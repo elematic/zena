@@ -26,6 +26,7 @@ import {DidDocument} from 'atproto:did';
 import {IdentityResolver} from 'atproto:identity';
 import {getVerifiedBlob, getVerifiedRecord} from 'atproto:sync';
 import {SourceFile, unpackSource} from './archive.zena';
+import {checkSource} from './validate.zena';
 import {PackageCache} from './cache.zena';
 import {Artifact, RELEASE_TYPE, Release, SOURCE} from './records.zena';
 import {Pin, packageKey} from './resolution.zena';
@@ -69,6 +70,16 @@ export async function fetchPackage(pin: Pin, cache: PackageCache,
         `${pin.key}: release ${versionText} has source ${source.cid.toString()}, but zena-lock.json pins ${pin.source.toString()}`);
   }
   let bytes = await download(document, source, pin);
+  // The package's PDS may be any PDS, where nothing checked what was
+  // written, so the release is checked against its archive here too.
+  let problems = checkSource(release, pin.did, bytes);
+  if (problems.length > 0) {
+    var message = `${pin.key}: release ${versionText} does not agree with its source archive:`;
+    for (let problem in problems) {
+      message = `${message}\n  ${problem}`;
+    }
+    throw new FetchError(message);
+  }
   await cache.storeSource(pin.source, unpack(bytes, pin));
   return true;
 }

@@ -1862,6 +1862,16 @@ class Array<T> { … }                   // a restricted argument is rejected
 let discard = <affine T>(x: T) => {};  // NOT in v1: needs at-most-once
 ```
 
+Both halves are enforced where a generic is instantiated, explicitly or
+by inference (`rejectSecondClassTypeArguments`,
+`rejectSecondClassFunctionTypeArgs`): a borrowed or scoped argument is
+rejected as second-class storage, and an owner, or an affine tuple, as
+an argument the body may duplicate (#379). The class half of `scoped T`
+(§"Scoped type arguments": `T`-typed fields in a `scoped T` class) is
+not implemented yet; until it is, a `T` field rejects a `scoped T`, so
+no generic class holds an owner in a `T` field, and an object that holds
+owners is a resource class with `Own<T>` fields.
+
 owner-futures.md defines the class half of `scoped T` for the async
 containers, with an `isFirstClass<T>()` branch for behavior only a
 first-class instantiation has. It needs no at-most-once variant: the

@@ -1,0 +1,103 @@
+/**
+ * Changing who belongs, from end to end, against
+ * `tests/fixtures/publish-stack.zena`: Alice creates a scope and a package,
+ * adds Bob to the scope and to a team, gives the team the package, and Bob
+ * publishes it until the team loses it.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {JsonObject, parseJson} from 'zena:json';
+import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, write} from './cli-support.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+
+export let tests = suite('zena scope, team and owner', () => {
+  test('adds people to a scope, a team and a package, and takes them away', (ctx) => {
+    let scratch = Scratch.create('membership');
+    let stack = startFakePds(scratch, 'publish-stack.zena');
+    try {
+      fakePdsOrigin(scratch, stack);
+      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      // Each person signs in with a configuration directory of their own.
+      let person = (who: String, dir: String) =>
+        new ZenaCommand(scratch.host(dir), scratch.at(dir), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
+          .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
+          .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
+          .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
+
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "scope": "acme", "version": "1.0.0"}\n');
+      write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      let alice = person('alice', 'lib');
+      let bob = person('bob', 'lib');
+      isTrue(alice.run(['login', ALICE, '--password-stdin'], 'app-password\n').succeeded(), 'alice signs in');
+      isTrue(bob.run(['login', BOB, '--password-stdin'], 'bob-password\n').succeeded(), 'bob signs in');
+      let scope = alice.run(['scope', 'create', 'acme', '--yes']);
+      isTrue(scope.succeeded(), described(scope));
+      let published = alice.run(['publish', '--yes']);
+      isTrue(published.succeeded(), described(published));
+      let did = (parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
+      let manifestAt = (version: String) => write(scratch.at('lib/zena-package.json'),
+          `{"name": "greet", "did": "${did}", "scope": "acme", "version": "${version}"}\n`);
+
+      // Alice is the only member; Bob, who is none, sees no one and can
+      // change nothing.
+      let members = alice.run(['scope', 'members', 'acme']);
+      isTrue(members.succeeded() && members.stdout.contains(`${ALICE}  owner`), described(members));
+      let outsider = bob.run(['scope', 'add', 'acme', BOB, '--role', 'owner']);
+      isTrue(!outsider.succeeded() && outsider.stderr.contains('cannot change it'), described(outsider));
+      let badRole = alice.run(['scope', 'add', 'acme', BOB, '--role', 'pope']);
+      isTrue(!badRole.succeeded() && badRole.stderr.contains('not a role'), described(badRole));
+
+      // Alice adds Bob as an admin, who then sees every member.
+      let added = alice.run(['scope', 'add', 'acme', BOB, '--role', 'admin']);
+      isTrue(added.succeeded() && added.stdout.contains('as admin'), described(added));
+      let seen = bob.run(['scope', 'members', 'acme']);
+      isTrue(seen.succeeded() && seen.stdout.contains(`${ALICE}  owner`) && seen.stdout.contains(`${BOB}  admin`),
+          described(seen));
+
+      // A team, with Bob on it, publishes the package.
+      let team = alice.run(['team', 'create', 'acme/core']);
+      isTrue(team.succeeded() && team.stdout.contains('Created the team acme/core'), described(team));
+      let onTeam = alice.run(['team', 'add', 'acme/core', BOB]);
+      isTrue(onTeam.succeeded(), described(onTeam));
+      let teamMembers = bob.run(['team', 'members', 'acme/core']);
+      isTrue(teamMembers.succeeded() && teamMembers.stdout.contains(`${BOB}  member`), described(teamMembers));
+      let notYet = bob.run(['publish']);
+      isTrue(!notYet.succeeded(), described(notYet));
+      let given = alice.run(['owner', 'add', '--team', 'acme/core']);
+      isTrue(given.succeeded() && given.stdout.contains('Added the team acme/core'), described(given));
+      let owners = alice.run(['owner', 'list']);
+      isTrue(owners.succeeded() && owners.stdout.contains(`${ALICE}  owner`) &&
+          owners.stdout.contains('the team core of did:plc:') && owners.stdout.contains('publisher'), described(owners));
+
+      manifestAt('1.1.0');
+      let byBob = bob.run(['publish']);
+      isTrue(byBob.succeeded() && byBob.stdout.contains('Published greet 1.1.0'), described(byBob));
+      // As a publisher, Bob does not choose the package's maintainers.
+      let notOwner = bob.run(['owner', 'add', ALICE, '--role', 'owner']);
+      isTrue(!notOwner.succeeded() && notOwner.stderr.contains('Forbidden'), described(notOwner));
+
+      // Taken away: the team loses the package, and Bob the scope.
+      let taken = alice.run(['owner', 'remove', '--team', 'acme/core']);
+      isTrue(taken.succeeded(), described(taken));
+      manifestAt('1.2.0');
+      let refused = bob.run(['publish']);
+      isTrue(!refused.succeeded() && refused.stderr.contains('Forbidden'), described(refused));
+      let deleted = alice.run(['team', 'delete', 'acme/core']);
+      isTrue(deleted.succeeded(), described(deleted));
+      let removed = alice.run(['scope', 'remove', 'acme', BOB]);
+      isTrue(removed.succeeded(), described(removed));
+      let gone = bob.run(['scope', 'members', 'acme']);
+      isTrue(gone.succeeded() && gone.stdout.contains('none you can see'), described(gone));
+      // The last owner stays: the host refuses a record with none.
+      let lastOwner = alice.run(['scope', 'remove', 'acme', ALICE]);
+      isTrue(!lastOwner.succeeded() && lastOwner.stderr.contains('InvalidRequest'), described(lastOwner));
+    } finally {
+      stack.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});

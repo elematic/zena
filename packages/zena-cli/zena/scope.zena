@@ -1,0 +1,98 @@
+/**
+ * `zena scope create` and `zena scope info`: the scopes on a package host
+ * (docs/design/package-manager.md, "Scopes"). A scope is an organization
+ * account whose handle is one label below the host's domain, and packages
+ * are created in it by `zena publish` (`publish.zena`), which never
+ * creates a scope itself.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { JsonArray, JsonObject, JsonValue } from 'zena:json';
+import { XrpcClient } from 'atproto:xrpc';
+import { MEMBERS_TYPE, isValidScopeName } from 'package-manager:records';
+import { Options } from './env.zena';
+import { packageResolver } from './fetch.zena';
+import {
+  PublishError, createOrganization, findHost, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+} from './publish.zena';
+
+/**
+ * `zena scope create <name>`: creates the scope on the host, with the
+ * signed-in maintainer as its only owner, once `--yes` says to.
+ */
+export function scopeCreateCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 2) {
+      throw new PublishError('give the scope to create: zena scope create <name>');
+    }
+    let name = args.rest[1];
+    if (!isValidScopeName(name)) {
+      throw new PublishError(
+          `'${name}' cannot be a scope: use lowercase letters, digits and -, starting with a letter`);
+    }
+    let session = signedIn();
+    let host = findHost(args);
+    let handle = `${name}.${host.domain}`;
+    if (scopeOrganization(handle) != null) {
+      throw new PublishError(`${host.origin} already has the scope ${name} (${handle})`);
+    }
+    if (!args.getFlag('yes')) {
+      throw new PublishError(
+          `Run again with --yes to create the scope ${handle} on ${host.origin}, owned by ${session.handle}.`);
+    }
+    createOrganization(session, host, name);
+    saveIfRefreshed(session);
+  });
+}
+
+/**
+ * `zena scope info <scope>`: the scope's DID, handle and host, and its
+ * members record: how many members it commits to, and its thresholds.
+ * The scope is its name on the host, its handle, or its DID. Who the
+ * members are is private (package-manager.md, "Private membership").
+ */
+export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 2) {
+      throw new PublishError('give the scope: zena scope info <name, handle or DID>');
+    }
+    let given = args.rest[1];
+    var did = given;
+    if (!given.startsWith('did:')) {
+      let handle = if (given.contains('.')) given else `${given}.${findHost(args).domain}`;
+      let found = scopeOrganization(handle);
+      if (found == null) {
+        throw new PublishError(`no scope has the handle ${handle}`);
+      }
+      did = found as String;
+    }
+    let document = runFuture(packageResolver().resolveDid(did));
+    if (document.pds == null) {
+      throw new PublishError(`${did} names no PDS`);
+    }
+    let params: Array<(String, String)> = [('repo', did), ('collection', MEMBERS_TYPE), ('rkey', 'self')];
+    var record: JsonObject | null = null;
+    try {
+      record = runFuture(new XrpcClient(document.pds as String).query('com.atproto.repo.getRecord', params))
+        as JsonObject;
+    } catch (e) {
+      throw new PublishError(`${did} has no members record, so it is not a scope: ${e.message}`);
+    }
+    let members = (record as JsonObject)['value'] as JsonObject;
+    console.log(document.handle ?? '(no handle)');
+    console.log(`  DID: ${did}`);
+    console.log(`  Host: ${document.pds as String}`);
+    console.log(`  Members: ${(members['members'] as JsonArray).length}`);
+    console.log(`  Owners needed to change members: ${number(members['ownerThreshold'])}`);
+    console.log(`  Admins needed to change teams: ${number(members['adminThreshold'])}`);
+  });
+}
+
+/** A JSON number as a whole number, or `?` when it is not one. */
+function number(value: JsonValue): String {
+  if (value is Box<f64>) {
+    return `${(value as Box<f64>).value as i64}`;
+  }
+  return '?';
+}

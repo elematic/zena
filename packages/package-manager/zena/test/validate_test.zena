@@ -1,0 +1,155 @@
+/**
+ * `package-manager:validate`: a release against its source archive, and
+ * its dependencies against `package-manager:testing/fake-pds`.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {Cid} from 'atproto:cid';
+import {BlobRef} from 'atproto:data';
+import {packSource} from 'package-manager:archive';
+import {Artifact, Dependency, Release, SOURCE, Retraction} from 'package-manager:records';
+import {FakeAccount, FakePds} from 'package-manager:testing/fake-pds';
+import {SOURCE_MIME_TYPE, checkDependencies, checkSource, validateRelease} from 'package-manager:validate';
+import {Version} from 'package-manager:version';
+
+let PACKAGE = 'did:plc:routerrouterrouterrouter';
+let JSON_DID = 'did:plc:jsonjsonjsonjsonjsonjson';
+
+/** An archive of `manifest` and one source file. */
+function archiveOf(manifest: String): FixedArray<u8> {
+  let files = new HashMap<String, FixedArray<u8>>();
+  files['zena-package.json'] = manifest.toBytes() as FixedArray<u8>;
+  files['router.zena'] = 'export let x = 1;\n'.toBytes() as FixedArray<u8>;
+  return packSource(files);
+}
+
+/** A release of `version` whose source artifact is `source`. */
+function releaseOf(version: String, source: FixedArray<u8>, dependencies: Array<Dependency>,
+    mimeType: String = SOURCE_MIME_TYPE): Release {
+  let blob = new BlobRef(Cid.forBlob(source), mimeType, source.length as i64);
+  let deps = new FixedArray<Dependency>(dependencies.length, new Dependency('', Version.parse('0.0.0'), ''));
+  for (var i = 0; i < dependencies.length; i += 1) {
+    deps[i] = dependencies[i];
+  }
+  return new Release(Version.parse(version), '2026-10-26T00:00:00.000Z',
+      new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), deps);
+}
+
+function json(version: String) {
+  let list = new GrowableArray<Dependency>();
+  list.push(new Dependency(JSON_DID, Version.parse(version), 'json'));
+  return list;
+}
+
+let GOOD = `{"name": "router", "did": "${PACKAGE}", "version": "1.4.2", "dependencies": {"json": {"did": "${JSON_DID}", "version": "2.0.0"}}}`;
+
+/** The problems as one line each, for a failure message. */
+function lines(problems: Array<String>): String {
+  var text = '';
+  for (let problem in problems) {
+    text = `${text}\n${problem}`;
+  }
+  return text;
+}
+
+/** Whether one of `problems` contains `fragment`. */
+function has(problems: Array<String>, fragment: String): boolean {
+  for (let problem in problems) {
+    if (problem.contains(fragment)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export let tests = suite('package-manager:validate', () => {
+  test('accepts a release that agrees with its archive', (ctx) => {
+    let source = archiveOf(GOOD);
+    let problems = checkSource(releaseOf('1.4.2', source, json('2.0.0')), PACKAGE, source, 'router');
+    equal(problems.length, 0, lines(problems));
+    // A path dependency appears in the release as a DID, under its name.
+    let pathed = archiveOf(`{"name": "router", "version": "1.4.2", "dependencies": {"json": {"path": "../json"}}}`);
+    equal(checkSource(releaseOf('1.4.2', pathed, json('2.0.0')), PACKAGE, pathed).length, 0);
+  });
+
+  test('finds every way an archive disagrees with its release', (ctx) => {
+    let source = archiveOf(GOOD);
+    let release = releaseOf('1.4.2', source, json('2.0.0'));
+
+    isTrue(has(checkSource(releaseOf('1.5.0', source, json('2.0.0')), PACKAGE, source), 'is version 1.4.2, not 1.5.0'));
+    isTrue(has(checkSource(release, 'did:plc:otherotherotherotherothe', source), 'is the package'));
+    isTrue(has(checkSource(release, PACKAGE, source, 'routing'), 'names router, not routing'));
+    isTrue(has(checkSource(releaseOf('1.4.2', source, new GrowableArray<Dependency>()), PACKAGE, source),
+        'depends on json, which the release does not list'));
+    let extra = json('2.0.0');
+    extra.push(new Dependency('did:plc:yamlyamlyamlyamlyamlyaml', Version.parse('1.0.0'), 'yaml'));
+    isTrue(has(checkSource(releaseOf('1.4.2', source, extra), PACKAGE, source), 'depends on yaml, which the archive'));
+
+    let wit = archiveOf(`{"name": "router", "version": "1.4.2", "dependencies": {"gfx": {"wit": "./wit"}}}`);
+    isTrue(has(checkSource(releaseOf('1.4.2', wit, new GrowableArray<Dependency>()), PACKAGE, wit), 'WIT'));
+    let unversioned = archiveOf('{"name": "router"}');
+    isTrue(has(checkSource(releaseOf('1.4.2', unversioned, new GrowableArray<Dependency>()), PACKAGE, unversioned),
+        'has no version'));
+    let unreadable = archiveOf('{"name": "Router!"}');
+    isTrue(has(checkSource(releaseOf('1.4.2', unreadable, new GrowableArray<Dependency>()), PACKAGE, unreadable),
+        'cannot be read'));
+
+    let files = new HashMap<String, FixedArray<u8>>();
+    files['router.zena'] = 'export let x = 1;\n'.toBytes() as FixedArray<u8>;
+    let bare = packSource(files);
+    isTrue(has(checkSource(releaseOf('1.4.2', bare, new GrowableArray<Dependency>()), PACKAGE, bare),
+        'has no zena-package.json'));
+    let junk = 'not a CAR file'.toBytes() as FixedArray<u8>;
+    isTrue(has(checkSource(releaseOf('1.4.2', junk, new GrowableArray<Dependency>()), PACKAGE, junk), 'does not unpack'));
+  });
+
+  test('checks that the archive is the artifact the release names', (ctx) => {
+    let source = archiveOf(GOOD);
+    let other = archiveOf(`{"name": "router", "did": "${PACKAGE}", "version": "1.4.2", "dependencies": {"json": {"did": "${JSON_DID}", "version": "2.0.1"}}}`);
+    let release = releaseOf('1.4.2', source, json('2.0.0'));
+    isTrue(has(checkSource(release, PACKAGE, other), 'is not the source artifact'));
+    isTrue(has(checkSource(releaseOf('1.4.2', source, json('2.0.0'), 'text/plain'), PACKAGE, source),
+        'is text/plain'));
+    let none = new Release(Version.parse('1.4.2'), '2026-10-26T00:00:00.000Z', new FixedArray<Artifact>(0,
+        Artifact.whole(SOURCE, new BlobRef(Cid.forBlob(source), SOURCE_MIME_TYPE, 1 as i64))),
+        new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+    isTrue(has(checkSource(none, PACKAGE, source), 'has no source artifact'));
+  });
+
+  test('checks that each dependency is published and not retracted', (ctx) => {
+    let pds = new FakePds();
+    pds.start();
+    let package = pds.account(JSON_DID, 'json.acme.pkg.zena-lang.dev');
+    publish(package, '2.0.0');
+    publish(package, '2.1.0');
+    package.retract(new Retraction(Version.parse('2.1.0'), 'broken'));
+    let resolver = pds.resolver();
+
+    equal(runFuture(checkDependencies(json('2.0.0'), resolver)).length, 0);
+    isTrue(has(runFuture(checkDependencies(json('3.0.0'), resolver)), 'json 3.0.0'));
+    isTrue(has(runFuture(checkDependencies(json('3.0.0'), resolver)), 'is not published'));
+    isTrue(has(runFuture(checkDependencies(json('2.1.0'), resolver)), 'is retracted'));
+    let nowhere = new GrowableArray<Dependency>();
+    nowhere.push(new Dependency('did:plc:nowherenowherenowherenow', Version.parse('1.0.0'), 'nowhere'));
+    isTrue(has(runFuture(checkDependencies(nowhere, resolver)), 'cannot be found'));
+
+    // Publishing checks both, and reports every problem at once.
+    let source = archiveOf(`{"name": "router", "did": "${PACKAGE}", "version": "1.4.2", "dependencies": {"json": {"did": "${JSON_DID}", "version": "3.0.0"}}}`);
+    let problems = runFuture(validateRelease(releaseOf('1.5.0', source, json('3.0.0')), PACKAGE, source, 'router',
+        resolver));
+    isTrue(has(problems, 'not 1.5.0') && has(problems, 'is not published'), lines(problems));
+    pds.close();
+  });
+});
+
+/** Publishes `version` on `account`, with an archive of its own. */
+function publish(account: FakeAccount, version: String) {
+  let source = archiveOf(`{"name": "json", "version": "${version}"}`);
+  let cid = account.addBlob(source);
+  account.publish(new Release(Version.parse(version), '2026-10-26T00:00:00.000Z',
+      new FixedArray<Artifact>(1, Artifact.whole(SOURCE, new BlobRef(cid, SOURCE_MIME_TYPE, source.length as i64))),
+      new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), ''))));
+}

@@ -31,6 +31,9 @@ import { fetchCommand } from './fetch.zena';
 import { addCommand, updateCommand } from './add.zena';
 import { loginCommand, logoutCommand } from './login.zena';
 import { packageCreateCommand, publishCommand } from './publish.zena';
+import { scopeCreateCommand, scopeInfoCommand } from './scope.zena';
+import { ownerCommand, scopeAddCommand, scopeMembersCommand, scopeRemoveCommand, teamCommand } from './members.zena';
+import { retractCommand } from './retract.zena';
 
 /** The whole command line, described once. */
 function describe() {
@@ -98,6 +101,10 @@ function describe() {
             type: OptionType.Flag,
             help: 'Let the program spawn processes and run modules',
           },
+          'allow-extensions' => {
+            type: OptionType.Flag,
+            help: 'Let the program load components as extensions',
+          },
         },
       },
       'test' => {
@@ -115,6 +122,10 @@ function describe() {
           'single' => {
             type: OptionType.Flag,
             help: 'Run one file in this process (what each test runs as)',
+          },
+          'compile' => {
+            type: OptionType.Flag,
+            help: 'Compile the files into the cache on one compiler, and run none (what the runner starts first)',
           },
         },
       },
@@ -182,8 +193,44 @@ function describe() {
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
-          'scope' => {help: 'The scope to create a new package in'},
+          'scope' => {help: 'The scope to create a new package in, when its manifest names none'},
           'yes' => {type: OptionType.Flag, help: 'Create the package if it has no DID yet'},
+        },
+      },
+      'scope' => {
+        help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person>',
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'yes' => {type: OptionType.Flag, help: 'Create it'},
+          'role' => {help: 'With add: member (the default), admin or owner'},
+        },
+      },
+      'team' => {
+        help: 'team create|delete|members <scope>/<team> | add|remove <scope>/<team> <person>',
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'role' => {help: 'With add: member (the default) or maintainer'},
+        },
+      },
+      'owner' => {
+        help: "owner add|remove <person> | add|remove --team <scope>/<team> | list: a package's maintainers",
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'role' => {help: 'With add: publisher (the default) or owner'},
+          'team' => {help: 'A team, <scope>/<team>, in place of a person'},
+          'package' => {help: 'The package, by DID, handle or @scope/name (default: the one you are in)'},
+        },
+      },
+      'retract' => {
+        help: 'Retract a published version: builds that pin it keep it, and choosing a version skips it',
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'reason' => {help: 'Why, for those who depend on it'},
+          'package' => {help: 'The package, by DID, handle or @scope/name (default: the one you are in)'},
         },
       },
       'package' => {
@@ -191,7 +238,7 @@ function describe() {
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
-          'scope' => {help: 'The scope to create the package in'},
+          'scope' => {help: 'The scope to create the package in, when its manifest names none'},
           'yes' => {type: OptionType.Flag, help: 'Create it'},
         },
       },
@@ -325,6 +372,34 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
       return 2;
     }
     return packageCreateCommand(sub, options);
+  }
+  if (name == 'scope') {
+    if (sub.rest.length > 0 && sub.rest[0] == 'create') {
+      return scopeCreateCommand(sub, options);
+    }
+    if (sub.rest.length > 0 && sub.rest[0] == 'info') {
+      return scopeInfoCommand(sub, options);
+    }
+    if (sub.rest.length > 0 && sub.rest[0] == 'members') {
+      return scopeMembersCommand(sub, options);
+    }
+    if (sub.rest.length > 0 && sub.rest[0] == 'add') {
+      return scopeAddCommand(sub, options);
+    }
+    if (sub.rest.length > 0 && sub.rest[0] == 'remove') {
+      return scopeRemoveCommand(sub, options);
+    }
+    console.error('Error: zena scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person>');
+    return 2;
+  }
+  if (name == 'team') {
+    return teamCommand(sub, options);
+  }
+  if (name == 'retract') {
+    return retractCommand(sub, options);
+  }
+  if (name == 'owner') {
+    return ownerCommand(sub, options);
   }
   if (name == 'bench') {
     return benchCommand(sub, options);

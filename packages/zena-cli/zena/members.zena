@@ -1,0 +1,511 @@
+/**
+ * Who belongs: `zena scope add`, `remove` and `members` for an
+ * organization's members, `zena team` for its teams, and `zena owner` for a
+ * package's maintainers (docs/design/package-manager.md, "Adding and
+ * removing people").
+ *
+ * Each change takes the same steps: read the record and its CID from the
+ * account's repository, and the private entries behind its commitments
+ * from the host (`getEntries`); make the new person's entry, with a new
+ * salt, or leave out the one removed; call the host's method with the new
+ * record, the entries, and the CID read, so that a change someone else
+ * made since is refused rather than overwritten; and attest the new record
+ * in the caller's own repository. A change counts once the record before
+ * it has the attestations its thresholds ask for, which with thresholds of
+ * one is the caller's.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { JsonArray, JsonObject, JsonValue } from 'zena:json';
+import { getRandomBytes } from 'wasi:random/random';
+import { Cid } from 'atproto:cid';
+import { fromJson, toJson } from 'atproto:data';
+import { Session } from 'atproto:session';
+import { XrpcClient } from 'atproto:xrpc';
+import {
+  ADMIN, MAINTAINER, MAINTAINERS_TYPE, MEMBER, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, OWNER,
+  PUBLISHER, TEAM_TYPE, Team
+} from 'package-manager:records';
+import { DiskFiles, readWorkspace } from 'package-manager:workspace';
+import { Options, repoRoot, userCwd } from './env.zena';
+import { packageResolver } from './fetch.zena';
+import {
+  Host, PublishError, attest, findHost, hostClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+} from './publish.zena';
+
+/** A record in an account's repository, as it is now. */
+final class Held {
+  value: JsonValue;
+  cid: String;
+  uri: String;
+
+  new(this.value, this.cid, this.uri);
+}
+
+/** `zena scope add <scope> <person> [--role member|admin|owner]`. */
+export function scopeAddCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    let (scope, person) = twoArguments(args, 'zena scope add <scope> <handle or DID> [--role member|admin|owner]');
+    let role = roleOf(args, MEMBER, [MEMBER, ADMIN, OWNER]);
+    let session = signedIn();
+    let host = findHost(args);
+    let org = scopeDid(host, scope);
+    let did = personDid(person);
+    let held = required(current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
+    let members = Members.fromValue(fromJson(held.value));
+    let entries = withoutPerson(allEntries(session, host, org, null, members.members, scope), did);
+    let added = newEntry(did, role);
+    entries.push(added);
+    let record = new Members(commitmentsOf(entries), members.ownerThreshold, members.adminThreshold);
+    let input = new JsonObject();
+    input['organization'] = org;
+    input['members'] = toJson(record.toValue());
+    input['entries'] = entriesJson([added]);
+    input['swapRecord'] = held.cid;
+    write(session, host, 'dev.zena-lang.host.putMembers', input);
+    console.log(`Added ${person} to ${scope} as ${role}.${thresholdNote(members.ownerThreshold, 'owners')}`);
+    saveIfRefreshed(session);
+  });
+}
+
+/** `zena scope remove <scope> <person>`. */
+export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    let (scope, person) = twoArguments(args, 'zena scope remove <scope> <handle or DID>');
+    let session = signedIn();
+    let host = findHost(args);
+    let org = scopeDid(host, scope);
+    let did = personDid(person);
+    let held = required(current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
+    let members = Members.fromValue(fromJson(held.value));
+    let before = allEntries(session, host, org, null, members.members, scope);
+    let entries = withoutPerson(before, did);
+    if (entries.length == before.length) {
+      throw new PublishError(`${person} is not a member of ${scope}`);
+    }
+    let record = new Members(commitmentsOf(entries), members.ownerThreshold, members.adminThreshold);
+    let input = new JsonObject();
+    input['organization'] = org;
+    input['members'] = toJson(record.toValue());
+    input['entries'] = new JsonArray();
+    input['swapRecord'] = held.cid;
+    write(session, host, 'dev.zena-lang.host.putMembers', input);
+    console.log(`Removed ${person} from ${scope}.${thresholdNote(members.ownerThreshold, 'owners')}`);
+    saveIfRefreshed(session);
+  });
+}
+
+/** `zena scope members <scope>`: the members the caller may see. */
+export function scopeMembersCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 2) {
+      throw new PublishError('give the scope: zena scope members <scope>');
+    }
+    let session = signedIn();
+    let host = findHost(args);
+    let org = scopeDid(host, args.rest[1]);
+    required(current(org, MEMBERS_TYPE, 'self'), `${args.rest[1]} has no members record`);
+    printEntries(visibleEntries(session, host, org, null));
+    saveIfRefreshed(session);
+  });
+}
+
+/**
+ * `zena team create|add|remove|delete|members <scope>/<team> ...`: an
+ * organization's teams. A team is created empty, and its members must be
+ * members of the organization.
+ */
+export function teamCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    let usage = 'zena team create|delete|members <scope>/<team>, or zena team add|remove <scope>/<team> <handle or DID>';
+    if (args.rest.length < 2) {
+      throw new PublishError(`give a subcommand and a team: ${usage}`);
+    }
+    let sub = args.rest[0];
+    let (scope, name) = teamName(args.rest[1]);
+    let session = signedIn();
+    let host = findHost(args);
+    let org = scopeDid(host, scope);
+    let held = current(org, TEAM_TYPE, name);
+    if (sub == 'create') {
+      if (held != null) {
+        throw new PublishError(`${scope} already has the team ${name}`);
+      }
+      putTeam(session, host, org, name, new Team([]), [], null);
+      console.log(`Created the team ${scope}/${name}. Add its members with zena team add ${scope}/${name} <person>.`);
+    } else {
+      if (held == null) {
+        throw new PublishError(`${scope} has no team ${name}`);
+      }
+      let found = held as Held;
+      let team = Team.fromValue(fromJson(found.value));
+      if (sub == 'delete') {
+        let input = new JsonObject();
+        input['organization'] = org;
+        input['name'] = name;
+        input['swapRecord'] = found.cid;
+        runFuture(hostClient(session, host, 'dev.zena-lang.host.deleteTeam')
+          .procedure('dev.zena-lang.host.deleteTeam', input));
+        console.log(`Deleted the team ${scope}/${name}.`);
+      } else if (sub == 'members') {
+        printEntries(visibleEntries(session, host, org, name));
+      } else if ((sub == 'add' || sub == 'remove') && args.rest.length == 3) {
+        let person = args.rest[2];
+        let did = personDid(person);
+        let before = allEntries(session, host, org, name, team.members, `${scope}/${name}`);
+        let entries = withoutPerson(before, did);
+        var fresh = new GrowableArray<MemberEntry>();
+        if (sub == 'add') {
+          let added = newEntry(did, roleOf(args, MEMBER, [MEMBER, MAINTAINER]));
+          entries.push(added);
+          fresh.push(added);
+        } else if (entries.length == before.length) {
+          throw new PublishError(`${person} is not on the team ${scope}/${name}`);
+        }
+        putTeam(session, host, org, name, new Team(commitmentsOf(entries), team.threshold), fresh, found.cid);
+        console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${person} ${if (sub == 'add') 'to' else 'from'} ${scope}/${name}.${thresholdNote(team.threshold, 'maintainers')}`);
+      } else {
+        throw new PublishError(usage);
+      }
+    }
+    saveIfRefreshed(session);
+  });
+}
+
+/**
+ * `zena owner add|remove|list`: a package's maintainers, for the package
+ * in the current directory or the one `--package` names. A person is added
+ * by commitment, so the record does not name them; `--team <scope>/<team>`
+ * adds or removes a team.
+ */
+export function ownerCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    let usage = 'zena owner add|remove <handle or DID> [--role publisher|owner], zena owner add|remove --team <scope>/<team>, or zena owner list';
+    if (args.rest.length == 0) {
+      throw new PublishError(usage);
+    }
+    let sub = args.rest[0];
+    let session = signedIn();
+    let host = findHost(args);
+    let pkg = packageDid(host, args);
+    let held = current(pkg, MAINTAINERS_TYPE, 'self');
+    if (held == null) {
+      throw new PublishError(`${pkg} has no maintainers record`);
+    }
+    let found = held as Held;
+    let record = Maintainers.fromValue(fromJson(found.value));
+    let commitments = new GrowableArray<Cid>();
+    for (let maintainer in record.maintainers) {
+      if (maintainer.commitment != null) {
+        commitments.push(maintainer.commitment as Cid);
+      }
+    }
+    if (sub == 'list') {
+      let entries = visibleEntries(session, host, pkg, null);
+      for (let maintainer in record.maintainers) {
+        console.log(`${describeMaintainer(maintainer, entries)}  ${maintainer.role}`);
+      }
+      console.log(`Releases need ${record.threshold}, and changes to maintainers ${record.ownerThreshold} owners'.`);
+      saveIfRefreshed(session);
+      return;
+    }
+    if (sub != 'add' && sub != 'remove') {
+      throw new PublishError(usage);
+    }
+    let entries = allEntries(session, host, pkg, null, commitments, pkg);
+    // Who the change is about: a team, or a person by DID.
+    var teamOrg: String | null = null;
+    var teamLabel: String | null = null;
+    var did: String | null = null;
+    var who = '';
+    if (let (true, given) = args.getOption('team')) {
+      let (scope, name) = teamName(given);
+      teamOrg = scopeDid(host, scope);
+      teamLabel = name;
+      who = `the team ${given}`;
+    } else if (args.rest.length == 2) {
+      did = personDid(args.rest[1]);
+      who = args.rest[1];
+    } else {
+      throw new PublishError(usage);
+    }
+    let kept = new GrowableArray<Maintainer>();
+    for (let maintainer in record.maintainers) {
+      let isThem = if (teamOrg != null) maintainer.org == teamOrg && maintainer.team == teamLabel
+          else maintainerDid(maintainer, entries) == did;
+      if (!isThem) {
+        kept.push(maintainer);
+      }
+    }
+    let fresh = new GrowableArray<MemberEntry>();
+    if (sub == 'add') {
+      let role = roleOf(args, PUBLISHER, [PUBLISHER, OWNER]);
+      if (teamOrg != null) {
+        kept.push(new Maintainer(null, null, teamOrg, teamLabel, role));
+      } else {
+        let added = newEntry(did as String, role);
+        fresh.push(added);
+        kept.push(new Maintainer(null, added.commitment(), null, null, role));
+      }
+    } else if (kept.length == record.maintainers.length) {
+      throw new PublishError(`${who} does not maintain ${pkg}`);
+    }
+    if (kept.length == 0) {
+      throw new PublishError(`${pkg} would have no maintainers; add another first`);
+    }
+    let maintainers = new FixedArray<Maintainer>(kept.length, kept[0]);
+    for (var i = 0; i < kept.length; i += 1) {
+      maintainers[i] = kept[i];
+    }
+    let input = new JsonObject();
+    input['package'] = pkg;
+    input['maintainers'] = toJson(new Maintainers(maintainers, record.threshold, record.ownerThreshold).toValue());
+    input['entries'] = entriesJson(fresh);
+    input['swapRecord'] = found.cid;
+    write(session, host, 'dev.zena-lang.host.putMaintainers', input);
+    console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.${thresholdNote(record.ownerThreshold, 'owners')}`);
+    saveIfRefreshed(session);
+  });
+}
+
+/** Calls the host's `method` with `input`, and attests the record it wrote. */
+function write(session: Session, host: Host, method: String, input: JsonObject): void {
+  let written = runFuture(hostClient(session, host, method).procedure(method, input)) as JsonObject;
+  attest(session, written['uri'] as String, Cid.parse(written['cid'] as String));
+}
+
+function putTeam(session: Session, host: Host, org: String, name: String, team: Team, fresh: Array<MemberEntry>,
+    swap: String | null): void {
+  let input = new JsonObject();
+  input['organization'] = org;
+  input['name'] = name;
+  input['team'] = toJson(team.toValue());
+  input['entries'] = entriesJson(fresh);
+  if (swap != null) {
+    input['swapRecord'] = swap as String;
+  }
+  write(session, host, 'dev.zena-lang.host.putTeam', input);
+}
+
+/** What to say about a change whose record asks for more than one attestation. */
+function thresholdNote(threshold: i64, who: String): String {
+  if (threshold <= (1 as i64)) {
+    return '';
+  }
+  return ` You have attested it; it counts once ${threshold} ${who} have.`;
+}
+
+/** The two arguments after the subcommand, or a `PublishError` showing `usage`. */
+function twoArguments(args: ParsedArgs, usage: String): (String, String) {
+  if (args.rest.length != 3) {
+    throw new PublishError(`usage: ${usage}`);
+  }
+  return (args.rest[1], args.rest[2]);
+}
+
+/** `--role`, which must be one of `allowed`, or `fallback`. */
+function roleOf(args: ParsedArgs, fallback: String, allowed: Array<String>): String {
+  if (let (true, given) = args.getOption('role')) {
+    for (let role in allowed) {
+      if (role == given) {
+        return given;
+      }
+    }
+    var names = '';
+    for (let role in allowed) {
+      names = if (names == '') role else `${names}, ${role}`;
+    }
+    throw new PublishError(`'${given}' is not a role here: use ${names}`);
+  }
+  return fallback;
+}
+
+/** `<scope>/<team>`, split. */
+function teamName(text: String): (String, String) {
+  let parts = text.split('/');
+  if (parts.length != 2 || parts[0] == '' || parts[1] == '') {
+    throw new PublishError(`'${text}' is not <scope>/<team>`);
+  }
+  return (parts[0], parts[1]);
+}
+
+/** The organization of `scope` on `host`. */
+function scopeDid(host: Host, scope: String): String {
+  let handle = `${scope}.${host.domain}`;
+  let org = scopeOrganization(handle);
+  if (org == null) {
+    throw new PublishError(`${host.origin} has no scope ${scope}`);
+  }
+  return org as String;
+}
+
+/** A person's DID, from a DID or a handle. */
+function personDid(person: String): String {
+  if (person.startsWith('did:')) {
+    return person;
+  }
+  let did = scopeOrganization(person);
+  if (did == null) {
+    throw new PublishError(`${person} does not resolve to a DID`);
+  }
+  return did as String;
+}
+
+/**
+ * The package `--package` names, by DID, handle or `@scope/name` on the
+ * host, else the one in the current directory, by its manifest's DID.
+ */
+export function packageDid(host: Host, args: ParsedArgs): String {
+  if (let (true, given) = args.getOption('package')) {
+    if (given.startsWith('did:')) {
+      return given;
+    }
+    var handle = given;
+    if (given.startsWith('@')) {
+      let (scope, name) = teamName(given.sliceBytes(1, given.length));
+      handle = `${name}.${scope}.${host.domain}`;
+    }
+    let did = scopeOrganization(handle);
+    if (did == null) {
+      throw new PublishError(`${given} does not resolve to a package`);
+    }
+    return did as String;
+  }
+  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+  let target = workspace.packageAt(userCwd().value);
+  if (target.manifest.did == null) {
+    throw new PublishError('run this in a published package, or name one with --package');
+  }
+  return target.manifest.did as String;
+}
+
+/** The record at `collection/rkey` in `did`'s repository, or null. */
+function current(did: String, collection: String, rkey: String): Held | null {
+  let document = runFuture(packageResolver().resolveDid(did));
+  if (document.pds == null) {
+    throw new PublishError(`${did} names no PDS`);
+  }
+  let params: Array<(String, String)> = [('repo', did), ('collection', collection), ('rkey', rkey)];
+  try {
+    let answer = runFuture(new XrpcClient(document.pds as String).query('com.atproto.repo.getRecord', params))
+      as JsonObject;
+    return new Held(answer['value'], answer['cid'] as String, answer['uri'] as String);
+  } catch (e) {
+    return null;
+  }
+}
+
+/** `held`, or a `PublishError` saying `missing`. */
+function required(held: Held | null, missing: String): Held {
+  if (held == null) {
+    throw new PublishError(missing);
+  }
+  return held as Held;
+}
+
+/**
+ * Every entry behind `commitments`, the record of `what` as it is now.
+ * Changing a record needs them all, which only those who may change it
+ * see from the host.
+ */
+function allEntries(session: Session, host: Host, account: String, team: String | null, commitments: Array<Cid>,
+    what: String): GrowableArray<MemberEntry> {
+  let entries = visibleEntries(session, host, account, team);
+  if (entries.length < commitments.length) {
+    throw new PublishError(
+        `you can see ${entries.length} of the ${commitments.length} people in ${what}, so you cannot change it`);
+  }
+  return entries;
+}
+
+/** The entries behind the record's commitments that the caller may see, from the host. */
+function visibleEntries(session: Session, host: Host, account: String, team: String | null)
+    : GrowableArray<MemberEntry> {
+  var params: Array<(String, String)> = [('account', account)];
+  if (team != null) {
+    params = [('account', account), ('team', team as String)];
+  }
+  let answer = runFuture(hostClient(session, host, 'dev.zena-lang.host.getEntries')
+    .query('dev.zena-lang.host.getEntries', params)) as JsonObject;
+  let list = answer['entries'] as JsonArray;
+  let entries = new GrowableArray<MemberEntry>();
+  for (var i = 0; i < list.length; i += 1) {
+    entries.push(MemberEntry.fromValue(fromJson(list[i])));
+  }
+  return entries;
+}
+
+/** `entries` without those of `did`. */
+function withoutPerson(entries: Array<MemberEntry>, did: String): GrowableArray<MemberEntry> {
+  let kept = new GrowableArray<MemberEntry>();
+  for (let entry in entries) {
+    if (entry.did != did) {
+      kept.push(entry);
+    }
+  }
+  return kept;
+}
+
+/** A new entry for `did` in `role`, with a new salt. */
+function newEntry(did: String, role: String): MemberEntry {
+  return new MemberEntry(did, role, getRandomBytes(32));
+}
+
+function commitmentsOf(entries: Array<MemberEntry>): FixedArray<Cid> {
+  let out = new FixedArray<Cid>(entries.length, Cid.forBlob(new FixedArray<u8>(0, 0 as u8)));
+  for (var i = 0; i < entries.length; i += 1) {
+    out[i] = entries[i].commitment();
+  }
+  return out;
+}
+
+function entriesJson(entries: Array<MemberEntry>): JsonArray {
+  let list = new JsonArray();
+  for (let entry in entries) {
+    list.push(toJson(entry.toValue()));
+  }
+  return list;
+}
+
+/** The DID a maintainer stands for, when it is one person the caller can see. */
+function maintainerDid(maintainer: Maintainer, entries: Array<MemberEntry>): String | null {
+  if (maintainer.did != null) {
+    return maintainer.did;
+  }
+  let commitment = maintainer.commitment;
+  if (commitment != null) {
+    for (let entry in entries) {
+      if (entry.commitment().equals(commitment)) {
+        return entry.did;
+      }
+    }
+  }
+  return null;
+}
+
+function describeMaintainer(maintainer: Maintainer, entries: Array<MemberEntry>): String {
+  if (maintainer.org != null) {
+    return `the team ${maintainer.team as String} of ${maintainer.org as String}`;
+  }
+  return maintainerDid(maintainer, entries) ?? `${(maintainer.commitment as Cid).toString()} (private)`;
+}
+
+/** Prints each entry's DID, its handle when it has one, and its role. */
+function printEntries(entries: Array<MemberEntry>): void {
+  if (entries.length == 0) {
+    console.log('(none you can see)');
+  }
+  for (let entry in entries) {
+    var handle = '';
+    try {
+      let document = runFuture(packageResolver().resolveDid(entry.did));
+      if (document.handle != null) {
+        handle = ` (${document.handle as String})`;
+      }
+    } catch (e) {
+      // A DID that does not resolve is still listed.
+    }
+    console.log(`${entry.did}${handle}  ${entry.role}`);
+  }
+}

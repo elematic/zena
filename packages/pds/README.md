@@ -11,9 +11,12 @@ bytes in Cloud Storage or a directory. Each account's
 repository takes writes, which sign a new commit, and the server answers the
 reads of `com.atproto.sync` (`getRecord`, `getRepo`, `getLatestCommit`,
 `getBlob`) and `com.atproto.repo` (`getRecord`, `listRecords`,
-`describeRepo`). With a `PackageHost`, it also serves the package host's
-`createOrganization`, `createPackage`, `uploadArtifact` and `publish`, each
-checked with a service-auth token from the caller's PDS, and
+`describeRepo`). An account with an app password signs in with
+`com.atproto.server.createSession`, and with its session refreshes it,
+gets service-auth tokens (`getServiceAuth`), and writes its own repository
+(`putRecord`, `deleteRecord`); the accounts the package host creates have
+no other password. With a `PackageHost`, it also serves the package host's
+methods, each checked with a service-auth token from the caller's PDS, and
 `com.atproto.server.describeServer`, which tells `zena` its service DID and
 handle domain. pds.js's license is
 in `LICENSE-pds-js`.
@@ -54,10 +57,11 @@ lists every variable). With none, it is a PDS in memory on port 2583.
 A deployment keeps its data in Firestore, for a tenant, with blob bytes in
 a Cloud Storage bucket, writes its handles' TXT records to the Cloud DNS
 zone that holds its domain, and gives the host's PLC rotation key, a
-secp256k1 private key in hex, from a secret:
+secp256k1 private key in hex, and the secret that signs sessions' tokens,
+32 bytes in hex, from secrets:
 
 ```sh
-PDS_STORAGE=firestore PDS_TENANT=pkg PDS_BLOB_BUCKET=<bucket> \
+PDS_STORAGE=firestore PDS_TENANT=pkg PDS_BLOB_BUCKET=<bucket> PDS_JWT_SECRET=<hex> \
 PDS_HOST_DOMAIN=pkg.zena-lang.dev PDS_ROTATION_KEY=<hex> \
 PDS_HANDLE_RECORDS=cloud-dns PDS_DNS_ZONE=<managed zone> \
   ./target/release/zena-cli run packages/pds/zena/main.zena
@@ -73,10 +77,53 @@ The same configuration with the argument `sync-handles`
 handle record again from the host's store and exits, for after a record
 write failed or records were lost.
 
+With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`, it
+creates a scope owned by that DID and exits. This is how the operator
+takes a name the host reserves (`www`, `api`, `admin`, `zena`, `pkg`,
+`mail`, and `PDS_RESERVED_SCOPES`), which no `zena scope create` can.
+
 `PDS_BLOB_DIR=<dir>` keeps blob bytes in a directory instead, for a server
 on one machine. `FIRESTORE_EMULATOR_HOST` points the server at the
 emulator, and `GOOGLE_CLOUD_PROJECT` names the project. A configuration
 the server cannot use stops it with every problem listed, and status 2.
+
+## Deploying
+
+The package host runs on Cloud Run, in two environments that `PDS_ENV`
+picks: `staging`, the default, at `pkg-staging.zena-lang.dev`, with its
+own PLC directory, so nothing it makes reaches `plc.directory`; and
+`production`, at `pkg.zena-lang.dev`. `deploy/env.sh` names what each one
+owns: a service, a Firestore database, a bucket, a service account with
+roles on those alone, a rotation-key secret, a session secret, and a Cloud DNS zone
+delegated from `zena-lang.dev`'s for its handle records. With `gcloud`
+signed in to the project:
+
+```sh
+export ZENA_GCP_PROJECT=meta-garage-420114 PDS_ENV=staging
+npm run deploy:setup -w @zena-lang/pds    # once: the resources, the key and the zone
+npm run deploy -w @zena-lang/pds          # builds the image with Cloud Build, and deploys it
+npm run deploy:domain -w @zena-lang/pds   # once: maps the domain, with gcloud's beta component
+```
+
+`deploy:setup` is idempotent, and makes the rotation key and the session
+secret only when there are none; run it again after pulling a change that
+adds a resource, such as the session secret, before `deploy`. When `zena-lang.dev`'s DNS is not a Cloud DNS zone in the project,
+or in `ZENA_DNS_PARENT_PROJECT`, it prints the `NS` records that delegate
+the environment's domain, to add where that DNS is kept. Back up the key with
+`gcloud secrets versions access latest --secret zena-pkg-staging-rotation-key`.
+`deploy` checks that the new revision answers `describeServer`. The
+certificate for the domain can take a while after `deploy:domain`.
+
+`zena` uses staging with two variables, which `deploy/staging.env` sets:
+
+```sh
+source packages/pds/deploy/staging.env    # ZENA_PACKAGE_HOST and ZENA_PLC_DIRECTORY
+export ZENA_CONFIG_DIR=$(mktemp -d)       # optional: a staging sign-in apart from your usual one
+```
+
+Every shell that runs `zena` against staging needs them, `zena add` and
+`zena fetch` included: without `ZENA_PLC_DIRECTORY`, a staging package's
+DID is looked up in `plc.directory`, which has never heard of it.
 
 ## Layout
 
@@ -97,3 +144,5 @@ the server cannot use stops it with every problem listed, and status 2.
   - `service`: the configuration, read from the environment, and the
     server it describes; `main` is the two together.
 - `zena/test/`: its tests.
+- `deploy/`: the image and the Cloud Run scripts.
+- `dev/demo.zena`: the demo.

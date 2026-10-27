@@ -26,7 +26,11 @@ the `zena` command. The design is in
      (`atproto:session`) in the configuration directory, and
      `publish.zena`, for `zena publish` and `zena package create`, which
      call a package host's `dev.zena-lang.host.*` methods with service-auth
-     tokens from that session.
+     tokens from that session, `scope.zena`, for `zena scope create` and
+     `zena scope info`, and `members.zena`, for `zena scope add`, `remove`
+     and `members`, `zena team` and `zena owner`, which change who belongs
+     through the host's `put*` methods, and `retract.zena`, for
+     `zena retract`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked
@@ -64,15 +68,25 @@ the `zena` command. The design is in
      repository: the compiler reads the workspace's `zena-package.json` and
      `packages/stdlib/zena` relative to it) and `/` as `/`.
    - Grants spawning, so zb can run build commands and the module can run
-     other modules with `zena:wasm`.
+     other modules with `zena:wasm`, and loading components, so the test
+     runner can pass that on to tests. The programs `zena run` starts get
+     each grant only with its flag (`--allow-spawn`,
+     `--allow-extensions`) or its variable (`ZENA_ALLOW_SPAWN=1`,
+     `ZENA_ALLOW_EXTENSIONS=1`); `zena test` gives tests both.
    - Sets `ZENA_REPO_ROOT`, `ZENA_CWD` (where the user is; user paths are
      resolved against it, see `resolveUserPath`), `ZENA_CLI_MODULE`,
      `ZENA_AVAILABLE_PARALLELISM` and `ZENA_STDLIB_DIR` (`/stdlib`), in
      place of any values the shell has for them
      (`zena_runtime::inherited_env_with`).
-   - `ZENA_REPO_ROOT` defaults to the checkout the binary was built in;
-     `ZENA_CLI_MODULE` defaults to `packages/zena-cli/out/zena.wasm` under
-     it.
+   - The repository root, preopened as `.` and the workspace the commands
+     act on, is `ZENA_REPO_ROOT` when it is set, and none when it is set
+     empty. Otherwise it is the checkout the binary was built in when the
+     command runs inside that checkout. Anywhere else there is none, and
+     the directory the command runs in is the workspace, as for a binary
+     built elsewhere (#552). The standard library and `ZENA_CLI_MODULE`
+     (`packages/zena-cli/out/zena.wasm`) come from the repository root
+     when it has them, and otherwise from the checkout, wherever the
+     command runs (`repo_root_for`, `source_root` in `src/main.rs`).
 
 3. **Compiling**
    - In-process by default: the compiler is part of the module. With
@@ -91,6 +105,18 @@ the `zena` command. The design is in
      at a time. Each copy compiles its file in test mode and runs it with
      `zena:wasm`, with the repository as `.`, the stdlib as `/stdlib` and a
      temporary directory as `/tmp`.
+   - When more files are stale in the compile cache than copies run at
+     once, they are compiled first, in that many copies
+     (`zena test --compile <files...>`), each compiling its share in file
+     order on one `CompileSession` (`zena-compiler:compile-file`), so the
+     standard library and shared packages are checked once per copy.
+     `compileIntoCache` stores each module with the files its program is
+     made of (`CompileSession.sources`), not the files its compile read,
+     since a shared compiler reads each file once; `tests/test-batch_test.zena`
+     checks that an edit still makes such a module stale. A file that did
+     not compile is compiled again by its `--single` copy, which reports
+     why. With no more stale files than copies, nothing would be shared, and
+     the copies compile their own files as before.
    - This package's own tests run the built binary from Zena
      (`tests/*_test.zena`, the `test:zena` script). What they vary is the
      command's environment (the compile cache's directory, the standard

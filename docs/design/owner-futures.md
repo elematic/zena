@@ -31,9 +31,10 @@ async function never(): Future<void> {
 }                    // the resource is never released
 ```
 
-Run on 2026-10-25, `twice` releases the resource twice and `never`
-releases it zero times (`semantics/ownership/future-owner-consumed.zena`
-and `execution/ownership/future-owner-abandoned.zena` record both). The
+Run on 2026-10-25, `twice` released the resource twice and `never`
+released it zero times. Since #613 `twice` is a compile error
+(`semantics/ownership/future-owner-consumed.zena`); `never` still
+releases nothing (`execution/ownership/future-owner-abandoned.zena`). The
 same two holes exist for streams: `Stream.stop()` drops elements it has
 not delivered without releasing them, and the pump that lifts a typed
 WIT stream abandons elements it lifted but could not deliver.
@@ -400,12 +401,14 @@ and with them:
 
 ## Staging
 
-1. **Restricted instantiations (checker).** The class half of `scoped
-T` admits restricted arguments to classes, and the containment walks
-   look inside `scoped T` classes. `await` and the moves above consume a
-   restricted future, a second use is the use-after-move error, and the
-   members that hand out the value twice are rejected on restricted
-   instantiations. `twice` becomes a compile error.
+1. **Restricted instantiations (checker).** #613 did the owner case for
+   `Future`: `await` and the moves above consume a future of an owner, a
+   second use is the use-after-move error, `then` is rejected on it, and
+   so is binding it to an unrestricted type parameter, including through
+   an array or map literal. `twice` is a compile error. What remains is
+   the class half of `scoped T`, which admits restricted arguments to
+   classes and makes the containment walks look inside `scoped T`
+   classes, replacing #613's check that names `Future`.
 2. **The body rules:** `isFirstClass<T>()` and its branch, exactly-once
    use of `T` elsewhere, and field reads as takes; the `WithDefault<T>`
    operator and `defaultValue<T>()`, with `Future`'s slot de-boxed onto

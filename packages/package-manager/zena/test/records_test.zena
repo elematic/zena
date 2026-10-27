@@ -15,6 +15,7 @@ import {
   Maintainer,
   Maintainers,
   MemberEntry,
+  Members,
   OWNER,
   PROFILE_TYPE,
   PUBLISHER,
@@ -23,9 +24,11 @@ import {
   RecordError,
   Release,
   SOURCE,
-  YANK_TYPE,
-  Yank,
-  isValidPackageName
+  Team,
+  RETRACTION_TYPE,
+  Retraction,
+  isValidPackageName,
+  isValidScopeName
 } from 'package-manager:records';
 
 function bytes(text: String) {
@@ -91,7 +94,7 @@ function rejectsProfile(json: String) {
 
 export let tests = suite('package-manager:records', () => {
   test('names each record type after its lexicon', (ctx) => {
-    for (let type in [PROFILE_TYPE, RELEASE_TYPE, YANK_TYPE, MAINTAINERS_TYPE, ATTESTATION_TYPE]) {
+    for (let type in [PROFILE_TYPE, RELEASE_TYPE, RETRACTION_TYPE, MAINTAINERS_TYPE, ATTESTATION_TYPE]) {
       isTrue(isValidNsid(type), type);
       let parts = type.split('.');
       let path = `packages/package-manager/lexicons/dev/zena-lang/package/${parts[parts.length - 1]}.json`;
@@ -173,7 +176,7 @@ export let tests = suite('package-manager:records', () => {
   test('rejects releases outside the lexicon', (ctx) => {
     // The record itself.
     rejectsRelease(`{"version": "1.4.2", "createdAt": "2026-10-21T00:00:00.000Z", "artifacts": [${SOURCE_ARTIFACT}]}`);
-    rejectsRelease(`{"$type": "dev.zena-lang.package.yank", "version": "1.4.2", "createdAt": "2026-10-21T00:00:00.000Z", "artifacts": [${SOURCE_ARTIFACT}]}`);
+    rejectsRelease(`{"$type": "dev.zena-lang.package.retraction", "version": "1.4.2", "createdAt": "2026-10-21T00:00:00.000Z", "artifacts": [${SOURCE_ARTIFACT}]}`);
     rejectsRelease(release(), '1.4.3');
     rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, '[]', '1.4'), '1.4');
     rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, '[]', '1.4.2', 'yesterday'));
@@ -236,19 +239,19 @@ export let tests = suite('package-manager:records', () => {
     rejectsProfile('{"$type": "dev.zena-lang.package.release", "name": "router"}');
   });
 
-  test('reads yanks', (ctx) => {
+  test('reads retractions', (ctx) => {
     let json = `{
-      "$type": "dev.zena-lang.package.yank",
+      "$type": "dev.zena-lang.package.retraction",
       "version": "1.4.1",
       "reason": "Routes with a trailing slash matched the wrong handler"
     }`;
-    let yank = Yank.fromValue(value(json), '1.4.1');
-    equal(yank.version.toString(), '1.4.1');
-    jsonEqual(toJson(yank.toValue()), parseJson(json));
+    let retraction = Retraction.fromValue(value(json), '1.4.1');
+    equal(retraction.version.toString(), '1.4.1');
+    jsonEqual(toJson(retraction.toValue()), parseJson(json));
 
     var caught = false;
     try {
-      Yank.fromValue(value(json), '1.4.2');
+      Retraction.fromValue(value(json), '1.4.2');
     } catch (e) {
       caught = e is RecordError;
     }
@@ -267,6 +270,15 @@ export let tests = suite('package-manager:records', () => {
       'rout er', 'ab--cd', 'xn--router', tooLong
     ]) {
       isFalse(isValidPackageName(name), name);
+    }
+  });
+
+  test('accepts scope names that are DNS labels, zena among them', (ctx) => {
+    for (let name in ['zena', 'acme', 'zena-util']) {
+      isTrue(isValidScopeName(name), name);
+    }
+    for (let name in ['', 'Acme', 'acme-', 'xn--acme', 'my.scope']) {
+      isFalse(isValidScopeName(name), name);
     }
   });
 
@@ -320,6 +332,40 @@ export let tests = suite('package-manager:records', () => {
     // Another salt, another commitment.
     isFalse(new MemberEntry(entry.did, OWNER, new FixedArray<u8>(32, 8 as u8)).commitment()
         .equals(entry.commitment()));
+    // Approval keys are part of the entry, and of its commitment.
+    let keyed = new MemberEntry(entry.did, OWNER, salt);
+    keyed.approvalKeys = ['did:key:zDnaeexample'];
+    let readKeyed = MemberEntry.fromValue(keyed.toValue());
+    equal(readKeyed.approvalKeys.length, 1);
+    equal(readKeyed.approvalKeys[0], 'did:key:zDnaeexample');
+    isTrue(readKeyed.commitment().equals(keyed.commitment()));
+    isFalse(keyed.commitment().equals(entry.commitment()));
+  });
+
+  test('reads members and team records, which list commitments', (ctx) => {
+    let commitment = new MemberEntry('did:plc:alicealicealicealicealic', OWNER, new FixedArray<u8>(32, 7 as u8))
+      .commitment();
+    let members = Members.fromValue(new Members([commitment], 2 as i64, 3 as i64).toValue());
+    equal(members.members.length, 1);
+    isTrue(members.members[0].equals(commitment));
+    equal(members.ownerThreshold, 2 as i64);
+    equal(members.adminThreshold, 3 as i64);
+    let team = Team.fromValue(new Team([commitment], 2 as i64).toValue());
+    isTrue(team.members[0].equals(commitment));
+    equal(team.threshold, 2 as i64);
+    equal(Team.fromValue(new Team([]).toValue()).members.length, 0);
+
+    var refused = 0;
+    for (let bad in [new Members([]).toValue(), new Team([commitment]).toValue()]) {
+      try {
+        Members.fromValue(bad);
+      } catch (e) {
+        if (e is RecordError) {
+          refused += 1;
+        }
+      }
+    }
+    equal(refused, 2);
   });
 
   test('keys an attestation by its subject, version and all', (ctx) => {

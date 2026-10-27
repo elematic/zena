@@ -172,6 +172,22 @@ export let tests = suite('atproto:xrpc, atproto:identity and atproto:sync', () =
     server.close();
   });
 
+  test('names where it looked for a DID that does not resolve', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    var message = '';
+    try {
+      runFuture(resolverFor(originOf(server)).resolveDid('did:plc:nobodynobodynobodynobody'));
+    } catch (e) {
+      message = e.message;
+    }
+    // A DID missing from a directory set by ZENA_PLC_DIRECTORY, or from the
+    // public one when it is not set, is told apart by the URL.
+    isTrue(message.contains(`${originOf(server)}/plc/did:plc:nobodynobodynobodynobody`) &&
+        message.contains('HTTP '), message);
+    server.close();
+  });
+
   test('resolves a did:web from its host', (ctx) => {
     let world = new World();
     let server = startServer(world);

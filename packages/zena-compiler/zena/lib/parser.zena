@@ -832,13 +832,17 @@ export final class Parser {
       null
     };
     
-    // Initializer
-    this.#consume(TokenType.Equals, "Expected '=' after variable name");
-    let init = if (this.#check(TokenType.RBrace) || this.#isAtEnd()) {
-      let st = this.#peek();
-      new Identifier("", this.#makeLocation(st))
+    // Initializer (optional for typed `var` declarations, which default to null)
+    let init = if (kind == 'var' && pattern is IdentifierPattern && typeAnnotation != null && !this.#check(TokenType.Equals)) {
+      new NullLiteral(null)
     } else {
-      this.#parseExpression()
+      this.#consume(TokenType.Equals, "Expected '=' after variable name");
+      if (this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        let st = this.#peek();
+        new Identifier("", this.#makeLocation(st))
+      } else {
+        this.#parseExpression()
+      }
     };
     
     if (this.#check(TokenType.Semi)) {
@@ -1007,8 +1011,12 @@ export final class Parser {
         null
       };
       
-      this.#consume(TokenType.Equals, "Expected '=' after variable name");
-      let initExpr = this.#parseExpression();
+      let initExpr: Expression = if (pattern is IdentifierPattern && typeAnnotation != null && !this.#check(TokenType.Equals)) {
+        new NullLiteral(null)
+      } else {
+        this.#consume(TokenType.Equals, "Expected '=' after variable name");
+        this.#parseExpression()
+      };
       let init = new VariableDeclaration('var', pattern, typeAnnotation, initExpr, false, this.#makeLocation(varStart));
       return this.#parseCStyleFor(startToken, init, isAwait);
     }
@@ -2831,8 +2839,11 @@ export final class Parser {
     
     let name = this.#parseIdentifier();
     
-    // Check for optional parameter
-    var optional3 = this.#match(TokenType.Question);
+    // Parameters cannot be marked optional with `?`; use a default value instead.
+    if (this.#match(TokenType.Question)) {
+      throw this.#error("Parameters cannot be optional. Use a default value: 'name: Type = default'.");
+    }
+    var optional3 = false;
     
     // Type annotation (optional for this.field params)
     let typeAnnotation2: TypeAnnotation | null = if (this.#match(TokenType.Colon)) {
@@ -2883,6 +2894,7 @@ export final class Parser {
     }
     
     // Parse the first expression to determine record vs map
+    let firstToken = this.#peek();
     let firstExpr = this.#parseExpression();
     
     // If followed by =>, it's a map literal
@@ -2908,6 +2920,12 @@ export final class Parser {
     }
     
     // Otherwise it's a record — first expression must be an identifier
+    if (!(firstExpr is Identifier)) {
+      throw this.#error(
+        "A record field is named by an identifier; a map entry is written 'key => value'.",
+        firstToken
+      );
+    }
     let name = firstExpr as Identifier;
     let value: Expression = if (this.#match(TokenType.Colon)) {
       this.#parseExpression()
@@ -3460,10 +3478,17 @@ export final class Parser {
       null
     };
     let paramName = this.#parseIdentifier();
-    let optional = this.#match(TokenType.Question);
+    if (this.#match(TokenType.Question)) {
+      throw this.#error("Parameters cannot be optional. Use a default value: 'name: Type = default'.");
+    }
     this.#consume(TokenType.Colon, "Expected ':' after case class parameter name");
     let typeAnnotation = this.#parseTypeAnnotation();
-    return new CaseClassParam(paramName, typeAnnotation, mutability, optional, this.#makeLocation(paramStart));
+    let defaultValue: Expression | null = if (this.#match(TokenType.Equals)) {
+      this.#parseExpression()
+    } else {
+      null
+    };
+    return new CaseClassParam(paramName, typeAnnotation, mutability, defaultValue, this.#makeLocation(paramStart));
   }
   
   #parseSealedVariants(variants: GrowableArray<SealedVariant>): void {

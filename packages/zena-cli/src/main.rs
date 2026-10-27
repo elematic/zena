@@ -9,7 +9,8 @@
 //!
 //! - Where the module is, and the repository it works in.
 //! - The directory the user ran the command from. The module's working
-//!   directory is the repository root (or current directory if standalone),
+//!   directory is the repository root, or the current directory outside
+//!   the checkout the binary was built in or when standalone,
 //!   preopened as `.`, because that is where the compiler finds the
 //!   workspace's `zena-package.json`; the standard library is preopened as `/stdlib`,
 //!   and the whole filesystem is preopened as `/` for everything else.
@@ -59,34 +60,54 @@ fn user_cache_dir() -> Result<PathBuf> {
     );
 }
 
-/// The repository root: if running within a Zena repository checkout,
-/// returns that path.
-///
-/// In standalone mode (outside a repository checkout), returns `None`.
-fn repo_root() -> Result<Option<PathBuf>> {
-    if let Ok(root) = std::env::var("ZENA_REPO_ROOT") {
+/// The checkout this binary was built in, if it is still there: where a
+/// binary without the bundle finds the standard library and the CLI
+/// module, wherever it runs.
+fn build_checkout() -> Option<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| std::fs::canonicalize(p).ok())?;
+    if root.join("packages/stdlib/zena").is_dir() && root.join("packages/zena-cli").is_dir() {
+        Some(root)
+    } else {
+        None
+    }
+}
+
+/// The repository root: the module's working directory, and the workspace
+/// its commands act on. `ZENA_REPO_ROOT` when set, and none when it is
+/// set empty. Otherwise `checkout` when the command runs inside it.
+/// Anywhere else none, in standalone mode: the directory the command runs
+/// in is the workspace, as it is for a binary from somewhere else, though
+/// the checkout still supplies the standard library and the module (#552).
+fn repo_root_for(
+    env: Option<&str>,
+    checkout: Option<&Path>,
+    cwd: &Path,
+) -> Result<Option<PathBuf>> {
+    if let Some(root) = env {
         if root.is_empty() {
             return Ok(None);
         }
-        let path = std::fs::canonicalize(&root)
+        let path = std::fs::canonicalize(root)
             .with_context(|| format!("ZENA_REPO_ROOT does not exist: {root}"))?;
         return Ok(Some(path));
     }
-    if let Ok(dev_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(std::fs::canonicalize)
-        .transpose()
-    {
-        if let Some(dev_root) = dev_root {
-            if dev_root.join("packages/stdlib/zena").is_dir()
-                && dev_root.join("packages/zena-cli").is_dir()
-            {
-                return Ok(Some(dev_root));
-            }
-        }
-    }
-    Ok(None)
+    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    Ok(checkout
+        .filter(|root| cwd.starts_with(root))
+        .map(Path::to_path_buf))
+}
+
+/// Where the standard library and the CLI module come from, short of
+/// `ZENA_STDLIB_DIR` and `ZENA_CLI_MODULE`: the repository root when it has
+/// them, else the checkout the binary was built in.
+fn source_root(repo_root: Option<&Path>, checkout: Option<&Path>) -> Option<PathBuf> {
+    repo_root
+        .filter(|root| root.join("packages/stdlib/zena").is_dir())
+        .or(checkout)
+        .map(Path::to_path_buf)
 }
 
 /// The standard library source directory.
@@ -192,9 +213,16 @@ fn cli_module(repo_root: Option<&Path>) -> Result<PathBuf> {
 
 fn main() -> Result<()> {
     zena_runtime::init_logging();
-    let repo_root = repo_root()?;
-    let stdlib_dir = resolve_stdlib_dir(repo_root.as_deref())?;
-    let module_path = cli_module(repo_root.as_deref())?;
+    let cwd = std::env::current_dir()?;
+    let checkout = build_checkout();
+    let repo_root = repo_root_for(
+        std::env::var("ZENA_REPO_ROOT").ok().as_deref(),
+        checkout.as_deref(),
+        &cwd,
+    )?;
+    let sources = source_root(repo_root.as_deref(), checkout.as_deref());
+    let stdlib_dir = resolve_stdlib_dir(sources.as_deref())?;
+    let module_path = cli_module(sources.as_deref())?;
     if zena_runtime::core_module::is_core_module_file(&module_path)? {
         anyhow::bail!(
             "{} is a core module; the zena command's module is a component, \
@@ -202,7 +230,6 @@ fn main() -> Result<()> {
             module_path.display()
         );
     }
-    let cwd = std::env::current_dir()?;
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -250,14 +277,18 @@ fn main() -> Result<()> {
         ("/".to_string(), PathBuf::from("/")),
     ];
 
+    // The CLI module holds every grant, and passes on to the programs it
+    // runs what their flags ask for.
     let grant = Grant {
         path_map: grant_path_map,
         debug: false,
+        spawn: true,
+        extensions: true,
     };
     let engine = zena_runtime::engine::shared_component_engine(false)?;
     let component =
         zena_runtime::cache::load_component_variant(&engine, &module_path, false, false)?;
-    let linker = zena_runtime::component::linker(&engine)?;
+    let linker = zena_runtime::component::linker_for(&engine, &component)?;
     let mut store = Store::new(
         &engine,
         ComponentState::new(&engine, wasi.build(), Some(grant)),
@@ -273,5 +304,67 @@ fn main() -> Result<()> {
             zena_runtime::report_trap(&e);
             Err(e.into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory under the system's temporary directory, made anew.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("zena-cli-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("packages/stdlib/zena")).unwrap();
+        std::fs::canonicalize(dir).unwrap()
+    }
+
+    #[test]
+    fn the_checkout_is_the_workspace_only_inside_it() {
+        let checkout = scratch("checkout");
+        let inside = checkout.join("packages/stdlib/zena");
+        let outside = scratch("project");
+        assert_eq!(
+            repo_root_for(None, Some(&checkout), &checkout).unwrap(),
+            Some(checkout.clone())
+        );
+        assert_eq!(
+            repo_root_for(None, Some(&checkout), &inside).unwrap(),
+            Some(checkout.clone())
+        );
+        assert_eq!(
+            repo_root_for(None, Some(&checkout), &outside).unwrap(),
+            None
+        );
+        assert_eq!(repo_root_for(None, None, &outside).unwrap(), None);
+        // The checkout still supplies the standard library and the module.
+        assert_eq!(source_root(None, Some(&checkout)), Some(checkout.clone()));
+        let _ = std::fs::remove_dir_all(&checkout);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn zena_repo_root_decides_when_set() {
+        let checkout = scratch("set-checkout");
+        let project = scratch("set-project");
+        std::fs::remove_dir_all(project.join("packages")).unwrap();
+        let named = project.to_string_lossy().into_owned();
+        assert_eq!(
+            repo_root_for(Some(&named), Some(&checkout), &checkout).unwrap(),
+            Some(project.clone())
+        );
+        assert_eq!(
+            repo_root_for(Some(""), Some(&checkout), &checkout).unwrap(),
+            None
+        );
+        assert!(repo_root_for(Some("/no/such/dir"), Some(&checkout), &checkout).is_err());
+        // A root without the standard library takes it from the checkout.
+        assert_eq!(
+            source_root(Some(&project), Some(&checkout)),
+            Some(checkout.clone())
+        );
+        assert_eq!(source_root(Some(&checkout), None), Some(checkout.clone()));
+        let _ = std::fs::remove_dir_all(&checkout);
+        let _ = std::fs::remove_dir_all(&project);
     }
 }

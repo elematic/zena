@@ -205,12 +205,22 @@ The test runner is Zena from end to end:
 1. Find the test files: each argument is a file, a directory (meaning
    every `_test.zena` beneath it) or a glob, found with `zena:fs`'s
    `glob`.
-2. For each file, start a copy of the CLI module with `zena:wasm`, as
+2. When more files are stale in the compile cache than copies run at
+   once, compile them first: as many copies as run at once, each started
+   as `zena test --compile <files...>` with its share in file order,
+   compile their files on one compiler (`CompileSession`) and store the
+   modules in the cache. The standard library and the packages the tests
+   share are then loaded and checked once per copy instead of once per
+   file: on 4 CPUs, the standard library's 94 test files took 97s of CPU
+   to compile one by one and 49s this way.
+3. For each file, start a copy of the CLI module with `zena:wasm`, as
    `zena test --single <file>`, a bounded number at a time
    (`ZENA_TEST_PARALLELISM`, else the CPU count up to eight). The copy
-   compiles the file in test mode through the cache, runs the compiled
-   test with `zena:wasm`, and prints what the test printed.
-3. Report each file in order as pass or fail, with its output when it
+   compiles the file in test mode through the cache (finding it there
+   after step 2), runs the compiled test with `zena:wasm`, and prints what
+   the test printed. A file step 2 could not compile is compiled here
+   again, alone, and its errors are what the copy prints.
+4. Report each file in order as pass or fail, with its output when it
    failed.
 
 Each copy and each test runs in its own store. A trap is caught and

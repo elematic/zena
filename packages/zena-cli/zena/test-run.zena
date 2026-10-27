@@ -1,13 +1,20 @@
 /**
- * `zena test`: find the test files, then run each in a copy of this
- * module.
+ * `zena test`: find the test files, compile the ones the cache does not
+ * hold, then run each in a copy of this module.
  *
- * A copy (`zena test --single <file>`) compiles its file in test mode
- * through the cache, runs the compiled test with `zena:wasm`, and prints
- * what the test printed. This module starts a bounded number of copies
- * at once, again with `zena:wasm`, and reports each file in order as
- * pass or fail. Each copy and each test runs in its own store, so a
- * trapping test takes nothing else down and its memory goes with it.
+ * When more files are stale than copies run at once, compiling comes
+ * first, in that many copies (`zena test --compile <files...>`) that
+ * each compile their share of the files on one compiler, so the standard
+ * library and the packages the tests share are loaded and checked once
+ * per copy rather than once per file (`compileIntoCache`). Then a copy
+ * per file (`zena test --single
+ * <file>`) finds its module in the cache, runs it with `zena:wasm`, and
+ * prints what the test printed; a file that did not compile is compiled
+ * there again, alone, and its errors are what that copy prints. This
+ * module starts a bounded number of copies at once, again with
+ * `zena:wasm`, and reports each file in order as pass or fail. Each copy
+ * and each test runs in its own store, so a trapping test takes nothing
+ * else down and its memory goes with it.
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -16,8 +23,9 @@ import { Own, StringBuilder, Unmanaged, disown } from 'zena:core';
 import { GlobOptions, existsSync, globSync, isDirectorySync } from 'zena:fs';
 import { hasMagic } from 'zena:glob';
 import { AbsolutePath, RelativePath, extname } from 'zena:path';
+import { div } from 'zena:math';
 import { Run, RunOutcome, runModule, startModule } from 'zena:wasm';
-import { CompileFailure, CompileRequest, compileCached } from './compile.zena';
+import { CompileFailure, CompileRequest, compileCached, compileIntoCache, isCached } from './compile.zena';
 import {
   Options, cliModule, hostEnv, parallelism, repoRelative, repoRoot, resolveUserPath,
   stdlibDir
@@ -130,18 +138,38 @@ function report(running: RunningTest): boolean {
   return false;
 }
 
+/**
+ * A test file's absolute path: a copy measures relative paths from where
+ * the user is, and `file` is relative to the repository root.
+ */
+function testPath(file: String) {
+  return repoRoot().join(new RelativePath(file)).value;
+}
+
+/** The compile `zena test --single` asks the cache for. */
+function testRequest(path: String) {
+  let request = new CompileRequest(resolveUserPath(path));
+  request.testMode = true;
+  return request;
+}
+
 /** Starts a copy of this module on one test file. */
 function startWorker(file: String, options: Options) {
+  return startCopy('--single', [testPath(file)], options);
+}
+
+/** Starts a copy of this module as `zena test <mode> <paths...>`. */
+function startCopy(mode: String, paths: Array<String>, options: Options) {
   let args = new GrowableArray<String>();
   args.push('zena');
   if (options.debug) {
     args.push('-g');
   }
   args.push('test');
-  args.push('--single');
-  // Absolute: the copy measures relative paths from where the user is,
-  // and `file` is relative to the repository root.
-  args.push(repoRoot().join(new RelativePath(file)).value);
+  args.push(mode);
+  for (let path in paths) {
+    args.push(path);
+  }
   // The same view of the filesystem this module has, the repository
   // root first as `.` so relative paths mean the same thing, and the
   // variables the host told this module.
@@ -155,12 +183,74 @@ function startWorker(file: String, options: Options) {
       {from: '/', to: '/'},
     ],
     grant: true,
+    grantExtensions: true,
   });
+}
+
+/**
+ * Compiles the test files the cache does not hold fresh, before any of
+ * them runs: their share in each of `parallelism()` copies, in file
+ * order, so files beside each other, which tend to import the same
+ * things, share a compiler. What a copy prints is dropped. A file it did
+ * not compile is compiled again by its `--single` copy, which reports
+ * why, and a copy that dies leaves its files to theirs the same way.
+ *
+ * With no more stale files than copies, each copy would compile one file
+ * and share nothing, and waiting for all of them before running any test
+ * would only cost: the `--single` copies compile their own files then,
+ * each test running as soon as its compile is done.
+ */
+function compileAhead(files: Array<String>, options: Options): void {
+  let stale = new GrowableArray<String>();
+  for (let file in files) {
+    let path = testPath(file);
+    if (!isCached(testRequest(path), options)) {
+      stale.push(path);
+    }
+  }
+  let copies = parallelism();
+  if (stale.length <= copies) {
+    return;
+  }
+  let compiling = new GrowableArray<Unmanaged<Run>>();
+  var start = 0;
+  for (var i = 0; i < copies; i += 1) {
+    // The first `stale.length % copies` shares are one file longer.
+    var size = div(stale.length, copies);
+    if (i < stale.length % copies) {
+      size += 1;
+    }
+    let share = new GrowableArray<String>();
+    for (var j = start; j < start + size; j += 1) {
+      share.push(stale[j]);
+    }
+    start += size;
+    compiling.push(disown(startCopy('--compile', share, options)));
+  }
+  for (let run in compiling) {
+    run.wait();
+  }
+}
+
+/**
+ * `zena test --compile <files...>`: compile the files into the cache on
+ * one compiler, and run none.
+ */
+function compileOnly(args: ParsedArgs, options: Options): i32 {
+  let requests = new GrowableArray<CompileRequest>();
+  for (let path in args.rest) {
+    requests.push(testRequest(path));
+  }
+  compileIntoCache(requests, options);
+  return 0;
 }
 
 export function testCommand(args: ParsedArgs, options: Options): i32 {
   if (args.getFlag('single')) {
     return runSingle(args, options);
+  }
+  if (args.getFlag('compile')) {
+    return compileOnly(args, options);
   }
   if (args.rest.length == 0) {
     console.error('Error: test needs a file, directory or glob');
@@ -175,6 +265,7 @@ export function testCommand(args: ParsedArgs, options: Options): i32 {
     return 2;
   }
   console.log(`Running ${files.length} tests...`);
+  compileAhead(files, options);
 
   // A sliding window: at most `limit` copies in flight, results printed
   // in file order as the window advances.
@@ -233,8 +324,7 @@ function runSingle(args: ParsedArgs, options: Options): i32 {
     return 2;
   }
   let file = args.rest[0];
-  let request = new CompileRequest(resolveUserPath(file));
-  request.testMode = true;
+  let request = testRequest(file);
   var module: AbsolutePath | null = null;
   try {
     module = compileCached(request, options);
@@ -255,6 +345,7 @@ function runSingle(args: ParsedArgs, options: Options): i32 {
       {from: hostDir('/tmp').value, to: '/tmp'},
     ],
     grant: true,
+    grantExtensions: true,
     debug: options.debug,
   });
   echo(result.stdout, false);

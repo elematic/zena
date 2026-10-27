@@ -1,0 +1,54 @@
+// The extensions' side of the interfaces: `ops` is what the child
+// exports and `callbacks` what it imports, each as free functions.
+// `relay` is a second extension bound to the child's `ops`. The
+// caller's copy of all three is in caller.wit.
+package test:ext@1.0.0;
+
+interface ops {
+  /// Asks the caller what `x` maps to, and doubles the answer.
+  compute: async func(x: s32) -> s32;
+  /// A string and a list across the boundary.
+  describe: async func(name: string, parts: list<u32>) -> string;
+  /// Traps.
+  trap: async func();
+  /// Never returns.
+  spin: async func();
+  /// Holds `mebibytes` of arrays at once, and returns how many it made.
+  grow: async func(mebibytes: u32) -> u32;
+  /// Counts the calls since the instance started.
+  count: async func() -> u32;
+}
+
+interface callbacks {
+  lookup: async func(key: s32) -> s32;
+}
+
+/// Calls another extension's `ops`.
+interface relay {
+  /// `compute` on the bound extension, twice over: 2 * (2 * lookup(x)).
+  twice: async func(x: s32) -> s32;
+}
+
+/// A component with nothing to call back and no imports.
+interface plain {
+  ping: func() -> u32;
+}
+
+world child {
+  import callbacks;
+  export ops;
+}
+
+world relay-world {
+  import ops;
+  export relay;
+}
+
+world plain-world {
+  export plain;
+}
+
+world random-world {
+  import wasi:random/random@0.3.0;
+  export plain;
+}

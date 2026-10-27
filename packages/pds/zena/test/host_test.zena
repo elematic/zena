@@ -18,14 +18,17 @@ import {BlobRef, MapValue, fromJson, toJson} from 'atproto:data';
 import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis} from 'atproto:plc';
+import {IdentityResolver} from 'atproto:identity';
+import {packSource} from 'package-manager:archive';
 import {verifyRecordProof} from 'atproto:repo';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {
-  Artifact, Dependency, Maintainer, Maintainers, OWNER, Profile, RELEASE_TYPE, Release, SOURCE
+  ADMIN, Artifact, Dependency, MAINTAINER, MEMBER, Maintainer, Maintainers, Members, OWNER, PUBLISHER, Profile,
+  RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, Team
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
-import {ClaimedName, ClaimedScope, HostConfig, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
+import {ClaimedName, ClaimedScope, HostConfig, HostError, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
 import {CreateRecord, RepositoryError, Write} from 'pds:repository';
@@ -74,7 +77,8 @@ final class Fixture {
         (count: i32) => {
           this.#random += 1;
           return filled(this.#random);
-        });
+        },
+        unreachableResolver());
     this.host = host;
     this.app = createApp(this.pds, host);
   }
@@ -89,7 +93,7 @@ final class Fixture {
   }
 
   /** Calls the host method `name` as `caller` with a JSON body, or raw bytes. */
-  call(caller: String | null, name: String, body: String, query: String = '',
+  call(caller: String | null, name: String, body: String | FixedArray<u8>, query: String = '',
       contentType: String = 'application/json', authorization: String | null = null): Response {
     let method = `dev.zena-lang.host.${name}`;
     let headers = new HashMap<String, String>();
@@ -103,7 +107,21 @@ final class Fixture {
     let app = this.app;
     runFuture((async () => {
       let req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, 'POST', headers,
-          bytesStream(body.toBytes()));
+          bytesStream(if (body is String) body.toBytes() else body as FixedArray<u8>));
+      await app.handleRequest(req, res);
+    })());
+    return res;
+  }
+
+  /** Calls the host query `name` as `caller`, with `query` after the method. */
+  query(caller: String, name: String, query: String): Response {
+    let method = `dev.zena-lang.host.${name}`;
+    let headers = new HashMap<String, String>();
+    headers['authorization'] = `Bearer ${this.token(caller, method)}`;
+    let res = new Response();
+    let app = this.app;
+    runFuture((async () => {
+      let req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, 'GET', headers);
       await app.handleRequest(req, res);
     })());
     return res;
@@ -176,6 +194,96 @@ function createPackage(fixture: Fixture, caller: String, org: String, name: Stri
       `{"organization": "${org}", "recoveryKeys": ["${RECOVERY}"], "profile": ${profile}, "maintainers": ${maintainers}}`);
 }
 
+/** `caller`'s view of the entries behind `account`'s members, team or maintainers. */
+function entriesSeen(fixture: Fixture, caller: String, account: String, team: String | null = null)
+    : Array<MemberEntry> {
+  let query = if (team == null) `?account=${account}` else `?account=${account}&team=${team as String}`;
+  let list = ok(fixture.query(caller, 'getEntries', query))['entries'] as JsonArray;
+  let entries = new GrowableArray<MemberEntry>();
+  for (var i = 0; i < list.length; i += 1) {
+    entries.push(MemberEntry.fromValue(fromJson(list[i])));
+  }
+  return entries;
+}
+
+/** The JSON of `entries`, as a list. */
+function entriesJson(entries: Array<MemberEntry>): String {
+  let list = new JsonArray();
+  for (let entry in entries) {
+    list.push(toJson(entry.toValue()));
+  }
+  return stringify(list);
+}
+
+function commitmentsOf(entries: Array<MemberEntry>): FixedArray<Cid> {
+  let out = new FixedArray<Cid>(entries.length, Cid.forBlob(new FixedArray<u8>(0, 0 as u8)));
+  for (var i = 0; i < entries.length; i += 1) {
+    out[i] = entries[i].commitment();
+  }
+  return out;
+}
+
+/** The `swapRecord` member of a call's body, or nothing. */
+function swapJson(swap: String | null): String {
+  return if (swap == null) '' else `, "swapRecord": "${swap as String}"`;
+}
+
+/** `putMembers` as `caller`: a members record committing to `members`, sending `sent`. */
+function putMembers(fixture: Fixture, caller: String, org: String, members: Array<MemberEntry>,
+    sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64): Response {
+  let record = stringify(toJson(new Members(commitmentsOf(members), ownerThreshold).toValue()));
+  return fixture.call(caller, 'putMembers',
+      `{"organization": "${org}", "members": ${record}, "entries": ${entriesJson(sent)}${swapJson(swap)}}`);
+}
+
+/** `putTeam` as `caller`: `org`'s team `name`, committing to `members`, sending them all. */
+function putTeam(fixture: Fixture, caller: String, org: String, name: String, members: Array<MemberEntry>,
+    swap: String | null): Response {
+  let record = stringify(toJson(new Team(commitmentsOf(members)).toValue()));
+  return fixture.call(caller, 'putTeam',
+      `{"organization": "${org}", "name": "${name}", "team": ${record}, "entries": ${entriesJson(members)}${swapJson(swap)}}`);
+}
+
+/** `putMaintainers` as `caller`, sending `sent`. */
+function putMaintainers(fixture: Fixture, caller: String, pkg: String, maintainers: Maintainers,
+    sent: Array<MemberEntry>, swap: String | null): Response {
+  let record = stringify(toJson(maintainers.toValue()));
+  return fixture.call(caller, 'putMaintainers',
+      `{"package": "${pkg}", "maintainers": ${record}, "entries": ${entriesJson(sent)}${swapJson(swap)}}`);
+}
+
+/** `uploadArtifact` as `caller`, which only a maintainer may do. */
+function upload(fixture: Fixture, caller: String, pkg: String): Response {
+  return fixture.call(caller, 'uploadArtifact', new FixedArray<u8>(4, 1 as u8), `?package=${pkg}`,
+      'application/octet-stream');
+}
+
+/**
+ * A resolver whose directory is a closed port, so a release's dependencies
+ * are never found and the tests reach no network.
+ */
+function unreachableResolver(): IdentityResolver {
+  let resolver = new IdentityResolver();
+  resolver.plcDirectory = 'http://127.0.0.1:1';
+  resolver.dnsOverHttps = 'http://127.0.0.1:1';
+  return resolver;
+}
+
+/** A source archive of `router` `version`, the package `did`, as `zena publish` packs one. */
+function archiveOf(did: String, version: String, manifest: String | null = null): FixedArray<u8> {
+  let files = new HashMap<String, FixedArray<u8>>();
+  files['zena-package.json'] = (manifest ?? `{"name": "router", "did": "${did}", "version": "${version}"}`)
+    .toBytes() as FixedArray<u8>;
+  files['router.zena'] = 'export let route = 1;\n'.toBytes() as FixedArray<u8>;
+  return packSource(files);
+}
+
+/** Uploads `archive` to `pkg` as Alice, and returns its blob. */
+function upload(fixture: Fixture, pkg: String, archive: FixedArray<u8>): BlobRef {
+  return BlobRef.fromValue(fromJson(ok(fixture.call(ALICE, 'uploadArtifact', archive, `?package=${pkg}`,
+      'application/vnd.ipld.car'))['blob'] as JsonObject));
+}
+
 function releaseJson(version: String, blob: BlobRef): String {
   let release = new Release(Version.parse(version), '2026-10-23T00:00:00.000Z',
       new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
@@ -206,7 +314,8 @@ export let tests = suite('pds:host', () => {
     equal(((pkg['maintainers'] as JsonObject)['uri'] as String),
         `at://${pkgDid}/dev.zena-lang.package.maintainers/self`);
 
-    let uploaded = ok(fixture.call(ALICE, 'uploadArtifact', 'the source archive', `?package=${pkgDid}`,
+    let archive = archiveOf(pkgDid, '1.0.0');
+    let uploaded = ok(fixture.call(ALICE, 'uploadArtifact', archive, `?package=${pkgDid}`,
         'application/vnd.ipld.car'));
     let blobJson = uploaded['blob'] as JsonObject;
     equal(blobJson['mimeType'] as String, 'application/vnd.ipld.car');
@@ -224,7 +333,7 @@ export let tests = suite('pds:host', () => {
         (signed, sig) => verifySignature(signingKey, signed, sig));
     equal((verified.cid as Cid).toString(), published['cid'] as String);
     let artifact = fixture.get(`/xrpc/com.atproto.sync.getBlob?did=${pkgDid}&cid=${blob.cid.toString()}`);
-    equal(String.fromBytes(artifact.body as FixedArray<u8>), 'the source archive');
+    equal(Cid.forBlob(artifact.body as FixedArray<u8>).toString(), Cid.forBlob(archive).toString());
 
     // A package account holds package records only.
     let account = runFuture(fixture.pds.storage.getAccount(pkgDid)) as Account;
@@ -237,6 +346,151 @@ export let tests = suite('pds:host', () => {
       refused = if (e is RepositoryError) (e as RepositoryError).error else e.message;
     }
     equal(refused, 'InvalidRequest');
+  });
+
+  test('holds an account alone when its owners give no recovery keys', (ctx) => {
+    let fixture = new Fixture();
+    let host = (fixture.host as PackageHost).config.rotationKey.publicKey();
+    let org = ok(fixture.call(ALICE, 'createOrganization', '{"name": "acme"}'));
+    let operation = fixture.submitted[org['did'] as String];
+    equal(operation.rotationKeys.length, 1);
+    equal(operation.rotationKeys[0], formatDidKey(host));
+    let none = ok(fixture.call(ALICE, 'createOrganization', '{"name": "acme2", "recoveryKeys": []}'));
+    equal(fixture.submitted[none['did'] as String].rotationKeys.length, 1);
+
+    // The host keeps two of PLC's five rotation keys for itself (#597).
+    let four = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
+    equal(errorOf(fixture.call(ALICE, 'createOrganization', `{"name": "acme3", "recoveryKeys": [${four}]}`)),
+        'InvalidRequest');
+    equal(errorOf(fixture.call(ALICE, 'createOrganization', '{"name": "acme3", "recoveryKeys": "no"}')),
+        'InvalidRequest');
+  });
+
+  test('lets the operator create a reserved scope, which no caller can', (ctx) => {
+    let fixture = new Fixture();
+    let host = fixture.host as PackageHost;
+    equal(errorOf(createOrganization(fixture, ALICE, 'zena')), 'NameTaken');
+    let created = runFuture(host.createScopeAsOperator(ALICE, 'zena', [], 0 as i64));
+    equal(created.handle, 'zena.pkg.test');
+    equal(fixture.submitted[created.did].rotationKeys.length, 1);
+    // Its owner is Alice, who can create packages in it.
+    ok(createPackage(fixture, ALICE, created.did, 'wit-parser'));
+    // Taken once, as any scope.
+    var taken = '';
+    try {
+      runFuture(host.createScopeAsOperator(BOB, 'zena', [], 0 as i64));
+    } catch (e) {
+      taken = if (e is HostError) (e as HostError).error else e.message;
+    }
+    equal(taken, 'NameTaken');
+  });
+
+  test('changes an organization\'s members, and a role ends with the record that gave it', (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    var swap = (org['members'] as JsonObject)['cid'] as String;
+    // Alice's own entry, which the host made, is all she needs to keep.
+    let alice = entriesSeen(fixture, ALICE, orgDid);
+    equal(alice.length, 1);
+    equal(alice[0].role, OWNER);
+    let bob = new MemberEntry(BOB, ADMIN, filled(150));
+
+    // Only an owner changes the members.
+    equal(errorOf(putMembers(fixture, BOB, orgDid, [alice[0], bob], [bob], swap)), 'Forbidden');
+    // Each entry is behind a commitment, each commitment has an entry, and
+    // the record keeps owners enough for its thresholds.
+    equal(errorOf(putMembers(fixture, ALICE, orgDid, [alice[0]], [bob], swap)), 'InvalidRequest');
+    equal(errorOf(putMembers(fixture, ALICE, orgDid, [alice[0], bob], [], swap)), 'InvalidRequest');
+    equal(errorOf(putMembers(fixture, ALICE, orgDid, [bob], [bob], swap)), 'InvalidRequest');
+    equal(errorOf(putMembers(fixture, ALICE, orgDid, [alice[0], bob], [bob], swap, 2 as i64)), 'InvalidRequest');
+    let pope = new MemberEntry(BOB, 'pope', filled(151));
+    equal(errorOf(putMembers(fixture, ALICE, orgDid, [alice[0], pope], [pope], swap)), 'InvalidRequest');
+    equal(errorOf(putMembers(fixture, ALICE, orgDid, [alice[0], bob], [bob], 'bafyreinotacid')), 'InvalidRequest');
+
+    let added = ok(putMembers(fixture, ALICE, orgDid, [alice[0], bob], [bob], swap));
+    // A second change made from the same record is refused.
+    equal(errorOf(putMembers(fixture, ALICE, orgDid, [alice[0]], [], swap)), 'InvalidSwap');
+    swap = added['cid'] as String;
+
+    // Bob, an admin now, creates packages, sees every entry, and sees no
+    // more than his own once he is removed.
+    ok(createPackage(fixture, BOB, orgDid, 'router'));
+    equal(entriesSeen(fixture, BOB, orgDid).length, 2);
+    ok(putMembers(fixture, ALICE, orgDid, [alice[0]], [], swap));
+    equal(errorOf(createPackage(fixture, BOB, orgDid, 'parser')), 'Forbidden');
+    equal(entriesSeen(fixture, BOB, orgDid).length, 0);
+    equal(entriesSeen(fixture, ALICE, orgDid).length, 1);
+  });
+
+  test('gives a team a package, and takes it away with the team', (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let alice = entriesSeen(fixture, ALICE, orgDid);
+    let bobMember = new MemberEntry(BOB, MEMBER, filled(160));
+    ok(putMembers(fixture, ALICE, orgDid, [alice[0], bobMember], [bobMember],
+        (org['members'] as JsonObject)['cid'] as String));
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    var pkgSwap = (pkg['maintainers'] as JsonObject)['cid'] as String;
+
+    // A member makes no team; an admin does, of members only.
+    let bob = new MemberEntry(BOB, MAINTAINER, filled(161));
+    equal(errorOf(putTeam(fixture, BOB, orgDid, 'core', [bob], null)), 'Forbidden');
+    let stranger = new MemberEntry('did:plc:strangerstrangerstranger', MEMBER, filled(162));
+    equal(errorOf(putTeam(fixture, ALICE, orgDid, 'core', [bob, stranger], null)), 'InvalidRequest');
+    equal(errorOf(putTeam(fixture, ALICE, orgDid, 'Core', [bob], null)), 'InvalidRequest');
+    var teamSwap = ok(putTeam(fixture, ALICE, orgDid, 'core', [bob], null))['cid'] as String;
+    // The team's maintainer changes it after.
+    teamSwap = ok(putTeam(fixture, BOB, orgDid, 'core', [bob], teamSwap))['cid'] as String;
+    equal(entriesSeen(fixture, BOB, orgDid, 'core').length, 1);
+
+    // Bob publishes to the package through the team, and is no owner of it.
+    equal(errorOf(upload(fixture, BOB, pkgDid)), 'Forbidden');
+    let withTeam = new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, null, orgDid, 'core', PUBLISHER)]);
+    let missingTeam = new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, null, orgDid, 'nobody', PUBLISHER)]);
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, missingTeam, [], pkgSwap)), 'TeamNotFound');
+    pkgSwap = ok(putMaintainers(fixture, ALICE, pkgDid, withTeam, [], pkgSwap))['cid'] as String;
+    ok(upload(fixture, BOB, pkgDid));
+    equal(errorOf(putMaintainers(fixture, BOB, pkgDid, withTeam, [], pkgSwap)), 'Forbidden');
+
+    // Only an admin deletes the team, and with it Bob's part in the package.
+    equal(errorOf(fixture.call(BOB, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`)), 'Forbidden');
+    ok(fixture.call(ALICE, 'deleteTeam', `{"organization": "${orgDid}", "name": "core", "swapRecord": "${teamSwap}"}`));
+    equal(errorOf(upload(fixture, BOB, pkgDid)), 'Forbidden');
+    equal(errorOf(fixture.call(ALICE, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`)), 'TeamNotFound');
+  });
+
+  test('changes a package\'s maintainers, with private entries in the roles they give', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    var swap = (pkg['maintainers'] as JsonObject)['cid'] as String;
+    let bob = new MemberEntry(BOB, OWNER, filled(170));
+    let asOwner = new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, bob.commitment(), null, null, OWNER)]);
+    // An entry in another role than the record gives it, too few owners for
+    // the threshold, and too few maintainers for releases, are refused.
+    let wrongRole = new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, bob.commitment(), null, null, PUBLISHER)]);
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, wrongRole, [bob], swap)), 'InvalidRequest');
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid,
+        new Maintainers(asOwner.maintainers, 1 as i64, 3 as i64), [bob], swap)), 'InvalidRequest');
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid,
+        new Maintainers(asOwner.maintainers, 3 as i64), [bob], swap)), 'InvalidRequest');
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, asOwner, [], swap)), 'InvalidRequest');
+
+    swap = ok(putMaintainers(fixture, ALICE, pkgDid, asOwner, [bob], swap))['cid'] as String;
+    // Bob, an owner by commitment, sees the package's entries and changes
+    // its maintainers; his entry stays private to the package's owners.
+    equal(entriesSeen(fixture, BOB, pkgDid).length, 1);
+    ok(putMaintainers(fixture, BOB, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, bob.commitment(), null, null, OWNER)], 2 as i64), [], swap));
+    ok(upload(fixture, BOB, pkgDid));
   });
 
   test('refuses calls without a valid, unused token for the method', (ctx) => {
@@ -265,8 +519,7 @@ export let tests = suite('pds:host', () => {
 
     // Bob does not maintain router.
     equal(errorOf(fixture.call(BOB, 'uploadArtifact', 'bytes', `?package=${pkgDid}`, 'text/plain')), 'Forbidden');
-    let blob = BlobRef.fromValue(fromJson(ok(fixture.call(ALICE, 'uploadArtifact', 'bytes',
-        `?package=${pkgDid}`, 'text/plain'))['blob'] as JsonObject));
+    let blob = upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
     ok(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`));
     equal(errorOf(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`)),
         'VersionExists');
@@ -275,6 +528,22 @@ export let tests = suite('pds:host', () => {
         'BlobNotFound');
     equal(errorOf(fixture.call(BOB, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.2.0', blob)}}`)),
         'Forbidden');
+
+    // A maintainer retracts a release that exists, and may give a new
+    // reason later; a version with no release, and Bob, are refused.
+    let retract = (caller: String, version: String, reason: String) => fixture.call(caller, 'retract',
+        `{"package": "${pkgDid}", "version": "${version}", "reason": "${reason}"}`);
+    equal(errorOf(retract(BOB, '1.0.0', 'mine now')), 'Forbidden');
+    equal(errorOf(retract(ALICE, '9.9.9', 'never was')), 'ReleaseNotFound');
+    let retracted = ok(retract(ALICE, '1.0.0', 'broken'));
+    equal(retracted['uri'] as String, `at://${pkgDid}/${RETRACTION_TYPE}/1.0.0`);
+    let again = ok(retract(ALICE, '1.0.0', 'broken on Windows'));
+    isTrue(!((again['cid'] as String) == (retracted['cid'] as String)), 'the reason was replaced');
+    let record = ok(fixture.get(`/xrpc/com.atproto.repo.getRecord?repo=${pkgDid}&collection=${RETRACTION_TYPE}&rkey=1.0.0`));
+    let read = Retraction.fromValue(fromJson(record['value']), '1.0.0');
+    equal(read.reason as String, 'broken on Windows');
+    // The release itself stays.
+    ok(fixture.get(`/xrpc/com.atproto.repo.getRecord?repo=${pkgDid}&collection=${RELEASE_TYPE}&rkey=1.0.0`));
   });
 
   test('takes a name only once, however the lookups race', (ctx) => {
@@ -319,5 +588,49 @@ export let tests = suite('pds:host', () => {
     equal(fixture.records.lookup('acme.pkg.test') as String, orgDid);
     equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
     isTrue(fixture.records.lookup('ghost.acme.pkg.test') == null, 'no record for an account that does not exist');
+  });
+
+  test('refuses a release that does not agree with its archive, or depends on what is not there', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let publish = (version: String, blob: BlobRef): Response => fixture.call(ALICE, 'publish',
+        `{"package": "${pkgDid}", "release": ${releaseJson(version, blob)}}`);
+    let refusal = (res: Response): String => {
+      isTrue(res.statusCode == 400, `${res.statusCode}: ${res.body as String}`);
+      let body = json(res);
+      equal(body['error'] as String, 'InvalidRelease');
+      return body['message'] as String;
+    };
+
+    // The archive is 2.0.0, and the release says 2.1.0.
+    let mismatched = refusal(publish('2.1.0', upload(fixture, pkgDid, archiveOf(pkgDid, '2.0.0'))));
+    isTrue(mismatched.contains('is version 2.0.0, not 2.1.0'), mismatched);
+    // The archive names another package than the profile.
+    let renamed = refusal(publish('2.2.0', upload(fixture, pkgDid,
+        archiveOf(pkgDid, '2.2.0', `{"name": "routing", "version": "2.2.0"}`))));
+    isTrue(renamed.contains('names routing, not router'), renamed);
+    // Not an archive at all.
+    let text = BlobRef.fromValue(fromJson(ok(fixture.call(ALICE, 'uploadArtifact', 'just text',
+        `?package=${pkgDid}`, 'application/vnd.ipld.car'))['blob'] as JsonObject));
+    let junk = refusal(publish('2.3.0', text));
+    isTrue(junk.contains('does not unpack'), junk);
+    // The archive depends on json, which the release names at a DID that
+    // cannot be found.
+    let dependent = archiveOf(pkgDid, '2.4.0',
+        `{"name": "router", "version": "2.4.0", "dependencies": {"json": {"did": "did:plc:jsonjsonjsonjsonjsonjson", "version": "1.0.0"}}}`);
+    let blob = upload(fixture, pkgDid, dependent);
+    let release = new Release(Version.parse('2.4.0'), '2026-10-26T00:00:00.000Z',
+        new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
+        new FixedArray<Dependency>(1, new Dependency('did:plc:jsonjsonjsonjsonjsonjson', Version.parse('1.0.0'), 'json')));
+    let missing = refusal(fixture.call(ALICE, 'publish',
+        `{"package": "${pkgDid}", "release": ${stringify(toJson(release.toValue()))}}`));
+    isTrue(missing.contains('json 1.0.0') && missing.contains('cannot be found'), missing);
+
+    // None of them was recorded.
+    let store = fixture.pds.storage.store(pkgDid);
+    for (let version in ['2.1.0', '2.2.0', '2.3.0', '2.4.0']) {
+      isTrue(runFuture(store.getRecord(RELEASE_TYPE, version)) == null, version);
+    }
   });
 });

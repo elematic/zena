@@ -3,8 +3,10 @@
 //! A Zena program compiled for the `zena-cli` target is a WebAssembly
 //! component that imports WASI 0.3 and the `zena-cli:host` interfaces
 //! (`packages/stdlib/zena/host-wit/host.wit`): stack traces for `Error`,
-//! process spawning behind `zena:process`, and running other programs
-//! behind `zena:wasm`. This crate implements all of that on wasmtime
+//! process spawning behind `zena:process`, running other programs
+//! behind `zena:wasm`, and loading components as extensions behind
+//! `zena:extensions` ([`extensions`]). This crate
+//! implements all of that on wasmtime
 //! ([`component`]), plus the engine configuration such a component needs
 //! ([`engine`]) and a cache of ahead-of-time compiled components and
 //! core modules so repeated runs skip Cranelift ([`cache`]). A core
@@ -28,7 +30,7 @@
 //! let engine = zena_runtime::engine::shared_component_engine(false)?;
 //! let component =
 //!     zena_runtime::cache::load_component_variant(&engine, "prog.wasm".as_ref(), false, false)?;
-//! let linker = zena_runtime::component::linker(&engine)?;
+//! let linker = zena_runtime::component::linker_for(&engine, &component)?;
 //! let wasi = wasmtime_wasi::WasiCtxBuilder::new().inherit_stdio().build();
 //! let mut store = Store::new(&engine, ComponentState::new(&engine, wasi, None));
 //! zena_runtime::component::run_main(&mut store, &linker, &component, "main")?;
@@ -37,6 +39,7 @@
 
 pub mod cache;
 pub mod component;
+pub mod extensions;
 pub mod core_module;
 pub mod engine;
 mod fs_read;
@@ -63,6 +66,12 @@ pub fn spawn_allowed(flag: bool) -> bool {
     flag || std::env::var("ZENA_ALLOW_SPAWN").is_ok_and(|v| v == "1")
 }
 
+/// Whether this invocation may load extensions (`zena:extensions`). The `--allow-extensions` flag comes through
+/// here so that ZENA_ALLOW_EXTENSIONS=1 grants it too.
+pub fn extensions_allowed(flag: bool) -> bool {
+    flag || std::env::var("ZENA_ALLOW_EXTENSIONS").is_ok_and(|v| v == "1")
+}
+
 /// The host process's environment followed by `overrides`, leaving out
 /// the inherited variables that `overrides` sets again.
 ///
@@ -85,10 +94,12 @@ pub fn inherited_env_with(overrides: &[(String, String)]) -> Vec<(String, String
 /// must be translated before it reaches the OS.
 pub type PathMap = Vec<(String, std::path::PathBuf)>;
 
-/// What a component granted spawning needs to use the grant. Both
-/// `zena:process` and `zena:wasm` leave the WASI sandbox, so they are
-/// granted together, per instantiation; without a grant their imports
-/// trap with an explanation.
+/// What a component is granted beyond WASI, per instantiation, and what
+/// it needs to use the grants. `zena:process` and `zena:wasm` leave the
+/// WASI sandbox, so they are granted together, as `spawn`; loading
+/// extensions (`zena:extensions`) runs other code in the process, so it
+/// is granted on its own, as `extensions`. Without
+/// the grant, an interface's imports trap with an explanation.
 pub struct Grant {
     /// The guest-to-host directory map, mirroring the component's
     /// preopens. It translates a directory the guest names (a spawn's
@@ -99,6 +110,10 @@ pub struct Grant {
     /// started through `zena:wasm` is cached under the matching
     /// `.cwasm` name; see [`cache`].
     pub debug: bool,
+    /// `--allow-spawn`: `zena:process` and `zena:wasm`.
+    pub spawn: bool,
+    /// `--allow-extensions`: `zena:extensions`.
+    pub extensions: bool,
 }
 
 /// The exit status a guest asked for through WASI's `exit` (Zena's

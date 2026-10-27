@@ -430,6 +430,16 @@ final class CheckerContext {
   var resourceMentionOk: boolean = false;
 
   /**
+   * The argument a call is checking against a `scoped T` parameter's
+   * container (`Array<T>`), when the parameter type it passes as
+   * expected has had `T` substituted away. A literal there is the
+   * call-site temporary the storage rules sanction, but once `T` is
+   * `Own<R>` the substituted `Array<Own<R>>` no longer says so
+   * (ownership.md §"Scoped containers and extent nesting").
+   */
+  var scopedArgument: Node | null = null;
+
+  /**
    * Bindings and member paths some FlowNarrowings node has ever
    * mentioned, and bindings some FlowAssign has ever stored to. These
    * gate the flow-type walk: a reference to a binding no condition ever
@@ -1352,26 +1362,6 @@ final class CheckerContext {
       }
       if (isOptional) {
         hasOptionals = true;
-        if (param.optional && param.defaultValue == null) {
-          var alreadyNullable = false;
-          match (paramType) {
-            case NullType: { alreadyNullable = true; }
-            case UnionT {types}: {
-              for (let member in types) {
-                if (member is NullType) { alreadyNullable = true; }
-              }
-            }
-            case _: {}
-          }
-          if (!alreadyNullable) {
-            let unionTypes = growable<Type>([paramType, new NullType()]);
-            // Every argument spelled out: this is a forward reference to
-            // a function with defaults, which is exactly what this
-            // change teaches the checker — but the bootstrap compiling
-            // this file does not know it yet.
-            paramType = createUnionType(unionTypes, null, null);
-          }
-        }
       }
       paramTypes.push(paramType);
     }
@@ -4985,7 +4975,7 @@ function moveDestructuredTuple(ctx: CheckerContext, source: Expression, t: Type)
  * destructuring moves them out instead.
  */
 function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocation | null): Type {
-  if (isAffineTuple(t)) {
+  if (isAffineValue(t)) {
     ctx.error(
       `An element of type '${typeToString(t)}' holds an owner, so reading it would copy the owner. Destructure the tuple to move it out.`,
       DiagnosticCode.TypeMismatch,
@@ -5002,6 +4992,38 @@ function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocation | nu
  * owner in, a binding of it moves like an `Own<R>`, and destructuring it
  * moves the owners out.
  */
+/**
+ * Whether `t` is a future whose value carries an owner
+ * (docs/design/owner-futures.md). Such a future is affine: moved rather
+ * than copied, and consumed by its `await`, whose frame is its one
+ * consumer. `Future` and its subclasses are recognized by identity until
+ * the async containers declare `scoped T` and the rule follows the
+ * declaration.
+ */
+function isAffineContainer(t: Type): boolean {
+  let resolved = unwrapAliases(t);
+  if (!(resolved is ClassType)) { return false; }
+  var c: ClassType | null = resolved;
+  while (c != null) {
+    let cls = c as ClassType;
+    if (isFutureClassType(cls) || isFutureClassType(cls.genericSource ?? cls)) {
+      let args = cls.typeArguments;
+      return args != null && args.length == 1 && typeCarriesOwner(args[0]);
+    }
+    c = cls.superType;
+  }
+  return false;
+}
+
+/**
+ * Whether a binding of type `t` is move-checked like an owner: a tuple
+ * holding an owner (#495), or a future of one.
+ */
+function isAffineValue(t: Type): boolean {
+  if (isAffineTuple(t)) { return true; }
+  return isAffineContainer(soleNonNullMember(t) ?? t);
+}
+
 function isAffineTuple(t: Type): boolean {
   let resolved = unwrapAliases(t);
   if (resolved is TupleT || resolved is InlineTupleT) {
@@ -5027,6 +5049,8 @@ function isAffineTuple(t: Type): boolean {
  */
 function typeCarriesOwner(t: Type): boolean {
   if (ownershipHandleName(t) == "Own") { return true; }
+  // A future of an owner carries it too (docs/design/owner-futures.md).
+  if (isAffineContainer(t)) { return true; }
   // A tuple holding an owner carries it (#495).
   if (let TupleT {elementTypes} = t) {
     for (let el in elementTypes) {
@@ -5089,6 +5113,29 @@ function mentionsParamDerived(ctx: CheckerContext, e: Node) {
   return found;
 }
 
+
+/**
+ * The `HashMap<K, V>` a map literal builds. The literal instantiates it
+ * as `new HashMap<K, V>()` would, so its arguments meet the same rules:
+ * no borrow stored, no owner bound to an unrestricted parameter.
+ */
+function mapLiteralType(
+  ctx: CheckerContext,
+  keyType: Type,
+  valueType: Type,
+  loc: SourceLocation | null
+): Type {
+  let hashMapType = ctx.resolveTypeName("HashMap");
+  if (hashMapType is ClassType) {
+    let typeArgs = growable<Type>([keyType, valueType]);
+    let typeParams = hashMapType.typeParameters;
+    if (typeParams != null) {
+      rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
+    }
+    return instantiateClassType(hashMapType, typeArgs);
+  }
+  return new ErrorType();
+}
 
 /**
  * Whether `expected` is a container type whose element type is
@@ -5242,8 +5289,36 @@ function rejectSecondClassTypeArguments(
     // type then carries the restriction itself (ownership.md §"Scoped
     // containers and extent nesting").
     if (i < typeParams.length && typeParams[i].isScoped) { continue; }
+    let name = if (i < typeParams.length) typeParams[i].name else "T";
+    rejectOwnerTypeArgument(ctx, name, typeArgs[i], loc);
     rejectSecondClassStorage(ctx, typeArgs[i], "a container", loc);
   }
+}
+
+/**
+ * Rejects an owner bound to an unrestricted type parameter (ownership.md
+ * §"Affine type arguments", #379). The generic body was checked as if a
+ * `T` may be copied: a class may read its `T` field twice, a function may
+ * return its `T` twice, and each copy of an owner is another owner of the
+ * same resource, released again. `scoped T` admits an owner, and a
+ * generic over resources spells the handle around its parameter instead.
+ */
+function rejectOwnerTypeArgument(
+  ctx: CheckerContext,
+  name: String,
+  t: Type,
+  loc: SourceLocation | null
+) {
+  if (!typeCarriesOwner(t)) { return; }
+  ctx.error(ownerTypeArgumentMessage(name, t), DiagnosticCode.TypeMismatch, loc);
+}
+
+function ownerTypeArgumentMessage(name: String, t: Type): String {
+  return "Type '" + typeToString(t) + "' may not bind the unrestricted type " +
+    "parameter '" + name + "': the generic code may copy a '" + name +
+    "', and a copy of an owner is a second owner of the same resource. " +
+    "A generic over resources takes 'Own<" + name + ">' or 'Borrow<" +
+    name + ">', with '" + name + "' the resource class.";
 }
 
 /**
@@ -5262,6 +5337,7 @@ function rejectSecondClassFunctionTypeArgs(
 ) {
   for (var i = 0; i < typeParams.length && i < typeArgs.length; i += 1) {
     if (typeParams[i].isScoped) { continue; }
+    rejectOwnerTypeArgument(ctx, typeParams[i].name, typeArgs[i], loc);
     if (!typeContainsSecondClass(typeArgs[i])) { continue; }
     ctx.error(
       "Type '" + typeToString(typeArgs[i]) + "' may not bind the unrestricted " +
@@ -5452,7 +5528,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
     let rs = ctx.receiverSymbol;
     if (rs == null) { return; }
     let sinkCore = soleNonNullMember(paramType) ?? paramType;
-    if (ownershipHandleName(sinkCore) == "Own" || isAffineTuple(sinkCore)) {
+    if (ownershipHandleName(sinkCore) == "Own" || isAffineValue(sinkCore)) {
       ctx.recordFlowMove(rs.id, "this", arg.loc);
     } else if (ownershipHandleName(sinkCore) == "") {
       // An adaptation or an erased slot keeps the owner without a
@@ -5485,7 +5561,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
   // null just means there may be nothing to own.
   let sinkType = soleNonNullMember(paramType) ?? paramType;
   let handle = ownershipHandleName(sinkType);
-  if (handle == "Own" || isAffineTuple(sinkType)) {
+  if (handle == "Own" || isAffineValue(sinkType)) {
     ctx.recordFlowMove(info.id, info.name, arg.loc);
     return;
   }
@@ -5504,7 +5580,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
     // interface adaptation, an erased generic slot — escapes without a
     // recorded move, so implicit drop must leave the binding alone.
     let at = ctx.model.getNodeType(arg);
-    if (at != null && (ownershipHandleName(at) == "Own" || isAffineTuple(at))) {
+    if (at != null && (ownershipHandleName(at) == "Own" || isAffineValue(at))) {
       ctx.markUndroppable(info.id);
     }
   }
@@ -12125,7 +12201,15 @@ function checkVariableDeclaration(
 
   // If an explicit type annotation is present, validate assignability.
   if (expectedType != null) {
-    if (!isAssignableTo(ctx, initType, expectedType)) {
+    if (init is NullLiteral && init.loc == null) {
+      if (!(expectedType is ErrorType) && !isNullableType(expectedType)) {
+        ctx.error(
+          `Variable of non-nullable type '${typeToString(expectedType)}' must be initialized.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+    } else if (!isAssignableTo(ctx, initType, expectedType)) {
       ctx.error(
         `Type mismatch: '${typeToString(initType)}' is not assignable to '${typeToString(expectedType)}'.`,
         DiagnosticCode.TypeMismatch,
@@ -13813,7 +13897,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       // An owned binding is dead after a move on any path to here, and
       // a scoped binding after the consumption that moved it.
       if (ownershipHandleName(resolved) == "Own" || isScopedValueType(resolved) ||
-          isAffineTuple(resolved)) {
+          isAffineValue(resolved)) {
         let moveSym = ctx.model.resolve(expr);
         if (moveSym != null) {
           ctx.checkMoveUse(expr, moveSym);
@@ -14754,8 +14838,17 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     // extent nesting"). Spelling such a type in an annotation is
     // rejected at the annotation, so a binding cannot reach here with
     // one.
-    if (!scopedElementsExpected(expectedType)) {
+    if (!scopedElementsExpected(expectedType) && ctx.scopedArgument !== expr) {
       rejectSecondClassStorage(ctx, inferredElementType, "an array", loc);
+      // A literal instantiates its array as `new` would, so an owner
+      // element meets the rule a `new FixedArray<Own<R>>` does: the
+      // array's `T` is unrestricted, and an index read copies it
+      // (ownership.md §"Affine type arguments"). Once, because a call
+      // checks its arguments twice.
+      if (typeCarriesOwner(inferredElementType)) {
+        ctx.errorOnce(expr, ownerTypeArgumentMessage("T", inferredElementType),
+            DiagnosticCode.TypeMismatch);
+      }
     }
 
     // A literal is an ImmutableArray unless the context demands mutable
@@ -15054,20 +15147,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
     if (entries.length == 0) {
       if (expectedKeyType != null && expectedValType != null) {
-        let hashMapType = ctx.resolveTypeName("HashMap");
-        if (hashMapType != null) {
-          match (hashMapType) {
-            case ClassType as hm: {
-              let typeArgs = new GrowableArray<Type>();
-              typeArgs.push(expectedKeyType as Type);
-              typeArgs.push(expectedValType as Type);
-              instantiateClassType(hm, typeArgs) as Type
-            }
-            case _: new ErrorType()
-          }
-        } else {
-          new ErrorType()
-        }
+        mapLiteralType(ctx, expectedKeyType as Type, expectedValType as Type, loc)
       } else {
         ctx.error("Empty map literal requires type annotation. Use 'new HashMap<K, V>()' instead.", DiagnosticCode.TypeMismatch, loc);
         new ErrorType()
@@ -15106,19 +15186,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         }
         ei += 1;
       }
-      // Return Map<K, V> if available, otherwise ErrorType.
-      let hashMapType = ctx.resolveTypeName("HashMap");
-      if (hashMapType != null) {
-        match (hashMapType) {
-          case ClassType as hm: {
-            let typeArgs = growable<Type>([targetKeyType, targetValType]);
-            instantiateClassType(hm, typeArgs) as Type
-          }
-          case _: new ErrorType()
-        }
-      } else {
-        new ErrorType()
-      }
+      mapLiteralType(ctx, targetKeyType, targetValType, loc)
     }
   }
   case TemplateLiteral {expressions, loc}: {
@@ -16817,6 +16885,8 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
     let ctorParamTypes = new Array<Type>();
     let ctorParamNames = new Array<String>();
     let ctorOptionalParams = new Array<boolean>();
+    let ctorInitializers = new Array<Expression | null>();
+    var hasCtorInitializers = false;
 
     var cpi = 0;
     while (cpi < caseParams.length) {
@@ -16825,10 +16895,24 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
       var fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
       rejectSecondClassStorage(ctx, fieldType, "a field", cp.typeAnnotation.loc);
 
-      // Optional case params get nullable field type
-      if (cp.optional) {
-        let unionTypes = growable<Type>([fieldType, new NullType()]);
-        fieldType = createUnionType(unionTypes);
+      if (cp.defaultValue != null) {
+        hasCtorInitializers = true;
+        let initExp = cp.defaultValue as Expression;
+        let initType = checkExpression(ctx, initExp, fieldType);
+        if (!isAssignableTo(ctx, initType, fieldType)) {
+          ctx.error(
+            "Type mismatch: default value of type '" + typeToString(initType) +
+            "' is not assignable to parameter type '" + typeToString(fieldType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            initExp.loc
+          );
+        } else {
+          let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+          if (instantiatedVal !== initType) {
+            ctx.setNodeType(initExp, instantiatedVal);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, fieldType);
+        }
       }
 
       // Check for duplicate fields (but allow implementing abstract fields).
@@ -16854,12 +16938,22 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
 
       ctorParamTypes.push(fieldType);
       ctorParamNames.push(fieldName);
-      ctorOptionalParams.push(cp.optional);
+      ctorOptionalParams.push(cp.defaultValue != null);
+      ctorInitializers.push(cp.defaultValue);
       cpi = cpi + 1;
     }
 
     // Auto-generate constructor type.
-    let ctorType = new FunctionType(ctorParamTypes, classType, new FunctionDeclInfo(ctorParamNames, null, null, ctorOptionalParams));
+    let ctorType = new FunctionType(
+      ctorParamTypes,
+      classType,
+      new FunctionDeclInfo(
+        ctorParamNames,
+        null,
+        if (hasCtorInitializers) ctorInitializers else null,
+        ctorOptionalParams
+      )
+    );
     classType.constructorType = ctorType;
     classType.constructors["<constructor>"] = ctorType;
   }
@@ -17569,24 +17663,51 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
         let vCtorParams = new Array<Type>();
         let vCtorNames = new Array<String>();
         let vCtorOptionalParams = new Array<boolean>();
+        let vCtorInitializers = new Array<Expression | null>();
+        var hasVCtorInitializers = false;
         var vpi = 0;
         while (vpi < vParams.length) {
           let vp = vParams[vpi];
           var vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
 
-          if (vp.optional) {
-            let unionTypes = growable<Type>([vpType, new NullType()]);
-            vpType = createUnionType(unionTypes);
+          if (vp.defaultValue != null) {
+            hasVCtorInitializers = true;
+            let initExp = vp.defaultValue as Expression;
+            let initType = checkExpression(ctx, initExp, vpType);
+            if (!isAssignableTo(ctx, initType, vpType)) {
+              ctx.error(
+                "Type mismatch: default value of type '" + typeToString(initType) +
+                "' is not assignable to parameter type '" + typeToString(vpType) + "'.",
+                DiagnosticCode.TypeMismatch,
+                initExp.loc
+              );
+            } else {
+              let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, vpType);
+              if (instantiatedVal !== initType) {
+                ctx.setNodeType(initExp, instantiatedVal);
+              }
+              checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, vpType);
+            }
           }
 
           let isMut = vp.mutability != null && vp.mutability == "var";
           variantType.members[vp.name.name] = new FieldInfo(vpType, isMut, false, false, false, false);
           vCtorParams.push(vpType);
           vCtorNames.push(vp.name.name);
-          vCtorOptionalParams.push(vp.optional);
+          vCtorOptionalParams.push(vp.defaultValue != null);
+          vCtorInitializers.push(vp.defaultValue);
           vpi = vpi + 1;
         }
-        let vCtorType = new FunctionType(vCtorParams, variantType, new FunctionDeclInfo(vCtorNames, null, null, vCtorOptionalParams));
+        let vCtorType = new FunctionType(
+          vCtorParams,
+          variantType,
+          new FunctionDeclInfo(
+            vCtorNames,
+            null,
+            if (hasVCtorInitializers) vCtorInitializers else null,
+            vCtorOptionalParams
+          )
+        );
         variantType.constructorType = vCtorType;
         variantType.constructors["<constructor>"] = vCtorType;
         synthesizeCaseClassMembers(ctx, variantType, null);
@@ -18303,6 +18424,52 @@ function checkClassBodies(
         }
       }
     }
+
+    // When a concrete class has no explicit constructor of its own,
+    // checkMethodBody never runs for a constructor, so validate here that
+    // every own non-nullable field has an inline initializer.
+    if (!cd.isExtension && !classType.isCaseClass) {
+      var hasOwnConstructor = false;
+      for (let member in cd.body) {
+        if (member is MethodDefinition && (member as MethodDefinition).isConstructor) {
+          hasOwnConstructor = true;
+        }
+      }
+      if (!hasOwnConstructor) {
+        for (let member in cd.body) {
+          if (member is FieldDefinition) {
+            let fd = member as FieldDefinition;
+            if (fd.isStatic || fd.isAbstract || fd.isDeclare || fd.value != null ||
+                isSymbolFieldDeclaration(fd)) {
+              continue;
+            }
+            let declared = fieldDeclaredName(ctx, fd);
+            var lookupField = declared;
+            let fsn = classType.fieldSetterNames;
+            if (fsn != null) {
+              if (let (true, mapped) = fsn.get(declared)) {
+                lookupField = mapped;
+              }
+            }
+            let fType = if (classType.members.has(lookupField) &&
+                classType.members[lookupField] is FieldInfo) {
+              (classType.members[lookupField] as FieldInfo).type
+            } else {
+              let dec = decoratedFieldOf(classType, declared);
+              if (dec != null) dec.fieldType else (new ErrorType() as Type)
+            };
+            if (isNullableType(fType)) {
+              continue;
+            }
+            ctx.error(
+              `Field '${displayMemberName(declared)}' must be initialized. Add an initializer or a constructor.`,
+              DiagnosticCode.UninitializedField,
+              fd.loc
+            );
+          }
+        }
+      }
+    }
   }
 
   exitClassBodyScope(ctx, prevBodyThis);
@@ -18450,26 +18617,6 @@ function checkMethodSignature(
     initializers.push(param.defaultValue);
     if (isOptional) {
       hasOptionals = true;
-      // Only widen to T | null for ?-style optionals without a default value.
-      // Params with default values keep their declared type.
-      if (param.optional && param.defaultValue == null) {
-        var alreadyNullable = false;
-        match (paramType) {
-          case NullType: { alreadyNullable = true; }
-          case UnionT {types}: {
-            var ui = 0;
-            while (ui < types.length) {
-              if (types[ui] is NullType) { alreadyNullable = true; }
-              ui += 1;
-            }
-          }
-          case _: {}
-        }
-        if (!alreadyNullable) {
-          let unionTypes = growable<Type>([paramType, new NullType()]);
-          paramType = createUnionType(unionTypes);
-        }
-      }
     }
 
     paramTypes.push(paramType);
@@ -21107,6 +21254,19 @@ function checkMemberExpression(
 
   let propName = accessMemberKey(
       ctx, expr as Node, isSymbolAccess, property, expr.symbolPath);
+
+  // `then` hands a future's value to a callback while the future keeps
+  // it, so on a future of an owner it would mint a second owner; such a
+  // future is consumed by its `await` (docs/design/owner-futures.md).
+  if (!isSymbolAccess && propName == "then" && isAffineValue(objectType)) {
+    ctx.error(
+      "A future whose value holds an owner is consumed by 'await': " +
+        "'then' would hand the owner to a callback while the future " +
+        "still holds it.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
 
   // Reaching a `this: Own<this>` method through an owned binding moves
   // the binding: the call ends the receiver's life on this path. The
@@ -24308,6 +24468,15 @@ function makeFutureType(
  */
 function checkAwaitExpression(ctx: CheckerContext, aw: AwaitExpression): Type {
   var operandType = checkExpression(ctx, aw.argument, null);
+  // Awaiting a future of an owner consumes it: the awaiting frame is its
+  // one consumer, so the binding is dead afterwards
+  // (docs/design/owner-futures.md).
+  if (isAffineValue(operandType) && aw.argument is Identifier) {
+    let affineSym = ctx.model.resolve(aw.argument);
+    if (affineSym != null) {
+      ctx.recordFlowMove(affineSym.id, affineSym.name, aw.argument.loc);
+    }
+  }
   // Awaiting is a scoped future's consumption (ownership.md §"Required
   // consumption"): the binding is moved into the await, and the rest of
   // the check sees the future behind the wrapper.
@@ -24594,26 +24763,6 @@ function checkFunctionExpression(
     initializers.push(param.defaultValue);
     if (isOptional) {
       hasOptionals = true;
-      // Only widen to T | null for ?-style optionals without a default value.
-      // Params with default values keep their declared type.
-      if (param.optional && param.defaultValue == null) {
-        var alreadyNullable = false;
-        match (paramType) {
-          case NullType: { alreadyNullable = true; }
-          case UnionT {types}: {
-            var ui = 0;
-            while (ui < types.length) {
-              if (types[ui] is NullType) { alreadyNullable = true; }
-              ui += 1;
-            }
-          }
-          case _: {}
-        }
-        if (!alreadyNullable) {
-          let unionTypes = growable<Type>([paramType, new NullType()]);
-          paramType = createUnionType(unionTypes);
-        }
-      }
     }
 
     paramTypes.push(paramType);
@@ -25354,6 +25503,10 @@ function checkCallExpressionInner(
         }
       }
 
+      // The parameters as declared, before a generic call substitutes
+      // its type arguments into them.
+      let declaredParams = effectiveFt.parameters;
+
       // Handle generic function calls.
       let typeParams = effectiveFt.typeParameters;
       if (typeParams != null) {
@@ -25553,11 +25706,16 @@ function checkCallExpressionInner(
         } else {
           null
         };
+        let outerScopedArgument = ctx.scopedArgument;
+        if (j < declaredParams.length && scopedElementsExpected(declaredParams[j])) {
+          ctx.scopedArgument = args[j];
+        }
         let argType = if (roundTwoType != null) {
           roundTwoType
         } else {
           checkExpression(ctx, args[j], expectedParamType)
         };
+        ctx.scopedArgument = outerScopedArgument;
         if (!isAssignableTo(ctx, argType, expectedParamType)) {
           ctx.error(
             "Type mismatch: argument '" + typeToString(argType) +

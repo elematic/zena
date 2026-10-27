@@ -1,7 +1,7 @@
 import {suite, test} from 'zena:test';
-import {equal, throws} from 'zena:assert';
+import {equal, isFalse, isTrue, throws} from 'zena:assert';
 import {hex} from 'zena:encoding';
-import {hkdf, hkdfExpand, hkdfExtract, hmacSha256} from 'zena:crypto';
+import {constantTimeEquals, hkdf, hkdfExpand, hkdfExtract, hmacSha256} from 'zena:crypto';
 
 function repeatByte(byte: i32, count: i32) {
   let out = new FixedArray<u8>(count, 0 as u8);
@@ -20,6 +20,14 @@ function hmacHex(keyHex: String, dataHex: String) {
 }
 
 export let tests = suite('zena:crypto HMAC', () => {
+  test('compares bytes whatever the first difference', (ctx) => {
+    isTrue(constantTimeEquals(hex.decode('00ff10'), hex.decode('00ff10')));
+    isTrue(constantTimeEquals(new FixedArray<u8>(0, 0 as u8), new FixedArray<u8>(0, 0 as u8)));
+    isFalse(constantTimeEquals(hex.decode('00ff10'), hex.decode('01ff10')));
+    isFalse(constantTimeEquals(hex.decode('00ff10'), hex.decode('00ff11')));
+    isFalse(constantTimeEquals(hex.decode('00ff10'), hex.decode('00ff')));
+  });
+
   // RFC 4231, section 4.
   test('HMAC-SHA256 test case 1', (ctx) => {
     equal(

@@ -143,6 +143,69 @@ export let tests = suite('template lowering', () => {
     isTrue(families.specialized >= 6);
   });
 
+  test('methods of an extension class specialized at four classes copy from one template', () => {
+    // `this` is an array whose element type is the type argument, so
+    // each member's receiver is a different array type, learned like a
+    // class's struct.
+    let families = compileBothWaysWithStdlib(`
+      class A { n: i32; new(this.n); }
+      class B { n: i32; new(this.n); }
+      class C { n: i32; new(this.n); }
+      class D { n: i32; new(this.n); }
+      extension class Ends<T> on array<var T> {
+        first(): T { return this[0]; }
+        last(): T { return this[this.length - 1]; }
+      }
+      export let run = (): i32 => {
+        let a = __array_new(2, new A(1)) as Ends<A>;
+        let b = __array_new(2, new B(2)) as Ends<B>;
+        let c = __array_new(2, new C(3)) as Ends<C>;
+        let d = __array_new(2, new D(4)) as Ends<D>;
+        return a.first().n + b.first().n + c.first().n + d.first().n +
+            a.last().n + b.last().n + c.last().n + d.last().n;
+      };
+    `);
+    isTrue(families.templates >= 2);
+    isTrue(families.specialized >= 4);
+  });
+
+  test('constructors and their phases specialized at four classes copy from templates', () => {
+    // `Labeled<T>` extends `Box<T>`, so each `Box<X>` has a value phase
+    // (`<ctor-init>`, returning its fields for `Labeled<X>` to allocate
+    // with) beside its own constructor. A template for the value phase
+    // has to be learned from value phases, not from constructors.
+    let families = compileBothWays(`
+      class A { n: i32; new(this.n); }
+      class B { n: i32; new(this.n); }
+      class C { n: i32; new(this.n); }
+      class D { n: i32; new(this.n); }
+      class Box<T> {
+        value: T;
+        var count: i32;
+        new(value: T) : value = value, count = 1;
+      }
+      class Labeled<T> extends Box<T> {
+        label: i32;
+        new(value: T, this.label) : super(value);
+      }
+      export let run = (): i32 => {
+        let a = new Labeled<A>(new A(1), 10);
+        let b = new Labeled<B>(new B(2), 20);
+        let c = new Labeled<C>(new C(3), 30);
+        let d = new Labeled<D>(new D(4), 40);
+        let a2 = new Box<A>(new A(5));
+        let b2 = new Box<B>(new B(6));
+        let c2 = new Box<C>(new C(7));
+        let d2 = new Box<D>(new D(8));
+        return a.value.n + b.value.n + c.value.n + d.value.n +
+            a.label + b.label + c.label + d.label +
+            a2.value.n + b2.value.n + c2.value.n + d2.value.n + a.count;
+      };
+    `);
+    isTrue(families.templates >= 3);
+    isTrue(families.specialized >= 6);
+  });
+
   test('a method overridden in one specialization is not copied into it', () => {
     // Base<A> has a subclass that overrides `weight`, so `this.weight()`
     // in Base<A>.score dispatches through the vtable; in Base<B>,

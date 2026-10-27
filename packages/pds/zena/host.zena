@@ -8,9 +8,13 @@
  * checks the token, and the caller's role in the records it holds, and then
  * acts for the package or organization account, which no one signs in as.
  *
- * This implements creating organizations and packages, uploading artifacts
- * and publishing releases. Teams, the limits on how many accounts a scope
- * creates, and the other methods come later.
+ * This implements creating organizations and packages, uploading artifacts,
+ * publishing releases, and changing who belongs: an organization's
+ * members, its teams, and a package's maintainers, with the private
+ * entries behind their commitments ("Private membership"). A role is read
+ * from the record as it is now: an entry the current record no longer
+ * commits to gives nothing. The limits on how many accounts a scope
+ * creates, and the other methods, come later.
  */
 
 import {Future} from 'zena:async';
@@ -20,26 +24,41 @@ import {BlobRef, MapValue, Value} from 'atproto:data';
 import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, parseDidKey} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
+import {IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
+import {validateRelease} from 'package-manager:validate';
+import {Version} from 'package-manager:version';
 import {
+  ADMIN,
+  MAINTAINER,
+  MEMBER,
   MEMBERS_TYPE,
   MAINTAINERS_TYPE,
   Maintainers,
   MemberEntry,
   Members,
   OWNER,
+  TEAM_TYPE,
+  Team,
   PROFILE_KEY,
   PROFILE_TYPE,
   Profile,
   RELEASE_TYPE,
+  RETRACTION_TYPE,
   RecordError,
   Release,
-  isValidPackageName
+  Retraction,
+  SOURCE,
+  isValidPackageName,
+  isValidScopeName
 } from 'package-manager:records';
 import {HandleRecords} from './handles.zena';
 import {Pds} from './pds.zena';
-import {CreateRecord, RepositoryError, Write} from './repository.zena';
+import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
+
+/** The most recovery keys an account's genesis operation ranks above the host's keys. */
+let MAX_RECOVERY_KEYS = 3;
 
 /** A call the host refuses, with the XRPC error and HTTP status to answer with. */
 export class HostError extends Error {
@@ -202,7 +221,12 @@ export final class HostConfig {
   domain: String;
   /** Its PDS endpoint, which every account's DID document names. */
   endpoint: String;
-  /** Its PLC rotation key, ranked below every account's recovery keys. */
+  /**
+   * Its PLC rotation key, ranked below any recovery keys an account's
+   * owners give. Without them, it is the account's only rotation key: the
+   * host holds the account, as a PDS holds its users' (package-manager.md,
+   * "Keys").
+   */
   rotationKey: SigningKey;
   /** The largest blob `uploadArtifact` stores. */
   var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
@@ -242,16 +266,19 @@ export final class PackageHost {
   #keys: SigningKeyLookup;
   #submit: PlcSubmitter;
   #random: RandomBytes;
+  /** Resolves the DIDs of a release's dependencies, to check them. */
+  #resolver: IdentityResolver;
   #replays = new ReplayGuard();
 
   /**
-   * A host over `pds`, keeping its names in `store` and writing its
-   * handles' DNS records to `records`.
+   * A host over `pds`, keeping its names in `store`, writing its handles'
+   * DNS records to `records`, and resolving the dependencies of the
+   * releases it checks with `resolver`.
    */
   new(pds: Pds, config: HostConfig, store: HostStore, records: HandleRecords, keys: SigningKeyLookup,
-      submit: PlcSubmitter, random: RandomBytes)
+      submit: PlcSubmitter, random: RandomBytes, resolver: IdentityResolver)
       : pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
-        #random = random;
+        #random = random, #resolver = resolver;
 
   /**
    * The DID of the account a call to `method` comes from, read from its
@@ -278,13 +305,33 @@ export final class PackageHost {
 
   /**
    * `createOrganization`: a scope named `name`, owned by `caller` alone.
-   * `recoveryKeys` are `did:key`s, ranked above the host's rotation key.
-   * The scope's handle record is written last, so the handle resolves only
-   * to an organization that is whole.
+   * `recoveryKeys`, which may be none, are `did:key`s, ranked above the
+   * host's rotation key. The scope's handle record is written last, so the
+   * handle resolves only to an organization that is whole. A reserved name
+   * is refused: only the operator takes one (`createScopeAsOperator`).
    */
   async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
-    if (!isValidPackageName(name) || this.config.reservedScopes.has(name)) {
+    if (this.config.reservedScopes.has(name)) {
+      throw new HostError(400, 'NameTaken', `'${name}' cannot be a scope`);
+    }
+    return await this.#createOrganization(caller, name, recoveryKeys, nowMicros);
+  }
+
+  /**
+   * A scope named `name`, owned by `owner` alone, created by the host's
+   * operator: as `createOrganization`, but a reserved name may be taken.
+   * No XRPC method reaches it; `main.zena -- create-scope` calls it with
+   * the server's own configuration (package-manager.md, "Scopes").
+   */
+  async createScopeAsOperator(owner: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+      : Future<Created> {
+    return await this.#createOrganization(owner, name, recoveryKeys, nowMicros);
+  }
+
+  async #createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+      : Future<Created> {
+    if (!isValidScopeName(name)) {
       throw new HostError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
     if ((await this.#store.scopeOwner(name)) != null) {
@@ -318,7 +365,7 @@ export final class PackageHost {
     if (organization == null || organization.kind != AccountKind.Organization) {
       throw new HostError(400, 'InvalidRequest', `${org} is not an organization on this host`);
     }
-    if (!(await this.#hasRole(org, caller, ['owner', 'admin']))) {
+    if (!isAdmin(await this.#orgRole(org, caller))) {
       throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
     }
     let profile = readRecord(() => Profile.fromValue(profileValue));
@@ -416,19 +463,53 @@ export final class PackageHost {
     if ((await store.getRecord(RELEASE_TYPE, version)) != null) {
       throw new HostError(400, 'VersionExists', `${pkg} has a release ${version}`);
     }
+    // The host checks the release as every fetch will, against the archive
+    // it holds and the name its own profile record gives, and trusts
+    // nothing the client checked.
+    let source = release.artifact(SOURCE);
+    let held = if (source != null && source.blob != null) await store.getBlob((source.blob as BlobRef).cid) else null;
+    let problems = await validateRelease(release, pkg, if (held != null) held.bytes else new FixedArray<u8>(0, 0 as u8),
+        await this.#profileName(pkg), this.#resolver);
+    if (problems.length > 0) {
+      var message = `release ${version} of ${pkg} is not valid:`;
+      for (let problem in problems) {
+        message = `${message}\n  ${problem}`;
+      }
+      throw new HostError(400, 'InvalidRelease', message);
+    }
     let cid = await this.#write(account, RELEASE_TYPE, version, asMap(releaseValue), nowMicros);
     return new Created(account.did, account.handle ?? account.did,
         `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
   }
 
   /**
+   * `retract`: marks release `version` of `pkg` as retracted, with
+   * `reason`, at the record key equal to the version. The release stays,
+   * for the builds that pin it; choosing a version skips it. Any maintainer
+   * may retract a release, as any may publish one. Retracting a version
+   * again replaces the reason.
+   */
+  async retract(caller: String, pkg: String, version: String, reason: String | null, nowMicros: i64)
+      : Future<Created> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    if ((await this.pds.storage.store(pkg).getRecord(RELEASE_TYPE, version)) == null) {
+      throw new HostError(400, 'ReleaseNotFound', `${pkg} has no release ${version}`);
+    }
+    // A release's record key is its version, so `version` parses.
+    let retraction = new Retraction(Version.parse(version), reason);
+    return await this.#put(account, RETRACTION_TYPE, version, retraction.toValue(), null, nowMicros);
+  }
+
+  /**
    * An account named `handle` on this host, to be: a new signing key, and
    * the genesis operation of a `did:plc` that ranks `recoveryKeys` above
-   * the host's rotation key, signed with that key.
+   * the host's rotation key, signed with that key. A PLC operation lists at
+   * most five rotation keys, and the host keeps two of them for its own: the
+   * online key, and the operator's offline key (#597).
    */
   #prepareAccount(handle: String, recoveryKeys: Array<String>): PreparedAccount {
-    if (recoveryKeys.length == 0 || recoveryKeys.length > 4) {
-      throw new HostError(400, 'InvalidRequest', 'give one to four recovery keys');
+    if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
+      throw new HostError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
     }
     let rotation = new GrowableArray<PublicKey>();
     for (let key in recoveryKeys) {
@@ -475,49 +556,429 @@ export final class PackageHost {
     return (await this.pds.storage.store(account.did).getRecord(collection, rkey)) as Cid;
   }
 
-  /** Whether `caller`'s entry in `account` gives one of `roles`. */
-  async #hasRole(account: String, caller: String, roles: Array<String>): Future<boolean> {
-    for (let entry in await this.#store.entries(account)) {
-      for (let role in roles) {
-        if (entry.did == caller && entry.role == role) {
-          return true;
-        }
-      }
+  /** The name `pkg`'s profile record gives. */
+  async #profileName(pkg: String): Future<String> {
+    let profile = await this.#current(pkg, PROFILE_TYPE, PROFILE_KEY);
+    if (profile == null) {
+      throw new HostError(400, 'InvalidRequest', `${pkg} has no profile`);
     }
-    return false;
+    return Profile.fromValue((profile as CurrentRecord).value).name;
   }
 
   /**
-   * The package `pkg`, when `caller` maintains it: listed in its maintainers
-   * record by DID, or by a commitment whose entry names them. Throws
+   * The package `pkg`, when `caller` maintains it, in any role. Throws
    * `HostError` otherwise.
    */
   async #maintainedPackage(caller: String, pkg: String): Future<Account> {
-    let account = await this.pds.storage.getAccount(pkg);
-    if (account == null || account.kind != AccountKind.Package) {
-      throw new HostError(400, 'InvalidRequest', `${pkg} is not a package on this host`);
+    let account = await this.#account(pkg, AccountKind.Package, 'a package');
+    if ((await this.#packageRole(pkg, caller)) == null) {
+      throw new HostError(403, 'Forbidden', `${caller} does not maintain ${pkg}`);
     }
-    let store = this.pds.storage.store(pkg);
-    let cid = await store.getRecord(MAINTAINERS_TYPE, 'self');
-    if (cid == null) {
-      throw new HostError(403, 'Forbidden', `${pkg} has no maintainers record`);
+    return account;
+  }
+
+  /**
+   * `putMembers`: replaces `org`'s members record. The caller must be an
+   * owner of `org`. Every commitment needs an entry, given now or kept from
+   * before, and the record must leave the organization owners enough to
+   * meet its thresholds, so that it can still be changed.
+   */
+  async putMembers(caller: String, org: String, membersValue: Value, entryValues: Array<Value>,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    if ((await this.#orgRole(org, caller)) != OWNER) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
     }
-    let bytes = (await store.getBlock(cid as Cid)) as FixedArray<u8>;
-    let maintainers = Maintainers.fromValue(decodeCbor(bytes));
-    let commitments = new HashSet<String>();
-    for (let entry in await this.#store.entries(pkg)) {
-      if (entry.did == caller) {
-        commitments.add(entry.commitment().toString());
+    let members = readRecord(() => Members.fromValue(membersValue));
+    let entries = await this.#entriesBehind(org, members.members, entryValues);
+    var owners = 0;
+    var admins = 0;
+    for (let entry in entries.all) {
+      if (entry.role != OWNER && entry.role != ADMIN && entry.role != MEMBER) {
+        throw new HostError(400, 'InvalidRequest', `'${entry.role}' is not a role in an organization`);
+      }
+      if (entry.role == OWNER) {
+        owners += 1;
+      }
+      if (isAdmin(entry.role)) {
+        admins += 1;
       }
     }
+    if ((owners as i64) < members.ownerThreshold || (admins as i64) < members.adminThreshold) {
+      throw new HostError(400, 'InvalidRequest',
+          `${owners} owners and ${admins} admins or owners cannot meet the thresholds of ${members.ownerThreshold} and ${members.adminThreshold}`);
+    }
+    await this.#store.addEntries(org, entries.fresh);
+    return await this.#put(account, MEMBERS_TYPE, 'self', asMap(membersValue), swapRecord, nowMicros);
+  }
+
+  /**
+   * `putTeam`: creates or replaces `org`'s team `name`. The caller must be
+   * an owner or admin of `org`, or a maintainer of the team as it is. Its
+   * members must be members of `org`.
+   */
+  async putTeam(caller: String, org: String, name: String, teamValue: Value, entryValues: Array<Value>,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    if (!isValidPackageName(name)) {
+      throw new HostError(400, 'InvalidRequest', `'${name}' cannot name a team`);
+    }
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    let existing = await this.#current(org, TEAM_TYPE, name);
+    if (!isAdmin(await this.#orgRole(org, caller)) &&
+        (existing == null || (await this.#teamRole(org, name, caller)) != MAINTAINER)) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org} or a maintainer of its team ${name}`);
+    }
+    let team = readRecord(() => Team.fromValue(teamValue));
+    let entries = await this.#entriesBehind(org, team.members, entryValues);
+    let inOrg = new HashSet<String>();
+    for (let member in await this.#committed(org, await this.#commitmentsOf(org, MEMBERS_TYPE, 'self'))) {
+      inOrg.add(member.did);
+    }
+    for (let entry in entries.all) {
+      if (entry.role != MEMBER && entry.role != MAINTAINER) {
+        throw new HostError(400, 'InvalidRequest', `'${entry.role}' is not a role in a team`);
+      }
+      if (!inOrg.has(entry.did)) {
+        throw new HostError(400, 'InvalidRequest', `${entry.did} is not a member of ${org}`);
+      }
+    }
+    await this.#store.addEntries(org, entries.fresh);
+    return await this.#put(account, TEAM_TYPE, name, asMap(teamValue), swapRecord, nowMicros);
+  }
+
+  /**
+   * `deleteTeam`: deletes `org`'s team `name`. The caller must be an owner
+   * or admin of `org`. Packages the team maintained keep their other
+   * maintainers.
+   */
+  async deleteTeam(caller: String, org: String, name: String, swapRecord: String | null, nowMicros: i64)
+      : Future<void> {
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    if (!isAdmin(await this.#orgRole(org, caller))) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    }
+    if ((await this.#current(org, TEAM_TYPE, name)) == null) {
+      throw new HostError(400, 'TeamNotFound', `${org} has no team ${name}`);
+    }
+    await this.#apply(account, new DeleteRecord(TEAM_TYPE, name, swapCid(swapRecord)), nowMicros);
+  }
+
+  /**
+   * `putMaintainers`: replaces `pkg`'s maintainers record. The caller must
+   * be an owner of `pkg`. Each commitment needs an entry in the role the
+   * record gives it, each team must exist, and the record must name enough
+   * owners for its owner threshold, and enough maintainers for its release
+   * threshold.
+   */
+  async putMaintainers(caller: String, pkg: String, maintainersValue: Value, entryValues: Array<Value>,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    let account = await this.#account(pkg, AccountKind.Package, 'a package');
+    if ((await this.#packageRole(pkg, caller)) != OWNER) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an owner of ${pkg}`);
+    }
+    let maintainers = readRecord(() => Maintainers.fromValue(maintainersValue));
+    let commitments = new GrowableArray<Cid>();
     for (let maintainer in maintainers.maintainers) {
       let commitment = maintainer.commitment;
-      if ((maintainer.did != null && maintainer.did as String == caller) ||
-          (commitment != null && commitments.has(commitment.toString()))) {
-        return account as Account;
+      if (commitment != null) {
+        commitments.push(commitment);
       }
     }
-    throw new HostError(403, 'Forbidden', `${caller} does not maintain ${pkg}`);
+    let entries = await this.#entriesBehind(pkg, commitments, entryValues);
+    var owners = 0;
+    for (let maintainer in maintainers.maintainers) {
+      let commitment = maintainer.commitment;
+      if (commitment != null) {
+        let entry = entries.byCommitment[commitment.toString()];
+        if (entry.role != maintainer.role) {
+          throw new HostError(400, 'InvalidRequest',
+              `the entry behind ${commitment.toString()} gives the role ${entry.role}, and the record ${maintainer.role}`);
+        }
+      }
+      if (maintainer.org != null) {
+        let org = maintainer.org as String;
+        await this.#account(org, AccountKind.Organization, 'an organization');
+        if ((await this.#current(org, TEAM_TYPE, maintainer.team as String)) == null) {
+          throw new HostError(400, 'TeamNotFound', `${org} has no team ${maintainer.team as String}`);
+        }
+      }
+      if (maintainer.role == OWNER) {
+        owners += 1;
+      }
+    }
+    if ((owners as i64) < maintainers.ownerThreshold || (maintainers.maintainers.length as i64) < maintainers.threshold) {
+      throw new HostError(400, 'InvalidRequest',
+          `${owners} owners of ${maintainers.maintainers.length} maintainers cannot meet the thresholds of ${maintainers.ownerThreshold} and ${maintainers.threshold}`);
+    }
+    await this.#store.addEntries(pkg, entries.fresh);
+    return await this.#put(account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue), swapRecord, nowMicros);
+  }
+
+  /**
+   * `getEntries`: the entries behind `account`'s commitments that `caller`
+   * may see. For an organization, those of its members record, or of its
+   * team `team`; for a package, those of its maintainers record. Its owners
+   * and admins see every entry of an organization, its teams and its
+   * packages; a team's maintainers, the team's; a package's owners, the
+   * package's; and everyone else, their own.
+   */
+  async getEntries(caller: String, account: String, team: String | null): Future<Array<MemberEntry>> {
+    let held = await this.pds.storage.getAccount(account);
+    if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
+      throw new HostError(400, 'InvalidRequest', `${account} is not an organization or package on this host`);
+    }
+    var commitments: Array<Cid> = [];
+    var seesAll = false;
+    if (held.kind == AccountKind.Organization) {
+      let role = await this.#orgRole(account, caller);
+      if (team == null) {
+        commitments = await this.#commitmentsOf(account, MEMBERS_TYPE, 'self');
+        seesAll = isAdmin(role);
+      } else {
+        let name = team as String;
+        if ((await this.#current(account, TEAM_TYPE, name)) == null) {
+          throw new HostError(400, 'TeamNotFound', `${account} has no team ${name}`);
+        }
+        commitments = await this.#commitmentsOf(account, TEAM_TYPE, name);
+        seesAll = isAdmin(role) || (await this.#teamRole(account, name, caller)) == MAINTAINER;
+      }
+    } else {
+      commitments = await this.#commitmentsOf(account, MAINTAINERS_TYPE, 'self');
+      seesAll = (await this.#packageRole(account, caller)) == OWNER;
+      if (!seesAll && held.handle != null) {
+        // `<name>.<scope>.<domain>`: the organization of the package's scope.
+        let labels = scopeOf(held.handle as String, this.config.domain).split('.');
+        let org = if (labels.length == 2) await this.#store.scopeOwner(labels[1]) else null;
+        seesAll = org != null && isAdmin(await this.#orgRole(org as String, caller));
+      }
+    }
+    let visible = new GrowableArray<MemberEntry>();
+    for (let entry in await this.#committed(account, commitments)) {
+      if (seesAll || entry.did == caller) {
+        visible.push(entry);
+      }
+    }
+    return visible;
+  }
+
+  /** The account `did`, which must be of `kind`, described as `what` when it is not. */
+  async #account(did: String, kind: AccountKind, what: String): Future<Account> {
+    let account = await this.pds.storage.getAccount(did);
+    if (account == null || account.kind != kind) {
+      throw new HostError(400, 'InvalidRequest', `${did} is not ${what} on this host`);
+    }
+    return account as Account;
+  }
+
+  /** The record at `collection/rkey` in `did`'s repository as it is now, or null. */
+  async #current(did: String, collection: String, rkey: String): Future<CurrentRecord | null> {
+    let store = this.pds.storage.store(did);
+    let cid = await store.getRecord(collection, rkey);
+    if (cid == null) {
+      return null;
+    }
+    let bytes = (await store.getBlock(cid as Cid)) as FixedArray<u8>;
+    return new CurrentRecord(decodeCbor(bytes), cid as Cid);
+  }
+
+  /** The commitments the members or team record at `collection/rkey` lists now; none without one. */
+  async #commitmentsOf(did: String, collection: String, rkey: String): Future<Array<Cid>> {
+    let record = await this.#current(did, collection, rkey);
+    if (record == null) {
+      return [];
+    }
+    let value = (record as CurrentRecord).value;
+    if (collection == MEMBERS_TYPE) {
+      return Members.fromValue(value).members;
+    }
+    if (collection == TEAM_TYPE) {
+      return Team.fromValue(value).members;
+    }
+    let commitments = new GrowableArray<Cid>();
+    for (let maintainer in Maintainers.fromValue(value).maintainers) {
+      if (maintainer.commitment != null) {
+        commitments.push(maintainer.commitment as Cid);
+      }
+    }
+    return commitments;
+  }
+
+  /** The entries `account` keeps that `commitments` commit to. */
+  async #committed(account: String, commitments: Array<Cid>): Future<Array<MemberEntry>> {
+    let wanted = new HashSet<String>();
+    for (let commitment in commitments) {
+      wanted.add(commitment.toString());
+    }
+    let found = new GrowableArray<MemberEntry>();
+    let seen = new HashSet<String>();
+    for (let entry in await this.#store.entries(account)) {
+      let key = entry.commitment().toString();
+      if (wanted.has(key) && !seen.has(key)) {
+        seen.add(key);
+        found.push(entry);
+      }
+    }
+    return found;
+  }
+
+  /** `caller`'s role in `org`'s members record as it is now, or null. */
+  async #orgRole(org: String, caller: String): Future<String | null> {
+    return bestRole(await this.#committed(org, await this.#commitmentsOf(org, MEMBERS_TYPE, 'self')), caller);
+  }
+
+  /** `caller`'s role in `org`'s team `team` as it is now, or null. */
+  async #teamRole(org: String, team: String, caller: String): Future<String | null> {
+    return bestRole(await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE, team)), caller);
+  }
+
+  /**
+   * `caller`'s role in `pkg`'s maintainers record as it is now, `owner` or
+   * `publisher`, or null: listed by DID, by a commitment whose entry names
+   * them, or as a member of a team the record names, in the team's role.
+   */
+  async #packageRole(pkg: String, caller: String): Future<String | null> {
+    let record = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
+    if (record == null) {
+      return null;
+    }
+    let maintainers = Maintainers.fromValue((record as CurrentRecord).value);
+    let mine = new HashSet<String>();
+    for (let entry in await this.#store.entries(pkg)) {
+      if (entry.did == caller) {
+        mine.add(entry.commitment().toString());
+      }
+    }
+    var found: String | null = null;
+    for (let maintainer in maintainers.maintainers) {
+      let commitment = maintainer.commitment;
+      var matches = (maintainer.did != null && maintainer.did as String == caller) ||
+          (commitment != null && mine.has(commitment.toString()));
+      if (!matches && maintainer.org != null) {
+        matches = (await this.#teamRole(maintainer.org as String, maintainer.team as String, caller)) != null;
+      }
+      if (matches && (found == null || maintainer.role == OWNER)) {
+        found = maintainer.role;
+      }
+    }
+    return found;
+  }
+
+  /**
+   * The entries behind `commitments`: those in `entryValues`, which must
+   * each be behind one, and those `account` keeps from before. Every
+   * commitment must have one.
+   */
+  async #entriesBehind(account: String, commitments: Array<Cid>, entryValues: Array<Value>): Future<EntriesBehind> {
+    let wanted = new HashSet<String>();
+    for (let commitment in commitments) {
+      wanted.add(commitment.toString());
+    }
+    let result = new EntriesBehind();
+    for (let value in entryValues) {
+      let entry = readRecord(() => MemberEntry.fromValue(value));
+      let key = entry.commitment().toString();
+      if (!wanted.has(key)) {
+        throw new HostError(400, 'InvalidRequest', `the entry for ${entry.did} is not behind any commitment in the record`);
+      }
+      if (!result.byCommitment.has(key)) {
+        result.byCommitment[key] = entry;
+        result.fresh.push(entry);
+      }
+    }
+    for (let entry in await this.#store.entries(account)) {
+      let key = entry.commitment().toString();
+      if (wanted.has(key) && !result.byCommitment.has(key)) {
+        result.byCommitment[key] = entry;
+      }
+    }
+    for (let commitment in commitments) {
+      let key = commitment.toString();
+      if (!result.byCommitment.has(key)) {
+        throw new HostError(400, 'InvalidRequest', `no entry is behind the commitment ${key}`);
+      }
+      result.all.push(result.byCommitment[key]);
+    }
+    return result;
+  }
+
+  /**
+   * Writes `record` at `collection/rkey`: creates it, or replaces it while
+   * its CID is `swapRecord`, when one is given.
+   */
+  async #put(account: Account, collection: String, rkey: String, record: MapValue, swapRecord: String | null,
+      nowMicros: i64): Future<Created> {
+    let swap = swapCid(swapRecord);
+    let exists = (await this.pds.storage.store(account.did).getRecord(collection, rkey)) != null;
+    if (!exists && swap != null) {
+      throw new HostError(400, 'InvalidSwap', `${collection}/${rkey} does not exist`);
+    }
+    await this.#apply(account,
+        if (exists) new UpdateRecord(collection, rkey, record, swap) as Write else new CreateRecord(collection, rkey, record) as Write,
+        nowMicros);
+    let cid = (await this.pds.storage.store(account.did).getRecord(collection, rkey)) as Cid;
+    return new Created(account.did, account.handle ?? account.did, `at://${account.did}/${collection}/${rkey}`, cid);
+  }
+
+  /** Applies `write`, answering a write the repository refuses with its error. */
+  async #apply(account: Account, write: Write, nowMicros: i64): Future<void> {
+    try {
+      await this.pds.repositoryOf(account).applyWrites([write], nowMicros);
+    } catch (e) {
+      if (e is RepositoryError) {
+        throw new HostError(400, (e as RepositoryError).error, e.message);
+      }
+      throw e;
+    }
+  }
+}
+
+/** A record as it is now, and its CID. */
+final class CurrentRecord {
+  value: Value;
+  cid: Cid;
+
+  new(this.value, this.cid);
+}
+
+/** The entries behind a record's commitments, and which of them are new. */
+final class EntriesBehind {
+  /** By commitment, as a string. */
+  byCommitment = new HashMap<String, MemberEntry>();
+  /** In the record's order. */
+  all = new GrowableArray<MemberEntry>();
+  /** Those given with the call, which the host keeps from now on. */
+  fresh = new GrowableArray<MemberEntry>();
+
+  new();
+}
+
+/** The highest of the roles `entries` give `caller`: `owner`, then `admin` or `maintainer`, then any. */
+function bestRole(entries: Array<MemberEntry>, caller: String): String | null {
+  var found: String | null = null;
+  for (let entry in entries) {
+    if (entry.did == caller) {
+      if (found == null || entry.role == OWNER || (found as String != OWNER && (entry.role == ADMIN || entry.role == MAINTAINER))) {
+        found = entry.role;
+      }
+    }
+  }
+  return found;
+}
+
+/** Whether `role` is an organization's owner or admin. */
+function isAdmin(role: String | null): boolean {
+  return role == OWNER || role == ADMIN;
+}
+
+/** `swapRecord` as a CID, or null; one that is not a CID is refused. */
+function swapCid(swapRecord: String | null): Cid | null {
+  if (swapRecord == null) {
+    return null;
+  }
+  try {
+    return Cid.parse(swapRecord as String);
+  } catch (e) {
+    throw new HostError(400, 'InvalidRequest', `swapRecord '${swapRecord as String}' is not a CID`);
   }
 }
 

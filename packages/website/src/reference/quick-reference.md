@@ -153,6 +153,7 @@ like `1` or `"hello"`).
 let x: i32 = 1; // Explicit type
 let y = 1; // Inferred as i32
 let s: String = 'hello'; // Explicit String type
+var maybeName: String?; // Mutable nullable variable; defaults to null
 ```
 
 ## Primitive Types
@@ -309,15 +310,21 @@ let print = <T extends Printable>(x: T): void => {
 };
 ```
 
-### Optional Parameters
+### Default Parameters
 
-Parameters marked with `?` are optional. For reference types, the parameter
-becomes `T?` (`T | null`). Primitive types cannot be optional without a default value
-(since they can't be `null`).
+Parameters are made optional by giving them a default value with `=`. Unlike
+Python, default expressions are evaluated fresh at each call site—not shared
+between calls. Default values are used only when the argument is omitted
+entirely—passing `null` does not trigger a default. Parameters cannot be marked
+with `?` (`name?: String` is an error); write `name: String? = null` instead.
 
 ```zena
-// Reference types can be optional (become T?)
-let greet = (name: String, greeting?: String) => {
+let increment = (x: i32, amount: i32 = 1) => x + amount;
+
+increment(10); // 11 (amount defaults to 1)
+increment(10, 5); // 15 (amount is 5)
+
+let greet = (name: String, greeting: String? = null) => {
   if (greeting == null) {
     return 'Hello, ' + name;
   }
@@ -326,20 +333,6 @@ let greet = (name: String, greeting?: String) => {
 
 greet('Alice'); // "Hello, Alice"
 greet('Bob', 'Hi'); // "Hi, Bob"
-```
-
-### Default Parameters
-
-Parameters can have default values. Unlike Python, default expressions are
-evaluated fresh at each call site—not shared between calls. Default values are
-used when the argument is omitted entirely—there's no sentinel value like `null`
-or `undefined` that triggers defaults.
-
-```zena
-let increment = (x: i32, amount: i32 = 1) => x + amount;
-
-increment(10); // 11 (amount defaults to 1)
-increment(10, 5); // 15 (amount is 5)
 ```
 
 ### Argument Adaptation
@@ -1463,7 +1456,7 @@ A field of nullable type (`Type?`, shorthand for `Type | null`) needs no
 initializer: it defaults to `null` when not set in the constructor. Like any
 nullable type, primitives are excluded—use `Box<T>` if needed. Fields cannot
 be marked optional themselves (`bio?: String` is an error): `?` after a name
-means "may be absent", which is a record property and parameter concept—a
+means "may be absent", which is a record property concept—a
 constructed object's fields are never absent.
 
 ```zena

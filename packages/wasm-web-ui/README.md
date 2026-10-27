@@ -115,6 +115,32 @@ use each other in their templates without the page defining them;
 `new ElementModule(exports, {registry: customElements})` resolves from the
 page's registry instead.
 
+## Modules without Wasm GC
+
+A module that keeps its objects in linear memory, written in Rust or C,
+names them with integers, and the host keeps the identity: one `Handle`
+per object the page holds, released to the module's `webui_release` when
+the page drops it. The page makes a `LinearMemory` before instantiating,
+since the imports close over it, and hands it to the host it builds:
+
+```js
+import {
+  ElementModule,
+  LinearMemory,
+  webUiImports,
+} from '@zena-lang/wasm-web-ui';
+
+const linear = new LinearMemory();
+const {instance} = await WebAssembly.instantiate(bytes, webUiImports({linear}));
+const elements = new ElementModule(instance.exports, {linear});
+```
+
+`examples/rust` is a counter element written this way, with the support
+code a `wasm-web-ui` crate would provide, and `src/test/linear_test.ts`
+drives it through the same host as the Zena modules. The extension is
+specified in the design document under Other languages. A module that
+uses Wasm GC never touches it.
+
 ## Server rendering
 
 The same source renders on a server. `zena:web-elements` compiled for the

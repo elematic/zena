@@ -12,10 +12,20 @@
  */
 import type {TemplateResult} from 'lit-html';
 import {nothing, render as litRender, type RenderOptions} from 'lit-html';
-import {listener} from './listener.js';
+import {listener, linearListener} from './listener.js';
+import {
+  isLinearMemoryModule,
+  linearExports,
+  type Handle,
+  type LinearMemory,
+} from './linear.js';
 
-/** An opaque reference to an object the module made. */
-export type ModuleObject = object;
+/**
+ * An opaque reference to an object the module made: a Wasm GC reference,
+ * or, from a linear-memory module, a `Handle` for an owned object and a
+ * bare id for a transient result or list (`linear.ts`).
+ */
+export type ModuleObject = object | number;
 
 /** The value kinds of the protocol, as `webui_value_kind` reports them. */
 export const ValueKind = {
@@ -51,6 +61,16 @@ export const PROTOCOL_VERSION = 1;
 /** A TemplateStringsArray made from a module's strings. */
 type Strings = TemplateStringsArray;
 
+export interface TemplateHostOptions {
+  /**
+   * For a module without Wasm GC, which names its objects with integers:
+   * the `LinearMemory` its `wasm-web-ui` imports were built with. The
+   * host then reads the module through the linear-memory extension
+   * (`linear.ts`); a GC module needs nothing here.
+   */
+  linear?: LinearMemory;
+}
+
 /**
  * Reads results out of one instantiated module.
  *
@@ -59,10 +79,26 @@ type Strings = TemplateStringsArray;
  */
 export class TemplateHost {
   readonly exports: TemplateExports;
-  readonly #templates = new WeakMap<ModuleObject, Strings>();
+  // Keyed by the strings object, which is an object for every module:
+  // a GC reference or a `Handle`.
+  readonly #templates = new WeakMap<object, Strings>();
+  readonly #linear: LinearMemory | undefined;
 
-  constructor(exports: WebAssembly.Exports | TemplateExports) {
-    const e = exports as unknown as TemplateExports;
+  constructor(
+    exports: WebAssembly.Exports | TemplateExports,
+    options: TemplateHostOptions = {},
+  ) {
+    let e = exports as unknown as TemplateExports;
+    this.#linear = options.linear;
+    if (options.linear !== undefined) {
+      options.linear.attach(exports as WebAssembly.Exports);
+      e = linearExports(exports as WebAssembly.Exports, options.linear);
+    } else if (isLinearMemoryModule(exports)) {
+      throw new Error(
+        'wasm-web-ui: the module uses the linear-memory extension; pass ' +
+          'the LinearMemory its imports were built with as `linear`',
+      );
+    }
     if (typeof e.webui_version !== 'function') {
       throw new Error(
         'wasm-web-ui: the module does not export webui_version, so it ' +
@@ -108,7 +144,7 @@ export class TemplateHost {
    * and found by identity afterwards.
    */
   strings(ref: ModuleObject): Strings {
-    let strings = this.#templates.get(ref);
+    let strings = this.#templates.get(ref as object);
     if (strings === undefined) {
       const {exports} = this;
       const count = exports.webui_strings_count(ref);
@@ -124,7 +160,7 @@ export class TemplateHost {
       // strings are the module's literals, read through its exports.
       Object.defineProperty(cooked, 'raw', {value: Object.freeze(raw)});
       strings = Object.freeze(cooked) as unknown as Strings;
-      this.#templates.set(ref, strings);
+      this.#templates.set(ref as object, strings);
     }
     return strings;
   }
@@ -157,8 +193,12 @@ export class TemplateHost {
         return this.result(exports.webui_value_ref(container, index));
       case ValueKind.list:
         return this.values(exports.webui_value_ref(container, index));
-      case ValueKind.listener:
-        return listener(this, exports.webui_value_ref(container, index));
+      case ValueKind.listener: {
+        const ref = exports.webui_value_ref(container, index);
+        return this.#linear === undefined
+          ? listener(this, ref)
+          : linearListener(this.#linear, this, ref as Handle);
+      }
       default:
         throw new Error(
           `wasm-web-ui: unknown value kind ${exports.webui_value_kind(

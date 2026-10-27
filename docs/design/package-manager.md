@@ -4,8 +4,9 @@ Status: **Proposed**, and partly built: the AT Protocol libraries
 (`packages/atproto`), the package records, source archives and fetching
 (`packages/package-manager`), the compiler's reading of pinned packages,
 `zena add`, `zena update` and `zena fetch`, `zena login` with app
-passwords, `zena publish` and `zena package create`, and a package host in
-the PDS written in Zena (`packages/pds`), with the methods publishing needs.
+passwords, `zena publish`, `zena package create` and `zena scope`, and a
+package host in the PDS written in Zena (`packages/pds`), with the methods
+for publishing and for changing members, teams and maintainers.
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto
@@ -233,13 +234,14 @@ label: lowercase ASCII letters, digits and `-`, starting with a letter,
 not ending with `-`, without `--` as its third and fourth characters,
 which internationalized domain names reserve, and at most 63 characters.
 `zena` names the standard library and no package. Scope names follow the
-same rules, and a host reserves some, such as `www`.
+same rules, and a host reserves some, such as `www` (see
+[Scopes](#scopes)).
 
 ## Records
 
 The record schemas are named under `dev.zena-lang.package`, after the
 Zena project's domain, `zena-lang.dev`. They are published as lexicons at
-that domain. The profile, releases and yanks are below. The maintainers
+that domain. The profile, releases and retractions are below. The maintainers
 record, attestations, and an organization's records are in
 [Hosting, keys and maintainers](#hosting-keys-and-maintainers).
 
@@ -315,15 +317,15 @@ overwriting it. Each dependency names a DID, the minimum version the
 release needs, and the local name it uses for that package in its own
 imports.
 
-### Yank
+### Retraction
 
-A yanked version stays available. `zena add` and `zena update` skip it
+A retracted version stays available. `zena add` and `zena update` skip it
 when they pick the newest version, and a build whose dependencies require
-it still uses it, with a warning. Yanking writes a record:
+it still uses it, with a warning. Retracting writes a record:
 
 ```json
 {
-  "$type": "dev.zena-lang.package.yank",
+  "$type": "dev.zena-lang.package.retraction",
   "version": "1.4.1",
   "reason": "Routes with a trailing slash matched the wrong handler"
 }
@@ -498,7 +500,33 @@ To fetch a release, the client:
 3. Checks the release against the checksum log (see below).
 4. Downloads each artifact it needs with `com.atproto.sync.getBlob` and
    checks it against its CID.
-5. Stores everything in the local cache.
+5. Checks the release against its source archive (see below).
+6. Stores everything in the local cache.
+
+### Validating releases
+
+A release is checked in three places, by one set of rules
+(`package-manager:validate`). `zena publish` checks before it uploads
+anything. The package host checks before it records a release, since it
+trusts no client. A fetch checks too, since a package can be kept on any
+PDS, where nothing checked what was written. The rules:
+
+- **The archive is the artifact.** It is the size and CID the release's
+  source artifact gives, with the MIME type `application/vnd.ipld.car`,
+  and it unpacks under the archive rules (see Source archives).
+- **Its manifest agrees with the release.** It has a `zena-package.json`
+  with the release's version, no `wit` dependencies, and the same
+  dependencies by local name as the release; a path dependency is in the
+  release as the DID and version its package has. A `did`, when the
+  manifest has one, is the package's.
+- **When publishing, the manifest has the profile's name.** A fetch does
+  not check this, since a package renamed later keeps its older releases.
+- **When publishing, every dependency is a release that exists and is not
+  retracted.** A fetch does not repeat it: resolving the release's
+  dependencies already fails on one that does not.
+
+The host answers a release that breaks one with `InvalidRelease`, listing
+every problem.
 
 ## Immutability
 
@@ -635,29 +663,119 @@ package depends on the Zena project's host to stay readable or to leave.
 
 ### Keys
 
-| Key or credential                                            | Created by                                           | Held by                                                                                                             | Controls                                                       |
-| ------------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| A maintainer's account keys                                  | the maintainer's PDS                                 | the maintainer's PDS                                                                                                | the maintainer's repository, where their attestations are      |
-| A maintainer's OAuth session: a refresh token and a DPoP key | `zena login`                                         | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                      |
-| The package's signing key                                    | the host, when it creates the package                | the host, encrypted at rest                                                                                         | commits to the package's repository                            |
-| The host's rotation key                                      | the host, once                                       | the host, in a key store apart from its database                                                                    | PLC operations for every package it hosts, ranked last         |
-| Recovery keys                                                | `zena`, for the creator, or an organization's owners | up to four maintainers, in `$XDG_CONFIG_HOME/zena/recovery-key`, mode 0600, backed up                               | PLC operations, ranked above the host's rotation key           |
-| Approval keys, if a maintainer adds them                     | the maintainer, as passkeys or security keys         | the maintainer's devices                                                                                            | nothing alone: they countersign that maintainer's attestations |
-| CI credentials                                               | a maintainer                                         | the CI system, as a secret                                                                                          | publishing as a bot maintainer                                 |
+| Key or credential                                            | Created by                                   | Held by                                                                                                             | Controls                                                            |
+| ------------------------------------------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| A maintainer's account keys                                  | the maintainer's PDS                         | the maintainer's PDS                                                                                                | the maintainer's repository, where their attestations are           |
+| A maintainer's OAuth session: a refresh token and a DPoP key | `zena login`                                 | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                           |
+| The package's signing key                                    | the host, when it creates the package        | the host, encrypted at rest                                                                                         | commits to the package's repository                                 |
+| The host's online rotation key                               | the host, once                               | the host, in a key management service apart from its database                                                       | PLC operations for every account it hosts, ranked last              |
+| The host's offline rotation key                              | the operator, once                           | the operator, offline                                                                                               | PLC operations, ranked above the online key, to undo what it signed |
+| Recovery keys, if the owners add them                        | a maintainer                                 | up to three maintainers, in a hardware key, the OS keychain, or `$XDG_CONFIG_HOME/zena/recovery-key`, mode 0600     | PLC operations, ranked above the host's keys                        |
+| Approval keys, if a maintainer adds them                     | the maintainer, as passkeys or security keys | the maintainer's devices                                                                                            | nothing alone: they countersign that maintainer's attestations      |
+| CI credentials                                               | a maintainer                                 | the CI system, as a secret                                                                                          | publishing as a bot maintainer                                      |
 
 Keys are secp256k1, the curve the reference PDS uses. A maintainer uses
 the same recovery key for every package they hold one for.
+
+The host is the custodian of the accounts it creates, as Bluesky's PDS is
+of the accounts on it: it holds their signing keys and the rotation keys
+that control their DIDs, and no maintainer has to keep a key. The two
+kinds are separate because they are used differently. A signing key signs
+every commit, so it is in use all the time. A rotation key signs only the
+rare change to a DID document, so it can be kept where using it is slow
+and stealing it is hard, and it is what replaces a signing key that
+leaks.
+
+Releases do not depend on who holds the rotation keys. A release counts
+only with its maintainers' attestations, which the log checks (see
+[Who signs what](#who-signs-what)), so whoever controls a DID still
+cannot publish a release that counts. The rotation keys decide the DID
+document: which host serves the package, its signing key, and its handle.
+Recovery keys let a package's owners decide those without the host: undo
+what the host signs, and leave a host that will not move them or has
+gone. They suit organizations and widely used packages, kept in a
+hardware key or the OS keychain. A key in a file on a laptop is what
+malware looks for, and a thief with the first-ranked key takes the DID
+beyond anyone's reach, so `zena` does not make one unasked.
 
 There is no maintainer's own key for signing releases. In atproto an
 account's signing key is held by its PDS, not by the person, and this
 design does not add one.
 
+### Scopes
+
+`zena scope create`, `zena scope info`, the manifest's `scope` and the
+operator's `create-scope` are built (#575), and so are the membership
+commands below (#576).
+
+A scope is an organization account on a package host, whose handle is one
+label below the host's domain (see [Names and scopes](#names-and-scopes)).
+A person's packages go in a scope with them as its only owner, and an
+organization's packages in a scope its owners share.
+
+**Creating a scope.** `zena scope create acme` asks the host for the
+organization, with `dev.zena-lang.host.createOrganization`, with the
+caller as its only owner. Like `zena publish`, it names the handle it
+would create, `acme.pkg.zena-lang.dev`, and stops, and `--yes` creates
+it. It prints the scope's DID and handle.
+
+Publishing does not create scopes. A publish that names a scope the host
+does not have stops, and says to create it with `zena scope create`. If
+publishing created it, a mistyped `--scope` would make a scope no one
+meant to have, and take its name.
+
+**Which scope a package is in.** The manifest's `scope` names it:
+
+```json
+{"name": "router", "scope": "acme", "version": "1.4.2"}
+```
+
+The first publish creates the package in that scope, and `--scope` gives
+one for a manifest without it. A workspace root's `scope` is the default
+for its workspace packages (see
+[package-manifest.md](package-manifest.md#scope)). The manifest's `name`
+stays the package's own name, without the scope, since it is also the
+name dependents import it by, and a DNS label. `@acme/router` is only
+`zena add`'s shorthand for a handle.
+
+Once the package exists, its DID decides where it is, and `scope` is a
+check. `zena publish` resolves the DID's handle, and refuses when it is
+not `<name>.<scope>.<host domain>`, naming both. That catches a manifest
+copied from another package, and a package renamed or moved without its
+manifest following. A package whose handle is on a domain its maintainers
+control has no `scope`.
+
+**Seeing a scope.** `zena scope info <scope>` takes the scope's name,
+handle or DID, and prints its DID, its handle, the thresholds of its
+members record, and the caller's role in it. `zena scope members` prints
+the members the caller may see (see
+[Adding and removing people](#adding-and-removing-people)). The index
+lists the packages in a scope, by their handles.
+
+**Reserved scopes.** A host keeps some scope names from everyone: `www`,
+`api`, `admin`, `zena`, `pkg` and `mail`, and those its operator adds. The
+operator creates a scope with one of those names, for the project that
+runs the host, with a command run with the host's own configuration, as
+`sync-handles` is:
+
+```sh
+zena run packages/pds/zena/main.zena -- create-scope zena \
+  --owner did:plc:... --recovery-key did:key:...
+```
+
+The command is not an XRPC method, so nothing a caller can send takes a
+reserved name, and it needs no credentials the server does not already
+have. The scope's owner then manages it as any other. Which reserved
+scopes the Zena project's host creates, and which packages go in `zena`,
+is still open.
+
 ### Creating a package
 
 The first `zena publish` of a package creates its account, after asking:
 it names the handle it would create and stops, and `--yes` creates it.
-`--scope` names the scope, which is created too when the host has no scope
-of that name. `zena package create` does only this, for scripts.
+The package is created in the scope the manifest's `scope` or `--scope`
+names, which must exist (see [Scopes](#scopes)). `zena package create`
+does only this, for scripts.
 
 The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
 `zena` reads its service DID and the domain its handles are under from its
@@ -672,8 +790,9 @@ The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
    the command implements OAuth, `zena login` signs in with an app
    password instead, which allows the same calls and can be revoked on
    its own.
-2. **A recovery key.** If the maintainer has none, `zena` generates one
-   and asks them to back it up.
+2. **Recovery keys, if any.** When the maintainer keeps a recovery key,
+   `zena` passes its public key. It does not make one: without it, the
+   host's keys are the package's only rotation keys (see [Keys](#keys)).
 3. **A token for the host.** `zena` asks the maintainer's PDS for a
    service-auth token with `com.atproto.server.getServiceAuth`, addressed
    to the host's DID, for the method `dev.zena-lang.host.createPackage`.
@@ -682,20 +801,18 @@ The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
    knows which account the request is from without a password of its own.
    Every later call to the host is made the same way.
 4. **The DID.** `zena` calls `dev.zena-lang.host.createPackage` with the
-   scope's organization, the recovery key's public key, the profile and
-   the maintainers record. A maintainer with no scope on the host yet
-   creates one first, with `dev.zena-lang.host.createOrganization`: an
-   organization with them as its only owner, under a scope name they
-   choose. The host generates the
-   package's signing key, writes the genesis operation, signs it with its
-   rotation key and submits it to the PLC directory:
+   scope's organization, any recovery keys, the profile and the
+   maintainers record. The host generates the package's signing key,
+   writes the genesis operation, signs it with its online rotation key
+   and submits it to the PLC directory:
 
    ```json
    {
      "type": "plc_operation",
      "rotationKeys": [
-       "did:key:zQ3sh...(the maintainer's recovery key)",
-       "did:key:zQ3sh...(the host's rotation key)"
+       "did:key:zQ3sh...(the maintainer's recovery key, if they keep one)",
+       "did:key:zQ3sh...(the host's offline rotation key)",
+       "did:key:zQ3sh...(the host's online rotation key)"
      ],
      "verificationMethods": {
        "atproto": "did:key:zQ3sh...(the package's signing key)"
@@ -715,7 +832,8 @@ The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
    The DID is the first 24 characters of the base32 SHA-256 hash of this
    signed operation. A new package's DID document therefore names the
    host as its PDS and the host's key as its signing key, and lists the
-   maintainer's recovery key ahead of the host's rotation key.
+   maintainer's recovery key, if any, ahead of the host's two rotation
+   keys.
 
 5. **The repository.** The host creates the account's repository with the
    profile, from `zena-package.json`, and a maintainers record listing the
@@ -747,7 +865,7 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
    repository.
 4. It looks the version up in the checksum log, which records it.
 
-`zena yank <version>` writes a yank record the same way.
+`zena retract <version>` writes a retraction record the same way.
 
 Publishing changes the package's repository and not its DID document. The
 DID document changes only when the package moves to another host, its
@@ -840,25 +958,24 @@ A package's repository has a maintainers record at record key `self`:
   package maintained by a team names the organization, the team and the
   team's role on the package, and every member of the team has that role.
   Changing who is on a team changes it for every package the team
-  maintains. The packages an organization creates list the
-  organization's recovery keys, held by its owners, rather than one
-  person's.
+  maintains. The packages an organization creates list the recovery
+  keys its owners keep, if they keep any, rather than one person's.
 
 #### Roles
 
 | Record                    | Role       | Can                                                                                              |
 | ------------------------- | ---------- | ------------------------------------------------------------------------------------------------ |
-| a package's maintainers   | publisher  | attest releases, and yank them                                                                   |
+| a package's maintainers   | publisher  | attest releases, and retract them                                                                |
 |                           | owner      | also attest changes to the maintainers record, and edit the profile, rename and move the package |
 | an organization's members | member     | be put on teams                                                                                  |
 |                           | admin      | also create packages in the organization's scope, create teams, and attest changes to them       |
-|                           | owner      | also attest changes to the members record, and hold the organization's recovery keys             |
+|                           | owner      | also attest changes to the members record, and hold its recovery keys, if it has any             |
 | a team                    | member     | act on each of the team's packages in the role the package gives the team                        |
 |                           | maintainer | also attest changes to the team                                                                  |
 
 The log checks roles for everything that decides which releases count:
 releases, and changes to maintainers, members and teams. The host checks
-the same records for the rest: profile edits, renames, moves, yanks,
+the same records for the rest: profile edits, renames, moves, retractions,
 creating packages in a scope, and its own settings.
 
 #### Private membership
@@ -933,17 +1050,53 @@ one in particular.
 
 #### Adding and removing people
 
-`zena owner add <package> <handle or DID>` and `zena owner remove` write a
-new maintainers record through the host. `zena org add` and
-`zena org remove` do the same to an organization's members, and
-`zena team add` and `zena team remove` to a team. A change counts once
-the roles and threshold of the record before it have attested it: the
-owners for a maintainers or members record, and the admins, owners or the
-team's maintainers for a team. So one owner of a package whose
-`ownerThreshold` is 2 cannot replace the others. The log records each
-change that counts. A release counts under the maintainers record the log
-held when it recorded the release, so someone who leaves cannot attest
-new releases, and the releases they attested stay valid.
+Each command names a person by handle or DID, and changes one record
+through the host:
+
+| Command                                                 | Record                    | Host method      |
+| ------------------------------------------------------- | ------------------------- | ---------------- |
+| `zena scope add <scope> <person> --role <role>`         | the scope's members       | `putMembers`     |
+| `zena scope remove <scope> <person>`                    | the scope's members       | `putMembers`     |
+| `zena team create <scope>/<team>`                       | a new team                | `putTeam`        |
+| `zena team add <scope>/<team> <person> --role <role>`   | the team                  | `putTeam`        |
+| `zena team remove <scope>/<team> <person>`              | the team                  | `putTeam`        |
+| `zena team delete <scope>/<team>`                       | the team                  | `deleteTeam`     |
+| `zena owner add <person> --role <role>`                 | the package's maintainers | `putMaintainers` |
+| `zena owner add --team <scope>/<team> --role publisher` | the package's maintainers | `putMaintainers` |
+| `zena owner remove <person>`                            | the package's maintainers | `putMaintainers` |
+
+The roles are those of [Roles](#roles), and `member` or `publisher` when
+`--role` is left out. The `owner` commands act on the package in the
+current directory, or on the one `--package` names by DID, handle or
+`@scope/name`. `zena scope members <scope>`, `zena team members` and
+`zena owner list` print the entries the caller may see.
+
+Each change takes the same steps:
+
+1. `zena` reads the record and its CID from the account's repository, and
+   the entries behind its commitments from `getEntries`.
+2. It makes the new person's entry, with a new salt and no approval keys,
+   or leaves out the one being removed, and builds the new record from
+   the entries' commitments.
+3. It calls the host's method with the new record, the entries, and the
+   CID it read. The host refuses when the record has changed since, so
+   two owners editing at once do not overwrite each other unseen.
+4. It writes an attestation of the new record to the caller's own
+   repository.
+
+A new member adds their own approval keys later, in the management
+interface.
+
+A change counts once the roles and threshold of the record before it have
+attested it: the owners for a maintainers or members record, and the
+admins, owners or the team's maintainers for a team. So one owner of a
+package whose `ownerThreshold` is 2 cannot replace the others. The others
+attest a waiting change with `zena approve @acme` or
+`zena approve <package>`, which shows the entries added and removed
+first. The log records each change that counts. A release counts under
+the maintainers record the log held when it recorded the release, so
+someone who leaves cannot attest new releases, and the releases they
+attested stay valid.
 
 Someone who leaves and holds a recovery key must also lose the key: the
 remaining holders remove it from the DID's rotation keys with a PLC
@@ -952,6 +1105,14 @@ lower-ranked one within 72 hours, so the removal is signed with a recovery
 key ranked above the departing one, not with the host's key, which ranks
 last. The first rotation key should be the one trusted most, such as an
 organization's offline key.
+
+Nothing records which rotation key is whose, so `zena scope remove` and
+`zena owner remove` cannot yet tell whether the person removed holds one.
+Recording the holder's recovery key in their private entry would let the
+command find it, and prepare the PLC operation for each DID it is on, for
+a holder ranked above it to sign. `zena` signs it with that holder's key
+and submits it to the PLC directory itself, since the host never holds a
+recovery key.
 
 ### Thresholds
 
@@ -962,8 +1123,9 @@ organization's offline key.
 - **Control of the DID** cannot. PLC accepts an operation signed by any
   one rotation key, with rank deciding conflicts for 72 hours, and has no
   thresholds. The host signs with its own rotation key only for changes
-  the maintainers' threshold has attested, but a recovery key can act
-  alone. A package should have few recovery keys, kept offline.
+  the maintainers' threshold has attested, and for the recovery resets
+  of [Recovery](#recovery), but a recovery key can act alone. A package
+  should have few recovery keys, kept offline.
 
 Threshold signatures, where several holders together act as one key, are
 not planned.
@@ -1039,7 +1201,7 @@ once the attestations the previous record requires reach the log.
 | `createAutomationAccount` | an organization's admins                                        | creates an account for CI and returns its app password once          |
 | `uploadArtifact`          | a package's maintainers                                         | stores an artifact, or one part of it, as a blob of the package      |
 | `publish`                 | a package's maintainers                                         | writes a release record, refusing a version that exists              |
-| `yank`                    | a package's maintainers                                         | writes a yank record                                                 |
+| `retract`                 | a package's maintainers                                         | writes a retraction record                                           |
 | `putProfile`              | a package's owners                                              | replaces the profile                                                 |
 | `renamePackage`           | a package's owners                                              | changes the handle, with a PLC operation, and the profile's name     |
 | `putMaintainers`          | a package's owners                                              | writes a maintainers record, with the entries behind its commitments |
@@ -1070,6 +1232,9 @@ the DID document is changed to name it:
 3. A PLC operation names the new host's endpoint and signing key, and
    replaces the old host's rotation key with the new host's. The old host
    signs it if it cooperates, and a recovery key holder if it does not.
+   A package without recovery keys moves only with its host's
+   cooperation. The Zena project's host signs a move once the package's
+   owners' threshold has attested it.
 
 `zena package move --to <host>` does all three. If the old host is gone,
 the records and blobs can be rebuilt from caches and proxies, which hold
@@ -1077,11 +1242,11 @@ every release anyone has fetched, and checked against the log.
 
 ### Holding keys elsewhere
 
-- **Recovery keys** are held by maintainers already. A key on a laptop
-  can be lost, which leaves moving the package to the host's cooperation,
-  or stolen, and a thief with the first-ranked key can take the DID.
-  Keeping recovery keys in hardware keys or the OS keychain is an open
-  question.
+- **Recovery keys** are optional, and held by the maintainers who add
+  them. A key on a laptop can be lost, which leaves moving the package to
+  the host's cooperation, or stolen, and a thief with the first-ranked
+  key takes the DID. Keeping them in hardware keys or the OS keychain is
+  an open question.
 - **The signing key** is held by whatever serves the repository, since a
   commit is signed when records are written and served from there. A
   package that trusts no host runs its own: the Zena project's host
@@ -1110,8 +1275,14 @@ them, and sign PLC operations with its rotation key. What limits it:
 - PLC operations are public: the directory's export stream lists every
   operation on every DID, so a change a host makes to a package's DID
   document can be seen.
-- Recovery keys rank above the host's rotation key, so for 72 hours
-  maintainers can undo any PLC operation the host signs.
+- The host's offline rotation key ranks above its online one, so for 72
+  hours the operator can undo what a stolen online key signs.
+- Recovery keys, where the owners add them, rank above both, so for 72
+  hours those owners can undo any PLC operation the host signs.
+
+A package without recovery keys trusts its host with its DID: the host
+can move it, rename it, or refuse to move it, though it cannot publish a
+release that counts.
 
 A package's dependents rely on its maintainers, through their
 attestations, and on the log. They do not choose the package's host, and
@@ -1271,25 +1442,29 @@ any other.
 Two cases need a way back that does not go through the maintainers'
 attestations: an only maintainer who has lost their account or approval
 keys, and a team that can no longer reach its threshold. A new
-maintainers record signed with one of the package's recovery keys, in
+maintainers record signed with one of the package's rotation keys, in
 place of attestations, counts once the log has shown it for seven days,
 unless the current maintainers attest a different record in that time.
-The index tells the maintainers when such a change is pending. A recovery
-key is kept offline and rarely used, so it is harder to take than a
-session, and the seven days give the maintainers time to answer if it is
-taken.
+The index tells the maintainers when such a change is pending.
+
+A package with recovery keys is reset with one of them. For one without,
+the host signs the new record with its rotation key, once its operator
+has checked who is asking, as package registries' support does. Either
+key is used rarely, so it is harder to take than a session, and the
+seven days give the maintainers time to answer if it is misused.
 
 ### Compromised keys
 
-| If this is taken                  | The attacker can                                                       | What stops them                                                                                                              | Recovery                                                                                                                      |
-| --------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| A maintainer's session or account | attest as the maintainer, and ask the host for what the maintainer can | the threshold, `humans` and approval keys; the other maintainers are told                                                    | revoke the session or recover the account; the other maintainers remove the person if needed, and yank what was published     |
-| A CI secret                       | attest as the bot                                                      | `humans`; an automation account on the package's host counts only with a person's attestation                                | replace the app password                                                                                                      |
-| An approval key                   | nothing alone                                                          | it signs only together with the maintainer's account                                                                         | remove it from the maintainers record                                                                                         |
-| The package's signing key         | write records to the repository                                        | the log, which records nothing unattested                                                                                    | the host replaces the key with a PLC operation                                                                                |
-| The host's rotation key           | change the DID document of every package on the host                   | recovery keys, which rank above it, undo its operations for 72 hours; the index watches PLC operations and tells maintainers | maintainers undo the operations with their recovery keys                                                                      |
-| A recovery key                    | change the DID document at that key's rank, and start a recovery reset | higher-ranked keys, for 72 hours; the seven days of a reset; new releases still need the maintainers' attestations           | undo with a higher-ranked key; if the first-ranked key was taken, the DID is lost, and the package moves to a new DID (below) |
-| The log's signing key             | sign a log head that drops or changes entries                          | witnesses, and clients, which refuse a head that does not extend the last one they saw                                       | the log rotates its key                                                                                                       |
+| If this is taken                  | The attacker can                                                                | What stops them                                                                                                                                                                 | Recovery                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| A maintainer's session or account | attest as the maintainer, and ask the host for what the maintainer can          | the threshold, `humans` and approval keys; the other maintainers are told                                                                                                       | revoke the session or recover the account; the other maintainers remove the person if needed, and retract what was published  |
+| A CI secret                       | attest as the bot                                                               | `humans`; an automation account on the package's host counts only with a person's attestation                                                                                   | replace the app password                                                                                                      |
+| An approval key                   | nothing alone                                                                   | it signs only together with the maintainer's account                                                                                                                            | remove it from the maintainers record                                                                                         |
+| The package's signing key         | write records to the repository                                                 | the log, which records nothing unattested                                                                                                                                       | the host replaces the key with a PLC operation                                                                                |
+| The host's online rotation key    | change the DID document of every package on the host, and start recovery resets | the offline key and any recovery keys, which rank above it, undo its operations for 72 hours; the seven days of a reset; the index watches PLC operations and tells maintainers | the operator undoes the operations with the offline key, and replaces the online key                                          |
+| The host's offline rotation key   | the same, ranked above the online key                                           | recovery keys, where packages have them; the seven days of a reset                                                                                                              | packages with recovery keys undo the operations; packages without them move to new DIDs (below)                               |
+| A recovery key                    | change the DID document at that key's rank, and start a recovery reset          | higher-ranked keys, for 72 hours; the seven days of a reset; new releases still need the maintainers' attestations                                                              | undo with a higher-ranked key; if the first-ranked key was taken, the DID is lost, and the package moves to a new DID (below) |
+| The log's signing key             | sign a log head that drops or changes entries                                   | witnesses, and clients, which refuse a head that does not extend the last one they saw                                                                                          | the log rotates its key                                                                                                       |
 
 A package whose DID is taken cannot be published by its attacker, as
 long as its maintainers answer any recovery reset the attacker starts:
@@ -1349,7 +1524,7 @@ noticing:
 
 - Minimal version selection takes a new release only when someone raises
   a minimum, so a malicious release reaches the workspaces that update,
-  not every build. A release found out in that time can be yanked and
+  not every build. A release found out in that time can be retracted and
   labeled before most workspaces take it.
 - Labelers mark malicious releases `malware`, and clients that follow
   them refuse those releases, pinned ones included.
@@ -1363,7 +1538,9 @@ noticing:
 
 A package whose host deletes it, or disappears, can still be fetched from
 caches and proxies, since every artifact is addressed by its CID, and its
-maintainers can move it to another host with a recovery key. The PLC
+maintainers can move it to another host if they hold a recovery key. A
+package without one is published again under a new DID, which a labeler
+names as the old one's successor. The PLC
 directory and the log are needed to resolve new releases. A build from an
 existing lockfile needs neither, given a cache or proxy that holds
 its artifacts.
@@ -1476,7 +1653,7 @@ throttled. The host therefore limits who creates accounts and how many:
 - **Outgoing HTTP** with methods and headers on the `zena-cli` target,
   which `wasi:http` provides directly.
 - **The `zena` command**: `login`, `add`, `update`, `fetch`, `publish`,
-  `approve`, `yank`, `owner`, `team`, `package create` and
+  `approve`, `retract`, `scope`, `owner`, `team`, `package create` and
   `package move`, and the `@scope/name` shorthand with its `scopes`
   mapping. Signing in needs OAuth with a loopback redirect, a
   client metadata document at `zena-lang.dev`, and the

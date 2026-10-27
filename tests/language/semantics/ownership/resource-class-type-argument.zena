@@ -10,15 +10,15 @@
 // Legal uses live here; the positions that stay errors are in
 // ./resource-class-bare-mention.zena.
 
-import { Own, Borrow, Unmanaged, Disposable } from 'zena:core';
+import { Own, Borrow, Unmanaged, Disposable, Resource } from 'zena:core';
 
 resource class Descriptor {
   value(): i32 { return 1; }
   [Disposable.dispose](this: Own<this>): void {}
 }
 
-class Box<T> {
-  var item: T;
+resource class Slot<T extends Resource> {
+  item: Own<T>;
   new(this.item);
 }
 
@@ -40,5 +40,7 @@ let held = hold<Descriptor>(new Descriptor());
 let wrapped = read<Descriptor>(d);
 
 // `new` takes explicit type arguments through the same path. The argument
-// is moved into the box, so it is a fresh owner too.
-let boxOfHandles = new Box<Own<Descriptor>>(new Descriptor());
+// is moved into the slot, so it is a fresh owner too. (A handle cannot be
+// the argument of an unrestricted class parameter: see
+// owner-type-argument.zena.)
+let slotOfDescriptor = new Slot<Descriptor>(new Descriptor());

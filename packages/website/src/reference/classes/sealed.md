@@ -222,13 +222,12 @@ let c = new Counter('visits', 0);
 c.count += 1; // OK: count is mutable
 ```
 
-#### Optional parameters (`?`)
+#### Default parameter values
 
-Suffixing a parameter type with `?` marks it as optional. Optional parameters become
-nullable fields (`T?`) with a default argument of `null`:
+Case class parameters can specify a default value with `=`:
 
 ```zena
-class Node(value: i32, label?: String)
+class Node(value: i32, label: String? = null)
 
 let n1 = new Node(42);           // label defaults to null
 let n2 = new Node(42, 'root');   // label is 'root'
@@ -236,10 +235,10 @@ let n2 = new Node(42, 'root');   // label is 'root'
 
 #### Combining modifiers
 
-Modifiers can be combined. A mutable, optional field is declared with `var name?: Type`:
+`var` and default values can be combined:
 
 ```zena
-class Task(title: String, var assignee?: String)
+class Task(title: String, var assignee: String? = null)
 
 let t = new Task('Deploy');
 t.assignee = 'Alice';
