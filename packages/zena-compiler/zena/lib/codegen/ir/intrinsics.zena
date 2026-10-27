@@ -17,7 +17,7 @@ import {
   simdLaneCount,
 } from '../../simd.zena';
 import { parseI32WithHex } from '../codegen-utils.zena';
-import { arrayElementType, isSignedNarrowIntType, isVoidOrNeverType } from '../../types.zena';
+import { arrayElementType, isSignedNarrowIntType, isVoidOrNeverType, FunctionType, representsRestricted } from '../../types.zena';
 import {
   WasmFunction, WasmArray, WasmTag, isValSubtype, asWasmArray,
 } from '../wasm-module.zena';
@@ -258,6 +258,27 @@ function lowerDefaultValue(cx: LoweringContext, call: CallExpression): i32 {
     case ValTypeF64: cx.b.constF64(0.0, vt)
     case _: cx.failValue('defaultValue of this type')
   };
+}
+
+/**
+ * `isFirstClass<T>()`: a constant in each specialization, true where
+ * `T` is first-class. It answers for the body the specialization
+ * shares, from the representation it is keyed by, so it is false
+ * wherever a take would empty a slot (representsRestricted) and the
+ * two always agree.
+ */
+function lowerIsFirstClass(cx: LoweringContext, call: CallExpression): i32 {
+  let calleeType = cx.substitutedNodeType(call.callee);
+  if (!(calleeType is FunctionType)) {
+    return cx.failValue('isFirstClass callee type');
+  }
+  let ft = calleeType as FunctionType;
+  let args = ft.typeArguments;
+  if (args == null || args.length != 1) {
+    return cx.failValue('isFirstClass type argument');
+  }
+  let firstClass = !representsRestricted(args[0]);
+  return cx.b.constI32(if (firstClass) 1 else 0, new ValTypeI32());
 }
 
 /** __array_new: array.new with an explicit init value. */
@@ -815,6 +836,7 @@ export function lowerIntrinsic(cx: LoweringContext, name: String, call: CallExpr
       lowerToStringIntrinsic(cx, call)
     }
     case 'default_value': lowerDefaultValue(cx, call)
+    case 'is_first_class': lowerIsFirstClass(cx, call)
     case _: {
       // SIMD instructions are not listed above: one table row in
       // lib/simd.zena carries the opcode, shape and result for all 236,

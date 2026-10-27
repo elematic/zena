@@ -1021,6 +1021,14 @@ What the checker enforces for that half:
   `Unmanaged<R>` instantiation is taken from too.
 - **Returns.** A method returning its class's `T` counts `this` as the
   source the value derives from.
+- **`isFirstClass<T>()`** (the `is_first_class` intrinsic) is a constant
+  in each specialization: false where a take would empty a slot, true
+  elsewhere, so a body branches on what only one kind of instantiation
+  needs and the other branch folds away. Both answers come from the same
+  representation test, so they always agree, whichever instantiation of
+  a shared body the compiler recorded. The static half owner-futures.md
+  describes, `T` unrestricted where the call is known true, is not
+  implemented: no body needs it yet.
 
 Releasing an instance nobody consumed, and a store into a `T` field
 that still holds a value, are left to release glue

@@ -4340,28 +4340,18 @@ export function isScopedClassParam(cls: ClassType, i: i32): boolean {
 }
 
 /**
- * Whether a value read out of a field of type `t` has to be taken:
- * `t` is restricted at this instantiation, so the read moves the
- * value and leaves null behind. A field of a `scoped T` class is
- * restricted only at some instantiations; at a first-class one the
- * read is an ordinary copy.
- */
-export function isRestrictedValueType(t: Type): boolean {
-  return typeCarriesOwner(t) || typeContainsSecondClass(t);
-}
-
-/**
- * isRestrictedValueType for a type as codegen holds it. Codegen keys a
+ * Whether a specialization over `t` may serve a restricted
+ * instantiation, judged from `t`'s representation alone. Codegen keys a
  * specialization by representation, and a handle is its resource class
  * there (eraseTypeParameters), so `Own<R>`, `Borrow<R>` and
- * `Unmanaged<R>` share one body. A resource class standing for a type
- * argument therefore means the body may serve a restricted
- * instantiation, and the shared body behaves as those need: an
- * `Unmanaged<R>` instantiation is taken from too. `Scoped<F>` erases to
- * `F` and shares its body, so it behaves as first-class.
+ * `Unmanaged<R>` share one body, and `Scoped<F>` shares `F`'s. Which of
+ * them the specialization happens to record must not change the answer,
+ * so the answer is the representation's: a resource class anywhere in
+ * it means restricted, and the shared body behaves as the restricted
+ * instantiations need. An `Unmanaged<R>` instantiation is taken from
+ * too, and `Scoped<F>` behaves as first-class.
  */
 export function representsRestricted(t: Type): boolean {
-  if (isRestrictedValueType(t)) { return true; }
   if (t is ClassType) {
     if (t.isResource) { return true; }
     let args = t.typeArguments;
@@ -4391,6 +4381,24 @@ export function representsRestricted(t: Type): boolean {
     return false;
   }
   if (t is TypeAliasType) {
+    // A handle or `Scoped` is represented by what it wraps. An alias
+    // instance keeps its declaration's unsubstituted target, so a
+    // generic one is judged by its arguments, which over-approximates.
+    if (isOwnershipWrapper(t)) {
+      let inner = ownershipHandleInner(t);
+      return inner != null && representsRestricted(inner);
+    }
+    if (isScopedType(t)) {
+      let inner = scopedInner(t);
+      return inner != null && representsRestricted(inner);
+    }
+    let args = t.typeArguments;
+    if (args != null && t.typeParameters != null) {
+      for (let a in args) {
+        if (representsRestricted(a)) { return true; }
+      }
+      return false;
+    }
     if (t.resolving) { return false; }
     t.resolving = true;
     let res = representsRestricted(t.target);
