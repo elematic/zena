@@ -1,0 +1,183 @@
+// A program that loads the extension and calls it: what the extensions
+// tests run through `zena:wasm`, since a test file cannot declare the
+// WIT world the calls need. Its first argument names a scenario, and
+// what it prints is what the test checks.
+import { getArguments } from 'zena:cli';
+import { Future } from 'zena:async';
+import { Disposable, Result } from 'zena:core';
+import {
+  Extension, fromExtension, fromProgram, loadExtension,
+} from 'zena:extensions';
+import { Duration, milliseconds } from 'zena:time';
+import { Ops, attach } from 'test:ext/ops';
+import { Relay, attach as attachRelay } from 'test:ext/relay';
+
+let fixtures = 'packages/stdlib/tests/extensions/fixtures';
+
+/**
+ * What the caller serves to one extension: the object `create` makes
+ * for it, which knows which extension it serves.
+ */
+export class Callbacks implements Disposable {
+  #extension: u32;
+
+  new(ext: u32) : #extension = ext;
+
+  async lookup(key: i32): Future<i32> {
+    console.log(`lookup ${this.#extension} ${key}`);
+    return key + 100;
+  }
+
+  [Disposable.dispose](): void {
+    console.log(`callbacks ${this.#extension} disposed`);
+  }
+}
+
+export function create(ext: u32): Callbacks {
+  return new Callbacks(ext);
+}
+
+/** Loads `name`, which may import this program's `callbacks`. */
+let load = (name: String, options: {
+  memoryLimit?: i64, callTimeout?: Duration,
+} = {}): Extension => {
+  let loaded = loadExtension(`${fixtures}/${name}`,
+      [fromProgram('test:ext/callbacks@1.0.0')], options);
+  if (loaded is (true, Extension)) {
+    return loaded[1];
+  }
+  console.log(`load failed: ${(loaded as (false, String))[1]}`);
+  throw new Error('load failed');
+};
+
+/** `n` or the error, on one line. */
+let showI32 = (label: String, r: Result<i32, String>) => {
+  if (r is (true, i32)) {
+    console.log(`${label} = ${r[1]}`);
+  } else {
+    console.log(`${label} failed: ${(r as (false, String))[1]}`);
+  }
+};
+
+let showU32 = (label: String, r: Result<u32, String>) => {
+  if (r is (true, u32)) {
+    console.log(`${label} = ${r[1]}`);
+  } else {
+    console.log(`${label} failed: ${(r as (false, String))[1]}`);
+  }
+};
+
+let showString = (label: String, r: Result<String, String>) => {
+  if (r is (true, String)) {
+    console.log(`${label} = ${r[1]}`);
+  } else {
+    console.log(`${label} failed: ${(r as (false, String))[1]}`);
+  }
+};
+
+let showVoid = (label: String, r: Result<void, String>) => {
+  if (r is (false, String)) {
+    console.log(`${label} failed: ${r[1]}`);
+  } else {
+    console.log(`${label} returned`);
+  }
+};
+
+async function calls(): Future<void> {
+  let ext = load('child.wasm');
+  let ops = attach(ext.handle);
+  showI32('compute(5)', await ops.compute(5));
+  showI32('compute(7)', await ops.compute(7));
+  showString('describe', await ops.describe('ab', [1 as u32, 2 as u32, 3 as u32]));
+}
+
+async function traps(): Future<void> {
+  let ops = attach(load('child.wasm').handle);
+  showU32('count', await ops.count());
+  showU32('count', await ops.count());
+  showVoid('trap', await ops.trap());
+  // A fresh instance: the count starts over.
+  showU32('count', await ops.count());
+}
+
+async function timeout(): Future<void> {
+  let ops = attach(load('child.wasm', {callTimeout: milliseconds(100)}).handle);
+  showVoid('spin', await ops.spin());
+  showI32('compute(1)', await ops.compute(1));
+}
+
+async function memory(): Future<void> {
+  let ops = attach(load('child.wasm',
+      {memoryLimit: (8 as i64) * (1024 as i64) * (1024 as i64)}).handle);
+  showU32('grow(64)', await ops.grow(64 as u32));
+  showU32('grow(1)', await ops.grow(1 as u32));
+}
+
+async function drops(): Future<void> {
+  let ext = load('child.wasm');
+  let ops = attach(ext.handle);
+  showI32('compute(1)', await ops.compute(1));
+  ext.drop();
+  ext.drop();
+  showI32('after drop', await ops.compute(1));
+  showI32('no such handle', await attach(99 as u32).compute(1));
+}
+
+async function mismatch(): Future<void> {
+  let loaded = loadExtension(`${fixtures}/mismatch.wasm`, []);
+  if (loaded is (false, String)) {
+    console.log(`mismatch refused: ${loaded[1]}`);
+  } else {
+    console.log('mismatch loaded');
+  }
+}
+
+/** The child without `callbacks` bound: refused, exported or not. */
+async function unbound(): Future<void> {
+  let loaded = loadExtension(`${fixtures}/child.wasm`, []);
+  if (loaded is (false, String)) {
+    console.log(`unbound refused: ${loaded[1]}`);
+  } else {
+    console.log('unbound loaded');
+  }
+}
+
+/** Two extensions: the relay's `ops` is the child's export. */
+async function relays(): Future<void> {
+  let child = load('child.wasm');
+  let loaded = loadExtension(`${fixtures}/relay.wasm`,
+      [fromExtension('test:ext/ops@1.0.0', child)]);
+  if (loaded is (false, String)) {
+    console.log(`relay failed: ${loaded[1]}`);
+    return;
+  }
+  let relay = attachRelay((loaded as (true, Extension))[1].handle);
+  showI32('twice(5)', await relay.twice(5));
+  // Dropping the child leaves the relay's calls on it failing.
+  child.drop();
+  showI32('twice after drop', await relay.twice(5));
+}
+
+export async function main(): Future<void> {
+  let args = getArguments();
+  let scenario = if (args.length > 1) args[1] else '';
+  if (scenario == 'calls') {
+    await calls();
+  } else if (scenario == 'trap') {
+    await traps();
+  } else if (scenario == 'timeout') {
+    await timeout();
+  } else if (scenario == 'memory') {
+    await memory();
+  } else if (scenario == 'drop') {
+    await drops();
+  } else if (scenario == 'mismatch') {
+    await mismatch();
+  } else if (scenario == 'unbound') {
+    await unbound();
+  } else if (scenario == 'relay') {
+    await relays();
+  } else {
+    console.log(`unknown scenario: ${scenario}`);
+  }
+}
