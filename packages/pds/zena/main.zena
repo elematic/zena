@@ -8,6 +8,20 @@
  * handle the host has given out instead, from its store, and exits: for
  * after records were lost, or a write of one failed.
  *
+ * Two commands are for the operator's offline rotation key, on the
+ * operator's own machine, and read no configuration but
+ * `PDS_PLC_DIRECTORY`:
+ *
+ * - `generate-key` prints a new secp256k1 private key in hex and its
+ *   `did:key`, for `PDS_OFFLINE_ROTATION_KEY`. Keep the private key
+ *   offline.
+ * - `plc-restore <did> <cid> [--yes]` undoes every operation of `<did>`
+ *   after the one whose CID is `<cid>`, as after the online key was
+ *   stolen: it reads the offline private key from stdin, prints the
+ *   operation it would send, and sends it to the PLC directory with
+ *   `--yes`. The directory takes it within 72 hours of the first
+ *   operation it undoes.
+ *
  * With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`,
  * it creates a scope owned by `<did>` alone, as the host's operator, and
  * exits. Unlike `zena scope create`, it may take a name the host reserves
@@ -15,7 +29,14 @@
  */
 
 import {Future} from 'zena:async';
-import {exit, getArguments, getEnv} from 'zena:cli';
+import {exit, getArguments, getEnv, readStdin} from 'zena:cli';
+import {hex} from 'zena:encoding';
+import {fetch} from 'zena:fetch';
+import {JsonArray, parseJson, stringify} from 'zena:json';
+import {randomBytes} from 'zena:random';
+import {KeyType, formatDidKey} from 'atproto:didkey';
+import {PlcError, PlcOperation, submitPlcOperation, undoOperation} from 'atproto:plc';
+import {SigningKey} from './storage.zena';
 import {HostError} from './host.zena';
 import {nowMicros} from './server.zena';
 import {ConfigError, ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
@@ -34,6 +55,14 @@ function readConfig(): ServiceConfig | null {
 }
 
 export async function main(): Future<void> {
+  if (hasArgument('generate-key')) {
+    generateKey();
+    return;
+  }
+  if (hasArgument('plc-restore')) {
+    await plcRestore();
+    return;
+  }
   let config = readConfig();
   if (config == null) {
     exit(2);
@@ -131,6 +160,83 @@ async function createScope(config: ServiceConfig): Future<void> {
   } catch (e) {
     if (e is HostError) {
       console.error(`create-scope: ${e.message}`);
+      exit(1);
+      return;
+    }
+    throw e;
+  }
+  exit(0);
+}
+
+/** Prints a new secp256k1 private key and its `did:key`, and exits. */
+function generateKey(): void {
+  let key = new SigningKey(KeyType.Secp256k1, randomBytes(32));
+  console.log(`private key (keep it offline): ${hex.encode(key.privateKey)}`);
+  console.log(`did:key (PDS_OFFLINE_ROTATION_KEY): ${formatDidKey(key.publicKey())}`);
+  exit(0);
+}
+
+/**
+ * Undoes every operation of a DID after one, with the offline key read
+ * from stdin, and exits.
+ */
+async function plcRestore(): Future<void> {
+  let usage = 'usage: plc-restore <did> <cid> [--yes], with the offline private key in hex on stdin';
+  let args = argumentsAfter('plc-restore') as Array<String>;
+  let positional = new GrowableArray<String>();
+  var yes = false;
+  for (let arg in args) {
+    if (arg == '--yes') {
+      yes = true;
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length != 2 || !positional[0].startsWith('did:plc:')) {
+    console.error(usage);
+    exit(2);
+    return;
+  }
+  let did = positional[0];
+  let cid = positional[1];
+  let directory = getEnv('PDS_PLC_DIRECTORY') ?? 'https://plc.directory';
+  let keyText = (await readStdin()).trim();
+  var key: SigningKey | null = null;
+  try {
+    key = new SigningKey(KeyType.Secp256k1, hex.decode(keyText));
+    (key as SigningKey).publicKey();
+  } catch (e) {
+    console.error('plc-restore: stdin does not hold a secp256k1 private key in hex');
+    exit(2);
+    return;
+  }
+  let offline = key as SigningKey;
+  try {
+    let response = await fetch(`${directory}/${did}/log`);
+    if (!response.ok) {
+      throw new PlcError(`${directory} has no log for ${did}: HTTP ${response.status}`);
+    }
+    let list = parseJson(await response.text());
+    if (!(list is JsonArray)) {
+      throw new PlcError(`${directory} answered ${did}'s log with something other than a list`);
+    }
+    let log = new GrowableArray<PlcOperation>();
+    let items = list as JsonArray;
+    for (var i = 0; i < items.length; i += 1) {
+      log.push(PlcOperation.fromJson(items[i]));
+    }
+    let undo = undoOperation(log, cid, offline.publicKey()).signedWith((bytes) => offline.sign(bytes));
+    console.log(stringify(undo.toJson()));
+    if (!yes) {
+      console.log(`run again with --yes to send it to ${directory}, undoing every operation of ${did} after ${cid}`);
+      exit(0);
+      return;
+    }
+    await submitPlcOperation(directory, did, undo);
+    console.log(`sent: ${did} is as ${cid} left it`);
+  } catch (e) {
+    if (e is PlcError) {
+      console.error(`plc-restore: ${e.message}`);
       exit(1);
       return;
     }

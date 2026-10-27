@@ -1,0 +1,77 @@
+/**
+ * The package host's online PLC rotation key: what signs the operations of
+ * every account it creates (docs/design/package-manager.md, "Keys"). It is
+ * held either here, as a private key the server was given
+ * (`PDS_ROTATION_KEY`), or in Cloud KMS (`PDS_ROTATION_KMS_KEY`), which
+ * signs on request and never lets the key out, so that whoever reads the
+ * server's memory or secrets still cannot sign.
+ *
+ * The operator's offline key, ranked above this one, is not here: the
+ * server knows only its public key, and the operator signs with it, away
+ * from the server, to undo what this key signed (`main.zena`'s
+ * `plc-restore`).
+ */
+
+import {Future} from 'zena:async';
+import {p256, secp256k1, sha256} from 'zena:crypto';
+import {CloudKms, ecPointFromPem} from 'google-cloud:kms';
+import {KeyType, PublicKey} from 'atproto:didkey';
+import {SigningKey} from './storage.zena';
+
+/** A rotation key that signs PLC operations. */
+export interface RotationKey {
+  publicKey(): PublicKey;
+  /** The 64-byte low-S signature of the SHA-256 hash of `bytes`. */
+  sign(bytes: FixedArray<u8>): Future<FixedArray<u8>>;
+}
+
+/** A rotation key whose private key the server holds. */
+export final class LocalRotationKey implements RotationKey {
+  #key: SigningKey;
+
+  new(key: SigningKey) : #key = key;
+
+  publicKey(): PublicKey {
+    return this.#key.publicKey();
+  }
+
+  async sign(bytes: FixedArray<u8>): Future<FixedArray<u8>> {
+    return this.#key.sign(bytes);
+  }
+}
+
+/** A rotation key in Cloud KMS, an asymmetric signing key version on secp256k1 or P-256. */
+export final class KmsRotationKey implements RotationKey {
+  #kms: CloudKms;
+  #publicKey: PublicKey;
+
+  new(kms: CloudKms, publicKey: PublicKey) : #kms = kms, #publicKey = publicKey;
+
+  /**
+   * The key version `kms` names, after reading its public key. Throws
+   * when Cloud KMS refuses, or the key is not one a PLC rotation key can
+   * be.
+   */
+  static async connect(kms: CloudKms): Future<KmsRotationKey> {
+    let described = await kms.publicKey();
+    var keyType = KeyType.Secp256k1;
+    if (described.algorithm == 'EC_SIGN_P256_SHA256') {
+      keyType = KeyType.P256;
+    } else if (described.algorithm != 'EC_SIGN_SECP256K1_SHA256') {
+      throw new Error(`${kms.name} is ${described.algorithm}; a PLC rotation key is EC_SIGN_SECP256K1_SHA256 or EC_SIGN_P256_SHA256`);
+    }
+    let curve = if (keyType == KeyType.P256) p256 else secp256k1;
+    let point = curve.compressPublicKey(ecPointFromPem(described.pem));
+    return new KmsRotationKey(kms, new PublicKey(keyType, point));
+  }
+
+  publicKey(): PublicKey {
+    return this.#publicKey;
+  }
+
+  async sign(bytes: FixedArray<u8>): Future<FixedArray<u8>> {
+    let der = await this.#kms.asymmetricSign(sha256(bytes));
+    let curve = if (this.#publicKey.type == KeyType.P256) p256 else secp256k1;
+    return curve.signatureFromDer(der);
+  }
+}

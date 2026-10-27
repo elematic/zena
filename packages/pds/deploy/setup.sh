@@ -26,6 +26,7 @@ gcloud services enable \
   storage.googleapis.com \
   dns.googleapis.com \
   secretmanager.googleapis.com \
+  cloudkms.googleapis.com \
   iam.googleapis.com \
   --project "$PROJECT"
 
@@ -81,6 +82,30 @@ gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member "$MEMBER" 
   --role roles/storage.objectAdmin --quiet > /dev/null
 echo "    $SERVICE_ACCOUNT may use it"
 
+if [ "$ROTATION_KMS" = 1 ]; then
+  echo "==> Rotation key $KMS_KEY in Cloud KMS key ring $KMS_KEYRING ($KMS_LOCATION)"
+  if gcloud kms keyrings describe "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" > /dev/null 2>&1; then
+    echo "    key ring exists"
+  else
+    gcloud kms keyrings create "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" --quiet
+  fi
+  if gcloud kms keys describe "$KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" \
+      > /dev/null 2>&1; then
+    echo "    key exists; left as it is"
+  else
+    # It never leaves Cloud KMS, so it cannot be backed up: the offline
+    # key, ranked above it, is what undoes its operations if it is lost
+    # or misused.
+    gcloud kms keys create "$KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" \
+      --purpose asymmetric-signing --default-algorithm ec-sign-secp256k1-sha256 --protection-level hsm --quiet
+    echo "    made"
+  fi
+  gcloud kms keys add-iam-policy-binding "$KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
+    --project "$PROJECT" --member "$MEMBER" --role roles/cloudkms.signerVerifier --quiet > /dev/null
+  echo "    $SERVICE_ACCOUNT may sign with it"
+fi
+
+if [ "$ROTATION_KMS" != 1 ]; then
 echo "==> Rotation key $SECRET"
 if gcloud secrets describe "$SECRET" --project "$PROJECT" > /dev/null 2>&1; then
   echo "    exists; left as it is"
@@ -95,6 +120,7 @@ fi
 gcloud secrets add-iam-policy-binding "$SECRET" --project "$PROJECT" --member "$MEMBER" \
   --role roles/secretmanager.secretAccessor --quiet > /dev/null
 echo "    $SERVICE_ACCOUNT may read it"
+fi
 
 echo "==> Session secret $JWT_SECRET"
 if gcloud secrets describe "$JWT_SECRET" --project "$PROJECT" > /dev/null 2>&1; then

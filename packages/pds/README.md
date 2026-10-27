@@ -107,9 +107,11 @@ npm run deploy:domain -w @zena-lang/pds   # once: maps the domain, with gcloud's
 
 `deploy:setup` is idempotent, and makes the rotation key and the session
 secret only when there are none; run it again after pulling a change that
-adds a resource, such as the session secret, before `deploy`. When `zena-lang.dev`'s DNS is not a Cloud DNS zone in the project,
-or in `ZENA_DNS_PARENT_PROJECT`, it prints the `NS` records that delegate
-the environment's domain, to add where that DNS is kept. Back up the key with
+adds a resource, such as the session secret, before `deploy`. When
+`zena-lang.dev`'s DNS is not a Cloud DNS zone in the project, or in
+`ZENA_DNS_PARENT_PROJECT`, it prints the `NS` records that delegate the
+environment's domain, to add where that DNS is kept. Back up staging's
+key with
 `gcloud secrets versions access latest --secret zena-pkg-staging-rotation-key`.
 `deploy` checks that the new revision answers `describeServer`. The
 certificate for the domain can take a while after `deploy:domain`.
@@ -124,6 +126,52 @@ export ZENA_CONFIG_DIR=$(mktemp -d)       # optional: a staging sign-in apart fr
 Every shell that runs `zena` against staging needs them, `zena add` and
 `zena fetch` included: without `ZENA_PLC_DIRECTORY`, a staging package's
 DID is looked up in `plc.directory`, which has never heard of it.
+
+### Rotation keys
+
+Every account the host creates lists, highest ranked first: any recovery
+keys its owners gave, the operator's offline key, and the host's online
+key, which signs its operations (docs/design/package-manager.md, "Keys").
+
+- **The online key** is in Cloud KMS for production
+  (`PDS_ROTATION_KMS_KEY`): an HSM-protected secp256k1 key that
+  `deploy:setup` makes and the service account may only sign with. It
+  cannot be read or backed up. Staging keeps the secret
+  `zena-pkg-staging-rotation-key` (`PDS_ROTATION_KEY`), which its accounts
+  were made with; `ZENA_ROTATION_KMS=1` moves it to Cloud KMS, which
+  leaves the host unable to sign for the accounts it already has, so do
+  that only for a staging whose data was reset.
+- **The offline key** is the operator's, made on a machine you trust, and
+  never on the server:
+
+  ```sh
+  zena-cli run packages/pds/zena/main.zena -- generate-key
+  ```
+
+  It prints the private key, to keep offline (on paper, or in a password
+  manager you trust), and its `did:key`, which deploys as
+  `PDS_OFFLINE_ROTATION_KEY` from `ZENA_OFFLINE_ROTATION_KEY`. `deploy`
+  refuses production without it. Only accounts created after it is set
+  list it.
+
+**If the online key is stolen or misused**, the offline key undoes what it
+signed, within 72 hours of the first operation to undo. Find the last
+good operation's CID in the account's log
+(`https://plc.directory/<did>/log/audit`), then, on the machine with the
+offline key:
+
+```sh
+zena-cli run packages/pds/zena/main.zena -- plc-restore <did> <cid> < offline-key.txt         # shows the operation
+zena-cli run packages/pds/zena/main.zena -- plc-restore <did> <cid> --yes < offline-key.txt   # sends it
+```
+
+It sends a copy of that operation, signed by the offline key, which the
+directory takes in place of every operation after it. Then disable the
+KMS key version, make a new one, and deploy with it; the accounts' DID
+documents still list the old public key until each is updated with an
+operation the offline key signs. Staging's own PLC directory does not take
+an operation that replaces others, so the procedure cannot be rehearsed
+there.
 
 ## Layout
 

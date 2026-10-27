@@ -11,14 +11,14 @@ import {HashMap} from 'zena:collections';
 import {App, Request, Response, Server} from 'zena:http';
 import {hex} from 'zena:encoding';
 import {now} from 'wasi:clocks/system-clock';
-import {KeyType, formatDidKey, publicKeyFor} from 'atproto:didkey';
+import {KeyType, PublicKey, formatDidKey, publicKeyFor} from 'atproto:didkey';
 import {didDocument, genesisOperation} from 'atproto:plc';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {JsonObject, parseJson, stringify} from 'zena:json';
 import {parseDidDocument} from 'atproto:did';
 import {PackageHost} from 'pds:host';
 import {
-  ConfigError, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
+  ConfigError, HostSettings, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
   buildService, configFromEnv
 } from 'pds:service';
 
@@ -161,6 +161,35 @@ export let tests = suite('pds:service', () => {
         host.publicUrl as String == 'https://pkg-staging.zena-lang.dev', 'the host');
   });
 
+  test('reads the online rotation key from Cloud KMS, and the offline key', (ctx) => {
+    let offline = formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)));
+    let config = configFromEnv(envOf([
+      ('PDS_STORAGE', 'firestore'),
+      ('PDS_JWT_SECRET', KEY),
+      ('PDS_TENANT', 'pkg'),
+      ('PDS_BLOB_BUCKET', 'zena-blobs'),
+      ('PDS_HOST_DOMAIN', 'pkg.example.dev'),
+      ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1'),
+      ('PDS_OFFLINE_ROTATION_KEY', offline),
+      ('PDS_HANDLE_RECORDS', 'memory'),
+    ]));
+    let host = config.host as HostSettings;
+    isTrue(host.rotationKey == null, 'no key of its own');
+    equal(host.rotationKmsKey as String, 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1');
+    equal(formatDidKey(host.offlineRotationKey as PublicKey), offline);
+
+    let both = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_ROTATION_KEY', KEY),
+        ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1')]);
+    isTrue(both.contains('not both'), both);
+    let notVersion = refusal([('PDS_HOST_DOMAIN', 'pkg.test'),
+        ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k')]);
+    isTrue(notVersion.contains('is a key version'), notVersion);
+    let badOffline = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_OFFLINE_ROTATION_KEY', 'zQ3sh')]);
+    isTrue(badOffline.contains('PDS_OFFLINE_ROTATION_KEY is not a did:key'), badOffline);
+    let stray = refusal([('PDS_OFFLINE_ROTATION_KEY', offline)]);
+    isTrue(stray.contains('PDS_OFFLINE_ROTATION_KEY needs PDS_HOST_DOMAIN'), stray);
+  });
+
   test('makes up a rotation key for a host in memory', (ctx) => {
     let host = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test')])).host;
     isTrue(host != null && host.rotationKey == null, 'no key until the server starts');
@@ -171,7 +200,7 @@ export let tests = suite('pds:service', () => {
     let firestore = refusal([('PDS_STORAGE', 'firestore'), ('PDS_HOST_DOMAIN', 'pkg.test')]);
     isTrue(firestore.contains('needs PDS_TENANT'), firestore);
     isTrue(firestore.contains('needs PDS_BLOB_BUCKET or PDS_BLOB_DIR'), firestore);
-    isTrue(firestore.contains('needs PDS_ROTATION_KEY'), firestore);
+    isTrue(firestore.contains('needs PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY'), firestore);
     isTrue(firestore.contains('needs PDS_HANDLE_RECORDS'), firestore);
     isTrue(firestore.contains('needs PDS_JWT_SECRET'), firestore);
     let records = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_HANDLE_RECORDS', 'cloud-dns')]);

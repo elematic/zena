@@ -19,10 +19,15 @@
  * - `PDS_HOST_DOMAIN`: the package host's domain, such as
  *   `pkg.zena-lang.dev`. Without it the server is a PDS with no package
  *   host. With it:
- *   - `PDS_ROTATION_KEY`: the host's PLC rotation key, a secp256k1
- *     private key in hex. Required with `firestore`, since the accounts it
- *     creates outlive the server. With `memory`, a missing key is made up
- *     at start.
+ *   - `PDS_ROTATION_KEY`: the host's online PLC rotation key, a secp256k1
+ *     private key in hex; or `PDS_ROTATION_KMS_KEY`, a Cloud KMS key
+ *     version, `projects/…/cryptoKeyVersions/<n>`, on secp256k1 or P-256,
+ *     which signs without the key leaving Cloud KMS (`pds:rotation`). One
+ *     of them is required with `firestore`, since the accounts it creates
+ *     outlive the server. With `memory`, a missing key is made up at start.
+ *   - `PDS_OFFLINE_ROTATION_KEY`: the operator's offline rotation key, as
+ *     a `did:key`, which every new account ranks above the online key, so
+ *     that the operator can undo what a stolen online key signs.
  *   - `PDS_SERVICE_DID`: the host's DID, `did:web:<domain>` by default.
  *   - `PDS_PUBLIC_URL`: the origin the accounts' DID documents name as
  *     their PDS, `https://<domain>` by default.
@@ -68,7 +73,7 @@ import {
   FirestoreStorage
 } from './firestore.zena';
 import {parseDidDocument} from 'atproto:did';
-import {PublicKey} from 'atproto:didkey';
+import {PublicKey, parseDidKey} from 'atproto:didkey';
 import {SigningKeyLookup} from 'atproto:service-auth';
 import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
 import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
@@ -76,6 +81,8 @@ import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
 import {createApp} from './server.zena';
 import {CredentialStore, MemoryCredentialStore, Sessions} from './sessions.zena';
+import {KmsRotationKey, LocalRotationKey, RotationKey} from './rotation.zena';
+import {CloudKms} from 'google-cloud:kms';
 import {MemoryStorage, SigningKey, Storage} from './storage.zena';
 
 /** A configuration `configFromEnv` refuses, with every problem it found. */
@@ -114,6 +121,10 @@ export final class HostSettings {
   publicUrl: String | null;
   /** The host's PLC rotation key, or null to make one up at start. */
   rotationKey: SigningKey | null;
+  /** The Cloud KMS key version of the online rotation key, in place of `rotationKey`. */
+  var rotationKmsKey: String | null = null;
+  /** The operator's offline rotation key. */
+  var offlineRotationKey: PublicKey | null = null;
   reservedScopes: Array<String>;
   /** The largest artifact the host stores, or none for the host's default. */
   maxBlobSize: Option<i64>;
@@ -221,8 +232,24 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       } else {
         rotationKey = new SigningKey(KeyType.Secp256k1, bytes as FixedArray<u8>);
       }
-    } else if (storageKind == 'firestore') {
-      problems.push('PDS_HOST_DOMAIN with PDS_STORAGE=firestore needs PDS_ROTATION_KEY');
+    }
+    let kmsKey = value('PDS_ROTATION_KMS_KEY');
+    if (keyText != null && kmsKey != null) {
+      problems.push('give PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY, not both');
+    } else if (keyText == null && kmsKey == null && storageKind == 'firestore') {
+      problems.push('PDS_HOST_DOMAIN with PDS_STORAGE=firestore needs PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY');
+    }
+    if (kmsKey != null && !(kmsKey as String).contains('/cryptoKeyVersions/')) {
+      problems.push(`PDS_ROTATION_KMS_KEY is a key version, projects/…/cryptoKeyVersions/<n>, not ${kmsKey as String}`);
+    }
+    var offlineKey: PublicKey | null = null;
+    let offlineText = value('PDS_OFFLINE_ROTATION_KEY');
+    if (offlineText != null) {
+      try {
+        offlineKey = parseDidKey(offlineText as String);
+      } catch (e) {
+        problems.push('PDS_OFFLINE_ROTATION_KEY is not a did:key');
+      }
     }
     var maxBlobSize: Option<i64> = none;
     let maxText = value('PDS_MAX_BLOB_BYTES');
@@ -267,10 +294,14 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     } else {
       problems.push(`PDS_HANDLE_RECORDS is cloud-dns or memory, not ${recordsKind}`);
     }
-    host = new HostSettings(domain as String, value('PDS_SERVICE_DID') ?? `did:web:${domain}`,
+    let settings = new HostSettings(domain as String, value('PDS_SERVICE_DID') ?? `did:web:${domain}`,
         value('PDS_PUBLIC_URL') ?? `https://${domain}`, rotationKey, reserved, maxBlobSize, records);
+    settings.rotationKmsKey = kmsKey;
+    settings.offlineRotationKey = offlineKey;
+    host = settings;
   } else {
-    for (let name in ['PDS_ROTATION_KEY', 'PDS_SERVICE_DID', 'PDS_PUBLIC_URL', 'PDS_RESERVED_SCOPES',
+    for (let name in ['PDS_ROTATION_KEY', 'PDS_ROTATION_KMS_KEY', 'PDS_OFFLINE_ROTATION_KEY', 'PDS_SERVICE_DID',
+        'PDS_PUBLIC_URL', 'PDS_RESERVED_SCOPES',
         'PDS_MAX_BLOB_BYTES', 'PDS_HANDLE_RECORDS', 'PDS_DNS_ZONE', 'PDS_DNS_PROJECT']) {
       if (value(name) != null) {
         problems.push(`${name} needs PDS_HOST_DOMAIN`);
@@ -374,8 +405,11 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
       records = new CloudDnsRecords(CloudDns.connect(dnsProject, zone));
     }
   }
-  let rotationKey = settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32));
+  let kmsKey = settings.rotationKmsKey;
+  let rotationKey: RotationKey = if (kmsKey != null) await KmsRotationKey.connect(CloudKms.connect(kmsKey as String))
+      else new LocalRotationKey(settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32)));
   let hostConfig = new HostConfig(settings.serviceDid, settings.domain, settings.publicUrl ?? endpoint, rotationKey);
+  hostConfig.offlineRotationKey = settings.offlineRotationKey;
   for (let name in settings.reservedScopes) {
     hostConfig.reservedScopes.add(name);
   }

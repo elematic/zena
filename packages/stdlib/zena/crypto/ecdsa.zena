@@ -3,7 +3,9 @@
  * (`ES256K`).
  *
  * A signature is 64 bytes: r then s, each a 32-byte big-endian number
- * (the IEEE P1363 layout; DER-encoded signatures do not verify). `sign`
+ * (the IEEE P1363 layout; DER-encoded signatures do not verify, and
+ * `signatureFromDer` converts one, as a key management service returns
+ * it). `sign`
  * produces only low-S signatures, whose s is at most n / 2 for the group
  * order n, as Bitcoin and atproto require; `verify` rejects a high-S
  * signature unless `allowHighS` is set.
@@ -132,6 +134,61 @@ export final class EcdsaCurve {
       }
     }
     return signature;
+  }
+
+  /**
+   * The 64-byte low-S signature an ASN.1 DER `ECDSA-Sig-Value` holds:
+   * `SEQUENCE { r INTEGER, s INTEGER }`, as X.509, PKCS #11 and key
+   * management services such as Cloud KMS write signatures. A high-S
+   * signature, which they may give, is turned into its low-S twin, which
+   * signs the same message. Throws an `EcdsaError` for anything else, or
+   * an r or s that is 0 or not below the group order.
+   */
+  signatureFromDer(der: FixedArray<u8>): FixedArray<u8> {
+    let curve = this.#curve;
+    let malformed = new EcdsaError('not a DER-encoded ECDSA signature');
+    if (der.length < 8 || der[0] != (0x30 as u8) || (der[1] as i32) != der.length - 2) {
+      throw malformed;
+    }
+    let out = newByteArray(64);
+    var at = 2;
+    for (var part = 0; part < 2; part += 1) {
+      if (at + 2 > der.length || der[at] != (0x02 as u8)) {
+        throw malformed;
+      }
+      var length = der[at + 1] as i32;
+      var start = at + 2;
+      if (length == 0 || start + length > der.length) {
+        throw malformed;
+      }
+      // An INTEGER is positive here, so a leading zero only keeps its
+      // high bit clear.
+      while (length > 1 && der[start] == (0 as u8)) {
+        start += 1;
+        length -= 1;
+      }
+      if (length > 32) {
+        throw malformed;
+      }
+      for (var i = 0; i < length; i += 1) {
+        out[part * 32 + 32 - length + i] = der[start + i];
+      }
+      at = start + length;
+    }
+    if (at != der.length) {
+      throw malformed;
+    }
+    let fn = curve.fn;
+    let r = Fe.fromBytes(out, 0);
+    let s = Fe.fromBytes(out, 32);
+    if (r.isZero() || s.isZero() || !fn.isReduced(r) || !fn.isReduced(s)) {
+      throw new EcdsaError('r or s is out of range');
+    }
+    if (curve.halfN.lessThan(s)) {
+      fn.sub(s, Fe.zero(), s);
+      s.writeBytes(out, 32);
+    }
+    return out as FixedArray<u8>;
   }
 
   /**
