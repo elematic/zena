@@ -135,6 +135,23 @@ zena-cli publish --scope acme --yes    # the first time, or with "scope": "acme"
 zena-cli publish                       # after raising "version"
 ```
 
+A scope's owners change who belongs to it, and a package's owners who
+maintains it. Each change writes the new record through the host and
+attests it in your own repository. Who belongs stays private: records list
+commitments, and the host shows the entries behind them only to those who
+may see them.
+
+```bash
+zena-cli scope add acme bob.example.com --role admin   # member, admin or owner
+zena-cli scope remove acme bob.example.com
+zena-cli scope members acme
+zena-cli team create acme/core
+zena-cli team add acme/core bob.example.com --role maintainer   # member or maintainer
+zena-cli owner add --team acme/core      # in a package: the team publishes it
+zena-cli owner add carol.example.com --role owner   # publisher or owner
+zena-cli owner list
+```
+
 The workspace's root is the repository root, `ZENA_REPO_ROOT`, which
 defaults to the checkout the binary was built in, or the current directory
 for a standalone binary.
