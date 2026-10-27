@@ -40,6 +40,23 @@ it:
     with a time limit uses a second engine with epoch interruption on
     (`engine::interruptible_component_engine`), so programs that never
     ask for a limit do not pay for its checks.
+  - `extensions`: `load`, `load-trusted` and `drop` behind
+    `zena:extensions`, which loads a component as an extension: a
+    long-lived instance the program calls through objects, and which
+    calls the program through objects the program made for it
+    (`src/extensions.rs`,
+    [docs/design/runtime-components.md](../../docs/design/runtime-components.md)).
+    The program's WIT declares its side of each shared interface as a
+    resource: `component::linker_for` defines the ones the program
+    imports, with `attach` minting an object per extension and each
+    method forwarding to that extension's export as wasmtime values;
+    a load binds every import the extension has to the host, to a
+    resource the program exports (one object per extension, made by
+    its `create`), or to another extension, and checks the two sides'
+    types. Each extension has a store on a thread of its own, with a
+    memory limit and a per-call time limit when asked for, and a trap
+    fails one call and restarts the instance. It is granted on its own
+    (`Grant::extensions`, `--allow-extensions`).
 
 A component's `main` is lifted async with a callback, so calling it goes
 through wasmtime's concurrent machinery: `component::run_main` builds a
@@ -82,7 +99,7 @@ use zena_runtime::component::ComponentState;
 let engine = zena_runtime::engine::shared_component_engine(false)?;
 let component = zena_runtime::cache::load_component_variant(
     &engine, "prog.wasm".as_ref(), false, false)?;
-let linker = zena_runtime::component::linker(&engine)?;
+let linker = zena_runtime::component::linker_for(&engine, &component)?;
 
 let wasi = WasiCtxBuilder::new().inherit_stdio().build();
 let mut store = Store::new(&engine, ComponentState::new(&engine, wasi, None));
@@ -92,7 +109,8 @@ let results = zena_runtime::component::run_main(&mut store, &linker, &component,
 `run_main` keeps the error as a `wasmtime::Error` so the caller can still
 read the guest's exit status (`exit_code`) or print the wasm backtrace
 (`report_trap`). Passing a `Grant` in place of `None` lets the component
-spawn processes and run components.
+spawn processes and run components (`spawn`), or load components as
+extensions (`extensions`), or both.
 
 A core module — a `freestanding` build, a hand-written `.wat` benchmark,
 an AssemblyScript or Rust `wasm32-unknown-unknown` build — runs through
@@ -106,11 +124,11 @@ runs one compiled component or core module and nothing else;
 [`zena-cli`](../zena-cli) adds the compiler and the test and benchmark
 runners.
 
-`examples/components_spike.rs` is the spike for loading components as
-long-lived instances (#593): one Zena component calls another through
-its own imports, and the other calls back while that call is in flight.
-[docs/design/runtime-components.md](../../docs/design/runtime-components.md)
-says how to build its two components and what it shows.
+`examples/components_spike.rs` is a harness for the mechanism behind
+`extensions` (#593): one Zena component calls another through its own
+imports, and the other calls back while that call is in flight. It
+predates the object shape, so its two components carry a handle as a
+first parameter; its header says how to build and run them.
 
 ## Tests
 

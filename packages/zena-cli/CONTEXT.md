@@ -65,7 +65,11 @@ the `zena` command. The design is in
      repository: the compiler reads the workspace's `zena-package.json` and
      `packages/stdlib/zena` relative to it) and `/` as `/`.
    - Grants spawning, so zb can run build commands and the module can run
-     other modules with `zena:wasm`.
+     other modules with `zena:wasm`, and loading components, so the test
+     runner can pass that on to tests. The programs `zena run` starts get
+     each grant only with its flag (`--allow-spawn`,
+     `--allow-extensions`) or its variable (`ZENA_ALLOW_SPAWN=1`,
+     `ZENA_ALLOW_EXTENSIONS=1`); `zena test` gives tests both.
    - Sets `ZENA_REPO_ROOT`, `ZENA_CWD` (where the user is; user paths are
      resolved against it, see `resolveUserPath`), `ZENA_CLI_MODULE`,
      `ZENA_AVAILABLE_PARALLELISM` and `ZENA_STDLIB_DIR` (`/stdlib`), in
