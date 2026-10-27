@@ -23,6 +23,47 @@ function join(a: FixedArray<u8>, b: FixedArray<u8>) {
   return out;
 }
 
+/** `n - x` for 32-byte big-endian numbers. */
+function subtractFrom(n: FixedArray<u8>, x: FixedArray<u8>) {
+  let out = new FixedArray<u8>(32, 0 as u8);
+  var borrow = 0;
+  for (var i = 31; i >= 0; i -= 1) {
+    var d = (n[i] as i32) - (x[i] as i32) - borrow;
+    borrow = if (d < 0) 1 else 0;
+    if (d < 0) {
+      d += 256;
+    }
+    out[i] = d as u8;
+  }
+  return out;
+}
+
+/** A DER INTEGER for a 32-byte big-endian number, as short as DER makes it. */
+function derInteger(value: FixedArray<u8>) {
+  var start = 0;
+  while (start < 31 && value[start] == (0 as u8)) {
+    start += 1;
+  }
+  let pad = if ((value[start] as i32) >= 0x80) 1 else 0;
+  let length = 32 - start + pad;
+  let out = new FixedArray<u8>(2 + length, 0 as u8);
+  out[0] = 0x02 as u8;
+  out[1] = length as u8;
+  for (var i = start; i < 32; i += 1) {
+    out[2 + pad + i - start] = value[i];
+  }
+  return out;
+}
+
+/** The DER `ECDSA-Sig-Value` of r and s. */
+function derSignature(r: FixedArray<u8>, s: FixedArray<u8>) {
+  let body = join(derInteger(r), derInteger(s));
+  let header = new FixedArray<u8>(2, 0 as u8);
+  header[0] = 0x30 as u8;
+  header[1] = body.length as u8;
+  return join(header, body);
+}
+
 /** `bytes` with bit 0 of byte `index` flipped. */
 function flipBit(bytes: FixedArray<u8>, index: i32) {
   let out = bytes[..];
@@ -138,6 +179,26 @@ function checkRoundTrips(curve: EcdsaCurve, order: String) {
 }
 
 export let tests = suite('zena:crypto ECDSA', () => {
+  test('reads DER signatures, low-S or not, as a key management service gives them', (ctx) => {
+    let key = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let message = bytesOf('sign me');
+    let n = hex.decode('fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141');
+    let signature = secp256k1.sign(key, message);
+    let r = signature[0..32];
+    let s = signature[32..64];
+    equal(hex.encode(secp256k1.signatureFromDer(derSignature(r, s))), hex.encode(signature));
+    // The high-S twin, n - s, signs the same message; it comes back low.
+    let high = derSignature(r, subtractFrom(n, s));
+    let low = secp256k1.signatureFromDer(high);
+    equal(hex.encode(low), hex.encode(signature));
+    isTrue(secp256k1.verify(secp256k1.publicKey(key), message, low));
+    // Anything else is refused.
+    throws(() => { secp256k1.signatureFromDer(hex.decode('3006020100020101')); });
+    throws(() => { secp256k1.signatureFromDer(signature); });
+    throws(() => { secp256k1.signatureFromDer(join(high, hex.decode('00'))); });
+    throws(() => { secp256k1.signatureFromDer(derSignature(n, s)); });
+  });
+
   test('derives the RFC 6979 P-256 public key', (ctx) => {
     let key = hex.decode(rfcKey);
     equal(hex.encode(p256.publicKey(key, false)), `04${rfcPublicX}${rfcPublicY}`);

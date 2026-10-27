@@ -9,7 +9,8 @@ import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, publicKeyFor} from 'atproto:didkey';
 import {parseDidDocument} from 'atproto:did';
 import {
-  PlcError, PlcOperation, checkNextOperation, didDocument, didOfGenesis, genesisOperation, submitPlcOperation
+  PlcError, PlcOperation, checkNextOperation, didDocument, didOfGenesis, genesisOperation, submitPlcOperation,
+  undoOperation
 } from 'atproto:plc';
 
 let FIXTURES = 'packages/atproto/zena/test/fixtures/plc/operations.json';
@@ -93,6 +94,38 @@ export let tests = suite('atproto:plc', () => {
     equal(plcError(() => { checkNextOperation(did, log, next); }), '');
     let stranger = unsigned.signedWith((bytes) => p256.sign(other, bytes));
     isTrue(plcError(() => { checkNextOperation(did, log, stranger); }).contains('rotation keys'));
+  });
+
+  test('undoes the operations after one, with a key that ranks above their signer', (ctx) => {
+    // Ranked first, an offline key; then the online key, which signs.
+    let offline = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let online = hex.decode((cases()[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let signing = hex.decode('0101010101010101010101010101010101010101010101010101010101010101');
+    let genesis = genesisOperation(publicKeyFor(KeyType.P256, signing),
+        [publicKeyFor(KeyType.P256, offline), publicKeyFor(KeyType.P256, online)],
+        'router.acme.pkg.test', 'https://pkg.test').signedWith((bytes) => p256.sign(online, bytes));
+    // A stolen online key moves the account elsewhere.
+    let moved = new PlcOperation(genesis.rotationKeys, genesis.verificationMethods, genesis.alsoKnownAs,
+        genesis.services, genesis.cid().toString()).signedWith((bytes) => p256.sign(online, bytes));
+    let log = new GrowableArray<PlcOperation>();
+    log.push(genesis);
+    log.push(moved);
+    let cid = genesis.cid().toString();
+
+    let undo = undoOperation(log, cid, publicKeyFor(KeyType.P256, offline))
+      .signedWith((bytes) => p256.sign(offline, bytes));
+    equal(undo.prev as String, cid);
+    equal(stringify(undo.toJson()['rotationKeys']), stringify(genesis.toJson()['rotationKeys']));
+    isTrue(undo.isSignedBy(publicKeyFor(KeyType.P256, offline)), 'signed by the offline key');
+
+    // The online key cannot undo its own operation, a stranger's key is not
+    // a rotation key, and the last operation has nothing after it.
+    isTrue(plcError(() => { undoOperation(log, cid, publicKeyFor(KeyType.P256, online)); }).contains('not above'));
+    isTrue(plcError(() => { undoOperation(log, cid, publicKeyFor(KeyType.P256, signing)); }).contains('not one of'));
+    isTrue(plcError(() => { undoOperation(log, moved.cid().toString(), publicKeyFor(KeyType.P256, offline)); })
+      .contains('nothing after'));
+    isTrue(plcError(() => { undoOperation(log, 'bafyreinope', publicKeyFor(KeyType.P256, offline)); })
+      .contains('not in the log'));
   });
 
   test('gives the DID document an operation describes', (ctx) => {

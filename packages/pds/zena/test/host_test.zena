@@ -34,6 +34,7 @@ import {Pds} from 'pds:pds';
 import {CreateRecord, RepositoryError, Write} from 'pds:repository';
 import {createApp} from 'pds:server';
 import {MemoryCredentialStore, Sessions} from 'pds:sessions';
+import {LocalRotationKey} from 'pds:rotation';
 import {Account, AccountKind, MemoryStorage, SigningKey} from 'pds:storage';
 
 let HOST = 'did:web:pkg.test';
@@ -57,7 +58,7 @@ final class Fixture {
 
   new(store: HostStore = new MemoryHostStore()) : pds = new Pds(new MemoryStorage()), app = new App() {
     let rotation = new SigningKey(KeyType.Secp256k1, filled(200));
-    let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', rotation);
+    let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', new LocalRotationKey(rotation));
     let callers = new HashMap<String, PublicKey>();
     callers[ALICE] = new SigningKey(KeyType.P256, ALICE_KEY).publicKey();
     callers[BOB] = new SigningKey(KeyType.P256, BOB_KEY).publicKey();
@@ -402,6 +403,25 @@ export let tests = suite('pds:host', () => {
     equal(errorOf(fixture.call(ALICE, 'createOrganization', `{"name": "acme3", "recoveryKeys": [${four}]}`)),
         'InvalidRequest');
     equal(errorOf(fixture.call(ALICE, 'createOrganization', '{"name": "acme3", "recoveryKeys": "no"}')),
+        'InvalidRequest');
+  });
+
+  test("ranks recovery keys, then the operator's offline key, then the host's online key", (ctx) => {
+    let fixture = new Fixture();
+    let host = fixture.host as PackageHost;
+    let offline = new SigningKey(KeyType.Secp256k1, filled(201)).publicKey();
+    host.config.offlineRotationKey = offline;
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let operation = fixture.submitted[org['did'] as String];
+    equal(operation.rotationKeys.length, 3);
+    equal(operation.rotationKeys[0], RECOVERY);
+    equal(operation.rotationKeys[1], formatDidKey(offline));
+    equal(operation.rotationKeys[2], formatDidKey(host.config.rotationKey.publicKey()));
+    // The online key signs it.
+    isTrue(operation.isSignedBy(host.config.rotationKey.publicKey()), 'signed by the online key');
+    // Four recovery keys and the host's two would pass PLC's five.
+    let four = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
+    equal(errorOf(fixture.call(ALICE, 'createOrganization', `{"name": "acme2", "recoveryKeys": [${four}]}`)),
         'InvalidRequest');
   });
 

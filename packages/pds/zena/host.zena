@@ -56,6 +56,7 @@ import {HandleRecords} from './handles.zena';
 import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {Sessions} from './sessions.zena';
+import {RotationKey} from './rotation.zena';
 import {formatTimestamp} from 'zena:time';
 import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
 
@@ -224,18 +225,24 @@ export final class HostConfig {
   /** Its PDS endpoint, which every account's DID document names. */
   endpoint: String;
   /**
-   * Its PLC rotation key, ranked below any recovery keys an account's
-   * owners give. Without them, it is the account's only rotation key: the
-   * host holds the account, as a PDS holds its users' (package-manager.md,
-   * "Keys").
+   * Its online PLC rotation key, which signs every account's operations,
+   * ranked last: below any recovery keys an account's owners give, and the
+   * offline key. Without those, the host holds the account, as a PDS holds
+   * its users' (package-manager.md, "Keys").
    */
-  rotationKey: SigningKey;
+  rotationKey: RotationKey;
+  /**
+   * The operator's offline rotation key, ranked above the online one, so
+   * that the operator can undo for 72 hours what a stolen online key
+   * signs. The server knows only its public key.
+   */
+  var offlineRotationKey: PublicKey | null = null;
   /** The largest blob `uploadArtifact` stores. */
   var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
   /** Scope names no one may take. */
   reservedScopes = new HashSet<String>();
 
-  new(serviceDid: String, domain: String, endpoint: String, rotationKey: SigningKey)
+  new(serviceDid: String, domain: String, endpoint: String, rotationKey: RotationKey)
       : serviceDid = serviceDid, domain = domain, endpoint = endpoint, rotationKey = rotationKey {
     for (let name in ['www', 'api', 'admin', 'zena', 'pkg', 'mail']) {
       this.reservedScopes.add(name);
@@ -345,7 +352,7 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${name}' exists`);
     }
     let handle = `${name}.${this.config.domain}`;
-    let prepared = this.#prepareAccount(handle, recoveryKeys);
+    let prepared = await this.#prepareAccount(handle, recoveryKeys);
     let did = prepared.did;
     if (!(await this.#store.claimScope(name, did))) {
       throw new HostError(400, 'NameTaken', `the scope '${name}' exists`);
@@ -388,7 +395,7 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
     let handle = `${name}.${scope}.${this.config.domain}`;
-    let prepared = this.#prepareAccount(handle, []);
+    let prepared = await this.#prepareAccount(handle, []);
     let did = prepared.did;
     if (!(await this.#store.claimName(scope, name, did))) {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
@@ -438,7 +445,7 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${profile.name}'`);
     }
     let handle = `${profile.name}.${scope}.${this.config.domain}`;
-    let prepared = this.#prepareAccount(handle, recoveryKeys);
+    let prepared = await this.#prepareAccount(handle, recoveryKeys);
     let did = prepared.did;
     let name = profile.name;
     if (!(await this.#store.claimName(scope, name, did))) {
@@ -550,12 +557,12 @@ export final class PackageHost {
 
   /**
    * An account named `handle` on this host, to be: a new signing key, and
-   * the genesis operation of a `did:plc` that ranks `recoveryKeys` above
-   * the host's rotation key, signed with that key. A PLC operation lists at
-   * most five rotation keys, and the host keeps two of them for its own: the
-   * online key, and the operator's offline key (#597).
+   * the genesis operation of a `did:plc` that ranks `recoveryKeys` first,
+   * then the operator's offline key, then the online rotation key, which
+   * signs it. A PLC operation lists at most five rotation keys, and the
+   * host keeps two of them for its own.
    */
-  #prepareAccount(handle: String, recoveryKeys: Array<String>): PreparedAccount {
+  async #prepareAccount(handle: String, recoveryKeys: Array<String>): Future<PreparedAccount> {
     if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
       throw new HostError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
     }
@@ -567,11 +574,14 @@ export final class PackageHost {
         throw new HostError(400, 'InvalidRequest', `'${key}' is not a did:key`);
       }
     }
+    let offline = this.config.offlineRotationKey;
+    if (offline != null) {
+      rotation.push(offline as PublicKey);
+    }
     rotation.push(this.config.rotationKey.publicKey());
     let signing = new SigningKey(KeyType.Secp256k1, this.#random(32));
-    let hostKey = this.config.rotationKey;
-    let operation = genesisOperation(signing.publicKey(), rotation, handle, this.config.endpoint)
-      .signedWith((bytes) => hostKey.sign(bytes));
+    let unsigned = genesisOperation(signing.publicKey(), rotation, handle, this.config.endpoint);
+    let operation = unsigned.withSignature(await this.config.rotationKey.sign(unsigned.signingBytes()));
     return new PreparedAccount(didOfGenesis(operation), handle, signing, operation);
   }
 
@@ -1023,8 +1033,6 @@ final class EntriesBehind {
   all = new GrowableArray<MemberEntry>();
   /** Those given with the call, which the host keeps from now on. */
   fresh = new GrowableArray<MemberEntry>();
-
-  new();
 }
 
 /** The highest of the roles `entries` give `caller`: `owner`, then `admin` or `maintainer`, then any. */
