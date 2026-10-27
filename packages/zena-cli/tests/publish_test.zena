@@ -168,6 +168,22 @@ export let tests = suite('zena publish', () => {
       isTrue(read(scratch.at('app/zena-package.json')).contains('1.1.0'), read(scratch.at('app/zena-package.json')));
       let ran = app.run(['run', 'prog.zena']);
       isTrue(ran.succeeded(), described(ran));
+
+      // Retracting 1.1.0 leaves app, which pins it, running, and a new
+      // workspace that adds the package gets 1.0.0.
+      let notVersion = lib.run(['retract', 'latest']);
+      isTrue(!notVersion.succeeded() && notVersion.stderr.contains('not a version'), described(notVersion));
+      let noRelease = lib.run(['retract', '9.9.9']);
+      isTrue(!noRelease.succeeded() && noRelease.stderr.contains('ReleaseNotFound'), described(noRelease));
+      let retracted = lib.run(['retract', '1.1.0', '--reason', 'answers 43 on Tuesdays']);
+      isTrue(retracted.succeeded() && retracted.stdout.contains('Retracted 1.1.0'), described(retracted));
+      let stillRuns = app.run(['run', 'prog.zena']);
+      isTrue(stillRuns.succeeded(), described(stillRuns));
+      write(scratch.at('later/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
+      let later = zenaIn('later');
+      let addedLater = later.run(['add', 'greet.acme.pkg.test']);
+      isTrue(addedLater.succeeded(), described(addedLater));
+      isTrue(read(scratch.at('later/zena-package.json')).contains('1.0.0'), read(scratch.at('later/zena-package.json')));
     } finally {
       stack.waitFor(1 as i64);
       scratch.remove();

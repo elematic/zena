@@ -27,6 +27,7 @@ import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
 import {validateRelease} from 'package-manager:validate';
+import {Version} from 'package-manager:version';
 import {
   ADMIN,
   MAINTAINER,
@@ -43,8 +44,10 @@ import {
   PROFILE_TYPE,
   Profile,
   RELEASE_TYPE,
+  RETRACTION_TYPE,
   RecordError,
   Release,
+  Retraction,
   SOURCE,
   isValidPackageName,
   isValidScopeName
@@ -477,6 +480,24 @@ export final class PackageHost {
     let cid = await this.#write(account, RELEASE_TYPE, version, asMap(releaseValue), nowMicros);
     return new Created(account.did, account.handle ?? account.did,
         `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
+  }
+
+  /**
+   * `retract`: marks release `version` of `pkg` as retracted, with
+   * `reason`, at the record key equal to the version. The release stays,
+   * for the builds that pin it; choosing a version skips it. Any maintainer
+   * may retract a release, as any may publish one. Retracting a version
+   * again replaces the reason.
+   */
+  async retract(caller: String, pkg: String, version: String, reason: String | null, nowMicros: i64)
+      : Future<Created> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    if ((await this.pds.storage.store(pkg).getRecord(RELEASE_TYPE, version)) == null) {
+      throw new HostError(400, 'ReleaseNotFound', `${pkg} has no release ${version}`);
+    }
+    // A release's record key is its version, so `version` parses.
+    let retraction = new Retraction(Version.parse(version), reason);
+    return await this.#put(account, RETRACTION_TYPE, version, retraction.toValue(), null, nowMicros);
   }
 
   /**

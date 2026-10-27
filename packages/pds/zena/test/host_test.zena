@@ -24,7 +24,7 @@ import {verifyRecordProof} from 'atproto:repo';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {
   ADMIN, Artifact, Dependency, MAINTAINER, MEMBER, Maintainer, Maintainers, Members, OWNER, PUBLISHER, Profile,
-  RELEASE_TYPE, Release, SOURCE, Team
+  RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, Team
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
@@ -528,6 +528,22 @@ export let tests = suite('pds:host', () => {
         'BlobNotFound');
     equal(errorOf(fixture.call(BOB, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.2.0', blob)}}`)),
         'Forbidden');
+
+    // A maintainer retracts a release that exists, and may give a new
+    // reason later; a version with no release, and Bob, are refused.
+    let retract = (caller: String, version: String, reason: String) => fixture.call(caller, 'retract',
+        `{"package": "${pkgDid}", "version": "${version}", "reason": "${reason}"}`);
+    equal(errorOf(retract(BOB, '1.0.0', 'mine now')), 'Forbidden');
+    equal(errorOf(retract(ALICE, '9.9.9', 'never was')), 'ReleaseNotFound');
+    let retracted = ok(retract(ALICE, '1.0.0', 'broken'));
+    equal(retracted['uri'] as String, `at://${pkgDid}/${RETRACTION_TYPE}/1.0.0`);
+    let again = ok(retract(ALICE, '1.0.0', 'broken on Windows'));
+    isTrue(!((again['cid'] as String) == (retracted['cid'] as String)), 'the reason was replaced');
+    let record = ok(fixture.get(`/xrpc/com.atproto.repo.getRecord?repo=${pkgDid}&collection=${RETRACTION_TYPE}&rkey=1.0.0`));
+    let read = Retraction.fromValue(fromJson(record['value']), '1.0.0');
+    equal(read.reason as String, 'broken on Windows');
+    // The release itself stays.
+    ok(fixture.get(`/xrpc/com.atproto.repo.getRecord?repo=${pkgDid}&collection=${RELEASE_TYPE}&rkey=1.0.0`));
   });
 
   test('takes a name only once, however the lookups race', (ctx) => {

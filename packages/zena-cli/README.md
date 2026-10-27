@@ -133,7 +133,12 @@ again.
 zena-cli scope create acme --yes       # once per scope
 zena-cli publish --scope acme --yes    # the first time, or with "scope": "acme"
 zena-cli publish                       # after raising "version"
+zena-cli retract 1.4.1 --reason "Routes with a trailing slash matched the wrong handler"
 ```
+
+`zena retract <version>` marks a release as retracted. Builds whose
+lockfiles pin it keep using it, and `zena add` and `zena update` skip it.
+Any maintainer may retract a release.
 
 A scope's owners change who belongs to it, and a package's owners who
 maintains it. Each change writes the new record through the host and
