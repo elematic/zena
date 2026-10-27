@@ -1,0 +1,35 @@
+// @mode: check
+// A type parameter written in a union with a reference type, such as
+// `T | null`, may not be bound to a primitive (#614): `i32 | null` has
+// no representation, so the instantiation could not be compiled.
+// `WithDefault<T>` is the slot that may be empty at both.
+
+class Plain<T> {
+  var value: T | null = null;
+}
+
+class Short<T> {
+  var value: T? = null;
+}
+
+class Either<T> {
+  var value: T | String | null = null;
+}
+
+let first = <T>(x: T | null): i32 => 0;
+
+enum Color { Red, Green }
+
+let primitives = (): i32 => {
+  let p = new Plain<i32>(); // @error: may not bind 'T'
+  let s = new Short<boolean>(); // @error: may not bind 'T'
+  let e = new Either<f64>(); // @error: may not bind 'T'
+  let c = new Plain<Color>(); // @error: may not bind 'T'
+  return first<i64>(null); // @error: may not bind 'T'
+};
+
+let references = (): i32 => {
+  let p = new Plain<String>();
+  let s = new Short<Array<i32>>();
+  return first<String>(null);
+};
