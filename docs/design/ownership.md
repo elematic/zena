@@ -1933,12 +1933,12 @@ an argument the body may duplicate (#379). A class holds an owner in a
 `T` field only under `scoped T` (§"Scoped type arguments"), which moves
 the value out of the field with a take.
 
-owner-futures.md is the program that needs the at-most-once variant:
-`Future` drops a value an abandoned future or a lost `tryComplete` race
-leaves behind. It defines `affine T` as that variant, admitting
-first-class types and owners, together with the class half (`T`
-fields) and a branch on `isFirstClass<T>()` for behavior only a
-first-class instantiation has.
+owner-futures.md defines the class half of `scoped T` for the async
+containers, with an `isFirstClass<T>()` branch for behavior only a
+first-class instantiation has. It needs no at-most-once variant: the
+drops `Future` seemed to need, of an abandoned future and of a lost
+`tryComplete` race, belong to the use site, where an owner is released
+and a must-consume value cannot be dropped.
 
 The opt-in is **declared, not inferred**. Whole-program compilation would allow
 inferring it from bodies, but then errors land inside stdlib bodies at call sites
