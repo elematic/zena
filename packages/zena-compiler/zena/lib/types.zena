@@ -4192,6 +4192,150 @@ export function typeContainsSecondClassAtDepth(t: Type, depth: i32): boolean {
   return false;
 }
 
+/**
+ * Whether a value of `t` can carry an owner — the general containment
+ * test behind ownership.md's "types containing one". Aggressive on
+ * purpose: it pierces distinct aliases and walks every union member,
+ * so the affine-field and structural-member rules stay accurate
+ * however the formation rules for owner-containing types loosen later.
+ * `Borrow` and `Unmanaged` carry no obligation, and a class type never
+ * appears bare while carrying one — a resource class has no unwrapped
+ * form, and a class holding an owner is forced to be a resource.
+ */
+export function typeCarriesOwner(t: Type): boolean {
+  if (ownershipHandleName(t) == "Own") { return true; }
+  // An instance of a container of an owner carries it too
+  // (owner-futures.md §"Restricted instantiations").
+  if (isAffineContainer(t)) { return true; }
+  // A tuple holding an owner carries it (#495).
+  if (t is TupleType) {
+    for (let el in t.elementTypes) {
+      if (typeCarriesOwner(el)) { return true; }
+    }
+    return false;
+  }
+  if (t is InlineTupleType) {
+    for (let el in t.elementTypes) {
+      if (typeCarriesOwner(el)) { return true; }
+    }
+    return false;
+  }
+  if (t is UnionType) {
+    for (let m in t.types) {
+      if (typeCarriesOwner(m)) { return true; }
+    }
+    return false;
+  }
+  if (t is TypeAliasType) {
+    if (isOwnershipWrapper(t)) { return false; }
+    if (t.resolving) { return false; }
+    t.resolving = true;
+    let res = typeCarriesOwner(t.target);
+    t.resolving = false;
+    return res;
+  }
+  return false;
+}
+
+/**
+ * Whether `t` is an instance of a class that holds a restricted
+ * argument and carries an owner in it: a `scoped T` class bound to an
+ * owner, as an affine tuple is (ownership.md §"Scoped type
+ * arguments"), or a `Future` of one, which declares no `scoped T` yet.
+ */
+export function isAffineContainer(t: Type): boolean {
+  if (t is TypeAliasType) {
+    if (t.isDistinct || t.intrinsicName != null || t.resolving) { return false; }
+    t.resolving = true;
+    let res = isAffineContainer(t.target);
+    t.resolving = false;
+    return res;
+  }
+  if (!(t is ClassType)) { return false; }
+  var c: ClassType | null = t;
+  while (c != null) {
+    let cls = c as ClassType;
+    let args = cls.typeArguments;
+    if (isFutureClassType(cls) || isFutureClassType(cls.genericSource ?? cls)) {
+      return args != null && args.length == 1 && typeCarriesOwner(args[0]);
+    }
+    if (args != null) {
+      for (var i = 0; i < args.length; i += 1) {
+        if (isScopedClassParam(cls, i) && typeCarriesOwner(args[i])) { return true; }
+      }
+    }
+    c = cls.superType;
+  }
+  return false;
+}
+
+/** Whether `cls`'s declaration marks its type parameter `i` `scoped`. */
+export function isScopedClassParam(cls: ClassType, i: i32): boolean {
+  let params = (cls.genericSource ?? cls).typeParameters;
+  return params != null && i < params.length && params[i].isScoped;
+}
+
+/**
+ * Whether a value read out of a field of type `t` has to be taken:
+ * `t` is restricted at this instantiation, so the read moves the
+ * value and leaves null behind. A field of a `scoped T` class is
+ * restricted only at some instantiations; at a first-class one the
+ * read is an ordinary copy.
+ */
+export function isRestrictedValueType(t: Type): boolean {
+  return typeCarriesOwner(t) || typeContainsSecondClass(t);
+}
+
+/**
+ * isRestrictedValueType for a type as codegen holds it. Codegen keys a
+ * specialization by representation, and a handle is its resource class
+ * there (eraseTypeParameters), so `Own<R>`, `Borrow<R>` and
+ * `Unmanaged<R>` share one body. A resource class standing for a type
+ * argument therefore means the body may serve a restricted
+ * instantiation, and the shared body behaves as those need: an
+ * `Unmanaged<R>` instantiation is taken from too. `Scoped<F>` erases to
+ * `F` and shares its body, so it behaves as first-class.
+ */
+export function representsRestricted(t: Type): boolean {
+  if (isRestrictedValueType(t)) { return true; }
+  if (t is ClassType) {
+    if (t.isResource) { return true; }
+    let args = t.typeArguments;
+    if (args != null) {
+      for (var i = 0; i < args.length; i += 1) {
+        if (isScopedClassParam(t, i) && representsRestricted(args[i])) { return true; }
+      }
+    }
+    return false;
+  }
+  if (t is UnionType) {
+    for (let m in t.types) {
+      if (representsRestricted(m)) { return true; }
+    }
+    return false;
+  }
+  if (t is TupleType) {
+    for (let el in t.elementTypes) {
+      if (representsRestricted(el)) { return true; }
+    }
+    return false;
+  }
+  if (t is InlineTupleType) {
+    for (let el in t.elementTypes) {
+      if (representsRestricted(el)) { return true; }
+    }
+    return false;
+  }
+  if (t is TypeAliasType) {
+    if (t.resolving) { return false; }
+    t.resolving = true;
+    let res = representsRestricted(t.target);
+    t.resolving = false;
+    return res;
+  }
+  return false;
+}
+
 /** The scoped half of typeContainsSecondClass, for diagnostic wording. */
 export function typeContainsScoped(t: Type): boolean {
   if (isScopedType(t)) { return true; }

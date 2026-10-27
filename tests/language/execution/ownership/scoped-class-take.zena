@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 17
+// Moving a `T` field out of a `scoped T` class is a take: at an owner
+// it leaves null behind, so a second take finds nothing and the
+// resource is released once. At a first-class type nothing is taken,
+// so the value stays readable (owner-futures.md §"The class half of
+// `scoped T`").
+import {Own, Disposable} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Slot<scoped T> {
+  var #value: T | null = null;
+  new();
+  put(value: T): void {
+    this.#value = value;
+  }
+  take(): T | null {
+    return this.#value;
+  }
+}
+
+export let main = (): i32 => {
+  var result = 0;
+  if (true) {
+    let s = new Slot<Own<Res>>();
+    s.put(new Res());
+    let a = s.take();
+    let b = s.take();
+    if (b == null) {
+      result += 10;
+    }
+  }
+  result += released;
+  // A primitive `T` needs `WithDefault<T>` for its empty slot (#614).
+  let n = new Slot<String>();
+  n.put('abc');
+  let x = n.take() ?? '';
+  let y = n.take() ?? '';
+  return result + x.length + y.length;
+};

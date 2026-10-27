@@ -19,7 +19,7 @@ import {
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
   ownershipHandleName, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType, isIntegerType,
-  typeContainsTypeParameter,
+  typeContainsTypeParameter, representsRestricted,
 } from '../../types.zena';
 import {
   TemplateAbandon, TemplateFamilies, TemplateRecorder, internedCopy,
@@ -5244,6 +5244,12 @@ export final class FunctionLowerer {
       }
     } else if (expr is TaggedTemplateExpression) {
       throw new TemplateAbandon('tagged template');
+    } else if (expr is MemberExpression) {
+      // Whether a take stores null depends on the type argument
+      // (#takesHere).
+      if (model.isFieldTake(expr as Node) && mentions(expr)) {
+        throw new TemplateAbandon('field take');
+      }
     } else if (expr is CallExpression) {
       let callee = (expr as CallExpression).callee;
       if (callee is Identifier && mentions(callee) &&
@@ -7864,7 +7870,7 @@ export final class FunctionLowerer {
       // member's checked type may be narrower (non-null).
       let fieldVt = this.#fieldValType(target.owner, fieldName);
       let read = this.b.emit(IrOp.struct_get, fieldVt, receiver, fieldRef);
-      if (this.func.model.isFieldTake(member as Node)) {
+      if (this.func.model.isFieldTake(member as Node) && this.#takesHere(member)) {
         // A take: the owner moves out and the field is left null, which
         // the release glue skips (ownership.md §Affine fields).
         let nullValue = this.b.emit(IrOp.ref_null, fieldVt, -1, -1);
@@ -7884,6 +7890,19 @@ export final class FunctionLowerer {
     // Getter signatures return the field's (nullable) storage type; the
     // member's checked type may be non-null.
     return this.#reassertNonNull(call, this.#exprValType(member));
+  }
+
+  /**
+   * Whether a field take moves the value out at this specialization. An
+   * owner field's take always does. A `scoped T` field's does only where
+   * `T` may be restricted, judged from the representation the
+   * specialization is keyed by (representsRestricted); at a first-class
+   * `T` the read is a copy and the field keeps its value
+   * (owner-futures.md §"The class half of `scoped T`").
+   */
+  #takesHere(member: MemberExpression): boolean {
+    let t = this.#substitutedNodeType(member);
+    return t == null || representsRestricted(t as Type);
   }
 
   /**

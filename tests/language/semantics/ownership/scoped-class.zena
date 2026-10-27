@@ -1,0 +1,86 @@
+// @mode: check
+// The class half of `scoped T` (ownership.md §"Scoped type arguments",
+// owner-futures.md §"The class half of `scoped T`"). A `scoped T` class
+// may hold `T` in its fields, and an instance carries its argument's
+// restriction: at an owner it moves like the owner. In the body a `T`
+// is consumed exactly once, and moving a `T` field out is a take, so
+// the field must be a nullable `var`.
+import {Own, Borrow, Disposable} from 'zena:core';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+class Slot<scoped T> {
+  var #value: T | null = null;
+  new();
+  put(value: T): void {
+    this.#value = value;
+  }
+  take(): T | null {
+    return this.#value;
+  }
+}
+
+// Only a nullable `var` field can be taken from.
+class Fixed<scoped T> {
+  value: T;
+  new(this.value);
+  get(): T {
+    return this.value; // @error: is not nullable
+  }
+}
+
+class Kept<scoped T> {
+  #value: T | null = null;
+  new();
+  get(): T | null {
+    return this.#value; // @error: must be declared 'var'
+  }
+}
+
+// A `T` may sit inside another `scoped T` class, but not inside an
+// unrestricted container, whose index reads would copy it.
+class Nested<scoped T> {
+  var #inner: Slot<T> | null = null;
+  #items: Array<T> = []; // @error: may not be stored in a field
+  new();
+}
+
+// A field still may not hold a borrow of a concrete resource.
+class Lender<scoped T> {
+  #lent: Borrow<Res> | null = null; // @error: may not be stored in a field
+  new();
+}
+
+// A `T` value is consumed exactly once.
+class Leaky<scoped T> {
+  new();
+  drop(value: T): void { // @error: must be consumed
+  }
+}
+
+// An instance at an owner moves like the owner.
+let moved = (): i32 => {
+  let s = new Slot<Own<Res>>();
+  let t = s;
+  s.put(new Res()); // @error: 's' may have been moved
+  return 0;
+};
+
+let putTwice = (r: Own<Res>): i32 => {
+  let s = new Slot<Own<Res>>();
+  s.put(r);
+  s.put(r); // @error: 'r' may have been moved
+  return 0;
+};
+
+// An instance at a first-class type is unrestricted.
+let plain = (): i32 => {
+  let s = new Slot<i32>();
+  let t = s;
+  s.put(1);
+  t.put(2);
+  return s.take() ?? 0;
+};

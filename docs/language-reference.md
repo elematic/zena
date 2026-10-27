@@ -6046,6 +6046,28 @@ container or captured by a closure. An unrestricted instantiation —
 values in containers inside such a body waits on the standard library
 collections adopting the modifier themselves.
 
+A class may declare `scoped T` too, and then its own fields may hold a
+`T`: bare, as `T | null`, or as the argument of another class's
+`scoped` parameter. An instance carries its argument's restriction, so
+a `Slot<Own<File>>` moves like the owner it holds and a
+`Slot<Borrow<File>>` is second-class. Moving a `T` field's value out of
+the object, by returning, binding or passing it, is a take: the field
+must be a nullable `var`, and the move leaves null in it. At a
+first-class `T` the read is a copy and the field keeps its value.
+
+```zena
+class Slot<scoped T> {
+  var #value: T | null = null;
+  new();
+  put(value: T): void {
+    this.#value = value;   // consumes value
+  }
+  take(): T | null {
+    return this.#value;    // a take: at Own<File>, a second call gets null
+  }
+}
+```
+
 Containers of scoped values exist in exactly two shapes. A signature
 may say `Array<T>` under a `scoped T`, and a caller supplies it with
 an array literal written directly in the argument position —
