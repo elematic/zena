@@ -1,0 +1,603 @@
+/**
+ * Checking a program's declared world against the WIT its extensions
+ * are written to: docs/design/runtime-components.md, "The program's
+ * side of a shared interface".
+ *
+ * An extension's interfaces are plain functions. The program declares
+ * its side of each as a resource: for an interface it serves, a
+ * resource whose methods are the extension's functions, with a static
+ * `create(extension: u32) -> own<it>`; for an interface it calls, a
+ * resource whose methods are the extension's functions with each
+ * result wrapped in `result<_, string>`, with a static
+ * `attach(extension: u32) -> own<it>`. Resources the extension's
+ * interface declares appear on the program's side by the same name
+ * with the same methods, their results wrapped when the extension owns
+ * them. The runtime checks all of this against the real extension when
+ * it loads; this checks it when the program is built, against the
+ * extension WIT the program names with `--extension-wit`, so a view
+ * that drifts from the interface is a build error naming what drifted.
+ *
+ * Both documents are compared as parsed, without resolution: an
+ * interface's types are compared by structure where both sides define
+ * them, and by name where they come from a `use`. Whether a function
+ * is `async` is not compared, as the runtime does not compare it.
+ */
+
+import {
+  Ast, AstItemTag, Case, EnumCaseDef, Export, ExternKindTag, Field, FlagDef,
+  Func, Id, Import, InterfaceDef, InterfaceItemTag, NamedFunc, PackageName,
+  ResourceFunc, ResourceFuncTag, Type, TypeDef, TypeDefTag, TypeTag, UsePath,
+  UsePathTag, WorldDef, WorldItemTag,
+} from 'wit-parser:parser';
+import { StringBuilder } from 'zena:core';
+import { HashSet } from 'zena:collections';
+
+/** How a program's world relates to one of an extension's interfaces. */
+enum ViewKind {
+  /** The world imports it: the program calls the extension through it. */
+  Called,
+  /** The world exports it: the program serves it. */
+  Served,
+}
+
+/** An interface of a document, with the package it is declared in. */
+final class NamedInterface {
+  qualified: String;
+  def: InterfaceDef;
+
+  new(this.qualified, this.def);
+}
+
+/** The name an interface is reached by: `ns:pkg/name`, without a version. */
+function qualify(pkg: PackageName | null, name: String): String {
+  if (pkg == null) {
+    return name;
+  }
+  let p = pkg as PackageName;
+  return `${p.namespace.name}:${p.name.name}/${name}`;
+}
+
+/** Every interface the document declares, in its main and nested packages. */
+function interfacesOf(ast: Ast): GrowableArray<NamedInterface> {
+  let found = new GrowableArray<NamedInterface>();
+  for (let item in ast.items) {
+    if (item.tag == AstItemTag.Interface) {
+      let def = item.interfaceDef as InterfaceDef;
+      found.push(new NamedInterface(qualify(ast.packageName, def.name.name), def));
+    }
+  }
+  for (let nested in ast.nestedPackages) {
+    for (let item in nested.items) {
+      if (item.tag == AstItemTag.Interface) {
+        let def = item.interfaceDef as InterfaceDef;
+        found.push(new NamedInterface(qualify(nested.name, def.name.name), def));
+      }
+    }
+  }
+  return found;
+}
+
+/** The world named `worldName` in `ast`, or null. */
+function findWorld(ast: Ast, worldName: String): WorldDef | null {
+  for (let item in ast.items) {
+    if (item.tag == AstItemTag.World) {
+      let def = item.worldDef as WorldDef;
+      if (def.name.name == worldName) {
+        return def;
+      }
+    }
+  }
+  return null;
+}
+
+/** The qualified name a world's `import x;` or `import a:b/x;` reaches. */
+function externTarget(ast: Ast, path: UsePath): String {
+  if (path.tag == UsePathTag.Package) {
+    return qualify(path.packageId, (path.name as Id).name);
+  }
+  return qualify(ast.packageName, path.getName().name);
+}
+
+/** The parts of an interface that the check reads. */
+final class Members {
+  types = new Map<String, TypeDef>();
+  resources = new Map<String, TypeDef>();
+  functions = new Map<String, NamedFunc>();
+  /** In declaration order, for messages. */
+  functionNames = new GrowableArray<String>();
+  resourceNames = new GrowableArray<String>();
+
+  new(def: InterfaceDef) {
+    for (let item in def.items) {
+      if (item.tag == InterfaceItemTag.TypeDef) {
+        let td = item.typeDef as TypeDef;
+        if (td.tag == TypeDefTag.Resource) {
+          this.resources[td.name.name] = td;
+          this.resourceNames.push(td.name.name);
+        } else {
+          this.types[td.name.name] = td;
+        }
+      } else if (item.tag == InterfaceItemTag.Func) {
+        let f = item.func as NamedFunc;
+        this.functions[f.name.name] = f;
+        this.functionNames.push(f.name.name);
+      }
+    }
+  }
+
+  /** `resource`'s function `name` of kind `kind`, or null. */
+  resourceFunc(resource: String, name: String, kind: ResourceFuncTag): NamedFunc | null {
+    if (!this.resources.has(resource)) {
+      return null;
+    }
+    for (let rf in this.resources[resource].resourceFuncs as GrowableArray<ResourceFunc>) {
+      if (rf.tag == kind && rf.func.name.name == name) {
+        return rf.func;
+      }
+    }
+    return null;
+  }
+}
+
+/** A type as WIT spells it, for messages. */
+function spell(t: Type | null): String {
+  if (t == null) {
+    return '_';
+  }
+  let ty = t as Type;
+  return match (ty.tag) {
+    case TypeTag.U8: 'u8'
+    case TypeTag.U16: 'u16'
+    case TypeTag.U32: 'u32'
+    case TypeTag.U64: 'u64'
+    case TypeTag.S8: 's8'
+    case TypeTag.S16: 's16'
+    case TypeTag.S32: 's32'
+    case TypeTag.S64: 's64'
+    case TypeTag.F32: 'f32'
+    case TypeTag.F64: 'f64'
+    case TypeTag.Char: 'char'
+    case TypeTag.Bool: 'bool'
+    case TypeTag.String: 'string'
+    case TypeTag.ErrorContext: 'error-context'
+    case TypeTag.List: `list<${spell(ty.inner)}>`
+    case TypeTag.Option: `option<${spell(ty.inner)}>`
+    case TypeTag.Result: spellResult(ty)
+    case TypeTag.Tuple: `tuple<${spellAll(ty.types)}>`
+    case TypeTag.Future: `future<${spell(ty.inner)}>`
+    case TypeTag.Stream: `stream<${spell(ty.inner)}>`
+    case TypeTag.Map: `map<${spell(ty.keyType)}, ${spell(ty.valueType)}>`
+    case TypeTag.Own: `own<${spell(ty.inner)}>`
+    case TypeTag.Borrow: `borrow<${spell(ty.inner)}>`
+    case TypeTag.Name: (ty.name as Id).name
+  };
+}
+
+function spellResult(ty: Type): String {
+  if (ty.okType == null && ty.errType == null) {
+    return 'result';
+  }
+  return `result<${spell(ty.okType)}, ${spell(ty.errType)}>`;
+}
+
+function spellAll(types: GrowableArray<Type> | null): String {
+  if (types == null) {
+    return '';
+  }
+  let sb = new StringBuilder();
+  var first = true;
+  for (let t in types as GrowableArray<Type>) {
+    if (!first) {
+      sb.append(', ');
+    }
+    first = false;
+    sb.append(spell(t));
+  }
+  return sb.toString();
+}
+
+/** A function's parameter types, for messages. */
+function spellParams(f: Func, skip: i32): String {
+  let sb = new StringBuilder();
+  var i = 0;
+  for (let p in f.params) {
+    if (i >= skip) {
+      if (i > skip) {
+        sb.append(', ');
+      }
+      sb.append(spell(p.type));
+    }
+    i += 1;
+  }
+  return sb.toString();
+}
+
+/**
+ * Compares types across the two documents: `a` from the extension's
+ * interface, `b` from the program's view. Returns null when they are
+ * the same, or what differs.
+ */
+final class TypeComparer {
+  #guest: Members;
+  #host: Members;
+  /** Named types compared already, as `guest=host`, against cycles. */
+  #seen = new HashSet<String>();
+
+  new(guest: Members, host: Members) : #guest = guest, #host = host;
+
+  same(a: Type | null, b: Type | null): String | null {
+    if (a == null || b == null) {
+      if (a == null && b == null) {
+        return null;
+      }
+      return `${spell(a)} against ${spell(b)}`;
+    }
+    let x = a as Type;
+    let y = b as Type;
+    if (x.tag != y.tag) {
+      return `${spell(x)} against ${spell(y)}`;
+    }
+    return match (x.tag) {
+      case TypeTag.List: this.same(x.inner, y.inner)
+      case TypeTag.Option: this.same(x.inner, y.inner)
+      case TypeTag.Future: this.same(x.inner, y.inner)
+      case TypeTag.Stream: this.same(x.inner, y.inner)
+      case TypeTag.Result: this.same(x.okType, y.okType) ?? this.same(x.errType, y.errType)
+      case TypeTag.Tuple: this.sameAll(x.types, y.types)
+      case TypeTag.Map: this.same(x.keyType, y.keyType) ?? this.same(x.valueType, y.valueType)
+      case TypeTag.Own: this.sameHandle(x, y)
+      case TypeTag.Borrow: this.sameHandle(x, y)
+      case TypeTag.Name: this.sameNamed((x.name as Id).name, (y.name as Id).name)
+      case _: null
+    };
+  }
+
+  sameAll(xs: GrowableArray<Type> | null, ys: GrowableArray<Type> | null): String | null {
+    let a = xs ?? new GrowableArray<Type>();
+    let b = ys ?? new GrowableArray<Type>();
+    if (a.length != b.length) {
+      return `tuple<${spellAll(a)}> against tuple<${spellAll(b)}>`;
+    }
+    for (var i = 0; i < a.length; i += 1) {
+      let d = this.same(a[i], b[i]);
+      if (d != null) {
+        return d;
+      }
+    }
+    return null;
+  }
+
+  /** Handles pair resources by name: `own<txn>` on both sides. */
+  sameHandle(x: Type, y: Type): String | null {
+    let a = spell(x.inner);
+    let b = spell(y.inner);
+    if (a != b) {
+      return `${spell(x)} against ${spell(y)}`;
+    }
+    return null;
+  }
+
+  /**
+   * A named type is the same when both sides define it the same way,
+   * or when neither defines it (it comes from a `use`) and the names
+   * agree.
+   */
+  sameNamed(a: String, b: String): String | null {
+    if (a != b) {
+      return `${a} against ${b}`;
+    }
+    let guestDefines = this.#guest.types.has(a);
+    let hostDefines = this.#host.types.has(b);
+    if (!guestDefines && !hostDefines) {
+      return null;
+    }
+    if (!guestDefines || !hostDefines) {
+      return `${a} is defined on one side and used from elsewhere on the other`;
+    }
+    let key = `${a}=${b}`;
+    if (this.#seen.has(key)) {
+      return null;
+    }
+    this.#seen.add(key);
+    return this.sameDef(this.#guest.types[a], this.#host.types[b]);
+  }
+
+  sameDef(a: TypeDef, b: TypeDef): String | null {
+    let name = a.name.name;
+    if (a.tag != b.tag) {
+      return `${name} is a different kind of type on each side`;
+    }
+    if (a.tag == TypeDefTag.Alias) {
+      return this.same(a.aliasType, b.aliasType);
+    }
+    if (a.tag == TypeDefTag.Record) {
+      let fa = a.fields as GrowableArray<Field>;
+      let fb = b.fields as GrowableArray<Field>;
+      if (fa.length != fb.length) {
+        return `record ${name} has ${fa.length} fields on one side and ${fb.length} on the other`;
+      }
+      for (var i = 0; i < fa.length; i += 1) {
+        if (fa[i].name.name != fb[i].name.name) {
+          return `record ${name}'s field ${fa[i].name.name} is ${fb[i].name.name} on the other side`;
+        }
+        let d = this.same(fa[i].type, fb[i].type);
+        if (d != null) {
+          return `record ${name}'s field ${fa[i].name.name}: ${d}`;
+        }
+      }
+      return null;
+    }
+    if (a.tag == TypeDefTag.Variant) {
+      let ca = a.cases as GrowableArray<Case>;
+      let cb = b.cases as GrowableArray<Case>;
+      if (ca.length != cb.length) {
+        return `variant ${name} has ${ca.length} cases on one side and ${cb.length} on the other`;
+      }
+      for (var i = 0; i < ca.length; i += 1) {
+        if (ca[i].name.name != cb[i].name.name) {
+          return `variant ${name}'s case ${ca[i].name.name} is ${cb[i].name.name} on the other side`;
+        }
+        let d = this.same(ca[i].type, cb[i].type);
+        if (d != null) {
+          return `variant ${name}'s case ${ca[i].name.name}: ${d}`;
+        }
+      }
+      return null;
+    }
+    if (a.tag == TypeDefTag.Enum) {
+      let ea = a.enumCases as GrowableArray<EnumCaseDef>;
+      let eb = b.enumCases as GrowableArray<EnumCaseDef>;
+      if (ea.length != eb.length) {
+        return `enum ${name} has ${ea.length} cases on one side and ${eb.length} on the other`;
+      }
+      for (var i = 0; i < ea.length; i += 1) {
+        if (ea[i].name.name != eb[i].name.name) {
+          return `enum ${name}'s case ${ea[i].name.name} is ${eb[i].name.name} on the other side`;
+        }
+      }
+      return null;
+    }
+    if (a.tag == TypeDefTag.Flags) {
+      let fa = a.flags as GrowableArray<FlagDef>;
+      let fb = b.flags as GrowableArray<FlagDef>;
+      if (fa.length != fb.length) {
+        return `flags ${name} has ${fa.length} flags on one side and ${fb.length} on the other`;
+      }
+      for (var i = 0; i < fa.length; i += 1) {
+        if (fa[i].name.name != fb[i].name.name) {
+          return `flags ${name}'s flag ${fa[i].name.name} is ${fb[i].name.name} on the other side`;
+        }
+      }
+      return null;
+    }
+    return null;
+  }
+}
+
+/** One interface's check: what it found wrong, in order. */
+final class ViewCheck {
+  #errors: GrowableArray<String>;
+  #prefix: String;
+  #kind: ViewKind;
+  #guest: Members;
+  #host: Members;
+  #types: TypeComparer;
+
+  new(errors: GrowableArray<String>, prefix: String, kind: ViewKind,
+      guest: InterfaceDef, host: InterfaceDef)
+      : #errors = errors, #prefix = prefix, #kind = kind,
+        #guest = new Members(guest), #host = new Members(host),
+        #types = new TypeComparer(new Members(guest), new Members(host)) {}
+
+  #fail(message: String): void {
+    this.#errors.push(`${this.#prefix}: ${message}`);
+  }
+
+  /** `own` or `create`, by the view. */
+  #factory(): String {
+    return if (this.#kind == ViewKind.Called) 'attach' else 'create';
+  }
+
+  run(): void {
+    // The program's own resource: the one not in the extension's interface.
+    let own = new GrowableArray<String>();
+    for (let name in this.#host.resourceNames) {
+      if (!this.#guest.resources.has(name)) {
+        own.push(name);
+      }
+    }
+    if (own.length != 1) {
+      this.#fail(`it must declare one resource of its own, whose methods are the ` +
+          `extension's functions, with a static ${this.#factory()}; it declares ${own.length}`);
+      return;
+    }
+    let resource = own[0];
+    let factory = this.#host.resourceFunc(resource, this.#factory(), ResourceFuncTag.Static);
+    if (factory == null) {
+      this.#fail(`${resource} must declare ${this.#factory()}: static func(extension: u32) ` +
+          `-> own<${resource}>`);
+    } else {
+      let f = (factory as NamedFunc).func;
+      let shape = f.params.length == 1 && f.params[0].type.tag == TypeTag.U32 &&
+          f.result != null && (f.result as Type).tag == TypeTag.Own &&
+          spell((f.result as Type).inner) == resource;
+      if (!shape) {
+        this.#fail(`${resource}.${this.#factory()} must be static func(extension: u32) ` +
+            `-> own<${resource}>`);
+      }
+    }
+    // The program declares no free functions: they belong on the resource.
+    for (let name in this.#host.functionNames) {
+      this.#fail(`it declares the function ${name}, which belongs on ${resource} as a method`);
+    }
+    // The extension's functions, as the resource's methods.
+    for (let name in this.#guest.functionNames) {
+      let guest = this.#guest.functions[name].func;
+      let method = this.#host.resourceFunc(resource, name, ResourceFuncTag.Method);
+      if (method == null) {
+        this.#fail(`${resource} lacks a method for the extension's ${name}`);
+        continue;
+      }
+      this.#checkFunction(`${resource}.${name}`, name, guest, (method as NamedFunc).func, 0);
+    }
+    this.#checkExtraMethods(resource, this.#guest.functions);
+    // The extension's resources, declared the same on the program's side.
+    for (let name in this.#guest.resourceNames) {
+      if (!this.#host.resources.has(name)) {
+        this.#fail(`the extension's resource ${name} is not declared`);
+        continue;
+      }
+      let guestFuncs = (this.#guest.resources[name] as TypeDef).resourceFuncs as GrowableArray<ResourceFunc>;
+      let declared = new Map<String, NamedFunc>();
+      for (let rf in guestFuncs) {
+        if (rf.tag != ResourceFuncTag.Method) {
+          let what = if (rf.tag == ResourceFuncTag.Static) `static ${rf.func.name.name}` else 'a constructor';
+          this.#fail(`the extension's resource ${name} declares ${what}, which has no ` +
+              `object to serve it; only methods cross`);
+          continue;
+        }
+        declared[rf.func.name.name] = rf.func;
+        let method = this.#host.resourceFunc(name, rf.func.name.name, ResourceFuncTag.Method);
+        if (method == null) {
+          this.#fail(`resource ${name} lacks the extension's method ${rf.func.name.name}`);
+          continue;
+        }
+        this.#checkFunction(`${name}.${rf.func.name.name}`, rf.func.name.name, rf.func.func,
+            (method as NamedFunc).func, 0);
+      }
+      this.#checkExtraMethods(name, declared);
+    }
+    // Types both sides define must agree; the methods' checks reach the
+    // ones they use, and this reaches the rest.
+    for (let name in this.#guest.types.keys()) {
+      if (this.#host.types.has(name)) {
+        let d = this.#types.sameNamed(name, name);
+        if (d != null) {
+          this.#fail(`type ${name} differs: ${d}`);
+        }
+      }
+    }
+  }
+
+  /** Methods on the program's `resource` that the extension's side lacks. */
+  #checkExtraMethods(resource: String, expected: Map<String, NamedFunc>): void {
+    let def = this.#host.resources[resource];
+    for (let rf in def.resourceFuncs as GrowableArray<ResourceFunc>) {
+      let name = rf.func.name.name;
+      if (rf.tag == ResourceFuncTag.Method && !expected.has(name)) {
+        this.#fail(`${resource}.${name} has no counterpart in the extension's interface`);
+      } else if (rf.tag == ResourceFuncTag.Constructor) {
+        this.#fail(`${resource} declares a constructor, which the runtime never calls`);
+      } else if (rf.tag == ResourceFuncTag.Static && name != this.#factory()) {
+        this.#fail(`${resource}.${name} is a static the runtime never calls; ` +
+            `only ${this.#factory()} is`);
+      }
+    }
+  }
+
+  /**
+   * The extension's `guest` against the program's method `host`, whose
+   * parameters after `skip` must match, and whose result must match
+   * (served) or wrap the extension's in `result<_, string>` (called).
+   */
+  #checkFunction(label: String, name: String, guest: Func, host: Func, skip: i32): void {
+    if (guest.params.length != host.params.length - skip) {
+      this.#fail(`${label} takes (${spellParams(host, skip)}), where the extension's ` +
+          `${name} takes (${spellParams(guest, 0)})`);
+      return;
+    }
+    for (var i = 0; i < guest.params.length; i += 1) {
+      let d = this.#types.same(guest.params[i].type, host.params[i + skip].type);
+      if (d != null) {
+        this.#fail(`${label}'s parameter ${host.params[i + skip].name.name}: ${d}`);
+        return;
+      }
+    }
+    if (this.#kind == ViewKind.Served) {
+      let d = this.#types.same(guest.result, host.result);
+      if (d != null) {
+        this.#fail(`${label} returns ${spell(host.result)}, where the extension's ${name} ` +
+            `returns ${spell(guest.result)}: ${d}`);
+      }
+      return;
+    }
+    let wrapped = host.result != null && (host.result as Type).tag == TypeTag.Result &&
+        (host.result as Type).errType != null &&
+        ((host.result as Type).errType as Type).tag == TypeTag.String;
+    if (!wrapped) {
+      this.#fail(`${label} returns ${spell(host.result)}, where it must return ` +
+          `result<${spell(guest.result)}, string> around the extension's result, so a ` +
+          `failed call can be reported`);
+      return;
+    }
+    let d = this.#types.same(guest.result, (host.result as Type).okType);
+    if (d != null) {
+      this.#fail(`${label} returns ${spell(host.result)}, where the extension's ${name} ` +
+          `returns ${spell(guest.result)}: ${d}`);
+    }
+  }
+}
+
+/**
+ * Checks `world` of the program's document `host` against the
+ * extension document `guest`: every interface the extension document
+ * declares that the world imports or exports must be the program's
+ * view of it. Interfaces the world does not mention are the extension's
+ * business. Returns the problems found, each naming the interface and
+ * what differs; none when the world is right. `guestLabel` names the
+ * extension document in messages.
+ */
+export function checkExtensionViews(host: Ast, worldName: String, guest: Ast,
+    guestLabel: String): GrowableArray<String> {
+  let errors = new GrowableArray<String>();
+  let world = findWorld(host, worldName);
+  if (world == null) {
+    errors.push(`the program's document declares no world named ${worldName}`);
+    return errors;
+  }
+  let hostInterfaces = new Map<String, InterfaceDef>();
+  for (let iface in interfacesOf(host)) {
+    hostInterfaces[iface.qualified] = iface.def;
+  }
+  let imported = new Map<String, InterfaceDef>();
+  let exported = new Map<String, InterfaceDef>();
+  for (let item in (world as WorldDef).items) {
+    var path: UsePath | null = null;
+    var isImport = false;
+    if (item.tag == WorldItemTag.Import) {
+      let kind = (item.importItem as Import).kind;
+      if (kind.tag == ExternKindTag.Path) {
+        path = kind.path;
+        isImport = true;
+      }
+    } else if (item.tag == WorldItemTag.Export) {
+      let kind = (item.exportItem as Export).kind;
+      if (kind.tag == ExternKindTag.Path) {
+        path = kind.path;
+      }
+    }
+    if (path == null) {
+      continue;
+    }
+    let qualified = externTarget(host, path as UsePath);
+    if (!hostInterfaces.has(qualified)) {
+      continue;
+    }
+    if (isImport) {
+      imported[qualified] = hostInterfaces[qualified];
+    } else {
+      exported[qualified] = hostInterfaces[qualified];
+    }
+  }
+  for (let iface in interfacesOf(guest)) {
+    if (imported.has(iface.qualified)) {
+      new ViewCheck(errors, `${iface.qualified}, imported by world ${worldName} ` +
+          `(${guestLabel})`, ViewKind.Called, iface.def, imported[iface.qualified]).run();
+    }
+    if (exported.has(iface.qualified)) {
+      new ViewCheck(errors, `${iface.qualified}, exported by world ${worldName} ` +
+          `(${guestLabel})`, ViewKind.Served, iface.def, exported[iface.qualified]).run();
+    }
+  }
+  return errors;
+}
