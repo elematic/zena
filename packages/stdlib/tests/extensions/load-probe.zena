@@ -1,0 +1,20 @@
+// Loads one fixture with no bindings and prints the outcome: a probe
+// for debugging the host's `load`, run as `zena -g run
+// --allow-extensions --dir .::. packages/stdlib/tests/extensions/load-probe.zena
+// <fixture.wasm>`.
+import { getArguments } from 'zena:cli';
+import { Extension, loadExtension } from 'zena:extensions';
+
+export function main(): i32 {
+  let args = getArguments();
+  let path = if (args.length > 1) args[1] else 'packages/stdlib/tests/extensions/fixtures/plain.wasm';
+  console.log(`loading ${path}`);
+  let loaded = loadExtension(path, []);
+  if (loaded is (true, Extension)) {
+    console.log(`loaded as ${loaded[1].handle}`);
+    loaded[1].drop();
+    return 0;
+  }
+  console.log(`refused: ${(loaded as (false, String))[1]}`);
+  return 1;
+}

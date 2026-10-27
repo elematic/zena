@@ -1,0 +1,44 @@
+// The caller's side of child.wit's interfaces, in the shape the host
+// pairs with the extension's (docs/design/runtime-components.md):
+// `ops`, which the caller calls, as a resource whose methods are the
+// extension's functions with their results wrapped, plus `attach`;
+// `callbacks`, which the caller serves, as a resource whose methods are
+// the extension's functions, plus `create`.
+package test:ext@1.0.0;
+
+interface ops {
+  resource ops {
+    compute: async func(x: s32) -> result<s32, string>;
+    describe: async func(name: string, parts: list<u32>) -> result<string, string>;
+    trap: async func() -> result<_, string>;
+    spin: async func() -> result<_, string>;
+    grow: async func(mebibytes: u32) -> result<u32, string>;
+    count: async func() -> result<u32, string>;
+  }
+  attach: func(extension: u32) -> own<ops>;
+}
+
+interface relay {
+  resource relay {
+    twice: async func(x: s32) -> result<s32, string>;
+  }
+  attach: func(extension: u32) -> own<relay>;
+}
+
+interface callbacks {
+  resource callbacks {
+    lookup: async func(key: s32) -> s32;
+  }
+  create: func(extension: u32) -> own<callbacks>;
+}
+
+world caller {
+  import wasi:cli/environment@0.3.0;
+  import wasi:cli/stdout@0.3.0;
+  import wasi:cli/stderr@0.3.0;
+  import zena-cli:host/extensions@1.0.0;
+  import ops;
+  import relay;
+  export callbacks;
+  export main: async func();
+}

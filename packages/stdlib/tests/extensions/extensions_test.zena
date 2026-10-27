@@ -1,0 +1,165 @@
+// zena:extensions: loading components as extensions and calling them.
+// Loading is tested from here; the calls need a program that imports
+// the extension interfaces, so they run `fixtures/caller.wasm` through
+// zena:wasm and check what it prints. The fixtures are compiled by the
+// package's `build:fixtures` script from the Zena and WIT files beside
+// them. Repo tests run with both grants.
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import {
+  Binding, Extension, fromHost, fromProgram, loadExtension,
+  loadTrustedExtension,
+} from 'zena:extensions';
+import { RunOutcome, runModule } from 'zena:wasm';
+
+let fixtures = 'packages/stdlib/tests/extensions/fixtures';
+
+let fixture = (name: String) => `${fixtures}/${name}`;
+
+/** Why a load failed, or '' when it did not. */
+let refusal = (name: String, bindings: Array<Binding>): String => {
+  let loaded = loadExtension(fixture(name), bindings);
+  if (loaded is (false, String)) {
+    return loaded[1];
+  }
+  (loaded as (true, Extension))[1].drop();
+  return '';
+};
+
+/** Runs the caller fixture's `scenario` and returns what it printed. */
+let run = (scenario: String): String => {
+  let result = runModule(fixture('caller.wasm'), {
+    args: ['caller', scenario],
+    dirs: [{from: '.', to: '.'}],
+    grantExtensions: true,
+  });
+  equal(result.outcome, RunOutcome.Returned, `${result.message}\n${result.stderr}`);
+  return result.stdout;
+};
+
+let lines = (text: String) => text.trim().split('\n');
+
+export let tests = suite('extensions', () => {
+  test('a component with no imports loads and drops', () => {
+    let loaded = loadExtension(fixture('plain.wasm'), []);
+    if (loaded is (false, String)) {
+      isTrue(false, loaded[1]);
+    }
+    let ext = (loaded as (true, Extension))[1];
+    isTrue(ext.handle >= (1 as u32));
+    ext.drop();
+    // Dropping again is harmless, and handles are not reused.
+    ext.drop();
+    let again = loadExtension(fixture('plain.wasm'), []);
+    isTrue((again as (true, Extension))[1].handle > ext.handle);
+  });
+
+  test('a file that is missing or out of reach does not load', () => {
+    isTrue(refusal('no-such.wasm', []).contains('no such file'));
+    isTrue(refusal('../../../../../etc/passwd', []).contains('outside'));
+  });
+
+  test('an import without a binding is refused', () => {
+    let refused = refusal('random.wasm', []);
+    isTrue(refused.contains('wasi:random/random@0.3.0'), refused);
+    isTrue(refused.contains('not on its import list'), refused);
+    equal(refusal('random.wasm', [fromHost('wasi:random/random@0.3.0')]), '');
+  });
+
+  test('a trusted load allows every host interface', () => {
+    let loaded = loadTrustedExtension(fixture('random.wasm'));
+    if (loaded is (false, String)) {
+      isTrue(false, loaded[1]);
+    }
+    (loaded as (true, Extension))[1].drop();
+  });
+
+  test('a binding to an export this program lacks is refused', () => {
+    let unbound = refusal('child.wasm', []);
+    isTrue(unbound.contains('test:ext/callbacks@1.0.0'), unbound);
+    isTrue(unbound.contains('not on its import list'), unbound);
+    let bound = refusal('child.wasm', [fromProgram('test:ext/callbacks@1.0.0')]);
+    isTrue(bound.contains('test:ext/callbacks@1.0.0'), bound);
+    isTrue(bound.contains('does not export'), bound);
+    let asHost = refusal('child.wasm', [fromHost('test:ext/callbacks@1.0.0')]);
+    isTrue(asHost.contains('not a host interface'), asHost);
+    let trusted = loadTrustedExtension(fixture('child.wasm'));
+    isTrue(trusted is (false, String));
+  });
+
+  test('calls cross with their arguments and results, and call back', () => {
+    equal(run('calls').trim(),
+      'lookup 1 5\n' +
+      'compute(5) = 210\n' +
+      'lookup 1 7\n' +
+      'compute(7) = 214\n' +
+      'describe = ab:3:6');
+  });
+
+  test('a trap fails the call, and the next call starts afresh', () => {
+    let text = run('trap');
+    let out = lines(text);
+    equal(out[0], 'count = 1');
+    equal(out[1], 'count = 2');
+    isTrue(out[2].startsWith('trap failed: '), out[2]);
+    // The message carries the trap and its backtrace, over several lines.
+    isTrue(text.contains('out of bounds array access'), text);
+    equal(out[out.length - 1], 'count = 1');
+  });
+
+  test('a call past its time limit is stopped, and the next call runs', () => {
+    equal(run('timeout').trim(),
+      'spin failed: stopped at its time limit\n' +
+      'lookup 1 1\n' +
+      'compute(1) = 202');
+  });
+
+  test('memory past the limit fails the call', () => {
+    let text = run('memory');
+    let out = lines(text);
+    isTrue(out[0].startsWith('grow(64) failed: '), out[0]);
+    isTrue(text.contains('out of memory'), text);
+    equal(out[out.length - 1], 'grow(1) = 1');
+  });
+
+  test('a dropped extension, or an unknown handle, fails calls', () => {
+    equal(run('drop').trim(),
+      'lookup 1 1\n' +
+      'compute(1) = 202\n' +
+      'after drop failed: extension 1 is dropped\n' +
+      'no such handle failed: no extension 99');
+  });
+
+  test('a run loads nothing without the grant passed on', () => {
+    let result = runModule(fixture('caller.wasm'), {
+      args: ['caller', 'calls'],
+      dirs: [{from: '.', to: '.'}],
+    });
+    equal(result.outcome, RunOutcome.Trapped);
+    isTrue(result.message.contains('--allow-extensions'), result.message);
+  });
+
+  test('an export of the program is not granted by being exported', () => {
+    let out = run('unbound');
+    isTrue(out.startsWith('unbound refused: '), out);
+    isTrue(out.contains('test:ext/callbacks@1.0.0, which is not on its import list'), out);
+  });
+
+  test('an export whose type does not match is refused', () => {
+    let out = run('mismatch');
+    isTrue(out.startsWith('mismatch refused: '), out);
+    isTrue(out.contains('test:ext/ops@1.0.0#compute'), out);
+    isTrue(out.contains('S64'), out);
+  });
+
+  test('an extension bound to another calls it, and it calls the program', () => {
+    let text = run('relay');
+    let out = lines(text);
+    // The child's lookup is served for extension 1 while the program
+    // waits on the relay, extension 2.
+    equal(out[0], 'lookup 1 5');
+    equal(out[1], 'twice(5) = 420');
+    isTrue(out[2].startsWith('twice after drop failed: '), out[2]);
+    isTrue(text.contains('is dropped'), text);
+  });
+});
