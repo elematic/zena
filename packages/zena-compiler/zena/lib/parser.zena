@@ -2883,6 +2883,7 @@ export final class Parser {
     }
     
     // Parse the first expression to determine record vs map
+    let firstToken = this.#peek();
     let firstExpr = this.#parseExpression();
     
     // If followed by =>, it's a map literal
@@ -2908,6 +2909,12 @@ export final class Parser {
     }
     
     // Otherwise it's a record — first expression must be an identifier
+    if (!(firstExpr is Identifier)) {
+      throw this.#error(
+        "A record field is named by an identifier; a map entry is written 'key => value'.",
+        firstToken
+      );
+    }
     let name = firstExpr as Identifier;
     let value: Expression = if (this.#match(TokenType.Colon)) {
       this.#parseExpression()
