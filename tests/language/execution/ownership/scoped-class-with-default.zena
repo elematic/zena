@@ -1,0 +1,53 @@
+// @mode: run
+// @result: 17
+// A `scoped T` class's slot as `WithDefault<T>`, which has an empty
+// state at a primitive `T` too. Moving the value out is a take: at an
+// owner it leaves the slot empty, so the resource is released once,
+// and at `i32` the read is a copy. Reading it back with `as T` takes
+// the same way.
+
+import {Own, Disposable} from 'zena:core';
+
+@intrinsic('type.withDefault')
+declare type WithDefault<T>;
+
+@intrinsic('default_value')
+declare function defaultValue<scoped T>(): WithDefault<T>;
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+  take(): WithDefault<T> {
+    return this.#value;
+  }
+  get(): T {
+    return this.#value as T;
+  }
+}
+
+export let main = (): i32 => {
+  var result = 0;
+  if (true) {
+    let s = new Slot<Own<Res>>();
+    s.put(new Res());
+    let a = s.get();
+    let b = s.take();
+    if (b == null) {
+      result += 10;
+    }
+  }
+  result += released;
+  let n = new Slot<i32>();
+  n.put(3);
+  return result + n.get() + n.get();
+};

@@ -116,7 +116,7 @@ import {
   isScopedType, scopedInner,
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
   typeContainsConcreteSecondClass, borrowInnerRestricts,
-  typeCarriesOwner, isAffineContainer, isScopedClassParam
+  typeCarriesOwner, isAffineContainer, isScopedClassParam, hasPrimitiveRepresentation
 , ErasedType, FunctionDeclInfo, internFunctionType, mergeRow, mergeTupleRow } from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
@@ -5226,6 +5226,10 @@ function rejectFieldStorage(ctx: CheckerContext, t: Type, loc: SourceLocation | 
  */
 function scopedParamsFieldHeld(t: Type): boolean {
   if (t is TypeParameterType) { return true; }
+  if (isWithDefaultType(t)) {
+    let args = (t as TypeAliasType).typeArguments;
+    return args != null && args.length == 1 && scopedParamsFieldHeld(args[0]);
+  }
   if (t is UnionT) {
     for (let m in t.types) {
       if (!scopedParamsFieldHeld(m)) { return false; }
@@ -5274,6 +5278,47 @@ function rejectAffineStructuralMember(
 }
 
 /**
+ * Marks the type parameters a written union puts beside a reference
+ * type (`T | null`, `T | String`). Only written unions: one inferred
+ * in a body would be seen only once that body is checked, which for a
+ * dependency may be after its instantiations were.
+ */
+function markReferenceUnionParams(members: Array<Type>) {
+  var hasReference = false;
+  for (let m in members) {
+    if (!(m is TypeParameterType) && !hasPrimitiveRepresentation(m)) {
+      hasReference = true;
+    }
+  }
+  if (!hasReference) { return; }
+  for (let m in members) {
+    if (m is TypeParameterType) { m.inReferenceUnion = true; }
+  }
+}
+
+/**
+ * Rejects a primitive bound to a type parameter its declaration writes
+ * in a union with a reference type (#614). `i32 | null` has no
+ * representation, so the instantiation could not be compiled.
+ */
+function rejectPrimitiveInReferenceUnion(
+  ctx: CheckerContext,
+  param: TypeParameterType,
+  arg: Type,
+  loc: SourceLocation | null
+) {
+  if (!param.inReferenceUnion || !hasPrimitiveRepresentation(arg)) { return; }
+  let name = param.name;
+  ctx.error(
+    `Type '${typeToString(arg)}' may not bind '${name}': the declaration writes ` +
+    `'${name}' in a union with a reference type, such as '${name} | null', and a ` +
+    `primitive has no such union. A slot that may be empty is 'WithDefault<${name}>'.`,
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+}
+
+/**
  * Every type argument of a class is a storage position, because the class
  * is a heap object that outlives the scope constructing it. Applied where
  * a class is instantiated rather than only where one is spelled, so
@@ -5287,6 +5332,9 @@ function rejectSecondClassTypeArguments(
   loc: SourceLocation | null
 ) {
   for (var i = 0; i < typeArgs.length; i += 1) {
+    if (i < typeParams.length) {
+      rejectPrimitiveInReferenceUnion(ctx, typeParams[i], typeArgs[i], loc);
+    }
     // A `scoped` class parameter admits the argument; the instantiated
     // type then carries the restriction itself (ownership.md §"Scoped
     // containers and extent nesting").
@@ -5338,6 +5386,7 @@ function rejectSecondClassFunctionTypeArgs(
   loc: SourceLocation | null
 ) {
   for (var i = 0; i < typeParams.length && i < typeArgs.length; i += 1) {
+    rejectPrimitiveInReferenceUnion(ctx, typeParams[i], typeArgs[i], loc);
     if (typeParams[i].isScoped) { continue; }
     rejectOwnerTypeArgument(ctx, typeParams[i].name, typeArgs[i], loc);
     if (!typeContainsSecondClass(typeArgs[i])) { continue; }
@@ -5529,7 +5578,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
   if (arg is ThisExpression) {
     let rs = ctx.receiverSymbol;
     if (rs == null) { return; }
-    let sinkCore = soleNonNullMember(paramType) ?? paramType;
+    let sinkCore = moveSinkCore(paramType);
     if (ownershipHandleName(sinkCore) == "Own" || isAffineValue(sinkCore)) {
       ctx.recordFlowMove(rs.id, "this", arg.loc);
     } else if (ownershipHandleName(sinkCore) == "") {
@@ -5543,21 +5592,18 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
   // the field's move-out (ownership.md §Affine fields); the read kept
   // its owner type only there, so an affine test on the checked type
   // is what scopes this to that context.
+  // A `WithDefault<T>` slot read back as its `T` (`this.#value as T`)
+  // moves the slot's value as the bare read would.
+  if (arg is AsExpression) {
+    let inner = castOperand(arg);
+    if (inner is MemberExpression) {
+      recordScopedFieldSinkMove(ctx, inner, paramType);
+    }
+    return;
+  }
   if (arg is MemberExpression) {
     let me = arg;
-    // A `scoped T` field's value handed to a restricted sink (a `T`
-    // parameter, a binding, a `Future<T>`) moves out of the field. A
-    // borrow of it moves nothing.
-    let sfi = scopedFieldInfo(ctx, me);
-    if (sfi != null) {
-      let sinkCore = soleNonNullMember(paramType) ?? paramType;
-      let sinkHandle = ownershipHandleName(sinkCore);
-      if (sinkHandle != "Borrow" && sinkHandle != "Unmanaged" &&
-          typeContainsSecondClass(sinkCore)) {
-        recordScopedFieldTake(ctx, me, sfi as FieldInfo, arg.loc);
-      }
-      return;
-    }
+    if (recordScopedFieldSinkMove(ctx, me, paramType)) { return; }
     if (me.object is ThisExpression && ctx.owningReceiver) {
       let sink = ownershipHandleName(soleNonNullMember(paramType) ?? paramType);
       if (sink == "Own") {
@@ -5574,7 +5620,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
   if (info == null) { return; }
   // An `Own<R> | null` sink takes ownership the same way `Own<R>` does;
   // null just means there may be nothing to own.
-  let sinkType = soleNonNullMember(paramType) ?? paramType;
+  let sinkType = moveSinkCore(paramType);
   let handle = ownershipHandleName(sinkType);
   if (handle == "Own" || isAffineValue(sinkType)) {
     ctx.recordFlowMove(info.id, info.name, arg.loc);
@@ -5767,6 +5813,51 @@ function scopedFieldInfo(ctx: CheckerContext, me: MemberExpression): FieldInfo |
 }
 
 /**
+ * A `scoped T` field's value handed to a restricted sink (a `T`
+ * parameter, a binding, a `Future<T>`) moves out of the field; a borrow
+ * of it moves nothing. Whether `me` named such a field.
+ */
+function recordScopedFieldSinkMove(ctx: CheckerContext, me: MemberExpression,
+    paramType: Type): boolean {
+  let sfi = scopedFieldInfo(ctx, me);
+  if (sfi == null) { return false; }
+  let sinkCore = moveSinkCore(paramType);
+  let sinkHandle = ownershipHandleName(sinkCore);
+  if (sinkHandle != "Borrow" && sinkHandle != "Unmanaged" &&
+      typeContainsSecondClass(sinkCore)) {
+    recordScopedFieldTake(ctx, me, sfi as FieldInfo, me.loc);
+  }
+  return true;
+}
+
+/** The expression under any `as` casts around `e`. */
+function castOperand(e: Expression): Expression {
+  var current = e;
+  while (current is AsExpression) {
+    current = current.expression;
+  }
+  return current;
+}
+
+/**
+ * The type a move into a sink of `paramType` hands its value to. A
+ * nullable sink (`Own<R> | null`) and a slot that may be empty
+ * (`WithDefault<T>`) take the same value as their core.
+ */
+function moveSinkCore(paramType: Type): Type {
+  if (isWithDefaultType(paramType)) {
+    let args = (paramType as TypeAliasType).typeArguments;
+    if (args != null && args.length == 1) { return args[0]; }
+  }
+  return soleNonNullMember(paramType) ?? paramType;
+}
+
+/** Whether `t` is an instance of the `WithDefault<T>` operator. */
+function isWithDefaultType(t: Type): boolean {
+  return t is TypeAliasType && t.intrinsicName == 'type.withDefault';
+}
+
+/**
  * A move of a `scoped T` field's value out of the object
  * (owner-futures.md §"The class half of `scoped T`"). It is a take, as
  * for an owner field: the move leaves null behind, so the field must be
@@ -5777,11 +5868,15 @@ function recordScopedFieldTake(ctx: CheckerContext, me: MemberExpression,
     fi: FieldInfo, loc: SourceLocation | null) {
   let name = getMemberPropertyName(me.isSymbolAccess, me.property.name);
   let display = "this." + name;
-  if (!isNullableType(fi.type)) {
+  if (!isNullableType(fi.type) && !isWithDefaultType(fi.type)) {
+    // A bare `T` empties into `WithDefault<T>`, since `T | null` has
+    // no value at a primitive `T` (#614).
+    let shown = typeToString(fi.type);
+    let suggested = if (fi.type is TypeParameterType) `WithDefault<${shown}>` else `${shown} | null`;
     ctx.error(
       `'${display}' is not nullable, so moving its value out would leave the ` +
-        `object without one. Declare it 'var ${name}: ${typeToString(fi.type)} | null' ` +
-        "so the move leaves null in it.",
+        `object without one. Declare it 'var ${name}: ${suggested}' so the move ` +
+        "leaves it empty.",
       DiagnosticCode.UseAfterMove,
       loc
     );
@@ -6546,6 +6641,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
       ei += 1;
     }
 
+    markReferenceUnionParams(resolved);
     createUnionType(resolved, ctx, ann.loc)
   }
   case NullableTypeAnnotation {typeAnnotation}: {
@@ -6560,6 +6656,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
       new ErrorType() as Type
     } else {
       let arms = growable<Type>([inner, new NullType()]);
+      markReferenceUnionParams(arms);
       createUnionType(arms, ctx, ann.loc)
     }
   }
@@ -8910,6 +9007,17 @@ function operandText(expr: Expression) {
 }
 
 function isValidCast(sourceType: Type, targetType: Type): boolean {
+  // Reading a `WithDefault<T>` slot back as a `T`: the identity at a
+  // primitive, and at a reference a non-null cast that fails on an
+  // empty slot.
+  if (let TypeAliasType {intrinsicName, typeArguments} = sourceType) {
+    if (intrinsicName == 'type.withDefault' && typeArguments != null &&
+        typeArguments.length == 1) {
+      return typesEqual(typeArguments[0], targetType) ||
+          isValidCast(typeArguments[0], targetType);
+    }
+  }
+
   // `v128` has no numeric conversions. The bits carry no interpretation
   // until an instruction reads them, so there is nothing for a cast to
   // `i32` to preserve. What it does convert to is a shaped view of
@@ -9824,6 +9932,16 @@ function isAssignableTo(ctx: CheckerContext, source: Type, target: Type): boolea
   }
   if (let InlineParamType {param} = target) {
     return isAssignableTo(ctx, source, param);
+  }
+  // A `T` fills a `WithDefault<T>` slot, which is `T` itself at a
+  // primitive and `T | null` at a reference. Null does not, while `T`
+  // is open: at a primitive the slot has none (type-operators.md
+  // §"`type.withDefault`").
+  if (let TypeAliasType {intrinsicName, typeArguments} = target) {
+    if (intrinsicName == 'type.withDefault' && typeArguments != null &&
+        typeArguments.length == 1) {
+      return isAssignableTo(ctx, source, typeArguments[0]);
+    }
   }
 
   // Borrowing at a call site is implicit: an `Own<R>` is accepted where a
@@ -11611,11 +11729,12 @@ function checkStatement(ctx: CheckerContext, stmt: Statement): void {
       // ownership to the caller — a move-out, or the dispose glue
       // would release what was just returned.
       // `return this.field` of a `scoped T` field hands its value to
-      // the caller: a take.
-      if (argument != null && argument is MemberExpression) {
-        let sfi = scopedFieldInfo(ctx, argument);
+      // the caller: a take, through a cast too (`this.#value as T`).
+      let returned = if (argument != null) castOperand(argument as Expression) else null;
+      if (returned != null && returned is MemberExpression) {
+        let sfi = scopedFieldInfo(ctx, returned);
         if (sfi != null) {
-          recordScopedFieldTake(ctx, argument, sfi as FieldInfo, loc);
+          recordScopedFieldTake(ctx, returned, sfi as FieldInfo, loc);
         }
       }
       if (argument != null && ctx.owningReceiver && argument is MemberExpression) {
@@ -19904,13 +20023,14 @@ function checkTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasDeclaration
         ctx.error("The 'type.scopedFrom' operator needs 'Scoped' in scope.",
             DiagnosticCode.TypeMismatch, ta.name.loc);
       }
-    } else if (decoratorStringArg(dec, 0) != 'type.awaited') {
+    } else if (decoratorStringArg(dec, 0) != 'type.awaited' &&
+        decoratorStringArg(dec, 0) != 'type.withDefault') {
       ctx.error(`Unknown type intrinsic '${decoratorStringArg(dec, 0) as String}'.`,
           DiagnosticCode.TypeMismatch, dec.loc);
     } else {
       let tps = ta.typeParameters;
       if (tps == null || tps.length != 1) {
-        ctx.error("The 'type.awaited' operator takes exactly one type parameter.",
+        ctx.error(`The '${decoratorStringArg(dec, 0) as String}' operator takes exactly one type parameter.`,
             DiagnosticCode.TypeMismatch, ta.name.loc);
       }
     }

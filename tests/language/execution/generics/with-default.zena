@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 11
+// `WithDefault<T>` (type-operators.md §"`type.withDefault`") is `T` at
+// a primitive and `T | null` at a reference: a generic slot that may be
+// empty without a `Box`. `defaultValue<T>()` is zero or null, a `T`
+// fills it, and `as T` reads it back.
+
+@intrinsic('type.withDefault')
+declare type WithDefault<T>;
+
+@intrinsic('default_value')
+declare function defaultValue<scoped T>(): WithDefault<T>;
+
+class Cell<T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  set(value: T): void {
+    this.#value = value;
+  }
+  get(): T {
+    return this.#value as T;
+  }
+}
+
+export let main = (): i32 => {
+  let n = new Cell<i32>();
+  let empty = n.get();
+  n.set(5);
+  let s = new Cell<String>();
+  s.set('abc');
+  let f = new Cell<f64>();
+  f.set(1.5);
+  return empty + n.get() + s.get().length + (f.get() * 2.0) as i32;
+};

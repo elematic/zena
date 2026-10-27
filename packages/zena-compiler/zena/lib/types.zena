@@ -2949,6 +2949,13 @@ export final class TypeParameterType extends Type {
    */
   var isScoped: boolean = false;
   /**
+   * Written beside a reference type in a union (`T | null`) in its
+   * declaration. Such a union has no representation at a primitive, so
+   * binding the parameter to one is rejected where it is instantiated
+   * (#614). `WithDefault<T>` is the slot that has one at both.
+   */
+  var inReferenceUnion: boolean = false;
+  /**
    * Declared `R extends record`: the parameter ranges over record rows
    * and can be spread into a record type (docs/design/row-types.md
    * §3.1). `constraint` is null for one.
@@ -3345,11 +3352,66 @@ export function awaitedTypeOf(t: Type): Type {
 }
 
 /**
- * Applies an intrinsic alias's rule once its argument is closed, and
- * returns the alias unchanged while the argument still mentions open
- * type parameters — substitution re-applies at every step, so the
- * first closing substitution normalizes the alias away.
+ * The `type.withDefault` rule: `WithDefault<T>` is `T` at a primitive
+ * and `T | null` at a reference (type-operators.md §"`type.withDefault`").
+ * It is the type of a slot that is empty until a `T` is stored, with
+ * `defaultValue<T>()` its empty value: zero, or null.
  */
+export function withDefaultTypeOf(alias: TypeAliasType): Type {
+  let args = alias.typeArguments;
+  if (args == null || args.length != 1) {
+    return alias;
+  }
+  let t = args[0];
+  if (typeContainsTypeParameter(t)) {
+    return alias;
+  }
+  if (hasPrimitiveRepresentation(t)) {
+    return t;
+  }
+  if (t is NullType) {
+    return t;
+  }
+  let members = new Array<Type>();
+  if (t is UnionType) {
+    for (let m in t.types) {
+      if (m is NullType) { return t; }
+      members.push(m);
+    }
+  } else {
+    members.push(t);
+  }
+  members.push(new NullType());
+  return new UnionType(members);
+}
+
+/**
+ * Whether values of `t` are represented by a wasm scalar rather than a
+ * reference, through enums and distinct aliases, so a slot of it has
+ * no null.
+ */
+export function hasPrimitiveRepresentation(t: Type): boolean {
+  var current = t;
+  var hops = 0;
+  while (hops < 32) {
+    if (current is EnumType) {
+      let e = current as EnumType;
+      current = e.backingType;
+    } else if (current is TypeAliasType) {
+      let alias = current as TypeAliasType;
+      if (alias.intrinsicName != null || alias.resolving || isOwnershipWrapper(alias)) {
+        break;
+      }
+      current = alias.target;
+    } else {
+      break;
+    }
+    hops += 1;
+  }
+  return isNumericType(current) || current is BooleanType ||
+      current is BoolLiteralType || current is V128Type;
+}
+
 /**
  * The `type.scopedFrom` rule: `ScopedFrom<T, R>` is `Scoped<R>` when
  * `T` carries a second-class type and `R` otherwise
@@ -3381,9 +3443,18 @@ export function scopedFromTypeOf(alias: TypeAliasType): Type {
   return alias;
 }
 
+/**
+ * Applies an intrinsic alias's rule once its argument is closed, and
+ * returns the alias unchanged while the argument still mentions open
+ * type parameters — substitution re-applies at every step, so the
+ * first closing substitution normalizes the alias away.
+ */
 export function applyTypeIntrinsic(alias: TypeAliasType): Type {
   if (alias.intrinsicName == 'type.scopedFrom') {
     return scopedFromTypeOf(alias);
+  }
+  if (alias.intrinsicName == 'type.withDefault') {
+    return withDefaultTypeOf(alias);
   }
   if (alias.intrinsicName != 'type.awaited') {
     return alias;

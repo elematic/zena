@@ -651,6 +651,11 @@ import {Box} from 'zena';
 let maybeNumber: Box<i32>? = new Box(42);
 ```
 
+The same rule holds for a type parameter. A generic that writes `T | null`
+(or `T?`) may not be instantiated at a primitive, since `i32 | null` is not
+a type: `new Plain<i32>()` for `class Plain<T> { var value: T | null; }` is
+an error at the instantiation.
+
 **Note**: This is distinct from the "Indistinguishable Types" limitation (see
 [Distinguishable Types & Erasure](#distinguishable-types--erasure)). Primitives
 _are_ distinguishable from references, but they are incompatible in storage

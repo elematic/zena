@@ -11,7 +11,7 @@
  * case-class ==/hashCode synthesizers — and arrive here as closures.
  */
 import { CallExpression, Expression, NumberLiteral, UnaryExpression } from '../../ast.zena';
-import { ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeVoid } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeVoid, isRefValType } from '../wasm.zena';
 import {
   SimdInstruction, SimdShape, SimdResult, simdInstruction, simdArgCount,
   simdLaneCount,
@@ -238,6 +238,26 @@ function newResultArray(cx: LoweringContext, call: CallExpression): (ValType, Wa
     cx.fail('array builtin result type');
   }
   return (resultVt, arrTypeOpt);
+}
+
+/**
+ * `defaultValue<T>()`: what an empty `WithDefault<T>` slot holds, null
+ * at a reference `T` and zero at a primitive one. The call's type at
+ * this specialization is the closed `WithDefault<T>`, so its value type
+ * says which.
+ */
+function lowerDefaultValue(cx: LoweringContext, call: CallExpression): i32 {
+  let vt = cx.exprVt(call);
+  if (isRefValType(vt)) {
+    return cx.b.emit(IrOp.ref_null, vt, -1, -1);
+  }
+  return match (vt) {
+    case ValTypeI32: cx.b.constI32(0, vt)
+    case ValTypeI64: cx.b.constI64(0 as i64, vt)
+    case ValTypeF32: cx.b.constF32(0.0, vt)
+    case ValTypeF64: cx.b.constF64(0.0, vt)
+    case _: cx.failValue('defaultValue of this type')
+  };
 }
 
 /** __array_new: array.new with an explicit init value. */
@@ -794,6 +814,7 @@ export function lowerIntrinsic(cx: LoweringContext, name: String, call: CallExpr
     case 'to_string': {
       lowerToStringIntrinsic(cx, call)
     }
+    case 'default_value': lowerDefaultValue(cx, call)
     case _: {
       // SIMD instructions are not listed above: one table row in
       // lib/simd.zena carries the opcode, shape and result for all 236,

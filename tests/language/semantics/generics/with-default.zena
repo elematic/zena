@@ -1,0 +1,51 @@
+// @mode: check
+// `WithDefault<T>` while `T` is open: a `T` fills it, `defaultValue<T>()`
+// empties it, and `as T` reads it back. Null does not fit, since at a
+// primitive the slot has no null, and the slot is not a `T` until it is
+// read back.
+
+@intrinsic('type.withDefault')
+declare type WithDefault<T>;
+
+@intrinsic('default_value')
+declare function defaultValue<scoped T>(): WithDefault<T>;
+
+class Cell<T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  fill(value: T): void {
+    this.#value = value;
+  }
+  empty(): void {
+    this.#value = defaultValue<T>();
+  }
+  clear(): void {
+    this.#value = null; // @error: not assignable
+  }
+  get(): T {
+    return this.#value as T;
+  }
+  raw(): T {
+    return this.#value; // @error: cannot return
+  }
+}
+
+// In a `scoped T` class the slot is taken from, so it must be `var`.
+// The take holds through `as T` too.
+class Held<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  #fixed: WithDefault<T> = defaultValue<T>();
+  get(): T {
+    return this.#value as T;
+  }
+  fixed(): T {
+    return this.#fixed as T; // @error: must be declared 'var'
+  }
+}
+
+// Closed, the operator is the plain type.
+let closed = (): i32 => {
+  let n: WithDefault<i32> = 3;
+  let s: WithDefault<String> = null;
+  let t: String | null = s;
+  return n;
+};
