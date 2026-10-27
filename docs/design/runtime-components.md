@@ -317,9 +317,10 @@ gives it the usual class with the usual methods. Concretely:
 - A method call on a proxy is forwarded to the owner with the mapped
   handle as `self`, through the same channel as any other call.
   Dropping a proxy forwards the drop: to an extension's thread, which
-  drops the handle in its store, or to the program, as a task of its
-  store, since dropping a handle the program owns runs the program's
-  destructor.
+  drops the handle in its store, or to the program's forwarder waiting
+  on the call in flight, which drops it before the call returns, so
+  the program's destructor has run by the time the program sees the
+  result.
 
 ### Isolation
 

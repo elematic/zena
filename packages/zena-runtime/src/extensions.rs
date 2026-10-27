@@ -382,19 +382,6 @@ impl Ctx<'_> {
             Ctx::Direct(store) => f(store),
         }
     }
-
-    /// Spawns `task` in the store, when the store's event loop is
-    /// running; a synchronous import holds the store, so nothing can run
-    /// beside it.
-    fn spawn(&mut self, task: impl AccessorTask<ComponentState>) -> Result<bool> {
-        match self {
-            Ctx::Accessor(accessor) => {
-                accessor.with(|mut a| a.spawn(task))?;
-                Ok(true)
-            }
-            Ctx::Direct(_) => Ok(false),
-        }
-    }
 }
 
 /// Defines `name` in `li` as a forwarder: a concurrent host function
@@ -975,53 +962,92 @@ async fn forward_call(
         return fail(results, format!("extension {handle} is dropped"));
     }
     let result_types: Vec<Type> = result_payload(ty).into_iter().collect();
-    loop {
+    // Calls back are taken before the answer, and whatever arrived
+    // beside the answer is taken after it, so a drop the extension made
+    // on its way out is done before the program sees the result.
+    let answered = loop {
         tokio::select! {
-            answered = &mut answer => {
-                return match answered {
-                    Ok(Ok(carried)) => {
-                        let taken = ctx.with(|store| incoming(store, carried, &result_types, &target));
-                        match taken {
-                            Ok((vals, _)) => {
-                                let payload = vals.into_iter().next().map(Box::new);
-                                if let Some(slot) = results.first_mut() {
-                                    *slot = Val::Result(Ok(payload));
-                                }
-                                Ok(())
-                            }
-                            Err(e) => fail(results, format!("taking the result: {e:#}")),
-                        }
-                    }
-                    Ok(Err(message)) => fail(results, message),
-                    Err(_) => fail(results, format!("extension {handle} went away")),
-                };
-            }
+            biased;
             Some(callback) = callbacks_rx.recv() => {
-                match callback {
-                    Callback::Call { extension, interface, func, params, reply } => {
-                        match &mut ctx {
-                            Ctx::Accessor(accessor) => {
-                                accessor.with(|mut a| a.spawn(ServeCallback {
-                                    extension, interface, func, params, reply,
-                                }))?;
-                            }
-                            // A synchronous import holds the store, so
-                            // nothing can run in it until this returns.
-                            Ctx::Direct(_) => {
-                                let _ = reply.send(Err(format_err!(
-                                    "{interface}#{func}: the program's call is synchronous, \
-                                     so it cannot serve a call back"
-                                )));
-                            }
-                        }
+                serve_callback(&mut ctx, callback)?;
+            }
+            answered = &mut answer => break answered,
+        }
+    };
+    callbacks_rx.close();
+    while let Ok(callback) = callbacks_rx.try_recv() {
+        serve_callback(&mut ctx, callback)?;
+    }
+    match answered {
+        Ok(Ok(carried)) => {
+            let taken = ctx.with(|store| incoming(store, carried, &result_types, &target));
+            match taken {
+                Ok((vals, _)) => {
+                    let payload = vals.into_iter().next().map(Box::new);
+                    if let Some(slot) = results.first_mut() {
+                        *slot = Val::Result(Ok(payload));
                     }
-                    Callback::Drop(any) => {
-                        ctx.spawn(DropOwn { any })?;
-                    }
+                    Ok(())
                 }
+                Err(e) => fail(results, format!("taking the result: {e:#}")),
             }
         }
+        Ok(Err(message)) => fail(results, message),
+        Err(_) => fail(results, format!("extension {handle} went away")),
     }
+}
+
+/// Serves one message from the extension while the program's call is
+/// in flight: a call to the program as a spawned task, or a drop of a
+/// handle the program owns, done here and now so that it is finished
+/// before the call returns. Neither can run while a synchronous import
+/// holds the store.
+fn serve_callback(ctx: &mut Ctx<'_>, callback: Callback) -> Result<()> {
+    match callback {
+        Callback::Call {
+            extension,
+            interface,
+            func,
+            params,
+            reply,
+        } => match ctx {
+            Ctx::Accessor(accessor) => {
+                accessor.with(|mut a| {
+                    a.spawn(ServeCallback {
+                        extension,
+                        interface,
+                        func,
+                        params,
+                        reply,
+                    })
+                })?;
+            }
+            Ctx::Direct(_) => {
+                let _ = reply.send(Err(format_err!(
+                    "{interface}#{func}: the program's call is synchronous, so it cannot \
+                     serve a call back"
+                )));
+            }
+        },
+        Callback::Drop(any) => match ctx {
+            Ctx::Accessor(accessor) => {
+                let dropped = accessor.with(|mut a| {
+                    let mut store = a.as_context_mut();
+                    drop_now(&mut store, any)
+                });
+                if let Err(e) = dropped {
+                    eprintln!("dropping a resource an extension released: {e:#}");
+                }
+            }
+            Ctx::Direct(_) => {
+                eprintln!(
+                    "a resource an extension released is kept: the program's call is \
+                     synchronous, so its destructor cannot run now"
+                );
+            }
+        },
+    }
+    Ok(())
 }
 
 /// Drops a handle of the program's whose proxy an extension dropped,
