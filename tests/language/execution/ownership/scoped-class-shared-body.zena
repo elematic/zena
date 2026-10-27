@@ -1,0 +1,67 @@
+// @mode: run
+// @result: 111
+// Instantiations that share a representation share one specialization:
+// a handle erases to its resource class, and `Scoped<F>` to `F`. The
+// shared body's takes are decided from the representation, so the
+// instantiation the compiler happens to reach first does not change
+// them (owner-futures.md §"Specialization").
+
+import {Own, Unmanaged, Scoped, Disposable} from 'zena:core';
+
+@intrinsic('type.withDefault')
+declare type WithDefault<T>;
+
+@intrinsic('default_value')
+declare function defaultValue<scoped T>(): WithDefault<T>;
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+  take(): WithDefault<T> {
+    return this.#value;
+  }
+}
+
+let tick = async (): Future<i32> => 1;
+
+export let main = (): i32 => {
+  var result = 0;
+
+  // `Unmanaged<Res>` reached first: the shared body still takes, as
+  // the owner needs, so the resource is released once.
+  let unmanaged = new Slot<Unmanaged<Res>>();
+  let none = unmanaged.take();
+  if (true) {
+    let s = new Slot<Own<Res>>();
+    s.put(new Res());
+    let a = s.take();
+    let b = s.take();
+    if (b == null) {
+      result += 10;
+    }
+  }
+  result += released;
+
+  // `Scoped<Future<i32>>` reached first: the shared body is
+  // first-class, so a plain future stays readable.
+  let scoped = new Slot<Scoped<Future<i32>>>();
+  let empty = scoped.take();
+  let f = new Slot<Future<i32>>();
+  f.put(tick());
+  let first = f.take();
+  let second = f.take();
+  if (first != null && second != null) {
+    result += 100;
+  }
+  return result;
+};
