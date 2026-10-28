@@ -1,5 +1,5 @@
 import { suite, test, TestContext } from 'zena:test';
-import { equal, isTrue } from 'zena:assert';
+import { equal, equalText, isTrue } from 'zena:assert';
 import { runFuture, Completer, Future, requireSync } from 'zena:async';
 import {
   Some, Option, none, some, Iterable, Iterator, IterableUtils, ImmutableArray, AsyncInSyncIteration, StringBuilder, Result,
@@ -92,6 +92,18 @@ export let tests = suite('zena:http html', () => {
           ${nested}
         </div>
       `.toString(), '\n<div>\n  \n<section>\n  <p>Foo</p>\n</section>\n\n</div>\n');
+    });
+
+    test('Nested HTML keeps the text around its values on their lines', (ctx) => {
+      // The text right after a value continues the value's line: it keeps
+      // its leading space, and gains no indentation.
+      let inner = html`
+        <p>${'1 scope'}, ${'1 package'} and
+          ${'1 bot'}.</p>`;
+      equalText(html`
+        <main>
+            ${inner}
+        </main>`.toString(), '\n<main>\n    \n<p>1 scope, 1 package and\n  1 bot.</p>\n</main>');
     });
 
     test('Interpolated String', (ctx) => {
