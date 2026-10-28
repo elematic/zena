@@ -242,6 +242,12 @@ export final class HostConfig {
   var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
   /** Scope names no one may take. */
   reservedScopes = new HashSet<String>();
+  /**
+   * The DIDs of the host's admins (`PDS_ADMIN_DIDS`), who sign in as
+   * themselves, as anyone does, and may see every account the host holds
+   * and every private entry.
+   */
+  admins = new HashSet<String>();
 
   new(serviceDid: String, domain: String, endpoint: String, rotationKey: RotationKey)
       : serviceDid = serviceDid, domain = domain, endpoint = endpoint, rotationKey = rotationKey {
@@ -618,6 +624,35 @@ export final class PackageHost {
     return memberships;
   }
 
+  /** Whether `did` is one of the host's admins. */
+  isHostAdmin(did: String): boolean {
+    return this.config.admins.has(did);
+  }
+
+  /**
+   * Every account the host made, by its scope or name claim, with its
+   * kind: organizations, packages and automation accounts. Admins only.
+   */
+  async listAccounts(caller: String): Future<Array<HostAccount>> {
+    if (!this.isHostAdmin(caller)) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an admin of this host`);
+    }
+    let accounts = new GrowableArray<HostAccount>();
+    for (let claimed in await this.#store.allScopes()) {
+      let account = await this.pds.storage.getAccount(claimed.org);
+      if (account != null) {
+        accounts.push(new HostAccount(account.did, account.handle ?? '', account.kind, claimed.scope, claimed.scope));
+      }
+    }
+    for (let claimed in await this.#store.allNames()) {
+      let account = await this.pds.storage.getAccount(claimed.did);
+      if (account != null) {
+        accounts.push(new HostAccount(account.did, account.handle ?? '', account.kind, claimed.scope, claimed.name));
+      }
+    }
+    return accounts;
+  }
+
   /**
    * `com.atproto.identity.resolveHandle`: the DID of `handle`, from this
    * host's own accounts, or as its resolver finds it, or null. A browser
@@ -708,6 +743,36 @@ export final class PackageHost {
       packages[i] = summary;
     }
     return packages;
+  }
+
+  /**
+   * The scope `name`, as its page shows it: its organization, the
+   * commitments of its members record, and its teams, by name; or null
+   * when no organization holds it. Public, as the records are; the entries
+   * behind the commitments come from `getEntries`.
+   */
+  async getScope(name: String): Future<ScopeDetail | null> {
+    let org = await this.#store.scopeOwner(name);
+    if (org == null) {
+      return null;
+    }
+    let account = await this.pds.storage.getAccount(org as String);
+    if (account == null || account.kind != AccountKind.Organization) {
+      return null;
+    }
+    let detail = new ScopeDetail(name, account.did, account.handle ?? '');
+    let members = await this.#current(account.did, MEMBERS_TYPE, 'self');
+    if (members != null) {
+      detail.members = Members.fromValue((members as CurrentRecord).value).members;
+    }
+    let store = this.pds.storage.store(account.did);
+    for (let entry in await store.allRecords()) {
+      if (entry.collection == TEAM_TYPE) {
+        let team = Team.fromValue(decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>));
+        detail.teams.push(new NamedTeam(entry.rkey, team));
+      }
+    }
+    return detail;
   }
 
   /**
@@ -1022,23 +1087,24 @@ export final class PackageHost {
       throw new HostError(400, 'InvalidRequest', `${account} is not an organization or package on this host`);
     }
     var commitments: Array<Cid> = [];
-    var seesAll = false;
+    // The host's admins see every entry, as its operator could anyway.
+    var seesAll = this.isHostAdmin(caller);
     if (held.kind == AccountKind.Organization) {
       let role = await this.#orgRole(account, caller);
       if (team == null) {
         commitments = await this.#commitmentsOf(account, MEMBERS_TYPE, 'self');
-        seesAll = isAdmin(role);
+        seesAll = seesAll || isAdmin(role);
       } else {
         let name = team as String;
         if ((await this.#current(account, TEAM_TYPE, name)) == null) {
           throw new HostError(400, 'TeamNotFound', `${account} has no team ${name}`);
         }
         commitments = await this.#commitmentsOf(account, TEAM_TYPE, name);
-        seesAll = isAdmin(role) || (await this.#teamRole(account, name, caller)) == MAINTAINER;
+        seesAll = seesAll || isAdmin(role) || (await this.#teamRole(account, name, caller)) == MAINTAINER;
       }
     } else {
       commitments = await this.#commitmentsOf(account, MAINTAINERS_TYPE, 'self');
-      seesAll = (await this.#packageRole(account, caller)) == OWNER;
+      seesAll = seesAll || (await this.#packageRole(account, caller)) == OWNER;
       if (!seesAll && held.handle != null) {
         // `<name>.<scope>.<domain>`: the organization of the package's scope.
         let labels = scopeOf(held.handle as String, this.config.domain).split('.');
@@ -1226,6 +1292,18 @@ export final class PackageHost {
   }
 }
 
+/** An account the host made, as `listAccounts` describes it. */
+export final class HostAccount {
+  did: String;
+  handle: String;
+  kind: AccountKind;
+  scope: String;
+  /** The scope, for an organization; else the name in the scope. */
+  name: String;
+
+  new(this.did, this.handle, this.kind, this.scope, this.name);
+}
+
 /** One account `getMemberships` found a role in: an organization, a team of one, or a package. */
 export final class Membership {
   /** The organization's or the package's DID; a team's organization's. */
@@ -1289,6 +1367,28 @@ export final class PackageSummary {
   sortKey(): String {
     return `${this.scope} ${this.name}`;
   }
+}
+
+/** A scope, as `getScope` reads it. */
+export final class ScopeDetail {
+  name: String;
+  /** Its organization's DID and handle. */
+  did: String;
+  handle: String;
+  /** The commitments of the organization's members record. */
+  var members: FixedArray<Cid> = [];
+  /** By name, as the records list them. */
+  teams = new GrowableArray<NamedTeam>();
+
+  new(this.name, this.did, this.handle);
+}
+
+/** A team record, and the team's name, its record key. */
+export final class NamedTeam {
+  name: String;
+  team: Team;
+
+  new(this.name, this.team);
 }
 
 /** A package, as `getPackage` reads it. */

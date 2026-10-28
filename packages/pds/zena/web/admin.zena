@@ -1,0 +1,144 @@
+/**
+ * The host's admin page, for the DIDs in `PDS_ADMIN_DIDS`: every account
+ * the host made, by scope. An admin signs in as anyone does; the scope and
+ * package pages then name every private member for them too
+ * (`PackageHost.getEntries`).
+ */
+
+import {HashMap} from 'zena:collections';
+import {GrowableArray} from 'zena:core';
+import {HTMLPartial, Router, TemplateValue, html} from 'zena:http';
+import {compareKeys} from 'atproto:mst';
+import {AccountKind} from '../storage.zena';
+import {HostAccount, PackageHost} from '../host.zena';
+import {count, each, page, when} from './layout.zena';
+import {contextOf} from './session.zena';
+
+/** One scope's accounts: its organization, its packages and its automation accounts. */
+final class ScopeAccounts {
+  scope: String;
+  var org: HostAccount | null = null;
+  packages = new GrowableArray<HostAccount>();
+  automation = new GrowableArray<HostAccount>();
+
+  new(this.scope);
+}
+
+/** Adds the admin page to `router`. */
+export function adminPages(router: Router, host: PackageHost): void {
+  router.get('/admin', async (req, res, next, params) => {
+    let context = contextOf(req, host);
+    res.type = 'text/html; charset=utf-8';
+    let who = context.who;
+    if (who == null) {
+      res.body = page('Admin · Zena packages', context, html`
+        <h1>Admin</h1>
+        <p>Sign in as one of the host's admins to see everything it holds.</p>
+      `);
+      return;
+    }
+    if (!context.isAdmin) {
+      res.statusCode = 403;
+      res.body = page('Admin · Zena packages', context, html`
+        <h1>Admin</h1>
+        <p>Only the host's admins see this page. <a href="/me">See your own packages.</a></p>
+      `);
+      return;
+    }
+    let scopes = byScope(await host.listAccounts(who.did));
+    var packages = 0;
+    var automation = 0;
+    for (let scope in scopes) {
+      packages += scope.packages.length;
+      automation += scope.automation.length;
+    }
+    res.body = page('Admin · Zena packages', context, html`
+      <div>
+        <h1>Admin</h1>
+        <p class="muted">
+          ${count(scopes.length, 'scope')}, ${count(packages, 'package')} and
+          ${count(automation, 'automation account')}. A scope's page names its members and teams, and a
+          package's its maintainers.
+        </p>
+      </div>
+      ${if (scopes.length == 0) html`<p class="muted">The host holds nothing yet.</p>` else table(scopes)}
+    `);
+  });
+}
+
+function table(scopes: Array<ScopeAccounts>): HTMLPartial {
+  return html`
+    <table>
+      <thead><tr><th>Scope</th><th>Packages</th><th>Automation accounts</th></tr></thead>
+      <tbody>${each(scopes, (scope) => html`
+        <tr>
+          <td>
+            <a href="/scopes/${scope.scope}">@${scope.scope}</a>
+            ${when(scope.org != null, () => html`<div class="mono muted">${(scope.org as HostAccount).did}</div>`)}
+          </td>
+          <td>${accounts(scope.packages, true)}</td>
+          <td>${accounts(scope.automation, false)}</td>
+        </tr>`)}
+      </tbody>
+    </table>
+  `;
+}
+
+/** `list`'s accounts, each by name, linked to its page when `linked`; or a dash. */
+function accounts(list: Array<HostAccount>, linked: boolean): TemplateValue {
+  if (list.length == 0) {
+    return html`<span class="muted">none</span>`;
+  }
+  return html`<ul class="plain">${each(list, (account) => html`
+    <li>${if (linked) html`<a href="/packages/${account.handle}">${account.name}</a>`
+        else html`<span>${account.name}</span>`}
+      <span class="mono muted">${account.did}</span></li>`)}
+  </ul>`;
+}
+
+/** `accounts` by scope, with the scopes, and each scope's accounts, in order of name. */
+function byScope(accounts: Array<HostAccount>): Array<ScopeAccounts> {
+  let scopes = new HashMap<String, ScopeAccounts>();
+  let order = new GrowableArray<ScopeAccounts>();
+  for (let account in accounts) {
+    var scope: ScopeAccounts | null = null;
+    if (let (true, found) = scopes.get(account.scope)) {
+      scope = found;
+    } else {
+      let made = new ScopeAccounts(account.scope);
+      scopes[account.scope] = made;
+      order.push(made);
+      scope = made;
+    }
+    let held = scope as ScopeAccounts;
+    if (account.kind == AccountKind.Organization) {
+      held.org = account;
+    } else if (account.kind == AccountKind.Automation) {
+      insert(held.automation, account);
+    } else {
+      insert(held.packages, account);
+    }
+  }
+  let sorted = new GrowableArray<ScopeAccounts>();
+  for (let scope in order) {
+    var i = sorted.length;
+    sorted.push(scope);
+    while (i > 0 && compareKeys(sorted[i - 1].scope, scope.scope) > 0) {
+      sorted[i] = sorted[i - 1];
+      i -= 1;
+    }
+    sorted[i] = scope;
+  }
+  return sorted;
+}
+
+/** Adds `account` to `list`, keeping it in order of name. */
+function insert(list: GrowableArray<HostAccount>, account: HostAccount): void {
+  var i = list.length;
+  list.push(account);
+  while (i > 0 && compareKeys(list[i - 1].name, account.name) > 0) {
+    list[i] = list[i - 1];
+    i -= 1;
+  }
+  list[i] = account;
+}

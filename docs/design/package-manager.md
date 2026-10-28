@@ -1028,7 +1028,9 @@ DAG-CBOR and hashed with SHA-256. The entry stays private:
   trying DIDs.
 - **The host keeps the entries.** It gives each member their own entry,
   an organization's owners and admins every entry, and a team's
-  maintainers their team's.
+  maintainers their team's. The host's own admins, whom its operator
+  names, see every entry, as the operator could read them from the store
+  anyway; the entries are private from the public, not from the host.
 - **Acting reveals the entry.** An attestation that relies on a
   membership includes the entry, and the log checks it against the
   commitment. A member becomes known in a role when they first act in

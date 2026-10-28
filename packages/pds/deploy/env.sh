@@ -24,7 +24,9 @@
 # operator's offline rotation key, ranked above the online one, is
 # ZENA_OFFLINE_ROTATION_KEY: its did:key, from
 # `zena-cli run packages/pds/zena/main.zena -- generate-key`, whose private
-# key is kept offline. Production needs it.
+# key is kept offline. Production needs it. ZENA_ADMIN_DIDS lists the DIDs
+# of the host's admins, who see everything it holds in the web app,
+# separated by spaces or commas.
 
 PROJECT="${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the project id, such as meta-garage-420114}"
 REGION="${ZENA_GCP_REGION:-us-central1}"
@@ -71,6 +73,7 @@ KMS_KEYRING="zena-pkg${SUFFIX}"
 KMS_KEY=rotation
 KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_KEY}/cryptoKeyVersions/1"
 OFFLINE_ROTATION_KEY="${ZENA_OFFLINE_ROTATION_KEY:-}"
+ADMIN_DIDS="${ZENA_ADMIN_DIDS:-}"
 # The environment's own zone, delegated from zena-lang.dev's, so the
 # service account can write handle records there and nowhere else. setup.sh
 # writes the delegation when zena-lang.dev is a Cloud DNS zone, in the
