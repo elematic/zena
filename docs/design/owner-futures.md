@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, revised 2026-10-27 (fourth revision). Part of elematic/zena#284: switching
+Draft, revised 2026-10-28 (fifth revision). Part of elematic/zena#284: switching
 `wasi:http` and `zena-cli:host/http-server` to resource classes needs it,
 and so does the open "lifted `future<T>` ownership" item there.
 
@@ -137,28 +137,33 @@ for the place their static tracking stops. `Resource` keeps a runtime
 not disowned. A restricted container gets the same kind of check: a
 second consumer throws instead of releasing the value twice.
 
-A container needs no new field for this when its own contents can say
-"taken". `Future`'s can. For a restricted instantiation, the read that
-resumes the waiter takes the value and clears the value slot (§"The
-value slot"), and the existing fields encode every state:
+For a restricted instantiation the read that resumes the waiter takes
+the value and empties the value slot (§"The value slot"), so a read
+after it fails. That alone would catch a second consumer only once it
+reads. `Future` refuses the second consumer when it arrives, with one
+boolean, `#claimed`: the first waiter, or the first future adopting this
+one (`tail return`), sets it, and the next throws.
 
-| `#state` | waiters and slot | meaning for an owner future | a further await or read |
-| -------- | ---------------- | --------------------------- | ----------------------- |
-| pending  | no waiter        | unclaimed                   | becomes the one waiter  |
-| pending  | one waiter       | claimed                     | throws: a second claim  |
-| settled  | slot full        | available                   | takes the value         |
-| settled  | slot empty       | taken                       | throws: already taken   |
+The waiter list cannot carry this. A settle hands the waiters to the
+queue and empties the list before the first one runs, so between the
+settle and that read nothing in `#waiters` or the slot says the value
+is spoken for. Only a restricted specialization writes `#claimed`,
+behind `isFirstClass<T>()`, so in a first-class one the field is never
+written and dead-field elimination removes it. The object is 48 bytes
+either way.
 
-Both columns are needed. A future awaited after it settles never
-registers a waiter, since `[subscribe]` schedules the frame at once, so
-the slot is the only mark that its value has gone.
+| `#state` | `#claimed` and slot | meaning for an owner future | a further await or adoption |
+| -------- | ------------------- | --------------------------- | --------------------------- |
+| pending  | unclaimed           | unclaimed                   | claims it                   |
+| pending  | claimed             | claimed                     | throws: a second consumer   |
+| settled  | claimed, slot full  | not yet read                | throws: a second consumer   |
+| settled  | claimed, slot empty | taken                       | throws: a second consumer   |
 
-Every `scoped T` class has such an empty state. The body rules
+Every `scoped T` class has an empty state for its takes. The body rules
 (§"The class half of `scoped T`") let a field whose type carries `T` be
-read at a restricted instantiation only as a take, which needs a
-nullable field, so a taken value always leaves a null behind for the
-check to find. No class needs a hidden flag, the analogue of
-`Resource`'s `#state`, beside its own fields.
+moved out at a restricted instantiation only as a take, which needs a
+field that can be empty, so a taken value always leaves an empty slot
+behind.
 
 ## Specialization
 
@@ -193,11 +198,17 @@ one (§"The class half of `scoped T`"):
 }                            // taken slot fails the cast
 ```
 
-`[subscribe]` refuses a second waiter:
+`[subscribe]` and `[adoptFrom]` both claim the value for its one
+consumer (§"Runtime state"):
 
 ```zena
-if (!isFirstClass<T>() && this.#waiters != null) {
-  throw new Error('a future of a restricted value has one waiter');
+#claim(): void {
+  if (!isFirstClass<T>()) {
+    if (this.#claimed) {
+      throw new Error('A future of an owner or a borrow has one consumer');
+    }
+    this.#claimed = true;
+  }
 }
 ```
 
@@ -430,14 +441,14 @@ and with them:
    an array or map literal. `twice` is a compile error. #615 did the
    class half of `scoped T`: `T` fields, instances that carry their
    argument's restriction, takes, and returns derived from `this`.
-2. **The body rules and `Future`:** `isFirstClass<T>()` and its branch;
-   the `WithDefault<T>` operator and `defaultValue<T>()` (#614, since
-   `T | null` at a primitive does not lower), with `Future`'s slot
-   de-boxed onto them. Then `Future` declares `scoped T`, replacing
-   #613's check that names it, and its restricted paths are written
-   under the rules: the take, the second-waiter check, adoption taking
-   the value, and `tryComplete` returning its loser (with `zena:async`'s
-   callers matching on it).
+2. **The body rules and `Future`:** done in #619 (`WithDefault<T>`,
+   `defaultValue<T>()`, and the rule against an unconstrained type
+   parameter in a union), #624 (`isFirstClass<T>()`, without the static
+   half of its branch, which no body needs yet), #635 (their
+   declarations in `zena:core`), and #646: `Future` declares `scoped T`
+   with a `WithDefault<T>` slot, takes it in `valueOrThrow`, `result()`
+   and adoption, refuses a second consumer, and returns `tryComplete`'s
+   loser. #613's check that names `Future` is gone.
 3. **Release glue.** Drop plans for owner futures and streams that
    register the releasing waiter, everywhere implicit drop already
    runs: locals, parameters, fields, tuple elements, discarded results.
