@@ -196,9 +196,10 @@ final class TaskContext {
    * owed an event for. Zero means the task has nothing left to wait
    * on. */
   var pendingWaitables = 0;
-  /** Whether this task hands the host a value through a typed
-   * `task.return` (see `finishTask`), rather than the bare one the
-   * driver calls for a task that returns nothing. */
+  /** Whether this task's return is issued once its result settles
+   * (`finishTask`, `finishVoidTask`), rather than the bare one the
+   * driver calls at exit for a task that returns nothing and awaits
+   * nothing of its own. */
   var returnsValue = false;
   /** The typed return, ready to call: set once the task's result is
    * known, called from the task's own entry, then cleared. */
@@ -500,6 +501,27 @@ export async function finishTask<T>(
     let value = await result;
     ctx.pendingReturn = () => {
       ret(value);
+    };
+  } catch (e) {
+    ctx.failure = e;
+  }
+  wake(ctx);
+}
+
+/**
+ * `finishTask` for a task that returns nothing: its bare `task.return`
+ * is issued once `result` settles, from the task's own entry. Without
+ * this a task whose work pends on a waitable another task armed, a
+ * timer another sleeper's host wait covers, say, has nothing in its
+ * own set and would exit at its first entry with the work undone.
+ */
+export async function finishVoidTask(result: Future<void>): Future<void> {
+  let ctx = currentContext();
+  ctx.returnsValue = true;
+  try {
+    await result;
+    ctx.pendingReturn = () => {
+      taskReturn();
     };
   } catch (e) {
     ctx.failure = e;

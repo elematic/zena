@@ -222,6 +222,15 @@ code)` finds the context, runs the completion, drains, and answers
   before this. The probe question above is answered by the same
   mechanism: waitables one task creates are consumed from another
   task's entry throughout, and wasmtime is fine with it.
+- **A task that returns nothing waits for its work too.** The async
+  wrapper for an export without a result calls `finishVoidTask`, which
+  parks the bare `task.return` until the function's future settles and
+  wakes the task the same way. Before it, such a task exited at its
+  first entry once its own set was empty, with the work still pending:
+  a `wait(ms)` export whose sleep another task's host wait already
+  covered returned at once, since the timer queue arms one wait for
+  every sleeper. The extensions tests found it, with two calls into an
+  extension that each call back into a sleeping export of the program.
 - A task that returned its value can linger, driving timers and
   streams other tasks' work registered under it, until they fire; a
   waitable that never fires keeps it alive for the instance's life.
