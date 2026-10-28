@@ -9,6 +9,8 @@ import { Future, runFuture } from 'zena:async';
 import { fetch } from 'zena:fetch';
 import { App, Server } from 'zena:http';
 import { URL } from 'zena:url';
+import { TimeoutError, timeout } from 'zena:task';
+import { milliseconds, monotonic, sleep } from 'zena:time';
 
 function startEchoServer(): Server {
   let app = new App();
@@ -31,6 +33,10 @@ function startEchoServer(): Server {
       res.statusCode = 200;
       res.type = 'application/octet-stream';
       res.body = out;
+    } else if (req.path == '/slow') {
+      await sleep(milliseconds(3000));
+      res.statusCode = 200;
+      res.body = 'late';
     } else if (req.path == '/status/404') {
       res.statusCode = 404;
       res.body = 'missing';
@@ -155,5 +161,23 @@ export let tests = suite('zena:fetch', () => {
       unreachable = true;
     }
     isTrue(unreachable);
+  });
+
+  test('stops waiting for a slow server when its attempt is cancelled', () => {
+    let server = startEchoServer();
+    let start = monotonic();
+    var timedOut = false;
+    try {
+      runFuture(timeout<String>(milliseconds(100), async (): Future<String> => {
+        let response = await fetch(`${originOf(server)}/slow`);
+        return await response.text();
+      })());
+    } catch (e) {
+      timedOut = e is TimeoutError;
+    }
+    isTrue(timedOut, 'timed out');
+    // Well before the server's three seconds.
+    isTrue(((monotonic() - start) - milliseconds(1000)).isNegative(), 'stopped waiting');
+    server.close();
   });
 });

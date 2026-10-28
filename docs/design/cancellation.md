@@ -372,6 +372,23 @@ failure. Cancellation arriving from outside instead — an ancestor
 scope cancelling the group before any candidate settles — completes
 the race's future cancelled.
 
+## Timeouts
+
+An API takes no timeout of its own. Work that must not take too long
+runs under `timeout(budget, op)` from `zena:task`, which races each
+attempt against its budget and cancels whichever loses; an attempt that
+runs out fails with `TimeoutError`. A `fetch` inside the attempt stops
+waiting at its `await` when the budget runs out, as any cancelled work
+does: in `packages/stdlib/tests/fetch/fetch_test.zena`, a request to a
+server that answers after three seconds fails after the 100 ms the test
+gives it.
+
+What cancelling does not yet do is cancel the host's side of an async
+import. The frame unwinds, but the import's subtask is abandoned rather
+than cancelled (see "Streams and Component Model async" below, and
+#640), so the host finishes the request on its own: a `fetch` keeps its
+connection until the server answers or the runtime's own limit passes.
+
 ## Consumer interest
 
 An opt-in layer over the previous section: work spawned on behalf of
