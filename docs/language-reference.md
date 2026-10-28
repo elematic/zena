@@ -3558,6 +3558,35 @@ class Container<T extends Box<V>, V> {
 }
 ```
 
+#### A slot that may be empty
+
+`T | null` is not a type when `T` may be a primitive (see "Constraints"
+under "Union Types"). A field for a `T` the object may not have yet is a
+`WithDefault<T>` from `zena:core`: `T` itself at a primitive and
+`T | null` at a reference. `defaultValue<T>()` is its empty value, zero or
+null; a `T` fills it; and `as T` reads it back, failing on an empty slot
+at a non-null reference `T`. Nothing is boxed.
+
+```zena
+import {WithDefault, defaultValue} from 'zena:core';
+
+class Cell<T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  set(value: T): void {
+    this.#value = value;
+  }
+  get(): T {
+    return this.#value as T;
+  }
+}
+```
+
+`isFirstClass<T>()`, also from `zena:core`, is a constant in each
+specialization: false where `T` may be an owner, a borrow or a value
+holding one, true elsewhere. A `scoped T` class branches on it for
+behavior only one kind of instantiation needs, and the other branch is
+compiled away.
+
 ### Statics on a Generic Class
 
 A `static` belongs to the class itself, of which there is one however
