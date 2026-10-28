@@ -231,7 +231,7 @@ await x` pays the bare-value queue hop for nothing — return
     review): `WithDefault<T>` (the honest type of a default-initialized
     generic field; de-boxes `Future.#value` and gives collections an
     honest empty-slot element type; the compiler implements it, see
-    type-operators.md, and `zena:core` declares it after a reseed), `Awaited<R>` (folds `flatMap`
+    type-operators.md, and `zena:core` declares it), `Awaited<R>` (folds `flatMap`
     into a flattening `then`), and in-place sealed variants (the
     general typestate answer: cases sharing one flat object, `match`
     binding copies, in-place transitions).
