@@ -5,7 +5,7 @@
  */
 
 import * as esbuild from 'esbuild';
-import {mkdir, readFile, rm} from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -36,8 +36,6 @@ export default sheet;`,
   },
 };
 
-await rm(out, {recursive: true, force: true});
-await mkdir(out, {recursive: true});
 await esbuild.build({
   entryPoints: {app: join(here, 'src/main.ts')},
   outdir: out,
