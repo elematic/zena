@@ -8,7 +8,7 @@
   day; the build-time check of a program's world against its
   extensions' WIT (`--extension-wit`) and the check of a component
   against that WIT (`checkExtension`) the same day; `load` made
-  asynchronous 2026-10-28
+  asynchronous and calls into one extension made concurrent 2026-10-28
 - **Issue**: #593
 - **For**: a PDS written in Zena that loads extensions at run time
   ([pds-extensions.md](./pds-extensions.md))
@@ -323,7 +323,8 @@ as spawned tasks of the program's store.
 The extension's program-served imports are defined when the extension
 is loaded, from its component type: each function is a concurrent host
 function that sends the call to the program through the channel of the
-program's call in flight and waits for the answer. The task that serves
+program's call whose guest task it runs in, and waits for the answer.
+The task that serves
 it in the program looks up the object made for that extension on that
 interface, calls `create` first if there is none yet, and calls the
 method with the object as `self`. An extension that calls such an import
@@ -373,10 +374,16 @@ gives it the usual class with the usual methods. Concretely:
 ### Isolation
 
 Each extension has a store of its own, on a thread of its own with a
-current-thread tokio runtime, as a `zena:wasm` run has. Calls to an
-extension are serialized: one at a time, in order; a second call waits
-for the first. The thread holds the `InstancePre`, so a fresh instance
-can be made when the old one is lost.
+current-thread tokio runtime, as a `zena:wasm` run has. The thread runs
+the store under wasmtime's `run_concurrent` and starts each call as a
+task of the store, so calls in flight at once interleave wherever the
+extension awaits: a request handler extension serves requests side by
+side, and a slow call does not hold up a quick one. A call's calls back
+to the program go through the channel of that call, which the task that
+started it registers under its guest task, and a call back finds from
+the root of the async call stack (`async_call_stack` in wasmtime), so
+two calls' calls back never cross. The thread holds the `InstancePre`,
+so a fresh instance can be made when the old one is lost.
 
 - **Imports.** The extension's imports are resolved through its
   bindings before instantiation, and the error names the first import
@@ -393,12 +400,16 @@ can be made when the old one is lost.
   limit covers both. A growth past the limit fails the allocation, and
   a Zena program then traps.
 - **Time.** An extension loaded with `call-timeout` runs on the
-  interruptible engine, as a `zena:wasm` run with a time limit does,
-  and the thread sets the store's epoch deadline before each call.
+  interruptible engine, as a `zena:wasm` run with a time limit does.
+  The store has one epoch deadline, so the thread re-arms it whenever a
+  call starts or ends with what the earliest-started call in flight has
+  left; a call past its limit stops the instance, with every call on it.
 - **Failure.** A trap, a time limit, or a memory failure poisons the
   extension's store, so the instance is dropped and the next call
   instantiates the component again, with fresh state. The failed call
-  returns its error value; the handle stays valid, and so do the
+  returns its error value, and so does every other call in flight on
+  the instance, saying the instance failed and why; the handle stays
+  valid, and so do the
   objects the program made for it. Proxies the program holds to the
   lost instance's resources point at nothing, and a call on one fails.
 
@@ -505,7 +516,11 @@ their owners. The fixture program is built with `--extension-wit`
 against the extensions' document, and the compiler's
 `extension-views_test.zena` covers the build-time check rule by rule.
 `checkExtension` is tested on the fixtures against the worlds they were
-built for and against others.
+built for and against others. Two calls into one extension that each
+wait through a call back and then call back again show the calls
+overlapping and each reaching its own channel; two calls parked past
+the time limit fail together and the next call runs on a fresh
+instance; two loads in flight at once get distinct handles.
 
 ## Alternatives considered
 
@@ -540,10 +555,6 @@ built for and against others.
   passed back to its owner: an extension handing the program a proxy of
   another extension's resource, or the other way, fails the call. Routing
   such a handle would need the receiver to proxy a proxy.
-- Concurrent calls into one extension: one at a time is enough for
-  write policy hooks, and a request handler extension may want more.
-  Wasmtime's event loop can run several tasks in one store; the thread
-  would then take calls while others are in flight.
 - Where the compiled form is cached on hosts without a lasting disk
   ([pds-extensions.md](./pds-extensions.md), "Open questions").
 - Cancelling a call in flight when the program's task is cancelled.

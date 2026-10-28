@@ -8,7 +8,7 @@ import { Disposable, Result } from 'zena:core';
 import {
   Extension, LoadOptions, fromExtension, fromProgram, loadExtension,
 } from 'zena:extensions';
-import { Duration, milliseconds, sleep } from 'zena:time';
+import { Duration, milliseconds, monotonic, sleep } from 'zena:time';
 import { Ops } from 'test:ext/ops';
 import { Relay } from 'test:ext/relay';
 import { Session, Sessions } from 'test:ext/sessions';
@@ -27,6 +27,10 @@ export class Callbacks implements Disposable {
   async lookup(key: i32): Future<i32> {
     console.log(`lookup ${this.#extension} ${key}`);
     return key + 100;
+  }
+
+  async wait(ms: u32): Future<void> {
+    await sleep(milliseconds(ms as i64));
   }
 
   static create(ext: u32): Callbacks {
@@ -228,6 +232,52 @@ async function relays(): Future<void> {
   showI32('twice after drop', await relay.twice(5));
 }
 
+/** `slow(ms, x)` on `ops`, and whether it took at least `ms`. */
+async function timed(ops: Ops, ms: u32, x: i32): Future<(Result<i32, String>, boolean)> {
+  let started = monotonic();
+  let r = await ops.slow(ms, x);
+  let waited = !((monotonic() - started) - milliseconds(ms as i64)).isNegative();
+  return (r, waited);
+}
+
+/** Two calls in flight at once, each with its own call back. */
+async function concurrent(): Future<void> {
+  let ops = Ops.attach((await load('child.wasm')).handle);
+  let started = monotonic();
+  let both = await Future.all([timed(ops, 150 as u32, 5), timed(ops, 150 as u32, 7)]);
+  let elapsed = monotonic() - started;
+  showI32('slow(5)', both[0][0]);
+  showI32('slow(7)', both[1][0]);
+  // Each call waited its own 150ms, and the two waited together:
+  // serialized they would take 300ms and more.
+  console.log(`each waited: ${both[0][1] && both[1][1]}`);
+  console.log(`overlapped: ${!(elapsed - milliseconds(280)).isPositive()}`);
+}
+
+/** A time limit stops the instance, with every call on it. */
+async function concurrentFailure(): Future<void> {
+  let ops = Ops.attach((await load('child.wasm', {callTimeout: milliseconds(100)})).handle);
+  let both = await Future.all([ops.slow(1000 as u32, 1), ops.slow(1000 as u32, 2)]);
+  showI32('slow(1)', both[0]);
+  showI32('slow(2)', both[1]);
+  showU32('count', await ops.count());
+}
+
+/** Two loads in flight at once get distinct handles. */
+async function loads(): Future<void> {
+  let both = await Future.all([
+    loadExtension(`${fixtures}/plain.wasm`, []),
+    loadExtension(`${fixtures}/plain.wasm`, []),
+  ]);
+  let a = both[0];
+  let b = both[1];
+  if (a is (true, Extension) && b is (true, Extension)) {
+    console.log(`distinct: ${a[1].handle != b[1].handle}`);
+  } else {
+    console.log('a load failed');
+  }
+}
+
 export async function main(): Future<void> {
   let args = getArguments();
   let scenario = if (args.length > 1) args[1] else '';
@@ -249,6 +299,12 @@ export async function main(): Future<void> {
     await relays();
   } else if (scenario == 'resources') {
     await resources();
+  } else if (scenario == 'concurrent') {
+    await concurrent();
+  } else if (scenario == 'concurrent-failure') {
+    await concurrentFailure();
+  } else if (scenario == 'loads') {
+    await loads();
   } else {
     console.log(`unknown scenario: ${scenario}`);
   }

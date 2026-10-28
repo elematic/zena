@@ -203,6 +203,27 @@ export let tests = suite('extensions', () => {
       'disposed = 1');
   });
 
+  test('calls into one extension run at once, each with its own calls back', () => {
+    let text = run('concurrent');
+    isTrue(text.contains('slow(5) = 105'), text);
+    isTrue(text.contains('slow(7) = 107'), text);
+    // Each call waited its own time: a void async export the program
+    // serves must not return before its work is done (`finishVoidTask`).
+    isTrue(text.contains('each waited: true'), text);
+    isTrue(text.contains('overlapped: true'), text);
+  });
+
+  test('a failure fails every call in flight, and the next call starts afresh', () => {
+    let out = lines(run('concurrent-failure'));
+    isTrue(out[0].contains('time limit'), out[0]);
+    isTrue(out[1].contains('time limit'), out[1]);
+    equal(out[2], 'count = 1');
+  });
+
+  test('loads in flight at once get distinct handles', () => {
+    equal(run('loads').trim(), 'distinct: true');
+  });
+
   test('an extension bound to another calls it, and it calls the program', () => {
     let text = run('relay');
     let out = lines(text);
