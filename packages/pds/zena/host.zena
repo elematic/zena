@@ -59,6 +59,7 @@ import {Sessions} from './sessions.zena';
 import {RotationKey} from './rotation.zena';
 import {formatTimestamp} from 'zena:time';
 import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
+import {compareKeys} from 'atproto:mst';
 
 /** The most recovery keys an account's genesis operation ranks above the host's keys. */
 let MAX_RECOVERY_KEYS = 3;
@@ -538,6 +539,143 @@ export final class PackageHost {
   }
 
   /**
+   * `listScopes`: every scope whose organization exists, by name, with how
+   * many packages each has. Public: scope names are in DNS anyway.
+   */
+  async listScopes(): Future<Array<ScopeSummary>> {
+    let counts = new HashMap<String, i32>();
+    for (let claimed in await this.listPackages(null)) {
+      var count = 0;
+      if (let (true, held) = counts.get(claimed.scope)) {
+        count = held;
+      }
+      counts[claimed.scope] = count + 1;
+    }
+    let scopes = new GrowableArray<ScopeSummary>();
+    for (let claimed in await this.#store.allScopes()) {
+      let account = await this.pds.storage.getAccount(claimed.org);
+      if (account == null || account.kind != AccountKind.Organization) {
+        continue;
+      }
+      var packages = 0;
+      if (let (true, count) = counts.get(claimed.scope)) {
+        packages = count;
+      }
+      let summary = new ScopeSummary(claimed.scope, claimed.org, account.handle ?? '', packages);
+      var i = scopes.length;
+      scopes.push(summary);
+      while (i > 0 && compareKeys(scopes[i - 1].name, summary.name) > 0) {
+        scopes[i] = scopes[i - 1];
+        i -= 1;
+      }
+      scopes[i] = summary;
+    }
+    return scopes;
+  }
+
+  /**
+   * `listPackages`: the packages on the host, or in `scope`, by scope and
+   * name, each with its profile's description and license and its latest
+   * release that is not retracted. Public, as the records are. Automation
+   * accounts, which also take names in a scope, are left out.
+   */
+  async listPackages(scope: String | null): Future<Array<PackageSummary>> {
+    let packages = new GrowableArray<PackageSummary>();
+    for (let claimed in await this.#store.allNames()) {
+      if (scope != null && claimed.scope != scope as String) {
+        continue;
+      }
+      let account = await this.pds.storage.getAccount(claimed.did);
+      if (account == null || account.kind != AccountKind.Package) {
+        continue;
+      }
+      let summary = new PackageSummary(claimed.did, account.handle ?? '', claimed.scope, claimed.name);
+      let profile = await this.#current(claimed.did, PROFILE_TYPE, PROFILE_KEY);
+      if (profile != null) {
+        let read = Profile.fromValue((profile as CurrentRecord).value);
+        summary.description = read.description;
+        summary.license = read.license;
+      }
+      let retracted = new HashSet<String>();
+      let versions = new GrowableArray<String>();
+      for (let entry in await this.pds.storage.store(claimed.did).allRecords()) {
+        if (entry.collection == RETRACTION_TYPE) {
+          retracted.add(entry.rkey);
+        } else if (entry.collection == RELEASE_TYPE) {
+          versions.push(entry.rkey);
+        }
+      }
+      summary.releases = versions.length;
+      var latest: Version | null = null;
+      for (let text in versions) {
+        if (retracted.has(text)) {
+          continue;
+        }
+        let version = Version.parse(text);
+        if (latest == null || version.compareTo(latest as Version) > 0) {
+          latest = version;
+        }
+      }
+      if (latest != null) {
+        summary.latest = (latest as Version).toString();
+      }
+      var i = packages.length;
+      packages.push(summary);
+      while (i > 0 && compareKeys(packages[i - 1].sortKey(), summary.sortKey()) > 0) {
+        packages[i] = packages[i - 1];
+        i -= 1;
+      }
+      packages[i] = summary;
+    }
+    return packages;
+  }
+
+  /**
+   * The package whose handle is `handle`, as its page shows it: its
+   * profile, its releases, newest first, its retractions and its
+   * maintainers record; or null when no package here has that handle.
+   * Public, as the records are.
+   */
+  async getPackage(handle: String): Future<PackageDetail | null> {
+    let account = await this.pds.storage.accountByHandle(handle);
+    if (account == null || account.kind != AccountKind.Package) {
+      return null;
+    }
+    let did = account.did;
+    let detail = new PackageDetail(did, handle);
+    let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
+    if (profile != null) {
+      detail.profile = Profile.fromValue((profile as CurrentRecord).value);
+    }
+    let maintainers = await this.#current(did, MAINTAINERS_TYPE, 'self');
+    if (maintainers != null) {
+      detail.maintainers = Maintainers.fromValue((maintainers as CurrentRecord).value);
+    }
+    let store = this.pds.storage.store(did);
+    for (let entry in await store.allRecords()) {
+      if (entry.collection != RELEASE_TYPE && entry.collection != RETRACTION_TYPE) {
+        continue;
+      }
+      let value = decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>);
+      if (entry.collection == RETRACTION_TYPE) {
+        let retraction = Retraction.fromValue(value);
+        detail.retractions[retraction.version.toString()] = retraction;
+        continue;
+      }
+      let release = Release.fromValue(value);
+      let releases = detail.releases;
+      var i = releases.length;
+      releases.push(release);
+      while (i > 0 && releases[i - 1].version.compareTo(release.version) < 0) {
+        releases[i] = releases[i - 1];
+        i -= 1;
+      }
+      releases[i] = release;
+    }
+    return detail;
+  }
+
+  /**
    * `retract`: marks release `version` of `pkg` as retracted, with
    * `reason`, at the record key equal to the version. The release stays,
    * for the builds that pin it; choosing a version skips it. Any maintainer
@@ -1006,6 +1144,51 @@ export final class PackageHost {
       throw e;
     }
   }
+}
+
+/** A scope, as `listScopes` describes it. */
+export final class ScopeSummary {
+  name: String;
+  did: String;
+  handle: String;
+  packages: i32;
+
+  new(this.name, this.did, this.handle, this.packages);
+}
+
+/** A package, as `listPackages` describes it. */
+export final class PackageSummary {
+  did: String;
+  handle: String;
+  scope: String;
+  name: String;
+  var description: String | null = null;
+  var license: String | null = null;
+  /** The highest version that is not retracted, or null. */
+  var latest: String | null = null;
+  /** How many releases it has, retracted ones included. */
+  var releases: i32 = 0;
+
+  new(this.did, this.handle, this.scope, this.name);
+
+  /** What `listPackages` orders by: the scope, then the name. */
+  sortKey(): String {
+    return `${this.scope} ${this.name}`;
+  }
+}
+
+/** A package, as `getPackage` reads it. */
+export final class PackageDetail {
+  did: String;
+  handle: String;
+  var profile: Profile | null = null;
+  /** Newest first. */
+  releases = new GrowableArray<Release>();
+  /** By version. */
+  retractions = new HashMap<String, Retraction>();
+  var maintainers: Maintainers | null = null;
+
+  new(this.did, this.handle);
 }
 
 /** An automation account `createAutomationAccount` made, with its app password. */

@@ -52,13 +52,18 @@
  *   tokens of sessions (`pds:sessions`). Required with `firestore`, since
  *   sessions outlive the server and every server of a deployment checks
  *   them. With `memory`, a missing secret is made up at start.
+ * - `PDS_WEB_DIR`: the directory of the web app's assets
+ *   (`packages/pds-web`'s build), which the server serves at `/assets/`.
+ *   A package host renders its pages (`pds:web/pages`) with or without
+ *   it, but unstyled without; a PDS with no host answers `/` with its
+ *   banner.
  * - `PDS_CLOCK_ID`: 0 to 1023, which keeps this server's revisions apart
  *   from another's made in the same microsecond. Random by default.
  */
 
 import {Future} from 'zena:async';
 import {Option, Some, none, some} from 'zena:core';
-import {App, Server} from 'zena:http';
+import {App, Server, mount, serve as serveFiles} from 'zena:http';
 import {hex} from 'zena:encoding';
 import {randomBytes, randomInt} from 'zena:random';
 import {defaultProjectId} from 'google-cloud:auth';
@@ -149,6 +154,8 @@ export final class ServiceConfig {
   var plcStaging: boolean = false;
   /** The secret sessions' tokens are signed with, or null to make one up at start. */
   var jwtSecret: FixedArray<u8> | null = null;
+  /** The web app's directory, or null to serve none. */
+  var webDir: String | null = null;
 
   new(this.port, this.storage, this.host, this.plcDirectory, this.dnsOverHttps, this.clockId);
 }
@@ -353,6 +360,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       value('PDS_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query', clockId);
   config.plcStaging = plcStaging;
   config.jwtSecret = jwtSecret;
+  config.webDir = value('PDS_WEB_DIR');
   return config;
 }
 
@@ -394,8 +402,8 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
       (count: i32) => randomBytes(count));
   let settings = config.host;
   if (settings == null) {
-    return new Service(withPlc(createApp(pds, null, sessions), plc), pds, null, new MemoryHandleRecords(), plc,
-        sessions);
+    return new Service(withAssets(withPlc(createApp(pds, null, sessions), plc), config.webDir), pds, null,
+        new MemoryHandleRecords(), plc, sessions);
   }
   var records: HandleRecords = new MemoryHandleRecords();
   match (settings.records) {
@@ -439,7 +447,25 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let host = new PackageHost(pds, hostConfig, hostStore, records, keys, submit, (count: i32) => randomBytes(count),
       dependencies);
   host.sessions = sessions;
-  return new Service(withPlc(createApp(pds, host, sessions), plc), pds, host, records, plc, sessions);
+  return new Service(withAssets(withPlc(createApp(pds, host, sessions), plc), config.webDir), pds, host, records, plc,
+      sessions);
+}
+
+/**
+ * `app`, with the web app's assets in `dir`, when there is one, at
+ * `/assets/`: the stylesheet and script its pages load. The pages
+ * themselves are `app`'s (`pds:web/pages`).
+ */
+function withAssets(app: App, dir: String | null): App {
+  if (dir == null) {
+    return app;
+  }
+  let both = new App();
+  both.use(mount('/assets', serveFiles(dir as String)));
+  both.use(async (req, res, next): Future<void> => {
+    await app.handleRequest(req, res);
+  });
+  return both;
 }
 
 /** `app`, with `/plc/` answered by `plc` when there is one. */

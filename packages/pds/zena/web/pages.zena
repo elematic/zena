@@ -1,0 +1,266 @@
+/**
+ * The web app's public pages, which anyone may browse: every package and
+ * scope on the host, a scope's packages, and a package with its versions
+ * and maintainers. Each is a `zena:http` route rendered on the server
+ * (`./layout.zena`), reading the host in-process.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {GrowableArray} from 'zena:core';
+import {HTMLPartial, Request, Response, Router, TemplateValue, html} from 'zena:http';
+import {percentDecode} from 'zena:url';
+import {Dependency, Maintainer, Maintainers, Release} from 'package-manager:records';
+import {PackageDetail, PackageHost, PackageSummary, ScopeSummary} from '../host.zena';
+import {chip, count, each, page, when} from './layout.zena';
+
+/** Adds the public pages to `router`. */
+export function publicPages(router: Router, host: PackageHost): void {
+  let domain = host.config.domain;
+
+  router.get('/', async (req, res, next, params) => {
+    let query = (req.url.searchParams().get('q') ?? '').trim();
+    let packages = await host.listPackages(null);
+    let shown = filtered(packages, query);
+    let scopes = await host.listScopes();
+    res.type = 'text/html; charset=utf-8';
+    res.body = page('Zena packages', domain, html`
+      <div class="columns">
+        <section>
+          <h1>Packages</h1>
+          <form class="search" action="/" method="get">
+            <input type="search" name="q" value="${query}" placeholder="Search by name or description"
+                aria-label="Search packages">
+            <button type="submit">Search</button>
+          </form>
+          ${when(query != '', () => html`<p class="muted">${count(shown.length, 'package')} matching “${query}”.</p>`)}
+          ${packageList(shown, if (query == '') 'Nothing is published here yet.' else 'No packages match.')}
+        </section>
+        <aside>
+          <h2>Scopes</h2>
+          ${scopeList(scopes)}
+        </aside>
+      </div>
+    `);
+  });
+
+  router.get('/scopes/:name', async (req, res, next, params) => {
+    let name = percentDecode(params['name'] ?? '');
+    var scope: ScopeSummary | null = null;
+    for (let candidate in await host.listScopes()) {
+      if (candidate.name == name) {
+        scope = candidate;
+      }
+    }
+    if (scope == null) {
+      notFound(res, domain, `No scope here is named @${name}.`);
+      return;
+    }
+    let found = scope as ScopeSummary;
+    let packages = await host.listPackages(name);
+    res.type = 'text/html; charset=utf-8';
+    res.body = page(`@${name} · Zena packages`, domain, html`
+      <div>
+        <h1>@${name}</h1>
+        <div class="meta mono muted"><span>${found.handle}</span><span>${found.did}</span></div>
+      </div>
+      ${packageList(packages, 'This scope has no packages yet.')}
+    `);
+  });
+
+  router.get('/packages/:handle', async (req, res, next, params) => {
+    let handle = percentDecode(params['handle'] ?? '');
+    let detail = await host.getPackage(handle);
+    if (detail == null) {
+      notFound(res, domain, `No package here has the handle ${handle}.`);
+      return;
+    }
+    let found = detail as PackageDetail;
+    // The handles of the dependencies this host holds, to link to them.
+    let handles = new HashMap<String, String>();
+    for (let release in found.releases) {
+      for (let dependency in release.dependencies) {
+        let account = await host.pds.storage.getAccount(dependency.did);
+        if (account != null && account.handle != null) {
+          handles[dependency.did] = account.handle as String;
+        }
+      }
+    }
+    res.type = 'text/html; charset=utf-8';
+    let profile = found.profile;
+    let name = if (profile != null) profile.name else found.handle;
+    res.body = page(`${name} · Zena packages`, domain, packagePage(found, handles));
+  });
+}
+
+/** Answers `res` with the not-found page, saying `message`. */
+export function notFound(res: Response, domain: String, message: String): void {
+  res.statusCode = 404;
+  res.type = 'text/html; charset=utf-8';
+  res.body = page('Not found · Zena packages', domain, html`
+    <h1>Not found</h1>
+    <p>${message} <a href="/">See every package.</a></p>
+  `);
+}
+
+/** The packages whose name, handle or description has `query` in it, ignoring case; all for an empty query. */
+function filtered(packages: Array<PackageSummary>, query: String): Array<PackageSummary> {
+  if (query == '') {
+    return packages;
+  }
+  let needle = query.asciiLowerCase();
+  let shown = new GrowableArray<PackageSummary>();
+  for (let pkg in packages) {
+    let description = pkg.description ?? '';
+    if (pkg.name.asciiLowerCase().contains(needle) || pkg.handle.asciiLowerCase().contains(needle) ||
+        description.asciiLowerCase().contains(needle)) {
+      shown.push(pkg);
+    }
+  }
+  return shown;
+}
+
+/** Packages as cards: name, handle, latest version, license and description; or `empty`. */
+function packageList(packages: Array<PackageSummary>, empty: String): HTMLPartial {
+  if (packages.length == 0) {
+    return html`<p class="muted">${empty}</p>`;
+  }
+  return html`<div class="cards">${each(packages, (pkg) => html`
+    <a class="card" href="/packages/${pkg.handle}">
+      <div class="card-top">
+        <span class="name">${pkg.name}</span>
+        <span class="mono muted">${pkg.handle}</span>
+        <span class="chips">
+          ${if (pkg.latest == null) chip('unreleased') else chip(pkg.latest as String, 'primary')}
+          ${when(pkg.license != null, () => chip(pkg.license as String, 'success'))}
+        </span>
+      </div>
+      ${when(pkg.description != null, () => html`<p>${pkg.description as String}</p>`)}
+    </a>`)}
+  </div>`;
+}
+
+function scopeList(scopes: Array<ScopeSummary>): HTMLPartial {
+  if (scopes.length == 0) {
+    return html`<p class="muted">No scopes yet.</p>`;
+  }
+  return html`<ul class="plain">${each(scopes, (scope) => html`
+    <li><a href="/scopes/${scope.name}">@${scope.name}</a> <span class="muted">${count(scope.packages, 'package')}</span></li>`)}
+  </ul>`;
+}
+
+/** A package's page: its profile, the command that adds it, its versions and its maintainers. */
+function packagePage(detail: PackageDetail, handles: HashMap<String, String>): HTMLPartial {
+  let profile = detail.profile;
+  var name = detail.handle;
+  var description: String | null = null;
+  var license: String | null = null;
+  var homepage: String | null = null;
+  var source: String | null = null;
+  if (profile != null) {
+    name = profile.name;
+    description = profile.description;
+    license = profile.license;
+    homepage = profile.homepage;
+    source = profile.source;
+  }
+  var latest: String | null = null;
+  for (let release in detail.releases) {
+    if (latest == null && !detail.retractions.has(release.version.toString())) {
+      latest = release.version.toString();
+    }
+  }
+  return html`
+    <div>
+      <h1 class="with-chips">
+        ${name}
+        ${when(latest != null, () => chip(latest as String, 'primary'))}
+        ${when(license != null, () => chip(license as String, 'success'))}
+      </h1>
+      ${when(description != null, () => html`<p>${description as String}</p>`)}
+      <div class="meta mono muted">
+        <span>${detail.handle}</span>
+        <span>${detail.did}</span>
+        ${when(homepage != null, () => html`<a href="${homepage as String}">Homepage</a>`)}
+        ${when(source != null, () => html`<a href="${source as String}">Source</a>`)}
+      </div>
+    </div>
+    <pre class="mono">zena add ${detail.handle}</pre>
+    <section>
+      <h2>Versions</h2>
+      ${if (detail.releases.length == 0) html`<p class="muted">Nothing is published yet.</p>` else versions(detail, handles)}
+    </section>
+    <section>
+      <h2>Maintainers</h2>
+      ${if (detail.maintainers == null) html`<p class="muted">No maintainers record.</p>`
+          else maintainers(detail.maintainers as Maintainers)}
+    </section>
+  `;
+}
+
+function versions(detail: PackageDetail, handles: HashMap<String, String>): HTMLPartial {
+  return html`
+    <table>
+      <thead><tr><th>Version</th><th>Published</th><th>Dependencies</th></tr></thead>
+      <tbody>${each(detail.releases, (release) => {
+        let version = release.version.toString();
+        var retracted = false;
+        var reason: String | null = null;
+        if (let (true, retraction) = detail.retractions.get(version)) {
+          retracted = true;
+          reason = retraction.reason;
+        }
+        return html`
+        <tr class="${if (retracted) 'retracted' else ''}">
+          <td>
+            <span class="version mono">${version}</span>
+            ${when(retracted, () => chip('retracted', 'danger'))}
+            ${when(reason != null, () => html`<div class="muted">${reason as String}</div>`)}
+          </td>
+          <td class="muted">${release.createdAt.sliceBytes(0, 10)}</td>
+          <td>${dependencies(release, handles)}</td>
+        </tr>`;
+      })}
+      </tbody>
+    </table>
+  `;
+}
+
+function dependencies(release: Release, handles: HashMap<String, String>): TemplateValue {
+  if (release.dependencies.length == 0) {
+    return html`<span class="muted">none</span>`;
+  }
+  return html`<ul class="plain">${each(release.dependencies, (dependency: Dependency) => {
+    var target = html`<span class="mono">${dependency.name}</span>`;
+    if (let (true, handle) = handles.get(dependency.did)) {
+      target = html`<a class="mono" href="/packages/${handle}">${dependency.name}</a>`;
+    }
+    return html`<li>${target} ${dependency.version.toString()} <span class="mono muted">${dependency.did}</span></li>`;
+  })}</ul>`;
+}
+
+function maintainers(record: Maintainers): HTMLPartial {
+  return html`
+    <ul class="plain">${each(record.maintainers, (maintainer: Maintainer) => html`
+      <li>${describe(maintainer)} ${chip(maintainer.role)}</li>`)}
+    </ul>
+    <p class="muted">
+      A release counts once ${count(record.threshold as i32, 'maintainer')}
+      ${if (record.threshold == 1 as i64) 'approves' else 'approve'} it, and a change of maintainers once
+      ${count(record.ownerThreshold as i32, 'owner')} ${if (record.ownerThreshold == 1 as i64) 'does' else 'do'}.
+    </p>
+  `;
+}
+
+/** A maintainer as the record names it: a DID, a team, or a commitment whose person is private. */
+function describe(maintainer: Maintainer): HTMLPartial {
+  let automation = if (maintainer.automation) ' (automation)' else '';
+  if (maintainer.did != null) {
+    return html`<span class="mono">${maintainer.did as String}</span>${automation}`;
+  }
+  if (maintainer.team != null) {
+    return html`the team <span class="mono">${maintainer.team as String}</span> of
+      <span class="mono">${maintainer.org ?? ''}</span>`;
+  }
+  return html`<span class="muted">a private member</span>${automation}`;
+}

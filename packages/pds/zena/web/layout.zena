@@ -1,0 +1,65 @@
+/**
+ * The shell every page of the web app shares, and the small pieces pages
+ * build from. Pages are rendered on the server with `zena:http`'s `html`
+ * tag, which escapes every value it is given; `packages/pds-web` builds the
+ * stylesheet and the script they load from `/assets/`.
+ */
+
+import {GrowableArray} from 'zena:core';
+import {HTMLPartial, TemplateValue, html, unsafeHTML} from 'zena:http';
+
+/**
+ * Applies the theme the theme select saved before the page paints, as the
+ * select itself would once its script loads: `rad-theme-dark` on `<html>`
+ * for `dark`, or for `auto` when the system prefers dark.
+ */
+let THEME_SCRIPT = "try{let t=localStorage.getItem('themeName')??'auto';if(t==='dark'||(t==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.classList.add('rad-theme-dark')}catch{}";
+
+/** A whole page: `title`, the header with the host's `domain`, and `body`. */
+export function page(title: String, domain: String, body: TemplateValue): HTMLPartial {
+  return html`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${title}</title>
+    <script>${unsafeHTML(THEME_SCRIPT)}</script>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script type="module" src="/assets/app.js"></script>
+  </head>
+  <body>
+    <header class="site">
+      <a class="title" href="/">Zena packages</a>
+      <span class="mono muted">${domain}</span>
+      <span class="spacer"></span>
+      <rad-theme-select></rad-theme-select>
+    </header>
+    <main>${body}</main>
+  </body>
+</html>
+`;
+}
+
+/** A chip: `text` in a pill, colored by `kind`, one of `app.css`'s `chip-*` classes. */
+export function chip(text: String, kind: String = 'neutral'): HTMLPartial {
+  return html`<span class="chip chip-${kind}">${text}</span>`;
+}
+
+/** `n` and `noun`, plural unless `n` is 1. */
+export function count(n: i32, noun: String): String {
+  return if (n == 1) `1 ${noun}` else `${n} ${noun}s`;
+}
+
+/** `render` of each of `items`, for a template. */
+export function each<T>(items: Array<T>, render: (item: T) => TemplateValue): Array<TemplateValue> {
+  let rendered = new GrowableArray<TemplateValue>();
+  for (let item in items) {
+    rendered.push(render(item));
+  }
+  return rendered;
+}
+
+/** `content` when `condition` holds, else nothing. */
+export function when(condition: boolean, content: () => TemplateValue): TemplateValue {
+  return if (condition) content() else null;
+}

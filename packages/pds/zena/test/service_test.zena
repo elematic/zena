@@ -58,6 +58,26 @@ function get(app: App, path: String): Response {
 }
 
 export let tests = suite('pds:service', () => {
+  test("serves the web app's assets, beside its pages and APIs", (ctx) => {
+    let service = runFuture(buildService(configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'),
+        ('PDS_WEB_DIR', 'packages/pds/zena/test/fixtures/web')])), 'http://127.0.0.1:1'));
+    let script = get(service.app, '/assets/app.js');
+    equal(script.statusCode, 200, 'script');
+    isTrue((script.type ?? '').contains('javascript'), script.type ?? 'no type');
+    equal(get(service.app, '/assets/missing.js').statusCode, 404, 'a missing asset');
+    // The pages are the host's, rendered on the server.
+    let home = get(service.app, '/');
+    equal(home.statusCode, 200, 'home');
+    isTrue((home.type ?? '').contains('text/html'), home.type ?? 'no type');
+    let health = get(service.app, '/xrpc/_health');
+    equal(health.statusCode, 200, `health: ${health.statusCode}`);
+    isTrue((health.body as String).contains('version'), health.body as String);
+
+    // A PDS with no package host has no pages: its banner is at /.
+    let plain = runFuture(buildService(configFromEnv(envOf([])), 'http://127.0.0.1:1'));
+    isTrue((get(plain.app, '/').body as String).contains('PDS'), 'the banner');
+  });
+
   test('defaults to a PDS in memory on 2583', (ctx) => {
     let config = configFromEnv(envOf([]));
     equal(config.port as i32, 2583);

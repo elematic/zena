@@ -1329,7 +1329,20 @@ pass this request to a separate directory service). It reads the
 packages' profiles and releases from their PDSes. Later it follows the
 relay's stream of changes. It serves search, version lists, reverse
 dependencies and a web interface, and it feeds the checksum log. It runs
-as a Zena server next to the website.
+no relay of its own: Bluesky's relays crawl PDSes, the package host's
+among them.
+
+It starts in the package host's server, at the host's domain, which runs
+three parts kept apart in code: the PDS and the host's methods, the index,
+and the web pages, rendered on the server. The index keeps a store of its
+own, filled through one ingest interface from three sources in turn: the
+host's own commits, in the same process; other PDSes, found with
+`listReposByCollection` and read over HTTP; and the relay's stream, once
+Zena servers can follow a WebSocket. Public pages read only the index,
+even for packages hosted beside it, and show a package the same wherever
+it is hosted; pages about a person's memberships read the host. So search
+covers the host's packages first and grows with the sources, and the
+index can move to a server of its own without changing the pages.
 
 ### Labelers
 
