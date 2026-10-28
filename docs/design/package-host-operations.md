@@ -72,10 +72,10 @@ session, because the host holds nothing that can write there
 | ---------------------------------------------------------- | ------ | --------------------------------------------------------- |
 | List and search packages and scopes                        | anyone | `/`, `/scopes/<name>`; `listPackages`, `listScopes`       |
 | See a package: profile, versions, retractions, maintainers | anyone | `/packages/<handle>`                                      |
-| See a package's dependencies, by handle                    | anyone | by DID; handles to come                                   |
+| See a package's dependencies, by handle                    | anyone | `/packages/<handle>`, by handle for packages hosted here  |
 | See a package's dependents                                 | anyone | no; needs the index (#637)                                |
 | See who attested each release                              | anyone | no; the attestations are in the maintainers' repositories |
-| See a person's profile and public roles                    | anyone | no                                                        |
+| See a person's profile and public roles                    | anyone | `/people/<handle or DID>`                                 |
 | Report a package, release or scope                         | anyone | no; `com.atproto.moderation.createReport`                 |
 
 ## People and accounts

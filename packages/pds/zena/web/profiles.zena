@@ -1,0 +1,83 @@
+/**
+ * A person's page, and their avatar. The page shows their profile
+ * (`./people.zena`) and the packages that name them publicly; their
+ * private roles stay on `/me`, for them alone.
+ */
+
+import {HTMLPartial, Router, html} from 'zena:http';
+import {percentDecode} from 'zena:url';
+import {Membership, PackageHost} from '../host.zena';
+import {avatar, chip, each, page, when} from './layout.zena';
+import {notFound} from './pages.zena';
+import {People, Person} from './people.zena';
+import {PageContext, contextOf} from './session.zena';
+
+/** Adds the people pages to `router`. */
+export function peoplePages(router: Router, host: PackageHost, people: People): void {
+  router.get('/people/:id', async (req, res, next, params) => {
+    let context = await contextOf(req, host, people);
+    let id = percentDecode(params['id'] ?? '');
+    let did = if (id.startsWith('did:')) id else await host.resolveHandle(id);
+    if (did == null) {
+      notFound(res, context, `${id} does not resolve to an account.`);
+      return;
+    }
+    let person = await people.person(did as String);
+    let roles = await host.publicRolesOf(person.did);
+    res.type = 'text/html; charset=utf-8';
+    res.body = page(`${person.name()} · Zena packages`, context, personPage(context, person, roles));
+  });
+
+  // Only an avatar a page linked to: the URL's signature is the host's
+  // own, so the host is no open proxy for whatever a DID document names.
+  router.get('/people/:did/avatar', async (req, res, next, params) => {
+    let did = percentDecode(params['did'] ?? '');
+    let sessions = host.sessions;
+    if (sessions == null || !sessions.checkUrlSignature(did, req.url.searchParams().get('s'))) {
+      res.statusCode = 404;
+      res.body = '';
+      return;
+    }
+    let found = await people.avatar(await people.person(did));
+    if (found == null) {
+      res.statusCode = 404;
+      res.body = '';
+      return;
+    }
+    res.type = found.type;
+    res.setHeader('cache-control', 'public, max-age=86400');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('content-security-policy', "default-src 'none'");
+    res.body = found.bytes;
+  });
+}
+
+function personPage(context: PageContext, person: Person, roles: Array<Membership>): HTMLPartial {
+  let handle = person.handle;
+  let description = person.description;
+  let who = context.who;
+  return html`
+    <div class="profile">
+      ${avatar(context, person, 'large')}
+      <div>
+        <h1>${person.name()}</h1>
+        <div class="meta mono muted">
+          ${when(handle != null, () => html`<span>${handle as String}</span>`)}
+          <span>${person.did}</span>
+          ${when(person.hasProfile, () => html`<a href="https://bsky.app/profile/${person.did}">Bluesky profile</a>`)}
+        </div>
+      </div>
+    </div>
+    ${when(description != null, () => html`<p class="description">${description as String}</p>`)}
+    ${when(who != null && who.did == person.did, () => html`
+      <p class="muted">This is you. <a href="/me">Your packages</a> lists every role you have here, the private ones too.</p>`)}
+    <section>
+      <h2>Packages</h2>
+      ${if (roles.length == 0) html`<p class="muted">No package here names them as a maintainer publicly.</p>`
+          else html`<ul class="plain">${each(roles, (role) => html`
+            <li><a href="/packages/${role.handle}">${role.name}</a>
+              <span class="mono muted">${role.handle}</span> ${chip(role.role)}</li>`)}
+          </ul>`}
+    </section>
+  `;
+}

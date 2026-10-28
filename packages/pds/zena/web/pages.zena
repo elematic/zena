@@ -13,13 +13,14 @@ import {percentDecode} from 'zena:url';
 import {Cid} from 'atproto:cid';
 import {Dependency, Maintainer, Maintainers, MemberEntry, Release} from 'package-manager:records';
 import {PackageDetail, PackageHost, PackageSummary, ScopeDetail, ScopeSummary} from '../host.zena';
-import {chip, count, each, page, when} from './layout.zena';
+import {chip, count, each, page, personLink, when} from './layout.zena';
 import {PageContext, contextOf} from './session.zena';
+import {People, Person} from './people.zena';
 
 /** Adds the public pages to `router`. */
-export function publicPages(router: Router, host: PackageHost): void {
+export function publicPages(router: Router, host: PackageHost, people: People): void {
   router.get('/', async (req, res, next, params) => {
-    let context = contextOf(req, host);
+    let context = await contextOf(req, host, people);
     let query = (req.url.searchParams().get('q') ?? '').trim();
     let packages = await host.listPackages(null);
     let shown = filtered(packages, query);
@@ -46,7 +47,7 @@ export function publicPages(router: Router, host: PackageHost): void {
   });
 
   router.get('/scopes/:name', async (req, res, next, params) => {
-    let context = contextOf(req, host);
+    let context = await contextOf(req, host, people);
     let name = percentDecode(params['name'] ?? '');
     let scope = await host.getScope(name);
     if (scope == null) {
@@ -55,13 +56,20 @@ export function publicPages(router: Router, host: PackageHost): void {
     }
     let found = scope as ScopeDetail;
     let packages = await host.listPackages(name);
-    let memberEntries = await visibleEntries(context, found.did, null);
+    // The entries the viewer may see, of the members and of every team,
+    // in one map: each commitment is a different hash.
+    let entries = await visibleEntries(context, found.did, null);
+    for (let named in found.teams) {
+      for (let teamEntry in await visibleEntries(context, found.did, named.name)) {
+        entries[teamEntry.key] = teamEntry.value;
+      }
+    }
+    let shown = await shownWith(context, entries, []);
     let teams = new GrowableArray<TemplateValue>();
     for (let named in found.teams) {
-      let entries = await visibleEntries(context, found.did, named.name);
       teams.push(html`
         <h3 class="mono">${named.name}</h3>
-        ${members(named.team.members, entries, 'No members.')}`);
+        ${members(named.team.members, shown, 'No members.')}`);
     }
     res.type = 'text/html; charset=utf-8';
     res.body = page(`@${name} · Zena packages`, context, html`
@@ -75,14 +83,14 @@ export function publicPages(router: Router, host: PackageHost): void {
       </section>
       <section>
         <h2>Members</h2>
-        ${members(found.members, memberEntries, 'No members record.')}
+        ${members(found.members, shown, 'No members record.')}
       </section>
       ${when(teams.length > 0, () => html`<section><h2>Teams</h2>${teams}</section>`)}
     `);
   });
 
   router.get('/packages/:handle', async (req, res, next, params) => {
-    let context = contextOf(req, host);
+    let context = await contextOf(req, host, people);
     let handle = percentDecode(params['handle'] ?? '');
     let detail = await host.getPackage(handle);
     if (detail == null) {
@@ -104,7 +112,28 @@ export function publicPages(router: Router, host: PackageHost): void {
     let profile = found.profile;
     let name = if (profile != null) profile.name else found.handle;
     let entries = await visibleEntries(context, found.did, null);
-    res.body = page(`${name} · Zena packages`, context, packagePage(found, handles, entries));
+    let named = new GrowableArray<String>();
+    let record = found.maintainers;
+    if (record != null) {
+      for (let maintainer in record.maintainers) {
+        if (maintainer.did != null) {
+          named.push(maintainer.did as String);
+        }
+      }
+    }
+    let shown = await shownWith(context, entries, named);
+    if (record != null) {
+      for (let maintainer in record.maintainers) {
+        let org = maintainer.org;
+        if (org != null) {
+          let account = await host.pds.storage.getAccount(org as String);
+          if (account != null && account.handle != null) {
+            shown.scopes[org as String] = (account.handle as String).split('.')[0];
+          }
+        }
+      }
+    }
+    res.body = page(`${name} · Zena packages`, context, packagePage(found, handles, shown));
   });
 }
 
@@ -165,8 +194,7 @@ function scopeList(scopes: Array<ScopeSummary>): HTMLPartial {
 }
 
 /** A package's page: its profile, the command that adds it, its versions and its maintainers. */
-function packagePage(detail: PackageDetail, handles: HashMap<String, String>,
-    entries: HashMap<String, MemberEntry>): HTMLPartial {
+function packagePage(detail: PackageDetail, handles: HashMap<String, String>, shown: Shown): HTMLPartial {
   let profile = detail.profile;
   var name = detail.handle;
   var description: String | null = null;
@@ -195,6 +223,7 @@ function packagePage(detail: PackageDetail, handles: HashMap<String, String>,
       </h1>
       ${when(description != null, () => html`<p>${description as String}</p>`)}
       <div class="meta mono muted">
+        <span>in <a href="/scopes/${detail.scope}">@${detail.scope}</a></span>
         <span>${detail.handle}</span>
         <span>${detail.did}</span>
         ${when(homepage != null, () => html`<a href="${homepage as String}">Homepage</a>`)}
@@ -209,7 +238,7 @@ function packagePage(detail: PackageDetail, handles: HashMap<String, String>,
     <section>
       <h2>Maintainers</h2>
       ${if (detail.maintainers == null) html`<p class="muted">No maintainers record.</p>`
-          else maintainers(detail.maintainers as Maintainers, entries)}
+          else maintainers(detail.maintainers as Maintainers, shown)}
     </section>
   `;
 }
@@ -247,18 +276,33 @@ function dependencies(release: Release, handles: HashMap<String, String>): Templ
     return html`<span class="muted">none</span>`;
   }
   return html`<ul class="plain">${each(release.dependencies, (dependency: Dependency) => {
-    var target = html`<span class="mono">${dependency.name}</span>`;
+    // A package hosted here is named by its handle and linked; another by its DID.
+    var target = html`<span class="mono">${dependency.name}</span> <span class="mono muted">${dependency.did}</span>`;
     if (let (true, handle) = handles.get(dependency.did)) {
-      target = html`<a class="mono" href="/packages/${handle}">${dependency.name}</a>`;
+      target = html`<a class="mono" href="/packages/${handle}">${dependency.name}</a>
+        <span class="mono muted">${handle}</span>`;
     }
-    return html`<li>${target} ${dependency.version.toString()} <span class="mono muted">${dependency.did}</span></li>`;
+    return html`<li>${target} <span class="mono" title="${rangeTitle(dependency)}">${range(dependency)}</span></li>`;
   })}</ul>`;
 }
 
-function maintainers(record: Maintainers, entries: HashMap<String, MemberEntry>): HTMLPartial {
+/**
+ * The versions a dependency accepts: its version or any later one of the
+ * same major version, the one version selection picks from
+ * (package-manager.md, "Version selection").
+ */
+function range(dependency: Dependency): String {
+  return `≥ ${dependency.version.toString()} (${dependency.version.major}.x)`;
+}
+
+function rangeTitle(dependency: Dependency): String {
+  return `${dependency.version.toString()} or any later ${dependency.version.major}.x release`;
+}
+
+function maintainers(record: Maintainers, shown: Shown): HTMLPartial {
   return html`
     <ul class="plain">${each(record.maintainers, (maintainer: Maintainer) => html`
-      <li>${describe(maintainer, entries)} ${chip(maintainer.role)}</li>`)}
+      <li>${describe(maintainer, shown)} ${chip(maintainer.role)}</li>`)}
     </ul>
     <p class="muted">
       A release counts once ${count(record.threshold as i32, 'maintainer')}
@@ -269,25 +313,65 @@ function maintainers(record: Maintainers, entries: HashMap<String, MemberEntry>)
 }
 
 /**
- * A maintainer as the record names it: a DID, a team, or a commitment,
- * whose person is private unless `entries` has its entry.
+ * What a page knows of the people it names: the private entries the
+ * viewer may see, by commitment; each person named, by DID; and the
+ * scope of each organization a team is in.
  */
-function describe(maintainer: Maintainer, entries: HashMap<String, MemberEntry>): HTMLPartial {
-  let automation = if (maintainer.automation) ' (automation)' else '';
-  if (maintainer.did != null) {
-    return html`<span class="mono">${maintainer.did as String}</span>${automation}`;
+final class Shown {
+  context: PageContext;
+  entries: HashMap<String, MemberEntry>;
+  people: HashMap<String, Person>;
+  scopes = new HashMap<String, String>();
+
+  new(this.context, this.entries, this.people);
+
+  /** `did`'s person, as the page read them. */
+  person(did: String): Person {
+    if (let (true, person) = this.people.get(did)) {
+      return person;
+    }
+    return new Person(did);
   }
-  if (maintainer.team != null) {
-    return html`the team <span class="mono">${maintainer.team as String}</span> of
-      <span class="mono">${maintainer.org ?? ''}</span>`;
+}
+
+/** The people behind `entries` and `dids`, read for a page. */
+async function shownWith(context: PageContext, entries: HashMap<String, MemberEntry>, dids: Array<String>)
+    : Future<Shown> {
+  let all = new GrowableArray<String>();
+  for (let did in dids) {
+    all.push(did);
+  }
+  for (let entry in entries) {
+    all.push(entry.value.did);
+  }
+  return new Shown(context, entries, await context.people.each(all));
+}
+
+/**
+ * A maintainer as the record names it: a person, by DID; a team; or a
+ * commitment, whose person is private unless the viewer may see its entry.
+ */
+function describe(maintainer: Maintainer, shown: Shown): HTMLPartial {
+  let automation = when(maintainer.automation, () => chip('automation'));
+  let did = maintainer.did;
+  if (did != null) {
+    return html`${personLink(shown.context, shown.person(did as String))} ${automation}`;
+  }
+  let team = maintainer.team;
+  if (team != null) {
+    let org = maintainer.org ?? '';
+    if (let (true, scope) = shown.scopes.get(org)) {
+      return html`the team <a class="mono" href="/scopes/${scope}">@${scope}/${team as String}</a>`;
+    }
+    return html`the team <span class="mono">${team as String}</span> of <span class="mono">${org}</span>`;
   }
   let commitment = maintainer.commitment;
   if (commitment != null) {
-    if (let (true, entry) = entries.get(commitment.toString())) {
-      return html`<span class="mono">${entry.did}</span> <span class="muted">(private)</span>${automation}`;
+    if (let (true, entry) = shown.entries.get(commitment.toString())) {
+      return html`${personLink(shown.context, shown.person(entry.did))} <span class="muted">(private)</span> ${automation}`;
     }
   }
-  return html`<span class="muted">a private member</span>${automation}`;
+  return html`<span class="muted">a private member</span> ${automation}`;
 }
 
 /**
@@ -310,19 +394,18 @@ async function visibleEntries(context: PageContext, account: String, team: Strin
   return found;
 }
 
-/** Members, by commitment, each named when `entries` has their entry; or `empty`. */
-function members(commitments: FixedArray<Cid>, entries: HashMap<String, MemberEntry>, empty: String)
-    : HTMLPartial {
+/** Members, by commitment, each named when the viewer may see their entry; or `empty`. */
+function members(commitments: FixedArray<Cid>, shown: Shown, empty: String): HTMLPartial {
   if (commitments.length == 0) {
     return html`<p class="muted">${empty}</p>`;
   }
-  return html`<ul class="plain">${each(commitments, (commitment: Cid) => member(commitment, entries))}</ul>`;
+  return html`<ul class="plain">${each(commitments, (commitment: Cid) => member(commitment, shown))}</ul>`;
 }
 
-function member(commitment: Cid, entries: HashMap<String, MemberEntry>): HTMLPartial {
-  if (let (true, entry) = entries.get(commitment.toString())) {
+function member(commitment: Cid, shown: Shown): HTMLPartial {
+  if (let (true, entry) = shown.entries.get(commitment.toString())) {
     return html`
-      <li><span class="mono">${entry.did}</span> ${chip(entry.role)}
+      <li>${personLink(shown.context, shown.person(entry.did))} ${chip(entry.role)}
         ${when(entry.automation, () => chip('automation'))}</li>`;
   }
   return html`<li class="muted">a private member</li>`;

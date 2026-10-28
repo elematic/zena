@@ -11,18 +11,36 @@
 import {Request, Response} from 'zena:http';
 import {milliseconds} from 'zena:time';
 import {now} from 'wasi:clocks/system-clock';
+import {Future} from 'zena:async';
 import {PackageHost} from '../host.zena';
+import {People, Person} from './people.zena';
 import {WEB_SECONDS, WebCaller} from '../sessions.zena';
 
 /** The cookie that holds a web session's token. */
 export let SESSION_COOKIE = 'session';
 
-/** What every page needs: the host, and who is signed in, if anyone. */
+/** What every page needs: the host, who is signed in, if anyone, and the people pages show. */
 export final class PageContext {
   host: PackageHost;
   who: WebCaller | null;
+  people: People;
+  /** The person signed in, as `people` reads them, for the header. */
+  var person: Person | null = null;
 
-  new(this.host, this.who);
+  new(this.host, this.who, this.people);
+
+  /**
+   * The URL of `person`'s avatar, served through this host and signed so
+   * that it serves only avatars of people its pages show; null when their
+   * profile has none.
+   */
+  avatarUrl(person: Person): String | null {
+    let sessions = this.host.sessions;
+    if (person.avatar == null || sessions == null) {
+      return null;
+    }
+    return `/people/${person.did}/avatar?s=${sessions.urlSignature(person.did)}`;
+  }
 
   /** Whether the person signed in is one of the host's admins (`PDS_ADMIN_DIDS`). */
   isAdmin: boolean {
@@ -41,10 +59,14 @@ export final class PageContext {
 }
 
 /** The context of a page `req` asks for, reading its session cookie. */
-export function contextOf(req: Request, host: PackageHost): PageContext {
+export async function contextOf(req: Request, host: PackageHost, people: People): Future<PageContext> {
   let sessions = host.sessions;
   let who = if (sessions == null) null else sessions.webCaller(req.cookie(SESSION_COOKIE), now().seconds);
-  return new PageContext(host, who);
+  let context = new PageContext(host, who, people);
+  if (who != null) {
+    context.person = await people.person(who.did);
+  }
+  return context;
 }
 
 /**

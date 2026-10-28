@@ -1,0 +1,357 @@
+/**
+ * People as the pages show them: an account's handle, and the name,
+ * description and avatar of its profile. The profile is the account's own
+ * `app.bsky.actor.profile` record, read from its PDS, so a person changes
+ * it in the app that writes that record, and this host keeps no copy but a
+ * cache.
+ *
+ * Reading someone else's PDS while a page renders costs that page time,
+ * and serving their avatar costs this host bandwidth. So each read runs
+ * under `zena:task`'s `timeout`, answers are cached (failures too, for a
+ * shorter time), only public HTTPS hosts are read, and only images up to
+ * `MAX_AVATAR_BYTES` are served, from avatar URLs the pages signed
+ * (`./session.zena`). A cancelled read's request still runs on in the host
+ * until the PDS answers (#640); the cache keeps a slow PDS from being asked
+ * again soon.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {GrowableArray, parseI32} from 'zena:core';
+import {fetch} from 'zena:fetch';
+import {JsonObject, parseJson} from 'zena:json';
+import {div} from 'zena:math';
+import {timeout} from 'zena:task';
+import {milliseconds} from 'zena:time';
+import {URL} from 'zena:url';
+import {now} from 'wasi:clocks/system-clock';
+import {Cid} from 'atproto:cid';
+import {Identity} from 'atproto:identity';
+import {PackageHost} from '../host.zena';
+
+/** The profile record pages read: Bluesky's, which most atproto accounts have. */
+export let PROFILE_COLLECTION = 'app.bsky.actor.profile';
+
+/** How long a read of someone's PDS may take. */
+let READ_MILLISECONDS: i64 = 3000 as i64;
+/** How long a person read stays cached, and a failed read. */
+let FRESH_SECONDS: i64 = (60 * 60) as i64;
+let FAILED_SECONDS: i64 = (10 * 60) as i64;
+/** The largest avatar served, and the most avatar bytes kept in memory. */
+export let MAX_AVATAR_BYTES = 1024 * 1024;
+let AVATAR_CACHE_BYTES = 16 * 1024 * 1024;
+
+/** An account, as pages show it. */
+export final class Person {
+  did: String;
+  var handle: String | null = null;
+  var displayName: String | null = null;
+  var description: String | null = null;
+  /** The avatar's blob, and its MIME type, when the profile names one. */
+  var avatar: Cid | null = null;
+  var avatarType: String | null = null;
+  /** The PDS its profile and avatar are read from. */
+  var pds: String | null = null;
+  /** Whether it has a profile record. */
+  var hasProfile = false;
+
+  new(this.did);
+
+  /** What a page calls it: its display name, its handle, or its DID. */
+  name(): String {
+    return this.displayName ?? this.handle ?? this.did;
+  }
+
+  /** The path of its page here: by handle, or by DID when it has none. */
+  path(): String {
+    return `/people/${this.handle ?? this.did}`;
+  }
+}
+
+/** An HTTP answer: its status, its body, and its content type. */
+export final class Fetched {
+  status: i32;
+  body: FixedArray<u8>;
+  contentType: String;
+
+  new(this.status, this.body, this.contentType);
+}
+
+/**
+ * Where `People` reads from: the handle of an account this host holds
+ * (null for any other), an account's identity, and a URL. Tests pass
+ * fakes; `People.forHost` passes the host's storage and resolver, and
+ * `zena:fetch`.
+ */
+export final class PeopleSources {
+  local: (did: String) => Future<LocalAccount | null>;
+  identity: (did: String) => Future<Identity | null>;
+  get: (url: String) => Future<Fetched | null>;
+
+  new(this.local, this.identity, this.get);
+}
+
+/** An account this host holds, and its handle. */
+export final class LocalAccount {
+  handle: String | null;
+
+  new(this.handle);
+}
+
+final class Cached {
+  person: Person;
+  until: i64;
+
+  new(this.person, this.until);
+}
+
+/** An avatar, as `People.avatar` serves it: its image type and its bytes. */
+export final class Avatar {
+  type: String;
+  bytes: FixedArray<u8>;
+
+  new(this.type, this.bytes);
+}
+
+/** Reads people, and their avatars, and caches what it read. */
+export final class People {
+  #sources: PeopleSources;
+  #people = new HashMap<String, Cached>();
+  #avatars = new HashMap<String, Avatar>();
+  /** The avatars' keys, oldest first, and their bytes in all. */
+  var #avatarOrder = new GrowableArray<String>();
+  var #avatarBytes = 0;
+
+  new(sources: PeopleSources) : #sources = sources;
+
+  /** People reading through `host`'s storage and identity resolver, and the network. */
+  static forHost(host: PackageHost): People {
+    return new People(new PeopleSources(
+        async (did: String): Future<LocalAccount | null> => {
+          let held = await host.pds.storage.getAccount(did);
+          return if (held != null) new LocalAccount(held.handle) else null;
+        },
+        async (did: String): Future<Identity | null> => await host.identityOf(did),
+        async (url: String): Future<Fetched | null> => await httpGet(url)));
+  }
+
+  /**
+   * `did`'s handle and profile. An account of this host has a handle and
+   * no profile. Anyone else's comes from their DID document and their
+   * PDS, and stands as just a DID when those cannot be read.
+   */
+  async person(did: String): Future<Person> {
+    let nowSeconds = now().seconds;
+    if (let (true, cached) = this.#people.get(did)) {
+      if (cached.until > nowSeconds) {
+        return cached.person;
+      }
+    }
+    let person = new Person(did);
+    var fresh = true;
+    let held = await this.#sources.local(did);
+    if (held != null) {
+      person.handle = held.handle;
+    } else {
+      fresh = await this.#read(person);
+    }
+    this.#people[did] = new Cached(person, nowSeconds + (if (fresh) FRESH_SECONDS else FAILED_SECONDS));
+    return person;
+  }
+
+  /** Each of `dids`, as `person` reads them, in order. */
+  async each(dids: Array<String>): Future<HashMap<String, Person>> {
+    let found = new HashMap<String, Person>();
+    for (let did in dids) {
+      if (!found.has(did)) {
+        found[did] = await this.person(did);
+      }
+    }
+    return found;
+  }
+
+  /** Fills `person` from their DID document and profile; false when either could not be read. */
+  async #read(person: Person): Future<boolean> {
+    var identity: Identity | null = null;
+    try {
+      identity = await timeout<Identity | null>(milliseconds(READ_MILLISECONDS),
+          () => this.#sources.identity(person.did))();
+    } catch (e) {
+      return false;
+    }
+    if (identity == null) {
+      return false;
+    }
+    person.handle = identity.handle;
+    let pds = identity.document.pds;
+    if (pds == null || !isPublicHttps(pds as String)) {
+      return true;
+    }
+    person.pds = pds;
+    let url = `${pds as String}/xrpc/com.atproto.repo.getRecord?repo=${person.did}&collection=${PROFILE_COLLECTION}&rkey=self`;
+    let answer = await this.#get(url);
+    if (answer == null) {
+      return false;
+    }
+    if (answer.status != 200) {
+      // No profile record: a person with a handle alone.
+      return answer.status < 500;
+    }
+    readProfile(person, answer.body);
+    return true;
+  }
+
+  /**
+   * `person`'s avatar, as its MIME type and bytes, when their profile
+   * names an image no larger than `MAX_AVATAR_BYTES`; null otherwise.
+   */
+  async avatar(person: Person): Future<Avatar | null> {
+    let cid = person.avatar;
+    let pds = person.pds;
+    if (cid == null || pds == null) {
+      return null;
+    }
+    let key = cid.toString();
+    if (let (true, cached) = this.#avatars.get(key)) {
+      return cached;
+    }
+    let answer = await this.#get(`${pds as String}/xrpc/com.atproto.sync.getBlob?did=${person.did}&cid=${key}`);
+    if (answer == null || answer.status != 200 || answer.body.length > MAX_AVATAR_BYTES) {
+      return null;
+    }
+    let type = imageType(answer.contentType, person.avatarType);
+    if (type == null) {
+      return null;
+    }
+    let found = new Avatar(type as String, answer.body);
+    this.#keep(key, found);
+    return found;
+  }
+
+  /** Keeps `avatar`, dropping the oldest ones past `AVATAR_CACHE_BYTES`. */
+  #keep(key: String, avatar: Avatar): void {
+    this.#avatars[key] = avatar;
+    this.#avatarOrder.push(key);
+    this.#avatarBytes += avatar.bytes.length;
+    var oldest = 0;
+    while (this.#avatarBytes > AVATAR_CACHE_BYTES && oldest < this.#avatarOrder.length - 1) {
+      let dropped = this.#avatarOrder[oldest];
+      if (let (true, gone) = this.#avatars.get(dropped)) {
+        this.#avatarBytes -= gone.bytes.length;
+        this.#avatars.delete(dropped);
+      }
+      oldest += 1;
+    }
+    if (oldest > 0) {
+      let kept = new GrowableArray<String>();
+      for (var i = oldest; i < this.#avatarOrder.length; i += 1) {
+        kept.push(this.#avatarOrder[i]);
+      }
+      this.#avatarOrder = kept;
+    }
+  }
+
+  /** `url`, read under the read timeout; null when it failed or took too long. */
+  async #get(url: String): Future<Fetched | null> {
+    try {
+      return await timeout<Fetched | null>(milliseconds(READ_MILLISECONDS), () => this.#sources.get(url))();
+    } catch (e) {
+      return null;
+    }
+  }
+}
+
+/** `url`, fetched: its status, body and content type; null for a body larger than `MAX_AVATAR_BYTES`. */
+async function httpGet(url: String): Future<Fetched | null> {
+  let response = await fetch(url);
+  let length = response.header('content-length');
+  if (length != null) {
+    if (let (true, bytes) = parseI32(length as String)) {
+      if (bytes > MAX_AVATAR_BYTES) {
+        return null;
+      }
+    }
+  }
+  let contentType = response.header('content-type') ?? '';
+  return new Fetched(response.status, await response.bytes(), contentType);
+}
+
+/** Fills `person`'s name, description and avatar from a `getRecord` answer for their profile. */
+function readProfile(person: Person, body: FixedArray<u8>): void {
+  let parsed = parseJson(String.fromBytes(body));
+  if (!(parsed is JsonObject)) {
+    return;
+  }
+  let value = (parsed as JsonObject)['value'];
+  if (!(value is JsonObject)) {
+    return;
+  }
+  let profile = value as JsonObject;
+  person.hasProfile = true;
+  let name = profile['displayName'];
+  if (name is String && (name as String).trim().length > 0) {
+    person.displayName = (name as String).trim();
+  }
+  let description = profile['description'];
+  if (description is String && (description as String).trim().length > 0) {
+    person.description = (description as String).trim();
+  }
+  let avatar = profile['avatar'];
+  if (avatar is JsonObject) {
+    let blob = avatar as JsonObject;
+    let ref = blob['ref'];
+    let type = blob['mimeType'];
+    if (ref is JsonObject && (ref as JsonObject)['$link'] is String) {
+      try {
+        person.avatar = Cid.parse((ref as JsonObject)['$link'] as String);
+        person.avatarType = if (type is String) type as String else null;
+      } catch (e) {
+        person.avatar = null;
+      }
+    }
+  }
+}
+
+/** The image type to serve an avatar as, from the PDS's answer and the profile; null for anything else. */
+function imageType(contentType: String, declared: String | null): String | null {
+  for (let type in ['image/jpeg', 'image/png', 'image/webp', 'image/gif']) {
+    if (contentType.asciiLowerCase().startsWith(type) || (contentType == '' && declared == type)) {
+      return type;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether this host may read `url`: HTTPS, at a host name. An address, or
+ * a name for this machine or a private network, is refused, so a DID
+ * document cannot point the host's reads at itself or what is behind it.
+ * A public name can still resolve to a private address; refusing those
+ * needs the address the name resolves to (#643).
+ */
+export function isPublicHttps(url: String): boolean {
+  let parsed = URL.parse(url);
+  if (parsed == null) {
+    return false;
+  }
+  let target = parsed as URL;
+  if (target.protocol != 'https:' || target.port != '') {
+    return false;
+  }
+  let name = target.hostname.asciiLowerCase();
+  if (name == '' || name.startsWith('[') || name == 'localhost' || name.endsWith('.localhost') ||
+      name.endsWith('.local') || name.endsWith('.internal') || !name.contains('.')) {
+    return false;
+  }
+  // An IPv4 address: every label digits.
+  var digits = true;
+  for (let label in name.split('.')) {
+    for (var i = 0; i < label.length; i += 1) {
+      let b = label.getByteAt(i);
+      if (b < 0x30 || b > 0x39) {
+        digits = false;
+      }
+    }
+  }
+  return !digits;
+}

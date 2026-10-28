@@ -9,6 +9,7 @@ import {GrowableArray} from 'zena:core';
 import {HTMLPartial, TemplateValue, html, unsafeHTML} from 'zena:http';
 import {WebCaller} from '../sessions.zena';
 import {PageContext} from './session.zena';
+import {Person} from './people.zena';
 
 /**
  * Applies the theme the theme select saved before the page paints, as the
@@ -40,7 +41,7 @@ export function page(title: String, context: PageContext, body: TemplateValue): 
       <a class="title" href="/">Zena packages</a>
       <span class="mono muted">${context.domain}</span>
       <span class="spacer"></span>
-      ${if (who != null) signedIn(who, context.isAdmin) else signInButton()}
+      ${if (who != null) signedIn(context, who, context.isAdmin) else signInButton()}
       <rad-theme-select></rad-theme-select>
     </header>
     <main>${body}</main>
@@ -53,11 +54,13 @@ export function page(title: String, context: PageContext, body: TemplateValue): 
  * The header's links for `who`, signed in: the admin page, for the host's
  * admins; their packages; their name; and signing out.
  */
-function signedIn(who: WebCaller, admin: boolean): HTMLPartial {
+function signedIn(context: PageContext, who: WebCaller, admin: boolean): HTMLPartial {
+  let person = context.person;
   return html`
     ${when(admin, () => html`<a href="/admin">Admin</a>`)}
     <a href="/me">Your packages</a>
-    <span class="mono muted">${who.name()}</span>
+    ${if (person != null) html`<a class="who" href="${person.path()}">${avatar(context, person)}
+      <span class="mono muted">${who.name()}</span></a>` else html`<span class="mono muted">${who.name()}</span>`}
     <form class="sign-out" method="post" action="/signout">
       <button type="submit" class="quiet">Sign out</button>
     </form>`;
@@ -70,13 +73,14 @@ function signedIn(who: WebCaller, admin: boolean): HTMLPartial {
  */
 function signInButton(): HTMLPartial {
   return html`
-    <button type="button" data-sign-in>Sign in</button>
+    <button type="button" data-sign-in>Sign in with Atmosphere</button>
     <dialog id="sign-in">
       <form method="dialog" class="sign-in">
-        <h2>Sign in</h2>
+        <h2>Sign in with Atmosphere</h2>
         <p>
-          Sign in with your atproto account, such as your Bluesky one. Your
-          own PDS asks for your password; this site never sees it.
+          Sign in with your Atmosphere account: the one you use with Bluesky
+          and other atproto apps. Your own PDS asks for your password; this
+          site never sees it.
         </p>
         <label>
           Handle or DID
@@ -89,6 +93,27 @@ function signInButton(): HTMLPartial {
         </div>
       </form>
     </dialog>`;
+}
+
+/**
+ * `person`'s avatar, served through this host (`PageContext.avatarUrl`),
+ * or the first letter of their name in its place.
+ */
+export function avatar(context: PageContext, person: Person, size: String = 'small'): HTMLPartial {
+  let url = context.avatarUrl(person);
+  if (url != null) {
+    return html`<img class="avatar avatar-${size}" src="${url as String}" alt="" loading="lazy">`;
+  }
+  let name = person.name();
+  let letter = if (name.startsWith('did:')) '?' else String.fromCodePoint(name.codePointAt(0)).asciiUpperCase();
+  return html`<span class="avatar avatar-${size} avatar-none" aria-hidden="true">${letter}</span>`;
+}
+
+/** `person`, linked to their page: their avatar and name, and their handle beside a display name. */
+export function personLink(context: PageContext, person: Person): HTMLPartial {
+  let handle = person.handle;
+  return html`<a class="person" href="${person.path()}">${avatar(context, person)}<span>${person.name()}</span></a>${
+      when(person.displayName != null && handle != null, () => html` <span class="mono muted">${handle as String}</span>`)}`;
 }
 
 /** A chip: `text` in a pill, colored by `kind`, one of `app.css`'s `chip-*` classes. */

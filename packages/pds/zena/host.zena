@@ -24,7 +24,7 @@ import {BlobRef, MapValue, Value} from 'atproto:data';
 import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, parseDidKey} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
-import {IdentityResolver} from 'atproto:identity';
+import {Identity, IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
 import {validateRelease} from 'package-manager:validate';
 import {Version} from 'package-manager:version';
@@ -624,6 +624,32 @@ export final class PackageHost {
     return memberships;
   }
 
+  /**
+   * The packages whose maintainers records name `did` directly, each with
+   * its role there, for anyone to see. A role behind a commitment is
+   * private, so it is left out here even when the caller could see it.
+   */
+  async publicRolesOf(did: String): Future<Array<Membership>> {
+    let roles = new GrowableArray<Membership>();
+    for (let claimed in await this.#store.allNames()) {
+      let pkg = await this.pds.storage.getAccount(claimed.did);
+      if (pkg == null || pkg.kind != AccountKind.Package) {
+        continue;
+      }
+      let record = await this.#current(claimed.did, MAINTAINERS_TYPE, 'self');
+      if (record == null) {
+        continue;
+      }
+      for (let maintainer in Maintainers.fromValue((record as CurrentRecord).value).maintainers) {
+        if (maintainer.did == did) {
+          roles.push(new Membership(claimed.did, pkg.handle ?? '', claimed.scope, claimed.name, maintainer.role));
+        }
+      }
+    }
+    sortByName(roles);
+    return roles;
+  }
+
   /** Whether `did` is one of the host's admins. */
   isHostAdmin(did: String): boolean {
     return this.config.admins.has(did);
@@ -681,8 +707,17 @@ export final class PackageHost {
     if (held != null) {
       return held.handle;
     }
+    let identity = await this.identityOf(did);
+    return if (identity != null) identity.handle else null;
+  }
+
+  /**
+   * `did`'s DID document, and the handle it claims when that resolves back
+   * to `did`, from the host's resolver; null when it does not resolve.
+   */
+  async identityOf(did: String): Future<Identity | null> {
     try {
-      return (await this.#resolver.resolve(did)).handle;
+      return await this.#resolver.resolve(did);
     } catch (e) {
       return null;
     }
@@ -787,7 +822,9 @@ export final class PackageHost {
       return null;
     }
     let did = account.did;
-    let detail = new PackageDetail(did, handle);
+    // `<name>.<scope>.<domain>`.
+    let labels = scopeOf(handle, this.config.domain).split('.');
+    let detail = new PackageDetail(did, handle, labels[labels.length - 1]);
     let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
     if (profile != null) {
       detail.profile = Profile.fromValue((profile as CurrentRecord).value);
@@ -1395,6 +1432,8 @@ export final class NamedTeam {
 export final class PackageDetail {
   did: String;
   handle: String;
+  /** The scope it is in. */
+  scope: String;
   var profile: Profile | null = null;
   /** Newest first. */
   releases = new GrowableArray<Release>();
@@ -1402,7 +1441,7 @@ export final class PackageDetail {
   retractions = new HashMap<String, Retraction>();
   var maintainers: Maintainers | null = null;
 
-  new(this.did, this.handle);
+  new(this.did, this.handle, this.scope);
 }
 
 /** An automation account `createAutomationAccount` made, with its app password. */
