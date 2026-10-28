@@ -319,6 +319,29 @@ export final class Sessions {
     }
   }
 
+  /**
+   * A signature of `value` for a URL this server makes, such as an
+   * avatar's: 16 bytes of an HMAC with the sessions' secret, so that only
+   * URLs this server wrote check (`checkUrlSignature`).
+   */
+  urlSignature(value: String): String {
+    let mac = hmacSha256(this.#secret, `url ${value}`.toBytes() as FixedArray<u8>);
+    let short = new FixedArray<u8>(16, 0 as u8);
+    for (var i = 0; i < 16; i += 1) {
+      short[i] = mac[i];
+    }
+    return base64Url.encode(short, false);
+  }
+
+  /** Whether `signature` is `urlSignature(value)`. */
+  checkUrlSignature(value: String, signature: String | null): boolean {
+    if (signature == null) {
+      return false;
+    }
+    return constantTimeEquals(this.urlSignature(value).toBytes() as FixedArray<u8>,
+        (signature as String).toBytes() as FixedArray<u8>);
+  }
+
   #sign(type: String, payload: JsonObject): String {
     let header = new JsonObject();
     header['typ'] = type;

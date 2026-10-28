@@ -6,8 +6,11 @@ themselves are rendered on the server, by the PDS written in Zena
 
 - `/`: every package, with a search form (`?q=`), and every scope;
 - `/scopes/<name>`: a scope's packages;
-- `/packages/<handle>`: a package's profile, the command that adds it, its
-  versions with their dependencies and retractions, and its maintainers;
+- `/packages/<handle>`: a package's profile and scope, the command that
+  adds it, its versions with their dependencies and the versions they
+  accept, its retractions, and its maintainers;
+- `/people/<handle or DID>`: a person's profile, and the packages that
+  name them as a maintainer publicly;
 - `/me`: once signed in, the scopes, teams and packages you have a role in,
   with the role;
 - `/admin`: for the host's admins, every scope, with its packages and
@@ -19,6 +22,26 @@ names a member only to someone who may see their entry: the member
 themselves, an organization's owners and admins, a team's maintainers, a
 package's owners, and the host's admins. Everyone else sees "a private
 member".
+
+## People
+
+A page shows a person by their avatar and name, linked to their page. The
+name and avatar come from their own profile record, `app.bsky.actor.profile`,
+which this host reads from their PDS and caches, and never keeps a copy
+of: a person changes them in the app that writes that record
+(`pds:web/people`). Reading someone else's PDS while a page renders, and
+serving their avatar, are limited so the host is no tool for anyone else:
+
+- Each read runs under `zena:task`'s `timeout`, and answers are cached,
+  failures for a shorter time.
+- Only public HTTPS hosts are read: no addresses, `localhost`, or private
+  names. A public name that resolves to a private address is #643.
+- Avatars are served through this host, at URLs the pages sign, so a
+  visitor's browser asks no third party, and the host serves only
+  avatars its pages linked to. Only images up to 1 MB are served, with
+  `nosniff` and a content security policy that allows nothing.
+
+## Pages
 
 Each is a plain page: links and forms, no client-side routing. This
 package builds what they load from `/assets/`:

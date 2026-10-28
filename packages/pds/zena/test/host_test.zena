@@ -703,6 +703,22 @@ export let tests = suite('pds:host', () => {
     isTrue(scope.contains('@acme') && scope.contains('parser.acme.pkg.test'), scope);
     equal(fixture.get('/scopes/nobody').statusCode, 404, 'a missing scope');
 
+    // A release of parser that depends on router, written straight to its
+    // repository: publish would check the dependency against its source.
+    let parser = runFuture(fixture.pds.storage.accountByHandle('parser.acme.pkg.test')) as Account;
+    let blob = upload(fixture, parser.did, archiveOf(parser.did, '0.3.0'));
+    let withDependency = new Release(Version.parse('0.3.0'), '2026-10-24T00:00:00.000Z',
+        new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
+        [new Dependency(router, Version.parse('1.0.0'), 'router'),
+         new Dependency('did:plc:elsewhereelsewhereelsewh', Version.parse('0.2.1'), 'other')]);
+    runFuture(fixture.pds.repositoryOf(parser).applyWrites([new CreateRecord(RELEASE_TYPE, '0.3.0',
+        withDependency.toValue()) as Write], 0 as i64));
+    let parserHtml = pageOf(fixture.get('/packages/parser.acme.pkg.test'));
+    for (let expected in ['href="/scopes/acme"', 'href="/packages/router.acme.pkg.test">router</a>',
+        '≥ 1.0.0 (1.x)', 'did:plc:elsewhereelsewhereelsewh', '≥ 0.2.1 (0.x)']) {
+      isTrue(parserHtml.contains(expected), `${expected} in parser's page`);
+    }
+
     let pkg = fixture.get('/packages/router.acme.pkg.test');
     equal(pkg.statusCode, 200, 'package');
     let pkgHtml = pageOf(pkg);
@@ -769,6 +785,31 @@ export let tests = suite('pds:host', () => {
     // Tokens for signing in to the pages, and nothing else.
     equal(metadata['scope'] as String, 'atproto rpc:dev.zena-lang.host.createWebSession?aud=*');
     equal(metadata['token_endpoint_auth_method'] as String, 'none');
+  });
+
+  test("links maintainers to their pages, which list the packages that name them", (ctx) => {
+    let fixture = new Fixture();
+    seedBrowsable(fixture);
+    // Alice's DID does not resolve here, so it stands in for her handle.
+    let router = pageOf(fixture.get('/packages/router.acme.pkg.test'));
+    isTrue(router.contains(`href="/people/${ALICE}"`), router);
+
+    let alice = fixture.get(`/people/${ALICE}`);
+    equal(alice.statusCode, 200, 'her page');
+    let aliceHtml = pageOf(alice);
+    for (let expected in ['href="/packages/router.acme.pkg.test"', 'href="/packages/parser.acme.pkg.test"',
+        '>owner<', ALICE]) {
+      isTrue(aliceHtml.contains(expected), `${expected} in Alice's page`);
+    }
+    // Bob is named by no package.
+    isTrue(pageOf(fixture.get(`/people/${BOB}`)).contains('No package here names them'), "Bob's page");
+    equal(fixture.get('/people/nobody.example.com').statusCode, 404, 'a handle that does not resolve');
+
+    // Avatars only at URLs a page signed; Alice has none here anyway.
+    equal(fixture.get(`/people/${ALICE}/avatar`).statusCode, 404, 'unsigned');
+    equal(fixture.get(`/people/${ALICE}/avatar?s=forged`).statusCode, 404, 'forged');
+    let signature = ((fixture.host as PackageHost).sessions as Sessions).urlSignature(ALICE);
+    equal(fixture.get(`/people/${ALICE}/avatar?s=${signature}`).statusCode, 404, 'no avatar');
   });
 
   test('signs a person in to the pages with their service-auth token, and out', (ctx) => {

@@ -8,14 +8,15 @@ import {HTMLPartial, Router, html} from 'zena:http';
 import {Membership, Memberships, PackageHost} from '../host.zena';
 import {chip, each, page} from './layout.zena';
 import {clearSessionCookie, contextOf} from './session.zena';
+import {People} from './people.zena';
 
 /** Where a person's PDS sends them back to; the web app's OAuth client metadata names it. */
 export let CALLBACK_PATH = '/oauth/callback';
 
 /** Adds the account pages to `router`. */
-export function accountPages(router: Router, host: PackageHost): void {
+export function accountPages(router: Router, host: PackageHost, people: People): void {
   router.get('/me', async (req, res, next, params) => {
-    let context = contextOf(req, host);
+    let context = await contextOf(req, host, people);
     res.type = 'text/html; charset=utf-8';
     let who = context.who;
     if (who == null) {
@@ -33,7 +34,7 @@ export function accountPages(router: Router, host: PackageHost): void {
   // in the URL, trades a service-auth token for a web session, and moves on.
   router.get(CALLBACK_PATH, async (req, res, next, params) => {
     res.type = 'text/html; charset=utf-8';
-    res.body = page('Signing in · Zena packages', contextOf(req, host), html`
+    res.body = page('Signing in · Zena packages', (await contextOf(req, host, people)), html`
       <h1>Signing in</h1>
       <p class="muted" data-sign-in-status>Finishing your sign-in with your PDS…</p>
     `);

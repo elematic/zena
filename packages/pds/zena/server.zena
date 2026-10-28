@@ -37,6 +37,8 @@ import {notFound, publicPages} from './web/pages.zena';
 import {contextOf, setSessionCookie} from './web/session.zena';
 import {CALLBACK_PATH, accountPages} from './web/account.zena';
 import {adminPages} from './web/admin.zena';
+import {People} from './web/people.zena';
+import {peoplePages} from './web/profiles.zena';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {isValidDid} from 'atproto:syntax';
 import {hex} from 'zena:encoding';
@@ -972,26 +974,29 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
     json(res, body);
   });
 
-  if (host != null) {
-    hostRoutes(router, host as PackageHost);
-    publicPages(router, host as PackageHost);
-    accountPages(router, host as PackageHost);
-    adminPages(router, host as PackageHost);
-  }
   if (sessions != null) {
     sessionRoutes(router, pds, sessions as Sessions);
   }
-  app.use(router.routes());
-  if (host != null) {
-    let pages = host as PackageHost;
-    // A page path no route took: the web app's not-found page.
-    app.use(async (req, res, next): Future<void> => {
-      if (!res.statusCodeSet && res.body == null && (req.method == 'GET' || req.method == 'HEAD') &&
-          !isApiPath(req.path) && !req.path.startsWith('/assets/')) {
-        notFound(res, contextOf(req, pages), `Nothing is at ${req.path}.`);
-      }
-    });
+  if (host == null) {
+    app.use(router.routes());
+    return app;
   }
+  let pages = host as PackageHost;
+  hostRoutes(router, pages);
+  // One cache of the people the pages show, for every page.
+  let people = People.forHost(pages);
+  publicPages(router, pages, people);
+  accountPages(router, pages, people);
+  adminPages(router, pages, people);
+  peoplePages(router, pages, people);
+  app.use(router.routes());
+  // A page path no route took: the web app's not-found page.
+  app.use(async (req, res, next): Future<void> => {
+    if (!res.statusCodeSet && res.body == null && (req.method == 'GET' || req.method == 'HEAD') &&
+        !isApiPath(req.path) && !req.path.startsWith('/assets/')) {
+      notFound(res, await contextOf(req, pages, people), `Nothing is at ${req.path}.`);
+    }
+  });
   return app;
 }
 

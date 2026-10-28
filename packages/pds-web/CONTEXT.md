@@ -25,6 +25,11 @@ pages. The pages are rendered on the server, in Zena, in
   `pds:web/pages`), never around it, so the host's rules decide. The
   host's admins (`PDS_ADMIN_DIDS`, `PageContext.isAdmin`) are ordinary
   signed-in accounts the host answers more for.
+- Show a person with `personLink` or `avatar` (`pds:web/layout`), from the
+  `Person`s `PageContext.people` reads (`pds:web/people`); read the DIDs a
+  page names together, with `People.each`. Never put a URL from someone's
+  DID document or profile in a page: avatars go through the signed
+  `/people/<did>/avatar`.
 - Prefer plain links and GET forms to script. Use a Radica element only for
   what must happen in the browser, and import it in `src/main.ts`; its
   looks come with it. Server-rendered markup is styled in `src/app.css`,

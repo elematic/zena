@@ -1,0 +1,156 @@
+/**
+ * `pds:web/people`: reading people's handles and profiles, and their
+ * avatars, through fakes of the host's storage, the identity resolver and
+ * the network.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {GrowableArray} from 'zena:core';
+import {JsonObject} from 'zena:json';
+import {Cid} from 'atproto:cid';
+import {DidDocument} from 'atproto:did';
+import {Identity} from 'atproto:identity';
+import {Avatar, Fetched, LocalAccount, MAX_AVATAR_BYTES, People, PeopleSources, isPublicHttps} from 'pds:web/people';
+
+let LOCAL = 'did:plc:packagepackagepackagepac';
+let ALICE = 'did:plc:alicealicealicealicealic';
+let NOWHERE = 'did:plc:nowherenowherenowherenow';
+let LOOPBACK = 'did:plc:loopbackloopbackloopback';
+let QUIET = 'did:plc:quietquietquietquietquie';
+let PDS = 'https://pds.example.com';
+let AVATAR = Cid.forBlob(new FixedArray<u8>(3, 7 as u8));
+
+/** A fake world: one local account, and Alice, Loopback and Quiet elsewhere. */
+final class World {
+  /** Each lookup and fetch made, in order. */
+  asked = new GrowableArray<String>();
+  var avatarType = 'image/png';
+  var avatarBytes = new FixedArray<u8>(3, 7 as u8);
+
+  sources(): PeopleSources {
+    return new PeopleSources(
+        async (did: String): Future<LocalAccount | null> =>
+            if (did == LOCAL) new LocalAccount('router.acme.pkg.test') else null,
+        async (did: String): Future<Identity | null> => {
+          this.asked.push(`identity ${did}`);
+          if (did == ALICE) {
+            return identity(did, 'alice.example.com', PDS);
+          }
+          if (did == QUIET) {
+            return identity(did, 'quiet.example.com', PDS);
+          }
+          if (did == LOOPBACK) {
+            return identity(did, 'loop.example.com', 'http://127.0.0.1:2583');
+          }
+          return null;
+        },
+        async (url: String): Future<Fetched | null> => {
+          this.asked.push(url);
+          if (url.contains(`repo=${ALICE}`)) {
+            return new Fetched(200, profileJson().toBytes() as FixedArray<u8>, 'application/json');
+          }
+          if (url.contains('getBlob')) {
+            return new Fetched(200, this.avatarBytes, this.avatarType);
+          }
+          return new Fetched(400, '{"error":"RecordNotFound"}'.toBytes() as FixedArray<u8>, 'application/json');
+        });
+  }
+}
+
+function identity(did: String, handle: String, pds: String): Identity {
+  return new Identity(did, handle, new DidDocument(did, handle, null, pds, new JsonObject()));
+}
+
+function profileJson(): String {
+  return `{"uri":"at://${ALICE}/app.bsky.actor.profile/self","value":{"$type":"app.bsky.actor.profile",
+    "displayName":"  Alice  ","description":"Writes parsers.\\nAnd routers.",
+    "avatar":{"$type":"blob","ref":{"$link":"${AVATAR.toString()}"},"mimeType":"image/png","size":3}}}`;
+}
+
+export let tests = suite('pds:web/people', () => {
+  test("reads an account of this host's handle, and nothing from the network", (ctx) => {
+    let world = new World();
+    let people = new People(world.sources());
+    let person = runFuture(people.person(LOCAL));
+    equal(person.handle as String, 'router.acme.pkg.test');
+    equal(person.name(), 'router.acme.pkg.test');
+    equal(person.path(), '/people/router.acme.pkg.test');
+    equal(world.asked.length, 0);
+  });
+
+  test("reads someone else's handle and profile from their PDS, once", (ctx) => {
+    let world = new World();
+    let people = new People(world.sources());
+    let alice = runFuture(people.person(ALICE));
+    equal(alice.handle as String, 'alice.example.com');
+    equal(alice.name(), 'Alice');
+    equal(alice.description as String, 'Writes parsers.\nAnd routers.');
+    isTrue(alice.hasProfile, 'a profile');
+    equal((alice.avatar as Cid).toString(), AVATAR.toString());
+    equal(alice.pds as String, PDS);
+    equal(world.asked[1], `${PDS}/xrpc/com.atproto.repo.getRecord?repo=${ALICE}&collection=app.bsky.actor.profile&rkey=self`);
+    // Cached: asked once.
+    runFuture(people.person(ALICE));
+    equal(world.asked.length, 2);
+  });
+
+  test('stands for an account that does not resolve with its DID, and remembers that', (ctx) => {
+    let world = new World();
+    let people = new People(world.sources());
+    let nobody = runFuture(people.person(NOWHERE));
+    isTrue(nobody.handle == null && !nobody.hasProfile, 'nothing known');
+    equal(nobody.name(), NOWHERE);
+    equal(nobody.path(), `/people/${NOWHERE}`);
+    runFuture(people.person(NOWHERE));
+    equal(world.asked.length, 1);
+  });
+
+  test('reads no profile from a PDS that is not a public HTTPS host, or has none', (ctx) => {
+    let world = new World();
+    let people = new People(world.sources());
+    let loop = runFuture(people.person(LOOPBACK));
+    equal(loop.handle as String, 'loop.example.com');
+    isTrue(loop.pds == null && !loop.hasProfile, 'no profile read');
+    equal(world.asked.length, 1);
+    let quiet = runFuture(people.person(QUIET));
+    equal(quiet.name(), 'quiet.example.com');
+    isTrue(!quiet.hasProfile, 'no profile record');
+  });
+
+  test('serves an avatar that is an image within the size limit, and keeps it', (ctx) => {
+    let world = new World();
+    let people = new People(world.sources());
+    let alice = runFuture(people.person(ALICE));
+    let avatar = runFuture(people.avatar(alice));
+    isTrue(avatar != null, 'an avatar');
+    equal((avatar as Avatar).type, 'image/png');
+    equal((avatar as Avatar).bytes.length, 3);
+    equal(world.asked[2], `${PDS}/xrpc/com.atproto.sync.getBlob?did=${ALICE}&cid=${AVATAR.toString()}`);
+    runFuture(people.avatar(alice));
+    equal(world.asked.length, 3);
+    // Someone with no avatar has none, and nothing is fetched.
+    isTrue(runFuture(people.avatar(runFuture(people.person(QUIET)))) == null, 'no avatar');
+
+    let other = new World();
+    other.avatarType = 'text/html';
+    let fresh = new People(other.sources());
+    isTrue(runFuture(fresh.avatar(runFuture(fresh.person(ALICE)))) == null, 'not an image');
+    let huge = new World();
+    huge.avatarBytes = new FixedArray<u8>(MAX_AVATAR_BYTES + 1, 0 as u8);
+    let large = new People(huge.sources());
+    isTrue(runFuture(large.avatar(runFuture(large.person(ALICE)))) == null, 'too large');
+  });
+
+  test('reads only public HTTPS hosts', (ctx) => {
+    for (let url in ['https://bsky.social', 'https://pds.example.com/', 'https://morel.us-east.host.bsky.network']) {
+      isTrue(isPublicHttps(url), url);
+    }
+    for (let url in ['http://pds.example.com', 'https://127.0.0.1', 'https://10.0.0.8', 'https://[::1]',
+        'https://localhost', 'https://metadata.google.internal', 'https://printer.local', 'https://intranet',
+        'https://pds.example.com:8443', 'not a url']) {
+      isTrue(!isPublicHttps(url), url);
+    }
+  });
+});
