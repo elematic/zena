@@ -60,6 +60,19 @@ function originOf(server: Server): String {
 }
 
 export let tests = suite('zena:fetch', () => {
+  test('reads headers after the body, as before it', () => {
+    let server = startEchoServer();
+    let response = runFuture(fetch(`${originOf(server)}/after`));
+    equal(runFuture(response.text()), 'GET /after: ');
+    equal(response.header('x-method') as String, 'GET');
+    equal(response.header('Content-Type') as String, 'text/plain');
+    isNull(response.header('x-missing'));
+    let bytes = runFuture(fetch(`${originOf(server)}/after`));
+    equal(runFuture(bytes.bytes()).length, 12);
+    equal(bytes.header('x-method') as String, 'GET');
+    server.close();
+  });
+
   test('GET sends headers and reads status, headers, and text', () => {
     let server = startEchoServer();
     let response = runFuture(fetch(`${originOf(server)}/hello?a=1`, {
