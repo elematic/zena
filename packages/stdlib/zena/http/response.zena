@@ -5,6 +5,8 @@
 import { Option, Some } from 'zena:core';
 import { Stream } from 'zena:stream';
 import { HTMLPartial } from './html.zena';
+import { CookieOptions, serializeCookie } from './cookie.zena';
+import { nanoseconds } from 'zena:time';
 
 /**
  * Valid body representations for a response.
@@ -133,6 +135,25 @@ export class Response {
       values.push(value);
       headers[key] = values;
     }
+  }
+
+  /**
+   * Sets the cookie `name` to `value`, with the attributes `options` gives,
+   * in a `Set-Cookie` header of its own (`serializeCookie`).
+   */
+  setCookie(name: String, value: String, options: CookieOptions = {}): void {
+    this.appendHeader('set-cookie', serializeCookie(name, value, options));
+  }
+
+  /**
+   * Tells the browser to drop the cookie `name`: an empty value that
+   * expires at once. `path` and `domain` must be the ones it was set with,
+   * or the browser keeps it.
+   */
+  clearCookie(name: String, path: String = '/', domain: String | null = null): void {
+    let header = if (domain == null) serializeCookie(name, '', {maxAge: nanoseconds(0), path: path})
+        else serializeCookie(name, '', {maxAge: nanoseconds(0), path: path, domain: domain as String});
+    this.appendHeader('set-cookie', header);
   }
 
   /**
