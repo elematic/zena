@@ -35,7 +35,8 @@
 import { StringBuilder, join } from 'zena:core';
 import {
   Module, FunctionDeclaration, VariableDeclaration, FunctionExpression,
-  IdentifierPattern, NamedTypeAnnotation
+  IdentifierPattern, NamedTypeAnnotation, ClassDeclaration, MethodDefinition,
+  Identifier
 } from './ast.zena';
 import { toKebabName } from './codegen/component-emitter.zena';
 
@@ -203,6 +204,52 @@ export function mainWrapperResultOf(ast: Module): String {
 export function hasAsyncMain(ast: Module): boolean {
   let main = exportedMainOf(ast);
   return main != null && (main as FunctionExpression).isAsync;
+}
+
+/**
+ * Whether the entry's implementation of an export is `async`: the
+ * function `name` at the top level, in either spelling, or, with
+ * `className`, the method or static `member` of that class. False
+ * when there is no such function, which the compile reports in its
+ * own words. The wrapper for an export that returns nothing asks, to
+ * hand an async implementation's future to the driver and to call a
+ * synchronous one outright.
+ */
+export function exportedFunctionIsAsync(ast: Module, name: String,
+    className: String, member: String): boolean {
+  for (let stmt in ast.body) {
+    if (className == '') {
+      if (stmt is FunctionDeclaration) {
+        if (stmt.name.name == name) {
+          return stmt.func.isAsync;
+        }
+      } else if (stmt is VariableDeclaration) {
+        let pattern = stmt.pattern;
+        if (pattern is IdentifierPattern) {
+          if (pattern.name == name) {
+            let init = stmt.init;
+            if (init is FunctionExpression) {
+              return init.isAsync;
+            }
+          }
+        }
+      }
+    } else if (stmt is ClassDeclaration) {
+      if (stmt.name.name == className) {
+        for (let m in stmt.body) {
+          if (m is MethodDefinition) {
+            let mname = m.name;
+            if (mname is Identifier) {
+              if (mname.name == member) {
+                return m.isAsync;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /** The module's exported `main` function, in either spelling, or
