@@ -5252,7 +5252,21 @@ export final class FunctionLowerer {
       }
     } else if (expr is CallExpression) {
       let callee = (expr as CallExpression).callee;
-      if (callee is Identifier && mentions(callee) &&
+      // A call can depend on a type argument that its signature does
+      // not mention: `isFirstClass<T>()` is `() => boolean`.
+      let instantiatedAt = (e: Node): boolean => {
+        let t = model.getNodeType(e);
+        if (t is FunctionType) {
+          let targs = t.typeArguments;
+          if (targs != null) {
+            for (let a in targs) {
+              if (typeContainsTypeParameter(a)) { return true; }
+            }
+          }
+        }
+        return false;
+      };
+      if (callee is Identifier && (mentions(callee) || instantiatedAt(callee)) &&
           !isArrayIntrinsic((callee as Identifier).name)) {
         let sym = model.resolve(callee);
         let ct = model.getNodeType(callee);
@@ -7620,8 +7634,8 @@ export final class FunctionLowerer {
     let result = this.b.callFunc(
         this.b.addRef(new IrRefFunc(method)), args, resultType);
     if (resultType != null) {
-      let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType) is VoidType)) {
+      let nodeType = this.#refinableCallType(call);
+      if (nodeType != null) {
         let want = typeToValTypeWithSub(this.wasm, nodeType, this.func);
         if (want is ValTypeRef && resultType is ValTypeRefNull) {
           return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
@@ -8372,8 +8386,8 @@ export final class FunctionLowerer {
       this.b.callFunc(this.b.addRef(new IrRefFunc(method)), args, resultType)
     };
     if (resultType != null) {
-      let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType) is VoidType)) {
+      let nodeType = this.#refinableCallType(call);
+      if (nodeType != null) {
         let want = typeToValTypeWithSub(this.wasm, nodeType, this.func);
         if (want is ValTypeRef && resultType is ValTypeRefNull) {
           return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
@@ -10492,12 +10506,30 @@ export final class FunctionLowerer {
     if (resultType == null || this.b.body.typeId[result] < 0) {
       return result;
     }
-    let nodeType = this.func.model.getNodeType(call);
-    if (nodeType != null && !(baseType(nodeType) is VoidType)) {
+    let nodeType = this.#refinableCallType(call);
+    if (nodeType != null) {
       let want = typeToValTypeWithSub(this.wasm, nodeType, this.func);
       return this.#reassertNonNull(result, want);
     }
     return result;
+  }
+
+  /**
+   * A call's checked type, when its one wasm result can be refined to
+   * it: not `void`, and not an inline tuple union, which has no single
+   * value type. Such a union lowers to one result when its payload is
+   * `void`, `inline (true, _) | inline (false, T)` at `T = void`, and
+   * that result is the tag, already exactly typed.
+   */
+  #refinableCallType(call: Expression): Type | null {
+    let nodeType = this.func.model.getNodeType(call);
+    if (nodeType == null || baseType(nodeType as Type) is VoidType) {
+      return null;
+    }
+    if (this.#isInlineTupleTyped(call)) {
+      return null;
+    }
+    return nodeType;
   }
 
   /**

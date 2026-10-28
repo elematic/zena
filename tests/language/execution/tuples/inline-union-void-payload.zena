@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 11
+// An inline tuple union whose payload is `void` has one value, the
+// tag: `inline (true, _) | inline (false, T)` at `T = void`. A call
+// returning one still matches on its arms.
+
+class Gate<T> {
+  var open = true;
+  pass(value: T): inline (true, _) | inline (false, T) {
+    if (this.open) {
+      this.open = false;
+      return (true, _);
+    }
+    return (false, value);
+  }
+}
+
+function nothing(): void {}
+
+export let main = (): i32 => {
+  let g = new Gate<void>();
+  var result = 0;
+  if (let (true, _) = g.pass(nothing())) {
+    result += 1;
+  }
+  if (let (false, _) = g.pass(nothing())) {
+    result += 10;
+  }
+  return result;
+};
