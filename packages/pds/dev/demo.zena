@@ -1,14 +1,19 @@
 /**
- * A package host to try `zena` against on this machine, with nothing sent
- * to the public PLC directory or to real DNS. It starts:
+ * A package host to try `zena` against on this machine. Nothing it makes
+ * reaches the public PLC directory or real DNS, but real accounts resolve,
+ * so a person can sign in to its pages and `zena` as themselves. It
+ * starts:
  *
- * - a stand-in PLC directory, and the PDS of a maintainer, with an app
- *   password (`package-manager:testing/fake-pds`);
+ * - a stand-in PLC directory, which records the demo's DIDs and reads
+ *   every other DID from `plc.directory`, and the PDS of a maintainer,
+ *   with an app password (`package-manager:testing/fake-pds`);
  * - the package host for `pkg.test`, built from the environment as
  *   `main.zena` builds it, so `PDS_STORAGE=firestore` and the rest work
  *   here too, with the Firestore emulator. Its handle records are in
  *   memory;
- * - a DNS-over-HTTPS resolver that answers from those records.
+ * - a DNS-over-HTTPS resolver that answers from those records, and asks
+ *   `PDS_DNS_OVER_HTTPS` (Cloudflare's, by default) about every other
+ *   name, so handles on a person's own domain resolve.
  *
  * `npm run demo` builds the web app (`packages/pds-web`) and gives it to
  * the demo as the directory `/web` (`--dir packages/pds-web/out::/web`,
@@ -26,7 +31,7 @@ import {dedent} from 'zena:core';
 import {getEnv} from 'zena:cli';
 import {Server} from 'zena:http';
 import {FakePds} from 'package-manager:testing/fake-pds';
-import {MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
+import {MemoryHandleRecords, dnsOverHttpsApp, dnsOverHttpsUpstream} from 'pds:handles';
 import {configFromEnv, serve} from 'pds:service';
 
 let MAINTAINER = 'did:plc:maintainermaintainermain';
@@ -62,7 +67,8 @@ export async function main(): Future<void> {
     return null;
   });
   let running = await serve(config);
-  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords), 0 as u16);
+  let upstream = dnsOverHttpsUpstream(getEnv('PDS_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
+  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords, upstream), 0 as u16);
   dns.start();
 
   let dnsUrl = `http://127.0.0.1:${dns.port as i32}/dns-query`;
