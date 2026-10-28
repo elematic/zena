@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 1
+// A `tail return` of a future of an owner adopts it: the adopting
+// future takes the value out of the one it adopts (`#copySettle`), so
+// the resource reaches one awaiter and is released once
+// (owner-futures.md, "Runtime state").
+
+import {Own, Disposable} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+async function make(): Future<Own<Res>> {
+  return new Res();
+}
+
+async function relay(): Future<Own<Res>> {
+  tail return make();
+}
+
+export async function main(): Future<i32> {
+  if (true) {
+    let r = await relay();
+  }
+  return released;
+}

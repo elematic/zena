@@ -19,7 +19,9 @@
  * and allocates nothing at all when a future settles.
  */
 
-import { ScopedFrom, Disposable, growable, Result } from 'zena:core';
+import {
+  ScopedFrom, Disposable, growable, Result, WithDefault, defaultValue, isFirstClass,
+} from 'zena:core';
 import { Waiter, scheduleTask, drainMicrotasks, parkBlocking } from './executor.zena';
 
 /**
@@ -109,11 +111,24 @@ function alreadyCompleted() {
 // Future / Completer
 // ---------------------------------------------------------------------------
 
-export class Future<T> {
+/**
+ * A value that will be available later.
+ *
+ * `T` is `scoped` (docs/design/owner-futures.md): a future may hold an
+ * owner or a borrow, and the instance carries that restriction, so a
+ * `Future<Own<R>>` moves like the owner and its `await` consumes it. At
+ * such a `T` the future has one consumer: reading the value takes it,
+ * leaving the slot empty, and a second waiter is refused. At a
+ * first-class `T` the value stays readable by every waiter.
+ */
+export class Future<scoped T> {
   /** Read by name by the compiler's shielded-resume guard — see the
    * note on `FutureState.Pending`. */
   var #state = FutureState.Pending;
-  var #value: Box<T> | null = null;
+  /** The settled value. `#state` says whether it has settled, so the
+   * slot needs no box of its own; a read of it at a restricted `T` is a
+   * take and leaves it empty. */
+  var #value: WithDefault<T> = defaultValue<T>();
   var #error: Error | null = null;
   /** The future adopting this one's outcome (`tail return`,
    * async.md §8): settled synchronously, in this turn, when this
@@ -126,6 +141,26 @@ export class Future<T> {
    * read; sound because GrowableArray does not implement Waiter, so the
    * class test cannot claim a lone waiter. */
   var #waiters: Waiter | GrowableArray<Waiter> | null = null;
+  /** Whether a consumer has claimed a restricted value: a waiter, or a
+   * future adopting this one. Only a restricted specialization writes
+   * it (`#claim`). */
+  var #claimed = false;
+
+  /**
+   * Claims a restricted value for its one consumer. The checker sees the
+   * program's awaits; this guards the callers it does not, the executor
+   * and the combinators among them. `#waiters` cannot say it, since a
+   * settle empties the list before the waiter runs. At a first-class
+   * `T` it folds away.
+   */
+  #claim(): void {
+    if (!isFirstClass<T>()) {
+      if (this.#claimed) {
+        throw new Error('A future of an owner or a borrow has one consumer');
+      }
+      this.#claimed = true;
+    }
+  }
 
   /**
    * The settled/pending state, for the module's own waiters. User
@@ -170,8 +205,7 @@ export class Future<T> {
     if (this.#state == FutureState.Pending) {
       throw deadlock();
     }
-    let stored = this.#value as Box<T>;
-    return (true, stored.value, _);
+    return (true, this.#value as T, _);
   }
 
   /**
@@ -192,6 +226,7 @@ export class Future<T> {
    * reads the settled result back with `result()` when it runs.
    */
   [subscribe](t: Waiter): void {
+    this.#claim();
     if (!(this.#state == FutureState.Pending)) {
       scheduleTask(t);
       return;
@@ -272,29 +307,40 @@ export class Future<T> {
     if (this.#state == FutureState.Pending) {
       throw deadlock();
     }
-    let stored = this.#value as Box<T>;
-    return stored.value;
+    // A take at a restricted `T`: a second read finds the slot empty and
+    // fails the cast.
+    return this.#value as T;
   }
 
   /** Settles this future with a value. Throws if already settled. */
   [complete](value: T): void {
-    if (!this.[tryComplete](value)) {
+    if (!(this.#state == FutureState.Pending)) {
       throw alreadyCompleted();
     }
+    this.#resolve(value);
   }
 
-  /** Settles this future with a value, reporting whether it won.
-   * False means someone else settled it first, which is not an error
-   * for a caller racing on purpose. */
-  [tryComplete](value: T): boolean {
+  /**
+   * Settles this future with a value if nothing settled it first. A
+   * value that loses comes back, `(false, value)`, rather than being
+   * dropped here: at an owner the caller releases or keeps it, and a
+   * must-consume value has to be consumed where the race is written
+   * (owner-futures.md, "Specialization"). Losing is not an error for a
+   * caller racing on purpose.
+   */
+  [tryComplete](value: T): inline (true, _) | inline (false, T) {
     if (!(this.#state == FutureState.Pending)) {
-      return false;
+      return (false, value);
     }
+    this.#resolve(value);
+    return (true, _);
+  }
+
+  #resolve(value: T): void {
     this.#state = FutureState.Resolved;
-    this.#value = new Box<T>(value);
+    this.#value = value;
     this.#notify();
     this.#propagate();
-    return true;
   }
 
   /** Settles this future with a failure. Throws if already settled. */
@@ -347,6 +393,8 @@ export class Future<T> {
     if (!(this.#state == FutureState.Pending)) {
       throw alreadyCompleted();
     }
+    // Adopting is consuming: the adopter takes the source's value.
+    src.#claim();
     if (!(src.#state == FutureState.Pending)) {
       this.#copySettle(src);
       this.#propagate();
@@ -591,7 +639,10 @@ export class Completer<T> extends AnyCompleter {
    * someone else settled first — not an error for a caller racing on
    * purpose. */
   tryComplete(value: T): boolean {
-    return this.future.[tryComplete](value);
+    if (let (true, _) = this.future.[tryComplete](value)) {
+      return true;
+    }
+    return false;
   }
 
   /** Settles with a failure, reporting whether it won. */
