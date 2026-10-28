@@ -5849,21 +5849,25 @@ function ownerFieldInfo(ctx: CheckerContext, lm: MemberExpression): FieldInfo | 
 }
 
 /**
- * The field `me` names on `this` when its type holds its class's
- * `scoped T`, or null.
+ * The field `me` names when its declared type holds its class's
+ * `scoped T`, or null. Declared, so that a read through any receiver
+ * counts: `this.#value`, another instance's `src.#value`, or a public
+ * field read from outside on a `Slot<Own<R>>`, whose instantiated
+ * member type no longer names `T`. Whether the take stores its null is
+ * decided per specialization.
  */
 function scopedFieldInfo(ctx: CheckerContext, me: MemberExpression): FieldInfo | null {
-  if (!(me.object is ThisExpression)) { return null; }
   let objT = ctx.model.getNodeType(me.object);
   if (objT == null) { return null; }
-  let recvT = ownershipHandleInner(objT) ?? objT;
+  let peeled = ownershipHandleInner(objT) ?? objT;
+  let recvT = soleNonNullMember(peeled) ?? peeled;
   if (!(recvT is ClassType)) { return null; }
-  let ct = recvT as ClassType;
-  let scoped = scopedTypeParamsOf(ct.genericSource ?? ct);
+  let declaring = (recvT as ClassType).genericSource ?? (recvT as ClassType);
+  let scoped = scopedTypeParamsOf(declaring);
   if (scoped.length == 0) { return null; }
   let propName = getMemberPropertyName(me.isSymbolAccess, me.property.name);
-  if (!ct.members.has(propName)) { return null; }
-  let m = ct.members[propName];
+  if (!declaring.members.has(propName)) { return null; }
+  let m = declaring.members[propName];
   if (!(m is FieldInfo)) { return null; }
   let fi = m as FieldInfo;
   if (!mentionsTypeParams(fi.type, scoped)) { return null; }
@@ -5881,8 +5885,10 @@ function recordScopedFieldSinkMove(ctx: CheckerContext, me: MemberExpression,
   if (sfi == null) { return false; }
   let sinkCore = moveSinkCore(paramType);
   let sinkHandle = ownershipHandleName(sinkCore);
+  // Inside the class the sink is the open `T`; outside it, on a
+  // `Slot<Own<R>>`, it is the owner itself.
   if (sinkHandle != "Borrow" && sinkHandle != "Unmanaged" &&
-      typeContainsSecondClass(sinkCore)) {
+      (typeContainsSecondClass(sinkCore) || typeCarriesOwner(sinkCore))) {
     recordScopedFieldTake(ctx, me, sfi as FieldInfo, me.loc);
   }
   return true;
