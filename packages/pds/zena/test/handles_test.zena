@@ -14,6 +14,7 @@ import {CloudDns} from 'google-cloud:dns';
 import {CloudDnsRecords, MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
 
 let DID = 'did:plc:alicealicealicealicealic';
+let OTHER = 'did:plc:bobbobbobbobbobbobbobbob';
 
 /** The JSON `app` answers a lookup of `name` and `type` with. */
 function query(app: App, name: String, type: String = 'TXT'): JsonObject {
@@ -66,6 +67,29 @@ export let tests = suite('pds:handles', () => {
     let a = query(app, '_atproto.acme.pkg.test', 'A');
     equal(numberAt(a, 'Status'), 0);
     equal((a['Answer'] as JsonArray).length, 0);
+  });
+
+  test('passes the names it does not hold to an upstream resolver', (ctx) => {
+    let records = new MemoryHandleRecords();
+    runFuture(records.set('acme.pkg.test', DID));
+    let asked = new GrowableArray<String>();
+    let app = dnsOverHttpsApp(records, async (name: String, type: String): Future<String | null> => {
+      asked.push(`${name} ${type}`);
+      if (name == '_atproto.example.com') {
+        return `{"Status":0,"Answer":[{"name":"_atproto.example.com.","type":16,"data":"\\"did=${OTHER}\\""}]}`;
+      }
+      return null;
+    });
+    // Its own names it answers itself.
+    equal(((query(app, '_atproto.acme.pkg.test')['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
+        `"did=${DID}"`);
+    equal(asked.length, 0);
+    // Another name is the upstream's answer, and an upstream that cannot
+    // be reached leaves the name not found.
+    equal(((query(app, '_atproto.example.com')['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
+        `"did=${OTHER}"`);
+    equal(numberAt(query(app, '_atproto.unreachable.example'), 'Status'), 3);
+    equal(asked[0], '_atproto.example.com TXT');
   });
 
   test('writes a TXT record set to Cloud DNS for each handle', (ctx) => {

@@ -56,12 +56,15 @@ cookie, when the browser still has an OAuth session, makes a new one.
 - Handles are resolved by the host (`com.atproto.identity.resolveHandle`),
   not sent to a third party.
 
-To see your memberships in the demo, sign in with a real account; the
-demo's PLC directory reads real DIDs through from `plc.directory`. You
-have no role in anything there until you make one: sign `zena` in as the
-same account, by DID, since the demo's resolver knows only its own handles
-(`zena login did:plc:… `, with an app password), then
-`zena scope create <name> --yes`, and reload `/me`.
+To see your memberships in the demo, sign in with a real account. The
+demo keeps what it makes to itself, but reads real identities through:
+its PLC directory reads DIDs it does not hold from `plc.directory`, and
+its DNS resolver asks Cloudflare's about names it does not hold. You have
+no role in anything there until you make one: sign `zena` in as the same
+account (`zena login <handle or DID>`, with an app password), then
+`zena scope create <name> --yes`, and reload `/me`. That writes nothing to
+your repository; `zena publish` does, since it writes your attestation of
+the release there.
 
 ## Commands
 
