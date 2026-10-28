@@ -1,0 +1,153 @@
+/**
+ * HTTP cookies (RFC 6265): reading a request's `Cookie` header, and writing
+ * `Set-Cookie` headers. `Request.cookie` and `Response.setCookie` are the
+ * usual way in.
+ */
+
+import { HashMap } from 'zena:collections';
+import { StringBuilder } from 'zena:core';
+import { div } from 'zena:math';
+import { Duration } from 'zena:time';
+
+let NS_PER_SECOND: i64 = 1000000000;
+
+/** A cookie's attributes, for `serializeCookie` and `Response.setCookie`. */
+export type CookieOptions = {
+  /**
+   * How long the browser keeps the cookie, in whole seconds (`Max-Age`).
+   * Absent: until the browser's session ends.
+   */
+  maxAge?: Duration,
+  /** The paths the browser sends it for (`Path`). */
+  path?: String,
+  /** The host and subdomains it is sent to (`Domain`). Absent: the origin's host only. */
+  domain?: String,
+  /** Sent only over HTTPS (`Secure`). */
+  secure?: boolean,
+  /** Hidden from the page's script (`HttpOnly`). */
+  httpOnly?: boolean,
+  /** `Strict`, `Lax` or `None` (`SameSite`). */
+  sameSite?: String,
+};
+
+/**
+ * The cookies in a `Cookie` header, by name. A value in double quotes
+ * loses them; values are otherwise as sent, with no decoding. When a name
+ * comes twice, the first wins: browsers send the cookie with the longest
+ * path first. Pairs without `=` are skipped.
+ */
+export function parseCookies(header: String | null): HashMap<String, String> {
+  let cookies = new HashMap<String, String>();
+  if (header == null) {
+    return cookies;
+  }
+  for (let pair in (header as String).split(';')) {
+    let text = pair.trim();
+    var equals = -1;
+    for (var i = 0; i < text.length; i += 1) {
+      if (text.getByteAt(i) == 0x3D) { // =
+        equals = i;
+        break;
+      }
+    }
+    if (equals <= 0) {
+      continue;
+    }
+    let name = text.sliceBytes(0, equals).trim();
+    var value = text.sliceBytes(equals + 1, text.length).trim();
+    if (value.length >= 2 && value.getByteAt(0) == 0x22 && value.getByteAt(value.length - 1) == 0x22) {
+      value = value.sliceBytes(1, value.length - 1);
+    }
+    if (name.length > 0 && !cookies.has(name)) {
+      cookies[name] = value;
+    }
+  }
+  return cookies;
+}
+
+/**
+ * A `Set-Cookie` header's value: `name=value` and the attributes `options`
+ * gives. Throws when `name` is not a token, `value` has a byte a cookie
+ * may not, or an attribute would break the header, so that nothing a
+ * caller passes can add an attribute of its own.
+ */
+export function serializeCookie(name: String, value: String, options: CookieOptions = {}): String {
+  if (!isToken(name)) {
+    throw new Error(`not a cookie name: '${name}'`);
+  }
+  if (!isCookieValue(value)) {
+    throw new Error(`a cookie value may not have spaces, quotes, commas, semicolons or backslashes: '${value}'`);
+  }
+  let sb = new StringBuilder();
+  sb.append(name);
+  sb.append('=');
+  sb.append(value);
+  if (let {maxAge} = options) {
+    sb.append(`; Max-Age=${div(maxAge as i64, NS_PER_SECOND)}`);
+  }
+  if (let {domain} = options) {
+    sb.append(`; Domain=${attribute('Domain', domain)}`);
+  }
+  if (let {path} = options) {
+    sb.append(`; Path=${attribute('Path', path)}`);
+  }
+  if (let {secure} = options) {
+    if (secure) {
+      sb.append('; Secure');
+    }
+  }
+  if (let {httpOnly} = options) {
+    if (httpOnly) {
+      sb.append('; HttpOnly');
+    }
+  }
+  if (let {sameSite} = options) {
+    if (sameSite != 'Strict' && sameSite != 'Lax' && sameSite != 'None') {
+      throw new Error(`SameSite is Strict, Lax or None, not '${sameSite}'`);
+    }
+    sb.append(`; SameSite=${sameSite}`);
+  }
+  return sb.toString();
+}
+
+/** `value`, when it can be the value of the attribute `name`: no control bytes and no `;`. */
+function attribute(name: String, value: String): String {
+  for (var i = 0; i < value.length; i += 1) {
+    let b = value.getByteAt(i);
+    if (b < 0x20 || b == 0x7F || b == 0x3B) {
+      throw new Error(`a cookie's ${name} may not have control characters or ';': '${value}'`);
+    }
+  }
+  return value;
+}
+
+/** Whether `s` is an HTTP token (RFC 9110, section 5.6.2), as a cookie's name must be. */
+function isToken(s: String): boolean {
+  if (s.length == 0) {
+    return false;
+  }
+  for (var i = 0; i < s.length; i += 1) {
+    let b = s.getByteAt(i);
+    let alphanumeric = (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A);
+    // !#$%&'*+-.^_`|~
+    let punctuation = b == 0x21 || (b >= 0x23 && b <= 0x27) || b == 0x2A || b == 0x2B || b == 0x2D || b == 0x2E ||
+        b == 0x5E || b == 0x5F || b == 0x60 || b == 0x7C || b == 0x7E;
+    if (!alphanumeric && !punctuation) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Whether every byte of `s` is a cookie-octet (RFC 6265, section 4.1.1). */
+function isCookieValue(s: String): boolean {
+  for (var i = 0; i < s.length; i += 1) {
+    let b = s.getByteAt(i);
+    let allowed = b == 0x21 || (b >= 0x23 && b <= 0x2B) || (b >= 0x2D && b <= 0x3A) || (b >= 0x3C && b <= 0x5B) ||
+        (b >= 0x5D && b <= 0x7E);
+    if (!allowed) {
+      return false;
+    }
+  }
+  return true;
+}

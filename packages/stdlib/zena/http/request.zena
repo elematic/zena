@@ -5,6 +5,7 @@
 import { HashMap } from 'zena:collections';
 import { Stream, StreamWriter, readAllBytes, readAllText } from 'zena:stream';
 import { URL } from 'zena:url';
+import { parseCookies } from './cookie.zena';
 
 export function fallbackUrl(): URL {
   return URL.parse('http://localhost/', null) as URL;
@@ -232,6 +233,20 @@ export class Request {
       return values;
     }
     return new GrowableArray<String>(0);
+  }
+
+  /**
+   * The value of the cookie `name`, or null when the request has none.
+   * Reads every `Cookie` header, since HTTP/2 lets a browser send one per
+   * cookie (`parseCookies`).
+   */
+  cookie(name: String): String | null {
+    for (let header in this.getHeaders('cookie')) {
+      if (let (true, value) = parseCookies(header).get(name)) {
+        return value;
+      }
+    }
+    return null;
   }
 
   /**

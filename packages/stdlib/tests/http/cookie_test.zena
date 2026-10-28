@@ -1,0 +1,92 @@
+import { suite, test } from 'zena:test';
+import { equal, isTrue, throws } from 'zena:assert';
+import { HashMap } from 'zena:collections';
+import { milliseconds } from 'zena:time';
+import { URL } from 'zena:url';
+import { Request, Response, parseCookies, serializeCookie } from 'zena:http';
+
+let request = (cookies: Array<String>): Request => {
+  let headers = new HashMap<String, GrowableArray<String>>();
+  let values = new GrowableArray<String>();
+  for (let cookie in cookies) {
+    values.push(cookie);
+  }
+  headers['cookie'] = values;
+  return new Request(URL.parse('http://localhost/', null) as URL, 'GET', headers);
+};
+
+export let tests = suite('zena:http cookies', () => {
+  suite('parseCookies', () => {
+    test('reads name=value pairs, trimming spaces', (ctx) => {
+      let cookies = parseCookies('a=1; b=two ;c =3');
+      equal(cookies['a'] ?? '', '1');
+      equal(cookies['b'] ?? '', 'two');
+      equal(cookies['c'] ?? '', '3');
+    });
+
+    test('drops double quotes around a value, and keeps = inside one', (ctx) => {
+      let cookies = parseCookies('q="quoted"; t=a=b');
+      equal(cookies['q'] ?? '', 'quoted');
+      equal(cookies['t'] ?? '', 'a=b');
+    });
+
+    test('keeps the first of a name sent twice, and skips pairs without =', (ctx) => {
+      let cookies = parseCookies('id=first; flag; id=second; =nameless');
+      equal(cookies['id'] ?? '', 'first');
+      isTrue(!cookies.has('flag'), 'flag');
+      equal(cookies.size, 1);
+    });
+
+    test('reads nothing from no header', (ctx) => {
+      equal(parseCookies(null).size, 0);
+      equal(parseCookies('').size, 0);
+    });
+  });
+
+  suite('serializeCookie', () => {
+    test('writes the name and value alone without options', (ctx) => {
+      equal(serializeCookie('session', 'abc.def'), 'session=abc.def');
+    });
+
+    test('writes each attribute it is given', (ctx) => {
+      equal(serializeCookie('s', 'v', {
+        maxAge: milliseconds(3600500),
+        domain: 'example.com',
+        path: '/',
+        secure: true,
+        httpOnly: true,
+        sameSite: 'Lax',
+      }), 's=v; Max-Age=3600; Domain=example.com; Path=/; Secure; HttpOnly; SameSite=Lax');
+      equal(serializeCookie('s', 'v', {secure: false, httpOnly: false}), 's=v');
+    });
+
+    test('refuses what would break the header', (ctx) => {
+      throws(() => { serializeCookie('bad name', 'v'); });
+      throws(() => { serializeCookie('', 'v'); });
+      throws(() => { serializeCookie('s', 'a;b'); });
+      throws(() => { serializeCookie('s', 'a b'); });
+      throws(() => { serializeCookie('s', 'v', {path: '/; Domain=evil.example'}); });
+      throws(() => { serializeCookie('s', 'v', {sameSite: 'lax'}); });
+    });
+  });
+
+  test('Request.cookie reads every Cookie header', (ctx) => {
+    let req = request(['a=1; b=2', 'c=3']);
+    equal(req.cookie('b') ?? '', '2');
+    equal(req.cookie('c') ?? '', '3');
+    isTrue(req.cookie('d') == null, 'no d');
+    isTrue(request([]).cookie('a') == null, 'no cookies');
+  });
+
+  test('Response.setCookie and clearCookie each add a Set-Cookie header', (ctx) => {
+    let res = new Response();
+    res.setCookie('session', 'token', {path: '/', httpOnly: true});
+    res.clearCookie('old');
+    res.clearCookie('scoped', '/admin', 'example.com');
+    let headers = res.getHeaders('set-cookie');
+    equal(headers.length, 3);
+    equal(headers[0], 'session=token; Path=/; HttpOnly');
+    equal(headers[1], 'old=; Max-Age=0; Path=/');
+    equal(headers[2], 'scoped=; Max-Age=0; Domain=example.com; Path=/admin');
+  });
+});
