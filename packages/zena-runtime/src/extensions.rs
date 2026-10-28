@@ -1628,7 +1628,7 @@ fn serve(
     request: LoadRequest,
     calls: mpsc::UnboundedSender<ToExtension>,
     mut rx: mpsc::UnboundedReceiver<ToExtension>,
-    loaded: std::sync::mpsc::Sender<std::result::Result<Extension, String>>,
+    loaded: oneshot::Sender<std::result::Result<Extension, String>>,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2181,15 +2181,24 @@ impl Comparison<'_> {
 // The host interface
 // ============================================================================
 
+/// A load in progress: the slot reserved for the extension, and where
+/// its thread reports.
+struct Pending {
+    index: usize,
+    loaded: oneshot::Receiver<std::result::Result<Extension, String>>,
+}
+
 impl ComponentState {
-    /// Loads `path` as an extension that may import what `imports`
-    /// says, on a thread of its own, and returns its handle.
-    fn load_extension(
+    /// Starts loading `path` as an extension that may import what
+    /// `imports` says, on a thread of its own, with a slot reserved for
+    /// it so that loads in flight at once get distinct handles. A slot
+    /// whose load fails stays empty, as a dropped extension's does.
+    fn start_load(
         &mut self,
         path: String,
         imports: Imports,
         options: extensions::LoadOptions,
-    ) -> Result<std::result::Result<u32, String>> {
+    ) -> Result<std::result::Result<Pending, String>> {
         let grant = self.extensions_granted()?;
         let Some(host_path) = translate(&path, &grant.path_map) else {
             return Ok(Err(format!(
@@ -2227,8 +2236,9 @@ impl ComponentState {
                 }
             }
         }
+        let index = self.extensions.len();
         let request = LoadRequest {
-            handle: self.extensions.len() as u32 + 1,
+            handle: index as u32 + 1,
             path: host_path,
             imports,
             memory_limit: options.memory_limit,
@@ -2241,18 +2251,47 @@ impl ComponentState {
             caller,
             peers,
         };
-        let (tx, rx) = std::sync::mpsc::channel();
+        self.extensions.push(None);
+        let (tx, loaded) = oneshot::channel();
         let (calls, calls_rx) = mpsc::unbounded_channel();
         std::thread::spawn(move || serve(request, calls, calls_rx, tx));
-        match rx.recv() {
+        Ok(Ok(Pending { index, loaded }))
+    }
+
+    /// Keeps what the thread reported for the load at `index`, and
+    /// returns the extension's handle or why there is none.
+    fn finish_load(
+        &mut self,
+        index: usize,
+        loaded: std::result::Result<std::result::Result<Extension, String>, oneshot::error::RecvError>,
+    ) -> std::result::Result<u32, String> {
+        match loaded {
             Ok(Ok(extension)) => {
-                self.extensions.push(Some(extension));
-                Ok(Ok(self.extensions.len() as u32))
+                self.extensions[index] = Some(extension);
+                Ok(index as u32 + 1)
             }
-            Ok(Err(message)) => Ok(Err(message)),
-            Err(_) => Ok(Err("the extension's thread vanished".to_string())),
+            Ok(Err(message)) => Err(message),
+            Err(_) => Err("the extension's thread vanished".to_string()),
         }
     }
+}
+
+/// Loads an extension for the program `accessor` reaches: the program's
+/// store is held only to start the load and to keep its result, so the
+/// program's other tasks run while the thread compiles and instantiates.
+async fn load_extension(
+    accessor: &Accessor<ComponentState, wasmtime::component::HasSelf<ComponentState>>,
+    path: String,
+    imports: Imports,
+    options: extensions::LoadOptions,
+) -> Result<std::result::Result<u32, String>> {
+    let pending = accessor.with(|mut a| a.get().start_load(path, imports, options))?;
+    let Pending { index, loaded } = match pending {
+        Ok(pending) => pending,
+        Err(message) => return Ok(Err(message)),
+    };
+    let loaded = loaded.await;
+    Ok(accessor.with(|mut a| a.get().finish_load(index, loaded)))
 }
 
 impl From<extensions::Source> for Source {
@@ -2266,27 +2305,6 @@ impl From<extensions::Source> for Source {
 }
 
 impl extensions::Host for ComponentState {
-    fn load(
-        &mut self,
-        path: String,
-        bindings: Vec<extensions::Binding>,
-        options: extensions::LoadOptions,
-    ) -> Result<std::result::Result<u32, String>> {
-        let bound = bindings
-            .into_iter()
-            .map(|b| (b.name, b.served_by.into()))
-            .collect();
-        self.load_extension(path, Imports::Bound(bound), options)
-    }
-
-    fn load_trusted(
-        &mut self,
-        path: String,
-        options: extensions::LoadOptions,
-    ) -> Result<std::result::Result<u32, String>> {
-        self.load_extension(path, Imports::Trusted, options)
-    }
-
     fn check(
         &mut self,
         path: String,
@@ -2328,6 +2346,27 @@ impl extensions::Host for ComponentState {
 }
 
 impl extensions::HostWithStore<ComponentState> for wasmtime::component::HasSelf<ComponentState> {
+    async fn load(
+        accessor: &Accessor<ComponentState, Self>,
+        path: String,
+        bindings: Vec<extensions::Binding>,
+        options: extensions::LoadOptions,
+    ) -> Result<std::result::Result<u32, String>> {
+        let bound = bindings
+            .into_iter()
+            .map(|b| (b.name, b.served_by.into()))
+            .collect();
+        load_extension(accessor, path, Imports::Bound(bound), options).await
+    }
+
+    async fn load_trusted(
+        accessor: &Accessor<ComponentState, Self>,
+        path: String,
+        options: extensions::LoadOptions,
+    ) -> Result<std::result::Result<u32, String>> {
+        load_extension(accessor, path, Imports::Trusted, options).await
+    }
+
     /// Drops the extension, and the objects the program made for it
     /// through `create`. Their destructors are guest code, which cannot
     /// run while the program is in this call, so each drop is a task

@@ -38,6 +38,8 @@ pub(crate) mod bindings {
             default: trappable,
             "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
             "zena-cli:host/http-server.[method]response-writer.respond": trappable | store,
+            "zena-cli:host/extensions.load": async | trappable | store,
+            "zena-cli:host/extensions.load-trusted": async | trappable | store,
             "zena-cli:host/extensions.drop": trappable | store,
         },
         with: {
