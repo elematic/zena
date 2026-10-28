@@ -80,9 +80,9 @@ pub struct ComponentState {
     /// The extensions this program loaded, by handle minus one; a
     /// dropped one leaves its slot empty so handles are never reused.
     pub(crate) extensions: Vec<Option<crate::extensions::Extension>>,
-    /// In an extension's store: where its calls to the program go while
-    /// a call from the program is in flight.
-    pub(crate) callbacks: Option<crate::extensions::CallbackSender>,
+    /// In an extension's store: where its calls to the program go, by
+    /// the guest task of the call from the program that is in flight.
+    pub(crate) callbacks: crate::extensions::Callbacks,
     /// In an extension's store: its own channel, which a call it makes
     /// to another extension names as the caller.
     pub(crate) my_calls: Option<crate::extensions::ExtensionSender>,
@@ -104,7 +104,7 @@ impl ComponentState {
             component: None,
             instance: None,
             extensions: Vec::new(),
-            callbacks: None,
+            callbacks: Default::default(),
             my_calls: None,
             proxies: Default::default(),
             limits: wasmtime::StoreLimits::default(),
