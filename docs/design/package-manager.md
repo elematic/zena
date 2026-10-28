@@ -1144,12 +1144,17 @@ not planned.
 
 People sign in as themselves, never as an organization or a package:
 those have no passwords, and are managed through someone's role in them.
-The management interface is a browser app on the index's site, and has no
-privileges of its own:
+The management interface is pages on the index's site, rendered on the
+server, and has no privileges of its own:
 
-- **Signing in.** It signs in with atproto OAuth, as a browser client.
-  The session's DPoP key is a non-extractable WebCrypto key, and signing
-  out revokes the session.
+- **Signing in.** The page signs in with atproto OAuth, as a browser
+  client, and the OAuth session stays in the browser. The session's DPoP
+  key is a non-extractable WebCrypto key, and signing out revokes the
+  session. The server learns who is signed in from a web session: the page
+  asks the person's PDS for a service-auth token for
+  `dev.zena-lang.host.createWebSession` and trades it for an HttpOnly
+  cookie, which stands for the person to the site's pages and to nothing
+  else. It lasts a day, and the page renews it from the OAuth session.
 - **Reading.** It reads public data from the index: packages, their
   maintainers records, releases waiting for approvals, pending recovery
   resets and PLC operations. It asks each host the person uses for the

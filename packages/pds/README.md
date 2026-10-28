@@ -25,7 +25,12 @@ implementation, what is still missing, and the order of the work.
 
 With a package host, it serves web pages at its origin, rendered on the
 server (`zena/web/`): a visitor browses the host's scopes and packages
-there. `PDS_WEB_DIR` names the build of their stylesheet and script
+there, and a person signs in with atproto OAuth to see their own. For
+that, the host serves the pages' OAuth client metadata at
+`/oauth/client-metadata.json`, resolves handles
+(`com.atproto.identity.resolveHandle`), and trades a service-auth token
+for a web session cookie (`dev.zena-lang.host.createWebSession`).
+`PDS_WEB_DIR` names the build of the pages' stylesheet and script
 (`packages/pds-web`), which it serves at `/assets/`.
 
 The atproto libraries it is built on are in [`packages/atproto`](../atproto).

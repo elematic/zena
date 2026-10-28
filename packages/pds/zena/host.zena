@@ -574,6 +574,86 @@ export final class PackageHost {
   }
 
   /**
+   * `getMemberships`: the organizations, teams and packages on this host
+   * that `caller` has a role in, each with the role, as the records stand
+   * now. A package `caller` maintains through a team is listed with the
+   * team's role.
+   */
+  async getMemberships(caller: String): Future<Memberships> {
+    let memberships = new Memberships();
+    for (let claimed in await this.#store.allScopes()) {
+      let org = await this.pds.storage.getAccount(claimed.org);
+      if (org == null || org.kind != AccountKind.Organization) {
+        continue;
+      }
+      let role = await this.#orgRole(claimed.org, caller);
+      if (role != null) {
+        memberships.orgs.push(new Membership(claimed.org, org.handle ?? '', claimed.scope, claimed.scope, role as String));
+      }
+      for (let entry in await this.pds.storage.store(claimed.org).allRecords()) {
+        if (entry.collection != TEAM_TYPE) {
+          continue;
+        }
+        let teamRole = await this.#teamRole(claimed.org, entry.rkey, caller);
+        if (teamRole != null) {
+          memberships.teams.push(new Membership(claimed.org, org.handle ?? '', claimed.scope, entry.rkey,
+              teamRole as String));
+        }
+      }
+    }
+    for (let claimed in await this.#store.allNames()) {
+      let pkg = await this.pds.storage.getAccount(claimed.did);
+      if (pkg == null || pkg.kind != AccountKind.Package) {
+        continue;
+      }
+      let role = await this.#packageRole(claimed.did, caller);
+      if (role != null) {
+        memberships.packages.push(new Membership(claimed.did, pkg.handle ?? '', claimed.scope, claimed.name,
+            role as String));
+      }
+    }
+    sortByName(memberships.orgs);
+    sortByName(memberships.teams);
+    sortByName(memberships.packages);
+    return memberships;
+  }
+
+  /**
+   * `com.atproto.identity.resolveHandle`: the DID of `handle`, from this
+   * host's own accounts, or as its resolver finds it, or null. A browser
+   * cannot look DNS up, so the web app signs people in through this rather
+   * than send their handles to a third party.
+   */
+  async resolveHandle(handle: String): Future<String | null> {
+    let held = await this.pds.storage.accountByHandle(handle.asciiLowerCase());
+    if (held != null) {
+      return held.did;
+    }
+    try {
+      return await this.#resolver.resolveHandle(handle.asciiLowerCase());
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * The handle `did`'s DID document claims, when it resolves back to
+   * `did`; null when there is none, or the DID does not resolve. A page
+   * shows it for the person signed in.
+   */
+  async handleOf(did: String): Future<String | null> {
+    let held = await this.pds.storage.getAccount(did);
+    if (held != null) {
+      return held.handle;
+    }
+    try {
+      return (await this.#resolver.resolve(did)).handle;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
    * `listPackages`: the packages on the host, or in `scope`, by scope and
    * name, each with its profile's description and license and its latest
    * release that is not retracted. Public, as the records are. Automation
@@ -1144,6 +1224,40 @@ export final class PackageHost {
       throw e;
     }
   }
+}
+
+/** One account `getMemberships` found a role in: an organization, a team of one, or a package. */
+export final class Membership {
+  /** The organization's or the package's DID; a team's organization's. */
+  did: String;
+  handle: String;
+  scope: String;
+  /** The scope, the team's name, or the package's name. */
+  name: String;
+  role: String;
+
+  new(this.did, this.handle, this.scope, this.name, this.role);
+}
+
+/** Sorts `memberships` by scope, then name, in place. */
+function sortByName(memberships: GrowableArray<Membership>): void {
+  for (var i = 1; i < memberships.length; i += 1) {
+    let membership = memberships[i];
+    let key = `${membership.scope} ${membership.name}`;
+    var j = i;
+    while (j > 0 && compareKeys(`${memberships[j - 1].scope} ${memberships[j - 1].name}`, key) > 0) {
+      memberships[j] = memberships[j - 1];
+      j -= 1;
+    }
+    memberships[j] = membership;
+  }
+}
+
+/** What `getMemberships` finds. */
+export final class Memberships {
+  orgs = new GrowableArray<Membership>();
+  teams = new GrowableArray<Membership>();
+  packages = new GrowableArray<Membership>();
 }
 
 /** A scope, as `listScopes` describes it. */

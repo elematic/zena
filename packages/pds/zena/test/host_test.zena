@@ -167,11 +167,24 @@ final class Fixture {
     return res;
   }
 
-  get(path: String): Response {
+  get(path: String, cookie: String | null = null): Response {
+    return this.#send('GET', path, cookie);
+  }
+
+  /** A form post to `path`, with no body. */
+  post(path: String, cookie: String | null = null): Response {
+    return this.#send('POST', path, cookie);
+  }
+
+  #send(method: String, path: String, cookie: String | null): Response {
+    let headers = new HashMap<String, String>();
+    if (cookie != null) {
+      headers['cookie'] = cookie as String;
+    }
     let res = new Response();
     let app = this.app;
     runFuture((async () => {
-      let req = new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>());
+      let req = new Request.fromUrl(`http://localhost${path}`, method, headers);
       await app.handleRequest(req, res);
     })());
     return res;
@@ -698,6 +711,99 @@ export let tests = suite('pds:host', () => {
     equal(missing.statusCode, 404, 'a missing package');
     isTrue(pageOf(missing).contains('No package here'), 'the not-found page');
     equal(fixture.get('/nowhere').statusCode, 404, 'a path no page has');
+  });
+
+  test("lists a caller's memberships, a team's packages included", (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let alice = entriesSeen(fixture, ALICE, orgDid);
+    let bobAdmin = new MemberEntry(BOB, ADMIN, filled(190));
+    ok(putMembers(fixture, ALICE, orgDid, [alice[0], bobAdmin], [bobAdmin], (org['members'] as JsonObject)['cid'] as String));
+    ok(putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(191))], null));
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    ok(putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, null, orgDid, 'core', PUBLISHER)]), [], (pkg['maintainers'] as JsonObject)['cid'] as String));
+    ok(createPackage(fixture, ALICE, orgDid, 'parser'));
+
+    let bob = ok(fixture.query(BOB, 'getMemberships', ''));
+    equal(bob['did'] as String, BOB);
+    let orgs = bob['orgs'] as JsonArray;
+    equal(orgs.length, 1);
+    equal((orgs[0] as JsonObject)['name'] as String, 'acme');
+    equal((orgs[0] as JsonObject)['role'] as String, 'admin');
+    let teams = bob['teams'] as JsonArray;
+    equal(teams.length, 1);
+    equal((teams[0] as JsonObject)['name'] as String, 'core');
+    equal((teams[0] as JsonObject)['role'] as String, 'maintainer');
+    // Through the team, Bob publishes router, and parser is none of his.
+    let packages = bob['packages'] as JsonArray;
+    equal(packages.length, 1);
+    equal((packages[0] as JsonObject)['handle'] as String, 'router.acme.pkg.test');
+    equal((packages[0] as JsonObject)['role'] as String, 'publisher');
+    let mine = ok(fixture.query(ALICE, 'getMemberships', ''));
+    equal(((mine['orgs'] as JsonArray)[0] as JsonObject)['role'] as String, 'owner');
+    equal((mine['teams'] as JsonArray).length, 0);
+    equal((mine['packages'] as JsonArray).length, 2);
+    // Without a token, nothing.
+    equal(errorOf(fixture.get('/xrpc/dev.zena-lang.host.getMemberships')), 'AuthenticationRequired');
+  });
+
+  test('resolves handles, and describes the web app as an OAuth client', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let resolved = ok(fixture.get('/xrpc/com.atproto.identity.resolveHandle?handle=ACME.pkg.test'));
+    equal(resolved['did'] as String, orgDid);
+    equal(errorOf(fixture.get('/xrpc/com.atproto.identity.resolveHandle?handle=nobody.example.com')), 'HandleNotFound');
+    let metadata = ok(fixture.get('/oauth/client-metadata.json'));
+    equal(metadata['client_id'] as String, 'https://pkg.test/oauth/client-metadata.json');
+    equal(((metadata['redirect_uris'] as JsonArray)[0]) as String, 'https://pkg.test/oauth/callback');
+    isTrue((metadata['scope'] as String).contains('atproto'), metadata['scope'] as String);
+    equal(metadata['token_endpoint_auth_method'] as String, 'none');
+  });
+
+  test('signs a person in to the pages with their service-auth token, and out', (ctx) => {
+    let fixture = new Fixture();
+    seedBrowsable(fixture);
+    // Signed out, the header offers to sign in, and /me asks to.
+    let home = pageOf(fixture.get('/'));
+    isTrue(home.contains('data-sign-in') && home.contains('data-service-did="did:web:pkg.test"'), home);
+    isTrue(pageOf(fixture.get('/me')).contains('Sign in, with your atproto account'), 'me, signed out');
+
+    let res = fixture.call(ALICE, 'createWebSession', '');
+    equal(ok(res)['did'] as String, ALICE);
+    let setCookie = res.getHeader('set-cookie') ?? '';
+    for (let attribute in ['HttpOnly', 'SameSite=Lax', 'Secure', 'Path=/', 'Max-Age=86400']) {
+      isTrue(setCookie.contains(attribute), `${attribute} in ${setCookie}`);
+    }
+    let cookie = setCookie.split(';')[0];
+    isTrue(cookie.startsWith('session='), cookie);
+
+    // Signed in, every page knows, and /me lists Alice's scope and packages.
+    // Her DID does not resolve here, so it stands in for her handle.
+    let signedIn = pageOf(fixture.get('/', cookie));
+    isTrue(signedIn.contains(`data-did="${ALICE}"`) && signedIn.contains('href="/me"') &&
+        !signedIn.contains('data-sign-in'), signedIn);
+    let me = pageOf(fixture.get('/me', cookie));
+    for (let expected in ['href="/scopes/acme"', 'href="/packages/router.acme.pkg.test"',
+        'href="/packages/parser.acme.pkg.test"', '>owner<']) {
+      isTrue(me.contains(expected), `${expected} in /me`);
+    }
+    // A cookie this server did not sign is nobody's.
+    isTrue(pageOf(fixture.get('/me', 'session=a.b.c')).contains('Sign in, with'), 'a forged cookie');
+    // Only a token for this method makes a web session.
+    let wrongMethod = `Bearer ${fixture.token(BOB, 'dev.zena-lang.host.getMemberships')}`;
+    equal(errorOf(fixture.call(null, 'createWebSession', '', '', 'application/json', wrongMethod)), 'InvalidToken');
+    equal(errorOf(fixture.call(null, 'createWebSession', '')), 'AuthenticationRequired');
+
+    // The callback page is a page, for the script to finish on.
+    isTrue(pageOf(fixture.get('/oauth/callback')).contains('data-sign-in-status'), 'the callback page');
+
+    let out = fixture.post('/signout', cookie);
+    equal(out.statusCode, 303, 'sign out');
+    equal(out.getHeader('location') ?? '', '/');
+    isTrue((out.getHeader('set-cookie') ?? '').contains('session=; Max-Age=0'), out.getHeader('set-cookie') ?? '');
   });
 
   test('refuses calls without a valid, unused token for the method', (ctx) => {

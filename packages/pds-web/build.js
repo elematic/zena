@@ -1,7 +1,8 @@
 /**
  * Builds the web app's assets into out/, which the PDS serves at /assets/
  * as PDS_WEB_DIR: app.css, Radica's design tokens and the pages' own
- * styles, and app.js, the Radica elements the pages use.
+ * styles; app.js, the Radica elements the pages use and their sign-in;
+ * and chunks/, what app.js loads only when it needs it.
  */
 
 import * as esbuild from 'esbuild';
@@ -40,6 +41,10 @@ await esbuild.build({
   entryPoints: {app: join(here, 'src/main.ts')},
   outdir: out,
   bundle: true,
+  // The OAuth library is most of the script, and only signing in or out
+  // needs it: main.ts imports ./auth.js dynamically, into a chunk of its own.
+  splitting: true,
+  chunkNames: 'chunks/[name]-[hash]',
   format: 'esm',
   target: 'es2022',
   minify: true,
