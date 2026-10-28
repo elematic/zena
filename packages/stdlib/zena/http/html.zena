@@ -137,7 +137,11 @@ let firstLineIndent = (s: String): i32 => {
 
 /**
  * Appends `s` to `sb`, replacing up to `remove` leading spaces or tabs at the
- * start of every line (`^[ \t]{0,remove}` in multiline mode) with `add` spaces.
+ * start of every line with `add` spaces. A line starts after a newline in
+ * `s`, never at the start of `s`: a template's strings begin where a value,
+ * or the parent template's `${`, left off, in the middle of a line. (Zipadee's
+ * `^[ \t]{0,remove}` in multiline mode also matches at the start of each
+ * string, which moved the text after a value.)
  *
  * When `remove == maxIndent` (no line had a newline followed by `\S`, matching
  * `minIndent === Infinity` in Zipadee), appends `s` unchanged.
@@ -149,7 +153,7 @@ let appendFixedIndent = (sb: StringBuilder, remove: i32, add: i32, s: String) =>
   }
   let len = s.length;
   var i = 0;
-  var atLineStart = true;
+  var atLineStart = false;
   while (true) {
     if (atLineStart) {
       var dropped = 0;
