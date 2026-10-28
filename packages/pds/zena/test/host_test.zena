@@ -9,7 +9,7 @@ import {equal, isTrue} from 'zena:assert';
 import {Future, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {hex} from 'zena:encoding';
-import {App, Request, Response} from 'zena:http';
+import {App, HTMLPartial, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {bytesStream} from 'zena:stream';
 import {now} from 'wasi:clocks/system-clock';
@@ -244,6 +244,34 @@ function entriesSeen(fixture: Fixture, caller: String, account: String, team: St
     entries.push(MemberEntry.fromValue(fromJson(list[i])));
   }
   return entries;
+}
+
+/**
+ * Scopes acme and zeta; in acme, router, with 1.0.0 and 1.1.0, which is
+ * retracted, parser, unreleased, and the automation account ci. Returns
+ * router's DID.
+ */
+function seedBrowsable(fixture: Fixture): String {
+  let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+  ok(createOrganization(fixture, BOB, 'zeta'));
+  let profile = stringify(toJson(new Profile('router', 'Routes requests', 'MIT').toValue()));
+  let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
+  let router = ok(fixture.call(ALICE, 'createPackage',
+      `{"organization": "${orgDid}", "profile": ${profile}, "maintainers": ${maintainers}}`))['did'] as String;
+  ok(createPackage(fixture, ALICE, orgDid, 'parser'));
+  ok(fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+  for (let version in ['1.0.0', '1.1.0']) {
+    let blob = upload(fixture, router, archiveOf(router, version));
+    ok(fixture.call(ALICE, 'publish', `{"package": "${router}", "release": ${releaseJson(version, blob)}}`));
+  }
+  ok(fixture.call(ALICE, 'retract', `{"package": "${router}", "version": "1.1.0", "reason": "broken"}`));
+  return router;
+}
+
+/** The HTML of a page `res` answered with. */
+function pageOf(res: Response): String {
+  isTrue((res.type ?? '').contains('text/html'), res.type ?? 'no type');
+  return (res.body as HTMLPartial).toString();
 }
 
 /** The JSON of `entries`, as a list. */
@@ -604,6 +632,72 @@ export let tests = suite('pds:host', () => {
     equal(errorOf(fixture.post('/xrpc/com.atproto.repo.putRecord',
         `{"repo": "${botDid}", "collection": "app.bsky.feed.post", "rkey": "x", "record": {"$type": "app.bsky.feed.post"}}`,
         access)), 'InvalidRequest');
+  });
+
+  test('lists the scopes and packages a visitor can browse, with their latest releases', (ctx) => {
+    let fixture = new Fixture();
+    seedBrowsable(fixture);
+
+    let scopes = ok(fixture.get('/xrpc/dev.zena-lang.host.listScopes'))['scopes'] as JsonArray;
+    equal(scopes.length, 2);
+    let acme = scopes[0] as JsonObject;
+    equal(acme['name'] as String, 'acme');
+    equal(acme['handle'] as String, 'acme.pkg.test');
+    // The automation account takes a name, and is no package.
+    equal((acme['packages'] as Box<f64>).value as i32, 2);
+    equal((scopes[1] as JsonObject)['name'] as String, 'zeta');
+
+    let packages = ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages'))['packages'] as JsonArray;
+    equal(packages.length, 2);
+    equal((packages[0] as JsonObject)['name'] as String, 'parser');
+    isTrue((packages[0] as JsonObject)['latest'] == null, 'parser has no release');
+    let listed = packages[1] as JsonObject;
+    equal(listed['name'] as String, 'router');
+    equal(listed['handle'] as String, 'router.acme.pkg.test');
+    equal(listed['description'] as String, 'Routes requests');
+    equal(listed['license'] as String, 'MIT');
+    // 1.1.0 is retracted, so 1.0.0 is the latest; both are releases.
+    equal(listed['latest'] as String, '1.0.0');
+    equal((listed['releases'] as Box<f64>).value as i32, 2);
+    equal((ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages?scope=zeta'))['packages'] as JsonArray).length, 0);
+  });
+
+  test('renders the pages a visitor browses', (ctx) => {
+    let fixture = new Fixture();
+    let router = seedBrowsable(fixture);
+
+    let home = fixture.get('/');
+    equal(home.statusCode, 200, 'home');
+    let homeHtml = pageOf(home);
+    for (let expected in ['href="/packages/router.acme.pkg.test"', 'Routes requests', 'href="/scopes/zeta"',
+        '>unreleased<']) {
+      isTrue(homeHtml.contains(expected), `${expected} in the home page`);
+    }
+    // The filter matches the description, ignoring case, and escapes the query.
+    let found = pageOf(fixture.get('/?q=ROUTES'));
+    isTrue(found.contains('router.acme.pkg.test') && !found.contains('parser.acme.pkg.test'), found);
+    let none = pageOf(fixture.get('/?q=%3Cb%3E'));
+    isTrue(none.contains('No packages match') && none.contains('&lt;b&gt;') && !none.contains('<b>'), none);
+
+    let scope = pageOf(fixture.get('/scopes/acme'));
+    isTrue(scope.contains('@acme') && scope.contains('parser.acme.pkg.test'), scope);
+    equal(fixture.get('/scopes/nobody').statusCode, 404, 'a missing scope');
+
+    let pkg = fixture.get('/packages/router.acme.pkg.test');
+    equal(pkg.statusCode, 200, 'package');
+    let pkgHtml = pageOf(pkg);
+    for (let expected in ['zena add router.acme.pkg.test', router, '>MIT<', ALICE, 'broken',
+        'class="retracted"']) {
+      isTrue(pkgHtml.contains(expected), `${expected} in the package page`);
+    }
+    // 1.1.0 is retracted, so 1.0.0 is the latest, and listed after it.
+    isTrue(pkgHtml.contains('chip-primary">1.0.0<'), 'the latest');
+    isTrue(pkgHtml.split('>1.1.0<')[1].contains('>1.0.0</span>'), 'newest first');
+
+    let missing = fixture.get('/packages/nothing.acme.pkg.test');
+    equal(missing.statusCode, 404, 'a missing package');
+    isTrue(pageOf(missing).contains('No package here'), 'the not-found page');
+    equal(fixture.get('/nowhere').statusCode, 404, 'a path no page has');
   });
 
   test('refuses calls without a valid, unused token for the method', (ctx) => {

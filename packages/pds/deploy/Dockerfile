@@ -1,5 +1,6 @@
 # The package host's image: the server, pds.wasm, built from
-# zena/main.zena, and the zena-run host binary, which runs it.
+# zena/main.zena; the zena-run host binary, which runs it; and the web app
+# (packages/pds-web), which the server serves from /web.
 #
 #   Build locally:          npm run docker:build -w @zena-lang/pds
 #   Deploy to Cloud Run:    npm run deploy -w @zena-lang/pds (deploy/deploy.sh)
@@ -13,6 +14,7 @@ FROM debian:trixie-slim
 WORKDIR /app
 
 COPY zena-run pds.wasm ./
+COPY web ./web
 
 # Compiled to native code at build time, so a cold start loads it directly
 # rather than running Cranelift.
@@ -20,8 +22,9 @@ RUN /app/zena-run --precompile /app/pds.wasm
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
+ENV PDS_WEB_DIR=/web
 EXPOSE 8080
 
 USER www-data
 
-CMD ["/app/zena-run", "/app/pds.wasm"]
+CMD ["/app/zena-run", "--dir", "/app/web::/web", "/app/pds.wasm"]

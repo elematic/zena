@@ -10,6 +10,7 @@
     "demo": "wireit",
     "build:server": "wireit",
     "stage:docker": "wireit",
+    "stage:web": "wireit",
     "docker:build": "wireit",
     "deploy:setup": "wireit",
     "deploy:image": "wireit",
@@ -21,6 +22,7 @@
       "command": "../../target/release/zena-cli test \"zena/test/*_test.zena\"",
       "files": [
         "zena/*.zena",
+        "zena/web/*.zena",
         "zena/test/*.zena",
         "../atproto/zena/**/*.zena",
         "../package-manager/zena/**/*.zena",
@@ -48,6 +50,7 @@
       "command": "../../target/release/zena-cli test \"zena/test/emulator/*_test.zena\"",
       "files": [
         "zena/*.zena",
+        "zena/web/*.zena",
         "zena/test/emulator/*.zena",
         "zena/test/storage-conformance.zena",
         "../atproto/zena/**/*.zena",
@@ -76,11 +79,12 @@
     },
     "demo": {
       "#command": "A package host for pkg.test on this machine, with a stand-in PLC directory and a resolver for its handles, to try `zena login`, `zena publish` and `zena add` against: dev/demo.zena prints how. Runs until stopped.",
-      "command": "cd ../.. && ./target/release/zena-cli run packages/pds/dev/demo.zena",
+      "command": "cd ../.. && PDS_WEB_DIR=${PDS_WEB_DIR:-/web} ./target/release/zena-cli run --dir packages/pds-web/out::/web packages/pds/dev/demo.zena",
       "service": true,
       "files": [
         "dev/*.zena",
         "zena/*.zena",
+        "zena/web/*.zena",
         "../atproto/zena/**/*.zena",
         "../package-manager/zena/**/*.zena",
         "../google-cloud/zena/*.zena",
@@ -97,7 +101,8 @@
         "../protobuf/zena/zena-package.json"
       ],
       "dependencies": [
-        "../zena-cli:build"
+        "../zena-cli:build",
+        "../pds-web:build"
       ]
     },
     "build:server": {
@@ -105,6 +110,7 @@
       "command": "cd ../.. && ./target/release/zena-cli build packages/pds/zena/main.zena -o packages/pds/deploy/pds.wasm",
       "files": [
         "zena/*.zena",
+        "zena/web/*.zena",
         "../atproto/zena/**/*.zena",
         "../package-manager/zena/**/*.zena",
         "../google-cloud/zena/*.zena",
@@ -149,12 +155,26 @@
         "../zena-run:build"
       ]
     },
+    "stage:web": {
+      "#command": "Copies the web app's build (packages/pds-web) into deploy/web for the image, which serves it as PDS_WEB_DIR.",
+      "command": "rm -rf deploy/web && cp -R ../pds-web/out deploy/web",
+      "dependencies": [
+        "../pds-web:build"
+      ],
+      "files": [
+        "../pds-web/out/**"
+      ],
+      "output": [
+        "deploy/web/**"
+      ]
+    },
     "docker:build": {
       "#command": "Builds the image locally, for those with Docker; deploy:image builds it with Cloud Build instead.",
       "command": "docker build --platform linux/amd64 --file deploy/Dockerfile --tag zena-pkg deploy",
       "dependencies": [
         "build:server",
-        "stage:docker"
+        "stage:docker",
+        "stage:web"
       ]
     },
     "deploy:setup": {
@@ -166,7 +186,8 @@
       "command": "bash -c 'source deploy/env.sh > /dev/null && gcloud builds submit --project \"$PROJECT\" --config deploy/cloudbuild.yaml --substitutions _IMAGE=\"$IMAGE\" deploy'",
       "dependencies": [
         "build:server",
-        "stage:docker"
+        "stage:docker",
+        "stage:web"
       ]
     },
     "deploy": {

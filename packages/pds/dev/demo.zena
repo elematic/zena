@@ -10,6 +10,10 @@
  *   memory;
  * - a DNS-over-HTTPS resolver that answers from those records.
  *
+ * `npm run demo` builds the web app (`packages/pds-web`) and gives it to
+ * the demo as the directory `/web` (`--dir packages/pds-web/out::/web`,
+ * `PDS_WEB_DIR=/web`), which the host serves at its origin.
+ *
  * Then it prints the environment `zena` needs, and the commands of a
  * first publish. Run from the repository root with
  * `npm run demo -w @zena-lang/pds`, and stop it with Ctrl-C; everything in
@@ -18,6 +22,7 @@
 
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
+import {dedent} from 'zena:core';
 import {getEnv} from 'zena:cli';
 import {Server} from 'zena:http';
 import {FakePds} from 'package-manager:testing/fake-pds';
@@ -57,20 +62,25 @@ export async function main(): Future<void> {
   let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords), 0 as u16);
   dns.start();
 
-  console.log(`A package host for pkg.test is listening on ${running.origin}.
+  let dnsUrl = `http://127.0.0.1:${dns.port as i32}/dns-query`;
+  console.log(dedent`
+    A package host for pkg.test is listening on ${running.origin}, which
+    serves its web pages there too.
 
-In another shell, in a directory with a zena-package.json that has a name and
-a version:
+    In another shell, in a directory with a zena-package.json that has a name, a
+    version, a description and a license (such as "MIT"):
 
-  export ZENA_PLC_DIRECTORY=${world.plcDirectory}
-  export ZENA_DNS_OVER_HTTPS=http://127.0.0.1:${dns.port as i32}/dns-query
-  export ZENA_PACKAGE_HOST=${running.origin}
-  export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
+      export ZENA_PLC_DIRECTORY=${world.plcDirectory}
+      export ZENA_DNS_OVER_HTTPS=${dnsUrl}
+      export ZENA_PACKAGE_HOST=${running.origin}
+      export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
 
-  echo ${PASSWORD} | zena login ${MAINTAINER} --password-stdin
-  zena publish --scope acme --yes
+      echo ${PASSWORD} | zena login ${MAINTAINER} --password-stdin
+      zena scope create acme --yes
+      zena publish --scope acme --yes
 
-and in another workspace, \`zena add <name>.acme.pkg.test\` and \`zena run\`.
-Ctrl-C stops the host and forgets everything it held in memory.`);
+    and in another workspace, \`zena add <name>.acme.pkg.test\` and \`zena run\`.
+    Ctrl-C stops the host and forgets everything it held in memory.
+  `);
   await world.done();
 }

@@ -33,6 +33,7 @@ import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, Repository, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {SessionError, Sessions, Tokens} from './sessions.zena';
 import {Account} from './storage.zena';
+import {notFound, publicPages} from './web/pages.zena';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {isValidDid} from 'atproto:syntax';
 import {hex} from 'zena:encoding';
@@ -287,6 +288,48 @@ function hostRoutes(router: Router, host: PackageHost): void {
           nowMicros());
       return writtenJson(created);
     });
+  });
+
+  // Public: what a logged-out visitor browses.
+  router.get('/xrpc/dev.zena-lang.host.listScopes', async (req, res, next, params) => {
+    let list = new JsonArray();
+    for (let scope in await host.listScopes()) {
+      let item = new JsonObject();
+      item['name'] = scope.name;
+      item['did'] = scope.did;
+      item['handle'] = scope.handle;
+      item['packages'] = new Box<f64>(scope.packages as f64);
+      list.push(item);
+    }
+    let answer = new JsonObject();
+    answer['scopes'] = list;
+    json(res, answer);
+  });
+
+  router.get('/xrpc/dev.zena-lang.host.listPackages', async (req, res, next, params) => {
+    let scope = req.url.searchParams().get('scope');
+    let list = new JsonArray();
+    for (let summary in await host.listPackages(if (scope == null || scope == '') null else scope)) {
+      let item = new JsonObject();
+      item['did'] = summary.did;
+      item['handle'] = summary.handle;
+      item['scope'] = summary.scope;
+      item['name'] = summary.name;
+      if (summary.description != null) {
+        item['description'] = summary.description as String;
+      }
+      if (summary.license != null) {
+        item['license'] = summary.license as String;
+      }
+      if (summary.latest != null) {
+        item['latest'] = summary.latest as String;
+      }
+      item['releases'] = new Box<f64>(summary.releases as f64);
+      list.push(item);
+    }
+    let answer = new JsonObject();
+    answer['packages'] = list;
+    json(res, answer);
   });
 
   router.post('/xrpc/dev.zena-lang.host.createAutomationAccount', async (req, res, next, params) => {
@@ -646,10 +689,12 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
   let app = new App();
   let router = new Router();
 
-  router.get('/', async (req, res, next, params) => {
-    res.type = 'text/plain; charset=utf-8';
-    res.body = banner;
-  });
+  if (host == null) {
+    router.get('/', async (req, res, next, params) => {
+      res.type = 'text/plain; charset=utf-8';
+      res.body = banner;
+    });
+  }
 
   router.get('/xrpc/_health', async (req, res, next, params) => {
     res.type = 'application/json';
@@ -821,10 +866,26 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
 
   if (host != null) {
     hostRoutes(router, host as PackageHost);
+    publicPages(router, host as PackageHost);
   }
   if (sessions != null) {
     sessionRoutes(router, pds, sessions as Sessions);
   }
   app.use(router.routes());
+  if (host != null) {
+    let domain = (host as PackageHost).config.domain;
+    // A page path no route took: the web app's not-found page.
+    app.use(async (req, res, next): Future<void> => {
+      if (!res.statusCodeSet && res.body == null && (req.method == 'GET' || req.method == 'HEAD') &&
+          !isApiPath(req.path) && !req.path.startsWith('/assets/')) {
+        notFound(res, domain, `Nothing is at ${req.path}.`);
+      }
+    });
+  }
   return app;
+}
+
+/** Whether `path` is one of the server's APIs', which answer in JSON rather than with pages. */
+function isApiPath(path: String): boolean {
+  return path.startsWith('/xrpc/') || path.startsWith('/plc/') || path.startsWith('/.well-known/');
 }

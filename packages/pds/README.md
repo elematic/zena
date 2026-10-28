@@ -23,6 +23,11 @@ in `LICENSE-pds-js`.
 [docs/design/pds.md](../../docs/design/pds.md) describes the reference
 implementation, what is still missing, and the order of the work.
 
+With a package host, it serves web pages at its origin, rendered on the
+server (`zena/web/`): a visitor browses the host's scopes and packages
+there. `PDS_WEB_DIR` names the build of their stylesheet and script
+(`packages/pds-web`), which it serves at `/assets/`.
+
 The atproto libraries it is built on are in [`packages/atproto`](../atproto).
 
 ## Commands
