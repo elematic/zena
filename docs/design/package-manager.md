@@ -1223,6 +1223,11 @@ The `put` methods take the CID the record must have now, as
 `com.atproto.repo.putRecord` does, so two owners editing at once do not
 overwrite each other unseen.
 
+[package-host-operations.md](package-host-operations.md) lists every
+operation the host offers or will offer, these methods among them: who
+may do it, and where it is done, on the host's pages, with `zena`, or
+through a method.
+
 Moving a package to another host, and the recovery of
 [Recovery](#recovery), have no methods yet. Both need PLC operations that
 the host signs only with the maintainers' attestations, and the rules for
