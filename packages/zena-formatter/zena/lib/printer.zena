@@ -23,6 +23,84 @@ import { printDocToString, PrintOptions } from './doc-printer.zena';
 import { CommentMap, attachComments } from 'zena-compiler:comment-attachment';
 
 var currentCommentMap = new CommentMap();
+var currentSource: String = '';
+
+// ============================================================================
+// Blank-line and source-span helpers
+// ============================================================================
+
+/**
+ * Whether `source` contains a newline (`\n`) in `[from, to)`.
+ */
+function hasNewlineBetween(source: String, from: i32, to: i32): boolean {
+  var i = from;
+  while (i < to && i < source.length) {
+    if (source.getByteAt(i) == 10) {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+/**
+ * Whether `source` contains a blank line (at least two newlines separated
+ * only by horizontal whitespace) in `[from, to)`.
+ */
+function hasBlankLineBetween(source: String, from: i32, to: i32): boolean {
+  var newlineCount = 0;
+  var i = from;
+  while (i < to && i < source.length) {
+    let ch = source.getByteAt(i);
+    if (ch == 10) {
+      newlineCount += 1;
+      if (newlineCount >= 2) { return true; }
+    } else if (ch != 13 && ch != 32 && ch != 9) {
+      newlineCount = 0;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+function getNodeStart(node: Node): i32 {
+  let loc = node.loc;
+  if (loc != null) {
+    return loc.start;
+  }
+  return 0 - 1;
+}
+
+function getNodeEnd(node: Node): i32 {
+  let loc = node.loc;
+  if (loc != null) {
+    return loc.end;
+  }
+  return 0 - 1;
+}
+
+function getEffectiveNodeStart(node: Node): i32 {
+  let leading = currentCommentMap.getLeading(node);
+  if (leading != null && leading.length > 0) {
+    return leading[0].start;
+  }
+  return getNodeStart(node);
+}
+
+function getEffectiveNodeEnd(node: Node): i32 {
+  let trailing = currentCommentMap.getTrailing(node);
+  if (trailing != null && trailing.length > 0) {
+    return trailing[trailing.length - 1].end;
+  }
+  return getNodeEnd(node);
+}
+
+function hasBlankLineBetweenNodes(a: Node, b: Node): boolean {
+  let endA = getEffectiveNodeEnd(a);
+  let startB = getEffectiveNodeStart(b);
+  if (endA < 0 || startB < 0) { return false; }
+  return hasBlankLineBetween(currentSource, endA, startB);
+}
 
 // ============================================================================
 // Array helpers
@@ -162,19 +240,41 @@ function withComments(node: Node, doc: Doc) {
   if (leading != null) {
     var i = 0;
     while (i < leading.length) {
-      parts.push(printComment(leading[i]));
+      let c = leading[i];
+      parts.push(printComment(c));
       parts.push(hardline);
+      let nextStart = if (i + 1 < leading.length) {
+        leading[i + 1].start
+      } else {
+        getNodeStart(node)
+      };
+      if (nextStart >= 0 && hasBlankLineBetween(currentSource, c.end, nextStart)) {
+        parts.push(hardline);
+      }
       i += 1;
     }
   }
 
   parts.push(doc);
 
-  // Trailing comments (use lineSuffix so they stick to end of line)
+  // Trailing comments: same-line comments use lineSuffix so they stick to
+  // the end of the line; trailing comments on subsequent lines (after the
+  // last node in a block or module) start on a new line.
   if (trailing != null) {
+    var prevEnd = getNodeEnd(node);
     var j = 0;
     while (j < trailing.length) {
-      parts.push(lineSuffix(concat(docs2(text(' '), printComment(trailing[j])))));
+      let c = trailing[j];
+      if (prevEnd >= 0 && hasNewlineBetween(currentSource, prevEnd, c.start)) {
+        parts.push(hardline);
+        if (hasBlankLineBetween(currentSource, prevEnd, c.start)) {
+          parts.push(hardline);
+        }
+        parts.push(printComment(c));
+      } else {
+        parts.push(lineSuffix(concat(docs2(text(' '), printComment(c)))));
+      }
+      prevEnd = c.end;
       j += 1;
     }
   }
@@ -197,7 +297,12 @@ function printEmptyBody(node: Node, spaceBeforeOpen: boolean) {
   var i = 0;
   while (i < inner.length) {
     commentDocs.push(printComment(inner[i]));
-    if (i < inner.length - 1) { commentDocs.push(hardline); }
+    if (i < inner.length - 1) {
+      commentDocs.push(hardline);
+      if (hasBlankLineBetween(currentSource, inner[i].end, inner[i + 1].start)) {
+        commentDocs.push(hardline);
+      }
+    }
     i += 1;
   }
   let parts = new Array<Doc>();
@@ -218,6 +323,7 @@ export function format(source: String): String {
   // question the formatter has to answer to lay it out, and a file the
   // compiler rejects is one a user may still want formatted.
   let module = parseAllowingStatements(source, '<input>');
+  currentSource = source;
   currentCommentMap = attachComments(module);
   let doc = printModule(module);
   let options = new PrintOptions(80);
@@ -238,6 +344,10 @@ function printModule(module: Module): Doc {
     while (fi < fileComments.length) {
       parts.push(printComment(fileComments[fi]));
       parts.push(hardline);
+      if (fi + 1 < fileComments.length
+          && hasBlankLineBetween(currentSource, fileComments[fi].end, fileComments[fi + 1].start)) {
+        parts.push(hardline);
+      }
       fi += 1;
     }
     if (module.body.length > 0) {
@@ -253,6 +363,10 @@ function printModule(module: Module): Doc {
       while (di < inner.length) {
         parts.push(printComment(inner[di]));
         parts.push(hardline);
+        if (di + 1 < inner.length
+            && hasBlankLineBetween(currentSource, inner[di].end, inner[di + 1].start)) {
+          parts.push(hardline);
+        }
         di += 1;
       }
     }
@@ -264,43 +378,16 @@ function printModule(module: Module): Doc {
     parts.push(printStatement(stmt));
     if (i < module.body.length - 1) {
       parts.push(hardline);
-      let next = module.body[i + 1];
-      if (needsBlankLineBetween(stmt, next)) {
+      if (hasBlankLineBetweenNodes(stmt, module.body[i + 1])) {
         parts.push(hardline);
       }
     }
     i += 1;
   }
-  if (module.body.length > 0) {
+  if (module.body.length > 0 || parts.length == 0) {
     parts.push(hardline);
   }
   return concat(parts);
-}
-
-function needsBlankLineBetween(a: Statement, b: Statement): boolean {
-  match (a) {
-    case ClassDeclaration {}: { return true; }
-    case InterfaceDeclaration {}: { return true; }
-    case EnumDeclaration {}: { return true; }
-    case MixinDeclaration {}: { return true; }
-    case VariableDeclaration {init}: {
-      if (init is FunctionExpression) { return true; }
-    }
-    case FunctionDeclaration {}: { return true; }
-    case _: {}
-  }
-  match (b) {
-    case ClassDeclaration {}: { return true; }
-    case InterfaceDeclaration {}: { return true; }
-    case EnumDeclaration {}: { return true; }
-    case MixinDeclaration {}: { return true; }
-    case VariableDeclaration {init}: {
-      if (init is FunctionExpression) { return true; }
-    }
-    case FunctionDeclaration {}: { return true; }
-    case _: {}
-  }
-  return false;
 }
 
 // ============================================================================
@@ -446,8 +533,14 @@ function printBlockStatement(block: BlockStatement): Doc {
   let stmts = new Array<Doc>();
   var i = 0;
   while (i < block.body.length) {
-    stmts.push(printStatement(block.body[i]));
-    if (i < block.body.length - 1) { stmts.push(hardline); }
+    let stmt = block.body[i];
+    stmts.push(printStatement(stmt));
+    if (i < block.body.length - 1) {
+      stmts.push(hardline);
+      if (hasBlankLineBetweenNodes(stmt, block.body[i + 1])) {
+        stmts.push(hardline);
+      }
+    }
     i += 1;
   }
   let parts = growable<Doc>([
@@ -615,45 +708,62 @@ function printClassDeclaration(decl: ClassDeclaration): Doc {
     }
   }
 
-  // Sealed variants
-  if (decl.sealedVariants != null) {
-    let variants = decl.sealedVariants as GrowableArray<SealedVariant>;
-    parts.push(text(' {'));
-    let variantDocs = new Array<Doc>();
-    var i = 0;
-    while (i < variants.length) {
-      variantDocs.push(printSealedVariant(variants[i]));
-      i += 1;
-    }
-    parts.push(indent(concat(docs2(hardline, join(hardline, variantDocs)))));
-    parts.push(hardline);
-    parts.push(text('}'));
-    return concat(parts);
-  }
-
-  if (decl.body.length == 0) {
+  let hasVariants = decl.sealedVariants != null
+      && (decl.sealedVariants as GrowableArray<SealedVariant>).length > 0;
+  if (!hasVariants && decl.body.length == 0) {
     if (decl.caseParams != null) {
       // Concise case class — no braces
     } else {
       parts.push(printEmptyBody(decl, true));
     }
   } else {
-    parts.push(text(' '));
+    parts.push(text(' {'));
+    let itemNodes = new Array<Node>();
+    if (hasVariants) {
+      let variants = decl.sealedVariants as GrowableArray<SealedVariant>;
+      var vi = 0;
+      var bi = 0;
+      while (vi < variants.length && bi < decl.body.length) {
+        if (startsBefore(variants[vi], decl.body[bi])) {
+          itemNodes.push(variants[vi]);
+          vi += 1;
+        } else {
+          itemNodes.push(decl.body[bi]);
+          bi += 1;
+        }
+      }
+      while (vi < variants.length) {
+        itemNodes.push(variants[vi]);
+        vi += 1;
+      }
+      while (bi < decl.body.length) {
+        itemNodes.push(decl.body[bi]);
+        bi += 1;
+      }
+    } else {
+      var bi = 0;
+      while (bi < decl.body.length) {
+        itemNodes.push(decl.body[bi]);
+        bi += 1;
+      }
+    }
     let members = new Array<Doc>();
     var i = 0;
-    while (i < decl.body.length) {
-      members.push(printClassMember(decl.body[i]));
-      if (i < decl.body.length - 1) {
+    while (i < itemNodes.length) {
+      let cur = itemNodes[i];
+      if (cur is SealedVariant) {
+        members.push(withComments(cur, printSealedVariant(cur)));
+      } else {
+        members.push(printClassMember(cur));
+      }
+      if (i < itemNodes.length - 1) {
         members.push(hardline);
-        let cur = decl.body[i];
-        let next = decl.body[i + 1];
-        if (cur is MethodDefinition) {
+        if (hasBlankLineBetweenNodes(cur, itemNodes[i + 1])) {
           members.push(hardline);
-        } else if (next is MethodDefinition) { members.push(hardline); }
+        }
       }
       i += 1;
     }
-    parts.push(text('{'));
     parts.push(indent(concat(docs2(hardline, concat(members)))));
     parts.push(hardline);
     parts.push(text('}'));
@@ -896,11 +1006,17 @@ function printAccessorDeclaration(acc: AccessorDeclaration): Doc {
   }
   if (acc.setter != null) {
     if (let SetterInfo {param, body} = acc.setter as Node) {
+      if (acc.getter != null) {
+        accessors.push(hardline);
+        if (hasBlankLineBetweenNodes(acc.getter as Node, acc.setter as Node)) {
+          accessors.push(hardline);
+        }
+      }
       accessors.push(concat(docs2(
           text(`set(${param.name}) `), printBlockStatement(body))));
     }
   }
-  parts.push(indent(concat(docs2(hardline, join(hardline, accessors)))));
+  parts.push(indent(concat(docs2(hardline, concat(accessors)))));
   parts.push(hardline);
   parts.push(text('}'));
   return concat(parts);
@@ -932,10 +1048,17 @@ function printInterfaceDeclaration(decl: InterfaceDeclaration): Doc {
     let memberDocs = new Array<Doc>();
     var i = 0;
     while (i < decl.body.length) {
-      memberDocs.push(printInterfaceMember(decl.body[i]));
+      let cur = decl.body[i];
+      memberDocs.push(printInterfaceMember(cur));
+      if (i < decl.body.length - 1) {
+        memberDocs.push(hardline);
+        if (hasBlankLineBetweenNodes(cur, decl.body[i + 1])) {
+          memberDocs.push(hardline);
+        }
+      }
       i += 1;
     }
-    parts.push(indent(concat(docs2(hardline, join(hardline, memberDocs)))));
+    parts.push(indent(concat(docs2(hardline, concat(memberDocs)))));
     parts.push(hardline);
     parts.push(text('}'));
   }
@@ -1009,15 +1132,29 @@ function printEnumDeclaration(decl: EnumDeclaration): Doc {
   }
   parts.push(text(' {'));
   let memberDocs = new Array<Doc>();
-  for (let m in decl.members) {
+  var i = 0;
+  while (i < decl.members.length) {
+    let m = decl.members[i];
     let memberDoc = if (m.initializer != null) {
       concat(docs3(text(m.name.name), text(' = '), printExpression(m.initializer as Expression)));
     } else {
       text(m.name.name);
     };
-    memberDocs.push(withComments(m, memberDoc));
+    let withComma = if (i < decl.members.length - 1) {
+      concat(docs2(memberDoc, text(',')))
+    } else {
+      memberDoc
+    };
+    memberDocs.push(withComments(m, withComma));
+    if (i < decl.members.length - 1) {
+      memberDocs.push(hardline);
+      if (hasBlankLineBetweenNodes(m, decl.members[i + 1])) {
+        memberDocs.push(hardline);
+      }
+    }
+    i += 1;
   }
-  parts.push(indent(concat(docs2(hardline, join(concat(docs2(text(','), hardline)), memberDocs)))));
+  parts.push(indent(concat(docs2(hardline, concat(memberDocs)))));
   parts.push(hardline);
   parts.push(text('}'));
   return concat(parts);
@@ -1058,10 +1195,17 @@ function printMixinDeclaration(decl: MixinDeclaration): Doc {
     let memberDocs = new Array<Doc>();
     var i = 0;
     while (i < decl.body.length) {
-      memberDocs.push(printClassMember(decl.body[i]));
+      let cur = decl.body[i];
+      memberDocs.push(printClassMember(cur));
+      if (i < decl.body.length - 1) {
+        memberDocs.push(hardline);
+        if (hasBlankLineBetweenNodes(cur, decl.body[i + 1])) {
+          memberDocs.push(hardline);
+        }
+      }
       i += 1;
     }
-    parts.push(indent(concat(docs2(hardline, join(hardline, memberDocs)))));
+    parts.push(indent(concat(docs2(hardline, concat(memberDocs)))));
     parts.push(hardline);
     parts.push(text('}'));
   }
@@ -1834,7 +1978,10 @@ function printMatchExpression(expr: MatchExpression): Doc {
     printExpression(expr.discriminant),
     text(') {'),
   ]);
-  for (let c in expr.cases) {
+  let caseDocs = new Array<Doc>();
+  var i = 0;
+  while (i < expr.cases.length) {
+    let c = expr.cases[i];
     let caseParts = growable<Doc>([text('case '), printNode(c.pattern)]);
     if (c.guard != null) {
       caseParts.push(text(' if '));
@@ -1842,7 +1989,17 @@ function printMatchExpression(expr: MatchExpression): Doc {
     }
     caseParts.push(text(': '));
     caseParts.push(printNode(c.body));
-    parts.push(indent(concat(docs2(hardline, concat(caseParts)))));
+    caseDocs.push(withComments(c, concat(caseParts)));
+    if (i < expr.cases.length - 1) {
+      caseDocs.push(hardline);
+      if (hasBlankLineBetweenNodes(c, expr.cases[i + 1])) {
+        caseDocs.push(hardline);
+      }
+    }
+    i += 1;
+  }
+  if (caseDocs.length > 0) {
+    parts.push(indent(concat(docs2(hardline, concat(caseDocs)))));
   }
   parts.push(hardline);
   parts.push(text('}'));

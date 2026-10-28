@@ -1177,6 +1177,191 @@ let tests = suite('formatter', () => {
     checkStable('var without initializer', 'var x: String?;');
     checkStable('var with explicit null initializer', 'var x: String? = null;');
   });
+
+  // ========================================================================
+  // Blank line handling (#616)
+  // ========================================================================
+
+  test('keeps single blank lines at module top level', (t) => {
+    checkStable('blank between vars', dedentRaw`
+      let a = 1;
+
+      let b = 2;
+    `);
+    checkStable('no blank between functions when omitted', dedentRaw`
+      function f(): i32 {
+        return 1;
+      }
+      function g(): i32 {
+        return 2;
+      }
+    `);
+    checkStable('blank between imports and declarations', dedentRaw`
+      import {Array} from 'zena:array';
+
+      type Id = i32;
+
+      let x: Id = 1;
+    `);
+  });
+
+  test('keeps single blank lines inside block statements', (t) => {
+    checkStable('blank in function body', dedentRaw`
+      function compute(x: i32): i32 {
+        let a = x + 1;
+        let b = a * 2;
+
+        if (b > 10) {
+          let c = b - 10;
+
+          return c;
+        }
+
+        return b;
+      }
+    `);
+  });
+
+  test('keeps single blank lines in class, interface, mixin, enum, and match bodies', (t) => {
+    checkStable('blank between class fields', dedentRaw`
+      class Config {
+        host: String;
+        port: i32;
+
+        timeout: i32;
+      }
+    `);
+    checkStable('no blank between class methods when omitted', dedentRaw`
+      class Counter {
+        a(): i32 {
+          return 1;
+        }
+        b(): i32 {
+          return 2;
+        }
+      }
+    `);
+    checkStable('blank in interface body', dedentRaw`
+      interface Service {
+        start(): void;
+
+        stop(): void;
+      }
+    `);
+    checkStable('blank in mixin body', dedentRaw`
+      mixin Timestamped {
+        var createdAt: i64 = 0;
+
+        touch(now: i64): void {
+          this.createdAt = now;
+        }
+      }
+    `);
+    checkStable('blank in enum body', dedentRaw`
+      enum Status {
+        Pending,
+        Running,
+
+        Completed,
+        Failed
+      }
+    `);
+    checkStable('blank in match cases', dedentRaw`
+      let describe = (x: i32): String => match (x) {
+        case 0: 'zero'
+
+        case 1: 'one'
+        case _: 'many'
+      };
+    `);
+  });
+
+  test('collapses multiple consecutive blank lines into one', (t) => {
+    checkFormat('multiple blanks at top level',
+        'let a = 1;\n\n\n\nlet b = 2;\n',
+        dedentRaw`
+          let a = 1;
+
+          let b = 2;
+        `);
+    checkFormat('multiple blanks in block',
+        'function f(): void {\n  let a = 1;\n\n\n\n  let b = 2;\n}\n',
+        dedentRaw`
+          function f(): void {
+            let a = 1;
+
+            let b = 2;
+          }
+        `);
+    checkFormat('multiple blanks in class',
+        'class C {\n  x: i32;\n\n\n  y: i32;\n}\n',
+        dedentRaw`
+          class C {
+            x: i32;
+
+            y: i32;
+          }
+        `);
+  });
+
+  test('strips blank lines at the beginning and end of blocks and files', (t) => {
+    checkFormat('blanks at file edges',
+        '\n\n\nlet x = 1;\n\n\n',
+        'let x = 1;\n');
+    checkFormat('blanks at block edges',
+        'function f(): void {\n\n\n  let a = 1;\n  let b = 2;\n\n\n}\n',
+        dedentRaw`
+          function f(): void {
+            let a = 1;
+            let b = 2;
+          }
+        `);
+    checkFormat('blanks at class edges',
+        'class C {\n\n  x: i32;\n\n}\n',
+        dedentRaw`
+          class C {
+            x: i32;
+          }
+        `);
+    checkFormat('blanks in empty block',
+        'function f(): void {\n\n\n}\n',
+        'function f(): void {}\n');
+  });
+
+  test('preserves blank lines around comments', (t) => {
+    checkStable('blank before leading comment', dedentRaw`
+      let a = 1;
+
+      // section two
+      let b = 2;
+    `);
+    checkStable('blank after leading comment', dedentRaw`
+      let a = 1;
+      // section two
+
+      let b = 2;
+    `);
+    checkStable('blank between leading comments', dedentRaw`
+      function f(): void {
+        // first note
+
+        // second note
+        let x = 1;
+      }
+    `);
+    checkStable('blank after trailing same-line comment', dedentRaw`
+      let a = 1; // first
+
+      let b = 2;
+    `);
+    checkStable('blank before trailing comment at end of block', dedentRaw`
+      function f(): void {
+        let a = 1;
+
+        // done
+      }
+    `);
+  });
 });
 
 // Entry point - returns number of failed tests (0 = success)
