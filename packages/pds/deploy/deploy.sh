@@ -30,6 +30,10 @@ if [ "$ROTATION_KMS" = 1 ]; then
 else
   SECRETS+=",PDS_ROTATION_KEY=${SECRET}:latest"
 fi
+if [ -n "$ADMIN_DIDS" ]; then
+  # Spaces, since --set-env-vars splits on commas.
+  ENV_VARS+=",PDS_ADMIN_DIDS=${ADMIN_DIDS//,/ }"
+fi
 if [ -n "$OFFLINE_ROTATION_KEY" ]; then
   ENV_VARS+=",PDS_OFFLINE_ROTATION_KEY=${OFFLINE_ROTATION_KEY}"
 elif [ "$PDS_ENV" = production ]; then

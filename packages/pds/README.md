@@ -30,6 +30,8 @@ that, the host serves the pages' OAuth client metadata at
 `/oauth/client-metadata.json`, resolves handles
 (`com.atproto.identity.resolveHandle`), and trades a service-auth token
 for a web session cookie (`dev.zena-lang.host.createWebSession`).
+The DIDs in `PDS_ADMIN_DIDS` are the host's admins, who sign in as anyone
+does and see every account it holds, at `/admin`, and every private entry.
 `PDS_WEB_DIR` names the build of the pages' stylesheet and script
 (`packages/pds-web`), which it serves at `/assets/`.
 

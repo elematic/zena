@@ -281,6 +281,13 @@ function seedBrowsable(fixture: Fixture): String {
   return router;
 }
 
+/** The cookie of a web session for `caller`, from `createWebSession`. */
+function webCookie(fixture: Fixture, caller: String): String {
+  let res = fixture.call(caller, 'createWebSession', '');
+  ok(res);
+  return (res.getHeader('set-cookie') ?? '').split(';')[0];
+}
+
 /** The HTML of a page `res` answered with. */
 function pageOf(res: Response): String {
   isTrue((res.type ?? '').contains('text/html'), res.type ?? 'no type');
@@ -804,6 +811,58 @@ export let tests = suite('pds:host', () => {
     equal(out.statusCode, 303, 'sign out');
     equal(out.getHeader('location') ?? '', '/');
     isTrue((out.getHeader('set-cookie') ?? '').contains('session=; Max-Age=0'), out.getHeader('set-cookie') ?? '');
+  });
+
+  test("names private members to those who may see them, and shows the host's admins everything", (ctx) => {
+    let fixture = new Fixture();
+    let carol = 'did:plc:carolcarolcarolcarolcaro';
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    // A publisher, and a team member, only those allowed may see.
+    let publisher = new MemberEntry(carol, PUBLISHER, filled(192));
+    ok(putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, publisher.commitment(), null, null, PUBLISHER)]), [publisher],
+        (pkg['maintainers'] as JsonObject)['cid'] as String));
+    let carolMember = new MemberEntry(carol, MEMBER, filled(194));
+    ok(putMembers(fixture, ALICE, orgDid, [entriesSeen(fixture, ALICE, orgDid)[0], carolMember], [carolMember],
+        (org['members'] as JsonObject)['cid'] as String));
+    ok(putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(carol, MAINTAINER, filled(193))], null));
+    let bot = ok(fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+
+    // A visitor, and Bob, who belongs to none of it, see members as private.
+    let visitor = pageOf(fixture.get('/scopes/acme'));
+    isTrue(visitor.contains('a private member') && visitor.contains('<h3 class="mono">core</h3>') &&
+        !visitor.contains(ALICE) && !visitor.contains(carol), visitor);
+    let bob = webCookie(fixture, BOB);
+    let asBob = pageOf(fixture.get('/scopes/acme', bob));
+    isTrue(!asBob.contains(ALICE) && !asBob.contains(carol), asBob);
+    isTrue(!pageOf(fixture.get('/packages/router.acme.pkg.test', bob)).contains(carol), 'the publisher, to Bob');
+    equal(fixture.get('/admin', bob).statusCode, 403, 'admin, to Bob');
+    isTrue(!pageOf(fixture.get('/', bob)).contains('href="/admin"'), 'no admin link for Bob');
+
+    // Alice, an owner of acme, sees its members and teams.
+    let alice = webCookie(fixture, ALICE);
+    let asAlice = pageOf(fixture.get('/scopes/acme', alice));
+    isTrue(asAlice.contains(ALICE) && asAlice.contains(carol) && asAlice.contains('>maintainer<'), asAlice);
+
+    // Once Bob is one of the host's admins, he sees every account and every member.
+    (fixture.host as PackageHost).config.admins.add(BOB);
+    isTrue(pageOf(fixture.get('/', bob)).contains('href="/admin"'), 'the admin link');
+    let admin = fixture.get('/admin', bob);
+    equal(admin.statusCode, 200, 'admin');
+    let adminHtml = pageOf(admin);
+    for (let expected in ['href="/scopes/acme"', orgDid, 'href="/packages/router.acme.pkg.test"', pkgDid,
+        bot['did'] as String, '1 scope', '1 package', '1 automation account']) {
+      isTrue(adminHtml.contains(expected), `${expected} in /admin`);
+    }
+    let scope = pageOf(fixture.get('/scopes/acme', bob));
+    isTrue(scope.contains(ALICE) && scope.contains('>owner<') && scope.contains(carol), scope);
+    let router = pageOf(fixture.get('/packages/router.acme.pkg.test', bob));
+    isTrue(router.contains(carol) && router.contains('(private)'), router);
+    // Signed out, /admin asks to sign in.
+    isTrue(pageOf(fixture.get('/admin')).contains('Sign in as one of'), 'admin, signed out');
   });
 
   test('refuses calls without a valid, unused token for the method', (ctx) => {

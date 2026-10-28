@@ -10,8 +10,9 @@ import {HashMap} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
 import {HTMLPartial, Request, Response, Router, TemplateValue, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
-import {Dependency, Maintainer, Maintainers, Release} from 'package-manager:records';
-import {PackageDetail, PackageHost, PackageSummary, ScopeSummary} from '../host.zena';
+import {Cid} from 'atproto:cid';
+import {Dependency, Maintainer, Maintainers, MemberEntry, Release} from 'package-manager:records';
+import {PackageDetail, PackageHost, PackageSummary, ScopeDetail, ScopeSummary} from '../host.zena';
 import {chip, count, each, page, when} from './layout.zena';
 import {PageContext, contextOf} from './session.zena';
 
@@ -47,25 +48,36 @@ export function publicPages(router: Router, host: PackageHost): void {
   router.get('/scopes/:name', async (req, res, next, params) => {
     let context = contextOf(req, host);
     let name = percentDecode(params['name'] ?? '');
-    var scope: ScopeSummary | null = null;
-    for (let candidate in await host.listScopes()) {
-      if (candidate.name == name) {
-        scope = candidate;
-      }
-    }
+    let scope = await host.getScope(name);
     if (scope == null) {
       notFound(res, context, `No scope here is named @${name}.`);
       return;
     }
-    let found = scope as ScopeSummary;
+    let found = scope as ScopeDetail;
     let packages = await host.listPackages(name);
+    let memberEntries = await visibleEntries(context, found.did, null);
+    let teams = new GrowableArray<TemplateValue>();
+    for (let named in found.teams) {
+      let entries = await visibleEntries(context, found.did, named.name);
+      teams.push(html`
+        <h3 class="mono">${named.name}</h3>
+        ${members(named.team.members, entries, 'No members.')}`);
+    }
     res.type = 'text/html; charset=utf-8';
     res.body = page(`@${name} · Zena packages`, context, html`
       <div>
         <h1>@${name}</h1>
         <div class="meta mono muted"><span>${found.handle}</span><span>${found.did}</span></div>
       </div>
-      ${packageList(packages, 'This scope has no packages yet.')}
+      <section>
+        <h2>Packages</h2>
+        ${packageList(packages, 'This scope has no packages yet.')}
+      </section>
+      <section>
+        <h2>Members</h2>
+        ${members(found.members, memberEntries, 'No members record.')}
+      </section>
+      ${when(teams.length > 0, () => html`<section><h2>Teams</h2>${teams}</section>`)}
     `);
   });
 
@@ -91,7 +103,8 @@ export function publicPages(router: Router, host: PackageHost): void {
     res.type = 'text/html; charset=utf-8';
     let profile = found.profile;
     let name = if (profile != null) profile.name else found.handle;
-    res.body = page(`${name} · Zena packages`, context, packagePage(found, handles));
+    let entries = await visibleEntries(context, found.did, null);
+    res.body = page(`${name} · Zena packages`, context, packagePage(found, handles, entries));
   });
 }
 
@@ -152,7 +165,8 @@ function scopeList(scopes: Array<ScopeSummary>): HTMLPartial {
 }
 
 /** A package's page: its profile, the command that adds it, its versions and its maintainers. */
-function packagePage(detail: PackageDetail, handles: HashMap<String, String>): HTMLPartial {
+function packagePage(detail: PackageDetail, handles: HashMap<String, String>,
+    entries: HashMap<String, MemberEntry>): HTMLPartial {
   let profile = detail.profile;
   var name = detail.handle;
   var description: String | null = null;
@@ -195,7 +209,7 @@ function packagePage(detail: PackageDetail, handles: HashMap<String, String>): H
     <section>
       <h2>Maintainers</h2>
       ${if (detail.maintainers == null) html`<p class="muted">No maintainers record.</p>`
-          else maintainers(detail.maintainers as Maintainers)}
+          else maintainers(detail.maintainers as Maintainers, entries)}
     </section>
   `;
 }
@@ -241,10 +255,10 @@ function dependencies(release: Release, handles: HashMap<String, String>): Templ
   })}</ul>`;
 }
 
-function maintainers(record: Maintainers): HTMLPartial {
+function maintainers(record: Maintainers, entries: HashMap<String, MemberEntry>): HTMLPartial {
   return html`
     <ul class="plain">${each(record.maintainers, (maintainer: Maintainer) => html`
-      <li>${describe(maintainer)} ${chip(maintainer.role)}</li>`)}
+      <li>${describe(maintainer, entries)} ${chip(maintainer.role)}</li>`)}
     </ul>
     <p class="muted">
       A release counts once ${count(record.threshold as i32, 'maintainer')}
@@ -254,8 +268,11 @@ function maintainers(record: Maintainers): HTMLPartial {
   `;
 }
 
-/** A maintainer as the record names it: a DID, a team, or a commitment whose person is private. */
-function describe(maintainer: Maintainer): HTMLPartial {
+/**
+ * A maintainer as the record names it: a DID, a team, or a commitment,
+ * whose person is private unless `entries` has its entry.
+ */
+function describe(maintainer: Maintainer, entries: HashMap<String, MemberEntry>): HTMLPartial {
   let automation = if (maintainer.automation) ' (automation)' else '';
   if (maintainer.did != null) {
     return html`<span class="mono">${maintainer.did as String}</span>${automation}`;
@@ -264,5 +281,49 @@ function describe(maintainer: Maintainer): HTMLPartial {
     return html`the team <span class="mono">${maintainer.team as String}</span> of
       <span class="mono">${maintainer.org ?? ''}</span>`;
   }
+  let commitment = maintainer.commitment;
+  if (commitment != null) {
+    if (let (true, entry) = entries.get(commitment.toString())) {
+      return html`<span class="mono">${entry.did}</span> <span class="muted">(private)</span>${automation}`;
+    }
+  }
   return html`<span class="muted">a private member</span>${automation}`;
+}
+
+/**
+ * The private entries behind `account`'s members or maintainers record,
+ * or its team `team`, that the person signed in may see, by commitment:
+ * their own; all of them for the account's owners and admins, a team's
+ * maintainers, and the host's admins (`PackageHost.getEntries`). None for
+ * a visitor.
+ */
+async function visibleEntries(context: PageContext, account: String, team: String | null)
+    : Future<HashMap<String, MemberEntry>> {
+  let found = new HashMap<String, MemberEntry>();
+  let who = context.who;
+  if (who == null) {
+    return found;
+  }
+  for (let entry in await context.host.getEntries(who.did, account, team)) {
+    found[entry.commitment().toString()] = entry;
+  }
+  return found;
+}
+
+/** Members, by commitment, each named when `entries` has their entry; or `empty`. */
+function members(commitments: FixedArray<Cid>, entries: HashMap<String, MemberEntry>, empty: String)
+    : HTMLPartial {
+  if (commitments.length == 0) {
+    return html`<p class="muted">${empty}</p>`;
+  }
+  return html`<ul class="plain">${each(commitments, (commitment: Cid) => member(commitment, entries))}</ul>`;
+}
+
+function member(commitment: Cid, entries: HashMap<String, MemberEntry>): HTMLPartial {
+  if (let (true, entry) = entries.get(commitment.toString())) {
+    return html`
+      <li><span class="mono">${entry.did}</span> ${chip(entry.role)}
+        ${when(entry.automation, () => chip('automation'))}</li>`;
+  }
+  return html`<li class="muted">a private member</li>`;
 }

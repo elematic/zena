@@ -20,6 +20,11 @@ pages. The pages are rendered on the server, in Zena, in
   `node_modules/@atproto/oauth-client*` declarations. A real sign-in needs
   a real atproto account, so no test covers the OAuth half: try it in the
   demo (README, "Signing in").
+- What a page shows of private members goes through
+  `PackageHost.getEntries` as the person signed in (`visibleEntries` in
+  `pds:web/pages`), never around it, so the host's rules decide. The
+  host's admins (`PDS_ADMIN_DIDS`, `PageContext.isAdmin`) are ordinary
+  signed-in accounts the host answers more for.
 - Prefer plain links and GET forms to script. Use a Radica element only for
   what must happen in the browser, and import it in `src/main.ts`; its
   looks come with it. Server-rendered markup is styled in `src/app.css`,
