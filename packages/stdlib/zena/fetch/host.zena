@@ -67,6 +67,10 @@ declare function __request_body_text(init: JsRequestInit, body: String, len: i32
 @external("web", "request_body_bytes")
 declare function __request_body_bytes(init: JsRequestInit, len: i32): JsBytes;
 
+/** Sets `init.signal` on the host `RequestInit` to one that aborts after `milliseconds`. */
+@external("web", "request_timeout")
+declare function __request_timeout(init: JsRequestInit, milliseconds: f64): void;
+
 /** Sets `bytes[index] = value` on a host `Uint8Array`. */
 @external("web", "bytes_set")
 declare function __bytes_set(bytes: JsBytes, index: i32, value: i32): void;
@@ -178,6 +182,9 @@ let buildInit = (init: RequestInit): JsRequestInit | null => {
     for (let (name, value) in headers) {
       __request_header(target, name, name.length, value, value.length);
     }
+  }
+  if (let {timeout} = init) {
+    __request_timeout(ensure(), ((timeout as i64) as f64) / 1000000.0);
   }
   if (let {body} = init) {
     if (body is String) {

@@ -1011,6 +1011,9 @@ export function createWebHost(
         init.body = bytes as BodyInit;
         return bytes;
       },
+      request_timeout: (init: RequestInit, milliseconds: number): void => {
+        init.signal = AbortSignal.timeout(milliseconds);
+      },
       bytes_set: (bytes: Uint8Array, index: number, value: number): void => {
         bytes[index] = value & 0xff;
       },

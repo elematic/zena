@@ -9,6 +9,7 @@ import { Future, runFuture } from 'zena:async';
 import { fetch } from 'zena:fetch';
 import { App, Server } from 'zena:http';
 import { URL } from 'zena:url';
+import { milliseconds, sleep } from 'zena:time';
 
 function startEchoServer(): Server {
   let app = new App();
@@ -31,6 +32,10 @@ function startEchoServer(): Server {
       res.statusCode = 200;
       res.type = 'application/octet-stream';
       res.body = out;
+    } else if (req.path == '/slow') {
+      await sleep(milliseconds(1000 as i64));
+      res.statusCode = 200;
+      res.body = 'late';
     } else if (req.path == '/status/404') {
       res.statusCode = 404;
       res.body = 'missing';
@@ -155,5 +160,21 @@ export let tests = suite('zena:fetch', () => {
       unreachable = true;
     }
     isTrue(unreachable);
+  });
+
+  test('fails when the server takes longer than the timeout', () => {
+    let server = startEchoServer();
+    let origin = originOf(server);
+    var message = '';
+    try {
+      runFuture(fetch(`${origin}/slow`, {timeout: milliseconds(100 as i64)}));
+    } catch (e) {
+      message = e.message;
+    }
+    isTrue(message.contains('took longer than the timeout'), `failed: '${message}'`);
+    // A timeout longer than the server takes changes nothing.
+    let answer = runFuture(fetch(`${origin}/slow`, {timeout: milliseconds(5000 as i64)}));
+    equal(runFuture(answer.text()), 'late');
+    server.close();
   });
 });

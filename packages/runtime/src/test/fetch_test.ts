@@ -345,6 +345,39 @@ suite('Runtime - zena:fetch', () => {
     assert.strictEqual(seenBody, '{"name":"widget"}');
   });
 
+  test('a timeout aborts the request through its signal', async () => {
+    let seenSignal: AbortSignal | undefined;
+    // Never answers, unless the request's signal aborts it.
+    const mockFetch = ((_url: string | URL | Request, init?: RequestInit) => {
+      seenSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(init.signal!.reason),
+        );
+      });
+    }) as typeof fetch;
+
+    const {main} = await hosted(
+      `
+      import { Future } from 'zena:async';
+      import { fetch } from 'zena:fetch';
+      import { milliseconds } from 'zena:time';
+
+      export async function main(): Future<i32> {
+        try {
+          await fetch('https://example.test/slow', {timeout: milliseconds(50 as i64)});
+          return 1;
+        } catch (e) {
+          return 2;
+        }
+      }
+    `,
+      {fetch: mockFetch},
+    );
+    assert.strictEqual(await main(), 2);
+    assert.ok(seenSignal?.aborted, 'the signal aborted');
+  });
+
   test('fetch sends a byte body and reads response.bytes() once', async () => {
     let seenBytes: number[] = [];
     const mockFetch = (async (

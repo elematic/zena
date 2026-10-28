@@ -24,12 +24,13 @@ import { Stream, bytesStream, readAllBytes, readAllText, textStream } from 'zena
 import {
   Fields, Method, MethodConnect, MethodDelete, MethodGet, MethodHead,
   MethodOptions, MethodOther, MethodPatch, MethodPost, MethodPut,
-  MethodTrace, Request, Response as WireResponse, ErrorCode, Scheme,
+  MethodTrace, Request, RequestOptions, Response as WireResponse, ErrorCode, Scheme,
   SchemeHTTP, SchemeHTTPS, SchemeOther, ErrorCodeDNSError,
   ErrorCodeDNSTimeout, ErrorCodeDestinationNotFound,
   ErrorCodeDestinationUnavailable, ErrorCodeConnectionRefused,
   ErrorCodeConnectionTimeout, ErrorCodeConnectionTerminated,
-  ErrorCodeHTTPRequestURIInvalid, ErrorCodeInternalError
+  ErrorCodeHTTPRequestURIInvalid, ErrorCodeInternalError,
+  ErrorCodeConnectionReadTimeout, ErrorCodeHTTPResponseTimeout
 } from 'wasi:http/types';
 import { send } from 'wasi:http/client';
 import { RequestInit } from './options.zena';
@@ -170,8 +171,19 @@ let requestFor = (target: URL, init: RequestInit): Request => {
   // `new` returns the request and a future that settles once it has
   // been transmitted; a client that wanted send errors ahead of the
   // response would await it. It goes unobserved here (#587).
+  var options: Option<RequestOptions> = none;
+  if (let {timeout} = init) {
+    let given = RequestOptions.create();
+    let nanoseconds = (timeout as i64) as u64;
+    // Each fails only where the runtime does not support that timeout,
+    // and the request then waits as long as the runtime lets it.
+    given.setConnectTimeout(some(nanoseconds));
+    given.setFirstByteTimeout(some(nanoseconds));
+    given.setBetweenBytesTimeout(some(nanoseconds));
+    options = some(given);
+  }
   let (request, transmitted) =
-      Request.new_(fields, contents, trailers, none);
+      Request.new_(fields, contents, trailers, options);
   let {method = 'GET'} = init;
   request.setMethod(methodOf(method));
   request.setScheme(some(schemeOf(target.protocol)));
@@ -221,6 +233,9 @@ let describe = (code: ErrorCode): String => {
       code is ErrorCodeConnectionRefused ||
       code is ErrorCodeConnectionTimeout) {
     return 'the server could not be reached';
+  }
+  if (code is ErrorCodeConnectionReadTimeout || code is ErrorCodeHTTPResponseTimeout) {
+    return 'the server took longer than the timeout to answer';
   }
   if (code is ErrorCodeConnectionTerminated) {
     return 'the connection was closed before a response arrived';
