@@ -902,6 +902,13 @@ function checkTupleTag(cx: LoweringContext, expr: AsExpression, value: i32): voi
 }
 
 export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
+  // A cast to `void` reads back a slot that holds nothing: `slot as T`
+  // with a `WithDefault<T>` slot at `T = void`. Its operand still runs.
+  let target = cx.substitutedNodeType(expr);
+  if (target != null && isVoidOrNeverType(target)) {
+    lowerExpr(cx, expr.expression, null);
+    return -1;
+  }
   let dstVt = cx.exprVt(expr);
   let narrowTarget = narrowCastTarget(cx, expr);
   // Literal-through-cast (`9223372036854775807 as u64`,

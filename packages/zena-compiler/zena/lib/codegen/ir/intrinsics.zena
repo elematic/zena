@@ -247,6 +247,12 @@ function newResultArray(cx: LoweringContext, call: CallExpression): (ValType, Wa
  * says which.
  */
 function lowerDefaultValue(cx: LoweringContext, call: CallExpression): i32 {
+  let t = cx.substitutedNodeType(call);
+  if (t != null && isVoidOrNeverType(t)) {
+    // `WithDefault<void>` is `void`: no value, which is lowering.zena's
+    // NO_VALUE (a module value, so it does not cross the import cycle).
+    return -1;
+  }
   let vt = cx.exprVt(call);
   if (isRefValType(vt)) {
     return cx.b.emit(IrOp.ref_null, vt, -1, -1);
