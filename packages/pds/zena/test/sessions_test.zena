@@ -8,7 +8,7 @@ import {equal, isTrue} from 'zena:assert';
 import {runFuture} from 'zena:async';
 import {KeyType} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
-import {MemoryCredentialStore, SessionError, Sessions, Tokens} from 'pds:sessions';
+import {MemoryCredentialStore, SessionError, Sessions, Tokens, WEB_SECONDS, WebCaller} from 'pds:sessions';
 import {MemoryStorage, SigningKey} from 'pds:storage';
 
 let DID = 'did:plc:botbotbotbotbotbotbotbotb';
@@ -55,6 +55,36 @@ export let tests = suite('pds:sessions', () => {
     equal(refusal(() => { runFuture(sessions.create(DID, 'aaaa-bbbb-cccc-dddd', NOW)); }), 'AuthenticationRequired');
     equal(refusal(() => { runFuture(sessions.create('did:plc:nobodynobodynobodynobod', password, NOW)); }),
         'AuthenticationRequired');
+  });
+
+  test('signs web sessions that stand for nothing else', (ctx) => {
+    let pds = new Pds(new MemoryStorage());
+    let sessions = sessionsWith(1, pds, new MemoryCredentialStore());
+    let person = 'did:plc:alicealicealicealicealic';
+    let token = sessions.webSession(person, 'alice.example.com', NOW);
+    let caller = sessions.webCaller(token, NOW + (60 as i64));
+    isTrue(caller != null, 'a web session');
+    equal((caller as WebCaller).did, person);
+    equal((caller as WebCaller).name(), 'alice.example.com');
+    // Without a handle, the DID stands in.
+    equal((sessions.webCaller(sessions.webSession(person, null, NOW), NOW) as WebCaller).name(), person);
+
+    // Expired, signed by another server, altered, or no token at all: nobody.
+    isTrue(sessions.webCaller(token, NOW + WEB_SECONDS + (1 as i64)) == null, 'expired');
+    isTrue(sessionsWith(2, pds, new MemoryCredentialStore()).webCaller(token, NOW) == null, 'another secret');
+    let parts = token.split('.');
+    let forged = sessions.webSession('did:plc:mallorymallorymallorymal', null, NOW).split('.');
+    isTrue(sessions.webCaller(`${parts[0]}.${forged[1]}.${parts[2]}`, NOW) == null, 'altered');
+    isTrue(sessions.webCaller(null, NOW) == null && sessions.webCaller('', NOW) == null, 'none');
+
+    // An account's access token is not a web session, and a web session is
+    // not an access token.
+    runFuture(pds.createAccount(DID, 'ci.acme.pkg.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 9 as u8)),
+        NOW * (1000000 as i64)));
+    let password = runFuture(sessions.addAppPassword(DID, 'ci', '2026-10-27T00:00:00.000Z'));
+    let tokens = runFuture(sessions.create(DID, password, NOW));
+    isTrue(sessions.webCaller(tokens.accessJwt, NOW) == null, 'an access token');
+    equal(refusal(() => { runFuture(sessions.authenticate(`Bearer ${token}`, NOW)); }), 'InvalidToken');
   });
 
   test('checks access tokens, and spends each refresh token once', (ctx) => {

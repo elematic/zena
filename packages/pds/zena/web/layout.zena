@@ -7,6 +7,8 @@
 
 import {GrowableArray} from 'zena:core';
 import {HTMLPartial, TemplateValue, html, unsafeHTML} from 'zena:http';
+import {WebCaller} from '../sessions.zena';
+import {PageContext} from './session.zena';
 
 /**
  * Applies the theme the theme select saved before the page paints, as the
@@ -15,8 +17,14 @@ import {HTMLPartial, TemplateValue, html, unsafeHTML} from 'zena:http';
  */
 let THEME_SCRIPT = "try{let t=localStorage.getItem('themeName')??'auto';if(t==='dark'||(t==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.classList.add('rad-theme-dark')}catch{}";
 
-/** A whole page: `title`, the header with the host's `domain`, and `body`. */
-export function page(title: String, domain: String, body: TemplateValue): HTMLPartial {
+/**
+ * A whole page: `title`, the header, with the host's domain and who is
+ * signed in, and `body`. The body's data attributes tell the page's
+ * script the host's service DID, which service-auth tokens are addressed
+ * to, and the DID signed in.
+ */
+export function page(title: String, context: PageContext, body: TemplateValue): HTMLPartial {
+  let who = context.who;
   return html`<!doctype html>
 <html lang="en">
   <head>
@@ -27,17 +35,56 @@ export function page(title: String, domain: String, body: TemplateValue): HTMLPa
     <link rel="stylesheet" href="/assets/app.css">
     <script type="module" src="/assets/app.js"></script>
   </head>
-  <body>
+  <body data-service-did="${context.host.config.serviceDid}" data-did="${if (who != null) who.did else ''}">
     <header class="site">
       <a class="title" href="/">Zena packages</a>
-      <span class="mono muted">${domain}</span>
+      <span class="mono muted">${context.domain}</span>
       <span class="spacer"></span>
+      ${if (who != null) signedIn(who) else signInButton()}
       <rad-theme-select></rad-theme-select>
     </header>
     <main>${body}</main>
   </body>
 </html>
 `;
+}
+
+/** The header's links for `who`, signed in: their packages, their name, and signing out. */
+function signedIn(who: WebCaller): HTMLPartial {
+  return html`
+    <a href="/me">Your packages</a>
+    <span class="mono muted">${who.name()}</span>
+    <form class="sign-out" method="post" action="/signout">
+      <button type="submit" class="quiet">Sign out</button>
+    </form>`;
+}
+
+/**
+ * The header's sign-in button, and the dialog it opens, which asks for a
+ * handle and sends the browser to that person's PDS. The page's script
+ * does both; without it, the button does nothing.
+ */
+function signInButton(): HTMLPartial {
+  return html`
+    <button type="button" data-sign-in>Sign in</button>
+    <dialog id="sign-in">
+      <form method="dialog" class="sign-in">
+        <h2>Sign in</h2>
+        <p>
+          Sign in with your atproto account, such as your Bluesky one. Your
+          own PDS asks for your password; this site never sees it.
+        </p>
+        <label>
+          Handle or DID
+          <input name="identifier" placeholder="alice.bsky.social" required autocomplete="username">
+        </label>
+        <p class="error" hidden></p>
+        <div class="actions">
+          <button type="submit" value="sign-in">Sign in</button>
+          <button type="button" class="quiet" data-close>Cancel</button>
+        </div>
+      </form>
+    </dialog>`;
 }
 
 /** A chip: `text` in a pill, colored by `kind`, one of `app.css`'s `chip-*` classes. */

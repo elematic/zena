@@ -1,0 +1,60 @@
+/**
+ * Who is signed in to the host's pages. A person signs in with atproto
+ * OAuth in the browser, at their own PDS; the page then trades a
+ * service-auth token from it for a web session
+ * (`dev.zena-lang.host.createWebSession`), which this module keeps in an
+ * HttpOnly cookie. The server never holds anything that can write to the
+ * person's repository: the cookie stands for them only to this host's
+ * pages.
+ */
+
+import {Request, Response} from 'zena:http';
+import {milliseconds} from 'zena:time';
+import {now} from 'wasi:clocks/system-clock';
+import {PackageHost} from '../host.zena';
+import {WEB_SECONDS, WebCaller} from '../sessions.zena';
+
+/** The cookie that holds a web session's token. */
+export let SESSION_COOKIE = 'session';
+
+/** What every page needs: the host, and who is signed in, if anyone. */
+export final class PageContext {
+  host: PackageHost;
+  who: WebCaller | null;
+
+  new(this.host, this.who);
+
+  /** The domain the host's handles are under, for the header. */
+  domain: String {
+    get {
+      return this.host.config.domain;
+    }
+  }
+}
+
+/** The context of a page `req` asks for, reading its session cookie. */
+export function contextOf(req: Request, host: PackageHost): PageContext {
+  let sessions = host.sessions;
+  let who = if (sessions == null) null else sessions.webCaller(req.cookie(SESSION_COOKIE), now().seconds);
+  return new PageContext(host, who);
+}
+
+/**
+ * Keeps the session `token` in its cookie: HttpOnly, so no script reads
+ * it; SameSite=Lax, so another site's form cannot send it; and Secure
+ * when the host is served over HTTPS.
+ */
+export function setSessionCookie(res: Response, host: PackageHost, token: String): void {
+  res.setCookie(SESSION_COOKIE, token, {
+    path: '/',
+    httpOnly: true,
+    secure: host.config.endpoint.startsWith('https:'),
+    sameSite: 'Lax',
+    maxAge: milliseconds(WEB_SECONDS * (1000 as i64)),
+  });
+}
+
+/** Ends the web session: the browser drops its cookie. */
+export function clearSessionCookie(res: Response): void {
+  res.clearCookie(SESSION_COOKIE);
+}

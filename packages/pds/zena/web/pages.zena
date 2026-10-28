@@ -13,18 +13,18 @@ import {percentDecode} from 'zena:url';
 import {Dependency, Maintainer, Maintainers, Release} from 'package-manager:records';
 import {PackageDetail, PackageHost, PackageSummary, ScopeSummary} from '../host.zena';
 import {chip, count, each, page, when} from './layout.zena';
+import {PageContext, contextOf} from './session.zena';
 
 /** Adds the public pages to `router`. */
 export function publicPages(router: Router, host: PackageHost): void {
-  let domain = host.config.domain;
-
   router.get('/', async (req, res, next, params) => {
+    let context = contextOf(req, host);
     let query = (req.url.searchParams().get('q') ?? '').trim();
     let packages = await host.listPackages(null);
     let shown = filtered(packages, query);
     let scopes = await host.listScopes();
     res.type = 'text/html; charset=utf-8';
-    res.body = page('Zena packages', domain, html`
+    res.body = page('Zena packages', context, html`
       <div class="columns">
         <section>
           <h1>Packages</h1>
@@ -45,6 +45,7 @@ export function publicPages(router: Router, host: PackageHost): void {
   });
 
   router.get('/scopes/:name', async (req, res, next, params) => {
+    let context = contextOf(req, host);
     let name = percentDecode(params['name'] ?? '');
     var scope: ScopeSummary | null = null;
     for (let candidate in await host.listScopes()) {
@@ -53,13 +54,13 @@ export function publicPages(router: Router, host: PackageHost): void {
       }
     }
     if (scope == null) {
-      notFound(res, domain, `No scope here is named @${name}.`);
+      notFound(res, context, `No scope here is named @${name}.`);
       return;
     }
     let found = scope as ScopeSummary;
     let packages = await host.listPackages(name);
     res.type = 'text/html; charset=utf-8';
-    res.body = page(`@${name} · Zena packages`, domain, html`
+    res.body = page(`@${name} · Zena packages`, context, html`
       <div>
         <h1>@${name}</h1>
         <div class="meta mono muted"><span>${found.handle}</span><span>${found.did}</span></div>
@@ -69,10 +70,11 @@ export function publicPages(router: Router, host: PackageHost): void {
   });
 
   router.get('/packages/:handle', async (req, res, next, params) => {
+    let context = contextOf(req, host);
     let handle = percentDecode(params['handle'] ?? '');
     let detail = await host.getPackage(handle);
     if (detail == null) {
-      notFound(res, domain, `No package here has the handle ${handle}.`);
+      notFound(res, context, `No package here has the handle ${handle}.`);
       return;
     }
     let found = detail as PackageDetail;
@@ -89,15 +91,15 @@ export function publicPages(router: Router, host: PackageHost): void {
     res.type = 'text/html; charset=utf-8';
     let profile = found.profile;
     let name = if (profile != null) profile.name else found.handle;
-    res.body = page(`${name} · Zena packages`, domain, packagePage(found, handles));
+    res.body = page(`${name} · Zena packages`, context, packagePage(found, handles));
   });
 }
 
 /** Answers `res` with the not-found page, saying `message`. */
-export function notFound(res: Response, domain: String, message: String): void {
+export function notFound(res: Response, context: PageContext, message: String): void {
   res.statusCode = 404;
   res.type = 'text/html; charset=utf-8';
-  res.body = page('Not found · Zena packages', domain, html`
+  res.body = page('Not found · Zena packages', context, html`
     <h1>Not found</h1>
     <p>${message} <a href="/">See every package.</a></p>
   `);

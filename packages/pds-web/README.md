@@ -7,7 +7,9 @@ themselves are rendered on the server, by the PDS written in Zena
 - `/`: every package, with a search form (`?q=`), and every scope;
 - `/scopes/<name>`: a scope's packages;
 - `/packages/<handle>`: a package's profile, the command that adds it, its
-  versions with their dependencies and retractions, and its maintainers.
+  versions with their dependencies and retractions, and its maintainers;
+- `/me`: once signed in, the scopes, teams and packages you have a role in,
+  with the role.
 
 Each is a plain page: links and forms, no client-side routing. This
 package builds what they load from `/assets/`:
@@ -17,9 +19,49 @@ package builds what they load from `/assets/`:
   theme) and the pages' own styles over them. Radica's components keep
   their looks in their shadow roots, so server-rendered markup is styled
   here, from the same tokens.
-- `app.js`: the Radica elements the pages use for what must happen in the
-  browser, which today is only the theme select. A page applies the saved
-  theme from an inline script in its `<head>`, before it paints.
+- `app.js`: what must happen in the browser: the Radica theme select, and
+  signing in and out. A page applies the saved theme from an inline script
+  in its `<head>`, before it paints.
+- `chunks/`: what `app.js` loads only when it needs it: the atproto OAuth
+  client, for signing in and out.
+
+## Signing in
+
+A person signs in as their own atproto account, such as their Bluesky one,
+with atproto OAuth (`@atproto/oauth-client-browser`): their own PDS asks
+for their password, and this site never sees it. The OAuth session stays
+in the browser. Then:
+
+1. The page asks the person's PDS for a service-auth token for
+   `dev.zena-lang.host.createWebSession`, addressed to the host, and calls
+   that method with it.
+2. The host checks the token as it checks every call to its methods, and
+   answers with a cookie: an HS256 token naming the person's DID and
+   handle, signed with `PDS_JWT_SECRET`, HttpOnly, SameSite=Lax, and
+   Secure over HTTPS (`pds:web/session`).
+3. Every page reads the cookie, so the pages are rendered for the person
+   on the server. Signing out posts a form to `/signout`, which drops the
+   cookie, after the page revokes the OAuth session.
+
+The server never holds anything that can write to the person's
+repository. A cookie cannot be revoked, so it lasts a day; a page with no
+cookie, when the browser still has an OAuth session, makes a new one.
+
+- Deployed, the client's `client_id` is the metadata document the host
+  serves at `/oauth/client-metadata.json`, from `PDS_PUBLIC_URL`, with
+  `/oauth/callback` as its redirect.
+- On `127.0.0.1`, as in `npm run demo`, it is atproto's loopback client,
+  which needs no metadata document, so signing in works on this machine
+  with no tunnel. Use `http://127.0.0.1:<port>`, not `localhost`.
+- Handles are resolved by the host (`com.atproto.identity.resolveHandle`),
+  not sent to a third party.
+
+To see your memberships in the demo, sign in with a real account; the
+demo's PLC directory reads real DIDs through from `plc.directory`. You
+have no role in anything there until you make one: sign `zena` in as the
+same account, by DID, since the demo's resolver knows only its own handles
+(`zena login did:plc:… `, with an app password), then
+`zena scope create <name> --yes`, and reload `/me`.
 
 ## Commands
 

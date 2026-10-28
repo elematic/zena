@@ -12,6 +12,14 @@ pages. The pages are rendered on the server, in Zena, in
 - Pages read the host in-process (`PackageHost`), never through its XRPC
   routes. Data a page needs that the host does not give yet is a method on
   `PackageHost`, tested in `host_test.zena`, which also renders the pages.
+- Who is signed in is `PageContext.who` (`pds:web/session`), from a cookie
+  the host sets in `createWebSession`; pages never see OAuth. The browser
+  half is `src/auth.ts`, which `src/main.ts` imports dynamically, so the
+  OAuth library loads only to sign in, sign out or renew. The OAuth
+  library's README does not match its types in places; read
+  `node_modules/@atproto/oauth-client*` declarations. A real sign-in needs
+  a real atproto account, so no test covers the OAuth half: try it in the
+  demo (README, "Signing in").
 - Prefer plain links and GET forms to script. Use a Radica element only for
   what must happen in the browser, and import it in `src/main.ts`; its
   looks come with it. Server-rendered markup is styled in `src/app.css`,
