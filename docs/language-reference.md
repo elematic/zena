@@ -6183,6 +6183,12 @@ let a = await f;
 let b = await f;      // error: 'f' may have been moved
 ```
 
+`Future` declares `scoped T` (see "Scoped values"), so this follows from
+the class rules: reading a future's value takes it at a restricted `T`,
+and the future refuses a second consumer, a waiter or a `tail return`
+adopting it, by throwing. The checker sees the program's awaits; the
+throw guards the callers it does not see.
+
 ## 13. Compilation
 
 ### Dead Code Elimination

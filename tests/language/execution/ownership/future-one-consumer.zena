@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 1
+// A future of an owner has one consumer, and `Future` refuses a second
+// at run time, for the callers the checker does not see
+// (owner-futures.md, "Runtime state"). A program reaches that check
+// only through `Unmanaged<R>`: the checker treats it as first-class,
+// so a second await passes, but it shares `Own<R>`'s specialization,
+// whose body behaves as an owner needs.
+
+import {Own, Unmanaged, Disposable, disown, adopt} from 'zena:core';
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+async function make(): Future<Unmanaged<Res>> {
+  return disown(new Res());
+}
+
+export async function main(): Future<i32> {
+  let f = make();
+  let first = await f;
+  let refused = try {
+    await f;
+    0
+  } catch (e) {
+    if (e.message == 'A future of an owner or a borrow has one consumer') 1 else 2
+  };
+  let owner = adopt(first);
+  return refused;
+}
