@@ -11,6 +11,7 @@ import {
   Binding, Extension, checkExtension, fromHost, fromProgram, loadExtension,
   loadTrustedExtension,
 } from 'zena:extensions';
+import { blockOn } from 'zena:wasi';
 import { RunOutcome, runModule } from 'zena:wasm';
 
 let fixtures = 'packages/stdlib/tests/extensions/fixtures';
@@ -19,7 +20,7 @@ let fixture = (name: String) => `${fixtures}/${name}`;
 
 /** Why a load failed, or '' when it did not. */
 let refusal = (name: String, bindings: Array<Binding>): String => {
-  let loaded = loadExtension(fixture(name), bindings);
+  let loaded = blockOn(loadExtension(fixture(name), bindings));
   if (loaded is (false, String)) {
     return loaded[1];
   }
@@ -51,7 +52,7 @@ let checked = (name: String, world: String, wit: String = 'child.wit'): String =
 
 export let tests = suite('extensions', () => {
   test('a component with no imports loads and drops', () => {
-    let loaded = loadExtension(fixture('plain.wasm'), []);
+    let loaded = blockOn(loadExtension(fixture('plain.wasm'), []));
     if (loaded is (false, String)) {
       isTrue(false, loaded[1]);
     }
@@ -60,7 +61,7 @@ export let tests = suite('extensions', () => {
     ext.drop();
     // Dropping again is harmless, and handles are not reused.
     ext.drop();
-    let again = loadExtension(fixture('plain.wasm'), []);
+    let again = blockOn(loadExtension(fixture('plain.wasm'), []));
     isTrue((again as (true, Extension))[1].handle > ext.handle);
   });
 
@@ -77,7 +78,7 @@ export let tests = suite('extensions', () => {
   });
 
   test('a trusted load allows every host interface', () => {
-    let loaded = loadTrustedExtension(fixture('random.wasm'));
+    let loaded = blockOn(loadTrustedExtension(fixture('random.wasm')));
     if (loaded is (false, String)) {
       isTrue(false, loaded[1]);
     }
@@ -93,7 +94,7 @@ export let tests = suite('extensions', () => {
     isTrue(bound.contains('does not export'), bound);
     let asHost = refusal('child.wasm', [fromHost('test:ext/callbacks@1.0.0')]);
     isTrue(asHost.contains('not a host interface'), asHost);
-    let trusted = loadTrustedExtension(fixture('child.wasm'));
+    let trusted = blockOn(loadTrustedExtension(fixture('child.wasm')));
     isTrue(trusted is (false, String));
   });
 

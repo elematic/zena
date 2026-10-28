@@ -52,6 +52,7 @@
  * ```
  */
 
+import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { Disposable, Result } from 'zena:core';
 import { Duration } from 'zena:time';
@@ -160,18 +161,22 @@ let extensionOf = (loaded: Result<u32, String>): Result<Extension, String> => {
  *
  * A trap, a time limit or a memory failure in a call fails that call,
  * and the extension starts again, with fresh state, at the next call.
+ *
+ * The load compiles and instantiates on a thread of its own; this
+ * program's other tasks run meanwhile, so a server loading an
+ * extension keeps answering.
  */
-export let loadExtension = (
+export async function loadExtension(
   path: String,
   bindings: Array<Binding>,
   options: LoadOptions = {},
-): Result<Extension, String> => {
+): Future<Result<Extension, String>> {
   let list = new Array<Binding>();
   for (let binding in bindings) {
     list.push(binding);
   }
-  return extensionOf(load(path, list, configure(options)));
-};
+  return extensionOf(await load(path, list, configure(options)));
+}
 
 /**
  * `loadExtension` for a component this program trusts as it trusts
@@ -179,11 +184,12 @@ export let loadExtension = (
  * interface this program exports, by the same name. The checks on the
  * interfaces it does import, and the limits, are the same.
  */
-export let loadTrustedExtension = (
+export async function loadTrustedExtension(
   path: String,
   options: LoadOptions = {},
-): Result<Extension, String> =>
-  extensionOf(loadTrusted(path, configure(options)));
+): Future<Result<Extension, String>> {
+  return extensionOf(await loadTrusted(path, configure(options)));
+}
 
 /**
  * What keeps the component at `path` from being loaded as an extension

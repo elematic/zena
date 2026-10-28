@@ -7,7 +7,8 @@
   `--allow-extensions` grant; resources across the boundary the same
   day; the build-time check of a program's world against its
   extensions' WIT (`--extension-wit`) and the check of a component
-  against that WIT (`checkExtension`) the same day
+  against that WIT (`checkExtension`) the same day; `load` made
+  asynchronous 2026-10-28
 - **Issue**: #593
 - **For**: a PDS written in Zena that loads extensions at run time
   ([pds-extensions.md](./pds-extensions.md))
@@ -425,8 +426,8 @@ interface extensions {
     debug: bool,
   }
 
-  load: func(path: string, bindings: list<binding>, options: load-options) -> result<u32, string>;
-  load-trusted: func(path: string, options: load-options) -> result<u32, string>;
+  load: async func(path: string, bindings: list<binding>, options: load-options) -> result<u32, string>;
+  load-trusted: async func(path: string, options: load-options) -> result<u32, string>;
   check: func(path: string, wit-path: string, world-name: string, deps: list<string>) -> result<_, string>;
   drop: func(extension: u32);
 }
@@ -464,13 +465,21 @@ export let fromHost = (name: String): Binding;
 export let fromProgram = (name: String, exported: String | null = null): Binding;
 export let fromExtension = (name: String, ext: Extension): Binding;
 
-export let loadExtension = (path: String, bindings: Array<Binding>,
-    options: LoadOptions = {}): Result<Extension, String>;
-export let loadTrustedExtension = (path: String, options: LoadOptions = {}):
-    Result<Extension, String>;
+export async function loadExtension(path: String, bindings: Array<Binding>,
+    options: LoadOptions = {}): Future<Result<Extension, String>>;
+export async function loadTrustedExtension(path: String, options: LoadOptions = {}):
+    Future<Result<Extension, String>>;
 export let checkExtension = (path: String, witPath: String, world: String,
     deps: Array<String> | null = null): Array<String>;
 ```
+
+`load` is an `async func`, so the host takes the program's store only
+to start the load and to keep its result, and the program's other tasks
+run while the extension's thread compiles and instantiates. The slot
+for the handle is reserved when the load starts, so two loads in flight
+get distinct handles; a load that fails leaves its slot empty, as a
+dropped extension does. A program that wants to wait blocks on the
+future, which is safe here because a load serves no calls back.
 
 The program's side of the extension interfaces is ordinary WIT interop:
 it declares a world that imports its views of what extensions export
@@ -535,9 +544,6 @@ built for and against others.
   write policy hooks, and a request handler extension may want more.
   Wasmtime's event loop can run several tasks in one store; the thread
   would then take calls while others are in flight.
-- `load` blocks the program while the component compiles and
-  instantiates. The compile cache makes a second load fast; an async
-  `load` would keep a server responsive during the first.
 - Where the compiled form is cached on hosts without a lasting disk
   ([pds-extensions.md](./pds-extensions.md), "Open questions").
 - Cancelling a call in flight when the program's task is cancelled.

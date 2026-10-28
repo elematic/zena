@@ -6,7 +6,7 @@ import { getArguments } from 'zena:cli';
 import { Future } from 'zena:async';
 import { Disposable, Result } from 'zena:core';
 import {
-  Extension, fromExtension, fromProgram, loadExtension,
+  Extension, LoadOptions, fromExtension, fromProgram, loadExtension,
 } from 'zena:extensions';
 import { Duration, milliseconds, sleep } from 'zena:time';
 import { Ops } from 'test:ext/ops';
@@ -86,10 +86,8 @@ export class Store implements Disposable {
 }
 
 /** Loads `name`, which may import this program's `callbacks`. */
-let load = (name: String, options: {
-  memoryLimit?: i64, callTimeout?: Duration,
-} = {}): Extension => {
-  let loaded = loadExtension(`${fixtures}/${name}`,
+async function load(name: String, options: LoadOptions = {}): Future<Extension> {
+  let loaded = await loadExtension(`${fixtures}/${name}`,
       [fromProgram('test:ext/callbacks@1.0.0'), fromProgram('test:ext/store@1.0.0')],
       options);
   if (loaded is (true, Extension)) {
@@ -97,7 +95,7 @@ let load = (name: String, options: {
   }
   console.log(`load failed: ${(loaded as (false, String))[1]}`);
   throw new Error('load failed');
-};
+}
 
 /** `n` or the error, on one line. */
 let showI32 = (label: String, r: Result<i32, String>) => {
@@ -133,7 +131,7 @@ let showVoid = (label: String, r: Result<void, String>) => {
 };
 
 async function calls(): Future<void> {
-  let ext = load('child.wasm');
+  let ext = await load('child.wasm');
   let ops = Ops.attach(ext.handle);
   showI32('compute(5)', await ops.compute(5));
   showI32('compute(7)', await ops.compute(7));
@@ -141,7 +139,7 @@ async function calls(): Future<void> {
 }
 
 async function traps(): Future<void> {
-  let ops = Ops.attach(load('child.wasm').handle);
+  let ops = Ops.attach((await load('child.wasm')).handle);
   showU32('count', await ops.count());
   showU32('count', await ops.count());
   showVoid('trap', await ops.trap());
@@ -150,20 +148,20 @@ async function traps(): Future<void> {
 }
 
 async function timeout(): Future<void> {
-  let ops = Ops.attach(load('child.wasm', {callTimeout: milliseconds(100)}).handle);
+  let ops = Ops.attach((await load('child.wasm', {callTimeout: milliseconds(100)})).handle);
   showVoid('spin', await ops.spin());
   showI32('compute(1)', await ops.compute(1));
 }
 
 async function memory(): Future<void> {
-  let ops = Ops.attach(load('child.wasm',
-      {memoryLimit: (8 as i64) * (1024 as i64) * (1024 as i64)}).handle);
+  let ops = Ops.attach((await load('child.wasm',
+      {memoryLimit: (8 as i64) * (1024 as i64) * (1024 as i64)})).handle);
   showU32('grow(64)', await ops.grow(64 as u32));
   showU32('grow(1)', await ops.grow(1 as u32));
 }
 
 async function drops(): Future<void> {
-  let ext = load('child.wasm');
+  let ext = await load('child.wasm');
   let ops = Ops.attach(ext.handle);
   showI32('compute(1)', await ops.compute(1));
   ext.drop();
@@ -175,7 +173,7 @@ async function drops(): Future<void> {
 }
 
 async function mismatch(): Future<void> {
-  let loaded = loadExtension(`${fixtures}/mismatch.wasm`, []);
+  let loaded = await loadExtension(`${fixtures}/mismatch.wasm`, []);
   if (loaded is (false, String)) {
     console.log(`mismatch refused: ${loaded[1]}`);
   } else {
@@ -185,7 +183,7 @@ async function mismatch(): Future<void> {
 
 /** The child without `callbacks` bound: refused, exported or not. */
 async function unbound(): Future<void> {
-  let loaded = loadExtension(`${fixtures}/child.wasm`, []);
+  let loaded = await loadExtension(`${fixtures}/child.wasm`, []);
   if (loaded is (false, String)) {
     console.log(`unbound refused: ${loaded[1]}`);
   } else {
@@ -195,7 +193,7 @@ async function unbound(): Future<void> {
 
 /** Resources both ways: the caller's transactions, the child's sessions. */
 async function resources(): Future<void> {
-  let ext = load('child.wasm');
+  let ext = await load('child.wasm');
   let ops = Ops.attach(ext.handle);
   showU32('transact', await ops.transact('k', 7 as u32));
   let sessions = Sessions.attach(ext.handle);
@@ -215,8 +213,8 @@ async function resources(): Future<void> {
 
 /** Two extensions: the relay's `ops` is the child's export. */
 async function relays(): Future<void> {
-  let child = load('child.wasm');
-  let loaded = loadExtension(`${fixtures}/relay.wasm`,
+  let child = await load('child.wasm');
+  let loaded = await loadExtension(`${fixtures}/relay.wasm`,
       [fromExtension('test:ext/ops@1.0.0', child)]);
   if (loaded is (false, String)) {
     console.log(`relay failed: ${loaded[1]}`);
