@@ -1,0 +1,57 @@
+/** The home page: every package on the host, with a search form, and every scope. */
+
+import {Router, html} from 'zena:http';
+import {GrowableArray} from 'zena:core';
+import {PackageHost, PackageSummary} from '../../host.zena';
+import {page} from '../layout.zena';
+import {People} from '../people.zena';
+import {contextOf} from '../session.zena';
+import {count, when} from '../partials/common.zena';
+import {packageList, scopeList} from '../partials/packages.zena';
+
+/** Adds the home page, `/`, to `router`. */
+export function homePage(router: Router, host: PackageHost, people: People): void {
+  router.get('/', async (req, res, next, params) => {
+    let context = await contextOf(req, host, people);
+    let query = (req.url.searchParams().get('q') ?? '').trim();
+    let packages = await host.listPackages(null);
+    let shown = filtered(packages, query);
+    let scopes = await host.listScopes();
+    res.type = 'text/html; charset=utf-8';
+    res.body = page('Zena packages', context, html`
+      <div class="columns">
+        <section>
+          <h1>Packages</h1>
+          <form class="search" action="/" method="get">
+            <input type="search" name="q" value="${query}" placeholder="Search by name or description"
+                aria-label="Search packages">
+            <button type="submit">Search</button>
+          </form>
+          ${when(query != '', () => html`<p class="muted">${count(shown.length, 'package')} matching “${query}”.</p>`)}
+          ${packageList(shown, if (query == '') 'Nothing is published here yet.' else 'No packages match.')}
+        </section>
+        <aside>
+          <h2>Scopes</h2>
+          ${scopeList(scopes)}
+        </aside>
+      </div>
+    `);
+  });
+}
+
+/** The packages whose name, handle or description has `query` in it, ignoring case; all for an empty query. */
+function filtered(packages: Array<PackageSummary>, query: String): Array<PackageSummary> {
+  if (query == '') {
+    return packages;
+  }
+  let needle = query.asciiLowerCase();
+  let shown = new GrowableArray<PackageSummary>();
+  for (let pkg in packages) {
+    let description = pkg.description ?? '';
+    if (pkg.name.asciiLowerCase().contains(needle) || pkg.handle.asciiLowerCase().contains(needle) ||
+        description.asciiLowerCase().contains(needle)) {
+      shown.push(pkg);
+    }
+  }
+  return shown;
+}

@@ -29,7 +29,7 @@ import {
  */
 const SCOPE = 'atproto rpc:dev.zena-lang.host.createWebSession?aud=*';
 
-/** Where the person's PDS sends them back; a page of the host's (`pds:web/account`). */
+/** Where the person's PDS sends them back; a page of the host's (`pds:web/pages/sign-in`). */
 export const CALLBACK_PATH = '/oauth/callback';
 
 /** The host method that trades a service-auth token for a web session. */

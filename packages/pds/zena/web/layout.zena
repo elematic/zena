@@ -1,15 +1,16 @@
 /**
- * The shell every page of the web app shares, and the small pieces pages
- * build from. Pages are rendered on the server with `zena:http`'s `html`
- * tag, which escapes every value it is given; `packages/pds-web` builds the
- * stylesheet and the script they load from `/assets/`.
+ * The shell every page of the web app shares: the document, the header
+ * with who is signed in, and the sign-in dialog. Pages are rendered on the
+ * server with `zena:http`'s `html` tag, which escapes every value it is
+ * given; `packages/pds-web` builds the stylesheet and the script they load
+ * from `/assets/`.
  */
 
-import {GrowableArray} from 'zena:core';
 import {HTMLPartial, TemplateValue, html, unsafeHTML} from 'zena:http';
 import {WebCaller} from '../sessions.zena';
 import {PageContext} from './session.zena';
-import {Person} from './people.zena';
+import {when} from './partials/common.zena';
+import {avatar} from './partials/person.zena';
 
 /**
  * Applies the theme the theme select saved before the page paints, as the
@@ -93,49 +94,4 @@ function signInButton(): HTMLPartial {
         </div>
       </form>
     </dialog>`;
-}
-
-/**
- * `person`'s avatar, served through this host (`PageContext.avatarUrl`),
- * or the first letter of their name in its place.
- */
-export function avatar(context: PageContext, person: Person, size: String = 'small'): HTMLPartial {
-  let url = context.avatarUrl(person);
-  if (url != null) {
-    return html`<img class="avatar avatar-${size}" src="${url as String}" alt="" loading="lazy">`;
-  }
-  let name = person.name();
-  let letter = if (name.startsWith('did:')) '?' else String.fromCodePoint(name.codePointAt(0)).asciiUpperCase();
-  return html`<span class="avatar avatar-${size} avatar-none" aria-hidden="true">${letter}</span>`;
-}
-
-/** `person`, linked to their page: their avatar and name, and their handle beside a display name. */
-export function personLink(context: PageContext, person: Person): HTMLPartial {
-  let handle = person.handle;
-  return html`<a class="person" href="${person.path()}">${avatar(context, person)}<span>${person.name()}</span></a>${
-      when(person.displayName != null && handle != null, () => html` <span class="mono muted">${handle as String}</span>`)}`;
-}
-
-/** A chip: `text` in a pill, colored by `kind`, one of `app.css`'s `chip-*` classes. */
-export function chip(text: String, kind: String = 'neutral'): HTMLPartial {
-  return html`<span class="chip chip-${kind}">${text}</span>`;
-}
-
-/** `n` and `noun`, plural unless `n` is 1. */
-export function count(n: i32, noun: String): String {
-  return if (n == 1) `1 ${noun}` else `${n} ${noun}s`;
-}
-
-/** `render` of each of `items`, for a template. */
-export function each<T>(items: Array<T>, render: (item: T) => TemplateValue): Array<TemplateValue> {
-  let rendered = new GrowableArray<TemplateValue>();
-  for (let item in items) {
-    rendered.push(render(item));
-  }
-  return rendered;
-}
-
-/** `content` when `condition` holds, else nothing. */
-export function when(condition: boolean, content: () => TemplateValue): TemplateValue {
-  return if (condition) content() else null;
 }

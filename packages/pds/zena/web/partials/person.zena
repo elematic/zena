@@ -1,0 +1,30 @@
+/**
+ * A person as pages show them: their avatar, served through this host,
+ * and their name, linked to their page (`../people.zena` reads them).
+ */
+
+import {HTMLPartial, html} from 'zena:http';
+import {Person} from '../people.zena';
+import {PageContext} from '../session.zena';
+import {when} from './common.zena';
+
+/**
+ * `person`'s avatar, served through this host (`PageContext.avatarUrl`),
+ * or the first letter of their name in its place.
+ */
+export function avatar(context: PageContext, person: Person, size: String = 'small'): HTMLPartial {
+  let url = context.avatarUrl(person);
+  if (url != null) {
+    return html`<img class="avatar avatar-${size}" src="${url as String}" alt="" loading="lazy">`;
+  }
+  let name = person.name();
+  let letter = if (name.startsWith('did:')) '?' else String.fromCodePoint(name.codePointAt(0)).asciiUpperCase();
+  return html`<span class="avatar avatar-${size} avatar-none" aria-hidden="true">${letter}</span>`;
+}
+
+/** `person`, linked to their page: their avatar and name, and their handle beside a display name. */
+export function personLink(context: PageContext, person: Person): HTMLPartial {
+  let handle = person.handle;
+  return html`<a class="person" href="${person.path()}">${avatar(context, person)}<span>${person.name()}</span></a>${
+      when(person.displayName != null && handle != null, () => html` <span class="mono muted">${handle as String}</span>`)}`;
+}

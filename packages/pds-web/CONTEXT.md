@@ -4,11 +4,17 @@
 pages. The pages are rendered on the server, in Zena, in
 `packages/pds/zena/web/`; read this package's README first.
 
-- A page is a `zena:http` route (`pds:web/pages`) in the shell of
-  `pds:web/layout`, built with `zena:http`'s `html` tag, which escapes every
+- Each page is a module of its own under `packages/pds/zena/web/pages/`
+  (`pds:web/pages/package`, `.../scope`, ...), which exports a function
+  that adds its routes; `pds:web/routes` adds them all. A page renders in
+  the shell of `pds:web/layout`, from pieces pages share under
+  `web/partials/`: `common` (`chip`, `count`, `each`, `when`), `person`,
+  `packages` and `members`. A piece a second page needs moves to a
+  partial. Templates use `zena:http`'s `html` tag, which escapes every
   value. Quote attribute values (`href="${x}"`). A value must be a
   `String`, an `html` result, `unsafeHTML`, null, or an iterable of those:
-  format numbers yourself, and use `layout`'s `each` and `when`.
+  format numbers yourself, and use `each` and `when`. An array of `html`
+  results must be typed `Array<TemplateValue>`: arrays are invariant.
 - Pages read the host in-process (`PackageHost`), never through its XRPC
   routes. Data a page needs that the host does not give yet is a method on
   `PackageHost`, tested in `host_test.zena`, which also renders the pages.
@@ -22,10 +28,10 @@ pages. The pages are rendered on the server, in Zena, in
   demo (README, "Signing in").
 - What a page shows of private members goes through
   `PackageHost.getEntries` as the person signed in (`visibleEntries` in
-  `pds:web/pages`), never around it, so the host's rules decide. The
+  `pds:web/partials/members`), never around it, so the host's rules decide. The
   host's admins (`PDS_ADMIN_DIDS`, `PageContext.isAdmin`) are ordinary
   signed-in accounts the host answers more for.
-- Show a person with `personLink` or `avatar` (`pds:web/layout`), from the
+- Show a person with `personLink` or `avatar` (`pds:web/partials/person`), from the
   `Person`s `PageContext.people` reads (`pds:web/people`); read the DIDs a
   page names together, with `People.each`. Never put a URL from someone's
   DID document or profile in a page: avatars go through the signed

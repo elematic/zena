@@ -1,20 +1,14 @@
-/**
- * The pages of the person signed in (`./session.zena`): their scopes,
- * teams and packages; the page their PDS sends them back to after
- * signing in; and signing out.
- */
+/** `/me`: the scopes, teams and packages of the person signed in, each with their role. */
 
 import {HTMLPartial, Router, html} from 'zena:http';
-import {Membership, Memberships, PackageHost} from '../host.zena';
-import {chip, each, page} from './layout.zena';
-import {clearSessionCookie, contextOf} from './session.zena';
-import {People} from './people.zena';
+import {Membership, Memberships, PackageHost} from '../../host.zena';
+import {page} from '../layout.zena';
+import {People} from '../people.zena';
+import {contextOf} from '../session.zena';
+import {chip, each} from '../partials/common.zena';
 
-/** Where a person's PDS sends them back to; the web app's OAuth client metadata names it. */
-export let CALLBACK_PATH = '/oauth/callback';
-
-/** Adds the account pages to `router`. */
-export function accountPages(router: Router, host: PackageHost, people: People): void {
+/** Adds `/me` to `router`. */
+export function mePage(router: Router, host: PackageHost, people: People): void {
   router.get('/me', async (req, res, next, params) => {
     let context = await contextOf(req, host, people);
     res.type = 'text/html; charset=utf-8';
@@ -27,32 +21,12 @@ export function accountPages(router: Router, host: PackageHost, people: People):
       return;
     }
     let memberships = await host.getMemberships(who.did);
-    res.body = page('Your packages · Zena packages', context, mePage(memberships));
-  });
-
-  // The page's script finishes the sign-in here: it reads the OAuth answer
-  // in the URL, trades a service-auth token for a web session, and moves on.
-  router.get(CALLBACK_PATH, async (req, res, next, params) => {
-    res.type = 'text/html; charset=utf-8';
-    res.body = page('Signing in · Zena packages', (await contextOf(req, host, people)), html`
-      <h1>Signing in</h1>
-      <p class="muted" data-sign-in-status>Finishing your sign-in with your PDS…</p>
-    `);
-  });
-
-  // A form post, so it works without the page's script, which also ends
-  // the OAuth session in the browser first. SameSite=Lax keeps another
-  // site's form from sending the cookie.
-  router.post('/signout', async (req, res, next, params) => {
-    clearSessionCookie(res);
-    res.statusCode = 303;
-    res.setHeader('location', '/');
-    res.body = '';
+    res.body = page('Your packages · Zena packages', context, meBody(memberships));
   });
 }
 
 /** The scopes, teams and packages of the person signed in, each with their role. */
-function mePage(memberships: Memberships): HTMLPartial {
+function meBody(memberships: Memberships): HTMLPartial {
   return html`
     <h1>Your packages</h1>
     <section>
