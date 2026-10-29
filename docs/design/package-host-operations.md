@@ -106,6 +106,7 @@ session, because the host holds nothing that can write there
 | Change the scope's thresholds                        | owners (_threshold_)                       | `zena scope settings`; `putMembers`                                              |
 | Set minimums and defaults for the scope's packages   | owners (_threshold_)                       | `zena scope policy`; `putPolicy`                                                 |
 | Let a team create packages                           | owners (_threshold_)                       | `zena scope policy --creators`; `putPolicy`                                      |
+| Edit the scope's profile: name, description, website | admins                                     | `zena scope profile`; `putScopeProfile`                                          |
 | Rename a scope                                       | owners, host admins                        | no                                                                               |
 | Dissolve a scope                                     | owners, host admins                        | no                                                                               |
 | Create an automation account                         | admins                                     | `zena ci create`; `createAutomationAccount`                                      |

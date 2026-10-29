@@ -1127,7 +1127,7 @@ A package's repository has a maintainers record at record key `self`:
   many attestations each release needs, and `ownerThreshold` how many
   owners must attest a change to the maintainers record.
 - **An organization** is an account of its own on a package host, with
-  three kinds of record:
+  four kinds of record:
   - `dev.zena-lang.org.members`, at `self`: who belongs to the
     organization and in which role, and the thresholds for changing its
     members and its teams;
@@ -1141,7 +1141,11 @@ A package's repository has a maintainers record at record key `self`:
     defaults, the teams and thresholds a new package's maintainers record
     starts with, are what `zena` uses when it creates one. Its `creators`
     are the teams whose members may create packages in the scope, besides
-    its admins.
+    its admins;
+  - `dev.zena-lang.org.profile`, at `self`: how the scope presents
+    itself, with a display name, a description and a website. It decides
+    no one's role, so its admins write it at once, with
+    `zena scope profile`.
 
   The members and team records list their members privately, as
   [Private membership](#private-membership) describes. An organization's
@@ -1463,6 +1467,7 @@ once the attestations the previous record requires reach the log.
 | `putMembers`              | an organization's owners                                      | holds a members record, with its entries                            |
 | `putTeam`                 | an organization's admins, or a team's maintainers             | holds a new or replaced team                                        |
 | `putPolicy`               | an organization's owners                                      | holds a new policy for the scope's packages                         |
+| `putScopeProfile`         | an organization's admins                                      | writes the scope's profile                                          |
 | `deleteTeam`              | an organization's admins                                      | deletes a team                                                      |
 | `completeChange`          | anyone with a role in the account                             | writes a held record once the record before it allows it            |
 | `getPendingChanges`       | anyone with a role in the account                             | returns the held records, with who has attested each                |

@@ -47,6 +47,8 @@ import {
   OWNER,
   POLICY_TYPE,
   Policy,
+  SCOPE_PROFILE_TYPE,
+  ScopeProfile,
   TEAM_TYPE,
   Team,
   PROFILE_KEY,
@@ -1222,6 +1224,10 @@ export final class PackageHost {
       return null;
     }
     let detail = new ScopeDetail(name, account.did, account.handle ?? '');
+    let profile = await this.#current(account.did, SCOPE_PROFILE_TYPE, 'self');
+    if (profile != null) {
+      detail.profile = ScopeProfile.fromValue((profile as CurrentRecord).value);
+    }
     let members = await this.#current(account.did, MEMBERS_TYPE, 'self');
     if (members != null) {
       detail.members = Members.fromValue((members as CurrentRecord).value).members;
@@ -1480,6 +1486,21 @@ export final class PackageHost {
       throw new HostError(400, 'InvalidRequest', 'the policy\'s defaults ask less than its minimums');
     }
     return await this.#propose(caller, account, POLICY_TYPE, 'self', asMap(policyValue), swapRecord, nowMicros);
+  }
+
+  /**
+   * `putScopeProfile`: writes how `org` presents its scope (`ScopeProfile`),
+   * at once: it decides no one's role. The caller must be an admin or
+   * owner of `org`.
+   */
+  async putScopeProfile(caller: String, org: String, profileValue: Value, swapRecord: String | null,
+      nowMicros: i64): Future<Created> {
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    if (!isAdmin(await this.#orgRole(org, caller))) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    }
+    readRecord(() => ScopeProfile.fromValue(profileValue));
+    return await this.#put(account, SCOPE_PROFILE_TYPE, 'self', asMap(profileValue), swapRecord, nowMicros);
   }
 
   /** `org`'s policy for the packages in its scope, as it is now, or the one that asks nothing more. */
@@ -2303,6 +2324,8 @@ export final class ScopeDetail {
   /** Its organization's DID and handle. */
   did: String;
   handle: String;
+  /** How the organization presents its scope, when it says. */
+  var profile: ScopeProfile | null = null;
   /** The commitments of the organization's members record. */
   var members: FixedArray<Cid> = [];
   /** By name, as the records list them. */

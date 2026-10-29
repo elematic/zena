@@ -1,5 +1,6 @@
 /**
- * `zena scope create` and `zena scope info`: the scopes on a package host
+ * `zena scope create`, `zena scope info` and `zena scope profile`: the
+ * scopes on a package host
  * (docs/design/package-manager.md, "Scopes"). A scope is an organization
  * account whose handle is one label below the host's domain, and packages
  * are created in it by `zena publish` (`publish.zena`), which never
@@ -9,12 +10,14 @@
 import { ParsedArgs } from 'zena:args';
 import { runFuture } from 'zena:async';
 import { JsonArray, JsonObject, JsonValue } from 'zena:json';
-import { XrpcClient } from 'atproto:xrpc';
-import { MEMBERS_TYPE, isValidScopeName } from 'package-manager:records';
+import { fromJson, toJson } from 'atproto:data';
+import { XrpcClient, XrpcError } from 'atproto:xrpc';
+import { MEMBERS_TYPE, RecordError, SCOPE_PROFILE_TYPE, ScopeProfile, isValidScopeName } from 'package-manager:records';
+import { PUT_SCOPE_PROFILE } from 'package-manager:host-methods';
 import { Options } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import {
-  PublishError, createOrganization, findHost, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+  PublishError, createOrganization, findHost, hostClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
 } from './publish.zena';
 import { REPO_GET_RECORD } from 'atproto:methods';
 
@@ -82,12 +85,101 @@ export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
     }
     let members = (record as JsonObject)['value'] as JsonObject;
     console.log(document.handle ?? '(no handle)');
+    let profile = recordOf(did, SCOPE_PROFILE_TYPE);
+    if (profile != null) {
+      printProfile(ScopeProfile.fromValue(fromJson((profile as JsonObject)['value'])));
+    }
     console.log(`  DID: ${did}`);
     console.log(`  Host: ${document.pds as String}`);
     console.log(`  Members: ${(members['members'] as JsonArray).length}`);
     console.log(`  Owners needed to change members: ${number(members['ownerThreshold'])}`);
     console.log(`  Admins needed to change teams: ${number(members['adminThreshold'])}`);
   });
+}
+
+/**
+ * `zena scope profile <scope> [--name <text>] [--description <text>]
+ * [--website <url>]`: how the scope presents itself on the host's pages.
+ * A flag given empty clears its field. With no flags, prints it. Its
+ * admins write it at once: it decides no one's role.
+ */
+export function scopeProfileCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 2) {
+      throw new PublishError('give the scope: zena scope profile <scope> [--name <text>] [--description <text>] [--website <url>]');
+    }
+    let scope = args.rest[1];
+    let session = signedIn();
+    let host = findHost(args);
+    let org = scopeOrganization(`${scope}.${host.domain}`);
+    if (org == null) {
+      throw new PublishError(`${host.origin} has no scope ${scope}`);
+    }
+    let held = recordOf(org as String, SCOPE_PROFILE_TYPE);
+    let profile = if (held == null) new ScopeProfile()
+        else ScopeProfile.fromValue(fromJson((held as JsonObject)['value']));
+    var changed = false;
+    if (let (true, given) = args.getOption('name')) {
+      profile.displayName = if (given == '') null else given;
+      changed = true;
+    }
+    if (let (true, given) = args.getOption('description')) {
+      profile.description = if (given == '') null else given;
+      changed = true;
+    }
+    if (let (true, given) = args.getOption('website')) {
+      profile.website = if (given == '') null else given;
+      changed = true;
+    }
+    if (!changed) {
+      console.log(`${scope}.${host.domain}`);
+      printProfile(profile);
+      saveIfRefreshed(session);
+      return;
+    }
+    // Checked here as the host will check it, so a bad website is refused before the call.
+    try {
+      ScopeProfile.fromValue(profile.toValue());
+    } catch (e) {
+      if (e is RecordError) {
+        throw new PublishError((e as RecordError).message);
+      }
+      throw e;
+    }
+    let input = new JsonObject();
+    input['organization'] = org as String;
+    input['profile'] = toJson(profile.toValue());
+    if (held != null) {
+      input['swapRecord'] = (held as JsonObject)['cid'] as String;
+    }
+    runFuture(hostClient(session, host, PUT_SCOPE_PROFILE).procedure(PUT_SCOPE_PROFILE, input));
+    console.log(`Changed the profile of ${scope}.`);
+    printProfile(profile);
+    saveIfRefreshed(session);
+  });
+}
+
+function printProfile(profile: ScopeProfile): void {
+  console.log(`  Name: ${profile.displayName ?? '(none)'}`);
+  console.log(`  Description: ${profile.description ?? '(none)'}`);
+  console.log(`  Website: ${profile.website ?? '(none)'}`);
+}
+
+/** The `getRecord` answer for `did`'s record at `collection/self`, from its PDS, or null when it has none. */
+function recordOf(did: String, collection: String): JsonObject | null {
+  let document = runFuture(packageResolver().resolveDid(did));
+  if (document.pds == null) {
+    throw new PublishError(`${did} names no PDS`);
+  }
+  let params: Array<(String, String)> = [('repo', did), ('collection', collection), ('rkey', 'self')];
+  try {
+    return runFuture(new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params)) as JsonObject;
+  } catch (e) {
+    if (e is XrpcError && (e as XrpcError).error == 'RecordNotFound') {
+      return null;
+    }
+    throw e;
+  }
 }
 
 /** A JSON number as a whole number, or `?` when it is not one. */

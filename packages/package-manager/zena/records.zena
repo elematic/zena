@@ -29,6 +29,7 @@ import {
   newMap
 } from 'atproto:data';
 import {isValidCidSyntax, isValidDatetime, isValidDid} from 'atproto:syntax';
+import {URL} from 'zena:url';
 import {Version} from './version.zena';
 
 export let PROFILE_TYPE = 'dev.zena-lang.package.profile';
@@ -38,6 +39,7 @@ export let MAINTAINERS_TYPE = 'dev.zena-lang.package.maintainers';
 export let MEMBERS_TYPE = 'dev.zena-lang.org.members';
 export let TEAM_TYPE = 'dev.zena-lang.org.team';
 export let POLICY_TYPE = 'dev.zena-lang.org.policy';
+export let SCOPE_PROFILE_TYPE = 'dev.zena-lang.org.profile';
 export let ATTESTATION_TYPE = 'dev.zena-lang.package.attestation';
 
 /** The record key of a package's profile. */
@@ -892,6 +894,53 @@ export final class Policy {
     }
     return map;
   }
+}
+
+/**
+ * How an organization presents its scope, at record key `self`: a display
+ * name, a description and a website, each optional. It decides no one's
+ * role, so the organization's admins write it at once. Lengths are in
+ * UTF-8 bytes, as atproto's profiles limit them; the website is an
+ * `http:` or `https:` URL.
+ */
+export final class ScopeProfile {
+  var displayName: String | null = null;
+  var description: String | null = null;
+  var website: String | null = null;
+
+  static fromValue(value: Value): ScopeProfile {
+    let what = 'scope profile';
+    let map = recordMap(value, SCOPE_PROFILE_TYPE, what);
+    let profile = new ScopeProfile();
+    profile.displayName = boundedString(map, 'displayName', 640, what);
+    profile.description = boundedString(map, 'description', 2560, what);
+    let website = boundedString(map, 'website', 512, what);
+    if (website != null) {
+      let parsed = URL.parse(website as String);
+      if (parsed == null || (parsed.protocol != 'https:' && parsed.protocol != 'http:')) {
+        throw new RecordError(`${what}: '${website as String}' is not an http: or https: URL`);
+      }
+    }
+    profile.website = website;
+    return profile;
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(SCOPE_PROFILE_TYPE);
+    putString(map, 'displayName', this.displayName);
+    putString(map, 'description', this.description);
+    putString(map, 'website', this.website);
+    return map;
+  }
+}
+
+/** The string at `key`, at most `most` bytes, or null when there is none. */
+function boundedString(map: MapValue, key: String, most: i32, what: String): String | null {
+  let value = optionalString(map, key, what);
+  if (value != null && value.length > most) {
+    throw new RecordError(`${what}: '${key}' is longer than ${most} bytes`);
+  }
+  return value;
 }
 
 /** The count at `key`, at least `least`, or `least` when there is none. */

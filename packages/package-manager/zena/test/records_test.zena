@@ -19,6 +19,8 @@ import {
   OWNER,
   POLICY_TYPE,
   Policy,
+  SCOPE_PROFILE_TYPE,
+  ScopeProfile,
   TeamRole,
   PROFILE_TYPE,
   PUBLISHER,
@@ -434,6 +436,39 @@ export let tests = suite('package-manager:records', () => {
       }
     }
     equal(refused, 4);
+  });
+
+  test('reads a scope\'s profile, and refuses a website that is not a web address', (ctx) => {
+    let lexicon = parseJson(readFileSync('packages/package-manager/lexicons/dev/zena-lang/org/profile.json'))
+      as JsonObject;
+    equal(lexicon['id'] as String, SCOPE_PROFILE_TYPE);
+    let profile = new ScopeProfile();
+    profile.displayName = 'Acme Corp';
+    profile.website = 'https://acme.example';
+    let read = ScopeProfile.fromValue(profile.toValue());
+    equal(read.displayName as String, 'Acme Corp');
+    isNull(read.description);
+    equal(read.website as String, 'https://acme.example');
+    // TODO(#722): 'x'.repeat(641).
+    var long = '';
+    while (long.length < 641) {
+      long = `${long}x`;
+    }
+    var refused = 0;
+    for (let bad in [
+      '{"$type": "dev.zena-lang.org.profile", "website": "javascript:alert(1)"}',
+      '{"$type": "dev.zena-lang.org.profile", "website": "not a url"}',
+      `{"$type": "dev.zena-lang.org.profile", "displayName": "${long}"}`,
+    ]) {
+      try {
+        ScopeProfile.fromValue(value(bad));
+      } catch (e) {
+        if (e is RecordError) {
+          refused += 1;
+        }
+      }
+    }
+    equal(refused, 3);
   });
 
   test('keys an attestation by its subject, version and all', (ctx) => {

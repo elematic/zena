@@ -5,7 +5,7 @@ themselves are rendered on the server, by the PDS written in Zena
 (`packages/pds/zena/web`), as `zena:http` routes using its `html` tag:
 
 - `/`: every package, with a search form (`?q=`), and every scope;
-- `/scopes/<name>`: a scope's packages;
+- `/scopes/<name>`: a scope's profile and packages;
 - `/packages/<handle>`: a package's profile and scope, the command that
   adds it, the releases waiting for approval, for its maintainers, its
   versions with their dependencies and the versions they accept, who

@@ -1,7 +1,8 @@
 /**
  * The host methods that make accounts, an organization for a scope, a
- * package, and an automation account for CI, and the public lists of the
- * scopes and packages a visitor browses.
+ * package, and an automation account for CI, that set how a scope
+ * presents itself, and the public lists of the scopes and packages a
+ * visitor browses.
  */
 
 import {Future} from 'zena:async';
@@ -10,11 +11,11 @@ import {JsonArray, JsonObject} from 'zena:json';
 import {fromJson} from 'atproto:data';
 import {xrpcPath} from 'atproto:methods';
 import {
-  CREATE_AUTOMATION_ACCOUNT, CREATE_ORGANIZATION, CREATE_PACKAGE, LIST_PACKAGES, LIST_SCOPES
+  CREATE_AUTOMATION_ACCOUNT, CREATE_ORGANIZATION, CREATE_PACKAGE, LIST_PACKAGES, LIST_SCOPES, PUT_SCOPE_PROFILE
 } from 'package-manager:host-methods';
 import {Created, PackageHost} from '../../host.zena';
 import {fail, json, jsonBody, nowMicros, strings} from '../common.zena';
-import {entriesOf, hostProcedure} from './common.zena';
+import {entriesOf, hostProcedure, writtenJson} from './common.zena';
 
 /** Adds the methods that make accounts, and the lists of scopes and packages, to `router`. */
 export function accountRoutes(router: Router, host: PackageHost): void {
@@ -67,6 +68,20 @@ export function accountRoutes(router: Router, host: PackageHost): void {
     answer['handle'] = made.handle;
     answer['appPassword'] = made.appPassword;
     return answer;
+  });
+
+  hostProcedure(router, host, PUT_SCOPE_PROFILE, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['organization'] is String) || input['profile'] == null) {
+      fail(res, 400, 'InvalidRequest', 'organization and profile are required');
+      return null;
+    }
+    let swap = input['swapRecord'];
+    return writtenJson(await host.putScopeProfile(caller, input['organization'] as String, fromJson(input['profile']),
+        if (swap is String) swap as String else null, nowMicros()));
   });
 
   // Public: what a logged-out visitor browses.

@@ -334,7 +334,8 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   team and a package. **`scope settings`**, **`team settings`** and
   **`owner settings`** show and change their thresholds, and
   **`scope policy`** the minimums, defaults and creators of a scope's
-  packages.
+  packages. **`scope profile`** sets a scope's display name, description
+  and website.
 - **`fetch`**: Fetch the published packages `zena-lock.json` pins into
   the package cache, checking each against its pins. `ZENA_PLC_DIRECTORY`
   and `ZENA_DNS_OVER_HTTPS` replace the PLC directory and the DNS resolver
