@@ -25,7 +25,7 @@ import { substituteThisType, substituteTypeParams } from './generics.zena';
 import { getMemberPathKeyFromAccess } from './narrowing.zena';
 import { overloadCandidates, collectApplicableOperatorOverloads, selectMostSpecificIndex } from './overloads.zena';
 import {
-  borrowWrapFieldRead, isAffineValue, memberConsumesReceiver,
+  borrowWrapFieldRead, fieldReadsAsTake, isAffineValue, memberConsumesReceiver,
   rejectConsumingThroughNonOwner, tupleElementRead
 } from './ownership.zena';
 import { argumentAdaptsToParameter } from './literals.zena';
@@ -1030,6 +1030,10 @@ function resolveMemberType(
         if (ownerRead && typeCarriesOwner(resolved)) {
           return resolved;
         }
+        // A field in the class's `scoped T` is taken, not borrowed.
+        if (fieldReadsAsTake(fieldType)) {
+          return resolved;
+        }
         return borrowWrapFieldRead(ctx, resolved);
       }
       // Check methods.
@@ -1076,7 +1080,11 @@ function resolveMemberType(
       if (it.members.has(propName) && it.members[propName] is FieldInfo) {
         let fieldType = it.members[propName].type;
         let subField = substituteTypeParams(it.typeParameters, it.typeArguments, fieldType);
-        return borrowWrapFieldRead(ctx, substituteThisType(it as Type, subField));
+        let resolved = substituteThisType(it as Type, subField);
+        if (fieldReadsAsTake(fieldType)) {
+          return resolved;
+        }
+        return borrowWrapFieldRead(ctx, resolved);
       }
       if (it.members.has(propName) && it.members[propName] is MethodInfo) {
         let methodInfo = it.members[propName];

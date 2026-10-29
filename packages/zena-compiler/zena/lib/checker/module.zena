@@ -757,8 +757,14 @@ export function finishModule(mc: ModuleCheck): CheckResult {
   // so importers can resolve them cleanly.
   for (let {key as expName, value as exInfo} in scopeResult.exports) {
     let {declaration} = exInfo;
-    var exportType = ctx.resolveTypeName(expName);
-    if (exportType == null) {
+    // A declaration exports its own symbol, so its type is the one that
+    // symbol materialized to: never the name's, which a later
+    // declaration in this module could hold.
+    let origin = exInfo.resolveTarget();
+    var exportType: Type | null = null;
+    if (origin === exInfo) {
+      exportType = ctx.materializedType(exInfo);
+    } else {
       // A re-exported type (`export {X} from './dep'`): this module has
       // no local type registration for the name, so forward the origin's
       // type. Without this, importers fall back to the export symbol's
@@ -770,14 +776,11 @@ export function finishModule(mc: ModuleCheck): CheckResult {
       // the name across every dependency — two libraries can each
       // declare a `TemplateValue`, and whichever model came first in
       // the walk used to answer for both.
-      let origin = exInfo.resolveTarget();
-      if (origin !== exInfo) {
-        exportType = ctx.canonicalTypeOf(origin);
-        let models = ctx.depModels;
-        if (exportType == null && models != null) {
-          if (let (true, originModel) = models.get(origin.modulePath)) {
-            exportType = originModel.getExportType(expName);
-          }
+      exportType = ctx.canonicalTypeOf(origin);
+      let models = ctx.depModels;
+      if (exportType == null && models != null) {
+        if (let (true, originModel) = models.get(origin.modulePath)) {
+          exportType = originModel.getExportType(expName);
         }
       }
     }

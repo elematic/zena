@@ -121,9 +121,10 @@ section banners).
 
 ### Special cases that should be general
 
-- `forInLowersToIndexLoop` names `FixedArray`, `ImmutableArray`,
+- `forInLowersToIndexLoop` named `FixedArray`, `ImmutableArray`,
   `Array` and `GrowableArray` by string, next to a `WellKnown` test
-  for the ranges; the `Array` arm can only ever match a user class.
+  for the ranges, and reachability kept a second copy. The one copy
+  is now in `types.zena`, by identity.
 - `resolveMemberType`'s `ClassType` arm recognizes a mixin's `this`
   by the `_This` suffix of the class name and then scans every mixin
   and class declaration in the model by name. The class already
@@ -157,30 +158,57 @@ section banners).
 
 ### Name-based lookups (elematic/zena#288)
 
-Sites in the checker that decide something from a name where an
-identity exists:
+Sites in the checker that decided something from a name where an
+identity exists. The first group is done; each site that could pick a
+user's declaration has a portable test under `name-resolution/` in
+which a program declares the borrowed name.
 
 - A declaration finding its own pre-materialized type by name:
   `registerClassDeclaration`, `classTypeOfDeclaration`,
   `checkInterfaceDeclaration`, `checkInterfaceConstructorBodies`,
-  `checkMixinDeclaration`, `registerTypeAliasDeclaration`, and the
-  sealed-variant lookups in `registerClassDeclaration`, all through
-  `ctx.resolveTypeName(name)`. `checkEnumDeclaration` already does
-  this right, through `ctx.declaredType(symbol)`.
+  `checkMixinDeclaration` and `registerTypeAliasDeclaration`, all
+  through `ctx.resolveTypeName(name)`. They now ask
+  `ctx.declaredTypeOf(node)`, which goes through the node's symbol and
+  has no name fallback; `materializeDeclaration`, which had one, is
+  gone. The sealed-variant lookups in `registerClassDeclaration` stay
+  by name: a variant written `case Circle` next to a `class Circle` is
+  a duplicate, and whether a name is declared twice is a question
+  about the name.
 - `resolveIdentifierInternal` turning a type declaration's symbol
-  into a type by re-resolving its name.
+  into a type by re-resolving its name. It materializes from the
+  symbol it holds.
 - `finishModule` typing each export by `resolveTypeName(exportName)`.
+  A declaration exports its own symbol, so the export's type is what
+  that symbol materialized to; only a re-export walks to its origin.
 - `Own`, `Borrow` and `Scoped` through `resolveTypeName` in
   `wrapResourceInOwn`, `wrapResourceInBorrow`, `borrowWrapFieldRead`
-  and `typeOperatorTarget`; `receiverHandleIs` matching the written
-  name `Own`/`Borrow`.
+  and `typeOperatorTarget`. All four use the well-known table, as
+  `isOwnershipWrapper` already did to recognize a handle, so a
+  program's own `Own` alias is neither wrapped in nor recognized.
+  `receiverHandleIs` still matches the written name `Own`/`Borrow`.
+  The table gains a row as the declaring file finishes checking, so a
+  file of the declaring library asking earlier (`WithDefault` pointing
+  at `Scoped` from inside `zena:core`) is answered from its scope,
+  verified by identity, in `tryResolveWellKnownType`.
 - `String` through `resolveTypeName` for `__LOCATION__` and template
-  literals (the string-literal arm already uses the well-known type);
+  literals (the string-literal arm already used the well-known type);
   `StringIndex` and the four range classes in the range arm;
   `extractContextualRangeBoundType` matching five range class names;
-  `HashMap` in `mapLiteralType`.
+  `HashMap` in `mapLiteralType`. `Range`, `ToRange`, `FullRange`,
+  `StringIndex` and `HashMap` are now rows of the well-known table,
+  and every one of these goes through it. A map literal in a
+  compilation without `zena:collections` is reported rather than
+  silently an error type.
 - `literalPatternCanMatchType` accepting a string literal against any
-  class named `String`.
+  class named `String`. Now the well-known one.
+- Reachability's `findPreludeClass` and `findPreludeInterface` took
+  a name and answered with the first unit exporting a class or
+  interface of that name, so a program exporting its own `Iterable`
+  could stand in for the protocol. They take a `WellKnown` and check
+  the identity.
+
+Still open:
+
 - Type-argument inference keyed by parameter _name_
   (`HashMap<String, Type>` in `inferTypeArg`, `inferTypeParameter`,
   `instantiateGenericClass`, `instantiateGenericInterface`,
@@ -188,7 +216,10 @@ identity exists:
   two parameters called `T` in scope at once share one slot.
 - Interfaces matched by name in `inferTypeArg`,
   `inferTypeArgsFromContext`, `findExtendedInterfaceTransitive` and
-  `findImplementedInterfaceTransitiveInChecker`.
+  `findImplementedInterfaceTransitiveInChecker`, and in codegen's
+  `findImplementedInterfaceTransitive`; the for-in arm of
+  `checkStatement` and reachability's `rootIterationProtocol` pass
+  the strings `"Iterable"` and `"AsyncIterable"` into them.
 - `typesEqual` comparing type parameters, type aliases and mixins by
   name; `isAssignableTo` comparing two distinct aliases by name;
   `mergeHandleMembers` grouping handles by alias name.
@@ -224,6 +255,24 @@ Fixed with the split, each with a portable test seen failing first:
 - `resolveMemberType` recognized a mixin's `this` class by the `_This`
   suffix of its name and scanned every declaration in the model for
   the mixin. The class carries `mixinSelf`.
+- Reachability rooted the constructor of a resource `new` through the
+  callee's symbol, looked up by id in the constructing module's model
+  alone, so a resource class imported from another module had no
+  constructor at lowering ("constructor missing"). The lookup goes
+  through `getBindingType`, which reaches the declaring module. The
+  well-known `Own` made this visible: `wrapResourceInOwn` used to
+  demand an imported `Own`, and a synthesized WIT module that had not
+  imported it was handed the bare class and so never took the resource
+  path. Constructing a resource no longer requires importing `Own`.
+- Whether a field read was wrapped in `Borrow` depended on whether the
+  file had imported `Borrow`, since `borrowWrapFieldRead` and
+  `wrapResourceInBorrow` found the handle by name and did nothing when
+  the name was absent. The `scoped T` tests had not imported it, so
+  reading a `Slot<Own<R>>`'s field was the take the design describes
+  (ownership.md §"Takes") only by that accident; with the handle found
+  by identity, the read is a take because the field is declared in the
+  class's `scoped T` (`fieldReadsAsTake`). `this` inside a resource
+  class's methods is now a `Borrow<R>` in every file.
 
 Still open:
 
@@ -298,16 +347,17 @@ allocation history, so a layout change can move 700 ms between the
 `ZENA_GC_RESERVE_MB=512`, which pre-grows the heap, to compare the
 phases; the run-to-run spread is then under 1%.
 
-With that setting, on an idle machine, before and after the split:
+With that setting, on an idle machine, before and after the split, and
+after the name-to-identity step (on a loaded machine):
 
-| fixture            | phase          | before (ms) | after (ms) |
-| ------------------ | -------------- | ----------- | ---------- |
-| stdlib-moderate    | check          | 15.5        | 15.7       |
-| portable-semantics | scope          | 135.6       | 137.5      |
-| portable-semantics | check          | 246.8       | 256.2      |
-| portable-semantics | check-register | 22.5        | 30.2       |
-| portable-semantics | check-bodies   | 212.5       | 211.0      |
-| portable-semantics | total          | 4110        | 4179       |
+| fixture            | phase          | before (ms) | split (ms) | identity (ms) |
+| ------------------ | -------------- | ----------- | ---------- | ------------- |
+| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          |
+| portable-semantics | scope          | 135.6       | 137.5      | 127.0         |
+| portable-semantics | check          | 246.8       | 256.2      | 248.0         |
+| portable-semantics | check-register | 22.5        | 30.2       | 30.6          |
+| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         |
+| portable-semantics | total          | 4110        | 4179       | 4104          |
 
 `portable-semantics` compiles `zena/test/portable_semantics.zena`,
 which imports the compiler, so it is the one fixture whose input the
@@ -331,7 +381,9 @@ Each step is one PR, lands green on `npm test`, and keeps
    release rooting, overload candidates, the nullable strip, the
    static/instance check, accessor bodies, index selection.
 4. **Name to identity.** The #288 sites above, each with a test where
-   a user type borrows the name.
+   a user type borrows the name. The well-known and own-declaration
+   sites are done; inference and interface matching by identity, and
+   `typesEqual`, are next.
 5. **Condition narrowing.** One subject type (binding or path), one
    pass per condition producing both branches' narrowings, no
    re-checking of the subject.

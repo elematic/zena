@@ -1,53 +1,15 @@
 import { growable } from 'zena:core';
 import { Expression, SourceLocation } from '../ast.zena';
 import {
-  ArrayType, BoolLiteralType, ClassType, ErrorType, I32Type,
+  ArrayType, BoolLiteralType, ClassType, ErrorType,
   InlineTupleType as InlineTupleT, InterfaceType, Type, TypeAliasType,
   UnionType as UnionT, instantiateClassType, instantiateInterfaceType,
-  isFutureClassType, typeToString
+  isFutureClassType, isIterableRangeClass, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
 import { CheckerContext } from './context.zena';
 import { substituteTypeParams } from './generics.zena';
-
-/**
- * Extract the element type from an iterable type for for-in loops.
- * Checks if the type implements Iterable<T> by identity-based comparison
- * against the prelude Iterable interface.
- * Reports an error if the type is not iterable.
- */
-/**
- * True when codegen compiles a for-in over this class to a direct
- * index loop (lowerForIn in ir/control-flow.zena): FixedArray,
- * ImmutableArray and Array lower to array.len/array.get, and
- * BoundedRange and FromRange to a loop counting from the range's
- * start. None of them touch the Iterable/Iterator protocol, so a for-in
- * iterable of one of these types must not register an interface
- * adaptation. Mirrors lowerForIn's dispatch, including the
- * type-argument requirement for the arrays — a bare mention with no
- * arguments has no element type there and falls back to the iterator
- * path.
- */
-export function forInLowersToIndexLoop(ct: ClassType): boolean {
-  var canonical = ct;
-  while (canonical.genericSource != null) {
-    canonical = canonical.genericSource as ClassType;
-  }
-  if (isWellKnown(WellKnown.BoundedRangeClass, canonical.name,
-          canonical.sourcePath) ||
-      isWellKnown(WellKnown.FromRangeClass, canonical.name,
-          canonical.sourcePath)) {
-    let targs = ct.typeArguments;
-    return targs == null || (targs.length == 1 && targs[0] is I32Type);
-  }
-  if (canonical.name != "FixedArray" && canonical.name != "ImmutableArray" &&
-      canonical.name != "Array" && canonical.name != "GrowableArray") {
-    return false;
-  }
-  let targs = ct.typeArguments;
-  return targs != null && targs.length > 0;
-}
 
 /** What a for-in found to iterate: the element type, and whether the
  * iterator it reaches is asynchronous. */
@@ -120,11 +82,11 @@ function protocolElementType(
 ): Type | null {
   match (t) {
     case ClassType as ct: {
-      let targs = ct.typeArguments;
-      if ((isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) ||
-           isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath)) &&
-          targs != null &&
-          (targs.length != 1 || !(targs[0] is I32Type))) {
+      // A `BoundedRange<T>` or `FromRange<T>` with a non-`i32` argument
+      // is not a counting loop, and (today) nothing else either.
+      if (ct.typeArguments != null && !isIterableRangeClass(ct) &&
+          (isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) ||
+           isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath))) {
         return null;
       }
       for (let iface in ct.implementsList) {

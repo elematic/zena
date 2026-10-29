@@ -67,7 +67,7 @@ export function typeOperatorTarget(
   typeParams: Array<TypeParameterType> | null
 ): Type {
   if (alias.intrinsicName == 'type.scopedFrom') {
-    let scopedDecl = ctx.resolveTypeName('Scoped');
+    let scopedDecl = ctx.tryResolveWellKnownType(WellKnown.ScopedAlias);
     if (scopedDecl != null && scopedDecl is TypeAliasType) {
       return scopedDecl;
     }
@@ -79,7 +79,7 @@ export function typeOperatorTarget(
 }
 
 export function registerTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasDeclaration): void {
-  let t = ctx.resolveTypeName(ta.name.name);
+  let t = ctx.declaredTypeOf(ta);
   if (t == null) {
     return;
   }
@@ -135,7 +135,7 @@ export function registerTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasD
 // Type Alias Declaration
 // ============================================================================
 export function checkTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasDeclaration): void {
-  ctx.materializeDeclaration(ta, ta.name.name);
+  ctx.declaredTypeOf(ta);
   if (ta.typeAnnotation != null) {
     // Decorators on an ordinary alias never parse ("Expected 'declare'
     // after decorator"), so a body means there is nothing to validate.
@@ -163,9 +163,9 @@ export function checkTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasDecl
       }
       // Registration points the operator at the Scoped declaration
       // (typeOperatorTarget); here it only has to exist.
-      let scopedDecl = ctx.resolveTypeName('Scoped');
+      let scopedDecl = ctx.tryResolveWellKnownType(WellKnown.ScopedAlias);
       if (scopedDecl == null || !(scopedDecl is TypeAliasType)) {
-        ctx.error("The 'type.scopedFrom' operator needs 'Scoped' in scope.",
+        ctx.error("The 'type.scopedFrom' operator needs 'zena:core', which declares 'Scoped'.",
             DiagnosticCode.TypeMismatch, ta.name.loc);
       }
     } else if (decoratorStringArg(dec, 0) != 'type.awaited' &&
@@ -286,7 +286,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
 
   // Look up pre-registered MixinType, or create one.
   var mixinType = new MixinType(mixinName);
-  let preRegistered = ctx.resolveTypeName(mixinName);
+  let preRegistered = ctx.declaredTypeOf(md);
   if (preRegistered != null) {
     match (preRegistered) {
       case MixinType as existing: { mixinType = existing; }
@@ -779,7 +779,7 @@ export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDecl
 
   // Look up the pre-registered InterfaceType from the forward-declaration pass.
   var ifaceType = new InterfaceType(ctx.freshTypeId(), noSymbolId, ifaceName);
-  let preRegistered = ctx.resolveTypeName(ifaceName);
+  let preRegistered = ctx.declaredTypeOf(id);
   if (preRegistered != null) {
     match (preRegistered) {
       case InterfaceType as existing: { ifaceType = existing; }
@@ -1082,7 +1082,7 @@ function constructorSelfType(ifaceType: InterfaceType, ctorType: FunctionType): 
  * second phase, after every declaration has a signature.
  */
 export function checkInterfaceConstructorBodies(ctx: CheckerContext, id: InterfaceDeclaration): void {
-  let resolved = ctx.resolveTypeName(id.name.name);
+  let resolved = ctx.declaredTypeOf(id);
   if (!(resolved is InterfaceType)) {
     return;
   }

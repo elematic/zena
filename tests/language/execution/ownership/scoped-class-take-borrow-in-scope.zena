@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 11
+//
+// A `T` field of a `scoped T` class is taken, not borrowed, whatever
+// names the file imports: `Borrow` in scope used to turn the read into
+// a borrow, because the checker found the handle by name, so the slot
+// was never emptied and the resource never released (issue #288).
+
+import {Own, Borrow, Disposable, WithDefault, defaultValue} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+  take(): WithDefault<T> {
+    return this.#value;
+  }
+}
+
+function peek(r: Borrow<Res>): i32 {
+  return 0;
+}
+
+export function main(): i32 {
+  var result = 0;
+  if (true) {
+    let s = new Slot<Own<Res>>();
+    s.put(new Res());
+    let a = s.take();
+    if (a != null) {
+      result += peek(a);
+    }
+    let b = s.take();
+    if (b == null) {
+      result += 10;
+    }
+  }
+  return result + released;
+}

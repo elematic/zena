@@ -10,6 +10,7 @@ import {
   signedLiteralFits, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown, isWellKnown } from '../well-known.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
 import { unwrapAliases } from './unions.zena';
@@ -223,6 +224,16 @@ export function isIntLiteralExpr(e: Expression): boolean {
   };
 }
 
+/** Whether `ct` is one of the standard library's range classes. */
+function isRangeClass(ct: ClassType): boolean {
+  let {name, sourcePath} = ct;
+  return isWellKnown(WellKnown.RangeClass, name, sourcePath) ||
+      isWellKnown(WellKnown.BoundedRangeClass, name, sourcePath) ||
+      isWellKnown(WellKnown.FromRangeClass, name, sourcePath) ||
+      isWellKnown(WellKnown.ToRangeClass, name, sourcePath) ||
+      isWellKnown(WellKnown.FullRangeClass, name, sourcePath);
+}
+
 export function extractContextualRangeBoundType(expectedType: Type | null): Type | null {
   if (expectedType == null) {
     return null;
@@ -230,10 +241,7 @@ export function extractContextualRangeBoundType(expectedType: Type | null): Type
   match (unwrapAliases(expectedType)) {
     case ClassType as ect: {
       let targs = ect.typeArguments;
-      if ((ect.name == "Range" || ect.name == "BoundedRange" ||
-           ect.name == "FromRange" || ect.name == "ToRange" ||
-           ect.name == "FullRange") &&
-          targs != null && targs.length == 1) {
+      if (isRangeClass(ect) && targs != null && targs.length == 1) {
         return targs[0];
       }
     }
