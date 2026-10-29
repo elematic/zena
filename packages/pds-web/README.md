@@ -7,12 +7,13 @@ themselves are rendered on the server, by the PDS written in Zena
 - `/`: every package, with a search form (`?q=`), and every scope;
 - `/scopes/<name>`: a scope's packages;
 - `/packages/<handle>`: a package's profile and scope, the command that
-  adds it, its versions with their dependencies and the versions they
-  accept, who approved each, its retractions, and its maintainers;
+  adds it, the releases waiting for approval, for its maintainers, its
+  versions with their dependencies and the versions they accept, who
+  approved each, its retractions, and its maintainers;
 - `/people/<handle or DID>`: a person's profile, and the packages that
   name them as a maintainer publicly;
 - `/me`: once signed in, the scopes, teams and packages you have a role in,
-  with the role;
+  with the role, and the releases of your packages waiting for approval;
 - `/admin`: for the host's admins, every scope, with its packages and
   automation accounts.
 

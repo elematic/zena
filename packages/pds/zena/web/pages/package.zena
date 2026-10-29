@@ -1,7 +1,7 @@
 /**
- * A package's page: its profile and scope, the command that adds it, its
- * versions with their dependencies, approvers and retractions, and its
- * maintainers.
+ * A package's page: its profile and scope, the command that adds it, the
+ * releases waiting for approval, for its maintainers, its versions with
+ * their dependencies, approvers and retractions, and its maintainers.
  */
 
 import {HashMap} from 'zena:collections';
@@ -16,6 +16,7 @@ import {People} from '../people.zena';
 import {contextOf} from '../session.zena';
 import {chip, count, each, when} from '../partials/common.zena';
 import {Shown, describe, shownWith, visibleEntries} from '../partials/members.zena';
+import {PendingRow, pendingOf, pendingTable} from '../partials/pending.zena';
 import {personLink} from '../partials/person.zena';
 import {notFound} from './not-found.zena';
 
@@ -86,13 +87,25 @@ export function packagePage(router: Router, host: PackageHost, people: People, a
         }
       }
     }
-    res.body = page(`${name} · Zena packages`, context, packageBody(found, handles, shown, approvedBy));
+    // A maintainer sees the releases waiting for approval.
+    var waiting: HTMLPartial | null = null;
+    let who = context.who;
+    if (who != null) {
+      let rows = new GrowableArray<PendingRow>();
+      for (let held in await pendingOf(host, who.did, found.did)) {
+        rows.push(new PendingRow(found.handle, name, held));
+      }
+      if (rows.length > 0) {
+        waiting = await pendingTable(context, rows, false);
+      }
+    }
+    res.body = page(`${name} · Zena packages`, context, packageBody(found, handles, shown, approvedBy, waiting));
   });
 }
 
 /** A package's page: its profile, the command that adds it, its versions and its maintainers. */
 function packageBody(detail: PackageDetail, handles: HashMap<String, String>, shown: Shown,
-    approvedBy: HashMap<String, Array<String>>): HTMLPartial {
+    approvedBy: HashMap<String, Array<String>>, waiting: HTMLPartial | null): HTMLPartial {
   let profile = detail.profile;
   var name = detail.handle;
   var description: String | null = null;
@@ -129,6 +142,11 @@ function packageBody(detail: PackageDetail, handles: HashMap<String, String>, sh
       </div>
     </div>
     <pre class="mono">zena add ${detail.handle}</pre>
+    ${when(waiting != null, () => html`
+    <section>
+      <h2>Waiting for approval</h2>
+      ${waiting}
+    </section>`)}
     <section>
       <h2>Versions</h2>
       ${if (detail.releases.length == 0) html`<p class="muted">Nothing is published yet.</p>` else versions(detail, handles, shown, approvedBy)}

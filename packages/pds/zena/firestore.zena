@@ -42,7 +42,7 @@ import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {existsSync, mkdirSync, readFileBytesSync, renameSync, writeFileBytesSync} from 'zena:fs';
 import {randomU64} from 'zena:random';
-import {Fields, Firestore, Operator, Direction, DocumentReference, DocumentSnapshot, Transaction,
+import {CollectionReference, Fields, Firestore, Operator, Direction, DocumentReference, DocumentSnapshot, Transaction,
   bytesValue, stringValue} from 'google-cloud:firestore';
 import {Bucket} from 'google-cloud:storage';
 import {BlockMap} from 'atproto:car';
@@ -53,7 +53,7 @@ import {compareKeys} from 'atproto:mst';
 import {MemberEntry} from 'package-manager:records';
 import {JsonValue, parseJson, stringify} from 'zena:json';
 import {PlcOperation} from 'atproto:plc';
-import {ClaimedName, ClaimedScope, HostStore} from './host.zena';
+import {ClaimedName, ClaimedScope, HostStore, PendingRelease} from './host.zena';
 import {PlcLog} from './plc-directory.zena';
 import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
@@ -434,6 +434,38 @@ export final class FirestoreHostStore implements HostStore {
     return entries;
   }
 
+  /** Held releases, at `pending/<pkg>/releases/<version>`. */
+  #held(pkg: String): CollectionReference {
+    return this.#root.collection('pending').doc(pkg).collection('releases');
+  }
+
+  async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
+    return await claim(this.#db, this.#held(pkg).doc(recordId(release.version)), new Fields()
+        .set('cbor', bytesValue(release.record as ByteArray))
+        .string('cid', release.cid.toString())
+        .string('publisher', release.publisher)
+        .integer('heldAt', release.heldAt));
+  }
+
+  async heldRelease(pkg: String, version: String): Future<PendingRelease | null> {
+    return pendingAt(await this.#held(pkg).doc(recordId(version)).get(), version);
+  }
+
+  async heldReleases(pkg: String): Future<Array<PendingRelease>> {
+    let held = new GrowableArray<PendingRelease>();
+    for (let snapshot in await this.#held(pkg).get()) {
+      let release = pendingAt(snapshot, null);
+      if (release != null) {
+        held.push(release as PendingRelease);
+      }
+    }
+    return held;
+  }
+
+  async dropRelease(pkg: String, version: String): Future<void> {
+    await this.#held(pkg).doc(recordId(version)).delete();
+  }
+
   /** Adds `entries`, each under the base32 CID of its DAG-CBOR, its commitment. */
   async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
     let list = this.#root.collection('entries').doc(account).collection('list');
@@ -591,6 +623,23 @@ function bytesAt(snapshot: DocumentSnapshot, field: String): FixedArray<u8> | nu
     return value.bytesValue.toByteArray() as FixedArray<u8>;
   }
   return null;
+}
+
+/** The held release `snapshot` is, at `version` or its own ID's; null when it does not exist. */
+function pendingAt(snapshot: DocumentSnapshot, version: String | null): PendingRelease | null {
+  let record = bytesAt(snapshot, 'cbor');
+  let cid = cidAt(snapshot);
+  let publisher = stringAt(snapshot, 'publisher');
+  if (record == null || cid == null || publisher == null) {
+    return null;
+  }
+  var heldAt = 0 as i64;
+  if (let (true, micros) = snapshot.getInteger('heldAt')) {
+    heldAt = micros;
+  }
+  let id = snapshot.id;
+  let key = version ?? (if (id.startsWith('%')) id.sliceBytes(1, id.length) else id);
+  return new PendingRelease(key, record as FixedArray<u8>, cid as Cid, publisher as String, heldAt);
 }
 
 function cidAt(snapshot: DocumentSnapshot): Cid | null {

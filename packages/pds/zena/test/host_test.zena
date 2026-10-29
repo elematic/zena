@@ -8,13 +8,14 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
+import {join} from 'zena:core';
 import {hex} from 'zena:encoding';
 import {App, HTMLPartial, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {bytesStream} from 'zena:stream';
 import {now} from 'wasi:clocks/system-clock';
 import {readCar} from 'atproto:car';
-import {BlobRef, MapValue, fromJson, toJson} from 'atproto:data';
+import {BlobRef, MapValue, Value, fromJson, toJson} from 'atproto:data';
 import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis} from 'atproto:plc';
@@ -29,7 +30,10 @@ import {
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
-import {ClaimedName, ClaimedScope, HostConfig, HostError, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
+import {
+  ClaimedName, ClaimedScope, HostConfig, HostError, HostStore, MemoryHostStore, PENDING_MICROS, PackageHost,
+  PendingRelease
+} from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
 import {CreateRecord, RepositoryError, Write} from 'pds:repository';
@@ -54,6 +58,12 @@ final class Fixture {
   records = new MemoryHandleRecords();
   /** Whether the PLC directory refuses operations. */
   var plcDown = false;
+  /**
+   * The records in the repositories of callers this host does not hold,
+   * Alice's and Bob's, by `"<did> <collection> <rkey>"`: what the host
+   * reads from their PDSes.
+   */
+  remote = new HashMap<String, Value>();
   var #jti = 0;
   var #random = 0;
 
@@ -85,6 +95,13 @@ final class Fixture {
           return filled(this.#random);
         },
         unreachableResolver());
+    let remote = this.remote;
+    host.remoteRecords = async (did: String, collection: String, rkey: String): Future<Value | null> => {
+      if (let (true, value) = remote.get(`${did} ${collection} ${rkey}`)) {
+        return value;
+      }
+      return null;
+    };
     this.host = host;
     var counter = 0;
     let sessions = new Sessions(this.pds.storage, new MemoryCredentialStore(), filled(77), (count: i32) => {
@@ -93,6 +110,12 @@ final class Fixture {
     });
     host.sessions = sessions;
     this.app = createApp(this.pds, host, sessions);
+  }
+
+  /** An attestation by `caller`, Alice or Bob, of the record at `uri` whose CID is `cid`. */
+  attest(caller: String, uri: String, cid: String): void {
+    let attestation = new Attestation(uri, Cid.parse(cid), '2026-10-29T00:00:00.000Z');
+    this.remote[`${caller} ${ATTESTATION_TYPE} ${attestation.recordKey()}`] = attestation.toValue();
   }
 
   /** A token from `caller`'s PDS for `method`. */
@@ -215,6 +238,12 @@ final class StaleHostStore implements HostStore {
   async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
     await this.#inner.addEntries(account, entries);
   }
+  async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
+    return await this.#inner.holdRelease(pkg, release);
+  }
+  async heldRelease(pkg: String, version: String): Future<PendingRelease | null> { return null; }
+  async heldReleases(pkg: String): Future<Array<PendingRelease>> { return await this.#inner.heldReleases(pkg); }
+  async dropRelease(pkg: String, version: String): Future<void> { await this.#inner.dropRelease(pkg, version); }
 }
 
 function filled(value: i32): FixedArray<u8> {
@@ -275,8 +304,7 @@ function seedBrowsable(fixture: Fixture): String {
   ok(createPackage(fixture, ALICE, orgDid, 'parser'));
   ok(fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
   for (let version in ['1.0.0', '1.1.0']) {
-    let blob = upload(fixture, router, archiveOf(router, version));
-    ok(fixture.call(ALICE, 'publish', `{"package": "${router}", "release": ${releaseJson(version, blob)}}`));
+    release(fixture, ALICE, router, version, upload(fixture, router, archiveOf(router, version)));
   }
   ok(fixture.call(ALICE, 'retract', `{"package": "${router}", "version": "1.1.0", "reason": "broken"}`));
   return router;
@@ -373,6 +401,33 @@ function upload(fixture: Fixture, pkg: String, archive: FixedArray<u8>): BlobRef
       'application/vnd.ipld.car'))['blob'] as JsonObject));
 }
 
+/**
+ * Publishes `version` of `pkg` as `caller`, Alice or Bob, who attests it
+ * and completes it, and returns what `completeRelease` answered.
+ */
+function release(fixture: Fixture, caller: String, pkg: String, version: String, blob: BlobRef): JsonObject {
+  let held = ok(fixture.call(caller, 'publish', `{"package": "${pkg}", "release": ${releaseJson(version, blob)}}`));
+  fixture.attest(caller, held['uri'] as String, held['cid'] as String);
+  let completed = complete(fixture, caller, pkg, version);
+  equal(completed['state'] as String, 'published');
+  return completed;
+}
+
+/** `completeRelease` of `version` of `pkg` as `caller`. */
+function complete(fixture: Fixture, caller: String, pkg: String, version: String): JsonObject {
+  return ok(fixture.call(caller, 'completeRelease', `{"package": "${pkg}", "version": "${version}"}`));
+}
+
+/** The DIDs `answer`'s `approvedBy` lists. */
+function approvedBy(answer: JsonObject): String {
+  let list = answer['approvedBy'] as JsonArray;
+  let dids = new GrowableArray<String>();
+  for (var i = 0; i < list.length; i += 1) {
+    dids.push(list[i] as String);
+  }
+  return join(dids, ' ');
+}
+
 function releaseJson(version: String, blob: BlobRef): String {
   let release = new Release(Version.parse(version), '2026-10-23T00:00:00.000Z',
       new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
@@ -410,8 +465,7 @@ export let tests = suite('pds:host', () => {
     equal(blobJson['mimeType'] as String, 'application/vnd.ipld.car');
     let blob = BlobRef.fromValue(fromJson(blobJson));
 
-    let published = ok(fixture.call(ALICE, 'publish',
-        `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`));
+    let published = release(fixture, ALICE, pkgDid, '1.0.0', blob);
     equal(published['uri'] as String, `at://${pkgDid}/${RELEASE_TYPE}/1.0.0`);
 
     // The release can be fetched with a proof that verifies with the signing
@@ -435,6 +489,159 @@ export let tests = suite('pds:host', () => {
       refused = if (e is RepositoryError) (e as RepositoryError).error else e.message;
     }
     equal(refused, 'InvalidRequest');
+  });
+
+  test('holds a release out of the repository until its maintainers attest it', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let blob = upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
+    let body = `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`;
+    let held = ok(fixture.call(ALICE, 'publish', body));
+    equal(held['state'] as String, 'pending');
+    let uri = held['uri'] as String;
+    let cid = held['cid'] as String;
+    equal(uri, `at://${pkgDid}/${RELEASE_TYPE}/1.0.0`);
+
+    // Nothing is in the repository, so nothing is in the feed or listed.
+    let store = fixture.pds.storage.store(pkgDid);
+    isTrue(runFuture(store.getRecord(RELEASE_TYPE, '1.0.0')) == null, 'not written');
+    let listed = ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages'))['packages'] as JsonArray;
+    isTrue((listed[0] as JsonObject)['latest'] == null, 'no release listed');
+    // Publishing it again answers the same; another release of 1.0.0 is refused.
+    equal(ok(fixture.call(ALICE, 'publish', body))['cid'] as String, cid);
+    let other = new Release(Version.parse('1.0.0'), '2026-10-24T00:00:00.000Z',
+        new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
+        new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+    let refused = fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${stringify(toJson(other.toValue()))}}`);
+    equal(errorOf(refused), 'VersionExists');
+
+    // Unattested, it waits.
+    let waiting = complete(fixture, ALICE, pkgDid, '1.0.0');
+    equal(waiting['state'] as String, 'pending');
+    equal(approvedBy(waiting), '');
+    equal((waiting['threshold'] as Box<f64>).value as i32, 1);
+    let pending = ok(fixture.query(ALICE, 'getPendingReleases', `?package=${pkgDid}`))['releases'] as JsonArray;
+    equal(pending.length, 1);
+    let entry = pending[0] as JsonObject;
+    equal(entry['version'] as String, '1.0.0');
+    equal(entry['cid'] as String, cid);
+    equal(entry['publisher'] as String, ALICE);
+    equal(((entry['release'] as JsonObject)['version'] as String), '1.0.0');
+    equal(errorOf(fixture.query(BOB, 'getPendingReleases', `?package=${pkgDid}`)), 'Forbidden');
+    // An attestation of another CID, even at this release's key, counts for nothing.
+    let otherCid = Cid.forDagCbor(new FixedArray<u8>(1, 0 as u8)).toString();
+    let key = new Attestation(uri, Cid.parse(cid), '2026-10-29T00:00:00.000Z').recordKey();
+    fixture.remote[`${ALICE} ${ATTESTATION_TYPE} ${key}`] =
+        new Attestation(uri, Cid.parse(otherCid), '2026-10-29T00:00:00.000Z').toValue();
+    equal(complete(fixture, ALICE, pkgDid, '1.0.0')['state'] as String, 'pending');
+
+    // Alice's attestation meets the threshold of 1, and the host writes it.
+    fixture.attest(ALICE, uri, cid);
+    let done = complete(fixture, ALICE, pkgDid, '1.0.0');
+    equal(done['state'] as String, 'published');
+    equal(approvedBy(done), ALICE);
+    equal((runFuture(store.getRecord(RELEASE_TYPE, '1.0.0')) as Cid).toString(), cid);
+    equal(complete(fixture, ALICE, pkgDid, '1.0.0')['state'] as String, 'published');
+    equal((ok(fixture.query(ALICE, 'getPendingReleases', `?package=${pkgDid}`))['releases'] as JsonArray).length, 0);
+    equal(errorOf(fixture.call(ALICE, 'publish', body)), 'VersionExists');
+  });
+
+  test('waits for the threshold of maintainers, and for people', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    let robot = 'did:plc:robotrobotrobotrobotrobo';
+    var maintainers = new Maintainers([Maintainer.ofDid(ALICE, OWNER), Maintainer.ofDid(BOB, PUBLISHER),
+        new Maintainer(robot, null, null, null, PUBLISHER, true)], 2 as i64);
+    maintainers.humans = 3 as i64;
+    var swap = (pkg['maintainers'] as JsonObject)['cid'] as String;
+    // Two people cannot meet humans: 3.
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, maintainers, [], swap)), 'InvalidRequest');
+    maintainers.humans = 1 as i64;
+    swap = ok(putMaintainers(fixture, ALICE, pkgDid, maintainers, [], swap))['cid'] as String;
+
+    let held = ok(fixture.call(BOB, 'publish',
+        `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0')))}}`));
+    let uri = held['uri'] as String;
+    let cid = held['cid'] as String;
+    // Automation alone is not enough, however many: it needs a person.
+    fixture.attest(robot, uri, cid);
+    let one = complete(fixture, BOB, pkgDid, '1.0.0');
+    equal(one['state'] as String, 'pending');
+    equal(approvedBy(one), robot);
+    equal((one['humans'] as Box<f64>).value as i32, 1);
+    // Bob and the robot make two, one of them a person.
+    fixture.attest(BOB, uri, cid);
+    let two = complete(fixture, BOB, pkgDid, '1.0.0');
+    equal(two['state'] as String, 'published');
+    equal(approvedBy(two), `${BOB} ${robot}`);
+  });
+
+  test('counts automation the host holds only together with a person', (ctx) => {
+    let fixture = new Fixture();
+    let router = seedBrowsable(fixture);
+    let bot = runFuture(fixture.pds.storage.accountByHandle('ci.acme.pkg.test')) as Account;
+    let current = runFuture(fixture.pds.storage.store(router).getRecord(MAINTAINERS_TYPE, 'self')) as Cid;
+    ok(putMaintainers(fixture, ALICE, router, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(bot.did, null, null, null, PUBLISHER, true)]), [], current.toString()));
+    let held = ok(fixture.call(ALICE, 'publish',
+        `{"package": "${router}", "release": ${releaseJson('2.0.0', upload(fixture, router, archiveOf(router, '2.0.0')))}}`));
+    let uri = held['uri'] as String;
+    let attestation = new Attestation(uri, Cid.parse(held['cid'] as String), '2026-10-29T00:00:00.000Z');
+    runFuture(fixture.pds.repositoryOf(bot).applyWrites([new CreateRecord(ATTESTATION_TYPE, attestation.recordKey(),
+        attestation.toValue()) as Write], 0 as i64));
+    // The host holds the bot's keys, so the bot alone could be the host.
+    let alone = complete(fixture, ALICE, router, '2.0.0');
+    equal(alone['state'] as String, 'pending');
+    equal(approvedBy(alone), bot.did);
+    fixture.attest(ALICE, uri, held['cid'] as String);
+    equal(complete(fixture, ALICE, router, '2.0.0')['state'] as String, 'published');
+  });
+
+  test('frees a version its release was withdrawn from, or waited too long at', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    ok(putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        Maintainer.ofDid(BOB, PUBLISHER)]), [], (pkg['maintainers'] as JsonObject)['cid'] as String));
+    let blob = upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
+    let publish = (caller: String, created: String): Response => {
+      let release = new Release(Version.parse('1.0.0'), created, new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
+          new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+      return fixture.call(caller, 'publish', `{"package": "${pkgDid}", "release": ${stringify(toJson(release.toValue()))}}`);
+    };
+    let withdraw = (caller: String): Response =>
+        fixture.call(caller, 'withdrawRelease', `{"package": "${pkgDid}", "version": "1.0.0"}`);
+
+    // Alice's release: Bob, a publisher, may not withdraw it; Alice may.
+    ok(publish(ALICE, '2026-10-24T00:00:00.000Z'));
+    equal(errorOf(publish(BOB, '2026-10-25T00:00:00.000Z')), 'VersionExists');
+    equal(errorOf(withdraw(BOB)), 'Forbidden');
+    ok(withdraw(ALICE));
+    equal(errorOf(withdraw(ALICE)), 'ReleaseNotFound');
+    equal(errorOf(fixture.call(ALICE, 'completeRelease', `{"package": "${pkgDid}", "version": "1.0.0"}`)),
+        'ReleaseNotFound');
+
+    // Bob's: Alice, an owner, may withdraw it too, and Bob may.
+    ok(publish(BOB, '2026-10-25T00:00:00.000Z'));
+    ok(withdraw(ALICE));
+    ok(publish(BOB, '2026-10-26T00:00:00.000Z'));
+
+    // After seven days, it is gone, and the version is free.
+    let host = fixture.host as PackageHost;
+    let later = now().seconds * (1000000 as i64) + PENDING_MICROS + (1000000 as i64);
+    equal(runFuture(host.pendingReleases(ALICE, pkgDid, later)).length, 0);
+    var missing = '';
+    try {
+      runFuture(host.completeRelease(ALICE, pkgDid, '1.0.0', later));
+    } catch (e) {
+      missing = if (e is HostError) (e as HostError).error else e.message;
+    }
+    equal(missing, 'ReleaseNotFound');
+    ok(publish(ALICE, '2026-10-27T00:00:00.000Z'));
   });
 
   test('holds an account alone when its owners give no recovery keys', (ctx) => {
@@ -841,6 +1048,27 @@ export let tests = suite('pds:host', () => {
     isTrue(rows[2].contains('>1.0.0<') && rows[2].contains('href="/people/ci.acme.pkg.test"'), rows[2]);
   });
 
+  test('shows a release waiting for approval to its maintainers only', (ctx) => {
+    let fixture = new Fixture();
+    let router = seedBrowsable(fixture);
+    ok(fixture.call(ALICE, 'publish',
+        `{"package": "${router}", "release": ${releaseJson('2.0.0', upload(fixture, router, archiveOf(router, '2.0.0')))}}`));
+    let command = 'zena approve router.acme.pkg.test@2.0.0';
+    let alice = webCookie(fixture, ALICE);
+    let mine = pageOf(fixture.get('/packages/router.acme.pkg.test', alice));
+    isTrue(mine.contains('<h2>Waiting for approval</h2>') && mine.contains(command), mine);
+    isTrue(mine.contains('Needs 1 maintainer.'), mine);
+    let me = pageOf(fixture.get('/me', alice));
+    isTrue(me.contains('<h2>Waiting for approval</h2>') && me.contains(command) &&
+        me.contains('href="/packages/router.acme.pkg.test">router</a>'), me);
+    // Bob, who does not maintain router, and a visitor see only what is published.
+    for (let cookie in [webCookie(fixture, BOB), '']) {
+      let theirs = pageOf(fixture.get('/packages/router.acme.pkg.test', if (cookie == '') null else cookie));
+      isTrue(!theirs.contains('Waiting for approval') && !theirs.contains('2.0.0'), theirs);
+    }
+    isTrue(!pageOf(fixture.get('/me', webCookie(fixture, BOB))).contains('Waiting for approval'), 'not on Bob\'s /me');
+  });
+
   test('signs a person in to the pages with their service-auth token, and out', (ctx) => {
     let fixture = new Fixture();
     seedBrowsable(fixture);
@@ -963,9 +1191,11 @@ export let tests = suite('pds:host', () => {
     // Bob does not maintain router.
     equal(errorOf(fixture.call(BOB, 'uploadArtifact', 'bytes', `?package=${pkgDid}`, 'text/plain')), 'Forbidden');
     let blob = upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
-    ok(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`));
+    release(fixture, ALICE, pkgDid, '1.0.0', blob);
     equal(errorOf(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`)),
         'VersionExists');
+    equal(errorOf(fixture.call(BOB, 'completeRelease', `{"package": "${pkgDid}", "version": "1.0.0"}`)), 'Forbidden');
+    equal(errorOf(fixture.call(BOB, 'withdrawRelease', `{"package": "${pkgDid}", "version": "1.0.0"}`)), 'Forbidden');
     let missing = new BlobRef(Cid.forBlob('never uploaded'.toBytes()), 'text/plain', 14 as i64);
     equal(errorOf(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.1.0', missing)}}`)),
         'BlobNotFound');

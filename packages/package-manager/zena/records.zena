@@ -567,6 +567,8 @@ export final class Maintainers {
   threshold: i64;
   /** How many owners must attest a change to this record. */
   ownerThreshold: i64;
+  /** How many of a release's attestations must come from maintainers that are not automation. */
+  var humans: i64 = 0 as i64;
 
   new(maintainers: FixedArray<Maintainer>, threshold: i64 = 1 as i64, ownerThreshold: i64 = 1 as i64)
       : maintainers = maintainers, threshold = threshold, ownerThreshold = ownerThreshold;
@@ -609,8 +611,16 @@ export final class Maintainers {
       maintainers[i] = new Maintainer(did, commitment, org, team, role,
           automation is BoolValue && automation.value);
     }
-    return new Maintainers(maintainers, positive(map, 'threshold', what),
+    let record = new Maintainers(maintainers, positive(map, 'threshold', what),
         positive(map, 'ownerThreshold', what));
+    let humans = field(map, 'humans');
+    if (humans != null) {
+      if (!(humans is IntValue) || (humans as IntValue).value < (0 as i64)) {
+        throw new RecordError(`${what}: 'humans' is not a count`);
+      }
+      record.humans = (humans as IntValue).value;
+    }
+    return record;
   }
 
   toValue(): MapValue {
@@ -635,6 +645,9 @@ export final class Maintainers {
     map.entries['maintainers'] = new ListValue(items);
     map.entries['threshold'] = new IntValue(this.threshold);
     map.entries['ownerThreshold'] = new IntValue(this.ownerThreshold);
+    if (this.humans > (0 as i64)) {
+      map.entries['humans'] = new IntValue(this.humans);
+    }
     return map;
   }
 }

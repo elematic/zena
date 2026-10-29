@@ -1,0 +1,70 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.host.completeRelease",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Writes a release that 'dev.zena-lang.host.publish' holds to its package, once the attestations of it meet the package's maintainers record: its 'threshold' of maintainers, of whom 'humans' are people, and an automation account the host holds counts only together with a person. Until then it answers how far they are from enough, and writes nothing. The caller must be a maintainer of the package.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["package", "version"],
+          "properties": {
+            "package": {
+              "type": "string",
+              "format": "did",
+              "description": "A package on this host."
+            },
+            "version": {
+              "type": "string",
+              "description": "The version of a release the host holds."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "uri",
+            "cid",
+            "state",
+            "approvedBy",
+            "people",
+            "threshold",
+            "humans"
+          ],
+          "properties": {
+            "uri": {"type": "string", "format": "at-uri"},
+            "cid": {"type": "string", "format": "cid"},
+            "state": {
+              "type": "string",
+              "knownValues": ["pending", "published"],
+              "description": "'published' once the release record is in the package's repository."
+            },
+            "approvedBy": {
+              "type": "array",
+              "items": {"type": "string", "format": "did"},
+              "description": "The maintainers whose attestations name the release, in the maintainers record's order."
+            },
+            "people": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "How many of them are people, not automation."
+            },
+            "threshold": {"type": "integer", "minimum": 1},
+            "humans": {"type": "integer", "minimum": 0}
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "ReleaseNotFound",
+          "description": "The host holds no release of that version, and the package has none: it was never published, was withdrawn, or waited longer than seven days."
+        }
+      ]
+    }
+  }
+}

@@ -23,12 +23,13 @@ import {Future} from 'zena:async';
 import {App, Request, Response, Router} from 'zena:http';
 import {JsonArray, JsonBuilder, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {now} from 'wasi:clocks/system-clock';
+import {formatTimestamp} from 'zena:time';
 import {parseI32} from 'zena:core';
 import {div} from 'zena:math';
 import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
 import {MapValue, Value, fromJson, toJson} from 'atproto:data';
-import {Automation, Created, HostError, Membership, PackageHost} from './host.zena';
+import {Automation, Created, HostError, Membership, PENDING_MICROS, PackageHost, Tally} from './host.zena';
 import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, Repository, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {SessionError, Sessions, Tokens} from './sessions.zena';
@@ -305,7 +306,70 @@ function hostRoutes(router: Router, host: PackageHost): void {
       }
       let created = await host.publish(caller, input['package'] as String, fromJson(input['release']),
           nowMicros());
-      return writtenJson(created);
+      let answer = writtenJson(created);
+      answer['state'] = 'pending';
+      return answer;
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.completeRelease', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.completeRelease', async (caller): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['package'] is String) || !(input['version'] is String)) {
+        fail(res, 400, 'InvalidRequest', 'package and version are required');
+        return null;
+      }
+      let completion = await host.completeRelease(caller, input['package'] as String, input['version'] as String,
+          nowMicros());
+      let answer = tallyJson(completion.tally);
+      answer['uri'] = completion.uri;
+      answer['cid'] = completion.cid.toString();
+      answer['state'] = if (completion.published) 'published' else 'pending';
+      return answer;
+    });
+  });
+
+  router.get('/xrpc/dev.zena-lang.host.getPendingReleases', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.getPendingReleases', async (caller): Future<JsonObject | null> => {
+      let pkg = req.url.searchParams().get('package');
+      if (pkg == null || pkg == '') {
+        fail(res, 400, 'InvalidRequest', 'Missing required parameter: package');
+        return null;
+      }
+      let releases = new JsonArray();
+      for (let waiting in await host.pendingReleases(caller, pkg as String, nowMicros())) {
+        let held = waiting.release;
+        let entry = tallyJson(waiting.tally);
+        entry['version'] = held.version;
+        entry['uri'] = waiting.uri;
+        entry['cid'] = held.cid.toString();
+        entry['publisher'] = held.publisher;
+        entry['heldAt'] = formatTimestamp(held.heldAt * (1000 as i64));
+        entry['expiresAt'] = formatTimestamp((held.heldAt + PENDING_MICROS) * (1000 as i64));
+        entry['release'] = toJson(decodeCbor(held.record));
+        releases.push(entry);
+      }
+      let answer = new JsonObject();
+      answer['releases'] = releases;
+      return answer;
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.withdrawRelease', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.withdrawRelease', async (caller): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['package'] is String) || !(input['version'] is String)) {
+        fail(res, 400, 'InvalidRequest', 'package and version are required');
+        return null;
+      }
+      await host.withdrawRelease(caller, input['package'] as String, input['version'] as String, nowMicros());
+      return new JsonObject();
     });
   });
 
@@ -783,6 +847,20 @@ function swapOf(input: JsonObject): String | null {
 }
 
 /** The answer to a call that wrote a record: its AT-URI and CID. */
+/** Who attested a release, and what its maintainers record asks for. */
+function tallyJson(tally: Tally): JsonObject {
+  let approvedBy = new JsonArray();
+  for (let did in tally.approvedBy) {
+    approvedBy.push(did);
+  }
+  let answer = new JsonObject();
+  answer['approvedBy'] = approvedBy;
+  answer['people'] = new Box<f64>(tally.people as f64);
+  answer['threshold'] = new Box<f64>(tally.threshold as f64);
+  answer['humans'] = new Box<f64>(tally.humans as f64);
+  return answer;
+}
+
 function writtenJson(created: Created): JsonObject {
   let answer = new JsonObject();
   answer['uri'] = created.uri;

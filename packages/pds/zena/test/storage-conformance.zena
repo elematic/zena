@@ -14,7 +14,7 @@ import {MapValue, StringValue, newMap} from 'atproto:data';
 import {KeyType} from 'atproto:didkey';
 import {decodeCommit} from 'atproto:repo';
 import {MemberEntry, OWNER} from 'package-manager:records';
-import {HostStore} from 'pds:host';
+import {HostStore, PendingRelease} from 'pds:host';
 import {PlcLog} from 'pds:plc-directory';
 import {AppPassword, CredentialStore, RefreshSession} from 'pds:sessions';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
@@ -242,6 +242,33 @@ export function hostStoreConformance(make: () => HostStore): void {
     }
     equal(commitments, 2);
     equal(runFuture(store.entries(BOB)).length, 0);
+  });
+
+  test('holds each release of a package once, until it is dropped', (ctx) => {
+    let store = make();
+    let record = new FixedArray<u8>(3, 7 as u8);
+    let cid = Cid.forDagCbor(record);
+    isNull(runFuture(store.heldRelease(ALICE, '1.0.0')));
+    isTrue(runFuture(store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, BOB, 42 as i64))), 'held');
+    isTrue(!runFuture(store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 43 as i64))), 'taken');
+    isTrue(runFuture(store.holdRelease(ALICE, new PendingRelease('1.1.0', record, cid, BOB, 44 as i64))), 'another version');
+    isTrue(runFuture(store.holdRelease(BOB, new PendingRelease('1.0.0', record, cid, BOB, 45 as i64))), 'another package');
+    let held = runFuture(store.heldRelease(ALICE, '1.0.0'));
+    if (held == null) {
+      throw new Error('1.0.0 is not held');
+    }
+    equal(held.version, '1.0.0');
+    equal(hex.encode(held.record), '070707');
+    isTrue(held.cid.equals(cid), 'cid');
+    equal(held.publisher, BOB);
+    equal(held.heldAt, 42 as i64);
+    equal(runFuture(store.heldReleases(ALICE)).length, 2);
+    runFuture(store.dropRelease(ALICE, '1.0.0'));
+    isNull(runFuture(store.heldRelease(ALICE, '1.0.0')));
+    let rest = runFuture(store.heldReleases(ALICE));
+    equal(rest.length, 1);
+    equal(rest[0].version, '1.1.0');
+    isTrue(runFuture(store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 46 as i64))), 'held again');
   });
 }
 

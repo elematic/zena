@@ -30,7 +30,9 @@ the `zena` command. The design is in
      `zena scope info`, and `members.zena`, for `zena scope add`, `remove`
      and `members`, `zena team` and `zena owner`, which change who belongs
      through the host's `put*` methods, `retract.zena`, for
-     `zena retract`, and `ci.zena`, for `zena ci create`.
+     `zena retract`, `approve.zena`, for `zena approve`, which attests a
+     release waiting for its maintainers and asks the host to complete
+     it, and `ci.zena`, for `zena ci create`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked

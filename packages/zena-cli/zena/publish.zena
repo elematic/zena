@@ -97,7 +97,10 @@ export function publishCommand(args: ParsedArgs, options: Options): i32 {
       checkScope(args, host, target);
     }
     let manifest = readManifest(manifestText);
-    publish(session, host, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText));
+    let scope = scopeOf(args, target);
+    let approveAs = if (scope != null) `@${scope as String}/${manifest.name as String}` else manifest.did as String;
+    publish(session, host, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText),
+        approveAs);
     saveIfRefreshed(session);
   });
 }
@@ -370,9 +373,13 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
   return new PreparedRelease(release, archive);
 }
 
-/** Uploads and publishes `prepared`, `manifest`'s version of `target`, and attests it. */
+/**
+ * Uploads and publishes `prepared`, `manifest`'s version of `target`,
+ * attests it, and completes it, unless it waits for other maintainers to
+ * approve it, as `zena approve <approveAs>@<version>`.
+ */
 function publish(session: Session, host: Host, target: WorkspacePackage, manifest: Manifest,
-    prepared: PreparedRelease): void {
+    prepared: PreparedRelease, approveAs: String): void {
   let name = manifest.name as String;
   let did = manifest.did as String;
   let version = manifest.version as Version;
@@ -391,9 +398,47 @@ function publish(session: Session, host: Host, target: WorkspacePackage, manifes
   input['release'] = toJson(release.toValue());
   let published = runFuture(hostClient(session, host, 'dev.zena-lang.host.publish')
     .procedure('dev.zena-lang.host.publish', input)) as JsonObject;
-  let uri = published['uri'] as String;
-  attest(session, uri, Cid.parse(published['cid'] as String));
-  console.log(`Published ${name} ${version.toString()}: ${uri}`);
+  attest(session, published['uri'] as String, Cid.parse(published['cid'] as String));
+  completeRelease(session, host, did, version.toString(), `${name} ${version.toString()}`, approveAs);
+}
+
+/**
+ * Asks the host to write the release of `pkg` at `version`, which it holds
+ * until its maintainers' attestations are enough, and says whether it did
+ * or what the release waits for. `label` names the release, and
+ * `approveAs` the package, for `zena approve`.
+ */
+export function completeRelease(session: Session, host: Host, pkg: String, version: String, label: String,
+    approveAs: String): void {
+  let input = new JsonObject();
+  input['package'] = pkg;
+  input['version'] = version;
+  let answer = runFuture(hostClient(session, host, 'dev.zena-lang.host.completeRelease')
+    .procedure('dev.zena-lang.host.completeRelease', input)) as JsonObject;
+  if ((answer['state'] as String) == 'published') {
+    console.log(`Published ${label}: ${answer['uri'] as String}`);
+    return;
+  }
+  console.log(`${label} is waiting for approval: ${approvals(answer)}.`);
+  console.log(`Another maintainer approves it with: zena approve ${approveAs}@${version}`);
+}
+
+/**
+ * How far the attestations a `completeRelease` or `getPendingReleases`
+ * answer lists are from enough, as a phrase.
+ */
+export function approvals(answer: JsonObject): String {
+  let approved = (answer['approvedBy'] as JsonArray).length;
+  let people = (answer['people'] as Box<f64>).value as i32;
+  let threshold = (answer['threshold'] as Box<f64>).value as i32;
+  let humans = (answer['humans'] as Box<f64>).value as i32;
+  let needed = if (humans == 0) '' else if (humans == 1) ', one of them a person' else `, ${humans} of them people`;
+  let phrase = `approved by ${approved} of the ${threshold} maintainers it needs${needed}`;
+  if (approved >= threshold && people >= humans) {
+    // Enough, but for automation the host holds, which counts only with a person.
+    return `${phrase}; an automation account on the host counts only together with a person`;
+  }
+  return phrase;
 }
 
 /** Writes the maintainer's attestation of the record at `uri` to their own repository. */

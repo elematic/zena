@@ -35,6 +35,10 @@ does and see every account it holds, at `/admin`, and every private entry.
 `PDS_WEB_DIR` names the build of the pages' stylesheet and script
 (`packages/pds-web`), which it serves at `/assets/`.
 
+The host reads other PDSes, for maintainers' attestations and profiles,
+only at public HTTPS names. `PDS_PRIVATE_READS=1` lifts that, for a stack
+on one machine, such as the demo's.
+
 The atproto libraries it is built on are in [`packages/atproto`](../atproto).
 
 ## Commands

@@ -304,7 +304,8 @@ export let tests = suite('package-manager:records', () => {
         {"org": "did:plc:acmeacmeacmeacmeacmeacme", "team": "core", "role": "publisher"}
       ],
       "threshold": 2,
-      "ownerThreshold": 1
+      "ownerThreshold": 1,
+      "humans": 1
     }`;
     let record = Maintainers.fromValue(value(json));
     equal(record.maintainers.length, 3);
@@ -313,6 +314,7 @@ export let tests = suite('package-manager:records', () => {
     isTrue(record.maintainers[1].automation);
     equal(record.maintainers[2].team as String, 'core');
     equal(record.threshold, 2 as i64);
+    equal(record.humans, 1 as i64);
     jsonEqual(toJson(record.toValue()), parseJson(json));
   });
 
@@ -335,6 +337,8 @@ export let tests = suite('package-manager:records', () => {
     rejects(wrap('[{"org": "did:plc:acmeacmeacmeacmeacmeacme", "role": "owner"}]'));
     rejects(wrap('[{"did": "alice", "role": "owner"}]'));
     rejects(wrap('[{"did": "did:plc:alicealicealicealicealic", "role": "owner"}]', '"threshold": 0, "ownerThreshold": 1'));
+    rejects(wrap('[{"did": "did:plc:alicealicealicealicealic", "role": "owner"}]',
+        '"threshold": 1, "ownerThreshold": 1, "humans": -1'));
   });
 
   test("commits to a member's entry by its CID", (ctx) => {

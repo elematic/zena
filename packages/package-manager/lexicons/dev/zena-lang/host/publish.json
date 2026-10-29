@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Writes a release record to a package, at the record key equal to its version. The caller must be a maintainer of the package, and every blob the release references must have been uploaded with 'dev.zena-lang.host.uploadArtifact'. The release counts once the maintainers' threshold attests it.",
+      "description": "Checks a release of a package as every fetch will, and holds it, outside the package's repository, until the package's maintainers attest it and 'dev.zena-lang.host.completeRelease' writes it, at the record key equal to its version. Holding it reserves the version, for seven days. The caller must be a maintainer of the package, and every blob the release references must have been uploaded with 'dev.zena-lang.host.uploadArtifact'. Publishing a held release again, with the same record, answers the same.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -27,17 +27,26 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["uri", "cid"],
+          "required": ["uri", "cid", "state"],
           "properties": {
-            "uri": {"type": "string", "format": "at-uri"},
-            "cid": {"type": "string", "format": "cid"}
+            "uri": {
+              "type": "string",
+              "format": "at-uri",
+              "description": "Where the release record will be written, which an attestation names."
+            },
+            "cid": {
+              "type": "string",
+              "format": "cid",
+              "description": "The release record's CID, which an attestation names."
+            },
+            "state": {"type": "string", "knownValues": ["pending"]}
           }
         }
       },
       "errors": [
         {
           "name": "VersionExists",
-          "description": "The package has a release of that version. Releases are never replaced."
+          "description": "The package has a release of that version, or holds another release of it waiting for approval. Releases are never replaced."
         },
         {
           "name": "BlobNotFound",

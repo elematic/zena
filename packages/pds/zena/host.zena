@@ -19,10 +19,14 @@
 
 import {Future} from 'zena:async';
 import {HashMap, HashSet} from 'zena:collections';
-import {decodeCbor} from 'atproto:cbor';
+import {decodeCbor, encodeCbor} from 'atproto:cbor';
+import {readCar} from 'atproto:car';
+import {verifyRecordProof} from 'atproto:repo';
+import {fetch} from 'zena:fetch';
+import {timeout} from 'zena:task';
 import {BlobRef, MapValue, Value} from 'atproto:data';
 import {Cid} from 'atproto:cid';
-import {KeyType, PublicKey, parseDidKey} from 'atproto:didkey';
+import {KeyType, PublicKey, parseDidKey, verifySignature} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {Identity, IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
@@ -30,6 +34,9 @@ import {validateRelease} from 'package-manager:validate';
 import {Version} from 'package-manager:version';
 import {
   ADMIN,
+  ATTESTATION_TYPE,
+  Attestation,
+  attestationKey,
   MAINTAINER,
   MEMBER,
   MEMBERS_TYPE,
@@ -52,17 +59,31 @@ import {
   isValidPackageName,
   isValidScopeName
 } from 'package-manager:records';
+import {isPublicHttps} from './egress.zena';
 import {HandleRecords} from './handles.zena';
 import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {Sessions} from './sessions.zena';
 import {RotationKey} from './rotation.zena';
-import {formatTimestamp} from 'zena:time';
+import {formatTimestamp, milliseconds} from 'zena:time';
 import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
 import {compareKeys} from 'atproto:mst';
 
 /** The most recovery keys an account's genesis operation ranks above the host's keys. */
 let MAX_RECOVERY_KEYS = 3;
+
+/** How long a release waits for approval before its version is free again: seven days. */
+export let PENDING_MICROS: i64 = ((7 * 24 * 60 * 60) as i64) * (1000000 as i64);
+
+/** How long reading one maintainer's attestation from their PDS may take. */
+let ATTESTATION_READ_MILLISECONDS: i64 = 5000 as i64;
+
+/**
+ * The record at `collection/rkey` in the repository of `did`, an account
+ * on another PDS, or null. Tests replace how the host reads one; it reads
+ * from the account's PDS with the record's proof checked.
+ */
+export type RemoteRecords = (did: String, collection: String, rkey: String) => Future<Value | null>;
 
 /** A call the host refuses, with the XRPC error and HTTP status to answer with. */
 export class HostError extends Error {
@@ -98,6 +119,37 @@ export interface HostStore {
   /** The entries behind the commitments in `account`'s records. */
   entries(account: String): Future<Array<MemberEntry>>;
   addEntries(account: String, entries: Array<MemberEntry>): Future<void>;
+  /**
+   * Holds `release` of `pkg` until it is approved, unless a release of its
+   * version is held already. Returns whether it did: several servers may
+   * share the store, so the version is reserved with this one call.
+   */
+  holdRelease(pkg: String, release: PendingRelease): Future<boolean>;
+  /** The release of `pkg` held at `version`, or null. */
+  heldRelease(pkg: String, version: String): Future<PendingRelease | null>;
+  /** Every release of `pkg` held. */
+  heldReleases(pkg: String): Future<Array<PendingRelease>>;
+  /** Stops holding the release of `pkg` at `version`. */
+  dropRelease(pkg: String, version: String): Future<void>;
+}
+
+/**
+ * A release held back until its maintainers have attested it: the record
+ * the host will write, which is in no repository until then (`publish`,
+ * `completeRelease`).
+ */
+export final class PendingRelease {
+  version: String;
+  /** The release record's DAG-CBOR, as it will be written. */
+  record: FixedArray<u8>;
+  /** The record's CID, which the attestations name. */
+  cid: Cid;
+  /** Who published it. */
+  publisher: String;
+  /** When the host took it, in microseconds since the epoch. */
+  heldAt: i64;
+
+  new(this.version, this.record, this.cid, this.publisher, this.heldAt);
 }
 
 /** A scope and the organization it belongs to. */
@@ -120,6 +172,38 @@ export final class ClaimedName {
 /** The host's store in memory. */
 export final class MemoryHostStore implements HostStore {
   #scopes = new HashMap<String, String>();
+  /** Held releases by `<pkg> <version>`. */
+  #held = new HashMap<String, PendingRelease>();
+
+  async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
+    let key = `${pkg} ${release.version}`;
+    if (this.#held.has(key)) {
+      return false;
+    }
+    this.#held[key] = release;
+    return true;
+  }
+
+  async heldRelease(pkg: String, version: String): Future<PendingRelease | null> {
+    if (let (true, release) = this.#held.get(`${pkg} ${version}`)) {
+      return release;
+    }
+    return null;
+  }
+
+  async heldReleases(pkg: String): Future<Array<PendingRelease>> {
+    let held = new GrowableArray<PendingRelease>();
+    for (let entry in this.#held) {
+      if (entry.key.startsWith(`${pkg} `)) {
+        held.push(entry.value);
+      }
+    }
+    return held;
+  }
+
+  async dropRelease(pkg: String, version: String): Future<void> {
+    this.#held.delete(`${pkg} ${version}`);
+  }
   /** Claimed names by `<name>.<scope>`. */
   #names = new HashMap<String, ClaimedName>();
   #entries = new HashMap<String, GrowableArray<MemberEntry>>();
@@ -248,6 +332,11 @@ export final class HostConfig {
    * and every private entry.
    */
   admins = new HashSet<String>();
+  /**
+   * Whether the host may read PDSes on this machine or a private network,
+   * which only a stack on one machine needs (`PDS_PRIVATE_READS`).
+   */
+  var privateReads = false;
 
   new(serviceDid: String, domain: String, endpoint: String, rotationKey: RotationKey)
       : serviceDid = serviceDid, domain = domain, endpoint = endpoint, rotationKey = rotationKey {
@@ -280,6 +369,8 @@ export final class PackageHost {
    * without it, `createAutomationAccount` is not offered.
    */
   var sessions: Sessions | null = null;
+  /** Reads other PDSes' records in place of the host's own reading, as tests do; null reads them. */
+  var remoteRecords: RemoteRecords | null = null;
   pds: Pds;
   config: HostConfig;
   #store: HostStore;
@@ -507,8 +598,12 @@ export final class PackageHost {
   }
 
   /**
-   * `publish`: writes a release of `pkg`, at the record key equal to its
-   * version. Every blob it references must have been uploaded.
+   * `publish`: checks a release of `pkg` as every fetch will, and holds it
+   * until its maintainers have attested it (`completeRelease`), which
+   * reserves its version. Every blob it references must have been
+   * uploaded. Answers with the AT-URI and CID its record will have, which
+   * the attestations name. Publishing a release already held, with the
+   * same record, answers the same.
    */
   async publish(caller: String, pkg: String, releaseValue: Value, nowMicros: i64): Future<Created> {
     let account = await this.#maintainedPackage(caller, pkg);
@@ -529,8 +624,8 @@ export final class PackageHost {
     // it holds and the name its own profile record gives, and trusts
     // nothing the client checked.
     let source = release.artifact(SOURCE);
-    let held = if (source != null && source.blob != null) await store.getBlob((source.blob as BlobRef).cid) else null;
-    let problems = await validateRelease(release, pkg, if (held != null) held.bytes else new FixedArray<u8>(0, 0 as u8),
+    let archive = if (source != null && source.blob != null) await store.getBlob((source.blob as BlobRef).cid) else null;
+    let problems = await validateRelease(release, pkg, if (archive != null) archive.bytes else new FixedArray<u8>(0, 0 as u8),
         await this.#profileName(pkg), this.#resolver);
     if (problems.length > 0) {
       var message = `release ${version} of ${pkg} is not valid:`;
@@ -539,9 +634,201 @@ export final class PackageHost {
       }
       throw new HostError(400, 'InvalidRelease', message);
     }
-    let cid = await this.#write(account, RELEASE_TYPE, version, asMap(releaseValue), nowMicros);
-    return new Created(account.did, account.handle ?? account.did,
+    // The record as the repository will store it, and so its CID.
+    let record = encodeCbor(asMap(releaseValue));
+    let cid = Cid.forDagCbor(record);
+    let created = new Created(account.did, account.handle ?? account.did,
         `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
+    var held = await this.#held(pkg, version, nowMicros);
+    if (held == null) {
+      if (await this.#store.holdRelease(pkg, new PendingRelease(version, record, cid, caller, nowMicros))) {
+        return created;
+      }
+      // Another publish of the version holds it.
+      held = await this.#held(pkg, version, nowMicros);
+    }
+    if (held != null && (held as PendingRelease).cid.equals(cid)) {
+      return created;
+    }
+    throw new HostError(400, 'VersionExists', `${pkg} has a release ${version} waiting for approval`);
+  }
+
+  /**
+   * `completeRelease`: writes the release of `pkg` held at `version` once
+   * its maintainers' attestations meet the maintainers record (`#tally`),
+   * and stops holding it. The caller must be a maintainer. Until then it
+   * answers how far the attestations are from enough.
+   */
+  async completeRelease(caller: String, pkg: String, version: String, nowMicros: i64): Future<Completion> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    let uri = `at://${account.did}/${RELEASE_TYPE}/${version}`;
+    let written = await this.pds.storage.store(account.did).getRecord(RELEASE_TYPE, version);
+    let held = await this.#held(pkg, version, nowMicros);
+    if (held == null) {
+      if (written != null) {
+        // Another call completed it.
+        return new Completion(uri, written as Cid, true, new Tally());
+      }
+      throw new HostError(400, 'ReleaseNotFound', `${pkg} has no release ${version} waiting for approval`);
+    }
+    let release = held as PendingRelease;
+    let tally = await this.#tally(pkg, uri, release.cid);
+    if (!tally.enough) {
+      return new Completion(uri, release.cid, false, tally);
+    }
+    if (written == null) {
+      await this.#write(account, RELEASE_TYPE, version, asMap(decodeCbor(release.record)), nowMicros);
+    }
+    await this.#store.dropRelease(pkg, version);
+    return new Completion(uri, release.cid, true, tally);
+  }
+
+  /**
+   * `getPendingReleases`: the releases of `pkg` waiting for approval, each
+   * with its attestations so far. The caller must be a maintainer.
+   */
+  async pendingReleases(caller: String, pkg: String, nowMicros: i64): Future<Array<Waiting>> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    let waiting = new GrowableArray<Waiting>();
+    for (let release in await this.#store.heldReleases(pkg)) {
+      if (await this.#expired(pkg, release, nowMicros)) {
+        continue;
+      }
+      let uri = `at://${account.did}/${RELEASE_TYPE}/${release.version}`;
+      waiting.push(new Waiting(release, uri, await this.#tally(pkg, uri, release.cid)));
+    }
+    return waiting;
+  }
+
+  /**
+   * `withdrawRelease`: stops holding the release of `pkg` at `version`,
+   * which frees its version. Its publisher or an owner of `pkg` may.
+   */
+  async withdrawRelease(caller: String, pkg: String, version: String, nowMicros: i64): Future<void> {
+    await this.#maintainedPackage(caller, pkg);
+    let held = await this.#held(pkg, version, nowMicros);
+    if (held == null) {
+      throw new HostError(400, 'ReleaseNotFound', `${pkg} has no release ${version} waiting for approval`);
+    }
+    if ((held as PendingRelease).publisher != caller && (await this.#packageRole(pkg, caller)) != OWNER) {
+      throw new HostError(403, 'Forbidden', `${caller} neither published ${version} of ${pkg} nor owns it`);
+    }
+    await this.#store.dropRelease(pkg, version);
+  }
+
+  /** Whether the host may read `url` for someone (`isPublicHttps`, `HostConfig.privateReads`). */
+  mayRead(url: String): boolean {
+    return this.config.privateReads || isPublicHttps(url);
+  }
+
+  /** The release of `pkg` held at `version`, unless there is none or it has expired. */
+  async #held(pkg: String, version: String, nowMicros: i64): Future<PendingRelease | null> {
+    let held = await this.#store.heldRelease(pkg, version);
+    if (held == null || await this.#expired(pkg, held as PendingRelease, nowMicros)) {
+      return null;
+    }
+    return held;
+  }
+
+  /** Whether `release` has waited longer than `PENDING_MICROS`; one that has is dropped. */
+  async #expired(pkg: String, release: PendingRelease, nowMicros: i64): Future<boolean> {
+    if (nowMicros - release.heldAt <= PENDING_MICROS) {
+      return false;
+    }
+    await this.#store.dropRelease(pkg, release.version);
+    return true;
+  }
+
+  /**
+   * Who of `pkg`'s maintainers has attested the record at `uri` whose CID
+   * is `cid`, and whether that is enough for its maintainers record: its
+   * `threshold` of attestations, of which `humans` from people. An
+   * automation account this host holds counts only together with a
+   * person: the host holds its keys, so it could attest alone
+   * (package-manager.md, "Publishing a release").
+   */
+  async #tally(pkg: String, uri: String, cid: Cid): Future<Tally> {
+    let tally = new Tally();
+    let current = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
+    if (current == null) {
+      return tally;
+    }
+    let record = Maintainers.fromValue((current as CurrentRecord).value);
+    tally.threshold = record.threshold;
+    tally.humans = record.humans;
+    let attesters = await this.#attesterList(pkg, record);
+    let rkey = attestationKey(uri, cid);
+    // Every repository is asked at once.
+    let checks = new GrowableArray<Future<boolean>>();
+    for (let attester in attesters) {
+      checks.push(this.#attested(attester.did, uri, cid, rkey));
+    }
+    var hostAutomation = 0;
+    var otherAutomation = 0;
+    for (var i = 0; i < attesters.length; i += 1) {
+      if (!(await checks[i])) {
+        continue;
+      }
+      let attester = attesters[i];
+      tally.approvedBy.push(attester.did);
+      if (!attester.automation) {
+        tally.people += 1;
+      } else if ((await this.pds.storage.getAccount(attester.did)) != null) {
+        hostAutomation += 1;
+      } else {
+        otherAutomation += 1;
+      }
+    }
+    let counted = tally.people + otherAutomation + (if (tally.people > 0) hostAutomation else 0);
+    tally.enough = (counted as i64) >= record.threshold && (tally.people as i64) >= record.humans;
+    return tally;
+  }
+
+  /**
+   * Whether `did` has attested the record at `uri` whose CID is `cid`: an
+   * attestation at `rkey` in their repository naming it. An account this
+   * host holds is read from its storage; anyone else's from their PDS, with
+   * the record's proof checked against the signing key in their DID
+   * document, so their PDS cannot answer for them.
+   */
+  async #attested(did: String, uri: String, cid: Cid, rkey: String): Future<boolean> {
+    try {
+      var value: Value | null = null;
+      if ((await this.pds.storage.getAccount(did)) != null) {
+        let record = await this.#current(did, ATTESTATION_TYPE, rkey);
+        value = if (record != null) (record as CurrentRecord).value else null;
+      } else {
+        let reader = this.remoteRecords;
+        value = if (reader != null) await reader(did, ATTESTATION_TYPE, rkey)
+            else await timeout<Value | null>(milliseconds(ATTESTATION_READ_MILLISECONDS),
+                () => this.#provenRecord(did, ATTESTATION_TYPE, rkey))();
+      }
+      if (value == null) {
+        return false;
+      }
+      let attestation = Attestation.fromValue(value as Value);
+      return attestation.uri == uri && attestation.cid.equals(cid);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** The record at `collection/rkey` in `did`'s repository, from their PDS, with its proof checked. */
+  async #provenRecord(did: String, collection: String, rkey: String): Future<Value | null> {
+    let document = await this.#resolver.resolveDid(did);
+    let pds = document.pds;
+    let key = document.signingKey;
+    if (pds == null || key == null || !this.mayRead(pds as String)) {
+      return null;
+    }
+    let response = await fetch(`${pds as String}/xrpc/com.atproto.sync.getRecord?did=${did}&collection=${collection}&rkey=${rkey}`);
+    if (response.status != 200) {
+      return null;
+    }
+    let signer = key as PublicKey;
+    let proof = verifyRecordProof(readCar(await response.bytes()), did, collection, rkey,
+        (signed: FixedArray<u8>, signature: FixedArray<u8>) => verifySignature(signer, signed, signature));
+    return proof.record;
   }
 
   /**
@@ -659,32 +946,44 @@ export final class PackageHost {
    * (package-manager.md, "Private membership").
    */
   async attesters(pkg: String): Future<Array<String>> {
-    let found = new GrowableArray<String>();
-    let seen = new HashSet<String>();
-    let add = (did: String) => {
-      if (!seen.has(did)) {
-        seen.add(did);
-        found.push(did);
-      }
-    };
+    let dids = new GrowableArray<String>();
     let record = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
     if (record == null) {
-      return found;
+      return dids;
     }
-    let maintainers = Maintainers.fromValue((record as CurrentRecord).value);
-    for (let maintainer in maintainers.maintainers) {
+    for (let attester in await this.#attesterList(pkg, Maintainers.fromValue((record as CurrentRecord).value))) {
+      dids.push(attester.did);
+    }
+    return dids;
+  }
+
+  /**
+   * The people `record`, `pkg`'s maintainers record, names: by DID, by a
+   * commitment whose entry the host keeps, or as members of a team it
+   * names, each once, with whether they are automation.
+   */
+  async #attesterList(pkg: String, record: Maintainers): Future<Array<Attester>> {
+    let found = new GrowableArray<Attester>();
+    let seen = new HashSet<String>();
+    let add = (did: String, automation: boolean) => {
+      if (!seen.has(did)) {
+        seen.add(did);
+        found.push(new Attester(did, automation));
+      }
+    };
+    for (let maintainer in record.maintainers) {
       if (maintainer.did != null) {
-        add(maintainer.did as String);
+        add(maintainer.did as String, maintainer.automation);
       }
     }
     for (let entry in await this.#committed(pkg, await this.#commitmentsOf(pkg, MAINTAINERS_TYPE, 'self'))) {
-      add(entry.did);
+      add(entry.did, entry.automation);
     }
-    for (let maintainer in maintainers.maintainers) {
+    for (let maintainer in record.maintainers) {
       if (maintainer.org != null && maintainer.team != null) {
         let org = maintainer.org as String;
         for (let entry in await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE, maintainer.team as String))) {
-          add(entry.did);
+          add(entry.did, entry.automation);
         }
       }
     }
@@ -1106,6 +1405,9 @@ export final class PackageHost {
     }
     let entries = await this.#entriesBehind(pkg, commitments, entryValues);
     var owners = 0;
+    // People who could attest; a team could have any number.
+    var people = 0;
+    var teams = false;
     for (let maintainer in maintainers.maintainers) {
       let commitment = maintainer.commitment;
       if (commitment != null) {
@@ -1124,6 +1426,11 @@ export final class PackageHost {
       }
       if (maintainer.role == OWNER) {
         owners += 1;
+      }
+      if (maintainer.org != null) {
+        teams = true;
+      } else if (!maintainer.automation) {
+        people += 1;
       }
       // A bot is marked as one, in the record and its entry, so that the
       // log can count it only together with a person.
@@ -1147,6 +1454,10 @@ export final class PackageHost {
     if ((owners as i64) < maintainers.ownerThreshold || (maintainers.maintainers.length as i64) < maintainers.threshold) {
       throw new HostError(400, 'InvalidRequest',
           `${owners} owners of ${maintainers.maintainers.length} maintainers cannot meet the thresholds of ${maintainers.ownerThreshold} and ${maintainers.threshold}`);
+    }
+    if (!teams && (people as i64) < maintainers.humans) {
+      throw new HostError(400, 'InvalidRequest',
+          `${people} people among the maintainers cannot meet humans: ${maintainers.humans}`);
     }
     await this.#store.addEntries(pkg, entries.fresh);
     return await this.#put(account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue), swapRecord, nowMicros);
@@ -1468,6 +1779,45 @@ export final class NamedTeam {
   team: Team;
 
   new(this.name, this.team);
+}
+
+/** A maintainer who could attest a release, and whether they are automation. */
+final class Attester {
+  did: String;
+  automation: boolean;
+
+  new(this.did, this.automation);
+}
+
+/** A release's attestations, against what its maintainers record asks for. */
+export final class Tally {
+  /** The maintainers who attested it, in the record's order. */
+  approvedBy = new GrowableArray<String>();
+  /** How many of them are people. */
+  var people = 0;
+  var threshold: i64 = 1 as i64;
+  var humans: i64 = 0 as i64;
+  /** Whether they are enough. */
+  var enough = false;
+}
+
+/** What `completeRelease` did: whether it wrote the release, and its tally. */
+export final class Completion {
+  uri: String;
+  cid: Cid;
+  published: boolean;
+  tally: Tally;
+
+  new(this.uri, this.cid, this.published, this.tally);
+}
+
+/** A release waiting for approval, as `getPendingReleases` gives it. */
+export final class Waiting {
+  release: PendingRelease;
+  uri: String;
+  tally: Tally;
+
+  new(this.release, this.uri, this.tally);
 }
 
 /** A package, as `getPackage` reads it. */
