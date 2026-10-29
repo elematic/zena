@@ -121,14 +121,34 @@ export final class IdentityResolver {
     };
   }
 
-  /** The DID `handle` resolves to, or null when it resolves to none. */
+  /**
+   * The DID `handle` resolves to, or null when it resolves to none: its
+   * DNS TXT record, else its `/.well-known/atproto-did`. When the
+   * DNS-over-HTTPS resolver cannot be reached, HTTPS still answers, as for
+   * a handle under `bsky.social`; if it has nothing either, the resolver's
+   * failure is what is thrown, since the handle may have a DNS record no
+   * one could read.
+   */
   async resolveHandle(handle: String): Future<String | null> {
     if (!isValidHandle(handle)) {
       throw new IdentityError(`not a handle: ${handle}`);
     }
     let name = normalizeHandle(handle);
-    let fromDns = await this.#resolveHandleDns(name);
-    return fromDns ?? await this.#resolveHandleHttps(name);
+    var fromDns: String | null = null;
+    var dnsFailure: Error | null = null;
+    try {
+      fromDns = await this.#resolveHandleDns(name);
+    } catch (e) {
+      dnsFailure = e;
+    }
+    if (fromDns != null) {
+      return fromDns;
+    }
+    let fromHttps = await this.#resolveHandleHttps(name);
+    if (fromHttps == null && dnsFailure != null) {
+      throw dnsFailure as Error;
+    }
+    return fromHttps;
   }
 
   async #resolveHandleDns(handle: String): Future<String | null> {

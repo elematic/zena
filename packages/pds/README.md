@@ -128,7 +128,9 @@ key with
 `deploy` checks that the new revision answers `describeServer`. The
 certificate for the domain can take a while after `deploy:domain`.
 
-`zena` uses staging with two variables, which `deploy/staging.env` sets:
+`zena` uses staging with two variables, which `deploy/staging.env` sets;
+it also clears `ZENA_DNS_OVER_HTTPS`, which a shell that ran the demo still
+points at the demo's own resolver:
 
 ```sh
 source packages/pds/deploy/staging.env    # ZENA_PACKAGE_HOST and ZENA_PLC_DIRECTORY
