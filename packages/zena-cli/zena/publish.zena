@@ -15,7 +15,9 @@
  *
  * Publishing packs the package's files into a source archive, uploads it,
  * writes the release for the manifest's `version`, and writes the
- * maintainer's attestation of the release to their own repository.
+ * maintainer's attestation of the release to their own repository. The
+ * release is checked first, before the host is asked anything, so a
+ * package whose release would be refused is never created.
  *
  * The host is `--host`, else `ZENA_PACKAGE_HOST`, else
  * `https://pkg.zena-lang.dev`; its service DID and handle domain come from
@@ -52,6 +54,9 @@ import { configDir, currentSession, saveSession } from './login.zena';
 
 let DEFAULT_HOST = 'https://pkg.zena-lang.dev';
 
+/** A DID no package has, for checking a release before its package exists. */
+let STAND_IN_DID = 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa';
+
 /** A package host, as its `describeServer` describes it. */
 export final class Host {
   origin: String;
@@ -74,16 +79,25 @@ export function publishCommand(args: ParsedArgs, options: Options): i32 {
     refuseWitDependencies(target.manifest);
     refuseProblems(checkMetadata(target.manifest, target.manifestPath()));
     requirePublished(dependenciesOf(target, target.manifest));
+    var manifestText = target.text as String;
+    if (target.manifest.did == null) {
+      // Everything about the release is checked before anything is asked
+      // of the host, let alone the package created: with a stand-in for
+      // the DID it will have, written into the manifest as createPackage
+      // writes the real one. Only the DID's value is left to check once
+      // it exists.
+      let draft = writeDid(manifestText, STAND_IN_DID, null);
+      prepareRelease(target, readManifest(draft), STAND_IN_DID, draft);
+    }
     let session = signedIn();
     let host = findHost(args);
-    var manifestText = target.text as String;
     if (target.manifest.did == null) {
       manifestText = createPackage(args, session, host, target);
     } else {
       checkScope(args, host, target);
     }
     let manifest = readManifest(manifestText);
-    publish(session, host, target, manifest);
+    publish(session, host, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText));
     saveIfRefreshed(session);
   });
 }
@@ -324,22 +338,47 @@ function recoveryDidKeys(): Array<String> {
   return [formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode(readFileSync(path).trim())))];
 }
 
-/** Packs, uploads and publishes `manifest`'s version of `target`, and attests it. */
-function publish(session: Session, host: Host, target: WorkspacePackage, manifest: Manifest): void {
-  let name = manifest.name as String;
-  let did = manifest.did as String;
+/** A release of a package, and the source archive it names, checked and ready to upload. */
+final class PreparedRelease {
+  release: Release;
+  archive: FixedArray<u8>;
+
+  new(this.release, this.archive);
+}
+
+/**
+ * `manifest`'s version of `target`, the package `did`, packed and checked
+ * as the host and every fetch will check it: its source archive, with
+ * `manifestText` as its `zena-package.json`, and its release record.
+ * Throws the problems found.
+ */
+function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: String, manifestText: String)
+    : PreparedRelease {
   if (manifest.version == null) {
     throw new PublishError(`${target.manifestPath()} has no version to publish`);
   }
-  let version = manifest.version as Version;
-  let archive = packSource(sourceFiles(target.dir));
+  let files = sourceFiles(target.dir);
+  files['zena-package.json'] = manifestText.toBytes() as FixedArray<u8>;
+  let archive = packSource(files);
   // The blob the host will store, named by its contents, so the release is
   // checked as the host and every fetch will check it before anything is
   // uploaded.
   let blob = new BlobRef(Cid.forBlob(archive), SOURCE_MIME_TYPE, archive.length as i64);
-  let release = new Release(version, formatTimestamp(nowNanos()),
+  let release = new Release(manifest.version as Version, formatTimestamp(nowNanos()),
       new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), dependenciesOf(target, manifest));
-  refuseProblems(runFuture(validateRelease(release, did, archive, name, packageResolver())));
+  refuseProblems(runFuture(validateRelease(release, did, archive, manifest.name as String, packageResolver())));
+  return new PreparedRelease(release, archive);
+}
+
+/** Uploads and publishes `prepared`, `manifest`'s version of `target`, and attests it. */
+function publish(session: Session, host: Host, target: WorkspacePackage, manifest: Manifest,
+    prepared: PreparedRelease): void {
+  let name = manifest.name as String;
+  let did = manifest.did as String;
+  let version = manifest.version as Version;
+  let archive = prepared.archive;
+  let release = prepared.release;
+  let blob = release.artifact(SOURCE) as Artifact;
 
   let uploaded = runFuture(hostClient(session, host, 'dev.zena-lang.host.uploadArtifact')
     .upload('dev.zena-lang.host.uploadArtifact', SOURCE_MIME_TYPE, archive, [('package', did)]))
