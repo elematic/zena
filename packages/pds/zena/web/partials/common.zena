@@ -7,6 +7,7 @@
 
 import {GrowableArray} from 'zena:core';
 import {HTMLPartial, TemplateValue, html} from 'zena:http';
+import {URL} from 'zena:url';
 
 /** A chip: `text` in a pill, colored by `kind`, one of `app.css`'s `chip-*` classes. */
 export function chip(text: String, kind: String = 'neutral'): HTMLPartial {
@@ -25,6 +26,24 @@ export function each<T>(items: Array<T>, render: (item: T) => TemplateValue): Ar
     rendered.push(render(item));
   }
   return rendered;
+}
+
+/**
+ * A link to `url`, someone's own address such as a package's homepage,
+ * labelled `label`, when it is an `http:` or `https:` URL, and nothing
+ * otherwise. Escaping keeps a value inside its attribute, but not a
+ * `javascript:` URL from running on this host's origin when it is
+ * followed. The page vouches for no such link (`rel`).
+ */
+export function externalLink(url: String | null, label: String): TemplateValue {
+  if (url == null) {
+    return null;
+  }
+  let parsed = URL.parse(url as String);
+  if (parsed == null || (parsed.protocol != 'https:' && parsed.protocol != 'http:')) {
+    return null;
+  }
+  return html`<a href="${parsed.href}" rel="nofollow ugc noopener">${label}</a>`;
 }
 
 /** `content` when `condition` holds, else nothing. */
