@@ -1,0 +1,47 @@
+// @mode: run
+// @result: 111
+// `releaseOwned<T>(value)` releases what a `T` owns, as its implicit
+// drop would, so a generic body can release a value only its use site
+// knew to release: `Future`'s `[release]` (owner-futures.md, "Releasing
+// what nobody took"). At a type that owns nothing it releases nothing,
+// which is what a first-class specialization of the same body runs.
+
+import {Own, Disposable, WithDefault, defaultValue} from 'zena:core';
+
+@intrinsic('release_owned')
+declare function releaseOwned<scoped T>(value: T): void;
+
+var released = 0;
+
+resource class Res {
+  n: i32;
+  new(this.n);
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.n;
+  }
+}
+
+class Holder<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(v: T): void {
+    this.#value = v;
+  }
+  release(): void {
+    releaseOwned<T>(this.#value as T);
+  }
+}
+
+export let main = (): i32 => {
+  releaseOwned<Own<Res>>(new Res(1));
+  releaseOwned<i32>(5);
+  releaseOwned<(i32, Own<Res>)>((0, new Res(10)));
+
+  let owner = new Holder<Own<Res>>();
+  owner.put(new Res(100));
+  owner.release();
+
+  let plain = new Holder<i32>();
+  plain.put(7);
+  plain.release();
+  return released;
+};

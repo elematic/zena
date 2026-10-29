@@ -1529,6 +1529,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       return;
     }
     var opName = "";
+    var releases = false;
     for (let dec in decl.decorators) {
       if (dec.name == "intrinsic" && dec.args.length == 1) {
         let intrinsicName = decoratorStringArg(dec, 0) ?? "";
@@ -1536,8 +1537,23 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           opName = "==";
         } else if (intrinsicName == "hash") {
           opName = "hashCode";
+        } else if (intrinsicName == "release_owned") {
+          releases = true;
         }
       }
+    }
+    // `releaseOwned<T>` calls a resource's `:dispose`, or a future's
+    // `[release]`, on what its type argument owns.
+    if (releases && calleeFt != null) {
+      let releaseArgs = calleeFt.typeArguments;
+      if (releaseArgs != null) {
+        for (let ta in releaseArgs) {
+          let resolvedArg = resolveType(ta);
+          this.pass.notePendingStaticTargets(resolvedArg, ":dispose");
+          this.pass.notePendingStaticTargets(resolvedArg, ":release");
+        }
+      }
+      return;
     }
     if (opName == "") {
       return;

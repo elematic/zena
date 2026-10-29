@@ -689,6 +689,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             }
           }
         }
+        // `releaseOwned<T>` releases what a `T` owns at this
+        // specialization: a resource's `:dispose`, or a nested future's
+        // `[release]`.
+        let releaseArgs = func.typeArguments;
+        if (func.intrinsic != null && (func.intrinsic as String) == "release_owned" &&
+            releaseArgs != null) {
+          for (let ta in releaseArgs as Array<Type>) {
+            this.notePendingStaticTargets(ta, ":dispose");
+            this.notePendingStaticTargets(ta, ":release");
+          }
+        }
         // A synthesized :dispose releases each resource field the same way.
         let disposeOwner = func.classType;
         if (func.isSyntheticDispose && disposeOwner != null) {
