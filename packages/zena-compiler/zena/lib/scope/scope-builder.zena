@@ -670,8 +670,14 @@ export final class ScopeBuilder {
                 this.#exports[name] = sym;
               }
             } else {
+              // Predeclared by this statement, or declared before it, which
+              // the checker reports once this pattern resolves to that
+              // symbol (`bindPattern`): left unresolved, it reached codegen.
               let sym = this.#current.getLocal(name) as Symbol;
-              this.#allVariables.push(sym);
+              this.#symbols.record(pat, sym);
+              if (sym.declaration === pat) {
+                this.#allVariables.push(sym);
+              }
             }
           }
           case _: {
