@@ -1,90 +1,111 @@
 /**
- * `zena approve [<package>@]<version>`: approving a release that waits for
- * its maintainers (docs/design/package-manager.md, "Publishing a
- * release"). The host holds a published release out of the package's
- * repository until enough maintainers attest it. The command shows the
- * release, who published it, its dependencies, and who has approved it so
- * far; with `--yes` it writes the maintainer's attestation to their own
- * repository and asks the host to complete the release, as `zena publish`
- * does for the publisher's own.
+ * `zena approve`: approving what waits for its approvers
+ * (docs/design/package-manager.md, "Publishing a release" and "Adding and
+ * removing people").
  *
- * The package is a DID, a handle or `@scope/name` on the host, else the
- * package in the current directory.
+ * - `zena approve [<package>@]<version>`: a release. The host holds a
+ *   published release out of the package's repository until enough
+ *   maintainers attest it. The command shows the release, who published
+ *   it, its dependencies, and who has approved it so far.
+ * - `zena approve @<scope>` or `zena approve <package>`: the changes
+ *   waiting to an organization's members and teams, or to a package's
+ *   maintainers, which the host holds until enough owners, admins or team
+ *   maintainers of the record before each attest it. The command shows
+ *   who each change adds and removes, and the thresholds it changes.
+ *
+ * With `--yes` it writes the attestations to the caller's own repository
+ * and asks the host to complete each, as `zena publish` and `zena scope
+ * add` do for the caller's own. A package is a DID, a handle or
+ * `@scope/name` on the host, else the package in the current directory.
  */
 
 import { ParsedArgs } from 'zena:args';
 import { runFuture } from 'zena:async';
+import { HashSet } from 'zena:collections';
 import { JsonArray, JsonObject } from 'zena:json';
 import { Cid } from 'atproto:cid';
 import { fromJson } from 'atproto:data';
-import { Release } from 'package-manager:records';
+import {
+  MAINTAINERS_TYPE, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, Release, TEAM_TYPE, Team
+} from 'package-manager:records';
 import { Version } from 'package-manager:version';
 import { Options } from './env.zena';
-import { currentPackageDid, namedPackage } from './members.zena';
 import {
-  PublishError, approvals, attest, completeRelease, findHost, hostClient, runCommand, saveIfRefreshed, signedIn
+  Held, changeApprovals, completeChange, current, currentPackageDid, describeMaintainer, namedPackage, scopeDid,
+  visibleEntries
+} from './members.zena';
+import {
+  Host, PublishError, approvals, attest, completeRelease, findHost, hostClient, runCommand, saveIfRefreshed,
+  signedIn
 } from './publish.zena';
-import { GET_PENDING_RELEASES } from 'package-manager:host-methods';
+import { GET_PENDING_CHANGES, GET_PENDING_RELEASES } from 'package-manager:host-methods';
+import { Session } from 'atproto:session';
+
+let USAGE = 'zena approve [<package>@]<version> | @<scope> | <package> [--yes]';
 
 export function approveCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
     if (args.rest.length != 1) {
-      throw new PublishError('give the release: zena approve [<package>@]<version> [--yes]');
+      throw new PublishError(`give what to approve: ${USAGE}`);
     }
     let given = args.rest[0];
     let parts = given.split('@');
     let version = parts[parts.length - 1];
+    var isVersion = true;
     try {
       Version.parse(version);
     } catch (e) {
-      throw new PublishError(`'${version}' is not a version: zena approve [<package>@]<version>`);
+      isVersion = false;
     }
     let session = signedIn();
     let host = findHost(args);
-    let named = given.sliceBytes(0, given.length - version.length - 1);
-    let pkg = if (parts.length > 1) namedPackage(host, named) else currentPackageDid();
-    let label = if (parts.length > 1) named else pkg;
-
-    let pending = runFuture(hostClient(session, host, GET_PENDING_RELEASES)
-      .query(GET_PENDING_RELEASES, [('package', pkg)])) as JsonObject;
-    let releases = pending['releases'] as JsonArray;
-    var waiting: JsonObject | null = null;
-    for (var i = 0; i < releases.length; i += 1) {
-      let entry = releases[i] as JsonObject;
-      if ((entry['version'] as String) == version) {
-        waiting = entry;
-      }
+    if (isVersion) {
+      approveRelease(args, session, host, given, parts.length > 1, version);
+    } else {
+      approveChanges(args, session, host, given);
     }
-    if (waiting == null) {
-      throw new PublishError(`no release ${version} of ${label} is waiting for approval`);
-    }
-    let entry = waiting as JsonObject;
-    describe(entry, label);
-    let approvedBy = entry['approvedBy'] as JsonArray;
-    var mine = false;
-    for (var i = 0; i < approvedBy.length; i += 1) {
-      if ((approvedBy[i] as String) == session.did) {
-        mine = true;
-      }
-    }
-    if (!args.getFlag('yes')) {
-      if (mine) {
-        console.log(`You have approved it. Run again with --yes to ask ${host.origin} to complete it.`);
-      } else {
-        console.log(`Run again with --yes to approve it as ${session.handle}.`);
-      }
-      return;
-    }
-    if (!mine) {
-      attest(session, entry['uri'] as String, Cid.parse(entry['cid'] as String));
-    }
-    completeRelease(session, host, pkg, version, `${label} ${version}`, label);
     saveIfRefreshed(session);
   });
 }
 
+/** Shows, and with `--yes` approves, the release `version` of the package `given` names, or of this one. */
+function approveRelease(args: ParsedArgs, session: Session, host: Host, given: String, named: boolean,
+    version: String): void {
+  let name = given.sliceBytes(0, given.length - version.length - 1);
+  let pkg = if (named) namedPackage(host, name) else currentPackageDid();
+  let label = if (named) name else pkg;
+  let pending = runFuture(hostClient(session, host, GET_PENDING_RELEASES)
+    .query(GET_PENDING_RELEASES, [('package', pkg)])) as JsonObject;
+  let releases = pending['releases'] as JsonArray;
+  var waiting: JsonObject | null = null;
+  for (var i = 0; i < releases.length; i += 1) {
+    let entry = releases[i] as JsonObject;
+    if ((entry['version'] as String) == version) {
+      waiting = entry;
+    }
+  }
+  if (waiting == null) {
+    throw new PublishError(`no release ${version} of ${label} is waiting for approval`);
+  }
+  let entry = waiting as JsonObject;
+  describeRelease(entry, label);
+  let mine = listed(entry['approvedBy'] as JsonArray, session.did);
+  if (!args.getFlag('yes')) {
+    if (mine) {
+      console.log(`You have approved it. Run again with --yes to ask ${host.origin} to complete it.`);
+    } else {
+      console.log(`Run again with --yes to approve it as ${session.handle}.`);
+    }
+    return;
+  }
+  if (!mine) {
+    attest(session, entry['uri'] as String, Cid.parse(entry['cid'] as String));
+  }
+  completeRelease(session, host, pkg, version, `${label} ${version}`, label);
+}
+
 /** Prints what a maintainer approves: the release `entry` describes, of the package `label`. */
-function describe(entry: JsonObject, label: String): void {
+function describeRelease(entry: JsonObject, label: String): void {
   let release = Release.fromValue(fromJson(entry['release']));
   console.log(`${label} ${release.version.toString()}, published by ${entry['publisher'] as String} at ${entry['heldAt'] as String}`);
   console.log(`  record: ${entry['uri'] as String} (${entry['cid'] as String})`);
@@ -102,4 +123,166 @@ function describe(entry: JsonObject, label: String): void {
     console.log(`  approved by ${approvedBy[i] as String}`);
   }
   console.log(`It is ${approvals(entry)}, and waits until ${entry['expiresAt'] as String}.`);
+}
+
+/**
+ * Shows, and with `--yes` approves, the changes waiting to the records of
+ * the organization `@<scope>` or the package `given` names.
+ */
+function approveChanges(args: ParsedArgs, session: Session, host: Host, given: String): void {
+  let account = if (given.startsWith('@') && !given.contains('/')) scopeDid(host, given.sliceBytes(1, given.length))
+      else namedPackage(host, given);
+  let answer = runFuture(hostClient(session, host, GET_PENDING_CHANGES)
+    .query(GET_PENDING_CHANGES, [('account', account)])) as JsonObject;
+  let changes = answer['changes'] as JsonArray;
+  if (changes.length == 0) {
+    throw new PublishError(`no change to ${given} is waiting for approval`);
+  }
+  var unapproved = 0;
+  for (var i = 0; i < changes.length; i += 1) {
+    let change = changes[i] as JsonObject;
+    describeChange(session, host, account, given, change);
+    if (!approvedByMe(change, session.did)) {
+      unapproved += 1;
+    }
+  }
+  if (!args.getFlag('yes')) {
+    if (unapproved == 0) {
+      console.log(`You have approved them. Run again with --yes to ask ${host.origin} to complete them.`);
+    } else {
+      console.log(`Run again with --yes to approve ${if (changes.length == 1) 'it' else 'them'} as ${session.handle}.`);
+    }
+    return;
+  }
+  for (var i = 0; i < changes.length; i += 1) {
+    let change = changes[i] as JsonObject;
+    let uri = change['uri'] as String;
+    let cid = change['cid'] as String;
+    if (!approvedByMe(change, session.did)) {
+      attest(session, uri, Cid.parse(cid));
+    }
+    let what = whatChanges(change, given);
+    if (completeChange(session, host, uri, cid, what, given)) {
+      console.log(`Changed ${what}.`);
+    }
+  }
+}
+
+/** The record `change` is to, in words, of `given`. */
+function whatChanges(change: JsonObject, given: String): String {
+  let collection = change['collection'] as String;
+  if (collection == MEMBERS_TYPE) {
+    return `the members of ${given}`;
+  }
+  if (collection == TEAM_TYPE) {
+    return `the team ${change['rkey'] as String} of ${given}`;
+  }
+  return `the maintainers of ${given}`;
+}
+
+/** Prints a change waiting to one of `account`'s records: who it adds and removes, and the thresholds it changes. */
+function describeChange(session: Session, host: Host, account: String, given: String, change: JsonObject): void {
+  let collection = change['collection'] as String;
+  let rkey = change['rkey'] as String;
+  console.log(`${whatChanges(change, given)}, asked for by ${change['proposer'] as String} at ${change['heldAt'] as String}`);
+  console.log(`  record: ${change['uri'] as String} (${change['cid'] as String})`);
+  let held = current(account, collection, rkey);
+  let before = if (held == null) new GrowableArray<MemberEntry>()
+      else visibleEntries(session, host, account, if (collection == TEAM_TYPE) rkey else null);
+  let after = new GrowableArray<MemberEntry>();
+  let list = change['entries'] as JsonArray;
+  for (var i = 0; i < list.length; i += 1) {
+    after.push(MemberEntry.fromValue(fromJson(list[i])));
+  }
+  let record = fromJson(change['record']);
+  if (collection == MAINTAINERS_TYPE) {
+    let known = new GrowableArray<MemberEntry>();
+    for (let entry in before) {
+      known.push(entry);
+    }
+    for (let entry in after) {
+      known.push(entry);
+    }
+    let next = Maintainers.fromValue(record);
+    let previous = if (held == null) null else Maintainers.fromValue(fromJson((held as Held).value));
+    let was = maintainerLines(if (previous == null) [] else previous.maintainers, known);
+    let now = maintainerLines(next.maintainers, known);
+    printDifference(was, now);
+    if (previous != null) {
+      printThreshold('threshold', previous.threshold, next.threshold);
+      printThreshold('ownerThreshold', previous.ownerThreshold, next.ownerThreshold);
+      printThreshold('humans', previous.humans, next.humans);
+    }
+  } else {
+    printDifference(entryLines(before), entryLines(after));
+    if (held != null && collection == MEMBERS_TYPE) {
+      let previous = Members.fromValue(fromJson((held as Held).value));
+      let next = Members.fromValue(record);
+      printThreshold('ownerThreshold', previous.ownerThreshold, next.ownerThreshold);
+      printThreshold('adminThreshold', previous.adminThreshold, next.adminThreshold);
+    }
+    if (held != null && collection == TEAM_TYPE) {
+      printThreshold('threshold', Team.fromValue(fromJson((held as Held).value)).threshold,
+          Team.fromValue(record).threshold);
+    }
+  }
+  console.log(`It is ${changeApprovals(change)}, and waits until ${change['expiresAt'] as String}.`);
+}
+
+function entryLines(entries: Array<MemberEntry>): HashSet<String> {
+  let lines = new HashSet<String>();
+  for (let entry in entries) {
+    lines.add(`${entry.did} ${entry.role}${if (entry.automation) ' (automation)' else ''}`);
+  }
+  return lines;
+}
+
+function maintainerLines(maintainers: Array<Maintainer>, entries: Array<MemberEntry>): HashSet<String> {
+  let lines = new HashSet<String>();
+  for (let maintainer in maintainers) {
+    lines.add(`${describeMaintainer(maintainer, entries)} ${maintainer.role}${
+        if (maintainer.automation) ' (automation)' else ''}`);
+  }
+  return lines;
+}
+
+/** Prints what is in `now` and not `was`, as added, and the other way, as removed. */
+function printDifference(was: HashSet<String>, now: HashSet<String>): void {
+  for (let line in now) {
+    if (!was.has(line)) {
+      console.log(`  + ${line}`);
+    }
+  }
+  for (let line in was) {
+    if (!now.has(line)) {
+      console.log(`  - ${line}`);
+    }
+  }
+}
+
+function printThreshold(name: String, was: i64, now: i64): void {
+  if (was != now) {
+    console.log(`  ${name}: ${was} → ${now}`);
+  }
+}
+
+/** Whether `did` is among `list`'s strings. */
+function listed(list: JsonArray, did: String): boolean {
+  for (var i = 0; i < list.length; i += 1) {
+    if ((list[i] as String) == did) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether `did` has attested `change` in any of its requirements. */
+function approvedByMe(change: JsonObject, did: String): boolean {
+  let requirements = change['requirements'] as JsonArray;
+  for (var i = 0; i < requirements.length; i += 1) {
+    if (listed((requirements[i] as JsonObject)['approvedBy'] as JsonArray, did)) {
+      return true;
+    }
+  }
+  return false;
 }

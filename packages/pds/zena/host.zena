@@ -132,6 +132,21 @@ export interface HostStore {
   heldReleases(pkg: String): Future<Array<PendingRelease>>;
   /** Stops holding the release of `pkg` at `version`. */
   dropRelease(pkg: String, version: String): Future<void>;
+  /**
+   * Holds `change` to one of `account`'s records until it is approved, in
+   * place of any change to that record held before.
+   */
+  holdChange(account: String, change: PendingChange): Future<void>;
+  /** The change to `account`'s record at `collection/rkey` held, or null. */
+  heldChange(account: String, collection: String, rkey: String): Future<PendingChange | null>;
+  /** Every change to `account`'s records held. */
+  heldChanges(account: String): Future<Array<PendingChange>>;
+  /**
+   * Stops holding the change to `account`'s record at `collection/rkey`
+   * when it is the one whose new record's CID is `cid`, and not one held
+   * since in its place.
+   */
+  dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void>;
 }
 
 /**
@@ -151,6 +166,30 @@ export final class PendingRelease {
   heldAt: i64;
 
   new(this.version, this.record, this.cid, this.publisher, this.heldAt);
+}
+
+/**
+ * A change to an organization's members record or one of its teams, or to
+ * a package's maintainers record, held back until the record before it
+ * allows it: until enough of the roles that record names have attested
+ * the new one (`putMembers`, `putTeam`, `putMaintainers`,
+ * `completeChange`). Until then the record before it decides every role.
+ */
+export final class PendingChange {
+  collection: String;
+  rkey: String;
+  /** The new record's DAG-CBOR, as it will be written. */
+  record: FixedArray<u8>;
+  /** The new record's CID, which the attestations name. */
+  cid: Cid;
+  /** The CID of the record it replaces, or null for a new team. */
+  base: Cid | null;
+  /** Who asked for it. */
+  proposer: String;
+  /** When the host took it, in microseconds since the epoch. */
+  heldAt: i64;
+
+  new(this.collection, this.rkey, this.record, this.cid, this.base, this.proposer, this.heldAt);
 }
 
 /** A scope and the organization it belongs to. */
@@ -204,6 +243,39 @@ export final class MemoryHostStore implements HostStore {
 
   async dropRelease(pkg: String, version: String): Future<void> {
     this.#held.delete(`${pkg} ${version}`);
+  }
+
+  /** Held changes by `<account> <collection> <rkey>`. */
+  #changes = new HashMap<String, PendingChange>();
+
+  async holdChange(account: String, change: PendingChange): Future<void> {
+    this.#changes[`${account} ${change.collection} ${change.rkey}`] = change;
+  }
+
+  async heldChange(account: String, collection: String, rkey: String): Future<PendingChange | null> {
+    if (let (true, change) = this.#changes.get(`${account} ${collection} ${rkey}`)) {
+      return change;
+    }
+    return null;
+  }
+
+  async heldChanges(account: String): Future<Array<PendingChange>> {
+    let held = new GrowableArray<PendingChange>();
+    for (let entry in this.#changes) {
+      if (entry.key.startsWith(`${account} `)) {
+        held.push(entry.value);
+      }
+    }
+    return held;
+  }
+
+  async dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void> {
+    let key = `${account} ${collection} ${rkey}`;
+    if (let (true, change) = this.#changes.get(key)) {
+      if (change.cid.equals(cid)) {
+        this.#changes.delete(key);
+      }
+    }
   }
   /** Claimed names by `<name>.<scope>`. */
   #names = new HashMap<String, ClaimedName>();
@@ -1329,7 +1401,7 @@ export final class PackageHost {
           `${owners} owners and ${admins} admins or owners cannot meet the thresholds of ${members.ownerThreshold} and ${members.adminThreshold}`);
     }
     await this.#store.addEntries(org, entries.fresh);
-    return await this.#put(account, MEMBERS_TYPE, 'self', asMap(membersValue), swapRecord, nowMicros);
+    return await this.#propose(caller, account, MEMBERS_TYPE, 'self', asMap(membersValue), swapRecord, nowMicros);
   }
 
   /**
@@ -1363,7 +1435,7 @@ export final class PackageHost {
       }
     }
     await this.#store.addEntries(org, entries.fresh);
-    return await this.#put(account, TEAM_TYPE, name, asMap(teamValue), swapRecord, nowMicros);
+    return await this.#propose(caller, account, TEAM_TYPE, name, asMap(teamValue), swapRecord, nowMicros);
   }
 
   /**
@@ -1461,7 +1533,299 @@ export final class PackageHost {
           `${people} people among the maintainers cannot meet humans: ${maintainers.humans}`);
     }
     await this.#store.addEntries(pkg, entries.fresh);
-    return await this.#put(account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue), swapRecord, nowMicros);
+    return await this.#propose(caller, account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue), swapRecord,
+        nowMicros);
+  }
+
+  /**
+   * Holds `record`, which `caller` asks for at `collection/rkey`, in place
+   * of any change to it held before, until the record it replaces allows
+   * it (`completeChange`). `swapRecord`, when given, must be that record's
+   * CID now. Answers with the AT-URI and CID the new record will have,
+   * which the attestations name.
+   */
+  async #propose(caller: String, account: Account, collection: String, rkey: String, record: MapValue,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    let swap = swapCid(swapRecord);
+    let current = await this.pds.storage.store(account.did).getRecord(collection, rkey);
+    if (swap != null && (current == null || !(current as Cid).equals(swap))) {
+      throw new HostError(400, 'InvalidSwap', `${collection}/${rkey} is not ${swap.toString()}`);
+    }
+    let bytes = encodeCbor(record);
+    let cid = Cid.forDagCbor(bytes);
+    await this.#store.holdChange(account.did, new PendingChange(collection, rkey, bytes, cid, current, caller,
+        nowMicros));
+    return new Created(account.did, account.handle ?? account.did, `at://${account.did}/${collection}/${rkey}`, cid);
+  }
+
+  /**
+   * `completeChange`: writes the change held to the record at `uri` once
+   * the record it replaces allows it (`#changeTally`), and stops holding
+   * it. Until then it answers how far the attestations are from enough.
+   * The caller must have a role in the account. A change asked for before
+   * the record last changed is dropped: the roles that were to approve it
+   * may have changed. With `cid`, a record that is already the one with
+   * that CID answers as written, so a second call after the first wrote
+   * it does not fail.
+   */
+  async completeChange(caller: String, uri: String, cid: Cid | null, nowMicros: i64): Future<ChangeCompletion> {
+    let target = await this.#changeTarget(uri);
+    await this.#requireRole(caller, target);
+    let did = target.account.did;
+    let current = await this.pds.storage.store(did).getRecord(target.collection, target.rkey);
+    let held = await this.#heldChange(target, nowMicros);
+    if (held == null) {
+      if (cid != null && current != null && (current as Cid).equals(cid as Cid)) {
+        return new ChangeCompletion(uri, cid as Cid, true, new ChangeTally());
+      }
+      throw new HostError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
+    }
+    let change = held as PendingChange;
+    let base = change.base;
+    if ((base == null) != (current == null) || (base != null && !base.equals(current as Cid))) {
+      await this.#store.dropChange(did, target.collection, target.rkey, change.cid);
+      throw new HostError(400, 'InvalidSwap', `${uri} changed after this change was asked for: ask for it again`);
+    }
+    let tally = await this.#changeTally(target, change, uri);
+    if (!tally.enough) {
+      return new ChangeCompletion(uri, change.cid, false, tally);
+    }
+    let record = asMap(decodeCbor(change.record));
+    await this.#apply(target.account,
+        if (current != null) new UpdateRecord(target.collection, target.rkey, record, current) as Write
+        else new CreateRecord(target.collection, target.rkey, record) as Write,
+        nowMicros);
+    await this.#store.dropChange(did, target.collection, target.rkey, change.cid);
+    return new ChangeCompletion(uri, change.cid, true, tally);
+  }
+
+  /**
+   * `getPendingChanges`: the changes to `account`'s records waiting for
+   * approval, each with its attestations so far, and the entries behind
+   * the new record's commitments, as `getEntries` would show them once it
+   * is written. The caller must have a role in the account.
+   */
+  async pendingChanges(caller: String, account: String, nowMicros: i64): Future<Array<WaitingChange>> {
+    let held = await this.pds.storage.getAccount(account);
+    if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
+      throw new HostError(400, 'InvalidRequest', `${account} is not an organization or package on this host`);
+    }
+    let found = held as Account;
+    let waiting = new GrowableArray<WaitingChange>();
+    var checked = false;
+    for (let change in await this.#store.heldChanges(account)) {
+      let target = new ChangeTarget(found, change.collection, change.rkey);
+      if (!checked) {
+        await this.#requireRole(caller, target);
+        checked = true;
+      }
+      if (nowMicros - change.heldAt > PENDING_MICROS) {
+        await this.#store.dropChange(account, change.collection, change.rkey, change.cid);
+        continue;
+      }
+      let uri = `at://${account}/${change.collection}/${change.rkey}`;
+      let entry = new WaitingChange(change, uri, await this.#changeTally(target, change, uri));
+      let seesAll = await this.#seesAll(caller, found,
+          if (change.collection == TEAM_TYPE) change.rkey else null);
+      for (let member in await this.#committed(account, commitmentsIn(change.collection,
+          decodeCbor(change.record)))) {
+        if (seesAll || member.did == caller) {
+          entry.entries.push(member);
+        }
+      }
+      waiting.push(entry);
+    }
+    if (!checked) {
+      await this.#requireRole(caller, new ChangeTarget(found, '', ''));
+    }
+    return waiting;
+  }
+
+  /**
+   * `withdrawChange`: stops holding the change to the record at `uri`. The
+   * one who asked for it may, and anyone who sees every entry behind the
+   * record: an organization's owners and admins, a team's maintainers, a
+   * package's owners.
+   */
+  async withdrawChange(caller: String, uri: String, nowMicros: i64): Future<void> {
+    let target = await this.#changeTarget(uri);
+    await this.#requireRole(caller, target);
+    let held = await this.#heldChange(target, nowMicros);
+    if (held == null) {
+      throw new HostError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
+    }
+    let change = held as PendingChange;
+    if (change.proposer != caller && !(await this.#seesAll(caller, target.account,
+        if (target.collection == TEAM_TYPE) target.rkey else null))) {
+      throw new HostError(403, 'Forbidden', `${caller} neither asked for the change to ${uri} nor can approve it`);
+    }
+    await this.#store.dropChange(target.account.did, target.collection, target.rkey, change.cid);
+  }
+
+  /** The record of members, a team or maintainers `uri` names, on this host. */
+  async #changeTarget(uri: String): Future<ChangeTarget> {
+    let parts = if (uri.startsWith('at://')) uri.sliceBytes(5, uri.length).split('/') else new FixedArray<String>(0, '');
+    if (parts.length != 3) {
+      throw new HostError(400, 'InvalidRequest', `'${uri}' is not the AT-URI of a record`);
+    }
+    let collection = parts[1];
+    let rkey = parts[2];
+    if (collection == MAINTAINERS_TYPE && rkey == 'self') {
+      return new ChangeTarget(await this.#account(parts[0], AccountKind.Package, 'a package'), collection, rkey);
+    }
+    if ((collection == MEMBERS_TYPE && rkey == 'self') || collection == TEAM_TYPE) {
+      return new ChangeTarget(await this.#account(parts[0], AccountKind.Organization, 'an organization'), collection,
+          rkey);
+    }
+    throw new HostError(400, 'InvalidRequest', `${uri} is not a members, team or maintainers record`);
+  }
+
+  /** Throws unless `caller` has a role in the account `target` is a record of. */
+  async #requireRole(caller: String, target: ChangeTarget): Future<void> {
+    let did = target.account.did;
+    let role = if (target.account.kind == AccountKind.Organization) await this.#orgRole(did, caller)
+        else await this.#packageRole(did, caller);
+    if (role == null) {
+      throw new HostError(403, 'Forbidden', `${caller} has no role in ${did}`);
+    }
+  }
+
+  /** The change held to `target`, unless there is none or it has expired. */
+  async #heldChange(target: ChangeTarget, nowMicros: i64): Future<PendingChange | null> {
+    let did = target.account.did;
+    let held = await this.#store.heldChange(did, target.collection, target.rkey);
+    if (held == null) {
+      return null;
+    }
+    if (nowMicros - held.heldAt > PENDING_MICROS) {
+      await this.#store.dropChange(did, target.collection, target.rkey, held.cid);
+      return null;
+    }
+    return held;
+  }
+
+  /**
+   * Whether the record `target` names, as it is now, allows `change`, which
+   * would replace it: whether enough of the roles it gives have attested
+   * the new record at `uri`.
+   *
+   * - An organization's members record: its `ownerThreshold` of owners.
+   * - A team: its `threshold` of the team's maintainers, or the
+   *   organization's `adminThreshold` of admins and owners; a new team, the
+   *   admins alone.
+   * - A package's maintainers record: its `ownerThreshold` of owners, each
+   *   listed by DID, by commitment, or as a member of a team in the owner
+   *   role.
+   *
+   * Only people count: automation chooses no one's roles.
+   */
+  async #changeTally(target: ChangeTarget, change: PendingChange, uri: String): Future<ChangeTally> {
+    let tally = new ChangeTally();
+    let did = target.account.did;
+    let rkey = attestationKey(uri, change.cid);
+    if (target.collection == MAINTAINERS_TYPE) {
+      let current = await this.#current(did, MAINTAINERS_TYPE, 'self');
+      if (current != null) {
+        let record = Maintainers.fromValue((current as CurrentRecord).value);
+        let owners = new GrowableArray<String>();
+        let entries = await this.#committed(did, await this.#commitmentsOf(did, MAINTAINERS_TYPE, 'self'));
+        for (let maintainer in record.maintainers) {
+          if (maintainer.role != OWNER || maintainer.automation) {
+            continue;
+          }
+          if (maintainer.did != null) {
+            owners.push(maintainer.did as String);
+          } else if (maintainer.commitment != null) {
+            for (let entry in entries) {
+              if (entry.commitment().equals(maintainer.commitment as Cid) && !entry.automation) {
+                owners.push(entry.did);
+              }
+            }
+          } else {
+            let org = maintainer.org as String;
+            for (let entry in await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE,
+                maintainer.team as String))) {
+              if (!entry.automation) {
+                owners.push(entry.did);
+              }
+            }
+          }
+        }
+        tally.requirements.push(await this.#requirement(OWNER, record.ownerThreshold, owners, uri, change.cid, rkey));
+      }
+    } else {
+      let members = await this.#current(did, MEMBERS_TYPE, 'self');
+      let record = if (members != null) Members.fromValue((members as CurrentRecord).value) else null;
+      // TODO(#713): the annotation is only for the compiler.
+      let entries: Array<MemberEntry> = if (record != null) await this.#committed(did, record.members) else [];
+      if (target.collection == MEMBERS_TYPE && record != null) {
+        tally.requirements.push(await this.#requirement(OWNER, record.ownerThreshold,
+            await this.#peopleIn(entries, (role) => role == OWNER), uri, change.cid, rkey));
+      }
+      if (target.collection == TEAM_TYPE) {
+        let team = await this.#current(did, TEAM_TYPE, target.rkey);
+        if (team != null) {
+          let current = Team.fromValue((team as CurrentRecord).value);
+          tally.requirements.push(await this.#requirement(MAINTAINER, current.threshold,
+              await this.#peopleIn(await this.#committed(did, current.members), (role) => role == MAINTAINER),
+              uri, change.cid, rkey));
+        }
+        if (record != null) {
+          tally.requirements.push(await this.#requirement(ADMIN, record.adminThreshold,
+              await this.#peopleIn(entries, (role) => isAdmin(role)), uri, change.cid, rkey));
+        }
+      }
+    }
+    for (let requirement in tally.requirements) {
+      if (requirement.met) {
+        tally.enough = true;
+      }
+    }
+    return tally;
+  }
+
+  /** The DIDs of `entries` in a role `matches` takes, but for automation. */
+  async #peopleIn(entries: Array<MemberEntry>, matches: (role: String) => boolean): Future<Array<String>> {
+    let people = new GrowableArray<String>();
+    for (let entry in entries) {
+      if (!entry.automation && matches(entry.role)) {
+        people.push(entry.did);
+      }
+    }
+    return people;
+  }
+
+  /**
+   * Which of `candidates`, in `role`, have attested the record at `uri`
+   * whose CID is `cid`, and whether `threshold` of them have. An
+   * automation account this host holds is never counted.
+   */
+  async #requirement(role: String, threshold: i64, candidates: Array<String>, uri: String, cid: Cid, rkey: String)
+      : Future<Requirement> {
+    let requirement = new Requirement(role, threshold);
+    let seen = new HashSet<String>();
+    let dids = new GrowableArray<String>();
+    for (let did in candidates) {
+      if (!seen.has(did)) {
+        seen.add(did);
+        let held = await this.pds.storage.getAccount(did);
+        if (held == null || held.kind != AccountKind.Automation) {
+          dids.push(did);
+        }
+      }
+    }
+    // Every repository is asked at once.
+    let checks = new GrowableArray<Future<boolean>>();
+    for (let did in dids) {
+      checks.push(this.#attested(did, uri, cid, rkey));
+    }
+    for (var i = 0; i < dids.length; i += 1) {
+      if (await checks[i]) {
+        requirement.approvedBy.push(dids[i]);
+      }
+    }
+    requirement.met = (requirement.approvedBy.length as i64) >= threshold;
+    return requirement;
   }
 
   /**
@@ -1478,31 +1842,20 @@ export final class PackageHost {
       throw new HostError(400, 'InvalidRequest', `${account} is not an organization or package on this host`);
     }
     var commitments: Array<Cid> = [];
-    // The host's admins see every entry, as its operator could anyway.
-    var seesAll = this.isHostAdmin(caller);
     if (held.kind == AccountKind.Organization) {
-      let role = await this.#orgRole(account, caller);
       if (team == null) {
         commitments = await this.#commitmentsOf(account, MEMBERS_TYPE, 'self');
-        seesAll = seesAll || isAdmin(role);
       } else {
         let name = team as String;
         if ((await this.#current(account, TEAM_TYPE, name)) == null) {
           throw new HostError(400, 'TeamNotFound', `${account} has no team ${name}`);
         }
         commitments = await this.#commitmentsOf(account, TEAM_TYPE, name);
-        seesAll = seesAll || isAdmin(role) || (await this.#teamRole(account, name, caller)) == MAINTAINER;
       }
     } else {
       commitments = await this.#commitmentsOf(account, MAINTAINERS_TYPE, 'self');
-      seesAll = seesAll || (await this.#packageRole(account, caller)) == OWNER;
-      if (!seesAll && held.handle != null) {
-        // `<name>.<scope>.<domain>`: the organization of the package's scope.
-        let labels = scopeOf(held.handle as String, this.config.domain).split('.');
-        let org = if (labels.length == 2) await this.#store.scopeOwner(labels[1]) else null;
-        seesAll = org != null && isAdmin(await this.#orgRole(org as String, caller));
-      }
     }
+    let seesAll = await this.#seesAll(caller, held as Account, team);
     let visible = new GrowableArray<MemberEntry>();
     for (let entry in await this.#committed(account, commitments)) {
       if (seesAll || entry.did == caller) {
@@ -1510,6 +1863,37 @@ export final class PackageHost {
       }
     }
     return visible;
+  }
+
+  /**
+   * Whether `caller` sees every entry behind the commitments of `account`,
+   * an organization or a package: of the members record, or of the team
+   * `team`, or of the maintainers record. An organization's owners and
+   * admins do, and its team's maintainers for the team; a package's owners,
+   * and the admins of its scope's organization; and the host's admins, as
+   * its operator could read the entries anyway.
+   */
+  async #seesAll(caller: String, account: Account, team: String | null): Future<boolean> {
+    if (this.isHostAdmin(caller)) {
+      return true;
+    }
+    let did = account.did;
+    if (account.kind == AccountKind.Organization) {
+      if (isAdmin(await this.#orgRole(did, caller))) {
+        return true;
+      }
+      return team != null && (await this.#teamRole(did, team as String, caller)) == MAINTAINER;
+    }
+    if ((await this.#packageRole(did, caller)) == OWNER) {
+      return true;
+    }
+    if (account.handle == null) {
+      return false;
+    }
+    // `<name>.<scope>.<domain>`: the organization of the package's scope.
+    let labels = scopeOf(account.handle as String, this.config.domain).split('.');
+    let org = if (labels.length == 2) await this.#store.scopeOwner(labels[1]) else null;
+    return org != null && isAdmin(await this.#orgRole(org as String, caller));
   }
 
   /** The account `did`, which must be of `kind`, described as `what` when it is not. */
@@ -1538,20 +1922,7 @@ export final class PackageHost {
     if (record == null) {
       return [];
     }
-    let value = (record as CurrentRecord).value;
-    if (collection == MEMBERS_TYPE) {
-      return Members.fromValue(value).members;
-    }
-    if (collection == TEAM_TYPE) {
-      return Team.fromValue(value).members;
-    }
-    let commitments = new GrowableArray<Cid>();
-    for (let maintainer in Maintainers.fromValue(value).maintainers) {
-      if (maintainer.commitment != null) {
-        commitments.push(maintainer.commitment as Cid);
-      }
-    }
-    return commitments;
+    return commitmentsIn(collection, (record as CurrentRecord).value);
   }
 
   /** The entries `account` keeps that `commitments` commit to. */
@@ -1681,6 +2052,74 @@ export final class PackageHost {
       throw e;
     }
   }
+}
+
+/** The commitments the members, team or maintainers record `value`, of `collection`, lists. */
+function commitmentsIn(collection: String, value: Value): Array<Cid> {
+  if (collection == MEMBERS_TYPE) {
+    return Members.fromValue(value).members;
+  }
+  if (collection == TEAM_TYPE) {
+    return Team.fromValue(value).members;
+  }
+  let commitments = new GrowableArray<Cid>();
+  for (let maintainer in Maintainers.fromValue(value).maintainers) {
+    if (maintainer.commitment != null) {
+      commitments.push(maintainer.commitment as Cid);
+    }
+  }
+  return commitments;
+}
+
+/** A members, team or maintainers record a change is to, and its account. */
+final class ChangeTarget {
+  account: Account;
+  collection: String;
+  rkey: String;
+
+  new(this.account, this.collection, this.rkey);
+}
+
+/**
+ * One way a change can be allowed: `threshold` attestations from those in
+ * `role` (`owner`, `admin` or `maintainer`) in the record it replaces.
+ */
+export final class Requirement {
+  role: String;
+  threshold: i64;
+  /** Who in the role has attested the new record. */
+  approvedBy = new GrowableArray<String>();
+  var met = false;
+
+  new(this.role, this.threshold);
+}
+
+/** A change's attestations, against each way the record it replaces allows it. */
+export final class ChangeTally {
+  /** Any one of them met is enough. */
+  requirements = new GrowableArray<Requirement>();
+  var enough = false;
+}
+
+/** What `completeChange` did: whether it wrote the record, and its tally. */
+export final class ChangeCompletion {
+  uri: String;
+  cid: Cid;
+  written: boolean;
+  tally: ChangeTally;
+
+  new(this.uri, this.cid, this.written, this.tally);
+}
+
+/** A change waiting for approval, as `getPendingChanges` gives it. */
+export final class WaitingChange {
+  change: PendingChange;
+  uri: String;
+  tally: ChangeTally;
+  /** The entries behind the new record's commitments that the caller may see. */
+  entries = new GrowableArray<MemberEntry>();
+
+  new(this.change, this.uri, this.tally);
 }
 
 /** An account the host made, as `listAccounts` describes it. */

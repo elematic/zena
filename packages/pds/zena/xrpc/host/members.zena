@@ -2,18 +2,24 @@
  * The host methods of who belongs: the caller's memberships, an
  * organization's members record and teams, a package's maintainers
  * record, and the private entries behind their commitments, for those
- * who may see them (package-manager.md, "Private membership").
+ * who may see them (package-manager.md, "Private membership"). A new
+ * members, team or maintainers record waits, held, until the record it
+ * replaces allows it (`completeChange`, package-manager.md, "Adding and
+ * removing people").
  */
 
 import {Future} from 'zena:async';
 import {Router} from 'zena:http';
 import {JsonArray, JsonObject} from 'zena:json';
+import {formatTimestamp} from 'zena:time';
+import {decodeCbor} from 'atproto:cbor';
 import {fromJson, toJson} from 'atproto:data';
 import {
-  DELETE_TEAM, GET_ENTRIES, GET_MEMBERSHIPS, PUT_MAINTAINERS, PUT_MEMBERS, PUT_TEAM
+  COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, GET_MEMBERSHIPS, GET_PENDING_CHANGES, PUT_MAINTAINERS, PUT_MEMBERS,
+  PUT_TEAM, WITHDRAW_CHANGE
 } from 'package-manager:host-methods';
-import {Membership, PackageHost} from '../../host.zena';
-import {fail, jsonBody, nowMicros} from '../common.zena';
+import {ChangeTally, Created, Membership, PENDING_MICROS, PackageHost} from '../../host.zena';
+import {fail, jsonBody, nowMicros, parseCid} from '../common.zena';
 import {entriesOf, hostProcedure, hostQuery, swapOf, writtenJson} from './common.zena';
 
 /** Adds the methods of memberships, members, teams, maintainers and entries to `router`. */
@@ -37,7 +43,7 @@ export function memberRoutes(router: Router, host: PackageHost): void {
       fail(res, 400, 'InvalidRequest', 'organization, members and entries are required');
       return null;
     }
-    return writtenJson(await host.putMembers(caller, input['organization'] as String, fromJson(input['members']),
+    return heldJson(await host.putMembers(caller, input['organization'] as String, fromJson(input['members']),
         entriesOf(input), swapOf(input), nowMicros()));
   });
 
@@ -51,7 +57,7 @@ export function memberRoutes(router: Router, host: PackageHost): void {
       fail(res, 400, 'InvalidRequest', 'organization, name, team and entries are required');
       return null;
     }
-    return writtenJson(await host.putTeam(caller, input['organization'] as String, input['name'] as String,
+    return heldJson(await host.putTeam(caller, input['organization'] as String, input['name'] as String,
         fromJson(input['team']), entriesOf(input), swapOf(input), nowMicros()));
   });
 
@@ -78,8 +84,74 @@ export function memberRoutes(router: Router, host: PackageHost): void {
       fail(res, 400, 'InvalidRequest', 'package and maintainers are required');
       return null;
     }
-    return writtenJson(await host.putMaintainers(caller, input['package'] as String,
+    return heldJson(await host.putMaintainers(caller, input['package'] as String,
         fromJson(input['maintainers']), entriesOf(input), swapOf(input), nowMicros()));
+  });
+
+  hostProcedure(router, host, COMPLETE_CHANGE, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    let given = input['cid'];
+    let cid = if (given is String) parseCid(given as String) else null;
+    if (!(input['uri'] is String) || (given != null && cid == null)) {
+      fail(res, 400, 'InvalidRequest', 'uri is required, and cid must be a CID');
+      return null;
+    }
+    let completion = await host.completeChange(caller, input['uri'] as String, cid, nowMicros());
+    let answer = changeTallyJson(completion.tally);
+    answer['uri'] = completion.uri;
+    answer['cid'] = completion.cid.toString();
+    answer['state'] = if (completion.written) 'written' else 'pending';
+    return answer;
+  });
+
+  hostQuery(router, host, GET_PENDING_CHANGES, async (req, res, caller): Future<JsonObject | null> => {
+    let account = req.url.searchParams().get('account');
+    if (account == null || account == '') {
+      fail(res, 400, 'InvalidRequest', 'Missing required parameter: account');
+      return null;
+    }
+    let changes = new JsonArray();
+    for (let waiting in await host.pendingChanges(caller, account as String, nowMicros())) {
+      let held = waiting.change;
+      let entry = changeTallyJson(waiting.tally);
+      entry['uri'] = waiting.uri;
+      entry['cid'] = held.cid.toString();
+      entry['collection'] = held.collection;
+      entry['rkey'] = held.rkey;
+      let base = held.base;
+      if (base != null) {
+        entry['base'] = base.toString();
+      }
+      entry['proposer'] = held.proposer;
+      entry['heldAt'] = formatTimestamp(held.heldAt * (1000 as i64));
+      entry['expiresAt'] = formatTimestamp((held.heldAt + PENDING_MICROS) * (1000 as i64));
+      entry['record'] = toJson(decodeCbor(held.record));
+      let entries = new JsonArray();
+      for (let member in waiting.entries) {
+        entries.push(toJson(member.toValue()));
+      }
+      entry['entries'] = entries;
+      changes.push(entry);
+    }
+    let answer = new JsonObject();
+    answer['changes'] = changes;
+    return answer;
+  });
+
+  hostProcedure(router, host, WITHDRAW_CHANGE, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['uri'] is String)) {
+      fail(res, 400, 'InvalidRequest', 'uri is required');
+      return null;
+    }
+    await host.withdrawChange(caller, input['uri'] as String, nowMicros());
+    return new JsonObject();
   });
 
   hostQuery(router, host, GET_ENTRIES, async (req, res, caller): Future<JsonObject | null> => {
@@ -99,6 +171,32 @@ export function memberRoutes(router: Router, host: PackageHost): void {
     answer['entries'] = list;
     return answer;
   });
+}
+
+/** The answer to a call that holds a change: the AT-URI and CID its record will have. */
+function heldJson(created: Created): JsonObject {
+  let answer = writtenJson(created);
+  answer['state'] = 'pending';
+  return answer;
+}
+
+/** Each way a change can be allowed, and who has attested it in that role. */
+function changeTallyJson(tally: ChangeTally): JsonObject {
+  let requirements = new JsonArray();
+  for (let requirement in tally.requirements) {
+    let approvedBy = new JsonArray();
+    for (let did in requirement.approvedBy) {
+      approvedBy.push(did);
+    }
+    let item = new JsonObject();
+    item['role'] = requirement.role;
+    item['threshold'] = new Box<f64>(requirement.threshold as f64);
+    item['approvedBy'] = approvedBy;
+    requirements.push(item);
+  }
+  let answer = new JsonObject();
+  answer['requirements'] = requirements;
+  return answer;
 }
 
 /** Memberships as `getMemberships` answers them, each with its role, and `kind`'s name for its name. */

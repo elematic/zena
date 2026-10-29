@@ -1,0 +1,91 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.host.completeChange",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Writes a change to a members, team or maintainers record that the host holds, once the record it replaces allows it: once, for any one of its requirements, the threshold of people in its role have attested the new record. Automation never counts. Until then it answers who has attested it, and writes nothing. A change asked for before the record last changed is dropped, since the roles that were to approve it may have changed. The caller must have a role in the organization or package.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["uri"],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "at-uri",
+              "description": "The record: an organization's members record or one of its teams, or a package's maintainers record."
+            },
+            "cid": {
+              "type": "string",
+              "format": "cid",
+              "description": "The new record's CID. When the record already has it, the answer is 'written', so a second call after the first wrote it does not fail."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["uri", "cid", "state", "requirements"],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "cid": {
+              "type": "string",
+              "format": "cid"
+            },
+            "state": {
+              "type": "string",
+              "knownValues": ["pending", "written"]
+            },
+            "requirements": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "#requirement"
+              },
+              "description": "The ways the record it replaces allows the change; any one met is enough."
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "ChangeNotFound",
+          "description": "The host holds no change to that record: none was asked for, it was withdrawn or written, or it waited longer than seven days."
+        },
+        {
+          "name": "InvalidSwap",
+          "description": "The record changed after the change was asked for. The change is dropped; ask for it again."
+        }
+      ]
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["role", "threshold", "approvedBy"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "knownValues": ["owner", "admin", "maintainer"],
+          "description": "The role, in the record the change replaces, whose attestations count."
+        },
+        "threshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "approvedBy": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "did"
+          },
+          "description": "Who in the role has attested the new record."
+        }
+      }
+    }
+  }
+}

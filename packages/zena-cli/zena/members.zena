@@ -9,10 +9,13 @@
  * from the host (`getEntries`); make the new person's entry, with a new
  * salt, or leave out the one removed; call the host's method with the new
  * record, the entries, and the CID read, so that a change someone else
- * made since is refused rather than overwritten; and attest the new record
- * in the caller's own repository. A change counts once the record before
- * it has the attestations its thresholds ask for, which with thresholds of
- * one is the caller's.
+ * made since is refused rather than overwritten; attest the new record in
+ * the caller's own repository; and ask the host to write it
+ * (`completeChange`). The host holds it until the record before it allows
+ * it: until enough of the owners, admins or team maintainers that record
+ * names have attested it, which with thresholds of one is the caller.
+ * Until then the command says what it waits for, and the others approve it
+ * with `zena approve` (`approve.zena`).
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -34,10 +37,12 @@ import {
   Host, PublishError, attest, findHost, hostClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
 } from './publish.zena';
 import { REPO_GET_RECORD } from 'atproto:methods';
-import { DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_TEAM } from 'package-manager:host-methods';
+import {
+  COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_TEAM
+} from 'package-manager:host-methods';
 
 /** A record in an account's repository, as it is now. */
-final class Held {
+export final class Held {
   value: JsonValue;
   cid: String;
   uri: String;
@@ -65,8 +70,9 @@ export function scopeAddCommand(args: ParsedArgs, options: Options): i32 {
     input['members'] = toJson(record.toValue());
     input['entries'] = entriesJson([added]);
     input['swapRecord'] = held.cid;
-    write(session, host, PUT_MEMBERS, input);
-    console.log(`Added ${person} to ${scope} as ${role}.${thresholdNote(members.ownerThreshold, 'owners')}`);
+    if (write(session, host, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+      console.log(`Added ${person} to ${scope} as ${role}.`);
+    }
     saveIfRefreshed(session);
   });
 }
@@ -92,8 +98,9 @@ export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
     input['members'] = toJson(record.toValue());
     input['entries'] = new JsonArray();
     input['swapRecord'] = held.cid;
-    write(session, host, PUT_MEMBERS, input);
-    console.log(`Removed ${person} from ${scope}.${thresholdNote(members.ownerThreshold, 'owners')}`);
+    if (write(session, host, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+      console.log(`Removed ${person} from ${scope}.`);
+    }
     saveIfRefreshed(session);
   });
 }
@@ -134,8 +141,9 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
       if (held != null) {
         throw new PublishError(`${scope} already has the team ${name}`);
       }
-      putTeam(session, host, org, name, new Team([]), [], null);
-      console.log(`Created the team ${scope}/${name}. Add its members with zena team add ${scope}/${name} <person>.`);
+      if (putTeam(session, host, scope, org, name, new Team([]), [], null)) {
+        console.log(`Created the team ${scope}/${name}. Add its members with zena team add ${scope}/${name} <person>.`);
+      }
     } else {
       if (held == null) {
         throw new PublishError(`${scope} has no team ${name}`);
@@ -165,8 +173,10 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
         } else if (entries.length == before.length) {
           throw new PublishError(`${person} is not on the team ${scope}/${name}`);
         }
-        putTeam(session, host, org, name, new Team(commitmentsOf(entries), team.threshold), fresh, found.cid);
-        console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${person} ${if (sub == 'add') 'to' else 'from'} ${scope}/${name}.${thresholdNote(team.threshold, 'maintainers')}`);
+        if (putTeam(session, host, scope, org, name, new Team(commitmentsOf(entries), team.threshold), fresh,
+            found.cid)) {
+          console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${person} ${if (sub == 'add') 'to' else 'from'} ${scope}/${name}.`);
+        }
       } else {
         throw new PublishError(usage);
       }
@@ -262,25 +272,81 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
     for (var i = 0; i < kept.length; i += 1) {
       maintainers[i] = kept[i];
     }
+    let changed = new Maintainers(maintainers, record.threshold, record.ownerThreshold);
+    changed.humans = record.humans;
     let input = new JsonObject();
     input['package'] = pkg;
-    input['maintainers'] = toJson(new Maintainers(maintainers, record.threshold, record.ownerThreshold).toValue());
+    input['maintainers'] = toJson(changed.toValue());
     input['entries'] = entriesJson(fresh);
     input['swapRecord'] = found.cid;
-    write(session, host, PUT_MAINTAINERS, input);
-    console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.${thresholdNote(record.ownerThreshold, 'owners')}`);
+    var approveAs = pkg;
+    if (let (true, given) = args.getOption('package')) {
+      approveAs = given;
+    }
+    if (write(session, host, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAs)) {
+      console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.`);
+    }
     saveIfRefreshed(session);
   });
 }
 
-/** Calls the host's `method` with `input`, and attests the record it wrote. */
-function write(session: Session, host: Host, method: String, input: JsonObject): void {
-  let written = runFuture(hostClient(session, host, method).procedure(method, input)) as JsonObject;
-  attest(session, written['uri'] as String, Cid.parse(written['cid'] as String));
+/**
+ * Asks the host for the change `method` makes with `input`, to `what`'s
+ * record, attests the new record, and asks the host to write it
+ * (`completeChange`). Returns whether it did.
+ */
+function write(session: Session, host: Host, method: String, input: JsonObject, what: String, approveAs: String)
+    : boolean {
+  let held = runFuture(hostClient(session, host, method).procedure(method, input)) as JsonObject;
+  let uri = held['uri'] as String;
+  let cid = held['cid'] as String;
+  attest(session, uri, Cid.parse(cid));
+  return completeChange(session, host, uri, cid, what, approveAs);
 }
 
-function putTeam(session: Session, host: Host, org: String, name: String, team: Team, fresh: Array<MemberEntry>,
-    swap: String | null): void {
+/**
+ * Asks the host to write the change to the record at `uri`, whose new
+ * record's CID is `cid`, once the record before it allows it. Returns
+ * whether it did; otherwise says what the change to `what` waits for, and
+ * the command that approves it, `zena approve <approveAs>`.
+ */
+export function completeChange(session: Session, host: Host, uri: String, cid: String, what: String,
+    approveAs: String): boolean {
+  let input = new JsonObject();
+  input['uri'] = uri;
+  input['cid'] = cid;
+  let answer = runFuture(hostClient(session, host, COMPLETE_CHANGE).procedure(COMPLETE_CHANGE, input))
+    as JsonObject;
+  if ((answer['state'] as String) == 'written') {
+    return true;
+  }
+  console.log(`The change to ${what} is waiting for approval: ${changeApprovals(answer)}.`);
+  console.log(`Another approves it with: zena approve ${approveAs}`);
+  return false;
+}
+
+/**
+ * How far the attestations a `completeChange` or `getPendingChanges`
+ * answer lists are from enough, as a phrase: each way the record before
+ * it allows the change, any one of which is enough.
+ */
+export function changeApprovals(answer: JsonObject): String {
+  let requirements = answer['requirements'] as JsonArray;
+  var phrase = '';
+  for (var i = 0; i < requirements.length; i += 1) {
+    let requirement = requirements[i] as JsonObject;
+    let role = requirement['role'] as String;
+    let who = if (role == 'admin') 'admins or owners of the organization'
+        else if (role == 'maintainer') "maintainers of the team" else 'owners';
+    let part = `approved by ${(requirement['approvedBy'] as JsonArray).length} of the ${
+        (requirement['threshold'] as Box<f64>).value as i32} ${who} it needs`;
+    phrase = if (phrase == '') part else `${phrase}, or ${part}`;
+  }
+  return phrase;
+}
+
+function putTeam(session: Session, host: Host, scope: String, org: String, name: String, team: Team,
+    fresh: Array<MemberEntry>, swap: String | null): boolean {
   let input = new JsonObject();
   input['organization'] = org;
   input['name'] = name;
@@ -289,15 +355,7 @@ function putTeam(session: Session, host: Host, org: String, name: String, team: 
   if (swap != null) {
     input['swapRecord'] = swap as String;
   }
-  write(session, host, PUT_TEAM, input);
-}
-
-/** What to say about a change whose record asks for more than one attestation. */
-function thresholdNote(threshold: i64, who: String): String {
-  if (threshold <= (1 as i64)) {
-    return '';
-  }
-  return ` You have attested it; it counts once ${threshold} ${who} have.`;
+  return write(session, host, PUT_TEAM, input, `the team ${scope}/${name}`, `@${scope}`);
 }
 
 /** The two arguments after the subcommand, or a `PublishError` showing `usage`. */
@@ -335,7 +393,7 @@ function teamName(text: String): (String, String) {
 }
 
 /** The organization of `scope` on `host`. */
-function scopeDid(host: Host, scope: String): String {
+export function scopeDid(host: Host, scope: String): String {
   let handle = `${scope}.${host.domain}`;
   let org = scopeOrganization(handle);
   if (org == null) {
@@ -395,7 +453,7 @@ export function currentPackageDid(): String {
 }
 
 /** The record at `collection/rkey` in `did`'s repository, or null. */
-function current(did: String, collection: String, rkey: String): Held | null {
+export function current(did: String, collection: String, rkey: String): Held | null {
   let document = runFuture(packageResolver().resolveDid(did));
   if (document.pds == null) {
     throw new PublishError(`${did} names no PDS`);
@@ -434,7 +492,7 @@ function allEntries(session: Session, host: Host, account: String, team: String 
 }
 
 /** The entries behind the record's commitments that the caller may see, from the host. */
-function visibleEntries(session: Session, host: Host, account: String, team: String | null)
+export function visibleEntries(session: Session, host: Host, account: String, team: String | null)
     : GrowableArray<MemberEntry> {
   var params: Array<(String, String)> = [('account', account)];
   if (team != null) {
@@ -498,7 +556,8 @@ function maintainerDid(maintainer: Maintainer, entries: Array<MemberEntry>): Str
   return null;
 }
 
-function describeMaintainer(maintainer: Maintainer, entries: Array<MemberEntry>): String {
+/** A maintainer as `zena owner list` shows them. */
+export function describeMaintainer(maintainer: Maintainer, entries: Array<MemberEntry>): String {
   if (maintainer.org != null) {
     return `the team ${maintainer.team as String} of ${maintainer.org as String}`;
   }

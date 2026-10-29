@@ -25,14 +25,14 @@ import {verifyRecordProof} from 'atproto:repo';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {
   ADMIN, ATTESTATION_TYPE, Artifact, Attestation, Dependency, MAINTAINER, MAINTAINERS_TYPE, MEMBER, Maintainer,
-  Maintainers, Members, OWNER, PUBLISHER, Profile,
-  RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, Team
+  MEMBERS_TYPE, Maintainers, Members, OWNER, PUBLISHER, Profile,
+  RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, TEAM_TYPE, Team
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
 import {
   ClaimedName, ClaimedScope, HostConfig, HostError, HostStore, MemoryHostStore, PENDING_MICROS, PackageHost,
-  PendingRelease
+  PendingChange, PendingRelease
 } from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
@@ -244,6 +244,16 @@ final class StaleHostStore implements HostStore {
   async heldRelease(pkg: String, version: String): Future<PendingRelease | null> { return null; }
   async heldReleases(pkg: String): Future<Array<PendingRelease>> { return await this.#inner.heldReleases(pkg); }
   async dropRelease(pkg: String, version: String): Future<void> { await this.#inner.dropRelease(pkg, version); }
+  async holdChange(account: String, change: PendingChange): Future<void> {
+    await this.#inner.holdChange(account, change);
+  }
+  async heldChange(account: String, collection: String, rkey: String): Future<PendingChange | null> {
+    return await this.#inner.heldChange(account, collection, rkey);
+  }
+  async heldChanges(account: String): Future<Array<PendingChange>> { return await this.#inner.heldChanges(account); }
+  async dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void> {
+    await this.#inner.dropChange(account, collection, rkey, cid);
+  }
 }
 
 function filled(value: i32): FixedArray<u8> {
@@ -345,28 +355,65 @@ function swapJson(swap: String | null): String {
   return if (swap == null) '' else `, "swapRecord": "${swap as String}"`;
 }
 
-/** `putMembers` as `caller`: a members record committing to `members`, sending `sent`. */
+/** `putMembers` as `caller`: a members record committing to `members`, sending `sent`, then `approved`. */
 function putMembers(fixture: Fixture, caller: String, org: String, members: Array<MemberEntry>,
+    sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64): Response {
+  return approved(fixture, caller, proposeMembers(fixture, caller, org, members, sent, swap, ownerThreshold));
+}
+
+/** `putMembers` as `caller`, which only holds the change. */
+function proposeMembers(fixture: Fixture, caller: String, org: String, members: Array<MemberEntry>,
     sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64): Response {
   let record = stringify(toJson(new Members(commitmentsOf(members), ownerThreshold).toValue()));
   return fixture.call(caller, 'putMembers',
       `{"organization": "${org}", "members": ${record}, "entries": ${entriesJson(sent)}${swapJson(swap)}}`);
 }
 
-/** `putTeam` as `caller`: `org`'s team `name`, committing to `members`, sending them all. */
+/** `putTeam` as `caller`: `org`'s team `name`, committing to `members`, sending them all, then `approved`. */
 function putTeam(fixture: Fixture, caller: String, org: String, name: String, members: Array<MemberEntry>,
-    swap: String | null): Response {
-  let record = stringify(toJson(new Team(commitmentsOf(members)).toValue()));
+    swap: String | null, threshold: i64 = 1 as i64): Response {
+  return approved(fixture, caller, proposeTeam(fixture, caller, org, name, members, swap, threshold));
+}
+
+/** `putTeam` as `caller`, which only holds the change. */
+function proposeTeam(fixture: Fixture, caller: String, org: String, name: String, members: Array<MemberEntry>,
+    swap: String | null, threshold: i64 = 1 as i64): Response {
+  let record = stringify(toJson(new Team(commitmentsOf(members), threshold).toValue()));
   return fixture.call(caller, 'putTeam',
       `{"organization": "${org}", "name": "${name}", "team": ${record}, "entries": ${entriesJson(members)}${swapJson(swap)}}`);
 }
 
-/** `putMaintainers` as `caller`, sending `sent`. */
+/** `putMaintainers` as `caller`, sending `sent`, then `approved`. */
 function putMaintainers(fixture: Fixture, caller: String, pkg: String, maintainers: Maintainers,
+    sent: Array<MemberEntry>, swap: String | null): Response {
+  return approved(fixture, caller, proposeMaintainers(fixture, caller, pkg, maintainers, sent, swap));
+}
+
+/** `putMaintainers` as `caller`, which only holds the change. */
+function proposeMaintainers(fixture: Fixture, caller: String, pkg: String, maintainers: Maintainers,
     sent: Array<MemberEntry>, swap: String | null): Response {
   let record = stringify(toJson(maintainers.toValue()));
   return fixture.call(caller, 'putMaintainers',
       `{"package": "${pkg}", "maintainers": ${record}, "entries": ${entriesJson(sent)}${swapJson(swap)}}`);
+}
+
+/**
+ * After a put that `held` answered, `caller`'s attestation of the new
+ * record and `completeChange`, whose answer it returns: `written` when the
+ * record before it allowed `caller` alone. A put that failed is `held`.
+ */
+function approved(fixture: Fixture, caller: String, held: Response): Response {
+  if (held.statusCode != 200) {
+    return held;
+  }
+  let body = json(held);
+  fixture.attest(caller, body['uri'] as String, body['cid'] as String);
+  return completeChange(fixture, caller, body['uri'] as String, body['cid'] as String);
+}
+
+/** `completeChange` of the record at `uri`, as `caller`. */
+function completeChange(fixture: Fixture, caller: String, uri: String, cid: String): Response {
+  return fixture.call(caller, 'completeChange', `{"uri": "${uri}", "cid": "${cid}"}`);
 }
 
 /** `uploadArtifact` as `caller`, which only a maintainer may do. */
@@ -806,6 +853,151 @@ export let tests = suite('pds:host', () => {
     ok(putMaintainers(fixture, BOB, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
         new Maintainer(null, bob.commitment(), null, null, OWNER)], 2 as i64), [], swap));
     ok(upload(fixture, BOB, pkgDid));
+  });
+
+  test('holds a change to the members until enough owners of the record before it attest it', (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let alice = entriesSeen(fixture, ALICE, orgDid)[0];
+    let bob = new MemberEntry(BOB, OWNER, filled(190));
+    // Alice alone owns acme, so her attestation makes Bob an owner, and the
+    // new record asks for two owners from then on.
+    var swap = ok(putMembers(fixture, ALICE, orgDid, [alice, bob], [bob],
+        (org['members'] as JsonObject)['cid'] as String, 2 as i64))['cid'] as String;
+
+    // Alice removes Bob: the change waits, and Bob is an owner until it is written.
+    let held = ok(proposeMembers(fixture, ALICE, orgDid, [alice], [], swap));
+    equal(held['state'] as String, 'pending');
+    let uri = held['uri'] as String;
+    let cid = held['cid'] as String;
+    equal(uri, `at://${orgDid}/dev.zena-lang.org.members/self`);
+    fixture.attest(ALICE, uri, cid);
+    let waiting = ok(completeChange(fixture, ALICE, uri, cid));
+    equal(waiting['state'] as String, 'pending');
+    let requirement = (waiting['requirements'] as JsonArray)[0] as JsonObject;
+    equal(requirement['role'] as String, OWNER);
+    equal((requirement['threshold'] as Box<f64>).value as i32, 2);
+    equal(approvedBy(requirement), ALICE);
+    isTrue((runFuture(fixture.pds.storage.store(orgDid).getRecord(MEMBERS_TYPE, 'self')) as Cid).toString() == swap,
+        'the record is unchanged');
+    equal(entriesSeen(fixture, BOB, orgDid).length, 2);
+
+    // Bob sees the change, with the entries the new record commits to.
+    let pending = ok(fixture.query(BOB, 'getPendingChanges', `?account=${orgDid}`))['changes'] as JsonArray;
+    equal(pending.length, 1);
+    let change = pending[0] as JsonObject;
+    equal(change['uri'] as String, uri);
+    equal(change['cid'] as String, cid);
+    equal(change['base'] as String, swap);
+    equal(change['proposer'] as String, ALICE);
+    equal((change['entries'] as JsonArray).length, 1);
+    equal(((change['entries'] as JsonArray)[0] as JsonObject)['did'] as String, ALICE);
+    equal(errorOf(fixture.query(BOB, 'getPendingChanges', `?account=did:plc:nonenonenonenonenonenone`)),
+        'InvalidRequest');
+
+    // A later change to the record takes its place, and Alice's attestation
+    // of the first counts for nothing toward it.
+    let carol = new MemberEntry('did:plc:carolcarolcarolcarolcaro', MEMBER, filled(191));
+    let later = ok(proposeMembers(fixture, ALICE, orgDid, [alice, carol], [carol], swap));
+    let laterCid = later['cid'] as String;
+    let replaced = ok(fixture.query(ALICE, 'getPendingChanges', `?account=${orgDid}`))['changes'] as JsonArray;
+    equal(replaced.length, 1);
+    equal((replaced[0] as JsonObject)['cid'] as String, laterCid);
+    equal(approvedBy(((ok(completeChange(fixture, ALICE, uri, laterCid))['requirements'] as JsonArray)[0])
+        as JsonObject), '');
+
+    // Both owners attest it, and it is written.
+    fixture.attest(ALICE, uri, laterCid);
+    fixture.attest(BOB, uri, laterCid);
+    let written = ok(completeChange(fixture, BOB, uri, laterCid));
+    equal(written['state'] as String, 'written');
+    equal(approvedBy((written['requirements'] as JsonArray)[0] as JsonObject), `${ALICE} ${BOB}`);
+    equal((runFuture(fixture.pds.storage.store(orgDid).getRecord(MEMBERS_TYPE, 'self')) as Cid).toString(), laterCid);
+    // Bob is no member now; completing again answers as written.
+    equal(errorOf(fixture.query(BOB, 'getPendingChanges', `?account=${orgDid}`)), 'Forbidden');
+    equal(ok(completeChange(fixture, ALICE, uri, laterCid))['state'] as String, 'written');
+    equal(errorOf(completeChange(fixture, ALICE, uri, cid)), 'ChangeNotFound');
+  });
+
+  test('lets a team\'s maintainers, or enough admins, change a team', (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let alice = entriesSeen(fixture, ALICE, orgDid)[0];
+    let bobMember = new MemberEntry(BOB, ADMIN, filled(200));
+    let members = stringify(toJson(new Members(commitmentsOf([alice, bobMember]), 1 as i64, 2 as i64).toValue()));
+    let put = fixture.call(ALICE, 'putMembers', `{"organization": "${orgDid}", "members": ${members}, "entries": ${
+        entriesJson([bobMember])}, "swapRecord": "${(org['members'] as JsonObject)['cid'] as String}"}`);
+    isTrue(ok(approved(fixture, ALICE, put))['state'] as String == 'written', 'Bob is an admin');
+
+    // A new team needs two admins now.
+    let bob = new MemberEntry(BOB, MAINTAINER, filled(201));
+    let created = ok(putTeam(fixture, ALICE, orgDid, 'core', [bob], null));
+    equal(created['state'] as String, 'pending');
+    let uri = created['uri'] as String;
+    let requirements = created['requirements'] as JsonArray;
+    equal(requirements.length, 1);
+    equal(((requirements[0] as JsonObject)['role'] as String), ADMIN);
+    isTrue(runFuture(fixture.pds.storage.store(orgDid).getRecord(TEAM_TYPE, 'core')) == null, 'no team yet');
+    fixture.attest(BOB, uri, created['cid'] as String);
+    var teamSwap = ok(completeChange(fixture, BOB, uri, created['cid'] as String))['cid'] as String;
+
+    // Bob, the team's maintainer, changes it alone: its threshold is 1.
+    let carol = new MemberEntry('did:plc:carolcarolcarolcarolcaro', MEMBER, filled(202));
+    let carolMember = new MemberEntry('did:plc:carolcarolcarolcarolcaro', MEMBER, filled(203));
+    let swap = runFuture(fixture.pds.storage.store(orgDid).getRecord(MEMBERS_TYPE, 'self')) as Cid;
+    ok(putMembers(fixture, ALICE, orgDid, [alice, bobMember, carolMember], [carolMember], swap.toString(),
+        1 as i64));
+    let byMaintainer = ok(putTeam(fixture, BOB, orgDid, 'core', [bob, carol], teamSwap));
+    equal(byMaintainer['state'] as String, 'written');
+    teamSwap = byMaintainer['cid'] as String;
+
+    // A change held to a team deleted since is dropped when completed.
+    let held = ok(proposeTeam(fixture, BOB, orgDid, 'core', [bob], teamSwap));
+    fixture.attest(BOB, held['uri'] as String, held['cid'] as String);
+    ok(fixture.call(ALICE, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`));
+    equal(errorOf(completeChange(fixture, BOB, held['uri'] as String, held['cid'] as String)), 'InvalidSwap');
+    equal(errorOf(completeChange(fixture, BOB, held['uri'] as String, held['cid'] as String)), 'ChangeNotFound');
+  });
+
+  test('holds a change of maintainers until enough owners attest it, and lets it be withdrawn', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    let robot = 'did:plc:robotrobotrobotrobotrobo';
+    let two = new Maintainers([Maintainer.ofDid(ALICE, OWNER), Maintainer.ofDid(BOB, OWNER),
+        new Maintainer(robot, null, null, null, PUBLISHER, true)], 1 as i64, 2 as i64);
+    var swap = ok(putMaintainers(fixture, ALICE, pkgDid, two, [], (pkg['maintainers'] as JsonObject)['cid'] as String))
+        ['cid'] as String;
+
+    // Alice drops Bob: he stays an owner until he attests it too.
+    let alone = new Maintainers([Maintainer.ofDid(ALICE, OWNER)]);
+    let held = ok(putMaintainers(fixture, ALICE, pkgDid, alone, [], swap));
+    equal(held['state'] as String, 'pending');
+    let uri = held['uri'] as String;
+    let cid = held['cid'] as String;
+    // The robot's attestation is not an owner's.
+    fixture.attest(robot, uri, cid);
+    equal(approvedBy((ok(completeChange(fixture, ALICE, uri, cid))['requirements'] as JsonArray)[0] as JsonObject),
+        ALICE);
+    equal((runFuture(fixture.pds.storage.store(pkgDid).getRecord(MAINTAINERS_TYPE, 'self')) as Cid).toString(), swap);
+    ok(upload(fixture, BOB, pkgDid));
+
+    // Bob, an owner, withdraws it; a URI of no account here is refused.
+    equal(errorOf(fixture.call(BOB, 'withdrawChange', '{"uri": "at://did:plc:x/dev.zena-lang.org.team/core"}')),
+        'InvalidRequest');
+    ok(fixture.call(BOB, 'withdrawChange', `{"uri": "${uri}"}`));
+    equal(errorOf(fixture.call(BOB, 'withdrawChange', `{"uri": "${uri}"}`)), 'ChangeNotFound');
+
+    // Asked for again, it expires after seven days.
+    ok(proposeMaintainers(fixture, ALICE, pkgDid, alone, [], swap));
+    let host = fixture.host as PackageHost;
+    let later = now().seconds * (1000000 as i64) + PENDING_MICROS + (1000000 as i64);
+    equal(runFuture(host.pendingChanges(ALICE, pkgDid, later)).length, 0);
+    fixture.attest(BOB, uri, cid);
+    equal(errorOf(completeChange(fixture, ALICE, uri, cid)), 'ChangeNotFound');
   });
 
   test('creates an automation account that signs in and publishes, as a publisher only', (ctx) => {
