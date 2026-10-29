@@ -211,6 +211,26 @@ export let tests = suite('atproto:xrpc, atproto:identity and atproto:sync', () =
     server.close();
   });
 
+  test('resolves a handle through HTTPS when the DNS-over-HTTPS resolver cannot be reached', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    let resolver = resolverFor(originOf(server));
+    // Nothing listens here, as when ZENA_DNS_OVER_HTTPS names a resolver
+    // that has stopped.
+    resolver.dnsOverHttps = 'http://127.0.0.1:1/dns-query';
+    world.wellKnownDid = `${DID}\n`;
+    equal(runFuture(resolver.resolveHandle('atproto.com')) as String, DID);
+    // With nothing over HTTPS either, the resolver's failure is the answer:
+    // the handle may have a DNS record no one could read.
+    world.wellKnownDid = null;
+    let failure = runFuture(message(async (): Future<String> => {
+      await resolver.resolveHandle('atproto.com');
+      return 'resolved';
+    }));
+    isTrue(failure.contains('127.0.0.1:1/dns-query'), failure);
+    server.close();
+  });
+
   test('checks a handle in both directions', (ctx) => {
     let world = new World();
     let server = startServer(world);
