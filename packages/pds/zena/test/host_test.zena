@@ -1138,6 +1138,28 @@ export let tests = suite('pds:host', () => {
     equal((ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages?scope=zeta'))['packages'] as JsonArray).length, 0);
   });
 
+  test('lets a scope\'s admins say how it presents itself, which its page shows', (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let alice = entriesSeen(fixture, ALICE, orgDid)[0];
+    let bob = new MemberEntry(BOB, MEMBER, filled(220));
+    ok(putMembers(fixture, ALICE, orgDid, [alice, bob], [bob], (org['members'] as JsonObject)['cid'] as String));
+    let put = (caller: String, profile: String): Response => fixture.call(caller, 'putScopeProfile',
+        `{"organization": "${orgDid}", "profile": {"$type": "dev.zena-lang.org.profile", ${profile}}}`);
+    let wanted = '"displayName": "Acme Corp", "description": "Routers & more", "website": "https://acme.example/"';
+    // Bob, a member, is no admin; a website must be a web address.
+    equal(errorOf(put(BOB, wanted)), 'Forbidden');
+    equal(errorOf(put(ALICE, '"website": "javascript:alert(1)"')), 'InvalidRequest');
+    let written = ok(put(ALICE, wanted));
+    equal(written['uri'] as String, `at://${orgDid}/dev.zena-lang.org.profile/self`);
+
+    let page = pageOf(fixture.get('/scopes/acme'));
+    isTrue(page.contains('<strong>Acme Corp</strong>') && page.contains('Routers &amp; more') &&
+        page.contains('href="https://acme.example/"') && page.contains('<title>Acme Corp · Zena packages</title>'),
+        page);
+  });
+
   test('links a package\'s homepage and source only when they are web addresses', (ctx) => {
     let fixture = new Fixture();
     let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;

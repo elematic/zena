@@ -1,4 +1,4 @@
-/** A scope's page: its packages, and its organization's members and teams. */
+/** A scope's page: its profile, its packages, and its organization's members and teams. */
 
 import {GrowableArray} from 'zena:core';
 import {Router, TemplateValue, html} from 'zena:http';
@@ -7,7 +7,7 @@ import {PackageHost, ScopeDetail} from '../../host.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {contextOf} from '../session.zena';
-import {when} from '../partials/common.zena';
+import {externalLink, when} from '../partials/common.zena';
 import {members, shownWith, visibleEntries} from '../partials/members.zena';
 import {packageList} from '../partials/packages.zena';
 import {notFound} from './not-found.zena';
@@ -39,11 +39,20 @@ export function scopePage(router: Router, host: PackageHost, people: People): vo
         <h3 class="mono">${named.name}</h3>
         ${members(named.team.members, shown, 'No members.')}`);
     }
+    let profile = found.profile;
+    let displayName = if (profile != null) profile.displayName else null;
+    let description = if (profile != null) profile.description else null;
+    let website = if (profile != null) profile.website else null;
     res.type = 'text/html; charset=utf-8';
-    res.body = page(`@${name} · Zena packages`, context, html`
+    res.body = page(`${displayName ?? `@${name}`} · Zena packages`, context, html`
       <div>
         <h1>@${name}</h1>
-        <div class="meta mono muted"><span>${found.handle}</span><span>${found.did}</span></div>
+        ${when(displayName != null, () => html`<p><strong>${displayName as String}</strong></p>`)}
+        ${when(description != null, () => html`<p>${description as String}</p>`)}
+        <div class="meta mono muted">
+          <span>${found.handle}</span><span>${found.did}</span>
+          ${externalLink(website, 'Website')}
+        </div>
       </div>
       <section>
         <h2>Packages</h2>

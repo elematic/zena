@@ -51,6 +51,18 @@ export let tests = suite('zena scope, team and owner', () => {
       let badRole = alice.run(['scope', 'add', 'acme', BOB, '--role', 'pope']);
       isTrue(!badRole.succeeded() && badRole.stderr.contains('not a role'), described(badRole));
 
+      // Alice says how the scope presents itself; Bob, no admin, cannot.
+      let profile = alice.run(['scope', 'profile', 'acme', '--name', 'Acme Corp', '--website', 'https://acme.example/']);
+      isTrue(profile.succeeded() && profile.stdout.contains('Changed the profile of acme'), described(profile));
+      let info = alice.run(['scope', 'info', 'acme']);
+      isTrue(info.succeeded() && info.stdout.contains('Name: Acme Corp') &&
+          info.stdout.contains('Website: https://acme.example/'), described(info));
+      let badSite = alice.run(['scope', 'profile', 'acme', '--website', 'javascript:alert(1)']);
+      isTrue(!badSite.succeeded() && badSite.stderr.contains('not an http: or https: URL') &&
+          !badSite.stderr.contains('backtrace'), described(badSite));
+      let notAdmin = bob.run(['scope', 'profile', 'acme', '--name', 'Bob Corp']);
+      isTrue(!notAdmin.succeeded() && notAdmin.stderr.contains('Forbidden'), described(notAdmin));
+
       // Alice adds Bob as an admin, who then sees every member.
       let added = alice.run(['scope', 'add', 'acme', BOB, '--role', 'admin']);
       isTrue(added.succeeded() && added.stdout.contains('as admin'), described(added));
