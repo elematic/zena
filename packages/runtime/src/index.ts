@@ -507,15 +507,37 @@ export function createTimeHost(
   work: PendingWork = createPendingWork(),
   hostAsync: HostAsync = createHostAsync(getExports, work),
 ): TimeHost {
+  // The timers still pending, by handle: each one's way to clear itself
+  // and settle at once, for `sleep_cancel`.
+  const sleeping = new Map<number, () => void>();
   return {
     imports: {
       now_ms: (): number => performance.now(),
       sleep_ms: (handle: number, ms: number): void => {
         hostAsync.settle(
           handle,
-          new Promise((resolve) => setTimeout(resolve, ms > 0 ? ms : 0)),
+          new Promise<void>((resolve) => {
+            const timer = setTimeout(
+              () => {
+                sleeping.delete(handle);
+                resolve();
+              },
+              ms > 0 ? ms : 0,
+            );
+            sleeping.set(handle, () => {
+              clearTimeout(timer);
+              sleeping.delete(handle);
+              resolve();
+            });
+          }),
           'void',
         );
+      },
+      // A sleep whose frame was cancelled: settling it now drops it from
+      // the outstanding work, so run() does not wait out its deadline. A
+      // handle that fired is gone already, and handles are never reused.
+      sleep_cancel: (handle: number): void => {
+        sleeping.get(handle)?.();
       },
     },
     idle: work.idle,

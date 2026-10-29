@@ -84,6 +84,7 @@ const languageService = (): Service => {
     time: {
       now_ms: () => performance.now(),
       sleep_ms: () => {},
+      sleep_cancel: () => {},
     },
     env: {
       getStackTrace: () => null,

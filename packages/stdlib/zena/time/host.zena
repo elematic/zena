@@ -31,6 +31,14 @@ declare function __time_now_ms(): f64;
 declare function __time_sleep_ms(handle: i32, ms: f64): void;
 
 /**
+ * Clears the timer `handle` names and completes it now, so the host no
+ * longer waits for it; does nothing once it has fired. Handles are never
+ * reused, so a late call cannot reach another timer.
+ */
+@external("time", "sleep_cancel")
+declare function __time_sleep_cancel(handle: i32): void;
+
+/**
  * A future that completes after at least `d`.
  *
  * "At least": the deadline is when the timer becomes *eligible*, and it
@@ -42,10 +50,24 @@ export function sleep(d: Duration): Future<void> {
   if (d.isNegative()) {
     throw new Error('zena:time: sleep() needs a non-negative duration');
   }
+  return sleepFor(d);
+}
+
+/**
+ * Waits for a host timer of `d`. When the waiting frame is cancelled, as
+ * the loser of `zena:task`'s `timeout` is, the `finally` runs on the
+ * cancellation's unwind and clears the timer, so the host does not wait
+ * for it before the program can end.
+ */
+async function sleepFor(d: Duration): Future<void> {
   let p = pending<void>();
   let nsF = (d as i64) as f64;
   __time_sleep_ms(p.handle, nsF / 1000000.0);
-  return p.future;
+  try {
+    await p.future;
+  } finally {
+    __time_sleep_cancel(p.handle);
+  }
 }
 
 /** The monotonic clock's reading. */

@@ -1,0 +1,40 @@
+/**
+ * Timers seen from outside: a program exits once its work is done, and a
+ * timer that cancellation made moot does not keep it waiting. Only a
+ * process's lifetime shows this, so the test runs one.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {milliseconds, monotonic} from 'zena:time';
+import {Scratch, described, write, zenaIn} from './cli-support.zena';
+
+/** Work that finishes at once, under a timeout of 20 s, which is cancelled when the work wins. */
+let PROGRAM = `import {Future, runFuture} from 'zena:async';
+import {timeout} from 'zena:task';
+import {milliseconds} from 'zena:time';
+
+export async function main(): Future<void> {
+  let value = runFuture(timeout<i32>(milliseconds(20000), async (): Future<i32> => 7)());
+  console.log(\`got \${value}\`);
+}
+`;
+
+export let tests = suite('timers', () => {
+  test('a timeout finished early does not keep the program from exiting', (ctx) => {
+    let scratch = Scratch.create('timers');
+    try {
+      write(scratch.at('app/zena-package.json'), '{"name": "app"}\n');
+      write(scratch.at('app/main.zena'), PROGRAM);
+      let start = monotonic();
+      let result = zenaIn(scratch, 'app').run(['run', 'main.zena']);
+      let elapsed = monotonic() - start;
+      isTrue(result.succeeded() && result.stdout.contains('got 7'), described(result));
+      // Compiling takes a few seconds; waiting out the cancelled timer, 20.
+      isTrue((elapsed - milliseconds(10000)).isNegative(),
+          `exited after ${(elapsed as i64) / (1000000 as i64)} ms, waiting for a cancelled timer`);
+    } finally {
+      scratch.remove();
+    }
+  });
+});
