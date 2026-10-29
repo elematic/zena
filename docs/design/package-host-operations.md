@@ -103,7 +103,7 @@ session, because the host holds nothing that can write there
 | See and approve changes waiting                      | members; owners and admins approve         | `zena approve @<scope>`; `getPendingChanges`, `completeChange`, `withdrawChange` |
 | Add, remove and change members' roles                | owners (_threshold_)                       | `zena scope add --role`, `scope remove`; `putMembers`                            |
 | Create, change and delete teams                      | admins; a team's maintainers (_threshold_) | `zena team`; `putTeam`, `deleteTeam`                                             |
-| Change the scope's thresholds                        | owners (_threshold_)                       | in `putMembers`; no command                                                      |
+| Change the scope's thresholds                        | owners (_threshold_)                       | `zena scope settings`; `putMembers`                                              |
 | Rename a scope                                       | owners, host admins                        | no                                                                               |
 | Dissolve a scope                                     | owners, host admins                        | no                                                                               |
 | Create an automation account                         | admins                                     | `zena ci create`; `createAutomationAccount`                                      |
@@ -119,7 +119,7 @@ session, because the host holds nothing that can write there
 | See and approve changes of maintainers waiting   | maintainers; owners approve        | `zena approve <package>`; `getPendingChanges`, `completeChange` |
 | Add a team as maintainers                        | owners (_threshold_)               | `zena owner add --team`; `putMaintainers`                       |
 | Add a collaborator from outside the scope        | owners (_threshold_)               | `zena owner add <handle or DID>`; `putMaintainers`              |
-| Change the thresholds                            | owners (_threshold_)               | in `putMaintainers`; no command                                 |
+| Change the thresholds                            | owners (_threshold_)               | `zena owner settings`; `putMaintainers`                         |
 | Rename the package                               | owners                             | no; `renamePackage` is designed                                 |
 | Move it to another scope on the host             | owners, and the new scope's admins | no                                                              |
 | Move it to another host                          | owners (_threshold_)               | no; designed, without methods                                   |

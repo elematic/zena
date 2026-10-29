@@ -1236,20 +1236,28 @@ one in particular.
 Each command names a person by handle or DID, and changes one record
 through the host:
 
-| Command                                                 | Record                    | Host method      |
-| ------------------------------------------------------- | ------------------------- | ---------------- |
-| `zena scope add <scope> <person> --role <role>`         | the scope's members       | `putMembers`     |
-| `zena scope remove <scope> <person>`                    | the scope's members       | `putMembers`     |
-| `zena team create <scope>/<team>`                       | a new team                | `putTeam`        |
-| `zena team add <scope>/<team> <person> --role <role>`   | the team                  | `putTeam`        |
-| `zena team remove <scope>/<team> <person>`              | the team                  | `putTeam`        |
-| `zena team delete <scope>/<team>`                       | the team                  | `deleteTeam`     |
-| `zena owner add <person> --role <role>`                 | the package's maintainers | `putMaintainers` |
-| `zena owner add --team <scope>/<team> --role publisher` | the package's maintainers | `putMaintainers` |
-| `zena owner remove <person>`                            | the package's maintainers | `putMaintainers` |
+| Command                                                                   | Record                    | Host method      |
+| ------------------------------------------------------------------------- | ------------------------- | ---------------- |
+| `zena scope add <scope> <person> --role <role>`                           | the scope's members       | `putMembers`     |
+| `zena scope remove <scope> <person>`                                      | the scope's members       | `putMembers`     |
+| `zena team create <scope>/<team>`                                         | a new team                | `putTeam`        |
+| `zena team add <scope>/<team> <person> --role <role>`                     | the team                  | `putTeam`        |
+| `zena team remove <scope>/<team> <person>`                                | the team                  | `putTeam`        |
+| `zena team delete <scope>/<team>`                                         | the team                  | `deleteTeam`     |
+| `zena owner add <person> --role <role>`                                   | the package's maintainers | `putMaintainers` |
+| `zena owner add --team <scope>/<team> --role publisher`                   | the package's maintainers | `putMaintainers` |
+| `zena owner remove <person>`                                              | the package's maintainers | `putMaintainers` |
+| `zena scope settings <scope> --owner-threshold <n> --admin-threshold <n>` | the scope's members       | `putMembers`     |
+| `zena team settings <scope>/<team> --threshold <n>`                       | the team                  | `putTeam`        |
+| `zena owner settings --threshold <n> --owner-threshold <n> --humans <n>`  | the package's maintainers | `putMaintainers` |
 
 The roles are those of [Roles](#roles), and `member` or `publisher` when
-`--role` is left out. The `owner` commands act on the package in the
+`--role` is left out. The `settings` commands change a record's
+[thresholds](#thresholds) and keep its people; each flag left out keeps
+its value, and with none they print the thresholds. A change to a
+threshold is approved under the thresholds it replaces, so raising
+`ownerThreshold` from 1 to 2 needs one owner, and lowering it back needs
+two. The `owner` commands act on the package in the
 current directory, or on the one `--package` names by DID, handle or
 `@scope/name`. `zena scope members <scope>`, `zena team members` and
 `zena owner list` print the entries the caller may see.
