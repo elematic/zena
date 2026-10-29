@@ -30,10 +30,13 @@ the operations and where they live.
   server's own commands (`main.zena`), not through the pages.
 
 Some changes take effect only once enough people approve them. A change
-to a maintainers record needs `ownerThreshold` owners' attestations, and a
-release counts once `threshold` maintainers attest it. An operation
-marked _threshold_ below starts a pending change that other people then
-approve.
+to a maintainers or members record needs `ownerThreshold` owners'
+attestations, a change to a team its maintainers' or the organization's
+admins', and a release counts once `threshold` maintainers attest it. An
+operation marked _threshold_ below starts a pending change, which the
+host holds until other people approve it with `zena approve`
+(`getPendingChanges`, `completeChange`); with thresholds of 1, the
+caller's own approval is enough.
 
 ## Where operations live
 
@@ -91,36 +94,38 @@ session, because the host holds nothing that can write there
 
 ## Scopes and organizations
 
-| Operation                                            | Who                                | Exists                                                |
-| ---------------------------------------------------- | ---------------------------------- | ----------------------------------------------------- |
-| Create a scope                                       | a person the host allows           | `zena scope create`; `createOrganization`             |
-| Approve a scope request                              | host admins                        | no; `create-scope` for the operator                   |
-| Claim a scope by domain or GitHub org                | a person                           | no                                                    |
-| See a scope's members and teams                      | members; owners and admins see all | `/scopes/<name>`; `zena scope members`, `getEntries`  |
-| Add, remove and change members' roles                | owners (_threshold_)               | `zena scope add --role`, `scope remove`; `putMembers` |
-| Create, change and delete teams                      | admins; a team's maintainers       | `zena team`; `putTeam`, `deleteTeam`                  |
-| Change the scope's thresholds                        | owners (_threshold_)               | in `putMembers`; no command                           |
-| Rename a scope                                       | owners, host admins                | no                                                    |
-| Dissolve a scope                                     | owners, host admins                | no                                                    |
-| Create an automation account                         | admins                             | `zena ci create`; `createAutomationAccount`           |
-| Reset or revoke an automation account's app password | admins                             | no                                                    |
+| Operation                                            | Who                                        | Exists                                                                           |
+| ---------------------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------- |
+| Create a scope                                       | a person the host allows                   | `zena scope create`; `createOrganization`                                        |
+| Approve a scope request                              | host admins                                | no; `create-scope` for the operator                                              |
+| Claim a scope by domain or GitHub org                | a person                                   | no                                                                               |
+| See a scope's members and teams                      | members; owners and admins see all         | `/scopes/<name>`; `zena scope members`, `getEntries`                             |
+| See and approve changes waiting                      | members; owners and admins approve         | `zena approve @<scope>`; `getPendingChanges`, `completeChange`, `withdrawChange` |
+| Add, remove and change members' roles                | owners (_threshold_)                       | `zena scope add --role`, `scope remove`; `putMembers`                            |
+| Create, change and delete teams                      | admins; a team's maintainers (_threshold_) | `zena team`; `putTeam`, `deleteTeam`                                             |
+| Change the scope's thresholds                        | owners (_threshold_)                       | in `putMembers`; no command                                                      |
+| Rename a scope                                       | owners, host admins                        | no                                                                               |
+| Dissolve a scope                                     | owners, host admins                        | no                                                                               |
+| Create an automation account                         | admins                                     | `zena ci create`; `createAutomationAccount`                                      |
+| Reset or revoke an automation account's app password | admins                                     | no                                                                               |
 
 ## Packages
 
-| Operation                                        | Who                                | Exists                                                    |
-| ------------------------------------------------ | ---------------------------------- | --------------------------------------------------------- |
-| Create a package                                 | admins, or a team they allow       | `zena package create`, `zena publish`; `createPackage`    |
-| Edit the profile: description, license, links    | owners                             | no; `putProfile` is designed                              |
-| Add and remove maintainers and owners            | owners (_threshold_)               | `zena owner add --role`, `owner remove`; `putMaintainers` |
-| Add a team as maintainers                        | owners (_threshold_)               | `zena owner add --team`; `putMaintainers`                 |
-| Add a collaborator from outside the scope        | owners (_threshold_)               | `zena owner add <handle or DID>`; `putMaintainers`        |
-| Change the thresholds                            | owners (_threshold_)               | in `putMaintainers`; no command                           |
-| Rename the package                               | owners                             | no; `renamePackage` is designed                           |
-| Move it to another scope on the host             | owners, and the new scope's admins | no                                                        |
-| Move it to another host                          | owners (_threshold_)               | no; designed, without methods                             |
-| Deprecate it, with a pointer to a replacement    | owners                             | no                                                        |
-| Recover it (reset maintainers via recovery keys) | recovery key holders               | no; designed                                              |
-| See its PLC history and recovery keys            | anyone                             | no                                                        |
+| Operation                                        | Who                                | Exists                                                          |
+| ------------------------------------------------ | ---------------------------------- | --------------------------------------------------------------- |
+| Create a package                                 | admins, or a team they allow       | `zena package create`, `zena publish`; `createPackage`          |
+| Edit the profile: description, license, links    | owners                             | no; `putProfile` is designed                                    |
+| Add and remove maintainers and owners            | owners (_threshold_)               | `zena owner add --role`, `owner remove`; `putMaintainers`       |
+| See and approve changes of maintainers waiting   | maintainers; owners approve        | `zena approve <package>`; `getPendingChanges`, `completeChange` |
+| Add a team as maintainers                        | owners (_threshold_)               | `zena owner add --team`; `putMaintainers`                       |
+| Add a collaborator from outside the scope        | owners (_threshold_)               | `zena owner add <handle or DID>`; `putMaintainers`              |
+| Change the thresholds                            | owners (_threshold_)               | in `putMaintainers`; no command                                 |
+| Rename the package                               | owners                             | no; `renamePackage` is designed                                 |
+| Move it to another scope on the host             | owners, and the new scope's admins | no                                                              |
+| Move it to another host                          | owners (_threshold_)               | no; designed, without methods                                   |
+| Deprecate it, with a pointer to a replacement    | owners                             | no                                                              |
+| Recover it (reset maintainers via recovery keys) | recovery key holders               | no; designed                                                    |
+| See its PLC history and recovery keys            | anyone                             | no                                                              |
 
 ## Releases
 

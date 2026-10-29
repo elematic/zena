@@ -318,8 +318,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   (`ZENA_PACKAGE_HOST`), creating its account first when it has no `did`,
   in the scope its manifest's `scope` or `--scope` names. The host holds
   the release until enough maintainers attest it.
-  **`approve [<package>@]<version> [--yes]`** shows a release waiting for
-  approval and, with `--yes`, approves it.
+  **`approve [<package>@]<version> | @<scope> | <package> [--yes]`** shows a
+  release, or changes to who belongs, waiting for approval and, with
+  `--yes`, approves them.
   **`package create`** only creates it. **`retract <version> [--reason]`**
   marks a release so that choosing a version skips it.
   **`ci create <scope>/<name>`** makes an automation account for CI to

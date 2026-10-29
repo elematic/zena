@@ -6,7 +6,9 @@ Status: **Proposed**, and partly built: the AT Protocol libraries
 `zena add`, `zena update` and `zena fetch`, `zena login` with app
 passwords, `zena publish`, `zena package create` and `zena scope`, and a
 package host in the PDS written in Zena (`packages/pds`), with the methods
-for publishing and for changing members, teams and maintainers.
+for publishing and for changing members, teams and maintainers, each held
+until its threshold has attested it. The checksum log is not built yet, so
+for now the host's check of the attestations is the only one.
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto
@@ -49,10 +51,14 @@ dependencies (`zena-lock.json`).
 - **Hosting and maintainers.** A package host, a PDS with an extension that
   creates package accounts on request, lets maintainers publish by signing in with their
   own atproto accounts, so no one holds a password for a package. Each
-  release is attested by the package's maintainers, M of N if the package
-  asks for it, and the checksum log checks the attestations. Teams and
-  organizations have roles, and who belongs to them stays private until
-  they act.
+  release is attested by the package's maintainers: each approves it with
+  a record in their own repository, signed by their own PDS. A release
+  needs M of N if the package asks for it, and the host holds it back
+  until it has them; the checksum log checks the attestations again. Teams
+  and organizations have roles, and who belongs to them stays private
+  until they act. [Terms](#terms) defines these words, and
+  [What the records guarantee](#what-the-records-guarantee) why approvals
+  and roles are public records.
 - **Supply-chain security.** A workspace builds the bytes it pinned, a
   release counts only with its maintainers' approval, and no new release
   reaches a workspace until someone asks for it. Packages can require a person to
@@ -107,6 +113,54 @@ dependencies (`zena-lock.json`).
 - **Relays** collect repository changes from many PDSes. An **AppView**
   indexes them for an application. A **labeler** publishes signed labels
   on accounts and records, and clients choose which labelers to apply.
+
+### Terms
+
+These are the package manager's own terms. Each is described in full in
+the section it links to.
+
+- A **package host** is a PDS with an extension of `dev.zena-lang.host.*`
+  methods. It creates the accounts of packages, organizations and CI, and
+  holds their keys
+  ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
+- An **organization** is an account on a package host that owns a
+  **scope**, the label its packages' handles share (`acme` in
+  `router.acme.pkg.zena-lang.dev`). Its **members** have roles, and its
+  **teams** are groups of members that maintain packages together
+  ([Scopes](#scopes), [Roles](#roles)).
+- A package's **maintainers** are the people, and teams, who may publish
+  it, in the role of **publisher** or **owner**. The **maintainers
+  record**, in the package's repository, lists them. An organization's
+  **members record** and its **team records** do the same for its
+  members and teams.
+- An **attestation** is a record that one person writes to their own
+  repository, saying that they approve another record: a release, or a
+  new maintainers, members or team record. It names that record by
+  AT-URI and CID, so it approves those exact bytes. Their PDS signs it
+  with their key, which the host does not hold
+  ([Who signs what](#who-signs-what)).
+- A **threshold** is how many attestations something needs, and from
+  whom: a release, `threshold` of the package's maintainers, `humans` of
+  them people; a change to a maintainers or members record, its
+  `ownerThreshold` of owners; a change to a team, its `threshold` of the
+  team's maintainers or the organization's `adminThreshold` of admins. A
+  change counts under the thresholds of the record it replaces
+  ([Thresholds](#thresholds)).
+- A **membership entry** is one person's line in a members or team
+  record, or a maintainers record: their DID, their role, and a
+  **salt** of 32 random bytes. The entry is private. The record lists
+  only its **commitment**: the CID of the entry, which is a SHA-256 hash
+  of it. Given the entry, anyone can check that it is the one the record
+  lists. Given only the commitment, the salt keeps anyone from finding
+  out whose it is by trying DIDs ([Private membership](#private-membership)).
+- **Pending**: a release, or a change to a maintainers, members or team
+  record, that the host holds outside the repository until its threshold
+  has attested it. Nothing reads it but its approvers.
+- An **automation account** is an account the host makes for CI to
+  publish as. Its attestations count only together with a person's.
+- The **checksum log** is a public, append-only log, run by the Zena
+  project, of every release's content and of who approved it. Clients
+  check releases against it ([The checksum log](#the-checksum-log)).
 
 ### Prior art
 
@@ -964,6 +1018,89 @@ is why the Zena project's host holds package and organization accounts,
 and automation accounts that cannot publish without a person (see
 [Publishing a release](#publishing-a-release)), and no one's own account.
 
+### What the records guarantee
+
+The host holds the keys of every package, organization and automation
+account on it, so a signature by one of those accounts shows only that
+the host wrote the record. The design is meant to work without trusting
+the host to approve releases or choose who may approve them. Three kinds
+of public records make that possible:
+
+- **Attestations**, in each approver's own repository, signed by their
+  own PDS. The host cannot write one for a person whose account it does
+  not hold.
+- **The policy**: the maintainers record of each package, and the
+  members and team records of each organization. They say who may approve
+  what, and how many approvals each thing needs. They are public records
+  in the account's repository, because whoever checks an approval has to
+  read them: an approval is enough or not only against a threshold, and
+  an attester counts only in a role. If the host kept them in its own
+  storage, a checker would have to take its word for both.
+- **A chain of changes to the policy.** A new maintainers, members or
+  team record counts only when the roles and thresholds of the record
+  before it have attested it. So the host cannot lower a threshold, add an
+  owner, or put an account on a team without the attestations of those
+  who could already decide that. Teams make this matter for releases: a
+  package a team maintains accepts attestations from whoever is on the
+  team, so a team record the host could change alone would let the host
+  choose who approves the package's releases.
+
+Membership is in the policy too, but only as commitments (see
+[Terms](#terms) and [Private membership](#private-membership)). The
+records show how many people are in each role and what each threshold
+is, and not who they are. A person is revealed only when they attest
+something, and their attestation then has to carry their entry.
+
+Two parties check the same rules:
+
+- **The host**, first. It holds a release or a change outside the
+  repository until its threshold has attested it, and writes it only
+  then (see [Publishing a release](#publishing-a-release) and
+  [Adding and removing people](#adding-and-removing-people)). Until then
+  the record before it decides every role on the host. So the
+  repository, its firehose and the index only ever hold approved records,
+  and nothing that reads them needs to know that records can be pending.
+  The checks of a misconfigured or compromised host could be wrong or
+  missing.
+- **The checksum log**, again and independently. It reads the
+  attestations from the approvers' own repositories and the policy from
+  the records it has recorded, and records a release, or a change to the
+  policy, only when the rules allow it. Clients check every release
+  against the log. Anyone can repeat the log's checks from the same
+  public records to audit it.
+
+What this guarantees, with the log running:
+
+- A release a client accepts was attested by the package's threshold of
+  maintainers, `humans` of them people, each through a PDS they chose,
+  under the maintainers record the log held when it recorded the
+  release.
+- Every maintainers, members and team record behind that was approved by
+  the record before it, back to the records the package and its
+  organization were created with.
+- The host alone cannot make a release count, or make an account count
+  as a maintainer, owner, admin or team member.
+- A pending release or change is in no repository, so it cannot reach a
+  client.
+
+What it does not guarantee:
+
+- **Before the log exists**, the host's check is the only one. The
+  records make that check possible to audit, and nothing audits it yet.
+- **Availability.** The host can refuse to serve a package, or to write
+  an approved change. Pins in lockfiles, and moving the package to
+  another host, are the answers ([Trusting a host](#trusting-a-host)).
+- **The DID.** PLC has no thresholds. A recovery key, or the host's own
+  rotation key for a package without recovery keys, can act alone
+  ([Thresholds](#thresholds)).
+- **Privacy from the host.** It keeps every entry, and its admins can
+  read them. The entries are private from the public, not from the
+  host.
+- **An approver's own account.** Someone who takes over a maintainer's
+  account can attest as them. That is what approval keys and the
+  `humans` threshold are for
+  ([Human approval and second factors](#human-approval-and-second-factors)).
+
 ### Maintainers, teams and organizations
 
 A package's repository has a maintainers record at record key `self`:
@@ -1126,23 +1263,59 @@ Each change takes the same steps:
    the entries' commitments.
 3. It calls the host's method with the new record, the entries, and the
    CID it read. The host refuses when the record has changed since, so
-   two owners editing at once do not overwrite each other unseen.
-4. It writes an attestation of the new record to the caller's own
+   two owners editing at once do not overwrite each other unseen. It
+   checks the new record as it will be read, and holds it as pending,
+   outside the repository, answering with the AT-URI and CID it will
+   have.
+4. It writes an attestation of that AT-URI and CID to the caller's own
    repository.
+5. It calls `dev.zena-lang.host.completeChange`. The host counts the
+   attestations against the record before it (see below). Once they are
+   enough, it writes the new record, and only then does the change take
+   effect, on the host and in the repository. With thresholds of 1, the
+   caller's own attestation is enough, and steps 3 to 5 happen within one
+   command.
 
 A new member adds their own approval keys later, in the management
 interface.
 
-A change counts once the roles and threshold of the record before it have
-attested it: the owners for a maintainers or members record, and the
-admins, owners or the team's maintainers for a team. So one owner of a
-package whose `ownerThreshold` is 2 cannot replace the others. The others
-attest a waiting change with `zena approve @acme` or
-`zena approve <package>`, which shows the entries added and removed
-first. The log records each change that counts. A release counts under
-the maintainers record the log held when it recorded the release, so
-someone who leaves cannot attest new releases, and the releases they
-attested stay valid.
+A change counts once the roles and thresholds of the record before it
+have attested it. Only people count; automation chooses no one's roles.
+
+| Change to                 | Attested by                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| an organization's members | its `ownerThreshold` of owners                                                                          |
+| a team                    | the team's `threshold` of its maintainers, or the organization's `adminThreshold` of admins and owners  |
+| a new team                | the organization's `adminThreshold` of admins and owners                                                |
+| a package's maintainers   | its `ownerThreshold` of owners, listed by DID, by commitment, or as members of a team in the owner role |
+
+So one owner of a package whose `ownerThreshold` is 2 cannot replace the
+others, and until the others approve, the record before the change
+decides every role: the owner being removed is still an owner. The
+others see a waiting change with `zena approve @acme` or
+`zena approve <package>` (`dev.zena-lang.host.getPendingChanges`), which
+shows the entries added and removed and the thresholds changed first,
+and with `--yes` writes their attestations and calls `completeChange`.
+
+- **One change waits per record.** Asking for another change to the same
+  record replaces the one waiting, and the attestations of the first
+  count for nothing toward it, since they name its CID.
+- **A change made from a record that has changed since is dropped**, as
+  when its team was deleted. The roles that were to approve it may have
+  changed, so it is asked for again.
+- **A change waits seven days**, and the one who asked for it, or anyone
+  who sees every entry behind the record, can withdraw it sooner
+  (`dev.zena-lang.host.withdrawChange`).
+- **Creating** an organization or a package writes its first members or
+  maintainers record at once, with its creator as its only owner. There
+  is no record before it to approve it. **Deleting** a team is done by an
+  admin at once, and takes the team's part in its packages away; it adds
+  no one.
+
+The log records each change that counts. A release counts under the
+maintainers record the log held when it recorded the release, so someone
+who leaves cannot attest new releases, and the releases they attested
+stay valid.
 
 Someone who leaves and holds a recovery key must also lose the key: the
 remaining holders remove it from the DID's rotation keys with a PLC
@@ -1250,23 +1423,27 @@ caller's role in the records it already holds. A write that changes
 which releases count, such as a new maintainers record, takes effect
 once the attestations the previous record requires reach the log.
 
-| Method                    | Caller                                                          | What it does                                                         |
-| ------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `createOrganization`      | anyone the host's limits allow                                  | creates a scope, with the caller as its only owner                   |
-| `createPackage`           | an organization's admins, or a team they allow                  | creates a package with its profile and maintainers record            |
-| `createAutomationAccount` | an organization's admins                                        | creates an account for CI and returns its app password once          |
-| `uploadArtifact`          | a package's maintainers                                         | stores an artifact, or one part of it, as a blob of the package      |
-| `publish`                 | a package's maintainers                                         | checks a release and holds it, refusing a version that is taken      |
-| `completeRelease`         | a package's maintainers                                         | writes a held release once its attestations are enough               |
-| `getPendingReleases`      | a package's maintainers                                         | returns the held releases, with who has attested each                |
-| `withdrawRelease`         | a held release's publisher, or a package's owners               | stops holding a release, which frees its version                     |
-| `retract`                 | a package's maintainers                                         | writes a retraction record                                           |
-| `putProfile`              | a package's owners                                              | replaces the profile                                                 |
-| `renamePackage`           | a package's owners                                              | changes the handle, with a PLC operation, and the profile's name     |
-| `putMaintainers`          | a package's owners                                              | writes a maintainers record, with the entries behind its commitments |
-| `putMembers`              | an organization's owners                                        | writes the members record, with its entries                          |
-| `putTeam`, `deleteTeam`   | an organization's admins, or a team's maintainers for `putTeam` | creates, replaces or deletes a team                                  |
-| `getEntries`              | members, owners, admins and team maintainers                    | returns the private entries the caller may see                       |
+| Method                    | Caller                                                        | What it does                                                        |
+| ------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `createOrganization`      | anyone the host's limits allow                                | creates a scope, with the caller as its only owner                  |
+| `createPackage`           | an organization's admins, or a team they allow                | creates a package with its profile and maintainers record           |
+| `createAutomationAccount` | an organization's admins                                      | creates an account for CI and returns its app password once         |
+| `uploadArtifact`          | a package's maintainers                                       | stores an artifact, or one part of it, as a blob of the package     |
+| `publish`                 | a package's maintainers                                       | checks a release and holds it, refusing a version that is taken     |
+| `completeRelease`         | a package's maintainers                                       | writes a held release once its attestations are enough              |
+| `getPendingReleases`      | a package's maintainers                                       | returns the held releases, with who has attested each               |
+| `withdrawRelease`         | a held release's publisher, or a package's owners             | stops holding a release, which frees its version                    |
+| `retract`                 | a package's maintainers                                       | writes a retraction record                                          |
+| `putProfile`              | a package's owners                                            | replaces the profile                                                |
+| `renamePackage`           | a package's owners                                            | changes the handle, with a PLC operation, and the profile's name    |
+| `putMaintainers`          | a package's owners                                            | holds a maintainers record, with the entries behind its commitments |
+| `putMembers`              | an organization's owners                                      | holds a members record, with its entries                            |
+| `putTeam`                 | an organization's admins, or a team's maintainers             | holds a new or replaced team                                        |
+| `deleteTeam`              | an organization's admins                                      | deletes a team                                                      |
+| `completeChange`          | anyone with a role in the account                             | writes a held record once the record before it allows it            |
+| `getPendingChanges`       | anyone with a role in the account                             | returns the held records, with who has attested each                |
+| `withdrawChange`          | its proposer, and those who see every entry behind the record | stops holding a record                                              |
+| `getEntries`              | members, owners, admins and team maintainers                  | returns the private entries the caller may see                      |
 
 The `put` methods take the CID the record must have now, as
 `com.atproto.repo.putRecord` does, so two owners editing at once do not

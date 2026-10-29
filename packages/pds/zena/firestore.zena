@@ -53,7 +53,7 @@ import {compareKeys} from 'atproto:mst';
 import {MemberEntry} from 'package-manager:records';
 import {JsonValue, parseJson, stringify} from 'zena:json';
 import {PlcOperation} from 'atproto:plc';
-import {ClaimedName, ClaimedScope, HostStore, PendingRelease} from './host.zena';
+import {ClaimedName, ClaimedScope, HostStore, PendingChange, PendingRelease} from './host.zena';
 import {PlcLog} from './plc-directory.zena';
 import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
@@ -466,6 +466,45 @@ export final class FirestoreHostStore implements HostStore {
     await this.#held(pkg).doc(recordId(version)).delete();
   }
 
+  /** Held changes, at `pending/<account>/changes/<collection> <rkey>`. */
+  #changes(account: String): CollectionReference {
+    return this.#root.collection('pending').doc(account).collection('changes');
+  }
+
+  async holdChange(account: String, change: PendingChange): Future<void> {
+    var fields = new Fields()
+        .string('collection', change.collection)
+        .string('rkey', change.rkey)
+        .set('cbor', bytesValue(change.record as ByteArray))
+        .string('cid', change.cid.toString())
+        .string('proposer', change.proposer)
+        .integer('heldAt', change.heldAt);
+    let base = change.base;
+    if (base != null) {
+      fields = fields.string('base', base.toString());
+    }
+    await this.#changes(account).doc(changeId(change.collection, change.rkey)).set(fields);
+  }
+
+  async heldChange(account: String, collection: String, rkey: String): Future<PendingChange | null> {
+    return changeAt(await this.#changes(account).doc(changeId(collection, rkey)).get());
+  }
+
+  async heldChanges(account: String): Future<Array<PendingChange>> {
+    let held = new GrowableArray<PendingChange>();
+    for (let snapshot in await this.#changes(account).get()) {
+      let change = changeAt(snapshot);
+      if (change != null) {
+        held.push(change as PendingChange);
+      }
+    }
+    return held;
+  }
+
+  async dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void> {
+    await release(this.#db, this.#changes(account).doc(changeId(collection, rkey)), 'cid', cid.toString());
+  }
+
   /** Adds `entries`, each under the base32 CID of its DAG-CBOR, its commitment. */
   async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
     let list = this.#root.collection('entries').doc(account).collection('list');
@@ -640,6 +679,30 @@ function pendingAt(snapshot: DocumentSnapshot, version: String | null): PendingR
   let id = snapshot.id;
   let key = version ?? (if (id.startsWith('%')) id.sliceBytes(1, id.length) else id);
   return new PendingRelease(key, record as FixedArray<u8>, cid as Cid, publisher as String, heldAt);
+}
+
+/** The document ID of the held change to the record at `collection/rkey`. */
+function changeId(collection: String, rkey: String): String {
+  return `${collection} ${rkey}`;
+}
+
+/** The held change `snapshot` is; null when it does not exist. */
+function changeAt(snapshot: DocumentSnapshot): PendingChange | null {
+  let collection = stringAt(snapshot, 'collection');
+  let rkey = stringAt(snapshot, 'rkey');
+  let record = bytesAt(snapshot, 'cbor');
+  let cid = cidAt(snapshot);
+  let proposer = stringAt(snapshot, 'proposer');
+  if (collection == null || rkey == null || record == null || cid == null || proposer == null) {
+    return null;
+  }
+  let base = stringAt(snapshot, 'base');
+  var heldAt = 0 as i64;
+  if (let (true, micros) = snapshot.getInteger('heldAt')) {
+    heldAt = micros;
+  }
+  return new PendingChange(collection as String, rkey as String, record as FixedArray<u8>, cid as Cid,
+      if (base == null) null else Cid.parse(base as String), proposer as String, heldAt);
 }
 
 function cidAt(snapshot: DocumentSnapshot): Cid | null {

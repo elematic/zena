@@ -14,7 +14,7 @@ import {MapValue, StringValue, newMap} from 'atproto:data';
 import {KeyType} from 'atproto:didkey';
 import {decodeCommit} from 'atproto:repo';
 import {MemberEntry, OWNER} from 'package-manager:records';
-import {HostStore, PendingRelease} from 'pds:host';
+import {HostStore, PendingChange, PendingRelease} from 'pds:host';
 import {PlcLog} from 'pds:plc-directory';
 import {AppPassword, CredentialStore, RefreshSession} from 'pds:sessions';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
@@ -269,6 +269,50 @@ export function hostStoreConformance(make: () => HostStore): void {
     equal(rest.length, 1);
     equal(rest[0].version, '1.1.0');
     isTrue(runFuture(store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 46 as i64))), 'held again');
+  });
+
+  test('holds one change to each record, the latest, until it is dropped', (ctx) => {
+    let store = make();
+    let first = Cid.forDagCbor(new FixedArray<u8>(1, 1 as u8));
+    let second = Cid.forDagCbor(new FixedArray<u8>(1, 2 as u8));
+    let base = Cid.forDagCbor(new FixedArray<u8>(1, 3 as u8));
+    let members = 'dev.zena-lang.org.members';
+    let team = 'dev.zena-lang.org.team';
+    isNull(runFuture(store.heldChange(ALICE, members, 'self')));
+    runFuture(store.holdChange(ALICE, new PendingChange(members, 'self', new FixedArray<u8>(1, 1 as u8), first, base,
+        BOB, 42 as i64)));
+    // A new team has no record before it.
+    runFuture(store.holdChange(ALICE, new PendingChange(team, 'core', new FixedArray<u8>(1, 4 as u8), first, null,
+        ALICE, 43 as i64)));
+    runFuture(store.holdChange(BOB, new PendingChange(members, 'self', new FixedArray<u8>(1, 5 as u8), first, base,
+        BOB, 44 as i64)));
+    let held = runFuture(store.heldChange(ALICE, members, 'self'));
+    if (held == null) {
+      throw new Error('no change is held');
+    }
+    equal(held.collection, members);
+    equal(held.rkey, 'self');
+    equal(hex.encode(held.record), '01');
+    isTrue(held.cid.equals(first), 'cid');
+    isTrue(held.base != null && (held.base as Cid).equals(base), 'base');
+    equal(held.proposer, BOB);
+    equal(held.heldAt, 42 as i64);
+    let newTeam = runFuture(store.heldChange(ALICE, team, 'core'));
+    isTrue(newTeam != null && newTeam.base == null, 'a new team has no base');
+    equal(runFuture(store.heldChanges(ALICE)).length, 2);
+
+    // A later change to the record takes the earlier one's place, and
+    // dropping the earlier one leaves it.
+    runFuture(store.holdChange(ALICE, new PendingChange(members, 'self', new FixedArray<u8>(1, 2 as u8), second, base,
+        ALICE, 45 as i64)));
+    equal(runFuture(store.heldChanges(ALICE)).length, 2);
+    runFuture(store.dropChange(ALICE, members, 'self', first));
+    let latest = runFuture(store.heldChange(ALICE, members, 'self'));
+    isTrue(latest != null && latest.cid.equals(second), 'the later change stays');
+    runFuture(store.dropChange(ALICE, members, 'self', second));
+    isNull(runFuture(store.heldChange(ALICE, members, 'self')));
+    equal(runFuture(store.heldChanges(ALICE)).length, 1);
+    equal(runFuture(store.heldChanges(BOB)).length, 1);
   });
 }
 
