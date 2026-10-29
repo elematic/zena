@@ -35,7 +35,10 @@ pages. The pages are rendered on the server, in Zena, in
   `Person`s `PageContext.people` reads (`pds:web/people`); read the DIDs a
   page names together, with `People.each`. Never put a URL from someone's
   DID document or profile in a page: avatars go through the signed
-  `/people/<did>/avatar`.
+  `/people/<did>/avatar`. A link someone chose, such as a package's
+  homepage, goes through `externalLink` (`pds:web/partials/common`), which
+  renders only `http:` and `https:` URLs: escaping keeps a value in its
+  attribute, but a `javascript:` URL would still run on the host's origin.
 - Prefer plain links and GET forms to script. Use a Radica element only for
   what must happen in the browser, and import it in `src/main.ts`; its
   looks come with it. Server-rendered markup is styled in `src/app.css`,

@@ -1082,6 +1082,19 @@ export let tests = suite('pds:host', () => {
     equal((ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages?scope=zeta'))['packages'] as JsonArray).length, 0);
   });
 
+  test('links a package\'s homepage and source only when they are web addresses', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let profile = stringify(toJson(new Profile('router', null, null, 'javascript:alert(document.cookie)',
+        'https://example.com/router').toValue()));
+    let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
+    ok(fixture.call(ALICE, 'createPackage',
+        `{"organization": "${orgDid}", "profile": ${profile}, "maintainers": ${maintainers}}`));
+    let page = pageOf(fixture.get('/packages/router.acme.pkg.test'));
+    isTrue(!page.contains('javascript:'), page);
+    isTrue(page.contains('href="https://example.com/router"'), page);
+  });
+
   test('renders the pages a visitor browses', (ctx) => {
     let fixture = new Fixture();
     let router = seedBrowsable(fixture);
