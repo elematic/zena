@@ -56,8 +56,10 @@ import {HandleRecords} from './handles.zena';
 import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {Sessions} from './sessions.zena';
+import {RotationKey} from './rotation.zena';
 import {formatTimestamp} from 'zena:time';
 import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
+import {compareKeys} from 'atproto:mst';
 
 /** The most recovery keys an account's genesis operation ranks above the host's keys. */
 let MAX_RECOVERY_KEYS = 3;
@@ -224,18 +226,30 @@ export final class HostConfig {
   /** Its PDS endpoint, which every account's DID document names. */
   endpoint: String;
   /**
-   * Its PLC rotation key, ranked below any recovery keys an account's
-   * owners give. Without them, it is the account's only rotation key: the
-   * host holds the account, as a PDS holds its users' (package-manager.md,
-   * "Keys").
+   * Its online PLC rotation key, which signs every account's operations,
+   * ranked last: below any recovery keys an account's owners give, and the
+   * offline key. Without those, the host holds the account, as a PDS holds
+   * its users' (package-manager.md, "Keys").
    */
-  rotationKey: SigningKey;
+  rotationKey: RotationKey;
+  /**
+   * The operator's offline rotation key, ranked above the online one, so
+   * that the operator can undo for 72 hours what a stolen online key
+   * signs. The server knows only its public key.
+   */
+  var offlineRotationKey: PublicKey | null = null;
   /** The largest blob `uploadArtifact` stores. */
   var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
   /** Scope names no one may take. */
   reservedScopes = new HashSet<String>();
+  /**
+   * The DIDs of the host's admins (`PDS_ADMIN_DIDS`), who sign in as
+   * themselves, as anyone does, and may see every account the host holds
+   * and every private entry.
+   */
+  admins = new HashSet<String>();
 
-  new(serviceDid: String, domain: String, endpoint: String, rotationKey: SigningKey)
+  new(serviceDid: String, domain: String, endpoint: String, rotationKey: RotationKey)
       : serviceDid = serviceDid, domain = domain, endpoint = endpoint, rotationKey = rotationKey {
     for (let name in ['www', 'api', 'admin', 'zena', 'pkg', 'mail']) {
       this.reservedScopes.add(name);
@@ -345,7 +359,7 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${name}' exists`);
     }
     let handle = `${name}.${this.config.domain}`;
-    let prepared = this.#prepareAccount(handle, recoveryKeys);
+    let prepared = await this.#prepareAccount(handle, recoveryKeys);
     let did = prepared.did;
     if (!(await this.#store.claimScope(name, did))) {
       throw new HostError(400, 'NameTaken', `the scope '${name}' exists`);
@@ -388,7 +402,7 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
     let handle = `${name}.${scope}.${this.config.domain}`;
-    let prepared = this.#prepareAccount(handle, []);
+    let prepared = await this.#prepareAccount(handle, []);
     let did = prepared.did;
     if (!(await this.#store.claimName(scope, name, did))) {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
@@ -438,7 +452,7 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${profile.name}'`);
     }
     let handle = `${profile.name}.${scope}.${this.config.domain}`;
-    let prepared = this.#prepareAccount(handle, recoveryKeys);
+    let prepared = await this.#prepareAccount(handle, recoveryKeys);
     let did = prepared.did;
     let name = profile.name;
     if (!(await this.#store.claimName(scope, name, did))) {
@@ -531,6 +545,282 @@ export final class PackageHost {
   }
 
   /**
+   * `listScopes`: every scope whose organization exists, by name, with how
+   * many packages each has. Public: scope names are in DNS anyway.
+   */
+  async listScopes(): Future<Array<ScopeSummary>> {
+    let counts = new HashMap<String, i32>();
+    for (let claimed in await this.listPackages(null)) {
+      var count = 0;
+      if (let (true, held) = counts.get(claimed.scope)) {
+        count = held;
+      }
+      counts[claimed.scope] = count + 1;
+    }
+    let scopes = new GrowableArray<ScopeSummary>();
+    for (let claimed in await this.#store.allScopes()) {
+      let account = await this.pds.storage.getAccount(claimed.org);
+      if (account == null || account.kind != AccountKind.Organization) {
+        continue;
+      }
+      var packages = 0;
+      if (let (true, count) = counts.get(claimed.scope)) {
+        packages = count;
+      }
+      let summary = new ScopeSummary(claimed.scope, claimed.org, account.handle ?? '', packages);
+      var i = scopes.length;
+      scopes.push(summary);
+      while (i > 0 && compareKeys(scopes[i - 1].name, summary.name) > 0) {
+        scopes[i] = scopes[i - 1];
+        i -= 1;
+      }
+      scopes[i] = summary;
+    }
+    return scopes;
+  }
+
+  /**
+   * `getMemberships`: the organizations, teams and packages on this host
+   * that `caller` has a role in, each with the role, as the records stand
+   * now. A package `caller` maintains through a team is listed with the
+   * team's role.
+   */
+  async getMemberships(caller: String): Future<Memberships> {
+    let memberships = new Memberships();
+    for (let claimed in await this.#store.allScopes()) {
+      let org = await this.pds.storage.getAccount(claimed.org);
+      if (org == null || org.kind != AccountKind.Organization) {
+        continue;
+      }
+      let role = await this.#orgRole(claimed.org, caller);
+      if (role != null) {
+        memberships.orgs.push(new Membership(claimed.org, org.handle ?? '', claimed.scope, claimed.scope, role as String));
+      }
+      for (let entry in await this.pds.storage.store(claimed.org).allRecords()) {
+        if (entry.collection != TEAM_TYPE) {
+          continue;
+        }
+        let teamRole = await this.#teamRole(claimed.org, entry.rkey, caller);
+        if (teamRole != null) {
+          memberships.teams.push(new Membership(claimed.org, org.handle ?? '', claimed.scope, entry.rkey,
+              teamRole as String));
+        }
+      }
+    }
+    for (let claimed in await this.#store.allNames()) {
+      let pkg = await this.pds.storage.getAccount(claimed.did);
+      if (pkg == null || pkg.kind != AccountKind.Package) {
+        continue;
+      }
+      let role = await this.#packageRole(claimed.did, caller);
+      if (role != null) {
+        memberships.packages.push(new Membership(claimed.did, pkg.handle ?? '', claimed.scope, claimed.name,
+            role as String));
+      }
+    }
+    sortByName(memberships.orgs);
+    sortByName(memberships.teams);
+    sortByName(memberships.packages);
+    return memberships;
+  }
+
+  /** Whether `did` is one of the host's admins. */
+  isHostAdmin(did: String): boolean {
+    return this.config.admins.has(did);
+  }
+
+  /**
+   * Every account the host made, by its scope or name claim, with its
+   * kind: organizations, packages and automation accounts. Admins only.
+   */
+  async listAccounts(caller: String): Future<Array<HostAccount>> {
+    if (!this.isHostAdmin(caller)) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an admin of this host`);
+    }
+    let accounts = new GrowableArray<HostAccount>();
+    for (let claimed in await this.#store.allScopes()) {
+      let account = await this.pds.storage.getAccount(claimed.org);
+      if (account != null) {
+        accounts.push(new HostAccount(account.did, account.handle ?? '', account.kind, claimed.scope, claimed.scope));
+      }
+    }
+    for (let claimed in await this.#store.allNames()) {
+      let account = await this.pds.storage.getAccount(claimed.did);
+      if (account != null) {
+        accounts.push(new HostAccount(account.did, account.handle ?? '', account.kind, claimed.scope, claimed.name));
+      }
+    }
+    return accounts;
+  }
+
+  /**
+   * `com.atproto.identity.resolveHandle`: the DID of `handle`, from this
+   * host's own accounts, or as its resolver finds it, or null. A browser
+   * cannot look DNS up, so the web app signs people in through this rather
+   * than send their handles to a third party.
+   */
+  async resolveHandle(handle: String): Future<String | null> {
+    let held = await this.pds.storage.accountByHandle(handle.asciiLowerCase());
+    if (held != null) {
+      return held.did;
+    }
+    try {
+      return await this.#resolver.resolveHandle(handle.asciiLowerCase());
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * The handle `did`'s DID document claims, when it resolves back to
+   * `did`; null when there is none, or the DID does not resolve. A page
+   * shows it for the person signed in.
+   */
+  async handleOf(did: String): Future<String | null> {
+    let held = await this.pds.storage.getAccount(did);
+    if (held != null) {
+      return held.handle;
+    }
+    try {
+      return (await this.#resolver.resolve(did)).handle;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * `listPackages`: the packages on the host, or in `scope`, by scope and
+   * name, each with its profile's description and license and its latest
+   * release that is not retracted. Public, as the records are. Automation
+   * accounts, which also take names in a scope, are left out.
+   */
+  async listPackages(scope: String | null): Future<Array<PackageSummary>> {
+    let packages = new GrowableArray<PackageSummary>();
+    for (let claimed in await this.#store.allNames()) {
+      if (scope != null && claimed.scope != scope as String) {
+        continue;
+      }
+      let account = await this.pds.storage.getAccount(claimed.did);
+      if (account == null || account.kind != AccountKind.Package) {
+        continue;
+      }
+      let summary = new PackageSummary(claimed.did, account.handle ?? '', claimed.scope, claimed.name);
+      let profile = await this.#current(claimed.did, PROFILE_TYPE, PROFILE_KEY);
+      if (profile != null) {
+        let read = Profile.fromValue((profile as CurrentRecord).value);
+        summary.description = read.description;
+        summary.license = read.license;
+      }
+      let retracted = new HashSet<String>();
+      let versions = new GrowableArray<String>();
+      for (let entry in await this.pds.storage.store(claimed.did).allRecords()) {
+        if (entry.collection == RETRACTION_TYPE) {
+          retracted.add(entry.rkey);
+        } else if (entry.collection == RELEASE_TYPE) {
+          versions.push(entry.rkey);
+        }
+      }
+      summary.releases = versions.length;
+      var latest: Version | null = null;
+      for (let text in versions) {
+        if (retracted.has(text)) {
+          continue;
+        }
+        let version = Version.parse(text);
+        if (latest == null || version.compareTo(latest as Version) > 0) {
+          latest = version;
+        }
+      }
+      if (latest != null) {
+        summary.latest = (latest as Version).toString();
+      }
+      var i = packages.length;
+      packages.push(summary);
+      while (i > 0 && compareKeys(packages[i - 1].sortKey(), summary.sortKey()) > 0) {
+        packages[i] = packages[i - 1];
+        i -= 1;
+      }
+      packages[i] = summary;
+    }
+    return packages;
+  }
+
+  /**
+   * The scope `name`, as its page shows it: its organization, the
+   * commitments of its members record, and its teams, by name; or null
+   * when no organization holds it. Public, as the records are; the entries
+   * behind the commitments come from `getEntries`.
+   */
+  async getScope(name: String): Future<ScopeDetail | null> {
+    let org = await this.#store.scopeOwner(name);
+    if (org == null) {
+      return null;
+    }
+    let account = await this.pds.storage.getAccount(org as String);
+    if (account == null || account.kind != AccountKind.Organization) {
+      return null;
+    }
+    let detail = new ScopeDetail(name, account.did, account.handle ?? '');
+    let members = await this.#current(account.did, MEMBERS_TYPE, 'self');
+    if (members != null) {
+      detail.members = Members.fromValue((members as CurrentRecord).value).members;
+    }
+    let store = this.pds.storage.store(account.did);
+    for (let entry in await store.allRecords()) {
+      if (entry.collection == TEAM_TYPE) {
+        let team = Team.fromValue(decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>));
+        detail.teams.push(new NamedTeam(entry.rkey, team));
+      }
+    }
+    return detail;
+  }
+
+  /**
+   * The package whose handle is `handle`, as its page shows it: its
+   * profile, its releases, newest first, its retractions and its
+   * maintainers record; or null when no package here has that handle.
+   * Public, as the records are.
+   */
+  async getPackage(handle: String): Future<PackageDetail | null> {
+    let account = await this.pds.storage.accountByHandle(handle);
+    if (account == null || account.kind != AccountKind.Package) {
+      return null;
+    }
+    let did = account.did;
+    let detail = new PackageDetail(did, handle);
+    let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
+    if (profile != null) {
+      detail.profile = Profile.fromValue((profile as CurrentRecord).value);
+    }
+    let maintainers = await this.#current(did, MAINTAINERS_TYPE, 'self');
+    if (maintainers != null) {
+      detail.maintainers = Maintainers.fromValue((maintainers as CurrentRecord).value);
+    }
+    let store = this.pds.storage.store(did);
+    for (let entry in await store.allRecords()) {
+      if (entry.collection != RELEASE_TYPE && entry.collection != RETRACTION_TYPE) {
+        continue;
+      }
+      let value = decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>);
+      if (entry.collection == RETRACTION_TYPE) {
+        let retraction = Retraction.fromValue(value);
+        detail.retractions[retraction.version.toString()] = retraction;
+        continue;
+      }
+      let release = Release.fromValue(value);
+      let releases = detail.releases;
+      var i = releases.length;
+      releases.push(release);
+      while (i > 0 && releases[i - 1].version.compareTo(release.version) < 0) {
+        releases[i] = releases[i - 1];
+        i -= 1;
+      }
+      releases[i] = release;
+    }
+    return detail;
+  }
+
+  /**
    * `retract`: marks release `version` of `pkg` as retracted, with
    * `reason`, at the record key equal to the version. The release stays,
    * for the builds that pin it; choosing a version skips it. Any maintainer
@@ -550,12 +840,12 @@ export final class PackageHost {
 
   /**
    * An account named `handle` on this host, to be: a new signing key, and
-   * the genesis operation of a `did:plc` that ranks `recoveryKeys` above
-   * the host's rotation key, signed with that key. A PLC operation lists at
-   * most five rotation keys, and the host keeps two of them for its own: the
-   * online key, and the operator's offline key (#597).
+   * the genesis operation of a `did:plc` that ranks `recoveryKeys` first,
+   * then the operator's offline key, then the online rotation key, which
+   * signs it. A PLC operation lists at most five rotation keys, and the
+   * host keeps two of them for its own.
    */
-  #prepareAccount(handle: String, recoveryKeys: Array<String>): PreparedAccount {
+  async #prepareAccount(handle: String, recoveryKeys: Array<String>): Future<PreparedAccount> {
     if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
       throw new HostError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
     }
@@ -567,11 +857,14 @@ export final class PackageHost {
         throw new HostError(400, 'InvalidRequest', `'${key}' is not a did:key`);
       }
     }
+    let offline = this.config.offlineRotationKey;
+    if (offline != null) {
+      rotation.push(offline as PublicKey);
+    }
     rotation.push(this.config.rotationKey.publicKey());
     let signing = new SigningKey(KeyType.Secp256k1, this.#random(32));
-    let hostKey = this.config.rotationKey;
-    let operation = genesisOperation(signing.publicKey(), rotation, handle, this.config.endpoint)
-      .signedWith((bytes) => hostKey.sign(bytes));
+    let unsigned = genesisOperation(signing.publicKey(), rotation, handle, this.config.endpoint);
+    let operation = unsigned.withSignature(await this.config.rotationKey.sign(unsigned.signingBytes()));
     return new PreparedAccount(didOfGenesis(operation), handle, signing, operation);
   }
 
@@ -794,23 +1087,24 @@ export final class PackageHost {
       throw new HostError(400, 'InvalidRequest', `${account} is not an organization or package on this host`);
     }
     var commitments: Array<Cid> = [];
-    var seesAll = false;
+    // The host's admins see every entry, as its operator could anyway.
+    var seesAll = this.isHostAdmin(caller);
     if (held.kind == AccountKind.Organization) {
       let role = await this.#orgRole(account, caller);
       if (team == null) {
         commitments = await this.#commitmentsOf(account, MEMBERS_TYPE, 'self');
-        seesAll = isAdmin(role);
+        seesAll = seesAll || isAdmin(role);
       } else {
         let name = team as String;
         if ((await this.#current(account, TEAM_TYPE, name)) == null) {
           throw new HostError(400, 'TeamNotFound', `${account} has no team ${name}`);
         }
         commitments = await this.#commitmentsOf(account, TEAM_TYPE, name);
-        seesAll = isAdmin(role) || (await this.#teamRole(account, name, caller)) == MAINTAINER;
+        seesAll = seesAll || isAdmin(role) || (await this.#teamRole(account, name, caller)) == MAINTAINER;
       }
     } else {
       commitments = await this.#commitmentsOf(account, MAINTAINERS_TYPE, 'self');
-      seesAll = (await this.#packageRole(account, caller)) == OWNER;
+      seesAll = seesAll || (await this.#packageRole(account, caller)) == OWNER;
       if (!seesAll && held.handle != null) {
         // `<name>.<scope>.<domain>`: the organization of the package's scope.
         let labels = scopeOf(held.handle as String, this.config.domain).split('.');
@@ -998,6 +1292,119 @@ export final class PackageHost {
   }
 }
 
+/** An account the host made, as `listAccounts` describes it. */
+export final class HostAccount {
+  did: String;
+  handle: String;
+  kind: AccountKind;
+  scope: String;
+  /** The scope, for an organization; else the name in the scope. */
+  name: String;
+
+  new(this.did, this.handle, this.kind, this.scope, this.name);
+}
+
+/** One account `getMemberships` found a role in: an organization, a team of one, or a package. */
+export final class Membership {
+  /** The organization's or the package's DID; a team's organization's. */
+  did: String;
+  handle: String;
+  scope: String;
+  /** The scope, the team's name, or the package's name. */
+  name: String;
+  role: String;
+
+  new(this.did, this.handle, this.scope, this.name, this.role);
+}
+
+/** Sorts `memberships` by scope, then name, in place. */
+function sortByName(memberships: GrowableArray<Membership>): void {
+  for (var i = 1; i < memberships.length; i += 1) {
+    let membership = memberships[i];
+    let key = `${membership.scope} ${membership.name}`;
+    var j = i;
+    while (j > 0 && compareKeys(`${memberships[j - 1].scope} ${memberships[j - 1].name}`, key) > 0) {
+      memberships[j] = memberships[j - 1];
+      j -= 1;
+    }
+    memberships[j] = membership;
+  }
+}
+
+/** What `getMemberships` finds. */
+export final class Memberships {
+  orgs = new GrowableArray<Membership>();
+  teams = new GrowableArray<Membership>();
+  packages = new GrowableArray<Membership>();
+}
+
+/** A scope, as `listScopes` describes it. */
+export final class ScopeSummary {
+  name: String;
+  did: String;
+  handle: String;
+  packages: i32;
+
+  new(this.name, this.did, this.handle, this.packages);
+}
+
+/** A package, as `listPackages` describes it. */
+export final class PackageSummary {
+  did: String;
+  handle: String;
+  scope: String;
+  name: String;
+  var description: String | null = null;
+  var license: String | null = null;
+  /** The highest version that is not retracted, or null. */
+  var latest: String | null = null;
+  /** How many releases it has, retracted ones included. */
+  var releases: i32 = 0;
+
+  new(this.did, this.handle, this.scope, this.name);
+
+  /** What `listPackages` orders by: the scope, then the name. */
+  sortKey(): String {
+    return `${this.scope} ${this.name}`;
+  }
+}
+
+/** A scope, as `getScope` reads it. */
+export final class ScopeDetail {
+  name: String;
+  /** Its organization's DID and handle. */
+  did: String;
+  handle: String;
+  /** The commitments of the organization's members record. */
+  var members: FixedArray<Cid> = [];
+  /** By name, as the records list them. */
+  teams = new GrowableArray<NamedTeam>();
+
+  new(this.name, this.did, this.handle);
+}
+
+/** A team record, and the team's name, its record key. */
+export final class NamedTeam {
+  name: String;
+  team: Team;
+
+  new(this.name, this.team);
+}
+
+/** A package, as `getPackage` reads it. */
+export final class PackageDetail {
+  did: String;
+  handle: String;
+  var profile: Profile | null = null;
+  /** Newest first. */
+  releases = new GrowableArray<Release>();
+  /** By version. */
+  retractions = new HashMap<String, Retraction>();
+  var maintainers: Maintainers | null = null;
+
+  new(this.did, this.handle);
+}
+
 /** An automation account `createAutomationAccount` made, with its app password. */
 export final class Automation {
   did: String;
@@ -1023,8 +1430,6 @@ final class EntriesBehind {
   all = new GrowableArray<MemberEntry>();
   /** Those given with the call, which the host keeps from now on. */
   fresh = new GrowableArray<MemberEntry>();
-
-  new();
 }
 
 /** The highest of the roles `entries` give `caller`: `owner`, then `admin` or `maintainer`, then any. */

@@ -66,9 +66,26 @@ export class Response {
    * are bytes on the wire and decoded here as text.
    */
   header(name: String): String | null {
-    let values = this.#wire.getHeaders().get(name);
-    return if (values.length == 0) null else String.fromBytes(values[0]);
+    let copied = this.#copiedHeaders;
+    if (copied == null) {
+      let values = this.#wire.getHeaders().get(name);
+      return if (values.length == 0) null else String.fromBytes(values[0]);
+    }
+    let wanted = name.asciiLowerCase();
+    for (let (field, value) in copied) {
+      if (field.asciiLowerCase() == wanted) {
+        return String.fromBytes(value);
+      }
+    }
+    return null;
   }
+
+  /**
+   * The headers, copied from the wire response just before reading the
+   * body consumes it (`consume-body` takes the response resource), so
+   * `header` still answers afterwards.
+   */
+  var #copiedHeaders: Array<(String, FixedArray<u8>)> | null = null;
 
   /** The response body, decoded as text. */
   async text(): Future<String> {
@@ -98,6 +115,7 @@ export class Response {
         'zena:fetch: the response body has already been read');
     }
     this.#bodyUsed = true;
+    this.#copiedHeaders = this.#wire.getHeaders().copyAll();
     let (body, trailers) =
         WireResponse.consumeBody(this.#wire, this.#received.future);
     return body;

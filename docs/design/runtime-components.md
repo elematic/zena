@@ -5,7 +5,10 @@
 - **Status**: Implemented, 2026-10-27: `zena-runtime`'s `extensions`
   module, the `extensions` host interface, `zena:extensions`, and the
   `--allow-extensions` grant; resources across the boundary the same
-  day
+  day; the build-time check of a program's world against its
+  extensions' WIT (`--extension-wit`) and the check of a component
+  against that WIT (`checkExtension`) the same day; `load` made
+  asynchronous and calls into one extension made concurrent 2026-10-28
 - **Issue**: #593
 - **For**: a PDS written in Zena that loads extensions at run time
   ([pds-extensions.md](./pds-extensions.md))
@@ -229,6 +232,51 @@ Whether a function is `async` is not compared: the forwarder calls the
 other side either way. Types are compared with wasmtime's
 `types::Type`, structurally, with paired resources taken as the same.
 
+### Checking the program's world when it is built
+
+The load-time check is against the real extension. The program's
+world is also checked when the program is built, against the WIT its
+extensions are written to:
+
+```
+zena build app.zena -o app.wasm --target component \
+  --wit app.wit --world app --extension-wit ext.wit
+```
+
+The compiler reads the extension document and compares each interface
+it declares that the world imports or exports with the program's view
+of it, by the rules above. A view that differs is a build error naming
+the interface, the method and what differs, so the two documents
+drifting apart is found before anything is loaded. Interfaces the
+world does not mention are not checked. The flag repeats, one
+document per extension.
+
+The check compares the two documents as parsed, without resolving
+them: a type both sides define is compared by structure (records,
+variants, enums, flags and aliases), and a type a `use` brings in is
+compared by name. Whether a function is `async` is not compared, as
+the runtime does not compare it. The check is
+`packages/zena-compiler/zena/lib/extension-views.zena`.
+
+An extension written in Zena is checked against the same document
+when it is built, by `--wit` and `--world`, so its exports and imports
+match the document the program was checked against. A component built
+with other tools is checked against the document before it is loaded,
+by `checkExtension` in `zena:extensions`, which a program calls when
+an extension is installed; from the command line, `wasm-tools component
+targets` answers the same question, less the imports the host serves.
+The component must export every
+interface the world exports, with the world's functions and resources,
+and import nothing but interfaces the world imports, the same way, and
+interfaces the host serves. What differs is reported one line each.
+The runtime (`check_world` in `extensions.rs`) builds a stand-in
+component for the world with wit-component, with no code behind its
+exports, and compares the two components' wasmtime types the way a
+load does, so a component that passes loads. The WIT document may use
+packages from other files, the WASI packages the standard library
+carries by default (`$ZENA_STDLIB_DIR/wit`), or the files and
+directories the caller names.
+
 ### Calls back into the program
 
 The program's calls into an extension are async-lowered, so the
@@ -275,7 +323,8 @@ as spawned tasks of the program's store.
 The extension's program-served imports are defined when the extension
 is loaded, from its component type: each function is a concurrent host
 function that sends the call to the program through the channel of the
-program's call in flight and waits for the answer. The task that serves
+program's call whose guest task it runs in, and waits for the answer.
+The task that serves
 it in the program looks up the object made for that extension on that
 interface, calls `create` first if there is none yet, and calls the
 method with the object as `self`. An extension that calls such an import
@@ -325,10 +374,16 @@ gives it the usual class with the usual methods. Concretely:
 ### Isolation
 
 Each extension has a store of its own, on a thread of its own with a
-current-thread tokio runtime, as a `zena:wasm` run has. Calls to an
-extension are serialized: one at a time, in order; a second call waits
-for the first. The thread holds the `InstancePre`, so a fresh instance
-can be made when the old one is lost.
+current-thread tokio runtime, as a `zena:wasm` run has. The thread runs
+the store under wasmtime's `run_concurrent` and starts each call as a
+task of the store, so calls in flight at once interleave wherever the
+extension awaits: a request handler extension serves requests side by
+side, and a slow call does not hold up a quick one. A call's calls back
+to the program go through the channel of that call, which the task that
+started it registers under its guest task, and a call back finds from
+the root of the async call stack (`async_call_stack` in wasmtime), so
+two calls' calls back never cross. The thread holds the `InstancePre`,
+so a fresh instance can be made when the old one is lost.
 
 - **Imports.** The extension's imports are resolved through its
   bindings before instantiation, and the error names the first import
@@ -345,12 +400,16 @@ can be made when the old one is lost.
   limit covers both. A growth past the limit fails the allocation, and
   a Zena program then traps.
 - **Time.** An extension loaded with `call-timeout` runs on the
-  interruptible engine, as a `zena:wasm` run with a time limit does,
-  and the thread sets the store's epoch deadline before each call.
+  interruptible engine, as a `zena:wasm` run with a time limit does.
+  The store has one epoch deadline, so the thread re-arms it whenever a
+  call starts or ends with what the earliest-started call in flight has
+  left; a call past its limit stops the instance, with every call on it.
 - **Failure.** A trap, a time limit, or a memory failure poisons the
   extension's store, so the instance is dropped and the next call
   instantiates the component again, with fresh state. The failed call
-  returns its error value; the handle stays valid, and so do the
+  returns its error value, and so does every other call in flight on
+  the instance, saying the instance failed and why; the handle stays
+  valid, and so do the
   objects the program made for it. Proxies the program holds to the
   lost instance's resources point at nothing, and a call on one fails.
 
@@ -378,8 +437,9 @@ interface extensions {
     debug: bool,
   }
 
-  load: func(path: string, bindings: list<binding>, options: load-options) -> result<u32, string>;
-  load-trusted: func(path: string, options: load-options) -> result<u32, string>;
+  load: async func(path: string, bindings: list<binding>, options: load-options) -> result<u32, string>;
+  load-trusted: async func(path: string, options: load-options) -> result<u32, string>;
+  check: func(path: string, wit-path: string, world-name: string, deps: list<string>) -> result<_, string>;
   drop: func(extension: u32);
 }
 ```
@@ -416,11 +476,21 @@ export let fromHost = (name: String): Binding;
 export let fromProgram = (name: String, exported: String | null = null): Binding;
 export let fromExtension = (name: String, ext: Extension): Binding;
 
-export let loadExtension = (path: String, bindings: Array<Binding>,
-    options: LoadOptions = {}): Result<Extension, String>;
-export let loadTrustedExtension = (path: String, options: LoadOptions = {}):
-    Result<Extension, String>;
+export async function loadExtension(path: String, bindings: Array<Binding>,
+    options: LoadOptions = {}): Future<Result<Extension, String>>;
+export async function loadTrustedExtension(path: String, options: LoadOptions = {}):
+    Future<Result<Extension, String>>;
+export let checkExtension = (path: String, witPath: String, world: String,
+    deps: Array<String> | null = null): Array<String>;
 ```
+
+`load` is an `async func`, so the host takes the program's store only
+to start the load and to keep its result, and the program's other tasks
+run while the extension's thread compiles and instantiates. The slot
+for the handle is reserved when the load starts, so two loads in flight
+get distinct handles; a load that fails leaves its slot empty, as a
+dropped extension does. A program that wants to wait blocks on the
+future, which is safe here because a load serves no calls back.
 
 The program's side of the extension interfaces is ordinary WIT interop:
 it declares a world that imports its views of what extensions export
@@ -442,7 +512,15 @@ and the next call succeeding, a memory limit, dropping, an export the
 program lacks a binding for, a type mismatch, two extensions wired
 together with the second's calls back reaching the program, and
 resources crossing both ways, with a borrow and with drops that reach
-their owners.
+their owners. The fixture program is built with `--extension-wit`
+against the extensions' document, and the compiler's
+`extension-views_test.zena` covers the build-time check rule by rule.
+`checkExtension` is tested on the fixtures against the worlds they were
+built for and against others. Two calls into one extension that each
+wait through a call back and then call back again show the calls
+overlapping and each reaching its own channel; two calls parked past
+the time limit fail together and the next call runs on a fresh
+instance; two loads in flight at once get distinct handles.
 
 ## Alternatives considered
 
@@ -473,23 +551,10 @@ their owners.
 
 ## Open questions
 
-- **Validating the program's world against the extension WIT it
-  declares.** The load-time check is against the real extension. A
-  static check, when the program is built, would read the extension's
-  WIT and compare each of the program's views with the rules above, so
-  a mismatch is a build error naming the interface. It needs the
-  compiler to read a second WIT file alongside the world.
 - **Resources shared across three parties.** A proxy can only be
   passed back to its owner: an extension handing the program a proxy of
   another extension's resource, or the other way, fails the call. Routing
   such a handle would need the receiver to proxy a proxy.
-- Concurrent calls into one extension: one at a time is enough for
-  write policy hooks, and a request handler extension may want more.
-  Wasmtime's event loop can run several tasks in one store; the thread
-  would then take calls while others are in flight.
-- `load` blocks the program while the component compiles and
-  instantiates. The compile cache makes a second load fast; an async
-  `load` would keep a server responsive during the first.
 - Where the compiled form is cached on hosts without a lasting disk
   ([pds-extensions.md](./pds-extensions.md), "Open questions").
 - Cancelling a call in flight when the program's task is cancelled.

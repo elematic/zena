@@ -24,6 +24,23 @@ ENV_VARS+=",PDS_DNS_ZONE=${ZONE}"
 ENV_VARS+=",PDS_DNS_PROJECT=${PROJECT}"
 ENV_VARS+=",PDS_PLC=${PLC_MODE}"
 ENV_VARS+=",GOOGLE_CLOUD_PROJECT=${PROJECT}"
+SECRETS="PDS_JWT_SECRET=${JWT_SECRET}:latest"
+if [ "$ROTATION_KMS" = 1 ]; then
+  ENV_VARS+=",PDS_ROTATION_KMS_KEY=${KMS_KEY_VERSION}"
+else
+  SECRETS+=",PDS_ROTATION_KEY=${SECRET}:latest"
+fi
+if [ -n "$ADMIN_DIDS" ]; then
+  # Spaces, since --set-env-vars splits on commas.
+  ENV_VARS+=",PDS_ADMIN_DIDS=${ADMIN_DIDS//,/ }"
+fi
+if [ -n "$OFFLINE_ROTATION_KEY" ]; then
+  ENV_VARS+=",PDS_OFFLINE_ROTATION_KEY=${OFFLINE_ROTATION_KEY}"
+elif [ "$PDS_ENV" = production ]; then
+  echo "production needs the operator's offline rotation key: set ZENA_OFFLINE_ROTATION_KEY to its did:key," >&2
+  echo "from zena-cli run packages/pds/zena/main.zena -- generate-key on a machine you trust" >&2
+  exit 2
+fi
 
 echo "service: $SERVICE"
 echo "image:   $IMAGE"
@@ -38,7 +55,7 @@ gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --service-account "$SERVICE_ACCOUNT_EMAIL" \
   --set-env-vars "$ENV_VARS" \
-  --set-secrets "PDS_ROTATION_KEY=${SECRET}:latest,PDS_JWT_SECRET=${JWT_SECRET}:latest" \
+  --set-secrets "$SECRETS" \
   --memory 1Gi \
   --cpu 1 \
   --max-instances 4 \

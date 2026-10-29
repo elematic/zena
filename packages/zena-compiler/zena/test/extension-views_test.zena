@@ -1,0 +1,203 @@
+// A program's world against its extensions' WIT: the views the runtime
+// pairs with the extension's interfaces (docs/design/runtime-components.md),
+// checked at build time by `extension-views.zena`.
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { StringBuilder } from 'zena:core';
+import { parseSyntax } from 'wit-parser:wit';
+import { checkExtensionViews } from '../lib/extension-views.zena';
+
+/** The extension's side: plain functions, and a resource of its own. */
+let guest = `package test:ext@1.0.0;
+
+interface store {
+  record entry { key: string, value: u32 }
+  resource txn {
+    put: func(entry: entry);
+    commit: func() -> u32;
+  }
+  begin: func() -> own<txn>;
+  size: func(txn: borrow<txn>) -> u32;
+}
+
+interface policy {
+  variant verdict { allow, deny(string) }
+  check-write: async func(data: list<u8>) -> verdict;
+  reset: func();
+}
+
+interface unused {
+  ping: func() -> u32;
+}
+
+world extension {
+  import store;
+  export policy;
+}
+`;
+
+/** The program's side, right in every respect. */
+let host = `package test:ext@1.0.0;
+
+interface store {
+  record entry { key: string, value: u32 }
+  resource txn {
+    put: func(entry: entry);
+    commit: func() -> u32;
+  }
+  resource store {
+    begin: func() -> own<txn>;
+    size: func(txn: borrow<txn>) -> u32;
+    create: static func(extension: u32) -> own<store>;
+  }
+}
+
+interface policy {
+  variant verdict { allow, deny(string) }
+  resource policy {
+    check-write: async func(data: list<u8>) -> result<verdict, string>;
+    reset: func() -> result<_, string>;
+    attach: static func(extension: u32) -> own<policy>;
+  }
+}
+
+world app {
+  import policy;
+  export store;
+}
+`;
+
+let problems = (hostWit: String, worldName: String = 'app') =>
+  checkExtensionViews(parseSyntax(hostWit), worldName, parseSyntax(guest), 'ext.wit');
+
+let joined = (hostWit: String, worldName: String = 'app') => {
+  let sb = new StringBuilder();
+  for (let p in problems(hostWit, worldName)) {
+    sb.append(p).append('\n');
+  }
+  return sb.toString();
+};
+
+/** `host` with one line replaced. */
+let edited = (from: String, to: String) => {
+  let parts = host.split(from);
+  isTrue(parts.length == 2, `the line to edit is not in the host once: ${from}`);
+  return `${parts[0]}${to}${parts[1]}`;
+};
+
+export let tests = suite('extension views', () => {
+  test('a world whose views match passes', () => {
+    equal(joined(host), '');
+  });
+
+  test('an interface the world does not mention is not checked', () => {
+    // `unused` has no view, and nothing says so.
+    equal(joined(host), '');
+  });
+
+  test('a world the document lacks is reported', () => {
+    isTrue(joined(host, 'nowhere').contains('no world named nowhere'));
+  });
+
+  test('a called view wraps results and declares attach', () => {
+    let unwrapped = joined(edited(
+        '    check-write: async func(data: list<u8>) -> result<verdict, string>;',
+        '    check-write: async func(data: list<u8>) -> verdict;'));
+    isTrue(unwrapped.contains('policy.check-write returns verdict'), unwrapped);
+    isTrue(unwrapped.contains('result<verdict, string>'), unwrapped);
+    isTrue(unwrapped.contains('imported by world app'), unwrapped);
+
+    let noAttach = joined(edited(
+        '    attach: static func(extension: u32) -> own<policy>;', ''));
+    isTrue(noAttach.contains('policy must declare attach: static func(extension: u32) -> own<policy>'),
+        noAttach);
+
+    let wrongAttach = joined(edited(
+        '    attach: static func(extension: u32) -> own<policy>;',
+        '    attach: static func(extension: u64) -> own<policy>;'));
+    isTrue(wrongAttach.contains('policy.attach must be static func(extension: u32) -> own<policy>'),
+        wrongAttach);
+  });
+
+  test('a served view keeps results and declares create', () => {
+    let wrapped = joined(edited(
+        '    begin: func() -> own<txn>;',
+        '    begin: func() -> result<own<txn>, string>;'));
+    isTrue(wrapped.contains('store.begin returns result<own<txn>, string>, where the extension\'s begin returns own<txn>'),
+        wrapped);
+    isTrue(wrapped.contains('exported by world app'), wrapped);
+
+    let noCreate = joined(edited(
+        '    create: static func(extension: u32) -> own<store>;', ''));
+    isTrue(noCreate.contains('store must declare create: static func(extension: u32) -> own<store>'),
+        noCreate);
+  });
+
+  test('every function of the extension needs a method, and no more', () => {
+    let missing = joined(edited(
+        '    size: func(txn: borrow<txn>) -> u32;\n', ''));
+    isTrue(missing.contains('store lacks a method for the extension\'s size'), missing);
+
+    let extra = joined(edited(
+        '    size: func(txn: borrow<txn>) -> u32;',
+        '    size: func(txn: borrow<txn>) -> u32;\n    flush: func();'));
+    isTrue(extra.contains('store.flush has no counterpart in the extension\'s interface'), extra);
+
+    let free = joined(edited(
+        '  resource store {',
+        '  helper: func();\n  resource store {'));
+    isTrue(free.contains('declares the function helper, which belongs on store as a method'),
+        free);
+  });
+
+  test('parameters are compared by type, after self', () => {
+    let wrong = joined(edited(
+        '    size: func(txn: borrow<txn>) -> u32;',
+        '    size: func(txn: own<txn>) -> u32;'));
+    isTrue(wrong.contains('store.size\'s parameter txn: borrow<txn> against own<txn>'), wrong);
+
+    let count = joined(edited(
+        '    size: func(txn: borrow<txn>) -> u32;',
+        '    size: func(txn: borrow<txn>, deep: bool) -> u32;'));
+    isTrue(count.contains('store.size takes (borrow<txn>, bool), where the extension\'s size takes (borrow<txn>)'),
+        count);
+  });
+
+  test('the extension\'s resources are declared the same', () => {
+    let missing = joined(edited(
+        '    commit: func() -> u32;\n  }\n  resource store {',
+        '  }\n  resource store {'));
+    isTrue(missing.contains('resource txn lacks the extension\'s method commit'), missing);
+
+    let gone = joined(edited(
+        '  resource txn {\n    put: func(entry: entry);\n    commit: func() -> u32;\n  }\n', ''));
+    isTrue(gone.contains('the extension\'s resource txn is not declared'), gone);
+
+    let extra = joined(edited(
+        '    commit: func() -> u32;\n  }\n  resource store {',
+        '    commit: func() -> u32;\n    abort: func();\n  }\n  resource store {'));
+    isTrue(extra.contains('txn.abort has no counterpart in the extension\'s interface'), extra);
+  });
+
+  test('a constructor or static on the extension\'s resource is refused', () => {
+    let parts = guest.split('    put: func(entry: entry);');
+    let guestWithCtor = `${parts[0]}    constructor(name: string);\n    put: func(entry: entry);${parts[1]}`;
+    let found = checkExtensionViews(parseSyntax(host), 'app', parseSyntax(guestWithCtor),
+        'ext.wit');
+    isTrue(found.length == 1, `${found.length} problems`);
+    isTrue(found[0].contains('resource txn declares a constructor, which has no object to serve it'),
+        found[0]);
+  });
+
+  test('types both sides define are compared by structure', () => {
+    let field = joined(edited(
+        '  record entry { key: string, value: u32 }\n  resource txn {',
+        '  record entry { key: string, value: u64 }\n  resource txn {'));
+    isTrue(field.contains('record entry\'s field value: u32 against u64'), field);
+
+    let kase = joined(edited(
+        '  variant verdict { allow, deny(string) }\n  resource policy {',
+        '  variant verdict { allow, deny(u32) }\n  resource policy {'));
+    isTrue(kase.contains('variant verdict\'s case deny: string against u32'), kase);
+  });
+});

@@ -78,7 +78,7 @@ import {
   ComponentEntryWrapper, componentEntryPathFor,
   componentEntrySpecifierFor, componentExportSuffix, resourceWrapperBase,
   mainWrapperResultOf, mainWrapperAbiImports, hasAsyncMain, renderMainWrapper,
-  renderWrapperHeader,
+  renderWrapperHeader, exportedFunctionIsAsync,
   componentSyncExportSuffix
 } from './component-entry.zena';
 import { zena, emit, ZenaTemplate } from './code-template.zena';
@@ -103,6 +103,8 @@ var currentWitSource = "";
  * nested package's is not the document's main one).
  */
 var currentAst: Ast | null = null;
+/** The entry module's syntax, for what implements each export. */
+var currentEntryAst: Module | null = null;
 
 /**
  * The document last parsed, by its text: every synthesized module of
@@ -3924,6 +3926,7 @@ export function synthesizeExportWrapper(
 
   currentWitSource = source;
   currentAst = ast;
+  currentEntryAst = entryAst;
   currentPackage = ast.packageName;
   selfSpecifier = "";
   currentSpecifier = "";
@@ -4009,7 +4012,7 @@ export function synthesizeExportWrapper(
     sb.append(imported[i]);
   }
   sb.append(" } from '").append(specifier).append("';\n");
-  sb.append("import { finishTask } from 'zena:wasi';\n");
+  sb.append("import { finishTask, finishVoidTask } from 'zena:wasi';\n");
   if (uses.option) {
     sb.append("import { Option, Some, some, none } from 'zena:core';\n");
   }
@@ -4474,11 +4477,23 @@ function renderExportWrapper(sb: StringBuilder, target: ExportTarget,
       .append("): void {\n");
   sb.append(liftStmts.toString());
   if (!hasResult) {
-    // Nothing to return: the driver's bare `task.return` closes the
-    // task once its work is done, as it does for a `main` that
-    // returns nothing.
-    sb.append("  ").append(callee).append("(").append(callArgs.toString())
-        .append(");\n}\n");
+    // Nothing to return, but not before the work is done. An async
+    // implementation hands its future to the driver, which issues the
+    // bare `task.return` once it settles: a task whose work pends on a
+    // waitable another task armed has nothing in its own set, and
+    // would otherwise exit at its first entry. A synchronous one is
+    // done when it returns, and the driver's exit returns for it.
+    let entry = currentEntryAst;
+    let isAsyncCallee = entry != null && target.kind != "constructor" &&
+        exportedFunctionIsAsync(entry as Module, target.base, target.className,
+            target.member);
+    if (isAsyncCallee) {
+      sb.append("  finishVoidTask(").append(callee).append("(")
+          .append(callArgs.toString()).append("));\n}\n");
+    } else {
+      sb.append("  ").append(callee).append("(").append(callArgs.toString())
+          .append(");\n}\n");
+    }
     return;
   }
   sb.append("  finishTask<").append(zenaResult).append(">(")

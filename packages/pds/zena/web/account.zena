@@ -1,0 +1,85 @@
+/**
+ * The pages of the person signed in (`./session.zena`): their scopes,
+ * teams and packages; the page their PDS sends them back to after
+ * signing in; and signing out.
+ */
+
+import {HTMLPartial, Router, html} from 'zena:http';
+import {Membership, Memberships, PackageHost} from '../host.zena';
+import {chip, each, page} from './layout.zena';
+import {clearSessionCookie, contextOf} from './session.zena';
+
+/** Where a person's PDS sends them back to; the web app's OAuth client metadata names it. */
+export let CALLBACK_PATH = '/oauth/callback';
+
+/** Adds the account pages to `router`. */
+export function accountPages(router: Router, host: PackageHost): void {
+  router.get('/me', async (req, res, next, params) => {
+    let context = contextOf(req, host);
+    res.type = 'text/html; charset=utf-8';
+    let who = context.who;
+    if (who == null) {
+      res.body = page('Your packages · Zena packages', context, html`
+        <h1>Your packages</h1>
+        <p>Sign in, with your atproto account, to see the scopes, teams and packages you have a part in here.</p>
+      `);
+      return;
+    }
+    let memberships = await host.getMemberships(who.did);
+    res.body = page('Your packages · Zena packages', context, mePage(memberships));
+  });
+
+  // The page's script finishes the sign-in here: it reads the OAuth answer
+  // in the URL, trades a service-auth token for a web session, and moves on.
+  router.get(CALLBACK_PATH, async (req, res, next, params) => {
+    res.type = 'text/html; charset=utf-8';
+    res.body = page('Signing in · Zena packages', contextOf(req, host), html`
+      <h1>Signing in</h1>
+      <p class="muted" data-sign-in-status>Finishing your sign-in with your PDS…</p>
+    `);
+  });
+
+  // A form post, so it works without the page's script, which also ends
+  // the OAuth session in the browser first. SameSite=Lax keeps another
+  // site's form from sending the cookie.
+  router.post('/signout', async (req, res, next, params) => {
+    clearSessionCookie(res);
+    res.statusCode = 303;
+    res.setHeader('location', '/');
+    res.body = '';
+  });
+}
+
+/** The scopes, teams and packages of the person signed in, each with their role. */
+function mePage(memberships: Memberships): HTMLPartial {
+  return html`
+    <h1>Your packages</h1>
+    <section>
+      <h2>Scopes</h2>
+      ${list(memberships.orgs, (org) => html`<a href="/scopes/${org.scope}">@${org.scope}</a>
+        <span class="mono muted">${org.handle}</span>`,
+          'You belong to no scope here. zena scope create makes one.')}
+    </section>
+    <section>
+      <h2>Teams</h2>
+      ${list(memberships.teams, (team) => html`<span class="mono">${team.scope}/${team.name}</span>`,
+          'You are on no team here.')}
+    </section>
+    <section>
+      <h2>Packages</h2>
+      ${list(memberships.packages, (pkg) => html`<a href="/packages/${pkg.handle}">${pkg.name}</a>
+        <span class="mono muted">${pkg.handle}</span>`,
+          'You maintain no package here.')}
+    </section>
+  `;
+}
+
+/** `items` as a list, each with its role, or `empty` when there are none. */
+function list(items: Array<Membership>, label: (item: Membership) => HTMLPartial, empty: String): HTMLPartial {
+  if (items.length == 0) {
+    return html`<p class="muted">${empty}</p>`;
+  }
+  return html`<ul class="plain">${each(items, (item) => html`
+    <li>${label(item)} ${chip(item.role)}</li>`)}
+  </ul>`;
+}

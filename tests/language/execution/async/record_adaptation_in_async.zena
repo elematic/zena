@@ -1,0 +1,24 @@
+// @mode: run
+// @result: 2
+// @skip: record adaptation inside an async function fails in ZIR, "record adaptation vtable unregistered" (#633)
+// Passing a record where a wider record type is expected (an optional
+// field the argument's type lacks) adapts the record. The adapter is
+// registered for a synchronous function and not for an async one.
+import { Future } from 'zena:async';
+
+type Opts = {a?: i64, b?: i64, c?: boolean};
+
+function take(o: Opts): i64 {
+  if (let {a} = o) {
+    return a;
+  }
+  return 0 as i64;
+}
+
+async function f(options: {a?: i64, b?: i64} = {}): Future<i64> {
+  return take(options);
+}
+
+export async function main(): Future<i32> {
+  return (await f({a: 2 as i64})) as i32;
+}

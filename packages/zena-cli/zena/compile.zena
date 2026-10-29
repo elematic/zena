@@ -42,6 +42,8 @@ export final class CompileRequest {
   /** A WIT file or directory declaring a component's world. */
   var wit: AbsolutePath | null = null;
   var world: String | null = null;
+  /** WIT files or directories the program's extensions are written to. */
+  var extensionWits = new Array<AbsolutePath>();
   /**
    * The module string literals are imported from on the `js` target;
    * null for the compiler's default.
@@ -237,6 +239,10 @@ function compileFileOptions(
     parsed
   };
   let wit = request.wit;
+  let extensionWitPaths = new Array<String>();
+  for (let path in request.extensionWits) {
+    extensionWitPaths.push(repoRelative(path));
+  }
   let target = request.target ?? defaultTarget;
   // Empty for a target that embeds no runtime memory module, as
   // `witPath` is empty for a compile with no declared world.
@@ -270,6 +276,7 @@ function compileFileOptions(
     target,
     witPath: if (wit == null) { '' } else { repoRelative(wit) },
     worldName: request.world ?? '',
+    extensionWitPaths: extensionWitPaths,
     optLevel,
     runtimeMemoryPath: runtimeMemory,
     compactImports: request.compactImports,

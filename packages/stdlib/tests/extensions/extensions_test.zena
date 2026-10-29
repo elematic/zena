@@ -6,10 +6,12 @@
 // them. Repo tests run with both grants.
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
+import { StringBuilder } from 'zena:core';
 import {
-  Binding, Extension, fromHost, fromProgram, loadExtension,
+  Binding, Extension, checkExtension, fromHost, fromProgram, loadExtension,
   loadTrustedExtension,
 } from 'zena:extensions';
+import { blockOn } from 'zena:wasi';
 import { RunOutcome, runModule } from 'zena:wasm';
 
 let fixtures = 'packages/stdlib/tests/extensions/fixtures';
@@ -18,7 +20,7 @@ let fixture = (name: String) => `${fixtures}/${name}`;
 
 /** Why a load failed, or '' when it did not. */
 let refusal = (name: String, bindings: Array<Binding>): String => {
-  let loaded = loadExtension(fixture(name), bindings);
+  let loaded = blockOn(loadExtension(fixture(name), bindings));
   if (loaded is (false, String)) {
     return loaded[1];
   }
@@ -39,9 +41,18 @@ let run = (scenario: String): String => {
 
 let lines = (text: String) => text.trim().split('\n');
 
+/** What `checkExtension` found with `name` against `world` of child.wit, one per line. */
+let checked = (name: String, world: String, wit: String = 'child.wit'): String => {
+  let sb = new StringBuilder();
+  for (let problem in checkExtension(fixture(name), fixture(wit), world)) {
+    sb.append(problem).append('\n');
+  }
+  return sb.toString();
+};
+
 export let tests = suite('extensions', () => {
   test('a component with no imports loads and drops', () => {
-    let loaded = loadExtension(fixture('plain.wasm'), []);
+    let loaded = blockOn(loadExtension(fixture('plain.wasm'), []));
     if (loaded is (false, String)) {
       isTrue(false, loaded[1]);
     }
@@ -50,7 +61,7 @@ export let tests = suite('extensions', () => {
     ext.drop();
     // Dropping again is harmless, and handles are not reused.
     ext.drop();
-    let again = loadExtension(fixture('plain.wasm'), []);
+    let again = blockOn(loadExtension(fixture('plain.wasm'), []));
     isTrue((again as (true, Extension))[1].handle > ext.handle);
   });
 
@@ -67,7 +78,7 @@ export let tests = suite('extensions', () => {
   });
 
   test('a trusted load allows every host interface', () => {
-    let loaded = loadTrustedExtension(fixture('random.wasm'));
+    let loaded = blockOn(loadTrustedExtension(fixture('random.wasm')));
     if (loaded is (false, String)) {
       isTrue(false, loaded[1]);
     }
@@ -83,8 +94,31 @@ export let tests = suite('extensions', () => {
     isTrue(bound.contains('does not export'), bound);
     let asHost = refusal('child.wasm', [fromHost('test:ext/callbacks@1.0.0')]);
     isTrue(asHost.contains('not a host interface'), asHost);
-    let trusted = loadTrustedExtension(fixture('child.wasm'));
+    let trusted = blockOn(loadTrustedExtension(fixture('child.wasm')));
     isTrue(trusted is (false, String));
+  });
+
+  test('a component is checked against a world as a load would check it', () => {
+    equal(checked('child.wasm', 'child'), '');
+    // An import the world does not have, and the host does not serve,
+    // is a problem; an export the world does not need is not.
+    let other = checked('child.wasm', 'plain-world');
+    isTrue(other.contains('does not export test:ext/plain@1.0.0, which world plain-world exports'),
+        other);
+    isTrue(other.contains('imports test:ext/callbacks@1.0.0, which world plain-world does not ' +
+        'import and the host does not serve'), other);
+    isTrue(!other.contains('test:ext/ops'), other);
+    // A host interface the world does not mention is allowed.
+    equal(checked('random.wasm', 'plain-world'), '');
+    let mismatch = checked('mismatch.wasm', 'child');
+    isTrue(mismatch.contains("test:ext/ops@1.0.0#compute is (S64) -> S32, where world child's " +
+        'is (S32) -> S32'), mismatch);
+    isTrue(mismatch.contains('test:ext/ops@1.0.0 does not export describe'), mismatch);
+    isTrue(mismatch.contains('does not export test:ext/sessions@1.0.0'), mismatch);
+    isTrue(checked('child.wasm', 'nowhere').contains('has no world nowhere'));
+    isTrue(checked('no-such.wasm', 'child').contains('no-such.wasm'));
+    let noWit = checked('child.wasm', 'child', 'no-such.wit');
+    isTrue(noWit.contains('no-such.wit'), noWit);
   });
 
   test('calls cross with their arguments and results, and call back', () => {
@@ -167,6 +201,27 @@ export let tests = suite('extensions', () => {
       'a.bump = 2\n' +
       'b.bump = 1\n' +
       'disposed = 1');
+  });
+
+  test('calls into one extension run at once, each with its own calls back', () => {
+    let text = run('concurrent');
+    isTrue(text.contains('slow(5) = 105'), text);
+    isTrue(text.contains('slow(7) = 107'), text);
+    // Each call waited its own time: a void async export the program
+    // serves must not return before its work is done (`finishVoidTask`).
+    isTrue(text.contains('each waited: true'), text);
+    isTrue(text.contains('overlapped: true'), text);
+  });
+
+  test('a failure fails every call in flight, and the next call starts afresh', () => {
+    let out = lines(run('concurrent-failure'));
+    isTrue(out[0].contains('time limit'), out[0]);
+    isTrue(out[1].contains('time limit'), out[1]);
+    equal(out[2], 'count = 1');
+  });
+
+  test('loads in flight at once get distinct handles', () => {
+    equal(run('loads').trim(), 'distinct: true');
   });
 
   test('an extension bound to another calls it, and it calls the program', () => {

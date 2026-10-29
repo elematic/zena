@@ -1001,16 +1001,19 @@ out (§"Scoped containers and extent nesting").
 
 What the checker enforces for that half:
 
-- **Fields.** A field may hold a `scoped T` bare, nullable (`T | null`),
+- **Fields.** A field may hold a `scoped T` bare, as `WithDefault<T>`,
   or as the argument of another class's `scoped` parameter
   (`Future<T>`). Inside an unrestricted container (`Array<T>`) it is
-  rejected, since an index read would copy it.
+  rejected, since an index read would copy it. `T | null` needs `T`
+  constrained to references (types.md §"Unbounded Type Parameters in
+  Unions"), which an owner does not satisfy.
 - **Instances.** A `Channel<Own<R>>` moves like the owner it holds
   (`typeCarriesOwner` looks into a `scoped` parameter's argument), and a
   `Channel<Borrow<R>>` is second-class, as any container of a borrow is.
 - **Takes.** Moving a `T` field's value out (returning it, binding it,
   passing it on) is a take, the rule #563 gave owner fields: the field
-  must be a nullable `var`, and the move leaves null behind. Codegen
+  must be a `var` that can be empty, nullable or `WithDefault<T>`, and
+  the move leaves it empty, through `as T` too. Codegen
   stores the null only where the specialization's `T` may be
   restricted, so at a first-class `T` the read is a copy. It judges
   that from the representation the specialization is keyed by, where
@@ -1018,6 +1021,14 @@ What the checker enforces for that half:
   `Unmanaged<R>` instantiation is taken from too.
 - **Returns.** A method returning its class's `T` counts `this` as the
   source the value derives from.
+- **`isFirstClass<T>()`** (the `is_first_class` intrinsic) is a constant
+  in each specialization: false where a take would empty a slot, true
+  elsewhere, so a body branches on what only one kind of instantiation
+  needs and the other branch folds away. Both answers come from the same
+  representation test, so they always agree, whichever instantiation of
+  a shared body the compiler recorded. The static half owner-futures.md
+  describes, `T` unrestricted where the call is known true, is not
+  implemented: no body needs it yet.
 
 Releasing an instance nobody consumed, and a store into a `T` field
 that still holds a value, are left to release glue

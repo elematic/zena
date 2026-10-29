@@ -38,7 +38,7 @@ import { KeyType, formatDidKey, publicKeyFor } from 'atproto:didkey';
 import { Session, getServiceAuth } from 'atproto:session';
 import { XrpcClient, XrpcError } from 'atproto:xrpc';
 import { packSource } from 'package-manager:archive';
-import { SOURCE_MIME_TYPE, checkDependencies, validateRelease } from 'package-manager:validate';
+import { SOURCE_MIME_TYPE, checkDependencies, checkMetadata, validateRelease } from 'package-manager:validate';
 import { Manifest, readManifest, writeDid } from 'package-manager:manifest';
 import {
   ATTESTATION_TYPE, Artifact, Attestation, Dependency, Maintainer, Maintainers, OWNER, Profile,
@@ -72,6 +72,7 @@ export function publishCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
     let target = currentPackage();
     refuseWitDependencies(target.manifest);
+    refuseProblems(checkMetadata(target.manifest, target.manifestPath()));
     requirePublished(dependenciesOf(target, target.manifest));
     let session = signedIn();
     let host = findHost(args);
@@ -93,6 +94,7 @@ export function packageCreateCommand(args: ParsedArgs, options: Options): i32 {
     if (target.manifest.did != null) {
       throw new PublishError(`${target.manifestPath()} already names its package: ${target.manifest.did as String}`);
     }
+    refuseProblems(checkMetadata(target.manifest, target.manifestPath()));
     let session = signedIn();
     createPackage(args, session, findHost(args), target);
     saveIfRefreshed(session);
@@ -264,7 +266,8 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
   let input = new JsonObject();
   input['organization'] = org as String;
   input['recoveryKeys'] = strings(recoveryKeys);
-  input['profile'] = toJson(new Profile(name).toValue());
+  // The profile says what the manifest says, for the index to show.
+  input['profile'] = toJson(new Profile(name, target.manifest.description, target.manifest.license).toValue());
   input['maintainers'] = toJson(new Maintainers([Maintainer.ofDid(session.did, OWNER)]).toValue());
   let created = runFuture(hostClient(session, host, 'dev.zena-lang.host.createPackage')
     .procedure('dev.zena-lang.host.createPackage', input)) as JsonObject;

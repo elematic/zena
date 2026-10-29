@@ -169,6 +169,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - [packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md) — RTA and specialization
 - [packages/zena-cli/CONTEXT.md](packages/zena-cli/CONTEXT.md) — CLI module and Rust/wasmtime host
 - [packages/pds/CONTEXT.md](packages/pds/CONTEXT.md) — the PDS and package host, ported from pds.js
+- [packages/pds-web/CONTEXT.md](packages/pds-web/CONTEXT.md) — the PDS's server-rendered pages and their assets (Radica)
 - [packages/workspace-hack/CONTEXT.md](packages/workspace-hack/CONTEXT.md) — the generated crate that gives the Rust crates one set of dependency features
 
 ### Packages & Directories
@@ -191,6 +192,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - **`packages/atproto`**: AT Protocol libraries: the data model, DAG-CBOR, CIDs, repositories and their proofs, keys and signatures, identity resolution, XRPC, service auth and sessions (`@zena-lang/atproto`).
 - **`packages/package-manager`**: The package manager's libraries: records, source archives, fetching, version selection, manifests and workspaces, and the host's lexicons (`@zena-lang/package-manager`).
 - **`packages/pds`**: An AT Protocol PDS written in Zena, ported from pds.js, and the base of the Zena package host (`@zena-lang/pds`). (See [pds.md](docs/design/pds.md)).
+- **`packages/pds-web`**: The stylesheet and script of the package host's web pages, which the PDS renders on the server (`packages/pds/zena/web`): Radica's design tokens and the few Radica elements the pages use (`@zena-lang/pds-web`).
 - **`packages/language-service`**: Language service library, `lsp.zena` / `lsp.wasm`, and the JS API around it (`@zena-lang/language-service`). Published.
 - **`packages/zenadoc`**: API documentation extraction — reads a package's source and emits JSON describing its public API (`@zena-lang/zenadoc`). (See [zenadoc.md](docs/design/zenadoc.md)).
 - **`packages/codemirror`**: Zena support for CodeMirror 6 (`@zena-lang/codemirror`). Published.
@@ -271,6 +273,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
     alias), or `freestanding` (core module with no host imports beyond
     `@external`).
   - `--wit <path>`, `--world <name>`: WIT world for `component` builds.
+  - `--extension-wit <path>`: An extension's WIT, which the world's views
+    of its interfaces are checked against; repeatable, and needs `--wit`
+    and `--world` (`docs/design/runtime-components.md`).
   - `--imported-string-constants <module>`: The module `js` builds import
     string literals from (default `_`; WebAssembly ESM integration uses
     `wasm:js/string-constants`).

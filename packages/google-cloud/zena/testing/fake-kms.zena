@@ -1,0 +1,110 @@
+/**
+ * A fake Cloud KMS key version, served by `zena:http` in the same program,
+ * for tests of code that signs through `google-cloud:kms`: it answers
+ * asymmetricSign and getPublicKey for one secp256k1 key, as Cloud KMS may,
+ * with DER signatures whose s is high, and refuses any token but `token`.
+ */
+
+import {Future} from 'zena:async';
+import {secp256k1} from 'zena:crypto';
+import {base64, hex} from 'zena:encoding';
+import {App, Server} from 'zena:http';
+import {JsonObject, parseJson, stringify} from 'zena:json';
+
+/** The key version's name. */
+export let FAKE_KMS_KEY = 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1';
+/** Its private key. */
+export let FAKE_KMS_PRIVATE_KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+let ORDER = hex.decode('fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141');
+/** A secp256k1 SubjectPublicKeyInfo, up to the point. */
+let SPKI_PREFIX = '3056301006072a8648ce3d020106052b8104000a034200';
+
+/** `a` then `b`. */
+function join(a: FixedArray<u8>, b: FixedArray<u8>): FixedArray<u8> {
+  let out = new FixedArray<u8>(a.length + b.length, 0 as u8);
+  for (var i = 0; i < a.length; i += 1) {
+    out[i] = a[i];
+  }
+  for (var i = 0; i < b.length; i += 1) {
+    out[a.length + i] = b[i];
+  }
+  return out;
+}
+
+/** `n - x` for 32-byte big-endian numbers. */
+function subtractFrom(n: FixedArray<u8>, x: FixedArray<u8>): FixedArray<u8> {
+  let out = new FixedArray<u8>(32, 0 as u8);
+  var borrow = 0;
+  for (var i = 31; i >= 0; i -= 1) {
+    var d = (n[i] as i32) - (x[i] as i32) - borrow;
+    borrow = if (d < 0) 1 else 0;
+    if (d < 0) {
+      d += 256;
+    }
+    out[i] = d as u8;
+  }
+  return out;
+}
+
+/** A DER INTEGER of a 32-byte number, with a leading zero byte always. */
+function derInteger(value: FixedArray<u8>): FixedArray<u8> {
+  let head = new FixedArray<u8>(3, 0 as u8);
+  head[0] = 0x02 as u8;
+  head[1] = 33 as u8;
+  return join(head, value);
+}
+
+/** The fake signs as Cloud KMS may: in DER, with the high-S twin of its signature. */
+function highSDer(digest: FixedArray<u8>): FixedArray<u8> {
+  let signature = secp256k1.signDigest(FAKE_KMS_PRIVATE_KEY, digest);
+  let body = join(derInteger(signature[0..32]), derInteger(subtractFrom(ORDER, signature[32..64])));
+  let head = new FixedArray<u8>(2, 0 as u8);
+  head[0] = 0x30 as u8;
+  head[1] = body.length as u8;
+  return join(head, body);
+}
+
+/** A started server for the key; its origin is `http://127.0.0.1:<port>`. */
+export function startFakeKms(): Server {
+  let app = new App();
+  app.use(async (req, res, next): Future<void> => {
+    res.type = 'application/json';
+    if (req.getHeader('authorization') != 'Bearer token') {
+      res.statusCode = 403;
+      res.body = '{"error":{"code":403,"message":"Permission denied on the key"}}';
+      return;
+    }
+    if (req.method == 'POST' && req.path == `/v1/${FAKE_KMS_KEY}:asymmetricSign`) {
+      let body = parseJson(await req.text()) as JsonObject;
+      let digest = base64.decode((body['digest'] as JsonObject)['sha256'] as String);
+      let answer = new JsonObject();
+      answer['name'] = FAKE_KMS_KEY;
+      answer['signature'] = base64.encode(highSDer(digest));
+      res.body = stringify(answer);
+      return;
+    }
+    if (req.method == 'GET' && req.path == `/v1/${FAKE_KMS_KEY}/publicKey`) {
+      let spki = join(hex.decode(SPKI_PREFIX), secp256k1.publicKey(FAKE_KMS_PRIVATE_KEY, false));
+      let encoded = base64.encode(spki);
+      var pem = '-----BEGIN PUBLIC KEY-----\n';
+      var at = 0;
+      while (at < encoded.length) {
+        let end = if (at + 64 < encoded.length) at + 64 else encoded.length;
+        pem = `${pem}${encoded.sliceBytes(at, end)}\n`;
+        at = end;
+      }
+      pem = `${pem}-----END PUBLIC KEY-----\n`;
+      let answer = new JsonObject();
+      answer['pem'] = pem;
+      answer['algorithm'] = 'EC_SIGN_SECP256K1_SHA256';
+      res.body = stringify(answer);
+      return;
+    }
+    res.statusCode = 404;
+    res.body = '{"error":{"code":404,"message":"not found"}}';
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  return server;
+}
+

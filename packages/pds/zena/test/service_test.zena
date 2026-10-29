@@ -11,14 +11,14 @@ import {HashMap} from 'zena:collections';
 import {App, Request, Response, Server} from 'zena:http';
 import {hex} from 'zena:encoding';
 import {now} from 'wasi:clocks/system-clock';
-import {KeyType, formatDidKey, publicKeyFor} from 'atproto:didkey';
+import {KeyType, PublicKey, formatDidKey, publicKeyFor} from 'atproto:didkey';
 import {didDocument, genesisOperation} from 'atproto:plc';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {JsonObject, parseJson, stringify} from 'zena:json';
 import {parseDidDocument} from 'atproto:did';
 import {PackageHost} from 'pds:host';
 import {
-  ConfigError, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
+  ConfigError, HostSettings, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
   buildService, configFromEnv
 } from 'pds:service';
 
@@ -58,6 +58,26 @@ function get(app: App, path: String): Response {
 }
 
 export let tests = suite('pds:service', () => {
+  test("serves the web app's assets, beside its pages and APIs", (ctx) => {
+    let service = runFuture(buildService(configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'),
+        ('PDS_WEB_DIR', 'packages/pds/zena/test/fixtures/web')])), 'http://127.0.0.1:1'));
+    let script = get(service.app, '/assets/app.js');
+    equal(script.statusCode, 200, 'script');
+    isTrue((script.type ?? '').contains('javascript'), script.type ?? 'no type');
+    equal(get(service.app, '/assets/missing.js').statusCode, 404, 'a missing asset');
+    // The pages are the host's, rendered on the server.
+    let home = get(service.app, '/');
+    equal(home.statusCode, 200, 'home');
+    isTrue((home.type ?? '').contains('text/html'), home.type ?? 'no type');
+    let health = get(service.app, '/xrpc/_health');
+    equal(health.statusCode, 200, `health: ${health.statusCode}`);
+    isTrue((health.body as String).contains('version'), health.body as String);
+
+    // A PDS with no package host has no pages: its banner is at /.
+    let plain = runFuture(buildService(configFromEnv(envOf([])), 'http://127.0.0.1:1'));
+    isTrue((get(plain.app, '/').body as String).contains('PDS'), 'the banner');
+  });
+
   test('defaults to a PDS in memory on 2583', (ctx) => {
     let config = configFromEnv(envOf([]));
     equal(config.port as i32, 2583);
@@ -78,6 +98,7 @@ export let tests = suite('pds:service', () => {
       ('PDS_HOST_DOMAIN', 'pkg.example.dev'),
       ('PDS_ROTATION_KEY', KEY),
       ('PDS_RESERVED_SCOPES', 'std, core,,'),
+      ('PDS_ADMIN_DIDS', 'did:plc:aaaa, did:web:ops.example.dev,did:plc:cccc  did:plc:dddd'),
       ('PDS_MAX_BLOB_BYTES', '1000'),
       ('PDS_CLOCK_ID', '7'),
       ('PDS_PLC_DIRECTORY', 'http://plc.test'),
@@ -107,6 +128,10 @@ export let tests = suite('pds:service', () => {
     equal(host.serviceDid, 'did:web:pkg.example.dev');
     equal(host.publicUrl as String, 'https://pkg.example.dev');
     isTrue(host.rotationKey != null, 'the rotation key');
+    equal(host.admins.length, 4);
+    equal(host.admins[0], 'did:plc:aaaa');
+    equal(host.admins[1], 'did:web:ops.example.dev');
+    equal(host.admins[3], 'did:plc:dddd');
     equal(host.reservedScopes.length, 2);
     equal(host.reservedScopes[1], 'core');
     match (host.records) {
@@ -161,6 +186,35 @@ export let tests = suite('pds:service', () => {
         host.publicUrl as String == 'https://pkg-staging.zena-lang.dev', 'the host');
   });
 
+  test('reads the online rotation key from Cloud KMS, and the offline key', (ctx) => {
+    let offline = formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)));
+    let config = configFromEnv(envOf([
+      ('PDS_STORAGE', 'firestore'),
+      ('PDS_JWT_SECRET', KEY),
+      ('PDS_TENANT', 'pkg'),
+      ('PDS_BLOB_BUCKET', 'zena-blobs'),
+      ('PDS_HOST_DOMAIN', 'pkg.example.dev'),
+      ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1'),
+      ('PDS_OFFLINE_ROTATION_KEY', offline),
+      ('PDS_HANDLE_RECORDS', 'memory'),
+    ]));
+    let host = config.host as HostSettings;
+    isTrue(host.rotationKey == null, 'no key of its own');
+    equal(host.rotationKmsKey as String, 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1');
+    equal(formatDidKey(host.offlineRotationKey as PublicKey), offline);
+
+    let both = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_ROTATION_KEY', KEY),
+        ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1')]);
+    isTrue(both.contains('not both'), both);
+    let notVersion = refusal([('PDS_HOST_DOMAIN', 'pkg.test'),
+        ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k')]);
+    isTrue(notVersion.contains('is a key version'), notVersion);
+    let badOffline = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_OFFLINE_ROTATION_KEY', 'zQ3sh')]);
+    isTrue(badOffline.contains('PDS_OFFLINE_ROTATION_KEY is not a did:key'), badOffline);
+    let stray = refusal([('PDS_OFFLINE_ROTATION_KEY', offline)]);
+    isTrue(stray.contains('PDS_OFFLINE_ROTATION_KEY needs PDS_HOST_DOMAIN'), stray);
+  });
+
   test('makes up a rotation key for a host in memory', (ctx) => {
     let host = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test')])).host;
     isTrue(host != null && host.rotationKey == null, 'no key until the server starts');
@@ -171,7 +225,7 @@ export let tests = suite('pds:service', () => {
     let firestore = refusal([('PDS_STORAGE', 'firestore'), ('PDS_HOST_DOMAIN', 'pkg.test')]);
     isTrue(firestore.contains('needs PDS_TENANT'), firestore);
     isTrue(firestore.contains('needs PDS_BLOB_BUCKET or PDS_BLOB_DIR'), firestore);
-    isTrue(firestore.contains('needs PDS_ROTATION_KEY'), firestore);
+    isTrue(firestore.contains('needs PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY'), firestore);
     isTrue(firestore.contains('needs PDS_HANDLE_RECORDS'), firestore);
     isTrue(firestore.contains('needs PDS_JWT_SECRET'), firestore);
     let records = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_HANDLE_RECORDS', 'cloud-dns')]);
@@ -199,6 +253,11 @@ export let tests = suite('pds:service', () => {
       isTrue(values.contains(expected), `${expected} in: ${values}`);
     }
 
+    let admin = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_ADMIN_DIDS', 'did:plc:aaaa,alice.example.com')]);
+    isTrue(admin.contains("PDS_ADMIN_DIDS has 'alice.example.com', which is not a DID"), admin);
+    let strayAdmin = refusal([('PDS_ADMIN_DIDS', 'did:plc:aaaa')]);
+    isTrue(strayAdmin.contains('PDS_ADMIN_DIDS needs PDS_HOST_DOMAIN'), strayAdmin);
+
     let stray = refusal([('PDS_ROTATION_KEY', KEY), ('PDS_BLOB_DIR', '/tmp/x')]);
     isTrue(stray.contains('PDS_ROTATION_KEY needs PDS_HOST_DOMAIN'), stray);
     isTrue(stray.contains('need PDS_STORAGE=firestore'), stray);
@@ -215,7 +274,8 @@ export let tests = suite('pds:service', () => {
     equal(get(plain.app, '/xrpc/_health').statusCode, 200);
     equal(get(plain.app, '/xrpc/com.atproto.server.describeServer').statusCode, 404);
 
-    let config = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_RESERVED_SCOPES', 'std')]));
+    let config = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_RESERVED_SCOPES', 'std'),
+        ('PDS_ADMIN_DIDS', 'did:plc:aaaa')]));
     let hosted = runFuture(buildService(config, 'http://127.0.0.1:1'));
     let host = hosted.host;
     if (host == null) {
@@ -224,6 +284,7 @@ export let tests = suite('pds:service', () => {
     }
     equal(host.config.endpoint, 'https://pkg.test');
     isTrue(host.config.reservedScopes.has('std') && host.config.reservedScopes.has('www'), 'the reserved scopes');
+    isTrue(host.isHostAdmin('did:plc:aaaa') && !host.isHostAdmin('did:plc:bbbb'), 'the admins');
     let res = get(hosted.app, '/xrpc/com.atproto.server.describeServer');
     equal(res.statusCode, 200);
     equal((parseJson(res.body as String) as JsonObject)['did'] as String, 'did:web:pkg.test');

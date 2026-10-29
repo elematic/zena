@@ -651,6 +651,14 @@ import {Box} from 'zena';
 let maybeNumber: Box<i32>? = new Box(42);
 ```
 
+A type parameter may be bound to a primitive unless it is constrained to
+references, so such a parameter may be in a union only alone: `T | null`,
+`T?`, `T | String` and `T | U` are errors where they are written (or
+inferred, as `if (c) x else null` with `x: T`). Constrain the parameter
+(`T extends anyref`), or keep a slot that may be empty as `WithDefault<T>`
+(see `Box` and `WithDefault` in `zena:core`). An optional chain defaulted
+right away is not a union value, so `o?.value ?? d` is legal for any `T`.
+
 **Note**: This is distinct from the "Indistinguishable Types" limitation (see
 [Distinguishable Types & Erasure](#distinguishable-types--erasure)). Primitives
 _are_ distinguishable from references, but they are incompatible in storage
@@ -3550,6 +3558,35 @@ class Container<T extends Box<V>, V> {
 }
 ```
 
+#### A slot that may be empty
+
+`T | null` is not a type when `T` may be a primitive (see "Constraints"
+under "Union Types"). A field for a `T` the object may not have yet is a
+`WithDefault<T>` from `zena:core`: `T` itself at a primitive and
+`T | null` at a reference. `defaultValue<T>()` is its empty value, zero or
+null; a `T` fills it; and `as T` reads it back, failing on an empty slot
+at a non-null reference `T`. Nothing is boxed.
+
+```zena
+import {WithDefault, defaultValue} from 'zena:core';
+
+class Cell<T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  set(value: T): void {
+    this.#value = value;
+  }
+  get(): T {
+    return this.#value as T;
+  }
+}
+```
+
+`isFirstClass<T>()`, also from `zena:core`, is a constant in each
+specialization: false where `T` may be an owner, a borrow or a value
+holding one, true elsewhere. A `scoped T` class branches on it for
+behavior only one kind of instantiation needs, and the other branch is
+compiled away.
+
 ### Statics on a Generic Class
 
 A `static` belongs to the class itself, of which there is one however
@@ -6047,22 +6084,22 @@ values in containers inside such a body waits on the standard library
 collections adopting the modifier themselves.
 
 A class may declare `scoped T` too, and then its own fields may hold a
-`T`: bare, as `T | null`, or as the argument of another class's
+`T`: bare, as `WithDefault<T>`, or as the argument of another class's
 `scoped` parameter. An instance carries its argument's restriction, so
 a `Slot<Own<File>>` moves like the owner it holds and a
 `Slot<Borrow<File>>` is second-class. Moving a `T` field's value out of
 the object, by returning, binding or passing it, is a take: the field
-must be a nullable `var`, and the move leaves null in it. At a
+must be a `var` that can be empty, and the move empties it. At a
 first-class `T` the read is a copy and the field keeps its value.
 
 ```zena
 class Slot<scoped T> {
-  var #value: T | null = null;
+  var #value: WithDefault<T> = defaultValue<T>();
   put(value: T): void {
     this.#value = value;   // consumes value
   }
-  take(): T | null {
-    return this.#value;    // a take: at Own<File>, a second call gets null
+  take(): T {
+    return this.#value as T;   // a take: at Own<File>, a second call fails
   }
 }
 ```
@@ -6145,6 +6182,12 @@ let f = load(path);   // f: Future<Own<File>>
 let a = await f;
 let b = await f;      // error: 'f' may have been moved
 ```
+
+`Future` declares `scoped T` (see "Scoped values"), so this follows from
+the class rules: reading a future's value takes it at a restricted `T`,
+and the future refuses a second consumer, a waiter or a `tail return`
+adopting it, by throwing. The checker sees the program's awaits; the
+throw guards the callers it does not see.
 
 ## 13. Compilation
 

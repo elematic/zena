@@ -41,6 +41,9 @@ import {
 import { ComponentEntryWrapper } from './component-entry.zena';
 import { readWitSource, readWitDocument } from './wit-source.zena';
 import { WitDocument, witDiagnostic } from 'wit-parser:document';
+import { parseSyntax } from 'wit-parser:wit';
+import { Ast as WitAst } from 'wit-parser:parser';
+import { checkExtensionViews } from './extension-views.zena';
 import { directoryNames } from './fs-host.zena';
 import { HashMap } from 'zena:collections';
 
@@ -80,6 +83,13 @@ export type CompileFileOptions = {
   witPath?: String,
   /** Which world in `witPath`, when it declares several. */
   worldName?: String,
+  /**
+   * WIT files or directories the program's extensions are written to.
+   * Each interface in them that `worldName` imports or exports must be
+   * the program's view of it (`extension-views.zena`), or the compile
+   * fails naming what differs.
+   */
+  extensionWitPaths?: Array<String>,
   /**
    * The module string literals are imported from on the `js` target:
    * the `importedStringConstants` the host compiles the module with.
@@ -481,6 +491,17 @@ export function openCompileSession(options: CompileFileOptions): CompileSession 
         "and no --wit was given.");
     return null;
   }
+  let extensionWits = new Array<String>();
+  if (let {extensionWitPaths} = options) {
+    for (let path in extensionWitPaths) {
+      extensionWits.push(path);
+    }
+  }
+  if (extensionWits.length > 0 && (witPath == "" || worldName == "")) {
+    console.error("Error: --extension-wit checks the program's world against " +
+        "its extensions' WIT, and no --wit and --world name that world.");
+    return null;
+  }
   if (let {importedStringConstants: given} = options) {
     if (given == "") {
       console.error("Error: --imported-string-constants names a module, " +
@@ -518,6 +539,47 @@ export function openCompileSession(options: CompileFileOptions): CompileSession 
     let doc = readWitDocument(host, witPath);
     witDoc = doc;
     witSource = doc.source;
+  }
+  // The program's views of its extensions' interfaces, against the
+  // extensions' own WIT: a problem is reported here, naming the
+  // interface, before the program is checked against the world.
+  if (extensionWits.length > 0) {
+    var hostAst: WitAst | null = null;
+    try {
+      hostAst = parseSyntax(witSource);
+    } catch (e) {
+      if (e is Error && reportWitFailure(witDoc, e)) {
+        return null;
+      }
+      throw e;
+    }
+    var problems = 0;
+    for (let path in extensionWits) {
+      if (!existsSync(path)) {
+        console.error("Error: --extension-wit path does not exist: " + path);
+        return null;
+      }
+      let guestDoc = readWitDocument(host, path);
+      var guestAst: WitAst | null = null;
+      try {
+        guestAst = parseSyntax(guestDoc.source);
+      } catch (e) {
+        if (e is Error) {
+          let where = witDiagnostic(guestDoc, e) ?? e.message;
+          console.error(`Error: ${where}`);
+          return null;
+        }
+        throw e;
+      }
+      for (let problem in checkExtensionViews(hostAst as WitAst, worldName,
+          guestAst as WitAst, path)) {
+        console.error(`Error: ${problem}`);
+        problems += 1;
+      }
+    }
+    if (problems > 0) {
+      return null;
+    }
   }
   let loaded = loadPackagesOrReport(host, if (projectRoot == "") null else projectRoot,
       if (packageCache == "") null else packageCache);

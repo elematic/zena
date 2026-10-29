@@ -28,15 +28,30 @@ import {div} from 'zena:math';
 import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
 import {MapValue, Value, fromJson, toJson} from 'atproto:data';
-import {Automation, Created, HostError, PackageHost} from './host.zena';
+import {Automation, Created, HostError, Membership, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, Repository, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {SessionError, Sessions, Tokens} from './sessions.zena';
 import {Account} from './storage.zena';
+import {notFound, publicPages} from './web/pages.zena';
+import {contextOf, setSessionCookie} from './web/session.zena';
+import {CALLBACK_PATH, accountPages} from './web/account.zena';
+import {adminPages} from './web/admin.zena';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {isValidDid} from 'atproto:syntax';
 import {hex} from 'zena:encoding';
 import {randomBytes} from 'zena:random';
+
+/** Where the web app's OAuth client metadata is, below the host's origin. */
+export let OAUTH_CLIENT_METADATA = '/oauth/client-metadata.json';
+
+/**
+ * The OAuth scope the web app asks for: `transition:generic`, so that the
+ * user's PDS gives it service-auth tokens for the host's methods. A
+ * permission set naming only those methods, `dev.zena-lang.authPublish`,
+ * replaces it once its lexicon is published where PDSes can resolve it.
+ */
+let OAUTH_SCOPE = 'atproto transition:generic';
 
 /** The version `/xrpc/_health` reports. */
 export let version = '0.0.1';
@@ -287,6 +302,123 @@ function hostRoutes(router: Router, host: PackageHost): void {
           nowMicros());
       return writtenJson(created);
     });
+  });
+
+  router.get('/xrpc/dev.zena-lang.host.getMemberships', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.getMemberships', async (caller): Future<JsonObject | null> => {
+      let memberships = await host.getMemberships(caller);
+      let answer = new JsonObject();
+      answer['did'] = caller;
+      answer['orgs'] = membershipsJson(memberships.orgs, 'scope');
+      answer['teams'] = membershipsJson(memberships.teams, 'team');
+      answer['packages'] = membershipsJson(memberships.packages, 'package');
+      return answer;
+    });
+  });
+
+  // The web app's sign-in resolves handles here, rather than sending them
+  // to a third party; a browser cannot look DNS up itself.
+  router.get('/xrpc/com.atproto.identity.resolveHandle', async (req, res, next, params) => {
+    let handle = req.url.searchParams().get('handle');
+    if (handle == null || handle == '') {
+      fail(res, 400, 'InvalidRequest', 'Missing required parameter: handle');
+      return;
+    }
+    let did = await host.resolveHandle(handle as String);
+    if (did == null) {
+      fail(res, 400, 'HandleNotFound', `${handle as String} does not resolve to a DID`);
+      return;
+    }
+    let answer = new JsonObject();
+    answer['did'] = did as String;
+    json(res, answer);
+  });
+
+  // The web app's atproto OAuth client metadata, which its client_id
+  // names, so the user's PDS can find its redirect and scope.
+  router.get(OAUTH_CLIENT_METADATA, async (req, res, next, params) => {
+    let origin = host.config.endpoint;
+    let redirects = new JsonArray();
+    redirects.push(`${origin}${CALLBACK_PATH}`);
+    let grants = new JsonArray();
+    grants.push('authorization_code');
+    grants.push('refresh_token');
+    let responses = new JsonArray();
+    responses.push('code');
+    let metadata = new JsonObject();
+    metadata['client_id'] = `${origin}${OAUTH_CLIENT_METADATA}`;
+    metadata['client_name'] = 'Zena packages';
+    metadata['client_uri'] = origin;
+    metadata['redirect_uris'] = redirects;
+    metadata['scope'] = OAUTH_SCOPE;
+    metadata['grant_types'] = grants;
+    metadata['response_types'] = responses;
+    metadata['token_endpoint_auth_method'] = 'none';
+    metadata['application_type'] = 'web';
+    metadata['dpop_bound_access_tokens'] = new Box<boolean>(true);
+    json(res, metadata);
+  });
+
+  // Signs the caller in to the host's pages: a service-auth token for this
+  // method, from their own PDS, says who they are, and the answer keeps
+  // them signed in with a cookie (`pds:web/session`).
+  router.post('/xrpc/dev.zena-lang.host.createWebSession', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.createWebSession', async (caller): Future<JsonObject | null> => {
+      let sessions = host.sessions;
+      if (sessions == null) {
+        throw new HostError(501, 'MethodNotImplemented', 'this host has no sessions');
+      }
+      let handle = await host.handleOf(caller);
+      setSessionCookie(res, host, sessions.webSession(caller, handle, div(nowMicros(), 1000000 as i64)));
+      let answer = new JsonObject();
+      answer['did'] = caller;
+      if (handle != null) {
+        answer['handle'] = handle as String;
+      }
+      return answer;
+    });
+  });
+
+  // Public: what a logged-out visitor browses.
+  router.get('/xrpc/dev.zena-lang.host.listScopes', async (req, res, next, params) => {
+    let list = new JsonArray();
+    for (let scope in await host.listScopes()) {
+      let item = new JsonObject();
+      item['name'] = scope.name;
+      item['did'] = scope.did;
+      item['handle'] = scope.handle;
+      item['packages'] = new Box<f64>(scope.packages as f64);
+      list.push(item);
+    }
+    let answer = new JsonObject();
+    answer['scopes'] = list;
+    json(res, answer);
+  });
+
+  router.get('/xrpc/dev.zena-lang.host.listPackages', async (req, res, next, params) => {
+    let scope = req.url.searchParams().get('scope');
+    let list = new JsonArray();
+    for (let summary in await host.listPackages(if (scope == null || scope == '') null else scope)) {
+      let item = new JsonObject();
+      item['did'] = summary.did;
+      item['handle'] = summary.handle;
+      item['scope'] = summary.scope;
+      item['name'] = summary.name;
+      if (summary.description != null) {
+        item['description'] = summary.description as String;
+      }
+      if (summary.license != null) {
+        item['license'] = summary.license as String;
+      }
+      if (summary.latest != null) {
+        item['latest'] = summary.latest as String;
+      }
+      item['releases'] = new Box<f64>(summary.releases as f64);
+      list.push(item);
+    }
+    let answer = new JsonObject();
+    answer['packages'] = list;
+    json(res, answer);
   });
 
   router.post('/xrpc/dev.zena-lang.host.createAutomationAccount', async (req, res, next, params) => {
@@ -611,6 +743,21 @@ function swapCidOf(input: JsonObject): Cid | null {
   return cid;
 }
 
+/** Memberships as `getMemberships` answers them, each with its role, and `kind`'s name for its name. */
+function membershipsJson(memberships: Array<Membership>, kind: String): JsonArray {
+  let list = new JsonArray();
+  for (let membership in memberships) {
+    let item = new JsonObject();
+    item['did'] = membership.did;
+    item['handle'] = membership.handle;
+    item['scope'] = membership.scope;
+    item['name'] = membership.name;
+    item['role'] = membership.role;
+    list.push(item);
+  }
+  return list;
+}
+
 /** The `entries` a call gives, as values; none when it gives none. */
 function entriesOf(input: JsonObject): Array<Value> {
   let entries = new GrowableArray<Value>();
@@ -646,10 +793,12 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
   let app = new App();
   let router = new Router();
 
-  router.get('/', async (req, res, next, params) => {
-    res.type = 'text/plain; charset=utf-8';
-    res.body = banner;
-  });
+  if (host == null) {
+    router.get('/', async (req, res, next, params) => {
+      res.type = 'text/plain; charset=utf-8';
+      res.body = banner;
+    });
+  }
 
   router.get('/xrpc/_health', async (req, res, next, params) => {
     res.type = 'application/json';
@@ -821,10 +970,28 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
 
   if (host != null) {
     hostRoutes(router, host as PackageHost);
+    publicPages(router, host as PackageHost);
+    accountPages(router, host as PackageHost);
+    adminPages(router, host as PackageHost);
   }
   if (sessions != null) {
     sessionRoutes(router, pds, sessions as Sessions);
   }
   app.use(router.routes());
+  if (host != null) {
+    let pages = host as PackageHost;
+    // A page path no route took: the web app's not-found page.
+    app.use(async (req, res, next): Future<void> => {
+      if (!res.statusCodeSet && res.body == null && (req.method == 'GET' || req.method == 'HEAD') &&
+          !isApiPath(req.path) && !req.path.startsWith('/assets/')) {
+        notFound(res, contextOf(req, pages), `Nothing is at ${req.path}.`);
+      }
+    });
+  }
   return app;
+}
+
+/** Whether `path` is one of the server's APIs', which answer in JSON rather than with pages. */
+function isApiPath(path: String): boolean {
+  return path.startsWith('/xrpc/') || path.startsWith('/plc/') || path.startsWith('/.well-known/');
 }

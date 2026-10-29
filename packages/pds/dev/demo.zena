@@ -1,14 +1,23 @@
 /**
- * A package host to try `zena` against on this machine, with nothing sent
- * to the public PLC directory or to real DNS. It starts:
+ * A package host to try `zena` against on this machine. Nothing it makes
+ * reaches the public PLC directory or real DNS, but real accounts resolve,
+ * so a person can sign in to its pages and `zena` as themselves. It
+ * starts:
  *
- * - a stand-in PLC directory, and the PDS of a maintainer, with an app
- *   password (`package-manager:testing/fake-pds`);
+ * - a stand-in PLC directory, which records the demo's DIDs and reads
+ *   every other DID from `plc.directory`, and the PDS of a maintainer,
+ *   with an app password (`package-manager:testing/fake-pds`);
  * - the package host for `pkg.test`, built from the environment as
  *   `main.zena` builds it, so `PDS_STORAGE=firestore` and the rest work
  *   here too, with the Firestore emulator. Its handle records are in
  *   memory;
- * - a DNS-over-HTTPS resolver that answers from those records.
+ * - a DNS-over-HTTPS resolver that answers from those records, and asks
+ *   `PDS_DNS_OVER_HTTPS` (Cloudflare's, by default) about every other
+ *   name, so handles on a person's own domain resolve.
+ *
+ * `npm run demo` builds the web app (`packages/pds-web`) and gives it to
+ * the demo as the directory `/web` (`--dir packages/pds-web/out::/web`,
+ * `PDS_WEB_DIR=/web`), which the host serves at its origin.
  *
  * Then it prints the environment `zena` needs, and the commands of a
  * first publish. Run from the repository root with
@@ -18,10 +27,11 @@
 
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
+import {dedent} from 'zena:core';
 import {getEnv} from 'zena:cli';
 import {Server} from 'zena:http';
 import {FakePds} from 'package-manager:testing/fake-pds';
-import {MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
+import {MemoryHandleRecords, dnsOverHttpsApp, dnsOverHttpsUpstream} from 'pds:handles';
 import {configFromEnv, serve} from 'pds:service';
 
 let MAINTAINER = 'did:plc:maintainermaintainermain';
@@ -31,6 +41,9 @@ export async function main(): Future<void> {
   let world = new FakePds();
   world.start();
   world.account(MAINTAINER, null).password = PASSWORD;
+  // Real accounts, such as one signing in to the web app, resolve through
+  // the public directory; the demo's own accounts never reach it.
+  world.upstreamPlc = 'https://plc.directory';
 
   let port = getEnv('PORT') ?? '2583';
   let defaults = new HashMap<String, String>();
@@ -54,23 +67,31 @@ export async function main(): Future<void> {
     return null;
   });
   let running = await serve(config);
-  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords), 0 as u16);
+  let upstream = dnsOverHttpsUpstream(getEnv('PDS_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
+  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords, upstream), 0 as u16);
   dns.start();
 
-  console.log(`A package host for pkg.test is listening on ${running.origin}.
+  let dnsUrl = `http://127.0.0.1:${dns.port as i32}/dns-query`;
+  console.log(dedent`
+    A package host for pkg.test is listening on ${running.origin}, which
+    serves its web pages there too.
 
-In another shell, in a directory with a zena-package.json that has a name and
-a version:
+    In another shell, in a directory with a zena-package.json that has a name, a
+    version, a description and a license (such as "MIT"):
 
-  export ZENA_PLC_DIRECTORY=${world.plcDirectory}
-  export ZENA_DNS_OVER_HTTPS=http://127.0.0.1:${dns.port as i32}/dns-query
-  export ZENA_PACKAGE_HOST=${running.origin}
-  export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
+      export ZENA_PLC_DIRECTORY=${world.plcDirectory}
+      export ZENA_DNS_OVER_HTTPS=${dnsUrl}
+      export ZENA_PACKAGE_HOST=${running.origin}
+      export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
 
-  echo ${PASSWORD} | zena login ${MAINTAINER} --password-stdin
-  zena publish --scope acme --yes
+      echo ${PASSWORD} | zena login ${MAINTAINER} --password-stdin
+      zena scope create acme --yes
+      zena publish --scope acme --yes
 
-and in another workspace, \`zena add <name>.acme.pkg.test\` and \`zena run\`.
-Ctrl-C stops the host and forgets everything it held in memory.`);
+    and in another workspace, \`zena add <name>.acme.pkg.test\` and \`zena run\`.
+    To see /admin when you sign in to the pages, start the demo with
+    PDS_ADMIN_DIDS set to your DID.
+    Ctrl-C stops the host and forgets everything it held in memory.
+  `);
   await world.done();
 }

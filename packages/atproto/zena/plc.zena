@@ -90,7 +90,20 @@ export final class PlcOperation {
 
   /** The operation signed by `sign`, which signs with a rotation key. */
   signedWith(sign: (bytes: FixedArray<u8>) => FixedArray<u8>): PlcOperation {
-    let signature = sign(encodeCbor(this.#unsigned()));
+    return this.withSignature(sign(this.signingBytes()));
+  }
+
+  /**
+   * The bytes a rotation key signs: the operation without `sig`, as
+   * DAG-CBOR. For a signer that answers later, such as a key management
+   * service, with `withSignature` after.
+   */
+  signingBytes(): FixedArray<u8> {
+    return encodeCbor(this.#unsigned());
+  }
+
+  /** The operation with `signature`, 64 bytes of low-S r and s, as its `sig`. */
+  withSignature(signature: FixedArray<u8>): PlcOperation {
     return new PlcOperation(this.rotationKeys, this.verificationMethods, this.alsoKnownAs,
         this.services, this.prev, base64Url.encode(signature, false));
   }
@@ -236,6 +249,51 @@ export function didOfGenesis(operation: PlcOperation): String {
   }
   let hash = sha256(encodeCbor(operation.toValue()));
   return `did:plc:${base32Lower.encode(hash, false).sliceBytes(0, 24)}`;
+}
+
+/**
+ * The unsigned operation that undoes every operation after the one whose
+ * CID is `cid` in `log`, oldest first: a copy of that operation, naming it
+ * as `prev`. Signed by `key`, a PLC directory takes it in place of the
+ * operations after `cid` when it comes within 72 hours of the first of
+ * them, and `key` is one of `cid`'s rotation keys ranked above the key
+ * that signed that first one. Throws `PlcError` when `cid` is not in
+ * `log`, is its last operation, or `key` does not rank high enough.
+ */
+export function undoOperation(log: Array<PlcOperation>, cid: String, key: PublicKey): PlcOperation {
+  var at = -1;
+  for (var i = 0; i < log.length; i += 1) {
+    if (log[i].cid().toString() == cid) {
+      at = i;
+    }
+  }
+  if (at < 0) {
+    throw new PlcError(`${cid} is not in the log`);
+  }
+  if (at == log.length - 1) {
+    throw new PlcError(`${cid} is the last operation; there is nothing after it to undo`);
+  }
+  let kept = log[at];
+  let next = log[at + 1];
+  let wanted = formatDidKey(key);
+  var rank = -1;
+  var signerRank = -1;
+  for (var i = 0; i < kept.rotationKeys.length; i += 1) {
+    let candidate = kept.rotationKeys[i];
+    if (candidate == wanted) {
+      rank = i;
+    }
+    if (signerRank < 0 && next.isSignedBy(parseDidKey(candidate))) {
+      signerRank = i;
+    }
+  }
+  if (rank < 0) {
+    throw new PlcError(`${wanted} is not one of ${cid}'s rotation keys`);
+  }
+  if (signerRank >= 0 && rank >= signerRank) {
+    throw new PlcError(`${wanted} ranks ${rank + 1}, not above the key that signed the operation after ${cid}, which ranks ${signerRank + 1}`);
+  }
+  return new PlcOperation(kept.rotationKeys, kept.verificationMethods, kept.alsoKnownAs, kept.services, cid);
 }
 
 /**

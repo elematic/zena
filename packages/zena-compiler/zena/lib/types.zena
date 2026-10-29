@@ -3345,11 +3345,68 @@ export function awaitedTypeOf(t: Type): Type {
 }
 
 /**
- * Applies an intrinsic alias's rule once its argument is closed, and
- * returns the alias unchanged while the argument still mentions open
- * type parameters — substitution re-applies at every step, so the
- * first closing substitution normalizes the alias away.
+ * The `type.withDefault` rule: `WithDefault<T>` is `T` at a primitive
+ * and `T | null` at a reference (type-operators.md §"`type.withDefault`").
+ * It is the type of a slot that is empty until a `T` is stored, with
+ * `defaultValue<T>()` its empty value: zero, or null.
  */
+export function withDefaultTypeOf(alias: TypeAliasType): Type {
+  let args = alias.typeArguments;
+  if (args == null || args.length != 1) {
+    return alias;
+  }
+  let t = args[0];
+  if (typeContainsTypeParameter(t)) {
+    return alias;
+  }
+  // A primitive has no null, and `void` and `never` have no value to
+  // hold, so the slot is the type itself.
+  if (hasPrimitiveRepresentation(t) || t is VoidType || t is NeverType) {
+    return t;
+  }
+  if (t is NullType) {
+    return t;
+  }
+  let members = new Array<Type>();
+  if (t is UnionType) {
+    for (let m in t.types) {
+      if (m is NullType) { return t; }
+      members.push(m);
+    }
+  } else {
+    members.push(t);
+  }
+  members.push(new NullType());
+  return new UnionType(members);
+}
+
+/**
+ * Whether values of `t` are represented by a wasm scalar rather than a
+ * reference, through enums and distinct aliases, so a slot of it has
+ * no null.
+ */
+export function hasPrimitiveRepresentation(t: Type): boolean {
+  var current = t;
+  var hops = 0;
+  while (hops < 32) {
+    if (current is EnumType) {
+      let e = current as EnumType;
+      current = e.backingType;
+    } else if (current is TypeAliasType) {
+      let alias = current as TypeAliasType;
+      if (alias.intrinsicName != null || alias.resolving || isOwnershipWrapper(alias)) {
+        break;
+      }
+      current = alias.target;
+    } else {
+      break;
+    }
+    hops += 1;
+  }
+  return isNumericType(current) || current is BooleanType ||
+      current is BoolLiteralType || current is V128Type;
+}
+
 /**
  * The `type.scopedFrom` rule: `ScopedFrom<T, R>` is `Scoped<R>` when
  * `T` carries a second-class type and `R` otherwise
@@ -3381,9 +3438,18 @@ export function scopedFromTypeOf(alias: TypeAliasType): Type {
   return alias;
 }
 
+/**
+ * Applies an intrinsic alias's rule once its argument is closed, and
+ * returns the alias unchanged while the argument still mentions open
+ * type parameters — substitution re-applies at every step, so the
+ * first closing substitution normalizes the alias away.
+ */
 export function applyTypeIntrinsic(alias: TypeAliasType): Type {
   if (alias.intrinsicName == 'type.scopedFrom') {
     return scopedFromTypeOf(alias);
+  }
+  if (alias.intrinsicName == 'type.withDefault') {
+    return withDefaultTypeOf(alias);
   }
   if (alias.intrinsicName != 'type.awaited') {
     return alias;
@@ -4240,8 +4306,8 @@ export function typeCarriesOwner(t: Type): boolean {
 /**
  * Whether `t` is an instance of a class that holds a restricted
  * argument and carries an owner in it: a `scoped T` class bound to an
- * owner, as an affine tuple is (ownership.md §"Scoped type
- * arguments"), or a `Future` of one, which declares no `scoped T` yet.
+ * owner, such as a `Future<Own<R>>`, as an affine tuple is
+ * (ownership.md §"Scoped type arguments").
  */
 export function isAffineContainer(t: Type): boolean {
   if (t is TypeAliasType) {
@@ -4256,9 +4322,6 @@ export function isAffineContainer(t: Type): boolean {
   while (c != null) {
     let cls = c as ClassType;
     let args = cls.typeArguments;
-    if (isFutureClassType(cls) || isFutureClassType(cls.genericSource ?? cls)) {
-      return args != null && args.length == 1 && typeCarriesOwner(args[0]);
-    }
     if (args != null) {
       for (var i = 0; i < args.length; i += 1) {
         if (isScopedClassParam(cls, i) && typeCarriesOwner(args[i])) { return true; }
@@ -4276,28 +4339,18 @@ export function isScopedClassParam(cls: ClassType, i: i32): boolean {
 }
 
 /**
- * Whether a value read out of a field of type `t` has to be taken:
- * `t` is restricted at this instantiation, so the read moves the
- * value and leaves null behind. A field of a `scoped T` class is
- * restricted only at some instantiations; at a first-class one the
- * read is an ordinary copy.
- */
-export function isRestrictedValueType(t: Type): boolean {
-  return typeCarriesOwner(t) || typeContainsSecondClass(t);
-}
-
-/**
- * isRestrictedValueType for a type as codegen holds it. Codegen keys a
+ * Whether a specialization over `t` may serve a restricted
+ * instantiation, judged from `t`'s representation alone. Codegen keys a
  * specialization by representation, and a handle is its resource class
  * there (eraseTypeParameters), so `Own<R>`, `Borrow<R>` and
- * `Unmanaged<R>` share one body. A resource class standing for a type
- * argument therefore means the body may serve a restricted
- * instantiation, and the shared body behaves as those need: an
- * `Unmanaged<R>` instantiation is taken from too. `Scoped<F>` erases to
- * `F` and shares its body, so it behaves as first-class.
+ * `Unmanaged<R>` share one body, and `Scoped<F>` shares `F`'s. Which of
+ * them the specialization happens to record must not change the answer,
+ * so the answer is the representation's: a resource class anywhere in
+ * it means restricted, and the shared body behaves as the restricted
+ * instantiations need. An `Unmanaged<R>` instantiation is taken from
+ * too, and `Scoped<F>` behaves as first-class.
  */
 export function representsRestricted(t: Type): boolean {
-  if (isRestrictedValueType(t)) { return true; }
   if (t is ClassType) {
     if (t.isResource) { return true; }
     let args = t.typeArguments;
@@ -4327,6 +4380,24 @@ export function representsRestricted(t: Type): boolean {
     return false;
   }
   if (t is TypeAliasType) {
+    // A handle or `Scoped` is represented by what it wraps. An alias
+    // instance keeps its declaration's unsubstituted target, so a
+    // generic one is judged by its arguments, which over-approximates.
+    if (isOwnershipWrapper(t)) {
+      let inner = ownershipHandleInner(t);
+      return inner != null && representsRestricted(inner);
+    }
+    if (isScopedType(t)) {
+      let inner = scopedInner(t);
+      return inner != null && representsRestricted(inner);
+    }
+    let args = t.typeArguments;
+    if (args != null && t.typeParameters != null) {
+      for (let a in args) {
+        if (representsRestricted(a)) { return true; }
+      }
+      return false;
+    }
     if (t.resolving) { return false; }
     t.resolving = true;
     let res = representsRestricted(t.target);

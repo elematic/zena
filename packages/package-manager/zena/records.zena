@@ -65,6 +65,117 @@ export function isValidPackageName(name: String): boolean {
 }
 
 /**
+ * Whether `text` is an SPDX license expression
+ * (https://spdx.github.io/spdx-spec/v2.3/SPDX-license-expressions/): license
+ * identifiers, each perhaps with `+` or `WITH` an exception, joined by `AND`
+ * and `OR` and grouped by parentheses, such as `MIT` or
+ * `(Apache-2.0 OR MIT) AND BSD-3-Clause`. `LicenseRef-` and `DocumentRef-`
+ * identifiers name licenses SPDX does not list. Only the form is checked:
+ * an identifier SPDX does not list, such as a misspelt one, still passes.
+ */
+export function isValidLicenseExpression(text: String): boolean {
+  let tokens = new GrowableArray<String>();
+  var start = -1;
+  for (var i = 0; i < text.length; i += 1) {
+    let b = text.getByteAt(i);
+    if (b == 32 || b == 40 || b == 41) {
+      if (start >= 0) {
+        tokens.push(text.sliceBytes(start, i));
+        start = -1;
+      }
+      if (b != 32) {
+        tokens.push(text.sliceBytes(i, i + 1));
+      }
+    } else if (start < 0) {
+      start = i;
+    }
+  }
+  if (start >= 0) {
+    tokens.push(text.sliceBytes(start, text.length));
+  }
+  let parser = new LicenseParser(tokens);
+  return parser.expression() && parser.done();
+}
+
+/** A recursive-descent reader of an SPDX expression's tokens. */
+final class LicenseParser {
+  #tokens: Array<String>;
+  var #at = 0;
+
+  new(tokens: Array<String>) : #tokens = tokens;
+
+  done(): boolean {
+    return this.#at == this.#tokens.length;
+  }
+
+  #peek(): String {
+    return if (this.#at < this.#tokens.length) this.#tokens[this.#at] else '';
+  }
+
+  /** expression := term ((AND | OR) term)* */
+  expression(): boolean {
+    if (!this.#term()) {
+      return false;
+    }
+    while (this.#peek() == 'AND' || this.#peek() == 'OR') {
+      this.#at += 1;
+      if (!this.#term()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** term := '(' expression ')' | license (WITH exception)? */
+  #term(): boolean {
+    if (this.#peek() == '(') {
+      this.#at += 1;
+      if (!this.expression() || this.#peek() != ')') {
+        return false;
+      }
+      this.#at += 1;
+      return true;
+    }
+    if (!isLicenseId(this.#peek(), true)) {
+      return false;
+    }
+    this.#at += 1;
+    if (this.#peek() == 'WITH') {
+      this.#at += 1;
+      if (!isLicenseId(this.#peek(), false)) {
+        return false;
+      }
+      this.#at += 1;
+    }
+    return true;
+  }
+}
+
+/**
+ * Whether `token` is a license or exception identifier: letters, digits,
+ * `.` and `-`, perhaps ending in `+` for a license, or a `DocumentRef-…:`
+ * before a `LicenseRef-`. The operators are not identifiers.
+ */
+function isLicenseId(token: String, license: boolean): boolean {
+  if (token == '' || token == 'AND' || token == 'OR' || token == 'WITH' || token == '(' || token == ')') {
+    return false;
+  }
+  var body = token;
+  if (license && body.endsWith('+')) {
+    body = body.sliceBytes(0, body.length - 1);
+  }
+  for (var i = 0; i < body.length; i += 1) {
+    let b = body.getByteAt(i);
+    let ok = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 46 ||
+        (b == 58 && body.startsWith('DocumentRef-'));
+    if (!ok) {
+      return false;
+    }
+  }
+  return body.length > 0;
+}
+
+/**
  * Whether `name` can name a scope: the first label of an organization's
  * handle on a package host. The same DNS label as a package name, but
  * `zena` is allowed, since the scope of first-party packages is not the

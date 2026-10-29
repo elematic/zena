@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 117
+// Moving a `scoped T` field's value out is a take through any receiver:
+// another instance's field (`src.value`) and a public field read from
+// outside (`a.value`) as much as `this.value`. At an owner each take
+// empties the slot, so the resource is released once; at `i32` the
+// reads are copies. A `void` slot holds nothing.
+
+import {Own, Disposable, WithDefault, defaultValue} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Slot<scoped T> {
+  var value: WithDefault<T> = defaultValue<T>();
+  put(v: T): void {
+    this.value = v;
+  }
+  /** A new slot holding this one's value. */
+  relay(): Slot<T> {
+    let next = new Slot<T>();
+    next.pull(this);
+    return next;
+  }
+  pull(src: Slot<T>): void {
+    this.value = src.value;
+  }
+}
+
+export let main = (): i32 => {
+  var result = 0;
+  if (true) {
+    let a = new Slot<Own<Res>>();
+    a.put(new Res());
+    let b = a.relay();
+    let leftover = a.value;
+    let got = b.value;
+    let again = b.value;
+    if (leftover == null) {
+      result += 1;
+    }
+    if (again == null) {
+      result += 10;
+    }
+  }
+  result += released * 100;
+
+  let n = new Slot<i32>();
+  n.put(3);
+  let m = n.relay();
+  result += n.value + m.value;
+
+  let v = new Slot<void>();
+  let w = v.relay();
+  return result;
+};

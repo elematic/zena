@@ -11,12 +11,14 @@
  * local runs, and
  * `dnsOverHttpsApp` answers lookups from it as a DNS-over-HTTPS resolver
  * does, so `zena` and `atproto:identity` can resolve the handles with
- * `ZENA_DNS_OVER_HTTPS` pointed at it.
+ * `ZENA_DNS_OVER_HTTPS` pointed at it, and passes every other name to an
+ * upstream resolver, so real handles resolve too.
  */
 
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {App, Router} from 'zena:http';
+import {fetch} from 'zena:fetch';
 import {JsonArray, JsonObject, stringify} from 'zena:json';
 import {CloudDns, RecordSet} from 'google-cloud:dns';
 import {normalizeHandle} from 'atproto:syntax';
@@ -86,7 +88,30 @@ let TXT = 16;
  * `_atproto.<handle>` TXT record of a handle that has one, and status 3
  * (NXDOMAIN) for any other name.
  */
-export function dnsOverHttpsApp(records: MemoryHandleRecords): App {
+/**
+ * A DNS-over-HTTPS resolver to ask about the names `dnsOverHttpsApp` does
+ * not hold: given a name and a type, the JSON body it answers with, or
+ * null when it cannot be reached.
+ */
+export type DnsUpstream = (name: String, type: String) => Future<String | null>;
+
+/** The DNS-over-HTTPS resolver at `url`, such as `https://cloudflare-dns.com/dns-query`, as an upstream. */
+export function dnsOverHttpsUpstream(url: String): DnsUpstream {
+  return async (name: String, type: String): Future<String | null> => {
+    let response = await fetch(`${url}?name=${name}&type=${type}`, {headers: [('accept', 'application/dns-json')]});
+    if (response.status != 200) {
+      return null;
+    }
+    return await response.text();
+  };
+}
+
+/**
+ * A DNS-over-HTTPS resolver answering from `records`: a TXT record at
+ * `_atproto.<handle>` for each handle it holds. Any other name goes to
+ * `upstream` when there is one, and otherwise does not exist.
+ */
+export function dnsOverHttpsApp(records: MemoryHandleRecords, upstream: DnsUpstream | null = null): App {
   let app = new App();
   let router = new Router();
   router.get('/dns-query', async (req, res, next, params) => {
@@ -102,6 +127,13 @@ export function dnsOverHttpsApp(records: MemoryHandleRecords): App {
       did = records.lookup(name.sliceBytes(prefix.length, name.length));
     }
     res.type = 'application/dns-json';
+    if (did == null && upstream != null) {
+      let answer = await upstream(name, type);
+      if (answer != null) {
+        res.body = answer as String;
+        return;
+      }
+    }
     let body = new JsonObject();
     let found = did;
     if (found == null) {

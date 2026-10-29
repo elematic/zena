@@ -1,0 +1,175 @@
+/**
+ * A Cloud KMS client for signing with an asymmetric key version, over the
+ * REST API (`https://cloudkms.googleapis.com/v1`): the key never leaves
+ * Cloud KMS, which signs a digest on request.
+ *
+ *     let key = CloudKms.connect('projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1');
+ *     let der = await key.asymmetricSign(sha256(message));
+ *     let publicKey = await key.publicKey();
+ *
+ * A signature comes back DER-encoded (`zena:crypto`'s
+ * `signatureFromDer` reads it), and a public key as PEM, which
+ * `ecPointFromPem` reads. Each call asks its `Credentials` for an access
+ * token, with the `cloud-platform` or `cloudkms` scope; the caller needs
+ * `roles/cloudkms.signerVerifier` on the key.
+ */
+
+import {Future} from 'zena:async';
+import {base64} from 'zena:encoding';
+import {fetch, Response} from 'zena:fetch';
+import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {Credentials} from 'protobuf:runtime';
+import {defaultCredentials} from './auth.zena';
+
+/** The origin of the Cloud KMS API. */
+export let KMS_ORIGIN = 'https://cloudkms.googleapis.com';
+
+/** An answer from Cloud KMS that is an error, with its HTTP status, or a key it cannot read. */
+export class KmsError extends Error {
+  status: i32;
+
+  new(status: i32, message: String) : status = status, super(message);
+}
+
+/** A key version's public key, as Cloud KMS describes it. */
+export final class KmsPublicKey {
+  /** Such as `EC_SIGN_SECP256K1_SHA256` or `EC_SIGN_P256_SHA256`. */
+  algorithm: String;
+  /** The SubjectPublicKeyInfo, PEM-encoded. */
+  pem: String;
+
+  new(this.algorithm, this.pem);
+}
+
+/** One asymmetric signing key version. */
+export final class CloudKms {
+  #origin: String;
+  #credentials: Credentials;
+  /** `projects/…/cryptoKeyVersions/<n>`. */
+  name: String;
+
+  /**
+   * The key version `name`, at `origin`, the API's own (`KMS_ORIGIN`)
+   * unless a test serves it.
+   */
+  new(name: String, credentials: Credentials, origin: String = 'https://cloudkms.googleapis.com')
+      : name = name, #credentials = credentials, #origin = origin;
+
+  /** The key version with the default credentials (see `defaultCredentials`). */
+  static connect(name: String): CloudKms {
+    return new CloudKms(name, defaultCredentials());
+  }
+
+  /** The DER-encoded signature of the 32-byte SHA-256 `digest`. */
+  async asymmetricSign(digest: FixedArray<u8>): Future<FixedArray<u8>> {
+    let request = new JsonObject();
+    let sha = new JsonObject();
+    sha['sha256'] = base64.encode(digest);
+    request['digest'] = sha;
+    let response = await this.#call('POST', `/v1/${this.name}:asymmetricSign`, stringify(request));
+    let answer = jsonObject(await checked(response, 'signing'));
+    let signature = answer['signature'];
+    if (!(signature is String)) {
+      throw new KmsError(0, 'Cloud KMS answered asymmetricSign without a signature');
+    }
+    return base64.decode(signature as String);
+  }
+
+  /** The key version's public key. */
+  async publicKey(): Future<KmsPublicKey> {
+    let response = await this.#call('GET', `/v1/${this.name}/publicKey`, null);
+    let answer = jsonObject(await checked(response, 'reading the public key'));
+    let algorithm = answer['algorithm'];
+    let pem = answer['pem'];
+    if (!(algorithm is String) || !(pem is String)) {
+      throw new KmsError(0, 'Cloud KMS answered getPublicKey without an algorithm and a PEM');
+    }
+    return new KmsPublicKey(algorithm as String, pem as String);
+  }
+
+  async #call(method: String, path: String, body: String | null): Future<Response> {
+    let headers = new GrowableArray<(String, String)>();
+    headers.push(('accept', 'application/json'));
+    if (body != null) {
+      headers.push(('content-type', 'application/json'));
+    }
+    let authorization = await this.#credentials.authorization();
+    if (authorization != null) {
+      headers.push(('authorization', authorization));
+    }
+    return try {
+      await fetch(`${this.#origin}${path}`, {method, headers, body})
+    } catch (e) {
+      throw new KmsError(0, e.message)
+    };
+  }
+}
+
+/**
+ * The uncompressed SEC1 point (`04`, x, y) of an elliptic-curve
+ * SubjectPublicKeyInfo in PEM, as Cloud KMS gives it: the contents of its
+ * closing BIT STRING. Throws `KmsError` for anything else.
+ */
+export function ecPointFromPem(pem: String): FixedArray<u8> {
+  var body = '';
+  for (let line in pem.split('\n')) {
+    let trimmed = line.trim();
+    if (trimmed.length > 0 && !trimmed.startsWith('-----')) {
+      body = `${body}${trimmed}`;
+    }
+  }
+  var der = new FixedArray<u8>(0, 0 as u8);
+  try {
+    der = base64.decode(body);
+  } catch (e) {
+    throw new KmsError(0, 'the public key is not PEM');
+  }
+  // SEQUENCE { SEQUENCE { algorithm, curve }, BIT STRING { 0 unused bits, point } }:
+  // for P-256 and secp256k1 the point is the last 65 bytes, after 03 42 00.
+  let n = der.length;
+  if (n < 68 || der[0] != (0x30 as u8) || der[n - 68] != (0x03 as u8) || der[n - 67] != (0x42 as u8) ||
+      der[n - 66] != (0 as u8) || der[n - 65] != (0x04 as u8)) {
+    throw new KmsError(0, 'the public key is not an uncompressed P-256 or secp256k1 point');
+  }
+  let point = new FixedArray<u8>(65, 0 as u8);
+  for (var i = 0; i < 65; i += 1) {
+    point[i] = der[n - 65 + i];
+  }
+  return point;
+}
+
+function jsonObject(text: String): JsonObject {
+  let json: JsonValue = try {
+    parseJson(text)
+  } catch (e) {
+    null
+  };
+  if (!(json is JsonObject)) {
+    throw new KmsError(0, 'Cloud KMS answered with something other than a JSON object');
+  }
+  return json as JsonObject;
+}
+
+/** Returns `response`'s body text when it is a success, or throws `KmsError` naming what `doing` was. */
+async function checked(response: Response, doing: String): Future<String> {
+  let text = await response.text();
+  if (response.status >= 200 && response.status < 300) {
+    return text;
+  }
+  var message = text;
+  let json: JsonValue = try {
+    parseJson(text)
+  } catch (e) {
+    null
+  };
+  if (json is JsonObject) {
+    let error = (json as JsonObject)['error'];
+    if (error is JsonObject) {
+      let detail = (error as JsonObject)['message'];
+      if (detail is String) {
+        message = detail as String;
+      }
+    }
+  }
+  throw new KmsError(response.status, `Cloud KMS, ${doing}: HTTP ${response.status}: ${message}`);
+}

@@ -39,6 +39,13 @@ export let ACCESS_SECONDS: i64 = 7200 as i64;
 /** How long a refresh token lasts, in seconds. */
 export let REFRESH_SECONDS: i64 = (90 * 24 * 60 * 60) as i64;
 
+/**
+ * How long a web session lasts, in seconds. A token in a cookie cannot be
+ * revoked, so it is short; the page renews it from the person's own OAuth
+ * session, which their PDS can revoke.
+ */
+export let WEB_SECONDS: i64 = (24 * 60 * 60) as i64;
+
 /** A call refused, with the XRPC error and HTTP status to answer with. */
 export class SessionError extends Error {
   status: i32;
@@ -91,8 +98,6 @@ export interface CredentialStore {
 export final class MemoryCredentialStore implements CredentialStore {
   #passwords = new HashMap<String, GrowableArray<AppPassword>>();
   #sessions = new HashMap<String, RefreshSession>();
-
-  new();
 
   async appPasswords(did: String): Future<Array<AppPassword>> {
     if (let (true, list) = this.#passwords.get(did)) {
@@ -156,6 +161,23 @@ export final class Caller {
   scope: String;
 
   new(this.account, this.scope);
+}
+
+/**
+ * Who a web session is for: anyone with an atproto account, signed in to
+ * the host's pages (`createWebSession`), not an account of this PDS.
+ */
+export final class WebCaller {
+  did: String;
+  /** The handle their DID document claims and that resolves back to it, when there is one. */
+  handle: String | null;
+
+  new(this.did, this.handle);
+
+  /** What a page calls them: their handle, or their DID. */
+  name(): String {
+    return this.handle ?? this.did;
+  }
 }
 
 /** A session's tokens, and the account they are for. */
@@ -264,6 +286,37 @@ export final class Sessions {
     await this.#credentials.putSession(
         new RefreshSession(jti, account.did, scope, nowSeconds + REFRESH_SECONDS, appPassword));
     return new Tokens(account, this.#sign('at+jwt', access), this.#sign('refresh+jwt', refresh));
+  }
+
+  /**
+   * The token of a web session for `did`, shown as `handle`: what the
+   * cookie that keeps them signed in to the host's pages holds, for
+   * `WEB_SECONDS`. Only `webCaller` accepts it, and it accepts nothing
+   * else, so it never stands for an account of this PDS.
+   */
+  webSession(did: String, handle: String | null, nowSeconds: i64): String {
+    let claims = new JsonObject();
+    claims['sub'] = did;
+    if (handle != null) {
+      claims['handle'] = handle as String;
+    }
+    claims['iat'] = new Box<f64>(nowSeconds as f64);
+    claims['exp'] = new Box<f64>((nowSeconds + WEB_SECONDS) as f64);
+    return this.#sign('web+jwt', claims);
+  }
+
+  /** Who `token` is a web session for; null when it is none, or has expired. */
+  webCaller(token: String | null, nowSeconds: i64): WebCaller | null {
+    if (token == null) {
+      return null;
+    }
+    try {
+      let claims = this.#verify(token as String, 'web+jwt', nowSeconds);
+      let handle = claims['handle'];
+      return new WebCaller(stringClaim(claims, 'sub'), if (handle is String) handle as String else null);
+    } catch (e) {
+      return null;
+    }
   }
 
   #sign(type: String, payload: JsonObject): String {

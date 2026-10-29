@@ -119,12 +119,44 @@ flattening the way JS's does with the type told by
 frame the way it does everywhere, with no callback able to observe
 it.
 
-## Planned operators
+## `type.withDefault`
 
-- **`WithDefault<T>`** — `T` for a primitive, `T | null` for a
-  reference: the honest type of a default-initialized field of an
-  unbounded `T`, surfacing the `weakenToNullable` operation frames
-  already apply. De-boxes `Future`'s value slot and gives collections
-  an honest empty-slot element type. Needs its companion
-  `defaultValue<T>(): WithDefault<T>` intrinsic and the field
-  defaultability rule; see the async roadmap in PLAN.md.
+`WithDefault<T>` is `T` at a primitive and `T | null` at a reference.
+It is the type of a slot a generic class keeps for a `T` it may not
+have yet, such as `Future`'s value before it settles. Without it the
+slot is `Box<T> | null`, an allocation per value, because `T | null` has
+no representation at a primitive: `i32 | null` is not a type.
+
+The closed forms follow from the argument's representation, through
+enums and distinct aliases: `WithDefault<i32>` and `WithDefault<Color>`
+are themselves, `WithDefault<String>` is `String | null`, and a type
+that already admits null is unchanged.
+
+While `T` is open the instance stays symbolic, and the checker allows
+exactly what holds at every instantiation:
+
+- a `T` is assignable to `WithDefault<T>`, and `null` is not;
+- `defaultValue<T>(): WithDefault<T>`, the `default_value` intrinsic,
+  is its empty value: zero at a primitive, null at a reference;
+- `slot as T` reads the slot back, the identity at a primitive and a
+  non-null cast at a reference, which fails on an empty slot. Nothing
+  else reads it as a `T`.
+
+`defaultValue` declares `scoped T`, since it takes no `T` and returns
+an empty slot, so a `scoped T` class can use it. A `WithDefault<T>`
+field of such a class is taken from like a nullable one
+(ownership.md §"Scoped type arguments").
+
+The rule that makes the operator necessary is enforced too (#614): a
+type parameter not constrained to references may not be in a union with
+anything else, `T | null` included (types.md §"Unbounded Type Parameters
+in Unions"). Such a parameter can be bound to a primitive, and a
+primitive's union with another type has no representation.
+`WithDefault<T>` is the slot for an unconstrained `T`, and
+`T extends anyref` the alternative for a parameter that is never a
+primitive. An owner does not satisfy `anyref`, so a `scoped T` class that
+holds owners uses `WithDefault<T>`.
+
+Not yet implemented: a field of type `WithDefault<T>` still needs its
+`= defaultValue<T>()` initializer, where a nullable `var` field may
+omit `= null`.

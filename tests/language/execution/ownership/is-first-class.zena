@@ -1,0 +1,42 @@
+// @mode: run
+// @result: 43
+// `isFirstClass<T>()` is a constant in each specialization: true where
+// `T` is first-class, false where it may be restricted, so a `scoped T`
+// body can branch on it and the branch folds away
+// (owner-futures.md §"Specialization"). Each case is one bit of the
+// result.
+//
+// A specialization is keyed by representation, and a handle erases to
+// its resource class, so `Own<R>`, `Borrow<R>` and `Unmanaged<R>` share
+// one body and get one answer: the restricted one. `Scoped<F>` erases
+// to `F` and shares its first-class answer.
+
+import {Own, Borrow, Unmanaged, Scoped, Disposable, isFirstClass} from 'zena:core';
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+class Plain {}
+
+class Slot<scoped T> {
+  kind(): i32 {
+    return if (isFirstClass<T>()) 1 else 0;
+  }
+}
+
+let firstClass = <scoped T>(): i32 => if (isFirstClass<T>()) 1 else 0;
+
+export let main = (): i32 => {
+  var bits = 0;
+  bits += firstClass<i32>() * 1;
+  bits += firstClass<String>() * 2;
+  bits += firstClass<Own<Res>>() * 4;
+  bits += new Slot<Plain>().kind() * 8;
+  bits += new Slot<Own<Res>>().kind() * 16;
+  bits += firstClass<Scoped<Future<i32>>>() * 32;
+  bits += firstClass<(i32, Own<Res>)>() * 64;
+  bits += firstClass<Borrow<Res>>() * 128;
+  bits += firstClass<Unmanaged<Res>>() * 256;
+  return bits;
+};

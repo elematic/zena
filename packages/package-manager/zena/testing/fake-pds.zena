@@ -44,6 +44,7 @@ import {BytesValue, IntValue, LinkValue, MapValue, NullValue, StringValue, fromJ
 import {KeyType, formatMultikey, parseDidKey, publicKeyFor} from 'atproto:didkey';
 import {IdentityResolver} from 'atproto:identity';
 import {PlcOperation, didDocument as plcDidDocument, didOfGenesis} from 'atproto:plc';
+import {fetch} from 'zena:fetch';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {buildMst, compareKeys} from 'atproto:mst';
 import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, RETRACTION_TYPE, Retraction} from '../records.zena';
@@ -179,6 +180,12 @@ export final class FakePds {
   var #sessions = 0;
   /** The latest operation the PLC directory took for each DID it was sent. */
   operations = new OrderedHashMap<String, PlcOperation>();
+  /**
+   * A PLC directory to read the DIDs the fake does not hold from, such as
+   * `https://plc.directory`, so that real accounts resolve too; none when
+   * null, as in tests, which reach no network.
+   */
+  var upstreamPlc: String | null = null;
   /** The `(aud, lxm)` of each service-auth token handed out, in order. */
   serviceAuthRequests = new GrowableArray<(String, String)>();
   var #server: Server | null = null;
@@ -321,6 +328,13 @@ function serve(pds: FakePds): Server {
       } else if (let (true, operation) = pds.operations.get(did)) {
         res.type = 'application/json';
         res.body = stringify(plcDidDocument(did, operation));
+      } else if (pds.upstreamPlc != null) {
+        // A DID the fake does not hold, such as a real account's, from the
+        // directory it reads through to.
+        let answer = await fetch(`${pds.upstreamPlc as String}/${did}`);
+        res.statusCode = answer.status;
+        res.type = 'application/json';
+        res.body = await answer.text();
       } else {
         res.statusCode = 404;
         res.body = 'no such DID';

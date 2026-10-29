@@ -9,7 +9,7 @@ import {equal, isTrue} from 'zena:assert';
 import {Future, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {hex} from 'zena:encoding';
-import {App, Request, Response} from 'zena:http';
+import {App, HTMLPartial, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {bytesStream} from 'zena:stream';
 import {now} from 'wasi:clocks/system-clock';
@@ -34,6 +34,7 @@ import {Pds} from 'pds:pds';
 import {CreateRecord, RepositoryError, Write} from 'pds:repository';
 import {createApp} from 'pds:server';
 import {MemoryCredentialStore, Sessions} from 'pds:sessions';
+import {LocalRotationKey} from 'pds:rotation';
 import {Account, AccountKind, MemoryStorage, SigningKey} from 'pds:storage';
 
 let HOST = 'did:web:pkg.test';
@@ -57,7 +58,7 @@ final class Fixture {
 
   new(store: HostStore = new MemoryHostStore()) : pds = new Pds(new MemoryStorage()), app = new App() {
     let rotation = new SigningKey(KeyType.Secp256k1, filled(200));
-    let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', rotation);
+    let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', new LocalRotationKey(rotation));
     let callers = new HashMap<String, PublicKey>();
     callers[ALICE] = new SigningKey(KeyType.P256, ALICE_KEY).publicKey();
     callers[BOB] = new SigningKey(KeyType.P256, BOB_KEY).publicKey();
@@ -166,11 +167,24 @@ final class Fixture {
     return res;
   }
 
-  get(path: String): Response {
+  get(path: String, cookie: String | null = null): Response {
+    return this.#send('GET', path, cookie);
+  }
+
+  /** A form post to `path`, with no body. */
+  post(path: String, cookie: String | null = null): Response {
+    return this.#send('POST', path, cookie);
+  }
+
+  #send(method: String, path: String, cookie: String | null): Response {
+    let headers = new HashMap<String, String>();
+    if (cookie != null) {
+      headers['cookie'] = cookie as String;
+    }
     let res = new Response();
     let app = this.app;
     runFuture((async () => {
-      let req = new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>());
+      let req = new Request.fromUrl(`http://localhost${path}`, method, headers);
       await app.handleRequest(req, res);
     })());
     return res;
@@ -245,6 +259,41 @@ function entriesSeen(fixture: Fixture, caller: String, account: String, team: St
   return entries;
 }
 
+/**
+ * Scopes acme and zeta; in acme, router, with 1.0.0 and 1.1.0, which is
+ * retracted, parser, unreleased, and the automation account ci. Returns
+ * router's DID.
+ */
+function seedBrowsable(fixture: Fixture): String {
+  let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+  ok(createOrganization(fixture, BOB, 'zeta'));
+  let profile = stringify(toJson(new Profile('router', 'Routes requests', 'MIT').toValue()));
+  let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
+  let router = ok(fixture.call(ALICE, 'createPackage',
+      `{"organization": "${orgDid}", "profile": ${profile}, "maintainers": ${maintainers}}`))['did'] as String;
+  ok(createPackage(fixture, ALICE, orgDid, 'parser'));
+  ok(fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+  for (let version in ['1.0.0', '1.1.0']) {
+    let blob = upload(fixture, router, archiveOf(router, version));
+    ok(fixture.call(ALICE, 'publish', `{"package": "${router}", "release": ${releaseJson(version, blob)}}`));
+  }
+  ok(fixture.call(ALICE, 'retract', `{"package": "${router}", "version": "1.1.0", "reason": "broken"}`));
+  return router;
+}
+
+/** The cookie of a web session for `caller`, from `createWebSession`. */
+function webCookie(fixture: Fixture, caller: String): String {
+  let res = fixture.call(caller, 'createWebSession', '');
+  ok(res);
+  return (res.getHeader('set-cookie') ?? '').split(';')[0];
+}
+
+/** The HTML of a page `res` answered with. */
+function pageOf(res: Response): String {
+  isTrue((res.type ?? '').contains('text/html'), res.type ?? 'no type');
+  return (res.body as HTMLPartial).toString();
+}
+
 /** The JSON of `entries`, as a list. */
 function entriesJson(entries: Array<MemberEntry>): String {
   let list = new JsonArray();
@@ -311,7 +360,7 @@ function unreachableResolver(): IdentityResolver {
 /** A source archive of `router` `version`, the package `did`, as `zena publish` packs one. */
 function archiveOf(did: String, version: String, manifest: String | null = null): FixedArray<u8> {
   let files = new HashMap<String, FixedArray<u8>>();
-  files['zena-package.json'] = (manifest ?? `{"name": "router", "did": "${did}", "version": "${version}"}`)
+  files['zena-package.json'] = (manifest ?? `{"name": "router", "did": "${did}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`)
     .toBytes() as FixedArray<u8>;
   files['router.zena'] = 'export let route = 1;\n'.toBytes() as FixedArray<u8>;
   return packSource(files);
@@ -402,6 +451,25 @@ export let tests = suite('pds:host', () => {
     equal(errorOf(fixture.call(ALICE, 'createOrganization', `{"name": "acme3", "recoveryKeys": [${four}]}`)),
         'InvalidRequest');
     equal(errorOf(fixture.call(ALICE, 'createOrganization', '{"name": "acme3", "recoveryKeys": "no"}')),
+        'InvalidRequest');
+  });
+
+  test("ranks recovery keys, then the operator's offline key, then the host's online key", (ctx) => {
+    let fixture = new Fixture();
+    let host = fixture.host as PackageHost;
+    let offline = new SigningKey(KeyType.Secp256k1, filled(201)).publicKey();
+    host.config.offlineRotationKey = offline;
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let operation = fixture.submitted[org['did'] as String];
+    equal(operation.rotationKeys.length, 3);
+    equal(operation.rotationKeys[0], RECOVERY);
+    equal(operation.rotationKeys[1], formatDidKey(offline));
+    equal(operation.rotationKeys[2], formatDidKey(host.config.rotationKey.publicKey()));
+    // The online key signs it.
+    isTrue(operation.isSignedBy(host.config.rotationKey.publicKey()), 'signed by the online key');
+    // Four recovery keys and the host's two would pass PLC's five.
+    let four = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
+    equal(errorOf(fixture.call(ALICE, 'createOrganization', `{"name": "acme2", "recoveryKeys": [${four}]}`)),
         'InvalidRequest');
   });
 
@@ -586,6 +654,217 @@ export let tests = suite('pds:host', () => {
         access)), 'InvalidRequest');
   });
 
+  test('lists the scopes and packages a visitor can browse, with their latest releases', (ctx) => {
+    let fixture = new Fixture();
+    seedBrowsable(fixture);
+
+    let scopes = ok(fixture.get('/xrpc/dev.zena-lang.host.listScopes'))['scopes'] as JsonArray;
+    equal(scopes.length, 2);
+    let acme = scopes[0] as JsonObject;
+    equal(acme['name'] as String, 'acme');
+    equal(acme['handle'] as String, 'acme.pkg.test');
+    // The automation account takes a name, and is no package.
+    equal((acme['packages'] as Box<f64>).value as i32, 2);
+    equal((scopes[1] as JsonObject)['name'] as String, 'zeta');
+
+    let packages = ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages'))['packages'] as JsonArray;
+    equal(packages.length, 2);
+    equal((packages[0] as JsonObject)['name'] as String, 'parser');
+    isTrue((packages[0] as JsonObject)['latest'] == null, 'parser has no release');
+    let listed = packages[1] as JsonObject;
+    equal(listed['name'] as String, 'router');
+    equal(listed['handle'] as String, 'router.acme.pkg.test');
+    equal(listed['description'] as String, 'Routes requests');
+    equal(listed['license'] as String, 'MIT');
+    // 1.1.0 is retracted, so 1.0.0 is the latest; both are releases.
+    equal(listed['latest'] as String, '1.0.0');
+    equal((listed['releases'] as Box<f64>).value as i32, 2);
+    equal((ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages?scope=zeta'))['packages'] as JsonArray).length, 0);
+  });
+
+  test('renders the pages a visitor browses', (ctx) => {
+    let fixture = new Fixture();
+    let router = seedBrowsable(fixture);
+
+    let home = fixture.get('/');
+    equal(home.statusCode, 200, 'home');
+    let homeHtml = pageOf(home);
+    for (let expected in ['href="/packages/router.acme.pkg.test"', 'Routes requests', 'href="/scopes/zeta"',
+        '>unreleased<']) {
+      isTrue(homeHtml.contains(expected), `${expected} in the home page`);
+    }
+    // The filter matches the description, ignoring case, and escapes the query.
+    let found = pageOf(fixture.get('/?q=ROUTES'));
+    isTrue(found.contains('router.acme.pkg.test') && !found.contains('parser.acme.pkg.test'), found);
+    let none = pageOf(fixture.get('/?q=%3Cb%3E'));
+    isTrue(none.contains('No packages match') && none.contains('&lt;b&gt;') && !none.contains('<b>'), none);
+
+    let scope = pageOf(fixture.get('/scopes/acme'));
+    isTrue(scope.contains('@acme') && scope.contains('parser.acme.pkg.test'), scope);
+    equal(fixture.get('/scopes/nobody').statusCode, 404, 'a missing scope');
+
+    let pkg = fixture.get('/packages/router.acme.pkg.test');
+    equal(pkg.statusCode, 200, 'package');
+    let pkgHtml = pageOf(pkg);
+    for (let expected in ['zena add router.acme.pkg.test', router, '>MIT<', ALICE, 'broken',
+        'class="retracted"']) {
+      isTrue(pkgHtml.contains(expected), `${expected} in the package page`);
+    }
+    // 1.1.0 is retracted, so 1.0.0 is the latest, and listed after it.
+    isTrue(pkgHtml.contains('chip-primary">1.0.0<'), 'the latest');
+    isTrue(pkgHtml.split('>1.1.0<')[1].contains('>1.0.0</span>'), 'newest first');
+
+    let missing = fixture.get('/packages/nothing.acme.pkg.test');
+    equal(missing.statusCode, 404, 'a missing package');
+    isTrue(pageOf(missing).contains('No package here'), 'the not-found page');
+    equal(fixture.get('/nowhere').statusCode, 404, 'a path no page has');
+  });
+
+  test("lists a caller's memberships, a team's packages included", (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let alice = entriesSeen(fixture, ALICE, orgDid);
+    let bobAdmin = new MemberEntry(BOB, ADMIN, filled(190));
+    ok(putMembers(fixture, ALICE, orgDid, [alice[0], bobAdmin], [bobAdmin], (org['members'] as JsonObject)['cid'] as String));
+    ok(putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(191))], null));
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    ok(putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, null, orgDid, 'core', PUBLISHER)]), [], (pkg['maintainers'] as JsonObject)['cid'] as String));
+    ok(createPackage(fixture, ALICE, orgDid, 'parser'));
+
+    let bob = ok(fixture.query(BOB, 'getMemberships', ''));
+    equal(bob['did'] as String, BOB);
+    let orgs = bob['orgs'] as JsonArray;
+    equal(orgs.length, 1);
+    equal((orgs[0] as JsonObject)['name'] as String, 'acme');
+    equal((orgs[0] as JsonObject)['role'] as String, 'admin');
+    let teams = bob['teams'] as JsonArray;
+    equal(teams.length, 1);
+    equal((teams[0] as JsonObject)['name'] as String, 'core');
+    equal((teams[0] as JsonObject)['role'] as String, 'maintainer');
+    // Through the team, Bob publishes router, and parser is none of his.
+    let packages = bob['packages'] as JsonArray;
+    equal(packages.length, 1);
+    equal((packages[0] as JsonObject)['handle'] as String, 'router.acme.pkg.test');
+    equal((packages[0] as JsonObject)['role'] as String, 'publisher');
+    let mine = ok(fixture.query(ALICE, 'getMemberships', ''));
+    equal(((mine['orgs'] as JsonArray)[0] as JsonObject)['role'] as String, 'owner');
+    equal((mine['teams'] as JsonArray).length, 0);
+    equal((mine['packages'] as JsonArray).length, 2);
+    // Without a token, nothing.
+    equal(errorOf(fixture.get('/xrpc/dev.zena-lang.host.getMemberships')), 'AuthenticationRequired');
+  });
+
+  test('resolves handles, and describes the web app as an OAuth client', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let resolved = ok(fixture.get('/xrpc/com.atproto.identity.resolveHandle?handle=ACME.pkg.test'));
+    equal(resolved['did'] as String, orgDid);
+    equal(errorOf(fixture.get('/xrpc/com.atproto.identity.resolveHandle?handle=nobody.example.com')), 'HandleNotFound');
+    let metadata = ok(fixture.get('/oauth/client-metadata.json'));
+    equal(metadata['client_id'] as String, 'https://pkg.test/oauth/client-metadata.json');
+    equal(((metadata['redirect_uris'] as JsonArray)[0]) as String, 'https://pkg.test/oauth/callback');
+    isTrue((metadata['scope'] as String).contains('atproto'), metadata['scope'] as String);
+    equal(metadata['token_endpoint_auth_method'] as String, 'none');
+  });
+
+  test('signs a person in to the pages with their service-auth token, and out', (ctx) => {
+    let fixture = new Fixture();
+    seedBrowsable(fixture);
+    // Signed out, the header offers to sign in, and /me asks to.
+    let home = pageOf(fixture.get('/'));
+    isTrue(home.contains('data-sign-in') && home.contains('data-service-did="did:web:pkg.test"'), home);
+    isTrue(pageOf(fixture.get('/me')).contains('Sign in, with your atproto account'), 'me, signed out');
+
+    let res = fixture.call(ALICE, 'createWebSession', '');
+    equal(ok(res)['did'] as String, ALICE);
+    let setCookie = res.getHeader('set-cookie') ?? '';
+    for (let attribute in ['HttpOnly', 'SameSite=Lax', 'Secure', 'Path=/', 'Max-Age=86400']) {
+      isTrue(setCookie.contains(attribute), `${attribute} in ${setCookie}`);
+    }
+    let cookie = setCookie.split(';')[0];
+    isTrue(cookie.startsWith('session='), cookie);
+
+    // Signed in, every page knows, and /me lists Alice's scope and packages.
+    // Her DID does not resolve here, so it stands in for her handle.
+    let signedIn = pageOf(fixture.get('/', cookie));
+    isTrue(signedIn.contains(`data-did="${ALICE}"`) && signedIn.contains('href="/me"') &&
+        !signedIn.contains('data-sign-in'), signedIn);
+    let me = pageOf(fixture.get('/me', cookie));
+    for (let expected in ['href="/scopes/acme"', 'href="/packages/router.acme.pkg.test"',
+        'href="/packages/parser.acme.pkg.test"', '>owner<']) {
+      isTrue(me.contains(expected), `${expected} in /me`);
+    }
+    // A cookie this server did not sign is nobody's.
+    isTrue(pageOf(fixture.get('/me', 'session=a.b.c')).contains('Sign in, with'), 'a forged cookie');
+    // Only a token for this method makes a web session.
+    let wrongMethod = `Bearer ${fixture.token(BOB, 'dev.zena-lang.host.getMemberships')}`;
+    equal(errorOf(fixture.call(null, 'createWebSession', '', '', 'application/json', wrongMethod)), 'InvalidToken');
+    equal(errorOf(fixture.call(null, 'createWebSession', '')), 'AuthenticationRequired');
+
+    // The callback page is a page, for the script to finish on.
+    isTrue(pageOf(fixture.get('/oauth/callback')).contains('data-sign-in-status'), 'the callback page');
+
+    let out = fixture.post('/signout', cookie);
+    equal(out.statusCode, 303, 'sign out');
+    equal(out.getHeader('location') ?? '', '/');
+    isTrue((out.getHeader('set-cookie') ?? '').contains('session=; Max-Age=0'), out.getHeader('set-cookie') ?? '');
+  });
+
+  test("names private members to those who may see them, and shows the host's admins everything", (ctx) => {
+    let fixture = new Fixture();
+    let carol = 'did:plc:carolcarolcarolcarolcaro';
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    // A publisher, and a team member, only those allowed may see.
+    let publisher = new MemberEntry(carol, PUBLISHER, filled(192));
+    ok(putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, publisher.commitment(), null, null, PUBLISHER)]), [publisher],
+        (pkg['maintainers'] as JsonObject)['cid'] as String));
+    let carolMember = new MemberEntry(carol, MEMBER, filled(194));
+    ok(putMembers(fixture, ALICE, orgDid, [entriesSeen(fixture, ALICE, orgDid)[0], carolMember], [carolMember],
+        (org['members'] as JsonObject)['cid'] as String));
+    ok(putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(carol, MAINTAINER, filled(193))], null));
+    let bot = ok(fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+
+    // A visitor, and Bob, who belongs to none of it, see members as private.
+    let visitor = pageOf(fixture.get('/scopes/acme'));
+    isTrue(visitor.contains('a private member') && visitor.contains('<h3 class="mono">core</h3>') &&
+        !visitor.contains(ALICE) && !visitor.contains(carol), visitor);
+    let bob = webCookie(fixture, BOB);
+    let asBob = pageOf(fixture.get('/scopes/acme', bob));
+    isTrue(!asBob.contains(ALICE) && !asBob.contains(carol), asBob);
+    isTrue(!pageOf(fixture.get('/packages/router.acme.pkg.test', bob)).contains(carol), 'the publisher, to Bob');
+    equal(fixture.get('/admin', bob).statusCode, 403, 'admin, to Bob');
+    isTrue(!pageOf(fixture.get('/', bob)).contains('href="/admin"'), 'no admin link for Bob');
+
+    // Alice, an owner of acme, sees its members and teams.
+    let alice = webCookie(fixture, ALICE);
+    let asAlice = pageOf(fixture.get('/scopes/acme', alice));
+    isTrue(asAlice.contains(ALICE) && asAlice.contains(carol) && asAlice.contains('>maintainer<'), asAlice);
+
+    // Once Bob is one of the host's admins, he sees every account and every member.
+    (fixture.host as PackageHost).config.admins.add(BOB);
+    isTrue(pageOf(fixture.get('/', bob)).contains('href="/admin"'), 'the admin link');
+    let admin = fixture.get('/admin', bob);
+    equal(admin.statusCode, 200, 'admin');
+    let adminHtml = pageOf(admin);
+    for (let expected in ['href="/scopes/acme"', orgDid, 'href="/packages/router.acme.pkg.test"', pkgDid,
+        bot['did'] as String, '1 scope', '1 package', '1 automation account']) {
+      isTrue(adminHtml.contains(expected), `${expected} in /admin`);
+    }
+    let scope = pageOf(fixture.get('/scopes/acme', bob));
+    isTrue(scope.contains(ALICE) && scope.contains('>owner<') && scope.contains(carol), scope);
+    let router = pageOf(fixture.get('/packages/router.acme.pkg.test', bob));
+    isTrue(router.contains(carol) && router.contains('(private)'), router);
+    // Signed out, /admin asks to sign in.
+    isTrue(pageOf(fixture.get('/admin')).contains('Sign in as one of'), 'admin, signed out');
+  });
+
   test('refuses calls without a valid, unused token for the method', (ctx) => {
     let fixture = new Fixture();
     let body = `{"name": "acme", "recoveryKeys": ["${RECOVERY}"]}`;
@@ -711,7 +990,7 @@ export let tests = suite('pds:host', () => {
     // The archive depends on json, which the release names at a DID that
     // cannot be found.
     let dependent = archiveOf(pkgDid, '2.4.0',
-        `{"name": "router", "version": "2.4.0", "dependencies": {"json": {"did": "did:plc:jsonjsonjsonjsonjsonjson", "version": "1.0.0"}}}`);
+        `{"name": "router", "description": "A package for tests", "license": "MIT", "version": "2.4.0", "dependencies": {"json": {"did": "did:plc:jsonjsonjsonjsonjsonjson", "version": "1.0.0"}}}`);
     let blob = upload(fixture, pkgDid, dependent);
     let release = new Release(Version.parse('2.4.0'), '2026-10-26T00:00:00.000Z',
         new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),

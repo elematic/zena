@@ -524,6 +524,12 @@ PDS, where nothing checked what was written. The rules:
 - **When publishing, every dependency is a release that exists and is not
   retracted.** A fetch does not repeat it: resolving the release's
   dependencies already fails on one that does not.
+- **When publishing, the manifest has a description and a license**, an
+  SPDX expression such as `MIT` or `(MIT OR Apache-2.0)`, as crates.io
+  requires: every package states what it is for and on what terms it may
+  be used. `zena publish` checks this before it creates a package, whose
+  profile then carries both. A fetch does not, so releases published
+  before the rule stay usable.
 
 The host answers a release that breaks one with `InvalidRelease`, listing
 every problem.
@@ -1022,7 +1028,9 @@ DAG-CBOR and hashed with SHA-256. The entry stays private:
   trying DIDs.
 - **The host keeps the entries.** It gives each member their own entry,
   an organization's owners and admins every entry, and a team's
-  maintainers their team's.
+  maintainers their team's. The host's own admins, whom its operator
+  names, see every entry, as the operator could read them from the store
+  anyway; the entries are private from the public, not from the host.
 - **Acting reveals the entry.** An attestation that relies on a
   membership includes the entry, and the log checks it against the
   commitment. A member becomes known in a role when they first act in
@@ -1138,12 +1146,17 @@ not planned.
 
 People sign in as themselves, never as an organization or a package:
 those have no passwords, and are managed through someone's role in them.
-The management interface is a browser app on the index's site, and has no
-privileges of its own:
+The management interface is pages on the index's site, rendered on the
+server, and has no privileges of its own:
 
-- **Signing in.** It signs in with atproto OAuth, as a browser client.
-  The session's DPoP key is a non-extractable WebCrypto key, and signing
-  out revokes the session.
+- **Signing in.** The page signs in with atproto OAuth, as a browser
+  client, and the OAuth session stays in the browser. The session's DPoP
+  key is a non-extractable WebCrypto key, and signing out revokes the
+  session. The server learns who is signed in from a web session: the page
+  asks the person's PDS for a service-auth token for
+  `dev.zena-lang.host.createWebSession` and trades it for an HttpOnly
+  cookie, which stands for the person to the site's pages and to nothing
+  else. It lasts a day, and the page renews it from the OAuth session.
 - **Reading.** It reads public data from the index: packages, their
   maintainers records, releases waiting for approvals, pending recovery
   resets and PLC operations. It asks each host the person uses for the
@@ -1216,6 +1229,11 @@ once the attestations the previous record requires reach the log.
 The `put` methods take the CID the record must have now, as
 `com.atproto.repo.putRecord` does, so two owners editing at once do not
 overwrite each other unseen.
+
+[package-host-operations.md](package-host-operations.md) lists every
+operation the host offers or will offer, these methods among them: who
+may do it, and where it is done, on the host's pages, with `zena`, or
+through a method.
 
 Moving a package to another host, and the recovery of
 [Recovery](#recovery), have no methods yet. Both need PLC operations that
@@ -1323,7 +1341,20 @@ pass this request to a separate directory service). It reads the
 packages' profiles and releases from their PDSes. Later it follows the
 relay's stream of changes. It serves search, version lists, reverse
 dependencies and a web interface, and it feeds the checksum log. It runs
-as a Zena server next to the website.
+no relay of its own: Bluesky's relays crawl PDSes, the package host's
+among them.
+
+It starts in the package host's server, at the host's domain, which runs
+three parts kept apart in code: the PDS and the host's methods, the index,
+and the web pages, rendered on the server. The index keeps a store of its
+own, filled through one ingest interface from three sources in turn: the
+host's own commits, in the same process; other PDSes, found with
+`listReposByCollection` and read over HTTP; and the relay's stream, once
+Zena servers can follow a WebSocket. Public pages read only the index,
+even for packages hosted beside it, and show a package the same wherever
+it is hosted; pages about a person's memberships read the host. So search
+covers the host's packages first and grows with the sources, and the
+index can move to a server of its own without changing the pages.
 
 ### Labelers
 

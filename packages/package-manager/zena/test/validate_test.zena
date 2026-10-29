@@ -75,6 +75,20 @@ export let tests = suite('package-manager:validate', () => {
     equal(checkSource(releaseOf('1.4.2', pathed, json('2.0.0')), PACKAGE, pathed).length, 0);
   });
 
+  test('requires a description and an SPDX license to publish, and not to fetch', (ctx) => {
+    let bare = archiveOf(GOOD);
+    let release = releaseOf('1.4.2', bare, json('2.0.0'));
+    let problems = checkSource(release, PACKAGE, bare, 'router', true);
+    isTrue(has(problems, 'has no description') && has(problems, 'has no license'), lines(problems));
+    // A fetch takes a release published before the rule.
+    equal(checkSource(release, PACKAGE, bare).length, 0);
+    let badLicense = archiveOf(`{"name": "router", "version": "1.4.2", "description": "Routes requests", "license": "MIT/Apache", "dependencies": {"json": {"did": "${JSON_DID}", "version": "2.0.0"}}}`);
+    isTrue(has(checkSource(releaseOf('1.4.2', badLicense, json('2.0.0')), PACKAGE, badLicense, 'router', true),
+        "license 'MIT/Apache' is not an SPDX expression"), 'a license that is not SPDX');
+    let complete = archiveOf(`{"name": "router", "version": "1.4.2", "description": "Routes requests", "license": "(MIT OR Apache-2.0)", "dependencies": {"json": {"did": "${JSON_DID}", "version": "2.0.0"}}}`);
+    equal(checkSource(releaseOf('1.4.2', complete, json('2.0.0')), PACKAGE, complete, 'router', true).length, 0);
+  });
+
   test('finds every way an archive disagrees with its release', (ctx) => {
     let source = archiveOf(GOOD);
     let release = releaseOf('1.4.2', source, json('2.0.0'));

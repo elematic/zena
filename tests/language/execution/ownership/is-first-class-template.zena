@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 11
+// `isFirstClass<T>()` answers per specialization, so a method calling
+// it cannot be copied from a sibling specialization's template
+// (docs/design/template-zir.md). Template lowering learns from the
+// first two specializations of a family and copies the rest; here the
+// third, at an owner, must still answer false.
+
+import {Own, Disposable, isFirstClass} from 'zena:core';
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+class A {}
+class B {}
+
+class Slot<scoped T> {
+  kind(): i32 {
+    return if (isFirstClass<T>()) 1 else 0;
+  }
+}
+
+export let main = (): i32 => {
+  let a = new Slot<A>().kind();
+  let b = new Slot<B>().kind() * 10;
+  let owner = new Slot<Own<Res>>().kind() * 100;
+  return a + b + owner;
+};

@@ -44,32 +44,38 @@
 //!
 //! Each extension has a store of its own on a thread of its own, with a
 //! current-thread tokio runtime, as a `zena:wasm` run has. Calls reach
-//! it over a channel, one at a time. While the program waits on a call,
-//! the extension's calls back are served by tasks spawned in the
+//! it over a channel, and each runs as a task of the store under
+//! wasmtime's `run_concurrent`, so calls in flight at once interleave
+//! wherever the extension awaits. An extension's call back to the
+//! program goes through the channel of the program's call whose guest
+//! task it runs in, found from the async call stack. While the program
+//! waits on a call, those calls back are served by tasks spawned in the
 //! program's store, so the program is entered as a new task rather than
 //! re-entered, which the Component Model forbids. A trap, a time limit
-//! or a memory failure poisons the store, so the thread drops the
-//! instance and makes a new one from the `InstancePre` for the next call.
+//! or a memory failure poisons the store, so every call in flight fails
+//! and the thread drops the instance and makes a new one from the
+//! `InstancePre` for the next call.
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, mpsc, oneshot};
 use wasmtime::component::types::{
     ComponentFunc, ComponentInstance as InterfaceType, ComponentItem, Type,
 };
 use wasmtime::component::{
-    Accessor, AccessorTask, Component, ComponentExportIndex, Func, Instance, InstancePre, Linker,
-    Resource, ResourceAny, ResourceType, Val,
+    Accessor, AccessorTask, Component, ComponentExportIndex, Func, GuestTaskId, Instance,
+    InstancePre, Linker, Resource, ResourceAny, ResourceType, Val,
 };
 use wasmtime::{
     AsContextMut, Engine, Result, Store, StoreContextMut, StoreLimitsBuilder, Trap, bail,
     format_err,
 };
 use wasmtime_wasi::WasiCtxBuilder;
+use wit_parser::{ManglingAndAbi, Resolve};
 
 use crate::component::bindings::zena_cli::host::extensions;
 use crate::component::{ComponentState, linker, translate};
@@ -354,7 +360,7 @@ fn define_proxy(li: &mut wasmtime::component::LinkerInstance<'_, ComponentState>
         };
         match entry.owner {
             Owner::Program => {
-                if let Some(callbacks) = store.data().callbacks.clone() {
+                if let Some(callbacks) = current_callbacks(&mut store) {
                     let _ = callbacks.send(Callback::Drop(entry.remote));
                 }
             }
@@ -459,6 +465,18 @@ pub(crate) enum Callback {
 }
 
 pub(crate) type CallbackSender = mpsc::UnboundedSender<Callback>;
+/// In an extension's store: the program's channel for each call from
+/// the program in flight, by the guest task running it.
+pub(crate) type Callbacks = HashMap<GuestTaskId, CallbackSender>;
+
+/// The channel to the program for the call whose guest task the
+/// current host call runs in: the root of the async call stack, as
+/// the task that started the call registered it. None outside any call
+/// from the program, as in a task the extension started itself.
+fn current_callbacks(store: &mut StoreContextMut<'_, ComponentState>) -> Option<CallbackSender> {
+    let root = store.async_call_stack().ok()?.last()?;
+    store.data().callbacks.get(&root).cloned()
+}
 pub(crate) type ExtensionSender = mpsc::UnboundedSender<ToExtension>;
 
 /// What the program serves to one extension for one of its imports: the
@@ -1177,7 +1195,7 @@ impl AccessorTask<ComponentState> for ServeCallback {
     }
 }
 
-/// [`export_func`] on a store context.
+/// Finds `interface`'s function `name` among `instance`'s exports.
 fn lookup(
     store: &mut StoreContextMut<'_, ComponentState>,
     instance: &Instance,
@@ -1190,24 +1208,6 @@ fn lookup(
     let idx = instance
         .get_export_index(&mut *store, Some(&iface), name)
         .ok_or_else(|| format_err!("the program exports no {interface}#{name}"))?;
-    instance
-        .get_func(&mut *store, idx)
-        .ok_or_else(|| format_err!("{interface}#{name} is not a function"))
-}
-
-/// Finds `interface`'s function `name` among `instance`'s exports.
-fn export_func<T>(
-    store: &mut Store<T>,
-    instance: &Instance,
-    interface: &str,
-    name: &str,
-) -> Result<Func> {
-    let iface: ComponentExportIndex = instance
-        .get_export_index(&mut *store, None, interface)
-        .ok_or_else(|| format_err!("no export {interface}"))?;
-    let idx = instance
-        .get_export_index(&mut *store, Some(&iface), name)
-        .ok_or_else(|| format_err!("no export {interface}#{name}"))?;
     instance
         .get_func(&mut *store, idx)
         .ok_or_else(|| format_err!("{interface}#{name} is not a function"))
@@ -1228,7 +1228,7 @@ async fn forward_callback(
     params: &[Val],
     results: &mut [Val],
 ) -> Result<()> {
-    let sender = ctx.with(|store| store.data().callbacks.clone());
+    let sender = ctx.with(|store| current_callbacks(store));
     let Some(sender) = sender else {
         bail!(
             "{interface}#{func}: called outside a call from the program, which is the only \
@@ -1279,7 +1279,7 @@ async fn forward_peer(
         let carried = outgoing(store, params, &param_types, peer)?;
         let my_calls = store.data().my_calls.clone();
         Ok::<_, wasmtime::Error>((
-            store.data().callbacks.clone(),
+            current_callbacks(store),
             carried,
             my_calls.map(|calls| Owner::Extension { handle: me, calls }),
         ))
@@ -1592,32 +1592,149 @@ impl Loaded {
         let instance = self.pre.instantiate_async(&mut store).await?;
         Ok(Live { store, instance })
     }
+}
 
-    /// One call: the result values, or why it failed.
-    async fn call(&self, live: &mut Live, call: Call) -> Result<Carried> {
-        let func = export_func(&mut live.store, &live.instance, &call.interface, &call.func)?;
-        let ty = func.ty(&live.store);
+/// The calls in flight on one instance, by number: where each answers,
+/// and when it started.
+#[derive(Default)]
+struct InFlight {
+    next: u64,
+    calls: HashMap<
+        u64,
+        (
+            oneshot::Sender<std::result::Result<Carried, String>>,
+            Instant,
+        ),
+    >,
+}
+
+type Shared = Arc<std::sync::Mutex<InFlight>>;
+
+fn in_flight(shared: &Shared) -> std::sync::MutexGuard<'_, InFlight> {
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Sets the store's epoch deadline for the calls in flight: what the
+/// earliest-started call has left of `ticks`, or none when nothing is
+/// in flight. One deadline serves the instance, so a call past its
+/// limit stops the instance and fails every call on it.
+fn arm_deadline(
+    store: &mut StoreContextMut<'_, ComponentState>,
+    ticks: Option<u64>,
+    shared: &Shared,
+) {
+    let Some(ticks) = ticks else {
+        return;
+    };
+    let longest = in_flight(shared)
+        .calls
+        .values()
+        .map(|(_, started)| started.elapsed())
+        .max();
+    match longest {
+        Some(elapsed) => {
+            let spent = (elapsed.as_nanos() / EPOCH_TICK.as_nanos()) as u64;
+            store.set_epoch_deadline(ticks.saturating_sub(spent).max(1));
+        }
+        None => store.set_epoch_deadline(NO_DEADLINE),
+    }
+}
+
+/// One call into the instance, as a task of its store beside the other
+/// calls in flight. Answers the caller, and ends the run when the call
+/// failed, since the store may be poisoned.
+struct RunCall {
+    id: u64,
+    call: Call,
+    instance: Instance,
+    deadline: Option<u64>,
+    shared: Shared,
+}
+
+impl AccessorTask<ComponentState> for RunCall {
+    async fn run(self, accessor: &Accessor<ComponentState>) -> Result<()> {
+        let RunCall {
+            id,
+            call,
+            instance,
+            deadline,
+            shared,
+        } = self;
+        let outcome = run_call(accessor, &instance, call).await;
+        let reply = in_flight(&shared).calls.remove(&id).map(|(reply, _)| reply);
+        accessor.with(|mut a| arm_deadline(&mut a.as_context_mut(), deadline, &shared));
+        match outcome {
+            Ok(carried) => {
+                if let Some(reply) = reply {
+                    let _ = reply.send(Ok(carried));
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let message = describe_failure(e);
+                if let Some(reply) = reply {
+                    let _ = reply.send(Err(message.clone()));
+                }
+                Err(format_err!("{message}"))
+            }
+        }
+    }
+}
+
+/// The call itself: the arguments taken in, the export called as a
+/// concurrent task with the caller's channel registered for its guest
+/// task, and the results passed back.
+async fn run_call(
+    accessor: &Accessor<ComponentState>,
+    instance: &Instance,
+    call: Call,
+) -> Result<Carried> {
+    let Call {
+        interface,
+        func,
+        params,
+        callbacks,
+        from,
+        ..
+    } = call;
+    let (f, result_types, params, borrowed) = accessor.with(|mut a| {
+        let mut store = a.as_context_mut();
+        let f = lookup(&mut store, instance, &interface, &func)?;
+        let ty = f.ty(&store);
         let param_types = params_of(&ty);
         let result_types: Vec<Type> = ty.results().collect();
-        let (params, borrowed) = {
-            let mut cx = live.store.as_context_mut();
-            incoming(&mut cx, call.params, &param_types, &call.from)
-                .map_err(|e| format_err!("taking in the arguments: {e:#}"))?
-        };
-        let mut results = vec![Val::Bool(false); result_types.len()];
-        if let Some(ticks) = self.deadline {
-            live.store.set_epoch_deadline(ticks);
-        }
-        // The plain async call, not `run_concurrent`: it opens the call
-        // scope that lending a host-held handle as a borrow needs, which
-        // the concurrent path does not have at lowering time.
-        let called = func.call_async(&mut live.store, &params, &mut results).await;
-        let mut cx = live.store.as_context_mut();
-        release_borrowed(&mut cx, &borrowed);
-        called?;
-        outgoing(&mut cx, &results, &result_types, &call.from)
-            .map_err(|e| format_err!("passing back the results: {e:#}"))
+        let (params, borrowed) = incoming(&mut store, params, &param_types, &from)
+            .map_err(|e| format_err!("taking in the arguments: {e:#}"))?;
+        Ok::<_, wasmtime::Error>((f, result_types, params, borrowed))
+    })?;
+    let mut results = vec![Val::Bool(false); result_types.len()];
+    let started = accessor
+        .with(|mut a| f.start_call_concurrent(a.as_context_mut(), &params, &mut results))?;
+    let task = started.task();
+    if let Some(callbacks) = callbacks {
+        accessor.with(|mut a| {
+            a.get().callbacks.insert(task, callbacks);
+        });
     }
+    let called = f.finish_call_concurrent(accessor, started).await;
+    accessor.with(|mut a| {
+        a.get().callbacks.remove(&task);
+        let mut store = a.as_context_mut();
+        release_borrowed(&mut store, &borrowed);
+        called?;
+        outgoing(&mut store, &results, &result_types, &from)
+            .map_err(|e| format_err!("passing back the results: {e:#}"))
+    })
+}
+
+/// Why the thread left an instance's run.
+enum Exit {
+    /// The program dropped the extension.
+    Dropped,
+    /// Every sender of the channel is gone.
+    Closed,
 }
 
 /// Loads the component on the calling thread's behalf and serves calls
@@ -1627,7 +1744,7 @@ fn serve(
     request: LoadRequest,
     calls: mpsc::UnboundedSender<ToExtension>,
     mut rx: mpsc::UnboundedReceiver<ToExtension>,
-    loaded: std::sync::mpsc::Sender<std::result::Result<Extension, String>>,
+    loaded: oneshot::Sender<std::result::Result<Extension, String>>,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1642,13 +1759,13 @@ fn serve(
     rt.block_on(async {
         let prepared = prepare(&request, calls.clone()).await;
         let (alive, mut dropped) = oneshot::channel::<()>();
-        let (state, mut live, served, component) = match prepared {
+        let (state, live, served, component) = match prepared {
             Ok(Prepared {
                 loaded: state,
                 live,
                 served,
                 component,
-            }) => (state, Some(live), served, component),
+            }) => (state, live, served, component),
             Err(message) => {
                 let _ = loaded.send(Err(message));
                 return;
@@ -1660,51 +1777,105 @@ fn serve(
             component,
             served,
         }));
+        let shared: Shared = Default::default();
+        let mut live = Some(live);
+        // A call taken while there was no instance, for the run to serve
+        // first.
+        let mut first: Option<Call> = None;
         loop {
-            let message = tokio::select! {
-                biased;
-                _ = &mut dropped => break,
-                received = rx.recv() => match received {
-                    Some(message) => message,
-                    None => break,
-                },
-            };
-            let call = match message {
-                ToExtension::Call(call) => call,
-                ToExtension::Drop(any) => {
-                    if let Some(current) = live.as_mut() {
-                        let _ = any.resource_drop_async(&mut current.store).await;
-                    }
-                    continue;
-                }
-            };
             if live.is_none() {
-                live = match state.instantiate().await {
-                    Ok(l) => Some(l),
+                let message = tokio::select! {
+                    biased;
+                    _ = &mut dropped => break,
+                    received = rx.recv() => match received {
+                        Some(message) => message,
+                        None => break,
+                    },
+                };
+                let call = match message {
+                    ToExtension::Call(call) => call,
+                    // Its handle went with the instance.
+                    ToExtension::Drop(_) => continue,
+                };
+                match state.instantiate().await {
+                    Ok(fresh) => {
+                        live = Some(fresh);
+                        first = Some(call);
+                    }
                     Err(e) => {
                         let _ = call
                             .reply
                             .send(Err(format!("could not instantiate again: {e:#}")));
                         continue;
                     }
-                };
-            }
-            let current = live.as_mut().unwrap();
-            current.store.data_mut().callbacks = call.callbacks.clone();
-            let reply = call.reply;
-            let call = Call { reply: oneshot::channel().0, ..call };
-            let outcome = state.call(current, call).await;
-            current.store.data_mut().callbacks = None;
-            let answer = match outcome {
-                Ok(carried) => Ok(carried),
-                Err(e) => {
-                    // The store may be poisoned, so the instance goes;
-                    // the next call starts a fresh one.
-                    live = None;
-                    Err(describe_failure(e))
                 }
-            };
-            let _ = reply.send(answer);
+            }
+            let current = live.as_mut().expect("instantiated above");
+            let instance = current.instance;
+            let mut pending = first.take();
+            let outcome = current
+                .store
+                .run_concurrent(async |accessor: &Accessor<ComponentState>| {
+                    loop {
+                        let message = match pending.take() {
+                            Some(call) => ToExtension::Call(call),
+                            None => tokio::select! {
+                                biased;
+                                _ = &mut dropped => return Ok(Exit::Dropped),
+                                received = rx.recv() => match received {
+                                    Some(message) => message,
+                                    None => return Ok(Exit::Closed),
+                                },
+                            },
+                        };
+                        match message {
+                            ToExtension::Drop(any) => accessor.with(|mut a| {
+                                let _ = drop_now(&mut a.as_context_mut(), any);
+                            }),
+                            ToExtension::Call(mut call) => {
+                                let reply =
+                                    std::mem::replace(&mut call.reply, oneshot::channel().0);
+                                let id = {
+                                    let mut flight = in_flight(&shared);
+                                    let id = flight.next;
+                                    flight.next += 1;
+                                    flight.calls.insert(id, (reply, Instant::now()));
+                                    id
+                                };
+                                accessor.with(|mut a| {
+                                    arm_deadline(&mut a.as_context_mut(), state.deadline, &shared);
+                                    a.spawn(RunCall {
+                                        id,
+                                        call,
+                                        instance,
+                                        deadline: state.deadline,
+                                        shared: shared.clone(),
+                                    })
+                                })?;
+                            }
+                        }
+                    }
+                })
+                .await;
+            match outcome {
+                Ok(Ok(Exit::Dropped)) | Ok(Ok(Exit::Closed)) => break,
+                Ok(Err(e)) | Err(e) => {
+                    // The instance failed: every call still in flight
+                    // fails with it, the one that failed it among them,
+                    // since the run ends before its task sees the error.
+                    // The next call starts a fresh instance.
+                    let message = describe_failure(e);
+                    let failed: Vec<_> = in_flight(&shared)
+                        .calls
+                        .drain()
+                        .map(|(_, (reply, _))| reply)
+                        .collect();
+                    for reply in failed {
+                        let _ = reply.send(Err(message.clone()));
+                    }
+                    live = None;
+                }
+            }
         }
         // Calls another extension sent before it learned of the drop.
         rx.close();
@@ -1900,18 +2071,304 @@ fn bind_imports(
 }
 
 // ============================================================================
+// A component against a WIT world
+// ============================================================================
+
+/// Checks the component at `path` against `world` of the WIT document
+/// at `wit`, as an extension: it must export every interface the world
+/// exports, with the world's functions and resources, and import
+/// nothing but interfaces the world imports, the same way, and
+/// interfaces the host serves. `deps` are WIT files and directories
+/// whose packages the document may use. Returns what differs, one line
+/// each, or nothing when the component fits.
+///
+/// The world's side is a stand-in component wit-component builds for
+/// the world, with no code behind its exports, compiled on the same
+/// engine, so both sides are wasmtime types and the comparison is the
+/// one a load makes. Whether a function is `async` is not compared, as
+/// a load does not compare it.
+pub fn check_world(
+    engine: &Engine,
+    path: &Path,
+    wit: &Path,
+    world: &str,
+    deps: &[PathBuf],
+) -> anyhow::Result<Vec<String>> {
+    use anyhow::Context;
+    let mut resolve = Resolve::default();
+    push_deps(&mut resolve, deps)?;
+    let (package, _) = resolve
+        .push_path(wit)
+        .with_context(|| format!("could not read the WIT at {}", wit.display()))?;
+    let world_id = resolve
+        .select_world(&[package], Some(world))
+        .with_context(|| format!("{} has no world {world}", wit.display()))?;
+    let mut module = wit_component::dummy_module(&resolve, world_id, ManglingAndAbi::Standard32);
+    wit_component::embed_component_metadata(
+        &mut module,
+        &resolve,
+        world_id,
+        wit_component::StringEncoding::UTF8,
+    )?;
+    let stand_in = wit_component::ComponentEncoder::default()
+        .module(&module)?
+        .validate(true)
+        .encode()
+        .with_context(|| format!("could not encode world {world} as a component"))?;
+    let stand_in = Component::new(engine, &stand_in)
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("could not compile world {world} as a component"))?;
+    let tested = crate::cache::compile_component_uncached(engine, path)?;
+    Ok(compare_to_world(engine, &stand_in, &tested, world))
+}
+
+/// Pushes the packages in `deps` into `resolve`: each file, and each
+/// `.wit` file of each directory, is a package. A package may use
+/// another from the same list, so the files are pushed in rounds,
+/// each round taking the files whose packages are now resolvable,
+/// until none is left or none can be pushed. A push that fails leaves
+/// its package registered, so each is tried on a copy.
+fn push_deps(resolve: &mut Resolve, deps: &[PathBuf]) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let mut pending = Vec::new();
+    for dep in deps {
+        if dep.is_dir() {
+            let entries = std::fs::read_dir(dep)
+                .with_context(|| format!("could not read {}", dep.display()))?;
+            let mut files: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "wit"))
+                .collect();
+            files.sort();
+            pending.extend(files);
+        } else {
+            pending.push(dep.clone());
+        }
+    }
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut remaining = Vec::new();
+        let mut first_failure = None;
+        for path in pending {
+            let mut trial = resolve.clone();
+            match trial.push_path(&path) {
+                Ok(_) => *resolve = trial,
+                Err(e) => {
+                    if first_failure.is_none() {
+                        first_failure = Some((path.clone(), e));
+                    }
+                    remaining.push(path);
+                }
+            }
+        }
+        if remaining.len() == before {
+            let (path, e) = first_failure.expect("a round without progress has a failure");
+            return Err(e).with_context(|| format!("could not read the WIT at {}", path.display()));
+        }
+        pending = remaining;
+    }
+    Ok(())
+}
+
+/// Which side of a comparison declares what the other must have.
+#[derive(Clone, Copy)]
+enum Expected {
+    /// The world's export, which the component must export.
+    Export,
+    /// The component's import, which the world must import.
+    Import,
+}
+
+/// `tested` against `stand_in`, a component of the world's type, as
+/// [`check_world`] says.
+fn compare_to_world(
+    engine: &Engine,
+    stand_in: &Component,
+    tested: &Component,
+    world: &str,
+) -> Vec<String> {
+    let want = stand_in.component_type();
+    let have = tested.component_type();
+    let mut comparison = Comparison {
+        engine,
+        pairs: Vec::new(),
+        world,
+        problems: Vec::new(),
+    };
+    // Resources the two sides declare under one name in one interface
+    // stand for each other.
+    for (name, item) in want.exports(engine) {
+        if let (ComponentItem::ComponentInstance(w), Some(ComponentItem::ComponentInstance(h))) =
+            (item.ty, have.get_export(engine, name).map(|e| e.ty))
+        {
+            comparison.pair_resources(&w, &h);
+        }
+    }
+    for (name, item) in want.imports(engine) {
+        if let (ComponentItem::ComponentInstance(w), Some(ComponentItem::ComponentInstance(h))) =
+            (item.ty, have.get_import(engine, name).map(|e| e.ty))
+        {
+            comparison.pair_resources(&w, &h);
+        }
+    }
+    for (name, item) in want.exports(engine) {
+        match (item.ty, have.get_export(engine, name).map(|e| e.ty)) {
+            (ComponentItem::ComponentInstance(w), Some(ComponentItem::ComponentInstance(h))) => {
+                comparison.interface(name, &w, &h, Expected::Export);
+            }
+            (ComponentItem::ComponentFunc(w), Some(ComponentItem::ComponentFunc(h))) => {
+                comparison.function(name, None, &w, &h, Expected::Export);
+            }
+            (ComponentItem::ComponentInstance(_), _) => comparison.problems.push(format!(
+                "does not export {name}, which world {world} exports"
+            )),
+            (ComponentItem::ComponentFunc(_), _) => comparison.problems.push(format!(
+                "does not export the function {name}, which world {world} exports"
+            )),
+            _ => {}
+        }
+    }
+    for (name, item) in have.imports(engine) {
+        match (item.ty, want.get_import(engine, name).map(|e| e.ty)) {
+            (ComponentItem::ComponentInstance(h), Some(ComponentItem::ComponentInstance(w))) => {
+                comparison.interface(name, &h, &w, Expected::Import);
+            }
+            (ComponentItem::ComponentFunc(h), Some(ComponentItem::ComponentFunc(w))) => {
+                comparison.function(name, None, &h, &w, Expected::Import);
+            }
+            (_, None) if is_host_interface(name) => {}
+            (_, None) => comparison.problems.push(format!(
+                "imports {name}, which world {world} does not import and the host does not serve"
+            )),
+            _ => comparison.problems.push(format!(
+                "imports {name} as a different kind of item than world {world} imports"
+            )),
+        }
+    }
+    comparison.problems
+}
+
+/// A component against a world: the resources paired so far, and what
+/// differs.
+struct Comparison<'a> {
+    engine: &'a Engine,
+    pairs: Pairs,
+    world: &'a str,
+    problems: Vec<String>,
+}
+
+impl Comparison<'_> {
+    /// Pairs the resources `a` and `b` declare under the same name.
+    fn pair_resources(&mut self, a: &InterfaceType, b: &InterfaceType) {
+        let theirs = resources(self.engine, b);
+        for (name, r) in resources(self.engine, a) {
+            if let Some((_, other)) = theirs.iter().find(|(n, _)| *n == name) {
+                self.pairs.push((r, other.clone()));
+            }
+        }
+    }
+
+    /// Every function and resource `declared` has, `found` must have,
+    /// with the same types.
+    fn interface(
+        &mut self,
+        name: &str,
+        declared: &InterfaceType,
+        found: &InterfaceType,
+        expected: Expected,
+    ) {
+        let world = self.world;
+        let have = resources(self.engine, found);
+        for (rname, _) in resources(self.engine, declared) {
+            if !have.iter().any(|(n, _)| *n == rname) {
+                self.problems.push(match expected {
+                    Expected::Export => format!(
+                        "{name} does not export the resource {rname}, which world {world}'s does"
+                    ),
+                    Expected::Import => format!(
+                        "imports {name}'s resource {rname}, which world {world}'s does not declare"
+                    ),
+                });
+            }
+        }
+        let have = functions(self.engine, found);
+        for (fname, f) in functions(self.engine, declared) {
+            match have.iter().find(|(n, _)| *n == fname) {
+                Some((_, g)) => self.function(name, Some(&fname), &f, g, expected),
+                None => self.problems.push(match expected {
+                    Expected::Export => {
+                        format!("{name} does not export {fname}, which world {world}'s does")
+                    }
+                    Expected::Import => format!(
+                        "imports {name}#{fname}, which world {world}'s {name} does not declare"
+                    ),
+                }),
+            }
+        }
+    }
+
+    /// `declared` and `found` must take and return the same types.
+    fn function(
+        &mut self,
+        name: &str,
+        fname: Option<&str>,
+        declared: &ComponentFunc,
+        found: &ComponentFunc,
+        expected: Expected,
+    ) {
+        let declared_results: Vec<Type> = declared.results().collect();
+        let found_results: Vec<Type> = found.results().collect();
+        if same_types(&params_of(declared), &params_of(found), &self.pairs)
+            && same_types(&declared_results, &found_results, &self.pairs)
+        {
+            return;
+        }
+        let world = self.world;
+        let label = match fname {
+            Some(f) => format!("{name}#{f}"),
+            None => name.to_string(),
+        };
+        self.problems.push(match expected {
+            Expected::Export => format!(
+                "{label} is ({}) -> {}, where world {world}'s is ({}) -> {}",
+                describe(&params_of(found)),
+                describe(&found_results),
+                describe(&params_of(declared)),
+                describe(&declared_results)
+            ),
+            Expected::Import => format!(
+                "imports {label} as ({}) -> {}, where world {world}'s is ({}) -> {}",
+                describe(&params_of(declared)),
+                describe(&declared_results),
+                describe(&params_of(found)),
+                describe(&found_results)
+            ),
+        });
+    }
+}
+
+// ============================================================================
 // The host interface
 // ============================================================================
 
+/// A load in progress: the slot reserved for the extension, and where
+/// its thread reports.
+struct Pending {
+    index: usize,
+    loaded: oneshot::Receiver<std::result::Result<Extension, String>>,
+}
+
 impl ComponentState {
-    /// Loads `path` as an extension that may import what `imports`
-    /// says, on a thread of its own, and returns its handle.
-    fn load_extension(
+    /// Starts loading `path` as an extension that may import what
+    /// `imports` says, on a thread of its own, with a slot reserved for
+    /// it so that loads in flight at once get distinct handles. A slot
+    /// whose load fails stays empty, as a dropped extension's does.
+    fn start_load(
         &mut self,
         path: String,
         imports: Imports,
         options: extensions::LoadOptions,
-    ) -> Result<std::result::Result<u32, String>> {
+    ) -> Result<std::result::Result<Pending, String>> {
         let grant = self.extensions_granted()?;
         let Some(host_path) = translate(&path, &grant.path_map) else {
             return Ok(Err(format!(
@@ -1949,8 +2406,9 @@ impl ComponentState {
                 }
             }
         }
+        let index = self.extensions.len();
         let request = LoadRequest {
-            handle: self.extensions.len() as u32 + 1,
+            handle: index as u32 + 1,
             path: host_path,
             imports,
             memory_limit: options.memory_limit,
@@ -1963,18 +2421,47 @@ impl ComponentState {
             caller,
             peers,
         };
-        let (tx, rx) = std::sync::mpsc::channel();
+        self.extensions.push(None);
+        let (tx, loaded) = oneshot::channel();
         let (calls, calls_rx) = mpsc::unbounded_channel();
         std::thread::spawn(move || serve(request, calls, calls_rx, tx));
-        match rx.recv() {
+        Ok(Ok(Pending { index, loaded }))
+    }
+
+    /// Keeps what the thread reported for the load at `index`, and
+    /// returns the extension's handle or why there is none.
+    fn finish_load(
+        &mut self,
+        index: usize,
+        loaded: std::result::Result<std::result::Result<Extension, String>, oneshot::error::RecvError>,
+    ) -> std::result::Result<u32, String> {
+        match loaded {
             Ok(Ok(extension)) => {
-                self.extensions.push(Some(extension));
-                Ok(Ok(self.extensions.len() as u32))
+                self.extensions[index] = Some(extension);
+                Ok(index as u32 + 1)
             }
-            Ok(Err(message)) => Ok(Err(message)),
-            Err(_) => Ok(Err("the extension's thread vanished".to_string())),
+            Ok(Err(message)) => Err(message),
+            Err(_) => Err("the extension's thread vanished".to_string()),
         }
     }
+}
+
+/// Loads an extension for the program `accessor` reaches: the program's
+/// store is held only to start the load and to keep its result, so the
+/// program's other tasks run while the thread compiles and instantiates.
+async fn load_extension(
+    accessor: &Accessor<ComponentState, wasmtime::component::HasSelf<ComponentState>>,
+    path: String,
+    imports: Imports,
+    options: extensions::LoadOptions,
+) -> Result<std::result::Result<u32, String>> {
+    let pending = accessor.with(|mut a| a.get().start_load(path, imports, options))?;
+    let Pending { index, loaded } = match pending {
+        Ok(pending) => pending,
+        Err(message) => return Ok(Err(message)),
+    };
+    let loaded = loaded.await;
+    Ok(accessor.with(|mut a| a.get().finish_load(index, loaded)))
 }
 
 impl From<extensions::Source> for Source {
@@ -1988,8 +2475,49 @@ impl From<extensions::Source> for Source {
 }
 
 impl extensions::Host for ComponentState {
-    fn load(
+    fn check(
         &mut self,
+        path: String,
+        wit_path: String,
+        world_name: String,
+        deps: Vec<String>,
+    ) -> Result<std::result::Result<(), String>> {
+        let grant = self.extensions_granted()?;
+        let Some(host_path) = translate(&path, &grant.path_map) else {
+            return Ok(Err(format!(
+                "{path} is outside every directory this program can reach"
+            )));
+        };
+        let Some(host_wit) = translate(&wit_path, &grant.path_map) else {
+            return Ok(Err(format!(
+                "{wit_path} is outside every directory this program can reach"
+            )));
+        };
+        let mut host_deps = Vec::new();
+        for dep in &deps {
+            let Some(host_dep) = translate(dep, &grant.path_map) else {
+                return Ok(Err(format!(
+                    "{dep} is outside every directory this program can reach"
+                )));
+            };
+            host_deps.push(host_dep);
+        }
+        let engine = match crate::engine::shared_component_engine(grant.debug) {
+            Ok(engine) => engine,
+            Err(e) => return Ok(Err(format!("{e:#}"))),
+        };
+        let checked = check_world(&engine, &host_path, &host_wit, &world_name, &host_deps);
+        Ok(match checked {
+            Ok(problems) if problems.is_empty() => Ok(()),
+            Ok(problems) => Err(problems.join("\n")),
+            Err(e) => Err(format!("{e:#}")),
+        })
+    }
+}
+
+impl extensions::HostWithStore<ComponentState> for wasmtime::component::HasSelf<ComponentState> {
+    async fn load(
+        accessor: &Accessor<ComponentState, Self>,
         path: String,
         bindings: Vec<extensions::Binding>,
         options: extensions::LoadOptions,
@@ -1998,20 +2526,17 @@ impl extensions::Host for ComponentState {
             .into_iter()
             .map(|b| (b.name, b.served_by.into()))
             .collect();
-        self.load_extension(path, Imports::Bound(bound), options)
+        load_extension(accessor, path, Imports::Bound(bound), options).await
     }
 
-    fn load_trusted(
-        &mut self,
+    async fn load_trusted(
+        accessor: &Accessor<ComponentState, Self>,
         path: String,
         options: extensions::LoadOptions,
     ) -> Result<std::result::Result<u32, String>> {
-        self.load_extension(path, Imports::Trusted, options)
+        load_extension(accessor, path, Imports::Trusted, options).await
     }
 
-}
-
-impl extensions::HostWithStore<ComponentState> for wasmtime::component::HasSelf<ComponentState> {
     /// Drops the extension, and the objects the program made for it
     /// through `create`. Their destructors are guest code, which cannot
     /// run while the program is in this call, so each drop is a task

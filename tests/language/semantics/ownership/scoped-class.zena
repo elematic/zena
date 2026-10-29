@@ -4,19 +4,21 @@
 // may hold `T` in its fields, and an instance carries its argument's
 // restriction: at an owner it moves like the owner. In the body a `T`
 // is consumed exactly once, and moving a `T` field out is a take, so
-// the field must be a nullable `var`.
-import {Own, Borrow, Disposable} from 'zena:core';
+// the field must be a `var` that can be empty, such as `WithDefault<T>`.
+// (`T | null` would need `T` constrained to references, which an owner
+// does not satisfy.)
+import {Own, Borrow, Disposable, WithDefault, defaultValue} from 'zena:core';
 
 resource class Res {
   [Disposable.dispose](this: Own<this>): void {}
 }
 
 class Slot<scoped T> {
-  var #value: T | null = null;
+  var #value: WithDefault<T> = defaultValue<T>();
   put(value: T): void {
     this.#value = value;
   }
-  take(): T | null {
+  take(): WithDefault<T> {
     return this.#value;
   }
 }
@@ -31,8 +33,8 @@ class Fixed<scoped T> {
 }
 
 class Kept<scoped T> {
-  #value: T | null = null;
-  get(): T | null {
+  #value: WithDefault<T> = defaultValue<T>();
+  get(): WithDefault<T> {
     return this.#value; // @error: must be declared 'var'
   }
 }
@@ -72,9 +74,9 @@ let putTwice = (r: Own<Res>): i32 => {
 
 // An instance at a first-class type is unrestricted.
 let plain = (): i32 => {
-  let s = new Slot<i32>();
+  let s = new Slot<String>();
   let t = s;
-  s.put(1);
-  t.put(2);
-  return s.take() ?? 0;
+  s.put('a');
+  t.put('bc');
+  return (s.take() ?? '').length;
 };

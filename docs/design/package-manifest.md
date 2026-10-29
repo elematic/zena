@@ -52,6 +52,8 @@ else moved.
 | `name`         | `string`                        | any package    | The package's own name, and the name it suggests to its dependents     |
 | `did`          | `string`                        | any package    | The package's DID, once it has been created on a package host          |
 | `scope`        | `string`                        | any package    | The scope on a package host the package is created in                  |
+| `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish            |
+| `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish         |
 | `version`      | `string`                        | any package    | The version `zena publish` publishes next                              |
 | `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                |
 | `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name            |
@@ -89,6 +91,14 @@ it.
 
 `scope` is unrelated to `scopes`, below, which says where `zena add`
 looks up the packages of other scopes.
+
+### `description` and `license`
+
+What the package is for, in a sentence, and the terms it may be used on,
+as an SPDX license expression: `MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`,
+or `LicenseRef-…` for a license SPDX does not list. `zena publish` refuses
+a package without both, and its profile carries them (package-manager.md,
+"Validating releases"). The compiler does not read them.
 
 ### `version`
 
