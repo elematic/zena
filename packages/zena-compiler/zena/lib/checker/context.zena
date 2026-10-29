@@ -1,0 +1,3735 @@
+import { HashMap, HashSet, Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import {
+  BorrowUseRec, FlowAssign, FlowBodyState, FlowJoin, FlowMove,
+  FlowNarrowings, FlowNode, FlowStart, FlowSuspend, FlowUnreachable,
+  PendingEdgeIf, PendingEdgeMatch
+} from '../analysis/flow.zena';
+import {
+  ClassDeclaration, DeclareFunction, EnumDeclaration, Expression,
+  FunctionExpression, Identifier, InterfaceDeclaration, MixinDeclaration,
+  Node, NodeId, Parameter, SealedVariant, SourceLocation, StringLiteral,
+  TypeAliasDeclaration, TypeAnnotation, TypeParameter, decoratorStringArg
+} from '../ast.zena';
+import {
+  BooleanType, ClassType, EnumType, ErrorType, F32Type, F64Type, FieldInfo,
+  FunctionDeclInfo, FunctionType, HoleType, I16Type, I32Type, I64Type,
+  I8Type, InterfaceType, MixinType, NeverType, NullType, SymbolType, Type,
+  TypeAliasType, TypeId, TypeInterner, TypeParameterType, U16Type, U32Type,
+  U64Type, U8Type, UnionType as UnionT, V128Type, VoidType,
+  makeTypeIdGenerator, releaseMemberOf
+} from '../types.zena';
+import {
+  ClosureDependency, EdgeDrop, ModelIndex, SemanticModel, SymbolDependencies
+} from '../semantic-model.zena';
+import { DiagnosticBag, DiagnosticCode } from '../diagnostics.zena';
+import { Symbol, SymbolId, noSymbolId } from '../scope/symbol.zena';
+import { ModuleExports, ScopeResult } from '../scope/scope-builder.zena';
+import { WellKnown, wellKnownLibrary, wellKnownName } from '../well-known.zena';
+import { nowMs, performance } from '../time.zena';
+import {
+  isRecordRowBound, isTupleRowBound, resolveBound, resolveTypeAnnotation
+} from './annotations.zena';
+import { typeOperatorTarget } from './declarations.zena';
+import { checkFunctionExpression } from './functions.zena';
+import { ConditionNarrowings, getMemberPathKey, pathRootSymbolId } from './narrowing.zena';
+import {
+  OwnDropCandidate, ScopedConsumeCandidate, classifyOwnUses,
+  computeOwnIntervals
+} from './ownership.zena';
+import { isAssignableTo, typesEqual } from './relations.zena';
+
+export function lookupBindingTypeInDeps(ctx: CheckerContext, sym: Symbol): Type | null {
+  // A linear scan of every dependency's model, asked once per imported
+  // name whose type the direct dependency's model does not hold. A name
+  // re-exported through `export *` is exactly that case, so the cost
+  // here grows with the product of the modules and their dependencies;
+  // the phase total and call count say whether that product matters.
+  let tLookup = nowMs();
+  var found: Type | null = null;
+  let models = ctx.depModels;
+  if (models != null) {
+    for (let depKey in models.keys()) {
+      if (let (true, depModel) = models.get(depKey)) {
+        let dbt = depModel.getBindingTypeDirect(sym);
+        if (dbt != null) { found = dbt; break; }
+      }
+    }
+  }
+  performance.add("check-dep-lookup", nowMs() - tLookup);
+  return found;
+}
+
+/**
+ * Internal state for the type checker.
+ *
+ * Name resolution for values (variables, parameters, functions) is
+ * delegated to the scope pass's ReferenceMap. The checker no longer
+ * maintains its own value scope stack. Instead:
+ *
+ *   Declaration time: the checker stores a binding's type in the
+ *   SemanticModel via `model.setBindingType(symbolInfo, type)`.
+ *
+ *   Reference time: an Identifier is resolved through the ReferenceMap
+ *   to its Symbol, then `model.getBindingType(info)` recovers the
+ *   type. Narrowings are checked first (keyed by Symbol.id).
+ *
+ * The checker keeps a flat type-name map for built-in primitive types
+ * (i32, f64, etc.) at #typeScopes[0]. Type annotation resolution for
+ * all other names — including type parameters — delegates to the scope
+ * pass's ReferenceMap: model.resolve(node) → Symbol.id →
+ * #materializedTypes. Type parameters are registered there via
+ * registerTypeParameter() as soon as each TypeParameterType is created.
+ */
+/**
+ * Whether `decl` declares a type: a class, interface, mixin, sealed
+ * variant, type alias or enum. Each has one canonical type object per
+ * declaration (docs/design/import-cycles.md), created by whichever module
+ * asks first, in `SharedCheckerState.declaredNominalTypes`, and filled in
+ * by the declaring module's own registration. A type parameter is
+ * declared by the type or function it belongs to and is keyed by its
+ * source location (`typeParameterTypes`), and a `symbol` declaration is a
+ * value (`declaredSymbolTypes`); neither is one of these.
+ */
+function isTypeDeclaration(decl: Node): boolean {
+  return match (decl) {
+    case ClassDeclaration: true
+    case InterfaceDeclaration: true
+    case MixinDeclaration: true
+    case SealedVariant: true
+    case TypeAliasDeclaration: true
+    case EnumDeclaration: true
+    case _: false
+  };
+}
+
+/**
+ * An enum's type from its declaration alone: its members, each a static
+ * field of the type itself, with the backing type a hole until the enum's
+ * registration fills it in.
+ */
+export function newEnumType(symbolId: SymbolId, declaringModule: String, ed: EnumDeclaration): EnumType {
+  let enumType = new EnumType(symbolId, ed.name.name, ed, declaringModule);
+  for (let member in ed.members) {
+    enumType.members[member.name.name] = new FieldInfo(enumType, false, false, true, false, false);
+  }
+  return enumType;
+}
+
+export final class SharedCheckerState {
+  var typeIdGenerator = makeTypeIdGenerator();
+  /** The compiler's interned types, shared with its codegen. */
+  interner = new TypeInterner();
+  preludeTypes = new Map<String, Type>();
+  preludeValues = new Map<String, Type>();
+  var preludeRegistered: boolean = false;
+
+  /**
+   * The type of each well-known standard library declaration, keyed by its
+   * `WellKnown` variant.
+   *
+   * Distinct from `preludeTypes`, which answers a different question. The
+   * prelude is the set of names a program can use without importing them,
+   * so it is keyed by name and a program's own declaration of that name
+   * shadows it — correctly, for ordinary name resolution. This map is the
+   * compiler's own handle on specific declarations, filled by matching the
+   * library a module belongs to against the well-known registry, so nothing
+   * a program declares can stand in for one.
+   */
+  wellKnownTypes = new Map<i32, Type>();
+
+  /**
+   * The canonical type of each type declaration (`isTypeDeclaration`:
+   * class, interface, mixin, sealed variant, type alias, enum), keyed by
+   * its declaring symbol. Shared across every checking pass of a
+   * compilation so a declaration has exactly ONE type object no matter
+   * how many times its module is checked or which module materializes
+   * it first: an importer across a cycle's back edge creates a shell
+   * here from the origin's AST, and the origin's own registration later
+   * fills the same object (docs/design/import-cycles.md).
+   */
+  declaredNominalTypes = new Map<SymbolId, Type>();
+
+  /**
+   * The canonical TypeParameterType per declared type parameter, keyed
+   * by "<source path>#<byte offset>" of the parameter's declaration
+   * (importers re-materialize an exporter's signature from its AST,
+   * where the importer's model has no Symbol for the foreign parameter
+   * — the location is shared). NOT keyed by node id: node id spaces
+   * restart per compilation while shared state (prelude/stdlib types)
+   * can carry forward across compilations in one process, so ids
+   * collide across programs; source locations are stable. Substitution
+   * matches parameters by object identity, so every pass and every
+   * importing module must see the same object — same reasoning as
+   * declaredNominalTypes.
+   */
+  typeParameterTypes = new Map<String, Type>();
+
+  /**
+   * The declaration of each row parameter (`R extends record`), by the
+   * canonical TypeParameterType's uid. Whether a record type spreading R
+   * is in its declaration's signature or in a body is a question about
+   * where it sits relative to this node (`isInRowSignature`).
+   */
+  rowParameterDeclarations = new Map<i32, TypeParameter>();
+
+  /**
+   * The canonical `SymbolType` per `symbol` declaration, keyed by
+   * "<source path>#<byte offset>" — the same key, for the same reason,
+   * as `typeParameterTypes`: a dependency module is checked more than
+   * once in a compilation, and symbol id spaces restart per parse, so an
+   * id-keyed cache mints a second identity for one declaration.
+   *
+   * A symbol's whole purpose is to be an identity distinct from its
+   * name. Two identities for one declaration would make a member and the
+   * accesses to it disagree about which symbol keyed it, inside the one
+   * module that indisputably may reach it: the declaring one.
+   */
+  declaredSymbolTypes = new Map<String, Type>();
+
+  /**
+   * Intermediate class types created for mixin applications, keyed by
+   * "<base type id>&<mixin type id><type arguments>".
+   */
+  mixinApplications = new Map<String, ClassType>();
+
+  /**
+   * Which model owns each node and binding checked under this state.
+   * Lives here because that is a property of the check: every
+   * `Program` built over these `CheckResult`s would compute the same
+   * index, and the models outlive any one compile.
+   */
+  modelIndex = new ModelIndex();
+
+  /**
+   * Modules of the current compilation that have registered their
+   * declarations but not yet checked their bodies: the members of an
+   * import cycle, between beginModule and finishModule. Keyed by module
+   * path. A module here answers for the signatures of the annotated
+   * functions it exports before its bodies are checked
+   * (CheckerContext.resolveExportedFunction), which is what lets a
+   * cycle be checked in one pass over each member.
+   */
+  inProgressModules = new Map<String, CheckerContext>();
+
+  /**
+   * The modules whose bodies wait to be reached, by path, for as long
+   * as the state lives. `inProgressModules` holds a module only
+   * between its two halves; this holds it afterwards too, which is
+   * what lets an importer ask a finished module to resolve a function
+   * signature its deferred body never bound
+   * (CheckerContext.resolveInProgressFunction).
+   */
+  moduleContexts = new Map<String, CheckerContext>();
+
+  invalidatePath(path: String): void {
+    let tpKeys = this.typeParameterTypes.keys();
+    let toDeleteTp = new Array<String>();
+    for (let k in tpKeys) {
+      if (k.startsWith(path + "#")) {
+        toDeleteTp.push(k);
+      }
+    }
+    for (let k in toDeleteTp) {
+      this.typeParameterTypes.delete(k);
+    }
+
+    let symKeys = this.declaredSymbolTypes.keys();
+    let toDeleteSym = new Array<String>();
+    for (let k in symKeys) {
+      if (k.startsWith(path + "#")) {
+        toDeleteSym.push(k);
+      }
+    }
+    for (let k in toDeleteSym) {
+      this.declaredSymbolTypes.delete(k);
+    }
+
+    let mixKeys = this.mixinApplications.keys();
+    let toDeleteMix = new Array<String>();
+    for (let k in mixKeys) {
+      if (k.contains(path + "#")) {
+        toDeleteMix.push(k);
+      }
+    }
+    for (let k in toDeleteMix) {
+      this.mixinApplications.delete(k);
+    }
+  }
+}
+
+/**
+ * Internal state for the type checker.
+ *
+ * Name resolution for values (variables, parameters, functions) is
+ * delegated to the scope pass's ReferenceMap. The checker no longer
+ * maintains its own value scope stack. Instead:
+ *
+ *   Declaration time: the checker stores a binding's type in the
+ *   SemanticModel via `model.setBindingType(symbolInfo, type)`.
+ *
+ *   Reference time: an Identifier is resolved through the ReferenceMap
+ *   to its Symbol, then `model.getBindingType(info)` recovers the
+ *   type. Narrowings are checked first (keyed by Symbol.id).
+ *
+ * The checker keeps a flat type-name map for built-in primitive types
+ * (i32, f64, etc.) at #typeScopes[0]. Type annotation resolution for
+ * all other names — including type parameters — delegates to the scope
+ * pass's ReferenceMap: model.resolve(node) → Symbol.id →
+ * #materializedTypes. Type parameters are registered there via
+ * registerTypeParameter() as soon as each TypeParameterType is created.
+ */
+export final class CheckerContext {
+  model = new SemanticModel();
+
+  /**
+   * The same file's model from the previous checking pass, when this is
+   * a cycle-driven re-check (compiler.zena's second pass). Guards
+   * against re-resolving previously-spliced default arguments in the
+   * caller's scope; see splicedArgCountOf.
+   */
+  var priorModel: SemanticModel | null = null;
+  diagnostics: DiagnosticBag;
+  #sharedState: SharedCheckerState;
+
+  /**
+   * Module paths that run AFTER this module in evaluation order —
+   * an import whose declaration ORIGINATES in one of them crosses an
+   * import cycle's back edge (docs/design/import-cycles.md). Null when
+   * the compilation has no cycles.
+   */
+  var cyclicLaterPaths: HashSet<String> | null = null;
+
+  /**
+   * Modules the compiler re-checks because of import cycles. A type
+   * or inferred signature may cross a back edge only when it
+   * originates OUTSIDE this set: such an origin is checked exactly
+   * once, so its type objects are unique and stable.
+   */
+  var cyclicRecheckPaths: HashSet<String> | null = null;
+
+  /**
+   * Type namespace map for built-in primitive types (i32, u32, f64, etc.).
+   * Only index 0 is meaningful; the stack structure is retained because
+   * enterScope/exitScope still push/pop frames for narrowing bookkeeping.
+   */
+  #typeScopes = new Array<HashMap<String, Type>>();
+
+  /**
+   * Optional-chain nodes sanctioned as the immediate left operand of
+   * `??`. A chain yielding a boxable primitive is only legal there:
+   * the miss becomes the coalesce arm, so `primitive | null` never
+   * materializes as a value. Any unsanctioned primitive chain errors.
+   */
+  nullishSanctioned = new Set<i32>();
+
+  /**
+   * Narrowed types (control-flow narrowing) per scope level.
+   * Keyed by Symbol.id so narrowing survives across scopes that
+   * reference the same binding, and is robust against shadowing.
+   * Kept as a stack so narrowings are automatically discarded when
+   * their enclosing scope exits.
+   */
+  /**
+   * Set immediately before resolving a type argument of `Own`/`Borrow`/
+   * `Unmanaged`, and consumed (cleared) by the next named-type resolution.
+   * It is what permits a `resource class` to be named there and nowhere else.
+   *
+   * A flag rather than a parameter on `resolveTypeAnnotation` because that
+   * function is forward-referenced from callers above its definition, and
+   * adding a defaulted parameter makes those call sites fail arity checking.
+   */
+  var resourceMentionOk: boolean = false;
+
+  /**
+   * The argument a call is checking against a `scoped T` parameter's
+   * container (`Array<T>`), when the parameter type it passes as
+   * expected has had `T` substituted away. A literal there is the
+   * call-site temporary the storage rules sanction, but once `T` is
+   * `Own<R>` the substituted `Array<Own<R>>` no longer says so
+   * (ownership.md §"Scoped containers and extent nesting").
+   */
+  var scopedArgument: Node | null = null;
+
+  /**
+   * Bindings and member paths some FlowNarrowings node has ever
+   * mentioned, and bindings some FlowAssign has ever stored to. These
+   * gate the flow-type walk: a reference to a binding no condition ever
+   * narrowed and no assignment could re-type takes its declared type
+   * with no graph traversal at all, which is nearly every reference.
+   */
+  #everNarrowedSymbols = new Set<i32>();
+  #everNarrowedPaths = new Set<String>();
+  #everAssignedSymbols = new Set<i32>();
+
+  /**
+   * Bindings some move consumed, anywhere. Implicit drop skips them: a
+   * moved binding's value belongs to whoever it was moved to.
+   */
+  #everMovedSymbols = new Set<i32>();
+
+  /** Moves recorded per binding, so a statement's moves can be counted. */
+  #moveCounts = new Map<i32, i32>();
+
+  #moveCount(id: SymbolId): i32 {
+    if (let (true, c) = this.#moveCounts.get(id as i32)) { return c; }
+    return 0;
+  }
+
+  /**
+   * Bindings implicit drop must leave alone even though no move was
+   * recorded: captured by a closure, or used in a position the
+   * classifier does not recognize as a borrow. The default is
+   * undroppable — a use position must be affirmatively safe — so an
+   * unclassified escape leaks (the status quo) rather than releasing a
+   * value someone else still holds.
+   */
+  #undroppableSymbols = new Set<i32>();
+
+  markUndroppable(id: SymbolId): void {
+    this.#undroppableSymbols.add(id as i32);
+  }
+
+  /**
+   * Scope frames of implicit-drop candidates: `Own<resource>` bindings
+   * declared by simple `let`s in a statement block. Pushed per block;
+   * popping decides each candidate's verdict and records it on the
+   * declaration for lowering.
+   */
+  #ownScopeStack = new Array<GrowableArray<OwnDropCandidate>>();
+
+  /**
+   * Scoped bindings per open block, awaiting the must-consume verdict
+   * — the frames parallel #ownScopeStack's. A return checks every open
+   * frame; a block exit checks the one it closes.
+   */
+  #scopedScopeStack = new Array<GrowableArray<ScopedConsumeCandidate>>();
+
+  /** Bindings already reported unconsumed, so each errors once. */
+  #scopedErrorSymbols = new Set<i32>();
+
+  /**
+   * Second-class bindings rooted in a body's parameters: the
+   * parameters themselves, and scoped locals whose initializer
+   * mentions one. Awaiting such a value parks the frame on work
+   * bounded by the caller's extent, so the frame's own future must be
+   * Scoped too — checked in checkAwaitExpression. Symbol ids are
+   * process-unique, so one set serves every body.
+   */
+  #paramDerivedSecondClass = new Set<i32>();
+
+  markParamDerivedSecondClass(id: SymbolId): void {
+    this.#paramDerivedSecondClass.add(id as i32);
+  }
+
+  isParamDerivedSecondClass(id: SymbolId): boolean {
+    return this.#paramDerivedSecondClass.has(id as i32);
+  }
+
+  /**
+   * If/else joins recorded while checking, awaiting the branch-join
+   * decision when a scope with candidates closes (the decision needs
+   * the complete capture and escape facts). Per body, swapped with the
+   * rest of the flow state.
+   */
+  var #pendingEdgeIfs = new Array<PendingEdgeIf>();
+
+  /** The matches recorded for the same decision — PendingEdgeIf's
+   * N-ary sibling; same lifecycle. */
+  var #pendingEdgeMatches = new Array<PendingEdgeMatch>();
+
+  /** Whether any open scope holds an implicit-drop candidate. */
+  #hasOwnCandidates(): boolean {
+    for (let frame in this.#ownScopeStack) {
+      if (frame.length > 0) { return true; }
+    }
+    return false;
+  }
+
+  /**
+   * Record an if/else for the branch-join decision. Skipped when no
+   * candidate is in scope — nothing could need a compensating drop.
+   */
+  recordPendingEdgeIf(ifNode: Node, preBranch: FlowNode,
+      trueEnd: FlowNode, falseEnd: FlowNode): void {
+    if (!this.#hasOwnCandidates()) { return; }
+    this.#pendingEdgeIfs.push(new PendingEdgeIf(
+      ifNode, preBranch, trueEnd, falseEnd,
+      !(trueEnd is FlowUnreachable), !(falseEnd is FlowUnreachable)));
+  }
+
+  /** Record a match's arm ends for the branch-join decision. */
+  recordPendingEdgeMatch(matchNode: Node, preBranch: FlowNode,
+      armEnds: GrowableArray<FlowNode>): void {
+    if (!this.#hasOwnCandidates()) { return; }
+    this.#pendingEdgeMatches.push(
+      new PendingEdgeMatch(matchNode, preBranch, armEnds));
+  }
+
+  /**
+   * Flow-type results at join nodes, keyed by (join id, symbol id) and
+   * shared across queries — a reference after N sequential joins would
+   * otherwise recompute each of them per reference, which is quadratic
+   * over a body. The graph only mutates behind a query at a loop's back
+   * edge, so exitFlowLoop invalidates exactly the entries written while
+   * the loop was open, via the write log.
+   */
+  #flowTypeMemo = new Map<i64, Type>();
+  #flowTypeMemoLog = new Array<i64>();
+  #flowLoopMemoMarks = new Array<i32>();
+
+  /** The path walk's memo, keyed "<join id>|<path>"; #pathVeto included. */
+  #flowPathMemo = new Map<String, Type>();
+  #flowPathMemoLog = new Array<String>();
+  #flowPathMemoLogIds = new Array<i32>();
+  #flowLoopPathMemoMarks = new Array<i32>();
+
+  /**
+   * The FlowStart id of the body each binding was declared in. A walk
+   * that reaches that node has seen everything that could narrow the
+   * binding, so it stops there instead of continuing into the enclosing
+   * body's graph — only captured bindings look outward.
+   */
+  #bindingBodyStart = new Map<i32, i32>();
+
+  // --- Control-flow graph (analysis/flow.zena) ---
+  //
+  // Built alongside the checker's forward walk: assignments, moves,
+  // narrowings and joins advance #currentFlow. A reference's type is
+  // the declared type refined by a backward walk from here
+  // (flowTypeOfBinding / flowTypeOfPath), and move checking walks the
+  // same nodes (findLiveMove).
+
+  /** The flow node reflecting the checker's current position. */
+  var #currentFlow: FlowNode = new FlowStart();
+
+  /** The FlowStart of the innermost body being checked. */
+  var #currentFlowStart: FlowStart = new FlowStart();
+
+  /** The one unreachable node; joins drop it, walks pass through it. */
+  #flowUnreachable = new FlowUnreachable();
+
+  /** Loop header joins (continue targets), innermost last. */
+  var #flowLoopHeads = new Array<FlowJoin>();
+
+  /** Loop exit joins (break targets), innermost last. */
+  var #flowLoopExits = new Array<FlowJoin>();
+
+  /**
+   * Catch-entry joins of enclosing `try` bodies, innermost last. Every
+   * assignment inside a protected body is added as an antecedent of the
+   * innermost one, because the body can throw at any point after it.
+   * The arrays are swapped (not shared) across nested bodies, hence
+   * `var`.
+   */
+  var #flowExceptionTargets = new Array<FlowJoin>();
+
+  /**
+   * Moves recorded while each enclosing loop is open, innermost last. A
+   * move registers with every entry, because an outer loop's back edge
+   * re-runs an inner loop's body. Checked by exitFlowLoop.
+   */
+  var #flowLoopMoves = new Array<GrowableArray<FlowMove>>();
+
+  /**
+   * Symbols declared while each enclosing loop is open. A binding
+   * declared inside the loop is fresh every iteration, so its moves are
+   * exempt from the back-edge rule.
+   */
+  var #flowLoopDeclared = new Array<HashSet<i32>>();
+
+  /**
+   * Nodes that already reported use-after-move. Several call paths check
+   * an argument expression twice (overload pre-pass, then the selected
+   * signature), and the second check must not duplicate the error.
+   */
+  #moveErrorNodes = new Set<i32>();
+
+  /** Nodes that already reported an `errorOnce`, for the same reason. */
+  #onceErrorNodes = new Set<i32>();
+
+  /** Locations and messages that already reported an `errorOnceAt`. */
+  #onceErrorSites = new Set<String>();
+
+  /**
+   * Second-class borrow reads of the current suspending body, decided
+   * at exitBodyFlow; error dedup by expression node id, because
+   * re-check passes flush the same body again.
+   */
+  var #bodyBorrowUses = new Array<BorrowUseRec>();
+  #borrowSuspendErrorNodes = new Set<i32>();
+
+  /**
+   * The current body's member-path moves and its `return` positions,
+   * for the moved-on-every-exit verdict of consuming-method field
+   * move-out; error dedup by expression node id across re-checks.
+   */
+  var #bodyPathMoves = new Array<FlowMove>();
+  var #bodyExits = new Array<FlowNode>();
+  #pathMoveErrorNodes = new Set<i32>();
+
+  /**
+   * Where each second-class local was declared, as a flow node id: the
+   * liveness walk stops there, so a borrow derived after the last
+   * suspension is clean. A parameter has no entry — its extent begins
+   * at the body start, so the walk runs to FlowStart.
+   */
+  #borrowBirthNodes = new Map<i32, i32>();
+
+  /**
+   * The identifier node currently being checked as a plain assignment
+   * TARGET: writing to a dead binding revives it, so the left-hand read
+   * is not a use.
+   */
+  var #moveCheckSuppressedNode: i32 = -1;
+
+  /** Mint for FlowNode ids; per-context, so graphs stay deterministic. */
+  var #nextFlowId: i32 = 0;
+
+
+  /**
+   * The current function's expected return type, or null if not in a function.
+   */
+  var #returnType: Type | null = null;
+
+  /**
+   * Inferred return types collected from return statements.
+   * Used when a function has no explicit return type annotation.
+   */
+  var #inferredReturnTypes: GrowableArray<Type> = new Array<Type>();
+
+  /**
+   * The current generator's expected yield type, or null when the
+   * nearest enclosing function is not a `gen` function. VoidType is
+   * the inference sentinel, mirroring #returnType's convention.
+   */
+  var #yieldType: Type | null = null;
+
+  /**
+   * Inferred yield types collected from yield statements.
+   * Used when a generator has no explicit yield type annotation.
+   */
+  var #inferredYieldTypes: GrowableArray<Type> = new Array<Type>();
+
+  /**
+   * Depth of enclosing try blocks within the current function body.
+   * `yield`/`await` inside `try` are rejected in v1 (generators.md §6,
+   * async.md §1).
+   */
+  var #tryDepth: i32 = 0;
+
+  /**
+   * How many `using` bindings of the current function body are live at
+   * this point: each owes a release on every path out of its block, so
+   * a `tail return` under one would discard the frame that still has
+   * to run it (tail-calls.md §3).
+   */
+  var #usingDepth: i32 = 0;
+
+  /**
+   * Whether the body being checked is a constructor's. A constructor
+   * body is inlined into a factory that returns the new instance, so
+   * `return` there does not return the operand (tail-calls.md §3).
+   */
+  var #inConstructor: boolean = false;
+
+  /**
+   * The value type T of the enclosing async function's Future<T>, or
+   * null when the nearest enclosing function is not async. VoidType is
+   * the inference sentinel, mirroring #returnType's convention.
+   */
+  var #asyncValueType: Type | null = null;
+
+  /**
+   * The declared Future<T> of the enclosing async function — the
+   * return-adoption target (async.md §2). Null while inferring (no
+   * adoption during inference) and outside async bodies.
+   */
+  var #asyncFutureType: Type | null = null;
+
+  /**
+   * Stack of class types being checked. The top is the innermost class.
+   * Used by ThisExpression, super resolution, and member access validation.
+   */
+  #classStack = new Array<ClassType>();
+
+  /** Whether we are currently checking an interface declaration body. */
+  var #inInterface = false;
+
+  /**
+   * What a written `this` type annotation means at the current
+   * position, or null when it means the polymorphic `this` itself.
+   *
+   * In a signature `this` stays polymorphic: it is what makes a
+   * subclass's `clone()` return the subclass. Inside a body there is
+   * nothing left to be polymorphic about — the receiver is the class
+   * being checked — so the method's declared `this` return already
+   * substitutes to the self type (issue #434), and a `this` written
+   * in the body has to mean the same thing or the two disagree and a
+   * cast like `return value as this` cannot type-check.
+   */
+  var #bodyThisType: Type | null = null;
+
+  /**
+   * Whether the method being checked declared `this: Own<this>`, which makes
+   * `this` in its body the owner rather than a borrow.
+   */
+  var #owningReceiver = false;
+
+  /**
+   * The receiver's symbol in a method that declared `this: Own<this>`:
+   * the release bookkeeping tracks `this` there like an owned parameter
+   * (ownership.md §"Implicit drop"). Null in every other body.
+   */
+  var #receiverSymbol: Symbol | null = null;
+
+  /**
+   * Whether the body being checked is a `[Disposable.dispose]`, the one
+   * consuming method that may move a non-null owner field out.
+   */
+  var #inDispose = false;
+
+  /**
+   * Loop nesting depth (for break/continue validation).
+   */
+  var #loopDepth = 0;
+
+  /**
+   * Pending function declarations indexed by Symbol.id.
+   * Populated by a pre-scan in checkModule so that resolveIdentifier
+   * can lazily resolve forward-referenced function types from their
+   * annotations without waiting for the main pass to reach them.
+   */
+  #pendingFunctions = new Map<SymbolId, Node>();
+  #pendingFunctionOverloads = new Map<SymbolId, GrowableArray<Node>>();
+
+  /**
+   * Symbol IDs currently being lazily resolved.
+   * Used for cycle detection: if we re-enter resolution for an ID
+   * already in this set, we've found a recursive reference.
+   */
+  #resolving = new Set<SymbolId>();
+
+  /**
+   * Pipeline value stack for `|>` operator.
+   * `$` placeholder resolves to the top of this stack.
+   */
+  #pipelineStack = new Array<Type>();
+
+  #referrerStack = new Array<String>();
+  #referrerSymbolStack = new Array<SymbolId>();
+  #referrerNodeStack = new Array<i32>();
+  #dependencyStack = new Array<SymbolDependencies>();
+
+  enterSymbolReferrer(symId: SymbolId): void {
+    this.#referrerStack.push("sym");
+    this.#referrerSymbolStack.push(symId);
+    let existing = if (let (true, d) = this.model.symbolDependencies.get(symId)) d else new SymbolDependencies();
+    this.#dependencyStack.push(existing);
+  }
+
+  exitSymbolReferrer(symId: SymbolId): void {
+    if (this.#referrerStack.length > 0) {
+      this.#referrerStack.pop();
+      this.#referrerSymbolStack.pop();
+      let deps = this.#dependencyStack.pop();
+      this.model.setSymbolDependencies(symId, deps);
+
+    }
+  }
+
+  enterNodeReferrer(nodeId: i32): void {
+    this.#referrerStack.push("node");
+    this.#referrerNodeStack.push(nodeId);
+    let existing = if (let (true, d) = this.model.nodeDependencies.get(nodeId)) d else new SymbolDependencies();
+    this.#dependencyStack.push(existing);
+  }
+
+  exitNodeReferrer(nodeId: i32): void {
+    if (this.#referrerStack.length > 0) {
+      this.#referrerStack.pop();
+      this.#referrerNodeStack.pop();
+      let deps = this.#dependencyStack.pop();
+      this.model.setNodeDependencies(nodeId, deps);
+    }
+  }
+
+  currentDependencies(): SymbolDependencies | null {
+    if (this.#dependencyStack.length > 0) {
+      return this.#dependencyStack[this.#dependencyStack.length - 1];
+    }
+    return null;
+  }
+
+  setNodeType(node: Node, type: Type): void {
+    this.model.setNodeType(node, type);
+    if (type is FunctionType) {
+      if (type.functionSymbolId != noSymbolId) {
+        let deps = this.currentDependencies();
+        if (deps != null) {
+          deps.referencedTypes.add(type);
+        }
+      }
+    }
+  }
+
+  referrerStack: GrowableArray<String> {
+    get { return this.#referrerStack; }
+  }
+
+  currentReferrerNodeId(): i32 {
+    if (this.#referrerNodeStack.length > 0) {
+      return this.#referrerNodeStack[this.#referrerNodeStack.length - 1];
+    }
+    return -1;
+  }
+
+  enterClosureReferrer(): void {
+    this.#dependencyStack.push(new SymbolDependencies());
+  }
+
+  exitClosureReferrer(fe: FunctionExpression, capturesThis: boolean, captures: GrowableArray<SymbolId>, mutableCaptures: HashSet<SymbolId>): void {
+    // A captured binding escapes its scope's timeline — the closure can
+    // run after the scope ends — so it is never implicitly dropped.
+    for (let capId in captures) {
+      this.markUndroppable(capId);
+    }
+    for (let capId in mutableCaptures) {
+      this.model.mutablyCapturedSymbols.add(capId);
+    }
+    if (this.#dependencyStack.length > 1) {
+      let deps = this.#dependencyStack.pop();
+      let parentDeps = this.#dependencyStack[this.#dependencyStack.length - 1];
+      let clDep = new ClosureDependency(fe.id as i32, fe as Node, capturesThis, captures, deps);
+      parentDeps.closures.push(clDep);
+      this.model.setNodeDependencies(fe.id as i32, deps);
+    }
+  }
+
+  /**
+   * The scope result from name resolution (for reference lookups).
+   */
+  #scopeResult: ScopeResult;
+
+  /**
+   * Symbol IDs currently being materialized (cycle detection).
+   * Prevents infinite recursion when type A references type B
+   * which references type A. Keyed by Symbol.id rather than
+   * name strings, since names only have meaning within a scope.
+   */
+  #pendingTypes = new Set<SymbolId>();
+
+  /**
+   * Materialized type declarations keyed by type-symbol identity.
+   * Avoids name-based caching bugs under lexical shadowing.
+   */
+  #materializedTypes = new Map<SymbolId, Type>();
+
+  /**
+   * Materialized declaration types keyed by the declaration node's id,
+   * so the type-namespace and value-namespace symbols of one
+   * declaration resolve to one type object. A node minted outside the
+   * parser carries id 0 and is not cached, since every such node would
+   * share the key.
+   */
+  #materializedDeclTypes = new Map<NodeId, Type>();
+
+  /**
+   * Dependency exports map: import specifier → ModuleExports.
+   * Populated by the compiler so the checker can resolve imported types.
+   */
+  #depExports: HashMap<String, ModuleExports> | null = null;
+
+  /**
+   * Dependency semantic models: import specifier → SemanticModel.
+   * When provided, the checker can look up actual resolved types from
+   * already-checked dependency modules instead of creating empty stubs.
+   */
+  var #depModels: HashMap<String, SemanticModel> | null = null;
+
+  /** The file path of the module being checked. */
+  #filePath: String;
+
+  emitLocations: boolean;
+  warnUnnecessaryCasts: boolean;
+
+  new(
+      sharedState: SharedCheckerState,
+      file: String,
+      scopeResult: ScopeResult,
+      depExports: HashMap<String, ModuleExports> | null,
+      depModels: HashMap<String, SemanticModel> | null,
+      emitLocations: boolean = false,
+      warnUnnecessaryCasts: boolean = false)
+    : diagnostics = new DiagnosticBag(file),
+      #sharedState = sharedState,
+      #filePath = file,
+      #scopeResult = scopeResult,
+      #depExports = depExports,
+      #depModels = depModels,
+      emitLocations = emitLocations,
+      warnUnnecessaryCasts = warnUnnecessaryCasts {
+    
+    // Initialize with module-level scope.
+    this.#typeScopes.push(new Map<String, Type>());
+
+    // Module-level control flow. The field defaults exist only to keep
+    // the fields non-nullable; mint real ids so nodes never compare
+    // equal by accident (comparisons go through `id`).
+    this.#flowUnreachable.id = this.newFlowId();
+    let moduleStart = new FlowStart();
+    moduleStart.id = this.newFlowId();
+    this.#currentFlow = moduleStart;
+    this.#currentFlowStart = moduleStart;
+
+    // Wire the scope pass's maps into the SemanticModel
+    // so consumers have a single object for all queries.
+    this.model.setSymbols(scopeResult.symbols);
+    this.model.setParents(scopeResult.parents);
+    
+
+    // Pre-register built-in types in the type namespace.
+    this.declareBuiltinType("i32", new I32Type());
+    this.declareBuiltinType("u32", new U32Type());
+    this.declareBuiltinType("i64", new I64Type());
+    this.declareBuiltinType("u64", new U64Type());
+    this.declareBuiltinType("f32", new F32Type());
+    this.declareBuiltinType("f64", new F64Type());
+    this.declareBuiltinType("u8", new U8Type());
+    this.declareBuiltinType("u16", new U16Type());
+    this.declareBuiltinType("i8", new I8Type());
+    this.declareBuiltinType("i16", new I16Type());
+    this.declareBuiltinType("v128", new V128Type());
+    this.declareBuiltinType("boolean", new BooleanType());
+    this.declareBuiltinType("void", new VoidType());
+    this.declareBuiltinType("null", new NullType());
+    this.declareBuiltinType("never", new NeverType());
+    this.declareBuiltinType("_", new HoleType());
+  }
+
+  /**
+   * Register a built-in type in the type namespace.
+   */
+  declareBuiltinType(name: String, t: Type): void {
+    this.#typeScopes[0][name] = t;
+  }
+
+  /**
+   * Generate a fresh type ID.
+   */
+  freshTypeId(): TypeId {
+    return this.#sharedState.typeIdGenerator.next();
+  }
+
+  /** The compiler's interned types; see `TypeInterner`. */
+  interner: TypeInterner {
+    get { return this.#sharedState.interner; }
+  }
+
+  mixinApplications(): HashMap<String, ClassType> {
+    return this.#sharedState.mixinApplications;
+  }
+
+  /**
+   * The caller-written argument count for a node whose args the checker
+   * extended with spliced default initializers. Splicing MUTATES the
+   * shared AST, but a re-checked file (the cycle-driven second pass)
+   * starts a fresh SemanticModel — so when the current model has no
+   * record, consult the same file's previous-pass model (priorModel).
+   * Per-file models keep this safe under compilation reuse, where node
+   * ids restart across unrelated programs.
+   */
+  splicedArgCountOf(node: Node): i32 {
+    let c = this.model.getOriginalArgCountDirect(node);
+    if (c != -1) { return c; }
+    let prior = this.priorModel;
+    if (prior != null) {
+      return prior.getOriginalArgCountDirect(node);
+    }
+    return -1;
+  }
+
+  // --- Scope management ---
+
+  /**
+   * Push a new scope frame (for narrowings).
+   * Value-namespace scoping is handled by the scope pass's ReferenceMap.
+   * Type-parameter scoping is handled by registerTypeParameter → #materializedTypes.
+   */
+  enterScope(): void {
+    this.#typeScopes.push(new Map<String, Type>());
+  }
+
+  exitScope(): void {
+    this.#typeScopes.pop();
+  }
+
+  // --- Value binding (via SemanticModel + Symbol) ---
+
+  /**
+   * Store a binding's type in the SemanticModel, keyed by Symbol.
+   * Called when processing declarations (VariableDeclaration, parameters).
+   */
+  declareBinding(info: Symbol, t: Type): void {
+    this.model.setBindingType(info, t);
+    this.#bindingBodyStart[info.id as i32] = this.#currentFlowStart.id;
+    // A binding declared while a loop is open is fresh every iteration,
+    // which exempts its moves from the back-edge rule in exitFlowLoop.
+    for (let declared in this.#flowLoopDeclared) {
+      declared.add(info.id as i32);
+    }
+    // Also store on the declaration node for getNodeType() queries.
+    let {declaration} = info;
+    if (declaration != null) {
+      this.setNodeType(declaration, t);
+    }
+  }
+
+  /**
+   * Resolve an identifier's type via the ReferenceMap.
+   * Checks narrowings first, then falls back to the binding type.
+   * If no type is stored yet, attempts lazy resolution for function
+   * declarations (enabling forward references and self-recursion).
+   */
+  resolveIdentifier(node: Node): Type | null {
+    let t = this.resolveIdentifierInternal(node);
+    if (t != null) {
+      let info = this.model.resolve(node);
+      if (info != null) {
+        let resolvedSym = info.resolveTarget();
+        if (t is FunctionType) {
+          t.functionSymbolId = resolvedSym.id;
+          t.functionSymbolName = resolvedSym.name;
+          let {overloads} = t;
+          if (overloads != null) {
+            for (let ov in overloads) {
+              ov.functionSymbolId = resolvedSym.id;
+              ov.functionSymbolName = resolvedSym.name;
+            }
+          }
+          let deps = this.currentDependencies();
+          if (deps != null) {
+            deps.referencedTypes.add(t);
+          }
+        }
+      }
+    }
+    return t;
+  }
+
+  resolveIdentifierInternal(node: Node): Type | null {
+    let info = this.model.resolve(node);
+    if (info == null) { return null; }
+    this.model.symbolNames[info.id] = info.name;
+    let resolvedSym = info.resolveTarget();
+    this.model.symbolNames[resolvedSym.id] = resolvedSym.name;
+
+    let deps = this.currentDependencies();
+    if (deps != null) {
+      deps.referencedSymbols.add(resolvedSym.id);
+    }
+    // A decorator body reading its `context`: reachability roots the
+    // field's accessors and their wrappers only for decorators that do.
+    if (resolvedSym.isDecoratorContext) {
+      resolvedSym.decoratorContextUsed = true;
+    }
+
+    // The binding's declared type, refined by the flow graph: the
+    // nearest narrowing or assignment on the way back to the entry.
+    let bt = this.model.getBindingType(info);
+    if (bt != null) { return this.flowTypeOfBinding(info, bt); }
+
+    // Check dependency models in case this binding came from an import.
+    let models = this.#depModels;
+    if (models != null) {
+      for (let depKey in models.keys()) {
+        if (let (true, depModel) = models.get(depKey)) {
+          let dbt = depModel.getBindingType(info);
+          if (dbt != null) { return dbt; }
+        }
+      }
+    }
+
+    // An import from a member of the same import cycle that has
+    // registered its declarations but not yet checked its bodies: its
+    // annotated functions resolve on demand from the origin's context.
+    if (resolvedSym.id != info.id) {
+      let lazy = this.resolveInProgressFunction(resolvedSym);
+      if (lazy != null) {
+        this.model.setBindingType(info, lazy);
+        return lazy;
+      }
+    }
+
+    // No type stored yet — attempt lazy resolution for pending functions.
+    if (let (true, pendingFunc) = this.#pendingFunctions.get(info.id)) {
+      return this.lazyResolveFunction(info, pendingFunc);
+    }
+
+    // On-demand: if the declaration is a type (class, interface, mixin,
+    // sealed variant), materialize it via resolveTypeName so forward
+    // references work.
+    // For DeclareFunction, register a placeholder so forward refs don't fail.
+    // TODO: It feels like this might be duplicating some functionality...
+    let decl = info.declaration;
+    if (decl != null) {
+      // Extract type name from declaration node
+      // TODO: Let's make a named Node interface or at least
+      // a getName() utility. We should definitely add an isType() utility.
+      let tn = match (decl) {
+        case ClassDeclaration {name}: { name.name }
+        case InterfaceDeclaration {name}: { name.name }
+        case MixinDeclaration {name}: { name.name }
+        case SealedVariant {name}: { name.name }
+        case DeclareFunction: {
+          this.declareBinding(info, new ErrorType());
+          null
+        }
+        case _: { null }
+      };
+      
+      if (tn != null) {
+        let t = this.resolveTypeName(tn);
+        if (t != null) { return t; }
+      }
+      
+      
+    }
+    return null;
+  }
+
+  /**
+   * Register a function declaration for lazy resolution.
+   * Called during the checkModule pre-scan.
+   */
+  registerPendingFunction(id: SymbolId, funcExpr: Node, isDeclaration: boolean = false): void {
+    if (!this.#pendingFunctions.has(id)) {
+      this.#pendingFunctions[id] = funcExpr;
+    }
+    if (isDeclaration) {
+      let list = if (let (true, l) = this.#pendingFunctionOverloads.get(id)) {
+        l
+      } else {
+        let nl = new Array<Node>();
+        this.#pendingFunctionOverloads[id] = nl;
+        nl
+      };
+      list.push(funcExpr);
+    }
+  }
+
+  pendingFunctionOverloads(id: SymbolId): GrowableArray<Node> | null {
+    if (let (true, l) = this.#pendingFunctionOverloads.get(id)) {
+      return l;
+    }
+    return null;
+  }
+
+  /**
+   * Lazily resolve a function's type from its annotations or body.
+   *
+   * If the function is fully annotated (all params + return type),
+   * resolves the exact FunctionType from annotations. If it has no
+   * return type but is a pure forward reference (no cycle), eagerly
+   * checks the function body to infer the type. If it's in a recursive
+   * cycle without a return type annotation, reports an error.
+   */
+  lazyResolveFunction(si: Symbol, funcNode: Node): Type | null {
+    if (let (true, overloads) = this.#pendingFunctionOverloads.get(si.id)) {
+      if (overloads.length > 1 && !this.#resolving.has(si.id)) {
+        this.#resolving.add(si.id);
+        let resolvedList = new Array<FunctionType>();
+        for (let ovNode in overloads) {
+          if (ovNode is FunctionExpression) {
+            let ovFe = ovNode as FunctionExpression;
+            let ovType = if (ovFe.returnType != null) {
+              this.resolveFunctionFromAnnotations(
+                  ovFe.typeParameters, ovFe.params, ovFe.returnType as TypeAnnotation, si)
+            } else {
+              checkFunctionExpression(this, ovFe, null)
+            };
+            this.setNodeType(ovFe as Node, ovType);
+            if (ovType is FunctionType) {
+              ovType.functionSymbolId = si.id;
+              ovType.functionSymbolName = si.name;
+              resolvedList.push(ovType);
+            }
+          }
+        }
+        this.#resolving.delete(si.id);
+        if (resolvedList.length > 0) {
+          let first = resolvedList[0];
+          if (resolvedList.length > 1) {
+            first.overloads = resolvedList;
+          }
+          this.declareBinding(si, first);
+          return first;
+        }
+      }
+    }
+    match (funcNode) {
+      case FunctionExpression as fe: {
+        let {typeParameters} = fe;
+        let {params} = fe;
+        let {returnType} = fe;
+        let {body} = fe;
+        let loc = fe.loc;
+        // Check for cycle — if we're already resolving this symbol,
+        // it's a recursive reference.
+        if (this.#resolving.has(si.id)) {
+          // Recursive call. If fully annotated, we can resolve from annotations.
+          if (returnType != null) {
+            // Resolve from annotations only (no body check needed).
+            return this.resolveFunctionFromAnnotations(typeParameters, params, returnType, si);
+          } else {
+            // Recursive without return type annotation — error.
+            this.error(
+              "Recursive function requires an explicit return type annotation.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+            return new ErrorType();
+          }
+        }
+
+        // Not a cycle. Mark as resolving.
+        this.#resolving.add(si.id);
+
+        let funcType = if (returnType != null) {
+          // Fully annotated — resolve from annotations.
+          this.resolveFunctionFromAnnotations(typeParameters, params, returnType, si)
+        } else {
+          // No return type annotation — eagerly check the function body.
+          checkFunctionExpression(this, fe, null)
+        };
+
+        // Store result so subsequent references find it immediately.
+        this.declareBinding(si, funcType);
+        // On the arrow as well as the binding: codegen asks the arrow
+        // for the signature it builds a wasm function from, and a
+        // body that has not been checked yet has no type there.
+        this.setNodeType(fe as Node, funcType);
+
+        // Clean up resolving state.
+        this.#resolving.delete(si.id);
+
+        return funcType;
+      }
+      case _: { return null; }
+    }
+  }
+
+  /**
+   * Resolve a function type from its annotations only (no body check).
+   * Used for fully-annotated functions and recursive references.
+   */
+  resolveFunctionFromAnnotations(
+    typeParameters: GrowableArray<TypeParameter> | null,
+    params: GrowableArray<Parameter>,
+    returnTypeAnn: TypeAnnotation,
+    si: Symbol
+  ): Type {
+    // Enter a temporary scope for type parameter names.
+    this.enterScope();
+    var resolvedTypeParams: Array<TypeParameterType> | null = null;
+    if (typeParameters != null) {
+      resolvedTypeParams = new Array<TypeParameterType>();
+      for (let tp in typeParameters) {
+        var constraint: Type | null = null;
+        if (tp.constraint != null) {
+          // A bound names a class, not a value, so a resource class is
+          // spellable here for the same reason it is in an extends clause.
+          this.resourceMentionOk = true;
+          constraint = resolveBound(this, tp.constraint as TypeAnnotation);
+          this.resourceMentionOk = false;
+        }
+        let tpType = this.getOrCreateTypeParameter(tp, constraint, null);
+        this.declareTypeName(tp.name, tpType);
+        resolvedTypeParams.push(tpType);
+      }
+    }
+
+    // Resolve parameter types. Optional parameters are recorded the way
+    // checkFunctionExpression records them — a `?` parameter without a
+    // default widens to `T | null`, a default stays on the declared type
+    // and is kept for the caller-side splice — so a call resolved
+    // through this path (a forward reference, or an import from a
+    // member of the same import cycle) may omit them.
+    let paramTypes = new Array<Type>();
+    let paramNames = new Array<String>();
+    var hasOptionals = false;
+    let optionals = new Array<boolean>();
+    var hasInitializers = false;
+    let initializers = new Array<Expression | null>();
+    for (let param in params) {
+      paramNames.push(param.name.name);
+      let {typeAnnotation} = param;
+      var paramType = if (typeAnnotation != null) {
+        resolveTypeAnnotation(this, typeAnnotation, false)
+      } else {
+        new ErrorType() as Type
+      };
+      let isOptional = param.optional || param.defaultValue != null;
+      optionals.push(isOptional);
+      initializers.push(param.defaultValue);
+      if (param.defaultValue != null) {
+        hasInitializers = true;
+      }
+      if (isOptional) {
+        hasOptionals = true;
+      }
+      paramTypes.push(paramType);
+    }
+
+    // Resolve return type. For generators the annotation is the full
+    // Iterator<T> type (validated when the body is checked).
+    let retType = resolveTypeAnnotation(this, returnTypeAnn, true);
+
+    this.exitScope();
+
+    // Build the FunctionType.
+    let funcType = new FunctionType(paramTypes, retType,
+        new FunctionDeclInfo(paramNames, null,
+            if (hasInitializers) initializers else null,
+            if (hasOptionals) optionals else null),
+        resolvedTypeParams);
+
+    return funcType as Type;
+  }
+
+  // --- Type name resolution ---
+
+  /**
+   * Declare a type name in the current scope.
+   */
+  declareTypeName(name: String, t: Type): void {
+    let top = this.#typeScopes[this.#typeScopes.length - 1];
+    top[name] = t;
+  }
+  
+  registerType(info: Symbol, t: Type): void {
+    this.#materializedTypes[info.id] = t;
+    this.model.setBindingType(info, t);
+  }
+
+  /**
+   * Register a TypeParameterType in the materialized types cache by the
+   * Symbol identity of the corresponding TypeParameter AST node.
+   *
+   * Called immediately after creating each TypeParameterType so that
+   * resolveTypeReference → model.resolve → #materializeFromSymbol finds
+   * the correct object (by Symbol.id) instead of falling back to the
+   * name-string #typeScopes stack.
+   */
+  registerTypeParameter(tp: TypeParameter, tpType: TypeParameterType): void {
+    let info = this.model.resolveDeclaration(tp as Node);
+    if (info != null) {
+      this.#materializedTypes[info.id] = tpType as Type;
+      this.model.setBindingType(info, tpType as Type);
+    }
+  }
+
+  /** The declaration of the row parameter `tp`, or null if it is not one. */
+  rowParameterDeclaration(tp: TypeParameterType): TypeParameter | null {
+    if (let (true, decl) = this.#sharedState.rowParameterDeclarations.get(tp.uid)) {
+      return decl;
+    }
+    return null;
+  }
+
+  /**
+   * The ONE TypeParameterType for a declared type parameter.
+   * Substitution matches parameters by object identity, so every
+   * resolution of the same declaration — lazy annotation resolution,
+   * signature checks, body checks — must see the same object.
+   * Creation therefore goes through a shared registry keyed by the
+   * parameter's AST node id; constraint/default stick from the first
+   * call that resolves them.
+   */
+  getOrCreateTypeParameter(
+    tp: TypeParameter,
+    constraint: Type | null,
+    defaultType: Type | null
+  ): TypeParameterType {
+    // Location-based key: stable across re-parses and across the
+    // compilations that share this state (node ids are not). Synthesized
+    // parameters without a location fall back to the node id, which is
+    // unique within one compilation.
+    var key = "id:" + i32ToString(tp.id as i32);
+    if (tp.loc != null) {
+      let loc = tp.loc as SourceLocation;
+      key = `${loc.path ?? ""}#${i32ToString(loc.start)}`;
+    }
+    var result: TypeParameterType | null = null;
+    if (let (true, existing) = this.#sharedState.typeParameterTypes.get(key)) {
+      if (existing is TypeParameterType) {
+        result = existing;
+      }
+    }
+    if (result == null) {
+      let created = new TypeParameterType(tp.name, constraint, defaultType);
+      created.isScoped = tp.isScoped;
+      this.#sharedState.typeParameterTypes[key] = created as Type;
+      result = created;
+    }
+    if (tp.isScoped) {
+      // The canonical object may have been created from a mention that
+      // did not carry the modifier; the declaration's spelling wins.
+      result.isScoped = true;
+    }
+    if (isRecordRowBound(tp.constraint)) {
+      result.isRecordRow = true;
+      this.#sharedState.rowParameterDeclarations[result.uid] = tp;
+    } else if (isTupleRowBound(tp.constraint)) {
+      result.isTupleRow = true;
+    }
+    // A resolution can reach the parameter before the declaring pass has
+    // resolved its constraint/default annotations (creating the canonical
+    // object with nulls). Later calls carry the resolved types — fill
+    // them in; never null out what an earlier call established.
+    if (constraint != null && result.constraint == null) {
+      result.constraint = constraint;
+    }
+    if (defaultType != null && result.defaultType == null) {
+      result.defaultType = defaultType;
+    }
+    // Register for name resolution in THIS module's model too (the
+    // symbol exists when the parameter is declared locally).
+    let info = this.model.resolveDeclaration(tp as Node);
+    if (info != null) {
+      this.#materializedTypes[info.id] = result as Type;
+      this.model.setBindingType(info, result as Type);
+    }
+    return result;
+  }
+
+  /**
+   * The one `SymbolType` for a `symbol` declaration, for the whole
+   * compilation — same reasoning as `getOrCreateTypeParameter` and
+   * `declaredNominalTypes`. A symbol exists to be an identity distinct
+   * from its name; minting a fresh one per checking pass would make a
+   * member and an access to it disagree about which symbol keyed it,
+   * inside the very module that declares both.
+   */
+  canonicalSymbolType(decl: Node, name: String, shortName: String,
+      protocolKey: String | null = null): Type {
+    var key = "id:" + i32ToString(decl.id as i32);
+    if (decl.loc != null) {
+      let loc = decl.loc as SourceLocation;
+      key = `${loc.path ?? ""}#${i32ToString(loc.start)}`;
+    }
+    if (let (true, existing) = this.#sharedState.declaredSymbolTypes.get(key)) {
+      return existing;
+    }
+    let created =
+        new SymbolType(this.freshTypeId(), name, shortName, protocolKey) as Type;
+    this.#sharedState.declaredSymbolTypes[key] = created;
+    return created;
+  }
+
+  /**
+   * The canonical type of the declaration `target` names, if any module
+   * has materialized it: the type face, whichever side created it and
+   * whether or not the declaring module has registered yet. Null for a
+   * declaration no one has asked for, and for anything that is not a type
+   * declaration.
+   */
+  canonicalTypeOf(target: Symbol): Type | null {
+    let d = target.declaration;
+    if (d == null || !isTypeDeclaration(d)) {
+      return null;
+    }
+    if (let (true, t) = this.#sharedState.declaredNominalTypes.get(target.id)) {
+      return t;
+    }
+    return null;
+  }
+
+  /**
+   * The canonical type of the declaration `sym` names, materialized from
+   * its AST if no module has asked for it yet. Null for anything that is
+   * not a type declaration.
+   */
+  declaredType(sym: Symbol): Type | null {
+    let existing = this.canonicalTypeOf(sym);
+    if (existing != null) {
+      return existing;
+    }
+    if (this.#materializeFromSymbol(sym, sym.name) == null) {
+      return null;
+    }
+    return this.canonicalTypeOf(sym);
+  }
+
+  /**
+   * Declare a type name in the module (outermost) scope. Used for sealed
+   * variant types that need to be visible outside the class scope.
+   */
+  declareModuleTypeName(name: String, t: Type): void {
+    this.#typeScopes[0][name] = t;
+  }
+
+  /**
+   * Resolve a type name through scope analysis and materialization.
+   * This path is for name-only lookups (for example declaration self-lookups).
+   */
+  resolveTypeName(name: String): Type | null {
+    let localType = this.#materializeFromScope(name);
+    if (localType != null) {
+      return localType;
+    }
+    return this.#resolveBuiltinOrPreludeType(name);
+  }
+
+  /**
+   * Resolve a type reference site (e.g. NamedTypeAnnotation) using
+   * the scope pass's ReferenceMap.
+   */
+  resolveTypeReference(node: Node, fallbackName: String): Type | null {
+    let info = this.model.resolve(node);
+    if (info != null) {
+      let t = this.#materializeFromSymbol(info, fallbackName);
+      if (t != null) {
+        return t;
+      }
+    }
+
+    // Fall back to scope root by name and builtins/prelude.
+    return this.resolveTypeName(fallbackName);
+  }
+
+  /**
+   * Materialize a type for its declaration node.
+   */
+  materializeDeclaration(node: Node, fallbackName: String): Type | null {
+    let info = this.model.resolveDeclaration(node);
+    if (info != null) {
+      let t = this.#materializeFromSymbol(info, fallbackName);
+      if (t != null) {
+        return t;
+      }
+    }
+    return this.resolveTypeName(fallbackName);
+  }
+
+  /**
+   * Look up a type name in scope analysis and materialize a Type object
+   * on demand. Returns null if the name doesn't exist in scope analysis.
+   * Sets all boolean flags from the AST node at creation time.
+   */
+  /**
+   * The canonical type of an imported type declaration whose module has
+   * not finished checking: the declaration's entry in
+   * `declaredNominalTypes` if any module has materialized it, else a
+   * shell built here from the origin's AST, which the origin's own
+   * registration later fills. The same object answers in both
+   * namespaces: a declaration's name is bound to its type as a value.
+   */
+  materializeCyclicImport(info: Symbol, name: String): Type | null {
+    let target = info.resolveTarget();
+    return this.canonicalTypeOf(target) ?? this.#materializeShell(info, name, target);
+  }
+
+  /**
+   * A shell for the type declaration `target`, which `info` imports, built
+   * from the origin's AST and filled in later by the origin's own
+   * registration. Null unless `target` lies across a back edge of the
+   * current compilation: only then does the origin have no model YET
+   * with its registration guaranteed to follow. Any other model miss is
+   * stale state — e.g. an incremental host re-loaded the origin after its
+   * model was computed, so lookups against the old model miss on the new
+   * Symbols — and minting a shell there would give the declaration a
+   * second nominal identity.
+   */
+  #materializeShell(info: Symbol, name: String, target: Symbol): Type | null {
+    let later = this.cyclicLaterPaths;
+    if (later == null || !later.has(target.modulePath)) {
+      return null;
+    }
+    let d = target.declaration;
+    if (d == null || !isTypeDeclaration(d)) {
+      return null;
+    }
+    if (this.#materializeFromSymbol(info, name, target) == null) {
+      return null;
+    }
+    return this.canonicalTypeOf(target);
+  }
+
+  #materializeFromScope(name: String): Type | null {
+    let si = this.#scopeResult.rootScope.resolve(name);
+    if (si == null) { return null; }
+    return this.#materializeFromSymbol(si, name);
+  }
+
+  #materializeFromSymbol(info: Symbol, nameHint: String, target: Symbol = info): Type | null {
+    if (let (true, mat) = this.#materializedTypes.get(info.id)) {
+      return mat;
+    }
+
+    let btType = this.model.getBindingType(info);
+    if (btType != null) {
+      return btType;
+    }
+    let btTarget = this.model.getBindingType(target);
+    if (btTarget != null) {
+      return btTarget;
+    }
+
+    let models = this.#depModels;
+    if (models != null) {
+      for (let depKey in models.keys()) {
+        if (let (true, depModel) = models.get(depKey)) {
+          let bt = depModel.getBindingType(target);
+          if (bt != null) {
+            this.#materializedTypes[info.id] = bt;
+            this.#materializedTypes[target.id] = bt;
+            this.model.setBindingType(info, bt);
+            return bt;
+          }
+        }
+      }
+    }
+
+    if (target.declaration != null) {
+      let declNode = target.declaration as Node;
+      if ((declNode.id as i32) != 0) {
+        if (let (true, cached) = this.#materializedDeclTypes.get(declNode.id)) {
+          this.#materializedTypes[info.id] = cached;
+          this.#materializedTypes[target.id] = cached;
+          this.model.setBindingType(info, cached);
+          return cached;
+        }
+      }
+    }
+
+    if (target.declaration == null) {
+      return this.#resolveBuiltinOrPreludeType(nameHint);
+    }
+
+    // Canonical types are shared across checking passes: if any pass (of
+    // any module) already materialized this declaration, reuse that
+    // object — never mint a second identity for one declaration.
+    let canonical = this.canonicalTypeOf(target);
+    if (canonical != null) {
+      this.#materializedTypes[info.id] = canonical;
+      this.#materializedTypes[target.id] = canonical;
+      this.model.setBindingType(info, canonical);
+      return canonical;
+    }
+
+    // Cycle detection — keyed by Symbol.id, not name.
+    if (this.#pendingTypes.has(target.id)) {
+      return null;
+    }
+    if (this.#pendingTypes.has(info.id)) {
+      return null;
+    }
+    this.#pendingTypes.add(target.id);
+    this.#pendingTypes.add(info.id);
+
+    let t = this.#materializeType(target);
+    if (t != null) {
+      let materialized = t;
+      this.#materializedTypes[info.id] = materialized;
+      this.#materializedTypes[target.id] = materialized;
+      this.model.setBindingType(info, materialized);
+      if (target.declaration != null) {
+        let declNode = target.declaration as Node;
+        if ((declNode.id as i32) != 0) {
+          this.#materializedDeclTypes[declNode.id] = materialized;
+        }
+        if (isTypeDeclaration(declNode)) {
+          this.#sharedState.declaredNominalTypes[target.id] = materialized;
+        }
+        // A declaration's name is bound to its type in the value
+        // namespace too: a class is its own constructor value, an enum
+        // the namespace its members are read off, an interface or mixin
+        // the owner its static symbols are read off.
+        let valueInfo = this.model.resolveDeclaration(declNode);
+        if (valueInfo != null) {
+          this.declareBinding(valueInfo, materialized);
+        }
+      }
+    }
+
+    this.#pendingTypes.delete(target.id);
+    this.#pendingTypes.delete(info.id);
+    return t;
+  }
+
+  #resolveBuiltinOrPreludeType(name: String): Type | null {
+    if (this.#typeScopes.length > 0) {
+      if (let (true, t) = this.#typeScopes[0].get(name)) {
+        return t;
+      }
+    }
+    if (let (true, t) = this.#sharedState.preludeTypes.get(name)) {
+      return t;
+    }
+    return null;
+  }
+
+  #resolveCheckerTypeName(name: String): Type | null {
+    for (var i = this.#typeScopes.length - 1; i >= 0; i -= 1) {
+      if (let (true, t) = this.#typeScopes[i].get(name)) {
+        return t;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Create a Type from a Symbol's declaration node.
+   * Sets all boolean flags immediately from the AST.
+   */
+  /**
+   * The canonical `TypeParameterType`s a nominal declaration declares,
+   * from the AST alone.
+   *
+   * A shell materialized on demand (a forward reference within a module,
+   * or a cyclic import's back edge) is the object every reference to that
+   * declaration sees, including references resolved BEFORE the declaring
+   * pass runs. Without its type parameters, `resolveTypeAnnotation` finds
+   * `typeParameters == null`, skips instantiation, and silently DROPS the
+   * arguments the source wrote: `S<T>` came back as the raw `S`, whose
+   * codegen erasure is `S<anyref>` — a struct nothing constructs. So a
+   * class whose field named a generic class declared later in the same
+   * file failed to lower, and moving the declaration up fixed it.
+   *
+   * Constraints and defaults are deliberately NOT resolved here: they can
+   * name types whose own materialization is in progress. The declaring
+   * pass resolves them and fills them into these same objects — the
+   * location-keyed cache in `getOrCreateTypeParameter` is what makes them
+   * the same objects, which is also what makes substitution (an identity
+   * comparison) match later.
+   */
+  #declaredTypeParameters(
+      declared: GrowableArray<TypeParameter> | null): Array<TypeParameterType> | null {
+    if (declared == null) {
+      return null;
+    }
+    let params = new Array<TypeParameterType>(declared.length);
+    for (let tp in declared) {
+      params.push(this.getOrCreateTypeParameter(tp, null, null));
+    }
+    return params;
+  }
+
+  #materializeType(info: Symbol): Type | null {
+    let decl = info.declaration;
+    if (decl == null) {
+      return null;
+    }
+    match (decl) {
+      case ClassDeclaration as cd: {
+        let typeId = this.freshTypeId();
+        var symbolId = info.id;
+        let sym = this.model.resolve(cd);
+        if (sym != null) {
+          symbolId = sym.id;
+        }
+        let ct = new ClassType(typeId, symbolId, cd.name.name);
+        ct.isFinal = cd.isFinal;
+        ct.isAbstract = cd.isAbstract;
+        ct.isSealed = cd.isSealed;
+        if (cd.isSealed) {
+          ct.isAbstract = true;
+        }
+        if (cd.caseParams != null && !cd.isSealed) {
+          ct.isFinal = true;
+          ct.isCaseClass = true;
+        }
+        ct.isExtension = cd.isExtension;
+        ct.isResource = cd.isResource;
+        ct.typeParameters = this.#declaredTypeParameters(cd.typeParameters);
+        // Pre-register forward variant names for sealed classes.
+        if (cd.isSealed && cd.sealedVariants != null) {
+          let variants = cd.sealedVariants as GrowableArray<SealedVariant>;
+          for (let variant in variants) {
+            if (variant.params == null) {
+              let forwardVariantNames = ct.forwardVariantNames ??= new Set<String>();
+              forwardVariantNames.add(variant.name.name);
+            }
+          }
+        }
+        return ct;
+      }
+      case InterfaceDeclaration as id: {
+        let typeId = this.freshTypeId();
+        var symbolId = info.id;
+        let sym = this.model.resolve(id);
+        if (sym != null) {
+          symbolId = sym.id;
+        }
+        let it = new InterfaceType(typeId, symbolId, id.name.name);
+        it.typeParameters = this.#declaredTypeParameters(id.typeParameters);
+        return it;
+      }
+      case MixinDeclaration as md: {
+        var symbolId = info.id;
+        let sym = this.model.resolve(md);
+        if (sym != null) {
+          symbolId = sym.id;
+        }
+        let mt = new MixinType(md.name.name);
+        // The declaring module's path. An importer across a cycle's back
+        // edge materializes this shell from its own context, and the path
+        // keys the mixin's applications (getOrCreateMixinApplication) and
+        // finds its declaration in codegen (Program.mixinDeclarations).
+        mt.sourcePath = if (info.modulePath != "") info.modulePath else this.filePath;
+        mt.symbolId = symbolId;
+        mt.typeParameters = this.#declaredTypeParameters(md.typeParameters);
+        return mt;
+      }
+      case SealedVariant as sv: {
+        let typeId = this.freshTypeId();
+        var symbolId = info.id;
+        let sym = this.model.resolve(sv);
+        if (sym != null) {
+          symbolId = sym.id;
+        }
+        let ct = new ClassType(typeId, symbolId, sv.name.name);
+        ct.isCaseClass = true;
+        ct.isFinal = true;
+        return ct;
+      }
+      case EnumDeclaration as ed: {
+        let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
+        let backingType = if (isStringEnum) { this.tryResolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
+        let enumType = newEnumType(info.id, info.modulePath, ed);
+        enumType.backingType = backingType;
+        return enumType;
+      }
+      case TypeAliasDeclaration as ta: {
+        let aliasType = new TypeAliasType(
+          ta.name.name, null, new HoleType(), ta.isDistinct, null,
+          ta.isOpaque, info.modulePath);
+        // Registered before the body resolves, so a body that names the
+        // alias itself finds this object.
+        this.#sharedState.declaredNominalTypes[info.id] = aliasType;
+        this.#materializedTypes[info.id] = aliasType;
+        if (info.modulePath != this.filePath) {
+          // A declaration from another module, materialized here because
+          // its module has not registered yet (an import cycle's back
+          // edge): a shell with the declaration's type parameters and a
+          // hole for a body. The body may name types only the origin's
+          // scope can resolve, so the origin's own registration fills it
+          // (registerTypeAliasDeclaration).
+          aliasType.typeParameters = this.#declaredTypeParameters(ta.typeParameters);
+          return aliasType;
+        }
+        this.enterScope();
+        let declarationParams = ta.typeParameters;
+        var typeParams: Array<TypeParameterType> | null = null;
+        if (declarationParams != null) {
+          let tempTypeParams = new Array<TypeParameterType>();
+          typeParams = tempTypeParams;
+          for (let param in declarationParams) {
+            let tpType = this.getOrCreateTypeParameter(param, null, null);
+            tempTypeParams.push(tpType);
+            this.declareTypeName(tpType.name, tpType);
+            this.registerTypeParameter(param, tpType);
+          }
+
+          // Resolve constraints
+          for (var i = 0; i < declarationParams.length; i += 1) {
+            let param = declarationParams[i];
+            let {constraint} = param;
+            if (constraint != null) {
+              // See the matching flag in the type-parameter loop above.
+              this.resourceMentionOk = true;
+              tempTypeParams[i].constraint = resolveBound(this, constraint);
+              this.resourceMentionOk = false;
+            }
+            let {defaultType} = param;
+            if (defaultType != null) {
+              tempTypeParams[i].defaultType =
+                resolveTypeAnnotation(this, defaultType, false);
+            }
+          }
+        }
+        
+        aliasType.typeParameters = typeParams;
+        // A decorated alias names a builtin type operator; validation
+        // of the decorator itself happens when the STATEMENT checks
+        // (checkStatement's TypeAliasDeclaration arm), where errors
+        // have a home. The body is a placeholder the operator ignores.
+        for (let dec in ta.decorators) {
+          if (dec.name == 'intrinsic' && dec.args.length == 1) {
+            aliasType.intrinsicName = decoratorStringArg(dec, 0);
+          }
+        }
+
+        aliasType.resolving = true;
+        let bodyAnn = ta.typeAnnotation;
+        if (bodyAnn != null) {
+          let targetType = resolveTypeAnnotation(this, bodyAnn, true);
+          aliasType.target = targetType;
+          if (aliasType.specializationKeyCache != null) {
+            targetType.specializationKeyCache = aliasType.specializationKeyCache;
+            targetType.uniqueKeyCache = aliasType.uniqueKeyCache;
+          }
+        } else {
+          // A `declare type` operator has no body.
+          aliasType.target = typeOperatorTarget(this, aliasType, typeParams);
+        }
+        aliasType.resolving = false;
+        this.exitScope();
+        
+        return aliasType;
+      }
+      case _: {
+        return null;
+      }
+    }
+  }
+
+  /**
+   * Register a prelude type (available globally without import).
+   */
+  registerPreludeType(name: String, t: Type): void {
+    this.#sharedState.preludeTypes[name] = t;
+  }
+
+  /**
+   * Register a prelude value (available globally without import).
+   */
+  registerPreludeValue(name: String, t: Type): void {
+    this.#sharedState.preludeValues[name] = t;
+  }
+
+  /**
+   * Resolve a prelude value by name.
+   */
+  resolvePreludeValue(name: String): Type | null {
+    if (let (true, t) = this.#sharedState.preludeValues.get(name)) {
+      return t;
+    }
+    return null;
+  }
+
+  /**
+   * The type of a well-known standard library declaration, for a caller
+   * asking whether some type is that declaration. Null means no — either
+   * the library is not part of this compilation, or its own module is the
+   * one being checked and has not finished registering yet.
+   *
+   * Nothing a program declares is ever returned: the map is filled by
+   * matching a module's library against the well-known registry, not by
+   * name. A caller that falls back to name resolution on null undoes that.
+   */
+  tryResolveWellKnownType(w: WellKnown): Type | null {
+    if (let (true, t) = this.#sharedState.wellKnownTypes.get(w as i32)) {
+      return t;
+    }
+    return null;
+  }
+
+  /**
+   * The type of a well-known standard library declaration, for a caller
+   * that cannot proceed without it — the checker is about to give this
+   * declaration's members to an expression, so a miss is a compiler bug
+   * rather than an answer.
+   *
+   * A caller that can be asked about a library this compilation never
+   * loads wants `tryResolveWellKnownType` instead.
+   */
+  resolveWellKnownType(w: WellKnown): Type {
+    if (let (true, t) = this.#sharedState.wellKnownTypes.get(w as i32)) {
+      return t;
+    }
+    throw new Error("No standard library '" + wellKnownLibrary(w) +
+        "' declaring '" + wellKnownName(w) + "' in this compilation, asked " +
+        "while checking " + this.filePath);
+  }
+
+  /** Records `w`'s type as its declaring library is checked. */
+  registerWellKnownType(w: WellKnown, t: Type): void {
+    this.#sharedState.wellKnownTypes[w as i32] = t;
+  }
+
+  // --- Pipeline ---
+
+  pushPipelineValue(t: Type): void { this.#pipelineStack.push(t); }
+  popPipelineValue(): void { this.#pipelineStack.pop(); }
+  pipelineValueType: Type | null {
+    get {
+      if (this.#pipelineStack.length == 0) { return null; }
+      return this.#pipelineStack[this.#pipelineStack.length - 1];
+    }
+  }
+
+  // --- Dependency exports ---
+
+  /**
+   * Get the file path of the module being checked.
+   */
+  filePath: String {
+    get { return this.#filePath; }
+  }
+
+  /**
+   * Get the dependency exports map (import specifier → ModuleExports).
+   */
+  depExports: HashMap<String, ModuleExports> | null {
+    get { return this.#depExports; }
+  }
+
+  /**
+   * Get the dependency semantic models (import specifier → SemanticModel).
+   */
+  depModels: HashMap<String, SemanticModel> | null {
+    get { return this.#depModels; }
+  }
+
+  /**
+   * Make a dependency's model visible to this module. Used between
+   * beginModule and finishModule for a cycle member whose dependencies
+   * were still being registered when this module began.
+   */
+  addDepModel(key: String, model: SemanticModel): void {
+    if (this.#depModels == null) {
+      this.#depModels = new Map<String, SemanticModel>();
+    }
+    (this.#depModels as HashMap<String, SemanticModel>)[key] = model;
+  }
+
+  /**
+   * The type of a function this module exports, resolved from its
+   * annotations on demand — for an importer that is a member of the
+   * same import cycle and is checking its bodies before this module
+   * has checked its own. Null when the symbol is not a function this
+   * module can resolve that way (the cycle rules already require a
+   * full signature for a function crossing a back edge).
+   */
+  resolveExportedFunction(sym: Symbol): Type | null {
+    let bound = this.model.getBindingType(sym);
+    if (bound != null) {
+      return bound;
+    }
+    if (let (true, pending) = this.#pendingFunctions.get(sym.id)) {
+      return this.lazyResolveFunction(sym, pending);
+    }
+    return null;
+  }
+
+  /**
+   * The type of `origin`, a function another module declares, resolved
+   * from that module's own context. Two modules answer this way: one of
+   * the same import cycle that has registered but not finished, and a
+   * dependency whose bodies are deferred — in both cases the binding
+   * `depModels` would hold has not been made yet, and the origin's
+   * pending-function index can resolve the signature from annotations.
+   * Null when the symbol is not a function that module can resolve.
+   */
+  resolveInProgressFunction(origin: Symbol): Type | null {
+    if (origin.modulePath == this.#filePath) {
+      return null;
+    }
+    let {inProgressModules} = this.#sharedState;
+    if (let (true, other) = inProgressModules.get(origin.modulePath)) {
+      return other.resolveExportedFunction(origin);
+    }
+    if (let (true, owner) = this.#sharedState.moduleContexts.get(origin.modulePath)) {
+      return owner.resolveExportedFunction(origin);
+    }
+    return null;
+  }
+
+  // --- Return type ---
+
+  returnType: Type | null {
+    get { return this.#returnType; }
+  }
+
+  setReturnType(t: Type | null): void {
+    this.#returnType = t;
+  }
+
+  // --- Inferred return types ---
+
+  inferredReturnTypes: GrowableArray<Type> {
+    get { return this.#inferredReturnTypes; }
+  }
+
+  setInferredReturnTypes(a: GrowableArray<Type>): void {
+    this.#inferredReturnTypes = a;
+  }
+
+  addInferredReturnType(t: Type): void {
+    this.#inferredReturnTypes.push(t);
+  }
+
+  // --- Yield type (generators) ---
+
+  yieldType: Type | null {
+    get { return this.#yieldType; }
+  }
+
+  setYieldType(t: Type | null): void {
+    this.#yieldType = t;
+  }
+
+  inferredYieldTypes: GrowableArray<Type> {
+    get { return this.#inferredYieldTypes; }
+  }
+
+  setInferredYieldTypes(a: GrowableArray<Type>): void {
+    this.#inferredYieldTypes = a;
+  }
+
+  addInferredYieldType(t: Type): void {
+    this.#inferredYieldTypes.push(t);
+  }
+
+  // --- Try depth (yield-in-try rejection) ---
+
+  tryDepth: i32 {
+    get { return this.#tryDepth; }
+  }
+
+  setTryDepth(d: i32): void {
+    this.#tryDepth = d;
+  }
+
+  enterTry(): void { this.#tryDepth = this.#tryDepth + 1; }
+  exitTry(): void { this.#tryDepth = this.#tryDepth - 1; }
+
+  // --- Live `using` bindings and constructor bodies (tail returns) ---
+
+  usingDepth: i32 {
+    get { return this.#usingDepth; }
+  }
+
+  setUsingDepth(d: i32): void {
+    this.#usingDepth = d;
+  }
+
+  noteUsingBinding(): void { this.#usingDepth = this.#usingDepth + 1; }
+
+  inConstructor: boolean {
+    get { return this.#inConstructor; }
+  }
+
+  setInConstructor(v: boolean): void {
+    this.#inConstructor = v;
+  }
+
+  // --- Async context ---
+
+  asyncValueType: Type | null {
+    get { return this.#asyncValueType; }
+  }
+
+  setAsyncValueType(t: Type | null): void {
+    this.#asyncValueType = t;
+  }
+
+  /**
+   * Whether the body being checked declared a `Scoped` return, which
+   * lifts the borrow-across-suspension rule for it: the frame's only
+   * first-class escape is the returned scoped value, and the scoped
+   * rules keep that inside the borrow's extent (ownership.md §"What
+   * the annotation allows"). Per-function, like the suspension
+   * context itself.
+   */
+  var #suspensionRelaxed: boolean = false;
+
+  suspensionRelaxed: boolean {
+    get { return this.#suspensionRelaxed; }
+  }
+
+  setSuspensionRelaxed(v: boolean): void {
+    this.#suspensionRelaxed = v;
+  }
+
+  asyncFutureType: Type | null {
+    get { return this.#asyncFutureType; }
+  }
+
+  setAsyncFutureType(t: Type | null): void {
+    this.#asyncFutureType = t;
+  }
+
+  // --- Loop depth ---
+
+  enterLoop(): void { this.#loopDepth = this.#loopDepth + 1; }
+  exitLoop(): void { this.#loopDepth = this.#loopDepth - 1; }
+  inLoop(): boolean { return this.#loopDepth > 0; }
+  loopDepth: i32 {
+    get { return this.#loopDepth; }
+  }
+
+  /**
+   * Loop depth at entry to the innermost enclosing `cancel` block, or
+   * -1 outside one. `return` is rejected inside, and `break`/
+   * `continue` are rejected unless their loop opened inside the block:
+   * the cancellation unwind continues unconditionally, so nothing may
+   * leave through the clause (docs/design/cancellation.md). Reset per
+   * function body — a closure inside the block returns from itself.
+   */
+  var #cancelBlockFloor: i32 = -1;
+  cancelBlockFloor: i32 {
+    get { return this.#cancelBlockFloor; }
+  }
+  setCancelBlockFloor(d: i32): void { this.#cancelBlockFloor = d; }
+
+  /**
+   * Whether checking is inside a `finally` block. Read only by
+   * `yield`: a generator's finalizer must run to completion during
+   * disposal, and a suspension point inside it would let a disposed
+   * generator park mid-cleanup. Saved and restored around each
+   * finalizer, and reset per function body — a closure or nested
+   * `gen` inside a finalizer is its own function.
+   */
+  var #inFinalizer = false;
+  inFinalizer: boolean {
+    get { return this.#inFinalizer; }
+  }
+  setInFinalizer(v: boolean): void { this.#inFinalizer = v; }
+
+  /**
+   * The target of the primitive cast whose operand, a bare or negated
+   * numeric literal, is being checked; null otherwise. Lowering parses
+   * such a literal at the cast's width (`18446744073709551615 as u64`,
+   * `-1 as u32`), so the literal is measured against that width rather
+   * than against i32's range. Set and restored around the operand.
+   */
+  var #castLiteralTarget: Type | null = null;
+  castLiteralTarget: Type | null {
+    get { return this.#castLiteralTarget; }
+  }
+  setCastLiteralTarget(t: Type | null): void { this.#castLiteralTarget = t; }
+
+  // --- Class stack ---
+
+  enterClass(ct: ClassType): void { this.#classStack.push(ct); }
+  exitClass(): void { this.#classStack.pop(); }
+  currentClass: ClassType | null {
+    get {
+      if (this.#classStack.length == 0) { return null; }
+      return this.#classStack[this.#classStack.length - 1];
+    }
+  }
+
+  /**
+   * The types whose bodies are open, innermost last — for a class, an
+   * interface or a mixin, whether its member signatures or its method
+   * bodies are being checked. Only read to phrase the missing-name
+   * error: a bare name that one of these declares as a static member is
+   * almost always that member written without its type.
+   */
+  #declaringTypes = new Array<Type>();
+
+  pushDeclaringType(t: Type): void { this.#declaringTypes.push(t); }
+  popDeclaringType(): void { this.#declaringTypes.pop(); }
+  declaringTypes: Array<Type> { get { return this.#declaringTypes; } }
+
+  /** Whether the method being checked consumes its receiver. */
+  owningReceiver: boolean { get { return this.#owningReceiver; } }
+
+  receiverSymbol: Symbol | null { get { return this.#receiverSymbol; } }
+
+  setReceiverSymbol(s: Symbol | null): void { this.#receiverSymbol = s; }
+
+  inDispose: boolean { get { return this.#inDispose; } }
+
+  setInDispose(v: boolean): void { this.#inDispose = v; }
+
+  setOwningReceiver(v: boolean): void { this.#owningReceiver = v; }
+
+  /**
+   * What a written `this` type means here: the self type inside a
+   * class or mixin body, null in a signature.
+   */
+  bodyThisType: Type | null { get { return this.#bodyThisType; } }
+
+  setBodyThisType(t: Type | null): void { this.#bodyThisType = t; }
+
+  /** Enter an interface declaration context (for ThisType resolution). */
+  enterInterface(): void { this.#inInterface = true; }
+  /** Exit an interface declaration context. */
+  exitInterface(): void { this.#inInterface = false; }
+  /** Whether we are currently checking an interface declaration body. */
+  inInterface: boolean { get { return this.#inInterface; } }
+
+  // --- Control flow ---
+
+  newFlowId(): i32 {
+    this.#nextFlowId += 1;
+    return this.#nextFlowId;
+  }
+
+  /** The flow node at the checker's current position. */
+  currentFlow: FlowNode { get { return this.#currentFlow; } }
+
+  setFlow(node: FlowNode): void { this.#currentFlow = node; }
+
+  /** Mark the current position unreachable (after return/throw/...). */
+  markFlowUnreachable(): void {
+    this.#currentFlow = this.#flowUnreachable;
+  }
+
+  flowIsUnreachable(): boolean {
+    return this.#currentFlow is FlowUnreachable;
+  }
+
+  /** The node for a position no path reaches. */
+  unreachableFlow(): FlowNode {
+    return this.#flowUnreachable;
+  }
+
+  newFlowJoin(): FlowJoin {
+    let j = new FlowJoin();
+    j.id = this.newFlowId();
+    return j;
+  }
+
+  /**
+   * Merge two branch ends into a join and make it the current flow.
+   * Unreachable ends are dropped; if both are unreachable the join has
+   * no antecedents and the current flow becomes unreachable.
+   */
+  mergeFlow(a: FlowNode, b: FlowNode): void {
+    if (a is FlowUnreachable && b is FlowUnreachable) {
+      this.#currentFlow = this.#flowUnreachable;
+      return;
+    }
+    let j = this.newFlowJoin();
+    j.add(a);
+    j.add(b);
+    this.#currentFlow = j;
+  }
+
+  /**
+   * Record an assignment to a local binding. `assignedType` is the type
+   * of the stored value; the assignment is also an antecedent of the
+   * innermost enclosing `try`'s catch entry, which can observe the
+   * variable mid-body.
+   */
+  recordFlowAssignment(id: SymbolId, assignedType: Type | null): void {
+    let node = new FlowAssign(this.#currentFlow, id, assignedType);
+    node.id = this.newFlowId();
+    this.#everAssignedSymbols.add(id as i32);
+    if (this.#flowExceptionTargets.length > 0) {
+      this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
+        .add(node);
+    }
+    this.#currentFlow = node;
+  }
+
+  /**
+   * Begin a loop: the returned header join is the continue/back-edge
+   * target and already has the current flow as an antecedent; the exit
+   * join collects breaks. Both are pushed for break/continue to find.
+   */
+  enterFlowLoop(): FlowJoin {
+    this.enterScopedLoop();
+    let head = this.newFlowJoin();
+    head.add(this.#currentFlow);
+    let exit = this.newFlowJoin();
+    this.#flowLoopHeads.push(head);
+    this.#flowLoopExits.push(exit);
+    this.#flowLoopMoves.push(new Array<FlowMove>());
+    this.#flowLoopDeclared.push(new Set<i32>());
+    this.#flowLoopMemoMarks.push(this.#flowTypeMemoLog.length);
+    this.#flowLoopPathMemoMarks.push(this.#flowPathMemoLog.length);
+    this.#currentFlow = head;
+    return head;
+  }
+
+  /**
+   * End a loop: wire the body-end back edge into the header, collect the
+   * normal exit (`afterTest`, the flow after the condition — for loops
+   * with no condition this is the header itself) into the exit join, and
+   * continue from the exit.
+   */
+  exitFlowLoop(afterTest: FlowNode): void {
+    this.exitScopedLoop();
+    let head = this.#flowLoopHeads.pop();
+    let exit = this.#flowLoopExits.pop();
+    let moves = this.#flowLoopMoves.pop();
+    let declared = this.#flowLoopDeclared.pop();
+    // The back-edge rule (ownership.md §"Where the join rule does not
+    // reach"): a binding declared outside the loop and moved inside it
+    // must be reinitialized on every path to the back edge — the next
+    // iteration re-runs the move on a dead binding otherwise. Checked
+    // here, before the back edge is wired, by asking whether any move
+    // is still live at the body's end.
+    let reported = new Set<i32>();
+    for (let mv in moves) {
+      if (declared.has(mv.symbolId as i32)) { continue; }
+      if (reported.has(mv.symbolId as i32)) { continue; }
+      let live = this.findLiveMove(mv.symbolId, this.#currentFlow, head.id);
+      if (live != null) {
+        reported.add(mv.symbolId as i32);
+        this.error(
+          "'" + live.name +
+            "' is moved inside this loop and not reinitialized before the next iteration.",
+          DiagnosticCode.UseAfterMove,
+          live.loc
+        );
+      }
+    }
+    head.add(this.#currentFlow);
+    // The back edge just changed what flows into the header. Only
+    // results at joins created inside the loop (id >= the header's) can
+    // have traversed the incomplete header — a join created before the
+    // loop cannot have it among its ancestors — so only those entries
+    // written while the loop was open are deleted. The log is not
+    // truncated: entries kept here may still belong to an enclosing
+    // loop's window, whose exit re-scans its own range.
+    if (this.#flowLoopMemoMarks.length > 0) {
+      let mark = this.#flowLoopMemoMarks[this.#flowLoopMemoMarks.length - 1];
+      this.#flowLoopMemoMarks.pop();
+      var li = mark;
+      while (li < this.#flowTypeMemoLog.length) {
+        let key = this.#flowTypeMemoLog[li];
+        if ((key / (4294967296 as i64)) as i32 >= head.id) {
+          this.#flowTypeMemo.delete(key);
+        }
+        li += 1;
+      }
+    }
+    if (this.#flowLoopPathMemoMarks.length > 0) {
+      let pmark = this.#flowLoopPathMemoMarks[this.#flowLoopPathMemoMarks.length - 1];
+      this.#flowLoopPathMemoMarks.pop();
+      var pli = pmark;
+      while (pli < this.#flowPathMemoLog.length) {
+        if (this.#flowPathMemoLogIds[pli] >= head.id) {
+          this.#flowPathMemo.delete(this.#flowPathMemoLog[pli]);
+        }
+        pli += 1;
+      }
+    }
+    exit.add(afterTest);
+    if (exit.antecedents.length == 0) {
+      this.#currentFlow = this.#flowUnreachable;
+    } else {
+      this.#currentFlow = exit;
+    }
+  }
+
+  /** Route a `break` to the innermost loop's exit join. */
+  recordFlowBreak(): void {
+    if (this.#flowLoopExits.length > 0) {
+      this.#flowLoopExits[this.#flowLoopExits.length - 1]
+        .add(this.#currentFlow);
+    }
+    this.markFlowUnreachable();
+  }
+
+  /** Route a `continue` to the innermost loop's header join. */
+  recordFlowContinue(): void {
+    if (this.#flowLoopHeads.length > 0) {
+      this.#flowLoopHeads[this.#flowLoopHeads.length - 1]
+        .add(this.#currentFlow);
+    }
+    this.markFlowUnreachable();
+  }
+
+  /**
+   * Record a move of a member path — `this.field` handed to an owning
+   * sink inside a consuming method. Carries noSymbolId so the binding
+   * walks pass through; the path walks match on the key. Feeds the
+   * catch entry like a binding move, and registers with the body for
+   * the moved-on-every-exit verdict (ownership.md §Affine fields).
+   */
+  recordFlowPathMove(pathKey: String, name: String, loc: SourceLocation | null): void {
+    let node = new FlowMove(this.#currentFlow, noSymbolId, name, loc);
+    node.pathKey = pathKey;
+    node.id = this.newFlowId();
+    if (this.#flowExceptionTargets.length > 0) {
+      this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
+        .add(node);
+    }
+    this.#bodyPathMoves.push(node);
+    this.#currentFlow = node;
+  }
+
+  /**
+   * Record a store that revives a member path moved out on every path
+   * to it (ownership.md §Affine fields): the field holds a value again.
+   */
+  recordFlowPathRevive(pathKey: String): void {
+    let node = new FlowAssign(this.#currentFlow, noSymbolId, null);
+    node.pathKey = pathKey;
+    node.id = this.newFlowId();
+    if (this.#flowExceptionTargets.length > 0) {
+      this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
+        .add(node);
+    }
+    this.#currentFlow = node;
+  }
+
+  /**
+   * The live move of `pathKey` on some backward path from `from`, or
+   * null. A store that revived the path ends the search on its path.
+   */
+  findLivePathMove(pathKey: String, from: FlowNode): FlowMove | null {
+    let visited = new Set<i32>();
+    let pending = growable<FlowNode>([from]);
+    while (pending.length > 0) {
+      let node = pending.pop();
+      if (visited.has(node.id)) { continue; }
+      visited.add(node.id);
+      match (node) {
+        case FlowStart: {}
+        case FlowUnreachable: {}
+        case FlowNarrowings as nw: { pending.push(nw.antecedent); }
+        case FlowSuspend as sp: { pending.push(sp.antecedent); }
+        case FlowMove as mv: {
+          if (mv.pathKey == pathKey) { return mv; }
+          pending.push(mv.antecedent);
+        }
+        case FlowAssign as assign: {
+          if (assign.pathKey != pathKey) { pending.push(assign.antecedent); }
+        }
+        case FlowJoin as join: {
+          for (let a in join.antecedents) {
+            pending.push(a);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether EVERY backward path from `from` crosses a move of
+   * `pathKey` — the must-analysis behind the static glue skip: a field
+   * moved on some paths but live on others has no one release story.
+   * Cycles answer false, conservatively.
+   */
+  pathDefinitelyMoved(pathKey: String, from: FlowNode): boolean {
+    let memo = new Map<i32, boolean>();
+    return this.#mustMoveWalk(pathKey, from, memo);
+  }
+
+  #mustMoveWalk(pathKey: String, node: FlowNode, memo: HashMap<i32, boolean>): boolean {
+    if (let (true, m) = memo.get(node.id)) { return m; }
+    memo[node.id] = false;
+    let result = match (node) {
+      case FlowMove as mv: {
+        if (mv.pathKey == pathKey) { true }
+        else { this.#mustMoveWalk(pathKey, mv.antecedent, memo) }
+      }
+      case FlowStart: false
+      case FlowUnreachable: true
+      case FlowAssign as assign: {
+        if (assign.pathKey == pathKey) { false }
+        else { this.#mustMoveWalk(pathKey, assign.antecedent, memo) }
+      }
+      case FlowNarrowings as nw: this.#mustMoveWalk(pathKey, nw.antecedent, memo)
+      case FlowSuspend as sp: this.#mustMoveWalk(pathKey, sp.antecedent, memo)
+      case FlowJoin as join: {
+        var all = true;
+        for (let a in join.antecedents) {
+          if (!this.#mustMoveWalk(pathKey, a, memo)) { all = false; }
+        }
+        all
+      }
+    };
+    memo[node.id] = result;
+    return result;
+  }
+
+  /**
+   * Report a read of a moved-out field path, deduplicated by node id
+   * exactly as binding use-after-move is.
+   */
+  checkPathMoveUse(expr: Node, pathKey: String, display: String): void {
+    if ((expr.id as i32) == this.#moveCheckSuppressedNode) { return; }
+    if (this.#pathMoveErrorNodes.has(expr.id as i32)) { return; }
+    let mv = this.findLivePathMove(pathKey, this.#currentFlow);
+    if (mv == null) { return; }
+    this.#pathMoveErrorNodes.add(expr.id as i32);
+    this.error(
+      "'" + display + "' may have been moved out: a moved field is dead " +
+      "for the rest of the method.",
+      DiagnosticCode.UseAfterMove,
+      expr.loc
+    );
+  }
+
+  /** A `return`'s flow position, for the moved-on-every-exit verdict. */
+  recordBodyExit(): void {
+    this.#bodyExits.push(this.#currentFlow);
+  }
+
+  /**
+   * Decide the body's field move-outs: at each exit — return sites and
+   * the natural end — a moved path must be moved on every path to it, or
+   * revived by a store on every path to it, the same at all exits, or the
+   * move is an error. The paths moved at every exit are what dispose glue
+   * skips. Returns their field names (paths stripped of their "this."
+   * root).
+   */
+  finishBodyPathMoves(bodyEndReachable: boolean): GrowableArray<String> {
+    let moved = new Array<String>();
+    if (this.#bodyPathMoves.length == 0) { return moved; }
+    let exits = new Array<FlowNode>();
+    for (let e in this.#bodyExits) { exits.push(e); }
+    if (bodyEndReachable) { exits.push(this.#currentFlow); }
+    let seen = new Set<String>();
+    for (let mv in this.#bodyPathMoves) {
+      let pk = mv.pathKey;
+      if (seen.has(pk)) { continue; }
+      seen.add(pk);
+      var everywhere = true;
+      var nowhere = true;
+      for (let exit in exits) {
+        if (!this.pathDefinitelyMoved(pk, exit)) { everywhere = false; }
+        if (this.findLivePathMove(pk, exit) != null) { nowhere = false; }
+      }
+      // Revived on every path: the field holds a value at every exit,
+      // which the glue releases.
+      if (nowhere) { continue; }
+      if (!everywhere) {
+        this.error(
+          "'" + mv.name + "' is moved out on some paths but still held " +
+          "on others: move it on every path, or on none — the release " +
+          "glue is decided once for the whole method.",
+          DiagnosticCode.UseAfterMove,
+          mv.loc
+        );
+        continue;
+      }
+      if (pk.startsWith("this.")) {
+        moved.push(pk.sliceBytes(5, pk.length));
+      }
+    }
+    return moved;
+  }
+
+  /**
+   * Record a suspension point (`await`, `yield`) at the current
+   * position. Transparent to every walk except the borrow-liveness
+   * check flushed at body exit.
+   */
+  recordFlowSuspend(): void {
+    let node = new FlowSuspend(this.#currentFlow);
+    node.id = this.newFlowId();
+    this.#currentFlow = node;
+  }
+
+  /**
+   * Record a read of a second-class borrow. Only suspending bodies
+   * collect these; the check runs at body exit (exitBodyFlow), when
+   * the flow graph is complete — loop back edges included — so a read
+   * at a loop's top still sees a suspension later in the body.
+   */
+  recordBorrowUse(expr: Node, si: Symbol): void {
+    if (this.yieldType == null && this.asyncValueType == null) { return; }
+    if (this.#suspensionRelaxed) { return; }
+    this.#bodyBorrowUses.push(new BorrowUseRec(
+      si.id, si.name, this.#currentFlow, expr.id as i32, expr.loc));
+  }
+
+  /** Mark the current position as `id`'s declaration for the walk. */
+  recordBorrowBirth(id: SymbolId): void {
+    this.#borrowBirthNodes[id as i32] = this.#currentFlow.id;
+  }
+
+  /**
+   * Whether a suspension lies on some backward path from `from` to the
+   * binding's birth. An assignment to the binding ends a path cleanly —
+   * the value read was produced after it — exactly as in findLiveMove.
+   */
+  #findFlowSuspend(id: SymbolId, from: FlowNode, stopAtId: i32): boolean {
+    let visited = new Set<i32>();
+    let pending = growable<FlowNode>([from]);
+    while (pending.length > 0) {
+      let node = pending.pop();
+      if (node.id == stopAtId) { continue; }
+      if (visited.has(node.id)) { continue; }
+      visited.add(node.id);
+      match (node) {
+        case FlowStart: {}
+        case FlowUnreachable: {}
+        case FlowSuspend: { return true; }
+        case FlowNarrowings as nw: { pending.push(nw.antecedent); }
+        case FlowMove as mv: { pending.push(mv.antecedent); }
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) != (id as i32)) {
+            pending.push(assign.antecedent);
+          }
+        }
+        case FlowJoin as join: {
+          for (let a in join.antecedents) {
+            pending.push(a);
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Decide the collected borrow reads of the body being exited. */
+  #flushBorrowUses(): void {
+    for (let rec in this.#bodyBorrowUses) {
+      if (this.#borrowSuspendErrorNodes.has(rec.exprNodeId)) { continue; }
+      // A read that already got a use-after-move error is dead for a
+      // reason the move diagnosis names; the suspension one on top of
+      // it is noise.
+      if (this.#moveErrorNodes.has(rec.exprNodeId)) { continue; }
+      let birthId = if (let (true, b) =
+          this.#borrowBirthNodes.get(rec.symbolId as i32)) b else -1;
+      if (!this.#findFlowSuspend(rec.symbolId, rec.node, birthId)) { continue; }
+      this.#borrowSuspendErrorNodes.add(rec.exprNodeId);
+      this.error(
+        "'" + rec.name + "' is a borrow read after a suspension point: the " +
+        "owner's scope may have ended and released the resource. A " +
+        "'Borrow' may not be live across an 'await' or 'yield'.",
+        DiagnosticCode.UseAfterMove,
+        rec.loc
+      );
+    }
+  }
+
+  /**
+   * Record a move of an owned binding at the current position. Like an
+   * assignment, a move feeds the innermost catch entry (the body can
+   * throw right after it), and it registers with every open loop for
+   * the back-edge check in exitFlowLoop.
+   */
+  recordFlowMove(id: SymbolId, name: String, loc: SourceLocation | null): void {
+    this.#everMovedSymbols.add(id as i32);
+    this.#moveCounts[id as i32] = this.#moveCount(id) + 1;
+    let node = new FlowMove(this.#currentFlow, id, name, loc);
+    node.id = this.newFlowId();
+    if (this.#flowExceptionTargets.length > 0) {
+      this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
+        .add(node);
+    }
+    for (let loopMoves in this.#flowLoopMoves) {
+      loopMoves.push(node);
+    }
+    this.#currentFlow = node;
+  }
+
+  // --- Implicit drop (ownership.md §Implicit drop) ---
+
+  enterOwnScope(): void {
+    this.#ownScopeStack.push(new Array<OwnDropCandidate>());
+    this.#scopedScopeStack.push(new Array<ScopedConsumeCandidate>());
+  }
+
+  /** A simple-`let` `Scoped` declaration in the current block. */
+  registerScopedCandidate(sym: Symbol, patternNode: Node): void {
+    if (this.#scopedScopeStack.length == 0) { return; }
+    this.#scopedScopeStack[this.#scopedScopeStack.length - 1]
+      .push(new ScopedConsumeCandidate(sym, patternNode));
+  }
+
+  /**
+   * Whether `id` was consumed (a FlowMove of it) on every backward path
+   * from `from` to its declaration. A path that reaches the declaration
+   * node without a move is the failure; a path that reaches the body
+   * start bypassed the declaration and holds nothing. Optimistic on
+   * loop back edges: a cycle re-entering a node under evaluation
+   * assumes consumed, so the acyclic paths decide.
+   */
+  #definitelyConsumed(id: SymbolId, from: FlowNode, birthId: i32,
+      memo: HashMap<i32, boolean>): boolean {
+    if (from.id == birthId) { return false; }
+    if (let (true, v) = memo.get(from.id)) { return v; }
+    memo[from.id] = true;
+    let result: boolean = match (from) {
+      case FlowStart: true
+      case FlowUnreachable: true
+      case FlowSuspend as sp:
+        this.#definitelyConsumed(id, sp.antecedent, birthId, memo)
+      case FlowNarrowings as nw:
+        this.#definitelyConsumed(id, nw.antecedent, birthId, memo)
+      case FlowMove as mv: {
+        if ((mv.symbolId as i32) == (id as i32)) { true }
+        else { this.#definitelyConsumed(id, mv.antecedent, birthId, memo) }
+      }
+      case FlowAssign as assign: {
+        if ((assign.symbolId as i32) == (id as i32)) { false }
+        else { this.#definitelyConsumed(id, assign.antecedent, birthId, memo) }
+      }
+      case FlowJoin as join: {
+        var all = true;
+        for (let a in join.antecedents) {
+          if (!this.#definitelyConsumed(id, a, birthId, memo)) { all = false; }
+        }
+        all
+      }
+    };
+    memo[from.id] = result;
+    return result;
+  }
+
+  /** The frame depth at each open loop's entry, for break/continue. */
+  #scopedLoopFloors = new Array<i32>();
+
+  /** The frame depth at the current body's entry: a nested body's
+   * returns leave only frames at or above it. */
+  var #scopedBodyFloor: i32 = 0;
+
+  enterScopedLoop(): void {
+    this.#scopedLoopFloors.push(this.#scopedScopeStack.length);
+  }
+
+  exitScopedLoop(): void {
+    if (this.#scopedLoopFloors.length > 0) { this.#scopedLoopFloors.pop(); }
+  }
+
+  /** The scoped frames a break/continue leaves: the innermost loop's. */
+  scopedLoopFloor(): i32 {
+    if (this.#scopedLoopFloors.length == 0) {
+      return this.#scopedScopeStack.length;
+    }
+    return this.#scopedLoopFloors[this.#scopedLoopFloors.length - 1];
+  }
+
+  /**
+   * Require every scoped binding in frames `start` and above to be
+   * consumed at the current flow position. A `return` leaves every
+   * frame (start 0), a block end leaves its own (start length−1), a
+   * break or continue leaves the frames inside the innermost loop
+   * (start scopedLoopFloor()). Each binding errors once.
+   */
+  requireScopedConsumed(loc: SourceLocation | null, start: i32): void {
+    if (this.#currentFlow is FlowUnreachable) { return; }
+    if (this.#scopedScopeStack.length == 0) { return; }
+    var from = start;
+    if (from < this.#scopedBodyFloor) { from = this.#scopedBodyFloor; }
+    for (var i = from; i < this.#scopedScopeStack.length; i += 1) {
+      for (let c in this.#scopedScopeStack[i]) {
+        let cid = c.sym.id as i32;
+        if (this.#scopedErrorSymbols.has(cid)) { continue; }
+        let birthId = if (let (true, b) =
+            this.#borrowBirthNodes.get(cid)) b else -1;
+        let memo = new Map<i32, boolean>();
+        if (this.#definitelyConsumed(c.sym.id, this.#currentFlow, birthId, memo)) {
+          continue;
+        }
+        this.#scopedErrorSymbols.add(cid);
+        this.error(
+          "'" + c.sym.name + "' is scoped and must be consumed on every " +
+          "path before its scope exits: await it, or move it. A scoped " +
+          "value has no release glue to fall back on.",
+          DiagnosticCode.UseAfterMove,
+          if (loc != null) loc else c.node.loc
+        );
+      }
+    }
+  }
+
+  /** A simple-`let` `Own<resource>` declaration in the current block. */
+  registerOwnCandidate(sym: Symbol, patternNode: Node, resources: GrowableArray<ClassType>,
+      isVar: boolean = false, declNode: Node | null = null): void {
+    if (this.#ownScopeStack.length == 0) { return; }
+    let c = new OwnDropCandidate(sym, patternNode, resources, isVar, declNode,
+        this.#currentFlow.id);
+    c.moveMark = this.#moveCount(sym.id);
+    this.#ownScopeStack[this.#ownScopeStack.length - 1].push(c);
+  }
+
+  /**
+   * Bracket one top-level statement of the innermost own scope's block,
+   * `index` in its statement list. The `var` owner candidates record,
+   * per statement, whether it moved the binding and whether the binding
+   * is live after it; exitOwnScope turns those into release intervals.
+   */
+  beginOwnStatement(): void {
+    if (this.#ownScopeStack.length == 0) { return; }
+    let frame = this.#ownScopeStack[this.#ownScopeStack.length - 1];
+    for (let c in frame) {
+      if (c.isVar) { c.moveMark = this.#moveCount(c.sym.id); }
+    }
+  }
+
+  endOwnStatement(index: i32, stmt: Node): void {
+    if (this.#ownScopeStack.length == 0) { return; }
+    let frame = this.#ownScopeStack[this.#ownScopeStack.length - 1];
+    for (let c in frame) {
+      if (!c.isVar || c.misplaced) { continue; }
+      if (!c.placed) {
+        let dn = c.declNode;
+        if (dn == null || dn.id != stmt.id) {
+          c.misplaced = true;
+          continue;
+        }
+        c.placed = true;
+      }
+      let movedIn = this.#moveCount(c.sym.id) != c.moveMark;
+      let liveAfter = !(this.#currentFlow is FlowUnreachable) &&
+        this.findLiveMove(c.sym.id, this.#currentFlow, c.declFlowId) == null;
+      c.events.push(index);
+      c.events.push(if (movedIn) 1 else 0);
+      c.events.push(if (liveAfter) 1 else 0);
+    }
+  }
+
+  /**
+   * A plain store into a `var` owner binding, noted before the store
+   * revives it: whether the binding held a live value decides whether
+   * the store releases one (exitOwnScope commits it with the verdict).
+   */
+  noteOwnerStore(id: SymbolId, assignNode: Node): void {
+    var k = this.#ownScopeStack.length - 1;
+    while (k >= 0) {
+      for (let c in this.#ownScopeStack[k]) {
+        if ((c.sym.id as i32) == (id as i32) && c.isVar) {
+          c.storeNodes.push(assignNode);
+          c.storeLive.push(
+              this.findLiveMove(id, this.#currentFlow, c.declFlowId) == null);
+          return;
+        }
+      }
+      k -= 1;
+    }
+  }
+
+  /**
+   * Decide the closing block's candidates. A candidate is released at
+   * scope exit only when nothing moved it, nothing reassigned it,
+   * nothing captured it, and every use the block contains sits in a
+   * position the classifier affirms as a borrow — anything else leaves
+   * the binding alone. The verdict overwrites on a re-check.
+   */
+  exitOwnScope(scopeNode: Node): void {
+    if (this.#scopedScopeStack.length > 0) {
+      this.requireScopedConsumed(null, this.#scopedScopeStack.length - 1);
+      this.#scopedScopeStack.pop();
+    }
+    if (this.#ownScopeStack.length == 0) { return; }
+    let frame = this.#ownScopeStack[this.#ownScopeStack.length - 1];
+    this.#ownScopeStack.pop();
+    if (frame.length == 0) { return; }
+    let ids = new Set<i32>();
+    for (let c in frame) { ids.add(c.sym.id as i32); }
+    classifyOwnUses(this, scopeNode, ids);
+    for (let c in frame) {
+      let id = c.sym.id as i32;
+      // The branch-join rule: a candidate moved on exactly one arm of
+      // an if whose arms both complete gets a compensating drop at the
+      // end of the arm that kept it, making it uniformly dead at the
+      // merge. Decided here, where captures and escapes are complete.
+      if (this.#everMovedSymbols.has(id) &&
+          (c.isVar || !this.#everAssignedSymbols.has(id)) &&
+          !this.#undroppableSymbols.has(id)) {
+        for (let p in this.#pendingEdgeIfs) {
+          let movedTrue = p.trueReachable &&
+            this.findLiveMove(c.sym.id, p.trueEnd, p.preBranch.id) != null;
+          let movedFalse = p.falseReachable &&
+            this.findLiveMove(c.sym.id, p.falseEnd, p.preBranch.id) != null;
+          if (movedTrue && !movedFalse && p.falseReachable) {
+            this.#addEdgeDrop(p.ifNode, c.sym.id, false, -1, c.resources);
+          } else if (movedFalse && !movedTrue && p.trueReachable) {
+            this.#addEdgeDrop(p.ifNode, c.sym.id, true, -1, c.resources);
+          }
+        }
+        // The same rule over a match's N arms: some arm moved it, so
+        // every reachable arm that kept it compensates. A diverged
+        // arm's end is unreachable and needs no drop.
+        for (let pm in this.#pendingEdgeMatches) {
+          var movedCount = 0;
+          var keptCount = 0;
+          let armMoved = new Array<boolean>();
+          for (let end in pm.armEnds) {
+            if (end is FlowUnreachable) {
+              armMoved.push(true);
+            } else {
+              let mv = this.findLiveMove(c.sym.id, end, pm.preBranch.id) != null;
+              armMoved.push(mv);
+              if (mv) { movedCount += 1; } else { keptCount += 1; }
+            }
+          }
+          if (movedCount > 0 && keptCount > 0) {
+            for (var ai = 0; ai < pm.armEnds.length; ai += 1) {
+              if (!armMoved[ai]) {
+                this.#addEdgeDrop(pm.matchNode, c.sym.id, false, ai, c.resources);
+              }
+            }
+          }
+        }
+      }
+      // A `let` is released by one region to the block's end, so any
+      // move anywhere (or a reassignment, which a let cannot have)
+      // withdraws it. A `var` is released over the intervals its
+      // statement events describe, and its stores release what they
+      // replace — both only when nothing captured or escaped it.
+      let drop = if (c.isVar) {
+        !c.misplaced && !this.#undroppableSymbols.has(id)
+      } else {
+        !this.#everMovedSymbols.has(id) &&
+          !this.#everAssignedSymbols.has(id) &&
+          !this.#undroppableSymbols.has(id)
+      };
+      this.model.setScopeExitDrop(c.node, drop && !c.isVar);
+      if (c.isVar) {
+        let intervals = new Array<i32>();
+        if (drop) { computeOwnIntervals(c, intervals); }
+        this.model.setOwnDropIntervals(c.node, intervals);
+        for (var si = 0; si < c.storeNodes.length; si += 1) {
+          if (drop && c.storeLive[si]) {
+            this.model.setAssignmentRelease(c.storeNodes[si]);
+          }
+        }
+      }
+      if (drop) {
+        // The release call is synthesized by lowering, so nothing in
+        // the AST names `:dispose` — root it the way `using` does. The
+        // release region is a try_table, so the module needs the
+        // exception infrastructure even if no source `try` appears.
+        let deps = this.currentDependencies();
+        if (deps != null) {
+          deps.needsExceptionInfra = true;
+          for (let resource in c.resources) {
+            let classSymId = (resource.genericSource ?? resource).symbolId;
+            deps.referencedSymbols.add(classSymId);
+            deps.referencedClassMethods.add(
+              i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Commit one compensating drop, replacing any stale entry for the
+   * same binding on the same if (the latest verdict wins; a fresh model
+   * on a full re-check clears the rest). Roots `:dispose` — the drop is
+   * a plain call at the arm's end, so no exception region is needed.
+   */
+  #addEdgeDrop(node: Node, symId: SymbolId, onTrue: boolean, armIndex: i32, resources: GrowableArray<ClassType>): void {
+    let existing = this.model.edgeDropsOfDirect(node);
+    let kept = new Array<EdgeDrop>();
+    if (existing != null) {
+      for (let d in existing) {
+        // A match needs one entry per keeping arm for the same
+        // binding, so staleness is per (binding, arm).
+        if ((d.symbolId as i32) != (symId as i32) || d.armIndex != armIndex) {
+          kept.push(d);
+        }
+      }
+    }
+    let drop = new EdgeDrop(symId, onTrue);
+    drop.armIndex = armIndex;
+    kept.push(drop);
+    this.model.setEdgeDrops(node, kept);
+    let deps = this.currentDependencies();
+    if (deps != null) {
+      for (let resource in resources) {
+        let classSymId = (resource.genericSource ?? resource).symbolId;
+        deps.referencedSymbols.add(classSymId);
+        deps.referencedClassMethods.add(
+          i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
+      }
+    }
+  }
+
+  /**
+   * The move that kills `id` on some backward path from `from`, or null
+   * if the binding is live. An assignment to the binding ends a path
+   * cleanly (the move was compensated), as does reaching `stopAtId` (a
+   * loop header, for the back-edge check) or a FlowStart. Pass -1 as
+   * stopAtId to walk to the start.
+   */
+  findLiveMove(id: SymbolId, from: FlowNode, stopAtId: i32): FlowMove | null {
+    let visited = new Set<i32>();
+    let pending = growable<FlowNode>([from]);
+    while (pending.length > 0) {
+      let node = pending.pop();
+      if (node.id == stopAtId) { continue; }
+      if (visited.has(node.id)) { continue; }
+      visited.add(node.id);
+      match (node) {
+        case FlowStart: {}
+        case FlowUnreachable: {}
+        case FlowNarrowings as nw: {
+          // A narrowing does not change liveness.
+          pending.push(nw.antecedent);
+        }
+        case FlowMove as mv: {
+          if ((mv.symbolId as i32) == (id as i32)) { return mv; }
+          pending.push(mv.antecedent);
+        }
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) != (id as i32)) {
+            pending.push(assign.antecedent);
+          }
+          // An assignment to the binding revives it: this path is clean.
+        }
+        case FlowSuspend as sp: {
+          // A suspension does not change move liveness.
+          pending.push(sp.antecedent);
+        }
+        case FlowJoin as join: {
+          for (let a in join.antecedents) {
+            pending.push(a);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Report a use of `expr` (an identifier naming an owned binding) when
+   * a move may precede it. Deduplicated by node id: several call paths
+   * check an argument expression more than once.
+   */
+  checkMoveUse(expr: Node, si: Symbol): void {
+    if ((expr.id as i32) == this.#moveCheckSuppressedNode) { return; }
+    if (this.#moveErrorNodes.has(expr.id as i32)) { return; }
+    let mv = this.findLiveMove(si.id, this.#currentFlow, -1);
+    if (mv == null) { return; }
+    this.#moveErrorNodes.add(expr.id as i32);
+    this.error(
+      `'${si.name}' may have been moved: an owned value is dead after the move that consumes it.`,
+      DiagnosticCode.UseAfterMove,
+      expr.loc
+    );
+  }
+
+  setMoveCheckSuppressedNode(id: i32): void {
+    this.#moveCheckSuppressedNode = id;
+  }
+
+  /**
+   * Begin a protected (`try`) body: the returned join is the catch
+   * entry, seeded with the flow before the body; assignments inside the
+   * body add themselves to it.
+   */
+  enterFlowTry(): FlowJoin {
+    let catchEntry = this.newFlowJoin();
+    catchEntry.add(this.#currentFlow);
+    this.#flowExceptionTargets.push(catchEntry);
+    return catchEntry;
+  }
+
+  exitFlowTry(): void {
+    this.#flowExceptionTargets.pop();
+  }
+
+  /**
+   * Install fresh flow state for a nested body (function, method,
+   * accessor). Returns the enclosing state for exitBodyFlow.
+   */
+  enterBodyFlow(sharesThis: boolean): FlowBodyState {
+    let saved = new FlowBodyState(
+      this.#currentFlow, this.#currentFlowStart, this.#flowLoopHeads,
+      this.#flowLoopExits, this.#flowExceptionTargets,
+      this.#flowLoopMoves, this.#flowLoopDeclared, this.#pendingEdgeIfs);
+    let start = new FlowStart();
+    start.id = this.newFlowId();
+    // A nested body's walk may continue at its creation site: the
+    // narrowings that held where the closure was written are what its
+    // captures see. (Deferred execution can invalidate them — the
+    // pre-graph behavior, kept.)
+    start.enclosing = saved.current;
+    start.sharesThis = sharesThis;
+    this.#currentFlow = start;
+    this.#currentFlowStart = start;
+    this.#flowLoopHeads = new Array<FlowJoin>();
+    this.#flowLoopExits = new Array<FlowJoin>();
+    this.#flowExceptionTargets = new Array<FlowJoin>();
+    this.#flowLoopMoves = new Array<GrowableArray<FlowMove>>();
+    this.#flowLoopDeclared = new Array<HashSet<i32>>();
+    this.#pendingEdgeIfs = new Array<PendingEdgeIf>();
+    saved.borrowUses = this.#bodyBorrowUses;
+    this.#bodyBorrowUses = new Array<BorrowUseRec>();
+    saved.pendingEdgeMatches = this.#pendingEdgeMatches;
+    this.#pendingEdgeMatches = new Array<PendingEdgeMatch>();
+    saved.bodyExits = this.#bodyExits;
+    this.#bodyExits = new Array<FlowNode>();
+    saved.bodyPathMoves = this.#bodyPathMoves;
+    this.#bodyPathMoves = new Array<FlowMove>();
+    // A nested body's returns leave only its own scoped frames: frames
+    // below the floor belong to the enclosing function.
+    saved.scopedBodyFloor = this.#scopedBodyFloor;
+    this.#scopedBodyFloor = this.#scopedScopeStack.length;
+    saved.scopedLoopFloorCount = this.#scopedLoopFloors.length;
+    return saved;
+  }
+
+  exitBodyFlow(saved: FlowBodyState): void {
+    // The body's flow graph is complete here — loop back edges wired —
+    // so the borrow-liveness reads collected for it are decidable.
+    this.#flushBorrowUses();
+    this.#scopedBodyFloor = saved.scopedBodyFloor;
+    while (this.#scopedLoopFloors.length > saved.scopedLoopFloorCount) {
+      this.#scopedLoopFloors.pop();
+    }
+    this.#bodyBorrowUses = saved.borrowUses;
+    this.#pendingEdgeMatches = saved.pendingEdgeMatches;
+    this.#bodyExits = saved.bodyExits;
+    this.#bodyPathMoves = saved.bodyPathMoves;
+    this.#currentFlow = saved.current;
+    this.#currentFlowStart = saved.start;
+    this.#flowLoopHeads = saved.loopHeads;
+    this.#flowLoopExits = saved.loopExits;
+    this.#flowExceptionTargets = saved.exceptionTargets;
+    this.#flowLoopMoves = saved.loopMoves;
+    this.#flowLoopDeclared = saved.loopDeclared;
+    this.#pendingEdgeIfs = saved.pendingEdgeIfs;
+  }
+
+  // --- Narrowing ---
+
+  /**
+   * Attach a FlowNarrowings node carrying `ns` to the current flow. The
+   * maps come from the condition engine (getNarrowedTypesFromCondition)
+   * and hold the types that follow on the guarded path. An empty result
+   * attaches nothing.
+   */
+  pushFlowNarrowings(ns: ConditionNarrowings): void {
+    if (ns.bindings.size == 0 && ns.paths.size == 0) { return; }
+    let node = new FlowNarrowings(this.#currentFlow, ns.bindings, ns.paths);
+    node.id = this.newFlowId();
+    for (let bkey in ns.bindings.keys()) {
+      this.#everNarrowedSymbols.add(bkey as i32);
+    }
+    for (let pkey in ns.paths.keys()) {
+      this.#everNarrowedPaths.add(pkey);
+    }
+    this.#currentFlow = node;
+  }
+
+  /** pushFlowNarrowings for a single member path. */
+  pushFlowPathNarrowing(path: String, t: Type): void {
+    let ns = new ConditionNarrowings();
+    ns.paths[path] = t;
+    this.pushFlowNarrowings(ns);
+  }
+
+  /**
+   * The type of a binding at the current position: the declared type
+   * refined along the flow path — the nearest narrowing that mentions
+   * the binding, an assignment's stored type, unions at joins. The
+   * ever-sets keep this from walking at all for the common un-narrowed
+   * binding; assignment re-typing is consulted only for union-typed
+   * mutable bindings, the one shape where a store can change what a
+   * read sees.
+   */
+  flowTypeOfBinding(si: Symbol, declared: Type): Type {
+    let id = si.id as i32;
+    let pathKey = "s" + i32ToString(id);
+    let narrowed = this.#everNarrowedSymbols.has(id) ||
+      this.#everNarrowedPaths.has(pathKey);
+    let assigned = si.isMutable && this.#everAssignedSymbols.has(id) &&
+      declared is UnionT;
+    if (!narrowed && !assigned) { return declared; }
+    this.#walkCycleMin = 2147483647;
+    this.#walkBudget = 100000;
+    let r = this.#walkBindingType(
+      this.#currentFlow, si.id, pathKey, declared, new Array<i32>());
+    if (r == null) { return declared; }
+    // A narrowing can only narrow. A join can manufacture something
+    // wider — a statically-false `x == null` arm narrows a
+    // non-nullable binding to `null`, and the branches union — and the
+    // declared type is the ceiling that discards it.
+    if (!isAssignableTo(this, r, declared)) { return declared; }
+    return r;
+  }
+
+  /**
+   * The stack index of the shallowest in-progress join a cycle has
+   * referenced during the current walk (a lowlink). A join whose
+   * evaluation saw cycles only back to itself is a fixpoint — a
+   * completed loop's header — and its result is memoizable; one whose
+   * cycles reach an ancestor is provisional and is not.
+   */
+  var #walkCycleMin: i32 = 2147483647;
+
+  /**
+   * Per-query step budget: a safety net against walk pathologies. With
+   * the provisional cache below it should not trip in practice;
+   * exhaustion cuts the walk off at "no narrowing" — always sound — and
+   * forces the lowlink below any depth so nothing above the cut is
+   * memoized.
+   */
+  var #walkBudget: i32 = 0;
+
+  /**
+   * Provisional results: joins evaluated under an in-progress loop
+   * header (their lowlink points at an ancestor). They are stable while
+   * that ancestor is still being evaluated — the graph and the stack
+   * below it are frozen — which is exactly what stops a run of
+   * sequential joins inside a loop body from being re-explored
+   * exponentially. Each entry is bucketed by its lowlink; when the join
+   * at stack depth d pops, buckets >= d are purged.
+   */
+  #taintedBindingMemo = new Map<i64, Type>();
+  #taintedBindingBuckets = new Array<GrowableArray<i64>>();
+  #taintedPathMemo = new Map<String, Type>();
+  #taintedPathBuckets = new Array<GrowableArray<String>>();
+
+  #purgeTaintedFrom(depth: i32): void {
+    var b = depth;
+    while (b < this.#taintedBindingBuckets.length) {
+      let bucket = this.#taintedBindingBuckets[b];
+      for (let bKey in bucket) {
+        this.#taintedBindingMemo.delete(bKey);
+      }
+      bucket.clear();
+      b += 1;
+    }
+    var pb = depth;
+    while (pb < this.#taintedPathBuckets.length) {
+      let bucket = this.#taintedPathBuckets[pb];
+      for (let pKey in bucket) {
+        this.#taintedPathMemo.delete(pKey);
+      }
+      bucket.clear();
+      pb += 1;
+    }
+  }
+
+  #taintedBucketAdd(depth: i32, bindingKey: i64): void {
+    while (this.#taintedBindingBuckets.length <= depth) {
+      this.#taintedBindingBuckets.push(new Array<i64>());
+    }
+    this.#taintedBindingBuckets[depth].push(bindingKey);
+  }
+
+  #taintedPathBucketAdd(depth: i32, pathKey: String): void {
+    while (this.#taintedPathBuckets.length <= depth) {
+      this.#taintedPathBuckets.push(new Array<String>());
+    }
+    this.#taintedPathBuckets[depth].push(pathKey);
+  }
+
+  /**
+   * The walk behind flowTypeOfBinding. Chains descend iteratively;
+   * recursion happens only at joins, whose result is the union of their
+   * antecedents'. A null return is a cycle contribution (a loop back
+   * edge reached its own header) and is skipped by the join above it —
+   * the optimistic reading is sound because a loop that changes the
+   * binding declares that with the unknown-type assignments recorded at
+   * its header. Join results computed without touching an in-progress
+   * cycle are memoized for the duration of one query.
+   */
+  #walkBindingType(
+    from: FlowNode,
+    symId: SymbolId,
+    pathKey: String,
+    declared: Type,
+    inProgress: GrowableArray<i32>
+  ): Type | null {
+    var n = from;
+    while (true) {
+      if (this.#walkBudget <= 0) {
+        this.#walkCycleMin = -1;
+        return declared;
+      }
+      this.#walkBudget -= 1;
+      match (n) {
+        case FlowNarrowings as nw: {
+          if (let (true, t) = nw.bindings.get(symId)) { return t; }
+          if (let (true, pt) = nw.paths.get(pathKey)) { return pt; }
+          n = nw.antecedent;
+        }
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) == (symId as i32)) {
+            // The stored type is clamped to the declared type at the
+            // recording site, so it is returned as-is here.
+            let at = assign.assignedType;
+            if (at != null) { return at; }
+            return declared;
+          }
+          n = assign.antecedent;
+        }
+        case FlowMove as mv: {
+          n = mv.antecedent;
+        }
+        case FlowSuspend as sp: {
+          // A suspension does not change what holds for the binding.
+          n = sp.antecedent;
+        }
+        case FlowStart as st: {
+          // The declaring body's entry has seen everything that could
+          // narrow the binding; only a capture keeps looking outward.
+          if (let (true, bodyId) = this.#bindingBodyStart.get(symId as i32)) {
+            if (bodyId == st.id) { return declared; }
+          } else {
+            return declared;
+          }
+          let enc = st.enclosing;
+          if (enc == null) { return declared; }
+          // Crossing into the enclosing body is computed once per key:
+          // the enclosing flow is frozen at the closure's creation, so
+          // the answer there never changes (modulo loop back edges,
+          // which the log invalidation covers).
+          let crossKey = (st.id as i64) * 4294967296 + (symId as i32 as i64);
+          if (let (true, cm) = this.#flowTypeMemo.get(crossKey)) { return cm; }
+          let outerMin = this.#walkCycleMin;
+          this.#walkCycleMin = 2147483647;
+          let sub = this.#walkBindingType(
+            enc, symId, pathKey, declared, inProgress);
+          let myMin = this.#walkCycleMin;
+          if (sub != null && myMin >= inProgress.length) {
+            this.#flowTypeMemo[crossKey] = sub;
+            this.#flowTypeMemoLog.push(crossKey);
+          }
+          this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+          return sub;
+        }
+        case FlowUnreachable: {
+          return declared;
+        }
+        case FlowJoin as join: {
+          let memoKey = (join.id as i64) * 4294967296 + (symId as i32 as i64);
+          if (let (true, m) = this.#flowTypeMemo.get(memoKey)) { return m; }
+          if (let (true, tm) = this.#taintedBindingMemo.get(memoKey)) { return tm; }
+          var pi = 0;
+          var cycled = false;
+          while (pi < inProgress.length) {
+            if (inProgress[pi] == join.id) {
+              if (pi < this.#walkCycleMin) { this.#walkCycleMin = pi; }
+              cycled = true;
+            }
+            pi += 1;
+          }
+          if (cycled) { return null; }
+          let depth = inProgress.length;
+          inProgress.push(join.id);
+          // Lowlink accounting: cycles seen under THIS join, kept apart
+          // from what the siblings already saw.
+          let outerMin = this.#walkCycleMin;
+          this.#walkCycleMin = 2147483647;
+          // The antecedents nearly always agree on one type, so the
+          // list of distinct results is only built once a second one
+          // appears: this walk runs millions of times in a large
+          // compile, and an array per join was a tenth of its garbage.
+          var first: Type | null = null;
+          var results: Array<Type> | null = null;
+          var sawCycle = false;
+          for (let a in join.antecedents) {
+            let r = this.#walkBindingType(
+              a, symId, pathKey, declared, inProgress);
+            if (r == null) {
+              sawCycle = true;
+            } else if (first == null) {
+              first = r;
+            } else if (results == null) {
+              if (!typesEqual(first as Type, r)) {
+                let list = growable<Type>([first as Type, r]);
+                results = list;
+              }
+            } else {
+              let list = results as GrowableArray<Type>;
+              var dup = false;
+              for (let existing in list) {
+                if (typesEqual(existing, r)) { dup = true; }
+              }
+              if (!dup) { list.push(r); }
+            }
+          }
+          let myMin = this.#walkCycleMin;
+          inProgress.pop();
+          // Anything provisional that depended on this join dies with
+          // its evaluation.
+          this.#purgeTaintedFrom(depth);
+          if (first == null) {
+            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+            if (sawCycle) { return null; }
+            return declared;
+          }
+          // Two distinct narrowings meeting (an `is A` arm and an
+          // `is B` arm whose else diverged) merge to the declared type:
+          // member lookup cannot see through an A | B union of
+          // subclasses, so the union would reject code the un-narrowed
+          // type accepts.
+          let result = if (results == null) {
+            first as Type
+          } else {
+            let kept = this.#dropSubsumed(results as GrowableArray<Type>);
+            if (kept.length == 1) { kept[0] } else { declared }
+          };
+          if (myMin >= depth) {
+            // Cycles, if any, pointed only at this join: it is a
+            // completed loop header and this is its fixpoint.
+            this.#flowTypeMemo[memoKey] = result;
+            this.#flowTypeMemoLog.push(memoKey);
+            this.#walkCycleMin = outerMin;
+          } else {
+            // Provisional under an in-progress ancestor: cached until
+            // that ancestor pops. A negative lowlink is the budget
+            // cut's mark — those results are not cached at all.
+            if (myMin >= 0) {
+              this.#taintedBindingMemo[memoKey] = result;
+              this.#taintedBucketAdd(myMin, memoKey);
+            }
+            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+          }
+          return result;
+        }
+      }
+    }
+  }
+
+  /**
+   * The narrowed type of a member path at the current position, or null
+   * when it is not narrowed. Any assignment to the path's root binding
+   * on some incoming path un-narrows it (the object was replaced), so a
+   * join only keeps the narrowing when every reachable antecedent
+   * carries one; cycle contributions are skipped as in the binding
+   * walk. `#pathVeto` is the un-narrowed marker inside the walk, so it
+   * can be told apart from a cycle.
+   */
+  #pathVeto: Type = new ErrorType();
+
+  /**
+   * Drop union members another member already covers: a join of an
+   * assignment-narrowed subtype with the declared supertype is the
+   * supertype, not a two-member union member lookups cannot see
+   * through.
+   */
+  #dropSubsumed(results: Array<Type>): Array<Type> {
+    if (results.length < 2) { return results; }
+    let kept = new Array<Type>();
+    var i = 0;
+    while (i < results.length) {
+      var subsumed = false;
+      var j = 0;
+      while (j < results.length) {
+        if (j != i && isAssignableTo(this, results[i], results[j]) &&
+            !isAssignableTo(this, results[j], results[i])) {
+          subsumed = true;
+        }
+        j += 1;
+      }
+      if (!subsumed) { kept.push(results[i]); }
+      i += 1;
+    }
+    if (kept.length == 0) { return results; }
+    return kept;
+  }
+
+  flowTypeOfPath(path: String): Type | null {
+    if (!this.#everNarrowedPaths.has(path)) { return null; }
+    this.#walkCycleMin = 2147483647;
+    this.#walkBudget = 100000;
+    let r = this.#walkPathType(
+      this.#currentFlow, path, pathRootSymbolId(path), new Array<i32>());
+    if (r == null) { return null; }
+    // Identity via uid: Type equality is structural, and any ErrorType
+    // would otherwise look like the veto marker.
+    if (r.uid == this.#pathVeto.uid) { return null; }
+    return r;
+  }
+
+  #walkPathType(
+    from: FlowNode,
+    path: String,
+    rootId: SymbolId,
+    inProgress: GrowableArray<i32>
+  ): Type | null {
+    var n = from;
+    while (true) {
+      if (this.#walkBudget <= 0) {
+        this.#walkCycleMin = -1;
+        return this.#pathVeto;
+      }
+      this.#walkBudget -= 1;
+      match (n) {
+        case FlowNarrowings as nw: {
+          if (let (true, t) = nw.paths.get(path)) { return t; }
+          n = nw.antecedent;
+        }
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) == (rootId as i32)) {
+            return this.#pathVeto;
+          }
+          n = assign.antecedent;
+        }
+        case FlowMove as mv: {
+          n = mv.antecedent;
+        }
+        case FlowSuspend as sp: {
+          // A suspension does not change what holds for the path.
+          n = sp.antecedent;
+        }
+        case FlowStart as st: {
+          // A rooted path stops at its root's declaring body the way a
+          // binding walk does. A `this`-rooted path stops where `this`
+          // stops: at a method or accessor root — only a closure that
+          // shares its `this` keeps looking outward.
+          if ((rootId as i32) >= 0) {
+            if (let (true, bodyId) = this.#bindingBodyStart.get(rootId as i32)) {
+              if (bodyId == st.id) { return this.#pathVeto; }
+            } else {
+              return this.#pathVeto;
+            }
+          } else {
+            if (!st.sharesThis) { return this.#pathVeto; }
+          }
+          let enc = st.enclosing;
+          if (enc == null) { return this.#pathVeto; }
+          let crossKey = `${i32ToString(st.id)}|${path}`;
+          if (let (true, cm) = this.#flowPathMemo.get(crossKey)) { return cm; }
+          let outerMin = this.#walkCycleMin;
+          this.#walkCycleMin = 2147483647;
+          let sub = this.#walkPathType(enc, path, rootId, inProgress);
+          let myMin = this.#walkCycleMin;
+          if (sub != null && myMin >= inProgress.length) {
+            this.#flowPathMemo[crossKey] = sub;
+            this.#flowPathMemoLog.push(crossKey);
+            this.#flowPathMemoLogIds.push(st.id);
+          }
+          this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+          return sub;
+        }
+        case FlowUnreachable: {
+          return null;
+        }
+        case FlowJoin as join: {
+          let memoKey = `${i32ToString(join.id)}|${path}`;
+          if (let (true, m) = this.#flowPathMemo.get(memoKey)) { return m; }
+          if (let (true, tm) = this.#taintedPathMemo.get(memoKey)) { return tm; }
+          var pi = 0;
+          var cycled = false;
+          while (pi < inProgress.length) {
+            if (inProgress[pi] == join.id) {
+              if (pi < this.#walkCycleMin) { this.#walkCycleMin = pi; }
+              cycled = true;
+            }
+            pi += 1;
+          }
+          if (cycled) { return null; }
+          let depth = inProgress.length;
+          inProgress.push(join.id);
+          let outerMin = this.#walkCycleMin;
+          this.#walkCycleMin = 2147483647;
+          // As in the binding walk, the list of distinct results is
+          // only built once a second one appears.
+          var first: Type | null = null;
+          var results: Array<Type> | null = null;
+          var vetoed = false;
+          for (let a in join.antecedents) {
+            let r = this.#walkPathType(a, path, rootId, inProgress);
+            if (r != null) {
+              if (r.uid == this.#pathVeto.uid) {
+                vetoed = true;
+              } else if (first == null) {
+                first = r;
+              } else if (results == null) {
+                if (!typesEqual(first as Type, r)) {
+                  let list = growable<Type>([first as Type, r]);
+                  results = list;
+                }
+              } else {
+                let list = results as GrowableArray<Type>;
+                var dup = false;
+                for (let existing in list) {
+                  if (typesEqual(existing, r)) { dup = true; }
+                }
+                if (!dup) { list.push(r); }
+              }
+            }
+          }
+          let myMin = this.#walkCycleMin;
+          inProgress.pop();
+          this.#purgeTaintedFrom(depth);
+          var result: Type | null = null;
+          if (vetoed) {
+            result = this.#pathVeto;
+          } else if (results == null) {
+            result = first;
+          } else {
+            // As in the binding walk: distinct narrowings meeting means
+            // the path is no longer usefully narrowed.
+            let kept = this.#dropSubsumed(results as GrowableArray<Type>);
+            result = if (kept.length == 1) { kept[0] } else { this.#pathVeto };
+          }
+          if (result == null) {
+            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+            return null;
+          }
+          if (myMin >= depth) {
+            this.#flowPathMemo[memoKey] = result;
+            this.#flowPathMemoLog.push(memoKey);
+            this.#flowPathMemoLogIds.push(join.id);
+            this.#walkCycleMin = outerMin;
+          } else {
+            if (myMin >= 0) {
+              this.#taintedPathMemo[memoKey] = result;
+              this.#taintedPathBucketAdd(myMin, memoKey);
+            }
+            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+          }
+          return result;
+        }
+      }
+    }
+  }
+
+  isExpressionNarrowed(expr: Expression): boolean {
+    if (expr is Identifier) {
+      let sym = this.model.resolve(expr);
+      if (sym == null) { return false; }
+      let bt = this.model.getBindingType(sym);
+      if (bt == null) { return false; }
+      let ft = this.flowTypeOfBinding(sym, bt);
+      return !typesEqual(ft, bt);
+    } else {
+      let key = getMemberPathKey(this, expr);
+      if (key == null) { return false; }
+      return this.flowTypeOfPath(key) != null;
+    }
+  }
+
+  // --- Scope result access ---
+
+  scopeResult: ScopeResult {
+    get { return this.#scopeResult; }
+  }
+
+  // --- Error helpers ---
+
+  var #diagnosticsSuppressed = false;
+
+  /**
+   * Silence error/warning emission. Used when a registration pass
+   * re-resolves a type only to fill its identity (a cross-cycle alias
+   * shell's body), not to re-report — the authoritative resolution has
+   * already reported once.
+   */
+  setDiagnosticsSuppressed(v: boolean): void {
+    this.#diagnosticsSuppressed = v;
+  }
+
+  error(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    if (this.#diagnosticsSuppressed) { return; }
+    this.diagnostics.reportError(message, code, loc);
+  }
+
+  /**
+   * An error about `node` reported at most once: call paths that check
+   * an argument twice (an overload pre-pass, then the chosen signature)
+   * would otherwise report it twice.
+   */
+  errorOnce(node: Node, message: String, code: DiagnosticCode): void {
+    if (this.#diagnosticsSuppressed || this.#onceErrorNodes.has(node.id as i32)) { return; }
+    this.#onceErrorNodes.add(node.id as i32);
+    this.diagnostics.reportError(message, code, node.loc);
+  }
+
+  /**
+   * An error reported at most once per location and message, for a rule
+   * about a type that is resolved more than once: a method's signature
+   * is resolved again for its body.
+   */
+  errorOnceAt(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    if (this.#diagnosticsSuppressed) { return; }
+    if (loc != null) {
+      let site = `${i32ToString(loc.start)}:${i32ToString(loc.end)}:${message}`;
+      if (this.#onceErrorSites.has(site)) { return; }
+      this.#onceErrorSites.add(site);
+    }
+    this.diagnostics.reportError(message, code, loc);
+  }
+
+  warning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    if (this.#diagnosticsSuppressed) { return; }
+    this.diagnostics.reportWarning(message, code, loc);
+  }
+}

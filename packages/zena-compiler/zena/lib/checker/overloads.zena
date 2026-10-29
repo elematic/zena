@@ -1,0 +1,359 @@
+import { Expression, SourceLocation } from '../ast.zena';
+import {
+  ClassType, FunctionType, InterfaceType, Type, TypeParameterType,
+  UnionType as UnionT
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { CheckerContext } from './context.zena';
+import { substituteTypeParams } from './generics.zena';
+import { argumentAdaptsToParameter } from './literals.zena';
+import { isAssignableTo, typesEqual } from './relations.zena';
+
+/**
+ * Fills `applicableRaw`/`applicableRes` with the operator candidates
+ * the given operands are applicable to — the `[]` read sites, whose
+ * one operand is the index, and the `[]=` write site, whose two are
+ * the index and the value.
+ *
+ * Same two tiers as a call (member-lookup.md §5.1): operands are
+ * first judged by the types they already have, and only if that
+ * leaves nothing applicable does a bare numeric literal operand adapt
+ * to the parameter facing it. Without the second tier `t[10]` cannot
+ * reach an `operator [](k: u32)` at all.
+ *
+ * Only the first `adaptableCount` operands may adapt. `[]=` passes 1,
+ * so its index adapts and its value does not: under a compound
+ * assignment the value operand is the right side of the `+=`, not the
+ * value being stored, and its type is already `effectiveType`.
+ *
+ * The two output arrays are parallel because callers need both forms:
+ * the declared signature to record the selection for codegen, and the
+ * substituted one to compare specificity.
+ */
+export function collectApplicableOperatorOverloads(
+  ctx: CheckerContext,
+  candidates: GrowableArray<FunctionType>,
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null,
+  operandTypes: Array<Type>,
+  operands: GrowableArray<Expression>,
+  adaptableCount: i32,
+  applicableRaw: GrowableArray<FunctionType>,
+  applicableRes: GrowableArray<FunctionType>
+): void {
+  for (var tier = 0; tier < 2; tier += 1) {
+    let adaptLiterals = tier == 1;
+    for (let candidate in candidates) {
+      let resolvedCandidate =
+          substituteTypeParams(typeParams, typeArgs, candidate) as FunctionType;
+      if (resolvedCandidate.parameters.length != operandTypes.length) {
+        continue;
+      }
+      var matchOk = true;
+      for (var i = 0; i < operandTypes.length; i += 1) {
+        let param = resolvedCandidate.parameters[i];
+        if (!isAssignableTo(ctx, operandTypes[i], param) &&
+            !(adaptLiterals && i < adaptableCount &&
+              argumentAdaptsToParameter(operands[i], param))) {
+          matchOk = false;
+        }
+      }
+      if (matchOk) {
+        applicableRaw.push(candidate);
+        applicableRes.push(resolvedCandidate);
+      }
+    }
+    if (applicableRaw.length > 0) {
+      return;
+    }
+  }
+}
+
+// ============================================================================
+// Class & Interface Checking
+// ============================================================================
+export function hasSameSignature(a: FunctionType, b: FunctionType): boolean {
+  if (a.parameters.length != b.parameters.length) {
+    return false;
+  }
+  for (var i = 0; i < a.parameters.length; i += 1) {
+    if (!typesEqual(a.parameters[i], b.parameters[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * The signatures a member type stands for: each overload of an overloaded
+ * method, or the type itself.
+ */
+export function functionSignatures(t: Type): Array<Type> {
+  let signatures = new Array<Type>();
+  if (t is FunctionType) {
+    let {overloads} = t;
+    if (overloads != null) {
+      for (let overload in overloads) {
+        signatures.push(overload);
+      }
+      return signatures;
+    }
+  }
+  signatures.push(t);
+  return signatures;
+}
+
+export function findMatchingOverload(
+  method: FunctionType,
+  signature: FunctionType
+): FunctionType | null {
+  if (hasSameSignature(method, signature)) {
+    return method;
+  }
+  if (method.overloads != null) {
+    let overloads = method.overloads as GrowableArray<FunctionType>;
+    for (let overload in overloads) {
+      if (hasSameSignature(overload, signature)) {
+        return overload;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Overload selection (member-lookup.md §5.1): X is at least as
+ * specific as Y, over the call's first argCount parameters, when
+ * every parameter of X is assignable to Y's corresponding parameter.
+ */
+function atLeastAsSpecific(
+  ctx: CheckerContext,
+  x: FunctionType,
+  y: FunctionType,
+  argCount: i32
+): boolean {
+  var i = 0;
+  while (i < argCount && i < x.parameters.length && i < y.parameters.length) {
+    if (!isAssignableTo(ctx, x.parameters[i], y.parameters[i])) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+/**
+ * Picks the most-specific applicable overload (member-lookup.md
+ * §5.1): the unique applicable candidate at least as specific as
+ * every other. Parameter-equivalent ties break toward the
+ * exact-arity candidate; a set with no unique maximum is AMBIGUOUS —
+ * returns (first-declared, true) so the caller can report the error
+ * and still recover deterministically.
+ */
+function pickMostSpecificOverload(
+  ctx: CheckerContext,
+  applicable: GrowableArray<FunctionType>,
+  argCount: i32
+): (FunctionType, boolean) {
+  var best = applicable[0];
+  for (var i = 1; i < applicable.length; i += 1) {
+    let c = applicable[i];
+    let cBeatsBest = atLeastAsSpecific(ctx, c, best, argCount);
+    let bestBeatsC = atLeastAsSpecific(ctx, best, c, argCount);
+    if (cBeatsBest && !bestBeatsC) {
+      best = c;
+    } else if (cBeatsBest && bestBeatsC &&
+        c.parameters.length == argCount &&
+        best.parameters.length != argCount) {
+      best = c;
+    }
+  }
+  for (var i = 0; i < applicable.length; i += 1) {
+    if (!atLeastAsSpecific(ctx, best, applicable[i], argCount)) {
+      return (applicable[0], true);
+    }
+  }
+  return (best, false);
+}
+
+/**
+ * Shared tail of overload selection (member-lookup.md §5.1): the
+ * most-specific candidate among the applicable ones, compared over
+ * the (substituted) resolved forms, reporting the ambiguity error at
+ * `loc`. Returns an index into the array so callers holding parallel
+ * raw/resolved arrays can recover the declared signature; -1 when
+ * nothing is applicable. Every overloaded selection site — calls,
+ * index reads, index writes — funnels through this.
+ */
+export function selectMostSpecificIndex(
+  ctx: CheckerContext,
+  applicableRes: GrowableArray<FunctionType>,
+  argCount: i32,
+  loc: SourceLocation | null
+): i32 {
+  if (applicableRes.length == 0) {
+    return -1;
+  }
+  if (applicableRes.length == 1) {
+    return 0;
+  }
+  let (winner, ambiguous) = pickMostSpecificOverload(ctx, applicableRes, argCount);
+  if (ambiguous) {
+    ctx.error(
+      "Ambiguous overload call: multiple overloads match and none is most specific. Cast an argument to select one.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
+  for (var i = 0; i < applicableRes.length; i += 1) {
+    if (applicableRes[i] == winner) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+/**
+ * The candidates a call's arguments are applicable to: right arity,
+ * and every argument assignable to the parameter facing it.
+ *
+ * `adaptLiterals` selects the second tier of call overload resolution.
+ * With it off, each argument is judged by the type it already has in
+ * `argTypes`. With it on, an argument whose type is decided by context
+ * — a bare numeric literal — is instead judged by whether it *could*
+ * be written at the parameter's type, which is what lets
+ * `div(someU32, 10)` reach the `(u32, u32)` signature. See the call
+ * site for why that is a second tier rather than the only rule.
+ *
+ * Only the first `callerArgCount` arguments may adapt. Beyond that sit
+ * default initializers spliced in from the first-declared signature,
+ * which are never re-checked against the signature that wins; letting
+ * one of those adapt would select an overload on the strength of
+ * another overload's default.
+ */
+export function collectApplicableOverloads(
+  ctx: CheckerContext,
+  candidates: GrowableArray<FunctionType>,
+  args: GrowableArray<Expression>,
+  argTypes: Array<Type>,
+  callerArgCount: i32,
+  adaptLiterals: boolean
+): GrowableArray<FunctionType> {
+  let applicable = new Array<FunctionType>();
+  for (let candidate in candidates) {
+    let expectedCount = candidate.parameters.length;
+    var requiredCount = expectedCount;
+    let optionals = candidate.optionalParameters;
+    if (optionals != null) {
+      requiredCount = 0;
+      for (let optional in optionals) {
+        if (!optional) {
+          requiredCount = requiredCount + 1;
+        }
+      }
+    }
+
+    if (args.length >= requiredCount && args.length <= expectedCount) {
+      var matchOk = true;
+      for (var i = 0; i < args.length && i < expectedCount; i += 1) {
+        let param = candidate.parameters[i];
+        if (!isAssignableTo(ctx, argTypes[i], param) &&
+            !(adaptLiterals && i < callerArgCount &&
+              argumentAdaptsToParameter(args[i], param))) {
+          matchOk = false;
+        }
+      }
+      if (matchOk) {
+        applicable.push(candidate);
+      }
+    }
+  }
+  return applicable;
+}
+
+/**
+ * Conservative value-overlap test for the overlap restriction on
+ * subclass-added overloads (member-lookup.md §5.1): true when some
+ * runtime value could satisfy both types. Exact for class-class
+ * (single inheritance: unrelated classes share no subtype) and
+ * primitive pairs; conservatively true when interfaces, type
+ * parameters, or other open-world types are involved.
+ */
+function typesMayOverlap(ctx: CheckerContext, a: Type, b: Type): boolean {
+  if (isAssignableTo(ctx, a, b) || isAssignableTo(ctx, b, a)) {
+    return true;
+  }
+  return match (a) {
+    case UnionT {types}: {
+      for (let arm in types) {
+        if (typesMayOverlap(ctx, arm, b)) { return true; }
+      }
+      false
+    }
+    case _: match (b) {
+      case UnionT {types}: {
+        for (let arm in types) {
+          if (typesMayOverlap(ctx, a, arm)) { return true; }
+        }
+        false
+      }
+      case _: {
+        let aIsClass = a is ClassType;
+        let bIsClass = b is ClassType;
+        if (aIsClass && bIsClass) {
+          // Unrelated classes (neither assignable) share no common
+          // subtype under single inheritance.
+          false
+        } else if (a is InterfaceType || b is InterfaceType ||
+            a is TypeParameterType || b is TypeParameterType) {
+          // A class can implement any interface; type parameters are
+          // open. Conservatively overlapping.
+          true
+        } else {
+          // Distinct primitives / other closed leaf types with no
+          // assignability relation are disjoint.
+          false
+        }
+      }
+    }
+  };
+}
+
+/**
+ * True when some argument tuple could be applicable to both
+ * signatures: their arity ranges intersect and every shared
+ * parameter position may overlap in values.
+ */
+export function signaturesMayOverlap(
+  ctx: CheckerContext,
+  a: FunctionType,
+  b: FunctionType
+): boolean {
+  var aRequired = a.parameters.length;
+  let aOpt = a.optionalParameters;
+  if (aOpt != null) {
+    aRequired = 0;
+    for (let o in aOpt) { if (!o) { aRequired += 1; } }
+  }
+  var bRequired = b.parameters.length;
+  let bOpt = b.optionalParameters;
+  if (bOpt != null) {
+    bRequired = 0;
+    for (let o in bOpt) { if (!o) { bRequired += 1; } }
+  }
+  let lo = if (aRequired > bRequired) aRequired else bRequired;
+  let hiA = a.parameters.length;
+  let hiB = b.parameters.length;
+  let hi = if (hiA < hiB) hiA else hiB;
+  if (lo > hi) {
+    return false;
+  }
+  var i = 0;
+  while (i < lo) {
+    if (!typesMayOverlap(ctx, a.parameters[i], b.parameters[i])) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}

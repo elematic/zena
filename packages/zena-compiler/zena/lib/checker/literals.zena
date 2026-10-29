@@ -1,0 +1,297 @@
+import {
+  BooleanLiteral, Expression, NumberLiteral, SourceLocation, StringLiteral,
+  UnaryExpression
+} from '../ast.zena';
+import {
+  BoolLiteralType, ClassType, F32Type, F64Type, I16Type, I32Type, I64Type,
+  I8Type, NumLiteralType, StringLiteralType, Type, TypeParameterType,
+  U16Type, U32Type, U64Type, U8Type, UnionType as UnionT, baseType,
+  integerLiteralFits, integerLiteralMagnitude, isNumericType,
+  signedLiteralFits, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import { unwrapAliases } from './unions.zena';
+
+export function getMatchedLiteralType(expr: Expression, expected: Type): Type | null {
+  match (expected) {
+    case BoolLiteralType {value}: {
+      if (expr is BooleanLiteral && expr.value == value) {
+        return expected;
+      }
+    }
+    case StringLiteralType {value}: {
+      if (expr is StringLiteral && expr.value == value) {
+        return expected;
+      }
+    }
+    case NumLiteralType {raw}: {
+      if (expr is NumberLiteral && expr.raw == raw) {
+        return expected;
+      }
+    }
+    case UnionT {types}: {
+      for (let type in types) {
+        let matched = getMatchedLiteralType(expr, type);
+        if (matched != null) {
+          return matched;
+        }
+      }
+    }
+    case _: {}
+  }
+  return null;
+}
+
+/**
+ * The integer types whose literal range the checker enforces: the narrow
+ * types, which exist to describe exact storage widths, and the unsigned
+ * types, which previously rejected every literal outright. Deliberately
+ * direct `is` tests — a `baseType`-based predicate would also capture a
+ * `NumLiteralType` expectation, which must keep falling through to i32.
+ */
+function isRangeCheckedIntType(t: Type): boolean {
+  return t is U8Type || t is U16Type || t is I8Type || t is I16Type ||
+      t is U32Type || t is U64Type;
+}
+
+/**
+ * Type an integer literal against its context. The literal adopts a
+ * numeric expected type when there is one, and for the types whose range
+ * the checker enforces — the narrow types and the unsigned types — it
+ * must also fit, so a byte-sized constant that cannot be stored is
+ * reported rather than silently wrapped.
+ *
+ * `negative` reports a unary minus applied directly to this literal. It
+ * is threaded in rather than inferred so that `-128` is measured against
+ * i8's lower bound instead of its upper one.
+ */
+export function checkIntegerLiteral(
+  ctx: CheckerContext,
+  raw: String,
+  negative: boolean,
+  expectedType: Type | null,
+  loc: SourceLocation | null
+): Type {
+  if (expectedType == null) {
+    return signedLiteralType(ctx, raw, negative, new I32Type(), loc);
+  }
+  // Note these are deliberately direct `is` tests rather than
+  // `isIntegerType`, which looks through `baseType` and would therefore
+  // also capture a `NumLiteralType` expectation and hand it back as the
+  // literal's type instead of i32.
+  if (expectedType is I32Type || expectedType is I64Type) {
+    return signedLiteralType(ctx, raw, negative, expectedType, loc);
+  }
+  if (expectedType is F32Type || expectedType is F64Type) {
+    return expectedType;
+  }
+  if (let TypeParameterType {defaultType} = expectedType) {
+    if (defaultType != null && isNumericType(defaultType as Type)) {
+      return expectedType;
+    }
+  }
+  if (!isRangeCheckedIntType(expectedType)) {
+    return signedLiteralType(ctx, raw, negative, new I32Type(), loc);
+  }
+  if (integerLiteralFits(raw, negative, expectedType)) {
+    return expectedType;
+  }
+  let sign = if (negative) "-" else "";
+  ctx.error(
+    "Integer literal " + sign + raw + " is out of range for type '" +
+    typeToString(expectedType) + "'.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+  // Carry on as the expected type: the range is the only thing wrong, and
+  // reporting a cascade of operator errors on top would not help.
+  return expectedType;
+}
+
+/**
+ * `t`, i32 or i64, as an integer literal's type, reporting a literal that
+ * does not fit it (see `signedLiteralFits`). A literal that wrapped
+ * would compare and compute as a different number than the one written.
+ */
+function signedLiteralType(
+  ctx: CheckerContext,
+  raw: String,
+  negative: boolean,
+  t: Type,
+  loc: SourceLocation | null
+): Type {
+  let castTarget = ctx.castLiteralTarget;
+  if (castTarget != null) {
+    if (!literalFitsCastWidth(raw, negative, castTarget as Type)) {
+      let sign = if (negative) "-" else "";
+      ctx.error(
+        `Integer literal ${sign}${raw} is out of range for type '${typeToString(castTarget as Type)}'.`,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
+    return t;
+  }
+  if (!signedLiteralFits(raw, negative, t is I64Type)) {
+    let sign = if (negative) "-" else "";
+    ctx.error(
+      `Integer literal ${sign}${raw} is out of range for type '${typeToString(t)}'.`,
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
+  return t;
+}
+
+/**
+ * Whether an integer literal fits the width of a cast to `target`, as
+ * lowering parses it there: any 64-bit value (down to -2^63) for a
+ * 64-bit integer, a 32-bit value signed or unsigned for a narrower
+ * integer, and any value for a float, which converts it.
+ */
+function literalFitsCastWidth(raw: String, negative: boolean, target: Type): boolean {
+  let base = baseType(target);
+  if (base is F32Type || base is F64Type) {
+    return true;
+  }
+  if (let (true, mag) = integerLiteralMagnitude(raw)) {
+    if (base is I64Type || base is U64Type) {
+      return !negative || mag <= (9223372036854775808 as u64);
+    }
+    return if (negative) mag <= (2147483648 as u64) else mag <= (4294967295 as u64);
+  }
+  return false;
+}
+
+/**
+ * Whether a bare numeric literal written as `raw` can be typed
+ * `target`. Mirrors `checkIntegerLiteral`'s acceptance exactly, minus
+ * the reporting: overload resolution asks this of candidates it will
+ * not choose, so a candidate that loses must not leave a diagnostic
+ * behind. Keeping the two in step is what guarantees that a candidate
+ * accepted here type-checks when the argument is re-checked against
+ * the signature that won.
+ */
+function numericLiteralAdaptsTo(raw: String, negative: boolean, target: Type): boolean {
+  if (raw.contains('.')) {
+    // A float literal takes its type from the float types only.
+    return target is F32Type || target is F64Type;
+  }
+  if (target is I32Type || target is I64Type) {
+    return signedLiteralFits(raw, negative, target is I64Type);
+  }
+  if (target is F32Type || target is F64Type) {
+    return true;
+  }
+  if (!isRangeCheckedIntType(target)) {
+    return false;
+  }
+  return integerLiteralFits(raw, negative, target);
+}
+
+/**
+ * Whether `e` is a numeric literal, or one negated, whose type its
+ * context decides, so that beside another operand it should take that
+ * operand's type.
+ */
+export function isContextTypedNumber(e: Expression): boolean {
+  return match (e) {
+  case NumberLiteral {}: true
+  case UnaryExpression {operator, argument}: operator == "-" && argument is NumberLiteral
+  case _: false
+};
+}
+
+export function isNumericOrNumericTypeParam(t: Type): boolean {
+  if (isNumericType(t)) {
+    return true;
+  }
+  if (let TypeParameterType {defaultType} = t) {
+    return defaultType != null && isNumericType(defaultType as Type);
+  }
+  return false;
+}
+
+export function isIntLiteralExpr(e: Expression): boolean {
+  return match (e) {
+    case NumberLiteral {raw}: !raw.contains('.')
+    case UnaryExpression {operator, argument}:
+      operator == "-" && argument is NumberLiteral && !(argument as NumberLiteral).raw.contains('.')
+    case _: false
+  };
+}
+
+export function extractContextualRangeBoundType(expectedType: Type | null): Type | null {
+  if (expectedType == null) {
+    return null;
+  }
+  match (unwrapAliases(expectedType)) {
+    case ClassType as ect: {
+      let targs = ect.typeArguments;
+      if ((ect.name == "Range" || ect.name == "BoundedRange" ||
+           ect.name == "FromRange" || ect.name == "ToRange" ||
+           ect.name == "FullRange") &&
+          targs != null && targs.length == 1) {
+        return targs[0];
+      }
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        let found = extractContextualRangeBoundType(member);
+        if (found != null) {
+          return found;
+        }
+      }
+    }
+    case _: {}
+  }
+  return null;
+}
+
+/**
+ * The types of a binary operator's operands when one is a numeric
+ * literal and the other is not: `other` is checked first, with
+ * `context`, and the literal then takes its type when that is numeric,
+ * so `x < 3000000000` with `x: i64` compares two i64s. Answers the
+ * literal's type, then the other's.
+ */
+export function checkLiteralBeside(
+  ctx: CheckerContext,
+  literal: Expression,
+  other: Expression,
+  context: Type | null
+): inline (Type, Type) {
+  let otherType = checkExpression(ctx, other, context);
+  let literalType = checkExpression(ctx, literal, if (isNumericOrNumericTypeParam(otherType)) otherType else context);
+  return (literalType, otherType);
+}
+
+/**
+ * Whether `arg` is an argument whose type is decided by its context
+ * rather than by the expression itself, and whether that context can
+ * be `target`. Two forms qualify: a bare numeric literal (see
+ * "Contextual Typing for Numeric Literals" in the language reference)
+ * and any literal a literal *type* names exactly. A unary minus
+ * directly on a numeric literal belongs to the literal, so `-128` is
+ * measured against i8's lower bound rather than its upper one — the
+ * same way `checkExpressionInner` measures it.
+ */
+export function argumentAdaptsToParameter(arg: Expression, target: Type): boolean {
+  if (getMatchedLiteralType(arg, target) != null) {
+    return true;
+  }
+  return match (arg) {
+    case NumberLiteral {raw}: numericLiteralAdaptsTo(raw, false, target)
+    case UnaryExpression {operator, argument}: {
+      if (operator != "-") { return false; }
+      if (let NumberLiteral {raw} = argument) {
+        numericLiteralAdaptsTo(raw, true, target)
+      } else {
+        false
+      }
+    }
+    case _: false
+  };
+}

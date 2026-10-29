@@ -1,0 +1,1444 @@
+import { HashSet } from 'zena:collections';
+import { growable } from 'zena:core';
+import { walkEnter } from '../visitor.zena';
+import {
+  AsExpression, AssignmentExpression, BinaryExpression, BindingPattern,
+  CallExpression, Expression, ExpressionStatement, Identifier,
+  IdentifierPattern, IndexExpression, IsExpression, MatchExpression,
+  MemberExpression, MethodDefinition, NamedTypeAnnotation, NewExpression,
+  Node, Parameter, SourceLocation, ThisExpression, ThisTypeAnnotation,
+  TuplePattern, TypeAnnotation, VariableDeclaration, getMemberPropertyName
+} from '../ast.zena';
+import {
+  ArrayType, ClassType, ErrorType, FieldInfo,
+  InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType,
+  ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType,
+  UnionType as UnionT, instantiateTypeAliasType, isAffineContainer,
+  isOwnershipWrapper, isScopedClassParam, isScopedType, ownershipHandleInner,
+  ownershipHandleName, releasableFuture, releaseMemberOf, soleNonNullMember,
+  typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped,
+  typeContainsSecondClass, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { Symbol, noSymbolId } from '../scope/symbol.zena';
+import { CheckerContext } from './context.zena';
+import { mentionsTypeParams, selfTypeOfClass } from './generics.zena';
+import { displayMemberName } from './members.zena';
+import { getMemberPathKey } from './narrowing.zena';
+import {
+  createUnionType, isNullableType, unwrapAliases,
+  unwrapNullableForMemberLookup
+} from './unions.zena';
+
+/**
+ * Resolve a type annotation AST node to a Type.
+ */
+/**
+ * Wraps a bare resource-class type in `Own<…>`. Constructing a resource
+ * produces the owning reference: without this, the inferred type of
+ * `let d = new Descriptor(…)` would be bare `Descriptor`, which is not a
+ * spellable type, so the value could not be named or passed anywhere.
+ *
+ * `Own` is resolved by ordinary scope lookup rather than through the prelude —
+ * putting `zena:ownership` in the prelude would add it to every program's
+ * module graph, which is measurable even for programs with no resources. A file
+ * that constructs a resource must therefore import `Own`, and if it has not,
+ * this reports that rather than silently leaving the value unwrapped.
+ */
+export function wrapResourceInOwn(ctx: CheckerContext, t: Type, loc: SourceLocation | null): Type {
+  if (!(t is ClassType)) { return t; }
+  if (!t.isResource) { return t; }
+  let own = ctx.resolveTypeName("Own");
+  if (own == null || !(own is TypeAliasType)) {
+    ctx.error(
+      "Constructing the resource class '" + t.name + "' produces an 'Own<" +
+      t.name + ">', but 'Own' is not in scope. Add: import { Own } from 'zena:core';",
+      DiagnosticCode.SymbolNotFound,
+      loc
+    );
+    return t;
+  }
+  if (own.typeParameters == null) { return t; }
+  let args = growable<Type>([t]);
+  return instantiateTypeAliasType(own, args);
+}
+
+/**
+ * Wraps a resource class in `Borrow<…>` to type `this` inside its own
+ * methods. A resource has no unwrapped form, so `this` has to be *some*
+ * handle; `Own<R>` would be wrong, since the method did not receive
+ * ownership and must not release or move its receiver.
+ *
+ * Returns the bare type when `Borrow` does not resolve. In practice it
+ * always does, and not because files import it: a stdlib module's exported
+ * type names resolve without an import today (elematic/zena#91), which is also
+ * why `wrapResourceInOwn`'s "add: import { Own }" diagnostic looks
+ * unreachable. The fallback is here so that tightening resolution
+ * degrades this to a bare `this` rather than a crash.
+ */
+export function wrapResourceInBorrow(ctx: CheckerContext, ct: ClassType): Type {
+  let borrow = ctx.resolveTypeName("Borrow");
+  if (borrow == null || !(borrow is TypeAliasType)) { return ct as Type; }
+  if (borrow.typeParameters == null) { return ct as Type; }
+  let args = growable<Type>([ct as Type]);
+  return instantiateTypeAliasType(borrow, args);
+}
+
+/**
+ * The type a READ of a field of type `t` yields. An affine field reads
+ * as a borrow — a read must not mint a second owner; moving a field
+ * out is a consuming method's privilege (ownership.md §Affine fields).
+ * A nullable owner keeps its null arm: `Own<R> | null` reads as
+ * `Borrow<R> | null`. Everything else reads as itself.
+ */
+export function borrowWrapFieldRead(ctx: CheckerContext, t: Type): Type {
+  let nonNull = soleNonNullMember(t);
+  let core = nonNull ?? t;
+  if (ownershipHandleName(core) != "Own") { return t; }
+  let inner = ownershipHandleInner(core);
+  if (inner == null) { return t; }
+  let borrow = ctx.resolveTypeName("Borrow");
+  if (borrow == null || !(borrow is TypeAliasType)) { return t; }
+  if (borrow.typeParameters == null) { return t; }
+  let args = growable<Type>([inner]);
+  let borrowed = instantiateTypeAliasType(borrow, args);
+  if (nonNull == null) { return borrowed; }
+  let arms = growable<Type>([borrowed, new NullType()]);
+  return createUnionType(arms, null, null);
+}
+
+/**
+ * A pattern that takes apart a tuple holding an owner moves it: the
+ * owners go to the pattern's bindings, so the tuple must not hold them
+ * too (#495). The move is recorded before the branch, so the binding is
+ * dead on the path where the pattern does not match as well.
+ */
+export function moveDestructuredTuple(ctx: CheckerContext, source: Expression, t: Type): void {
+  if (isAffineTuple(t)) {
+    recordArgumentMove(ctx, source, t);
+  }
+}
+
+/**
+ * The type a read of a tuple element of type `t` yields. An owner reads
+ * as a borrow, as an owner field does, so the read does not mint a second
+ * owner (#495). An element that is itself a tuple holding an owner has no
+ * borrowed form, and a read would copy its owners, so it is an error:
+ * destructuring moves them out instead.
+ */
+export function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocation | null): Type {
+  if (isAffineValue(t)) {
+    ctx.error(
+      `An element of type '${typeToString(t)}' holds an owner, so reading it would copy the owner. Destructure the tuple to move it out.`,
+      DiagnosticCode.TypeMismatch,
+      loc,
+    );
+    return new ErrorType();
+  }
+  return borrowWrapFieldRead(ctx, t);
+}
+
+/**
+ * Whether a binding of type `t` is move-checked like an owner: a tuple
+ * holding an owner (#495), or an instance of a container of one, such
+ * as a `Future<Own<R>>`, which its `await` consumes.
+ */
+export function isAffineValue(t: Type): boolean {
+  if (isAffineTuple(t)) { return true; }
+  return isAffineContainer(soleNonNullMember(t) ?? t);
+}
+
+/**
+ * Whether `t` is a tuple, boxed or inline, or a union of them, that holds
+ * an owner. Such a tuple is affine itself (#495): building it moves the
+ * owner in, a binding of it moves like an `Own<R>`, and destructuring it
+ * moves the owners out.
+ */
+function isAffineTuple(t: Type): boolean {
+  let resolved = unwrapAliases(t);
+  if (resolved is TupleT || resolved is InlineTupleT) {
+    return typeCarriesOwner(resolved);
+  }
+  if (let UnionT {types} = resolved) {
+    for (let member in types) {
+      if (isAffineTuple(member)) { return true; }
+    }
+  }
+  return false;
+}
+
+/**
+ * A type whose values follow the scoped consumption rules — the
+ * `Scoped` wrapper itself, or a `scoped T` parameter's values, which
+ * the body checks at the same discipline.
+ */
+export function isScopedValueType(t: Type): boolean {
+  if (isScopedType(t)) { return true; }
+  return t is TypeParameterType && t.isScoped;
+}
+
+/**
+ * Whether `e` mentions a binding rooted in the current body's
+ * second-class parameters — the conservative derivation test for a
+ * scoped initializer or an await operand. Mentioning is enough: the
+ * common shapes are the parameter itself and a call passing it, and
+ * a false positive only demands a Scoped return that is then legal.
+ */
+export function mentionsParamDerived(ctx: CheckerContext, e: Node): boolean {
+  var found = false;
+  walkEnter(e, (n) => {
+    if (found) { return; }
+    if (!(n is Identifier)) { return; }
+    let info = ctx.model.resolve(n);
+    if (info != null && ctx.isParamDerivedSecondClass(info.id)) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+/**
+ * Whether `expected` is a container type whose element type is
+ * second-class — the shape a `scoped T` parameter presents to an
+ * argument literal, raw (`Array<T>`) or substituted
+ * (`Array<Scoped<F>>`).
+ */
+export function scopedElementsExpected(expected: Type | null): boolean {
+  if (expected == null) { return false; }
+  let e = expected as Type;
+  match (e) {
+    case ArrayType {elementType}: { return typeContainsSecondClass(elementType); }
+    case ClassType {typeArguments}: {
+      if (typeArguments != null && typeArguments.length > 0) {
+        return typeContainsSecondClass(typeArguments[0]);
+      }
+      return false;
+    }
+    case InterfaceType {typeArguments}: {
+      if (typeArguments != null && typeArguments.length > 0) {
+        return typeContainsSecondClass(typeArguments[0]);
+      }
+      return false;
+    }
+    case _: { return false; }
+  }
+}
+
+/** The annotation-position variant of rejectSecondClassStorage. */
+export function rejectConcreteSecondClassStorage(
+  ctx: CheckerContext,
+  t: Type,
+  where: String,
+  loc: SourceLocation | null
+): void {
+  if (!typeContainsConcreteSecondClass(t)) { return; }
+  rejectSecondClassStorage(ctx, t, where, loc);
+}
+
+/**
+ * A generator may not take a restricted borrow parameter at all: its
+ * ramp is lazy — the frame is allocated, the arguments spill into it and
+ * the iterator returns without running any body code — so every use of
+ * the parameter happens after the caller has taken the iterator, and
+ * there is no prefix in which the borrow is safe. Contrast async, whose
+ * eager ramp makes uses up to the first `await` legal; see ownership.md
+ * §"Borrows and suspension".
+ */
+export function rejectGeneratorBorrowParams(
+  ctx: CheckerContext,
+  params: GrowableArray<Parameter>,
+  paramTypes: Array<Type>
+): void {
+  var i = 0;
+  while (i < paramTypes.length && i < params.length) {
+    if (typeContainsSecondClass(paramTypes[i])) {
+      ctx.error(
+        "A generator may not take a '" + typeToString(paramTypes[i]) +
+        "' parameter: the body only runs once the caller holds the " +
+        "iterator, so every use of the borrow would be outside the " +
+        "extent it was borrowed from.",
+        DiagnosticCode.IncompatibleTypes,
+        params[i].loc
+      );
+    }
+    i += 1;
+  }
+}
+
+/**
+ * Rejects a second-class type in a storage position — a field, a container
+ * element, a record field, a tuple element. See ownership.md §"The two
+ * axes", which spells the field case out: a field outlives any extent, so
+ * a borrow in one has outlived the scope that lent it.
+ *
+ * This is deliberately a rule about the *type* rather than about a
+ * particular assignment. Once `Borrow<R>` cannot be a field's type or a
+ * container's element type there is no storage location left that could
+ * hold one, so no flow analysis is needed to find the stores — including
+ * the ones that never name the type, like `xs.push(f)`.
+ *
+ * `where` names the storage in the diagnostic, and reads as both "may not
+ * be stored in <where>" and "<where> outlives every scope".
+ */
+export function rejectSecondClassStorage(
+  ctx: CheckerContext,
+  t: Type,
+  where: String,
+  loc: SourceLocation | null
+): void {
+  if (!typeContainsSecondClass(t)) { return; }
+  if (!typeContainsConcreteSecondClass(t)) {
+    ctx.error(
+      `A '${typeToString(t)}' may not be stored in ${where}. A 'scoped' type parameter ` +
+      "may be bound to a borrow or a scoped value, which may not outlive its extent, " +
+      "or to an owner, which may not be copied.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return;
+  }
+  if (typeContainsScoped(t)) {
+    ctx.error(
+      "A '" + typeToString(t) + "' may not be stored in " + where + ". A scoped value " +
+      "may not outlive the extent it derives from, and " + where + " outlives every extent.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return;
+  }
+  ctx.error(
+    "A '" + typeToString(t) + "' may not be stored in " + where + ". A borrow may not " +
+    "outlive the scope it was borrowed from, and " + where + " outlives every scope one " +
+    "could have been lent for.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+}
+
+/** The type parameters `ct` declares `scoped`. */
+export function scopedTypeParamsOf(ct: ClassType): Array<TypeParameterType> {
+  let scoped = new GrowableArray<TypeParameterType>();
+  let params = ct.typeParameters;
+  if (params != null) {
+    for (let p in params) {
+      if (p.isScoped) { scoped.push(p); }
+    }
+  }
+  return scoped;
+}
+
+/**
+ * The storage rule for a field. A `scoped T` class may hold its `T`
+ * (ownership.md §"Scoped type arguments"); every other second-class
+ * type is rejected as for any storage.
+ */
+export function rejectFieldStorage(ctx: CheckerContext, t: Type, loc: SourceLocation | null): void {
+  if (scopedParamsFieldHeld(t)) {
+    rejectConcreteSecondClassStorage(ctx, t, "a field", loc);
+    return;
+  }
+  rejectSecondClassStorage(ctx, t, "a field", loc);
+}
+
+/**
+ * Whether every `scoped` type parameter `t` mentions is where a field
+ * may hold one: bare, as a union member (`T | null`), or as the
+ * argument of another class's `scoped` parameter (`Future<T>`). Each of
+ * those is moved out with a take. Inside anything else, such as an
+ * `Array<T>` whose index reads would copy it, a `T` is second-class
+ * storage like a borrow.
+ */
+function scopedParamsFieldHeld(t: Type): boolean {
+  if (t is TypeParameterType) { return true; }
+  if (isWithDefaultType(t)) {
+    let args = (t as TypeAliasType).typeArguments;
+    return args != null && args.length == 1 && scopedParamsFieldHeld(args[0]);
+  }
+  if (t is UnionT) {
+    for (let m in t.types) {
+      if (!scopedParamsFieldHeld(m)) { return false; }
+    }
+    return true;
+  }
+  if (t is ClassType) {
+    let args = t.typeArguments;
+    if (args == null) { return true; }
+    for (var i = 0; i < args.length; i += 1) {
+      let held = if (isScopedClassParam(t, i)) {
+        scopedParamsFieldHeld(args[i])
+      } else {
+        !typeContainsSecondClass(args[i])
+      };
+      if (!held) { return false; }
+    }
+    return true;
+  }
+  return !typeContainsSecondClass(t);
+}
+
+/**
+ * Rejects an affine type as a structural member — a record field or a
+ * tuple element. Structural values convert by adaptation, adaptation
+ * copies, and a copy would duplicate the owner; there is also no
+ * dispose slot to hang release glue on. The affine twin of
+ * rejectSecondClassStorage: borrows are kept out of structural types
+ * for extent reasons, owners for duplication reasons
+ * (ownership.md §Affine fields).
+ */
+export function rejectAffineStructuralMember(
+  ctx: CheckerContext,
+  t: Type,
+  where: String,
+  loc: SourceLocation | null
+): void {
+  if (!typeCarriesOwner(t)) { return; }
+  ctx.error(
+    "A '" + typeToString(t) + "' may not be " + where + ": structural " +
+    "values copy when they adapt, and a copy would duplicate the owner. " +
+    "Hold it in a resource class's field instead.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+}
+
+/**
+ * Every type argument of a class is a storage position, because the class
+ * is a heap object that outlives the scope constructing it. Applied where
+ * a class is instantiated rather than only where one is spelled, so
+ * `new GrowableArray<Borrow<File>>()` and a `T` inferred from a borrow argument
+ * are caught alike.
+ */
+export function rejectSecondClassTypeArguments(
+  ctx: CheckerContext,
+  typeParams: Array<TypeParameterType>,
+  typeArgs: Array<Type>,
+  loc: SourceLocation | null
+): void {
+  for (var i = 0; i < typeArgs.length; i += 1) {
+    // A `scoped` class parameter admits the argument; the instantiated
+    // type then carries the restriction itself (ownership.md §"Scoped
+    // containers and extent nesting").
+    if (i < typeParams.length && typeParams[i].isScoped) { continue; }
+    let name = if (i < typeParams.length) typeParams[i].name else "T";
+    rejectOwnerTypeArgument(ctx, name, typeArgs[i], loc);
+    rejectSecondClassStorage(ctx, typeArgs[i], "a container", loc);
+  }
+}
+
+/**
+ * Rejects an owner bound to an unrestricted type parameter (ownership.md
+ * §"Affine type arguments", #379). The generic body was checked as if a
+ * `T` may be copied: a class may read its `T` field twice, a function may
+ * return its `T` twice, and each copy of an owner is another owner of the
+ * same resource, released again. `scoped T` admits an owner, and a
+ * generic over resources spells the handle around its parameter instead.
+ */
+function rejectOwnerTypeArgument(
+  ctx: CheckerContext,
+  name: String,
+  t: Type,
+  loc: SourceLocation | null
+): void {
+  if (!typeCarriesOwner(t)) { return; }
+  ctx.error(ownerTypeArgumentMessage(name, t), DiagnosticCode.TypeMismatch, loc);
+}
+
+export function ownerTypeArgumentMessage(name: String, t: Type): String {
+  return "Type '" + typeToString(t) + "' may not bind the unrestricted type " +
+    "parameter '" + name + "': the generic code may copy a '" + name +
+    "', and a copy of an owner is a second owner of the same resource. " +
+    "A generic over resources takes 'Own<" + name + ">' or 'Borrow<" +
+    name + ">', with '" + name + "' the resource class.";
+}
+
+/**
+ * Rejects a second-class type bound to an unrestricted function type
+ * parameter (ownership.md §"Scoped type arguments"). The generic body
+ * was checked assuming a `T` may be stored, copied, and captured, so a
+ * borrow or scoped argument flowing in escapes every rule the value
+ * carries. Class type parameters are covered by the storage-position
+ * rule; this is the function half.
+ */
+export function rejectSecondClassFunctionTypeArgs(
+  ctx: CheckerContext,
+  typeParams: Array<TypeParameterType>,
+  typeArgs: Array<Type>,
+  loc: SourceLocation | null
+): void {
+  for (var i = 0; i < typeParams.length && i < typeArgs.length; i += 1) {
+    if (typeParams[i].isScoped) { continue; }
+    rejectOwnerTypeArgument(ctx, typeParams[i].name, typeArgs[i], loc);
+    if (!typeContainsSecondClass(typeArgs[i])) { continue; }
+    ctx.error(
+      "Type '" + typeToString(typeArgs[i]) + "' may not bind the unrestricted " +
+      "type parameter '" + typeParams[i].name + "': the generic body may " +
+      "store, copy, or capture a '" + typeParams[i].name + "', and a " +
+      "second-class value may do none of those. The parameter would have to " +
+      "be declared 'scoped " + typeParams[i].name + "'.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
+}
+
+/**
+ * The derivation rule for a returned second-class value: it must derive
+ * from exactly one borrow the function was handed. See ownership.md
+ * §"Derived borrows".
+ *
+ * A blanket ban on returning borrows would reject the cases that make
+ * borrows usable — field projection above all, since `f.name` on a
+ * borrowed `f` has to be a borrow itself. Elision is what admits them:
+ * with one borrow parameter the result is understood to borrow that
+ * parameter's source, so its extent is the *caller's* borrow scope, which
+ * already encloses this call. Returning is then not an escape.
+ *
+ * With no borrow parameter there is no such scope to name, and with two
+ * the signature does not say which one bounds the result. The ambiguous
+ * case is left an error rather than guessed; ownership.md records naming
+ * the source positionally as the alternative, still open.
+ *
+ * `borrowedReceiver` counts a method's `this` as a source, which is what
+ * it will be once a resource's methods take `this` as a borrow.
+ */
+export function checkBorrowDerivation(
+  ctx: CheckerContext,
+  paramTypes: Array<Type>,
+  returnType: Type,
+  borrowedReceiver: boolean,
+  loc: SourceLocation | null
+): void {
+  if (!typeContainsSecondClass(returnType)) { return; }
+  var sources = if (borrowedReceiver) 1 else 0;
+  for (let p in paramTypes) {
+    if (typeContainsSecondClass(p)) { sources += 1; }
+  }
+  if (sources == 1) { return; }
+  let shown = typeToString(returnType);
+  if (sources == 0) {
+    ctx.error(
+      "Returning a '" + shown + "' with no borrow parameter to derive from. A borrow may " +
+      "not outlive the scope it was borrowed from, and this function has no borrow whose " +
+      "scope could bound the result.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return;
+  }
+  ctx.error(
+    `Which borrow the returned '${shown}' derives from is ambiguous: this function has ` +
+    `${sources} borrow parameters, and the result is bounded by the scope of ` +
+    "whichever one it borrows from.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+}
+
+/**
+ * Whether a receiver annotation is `<handle><this>` — `Own<this>` for the
+ * consuming receiver, `Borrow<this>` for the default spelled out.
+ *
+ * Matched on the annotation's syntax rather than on a resolved type. A
+ * receiver is a fixed grammatical form rather than an arbitrary type
+ * expression, and matching it by shape is what keeps `Own<this>` from being
+ * reachable through an alias that hides which handle was meant. The `Own`
+ * named here is the one `wrapResourceInOwn` resolves for `new`.
+ */
+function receiverHandleIs(ann: TypeAnnotation, handle: String): boolean {
+  if (let NamedTypeAnnotation {name, typeArguments} = ann) {
+    if (name != handle || typeArguments == null) { return false; }
+    return typeArguments.length == 1 && typeArguments[0] is ThisTypeAnnotation;
+  } else { return false; }
+}
+
+/**
+ * Whether `md` declares an owning receiver, so that `this` in its body is
+ * the owner rather than a borrow. Reports nothing: the body pass runs after
+ * the member pass has already validated the declaration, and a method whose
+ * receiver was rejected falls back to the borrowing default.
+ */
+export function declaresOwningReceiver(md: MethodDefinition): boolean {
+  let r = md.receiver;
+  if (r == null) { return false; }
+  return receiverHandleIs(r, "Own");
+}
+
+/**
+ * Validates a declared receiver and reports what it is.
+ *
+ * A receiver is only declarable where the handles reach: on a resource
+ * class's instance method. An ordinary class hands its methods a bare
+ * reference — nothing can produce an `Own<Plain>` to call a consuming method
+ * with — and a static method has no receiver at all. `Unmanaged<this>` is
+ * excluded for the reason ownership.md gives for `Unmanaged<R>` having no
+ * user-callable dispose: it is not an owner, so it cannot be handed the one
+ * receiver worth declaring.
+ *
+ * See docs/design/ownership.md §"Release consumes its receiver".
+ */
+export function checkReceiverDeclaration(
+  ctx: CheckerContext,
+  classType: ClassType,
+  md: MethodDefinition
+): ReceiverKind {
+  let r = md.receiver;
+  if (r == null) { return ReceiverKind.Implicit; }
+  if (md.isStatic) {
+    ctx.error(
+      "A static method has no receiver to declare: it is called on the class rather " +
+      "than on an instance.",
+      DiagnosticCode.TypeMismatch,
+      md.loc
+    );
+    return ReceiverKind.Invalid;
+  }
+  if (!classType.isResource) {
+    ctx.error(
+      "Only a resource class's method may declare its receiver. '" + classType.name +
+      "' is an ordinary class, so its methods are called on a bare reference and no " +
+      "caller could produce a handle to satisfy a declared receiver.",
+      DiagnosticCode.TypeMismatch,
+      md.loc
+    );
+    return ReceiverKind.Invalid;
+  }
+  if (receiverHandleIs(r, "Own")) { return ReceiverKind.Owning; }
+  if (receiverHandleIs(r, "Borrow")) { return ReceiverKind.Borrowing; }
+  ctx.error(
+    "A receiver is declared as 'Own<this>' or 'Borrow<this>'. 'this' rather than '" +
+    classType.name + "' written out, because a subclass inherits this signature and " +
+    "its receiver is an owned subclass, not an owned '" + classType.name + "'.",
+    DiagnosticCode.TypeMismatch,
+    md.loc
+  );
+  return ReceiverKind.Invalid;
+}
+
+/**
+ * A method that consumes its receiver may only be reached through the owner.
+ *
+ * This is the payoff of declaring the receiver at all, and it holds before
+ * move checking does: releasing ends the object's life, and a borrow never
+ * had that life to end. It catches a resource's own methods too, since a
+ * borrowing method's `this` is a `Borrow<R>` — a method that only borrows
+ * cannot release what it was lent.
+ */
+export function rejectConsumingThroughNonOwner(
+  ctx: CheckerContext,
+  handle: Type,
+  inner: Type,
+  propName: String,
+  loc: SourceLocation | null
+): void {
+  if (ownershipHandleName(handle) == "Own") { return; }
+  if (!(inner is ClassType)) { return; }
+  if (!inner.members.has(propName)) { return; }
+  let member = inner.members[propName];
+  if (!(member is MethodInfo)) { return; }
+  if (!member.consumesReceiver()) { return; }
+  ctx.error(
+    "'" + displayMemberName(propName) + "' consumes its receiver, so it may only be called on an 'Own<" +
+    inner.name + ">'. Releasing ends the resource's life, and a '" + typeToString(handle) +
+    "' never had that life to end.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+}
+
+/**
+ * A plain identifier argument handed to an `Own` parameter moves the
+ * binding: the callee owns the value from here, and the flow graph is
+ * what makes a later use an error. Only bindings are tracked — a value
+ * produced by an expression has no binding left behind to misuse.
+ */
+export function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Type): void {
+  // A consuming method's `this` handed to an owning sink moves the
+  // receiver: whoever took it releases it, so the method's exit does not.
+  if (arg is ThisExpression) {
+    let rs = ctx.receiverSymbol;
+    if (rs == null) { return; }
+    let sinkCore = moveSinkCore(paramType);
+    if (ownershipHandleName(sinkCore) == "Own" || isAffineValue(sinkCore)) {
+      ctx.recordFlowMove(rs.id, "this", arg.loc);
+    } else if (ownershipHandleName(sinkCore) == "") {
+      // An adaptation or an erased slot keeps the owner without a
+      // recorded move, so the exit must not release it.
+      ctx.markUndroppable(rs.id);
+    }
+    return;
+  }
+  // `this.field` handed to an owning sink inside a consuming method is
+  // the field's move-out (ownership.md §Affine fields); the read kept
+  // its owner type only there, so an affine test on the checked type
+  // is what scopes this to that context.
+  // A `WithDefault<T>` slot read back as its `T` (`this.#value as T`)
+  // moves the slot's value as the bare read would.
+  if (arg is AsExpression) {
+    let inner = castOperand(arg);
+    if (inner is MemberExpression) {
+      recordScopedFieldSinkMove(ctx, inner, paramType);
+    }
+    return;
+  }
+  if (arg is MemberExpression) {
+    let me = arg;
+    if (recordScopedFieldSinkMove(ctx, me, paramType)) { return; }
+    if (me.object is ThisExpression && ctx.owningReceiver) {
+      let sink = ownershipHandleName(soleNonNullMember(paramType) ?? paramType);
+      if (sink == "Own") {
+        let at = ctx.model.getNodeType(arg);
+        if (at != null && typeCarriesOwner(at)) {
+          recordOwnerFieldMove(ctx, me, arg.loc);
+        }
+      }
+    }
+    return;
+  }
+  if (!(arg is Identifier)) { return; }
+  let info = ctx.model.resolve(arg);
+  if (info == null) { return; }
+  // An `Own<R> | null` sink takes ownership the same way `Own<R>` does;
+  // null just means there may be nothing to own.
+  let sinkType = moveSinkCore(paramType);
+  let handle = ownershipHandleName(sinkType);
+  if (handle == "Own" || isAffineValue(sinkType)) {
+    ctx.recordFlowMove(info.id, info.name, arg.loc);
+    return;
+  }
+  // A scoped sink consumes the argument too: handing a scoped value to
+  // a scoped parameter (or rebinding it, which comes through here with
+  // the declaration's type as the sink) is its one permitted move.
+  if (isScopedValueType(sinkType)) {
+    let at = ctx.model.getNodeType(arg);
+    if (at != null && isScopedValueType(at)) {
+      ctx.recordFlowMove(info.id, info.name, arg.loc);
+    }
+    return;
+  }
+  if (handle == "") {
+    // Not a handle-typed sink. An owned argument that lands in one — an
+    // interface adaptation, an erased generic slot — escapes without a
+    // recorded move, so implicit drop must leave the binding alone.
+    let at = ctx.model.getNodeType(arg);
+    if (at != null && (ownershipHandleName(at) == "Own" || isAffineValue(at))) {
+      ctx.markUndroppable(info.id);
+    }
+  }
+  // Borrow / Unmanaged sinks are borrows; nothing to record.
+}
+
+/**
+ * An `Own<resource>` declared by a simple `let` in a block: a candidate
+ * for release at that block's exit, pending exitOwnScope's verdict.
+ * A union owner (`Own<A | B>`) carries every member class — the
+ * release dispatches on the dynamic one, and each needs its `:dispose`
+ * rooted.
+ */
+export final class OwnDropCandidate {
+  sym: Symbol;
+  node: Node;
+  resources: GrowableArray<ClassType>;
+  /**
+   * A `var` binding: released over intervals of its block's statements
+   * rather than a region to the block's end, since a store may revive
+   * it after a move (ownership.md §Implicit drop).
+   */
+  isVar: boolean;
+  /** The declaration statement, to place the binding in its block. */
+  declNode: Node | null;
+  /** The flow node of the declaration; move searches stop there. */
+  declFlowId: i32;
+  /** The binding's move count when its block's current statement began. */
+  var moveMark: i32 = 0;
+  /**
+   * One triple per top-level statement of the declaring block from the
+   * declaration on: the statement's index, whether it moved the
+   * binding, whether the binding is live after it.
+   */
+  events: GrowableArray<i32> = new Array<i32>();
+  /** Set once the declaration's own statement event was recorded. */
+  var placed: boolean = false;
+  /**
+   * The first statement event was not the declaration: registered from
+   * a nested list that opens no scope of its own (a match arm's block),
+   * so the indices would name the wrong statements. No regions then.
+   */
+  var misplaced: boolean = false;
+  /** Plain stores into the binding, and whether it was live before each. */
+  storeNodes: GrowableArray<Node> = new Array<Node>();
+  storeLive: GrowableArray<boolean> = new Array<boolean>();
+  new(this.sym, this.node, this.resources, this.isVar, this.declNode,
+      this.declFlowId);
+}
+
+/**
+ * A `var` owner binding's release intervals from its statement events,
+ * as [start, end) pairs of statement indices (end -1: the block's end).
+ * The declaration's own event opens the first interval after it. A
+ * statement that moves the binding sits outside every interval — until
+ * a store revives the binding, it holds a value whoever took it will
+ * release — so it closes the open one, and the binding's liveness after
+ * it says whether a new one opens. A statement after which the binding
+ * is dead without a move ended the path (a return, a throw), so the
+ * interval closes after it, the region covering that exit.
+ */
+export function computeOwnIntervals(c: OwnDropCandidate, out: GrowableArray<i32>): void {
+  var open = -1;
+  var n = 0;
+  var first = true;
+  let close = (end: i32) => {
+    if (open >= 0 && end > open) {
+      out.push(open);
+      out.push(end);
+    }
+    open = -1;
+  };
+  while (n + 2 < c.events.length) {
+    let index = c.events[n];
+    let movedIn = c.events[n + 1] == 1;
+    let liveAfter = c.events[n + 2] == 1;
+    n += 3;
+    if (first) {
+      first = false;
+      if (liveAfter) { open = index + 1; }
+      continue;
+    }
+    if (movedIn) {
+      close(index);
+      if (liveAfter) { open = index + 1; }
+    } else if (open < 0 && liveAfter) {
+      open = index + 1;
+    } else if (open >= 0 && !liveAfter) {
+      close(index + 1);
+    }
+  }
+  if (open >= 0) {
+    out.push(open);
+    out.push(-1);
+  }
+}
+
+/**
+ * A `Scoped` binding declared by a simple `let`, pending the
+ * must-consume verdict at its block's exit (ownership.md §"Required
+ * consumption"): consumed exactly once on every path, or an error —
+ * there is no release glue to fall back on.
+ */
+export final class ScopedConsumeCandidate {
+  sym: Symbol;
+  node: Node;
+  new(this.sym, this.node);
+}
+
+/**
+ * The declared type of the owner field `lm` names, when it is one — an
+ * affine field of a resource class (ownership.md §Affine fields) — or
+ * null. A store into such a field is a move into the field's `Own<R>`,
+ * so the assignment's sink is this declared type rather than the
+ * borrow a read of the field yields.
+ */
+export function affineOwnerFieldType(ctx: CheckerContext, lm: MemberExpression): Type | null {
+  let fi = ownerFieldInfo(ctx, lm);
+  return if (fi == null) null else fi.type;
+}
+
+/** The owner field `lm` names on a resource class, or null. */
+function ownerFieldInfo(ctx: CheckerContext, lm: MemberExpression): FieldInfo | null {
+  let objT = ctx.model.getNodeType(lm.object);
+  if (objT == null) { return null; }
+  // The receiver reaches here as it is typed at the access: usually
+  // behind an ownership handle (`this` is `Borrow<C>` or `Own<C>`),
+  // sometimes nullable under an optional chain.
+  var recvT = objT;
+  var peeled = ownershipHandleInner(recvT);
+  if (peeled != null) { recvT = peeled; }
+  let nonNull = unwrapNullableForMemberLookup(recvT);
+  if (nonNull == null) { return null; }
+  recvT = nonNull;
+  peeled = ownershipHandleInner(recvT);
+  if (peeled != null) { recvT = peeled; }
+  if (!(recvT is ClassType)) { return null; }
+  let ct = recvT as ClassType;
+  if (!ct.isResource) { return null; }
+  let propName = getMemberPropertyName(lm.isSymbolAccess, lm.property.name);
+  if (!ct.members.has(propName)) { return null; }
+  let m = ct.members[propName];
+  if (!(m is FieldInfo)) { return null; }
+  let fi = m as FieldInfo;
+  if (!typeCarriesOwner(fi.type)) { return null; }
+  return fi;
+}
+
+/**
+ * The field `me` names when its declared type holds its class's
+ * `scoped T`, or null. Declared, so that a read through any receiver
+ * counts: `this.#value`, another instance's `src.#value`, or a public
+ * field read from outside on a `Slot<Own<R>>`, whose instantiated
+ * member type no longer names `T`. Whether the take stores its null is
+ * decided per specialization.
+ */
+export function scopedFieldInfo(ctx: CheckerContext, me: MemberExpression): FieldInfo | null {
+  let objT = ctx.model.getNodeType(me.object);
+  if (objT == null) { return null; }
+  let peeled = ownershipHandleInner(objT) ?? objT;
+  let recvT = soleNonNullMember(peeled) ?? peeled;
+  if (!(recvT is ClassType)) { return null; }
+  let declaring = (recvT as ClassType).genericSource ?? (recvT as ClassType);
+  let scoped = scopedTypeParamsOf(declaring);
+  if (scoped.length == 0) { return null; }
+  let propName = getMemberPropertyName(me.isSymbolAccess, me.property.name);
+  if (!declaring.members.has(propName)) { return null; }
+  let m = declaring.members[propName];
+  if (!(m is FieldInfo)) { return null; }
+  let fi = m as FieldInfo;
+  if (!mentionsTypeParams(fi.type, scoped)) { return null; }
+  return fi;
+}
+
+/**
+ * A `scoped T` field's value handed to a restricted sink (a `T`
+ * parameter, a binding, a `Future<T>`) moves out of the field; a borrow
+ * of it moves nothing. Whether `me` named such a field.
+ */
+function recordScopedFieldSinkMove(ctx: CheckerContext, me: MemberExpression,
+    paramType: Type): boolean {
+  let sfi = scopedFieldInfo(ctx, me);
+  if (sfi == null) { return false; }
+  let sinkCore = moveSinkCore(paramType);
+  let sinkHandle = ownershipHandleName(sinkCore);
+  // Inside the class the sink is the open `T`; outside it, on a
+  // `Slot<Own<R>>`, it is the owner itself.
+  if (sinkHandle != "Borrow" && sinkHandle != "Unmanaged" &&
+      (typeContainsSecondClass(sinkCore) || typeCarriesOwner(sinkCore))) {
+    recordScopedFieldTake(ctx, me, sfi as FieldInfo, me.loc);
+  }
+  return true;
+}
+
+/** The expression under any `as` casts around `e`. */
+export function castOperand(e: Expression): Expression {
+  var current = e;
+  while (current is AsExpression) {
+    current = current.expression;
+  }
+  return current;
+}
+
+/**
+ * The type a move into a sink of `paramType` hands its value to. A
+ * nullable sink (`Own<R> | null`) and a slot that may be empty
+ * (`WithDefault<T>`) take the same value as their core.
+ */
+function moveSinkCore(paramType: Type): Type {
+  if (isWithDefaultType(paramType)) {
+    let args = (paramType as TypeAliasType).typeArguments;
+    if (args != null && args.length == 1) { return args[0]; }
+  }
+  return soleNonNullMember(paramType) ?? paramType;
+}
+
+/** Whether `t` is an instance of the `WithDefault<T>` operator. */
+function isWithDefaultType(t: Type): boolean {
+  return t is TypeAliasType && t.intrinsicName == 'type.withDefault';
+}
+
+/**
+ * A move of a `scoped T` field's value out of the object
+ * (owner-futures.md §"The class half of `scoped T`"). It is a take, as
+ * for an owner field: the move leaves null behind, so the field must be
+ * a nullable `var`. Whether the take stores the null is decided per
+ * specialization: at a first-class `T` the read is a copy.
+ */
+export function recordScopedFieldTake(ctx: CheckerContext, me: MemberExpression,
+    fi: FieldInfo, loc: SourceLocation | null): void {
+  let name = getMemberPropertyName(me.isSymbolAccess, me.property.name);
+  let display = "this." + name;
+  if (!isNullableType(fi.type) && !isWithDefaultType(fi.type)) {
+    // A bare `T` empties into `WithDefault<T>`, since `T | null` has
+    // no value at a primitive `T` (#614).
+    let shown = typeToString(fi.type);
+    let suggested = if (fi.type is TypeParameterType) `WithDefault<${shown}>` else `${shown} | null`;
+    ctx.error(
+      `'${display}' is not nullable, so moving its value out would leave the ` +
+        `object without one. Declare it 'var ${name}: ${suggested}' so the move ` +
+        "leaves it empty.",
+      DiagnosticCode.UseAfterMove,
+      loc
+    );
+    return;
+  }
+  if (!fi.isMutable) {
+    ctx.error(
+      `Moving '${display}' out leaves null in it, so the field must be declared 'var'.`,
+      DiagnosticCode.InvalidAssignment,
+      loc
+    );
+    return;
+  }
+  ctx.model.setFieldTake(me as Node);
+}
+
+/**
+ * A move of `this.field` out of a consuming method (ownership.md
+ * §Affine fields). A nullable field is taken: the move leaves null in
+ * it, so the field must be `var`, and nothing goes on the flow graph,
+ * since the field then just holds null and the release glue skips null.
+ * A non-null field has nothing to leave behind, so only a dispose, the
+ * object's last act, may move it; there it is a path move, verified on
+ * every exit, that the glue skips.
+ */
+export function recordOwnerFieldMove(ctx: CheckerContext, me: MemberExpression,
+    loc: SourceLocation | null): void {
+  let pathKey = getMemberPathKey(ctx, me);
+  if (pathKey == null) { return; }
+  let name = getMemberPropertyName(me.isSymbolAccess, me.property.name);
+  let display = "this." + name;
+  let fi = ownerFieldInfo(ctx, me);
+  if (fi != null && isNullableType(fi.type)) {
+    if (!fi.isMutable) {
+      ctx.error(
+        "Moving '" + display + "' out leaves null in it, so the field " +
+          "must be declared 'var'.",
+        DiagnosticCode.InvalidAssignment,
+        loc
+      );
+      return;
+    }
+    ctx.model.setFieldTake(me as Node);
+    return;
+  }
+  if (!ctx.inDispose) {
+    let declared = if (fi == null) "..." else typeToString(fi.type);
+    ctx.error(
+      "'" + display + "' is not nullable, so only a dispose can move it " +
+        "out: anywhere else the move would leave the object without it. " +
+        "Declare it 'var " + name + ": " + declared + " | null' so the " +
+        "move leaves null in it.",
+      DiagnosticCode.UseAfterMove,
+      loc
+    );
+    return;
+  }
+  ctx.recordFlowPathMove(pathKey, display, loc);
+}
+
+/**
+ * The resource classes an `Own` inner type names: one for a lone
+ * resource class, all members for a union of them, null when anything
+ * else appears (a non-resource member has no release obligation, so
+ * the binding is not an implicit-drop candidate).
+ */
+export function ownedResourceClasses(inner: Type): GrowableArray<ClassType> | null {
+  let result = new Array<ClassType>();
+  let members = if (let UnionT {types} = inner) {
+    types
+  } else {
+    let one = growable<Type>([inner]);
+    one
+  };
+  for (let m in members) {
+    if (!(m is ClassType)) { return null; }
+    if (!m.isResource) { return null; }
+    result.push(m);
+  }
+  if (result.length == 0) { return null; }
+  return result;
+}
+
+/**
+ * Register a body's owned parameters as implicit-drop candidates: the
+ * function received ownership, so the function releases at exit unless
+ * the body moves, captures or escapes it — the same verdict machinery
+ * as a local binding, including branch-join compensation. Not in
+ * constructors (their owned parameters feed fields and the super call,
+ * which are checked outside the body block), not in suspending bodies,
+ * and never the receiver or a `this.x` field parameter.
+ */
+export function registerOwnParamCandidates(
+  ctx: CheckerContext,
+  params: GrowableArray<Parameter>,
+  paramTypes: Array<Type>
+): void {
+  // Suspending bodies qualify: the release regions spill into the
+  // frame and catch both tags, so they release across suspensions, on
+  // cancellation, and — for a generator — through disposal, which
+  // cancels the frame at its suspended yield.
+  var i = 0;
+  while (i < params.length && i < paramTypes.length) {
+    let param = params[i];
+    let t = paramTypes[i];
+    i += 1;
+    if (param.isThisParam || param.name.name == "this") { continue; }
+    // Second-class parameters root the derivation test for awaits, and
+    // a scoped parameter is a consume candidate for the whole body:
+    // its caller handed over the one permitted copy, so a body that
+    // drops it on some path abandons a live frame.
+    if (typeContainsSecondClass(t)) {
+      let si2 = ctx.model.resolveDeclaration(param);
+      if (si2 != null) {
+        ctx.markParamDerivedSecondClass(si2.id);
+        if (isScopedValueType(t)) {
+          ctx.registerScopedCandidate(si2, param as Node);
+          ctx.recordBorrowBirth(si2.id);
+        }
+      }
+    }
+    let handleType = soleNonNullMember(t) ?? t;
+    // An affine tuple parameter is released at exit too (#495).
+    let resources = ownedResourcesIn(t);
+    if (resources == null) { continue; }
+    let si = ctx.model.resolveDeclaration(param);
+    if (si == null) { continue; }
+    ctx.registerOwnCandidate(si, param as Node, resources);
+  }
+}
+
+/**
+ * The receiver's symbol in a method that declared `this: Own<this>`, with
+ * its binding type recorded as `Own<C>` so the release machinery reads it
+ * like an owned parameter's. Null for every other method.
+ */
+export function owningReceiverSymbol(ctx: CheckerContext, md: MethodDefinition,
+    classType: ClassType): Symbol | null {
+  let receiver = md.receiver;
+  if (receiver == null || !declaresOwningReceiver(md)) { return null; }
+  let sym = ctx.model.resolveDeclaration(receiver as Node);
+  if (sym == null) { return null; }
+  // The self type, a generic class at its own parameters, so lowering
+  // substitutes it per specialization as it does a parameter's.
+  ctx.model.setBindingType(sym,
+      wrapResourceInOwn(ctx, selfTypeOfClass(classType), md.loc));
+  return sym;
+}
+
+/**
+ * A consuming method owns its receiver, so a body that does not move
+ * `this` on releases it at exit, exactly as an owned parameter is
+ * released (registerOwnParamCandidates). Not a dispose: its exit is the
+ * release, and the release action cannot run itself.
+ */
+export function registerReceiverCandidate(ctx: CheckerContext, md: MethodDefinition,
+    classType: ClassType, isDispose: boolean): void {
+  if (isDispose) { return; }
+  let sym = ctx.receiverSymbol;
+  if (sym == null) { return; }
+  let resources = growable<ClassType>([classType]);
+  ctx.registerOwnCandidate(sym, md.receiver as Node, resources);
+}
+
+/**
+ * The resource classes a value of `t` may own and so may release: those
+ * of an `Own<R>`, nullable or not, or of every owner in an affine tuple,
+ * nested tuples and unions included (#495). Null when `t` owns nothing,
+ * or owns something whose classes are not known resources; such a value
+ * is not a drop candidate and leaks, as before implicit drop.
+ */
+export function ownedResourcesIn(t: Type): GrowableArray<ClassType> | null {
+  let result = new Array<ClassType>();
+  if (!collectOwnedResources(t, result) || result.length == 0) {
+    return null;
+  }
+  return result;
+}
+
+/**
+ * Adds the resource classes `t` may own to `result`; false when some
+ * owner's classes are not known resources.
+ */
+function collectOwnedResources(t: Type, result: GrowableArray<ClassType>): boolean {
+  let handleType = soleNonNullMember(t) ?? t;
+  if (ownershipHandleName(handleType) == "Own") {
+    let innerOpt = ownershipHandleInner(handleType);
+    if (innerOpt == null) { return false; }
+    let found = ownedResourceClasses(innerOpt);
+    if (found == null) { return false; }
+    for (let c in found) {
+      if (!result.contains(c)) {
+        result.push(c);
+      }
+    }
+    return true;
+  }
+  // A future of an owner is released through the future: its
+  // `[release]` takes the value when it lands and releases what it
+  // holds (owner-futures.md, "Releasing what nobody took"). The
+  // future's class stands in the list for that call, and the owners
+  // in its value are listed too, so their `:dispose` is rooted.
+  let releasable = releasableFuture(handleType);
+  if (releasable != null) {
+    let fut = releasable as ClassType;
+    if (!result.contains(fut)) {
+      result.push(fut);
+    }
+    let args = fut.typeArguments;
+    if (args != null && args.length == 1) {
+      collectOwnedResources(args[0], result);
+    }
+    return true;
+  }
+  if (!isAffineTuple(handleType)) {
+    return true;
+  }
+  let resolved = unwrapAliases(handleType);
+  let tuples = if (let UnionT {types} = resolved) types else growable<Type>([resolved]);
+  for (let member in tuples) {
+    let elements = match (unwrapAliases(member)) {
+      case TupleT {elementTypes}: elementTypes
+      case InlineTupleT {elementTypes}: elementTypes
+      case _: null
+    };
+    if (elements != null) {
+      for (let element in elements) {
+        if (typeCarriesOwner(element) && !collectOwnedResources(element, result)) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * A call or `new` whose result owns something, used as a statement: no
+ * binding takes the owner, so it is released right there (#495). The
+ * statement is marked for lowering, and the release's `:dispose` rooted
+ * as an implicit drop's is.
+ */
+export function releaseDiscardedOwner(ctx: CheckerContext, stmt: Node, expression: Expression,
+    exprType: Type): void {
+  if (!(expression is CallExpression) && !(expression is NewExpression)) {
+    return;
+  }
+  let resources = ownedResourcesIn(exprType);
+  if (resources == null) {
+    return;
+  }
+  ctx.model.setScopeExitDrop(stmt, true);
+  let deps = ctx.currentDependencies();
+  if (deps != null) {
+    deps.needsExceptionInfra = true;
+    for (let resource in resources) {
+      let classSymId = (resource.genericSource ?? resource).symbolId;
+      deps.referencedSymbols.add(classSymId);
+      deps.referencedClassMethods.add(
+          i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
+    }
+  }
+}
+
+/**
+ * Register the owner bindings an `if let`, `while let` or `match` pattern
+ * declares as drop candidates of the branch it guards, so they are
+ * released at the branch's end unless it moves them (#495).
+ */
+export function registerPatternOwners(ctx: CheckerContext, pattern: Node): void {
+  match (pattern) {
+    case BindingPattern {pattern as inner}: registerPatternOwners(ctx, inner as Node)
+    case TuplePattern {elements}: {
+      for (let element in elements) {
+        if (element != null) {
+          registerPatternOwners(ctx, element as Node);
+        }
+      }
+    }
+    case Identifier {}: registerPatternOwner(ctx, pattern)
+    case IdentifierPattern {}: registerPatternOwner(ctx, pattern)
+    case _: {}
+  }
+}
+
+function registerPatternOwner(ctx: CheckerContext, node: Node): void {
+  let symOpt = ctx.model.resolveDeclaration(node);
+  if (symOpt == null) {
+    return;
+  }
+  let bindingType = ctx.model.getBindingType(symOpt);
+  if (bindingType == null) {
+    return;
+  }
+  let resources = ownedResourcesIn(bindingType);
+  if (resources != null) {
+    ctx.registerOwnCandidate(symOpt, node, resources);
+  }
+}
+
+/** Register the owner bindings a tuple pattern declares as drop candidates. */
+export function registerDestructuredOwners(ctx: CheckerContext, pattern: TuplePattern,
+    declNode: Node | null): void {
+  for (let element in pattern.elements) {
+    if (element == null) {
+      continue;
+    }
+    let el = element as Node;
+    if (el is TuplePattern) {
+      registerDestructuredOwners(ctx, el, declNode);
+      continue;
+    }
+    if (!(el is IdentifierPattern)) {
+      continue;
+    }
+    let symOpt = ctx.model.resolveDeclaration(el);
+    if (symOpt == null) {
+      continue;
+    }
+    let bindingType = ctx.model.getBindingType(symOpt);
+    if (bindingType == null) {
+      continue;
+    }
+    let resources = ownedResourcesIn(bindingType);
+    if (resources != null) {
+      ctx.registerOwnCandidate(symOpt, el, resources, false, declNode);
+    }
+  }
+}
+
+/**
+ * Mark drop candidates whose block contains a use the allowlist does
+ * not affirm as a borrow. The default is unsafe: only positions the
+ * checker fully understands — a member-access receiver, a call or
+ * `new` argument (each argument's sink was already classified by
+ * recordArgumentMove), a comparison or `is` operand, a discarded
+ * expression statement, a match discriminant, a declaration or
+ * assignment (both covered by the flow machinery) — keep a candidate
+ * droppable. Anything else leaves the binding alone, which leaks
+ * exactly as the language did before implicit drop.
+ */
+export function classifyOwnUses(ctx: CheckerContext, scope: Node, ids: HashSet<i32>): void {
+  // A consuming method's receiver is used as `this`, which resolves to
+  // no symbol; its uses are classified like an identifier's.
+  let rs = ctx.receiverSymbol;
+  let receiverId = if (rs != null && ids.has(rs.id as i32)) rs.id else noSymbolId;
+  walkEnter(scope, (n) => {
+    var id = noSymbolId;
+    if (n is ThisExpression) {
+      id = receiverId;
+    } else if (n is Identifier) {
+      let info = ctx.model.resolve(n);
+      if (info != null) { id = info.id; }
+    }
+    if (id == noSymbolId) { return; }
+    if (!ids.has(id as i32)) { return; }
+    let parentOpt = ctx.model.getParent(n);
+    if (parentOpt == null) {
+      ctx.markUndroppable(id);
+      return;
+    }
+    let parent = parentOpt;
+    var safe = false;
+    match (parent) {
+      case MemberExpression as me: { safe = me.object.id == n.id; }
+      // An index read of a tuple's owner element borrows it.
+      case IndexExpression as ie: { safe = ie.object.id == n.id; }
+      case CallExpression: { safe = true; }
+      case NewExpression: { safe = true; }
+      case BinaryExpression as be: {
+        safe = be.operator == "==" || be.operator == "!=" ||
+          be.operator == "===" || be.operator == "!==";
+      }
+      case IsExpression: { safe = true; }
+      case ExpressionStatement: { safe = true; }
+      case MatchExpression as mx: { safe = mx.discriminant.id == n.id; }
+      case VariableDeclaration: { safe = true; }
+      case AssignmentExpression: { safe = true; }
+      case _: {}
+    }
+    if (!safe) { ctx.markUndroppable(id); }
+  });
+}
+
+/**
+ * Whether `object.propName` names a `this: Own<this>` method: the same
+ * lookup rejectConsumingThroughNonOwner does, answered rather than
+ * enforced, for the caller-side move a consuming call performs.
+ */
+export function memberConsumesReceiver(objectType: Type, propName: String): boolean {
+  let inner = ownershipHandleInner(objectType);
+  if (inner == null) { return false; }
+  if (!(inner is ClassType)) { return false; }
+  if (!inner.members.has(propName)) { return false; }
+  let member = inner.members[propName];
+  if (!(member is MethodInfo)) { return false; }
+  return member.consumesReceiver();
+}
+
+/**
+ * Reports unless `t` carries `:dispose()`, and records the dependency that
+ * roots it.
+ *
+ * Recording matters as much as reporting: the call is synthesized by
+ * lowering rather than written in the source, so nothing in the AST names
+ * the method and RTA would prune it. This is the same `referencedClassMethods`
+ * entry an explicit `value.[Disposable.dispose]()` would leave behind.
+ */
+export function requireDisposable(ctx: CheckerContext, t: Type, loc: SourceLocation | null): void {
+  if (t is ErrorType) { return; }
+
+  // `T | null` releases like `T`: the dispose is skipped when the value
+  // is null, so the requirement falls on the non-null member. Wider
+  // unions have no single release path and stay rejected below.
+  let nonNull = soleNonNullMember(t);
+  if (nonNull != null) {
+    requireDisposable(ctx, nonNull, loc);
+    return;
+  }
+
+  if (ownershipHandleName(t) == "Borrow") {
+    ctx.error(
+      "'using' cannot release a 'Borrow<" + typeToString(ownershipHandleInner(t) ?? t) +
+      "'>: a borrow is temporary access to something another party owns, and " +
+      "never releases what it points at.",
+      DiagnosticCode.IncompatibleTypes,
+      loc
+    );
+    return;
+  }
+
+  // A handle is erased, so its members are the resource's members. A
+  // union owner — `Own<A | B>` — requires `:dispose` of every member;
+  // the release dispatches on the dynamic class.
+  var target = unwrapAliases(t);
+  while (isOwnershipWrapper(target)) {
+    let inner = ownershipHandleInner(target);
+    if (inner == null) { break; }
+    target = unwrapAliases(inner);
+  }
+  let targets = new Array<Type>();
+  if (let UnionT {types} = target) {
+    for (let m in types) { targets.push(unwrapAliases(m)); }
+  } else {
+    targets.push(target);
+  }
+
+  var hasDispose = targets.length > 0;
+  for (let one in targets) {
+    let ok = match (one) {
+      case ClassType as ct: ct.members.has(":dispose")
+      case InterfaceType as it: it.members.has(":dispose")
+      case _: false
+    };
+    if (!ok) { hasDispose = false; }
+  }
+
+  if (!hasDispose) {
+    ctx.error(
+      "'using' requires a Disposable, but '" + typeToString(t) +
+      "' has no ':dispose()' member. Implement 'Disposable' from " +
+      "'zena:core', which declares the symbol-keyed release method " +
+      "'using' calls at scope exit.",
+      DiagnosticCode.IncompatibleTypes,
+      loc
+    );
+    return;
+  }
+
+  for (let one in targets) {
+    if (one is ClassType) {
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        let classSymId = (one.genericSource ?? one).symbolId;
+        deps.referencedSymbols.add(classSymId);
+        deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".:dispose");
+      }
+    }
+  }
+}

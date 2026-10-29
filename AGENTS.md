@@ -166,6 +166,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 
 - [packages/zena-compiler/CONTEXT.md](packages/zena-compiler/CONTEXT.md) — self-hosted compiler and codegen overview
 - [packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md) — ZIR backend (lowering, GVN, emit)
+- [packages/zena-compiler/zena/lib/checker/CONTEXT.md](packages/zena-compiler/zena/lib/checker/CONTEXT.md) — the type checker's libraries
 - [packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md) — RTA and specialization
 - [packages/zena-cli/CONTEXT.md](packages/zena-cli/CONTEXT.md) — CLI module and Rust/wasmtime host
 - [packages/pds/CONTEXT.md](packages/pds/CONTEXT.md) — the PDS and package host, ported from pds.js

@@ -1,0 +1,1628 @@
+import { HashMap, HashSet, OrderedHashMap, Set } from 'zena:collections';
+import { StringBuilder, growable } from 'zena:core';
+import {
+  AccessorDeclaration, AccessorSignature, ClassDeclaration, EnumDeclaration,
+  Expression, FieldDefinition, Identifier, ImportSpecifier,
+  InterfaceDeclaration, MemberExpression, MethodDefinition, MethodSignature,
+  MixinDeclaration, Node, NumberLiteral, PropertySignature, RecordPattern,
+  SourceLocation, SymbolDeclaration, SymbolPropertyName, ThisExpression,
+  isSymbolFieldDeclaration, syntacticMemberName
+} from '../ast.zena';
+import {
+  ArrayType, ClassType, EnumType, ErrorType, FieldInfo, FunctionType,
+  InterfaceType, MemberTable, MethodInfo, MixinType, NullType,
+  RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type,
+  TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType,
+  baseType, instantiateClassType, isIntegerType, ownershipHandleInner,
+  ownershipHandleName, typeCarriesOwner, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { noSymbolId } from '../scope/symbol.zena';
+import { WellKnown, protocolSymbolKey, wellKnownName } from '../well-known.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import { substituteThisType, substituteTypeParams } from './generics.zena';
+import { getMemberPathKeyFromAccess } from './narrowing.zena';
+import { collectApplicableOperatorOverloads, selectMostSpecificIndex } from './overloads.zena';
+import {
+  borrowWrapFieldRead, isAffineValue, memberConsumesReceiver,
+  rejectConsumingThroughNonOwner, tupleElementRead
+} from './ownership.zena';
+import { isBoxablePrimitive, typesEqual } from './relations.zena';
+import { createUnionType, subtractNullFromType } from './unions.zena';
+
+/**
+ * A parent's member re-typed for the subtype that inherits it.
+ *
+ * Carries `symbolTypeId` across, so a symbol-keyed member keeps its
+ * symbol's identity one level below the type that declared it — which is
+ * where most calls to an inherited protocol method are.
+ */
+/**
+ * The member key a symbol makes: its name, then its identity.
+ *
+ * Shaped like `getTypeUniqueKey`'s `Name_id`, for the same reason — the
+ * name is what a reader needs and the id is what keeps two of them
+ * apart. `displayMemberName` takes the id back off for diagnostics, so
+ * the mangling never reaches a message.
+ *
+ * The protocol symbols the compiler invokes itself carry a fixed key
+ * instead (see `SymbolType.protocolKey`). No id-keyed symbol can collide
+ * with one, because every id-keyed key ends in `_<digits>`.
+ */
+function symbolMemberKey(sym: SymbolType): String {
+  let fixed = sym.protocolKey;
+  if (fixed != null) {
+    return fixed as String;
+  }
+  return `:${sym.name}_${i32ToString(sym.id as i32)}`;
+}
+
+/**
+ * A member key as a reader should see it: `:dispose` rather than
+ * `:dispose_87`. The identity suffix exists so two same-named symbols
+ * key two members, and it is never what someone wrote.
+ */
+export function displayMemberName(key: String): String {
+  if (key.length == 0 || key.sliceBytes(0, 1) != ":") {
+    return key;
+  }
+  // Scan back over the trailing digits to the underscore that precedes
+  // them. Anything else — no underscore, no digits, a name-keyed member
+  // — is already what a reader should see.
+  let zero = 48;
+  let nine = 57;
+  let underscore = 95;
+  var i = key.length;
+  while (i > 0) {
+    let c = key.getByteAt(i - 1);
+    if (c < zero || c > nine) { break; }
+    i -= 1;
+  }
+  if (i == key.length || i == 0) {
+    return key;
+  }
+  if (key.getByteAt(i - 1) != underscore) {
+    return key;
+  }
+  return key.sliceBytes(0, i - 1);
+}
+
+/**
+ * The key a member is registered under, and the only place it is minted.
+ *
+ * A name-keyed member is keyed by its name. A symbol-keyed one is keyed
+ * by the symbol's identity, because two symbols may share a name and a
+ * type may hold a member from each — so `[Reader.act]` and `[Writer.act]`
+ * must not land in the same slot. The key is recorded on the name node,
+ * and every later pass reads it back rather than rebuilding it from the
+ * text, which cannot tell the two apart.
+ *
+ * A symbol that does not resolve falls back to its spelling. The failure
+ * is reported at the declaration; the key only has to stay consistent.
+ */
+export function getMemberName(ctx: CheckerContext, node: Node): String {
+  if (!(node is SymbolPropertyName)) {
+    return syntacticMemberName(node);
+  }
+  let recorded = ctx.model.memberKey(node);
+  if (recorded != null) {
+    return recorded as String;
+  }
+  let sym = lookupSymbolPath(ctx, (node as SymbolPropertyName).symbolRef);
+  if (sym == null) {
+    return syntacticMemberName(node);
+  }
+  let key = symbolMemberKey(sym as SymbolType);
+  ctx.model.setMemberKey(node, key);
+  return key;
+}
+
+/**
+ * The key a member ACCESS looks a member up by — the declaration-site
+ * key seen from the other side, so the two have to agree.
+ *
+ * `x.[Reader.act]()` and `x.[Writer.act]()` name two members, and the
+ * property name is `act` for both. The symbol the path resolves to is
+ * the difference, so it is what the key carries. The result is recorded
+ * on the access node, because lowering looks the same member up later
+ * and cannot resolve anything itself.
+ */
+export function accessMemberKey(
+    ctx: CheckerContext,
+    expr: Node,
+    isSymbolAccess: boolean,
+    property: Identifier,
+    symbolPath: Expression | null): String {
+  if (!isSymbolAccess) {
+    return property.name;
+  }
+  let recorded = ctx.model.memberKey(expr);
+  if (recorded != null) {
+    return recorded as String;
+  }
+  if (symbolPath == null) {
+    return ":" + property.name;
+  }
+  let sym = lookupSymbolPath(ctx, symbolPath as Expression);
+  if (sym == null) {
+    return ":" + property.name;
+  }
+  let key = symbolMemberKey(sym as SymbolType);
+  ctx.model.setMemberKey(expr, key);
+  return key;
+}
+
+// ============================================================================
+// Member Expression
+// ============================================================================
+
+/**
+ * The `staticSymbols` map of a named type, or null for anything else.
+ */
+function staticSymbolsOf(t: Type): OrderedHashMap<String, Type> | null {
+  return match (t) {
+    case ClassType as ct: ct.staticSymbols
+    case InterfaceType as it: it.staticSymbols
+    case MixinType as mt: mt.staticSymbols
+    case _: null
+  };
+}
+
+/**
+ * Whether `t` declares a static member — field, method, accessor or
+ * symbol — called `name`.
+ */
+function declaresStaticMember(t: Type, name: String): boolean {
+  let symbols = staticSymbolsOf(t);
+  if (symbols != null && (symbols as OrderedHashMap<String, Type>).has(name)) {
+    return true;
+  }
+  let members: MemberTable | null = match (t) {
+    case ClassType as ct: ct.members
+    case InterfaceType as it: it.members
+    case MixinType as mt: mt.members
+    case _: null
+  };
+  if (members == null) {
+    return false;
+  }
+  for (let key in [name, "get#" + name]) {
+    if (let (true, info) = (members as MemberTable).get(key)) {
+      if (info.isStatic) { return true; }
+    }
+  }
+  return false;
+}
+
+/** The declared name of a class, interface or mixin; "" for anything else. */
+function declaredTypeName(t: Type): String {
+  return match (t) {
+    case ClassType as ct: ct.name
+    case InterfaceType as it: it.name
+    case MixinType as mt: mt.name
+    case _: ""
+  };
+}
+
+/**
+ * The suffix for a missing-name error when the name is a static member of
+ * a type whose body encloses the reference — the usual cause of that
+ * error inside a type, since a static member is only ever named through
+ * its type. Empty when no enclosing type declares it.
+ */
+export function staticMemberHint(ctx: CheckerContext, name: String): String {
+  let candidates = new Array<Type>();
+  let declaring = ctx.declaringTypes;
+  var i = declaring.length - 1;
+  while (i >= 0) {
+    candidates.push(declaring[i]);
+    i -= 1;
+  }
+  let {currentClass} = ctx;
+  if (currentClass != null) {
+    candidates.push(currentClass as Type);
+  }
+  for (let t in candidates) {
+    let typeName = declaredTypeName(t);
+    if (typeName != "" && declaresStaticMember(t, name)) {
+      return ` Did you mean '${typeName}.${name}'?`;
+    }
+  }
+  return "";
+}
+
+/**
+ * The symbol a member key names, found without reporting anything.
+ *
+ * Member keys are minted during registration, before the path itself is
+ * checked, so this has to be a quiet lookup. It finds exactly what
+ * `checkSymbolPath` finds — a top-level `symbol` in scope for `sym`, a
+ * static symbol of `Owner` for `Owner.sym` — and a path it cannot find is
+ * reported there, as an ordinary expression.
+ */
+function lookupSymbolPath(ctx: CheckerContext, path: Expression): SymbolType | null {
+  match (path) {
+    case Identifier as ident: {
+      let t = ctx.resolveIdentifier(ident as Node);
+      if (t != null && t is SymbolType) {
+        return t as SymbolType;
+      }
+      return null;
+    }
+    case MemberExpression {object, property}: {
+      if (!(object is Identifier)) {
+        return null;
+      }
+      let ownerName = (object as Identifier).name;
+      var ownerType = ctx.resolveTypeReference(object as Node, ownerName);
+      if (ownerType == null) {
+        ownerType = ctx.resolveIdentifier(object as Node);
+      }
+      if (ownerType == null) {
+        return null;
+      }
+      let symbols = staticSymbolsOf(baseType(ownerType as Type));
+      if (symbols == null) {
+        return null;
+      }
+      if (let (true, sym) = (symbols as OrderedHashMap<String, Type>).get(property.name)) {
+        if (sym is SymbolType) {
+          return sym as SymbolType;
+        }
+      }
+      return null;
+    }
+    case _: {
+      return null;
+    }
+  }
+}
+
+/**
+ * Checks the path inside `[...]` as the expression it is, and requires it
+ * to be a symbol.
+ *
+ * `sym` and `Owner.sym` are an ordinary name and an ordinary static member
+ * read, so they are checked like any other, and a name or member that does
+ * not exist is reported the way it would be anywhere. The one thing that
+ * is particular to a member key is that what it names has to be a symbol.
+ * Returns null after reporting when either fails.
+ */
+function checkSymbolPath(ctx: CheckerContext, path: Expression): SymbolType | null {
+  let t = checkExpression(ctx, path, null);
+  if (t is SymbolType) {
+    return t as SymbolType;
+  }
+  if (!(t is ErrorType)) {
+    ctx.error(
+      `'${symbolPathText(path)}' is not a symbol.`,
+      DiagnosticCode.TypeMismatch,
+      path.loc
+    );
+  }
+  return null;
+}
+
+/** The source spelling of a symbol path, for a message. */
+function symbolPathText(path: Expression): String {
+  return match (path) {
+    case Identifier {name}: name
+    case MemberExpression {object, property}:
+      `${symbolPathText(object)}.${property.name}`
+    case _: "<expression>"
+  };
+}
+
+/**
+ * The symbol reference a member's name node carries, or null for a
+ * name-keyed member.
+ */
+function symbolRefOfMemberName(nameNode: Node): Expression | null {
+  if (!(nameNode is SymbolPropertyName)) {
+    return null;
+  }
+  return nameNode.symbolRef;
+}
+
+/** The name node a declaration body member is declared under. */
+function memberNameNodeOf(member: Node): Node | null {
+  return match (member) {
+    case FieldDefinition as fd: fd.name as Node
+    case MethodDefinition as md: md.name as Node
+    case AccessorDeclaration as ad: ad.name as Node
+    case MethodSignature as ms: ms.name as Node
+    case AccessorSignature as asig: asig.name as Node
+    case PropertySignature as ps: ps.name as Node
+    case _: null
+  };
+}
+
+/**
+ * Registers the `static symbol` declarations a body makes on the type
+ * that declares them, so `Owner.sym` resolves and the members it keys
+ * can carry its identity.
+ *
+ * A symbol is an identity rather than storage, so it occupies nothing on
+ * the type that declares it and any type can declare one. An interface
+ * spells `static symbol sym;` as a `SymbolDeclaration`; a class or mixin
+ * body parses the same words into a static `FieldDefinition` annotated
+ * `symbol`. Both land here and answer `Owner.sym` the same way.
+ */
+export function registerStaticSymbols(
+    ctx: CheckerContext,
+    ownerName: String,
+    symbols: HashMap<String, Type>,
+    body: GrowableArray<Node>): void {
+  for (let member in body) {
+    var symName = "";
+    var node: Node | null = null;
+    match (member) {
+      case SymbolDeclaration as sd: {
+        symName = sd.name.name;
+        node = sd as Node;
+      }
+      case FieldDefinition as fd: {
+        if (isSymbolFieldDeclaration(fd)) {
+          symName = syntacticMemberName(fd.name as Node);
+          node = fd as Node;
+        }
+      }
+      case _: {}
+    }
+    if (node == null || symName == "") { continue; }
+    let sym = ctx.canonicalSymbolType(
+        node as Node, `${ownerName}.${symName}`, symName,
+        protocolSymbolKey(ownerName, symName, ctx.filePath));
+    if (let (true, existing) = symbols.get(symName)) {
+      // A declaration is registered again whenever its module is
+      // re-checked, and `canonicalSymbolType` is keyed by source
+      // location, so the same declaration hands back the same type. A
+      // different one is a real duplicate.
+      if (!typesEqual(existing, sym)) {
+        ctx.error(
+          `'${ownerName}' already declares a static symbol '${symName}'.`,
+          DiagnosticCode.DuplicateDeclaration,
+          (node as Node).loc
+        );
+      }
+      continue;
+    }
+    symbols[symName] = sym;
+  }
+}
+
+/**
+ * Records, on each symbol-keyed member a declaration body declares, the
+ * identity of the symbol that named it, and reports a key that names no
+ * symbol at all.
+ *
+ * Run as one pass over the body rather than at each member-registration
+ * site: the same key is registered from a dozen places (fields, methods,
+ * accessors, and their `get#`/`set#` companions), and every one of them
+ * would otherwise have to remember to carry the symbol along.
+ */
+export function recordSymbolKeyedMemberIdentities(
+    ctx: CheckerContext,
+    owner: Type,
+    members: MemberTable,
+    body: GrowableArray<Node>): void {
+  for (let member in body) {
+    let nameNode = memberNameNodeOf(member);
+    if (nameNode == null) { continue; }
+    let ref = symbolRefOfMemberName(nameNode as Node);
+    if (ref == null) { continue; }
+    let key = getMemberName(ctx, nameNode as Node);
+    // A body is walked once per registration pass, and a module in an
+    // import cycle is registered more than once. Stamping is idempotent;
+    // reporting is not, so a member that already carries its identity is
+    // left alone. The key carries the symbol's identity, so a member
+    // stamped here can only have been stamped by this same symbol.
+    var settled = false;
+    if (let (true, seen) = members.get(key)) {
+      settled = seen.symbolTypeId >= 0;
+    }
+    if (settled) { continue; }
+    ctx.pushDeclaringType(owner);
+    let sym = checkSymbolPath(ctx, ref as Expression);
+    ctx.popDeclaringType();
+    if (sym == null) { continue; }
+    let id = sym.id as i32;
+    let candidates = growable<String>([key, "get#" + key, "set#" + key]);
+    for (let candidate in candidates) {
+      if (let (true, info) = members.get(candidate)) {
+        info.symbolTypeId = id;
+      }
+    }
+  }
+}
+
+/**
+ * A symbol-keyed access names a symbol, and must be able to SEE it —
+ * `:sym` a symbol in lexical scope, `:Owner.sym` a static symbol of a type
+ * in scope. An unexported owner withholds its symbols the way an
+ * unexported `symbol` withholds itself (`classes.md` §9.4), and
+ * `zena:core` relies on that to keep the resource lifecycle flag
+ * unwritable.
+ *
+ * Which symbol the access names needs no check of its own: the member key
+ * carries the symbol's identity, so naming a different symbol of the same
+ * name looks up a different key and misses.
+ *
+ * Returns false when the path names nothing, having reported why, so the
+ * member lookup does not report the same mistake a second time.
+ */
+function checkSymbolKeyAccess(ctx: CheckerContext, path: Expression): boolean {
+  return checkSymbolPath(ctx, path) != null;
+}
+
+export function isStaticReceiver(ctx: CheckerContext, object: Expression): boolean {
+  if (object is Identifier) {
+    let sym = ctx.model.resolve(object);
+    if (sym != null) {
+      if (sym.declaration is ClassDeclaration || sym.declaration is EnumDeclaration) {
+        return true;
+      } else if (sym.declaration is ImportSpecifier) {
+        let spec = sym.declaration as ImportSpecifier;
+        let importedName = spec.imported.name;
+        let deps = ctx.depExports;
+        if (deps != null) {
+          for (let specifier in deps.keys()) {
+            if (let (true, depMod) = deps.get(specifier)) {
+              if (let (true, exp) = depMod.get(importedName)) {
+                if (exp.isType()) {
+                  return true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether `object` names a class, interface or mixin, so that a member
+ * read on it is a static read. `isStaticReceiver` answers for classes
+ * (and imported types); an interface or mixin name can hold static
+ * symbols too.
+ */
+function namesDeclaredType(ctx: CheckerContext, object: Expression): boolean {
+  if (isStaticReceiver(ctx, object)) {
+    return true;
+  }
+  if (!(object is Identifier)) {
+    return false;
+  }
+  let sym = ctx.model.resolve(object);
+  if (sym == null) {
+    return false;
+  }
+  let decl = sym.declaration;
+  return decl is InterfaceDeclaration || decl is MixinDeclaration;
+}
+
+export function checkMemberExpression(
+  ctx: CheckerContext,
+  expr: MemberExpression,
+  object: Expression,
+  property: Identifier,
+  optional: boolean,
+  isSymbolAccess: boolean,
+  loc: SourceLocation | null
+): Type {
+  let objectTypeRaw = checkExpression(ctx, object, null);
+  var objectType = objectTypeRaw;
+  if (objectType is ThisType) {
+    let {currentClass} = ctx;
+    if (currentClass != null) {
+      objectType = currentClass as Type;
+    }
+  }
+
+  let isStatic = isStaticReceiver(ctx, object);
+  ctx.model.setStaticAccess(expr, isStatic);
+
+  // `Owner.sym` reads a static symbol, the same way `Owner.count` reads a
+  // static field. A symbol exists only at compile time, so there is no
+  // member to look up at run time; its value is its type.
+  if (!isSymbolAccess && namesDeclaredType(ctx, object)) {
+    let symbols = staticSymbolsOf(baseType(objectTypeRaw));
+    if (symbols != null) {
+      if (let (true, sym) = (symbols as OrderedHashMap<String, Type>).get(property.name)) {
+        return sym;
+      }
+    }
+  }
+
+  let propName = accessMemberKey(
+      ctx, expr as Node, isSymbolAccess, property, expr.symbolPath);
+
+  // `then` hands a future's value to a callback while the future keeps
+  // it, so on a future of an owner it would mint a second owner; such a
+  // future is consumed by its `await` (docs/design/owner-futures.md).
+  if (!isSymbolAccess && propName == "then" && isAffineValue(objectType)) {
+    ctx.error(
+      "A future whose value holds an owner is consumed by 'await': " +
+        "'then' would hand the owner to a callback while the future " +
+        "still holds it.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
+
+  // Reaching a `this: Own<this>` method through an owned binding moves
+  // the binding: the call ends the receiver's life on this path. The
+  // move is recorded at the access — the caller-side counterpart of
+  // rejectConsumingThroughNonOwner's callee-side gate.
+  if (object is Identifier && ownershipHandleName(objectType) == "Own" &&
+      memberConsumesReceiver(objectType, propName)) {
+    let recvSym = ctx.model.resolve(object);
+    if (recvSym != null) {
+      ctx.recordFlowMove(recvSym.id, recvSym.name, object.loc);
+    }
+  }
+  // The same through a consuming method's own `this`: calling another
+  // consuming method on it, its dispose included, ends its life here.
+  if (object is ThisExpression && ownershipHandleName(objectType) == "Own" &&
+      memberConsumesReceiver(objectType, propName)) {
+    let rs = ctx.receiverSymbol;
+    if (rs != null) {
+      ctx.recordFlowMove(rs.id, "this", object.loc);
+    }
+  }
+
+  let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
+  let narrowedPathType = if (pathKey != null) {
+    ctx.flowTypeOfPath(pathKey)
+  } else {
+    null
+  };
+
+  // Check for private field access outside class
+  if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+    if (ctx.currentClass == null) {
+      ctx.error(
+        `Private field '${displayMemberName(propName)}' can only be accessed within a class.`,
+        DiagnosticCode.PrivateAccess,
+        loc
+      );
+      return new ErrorType();
+    }
+  }
+
+  // Unwrap union types for optional chaining.
+  var receiverType = objectType;
+  var isNullable = false;
+  match (objectType) {
+    case UnionT {types}: {
+      // If the union includes null, strip it for the member check.
+      let nonNull = new Array<Type>();
+      var ui = 0;
+      while (ui < types.length) {
+        if (types[ui] is NullType) {
+          isNullable = true;
+        } else {
+          nonNull.push(types[ui]);
+        }
+        ui = ui + 1;
+      }
+      if (nonNull.length == 1) {
+        receiverType = nonNull[0];
+      } else if (nonNull.length > 1) {
+        receiverType = ctx.interner.union(nonNull);
+      }
+    }
+    case NullType: { isNullable = true; }
+    case _: {}
+  }
+
+  if (isSymbolAccess && expr.symbolPath != null) {
+    if (!checkSymbolKeyAccess(ctx, expr.symbolPath as Expression)) {
+      return new ErrorType();
+    }
+  }
+
+  // Private access is lexical-only (docs/design/member-lookup.md §6):
+  // the enclosing class must itself declare the private, and the
+  // receiver must be that same lexical class — any specialization of
+  // it, since privacy is unaffected by specialization — or a subclass
+  // instance, which physically carries the ancestor's private state.
+  // Receivers that are not plain class types (type parameters, mixin
+  // This) are left to the receiver-side member lookup below.
+  if (propName.length > 0 && propName.sliceBytes(0, 1) == "#" &&
+      ctx.currentClass != null && !(receiverType is ErrorType)) {
+    let cur = ctx.currentClass as ClassType;
+    if (!cur.members.has(propName) &&
+        !cur.members.has("get#" + propName) &&
+        !cur.members.has("set#" + propName)) {
+      ctx.error(
+        `Property '${displayMemberName(propName)}' does not exist on type '${cur.name}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    if (receiverType is ClassType) {
+      // The receiver shares the lexical class when its own class —
+      // or any superclass, for subclass instances carrying an
+      // ancestor's private state — is a specialization of it.
+      let lexicalCanonical = cur.canonical();
+      var shares = false;
+      var r: ClassType | null = receiverType;
+      while (r != null && !shares) {
+        if (r.canonical() == lexicalCanonical) {
+          shares = true;
+        }
+        r = r.superType;
+      }
+      if (!shares) {
+        ctx.error(
+          "Type '" + typeToString(receiverType) + "' does not have private member '" +
+            propName + "' from class '" + cur.name + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        return new ErrorType();
+      }
+    }
+  }
+
+  // An optional record field is readable only as the immediate left
+  // operand of `??` (the sanction below): there the miss is the
+  // coalesce arm, so the maybe-absent value never escapes. Everywhere
+  // else resolveMemberType rejects the read.
+  if (!isNullable && !optional &&
+      ctx.nullishSanctioned.has(expr.id as i32)) {
+    let recBase = baseType(subtractNullFromType(receiverType));
+    if (recBase is RecordT && recBase.isOptional(propName)) {
+      return recBase.properties[propName];
+    }
+  }
+
+  let ownerRead = ctx.owningReceiver && object is ThisExpression;
+  let resultType = resolveMemberType(ctx, receiverType, propName, loc, ownerRead, isStatic);
+  if (ownerRead && typeCarriesOwner(resultType)) {
+    // The read kept its owner type for move-out; a read after the
+    // field was moved is the path use-after-move.
+    let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
+    if (pathKey != null) {
+      ctx.checkPathMoveUse(expr as Node, pathKey, "this." + propName);
+    }
+  }
+
+  if (isNullable && !optional) {
+    ctx.error(
+      `Object may be null when accessing '${displayMemberName(propName)}'.`,
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return new ErrorType();
+  }
+
+  if (narrowedPathType != null) {
+    return narrowedPathType;
+  }
+
+  // If the original type was nullable and this is optional chaining,
+  // wrap the result in a union with null. A boxable-primitive result
+  // has no wasm representation for that union, so the chain is only
+  // legal as the immediate left operand of `??` — where the miss is
+  // the coalesce arm and no `primitive | null` value ever exists.
+  if (isNullable && optional) {
+    if (isBoxablePrimitive(resultType) &&
+        !ctx.nullishSanctioned.has(expr.id as i32)) {
+      ctx.error(
+        "Optional access to a primitive member requires immediate coalescence: follow it with '?? <default>'.",
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new ErrorType();
+    }
+    let types = growable<Type>([resultType, new NullType()]);
+    return createUnionType(types);
+  }
+
+  return resultType;
+}
+
+/**
+ * The members of a union whose every member is a record type, or null
+ * for any other union. A record union is read, destructured and
+ * repacked one member at a time; see `RecordUnionAdaptation`.
+ */
+export function recordUnionMembersOf(ut: UnionT): GrowableArray<RecordT> | null {
+  let members = new Array<RecordT>();
+  for (let memberType in ut.types) {
+    let rec = baseType(memberType);
+    if (!(rec is RecordT)) { return null; }
+    members.push(rec);
+  }
+  if (members.length < 2) { return null; }
+  return members;
+}
+
+/**
+ * The one record shape a record pattern runs against for every member
+ * of a record union: the fields the pattern names, each at the type the
+ * members agree on, and optional when any member lacks it or has it
+ * optional.
+ *
+ * Every member is assignable to that shape, so the member a value is
+ * repacks to it in one hop (`RecordUnionAdaptation`) and the pattern
+ * then works as it does against any single record type. The presence
+ * mask carries which member the value came from, which is what makes
+ * `{rank = 9}` take its default on the members with no `rank` and
+ * `{rank}` a presence test.
+ *
+ * `ErrorType` when the members disagree about a field's type or no
+ * member has one the pattern names, both of which are reported. Null
+ * when the pattern names nothing.
+ */
+function recordUnionPatternShape(
+  ctx: CheckerContext,
+  ut: UnionT,
+  members: GrowableArray<RecordT>,
+  recordPat: RecordPattern
+): Type | null {
+  let props = new Map<String, Type>();
+  let optionals = new Set<String>();
+  for (let prop in recordPat.properties) {
+    let propName = prop.name.name;
+    if (props.has(propName)) { continue; }
+    var fieldType: Type | null = null;
+    var anyAbsent = false;
+    for (let rec in members) {
+      if (!rec.properties.has(propName)) {
+        anyAbsent = true;
+        continue;
+      }
+      if (rec.isOptional(propName)) { anyAbsent = true; }
+      let memberFieldType = rec.properties[propName];
+      if (fieldType == null) {
+        fieldType = memberFieldType;
+      } else if (!typesEqual(fieldType as Type, memberFieldType)) {
+        ctx.error(
+          "Field '" + displayMemberName(propName) + "' is '" +
+              typeToString(fieldType as Type) + "' in one member of the " +
+              "union and '" + typeToString(memberFieldType) +
+              "' in another, so one pattern cannot bind it.",
+          DiagnosticCode.TypeMismatch,
+          prop.loc
+        );
+        return new ErrorType();
+      }
+    }
+    if (fieldType == null) {
+      ctx.error(
+        "No member of '" + typeToString(ut) + "' has property '" +
+            displayMemberName(propName) + "'.",
+        DiagnosticCode.PropertyNotFound,
+        prop.loc
+      );
+      return new ErrorType();
+    }
+    props[propName] = fieldType as Type;
+    if (anyAbsent) { optionals.add(propName); }
+  }
+  if (props.size == 0) { return null; }
+  let optionalNames: HashSet<String> | null =
+      if (optionals.size > 0) { optionals } else { null };
+  return new RecordT(props, optionalNames, null, false);
+}
+
+/**
+ * The type of a record pattern's `...rest`: the matched record's fields
+ * the pattern does not name, optional where they were, and its row. The
+ * rest is the matched value converted to that narrower type, so the
+ * conversion is recorded on the rest pattern for codegen. Anything but
+ * a record is an error.
+ */
+export function recordRestType(ctx: CheckerContext, recordPat: RecordPattern, matched: Type): Type {
+  let rest = recordPat.rest as Node;
+  let base = baseType(matched);
+  if (!(base is RecordT)) {
+    if (!(base is ErrorType) && !(base is UnknownType)) {
+      ctx.error(`A '...rest' pattern needs a record, not '${typeToString(matched)}'.`,
+          DiagnosticCode.TypeMismatch, rest.loc);
+    }
+    return new ErrorType();
+  }
+  if (base.isExistential) {
+    ctx.error(`A '...rest' pattern needs a record whose fields are all known, not '${typeToString(matched)}'.`,
+        DiagnosticCode.TypeMismatch, rest.loc);
+    return new ErrorType();
+  }
+  let named = new HashSet<String>();
+  for (let prop in recordPat.properties) {
+    named.add(prop.name.name);
+  }
+  let props = new Map<String, Type>();
+  var optionals: HashSet<String> | null = null;
+  for (let key in base.properties.keys()) {
+    if (!named.has(key)) {
+      props[key] = base.properties[key];
+      if (base.isOptional(key)) {
+        optionals ??= new Set<String>();
+        optionals.add(key);
+      }
+    }
+  }
+  let restType = new RecordT(props, optionals, base.row, false);
+  ctx.model.setRecordAdaptation(rest, base, restType);
+  return restType;
+}
+
+/**
+ * The matched type for a record pattern whose value is a union of
+ * record types, and the adaptation that gets a value there: the shape
+ * above, recorded on the pattern node so codegen repacks the member
+ * before destructuring. `t` itself for anything else.
+ */
+export function recordPatternMatchedType(
+  ctx: CheckerContext,
+  t: Type,
+  recordPat: RecordPattern
+): Type {
+  if (!(t is UnionT)) { return t; }
+  let members = recordUnionMembersOf(t);
+  if (members == null) { return t; }
+  let shape = recordUnionPatternShape(ctx, t, members, recordPat);
+  if (shape == null) { return t; }
+  if (!(shape is RecordT)) { return shape; }
+  ctx.model.setRecordUnionAdaptation(recordPat, members, shape);
+  return shape;
+}
+
+/**
+ * The type of `propName` read off a union of record types: the field
+ * every member holds, required, at one type.
+ *
+ * Null when some member is not a record type, which leaves the caller
+ * its own diagnostic. `ErrorType` when the members are all records but
+ * disagree about the field — those name what is wrong, which the
+ * caller's "not supported" cannot.
+ */
+function resolveRecordUnionMemberType(
+  ctx: CheckerContext,
+  ut: UnionT,
+  propName: String,
+  loc: SourceLocation | null
+): Type | null {
+  let membersOpt = recordUnionMembersOf(ut);
+  if (membersOpt == null) { return null; }
+  var shared: Type | null = null;
+  for (let rec in membersOpt) {
+    if (!rec.properties.has(propName)) {
+      ctx.error(
+        "Property '" + displayMemberName(propName) + "' does not exist on '" +
+            typeToString(rec) + "', one member of '" + typeToString(ut) + "'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    if (rec.isOptional(propName)) {
+      // Same rule as a plain record: the field may be absent, so a
+      // direct read has no value to produce.
+      ctx.error(
+        "Property '" + displayMemberName(propName) + "' is optional in '" +
+            typeToString(rec) + "', one member of '" + typeToString(ut) +
+            "', so it may be absent. Destructure it with a default or match " +
+            "on its presence.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    let fieldType = rec.properties[propName];
+    if (shared == null) {
+      shared = fieldType;
+    } else if (!typesEqual(shared as Type, fieldType)) {
+      ctx.error(
+        "Property '" + displayMemberName(propName) + "' is '" +
+            typeToString(shared as Type) + "' in one member of '" +
+            typeToString(ut) + "' and '" + typeToString(fieldType) +
+            "' in another, so the read has no one type.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+  }
+  return shared;
+}
+
+/**
+ * Resolve a field's type if it is still to be inferred from its
+ * initializer (FieldInfo.pendingInit). Called where a member access
+ * reads a field's type, so a class from another member of an import
+ * cycle answers before its own bodies are checked.
+ */
+function settleFieldType(fi: FieldInfo): void {
+  let pending = fi.pendingInit;
+  if (pending != null) {
+    fi.pendingInit = null;
+    fi.type = pending();
+  }
+}
+
+/**
+ * Look up a member (field or method) on a type.
+ */
+function resolveMemberType(
+  ctx: CheckerContext,
+  objectType: Type,
+  propName: String,
+  loc: SourceLocation | null,
+  ownerRead: boolean,
+  isStaticAccess: boolean = false
+): Type {
+  // Member access forwards through the ownership handles. `Own<R>`,
+  // `Borrow<R>` and `Unmanaged<R>` carry no members of their own — they
+  // differ in permissions, not data — so `d.read()` on an `Own<Descriptor>`
+  // resolves against `Descriptor`. A resource class has no unwrapped form, so
+  // forwarding is the only way its members are reachable at all.
+  // See docs/design/ownership.md §Handles.
+  let handleInner = ownershipHandleInner(objectType);
+  if (handleInner != null) {
+    rejectConsumingThroughNonOwner(ctx, objectType, handleInner, propName, loc);
+    return resolveMemberType(ctx, handleInner, propName, loc, ownerRead, isStaticAccess);
+  }
+
+  match (objectType) {
+    case ClassType as ct: {
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        var classSymId = (ct.genericSource ?? ct).symbolId;
+        if (ct.name.length >= 5 && ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
+          let mixinName = ct.name.sliceBytes(0, ct.name.length - 5);
+          var foundId = noSymbolId;
+          let mixinKeys = ctx.model.mixinDeclarations.keys();
+          for (let k in mixinKeys) {
+            let decl = ctx.model.mixinDeclarations[k];
+            if (decl.name.name == mixinName) {
+              foundId = k;
+              break;
+            }
+          }
+          if (foundId as i32 != -1) {
+            classSymId = foundId;
+          } else {
+            let classKeys = ctx.model.classDeclarations.keys();
+            for (let k in classKeys) {
+              let decl = ctx.model.classDeclarations[k];
+              if (decl.name.name == mixinName) {
+                foundId = k;
+                break;
+              }
+            }
+            if (foundId as i32 != -1) {
+              classSymId = foundId;
+            }
+          }
+        }
+        deps.referencedSymbols.add(classSymId);
+        if (ct.isExtension) {
+          deps.referencedTypes.add(ct);
+        }
+        if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
+          deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${propName}`);
+        } else if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
+          let fi = ct.members[propName] as FieldInfo;
+          if (ct.isExtension || fi.isAbstract) {
+            deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
+          }
+        } else if (ct.members.has("get#" + propName)) {
+          deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
+        }
+      }
+      // Check fields first.
+      if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
+        let fi = ct.members[propName] as FieldInfo;
+        if (isStaticAccess && !fi.isStatic) {
+          ctx.error(
+            `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
+        if (!isStaticAccess && fi.isStatic) {
+          ctx.error(
+            `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
+        settleFieldType(fi);
+        let fieldType = fi.type;
+        // Substitute type parameters if this is an instantiated generic class.
+        let subField = substituteTypeParams(ct.typeParameters, ct.typeArguments, fieldType);
+        let resolved = substituteThisType(ct as Type, subField);
+        // Inside a consuming method, `this.field` keeps its owner type
+        // so it can be moved out — at most once per field per path,
+        // like a local (ownership.md §Affine fields). Everywhere else
+        // an affine field reads as a borrow.
+        if (ownerRead && typeCarriesOwner(resolved)) {
+          return resolved;
+        }
+        return borrowWrapFieldRead(ctx, resolved);
+      }
+      // Check methods.
+      if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
+        let methodInfo = ct.members[propName] as MethodInfo;
+        if (isStaticAccess && !methodInfo.isStatic) {
+          ctx.error(
+            `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
+        if (!isStaticAccess && methodInfo.isStatic) {
+          ctx.error(
+            `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
+        let subMethod = substituteTypeParams(ct.typeParameters, ct.typeArguments, methodInfo.type);
+        return substituteThisType(ct as Type, subMethod);
+      }
+      // Check for getter method (get#propName)
+      let getterName = "get#" + propName;
+      if (ct.members.has(getterName)) {
+        let getterMember = ct.members[getterName];
+        match (getterMember) {
+          case MethodInfo as getterInfo: {
+            if (isStaticAccess && !getterInfo.isStatic) {
+              ctx.error(
+                `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
+                DiagnosticCode.PropertyNotFound,
+                loc
+              );
+              return new ErrorType();
+            }
+            if (!isStaticAccess && getterInfo.isStatic) {
+              ctx.error(
+                `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
+                DiagnosticCode.PropertyNotFound,
+                loc
+              );
+              return new ErrorType();
+            }
+            // Return the return type of the getter
+            let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
+            return substituteThisType(ct as Type, subGetter);
+          }
+          case _: {}
+        }
+      }
+      ctx.error(
+        `Property '${displayMemberName(propName)}' does not exist on type '${ct.name}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case InterfaceType as it: {
+      let deps = ctx.currentDependencies();
+      // The member this reads is recorded by codegen's walk of the body
+      // (noteInterfaceDispatch), which gives it a vtable slot.
+      if (deps != null) {
+        deps.referencedSymbols.add((it.genericSource ?? it).symbolId);
+      }
+      if (it.members.has(propName) && it.members[propName] is FieldInfo) {
+        let fieldType = it.members[propName].type;
+        let subField = substituteTypeParams(it.typeParameters, it.typeArguments, fieldType);
+        return borrowWrapFieldRead(ctx, substituteThisType(it as Type, subField));
+      }
+      if (it.members.has(propName) && it.members[propName] is MethodInfo) {
+        let methodInfo = it.members[propName];
+        let subMethod = substituteTypeParams(it.typeParameters, it.typeArguments, methodInfo.type);
+        return substituteThisType(it as Type, subMethod);
+      }
+      // Check for getter method
+      let getterName = "get#" + propName;
+      if (it.members.has(getterName)) {
+        let getterInfo = it.members[getterName];
+        let subGetter = substituteTypeParams(it.typeParameters, it.typeArguments, (getterInfo.type as FunctionType).returnType);
+        return substituteThisType(it as Type, subGetter);
+      }
+      ctx.error(
+        `Property '${displayMemberName(propName)}' does not exist on interface '${it.name}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case RecordT as rec: {
+      let {properties} = rec;
+      if (properties.has(propName)) {
+        if (rec.isOptional(propName)) {
+          // The field may be absent, so a direct read has no value to
+          // produce; presence is consumed through destructuring with a
+          // default or an `if (let {...} = ...)` pattern.
+          ctx.error(
+            "Property '" + displayMemberName(propName) + "' is optional and may be absent. " +
+                "Destructure it with a default or match on its presence.",
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
+        return properties[propName];
+      }
+      ctx.error(
+        `Property '${displayMemberName(propName)}' does not exist on record type.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case UnionT as ut: {
+      // A union of record types is read one field at a time, by a
+      // shape every member has: the read dispatches on the member the
+      // value is, the way a use that passes the whole union repacks
+      // the member it gets (RecordUnionAdaptation). A union of
+      // anything else has no member to read.
+      let shared = resolveRecordUnionMemberType(ctx, ut, propName, loc);
+      if (shared != null) {
+        return shared;
+      }
+      ctx.error(
+        `Property access not supported on type '${typeToString(objectType)}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case ArrayType {elementType, elementsMutable}: {
+      // Delegate to the backing extension class — FixedArray<T> for
+      // mutable elements, ImmutableArray<T> for immutable ones.
+      let faType = resolveArrayBackingClass(ctx, elementsMutable);
+      if (faType != null) {
+        match (faType as Type) {
+          case ClassType as faCt: {
+            let classSymId = (faCt.genericSource ?? faCt).symbolId;
+            let deps = ctx.currentDependencies();
+            if (deps != null) {
+              deps.referencedSymbols.add(classSymId);
+              if (faCt.members.has(propName) && faCt.members[propName] is MethodInfo) {
+                deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${propName}`);
+              } else if (faCt.members.has(propName) && faCt.members[propName] is FieldInfo) {
+                let fi = faCt.members[propName] as FieldInfo;
+                if (faCt.isExtension || fi.isAbstract) {
+                  deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
+                }
+              } else if (faCt.members.has("get#" + propName)) {
+                deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
+              }
+            }
+
+            // Build type arguments [elementType] for substitution.
+            let typeArgs = growable<Type>([elementType]);
+            // Check getter first.
+            let getterName = "get#" + propName;
+            if (faCt.members.has(getterName)) {
+              let getterInfo = faCt.members[getterName];
+              return substituteTypeParams(faCt.typeParameters, typeArgs, (getterInfo.type as FunctionType).returnType);
+            }
+            if (faCt.members.has(propName)) {
+              let memberInfo = faCt.members[propName];
+              return substituteTypeParams(faCt.typeParameters, typeArgs, memberInfo.type);
+            }
+          }
+          case _: {}
+        }
+      }
+      ctx.error(
+        `Property '${displayMemberName(propName)}' does not exist on type 'Array<${typeToString(elementType)}>'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case TypeParameterType {name as tname, constraint}: {
+      if (constraint != null) {
+        return resolveMemberType(ctx, constraint, propName, loc, ownerRead, isStaticAccess);
+      }
+      ctx.error(
+        `Property '${displayMemberName(propName)}' does not exist on type '${tname}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case TypeAliasType as tat: {
+      return resolveMemberType(ctx, tat.target, propName, loc, ownerRead, isStaticAccess);
+    }
+    case EnumType as et: {
+      // `Color.Red`: a member read off the enum's name. A value of the
+      // enum has no members of its own.
+      if (isStaticAccess) {
+        if (let (true, member) = et.members.get(propName)) {
+          return member.type;
+        }
+        ctx.error(
+          `Enum '${et.name}' has no member '${displayMemberName(propName)}'.`,
+          DiagnosticCode.PropertyNotFound,
+          loc
+        );
+        return new ErrorType();
+      }
+      ctx.error(
+        `Property '${displayMemberName(propName)}' does not exist on type '${et.name}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case ErrorType: { return new ErrorType(); }
+    case _: {
+      ctx.error(
+        `Property access not supported on type '${typeToString(objectType)}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+  }
+}
+
+export function checkIndexExpression(
+  ctx: CheckerContext,
+  object: Expression,
+  index: Expression,
+  optional: boolean,
+  loc: SourceLocation | null,
+  node: Node | null = null
+): Type {
+  let objectType = checkExpression(ctx, object, null);
+
+  // Handle optional chaining on nullable object.
+  var baseType_ = objectType;
+  var isNullable = false;
+  match (objectType) {
+    case UnionT {types}: {
+      let nonNull = new Array<Type>();
+      var ui = 0;
+      while (ui < types.length) {
+        if (types[ui] is NullType) {
+          isNullable = true;
+        } else {
+          nonNull.push(types[ui]);
+        }
+        ui = ui + 1;
+      }
+      if (nonNull.length == 1) {
+        baseType_ = nonNull[0];
+      } else if (nonNull.length > 1) {
+        baseType_ = ctx.interner.union(nonNull);
+      }
+    }
+    case NullType: { isNullable = true; }
+    case _: {}
+  }
+
+  let resultType = resolveIndexType(ctx, baseType_, index, loc, node);
+
+  if (isNullable && optional) {
+    if (isBoxablePrimitive(resultType) && (node == null ||
+        !ctx.nullishSanctioned.has(node.id as i32))) {
+      ctx.error(
+        "Optional access to a primitive element requires immediate coalescence: follow it with '?? <default>'.",
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new ErrorType();
+    }
+    let types = growable<Type>([resultType, new NullType()]);
+    return createUnionType(types);
+  }
+
+  return resultType;
+}
+
+/**
+ * The index types an `operator []` accepts, for a diagnostic: the
+ * first parameter of every candidate, joined with " or ".
+ */
+function describeIndexParameters(
+  candidates: GrowableArray<FunctionType>,
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null
+): String {
+  let described = new StringBuilder();
+  var first = true;
+  for (let candidate in candidates) {
+    let resolved = substituteTypeParams(typeParams, typeArgs, candidate) as FunctionType;
+    if (resolved.parameters.length == 0) { continue; }
+    if (!first) { described.append(" or "); }
+    described.append(`'${typeToString(resolved.parameters[0])}'`);
+    first = false;
+  }
+  return described.toString();
+}
+
+/**
+ * The extension class whose members serve a bare array receiver:
+ * FixedArray for mutable elements, ImmutableArray for immutable ones.
+ *
+ * Matched against `currentClass` by name for the reason given at the
+ * array-literal site: the declaring file can be reached under two
+ * module ids, producing two nominal copies of the class.
+ */
+export function resolveArrayBackingClass(
+  ctx: CheckerContext,
+  elementsMutable: boolean
+): ClassType | null {
+  let w = if (elementsMutable) WellKnown.FixedArrayClass
+      else WellKnown.ImmutableArrayClass;
+  let name = wellKnownName(w);
+  let {currentClass} = ctx;
+  if (currentClass != null && currentClass.name == name) {
+    return currentClass;
+  }
+  // Nullable: this answers "which class backs a bare array", and a
+  // compilation without that library has no answer. Callers that cannot
+  // proceed without one say so themselves.
+  let resolved = ctx.tryResolveWellKnownType(w);
+  if (resolved is ClassType) {
+    return resolved as ClassType;
+  }
+  return null;
+}
+
+/** An index expression as a message shows it: a literal's digits. */
+function indexText(index: Expression): String {
+  return if (let NumberLiteral {raw} = index) raw else "expression";
+}
+
+function resolveIndexType(
+  ctx: CheckerContext,
+  objectType: Type,
+  index: Expression,
+  loc: SourceLocation | null,
+  node: Node | null = null
+): Type {
+  // Check the index.
+  let indexType = checkExpression(ctx, index, null);
+
+  // The single operand every overloaded `[]` below selects over,
+  // shared by the class, extension and interface branches.
+  let operandTypes = growable<Type>([indexType]);
+  let operands = growable<Expression>([index]);
+
+  match (objectType) {
+    case ArrayType {elementType, elementsMutable}: {
+      // Check for extension class operator[] on the backing array class
+      // (e.g., FixedArray<T>.operator[](Range)).
+      let fixedArrayPrelude = resolveArrayBackingClass(ctx, elementsMutable);
+      if (fixedArrayPrelude is ClassType) {
+        let typeArgs = growable<Type>([elementType]);
+        let ct = instantiateClassType(fixedArrayPrelude, typeArgs);
+        if (ct.members.has("[]")) {
+          let opMethodInfo = ct.members["[]"];
+          let baseMethod = opMethodInfo.type as FunctionType;
+          let candidates = growable<FunctionType>([baseMethod]);
+          let {overloads} = baseMethod;
+          if (overloads != null) {
+            let ovs = overloads;
+            var oi = 0;
+            while (oi < ovs.length) {
+              candidates.push(ovs[oi]);
+              oi = oi + 1;
+            }
+          }
+          // Most-specific selection over the applicable candidates
+          // (member-lookup.md §5.1).
+          let applicableRaw = new Array<FunctionType>();
+          let applicableRes = new Array<FunctionType>();
+          collectApplicableOperatorOverloads(
+              ctx, candidates, ct.typeParameters, ct.typeArguments,
+              operandTypes, operands, 1, applicableRaw, applicableRes);
+          if (applicableRaw.length > 0) {
+            let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
+            if (node != null && candidates.length > 1) {
+              // Record the subtype-sensitive selection for codegen.
+              ctx.model.setResolvedOverload(node, applicableRaw[selIdx]);
+            }
+            return substituteTypeParams(ct.typeParameters, ct.typeArguments, applicableRaw[selIdx].returnType);
+          }
+        }
+      }
+
+      // Array indexing — index must be i32.
+      if (!isIntegerType(indexType)) {
+        ctx.error(
+          `Array index must be an integer, got '${typeToString(indexType)}'.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+      return elementType;
+    }
+    case TupleT {elementTypes, row, rowIndex}: {
+      // A row's elements are the caller's, so only the positions before
+      // it are known.
+      if (row != null) {
+        if (let NumberLiteral {raw} = index) {
+          while (let (true, idx) = parseI32(raw)) {
+            if (idx >= 0 && idx < rowIndex) {
+              return tupleElementRead(ctx, elementTypes[idx], loc);
+            }
+            break;
+          }
+        }
+        ctx.error(
+          `Index ${indexText(index)} is at or past the row '${row.name}' of type '${typeToString(objectType)}': the elements from there on are the caller's.`,
+          DiagnosticCode.IndexOutOfBounds,
+          loc
+        );
+        return new ErrorType();
+      }
+      // Tuple indexing — return specific element type for literal index.
+      match (index) {
+        case NumberLiteral {raw}: {
+          while (let (true, idx) = parseI32(raw)) {
+            if (idx >= 0 && idx < elementTypes.length) {
+              return tupleElementRead(ctx, elementTypes[idx], loc);
+            }
+            break;
+          }
+          ctx.error(
+            `Tuple index out of bounds: ${raw} (tuple has ${elementTypes.length} elements).`,
+            DiagnosticCode.IndexOutOfBounds,
+            loc
+          );
+          return new ErrorType();
+        }
+        case _: {
+          // Non-literal index — return union of all element types.
+          let reads = new Array<Type>();
+          for (let el in elementTypes) {
+            reads.push(tupleElementRead(ctx, el, loc));
+          }
+          return createUnionType(reads);
+        }
+      }
+    }
+    case ClassType as ct: {
+      // Check for operator [] method.
+      if (ct.members.has("[]")) {
+        let deps = ctx.currentDependencies();
+        if (deps != null) {
+          let classSymId = (ct.genericSource ?? ct).symbolId;
+          deps.referencedSymbols.add(classSymId);
+          deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".[]");
+        }
+        let opMethodInfo = ct.members["[]"];
+        let baseMethod = opMethodInfo.type as FunctionType;
+        let candidates = growable<FunctionType>([baseMethod]);
+        let {overloads} = baseMethod;
+        if (overloads != null) {
+          let ovs = overloads;
+          var oi = 0;
+          while (oi < ovs.length) {
+            candidates.push(ovs[oi]);
+            oi = oi + 1;
+          }
+        }
+        // Most-specific selection over the applicable candidates
+        // (member-lookup.md §5.1).
+        var selectedMethod = baseMethod;
+        let applicableRaw = new Array<FunctionType>();
+        let applicableRes = new Array<FunctionType>();
+        collectApplicableOperatorOverloads(
+            ctx, candidates, ct.typeParameters, ct.typeArguments,
+            operandTypes, operands, 1, applicableRaw, applicableRes);
+        let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
+        if (selIdx >= 0) {
+          selectedMethod = applicableRaw[selIdx];
+        } else if (!(indexType is ErrorType)) {
+          // No overload accepts this index. Falling back to the
+          // first-declared signature would type the expression off a
+          // method the call can never reach, so say so instead.
+          ctx.error(
+            `Type mismatch: '${ct.name}' cannot be indexed by \
+'${typeToString(indexType)}'; 'operator []' expects \
+${describeIndexParameters(candidates, ct.typeParameters, ct.typeArguments)}.`,
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+          return new ErrorType();
+        }
+        if (node != null && candidates.length > 1) {
+          // Record the subtype-sensitive selection for codegen.
+          ctx.model.setResolvedOverload(node, selectedMethod);
+        }
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, selectedMethod.returnType);
+      }
+      ctx.error(
+        `Type '${ct.name}' does not support indexing (no 'operator []' method).`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case InterfaceType as it: {
+      if (it.members.has("[]")) {
+        let opMethodInfo = it.members["[]"];
+        let baseMethod = opMethodInfo.type as FunctionType;
+        let candidates = growable<FunctionType>([baseMethod]);
+        let {overloads} = baseMethod;
+        if (overloads != null) {
+          let ovs = overloads;
+          var oi = 0;
+          while (oi < ovs.length) {
+            candidates.push(ovs[oi]);
+            oi = oi + 1;
+          }
+        }
+        // Most-specific selection over the applicable candidates
+        // (member-lookup.md §5.1).
+        var selectedMethod = baseMethod;
+        let applicableRaw = new Array<FunctionType>();
+        let applicableRes = new Array<FunctionType>();
+        collectApplicableOperatorOverloads(
+            ctx, candidates, it.typeParameters, it.typeArguments,
+            operandTypes, operands, 1, applicableRaw, applicableRes);
+        let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
+        if (selIdx >= 0) {
+          selectedMethod = applicableRaw[selIdx];
+        } else if (!(indexType is ErrorType)) {
+          ctx.error(
+            `Type mismatch: '${it.name}' cannot be indexed by \
+'${typeToString(indexType)}'; 'operator []' expects \
+${describeIndexParameters(candidates, it.typeParameters, it.typeArguments)}.`,
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+          return new ErrorType();
+        }
+        if (node != null && candidates.length > 1) {
+          ctx.model.setResolvedOverload(node, selectedMethod);
+        }
+        return substituteTypeParams(it.typeParameters, it.typeArguments, selectedMethod.returnType);
+      }
+      ctx.error(
+        `Interface '${it.name}' does not support indexing (no 'operator []' method).`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case ErrorType: { return new ErrorType(); }
+    case TypeParameterType {constraint}: {
+      // Index access resolves through the bound, the same way member
+      // access does: the generic body is checked once against the
+      // constraint, and every specialization's receiver is a concrete
+      // type that lowers directly. This is what makes
+      // `<A extends Array<T>>` the signature that accepts every array
+      // representation at no cost — see docs/design/array-mutability.md.
+      if (constraint != null) {
+        return resolveIndexType(ctx, constraint, index, loc, node);
+      }
+      ctx.error(
+        `Index access not supported on type '${typeToString(objectType)}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case _: {
+      ctx.error(
+        `Index access not supported on type '${typeToString(objectType)}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+  }
+}

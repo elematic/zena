@@ -1,0 +1,1194 @@
+import { growable } from 'zena:core';
+import { analyzeTryBodyAssignments } from '../analysis/capture.zena';
+import {
+  BlockStatement, BreakStatement, CallExpression, ClassDeclaration,
+  ContinueStatement, DeclareFunction, EnumDeclaration, ExportAllDeclaration,
+  ExportFromDeclaration, Expression, ExpressionStatement, ForInStatement,
+  ForStatement, FunctionDeclaration, Identifier, IdentifierPattern,
+  IfStatement, ImportDeclaration, InterfaceDeclaration, LetPatternCondition,
+  MemberExpression, MixinDeclaration, Node, NullLiteral, Pattern,
+  ReturnStatement, ShieldedStatement, SourceLocation, Statement,
+  SymbolDeclaration, ThisExpression, TuplePattern, TypeAliasDeclaration,
+  TypeAnnotation, UsingStatement, VariableDeclaration, WhileStatement,
+  YieldStatement
+} from '../ast.zena';
+import {
+  ArrayType, ClassType, ErrorType, FieldInfo, FunctionType,
+  InlineTupleType as InlineTupleT, NeverType, NullType,
+  RecordType as RecordT, Type, VoidType, isScopedType, isSecondClass,
+  scopedInner, typeCarriesOwner, typeToString
+} from '../types.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { Symbol } from '../scope/symbol.zena';
+import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { boxedFormOf, resolveTypeAnnotation } from './annotations.zena';
+import { checkClassBodies, registerClassDeclaration } from './classes.zena';
+import { CheckerContext, lookupBindingTypeInDeps } from './context.zena';
+import {
+  checkDeclareFunction, checkEnumDeclaration,
+  checkInterfaceConstructorBodies, checkInterfaceDeclaration,
+  checkMixinDeclaration, checkSymbolDeclaration, checkTypeAliasDeclaration
+} from './declarations.zena';
+import { checkExpression, validateConditionType } from './expressions.zena';
+import {
+  findImplementedInterfaceTransitiveInChecker, tryInstantiateGenericFunction
+} from './generics.zena';
+import { checkCyclicImportRules, prescanPendingFunctions } from './module.zena';
+import {
+  applyFalseNarrowingFromCondition, applyTrueNarrowingFromCondition,
+  branchDefinitelyExits, isTrueLiteral, recordLoopAssignments
+} from './narrowing.zena';
+import {
+  castOperand, isScopedValueType, mentionsParamDerived,
+  moveDestructuredTuple, ownedResourcesIn, recordArgumentMove,
+  recordOwnerFieldMove, recordScopedFieldTake, registerDestructuredOwners,
+  registerPatternOwners, releaseDiscardedOwner, requireDisposable,
+  scopedFieldInfo
+} from './ownership.zena';
+import {
+  bindPattern, checkPattern, isRefutableDeclarationPattern,
+  narrowTypeByPattern
+} from './patterns.zena';
+import {
+  extractFutureValueType, forInLowersToIndexLoop, getIterationProtocol,
+  pendingStepFutureType
+} from './protocols.zena';
+import { isAssignableTo, typesEqual } from './relations.zena';
+import { isNullableType, unwrapAliases, widenType } from './unions.zena';
+
+export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
+  match (stmt) {
+    case VariableDeclaration {kind, pattern, typeAnnotation, init, loc}: {
+      checkVariableDeclaration(ctx, kind, pattern, typeAnnotation, init, loc);
+    }
+    case UsingStatement {pattern, typeAnnotation, init, loc}: {
+      checkUsingStatement(ctx, pattern, typeAnnotation, init, loc);
+    }
+    case ShieldedStatement {body, loc}: {
+      if (ctx.asyncFutureType == null) {
+        ctx.error(
+          "'shielded' is only legal in an async function: it masks " +
+          "cancellation checkpoints, and sync code has none.",
+          DiagnosticCode.TypeMismatch, loc);
+      }
+      // The region lowers through the finalizer machinery (the
+      // ambient-scope restore is its finalizer), so it needs the
+      // exception infra, and enclosing locals its body assigns need
+      // cells across suspensions exactly as a try body's do.
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        deps.needsExceptionInfra = true;
+      }
+      checkStatement(ctx, body);
+      if (deps != null && ctx.asyncFutureType != null) {
+        for (let symId in analyzeTryBodyAssignments(body as Node, ctx.model)) {
+          deps.tryMutatedSymbols.add(symId);
+        }
+      }
+    }
+    case FunctionDeclaration {name as namePat, func}: {
+      let info = ctx.model.resolveDeclaration(namePat);
+      let pendingOvs = if (info != null) ctx.pendingFunctionOverloads((info as Symbol).id) else null;
+      if (info != null && pendingOvs != null && (pendingOvs as GrowableArray<Node>).length > 1 &&
+          ctx.model.getBindingTypeDirect(info as Symbol) == null) {
+        ctx.lazyResolveFunction(info as Symbol, func as Node);
+      }
+      let funcType = checkExpression(ctx, func as Expression, null);
+      if (info != null && pendingOvs != null && (pendingOvs as GrowableArray<Node>).length > 1) {
+        let sym = info as Symbol;
+        let {declaration} = sym;
+        if (declaration != null && declaration !== namePat &&
+            !(ctx.model.getParent(declaration) is FunctionDeclaration)) {
+          ctx.error(
+            `Variable '${namePat.name}' is already declared in this scope.`,
+            DiagnosticCode.DuplicateDeclaration,
+            namePat.loc
+          );
+        } else if (funcType is FunctionType) {
+          funcType.functionSymbolId = sym.id;
+          funcType.functionSymbolName = sym.name;
+          ctx.setNodeType(namePat, funcType);
+          let ovNodes = pendingOvs as GrowableArray<Node>;
+          var ovIdx = -1;
+          for (var oi = 0; oi < ovNodes.length; oi += 1) {
+            if (ovNodes[oi] === (func as Node)) {
+              ovIdx = oi;
+              break;
+            }
+          }
+          let existingType = ctx.model.getBindingTypeDirect(sym);
+          if (existingType is FunctionType) {
+            let ovs = existingType.overloads ?? growable<FunctionType>([existingType]);
+            existingType.overloads = ovs;
+            if (ovIdx >= 0 && ovIdx < ovs.length) {
+              ovs[ovIdx] = funcType;
+            } else {
+              ovs.push(funcType);
+            }
+            funcType.overloads = ovs;
+          } else {
+            ctx.declareBinding(sym, funcType);
+          }
+        }
+      } else {
+        bindPattern(ctx, namePat as Pattern, funcType);
+      }
+    }
+    case ExpressionStatement {expression}: {
+      let exprType = checkExpression(ctx, expression, new VoidType());
+      // An expression of type `never` — a call to a never-returning
+      // function — ends the path, so the guard that led here inverts
+      // for the code after, like an inline `throw`.
+      if (exprType is NeverType) {
+        ctx.markFlowUnreachable();
+      }
+      releaseDiscardedOwner(ctx, stmt, expression, exprType);
+    }
+    case BlockStatement {body}: {
+      ctx.enterScope();
+      ctx.enterOwnScope();
+      let prevUsingDepth = ctx.usingDepth;
+      prescanPendingFunctions(ctx, body);
+      var i = 0;
+      while (i < body.length) {
+        let stmtNode = body[i];
+        ctx.beginOwnStatement();
+        checkStatement(ctx, stmtNode);
+        ctx.endOwnStatement(i, stmtNode);
+        // TODO(#509): report code after a loop that never completes too.
+        if (branchDefinitelyExits(stmtNode, ctx.model, false) &&
+            i < body.length - 1) {
+          ctx.error(
+            "Unreachable code detected.",
+            DiagnosticCode.UnreachableCode,
+            body[i + 1].loc
+          );
+          break;
+        }
+        i += 1;
+      }
+      ctx.setUsingDepth(prevUsingDepth);
+      ctx.exitOwnScope(stmt);
+      ctx.exitScope();
+    }
+    case ReturnStatement {argument, isTail, loc}: {
+      if (ctx.cancelBlockFloor >= 0) {
+        ctx.error(
+          "Cannot 'return' out of a 'cancel' block; the cancellation unwind continues.",
+          DiagnosticCode.TypeMismatch, loc);
+      }
+      if (isTail) {
+        checkTailReturnContext(ctx, argument, loc);
+      }
+      let tailAdopt = isTail && ctx.asyncFutureType != null;
+      if (tailAdopt && argument != null) {
+        // `tail return f()` in an async body ADOPTS: the frame's
+        // future settles from the callee's, so the operand must be
+        // the declared Future<T> itself, not the value type
+        // (async.md §8).
+        let adoptTarget = ctx.asyncFutureType as Type;
+        let argType = checkExpression(ctx, argument, adoptTarget);
+        if (!(argType is ErrorType) &&
+            !isAssignableTo(ctx, argType, adoptTarget)) {
+          ctx.error(
+            "Type mismatch: 'tail return' in an async function adopts a '" +
+            typeToString(adoptTarget) + "', got '" +
+            typeToString(argType) + "'.",
+            DiagnosticCode.TypeMismatch, loc);
+        }
+        return;
+      }
+      let expectedReturn = ctx.returnType;
+      if (ctx.yieldType != null && argument != null) {
+        // Generators complete via bare `return;` or falling off the end;
+        // the iteration protocol has no completion payload
+        // (generators.md §2.2).
+        ctx.error(
+          "Generators cannot return a value; use 'yield' to produce values and bare 'return;' to finish.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        checkExpression(ctx, argument, null);
+      } else if (argument != null) {
+        // By convention, if expectedReturn is VoidType, we are inferring the return type.
+        // We should not pass it down as expectedType since it will force if-expressions to void.
+        let isInferring = expectedReturn is VoidType;
+        let passedExpected = if (isInferring) { null } else { expectedReturn };
+        let argType = checkExpression(ctx, argument, passedExpected);
+        if (isTail) {
+          checkTailReturnType(ctx, argType, expectedReturn, loc);
+        }
+        if (expectedReturn != null) {
+          if (expectedReturn is VoidType) {
+            // No explicit return type - infer from return statements
+            ctx.addInferredReturnType(argType);
+          } else if (!isAssignableTo(ctx, argType, expectedReturn)) {
+            // Async return-adoption (async.md §2): `return e` in an
+            // annotated async body also accepts the declared Future<T>
+            // itself, forwarding its result — legal only when T is
+            // distinguishable from Future<T>.
+            let adoptTarget = ctx.asyncFutureType;
+            var adopted = false;
+            if (adoptTarget != null &&
+                extractFutureValueType(ctx, expectedReturn) == null &&
+                isAssignableTo(ctx, argType, adoptTarget)) {
+              adopted = true;
+            }
+            if (!adopted) {
+              ctx.error(
+                "Type mismatch: cannot return '" + typeToString(argType) +
+                "' from function expecting '" + typeToString(expectedReturn) + "'.",
+                DiagnosticCode.TypeMismatch,
+                loc
+              );
+            }
+          } else {
+            let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedReturn);
+            if (instantiated !== argType) {
+              ctx.setNodeType(argument, instantiated);
+            }
+            checkAndRegisterInterfaceAdaptation(ctx, argument, instantiated, expectedReturn);
+          }
+        } else {
+          // No expected return type at all (shouldn't happen in a function, but collect anyway)
+          ctx.addInferredReturnType(argType);
+        }
+      } else {
+        // return; — function should return void.
+        if (expectedReturn != null) {
+          if (!(expectedReturn is VoidType)) {
+            ctx.error(
+              `Missing return value. Expected '${typeToString(expectedReturn)}'.`,
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          }
+        }
+      }
+      // `return this.field` in a consuming method hands the field's
+      // ownership to the caller — a move-out, or the dispose glue
+      // would release what was just returned.
+      // `return this.field` of a `scoped T` field hands its value to
+      // the caller: a take, through a cast too (`this.#value as T`).
+      let returned = if (argument != null) castOperand(argument as Expression) else null;
+      if (returned != null && returned is MemberExpression) {
+        let sfi = scopedFieldInfo(ctx, returned);
+        if (sfi != null) {
+          recordScopedFieldTake(ctx, returned, sfi as FieldInfo, loc);
+        }
+      }
+      if (argument != null && ctx.owningReceiver && argument is MemberExpression) {
+        let me = argument;
+        if (me.object is ThisExpression) {
+          let at = ctx.model.getNodeType(argument as Node);
+          if (at != null && typeCarriesOwner(at)) {
+            recordOwnerFieldMove(ctx, me, loc);
+          }
+        }
+      }
+      // Returning a scoped binding is its consumption: the move
+      // happens before the exit check below, so `return fut;` is a
+      // clean path for `fut` and any OTHER live scoped binding errors.
+      if (argument != null && argument is Identifier) {
+        let rt = ctx.model.getNodeType(argument as Node);
+        if (rt != null && isScopedValueType(rt)) {
+          let rsym = ctx.model.resolve(argument);
+          if (rsym != null) {
+            ctx.recordFlowMove(rsym.id, rsym.name, loc);
+          }
+        }
+      }
+      ctx.requireScopedConsumed(loc, 0);
+      ctx.recordBodyExit();
+      ctx.markFlowUnreachable();
+    }
+    case YieldStatement {argument, loc}: {
+      if (ctx.inFinalizer) {
+        // Disposal delivers a cancellation at the suspended yield and
+        // the unwind runs the enclosing finalizers; a yield inside one
+        // would park the generator mid-cleanup, where nothing is
+        // obliged to ever resume it (docs/design/cancellation.md,
+        // "Abandonment and generator disposal").
+        ctx.error(
+          "'yield' is not allowed inside a 'finally' block.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+      let expectedYield = ctx.yieldType;
+      if (expectedYield == null) {
+        // Not in a `gen` body. A closure nested inside a generator hits
+        // this too: it is its own function and cannot suspend its
+        // lexical parent (generators.md §2.2).
+        ctx.error(
+          "'yield' is only valid inside the body of a 'gen' function.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        checkExpression(ctx, argument, null);
+      } else {
+        if (expectedYield is VoidType) {
+          // No yield type annotation — infer from yield statements.
+          let argType = checkExpression(ctx, argument, null);
+          ctx.addInferredYieldType(argType);
+        } else {
+          let argType = checkExpression(ctx, argument, expectedYield);
+          if (!isAssignableTo(ctx, argType, expectedYield)) {
+            ctx.error(
+              "Type mismatch: cannot yield '" + typeToString(argType) +
+              "' from a generator with yield type '" + typeToString(expectedYield) + "'.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          } else {
+            let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedYield);
+            if (instantiated !== argType) {
+              ctx.setNodeType(argument, instantiated);
+            }
+            checkAndRegisterInterfaceAdaptation(ctx, argument, instantiated, expectedYield);
+          }
+        }
+        // The yielded value evaluated before the suspension; everything
+        // after this statement is post-suspend.
+        ctx.recordFlowSuspend();
+      }
+    }
+    case IfStatement {test, consequent, alternate, loc}: {
+      // Check condition.
+      match (test) {
+        case LetPatternCondition as lpc: {
+          let initType = checkExpression(ctx, lpc.init, null);
+          moveDestructuredTuple(ctx, lpc.init, initType);
+          let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
+          let preBranchFlow = ctx.currentFlow;
+          ctx.enterScope();
+          checkPattern(ctx, lpc.pattern, narrowedInitType);
+          ctx.enterOwnScope();
+          registerPatternOwners(ctx, lpc.pattern as Node);
+          checkStatement(ctx, consequent);
+          ctx.exitOwnScope(consequent as Node);
+          ctx.exitScope();
+          let trueEnd = ctx.currentFlow;
+          ctx.setFlow(preBranchFlow);
+          if (alternate != null) {
+            ctx.enterScope();
+            checkStatement(ctx, alternate);
+            ctx.exitScope();
+          }
+          ctx.mergeFlow(trueEnd, ctx.currentFlow);
+        }
+case _: {
+          let testExpr = test as Expression;
+          let testType = checkExpression(ctx, testExpr, null);
+          validateConditionType(ctx, testType, testExpr);
+
+          let preBranchFlow = ctx.currentFlow;
+
+          // Consequent body with TRUE narrowings on its flow path.
+          ctx.enterScope();
+          applyTrueNarrowingFromCondition(ctx, testExpr);
+          checkStatement(ctx, consequent);
+          ctx.exitScope();
+          let trueEnd = ctx.currentFlow;
+
+          // The false path carries the inverse narrowings whether or
+          // not an `else` is written: not entering the consequent means
+          // the condition was false. This is what makes narrowing after
+          // a definitely-exiting branch, and after `if (x == null)
+          // { x = value; }`, fall out of the join below — the exiting
+          // branch's end is unreachable and drops out, and the
+          // assignment's stored type rides the true path.
+          ctx.setFlow(preBranchFlow);
+          applyFalseNarrowingFromCondition(ctx, testExpr);
+          if (alternate != null) {
+            ctx.enterScope();
+            checkStatement(ctx, alternate);
+            ctx.exitScope();
+          }
+          // Held for the branch-join drop decision when the enclosing
+          // scope closes (ownership.md §"The branch-join rule").
+          ctx.recordPendingEdgeIf(stmt as Node, preBranchFlow, trueEnd,
+              ctx.currentFlow);
+          ctx.mergeFlow(trueEnd, ctx.currentFlow);
+        }
+      }
+    }
+    case WhileStatement {test, body, loc}: {
+      match (test) {
+        case LetPatternCondition as lpc: {
+          // The condition re-runs every iteration, so it sits between
+          // the loop header and the body on the flow graph.
+          ctx.enterFlowLoop();
+          recordLoopAssignments(ctx, stmt);
+          let initType = checkExpression(ctx, lpc.init, null);
+          moveDestructuredTuple(ctx, lpc.init, initType);
+          let afterTest = ctx.currentFlow;
+          let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
+          ctx.enterLoop();
+          ctx.enterScope();
+          checkPattern(ctx, lpc.pattern, narrowedInitType);
+          ctx.enterOwnScope();
+          registerPatternOwners(ctx, lpc.pattern as Node);
+          checkStatement(ctx, body);
+          ctx.exitOwnScope(body as Node);
+          ctx.exitScope();
+          ctx.exitLoop();
+          ctx.exitFlowLoop(afterTest);
+        }
+        case _: {
+          ctx.enterFlowLoop();
+          recordLoopAssignments(ctx, stmt);
+          let testExpr = test as Expression;
+          let testType = checkExpression(ctx, testExpr, null);
+          let afterTest = ctx.currentFlow;
+          validateConditionType(ctx, testType, testExpr);
+          // The body runs under the condition's narrowings — the full
+          // engine, so compound conditions narrow too — and leaving the
+          // loop normally means the condition was false, so the exit
+          // edge carries the inverse.
+          applyTrueNarrowingFromCondition(ctx, testExpr);
+          ctx.enterLoop();
+          checkStatement(ctx, body);
+          ctx.exitLoop();
+          let bodyEnd = ctx.currentFlow;
+          ctx.setFlow(afterTest);
+          applyFalseNarrowingFromCondition(ctx, testExpr);
+          // `while (true)` is left only by a `break`.
+          let falseExit = if (isTrueLiteral(testExpr)) {
+            ctx.unreachableFlow()
+          } else {
+            ctx.currentFlow
+          };
+          ctx.setFlow(bodyEnd);
+          ctx.exitFlowLoop(falseExit);
+        }
+      }
+    }
+    case ForStatement {init, test, update, body, loc}: {
+      ctx.enterScope();
+      if (init != null) {
+        match (init) {
+          case VariableDeclaration as vd: {
+            checkStatement(ctx, vd);
+          }
+          case _: {
+            let initExpr = init as Expression;
+            checkExpression(ctx, initExpr, null);
+          }
+        }
+      }
+      // Test and update run every iteration, so their flow sits inside
+      // the loop. The update is checked before the body (its check
+      // order), which on the graph approximates "before each iteration
+      // after the first" — conservative for narrowing.
+      ctx.enterFlowLoop();
+      recordLoopAssignments(ctx, stmt);
+      var afterTest = ctx.currentFlow;
+      var falseExit = ctx.currentFlow;
+      if (test != null) {
+        let testType = checkExpression(ctx, test, null);
+        validateConditionType(ctx, testType, test);
+        afterTest = ctx.currentFlow;
+        applyTrueNarrowingFromCondition(ctx, test);
+        // The exit means the test was false.
+        let inBody = ctx.currentFlow;
+        ctx.setFlow(afterTest);
+        applyFalseNarrowingFromCondition(ctx, test);
+        falseExit = ctx.currentFlow;
+        ctx.setFlow(inBody);
+      }
+      // With no condition, or the literal `true`, only a `break` leaves.
+      if (test == null || isTrueLiteral(test)) {
+        falseExit = ctx.unreachableFlow();
+      }
+      if (update != null) {
+        checkExpression(ctx, update, null);
+      }
+      ctx.enterLoop();
+      checkStatement(ctx, body);
+      ctx.exitLoop();
+      ctx.exitFlowLoop(falseExit);
+      ctx.exitScope();
+    }
+    case BreakStatement {loc}: {
+      if (!ctx.inLoop()) {
+        ctx.error("'break' outside of loop.", DiagnosticCode.BreakOutsideLoop, loc);
+      } else if (ctx.cancelBlockFloor >= 0 &&
+          ctx.loopDepth <= ctx.cancelBlockFloor) {
+        ctx.error(
+          "Cannot 'break' out of a 'cancel' block; the cancellation unwind continues.",
+          DiagnosticCode.BreakOutsideLoop, loc);
+      }
+      ctx.requireScopedConsumed(loc, ctx.scopedLoopFloor());
+      ctx.recordFlowBreak();
+    }
+    case ContinueStatement {loc}: {
+      if (!ctx.inLoop()) {
+        ctx.error("'continue' outside of loop.", DiagnosticCode.ContinueOutsideLoop, loc);
+      } else if (ctx.cancelBlockFloor >= 0 &&
+          ctx.loopDepth <= ctx.cancelBlockFloor) {
+        ctx.error(
+          "Cannot 'continue' out of a 'cancel' block; the cancellation unwind continues.",
+          DiagnosticCode.ContinueOutsideLoop, loc);
+      }
+      ctx.requireScopedConsumed(loc, ctx.scopedLoopFloor());
+      ctx.recordFlowContinue();
+    }
+    // Declarations that are handled during pre-pass or skipped for now.
+    case ImportDeclaration {moduleSpecifier, imports}: {
+      let deps = ctx.depExports;
+      if (deps != null) {
+        let specifier = moduleSpecifier.value;
+        if (deps.has(specifier)) {
+          let depMod = deps[specifier];
+
+          // Look up the dependency's SemanticModel for resolved types.
+          var depModel: SemanticModel | null = null;
+          let models = ctx.depModels;
+          if (models != null) {
+            if (let (true, m) = models.get(specifier)) {
+              depModel = m;
+            }
+          }
+
+          for (let spec in imports) {
+            let importedName = spec.imported.name;
+            let localName = spec.local.name;
+
+            if (importedName != "*") {
+              checkCyclicImportRules(ctx, depMod, importedName, spec);
+            }
+
+            if (importedName == "*") {
+              // It's a namespace import: import * as ns from 'mod'
+              // We construct a RecordType populated with all value exports of the dependency.
+              // The record is materialized eagerly in __start, so any
+              // value originating across a cycle back edge would be
+              // read before its initializer runs — reject those
+              // (docs/design/import-cycles.md).
+              let laterForNs = ctx.cyclicLaterPaths;
+              if (laterForNs != null) {
+                for (let expKey in depMod.keys()) {
+                  if (let (true, exp) = depMod.get(expKey)) {
+                    if (exp.isValue() &&
+                        laterForNs.has(exp.resolveTarget().modulePath)) {
+                      ctx.error(
+                        "Cyclic namespace import: '" + expKey +
+                          "' originates in a module that has not initialized yet",
+                        DiagnosticCode.CyclicImport, spec.loc);
+                    }
+                  }
+                }
+              }
+              let properties = new Map<String, Type>();
+              for (let expKey in depMod.keys()) {
+                if (let (true, exp) = depMod.get(expKey)) {
+                  if (exp.isValue()) {
+                    let resolvedValType = if (depModel != null) {
+                      let t = depModel.getBindingType(exp);
+                      if (t != null) { t } else { lookupBindingTypeInDeps(ctx, exp) }
+                    } else {
+                      lookupBindingTypeInDeps(ctx, exp)
+                    };
+                    if (resolvedValType != null) {
+                      properties[expKey] = resolvedValType;
+                    } else {
+                      properties[expKey] = new ErrorType();
+                    }
+                  }
+                }
+              }
+              let recordType = new RecordT(properties, null, null, false);
+              
+              // Register it as a value import in the local scope.
+              let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
+              if (localValInfo != null) {
+                ctx.declareBinding(localValInfo, recordType);
+              }
+            } else {
+              // Register type imports (classes, interfaces, etc.)
+              let typeExport = if (let (true, exp) = depMod.get(importedName)) {
+                if (exp.isType()) { exp } else { null }
+              } else { null };
+
+              // Register value imports (functions, variables).
+              let valueExport = if (let (true, exp) = depMod.get(importedName)) {
+                if (exp.isValue()) { exp } else { null }
+              } else { null };
+
+              if (typeExport == null && valueExport == null) {
+                ctx.error(
+                  `Library '${specifier}' has no exported member '${importedName}'.`,
+                  DiagnosticCode.SymbolNotFound,
+                  spec.loc
+                );
+                let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
+                if (localValInfo != null) {
+                  ctx.declareBinding(localValInfo, new ErrorType());
+                }
+                ctx.declareTypeName(localName, new ErrorType());
+              } else {
+                if (typeExport != null) {
+                  var resolvedType: Type | null = if (depModel != null) {
+                    depModel.getExportType(importedName)
+                  } else {
+                    null
+                  };
+                  if (resolvedType == null) {
+                    // A type declaration's canonical object, whichever
+                    // module materialized it and whether or not its own
+                    // module has finished; a shell when the origin lies
+                    // across a cycle's back edge and has no model yet
+                    // (docs/design/import-cycles.md).
+                    resolvedType = ctx.materializeCyclicImport(typeExport, importedName);
+                  }
+                  if (resolvedType == null && depModel != null) {
+                    resolvedType = depModel.getBindingType(typeExport);
+                  }
+                  if (resolvedType == null) {
+                    resolvedType = lookupBindingTypeInDeps(ctx, typeExport);
+                  }
+
+                  let localTypeInfo = ctx.scopeResult.symbols.getByNode(spec);
+                  if (resolvedType != null) {
+                    ctx.declareTypeName(localName, resolvedType);
+                    if (localTypeInfo != null) {
+                      ctx.registerType(localTypeInfo, resolvedType);
+                    }
+                  } else {
+                    // Nothing answers for the name: no model, no
+                    // canonical type, no back edge to build a shell
+                    // from. That is stale incremental state, and a stub
+                    // minted here would be a second identity for the
+                    // declaration, which nothing would ever fill.
+                    ctx.declareTypeName(localName, new ErrorType());
+                    if (localTypeInfo != null) {
+                      ctx.declareBinding(localTypeInfo, new ErrorType());
+                    }
+                  }
+                }
+
+                if (valueExport != null) {
+                  let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
+                  if (localValInfo != null) {
+                    var resolvedValType = if (depModel != null) {
+                      let t = depModel.getBindingType(valueExport);
+                      if (t != null) { t } else { lookupBindingTypeInDeps(ctx, valueExport) }
+                    } else {
+                      lookupBindingTypeInDeps(ctx, valueExport)
+                    };
+                    if (resolvedValType == null) {
+                      // Cycle back edge, first pass: nominal declarations
+                      // (class constructor values) resolve via their
+                      // canonical shell.
+                      resolvedValType = ctx.materializeCyclicImport(valueExport, importedName);
+                    }
+                    if (resolvedValType == null) {
+                      // A function from a member of the same import cycle
+                      // that has registered its declarations but not yet
+                      // checked its bodies: its signature comes from its
+                      // annotations, on demand.
+                      resolvedValType = ctx.resolveInProgressFunction(valueExport.resolveTarget());
+                    }
+                    if (resolvedValType != null) {
+                      ctx.declareBinding(localValInfo, resolvedValType);
+                    } else if (typeExport == null) {
+                      // A function from later in the cycle, not yet
+                      // registered: left unbound here, and resolved the
+                      // same way at its first use, by which time the
+                      // origin has registered (resolveIdentifierInternal).
+                      // Anything else is an error the cycle rules have
+                      // already reported.
+                      let origin = valueExport.resolveTarget();
+                      let laterForFn = ctx.cyclicLaterPaths;
+                      let deferred = origin.isFunctionBinding && laterForFn != null &&
+                          laterForFn.has(origin.modulePath);
+                      if (!deferred) {
+                        ctx.declareBinding(localValInfo, new ErrorType());
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } else if (specifier != "") {
+          ctx.error(
+            `Library not found: '${specifier}'.`,
+            DiagnosticCode.ModuleNotFound,
+            moduleSpecifier.loc
+          );
+          for (let spec in imports) {
+            let localName = spec.local.name;
+            let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
+            if (localValInfo != null) {
+              ctx.declareBinding(localValInfo, new ErrorType());
+            }
+            ctx.declareTypeName(localName, new ErrorType());
+          }
+        }
+      }
+    }
+    case ExportAllDeclaration {moduleSpecifier}: {
+      let deps = ctx.depExports;
+      if (deps != null) {
+        let specifier = moduleSpecifier.value;
+        if (!deps.has(specifier) && specifier != "") {
+          ctx.error(
+            `Library not found: '${specifier}'.`,
+            DiagnosticCode.ModuleNotFound,
+            moduleSpecifier.loc
+          );
+        }
+      }
+    }
+    case ExportFromDeclaration {moduleSpecifier, specifiers}: {
+      let deps = ctx.depExports;
+      if (deps != null) {
+        let specifier = moduleSpecifier.value;
+        if (!deps.has(specifier) && specifier != "") {
+          ctx.error(
+            `Library not found: '${specifier}'.`,
+            DiagnosticCode.ModuleNotFound,
+            moduleSpecifier.loc
+          );
+        } else if (deps.has(specifier)) {
+          let depMod = deps[specifier];
+          for (let spec in specifiers) {
+            let importedName = spec.imported.name;
+            if (!depMod.has(importedName)) {
+              ctx.error(
+                `Library '${specifier}' has no exported member '${importedName}'.`,
+                DiagnosticCode.SymbolNotFound,
+                spec.loc
+              );
+            }
+          }
+        }
+      }
+    }
+    case ClassDeclaration as cd: {
+      registerClassDeclaration(ctx, cd);
+      checkClassBodies(ctx, cd);
+    }
+    case InterfaceDeclaration as id: {
+      checkInterfaceDeclaration(ctx, id);
+      checkInterfaceConstructorBodies(ctx, id);
+    }
+    case EnumDeclaration as ed: {
+      checkEnumDeclaration(ctx, ed);
+    }
+    case MixinDeclaration as md: {
+      checkMixinDeclaration(ctx, md);
+    }
+    case TypeAliasDeclaration as ta: {
+      checkTypeAliasDeclaration(ctx, ta);
+    }
+    case DeclareFunction as df: {
+      checkDeclareFunction(ctx, df);
+    }
+    case SymbolDeclaration as sd: {
+      checkSymbolDeclaration(ctx, sd);
+    }
+    case ForInStatement {pattern, iterable, body, isAwait, loc}: {
+      if (isAwait && ctx.asyncValueType == null) {
+        ctx.error(
+          "'for await' is only valid inside the body of an 'async' function or 'async gen'.",
+          DiagnosticCode.TypeMismatch, loc);
+      }
+      var iterableType = checkExpression(ctx, iterable, null);
+      // Driving a scoped iterator is its consumption (ownership.md
+      // §"Required consumption"): the loop moves the binding — its exit
+      // disposal is total, `break` included — and the element machinery
+      // sees the iterator behind the wrapper.
+      if (isScopedType(iterableType)) {
+        let scopedIt = scopedInner(iterableType);
+        if (scopedIt != null) {
+          if (iterable is Identifier) {
+            let itSym = ctx.model.resolve(iterable);
+            if (itSym != null) {
+              ctx.recordFlowMove(itSym.id, itSym.name, iterable.loc);
+            }
+          }
+          iterableType = scopedIt;
+        }
+      }
+      let baseT = unwrapAliases(iterableType);
+      // Half of the generator-disposal gate: a loop that iterates
+      // through the Iterator protocol may be handed a generator, and
+      // its early exits then need the disposal finalizer. Conservative
+      // in the same direction as lowering's dispatch — anything not
+      // certainly an index loop counts.
+      if (!(baseT is ArrayType) &&
+          !(baseT is ClassType && forInLowersToIndexLoop(baseT))) {
+        let feDeps = ctx.currentDependencies();
+        if (feDeps != null) {
+          feDeps.hasIteratorForIn = true;
+        }
+      }
+      // Codegen compiles a for-in over FixedArray, ImmutableArray or
+      // Array to a direct index loop (lowerForIn) and ignores the
+      // top-level Iterable adaptation, so registering one here would
+      // only root the whole iterator protocol for a loop that never
+      // dispatches through it. RTA mirrors the same dispatch in its
+      // ForInStatement arm.
+      let protocol = getIterationProtocol(ctx, iterableType, iterable, isAwait);
+      let elementType = protocol.elementType;
+      if (baseT is ClassType &&
+          !forInLowersToIndexLoop(baseT)) {
+        // The synchronous protocol's interfaces, or — for a `for await`
+        // over a class that has only the asynchronous one — its.
+        let iterableName = if (protocol.isAsync) "AsyncIterable" else "Iterable";
+        let iteratorName = if (protocol.isAsync) "AsyncIterator" else "Iterator";
+        let iterableIface = findImplementedInterfaceTransitiveInChecker(baseT, iterableName);
+        if (iterableIface != null) {
+          checkAndRegisterInterfaceAdaptation(ctx, iterable, baseT, iterableIface);
+        }
+        let iteratorIface = findImplementedInterfaceTransitiveInChecker(baseT, iteratorName);
+        if (iteratorIface != null) {
+          checkAndRegisterInterfaceAdaptation(ctx, iterable, baseT, iteratorIface);
+        }
+      }
+      // A `for await` over an asynchronous iterator suspends on a Pending
+      // step's future. The statement records that future's type, for
+      // reachability to root its await machinery and for lowering to
+      // suspend on it (docs/design/async-iteration.md, "Consuming"). A
+      // synchronous iterator has no Pending step, so a `for await` over
+      // one records nothing and lowers as a `for` does.
+      if (isAwait && protocol.isAsync) {
+        let pending = pendingStepFutureType(ctx, elementType);
+        if (pending != null) {
+          ctx.setNodeType(stmt, pending);
+        }
+      }
+      let loopHead = ctx.enterFlowLoop();
+      recordLoopAssignments(ctx, stmt);
+      ctx.enterScope();
+      ctx.enterLoop();
+      if (isRefutableDeclarationPattern(pattern)) {
+        ctx.error(
+          "Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match.",
+          DiagnosticCode.TypeMismatch,
+          pattern.loc
+        );
+      }
+      bindPattern(ctx, pattern, elementType);
+      checkStatement(ctx, body);
+      ctx.exitLoop();
+      ctx.exitScope();
+      ctx.exitFlowLoop(loopHead);
+    }
+  }
+}
+
+function checkVariableDeclaration(
+  ctx: CheckerContext,
+  kind: String,
+  pattern: Pattern,
+  typeAnnotation: TypeAnnotation | null,
+  init: Expression,
+  loc: SourceLocation | null
+): void {
+  // Infer the type of the initializer.
+  let expectedType = if (typeAnnotation != null) {
+    resolveTypeAnnotation(ctx, typeAnnotation)
+  } else {
+    null
+  };
+
+  let initType = checkExpression(ctx, init, expectedType);
+  if (typeAnnotation == null && pattern is IdentifierPattern) {
+      }
+
+  // For `var` bindings, widen literal types.
+  var declType = if (kind == "var" && typeAnnotation == null) {
+    widenType(ctx, initType)
+  } else {
+    initType
+  };
+  // A name holds a stored value, so an inline initializer is boxed. A
+  // tuple pattern takes the inline value apart instead.
+  if (typeAnnotation == null && !(pattern is TuplePattern)) {
+    declType = boxedFormOf(declType);
+  }
+
+  // If an explicit type annotation is present, validate assignability.
+  if (expectedType != null) {
+    if (init is NullLiteral && init.loc == null) {
+      if (!(expectedType is ErrorType) && !isNullableType(expectedType)) {
+        ctx.error(
+          `Variable of non-nullable type '${typeToString(expectedType)}' must be initialized.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+    } else if (!isAssignableTo(ctx, initType, expectedType)) {
+      ctx.error(
+        `Type mismatch: '${typeToString(initType)}' is not assignable to '${typeToString(expectedType)}'.`,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    } else {
+      let instantiated = tryInstantiateGenericFunction(ctx, initType, expectedType);
+      if (instantiated !== initType) {
+        ctx.setNodeType(init, instantiated);
+      }
+      if (instantiated is RecordT && expectedType is RecordT) {
+        // TODO: Fix narrowing here
+        if (instantiated.properties.size != expectedType.properties.size) {
+          ctx.model.setRecordAdaptation(init, instantiated, expectedType);
+        }
+      }
+      checkAndRegisterInterfaceAdaptation(ctx, init, instantiated, expectedType);
+    }
+    declType = expectedType;
+  }
+
+  if (isRefutableDeclarationPattern(pattern)) {
+    ctx.error(
+      "Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match.",
+      DiagnosticCode.TypeMismatch,
+      pattern.loc
+    );
+  }
+
+  // `let g = f` with an owned `f` transfers ownership to `g`.
+  recordArgumentMove(ctx, init, declType);
+
+  // Bind the declared names in the pattern.
+  bindPattern(ctx, pattern, declType);
+
+  // A borrow's extent begins here: the suspension-liveness walk stops
+  // at the declaration, so deriving one after an `await` is clean.
+  if (pattern is IdentifierPattern && isSecondClass(declType)) {
+    let borrowSym = ctx.model.resolveDeclaration(pattern);
+    if (borrowSym != null) {
+      ctx.recordBorrowBirth(borrowSym.id);
+    }
+  }
+
+  // A simple `let` holding an owned resource is an implicit-drop
+  // candidate: released at its block's exit unless something moves,
+  // reassigns, captures or escapes it (exitOwnScope decides).
+  // Suspending bodies qualify: the release regions spill into the
+  // frame and catch both tags, so they release across suspensions, on
+  // cancellation, and — for a generator — through disposal, which
+  // cancels the frame at its suspended yield.
+  // A nullable handle qualifies too — the release is null-guarded — but
+  // not one initialized to literal null: an immutable binding of null
+  // never holds a resource, so there is nothing to release.
+  // A simple `let` of scoped type must be consumed on every path out
+  // of its block — registered here, decided at exitOwnScope and at
+  // each return (ownership.md §"Required consumption"). One whose
+  // initializer mentions a parameter-rooted second-class binding
+  // derives from it, and carries that root to the await check.
+  if (kind == "let" && pattern is IdentifierPattern && isScopedValueType(declType)) {
+    let scopedSym = ctx.model.resolveDeclaration(pattern);
+    if (scopedSym != null) {
+      ctx.registerScopedCandidate(scopedSym, pattern as Node);
+      if (mentionsParamDerived(ctx, init as Node)) {
+        ctx.markParamDerivedSecondClass(scopedSym.id);
+      }
+    }
+  }
+
+  // A `var` owner qualifies too, literal-null initializer included:
+  // a store may fill it later, and its releases are decided per
+  // statement rather than once for the block.
+  // An affine tuple binding qualifies the same way (#495).
+  let isVarOwner = kind == "var";
+  if ((kind == "let" || isVarOwner) && pattern is IdentifierPattern &&
+      (isVarOwner || !(initType is NullType))) {
+    let resources = ownedResourcesIn(declType);
+    if (resources != null) {
+      let symOpt = ctx.model.resolveDeclaration(pattern);
+      if (symOpt != null) {
+        ctx.registerOwnCandidate(symOpt, pattern as Node, resources,
+            isVarOwner, ctx.model.getParent(pattern as Node));
+      }
+    }
+  }
+  // Destructuring moves the owners out of a tuple into its bindings,
+  // and each binding is released at the block's exit unless something
+  // moves it.
+  if (kind == "let" && pattern is TuplePattern) {
+    registerDestructuredOwners(ctx, pattern, ctx.model.getParent(pattern as Node));
+  }
+
+  // An initializer of type `never` cannot complete.
+  if (initType is NeverType) {
+    ctx.markFlowUnreachable();
+  }
+}
+
+/**
+ * `using let file = open(path);` and the unbound `using acquire(lock);`.
+ *
+ * The value must be a `Disposable` — something carrying the symbol-keyed
+ * `:dispose()` member. The interface is matched structurally, by the member
+ * key, rather than by a nominal conformance check: `zena:ownership` is
+ * deliberately out of the prelude, so requiring `Disposable` to be in scope
+ * at every `using` would make the statement import-dependent. This is the
+ * same arrangement `resource class` uses to require the member without an
+ * `implements` clause.
+ *
+ * A `Borrow<R>` is rejected: a borrow never releases what it points at, so
+ * disposing through one would release a resource someone else still owns.
+ */
+/**
+ * The context rules for `tail return` (tail-calls.md §3): the frame has
+ * to be genuinely dead at the call, and the operand has to be one call.
+ * Everything here is decided from the surrounding code, so it runs
+ * before the operand is checked.
+ */
+function checkTailReturnContext(
+  ctx: CheckerContext,
+  argument: Expression | null,
+  loc: SourceLocation | null
+): void {
+  if (ctx.yieldType != null) {
+    ctx.error(
+      "'tail return' is not allowed in a generator: 'return' there ends the iteration rather than returning from a frame.",
+      DiagnosticCode.TypeMismatch, loc);
+  } else if (ctx.inConstructor) {
+    ctx.error(
+      "'tail return' is not allowed in a constructor: a constructor returns the new instance, not the operand.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+  if (ctx.tryDepth > 0) {
+    ctx.error(
+      "'tail return' is not allowed inside a 'try': the frame it would discard still owes the handler and the finalizer.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+  if (ctx.usingDepth > 0) {
+    ctx.error(
+      "'tail return' is not allowed while a 'using' binding is live: the frame it would discard still owes the release.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+  if (argument == null) { return; }
+  let isPlainCall = if (let CallExpression {optional} = argument) {
+    !optional
+  } else {
+    false
+  };
+  if (!isPlainCall) {
+    ctx.error(
+      "'tail return' returns a call: write 'tail return f(x);'.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+}
+
+/**
+ * The type rule for `tail return` (tail-calls.md §3): the call's type
+ * is the enclosing function's return type, exactly. Anything wider
+ * would need a conversion after the callee returned, in the frame the
+ * tail call discarded.
+ */
+function checkTailReturnType(
+  ctx: CheckerContext,
+  argType: Type,
+  expectedReturn: Type | null,
+  loc: SourceLocation | null
+): void {
+  if (argType is ErrorType) { return; }
+  if (expectedReturn == null || expectedReturn is ErrorType) { return; }
+  let expected = expectedReturn;
+  // VoidType doubles as the "inferring the return type" sentinel, so a
+  // non-void operand here means the enclosing function never declared
+  // one to match against.
+  if (expected is VoidType && !(argType is VoidType)) {
+    ctx.error(
+      "'tail return' requires the enclosing function to declare its return type.",
+      DiagnosticCode.MissingReturnType, loc);
+    return;
+  }
+  if (!typesEqual(argType, expected)) {
+    ctx.error(
+      "'tail return' requires the call to return '" + typeToString(expected) +
+      "', got '" + typeToString(argType) +
+      "'; converting the result would run after the frame is gone. Use 'return' instead.",
+      DiagnosticCode.TypeMismatch, loc);
+    return;
+  }
+  // An inline tuple returns through several wasm results, which the
+  // rewrite does not handle yet (tail-calls.md §6).
+  if (expected is InlineTupleT) {
+    ctx.error(
+      "'tail return' does not support a multi-value return type yet; use 'return' instead.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+}
+
+function checkUsingStatement(
+  ctx: CheckerContext,
+  pattern: Pattern | null,
+  typeAnnotation: TypeAnnotation | null,
+  init: Expression,
+  loc: SourceLocation | null
+): void {
+  let expectedType = if (typeAnnotation != null) {
+    resolveTypeAnnotation(ctx, typeAnnotation)
+  } else {
+    null
+  };
+
+  let initType = checkExpression(ctx, init, expectedType);
+  var declType = initType;
+  if (expectedType != null) {
+    if (!isAssignableTo(ctx, initType, expectedType)) {
+      ctx.error(
+        `Type mismatch: '${typeToString(initType)}' is not assignable to '${typeToString(expectedType)}'.`,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    } else {
+      let instantiated = tryInstantiateGenericFunction(ctx, initType, expectedType);
+      if (instantiated !== initType) {
+        ctx.setNodeType(init, instantiated);
+      }
+      checkAndRegisterInterfaceAdaptation(ctx, init, instantiated, expectedType);
+    }
+    declType = expectedType;
+  }
+
+  // The release region is a try_table, so the module needs the
+  // exception infrastructure even when no source `try` appears. Every
+  // existing `using` module happened to also throw or carry an
+  // implicit drop, which is what masked this.
+  let infraDeps = ctx.currentDependencies();
+  if (infraDeps != null) {
+    infraDeps.needsExceptionInfra = true;
+  }
+
+  // A statically null initializer never has anything to release; a
+  // no-op `using` is a mistake worth reporting, and lowering has no
+  // class to release through anyway.
+  if (initType is NullType) {
+    ctx.error(
+      "'using' initializer is always null: there is nothing to release.",
+      DiagnosticCode.IncompatibleTypes,
+      loc
+    );
+  } else {
+    requireDisposable(ctx, declType, loc);
+  }
+
+  // `using let g = f` takes ownership the same way a plain binding does.
+  recordArgumentMove(ctx, init, declType);
+
+  if (pattern != null) {
+    if (isRefutableDeclarationPattern(pattern)) {
+      ctx.error(
+        "Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match.",
+        DiagnosticCode.TypeMismatch,
+        pattern.loc
+      );
+    }
+    bindPattern(ctx, pattern, declType);
+  }
+
+  // The rest of the enclosing block runs inside this binding's release
+  // region; the enclosing block restores the depth on the way out.
+  ctx.noteUsingBinding();
+}

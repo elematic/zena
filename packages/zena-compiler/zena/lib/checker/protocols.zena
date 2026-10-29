@@ -1,0 +1,414 @@
+import { growable } from 'zena:core';
+import { Expression, SourceLocation } from '../ast.zena';
+import {
+  ArrayType, BoolLiteralType, ClassType, ErrorType, I32Type,
+  InlineTupleType as InlineTupleT, InterfaceType, Type, TypeAliasType,
+  UnionType as UnionT, instantiateClassType, instantiateInterfaceType,
+  isFutureClassType, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown, isWellKnown } from '../well-known.zena';
+import { CheckerContext } from './context.zena';
+import { substituteTypeParams } from './generics.zena';
+
+/**
+ * Extract the element type from an iterable type for for-in loops.
+ * Checks if the type implements Iterable<T> by identity-based comparison
+ * against the prelude Iterable interface.
+ * Reports an error if the type is not iterable.
+ */
+/**
+ * True when codegen compiles a for-in over this class to a direct
+ * index loop (lowerForIn in ir/control-flow.zena): FixedArray,
+ * ImmutableArray and Array lower to array.len/array.get, and
+ * BoundedRange and FromRange to a loop counting from the range's
+ * start. None of them touch the Iterable/Iterator protocol, so a for-in
+ * iterable of one of these types must not register an interface
+ * adaptation. Mirrors lowerForIn's dispatch, including the
+ * type-argument requirement for the arrays — a bare mention with no
+ * arguments has no element type there and falls back to the iterator
+ * path.
+ */
+export function forInLowersToIndexLoop(ct: ClassType): boolean {
+  var canonical = ct;
+  while (canonical.genericSource != null) {
+    canonical = canonical.genericSource as ClassType;
+  }
+  if (isWellKnown(WellKnown.BoundedRangeClass, canonical.name,
+          canonical.sourcePath) ||
+      isWellKnown(WellKnown.FromRangeClass, canonical.name,
+          canonical.sourcePath)) {
+    let targs = ct.typeArguments;
+    return targs == null || (targs.length == 1 && targs[0] is I32Type);
+  }
+  if (canonical.name != "FixedArray" && canonical.name != "ImmutableArray" &&
+      canonical.name != "Array" && canonical.name != "GrowableArray") {
+    return false;
+  }
+  let targs = ct.typeArguments;
+  return targs != null && targs.length > 0;
+}
+
+/** What a for-in found to iterate: the element type, and whether the
+ * iterator it reaches is asynchronous. */
+type IterationProtocol = {elementType: Type, isAsync: boolean};
+
+/**
+ * The element type a for-in binds over `iterableType`, and which protocol
+ * it drives (docs/design/async-iteration.md, "Consuming"). The synchronous
+ * protocol — an array, `Iterator<T>`, `Iterable<T>` — is looked for
+ * first, then the asynchronous one, `AsyncIterator<T>` and
+ * `AsyncIterable<T>`; a type that is both iterates synchronously. A plain
+ * `for` over the asynchronous protocol is an error: the loop never waits,
+ * and a value that is still coming would have nowhere to go. Reports
+ * and returns an error type for anything that is not iterable.
+ */
+export function getIterationProtocol(
+  ctx: CheckerContext,
+  iterableType: Type,
+  iterableExpr: Expression,
+  isAwait: boolean
+): IterationProtocol {
+  if (iterableType is ErrorType) {
+    return {elementType: new ErrorType(), isAsync: false};
+  }
+  if (iterableType is ArrayType) {
+    return {elementType: iterableType.elementType, isAsync: false};
+  }
+  let sync = protocolElementType(ctx, iterableType,
+      WellKnown.IteratorInterface, WellKnown.IterableInterface);
+  if (sync != null) {
+    return {elementType: sync, isAsync: false};
+  }
+  let asyncElem = protocolElementType(ctx, iterableType,
+      WellKnown.AsyncIteratorInterface, WellKnown.AsyncIterableInterface);
+  if (asyncElem != null) {
+    if (!isAwait) {
+      ctx.error(
+        "Type '" + typeToString(iterableType) + "' is an asynchronous iterable, " +
+        "and a `for` never waits. Use `for await`, or `requireSync` to " +
+        "throw if a value is not available yet.",
+        DiagnosticCode.TypeMismatch,
+        iterableExpr.loc
+      );
+      // The element type is still known; binding it keeps the body's
+      // own errors about the body.
+    }
+    return {elementType: asyncElem, isAsync: true};
+  }
+  let name = match (iterableType) {
+    case ClassType as ct: `Type '${ct.name}' is not iterable.`
+    case InterfaceType as it: `Type '${it.name}' is not iterable.`
+    case _: "Type is not iterable."
+  };
+  ctx.error(name, DiagnosticCode.TypeMismatch, iterableExpr.loc);
+  return {elementType: new ErrorType(), isAsync: false};
+}
+
+/**
+ * The element type `t` yields through one iteration protocol — its
+ * iterator interface `iteratorW` and iterable interface `iterableW` —
+ * or null when `t` takes no part in it. A class takes part by
+ * implementing either interface, itself or through a superclass; an
+ * interface by being or extending one.
+ */
+function protocolElementType(
+  ctx: CheckerContext,
+  t: Type,
+  iteratorW: WellKnown,
+  iterableW: WellKnown
+): Type | null {
+  match (t) {
+    case ClassType as ct: {
+      let targs = ct.typeArguments;
+      if ((isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) ||
+           isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath)) &&
+          targs != null &&
+          (targs.length != 1 || !(targs[0] is I32Type))) {
+        return null;
+      }
+      for (let iface in ct.implementsList) {
+        let elemType = findProtocolInterface(ctx, iface, iterableW);
+        if (elemType != null) {
+          return substituteTypeParams(ct.typeParameters, ct.typeArguments, elemType);
+        }
+      }
+      for (let iface in ct.implementsList) {
+        let elemType = findProtocolInterface(ctx, iface, iteratorW);
+        if (elemType != null) {
+          return substituteTypeParams(ct.typeParameters, ct.typeArguments, elemType);
+        }
+      }
+      let {superType} = ct;
+      if (superType != null) {
+        return protocolElementType(ctx, superType as Type, iteratorW, iterableW);
+      }
+      return null;
+    }
+    case InterfaceType as it: {
+      if (isWellKnown(iteratorW, it.name, it.sourcePath) ||
+          isWellKnown(iterableW, it.name, it.sourcePath)) {
+        let {typeArguments} = it;
+        if (typeArguments != null) {
+          let args = typeArguments;
+          if (args.length > 0) { return args[0]; }
+        }
+      }
+      let elemType = findProtocolInterface(ctx, it, iterableW);
+      if (elemType != null) {
+        return elemType;
+      }
+      return findProtocolInterface(ctx, it, iteratorW);
+    }
+    case _: {
+      return null;
+    }
+  }
+}
+
+/**
+ * Check if an interface type is Iterable<T> or extends Iterable<T>.
+ * Uses identity-based comparison against the prelude Iterable type.
+ * Returns the element type T if found, null otherwise.
+ */
+export function findIterableInterface(ctx: CheckerContext, iface: InterfaceType): Type | null {
+  return findProtocolInterface(ctx, iface, WellKnown.IterableInterface);
+}
+
+/**
+ * The element type of `iface` seen as the well-known generic interface
+ * `w` — `iface` is `w` itself, or extends it — by identity against the
+ * prelude declaration; null when it is neither.
+ */
+function findProtocolInterface(ctx: CheckerContext, iface: InterfaceType, w: WellKnown): Type | null {
+  let prelude = ctx.tryResolveWellKnownType(w);
+  if (prelude == null) { return null; }
+  match (prelude) {
+    case InterfaceType as protocolType: {
+      // Compare by type id — instantiateInterfaceType preserves the source id.
+      let sourceId = if (iface.genericSource != null) {
+        (iface.genericSource as InterfaceType).id
+      } else {
+        iface.id
+      };
+      if (sourceId == protocolType.id) {
+        let {typeArguments} = iface;
+        if (typeArguments != null) {
+          let args = typeArguments;
+          if (args.length > 0) { return args[0]; }
+        }
+        return null;
+      }
+      // Walk the extends list, substituting this instantiation's type
+      // arguments into inherited entries first — the extendsList is
+      // shared by reference with the generic source, so its entries
+      // mention the SOURCE's parameters.
+      for (let ext in iface.extendsList) {
+        var parent = ext as Type;
+        if (iface.typeArguments != null) {
+          parent = substituteTypeParams(
+              iface.typeParameters, iface.typeArguments, parent);
+        }
+        if (parent is InterfaceType) {
+          let result = findProtocolInterface(ctx, parent, w);
+          if (result != null) { return result; }
+        }
+      }
+      return null;
+    }
+    case _: { return null; }
+  }
+}
+
+/**
+ * `Future<Option<V>>`: the future a Pending iteration step carries for
+ * elements of type `V` (docs/design/async-iteration.md, "The Step
+ * protocol"). Null when the element type is an error or the prelude's
+ * `Future` or `Option` is missing; lowering then refuses the loop loudly.
+ */
+export function pendingStepFutureType(ctx: CheckerContext, elementType: Type): Type | null {
+  if (elementType is ErrorType) {
+    return null;
+  }
+  let option = ctx.tryResolveWellKnownType(WellKnown.OptionAlias);
+  let future = ctx.tryResolveWellKnownType(WellKnown.FutureClass);
+  if (option == null || !(option is TypeAliasType) ||
+      future == null || !(future is ClassType)) {
+    return null;
+  }
+  let optionArgs = growable<Type>([elementType]);
+  let optionOfElement = substituteTypeParams(
+      option.typeParameters, optionArgs, option.target);
+  let futureArgs = growable<Type>([optionOfElement]);
+  return instantiateClassType(future, futureArgs);
+}
+
+/**
+ * The payload of a protocol inline-tuple union — exactly two inline
+ * tuple arms discriminated by literal `true`/`false` at position 0
+ * (the `Iterator.next` / `Map.get` / Result shapes). The payload is
+ * the true arm's element 1; a Result arm's trailing error slot plays
+ * no part. Null when `t` is any other type.
+ */
+export function protocolPayloadType(t: Type): Type | null {
+  if (!(t is UnionT)) { return null; }
+  let types = t.types;
+  if (types.length != 2) { return null; }
+  var trueArm: InlineTupleT | null = null;
+  var sawFalse = false;
+  for (let member in types) {
+    if (!(member is InlineTupleT)) { return null; }
+    if (member.elementTypes.length < 1) { return null; }
+    let head = member.elementTypes[0];
+    if (!(head is BoolLiteralType)) { return null; }
+    if (head.value) { trueArm = member; } else { sawFalse = true; }
+  }
+  if (trueArm == null || !sawFalse) { return null; }
+  if (trueArm.elementTypes.length < 2) { return null; }
+  return trueArm.elementTypes[1];
+}
+
+/**
+ * If `t` is the prelude Iterator<T> instantiation, returns T;
+ * otherwise null. A generator's declared return type must satisfy
+ * this (generators.md §2.2); the annotation is the call expression's
+ * type, and the yield type is its argument.
+ */
+export function extractIteratorYieldType(ctx: CheckerContext, t: Type): Type | null {
+  if (!(t is InterfaceType)) {
+    return null;
+  }
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
+  if (prelude == null || !(prelude is InterfaceType)) {
+    return null;
+  }
+  if (t.id != prelude.id) {
+    return null;
+  }
+  let args = t.typeArguments;
+  if (args == null) {
+    return null;
+  }
+  if (args.length != 1) {
+    return null;
+  }
+  return args[0];
+}
+
+/**
+ * The external type of a `gen` function with no annotation:
+ * Iterator<inferredYieldType> from the prelude.
+ */
+export function makeIteratorType(
+  ctx: CheckerContext,
+  yieldType: Type,
+  loc: SourceLocation | null
+): Type {
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
+  if (prelude == null || !(prelude is InterfaceType)) {
+    ctx.error(
+      "Generator functions require the 'Iterator' interface from the prelude.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return new ErrorType();
+  }
+  let args = growable<Type>([yieldType]);
+  return instantiateInterfaceType(prelude, args);
+}
+
+/**
+ * If `t` is the prelude AsyncIterator<T> instantiation, returns T;
+ * otherwise null. An async generator's declared return type must
+ * satisfy this (async-iteration.md).
+ */
+export function extractAsyncIteratorYieldType(ctx: CheckerContext, t: Type): Type | null {
+  if (!(t is InterfaceType)) {
+    return null;
+  }
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.AsyncIteratorInterface);
+  if (prelude == null || !(prelude is InterfaceType)) {
+    return null;
+  }
+  if (t.id != prelude.id) {
+    return null;
+  }
+  let args = t.typeArguments;
+  if (args == null) {
+    return null;
+  }
+  if (args.length != 1) {
+    return null;
+  }
+  return args[0];
+}
+
+/**
+ * The external type of an `async gen` function with no annotation:
+ * AsyncIterator<inferredYieldType> from 'zena:async'.
+ */
+export function makeAsyncIteratorType(
+  ctx: CheckerContext,
+  yieldType: Type,
+  loc: SourceLocation | null
+): Type {
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.AsyncIteratorInterface);
+  if (prelude == null || !(prelude is InterfaceType)) {
+    ctx.error(
+      "Async generator functions require the 'AsyncIterator' interface from 'zena:async'.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return new ErrorType();
+  }
+  let args = growable<Type>([yieldType]);
+  return instantiateInterfaceType(prelude, args);
+}
+
+/**
+ * If `t` is the prelude Future<T> instantiation, returns T; otherwise
+ * null. An async function's declared return type must satisfy this
+ * (async.md §1); the annotation is the call expression's type.
+ */
+export function extractFutureValueType(ctx: CheckerContext, t: Type): Type | null {
+  // By name and declaring module (isFutureClassType) rather than by
+  // identity with a recorded Future: inside zena:async's own files —
+  // exactly where the library's own async code (thenImpl) awaits —
+  // there may be no record yet, since it is filled as the declaring
+  // module is checked. The module id is reserved, so the name cannot
+  // be spoofed.
+  if (!isFutureClassType(t)) {
+    return null;
+  }
+  let ct = t as ClassType;
+  let args = ct.typeArguments;
+  if (args == null) {
+    return null;
+  }
+  if (args.length != 1) {
+    return null;
+  }
+  return args[0];
+}
+
+/**
+ * The external type of an `async` function with no annotation:
+ * Future<inferredValueType> from the prelude.
+ */
+export function makeFutureType(
+  ctx: CheckerContext,
+  valueType: Type,
+  loc: SourceLocation | null
+): Type {
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.FutureClass);
+  if (prelude == null || !(prelude is ClassType)) {
+    ctx.error(
+      "Async functions require the 'Future' class from the prelude.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return new ErrorType();
+  }
+  let args = growable<Type>([valueType]);
+  return instantiateClassType(prelude, args);
+}

@@ -1,0 +1,1363 @@
+import { isValidIntrinsic } from '../intrinsics.zena';
+import { HashSet, Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import {
+  AccessorDeclaration, AccessorSignature, BlockStatement, DeclareFunction,
+  Decorator, EnumDeclaration, Expression, FieldDefinition, Identifier,
+  InterfaceDeclaration, MethodDefinition, MethodSignature, MixinDeclaration,
+  Node, NumberLiteral, PropertySignature, SetterInfo, SourceLocation,
+  StringLiteral, SymbolDeclaration, TypeAliasDeclaration, TypeAnnotation,
+  TypeParameter, UnaryExpression, decoratorStringArg,
+  isSymbolFieldDeclaration, syntacticMemberName
+} from '../ast.zena';
+import {
+  AnyRefType, ClassType, EnumType, ErrorType, FieldInfo, FunctionDeclInfo,
+  FunctionType, HoleType, I32Type, InterfaceType, MethodInfo, MixinType,
+  RecordType as RecordT, Type, TypeAliasType, TypeParameterType, VoidType,
+  baseType, instantiateInterfaceType, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { noSymbolId } from '../scope/symbol.zena';
+import { WellKnown, protocolSymbolKey } from '../well-known.zena';
+import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { resolveBound, resolveTypeAnnotation } from './annotations.zena';
+import {
+  checkMethodBody, checkMethodSignature, validateDecoratorBody
+} from './classes.zena';
+import { CheckerContext, newEnumType } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import { selfTypeOfClass, tryInstantiateGenericFunction } from './generics.zena';
+import {
+  displayMemberName, getMemberName, recordSymbolKeyedMemberIdentities,
+  registerStaticSymbols
+} from './members.zena';
+import { prescanPendingFunctions } from './module.zena';
+import { branchDefinitelyExits } from './narrowing.zena';
+import { registerOwnParamCandidates } from './ownership.zena';
+import { bindPattern } from './patterns.zena';
+import { isAssignableTo } from './relations.zena';
+import { checkStatement } from './statements.zena';
+
+/**
+ * Fills a transparent alias's canonical type object in place, the way
+ * registerClassDeclaration fills a class shell: the object's identity
+ * is stable across import-cycle re-checks, its type parameters and
+ * target are re-resolved each pass. This is what lets a transparent
+ * alias cross an import cycle's back edge — an importer holds the shell
+ * and the origin fills its body here (docs/design/import-cycles.md).
+ */
+/**
+ * The target a body-less type operator carries.
+ *
+ * `type.scopedFrom` expands to `Scoped<R>`, so its target names the
+ * `Scoped` declaration, which substitution instantiates without a checker
+ * context (types.zena `scopedFromTypeOf`). Any other operator's target is
+ * its own first parameter, which is what makes an open instance erase and
+ * key exactly as its argument does (docs/design/type-operators.md); a
+ * closed instance never survives to read the target at all.
+ *
+ * Registration sets this, not the statement check: on an import cycle an
+ * importer registers signatures naming the operator before the declaring
+ * module's statements are checked, and an instance copies the target it
+ * finds.
+ */
+export function typeOperatorTarget(
+  ctx: CheckerContext,
+  alias: TypeAliasType,
+  typeParams: Array<TypeParameterType> | null
+): Type {
+  if (alias.intrinsicName == 'type.scopedFrom') {
+    let scopedDecl = ctx.resolveTypeName('Scoped');
+    if (scopedDecl != null && scopedDecl is TypeAliasType) {
+      return scopedDecl;
+    }
+  }
+  if (typeParams != null && typeParams.length > 0) {
+    return typeParams[0];
+  }
+  return new HoleType();
+}
+
+export function registerTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasDeclaration): void {
+  let t = ctx.resolveTypeName(ta.name.name);
+  if (t == null) {
+    return;
+  }
+  var aliasType: TypeAliasType | null = null;
+  match (t) {
+    case TypeAliasType as a: { aliasType = a; }
+    case _: { return; }
+  }
+  let alias = aliasType as TypeAliasType;
+  ctx.enterScope();
+  let declParams = ta.typeParameters;
+  var typeParams: Array<TypeParameterType> | null = null;
+  if (declParams != null) {
+    let tps = new Array<TypeParameterType>();
+    typeParams = tps;
+    for (let param in declParams) {
+      let tp = ctx.getOrCreateTypeParameter(param, null, null);
+      tps.push(tp);
+      ctx.declareTypeName(tp.name, tp);
+      ctx.registerTypeParameter(param, tp);
+    }
+    for (var i = 0; i < declParams.length; i += 1) {
+      let param = declParams[i];
+      let c = param.constraint;
+      if (c != null) {
+        ctx.resourceMentionOk = true;
+        tps[i].constraint = resolveBound(ctx, c);
+        ctx.resourceMentionOk = false;
+      }
+      let dt = param.defaultType;
+      if (dt != null) {
+        tps[i].defaultType = resolveTypeAnnotation(ctx, dt, false);
+      }
+    }
+  }
+  alias.typeParameters = typeParams;
+  // The alias may be the shell an importer across an import cycle made,
+  // which knows only the name and parameters: registration supplies the
+  // rest the declaration determines, the operator a decorated alias
+  // names included, or `Awaited<T>` would read as an ordinary alias of
+  // its placeholder.
+  alias.intrinsicName = null;
+  for (let dec in ta.decorators) {
+    if (dec.name == 'intrinsic' && dec.args.length == 1) {
+      alias.intrinsicName = decoratorStringArg(dec, 0);
+    }
+  }
+  alias.resolving = true;
+  let bodyAnn = ta.typeAnnotation;
+  if (bodyAnn != null) {
+    // Re-resolve the target so a cross-cycle reference picks up the
+    // origin's now-filled types on the second pass. Diagnostics are
+    // suppressed: resolveTypeName above already materialized the alias
+    // and reported any target errors (union-mixing, inline-tuple
+    // position) once — re-reporting them here doubles them (and this
+    // runs on every cyclic re-check pass besides).
+    ctx.setDiagnosticsSuppressed(true);
+    alias.target = resolveTypeAnnotation(ctx, bodyAnn, true);
+    ctx.setDiagnosticsSuppressed(false);
+    if (alias.specializationKeyCache != null) {
+      alias.target.specializationKeyCache = alias.specializationKeyCache;
+      alias.target.uniqueKeyCache = alias.uniqueKeyCache;
+    }
+  } else {
+    // A `declare type` operator has no body.
+    alias.target = typeOperatorTarget(ctx, alias, typeParams);
+  }
+  alias.resolving = false;
+  ctx.exitScope();
+}
+
+// ============================================================================
+// Enum Declaration
+// ============================================================================
+
+// ============================================================================
+// Type Alias Declaration
+// ============================================================================
+export function checkTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasDeclaration): void {
+  ctx.materializeDeclaration(ta, ta.name.name);
+  if (ta.typeAnnotation != null) {
+    // Decorators on an ordinary alias never parse ("Expected 'declare'
+    // after decorator"), so a body means there is nothing to validate.
+    return;
+  }
+  // The bodyless form declares a builtin type operator, and is
+  // meaningless without one.
+  if (ta.decorators.length == 0) {
+    ctx.error("A 'declare type' requires an @intrinsic type-operator decorator.",
+        DiagnosticCode.TypeMismatch, ta.name.loc);
+    return;
+  }
+  for (let dec in ta.decorators) {
+    if (dec.name != 'intrinsic') {
+      ctx.error(`Unknown decorator '@${dec.name}' on a type alias.`,
+          DiagnosticCode.TypeMismatch, dec.loc);
+    } else if (dec.args.length != 1 || decoratorStringArg(dec, 0) == null) {
+      ctx.error("Intrinsic decorator must have exactly one argument (the intrinsic name).",
+          DiagnosticCode.TypeMismatch, dec.loc);
+    } else if (decoratorStringArg(dec, 0) == 'type.scopedFrom') {
+      let tps2 = ta.typeParameters;
+      if (tps2 == null || tps2.length != 2) {
+        ctx.error("The 'type.scopedFrom' operator takes exactly two type parameters.",
+            DiagnosticCode.TypeMismatch, ta.name.loc);
+      }
+      // Registration points the operator at the Scoped declaration
+      // (typeOperatorTarget); here it only has to exist.
+      let scopedDecl = ctx.resolveTypeName('Scoped');
+      if (scopedDecl == null || !(scopedDecl is TypeAliasType)) {
+        ctx.error("The 'type.scopedFrom' operator needs 'Scoped' in scope.",
+            DiagnosticCode.TypeMismatch, ta.name.loc);
+      }
+    } else if (decoratorStringArg(dec, 0) != 'type.awaited' &&
+        decoratorStringArg(dec, 0) != 'type.withDefault') {
+      ctx.error(`Unknown type intrinsic '${decoratorStringArg(dec, 0) as String}'.`,
+          DiagnosticCode.TypeMismatch, dec.loc);
+    } else {
+      let tps = ta.typeParameters;
+      if (tps == null || tps.length != 1) {
+        ctx.error(`The '${decoratorStringArg(dec, 0) as String}' operator takes exactly one type parameter.`,
+            DiagnosticCode.TypeMismatch, ta.name.loc);
+      }
+    }
+  }
+}
+
+// ============================================================================
+// Enum Declaration
+// ============================================================================
+
+/**
+ * Whether an integer enum member's initializer is a number literal,
+ * which may have a minus sign: `-32700` parses as a negation.
+ */
+function isEnumNumberLiteral(initializer: Expression): boolean {
+  if (initializer is NumberLiteral) {
+    return true;
+  }
+  if (let UnaryExpression {operator, argument} = initializer) {
+    return operator == '-' && argument is NumberLiteral;
+  }
+  return false;
+}
+
+export function checkEnumDeclaration(ctx: CheckerContext, ed: EnumDeclaration): void {
+  let i32Type = new I32Type();
+  let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
+  let {name} = ed.name;
+  let {members} = ed;
+  var isStringEnum = false;
+
+  if (members.length == 0) {
+    ctx.error(
+      `Enum '${name}' must have at least one member.`,
+      DiagnosticCode.TypeMismatch,
+      ed.loc
+    );
+    // We don't return early so that we still register type and value names for
+    // the enum.
+  } else {
+    // Validate members in a single pass. The first enum member determins the
+    // enum type: numeric by default, or based on the initializer.
+    isStringEnum = members[0].initializer is StringLiteral;
+
+    if (isStringEnum) {
+      for (let member in members) {
+        if (member.initializer == null) {
+          ctx.error(
+            `String enum member '${member.name.name}' must have an initializer.`,
+            DiagnosticCode.TypeMismatch,
+            member.loc
+          );
+        } else {
+          let initType = checkExpression(ctx, member.initializer, null);
+          if (!(member.initializer is StringLiteral)) {
+            ctx.error(
+              "Enum member initializer must be a string literal.",
+              DiagnosticCode.TypeMismatch,
+              member.loc
+            );
+          }
+        }
+      }
+    } else {
+      for (let member in members) {
+        if (member.initializer != null) {
+          let initType = checkExpression(ctx, member.initializer, null);
+          if (!isAssignableTo(ctx, initType, i32Type) ||
+              !isEnumNumberLiteral(member.initializer as Expression)) {
+            ctx.error(
+              "Enum member initializer must be an i32 literal.",
+              DiagnosticCode.TypeMismatch,
+              member.loc
+            );
+          }
+        }
+      }
+    }
+  }
+
+  let strType = if (stringType != null) { stringType } else { new ErrorType() as Type };
+  let backingType = if (isStringEnum) { strType } else { i32Type as Type };
+  // The enum's canonical type, which an importer across an import cycle
+  // may already hold: fill in the backing type.
+  let info = ctx.model.resolveDeclaration(ed);
+  let declared = if (info != null) { ctx.declaredType(info) } else { null };
+  let enumType = if (declared is EnumType) {
+    declared as EnumType
+  } else {
+    newEnumType(noSymbolId, ctx.filePath, ed)
+  };
+  enumType.backingType = backingType;
+
+  // The enum's name is the type, and the value its members are read off.
+  ctx.declareTypeName(name, enumType);
+  if (info != null) {
+    ctx.registerType(info, enumType as Type);
+    ctx.declareBinding(info, enumType as Type);
+    ctx.model.addDeclaredEnum(info.id, ed);
+  }
+}
+
+// ============================================================================
+// Mixin Declaration
+// ============================================================================
+export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration): void {
+  let mixinName = md.name.name;
+
+  // Look up pre-registered MixinType, or create one.
+  var mixinType = new MixinType(mixinName);
+  let preRegistered = ctx.resolveTypeName(mixinName);
+  if (preRegistered != null) {
+    match (preRegistered) {
+      case MixinType as existing: { mixinType = existing; }
+      case _: {}
+    }
+  }
+
+  // Record the declaring file for cross-module lookup and reachability.
+  mixinType.sourcePath = ctx.filePath;
+
+  // Registration must be idempotent, as a class's is: a member of an
+  // import cycle registers twice against the one canonical MixinType
+  // (SharedCheckerState.declaredNominalTypes), so each pass resets what
+  // it rebuilds; appending to the previous pass's state would list every
+  // composed mixin twice. The members map is cleared in place because
+  // instantiations share it.
+  mixinType.members.clear();
+  mixinType.mixins = new Array<MixinType>();
+  mixinType.sharedMembers = null;
+
+  // Before the body, for the same reason as a class's.
+  registerStaticSymbols(
+      ctx, mixinName, mixinType.staticSymbols, md.body);
+
+  // Type parameters.
+  ctx.enterScope();
+  let {typeParameters} = md;
+  if (typeParameters != null) {
+    let tps = typeParameters;
+    let resolvedTps = new Array<TypeParameterType>();
+    for (let tp in tps) {
+      var constraint: Type | null = null;
+      if (tp.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
+      }
+      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
+      ctx.declareTypeName(tp.name, tpType);
+      resolvedTps.push(tpType);
+    }
+    mixinType.typeParameters = resolvedTps;
+  }
+
+  // A decorator's subject: the placeholder field its body is written
+  // against. Resolved under the type parameters, so `(var value: T)`
+  // names the parameter the decorated field's type will bind.
+  let {decoratorSubject} = md;
+  if (decoratorSubject != null) {
+    let subject = decoratorSubject;
+    mixinType.decoratorSubjectName = syntacticMemberName(subject.name);
+    mixinType.decoratorSubjectMutable =
+        subject.mutability != null && subject.mutability == "var";
+    mixinType.decoratorSubjectType = if (subject.typeAnnotation != null) {
+      resolveTypeAnnotation(ctx, subject.typeAnnotation as TypeAnnotation)
+    } else {
+      new ErrorType() as Type
+    };
+  }
+
+  // Resolve 'on' type.
+  let {on} = md;
+  if (on != null) {
+    let onTypeId = on;
+    let onResolved = resolveTypeAnnotation(ctx, onTypeId);
+    if (onResolved != null) {
+      match (onResolved) {
+        case ClassType as onClass: {
+          mixinType.onType = onClass;
+        }
+        case InterfaceType as onIface: {
+          mixinType.onType = onIface;
+        }
+        case _: {
+          ctx.error(
+            `Mixin 'on' type must be a class or interface, got '${typeToString(onResolved)}'.`,
+            DiagnosticCode.TypeMismatch,
+            md.loc
+          );
+        }
+      }
+    } else {
+      ctx.error(
+        "Type not found in 'on' clause.",
+        DiagnosticCode.SymbolNotFound,
+        md.loc
+      );
+    }
+  }
+
+  // A decorator body's `context`: the decorated field's name and its
+  // accessors as functions over the host, `{name: String, get: (host:
+  // Host) => T, set: (host: Host, value: T) => void}`, with `set` only
+  // for a `var` subject. `Host` is the `on` type; `anyref` when the
+  // decorator constrains nothing. One record type serves every
+  // application: codegen substitutes `T` per application and
+  // materializes the record from the field's name and accessors
+  // (docs/design/decorators.md, "The decorated field's context").
+  if (decoratorSubject != null && (decoratorSubject as FieldDefinition).name is Identifier) {
+    let contextSym = ctx.model.resolveDeclaration((decoratorSubject as FieldDefinition).name);
+    if (contextSym != null && contextSym.isDecoratorContext) {
+      let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
+      let hostType: Type = mixinType.onType ?? new AnyRefType();
+      let subjectT: Type = mixinType.decoratorSubjectType ?? new ErrorType();
+      let props = new Map<String, Type>();
+      props["name"] = stringType ?? new ErrorType();
+      props["get"] = new FunctionType(growable<Type>([hostType]), subjectT);
+      if (mixinType.decoratorSubjectMutable) {
+        props["set"] = new FunctionType(growable<Type>([hostType, subjectT]), new VoidType());
+      }
+      ctx.declareBinding(contextSym, new RecordT(props, null, null, false));
+    }
+  }
+
+  // Resolve composed mixins.
+  let {mixins} = md;
+  if (mixins != null) {
+    let mixinAnns = mixins;
+    for (let ma in mixinAnns) {
+      let composedType = resolveTypeAnnotation(ctx, ma);
+      match (composedType) {
+        case MixinType as composedMixin: {
+          // The composed mixin's members are read through `mixins` by
+          // the mixin's member table, its privates under the composed
+          // mixin's scope key (MemberTable).
+          mixinType.mixins.push(composedMixin);
+        }
+        case _: {
+          if (!(composedType is ErrorType)) {
+            ctx.error(
+              `'${typeToString(composedType)}' is not a mixin.`,
+              DiagnosticCode.TypeMismatch,
+              md.loc
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // 1. Create a synthetic ClassType for "this" inside the mixin early
+  let thisType = new ClassType(ctx.freshTypeId(), noSymbolId, mixinName + "_This");
+  // Mixin privates are lexically scoped to the mixin declaration and
+  // shared across applications (member-lookup.md §6). This key
+  // namespaces the mixin's private FIELDS inside every host class:
+  // the checker stores them under "<scopeKey>::#name" at application
+  // and codegen names the struct fields identically, so host and
+  // mixin same-named privates never collide. Names alone are not
+  // unique, so the key is the same identity MixinKey uses — the
+  // declaration's name plus its source path — making two same-named
+  // mixins from different modules distinct scopes. Every consumer
+  // reads the key from the MixinType / This type (never rederives it
+  // from the name).
+  let mixinScopeKey = `${mixinName}_This@${mixinType.sourcePath}`;
+  thisType.privateScopeKey = mixinScopeKey;
+  mixinType.privateScopeKey = mixinScopeKey;
+  
+  let {onType} = mixinType;
+  if (onType != null) {
+    match (baseType(onType)) {
+      case ClassType as ct: {
+        // The class's members reach `this` through the supertype.
+        thisType.superType = onType as ClassType;
+      }
+      case InterfaceType as it: {
+        // The interface's members reach `this` through `onType`
+        // (MemberTable), which a class inherits nothing from otherwise.
+        thisType.implementsList.push(onType as InterfaceType);
+        thisType.onType = onType;
+      }
+      case _: {}
+    }
+  }
+
+  // `this` sees the mixin's members, composed ones included, through
+  // the mixin itself (MemberTable).
+  thisType.mixinSelf = mixinType;
+
+  // Process body members.
+  ctx.enterInterface();
+  var b_idx = 0;
+  while (b_idx < md.body.length) {
+    let member = md.body[b_idx];
+    match (member) {
+      case FieldDefinition as fd: {
+        // `static symbol sym;` is shaped as a static field annotated
+        // `symbol`, but it declares a symbol rather than storage: it is
+        // registered on the type's staticSymbols and has no member and no
+        // type of its own. Registering it as a field asks for a type
+        // called `symbol`, which does not exist.
+        if (isSymbolFieldDeclaration(fd)) {
+          b_idx = b_idx + 1;
+          continue;
+        }
+        let fieldName = getMemberName(ctx, fd.name as Node);
+        let fieldType = if (fd.typeAnnotation != null) {
+          resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
+        } else {
+          new ErrorType() as Type
+        };
+        let isMutable = fd.mutability != null && fd.mutability == "var";
+        let isPrivate = fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#";
+        let fdInfo = new FieldInfo(
+          fieldType,
+          isMutable,
+          fd.isAbstract,
+          fd.isStatic,
+          isPrivate,
+          fd.value != null // hasInitializer
+        );
+        mixinType.members[fieldName] = fdInfo;
+        if (fd.isShared) {
+          if (md.decoratorSubject == null) {
+            ctx.error("'shared' applies only to a decorator's private members.",
+                DiagnosticCode.TypeMismatch, fd.loc);
+          } else {
+            let shared = mixinType.sharedMembers ?? new Set<String>();
+            mixinType.sharedMembers = shared;
+            shared.add(fieldName);
+          }
+        }
+
+        // Check initializer if present.
+        let {value} = fd;
+        if (value != null) {
+          ctx.enterNodeReferrer(fd.id as i32);
+          let initType = checkExpression(ctx, value, fieldType);
+          if (!isAssignableTo(ctx, initType, fieldType)) {
+            ctx.error(
+              "Type mismatch: field '" + displayMemberName(fieldName) + "' has type '" +
+              typeToString(fieldType) + "' but initializer has type '" +
+              typeToString(initType) + "'.",
+              DiagnosticCode.TypeMismatch,
+              fd.loc
+            );
+          } else {
+            let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+            if (instantiatedVal !== initType) {
+              ctx.setNodeType(value, instantiatedVal);
+            }
+            checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, fieldType);
+          }
+          ctx.exitNodeReferrer(fd.id as i32);
+        }
+      }
+      case MethodDefinition as methDef: {
+        let methodName = getMemberName(ctx, methDef.name as Node);
+
+        // Reject constructors in mixins.
+        if (methDef.isConstructor || methodName == "<constructor>") {
+          ctx.error(
+            "Mixins cannot define constructors.",
+            DiagnosticCode.IncompatibleTypes,
+            methDef.loc
+          );
+        } else {
+          // A mixin's method may not declare a receiver. Which handle `this`
+          // is depends on the class the mixin is applied to, so the answer
+          // is not this declaration's to give — and a mixin on a resource is
+          // ownership.md's own open question. Rejected rather than ignored:
+          // a silently dropped `Own<this>` would read as consuming.
+          if (methDef.receiver != null) {
+            ctx.error(
+              "A mixin's method may not declare a receiver: a mixin is applied to " +
+              "classes it does not know, so what 'this' is there is the host class's " +
+              "to say.",
+              DiagnosticCode.TypeMismatch,
+              methDef.loc
+            );
+          }
+          let ft = checkMethodSignature(ctx, thisType, methDef);
+          let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+          let mi = new MethodInfo(
+            ft,
+            methDef.isAbstract,
+            methDef.isStatic,
+            isPrivate,
+            methDef.isFinal
+          );
+          mixinType.members[methodName] = mi;
+          if (methDef.isShared) {
+            if (md.decoratorSubject == null) {
+              ctx.error("'shared' applies only to a decorator's private members.",
+                  DiagnosticCode.TypeMismatch, methDef.loc);
+            } else {
+              let shared = mixinType.sharedMembers ?? new Set<String>();
+              mixinType.sharedMembers = shared;
+              shared.add(methodName);
+            }
+          }
+        }
+      }
+      case AccessorDeclaration as acc: {
+        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+        let accName = getMemberName(ctx, acc.name as Node);
+        let isPrivate = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
+        if (isPrivate) {
+          // Private accessors register only their get#/set# methods,
+          // like class accessors: no bare-name entry (a bare
+          // FieldInfo would create a phantom struct field at
+          // application, and the bare getter-MethodInfo mistyped
+          // reads as '() => T').
+          if (acc.getter != null) {
+            let getterFt = new FunctionType(new Array<Type>(), accType);
+            let gi = new MethodInfo(getterFt, false, acc.isStatic, true, acc.isFinal);
+            mixinType.members["get#" + accName] = gi;
+          }
+          if (acc.setter != null) {
+            let setterParams = growable<Type>([accType]);
+            let setterFt = new FunctionType(setterParams, new VoidType());
+            let si = new MethodInfo(setterFt, false, acc.isStatic, true, acc.isFinal);
+            mixinType.members["set#" + accName] = si;
+          }
+        } else {
+          // Public accessors register get#/set# too, like class
+          // accessors and like the private ones above. A bare-name
+          // entry does not describe an accessor: a FieldInfo mints a
+          // phantom struct field at application, and a getter
+          // MethodInfo reads as '() => T' at the use site instead of
+          // T. The setter had no entry at all.
+          if (acc.getter != null) {
+            let getterFt = new FunctionType(new Array<Type>(), accType);
+            let gi = new MethodInfo(getterFt, false, acc.isStatic, isPrivate, acc.isFinal);
+            mixinType.members["get#" + accName] = gi;
+          }
+          if (acc.setter != null) {
+            let setterParams = growable<Type>([accType]);
+            let setterFt = new FunctionType(setterParams, new VoidType());
+            let si = new MethodInfo(setterFt, false, acc.isStatic, isPrivate, acc.isFinal);
+            mixinType.members["set#" + accName] = si;
+          }
+        }
+      }
+      case _: {}
+    }
+    b_idx += 1;
+  }
+  ctx.exitInterface();
+
+  // Register mixin type early so it's available in model during body checking.
+  ctx.declareTypeName(mixinName, mixinType);
+  let info = ctx.model.resolveDeclaration(md);
+  if (info != null) {
+    mixinType.symbolId = info.id;
+    ctx.declareBinding(info, mixinType);
+    ctx.model.addDeclaredMixin(info.id, md);
+  }
+
+  // As for an interface: members are registered and the mixin's name is
+  // bound, so its symbol keys can be checked, stamped and reported.
+  recordSymbolKeyedMemberIdentities(
+      ctx, mixinType as Type, mixinType.members, md.body);
+
+  if (md.decoratorSubject != null) {
+    validateDecoratorBody(ctx, md, mixinType);
+  }
+
+  // 2. Check bodies
+  ctx.enterClass(thisType);
+  let prevBodyThis = ctx.bodyThisType;
+  ctx.setBodyThisType(selfTypeOfClass(thisType));
+
+  for (let member in md.body) {
+    match (member) {
+      case MethodDefinition as methDef: {
+        let methodName = getMemberName(ctx, methDef.name as Node);
+         if (!methDef.isConstructor && methodName != "<constructor>" && methDef.body != null && mixinType.members.has(methodName)) {
+           if (let (true, methodTypeInfo) = mixinType.members.get(methodName)) {
+             ctx.enterNodeReferrer(methDef.id as i32);
+             checkMethodBody(ctx, thisType, methodTypeInfo.type as FunctionType, methDef);
+             ctx.exitNodeReferrer(methDef.id as i32);
+           }
+         }
+      }
+      case AccessorDeclaration as acc: {
+        // Mirrors class accessor body checking: getter with the
+        // accessor type as return context, setter with its parameter
+        // bound to the accessor type.
+        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+        let {getter} = acc;
+        if (getter != null) {
+          ctx.enterNodeReferrer(acc.id as i32);
+          let getterBlock = getter;
+          ctx.enterScope();
+          let prevReturnType = ctx.returnType;
+          ctx.setReturnType(accType);
+          let prevFlowState = ctx.enterBodyFlow(false);
+          var gi = 0;
+          while (gi < getterBlock.body.length) {
+            checkStatement(ctx, getterBlock.body[gi]);
+            gi += 1;
+          }
+          ctx.exitBodyFlow(prevFlowState);
+          ctx.setReturnType(prevReturnType);
+          ctx.exitScope();
+          ctx.exitNodeReferrer(acc.id as i32);
+        }
+        let {setter} = acc;
+        if (setter != null) {
+          match (setter) {
+            case SetterInfo as si: {
+              ctx.enterNodeReferrer(si.id as i32);
+              ctx.enterScope();
+              let paramInfo = ctx.model.resolveDeclaration(si.param);
+              if (paramInfo != null) {
+                ctx.declareBinding(paramInfo, accType);
+              }
+              let prevFlowState = ctx.enterBodyFlow(false);
+              for (let stmt in si.body.body) {
+                checkStatement(ctx, stmt);
+              }
+              ctx.exitBodyFlow(prevFlowState);
+              ctx.exitScope();
+              ctx.exitNodeReferrer(si.id as i32);
+            }
+            case _: {}
+          }
+        }
+      }
+      case _: {}
+    }
+  }
+
+  ctx.setBodyThisType(prevBodyThis);
+  ctx.exitClass();
+
+  ctx.exitScope();
+}
+
+export function validateFunctionDecorators(ctx: CheckerContext, decorators: GrowableArray<Decorator> | null, needsIntrinsicOrExternal: boolean, loc: SourceLocation | null): void {
+  var paramCount = 0;
+  var hasExternal = false;
+  if (decorators != null) {
+    for (let dec in decorators) {
+      if (dec.name == 'intrinsic') {
+        paramCount += 1;
+        // isDeclare function check is omitted since it is only allowed on declare functions and methods
+        if (false) {
+          ctx.error("@intrinsic decorator is only allowed on declare functions and methods.", DiagnosticCode.TypeMismatch, dec.loc);
+        }
+        let intrinsicName = decoratorStringArg(dec, 0);
+        if (dec.args.length != 1 || intrinsicName == null) {
+          ctx.error("Intrinsic decorator must have exactly one argument (the intrinsic name).", DiagnosticCode.TypeMismatch, dec.loc);
+        } else {
+          let name = intrinsicName as String;
+          if (!isValidIntrinsic(name)) {
+            ctx.error(`Unknown intrinsic '${name}'.`, DiagnosticCode.TypeMismatch, dec.loc);
+          }
+        }
+      } else if (dec.name == 'external') {
+        hasExternal = true;
+      }
+    }
+  }
+
+  if (needsIntrinsicOrExternal) {
+    var count = paramCount;
+    if (hasExternal) {
+      count += 1;
+    }
+    if (count != 1) {
+      ctx.error("A declare function must have exactly one of an @intrinsic or @external decorator.", DiagnosticCode.TypeMismatch, loc);
+    }
+  } else if (paramCount > 1) {
+    ctx.error("A function cannot have more than one @intrinsic decorator.", DiagnosticCode.TypeMismatch, loc);
+  }
+}
+
+// ============================================================================
+// Declare Function (External Declarations)
+// ============================================================================
+export function checkDeclareFunction(ctx: CheckerContext, df: DeclareFunction): void {
+  // Resolve from annotations (type params, params, return type).
+  // DeclareFunction always has full annotations — no body to check.
+  ctx.enterScope();
+
+  // Type parameters.
+  var resolvedTypeParams: Array<TypeParameterType> | null = null;
+  let {typeParameters} = df;
+  if (typeParameters != null) {
+    let tps = typeParameters;
+    resolvedTypeParams = new Array<TypeParameterType>();
+    for (let tp in tps) {
+      var constraint: Type | null = null;
+      if (tp.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
+      }
+      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
+      ctx.declareTypeName(tp.name, tpType);
+      resolvedTypeParams.push(tpType);
+    }
+  }
+
+  // Parameter types.
+  let paramTypes = new Array<Type>();
+  let paramNames = new Array<String>();
+  let optionals = new Array<boolean>();
+  let initializers = new Array<Expression | null>();
+  for (let param in df.params) {
+    paramNames.push(param.name.name);
+    optionals.push(param.optional || param.defaultValue != null);
+    initializers.push(param.defaultValue);
+    let {typeAnnotation} = param;
+    if (typeAnnotation != null) {
+      paramTypes.push(resolveTypeAnnotation(ctx, typeAnnotation));
+    } else {
+      paramTypes.push(new ErrorType());
+    }
+  }
+
+  // Return type.
+  let retType = resolveTypeAnnotation(ctx, df.returnType, true);
+
+  ctx.exitScope();
+
+  // Build function type.
+  let funcType = new FunctionType(paramTypes, retType,
+      new FunctionDeclInfo(paramNames, null, initializers, optionals),
+      resolvedTypeParams);
+
+  // Declare in value namespace.
+  let info = ctx.model.resolveDeclaration(df);
+  if (info != null) {
+    ctx.model.addDeclaredGlobal(info.id, df);
+    let existingType = ctx.model.getBindingType(info);
+    if (existingType is FunctionType) {
+      if (existingType.overloads == null) {
+        let ovArray = growable<FunctionType>([existingType]);
+        existingType.overloads = ovArray;
+      }
+      let ovs = existingType.overloads as GrowableArray<FunctionType>;
+      ovs.push(funcType);
+      ctx.setNodeType(df, funcType);
+    } else {
+      ctx.declareBinding(info, funcType);
+      if (info.declaration !== df) {
+        ctx.setNodeType(df, funcType);
+      }
+    }
+  }
+
+  // Check decorators
+  validateFunctionDecorators(ctx, df.decorators, true, df.loc);
+}
+
+// ============================================================================
+// Symbol Declaration
+// ============================================================================
+export function checkSymbolDeclaration(ctx: CheckerContext, sd: SymbolDeclaration): void {
+  let {name} = sd.name;
+  // Declare in value namespace.
+  let info = ctx.model.resolveDeclaration(sd);
+  if (info == null) {
+    return;
+  }
+  ctx.declareBinding(info, ctx.canonicalSymbolType(
+      sd as Node, name, name, protocolSymbolKey("", name, ctx.filePath)));
+}
+
+/**
+ * Check an interface declaration: build an InterfaceType with method/field signatures.
+ */
+export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDeclaration): void {
+  let ifaceName = id.name.name;
+
+  // Look up the pre-registered InterfaceType from the forward-declaration pass.
+  var ifaceType = new InterfaceType(ctx.freshTypeId(), noSymbolId, ifaceName);
+  let preRegistered = ctx.resolveTypeName(ifaceName);
+  if (preRegistered != null) {
+    match (preRegistered) {
+      case InterfaceType as existing: { ifaceType = existing; }
+      case _: {}
+    }
+  }
+
+  ifaceType.sourcePath = ctx.filePath;
+
+  // Before type parameters and before the body: a member's key may name a
+  // static symbol this very interface declares, and `Owner.sym` has to
+  // resolve by the time that member is registered.
+  registerStaticSymbols(
+      ctx, ifaceName, ifaceType.staticSymbols, id.body);
+
+  // Type parameters.
+  ctx.enterScope();
+  let {typeParameters} = id;
+  if (typeParameters != null) {
+    let tps = typeParameters;
+    ifaceType.typeParameters = new Array<TypeParameterType>();
+    for (let tp in tps) {
+      var constraint: Type | null = null;
+      if (tp.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
+      }
+      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
+      ctx.declareTypeName(tp.name, tpType);
+      (ifaceType.typeParameters as GrowableArray<TypeParameterType>).push(tpType);
+    }
+  }
+
+  // Resolve extends list.
+  let {extendsList} = id;
+  if (extendsList != null) {
+    let extends_ = extendsList;
+    for (let currentExtends in extends_) {
+      let parentType = resolveTypeAnnotation(ctx, currentExtends);
+      match (parentType) {
+        case InterfaceType as pt: {
+          // Registration can run twice on one canonical object (a
+          // member of an import cycle registers again once every
+          // member has); the parents list is shared with the
+          // interface's instantiations, so it is deduplicated rather
+          // than replaced.
+          var alreadyListed = false;
+          for (let listed in ifaceType.extendsList) {
+            if (listed === pt) { alreadyListed = true; }
+          }
+          if (!alreadyListed) {
+            ifaceType.extendsList.push(pt);
+          }
+          // The parent's members are read through `extendsList` by the
+          // interface's member table, substituted at the read.
+        }
+        case _: {}
+      }
+    }
+  }
+
+  // Process body members.
+  ctx.enterInterface();
+  let ownConstructorNames = new Set<String>();
+  let ownMethodNames = new Set<String>();
+  for (let member in id.body) {
+    match (member) {
+      case MethodDefinition as md: {
+        // The parser admits exactly one kind of MethodDefinition into an
+        // interface body: a constructor.
+        registerInterfaceConstructor(ctx, ifaceType, md, ownConstructorNames);
+      }
+      case MethodSignature as ms: {
+        ctx.enterScope();
+        var typeParams: Array<TypeParameterType> | null = null;
+        if (ms.typeParameters != null) {
+          let tpArr = new Array<TypeParameterType>();
+          let tps = ms.typeParameters as GrowableArray<TypeParameter>;
+          for (let tp in tps) {
+            var constraint: Type | null = null;
+            if (tp.constraint != null) {
+              // A bound names a class, not a value, so a resource class is
+              // spellable here — same reason as an extends clause.
+              ctx.resourceMentionOk = true;
+              constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
+              ctx.resourceMentionOk = false;
+            }
+            let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
+            ctx.declareTypeName(tp.name, tpType);
+            tpArr.push(tpType);
+          }
+          typeParams = tpArr;
+        }
+        let paramTypes = new Array<Type>();
+        for (let param in ms.params) {
+          var paramType: Type = new ErrorType();
+          let {typeAnnotation} = param;
+          if (typeAnnotation != null) {
+            paramType = resolveTypeAnnotation(ctx, typeAnnotation);
+                      }
+          paramTypes.push(paramType);
+        }
+        var retType: Type = new VoidType();
+        let {returnType} = ms;
+        if (returnType != null) {
+          retType = resolveTypeAnnotation(ctx, returnType, true);
+        }
+        let methodName = getMemberName(ctx, ms.name as Node);
+        let ft = new FunctionType(paramTypes, retType, null, typeParams);
+        // A second signature with the same name is an overload, collected
+        // the way a class's are. The first one in this pass replaces any
+        // earlier registration, so registering twice adds nothing.
+        if (ownMethodNames.has(methodName)) {
+          let existing = ifaceType.members[methodName].type;
+          if (existing is FunctionType) {
+            (existing.overloads ??= growable([existing])).push(ft);
+          }
+        } else {
+          ownMethodNames.add(methodName);
+          let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+          ifaceType.members[methodName] = new MethodInfo(
+            ft,
+            true, // isAbstract
+            false, // isStatic
+            isPrivate,
+            false // isFinal
+          );
+        }
+        ctx.exitScope();
+      }
+      case PropertySignature as ps: {
+        let propType = resolveTypeAnnotation(ctx, ps.typeAnnotation);
+        let isPrivate = ps.name.name.length > 0 && ps.name.name.sliceBytes(0, 1) == "#";
+        ifaceType.members[ps.name.name] = new FieldInfo(
+          propType,
+          false, // isMutable
+          true, // isAbstract
+          false, // isStatic
+          isPrivate,
+          false // hasInitializer
+        );
+      }
+      case FieldDefinition as fd: {
+        // See the class body: a static symbol declaration is not storage.
+        if (isSymbolFieldDeclaration(fd)) { continue; }
+        let fieldName = getMemberName(ctx, fd.name as Node);
+        let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
+        let isMutable = fd.mutability != null && fd.mutability == "var";
+        let isPrivate = fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#";
+        ifaceType.members[fieldName] = new FieldInfo(
+          fieldType,
+          isMutable,
+          true, // isAbstract
+          fd.isStatic,
+          isPrivate,
+          false // hasInitializer
+        );
+      }
+      case AccessorSignature as as_: {
+        let accType = resolveTypeAnnotation(ctx, as_.typeAnnotation);
+        if (as_.hasGetter) {
+          let getterFt = new FunctionType(new Array<Type>(), accType);
+          let isPrivate = as_.name.name.length > 0 && as_.name.name.sliceBytes(0, 1) == "#";
+          ifaceType.members["get#" + as_.name.name] = new MethodInfo(
+            getterFt,
+            true, // isAbstract
+            false, // isStatic
+            isPrivate,
+            false // isFinal
+          );
+        }
+      }
+      case _: {}
+    }
+  }
+  ctx.exitInterface();
+
+  // Register interface in type namespace.
+  ctx.declareTypeName(ifaceName, ifaceType);
+  let ifaceInfo = ctx.model.resolveDeclaration(id);
+  if (ifaceInfo != null) {
+    ctx.declareBinding(ifaceInfo, ifaceType);
+    ctx.model.addDeclaredInterface(ifaceInfo.id, id);
+  }
+
+  // Every member is registered by now, so each symbol-keyed one can be
+  // given the identity of the symbol that named it — and a key that names
+  // no symbol is reported. After the binding above, because the key is
+  // checked as an ordinary expression and `Iface.sym` names this interface.
+  recordSymbolKeyedMemberIdentities(
+      ctx, ifaceType as Type, ifaceType.members, id.body);
+
+  ctx.exitScope();
+}
+
+/**
+ * Register one constructor of an interface. An interface constructor is
+ * a factory: `new(...)` or `new name(...)` with a body that returns an
+ * instance of some class implementing the interface. Its signature is
+ * checked like a class constructor's, and its return type is the
+ * interface at its own type parameters. The body is checked later, by
+ * checkInterfaceConstructorBodies, once every declaration in the module
+ * has a signature, so the body may construct a class declared below the
+ * interface.
+ */
+function registerInterfaceConstructor(
+  ctx: CheckerContext,
+  ifaceType: InterfaceType,
+  md: MethodDefinition,
+  ownConstructorNames: HashSet<String>
+): void {
+  let ctorName = if (let Identifier {name} = md.name) name else "<unknown>";
+  let shown = if (ctorName == "<constructor>") "new" else "new " + ctorName;
+  let where = `Constructor '${shown}' of interface '${ifaceType.name}'`;
+  var thisParams = 0;
+  for (let param in md.params) {
+    if (param.isThisParam) {
+      thisParams += 1;
+      ctx.error(
+        where + " cannot take a 'this.' parameter: an interface has no fields.",
+        DiagnosticCode.IncompatibleTypes,
+        param.loc
+      );
+    }
+  }
+  // The parser synthesizes one initializer entry per `this.` parameter,
+  // reported above; anything beyond those was written.
+  let {initializerList} = md;
+  if (initializerList != null && initializerList.length > thisParams) {
+    ctx.error(
+      where + " cannot have an initializer list: an interface has no fields to initialize. Return the instance from the body instead.",
+      DiagnosticCode.IncompatibleTypes,
+      md.loc
+    );
+  }
+  if (md.superInitializer != null) {
+    ctx.error(
+      where + " cannot call 'super': an interface has no superclass.",
+      DiagnosticCode.IncompatibleTypes,
+      md.loc
+    );
+  }
+  // A body-less `new bare();` parses as an empty block, so the
+  // every-path-returns check on the body reports it.
+  if (ownConstructorNames.has(ctorName)) {
+    ctx.error(
+      `Duplicate constructor '${shown}' in interface '${ifaceType.name}'.`,
+      DiagnosticCode.DuplicateMethod,
+      md.loc
+    );
+    return;
+  }
+  ownConstructorNames.add(ctorName);
+  var ctorType = checkMethodSignature(ctx, null, md);
+  // The constructor's type parameters are the interface's own — codegen
+  // mints one copy per type-argument list, the way it does for a
+  // generic function, and finds the parameters those arguments bind
+  // here — unless the constructor restates them with bounds:
+  // `new<K extends Hashable, V>(...)` on `Map<K, V>`, whose body builds
+  // a HashMap and so needs more of K than the interface asks. A
+  // restatement names the interface's parameters, in order; its bounds
+  // are checked at each `new`.
+  if (md.typeParameters != null) {
+    let restated = md.typeParameters as GrowableArray<TypeParameter>;
+    let ifaceParams = ifaceType.typeParameters;
+    var matches = ifaceParams != null && restated.length == (ifaceParams as Array<TypeParameterType>).length;
+    if (matches) {
+      let ips = ifaceParams as Array<TypeParameterType>;
+      var i = 0;
+      while (i < restated.length) {
+        if (restated[i].name != ips[i].name) {
+          matches = false;
+        }
+        i += 1;
+      }
+    }
+    if (!matches) {
+      var expected = "";
+      if (ifaceParams != null) {
+        var first = true;
+        for (let tp in ifaceParams as Array<TypeParameterType>) {
+          if (!first) { expected = expected + ", "; }
+          first = false;
+          expected = expected + tp.name;
+        }
+      }
+      ctx.error(
+        where + " must restate the interface's type parameters, in order: <" +
+          expected + ">.",
+        DiagnosticCode.IncompatibleTypes,
+        md.loc
+      );
+      ctorType = ctorType.withTypeParameters(ifaceType.typeParameters);
+    }
+  } else {
+    ctorType = ctorType.withTypeParameters(ifaceType.typeParameters);
+  }
+  // The result is the interface at the constructor's type parameters
+  // unless the constructor declares a narrower type — `new():
+  // GrowableArray<T>` on `Array<T>`, so that the caller gets the class's
+  // full API. A declared type must still be an instance of the
+  // interface; that is checked with the body, in the second phase,
+  // because a class declared below the interface has no `implements`
+  // list yet.
+  if (md.returnType == null) {
+    ctorType = ctorType.withReturnType(constructorSelfType(ifaceType, ctorType));
+  }
+  ifaceType.constructors[ctorName] = ctorType;
+  ctx.setNodeType(md, ctorType);
+}
+
+/**
+ * The interface at a constructor's type parameters — the interface's
+ * own, or the constructor's restatement of them.
+ */
+function constructorSelfType(ifaceType: InterfaceType, ctorType: FunctionType): Type {
+  let params = ctorType.typeParameters;
+  if (params == null || params.length == 0) {
+    return ifaceType as Type;
+  }
+  let args = new Array<Type>();
+  for (let tp in params) {
+    args.push(tp as Type);
+  }
+  return instantiateInterfaceType(ifaceType, args) as Type;
+}
+
+/**
+ * Check the bodies of an interface's constructors. Runs in the module's
+ * second phase, after every declaration has a signature.
+ */
+export function checkInterfaceConstructorBodies(ctx: CheckerContext, id: InterfaceDeclaration): void {
+  let resolved = ctx.resolveTypeName(id.name.name);
+  if (!(resolved is InterfaceType)) {
+    return;
+  }
+  let ifaceType = resolved;
+  let seen = new Set<String>();
+  for (let member in id.body) {
+    if (member is MethodDefinition) {
+      let ctorName = if (let Identifier {name} = member.name) {
+        name
+      } else {
+        "<unknown>"
+      };
+      // A duplicate registered no signature; its body is not checked.
+      if (seen.has(ctorName)) {
+        continue;
+      }
+      seen.add(ctorName);
+      if (member.body == null || !ifaceType.constructors.has(ctorName)) {
+        continue;
+      }
+      let ctorType = ifaceType.constructors[ctorName];
+      // A declared result type must be an instance of the interface.
+      // Checked here rather than at registration because the class it
+      // names may be declared below the interface, and only has its
+      // `implements` list once every declaration in the module is
+      // registered.
+      if (member.returnType != null) {
+        let selfType = constructorSelfType(ifaceType, ctorType);
+        if (!isAssignableTo(ctx, ctorType.returnType, selfType)) {
+          let shown = if (ctorName == "<constructor>") "new" else "new " + ctorName;
+          ctx.error(
+            "Constructor '" + shown + "' of interface '" + ifaceType.name +
+              "' must return a '" + typeToString(selfType) +
+              "', but declares '" + typeToString(ctorType.returnType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            (member.returnType as Node).loc
+          );
+        }
+      }
+      ctx.enterNodeReferrer(member.id as i32);
+      checkInterfaceConstructorBody(ctx, ifaceType, ctorType, member);
+      ctx.exitNodeReferrer(member.id as i32);
+    }
+  }
+}
+
+/**
+ * Check one interface constructor's body: a function body whose
+ * parameters are the constructor's and whose return type is the
+ * interface at its own type parameters. There is no `this` (the
+ * interface context rejects it), and every path must return.
+ */
+function checkInterfaceConstructorBody(
+  ctx: CheckerContext,
+  ifaceType: InterfaceType,
+  ctorType: FunctionType,
+  md: MethodDefinition
+): void {
+  ctx.enterScope();
+  // The constructor's own type parameters (a restatement with bounds
+  // shadows the interface's by name, so the body sees the bounds).
+  let {typeParameters} = ctorType;
+  if (typeParameters != null) {
+    for (let tp in typeParameters) {
+      ctx.declareTypeName(tp.name, tp);
+    }
+  }
+  var i = 0;
+  while (i < md.params.length) {
+    let param = md.params[i];
+    let paramType = ctorType.parameters[i];
+    let paramInfo = ctx.model.resolveDeclaration(param);
+    if (paramInfo != null) {
+      ctx.declareBinding(paramInfo, paramType);
+    }
+    let {pattern} = param;
+    if (pattern != null) {
+      bindPattern(ctx, pattern, paramType);
+    }
+    i += 1;
+  }
+  let prevReturnType = ctx.returnType;
+  let prevYieldType = ctx.yieldType;
+  let prevAsyncValue = ctx.asyncValueType;
+  let prevAsyncFuture = ctx.asyncFutureType;
+  ctx.setReturnType(ctorType.returnType);
+  ctx.setYieldType(null);
+  ctx.setAsyncValueType(null);
+  ctx.setAsyncFutureType(null);
+  let prevUsingDepth = ctx.usingDepth;
+  ctx.setUsingDepth(0);
+  let prevInConstructor = ctx.inConstructor;
+  ctx.setInConstructor(false);
+  ctx.enterInterface();
+  let prevFlowState = ctx.enterBodyFlow(false);
+  match (md.body as Node) {
+    case BlockStatement as block: {
+      ctx.enterOwnScope();
+      registerOwnParamCandidates(ctx, md.params, ctorType.parameters);
+      prescanPendingFunctions(ctx, block.body);
+      for (let stmt in block.body) {
+        checkStatement(ctx, stmt);
+      }
+      ctx.exitOwnScope(block as Node);
+      if (!branchDefinitelyExits(block, ctx.model)) {
+        ctx.error(
+          "An interface constructor must return an instance on every path.",
+          DiagnosticCode.MissingReturnType,
+          md.loc
+        );
+      }
+    }
+    case Expression as bodyExpr: {
+      ctx.enterOwnScope();
+      registerOwnParamCandidates(ctx, md.params, ctorType.parameters);
+      let bodyType = checkExpression(ctx, bodyExpr, ctorType.returnType);
+      if (!isAssignableTo(ctx, bodyType, ctorType.returnType)) {
+        ctx.error(
+          "Type mismatch: constructor body returns '" + typeToString(bodyType) +
+          "' but expects '" + typeToString(ctorType.returnType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+      } else {
+        checkAndRegisterInterfaceAdaptation(ctx, bodyExpr, bodyType, ctorType.returnType);
+      }
+      ctx.exitOwnScope(bodyExpr as Node);
+    }
+    case _: {}
+  }
+  ctx.exitInterface();
+  ctx.setReturnType(prevReturnType);
+  ctx.setYieldType(prevYieldType);
+  ctx.setAsyncValueType(prevAsyncValue);
+  ctx.setAsyncFutureType(prevAsyncFuture);
+  ctx.setUsingDepth(prevUsingDepth);
+  ctx.setInConstructor(prevInConstructor);
+  ctx.exitBodyFlow(prevFlowState);
+  ctx.exitScope();
+}

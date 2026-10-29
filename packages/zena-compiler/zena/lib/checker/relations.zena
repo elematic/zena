@@ -1,0 +1,1606 @@
+import { growable } from 'zena:core';
+import { Expression, Identifier, SourceLocation } from '../ast.zena';
+import {
+  AnyRefType, ArrayType, BoolLiteralType, BooleanType, ClassType, EnumType,
+  EqRefType, ErasedType, ErrorType, ExternRefType, F32Type, F64Type,
+  FunctionType, HoleType, I16Type, I32Type, I64Type, I8Type, InlineParamType,
+  InlineTupleType as InlineTupleT, InterfaceType, MixinType, NeverType,
+  NullType, NumLiteralType, RecordType as RecordT, StringLiteralType,
+  SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType,
+  TypeParameterType, U16Type, U32Type, U64Type, U8Type, UnionType as UnionT,
+  UnknownType, V128Type, VoidType, baseType, isFloatType, isFutureClassType,
+  isNumericType, isOwnershipWrapper, isScopedType, ownershipHandleInner,
+  ownershipHandleName, scopedInner, typeContainsTypeParameter, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown } from '../well-known.zena';
+import { isInlineType } from './annotations.zena';
+import { CheckerContext } from './context.zena';
+import { substituteTypeParams, tryInstantiateGenericFunction } from './generics.zena';
+import { isNullableType, subtractNullFromType, unwrapAliases } from './unions.zena';
+
+/**
+ * Check if `source` is assignable to `target`.
+ */
+/**
+ * Whether a ClassType is a well-known standard library class, by identity
+ * (type id comparison). Works for both uninstantiated and instantiated
+ * generic types because instantiateClassType preserves the source type's id.
+ */
+export function isWellKnownClassType(ctx: CheckerContext, ct: ClassType,
+    w: WellKnown): boolean {
+  let known = ctx.tryResolveWellKnownType(w);
+  if (known == null) { return false; }
+  match (known) {
+    case ClassType as pt: { return ct.id == pt.id; }
+    case _: { return false; }
+  }
+}
+
+/**
+ * `FixedArray`, or the class being checked when that class is FixedArray.
+ *
+ * FixedArray is an extension class ON `array<T>`, so inside its own body
+ * `this` is the array it extends, and the cases that hand array members to
+ * an expression run while checking the very class they would otherwise ask
+ * the registry for. The registry does not have it: a declaration is
+ * registered once its module finishes checking. `currentClass` is that same
+ * declaration, so ask it first.
+ *
+ * Matched by name, deliberately, unlike every other well-known lookup. The
+ * same file can be reached under two module ids — `zena:fixed-array` from
+ * the prelude and its filesystem path when checked as an entry point —
+ * which produces two nominal FixedArray types, and comparing the canonical
+ * location would fail for the second and leave the expression typed as the
+ * other copy. See docs/design/stdlib-organization.md.
+ */
+export function fixedArrayType(ctx: CheckerContext): Type {
+  let {currentClass} = ctx;
+  if (currentClass != null && currentClass.name == "FixedArray") {
+    return currentClass as Type;
+  }
+  return ctx.resolveWellKnownType(WellKnown.FixedArrayClass);
+}
+
+export function isWellKnownInterfaceType(ctx: CheckerContext, it: InterfaceType,
+    w: WellKnown): boolean {
+  let known = ctx.tryResolveWellKnownType(w);
+  if (known == null) { return false; }
+  match (known) {
+    case InterfaceType as pt: { return it.id == pt.id; }
+    case _: { return false; }
+  }
+}
+
+export function isValuePrimitive(type: Type): boolean {
+  return match (type) {
+    case I32Type: true
+    case U32Type: true
+    case I64Type: true
+    case U64Type: true
+    case F32Type: true
+    case F64Type: true
+    case U8Type: true
+    case U16Type: true
+    case I8Type: true
+    case I16Type: true
+    // A value, not a reference — but one no cast reaches. `isValidCast`
+    // asks separately whether both sides are numeric or both boolean,
+    // and `v128` is neither, so every cast to or from it is rejected.
+    case V128Type: true
+    case BooleanType: true
+    case BoolLiteralType: true
+    case NumLiteralType: true
+    case _: false
+  };
+}
+
+export function isReferenceType(type: Type): boolean {
+  return match (type) {
+    case ClassType as ct: {
+      if (ct.isExtension && ct.onType != null) {
+        !isValuePrimitive(ct.onType as Type)
+      } else {
+        true
+      }
+    }
+    case InterfaceType: true
+    case ArrayType: true
+    case RecordT: true
+    case TupleT: true
+    case InlineTupleT: true
+    case FunctionType: true
+    case NullType: true
+    case AnyRefType: true
+    case EqRefType: true
+    case StringLiteralType: true
+    case _: false
+  };
+}
+
+/**
+ * What a type is made of, with aliases peeled — including `distinct`
+ * and `opaque` ones, which change who may name a value and not how it
+ * is represented. Only questions about representation may use this;
+ * assignability and identity must keep the alias.
+ *
+ * The walk is bounded, and stops at an alias still being resolved,
+ * because a self-referential alias would otherwise spin here.
+ */
+export function representationOf(t: Type): Type {
+  var current = t;
+  var depth = 0;
+  while (depth < 8) {
+    let step = current;
+    if (step is EnumType) {
+      return (step as EnumType).backingType;
+    }
+    if (!(step is TypeAliasType) || step.resolving) {
+      return step;
+    }
+    current = step.target;
+    depth += 1;
+  }
+  return current;
+}
+
+/**
+ * Whether `t` is an extension class declared `on v128` — a shaped view
+ * of a vector, like `I32x4` or `F32x4`. Extension classes are erased,
+ * so such a type IS the same 128 bits with a lane interpretation
+ * attached, and converting between the two moves no data.
+ */
+function isV128View(t: Type): boolean {
+  if (t is ClassType) {
+    if (t.isExtension && t.onType != null) {
+      return baseType(t.onType as Type) is V128Type;
+    }
+  }
+  return false;
+}
+
+/**
+ * How a value of a closed record or tuple type relates to another such
+ * type, for `is` and `as` (docs/design/row-types.md, Decisions:
+ * Operations per form). A value of a closed type has exactly its type's
+ * fields, so most answers are the types'.
+ */
+export enum ClosedRelation {
+  /** Not decided by the types: not both closed, a row, or a narrower field type. */
+  Runtime,
+  /** No value of the source type is a value of the target type. */
+  Never,
+  /** Every value of the source type is one of the target type. */
+  Same,
+  /** The target names a subset of the source's fields: `as` projects. */
+  Projection,
+}
+
+export function closedRelation(ctx: CheckerContext, source: Type, target: Type): ClosedRelation {
+  let sourceBase = baseType(source);
+  let targetBase = baseType(target);
+  if (sourceBase is RecordT && targetBase is RecordT) {
+    return closedRecordRelation(ctx, sourceBase, targetBase);
+  }
+  if (sourceBase is TupleT && targetBase is TupleT) {
+    return closedTupleRelation(ctx, sourceBase, targetBase);
+  }
+  return ClosedRelation.Runtime;
+}
+
+function closedRecordRelation(ctx: CheckerContext, s: RecordT, t: RecordT): ClosedRelation {
+  // An existential's other fields are known only at run time, where
+  // `is` and `as` test the record it holds.
+  if (s.row != null || t.row != null || s.isExistential) {
+    return ClosedRelation.Runtime;
+  }
+  if (t.isExistential) {
+    // A closed record is a value of `{x: i32, ...}` when it has `x`.
+    for (let key in t.properties.keys()) {
+      if (let (true, sourceField) = s.properties.get(key)) {
+        if (!isAssignableTo(ctx, sourceField, t.properties[key])) {
+          return ClosedRelation.Runtime;
+        }
+      } else {
+        return ClosedRelation.Never;
+      }
+    }
+    return ClosedRelation.Same;
+  }
+  var narrowing = false;
+  for (let key in t.properties.keys()) {
+    if (let (true, sourceField) = s.properties.get(key)) {
+      let targetField = t.properties[key];
+      if (s.isOptional(key) && !t.isOptional(key)) {
+        narrowing = true;
+      } else if (!isAssignableTo(ctx, sourceField, targetField)) {
+        if (!isAssignableTo(ctx, targetField, sourceField)) {
+          return ClosedRelation.Never;
+        }
+        narrowing = true;
+      }
+    } else {
+      return ClosedRelation.Never;
+    }
+  }
+  if (narrowing) {
+    return ClosedRelation.Runtime;
+  }
+  return if (s.properties.size == t.properties.size) ClosedRelation.Same
+      else ClosedRelation.Projection;
+}
+
+function closedTupleRelation(ctx: CheckerContext, s: TupleT, t: TupleT): ClosedRelation {
+  if (s.row != null || t.row != null) {
+    return ClosedRelation.Runtime;
+  }
+  if (s.elementTypes.length != t.elementTypes.length) {
+    return ClosedRelation.Never;
+  }
+  var narrowing = false;
+  for (var i = 0; i < s.elementTypes.length; i += 1) {
+    if (!isAssignableTo(ctx, s.elementTypes[i], t.elementTypes[i])) {
+      if (!isAssignableTo(ctx, t.elementTypes[i], s.elementTypes[i])) {
+        return ClosedRelation.Never;
+      }
+      narrowing = true;
+    }
+  }
+  return if (narrowing) ClosedRelation.Runtime else ClosedRelation.Same;
+}
+
+/** How a diagnostic names the operand of `is`: its name, or "the value". */
+export function operandText(expr: Expression): String {
+  if (expr is Identifier) {
+    return `'${expr.name}'`;
+  }
+  return "The value";
+}
+
+export function isValidCast(sourceType: Type, targetType: Type): boolean {
+  // Reading a `WithDefault<T>` slot back as a `T`: the identity at a
+  // primitive, and at a reference a non-null cast that fails on an
+  // empty slot.
+  if (let TypeAliasType {intrinsicName, typeArguments} = sourceType) {
+    if (intrinsicName == 'type.withDefault' && typeArguments != null &&
+        typeArguments.length == 1) {
+      return typesEqual(typeArguments[0], targetType) ||
+          isValidCast(typeArguments[0], targetType);
+    }
+  }
+
+  // `v128` has no numeric conversions. The bits carry no interpretation
+  // until an instruction reads them, so there is nothing for a cast to
+  // `i32` to preserve. What it does convert to is a shaped view of
+  // itself, which is where the interpretation comes from.
+  if (sourceType is V128Type || targetType is V128Type) {
+    if (sourceType is V128Type && targetType is V128Type) {
+      return true;
+    }
+    if (sourceType is V128Type) {
+      return isV128View(targetType);
+    }
+    return isV128View(sourceType);
+  }
+
+  // Primitive → Primitive: VALID only if both are numeric or both are boolean
+  if (isValuePrimitive(sourceType) && isValuePrimitive(targetType)) {
+    let isSrcNum: boolean = match (sourceType) {
+      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
+      case _: false
+    };
+    let isTgtNum: boolean = match (targetType) {
+      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
+      case _: false
+    };
+    let isSrcBool: boolean = match (sourceType) {
+      case BooleanType | BoolLiteralType: true
+      case _: false
+    };
+    let isTgtBool: boolean = match (targetType) {
+      case BooleanType | BoolLiteralType: true
+      case _: false
+    };
+    return (isSrcNum && isTgtNum) || (isSrcBool && isTgtBool);
+  }
+
+  // Primitive → Extension on same primitive: VALID (distinct type wrapping)
+  if (isValuePrimitive(sourceType) && targetType is ClassType) {
+    if (targetType.isExtension && targetType.onType != null) {
+      let onType = targetType.onType as Type;
+      let isSrcNum: boolean = match (sourceType) {
+        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
+        case _: false
+      };
+      let isOnNum: boolean = match (onType) {
+        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
+        case _: false
+      };
+      if (isSrcNum && isOnNum) {
+        return true;
+      }
+      let isSrcBool: boolean = match (sourceType) {
+        case BooleanType | BoolLiteralType: true
+        case _: false
+      };
+      let isOnBool: boolean = match (onType) {
+        case BooleanType | BoolLiteralType: true
+        case _: false
+      };
+      if (isSrcBool && isOnBool) {
+        return true;
+      }
+    }
+  }
+
+  // Primitive → Reference (not an extension on primitive): INVALID
+  if (isValuePrimitive(sourceType) && isReferenceType(targetType)) {
+    return false;
+  }
+
+  // Reference → Primitive: INVALID, the mirror of the rule above. A
+  // reference holds no scalar to reinterpret, so the value has to be
+  // read out of whatever holds it. This is a question about
+  // representation, so it looks through aliases: `distinct type Name =
+  // String` is as much a reference as `String`. Two things that look
+  // like they would be caught are not — an extension class over a
+  // primitive is not a reference type (`isReferenceType` asks its
+  // onType), and an enum is neither side — so unwrapping a distinct
+  // type over a primitive and `Opcode.return_ as i32` are untouched.
+  if (isReferenceType(representationOf(sourceType)) &&
+      isValuePrimitive(representationOf(targetType))) {
+    return false;
+  }
+
+  // Null → Non-nullable: INVALID
+  if (sourceType is NullType && !isNullableType(targetType)) {
+    return false;
+  }
+
+  // All other casts are allowed (checked at runtime)
+  return true;
+}
+
+/**
+ * Find an opaque alias reachable from `t` that was declared somewhere other
+ * than `currentFile`, or null if there is none.
+ *
+ * The search is not limited to the head of the type: `Array<i32> as
+ * Array<Token>` forges just as effectively as `0 as Token`, because distinct
+ * types are erased and the two have identical runtime representations. So
+ * every position that a cast could reinterpret is visited — element types,
+ * union members, record fields, function parameters and returns, and type
+ * arguments.
+ *
+ * An alias's `target` is followed too. `distinct type Tokens = Array<Token>`
+ * is not itself opaque, but casting to it would mint `Token`s all the same.
+ *
+ * `depth` bounds the walk instead of a visited set: recursive aliases and
+ * self-referential generic instantiations would otherwise not terminate, and
+ * a cast target deep enough to exhaust the budget is not something anyone
+ * writes deliberately. Running out of budget reports "no opaque type found",
+ * which errs toward accepting the cast rather than rejecting valid code.
+ */
+function findForeignOpaque(t: Type, currentFile: String, depth: i32): TypeAliasType | null {
+  if (depth <= 0) { return null; }
+  let next = depth - 1;
+  return match (t) {
+    case TypeAliasType as alias: {
+      if (alias.isOpaque && alias.declaringModule != currentFile) {
+        return alias;
+      }
+      // `resolving` means the checker is mid-way through computing this
+      // alias's target; reading it now would recurse forever.
+      if (alias.resolving) { return null; }
+      alias.resolving = true;
+      let inArgs = findForeignOpaqueInList(alias.typeArguments, currentFile, next);
+      if (inArgs != null) {
+        alias.resolving = false;
+        return inArgs;
+      }
+      let res = findForeignOpaque(alias.target, currentFile, next);
+      alias.resolving = false;
+      res
+    }
+    case ArrayType {elementType}: findForeignOpaque(elementType, currentFile, next)
+    case TupleT {elementTypes}: findForeignOpaqueInList(elementTypes, currentFile, next)
+    case InlineTupleT {elementTypes}: findForeignOpaqueInList(elementTypes, currentFile, next)
+    case UnionT {types}: findForeignOpaqueInList(types, currentFile, next)
+    case RecordT as rec: {
+      for (let key in rec.properties.keys()) {
+        if (let (true, propType) = rec.properties.get(key)) {
+          let found = findForeignOpaque(propType, currentFile, next);
+          if (found != null) { return found; }
+        }
+      }
+      null
+    }
+    case FunctionType as fn: {
+      let inParams = findForeignOpaqueInList(fn.parameters, currentFile, next);
+      if (inParams != null) { return inParams; }
+      findForeignOpaque(fn.returnType, currentFile, next)
+    }
+    case ClassType as ct: findForeignOpaqueInList(ct.typeArguments, currentFile, next)
+    case InterfaceType as it: findForeignOpaqueInList(it.typeArguments, currentFile, next)
+    case MixinType as mt: findForeignOpaqueInList(mt.typeArguments, currentFile, next)
+    case _: null
+  };
+}
+
+/** The first foreign opaque type in `types`, or null. A null list scans as empty. */
+function findForeignOpaqueInList(
+  types: Array<Type> | null,
+  currentFile: String,
+  depth: i32
+): TypeAliasType | null {
+  if (types == null) { return null; }
+  for (let t in types) {
+    let found = findForeignOpaque(t, currentFile, depth);
+    if (found != null) { return found; }
+  }
+  return null;
+}
+
+/**
+ * Reject `expr as T` when T mentions an opaque type declared in another file
+ * and the cast would actually mint a value of it.
+ *
+ * The point of `opaque` is that outside its defining file the only way to get
+ * one is from code that file hands you. A cast whose source and target already
+ * overlap cannot manufacture anything: `p as Password` where `p: Password` is
+ * redundant, and `p as Password` where `p: Password | null` is narrowing. Both
+ * stay legal, which matters because narrowing a nullable opaque value is
+ * ordinary code at every call site. Only a cast that reinterprets an unrelated
+ * representation — `42 as Password` — is a forge, and that is exactly the case
+ * where neither type is assignable to the other.
+ *
+ * Casting *out* of an opaque type (`pw as String`) is deliberately allowed:
+ * the restriction is on forging values, not on reading them.
+ */
+export function checkOpaqueCast(
+  ctx: CheckerContext,
+  sourceType: Type,
+  targetType: Type,
+  loc: SourceLocation | null
+): void {
+  let alias = findForeignOpaque(targetType, ctx.filePath, 16);
+  if (alias == null) { return; }
+  // A forward-assignable cast is a no-op: the value already has the target
+  // type, so nothing is minted.
+  if (isAssignableTo(ctx, sourceType, targetType)) {
+    return;
+  }
+  // The other legal shape is *narrowing* — `Handle | null` to `Handle` — where
+  // the value being cast already exists as the target type, it is just being
+  // selected out of a union. Recognizing that by the target being a member of
+  // the source union is narrower than "the target is assignable to the
+  // source", which also admits genuine forging: `Own<R>` is assignable to
+  // `Borrow<R>` through the implicit-borrow coercion, so `b as Own<R>` read as
+  // an ordinary downcast and minted a second owner.
+  // See docs/design/ownership.md §"Handles are not forgeable".
+  if (let UnionT {types} = sourceType) {
+    for (let member in types) {
+      if (typesEqual(member, targetType)) { return; }
+    }
+  }
+  ctx.error(
+    "Cannot cast to opaque type '" + alias.name + "'. Values of an opaque "
+      + "type can only be created in the file that declares it ('"
+      + alias.declaringModule + "'); use a function exported from that file.",
+    DiagnosticCode.OpaqueTypeCast,
+    loc
+  );
+}
+
+/**
+ * Peel type aliases off `t`, exposing the representation a cast actually
+ * reinterprets. Transparent aliases are already unwrapped by `isAssignableTo`;
+ * the ones that reach here and matter are the distinct ones.
+ *
+ * A `distinct type` is nominal for assignability and erased at codegen, so
+ * `Own<T>` and `T` are the same bits. The type-parameter rule below asks a
+ * representational question — "would this cast mint a `T` the source does not
+ * already hold?" — and must therefore compare erased forms. Unwrapping
+ * `Box2<T>` to `T` mints nothing; it is the only way to read a distinct alias
+ * at all.
+ *
+ * This does not soften what `distinct` and `opaque` guarantee. Nominal
+ * assignability is unaffected, and forging an opaque value is caught by
+ * `checkOpaqueCast`, which is a separate check keyed on the declaring module.
+ *
+ * `depth` bounds the walk for the same reason `findForeignOpaque` bounds its
+ * own: an alias may be recursive, and `resolving` marks one whose `target` is
+ * mid-computation and must not be read.
+ */
+function eraseDistinctAliases(t: Type, depth: i32): Type {
+  if (depth <= 0) { return t; }
+  return match (t) {
+    case TypeAliasType as ta: {
+      if (ta.resolving) { t } else { eraseDistinctAliases(ta.target, depth - 1) }
+    }
+    case EnumType as et: et.backingType
+    case _: t
+  };
+}
+
+/** Do `a` and `b` overlap enough that a cast between them reinterprets nothing? */
+function typesOverlap(ctx: CheckerContext, a: Type, b: Type): boolean {
+  if (isAssignableTo(ctx, a, b) || isAssignableTo(ctx, b, a)) { return true; }
+  let ea = eraseDistinctAliases(a, 16);
+  let eb = eraseDistinctAliases(b, 16);
+  if (ea === a && eb === b) { return false; }
+  return isAssignableTo(ctx, ea, eb) || isAssignableTo(ctx, eb, ea);
+}
+
+/**
+ * The type arguments of `t` if it is a generic instantiation, else null.
+ *
+ * `array<T>` is included because the intrinsic array type and the public
+ * container classes wrap the same representation, and the stdlib casts between
+ * them constantly.
+ */
+function castTypeArguments(t: Type): Array<Type> | null {
+  if (t is ClassType) { return (t as ClassType).typeArguments; }
+  if (t is InterfaceType) { return (t as InterfaceType).typeArguments; }
+  if (t is MixinType) { return (t as MixinType).typeArguments; }
+  if (t is TypeAliasType) { return (t as TypeAliasType).typeArguments; }
+  if (t is ArrayType) {
+    let one = growable<Type>([(t as ArrayType).elementType]);
+    return one;
+  }
+  return null;
+}
+
+/**
+ * Whether an immutable array of `a` may stand in for an immutable array
+ * of `b` with no conversion: `b` is `anyref` and `a` is a reference, or
+ * both are classes and `a` extends `b`. Only these keep the element
+ * representation, and only these have a declared Wasm subtyping — an
+ * immutable array is declared a subtype of its element's supertype's
+ * array (WasmArray.superArray). An interface-typed element is a fat
+ * pointer, a different representation, so those stay invariant, as do
+ * extension classes, which erase to whatever they are declared on.
+ */
+function immutableElementWidens(ctx: CheckerContext, a: Type, b: Type): boolean {
+  if (typesEqual(a, b)) { return true; }
+  if (b is AnyRefType) { return isReferenceType(a); }
+  if (a is ClassType && b is ClassType) {
+    let src = a as ClassType;
+    let tgt = b as ClassType;
+    if (src.isExtension || tgt.isExtension) { return false; }
+    var current = src.superType;
+    while (current != null) {
+      let cur = current;
+      if (typesEqual(cur, tgt)) { return true; }
+      current = cur.superType;
+    }
+  }
+  return false;
+}
+
+/** Same nominal head, ignoring type arguments? */
+function sameGenericHead(a: Type, b: Type): boolean {
+  if (a is ClassType && b is ClassType) {
+    let ca = a as ClassType;
+    let cb = b as ClassType;
+    return (ca.genericSource ?? ca).symbolId == (cb.genericSource ?? cb).symbolId;
+  }
+  if (a is InterfaceType && b is InterfaceType) {
+    let ia = a as InterfaceType;
+    let ib = b as InterfaceType;
+    return (ia.genericSource ?? ia).symbolId == (ib.genericSource ?? ib).symbolId;
+  }
+  return false;
+}
+
+/**
+ * Would casting `source` to `target` mint values of a type parameter that the
+ * source does not already supply?
+ *
+ * The two types are compared structurally rather than whole: `Array<T>` to
+ * `ImmutableArray<T>` re-labels a container whose elements are already `T`, so
+ * it mints nothing, while `Array<i32>` to `Array<T>` mints a `T` for every
+ * element. Only the second is a forge, and the difference is visible exactly
+ * in the type arguments.
+ */
+function castMintsTypeParameter(
+  ctx: CheckerContext,
+  source: Type,
+  target: Type,
+  depth: i32
+): boolean {
+  if (depth <= 0) { return false; }
+  if (!typeContainsTypeParameter(target)) { return false; }
+  if (typesOverlap(ctx, source, target)) { return false; }
+
+  let sArgs = castTypeArguments(source);
+  let tArgs = castTypeArguments(target);
+  // An open generic naming itself -- `this as GrowableArray<T>` inside `Array<T>` --
+  // has no type arguments on the source side. Same head, nothing minted.
+  if (sArgs == null) { return !sameGenericHead(source, target); }
+  if (tArgs == null) { return true; }
+  if (sArgs.length != tArgs.length) { return true; }
+  for (var i = 0; i < sArgs.length; i += 1) {
+    if (castMintsTypeParameter(ctx, sArgs[i], tArgs[i], depth - 1)) { return true; }
+  }
+  return false;
+}
+
+/**
+ * Reject `expr as T` where `T` is a bare type parameter and nothing about the
+ * source says it could be a `T`.
+ *
+ * Every other cast target is either checked at runtime (`ref.cast` traps on a
+ * bad downcast) or is a compile-time assertion over a known representation.
+ * A type parameter is neither: generics are monomorphized, so `x as T` with
+ * `T = Token` becomes `i32 as Token`, which is erased to nothing. Nothing
+ * checks it at compile time — the checker only ever sees `T` — and nothing
+ * checks it at runtime. So a one-line generic launders any type into any
+ * other:
+ *
+ *     let launder = <T>(x: i32): T => x as T;
+ *     let forged = launder<Token>(0);
+ *
+ * That forges `distinct` types, `opaque` types (defeating the declaring-file
+ * rule entirely), and class types alike.
+ *
+ * A cast is justified when the source already overlaps `T` — `x as T` where
+ * `x: T` is redundant, and where `x: T | null` it is narrowing — or when it
+ * overlaps `T`'s constraint, which makes it an ordinary downcast:
+ *
+ *     let pick = <T extends Animal>(a: Animal): T => a as T;   // fine
+ *
+ * An unconstrained `T` admits neither unless the source is already `T`, which
+ * is what closes the hole: there is no honest way to produce an arbitrary `T`
+ * out of an unrelated representation.
+ *
+ * A target that merely *mentions* a type parameter launders too --
+ * `xs as GrowableArray<T>` mints a whole container of them -- so those are checked as
+ * well, by comparing type arguments pairwise (see `castMintsTypeParameter`).
+ */
+export function checkTypeParameterCast(
+  ctx: CheckerContext,
+  sourceType: Type,
+  targetType: Type,
+  loc: SourceLocation | null
+): void {
+  match (targetType) {
+    case TypeParameterType as tp: {
+      if (typesOverlap(ctx, sourceType, tp as Type)) { return; }
+      let {constraint} = tp;
+      if (constraint != null && typesOverlap(ctx, sourceType, constraint)) {
+        return;
+      }
+      let detail = if (constraint == null) {
+        "'" + tp.name + "' is unconstrained, so nothing is known to be one. "
+          + "Take a value of type '" + tp.name + "', or a function returning one, "
+          + "as a parameter."
+      } else {
+        "'" + tp.name + "' is constrained to '" + typeToString(constraint)
+          + "', and '" + typeToString(sourceType) + "' is unrelated to it."
+      };
+      ctx.error(
+        "Cannot cast type '" + typeToString(sourceType) + "' to type parameter '"
+          + tp.name + "'. " + detail,
+        DiagnosticCode.UnjustifiedTypeParameterCast,
+        loc
+      );
+    }
+    case _: {
+      if (castMintsTypeParameter(ctx, sourceType, targetType, 8)) {
+        ctx.error(
+          "Cannot cast type '" + typeToString(sourceType) + "' to '"
+            + typeToString(targetType) + "': the target's type arguments are not "
+            + "supplied by the source, so the cast would mint values of them.",
+          DiagnosticCode.UnjustifiedTypeParameterCast,
+          loc
+        );
+      }
+    }
+  }
+}
+
+/**
+ * The element type an array literal's context asks for: the `T` of an
+ * expected `Array<T>`, `FixedArray<T>`, `GrowableArray<T>`,
+ * `ImmutableArray<T>`, `MutableArray<T>`, `Iterable<T>` or `array<T>`,
+ * nullable or not. Null when the context says nothing about elements.
+ */
+export function expectedArrayElementType(ctx: CheckerContext, expectedType: Type | null): Type | null {
+  if (expectedType == null) { return null; }
+  var typeArgs: Array<Type> | null = null;
+  match (unwrapAliases(baseType(subtractNullFromType(unwrapAliases(expectedType))))) {
+    case UnionT {types}: {
+      for (let member in types) {
+        let elem = expectedArrayElementType(ctx, member);
+        if (elem != null) {
+          return elem;
+        }
+      }
+    }
+    case ClassType as ct: {
+      if (isWellKnownClassType(ctx, ct, WellKnown.GrowableArrayClass) ||
+          isWellKnownClassType(ctx, ct, WellKnown.ArrayInterface) ||
+          isWellKnownClassType(ctx, ct, WellKnown.FixedArrayClass) ||
+          isWellKnownClassType(ctx, ct, WellKnown.ImmutableArrayClass)) {
+        typeArgs = ct.typeArguments;
+      }
+    }
+    case InterfaceType as it: {
+      if (isWellKnownInterfaceType(ctx, it, WellKnown.ArrayInterface) ||
+          isWellKnownInterfaceType(ctx, it, WellKnown.MutableArrayInterface) ||
+          isWellKnownInterfaceType(ctx, it, WellKnown.IterableInterface)) {
+        typeArgs = it.typeArguments;
+      }
+    }
+    case ArrayType {elementType}: { return elementType; }
+    case _: {}
+  }
+  if (typeArgs != null && typeArgs.length > 0) {
+    return typeArgs[0];
+  }
+  return null;
+}
+
+export function isBoxablePrimitive(t: Type): boolean {
+  return match (baseType(t)) {
+  case I32Type: true
+  case U32Type: true
+  case I64Type: true
+  case U64Type: true
+  case F32Type: true
+  case F64Type: true
+  case U8Type: true
+  case U16Type: true
+  case I8Type: true
+  case I16Type: true
+  case BooleanType: true
+  case _: false
+};
+}
+
+/**
+ * Types with a heap (reference) runtime representation — the sources
+ * `anyref` accepts. Inline tuples are excluded: they are flattened
+ * multi-value aggregates, not single references.
+ */
+function isAnyRefSource(t: Type): boolean {
+  if (t is ClassType || t is InterfaceType || t is ArrayType ||
+      t is RecordT || t is TupleT || t is FunctionType ||
+      t is NullType || t is AnyRefType ||
+      t is StringLiteralType) {
+    return true;
+  }
+  if (t is EnumType) {
+    return isAnyRefSource((t as EnumType).backingType);
+  }
+  if (t is TypeAliasType) {
+    if (t.resolving) { return true; }
+    t.resolving = true;
+    let res = isAnyRefSource(t.target);
+    t.resolving = false;
+    return res;
+  }
+  if (t is UnionT) {
+    for (let member in t.types) {
+      if (!isAnyRefSource(member)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The type parameter whose representation `t` has, when that parameter
+ * is not constrained to references and may therefore be bound to a
+ * primitive: `T` itself, a handle on it (`Own<T>`), or an open
+ * operator over it (`WithDefault<T>`). Null when `t`'s representation
+ * does not depend on such a parameter.
+ */
+export function unconstrainedTypeParamOf(t: Type): TypeParameterType | null {
+  if (t is TypeParameterType) {
+    return if (isGuaranteedReference(t)) null else t;
+  }
+  if (!(t is TypeAliasType)) { return null; }
+  let alias = t as TypeAliasType;
+  if (isOwnershipWrapper(alias)) {
+    let inner = ownershipHandleInner(alias);
+    return if (inner == null) null else unconstrainedTypeParamOf(inner as Type);
+  }
+  if (isScopedType(alias)) {
+    let inner = scopedInner(alias);
+    return if (inner == null) null else unconstrainedTypeParamOf(inner as Type);
+  }
+  if (alias.intrinsicName != null) {
+    // `ScopedFrom<T, R>` is represented as `R`; the other operators as
+    // their argument.
+    let args = alias.typeArguments;
+    if (args == null || args.length == 0) { return null; }
+    let at = if (alias.intrinsicName == 'type.scopedFrom' && args.length == 2) 1 else 0;
+    return unconstrainedTypeParamOf(args[at]);
+  }
+  if (alias.resolving) { return null; }
+  alias.resolving = true;
+  let res = unconstrainedTypeParamOf(alias.target);
+  alias.resolving = false;
+  return res;
+}
+
+/**
+ * Whether every value of `t` is a reference, so `t` may be in a union
+ * with other references: a class (unless it is an extension on a
+ * primitive), an interface, an array, a tuple, a record, a function,
+ * `anyref`, `null`, a union of them, or a type parameter constrained to
+ * one.
+ */
+function isGuaranteedReference(t: Type): boolean {
+  return match (t) {
+    case ClassType as ct: {
+      let onType = ct.onType;
+      if (ct.isExtension && onType != null) isGuaranteedReference(onType) else true
+    }
+    case InterfaceType: true
+    case ArrayType: true
+    case TupleT: true
+    case RecordT: true
+    case FunctionType: true
+    case AnyRefType: true
+    case EqRefType: true
+    case ExternRefType: true
+    case NullType: true
+    case UnionT {types}: {
+      for (let m in types) {
+        if (!isGuaranteedReference(m)) { return false; }
+      }
+      true
+    }
+    case TypeParameterType as tp: {
+      let c = tp.constraint;
+      c != null && isGuaranteedReference(c)
+    }
+    case TypeAliasType as ta: {
+      if (isOwnershipWrapper(ta)) {
+        let inner = ownershipHandleInner(ta);
+        inner != null && isGuaranteedReference(inner)
+      } else if (ta.resolving) {
+        false
+      } else {
+        ta.resolving = true;
+        let res = isGuaranteedReference(ta.target);
+        ta.resolving = false;
+        res
+      }
+    }
+    case _: false
+  };
+}
+
+export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type): boolean {
+  // Same type (identity check via match). Check before unwrapping
+  // recursive type aliases so `TemplateValue` vs `TemplateValue`
+  // succeeds in O(1) via TypeAliasType name/arg equality.
+  if (typesEqual(source, target)) { return true; }
+
+  // Automatically unwrap non-distinct type aliases. An INTRINSIC
+  // alias (a type operator like Awaited<T>, open at a bare type
+  // parameter) does not unwrap: its placeholder target IS its
+  // operand, so unwrapping would make `R` and `Awaited<R>`
+  // interchangeable — and they differ exactly when R instantiates to
+  // a future, which is a type error deferred to whichever
+  // specialization flattens (issue #522). Operators compare
+  // nominally, in typesEqual above.
+  match (source) {
+    case TypeAliasType as ta: {
+      if (!ta.isDistinct && ta.intrinsicName == null) {
+        return isAssignableTo(ctx, ta.target, target);
+      }
+    }
+    case _: {}
+  }
+  match (target) {
+    case TypeAliasType as tb: {
+      if (!tb.isDistinct && tb.intrinsicName == null) {
+        return isAssignableTo(ctx, source, tb.target);
+      }
+    }
+    case _: {}
+  }
+  // `inline? T` stands for `T` until a substitution decides: a value of
+  // `T` is unboxed there or not, and converts either way.
+  if (let InlineParamType {param} = source) {
+    return isAssignableTo(ctx, param, target);
+  }
+  if (let InlineParamType {param} = target) {
+    return isAssignableTo(ctx, source, param);
+  }
+  // A `T` fills a `WithDefault<T>` slot, which is `T` itself at a
+  // primitive and `T | null` at a reference. Null does not, while `T`
+  // is open: at a primitive the slot has none (type-operators.md
+  // §"`type.withDefault`").
+  if (let TypeAliasType {intrinsicName, typeArguments} = target) {
+    if (intrinsicName == 'type.withDefault' && typeArguments != null &&
+        typeArguments.length == 1) {
+      return isAssignableTo(ctx, source, typeArguments[0]);
+    }
+  }
+
+  // Borrowing at a call site is implicit: an `Own<R>` is accepted where a
+  // `Borrow<R>` is expected, and borrowing does not consume. The reverse is
+  // not true — a borrow is not an owner — and `Unmanaged<R>` is reached only
+  // through an explicit `disown`. See docs/design/ownership.md §Borrowing.
+  if (isOwnershipWrapper(source) && isOwnershipWrapper(target)) {
+    if (ownershipHandleName(source) == "Own" && ownershipHandleName(target) == "Borrow") {
+      let si = ownershipHandleInner(source);
+      let ti = ownershipHandleInner(target);
+      if (si != null && ti != null && typesEqual(si, ti)) {
+        return true;
+      }
+    }
+  }
+
+  // A first-class future is accepted where a scoped one is expected:
+  // weakening to scoped drops capability, which is safe. There is no
+  // coercion back (ownership.md §"Required consumption").
+  if (isScopedType(target) && !isScopedType(source) && isFutureClassType(source)) {
+    let inner = scopedInner(target);
+    if (inner != null && isAssignableTo(ctx, source, inner)) {
+      return true;
+    }
+  }
+
+  // `never` is assignable to anything.
+  if (source is NeverType) { return true; }
+  if (source is ErrorType || target is ErrorType) { return true; }
+
+  if (source is UnknownType || target is UnknownType) {
+    ctx.error(
+      "Internal compiler error: Unknown type encountered during validation.",
+      DiagnosticCode.UnknownError,
+      null
+    );
+    return true;
+  }
+
+  // An enum is assignable to itself (caught by `typesEqual` above) and
+  // to a union holding it; its backing type is reached only by a cast.
+  if (source is EnumType) {
+    if (let UnionT {types} = target) {
+      for (let t in types) {
+        if (isAssignableTo(ctx, source, t)) { return true; }
+      }
+      return false;
+    } else {
+      return false;
+    }
+  }
+  if (target is EnumType) {
+    return false;
+  }
+
+  // Handle distinct types explicitly
+  match (source) {
+    case TypeAliasType as srcAlias: {
+      if (srcAlias.isDistinct) {
+        match (target) {
+          case UnionT {types}: {
+            for (let t in types) {
+              if (isAssignableTo(ctx, source, t)) { return true; }
+            }
+            return false;
+          }
+          case TypeAliasType as tgtAlias: {
+            if (tgtAlias.isDistinct) {
+              return srcAlias.name == tgtAlias.name && isAssignableTo(ctx, srcAlias.target, tgtAlias.target);
+            }
+          }
+          case _: {}
+        }
+        return false;
+      }
+    }
+    case _: {}
+  }
+
+  match (target) {
+    case TypeAliasType as tgtAlias: {
+      if (tgtAlias.isDistinct) {
+        return false;
+      }
+    }
+    case _: {}
+  }
+
+  // Automatically unwrap non-distinct type aliases. Intrinsic
+  // aliases (type operators) never unwrap: typesEqual above already
+  // matched same-operator-same-arguments, and anything else is not
+  // assignable (issue #522).
+  match (source) {
+    case TypeAliasType as ta: {
+      if (ta.intrinsicName != null) {
+        return false;
+      }
+      return isAssignableTo(ctx, ta.target, target);
+    }
+    case _: {}
+  }
+  match (target) {
+    case TypeAliasType as tb: {
+      if (tb.intrinsicName != null) {
+        return false;
+      }
+      return isAssignableTo(ctx, source, tb.target);
+    }
+    case _: {}
+  }
+
+  // `anyref` is the top type for references: anything with a heap
+  // representation is assignable; primitives are not.
+  if (target is AnyRefType) { return isAnyRefSource(source); }
+
+  // `null` is assignable to nullable unions.
+  if (source is NullType) {
+    if (let UnionT {types} = target) {
+      for (let type in types) {
+        if (type is NullType) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Literal assignable to base.
+  if (source is BoolLiteralType && target is BooleanType) { return true; }
+  if (source is StringLiteralType &&
+      target is ClassType &&
+      isWellKnownClassType(ctx, target, WellKnown.StringClass)) {
+    return true;
+  }
+  if (source is NumLiteralType && isNumericType(target)) {
+    let base = baseType(source);
+    if (base is F64Type && !isFloatType(target)) {
+      // floats not assignable to int
+    } else {
+      return true;
+    }
+  }
+
+  // Union source: all members must be assignable to target.
+  if (let UnionT {types as sourceTypes} = source) {
+    for (let st in sourceTypes) {
+      if (!isAssignableTo(ctx, st, target)) { return false; }
+    }
+    return true;
+  }
+
+  // Union target: source must be assignable to at least one member.
+  if (let UnionT {types as targetTypes} = target) {
+    for (let tt in targetTypes) {
+      if (isAssignableTo(ctx, source, tt)) { return true; }
+    }
+    return false;
+  }
+
+  // Numeric: allow implicit widening in some cases.
+  // For now, require exact numeric type match (strict).
+  // This matches Zena's no-coercion design.
+
+  match (source) {
+    case FunctionType as srcFunc: {
+      match (target) {
+        case FunctionType as tgtFunc: {
+          let finalSrcFunc = tryInstantiateGenericFunction(ctx, srcFunc, tgtFunc) as FunctionType;
+
+          // Allow argument adaptation: source can have fewer parameters.
+          if (finalSrcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
+          // Covariant return type
+          if (!isAssignableTo(ctx, finalSrcFunc.returnType, tgtFunc.returnType)) { return false; }
+          // An inline result changes the wasm signature, and nothing
+          // adapts one function to the other yet.
+          if (isInlineType(finalSrcFunc.returnType) != isInlineType(tgtFunc.returnType)) {
+            return false;
+          }
+          for (var i = 0; i < finalSrcFunc.parameters.length; i += 1) {
+            // Contravariant parameter types
+            if (!isAssignableTo(ctx, tgtFunc.parameters[i], finalSrcFunc.parameters[i])) { return false; }
+          }
+          return true;
+        }
+        case _: {}
+      }
+    }
+    case _: {}
+  }
+
+  // Class subtyping: a subclass is assignable to its superclass chain.
+  match (source) {
+    case ClassType as srcClass: {
+      match (target) {
+        case ClassType as tgtClass: {
+          // If they match by id but didn't pass typesEqual early, they have different
+          // type arguments. ImmutableArray is covariant in its element along
+          // the class chain and up to anyref (immutableElementWidens); every
+          // other nominal type is invariant.
+          if (srcClass.id == tgtClass.id) {
+            if (isWellKnownClassType(ctx, srcClass, WellKnown.ImmutableArrayClass)) {
+              let sArgs = srcClass.typeArguments;
+              let tArgs = tgtClass.typeArguments;
+              if (sArgs != null && tArgs != null && sArgs.length == 1 && tArgs.length == 1) {
+                return immutableElementWidens(ctx, sArgs[0], tArgs[0]);
+              }
+            }
+            return false;
+          }
+          // Walk the supertype chain.
+          var current = srcClass.superType;
+          while (current != null) {
+            let cur = current;
+            if (typesEqual(cur, tgtClass)) { return true; }
+            if (cur.id == tgtClass.id) { return false; }
+            current = cur.superType;
+          }
+        }
+        case InterfaceType as tgtIface: {
+          var implList = srcClass.implementsList;
+          if (implList.length == 0 && srcClass.genericSource != null) {
+            let srcGen = srcClass.genericSource as ClassType;
+            if (srcGen.implementsList.length > 0 && srcClass.typeArguments != null) {
+              implList = srcGen.implementsList;
+            }
+          }
+          for (let impl in implList) {
+            var substitutedImpl = impl as Type;
+            let typeParamsList = (srcClass.genericSource ?? srcClass).typeParameters;
+            if (typeParamsList != null && srcClass.typeArguments != null) {
+              substitutedImpl = substituteTypeParams(typeParamsList, srcClass.typeArguments, substitutedImpl);
+            }
+            if (typesEqual(substitutedImpl, tgtIface) || isAssignableTo(ctx, substitutedImpl, target)) { return true; }
+          }
+          var current = srcClass.superType;
+          while (current != null) {
+            let cur = current;
+            var curImplList = cur.implementsList;
+            if (curImplList.length == 0 && cur.genericSource != null) {
+              let curGen = cur.genericSource as ClassType;
+              if (curGen.implementsList.length > 0 && cur.typeArguments != null) {
+                curImplList = curGen.implementsList;
+              }
+            }
+            for (let impl in curImplList) {
+              var substitutedImpl = impl as Type;
+              let typeParamsList = (cur.genericSource ?? cur).typeParameters;
+              if (typeParamsList != null && cur.typeArguments != null) {
+                substitutedImpl = substituteTypeParams(typeParamsList, cur.typeArguments, substitutedImpl);
+              }
+              if (typesEqual(substitutedImpl, tgtIface) || isAssignableTo(ctx, substitutedImpl, target)) { return true; }
+            }
+            current = cur.superType;
+          }
+        }
+        case _: {}
+      }
+    }
+    case InterfaceType as srcIface: {
+      match (target) {
+        case InterfaceType as tgtIface: {
+          for (let p in srcIface.extendsList) {
+            var substitutedP = p as Type;
+            let typeParamsList = (srcIface.genericSource ?? srcIface).typeParameters;
+            if (typeParamsList != null && srcIface.typeArguments != null) {
+              substitutedP = substituteTypeParams(typeParamsList, srcIface.typeArguments, substitutedP);
+            }
+            if (typesEqual(substitutedP, tgtIface) || isAssignableTo(ctx, substitutedP, target)) { return true; }
+          }
+        }
+        case _: {}
+      }
+    }
+    case _: {}
+  }
+
+  // Record structural assignability: all required target properties must
+  // exist in source with assignable types; a target's optional property may
+  // be missing, and may only be fed by a source property that is itself
+  // reliably present (a source optional cannot satisfy a required target).
+  match (source) {
+    case RecordT as srcRec: {
+      match (target) {
+        case RecordT as tgtRec: {
+          // The fields a target's row stands for are known only to be
+          // R's, so only a source spreading the same R has them. A
+          // source's row is extra width, which a closed target drops.
+          if (tgtRec.row != null && srcRec.row !== tgtRec.row) {
+            return false;
+          }
+          let srcProps = srcRec.properties;
+          let tgtProps = tgtRec.properties;
+          for (let key in tgtProps.keys()) {
+            if (let (true, srcType) = srcProps.get(key)) {
+              if (srcRec.isOptional(key) && !tgtRec.isOptional(key)) {
+                return false;
+              }
+              if (let (true, tgtType) = tgtProps.get(key)) {
+                if (!isAssignableTo(ctx, srcType, tgtType)) {
+                  return false;
+                }
+              }
+            } else if (!tgtRec.isOptional(key)) {
+              return false;
+            }
+          }
+          return true;
+        }
+        // `{...R}` is R.
+        case TypeParameterType as tgtParam: {
+          if (srcRec.row === tgtParam && srcRec.properties.size == 0) {
+            return true;
+          }
+        }
+        case _: {}
+      }
+    }
+    case TypeParameterType as srcParam: {
+      if (srcParam.isRecordRow && target is RecordT) {
+        // `{...R}` is R, and `{...}` holds any record.
+        return (target.row === srcParam || target.isExistential) &&
+            target.properties.size == 0;
+      }
+      if (srcParam.isTupleRow && target is TupleT) {
+        return target.row === srcParam && target.elementTypes.length == 0;
+      }
+    }
+    case _: {}
+  }
+
+  // ArrayType(elementType) is assignable to Array<T>/FixedArray<T> when elementType assignable to T.
+  match (source) {
+    case ArrayType {elementType, elementsMutable}: {
+      match (target) {
+        case ClassType as tgtClass: {
+          // A bare array satisfies the extension class over its own
+          // representation: mutable elements match the mutable-backed
+          // classes, immutable elements match ImmutableArray.
+          let isArrayLike = if (elementsMutable) {
+            isWellKnownClassType(ctx, tgtClass, WellKnown.GrowableArrayClass) || isWellKnownClassType(ctx, tgtClass, WellKnown.ArrayInterface) || isWellKnownClassType(ctx, tgtClass, WellKnown.FixedArrayClass)
+          } else {
+            isWellKnownClassType(ctx, tgtClass, WellKnown.ImmutableArrayClass)
+          };
+          if (isArrayLike && tgtClass.typeArguments != null) {
+            let tgtArgs = tgtClass.typeArguments as Array<Type>;
+            if (tgtArgs.length > 0) {
+              if (elementsMutable) {
+                return isAssignableTo(ctx, elementType, tgtArgs[0]);
+              }
+              return immutableElementWidens(ctx, elementType, tgtArgs[0]);
+            }
+          }
+          // Also match uninstantiated Array/FixedArray (bare type)
+          if (isArrayLike) {
+            return true;
+          }
+        }
+        case InterfaceType as tgtIface: {
+          // Both backing classes implement Array and Iterable; only the
+          // mutable one implements MutableArray.
+          let isIfaceLike = isWellKnownInterfaceType(ctx, tgtIface, WellKnown.ArrayInterface) || isWellKnownInterfaceType(ctx, tgtIface, WellKnown.IterableInterface) || (elementsMutable && isWellKnownInterfaceType(ctx, tgtIface, WellKnown.MutableArrayInterface));
+          if (isIfaceLike && tgtIface.typeArguments != null) {
+            let tgtArgs = tgtIface.typeArguments as Array<Type>;
+            if (tgtArgs.length > 0) {
+              return isAssignableTo(ctx, elementType, tgtArgs[0]);
+            }
+          }
+          if (isIfaceLike) {
+            return true;
+          }
+        }
+        case ArrayType {elementType as tgtElem, elementsMutable as tgtMut}: {
+          // Wasm gives no subtyping between `(array (mut T))` and
+          // `(array T)` in either direction, so mutability must match
+          // exactly. An immutable array is covariant in its element
+          // where the representation and a declared Wasm subtyping
+          // allow (immutableElementWidens); a mutable array is not.
+          if (elementsMutable != tgtMut) { return false; }
+          if (elementsMutable) {
+            return isAssignableTo(ctx, elementType, tgtElem);
+          }
+          return immutableElementWidens(ctx, elementType, tgtElem);
+        }
+        case _: {}
+      }
+    }
+    case TupleT {elementTypes as srcElems, row as srcRow, rowIndex as srcRowIndex}: {
+      match (target) {
+        case TupleT {elementTypes as tgtElems, row as tgtRow, rowIndex as tgtRowIndex}: {
+          // Tuples have no width: a row lines up only with the same row
+          // at the same position.
+          if (srcRow !== tgtRow) { return false; }
+          if (srcRow != null && srcRowIndex != tgtRowIndex) { return false; }
+          if (srcElems.length != tgtElems.length) { return false; }
+          for (var i = 0; i < srcElems.length; i += 1) {
+            if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
+          }
+          return true;
+        }
+        // A tuple converts to its inline form: its identity cannot be
+        // observed, so reading its fields into slots loses nothing.
+        case InlineTupleT {elementTypes as tgtElems}: {
+          if (srcRow != null || srcElems.length != tgtElems.length) { return false; }
+          for (var i = 0; i < srcElems.length; i += 1) {
+            if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
+          }
+          return true;
+        }
+        // `(...R)` is R.
+        case TypeParameterType as tgtParam: {
+          if (srcRow === tgtParam && srcElems.length == 0) {
+            return true;
+          }
+        }
+        case _: {}
+      }
+    }
+    case InlineTupleT {elementTypes as srcElems}: {
+      if (let InlineTupleT {elementTypes as tgtElems} = target) {
+        if (srcElems.length != tgtElems.length) { return false; }
+        for (var i = 0; i < srcElems.length; i += 1) {
+          if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
+        }
+        return true;
+      }
+      // An inline tuple converts to its boxed form by allocating it.
+      if (let TupleT {elementTypes as tgtElems, row as tgtRow} = target) {
+        if (tgtRow != null || srcElems.length != tgtElems.length) { return false; }
+        for (var i = 0; i < srcElems.length; i += 1) {
+          if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
+        }
+        return true;
+      }
+    }
+    case _: {}
+  }
+
+  return false;
+}
+
+/**
+ * Check if two type arrays (tuple elements) are structurally equal.
+
+ */
+function tupleElementsEqual(ea: Array<Type>, eb: Array<Type>): boolean {
+  if (ea.length != eb.length) {
+    return false;
+  }
+  for (var i = 0; i < ea.length; i += 1) {
+    if (!typesEqual(ea[i], eb[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Check if two types are structurally equal.
+ */
+export function typesEqual(a: Type, b: Type): boolean {
+  if (a === b) { return true; }
+  if (a is TypeAliasType && !(b is TypeAliasType)) {
+    let ta = a as TypeAliasType;
+    if (!ta.isDistinct && ta.intrinsicName == null && !ta.resolving) {
+      ta.resolving = true;
+      let eq = typesEqual(ta.target, b);
+      ta.resolving = false;
+      return eq;
+    }
+  }
+  if (b is TypeAliasType && !(a is TypeAliasType)) {
+    let tb = b as TypeAliasType;
+    if (!tb.isDistinct && tb.intrinsicName == null && !tb.resolving) {
+      tb.resolving = true;
+      let eq = typesEqual(a, tb.target);
+      tb.resolving = false;
+      return eq;
+    }
+  }
+  // For now, use a simple structural comparison based on type kind.
+  // Identity-based comparison will come with interning.
+  return match (a) {
+    case I32Type: b is I32Type
+    case U32Type: b is U32Type
+    case I64Type: b is I64Type
+    case U64Type: b is U64Type
+    case F32Type: b is F32Type
+    case F64Type: b is F64Type
+    case U8Type: b is U8Type
+    case U16Type: b is U16Type
+    case I8Type: b is I8Type
+    case I16Type: b is I16Type
+    case V128Type: b is V128Type
+    case BooleanType: b is BooleanType
+    case VoidType: b is VoidType
+    case NullType: b is NullType
+    case NeverType: true
+    case HoleType: b is HoleType
+    case ErrorType: b is ErrorType
+    case UnknownType: b is UnknownType
+    case AnyRefType: b is AnyRefType
+    // Codegen-internal (types.zena): the checker never builds one, but
+    // the match is exhaustive over Type.
+    case ErasedType: b is ErasedType
+    case EqRefType: b is EqRefType
+    case ExternRefType: b is ExternRefType
+    case BoolLiteralType {value as va}: {
+      if (let BoolLiteralType {value as vb} = b) va == vb else false
+    }
+    case StringLiteralType {value as va}: {
+      if (let StringLiteralType {value as vb} = b) va == vb else false
+    }
+    case NumLiteralType {raw as va}: {
+      if (let NumLiteralType {raw as vb} = b) va == vb else false
+    }
+    case ClassType as ca: {
+      match (b) {
+        case ClassType as cb: {
+          // Compare canonical base type (follow genericSource chain)
+          let baseA = if (ca.genericSource != null) (ca.genericSource as ClassType).id else ca.id;
+          let baseB = if (cb.genericSource != null) (cb.genericSource as ClassType).id else cb.id;
+          if (baseA != baseB) { return false; }
+          // Compare type arguments for generic instantiations
+          if (ca.typeArguments == null && cb.typeArguments == null) { return true; }
+          if (ca.typeArguments == null || cb.typeArguments == null) { return false; }
+          let argsA = ca.typeArguments as Array<Type>;
+          let argsB = cb.typeArguments as Array<Type>;
+          if (argsA.length != argsB.length) { return false; }
+          for (var i = 0; i < argsA.length; i += 1) {
+            if (!typesEqual(argsA[i], argsB[i])) { return false; }
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case InterfaceType as ia: {
+      match (b) {
+        case InterfaceType as ib: {
+          // Compare canonical base type (follow genericSource chain)
+          let baseA = if (ia.genericSource != null) (ia.genericSource as InterfaceType).id else ia.id;
+          let baseB = if (ib.genericSource != null) (ib.genericSource as InterfaceType).id else ib.id;
+          if (baseA != baseB) { return false; }
+          // Compare type arguments for generic instantiations
+          if (ia.typeArguments == null && ib.typeArguments == null) { return true; }
+          if (ia.typeArguments == null || ib.typeArguments == null) { return false; }
+          let argsA = ia.typeArguments as Array<Type>;
+          let argsB = ib.typeArguments as Array<Type>;
+          if (argsA.length != argsB.length) { return false; }
+          for (var i = 0; i < argsA.length; i += 1) {
+            if (!typesEqual(argsA[i], argsB[i])) { return false; }
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case TypeParameterType {name as na}: {
+      if (let TypeParameterType {name as nb} = b) na == nb else false
+    }
+    case ArrayType {elementType as ea, elementsMutable as ma}: {
+      if (let ArrayType {elementType as eb, elementsMutable as mb} = b) {
+        ma == mb && typesEqual(ea, eb)
+      } else {
+        false
+      }
+    }
+    case TupleT {elementTypes as ea, row as rowA, rowIndex as indexA}: {
+      if (let TupleT {elementTypes as eb, row as rowB, rowIndex as indexB} = b) {
+        rowA === rowB && (rowA == null || indexA == indexB) &&
+          tupleElementsEqual(ea, eb)
+      } else {
+        false
+      }
+    }
+    case InlineTupleT {elementTypes as ea}: {
+      if (let InlineTupleT {elementTypes as eb} = b) {
+        tupleElementsEqual(ea, eb)
+      } else {
+        false
+      }
+    }
+    case InlineParamType {param as pa}: {
+      if (let InlineParamType {param as pb} = b) typesEqual(pa, pb) else false
+    }
+    case FunctionType as fa: {
+      match (b) {
+        case FunctionType as fb: {
+          if (fa.parameters.length != fb.parameters.length) { return false; }
+          if (!typesEqual(fa.returnType, fb.returnType)) { return false; }
+          for (var i = 0; i < fa.parameters.length; i += 1) {
+            if (!typesEqual(fa.parameters[i], fb.parameters[i])) { return false; }
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case UnionT {types as ua}: {
+      if (let UnionT {types as ub} = b) {
+        if (ua.length != ub.length) { return false; }
+        for (var i = 0; i < ua.length; i += 1) {
+          if (!typesEqual(ua[i], ub[i])) { return false; }
+        }
+        true
+      } else {
+        false
+      }
+    }
+    case RecordT as ra: {
+      match (b) {
+        case RecordT as rb: {
+          let pa = ra.properties;
+          let pb = rb.properties;
+          if (pa.size != pb.size || ra.row !== rb.row || ra.isExistential != rb.isExistential) { return false; }
+          let keys = pa.keys();
+          for (let key in keys) {
+            if (!pb.has(key)) { return false; }
+            if (!typesEqual(pa[key], pb[key])) { return false; }
+            if (ra.isOptional(key) != rb.isOptional(key)) { return false; }
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case MixinType as ma: {
+      match (b) {
+        case MixinType as mb: ma.name == mb.name
+        case _: false
+      }
+    }
+    case SymbolType as sa: {
+      match (b) {
+        case SymbolType as sb: sa.id == sb.id
+        case _: false
+      }
+    }
+    case ThisType: b is ThisType
+    case TypeAliasType as ta: {
+      match (b) {
+        case TypeAliasType as tb: {
+          if (ta.name != tb.name) {
+            return false;
+          }
+          if (ta.typeArguments == null && tb.typeArguments == null) {
+            return true;
+          }
+          let argsA = ta.typeArguments;
+          if (argsA == null || tb.typeArguments == null) {
+            return false;
+          }
+          let argsB = tb.typeArguments as Array<Type>;
+          if (argsA.length != argsB.length) {
+            return false;
+          }
+          for (var i = 0; i < argsA.length; i += 1) {
+            if (!typesEqual(argsA[i], argsB[i])) {
+              return false;
+            }
+          }
+          true
+        }
+        case _: false
+      }
+    }
+    case EnumType as ea: {
+      // One canonical object per declaration, so identity (above) is
+      // the usual answer; the name is what survives a re-parse.
+      match (b) {
+        case EnumType as eb: ea.name == eb.name && ea.declaringModule == eb.declaringModule
+        case _: false
+      }
+    }
+  };
+}

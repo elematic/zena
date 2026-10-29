@@ -1,0 +1,619 @@
+import { growable } from 'zena:core';
+import { analyzeCaptures } from '../analysis/capture.zena';
+import { walkEnter } from '../visitor.zena';
+import {
+  BlockStatement, Expression, ExpressionStatement, FunctionDeclaration,
+  FunctionExpression, Identifier, Node, TypeAnnotation, VariableDeclaration
+} from '../ast.zena';
+import {
+  ClassType, ErrorType, FunctionDeclInfo, FunctionType, Type,
+  TypeParameterType, UnionType as UnionT, VoidType, isScopedType,
+  scopedInner, typeContainsSecondClass, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { SymbolId, noSymbolId } from '../scope/symbol.zena';
+import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { isInlineType, resolveBound, resolveTypeAnnotation } from './annotations.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import { tryInstantiateGenericFunction } from './generics.zena';
+import { prescanPendingFunctions } from './module.zena';
+import { branchDefinitelyExits } from './narrowing.zena';
+import {
+  checkBorrowDerivation, registerOwnParamCandidates,
+  rejectGeneratorBorrowParams
+} from './ownership.zena';
+import { bindPattern } from './patterns.zena';
+import {
+  extractAsyncIteratorYieldType, extractFutureValueType,
+  extractIteratorYieldType, makeAsyncIteratorType, makeFutureType,
+  makeIteratorType
+} from './protocols.zena';
+import { isAssignableTo } from './relations.zena';
+import { checkStatement } from './statements.zena';
+import { unwrapAliases } from './unions.zena';
+
+export function checkFunctionExpression(
+  ctx: CheckerContext,
+  fe: FunctionExpression,
+  expectedType: Type | null
+): Type {
+  let {typeParameters} = fe;
+  let {params} = fe;
+  let returnTypeAnn = fe.returnType;
+  let {body} = fe;
+  let loc = fe.loc;
+  var isClosure = !(ctx.referrerStack.length == 1 && ctx.referrerStack[0] == "sym");
+  if (!isClosure) {
+    let parent = ctx.model.getParent(fe);
+    if (parent == null ||
+        !(parent is VariableDeclaration || parent is FunctionDeclaration)) {
+      isClosure = true;
+    }
+  }
+  if (isClosure) {
+    ctx.enterClosureReferrer();
+  }
+  ctx.referrerStack.push("func");
+
+  ctx.enterScope();
+
+  // Register type parameters in the type scope.
+  var resolvedTypeParams: Array<TypeParameterType> | null = null;
+  if (typeParameters != null) {
+    if (typeParameters.length > 0) {
+      let tpTypes = new Array<TypeParameterType>();
+      for (let tp in typeParameters) {
+        var constraint: Type | null = null;
+        if (tp.constraint != null) {
+          // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
+        }
+        let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
+        ctx.declareTypeName(tp.name, tpType);
+        tpTypes.push(tpType);
+      }
+      resolvedTypeParams = tpTypes;
+    }
+  }
+
+  // Resolve parameter types.
+  let paramTypes = new Array<Type>();
+  let paramNames = new Array<String>();
+
+  // If there's a contextual function type, use it for parameter inference.
+  // A union with exactly one function member contextualizes the same
+  // way: an arrow written where `String | (e: Event) => void` is expected
+  // can only be the function, so its parameters take that member's
+  // types.
+  var contextualFn: FunctionType | null = null;
+  if (expectedType != null) {
+    match (unwrapAliases(expectedType)) {
+      case FunctionType as ft: { contextualFn = ft; }
+      case UnionT {types}: {
+        var only: FunctionType | null = null;
+        var count = 0;
+        for (let member in types) {
+          let m = unwrapAliases(member);
+          if (m is FunctionType) {
+            only = m as FunctionType;
+            count += 1;
+          }
+        }
+        if (count == 1) {
+          contextualFn = only;
+        }
+      }
+      case _: {}
+    }
+  }
+
+  var i = 0;
+  var hasOptionals = false;
+  let optionals = new Array<boolean>();
+  var hasInitializers = false;
+  let initializers = new Array<Expression | null>();
+  while (i < params.length) {
+    let param = params[i];
+    let paramName = param.name.name;
+    paramNames.push(paramName);
+
+    var paramType: Type = new ErrorType();
+    let {typeAnnotation} = param;
+    if (typeAnnotation != null) {
+      paramType = resolveTypeAnnotation(ctx, typeAnnotation);
+          } else if (contextualFn != null) {
+      if (i < contextualFn.parameters.length) {
+        paramType = contextualFn.parameters[i];
+      }
+    } else {
+      // No annotation and no contextual type — report an error.
+      ctx.error(
+        `Parameter '${paramName}' has no type annotation and cannot be inferred from context.`,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
+
+    // Optional parameters have their type widened to T | null
+    let isOptional = param.optional || param.defaultValue != null;
+    optionals.push(isOptional);
+
+    // Bind parameter type early so subsequent default arguments can reference it.
+    let paramInfo = ctx.model.resolveDeclaration(param);
+    if (paramInfo != null) {
+      ctx.declareBinding(paramInfo, paramType);
+    }
+    let {pattern} = param;
+    if (pattern != null) {
+      bindPattern(ctx, pattern, paramType);
+    }
+
+    let {defaultValue} = param;
+    if (defaultValue != null) {
+      hasInitializers = true;
+      let initExp = defaultValue;
+      let initType = checkExpression(ctx, initExp, paramType);
+      if (!isAssignableTo(ctx, initType, paramType)) {
+        ctx.error(
+          "Type mismatch: default value of type '" + typeToString(initType) +
+          "' is not assignable to parameter type '" + typeToString(paramType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          initExp.loc
+        );
+      } else {
+        let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, paramType);
+        if (instantiatedVal !== initType) {
+          ctx.setNodeType(initExp, instantiatedVal);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, paramType);
+      }
+    }
+    initializers.push(param.defaultValue);
+    if (isOptional) {
+      hasOptionals = true;
+    }
+
+    paramTypes.push(paramType);
+    i += 1;
+  }
+
+  // Resolve return type annotation.
+  var retType: Type = new VoidType();
+  var needsInference = false;
+  if (returnTypeAnn != null) {
+    retType = resolveTypeAnnotation(ctx, returnTypeAnn, true);
+  } else if (contextualFn != null && isInlineType(contextualFn.returnType) &&
+      !fe.isGenerator && !fe.isAsync) {
+    // Inference never produces an inline type, and inline-ness is part of
+    // a function type, so an arrow written where one is expected returns
+    // it: `let f: () => inline (i32, i32) = () => (1, 2)`.
+    retType = contextualFn.returnType;
+  } else {
+    needsInference = true;
+  }
+
+  // Generators: the annotation is the full Iterator<T> return type
+  // (the call expression's type); T is the yield type. With no
+  // annotation the yield type is inferred from the yield statements.
+  // The body may only `yield` values and `return;` bare.
+  let {isGenerator, isAsync} = fe;
+  var declaredYieldType: Type = new VoidType();
+  var declaredIteratorType: Type | null = null;
+  // A `Scoped` return annotation on an async or gen body lifts the
+  // borrow-across-suspension rule for it, and the generator borrow
+  // parameter ban: the scoped rules keep the frame inside the borrow's
+  // extent, and the single-source requirement is checkBorrowDerivation's
+  // (the return type is second-class). The annotation is peeled here so
+  // the Future/Iterator machinery sees the type it wraps; the external
+  // return type keeps the wrapper.
+  var scopedReturnRelaxed = false;
+  if (isGenerator) {
+    // The other half of the generator-disposal gate (see the
+    // ForInStatement arm): the program creates a generator.
+    let genDeps = ctx.currentDependencies();
+    if (genDeps != null) {
+      genDeps.createsGenerator = true;
+      if (isAsync) {
+        genDeps.createsAsyncGenerator = true;
+      }
+    }
+    if (returnTypeAnn != null) {
+      var genRet = retType;
+      if (isScopedType(genRet)) {
+        let genInner = scopedInner(genRet);
+        if (genInner != null) {
+          genRet = genInner;
+          scopedReturnRelaxed = true;
+        }
+      }
+      let extracted = if (isAsync) {
+        extractAsyncIteratorYieldType(ctx, genRet)
+      } else {
+        extractIteratorYieldType(ctx, genRet)
+      };
+      if (extracted == null) {
+        let expectedIface = if (isAsync) "AsyncIterator<T>" else "Iterator<T>";
+        let kindLabel = if (isAsync) "An async generator's" else "A generator's";
+        ctx.error(
+          kindLabel + " return type must be '" + expectedIface + "', got '" +
+          typeToString(retType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        declaredYieldType = new ErrorType();
+        declaredIteratorType = new ErrorType();
+        scopedReturnRelaxed = false;
+      } else {
+        declaredYieldType = extracted;
+        declaredIteratorType = retType;
+      }
+    }
+    retType = new VoidType();
+    needsInference = false;
+    if (!scopedReturnRelaxed) {
+      rejectGeneratorBorrowParams(ctx, fe.params, paramTypes);
+    }
+  }
+
+  // Async functions: the annotation is the full Future<T> return type
+  // (the call expression's type); the body checks against T, and
+  // `return e` may also adopt a Future<T> (async.md §1–§2). With no
+  // annotation, T is inferred from the returns and wrapped.
+  var declaredFutureType: Type | null = null;
+  var declaredScopedReturn: Type | null = null;
+  if (isAsync) {
+    // step()'s failure-capture region is a try_br: an async body needs
+    // the exception tag and payload global even when it never throws
+    // in source (async.md §3).
+    let asyncDeps = ctx.currentDependencies();
+    if (asyncDeps != null) {
+      asyncDeps.needsExceptionInfra = true;
+    }
+    // An `async gen` returns `Iterator<T>`, validated by the generator
+    // block above; `async` here means the body may await, not that it
+    // returns a Future (async-iteration.md). Skip the Future check.
+    if (!isGenerator && returnTypeAnn != null) {
+      var asyncRet = retType;
+      if (isScopedType(asyncRet)) {
+        let aInner = scopedInner(asyncRet);
+        if (aInner != null) {
+          asyncRet = aInner;
+          scopedReturnRelaxed = true;
+        }
+      }
+      let extracted = extractFutureValueType(ctx, asyncRet);
+      if (extracted == null) {
+        ctx.error(
+          "An async function's return type must be 'Future<T>', got '" +
+          typeToString(retType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        retType = new ErrorType();
+        declaredFutureType = new ErrorType();
+        scopedReturnRelaxed = false;
+      } else {
+        if (scopedReturnRelaxed) {
+          declaredScopedReturn = retType;
+        }
+        // The adoption target is the future itself, wrapper or not:
+        // `return e` may hand back a Future<T>, which coerces into a
+        // scoped return the same as anywhere else.
+        declaredFutureType = asyncRet;
+        retType = extracted;
+      }
+    }
+    // Unannotated: retType stays VoidType with needsInference — the
+    // ordinary return-inference machinery infers T (no adoption while
+    // inferring: the returned expression's type is taken as-is).
+  }
+
+  // Set expected return type for return statements.
+  // Save and reset inferred return types for this function.
+  // Yield/async context and try depth are per-function: a plain
+  // closure nested in a generator or async body must not inherit its
+  // parent's suspension context, and a closure inside `try` is not
+  // "in" the try.
+  let prevReturnType = ctx.returnType;
+  let prevInferredReturns = ctx.inferredReturnTypes;
+  let prevYieldType = ctx.yieldType;
+  let prevInferredYields = ctx.inferredYieldTypes;
+  let prevAsyncValue = ctx.asyncValueType;
+  let prevAsyncFuture = ctx.asyncFutureType;
+  let prevSuspensionRelaxed = ctx.suspensionRelaxed;
+  ctx.setSuspensionRelaxed(scopedReturnRelaxed);
+  let prevTryDepth = ctx.tryDepth;
+  // A nested body owes nothing to the enclosing one's `using` bindings
+  // or constructor, so a `tail return` in it is judged on its own.
+  let prevUsingDepth = ctx.usingDepth;
+  ctx.setUsingDepth(0);
+  let prevInConstructor = ctx.inConstructor;
+  ctx.setInConstructor(false);
+  let prevCancelBlockFloor = ctx.cancelBlockFloor;
+  ctx.setCancelBlockFloor(-1);
+  let prevInFinalizer = ctx.inFinalizer;
+  ctx.setInFinalizer(false);
+  ctx.setReturnType(retType);
+  ctx.setInferredReturnTypes(new Array<Type>());
+  let newYieldType: Type | null = if (isGenerator) declaredYieldType else null;
+  ctx.setYieldType(newYieldType);
+  ctx.setInferredYieldTypes(new Array<Type>());
+  let newAsyncValue: Type | null = if (isAsync) retType else null;
+  ctx.setAsyncValueType(newAsyncValue);
+  ctx.setAsyncFutureType(if (isAsync) { declaredFutureType } else { null });
+  ctx.setTryDepth(0);
+  // Arrows share `this` with the body they were written in.
+  let prevFlowState = ctx.enterBodyFlow(true);
+
+  // Check the body.
+  match (body) {
+    case BlockStatement as block: {
+      // A trailing expression statement in a non-void function is the
+      // function's result (value-block bodies): check it WITH the
+      // return type as context, so statement-position expressions
+      // (a match with value arms) type as values, not void.
+      var tailConforms = false;
+      ctx.enterOwnScope();
+      registerOwnParamCandidates(ctx, fe.params, paramTypes);
+      prescanPendingFunctions(ctx, block.body);
+      let tailIndex = if (!needsInference && !(retType is VoidType) &&
+          block.body.length > 0 &&
+          block.body[block.body.length - 1] is ExpressionStatement) {
+        block.body.length - 1
+      } else {
+        -1
+      };
+      var j = 0;
+      while (j < block.body.length) {
+        let stmtNode = block.body[j];
+        ctx.beginOwnStatement();
+        if (j == tailIndex && !branchDefinitelyExits(stmtNode)) {
+          let tailT = checkExpression(ctx,
+              (stmtNode as ExpressionStatement).expression, retType);
+          tailConforms = isAssignableTo(ctx, tailT, retType);
+        } else {
+          checkStatement(ctx, stmtNode);
+        }
+        ctx.endOwnStatement(j, stmtNode);
+        // TODO(#509): report code after a loop that never completes too.
+        if (branchDefinitelyExits(stmtNode, null, false) &&
+            j < block.body.length - 1) {
+          ctx.error(
+            "Unreachable code detected.",
+            DiagnosticCode.UnreachableCode,
+            block.body[j + 1].loc
+          );
+          break;
+        }
+        j = j + 1;
+      }
+      ctx.exitOwnScope(block as Node);
+      // After checking block body, infer return type from collected types.
+      if (needsInference) {
+        let inferred = ctx.inferredReturnTypes;
+        if (inferred.length == 0) {
+          retType = new VoidType();
+        } else if (inferred.length == 1) {
+          retType = inferred[0];
+        } else {
+          // Multiple return types - create union (or use first as approximation)
+          // For now, just use the first type as a simple heuristic
+          retType = inferred[0];
+        }
+      } else {
+        // If it lacks a guaranteed return, a conforming trailing
+        // expression (checked against the return type above) is the
+        // function's result.
+        if (!(retType is VoidType) && !branchDefinitelyExits(block, ctx.model) &&
+            !tailConforms) {
+          ctx.error(
+            "A function with a non-void declared return type must return a value.",
+            DiagnosticCode.MissingReturnType,
+            loc
+          );
+        }
+      }
+    }
+    case Expression as bodyExpr: {
+      ctx.enterOwnScope();
+      // Async expression bodies stay out: their lowering completes the
+      // frame's future directly, before the parameter regions exist.
+      if (ctx.asyncValueType == null) {
+        registerOwnParamCandidates(ctx, fe.params, paramTypes);
+      }
+      // If we don't have an expected type, don't pass retType (which is VoidType by default).
+      let expectedBodyType = if (needsInference) { null } else { retType };
+      let bodyType = checkExpression(ctx, bodyExpr, expectedBodyType);
+
+      // Expression body: validate return type if annotated
+      if (returnTypeAnn != null) {
+        if (!isAssignableTo(ctx, bodyType, retType)) {
+          // Async return-adoption: the body may produce the declared
+          // Future<T> itself (forwarded, not double-wrapped), when T
+          // is distinguishable from Future<T> (async.md §2).
+          var adopted = false;
+          if (declaredFutureType != null &&
+              extractFutureValueType(ctx, retType) == null &&
+              isAssignableTo(ctx, bodyType, declaredFutureType)) {
+            adopted = true;
+          }
+          if (!adopted) {
+            ctx.error(
+              "Type mismatch: expression body returns '" + typeToString(bodyType) +
+              "' but function expects '" + typeToString(retType) + "'.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+          }
+        } else {
+          // The body's value is the return: it adapts to the declared
+          // type the way a `return` statement's argument does — an
+          // array literal returned as `Array<T>` packs into the
+          // interface here.
+          let instantiated = tryInstantiateGenericFunction(ctx, bodyType, retType);
+          if (instantiated !== bodyType) {
+            ctx.setNodeType(bodyExpr, instantiated);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, bodyExpr, instantiated, retType);
+        }
+      } else {
+        // Infer return type from expression body.
+        retType = bodyType;
+      }
+      ctx.exitOwnScope(bodyExpr as Node);
+    }
+  }
+
+  // Generators: the declared Iterator<T> (or AsyncIterator<T> for
+  // `async gen`) is the return type; with no annotation, infer the
+  // yield type and wrap it.
+  var finalRetType = retType;
+  if (isGenerator) {
+    if (declaredIteratorType != null) {
+      finalRetType = declaredIteratorType;
+    } else {
+      var yieldT: Type = new VoidType();
+      let inferredYs = ctx.inferredYieldTypes;
+      if (inferredYs.length == 0) {
+        let expectedIface = if (isAsync) "AsyncIterator<T>" else "Iterator<T>";
+        ctx.error(
+          `Cannot infer the yield type of a generator that never yields; annotate the return type as '${expectedIface}'.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+        yieldT = new ErrorType();
+      } else {
+        yieldT = inferredYs[0];
+      }
+      finalRetType = if (isAsync) {
+        makeAsyncIteratorType(ctx, yieldT, loc)
+      } else {
+        makeIteratorType(ctx, yieldT, loc)
+      };
+    }
+  }
+
+  // Async: the declared Future<T> is the return type; with no
+  // annotation, wrap the inferred value type. An `async gen` already
+  // received its `AsyncIterator<T>` return type above.
+  if (isAsync && !isGenerator) {
+    if (declaredScopedReturn != null) {
+      finalRetType = declaredScopedReturn;
+    } else if (declaredFutureType != null) {
+      finalRetType = declaredFutureType;
+    } else {
+      finalRetType = makeFutureType(ctx, retType, loc);
+    }
+  }
+
+  ctx.setReturnType(prevReturnType);
+  ctx.setInferredReturnTypes(prevInferredReturns);
+  ctx.setYieldType(prevYieldType);
+  ctx.setInferredYieldTypes(prevInferredYields);
+  ctx.setAsyncValueType(prevAsyncValue);
+  ctx.setAsyncFutureType(prevAsyncFuture);
+  ctx.setSuspensionRelaxed(prevSuspensionRelaxed);
+  ctx.setTryDepth(prevTryDepth);
+  ctx.setUsingDepth(prevUsingDepth);
+  ctx.setInConstructor(prevInConstructor);
+  ctx.setCancelBlockFloor(prevCancelBlockFloor);
+  ctx.setInFinalizer(prevInFinalizer);
+  ctx.exitBodyFlow(prevFlowState);
+  ctx.exitScope();
+
+  let paramSymbols = new Array<SymbolId>();
+  var pi = 0;
+  while (pi < params.length) {
+    let paramInfo = ctx.model.resolveDeclaration(params[pi].name);
+    if (paramInfo != null) {
+      let symId = paramInfo.id;
+      // Mark as -1 if the parameter is never actually referenced in subsequent default parameters.
+      let isReferenced = growable<boolean>([false]);
+      var pi2 = pi + 1;
+      while (pi2 < params.length) {
+        if (params[pi2].defaultValue != null) {
+           walkEnter(params[pi2].defaultValue as Node, (n) => {
+             if (n is Identifier) {
+               let nSym = ctx.model.resolve(n);
+               if (nSym != null) {
+                 if (nSym.id == symId) {
+                   isReferenced[0] = true;
+                 }
+               }
+             }
+           });
+        }
+        pi2 += 1;
+      }
+      if (isReferenced[0]) {
+        paramSymbols.push(symId);
+      } else {
+        paramSymbols.push(noSymbolId);
+      }
+    } else {
+      paramSymbols.push(noSymbolId);
+    }
+    pi += 1;
+  }
+
+  checkBorrowDerivation(ctx, paramTypes, finalRetType, false, fe.loc);
+
+  let fnType = new FunctionType(paramTypes, finalRetType,
+      new FunctionDeclInfo(paramNames, paramSymbols,
+          if (hasInitializers) initializers else null,
+          if (hasOptionals) optionals else null),
+      resolvedTypeParams);
+  let deps = ctx.currentDependencies();
+  if (deps != null) {
+    deps.referencedTypes.add(fnType);
+  }
+  if (isClosure) {
+    let captureInfo = analyzeCaptures(fe, ctx.model);
+
+    // `this` is captured as a receiver rather than as a captured symbol,
+    // so the loop below cannot see it. Capturing a resource's `this` is
+    // the leak the borrowed receiver exists to close: the closure outlives
+    // the call, and nothing about its type says it is holding a resource.
+    if (captureInfo.capturesThis && ctx.currentClass != null &&
+        (ctx.currentClass as ClassType).isResource) {
+      ctx.error(
+        "A 'Borrow<" + (ctx.currentClass as ClassType).name + ">' may not be captured by " +
+        "a closure, and a closure in a resource's method captures 'this'. The closure can " +
+        "outlive the call, and would then be holding a resource its owner has already " +
+        "released.",
+        DiagnosticCode.TypeMismatch,
+        fe.loc
+      );
+    }
+
+    let capSyms = new Array<SymbolId>();
+    for (let c in captureInfo.captures) {
+      capSyms.push(c.id);
+      ctx.model.recordCapture(c, fe);
+      // A closure is a heap object: it may be returned, stored in a field
+      // or called long after the scope that lent the borrow has ended, so
+      // capturing a second-class value is exactly the escape the borrow
+      // rules exist to stop. ownership.md §"The two axes".
+      let decl = c.declaration;
+      if (decl != null) {
+        let declType = ctx.model.getNodeType(decl);
+        if (declType != null && typeContainsSecondClass(declType)) {
+          ctx.error(
+            "A '" + typeToString(declType) + "' may not be captured by a closure. " +
+            "The closure can outlive the scope the borrow came from, and would then be " +
+            "holding a resource its owner has already released.",
+            DiagnosticCode.TypeMismatch,
+            fe.loc
+          );
+        }
+      }
+    }
+    ctx.exitClosureReferrer(fe, captureInfo.capturesThis, capSyms, captureInfo.mutableCaptures);
+  }
+  let ignored = ctx.referrerStack.pop();
+  return fnType;
+}

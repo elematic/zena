@@ -1,0 +1,883 @@
+import { HashMap, HashSet, Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import {
+  AccessorDeclaration, BindingPattern, BooleanLiteral, FieldDefinition,
+  FunctionExpression, FunctionTypeAnnotation, InlineTypeAnnotation,
+  LiteralTypeAnnotation, MethodDefinition, NamedTypeAnnotation, Node,
+  NullLiteral, NullableTypeAnnotation, NumberLiteral, RecordTypeAnnotation,
+  SourceLocation, StringLiteral, ThisTypeAnnotation, TuplePattern,
+  TupleTypeAnnotation, TypeAnnotation, TypeParameter, UnionTypeAnnotation
+} from '../ast.zena';
+import {
+  ArrayType, BoolLiteralType, BooleanType, ClassType, ErrorType,
+  FunctionType, InlineParamType, InlineTupleType as InlineTupleT,
+  InterfaceType, MixinType, NullType, NumLiteralType, RecordType as RecordT,
+  StringLiteralType, ThisType, TupleType as TupleT, Type, TypeAliasType,
+  TypeParameterType, UnionType as UnionT, applyTypeIntrinsic, baseType,
+  instantiateClassType, instantiateInterfaceType, instantiateMixinType,
+  instantiateTypeAliasType, isNumericType, isOwnershipWrapper,
+  recursiveAliasKey, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { CheckerContext } from './context.zena';
+import { applyAndCheckTypeArguments, substituteTypeParams } from './generics.zena';
+import {
+  rejectAffineStructuralMember, rejectConcreteSecondClassStorage,
+  rejectSecondClassStorage
+} from './ownership.zena';
+import { isAssignableTo } from './relations.zena';
+import { createUnionType, unwrapAliases } from './unions.zena';
+
+/**
+ * Maximum alias hops `isInlineType` and `inlineFormOf` will follow. Aliases
+ * nest only a few deep in practice; the bound exists because a recursive
+ * alias (`type T = Array<T>`) otherwise cycles forever between the
+ * structural and alias steps — `resolving` guards only the declaration,
+ * not later uses. A chain this long is already an error elsewhere, and an
+ * endlessly expanding alias cannot name a concrete inline tuple, so giving
+ * up is safe.
+ */
+let maxAliasHops = 32;
+
+/**
+ * Whether a resolved type is an inline value: an inline tuple, a union of
+ * them, or an alias for either.
+ *
+ * This looks at the top only. A type argument, record field, function
+ * parameter or plain tuple element is resolved as a position of its own,
+ * which reports an inline type there, so a deeper walk would report it
+ * twice.
+ */
+export function isInlineType(t: Type, aliasHops: i32 = 0): boolean {
+  return match (t) {
+    case InlineTupleT {}: true
+    // It may be, so it follows the same placement rules.
+    case InlineParamType {}: true
+    // Aliases are transparent here — `type Pair = inline (i32, i32)` is
+    // legal to declare, so the restriction has to be enforced through the
+    // name at each use. `resolving` means we are inside this alias's own
+    // target resolution, where reading `target` would not terminate.
+    case TypeAliasType as alias: {
+      if (alias.resolving || aliasHops >= maxAliasHops) {
+        false
+      } else {
+        alias.resolving = true;
+        let res = isInlineType(alias.target, aliasHops + 1);
+        alias.resolving = false;
+        res
+      }
+    }
+    case UnionT {types}: {
+      var found = false;
+      for (let member in types) {
+        if (isInlineType(member, aliasHops)) {
+          found = true;
+          break;
+        }
+      }
+      found
+    }
+    case _: false
+  };
+}
+
+/**
+ * The type a tuple pattern's element binds at an element of type `t`. A
+ * nested inline tuple is taken apart by a tuple pattern in place; any
+ * other pattern holds it as a value, which is its boxed form.
+ */
+export function tupleElementPatternType(element: Node, t: Type): Type {
+  var inner = element;
+  if (let BindingPattern {pattern} = inner) {
+    inner = pattern as Node;
+  }
+  if (inner is TuplePattern) {
+    return t;
+  }
+  return if (isInlineType(t)) boxedFormOf(t) else t;
+}
+
+/**
+ * The boxed form of an inline type: what a binding or an inferred type
+ * argument holds when an inline value is stored. A type that is not
+ * inline comes back unchanged.
+ */
+export function boxedFormOf(t: Type): Type {
+  return match (unwrapAliases(t)) {
+    case InlineTupleT {elementTypes}: {
+      // A nested inline tuple is boxed too: a stored value holds no
+      // inline part.
+      let boxed = new Array<Type>();
+      for (let el in elementTypes) {
+        boxed.push(boxedFormOf(el));
+      }
+      new TupleT(boxed, null, 0) as Type
+    }
+    case InlineParamType {param}: param as Type
+    case UnionT {types}: {
+      if (!isInlineType(t)) {
+        t
+      } else {
+        let members = new Array<Type>();
+        for (let member in types) {
+          members.push(boxedFormOf(member));
+        }
+        createUnionType(members)
+      }
+    }
+    case _: t
+  };
+}
+
+/**
+ * Resolve the operand of `inline` to the unboxed form of its type.
+ *
+ * A tuple written in place has its elements resolved here, where they may
+ * be `inline` themselves: an inline value is the one place `inline` nests.
+ * A union distributes over its members, so `inline A | B` needs no
+ * modifier on `B`. Anything else (a name, above all) is resolved as
+ * written and then converted by `inlineFormOf`, which is where the
+ * operands that cannot be unboxed are reported.
+ */
+function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
+  return match (ann) {
+    case TupleTypeAnnotation {elementTypes, spreadIndices}: {
+      if (spreadIndices != null) {
+        // A spread splices in a whole tuple type, so let the tuple arm
+        // resolve it; its elements then follow the storage rule.
+        inlineFormOf(ctx, resolveTypeAnnotation(ctx, ann), ann.loc)
+      } else {
+        let elTypes = new Array<Type>();
+        for (let element in elementTypes) {
+          let elType = resolveTypeAnnotation(ctx, element, true);
+          // An inline tuple nests: its slots become the outer one's. A
+          // union cannot be spliced into one list of positions, so a
+          // nested inline union is not supported yet.
+          let unwrapped = unwrapAliases(elType);
+          if (isInlineType(elType) && !(unwrapped is InlineTupleT) &&
+              !(unwrapped is InlineParamType)) {
+            ctx.error(
+              "An inline union inside an inline tuple is not supported yet.",
+              DiagnosticCode.TypeMismatch,
+              element.loc,
+            );
+          }
+          elTypes.push(elType);
+        }
+        new InlineTupleT(elTypes) as Type
+      }
+    }
+    case UnionTypeAnnotation {types}: {
+      let members = new Array<Type>();
+      for (let member in types) {
+        members.push(resolveInlineOperand(ctx, member));
+      }
+      unionOfInlineMembers(ctx, members, ann.loc)
+    }
+    case _: inlineFormOf(ctx, resolveTypeAnnotation(ctx, ann, true), ann.loc)
+  };
+}
+
+/**
+ * `inline? T`: the argument for the type parameter `T` unboxed when it can
+ * be (a tuple, today), and as it is otherwise, decided per substitution
+ * (`InlineParamType`). On a type that is already known there is nothing
+ * to decide, so it is an error.
+ */
+function resolveInlineIfPossible(ctx: CheckerContext, ann: TypeAnnotation): Type {
+  let t = resolveTypeAnnotation(ctx, ann, true);
+  return match (t) {
+    case TypeParameterType as tp: new InlineParamType(tp) as Type
+    case ErrorType {}: t
+    case _: {
+      ctx.error(
+        "'inline?' applies to a type parameter: write 'inline' to unbox a known type.",
+        DiagnosticCode.TypeMismatch,
+        ann.loc,
+      );
+      new ErrorType() as Type
+    }
+  };
+}
+
+/**
+ * The union of converted members, or an error type when a member could not
+ * be converted: half an inline union would only produce follow-on errors.
+ */
+function unionOfInlineMembers(
+  ctx: CheckerContext,
+  members: Array<Type>,
+  loc: SourceLocation | null,
+): Type {
+  for (let member in members) {
+    if (member is ErrorType) {
+      return member;
+    }
+    if (let InlineParamType {param} = member) {
+      // A member has to start with a literal, which an argument for the
+      // parameter may not.
+      ctx.error(
+        `Type parameter '${param.name}' cannot be a member of an inline union.`,
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      return new ErrorType();
+    }
+  }
+  return createUnionType(members, ctx, loc);
+}
+
+/**
+ * The unboxed form of a resolved type: a tuple becomes an inline tuple, a
+ * union converts member by member, and an alias converts its target. Every
+ * other type is an error rather than a no-op, so `inline` always means the
+ * value is unboxed.
+ */
+function inlineFormOf(ctx: CheckerContext, t: Type, loc: SourceLocation | null, aliasHops: i32 = 0): Type {
+  return match (t) {
+    case InlineTupleT {}: t
+    case ErrorType {}: t
+    case TupleT as tuple: {
+      if (tuple.row != null) {
+        ctx.error(
+          "'inline' cannot apply to a tuple type with a rest: its length is not known.",
+          DiagnosticCode.TypeMismatch,
+          loc,
+        );
+        new ErrorType() as Type
+      } else {
+        new InlineTupleT(tuple.elementTypes)
+      }
+    }
+    case TypeAliasType as alias: {
+      // `resolving` and the hop bound guard a recursive alias, as in
+      // `isInlineType`.
+      if (alias.resolving || aliasHops >= maxAliasHops) {
+        new ErrorType() as Type
+      } else {
+        alias.resolving = true;
+        let converted = inlineFormOf(ctx, alias.target, loc, aliasHops + 1);
+        alias.resolving = false;
+        converted
+      }
+    }
+    case UnionT {types}: {
+      let members = new Array<Type>();
+      for (let member in types) {
+        members.push(inlineFormOf(ctx, member, loc, aliasHops));
+      }
+      unionOfInlineMembers(ctx, members, loc)
+    }
+    // `inline` requires the unboxed form, and an argument for the
+    // parameter may not have one. Once types other than tuples can be
+    // inline, this becomes a constraint on the argument.
+    case TypeParameterType as tp: {
+      ctx.error(
+        `'inline' cannot apply to type parameter '${tp.name}': its argument may not be inlinable. Write 'inline? ${tp.name}' to unbox it when it is a tuple.`,
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      new ErrorType() as Type
+    }
+    case InlineParamType {}: t
+    case RecordT as record: {
+      ctx.error(
+        if (record.isExistential) {
+          "'inline' cannot apply to an existential record type."
+        } else {
+          "Inline record types are not supported yet."
+        },
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      new ErrorType() as Type
+    }
+    case _: {
+      ctx.error(
+        `'inline' applies to tuple types and unions of them, not '${typeToString(t)}'.`,
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      new ErrorType() as Type
+    }
+  };
+}
+
+/**
+ * Whether a type parameter's bound is `record`, a contextual keyword in
+ * bound position (docs/design/row-types.md, Decisions: Syntax).
+ */
+export function isRecordRowBound(ann: TypeAnnotation | null): boolean {
+  if (ann is NamedTypeAnnotation) {
+    return ann.name == "record" && ann.typeArguments == null;
+  }
+  return false;
+}
+
+/** As `isRecordRowBound`, for `tuple`. */
+export function isTupleRowBound(ann: TypeAnnotation | null): boolean {
+  if (ann is NamedTypeAnnotation) {
+    return ann.name == "tuple" && ann.typeArguments == null;
+  }
+  return false;
+}
+
+/**
+ * A type parameter's bound as a constraint type, or null for `record` or
+ * `tuple`, which are no types: the parameter is a row (`isRecordRow`,
+ * `isTupleRow`) instead.
+ */
+export function resolveBound(ctx: CheckerContext, ann: TypeAnnotation): Type | null {
+  if (isRecordRowBound(ann) || isTupleRowBound(ann)) {
+    return null;
+  }
+  return resolveTypeAnnotation(ctx, ann, false);
+}
+
+function reportRepeatedRecordField(ctx: CheckerContext, name: String, loc: SourceLocation | null): void {
+  ctx.error(`Record type declares field '${name}' more than once.`, DiagnosticCode.DuplicateField, loc);
+}
+
+export function reportTwoRows(ctx: CheckerContext, loc: SourceLocation | null): void {
+  ctx.error("A record type can spread at most one row type parameter.",
+      DiagnosticCode.TypeMismatch, loc);
+}
+
+function reportTwoTupleRows(ctx: CheckerContext, loc: SourceLocation | null): void {
+  ctx.error("A tuple type can spread at most one row type parameter.",
+      DiagnosticCode.TypeMismatch, loc);
+}
+
+function reportNotTupleSpreadable(ctx: CheckerContext, t: Type, loc: SourceLocation | null): void {
+  ctx.error(`Cannot spread '${typeToString(t)}' into a tuple type: only a tuple type or a type parameter declared 'extends tuple' can be spread.`,
+      DiagnosticCode.TypeMismatch, loc);
+}
+
+function reportNotSpreadable(ctx: CheckerContext, t: Type, loc: SourceLocation | null): void {
+  ctx.error(`Cannot spread '${typeToString(t)}' into a record type: only a record type or a type parameter declared 'extends record' can be spread.`,
+      DiagnosticCode.TypeMismatch, loc);
+}
+
+/**
+ * Records the fields a record type names beside `...row`. In the
+ * signature of the declaration that introduces the row parameter they
+ * are fields the row must lack, which instantiation checks
+ * (`checkRecordRowArgument`). Anywhere else, in a body, the caller has
+ * already chosen the row, so only fields it is known to lack can be
+ * named.
+ */
+export function noteFieldsBesideRow(
+  ctx: CheckerContext,
+  row: TypeParameterType,
+  fields: HashMap<String, Type>,
+  ann: Node
+): void {
+  let decl = ctx.rowParameterDeclaration(row);
+  if (decl == null || isInRowSignature(ctx, ann, decl)) {
+    var lacks = row.rowLacks;
+    if (lacks == null) {
+      let created = new Set<String>();
+      row.rowLacks = created;
+      lacks = created;
+    }
+    for (let key in fields.keys()) {
+      lacks.add(key);
+    }
+    return;
+  }
+  let lacks = row.rowLacks;
+  for (let key in fields.keys()) {
+    if (lacks == null || !lacks.has(key)) {
+      ctx.error(`'${row.name}' may have a field '${key}'. Only the fields declared beside '...${row.name}' in its declaration's signature are known to be missing from it.`,
+          DiagnosticCode.TypeMismatch, ann.loc);
+      return;
+    }
+  }
+}
+
+/**
+ * Whether `node` is in the signature of the declaration that owns the
+ * type parameter `decl`, rather than in a body inside it: walking up from
+ * `node` reaches the owner without leaving a function body or a field
+ * initializer.
+ */
+export function isInRowSignature(ctx: CheckerContext, node: Node, decl: TypeParameter): boolean {
+  let owner = ctx.model.getParent(decl);
+  if (owner == null) {
+    return true;
+  }
+  var child = node;
+  var parent = ctx.model.getParent(node);
+  while (parent != null) {
+    let p = parent as Node;
+    if (isBodyOf(p, child)) {
+      return false;
+    }
+    if (p === owner) {
+      return true;
+    }
+    child = p;
+    parent = ctx.model.getParent(p);
+  }
+  return true;
+}
+
+/** Whether `child` is the body of `parent`: code rather than a signature. */
+function isBodyOf(parent: Node, child: Node): boolean {
+  return match (parent) {
+    case FunctionExpression {body}: body === child
+    case MethodDefinition {body}: body != null && body === child
+    case FieldDefinition {value}: value != null && value === child
+    case AccessorDeclaration {getter, setter}:
+        (getter != null && getter === child) || (setter != null && setter === child)
+    case _: false
+  };
+}
+
+export function resolveTypeAnnotation(ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean = false): Type {
+  let t = resolveTypeAnnotationInner(ctx, ann);
+  if (!allowInlineTuple) {
+    if (isInlineType(t)) {
+      ctx.error("Inline tuple types can only appear in function return types, not here.", DiagnosticCode.TypeMismatch, ann.loc);
+    }
+  }
+  return t;
+}
+
+/**
+ * Resolve an explicit type argument at a call or `new` site.
+ *
+ * A `resource class` may be named bare here. The bare-mention rule exists so
+ * that the ownership regime of a *value* is always visible at its type — but a
+ * type argument is not a value's type, it is the thing a handle wraps.
+ * `adopt<Descriptor>(u)` fills a parameter the signature already spells
+ * `Unmanaged<T>`, and inference produces that same binding from `adopt(u)`
+ * with nothing written down. Rejecting the spelled-out form would reject only
+ * the spelling.
+ *
+ * The relaxation stops at the argument itself: it is `ctx.resourceMentionOk`,
+ * which `resolveTypeAnnotationInner` consumes on the outermost name and then
+ * re-derives per nested argument, so `Array<Descriptor>` is still an error.
+ */
+export function resolveExplicitTypeArgument(ctx: CheckerContext, ann: TypeAnnotation): Type {
+  ctx.resourceMentionOk = true;
+  let t = resolveTypeAnnotation(ctx, ann);
+  ctx.resourceMentionOk = false;
+  return t;
+}
+
+function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): Type {
+  return match (ann) {
+  case NamedTypeAnnotation {name, typeArguments, elementsMutable}: {
+    // Resolve through scope analysis so lexical shadowing is honored.
+    let resolved = ctx.resolveTypeReference(ann, name);
+    if (resolved == null) {
+      ctx.error(
+        `Type '${name}' not found.`,
+        DiagnosticCode.SymbolNotFound,
+        ann.loc
+      );
+      return new ErrorType();
+    }
+
+    // `var` marks the element slot of the builtin array type constructor
+    // (`array<var T>`) and modifies nothing anywhere else: a type argument
+    // to a user generic does not name a slot. See
+    // docs/design/array-mutability.md.
+    if (elementsMutable &&
+        !(resolved is ArrayType && (resolved as ArrayType).elementType is TypeParameterType)) {
+      ctx.error(
+        "The 'var' element modifier only applies to the builtin 'array' type constructor.",
+        DiagnosticCode.TypeMismatch,
+        ann.loc
+      );
+    }
+    
+    // A `resource class` has no unwrapped form, so naming it bare is an
+    // error. Own/Borrow/Unmanaged are the only contexts that may.
+    let resourceOk = ctx.resourceMentionOk;
+    ctx.resourceMentionOk = false;
+    if (resolved is ClassType && resolved.isResource && !resourceOk) {
+      ctx.error(
+        "'" + name + "' is a resource class and has no unwrapped form. " +
+        "Write 'Own<" + name + ">', 'Borrow<" + name + ">' or 'Unmanaged<" + name + ">'.",
+        DiagnosticCode.TypeMismatch,
+        ann.loc
+      );
+      return new ErrorType();
+    }
+
+    // Handle generic type arguments
+    let resolvedArgs = new Array<Type>();
+    var hasTypeArgs = false;
+    let argsMayBeResource = isOwnershipWrapper(resolved);
+
+    if (typeArguments != null) {
+      if (typeArguments.length > 0) {
+        hasTypeArgs = true;
+        for (let typeArgument in typeArguments) {
+          ctx.resourceMentionOk = argsMayBeResource;
+          let resolvedArg = resolveTypeAnnotation(ctx, typeArgument);
+          // A generic type is a heap object, so its arguments are storage:
+          // `Array<Borrow<File>>` is the array case of the field rule. The
+          // handles themselves are the exception -- `Borrow<File>` is the
+          // borrow, not something holding one.
+          if (!argsMayBeResource) {
+            // Annotation position: `Array<T>` under a `scoped T` is a
+            // sanctioned signature shape, so the check ignores scoped
+            // type parameters; concrete second-class arguments still
+            // reject.
+            rejectConcreteSecondClassStorage(ctx, resolvedArg, "a container", typeArgument.loc);
+          }
+                    resolvedArgs.push(resolvedArg);
+        }
+      }
+    }
+
+    match (resolved) {
+      case ClassType as ct: {
+        let {typeParameters} = ct;
+        if (typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc, ann);
+          return instantiateClassType(ct, resolvedArgs);
+        }
+      }
+      case MixinType as mt: {
+        let {typeParameters} = mt;
+        if (typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc, ann);
+          let inst = instantiateMixinType(mt, resolvedArgs);
+          let {onType} = mt;
+          if (onType != null) {
+            inst.onType = substituteTypeParams(typeParameters, resolvedArgs, onType);
+          }
+          return inst;
+        }
+      }
+      case InterfaceType as it: {
+        let {typeParameters} = it;
+        if (typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc, ann);
+          return instantiateInterfaceType(it, resolvedArgs);
+        }
+      }
+      case TypeAliasType as tat: {
+        let {typeParameters} = tat;
+        if (typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc, ann);
+          if (tat.intrinsicName != null) {
+            // A builtin type operator: closed arguments normalize to
+            // the rule's result here and now; open ones stay a
+            // symbolic instance that substitution later re-applies.
+            let opInst = instantiateTypeAliasType(tat, resolvedArgs);
+            opInst.target = substituteTypeParams(typeParameters, resolvedArgs, tat.target);
+            return applyTypeIntrinsic(opInst);
+          }
+          let target = substituteTypeParams(typeParameters, resolvedArgs, tat.target);
+          if (tat.isDistinct || tat.resolving) {
+            let inst = instantiateTypeAliasType(tat, resolvedArgs);
+            inst.target = target;
+            return inst;
+          }
+          return target;
+        } else {
+          if (hasTypeArgs) {
+            ctx.error(`Type '${name}' is not generic.`, DiagnosticCode.TypeMismatch, ann.loc);
+          }
+          if (tat.resolving && !tat.isDistinct) {
+            tat.specializationKeyCache = recursiveAliasKey(tat);
+            tat.uniqueKeyCache = "alias_" + recursiveAliasKey(tat);
+          }
+          return if (tat.isDistinct || tat.resolving) tat else tat.target;
+        }
+      }
+      case ArrayType as at: {
+        // Only the bare `array` prelude type is generic — its element is
+        // a type parameter awaiting an argument. A name that already
+        // resolves to a concrete array (`ByteArray` is `array<u8>`) is
+        // complete, and demanding an argument for it would reject every
+        // use of the name.
+        if (!(at.elementType is TypeParameterType)) {
+          if (hasTypeArgs) {
+            ctx.error(`Type '${name}' is not generic.`, DiagnosticCode.TypeMismatch, ann.loc);
+          }
+          return at;
+        }
+        if (!hasTypeArgs || resolvedArgs.length != 1) {
+          ctx.error("Type 'array' is generic and requires exactly 1 type argument.", DiagnosticCode.TypeMismatch, ann.loc);
+          return new ErrorType();
+        }
+        // `array<var T>` has mutable elements — `(array (mut T))`; bare
+        // `array<T>` is the immutable-element `(array T)`. See
+        // docs/design/array-mutability.md.
+        return new ArrayType(resolvedArgs[0], elementsMutable);
+      }
+      case _: {
+        if (hasTypeArgs) {
+          ctx.error(`Type '${name}' is not generic.`, DiagnosticCode.TypeMismatch, ann.loc);
+        }
+      }
+    }
+    
+    resolved
+  }
+  case UnionTypeAnnotation {types}: {
+    // A handle's type argument may be a union of resource classes —
+    // `Own<A | B>` — so the mention permission the argument position
+    // carries applies to each member, not only the first one resolved
+    // (the NamedTypeAnnotation arm consumes the flag per name).
+    let memberResourceOk = ctx.resourceMentionOk;
+    let resolved = new Array<Type>();
+    var i = 0;
+    while (i < types.length) {
+      ctx.resourceMentionOk = memberResourceOk;
+      // A member is not a position of its own: the union is checked
+      // as a whole, by whoever resolves it.
+      let t = resolveTypeAnnotation(ctx, types[i], true);
+      resolved.push(t);
+      i += 1;
+    }
+    ctx.resourceMentionOk = false;
+
+    // Check for multiple extension types on the same underlying type.
+    var ei = 0;
+    while (ei < resolved.length) {
+      var ext1: ClassType | null = null;
+      match (resolved[ei]) {
+        case ClassType as ct: {
+          if (ct.isExtension && ct.onType != null) {
+            ext1 = ct;
+          }
+        }
+        case _: {}
+      }
+      
+      if (ext1 != null) {
+        var ej = ei + 1;
+        while (ej < resolved.length) {
+          var ext2: ClassType | null = null;
+          match (resolved[ej]) {
+            case ClassType as ct: {
+              if (ct.isExtension && ct.onType != null) {
+                ext2 = ct;
+              }
+            }
+            case _: {}
+          }
+          
+          if (ext2 != null && ext1 != null) {
+            let onType1 = ext1.onType;
+            let onType2 = ext2.onType;
+            if (onType1 != null && onType2 != null) {
+              if (isAssignableTo(ctx, onType1, onType2) && isAssignableTo(ctx, onType2, onType1)) {
+                ctx.error(
+                  "Union types cannot contain multiple extension types on the same underlying type: '" +
+                  typeToString(ext1) + "' and '" + typeToString(ext2) + "'.",
+                  DiagnosticCode.TypeMismatch,
+                  ann.loc
+                );
+              }
+            }
+          }
+          ej += 1;
+        }
+      }
+      ei += 1;
+    }
+
+    createUnionType(resolved, ctx, ann.loc)
+  }
+  case NullableTypeAnnotation {typeAnnotation}: {
+    // T? desugars to T | null; T?? and (T | null)? collapse in the union.
+    let inner = resolveTypeAnnotation(ctx, typeAnnotation, true);
+    if (isNumericType(inner) || inner is BooleanType) {
+      ctx.error(
+        `'${typeToString(inner)}' is not nullable: primitives cannot be null.`,
+        DiagnosticCode.IncompatibleTypes,
+        ann.loc
+      );
+      new ErrorType() as Type
+    } else {
+      let arms = growable<Type>([inner, new NullType()]);
+      createUnionType(arms, ctx, ann.loc)
+    }
+  }
+  case FunctionTypeAnnotation {params, returnType}: {
+    let paramTypes = new Array<Type>();
+    var i = 0;
+    while (i < params.length) {
+      let paramType = resolveTypeAnnotation(ctx, params[i]);
+            paramTypes.push(paramType);
+      i += 1;
+    }
+    let retType = resolveTypeAnnotation(ctx, returnType, true);
+    new FunctionType(paramTypes, retType)
+  }
+  case LiteralTypeAnnotation {value}: {
+    match (value) {
+      case BooleanLiteral {value}: new BoolLiteralType(value)
+      case NumberLiteral {raw}: {
+        // Number literal type — check for decimal point to decide base type.
+        // Or rather, instantiate NumLiteralType.
+        new NumLiteralType(raw)
+      }
+      case StringLiteral {value}: new StringLiteralType(value)
+      case NullLiteral {}: new NullType()
+      case _: new ErrorType()
+    }
+  }
+  case RecordTypeAnnotation {properties, spreads, isExistential, loc}: {
+    let props = new Map<String, Type>();
+    var optionals: HashSet<String> | null = null;
+    // Spreading an existential type makes this one existential too: its
+    // values have fields neither type names.
+    var existential = isExistential;
+    for (let prop in properties) {
+      let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation);
+      rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
+      rejectAffineStructuralMember(ctx, resolved, "a record member", prop.typeAnnotation.loc);
+      if (props.has(prop.name.name)) {
+        reportRepeatedRecordField(ctx, prop.name.name, prop.loc);
+      }
+      props[prop.name.name] = resolved;
+      if (prop.optional) {
+        optionals ??= new Set<String>();
+        optionals.add(prop.name.name);
+      }
+    }
+    var row: TypeParameterType | null = null;
+    if (spreads != null) {
+      for (let spread in spreads) {
+        let spreadType = resolveTypeAnnotation(ctx, spread);
+        match (baseType(spreadType)) {
+          case RecordT as rec: {
+            // A record type's fields merge in, and its row with them.
+            for (let key in rec.properties.keys()) {
+              if (props.has(key)) {
+                reportRepeatedRecordField(ctx, key, spread.loc);
+              }
+              props[key] = rec.properties[key];
+              if (rec.isOptional(key)) {
+                optionals ??= new Set<String>();
+                optionals.add(key);
+              }
+            }
+            let recRow = rec.row;
+            if (recRow != null) {
+              if (row != null) {
+                reportTwoRows(ctx, spread.loc);
+              }
+              row = recRow;
+            }
+            if (rec.isExistential) {
+              existential = true;
+            }
+          }
+          case TypeParameterType as tp: {
+            if (!tp.isRecordRow) {
+              reportNotSpreadable(ctx, spreadType, spread.loc);
+            } else {
+              if (row != null) {
+                reportTwoRows(ctx, spread.loc);
+              }
+              row = tp;
+            }
+          }
+          case ErrorType: {}
+          case _: {
+            reportNotSpreadable(ctx, spreadType, spread.loc);
+          }
+        }
+      }
+    }
+    if (existential && optionals != null) {
+      // A presence mask's bits are laid out per record type, so the
+      // packs that forward an existential's fields to the record held
+      // cannot forward its mask yet.
+      ctx.error("An existential record type cannot have optional fields yet.",
+          DiagnosticCode.TypeMismatch, loc);
+    }
+    if (row != null) {
+      noteFieldsBesideRow(ctx, row, props, ann);
+      if (existential) {
+        // A row names the other fields per call; an existential leaves
+        // them unnamed. One type cannot do both.
+        ctx.error("A record type cannot spread a row parameter and also be existential.",
+            DiagnosticCode.TypeMismatch, loc);
+        existential = false;
+      }
+    }
+    new RecordT(props, optionals, row, existential)
+  }
+  case TupleTypeAnnotation {elementTypes, spreadIndices}: {
+    let elTypes = new Array<Type>();
+    var row: TypeParameterType | null = null;
+    var rowIndex = 0;
+    var i = 0;
+    while (i < elementTypes.length) {
+      let resolved = resolveTypeAnnotation(ctx, elementTypes[i]);
+      if (spreadIndices != null && spreadIndices.contains(i)) {
+        // `...T`: a tuple type's elements splice in, and its row with
+        // them; a row parameter becomes this type's row.
+        match (baseType(resolved)) {
+          case TupleT as tuple: {
+            let tupleRow = tuple.row;
+            if (tupleRow != null) {
+              if (row != null) {
+                reportTwoTupleRows(ctx, elementTypes[i].loc);
+              }
+              row = tupleRow;
+              rowIndex = elTypes.length + tuple.rowIndex;
+            }
+            for (let element in tuple.elementTypes) {
+              elTypes.push(element);
+            }
+          }
+          case TypeParameterType as tp: {
+            if (!tp.isTupleRow) {
+              reportNotTupleSpreadable(ctx, resolved, elementTypes[i].loc);
+            } else {
+              if (row != null) {
+                reportTwoTupleRows(ctx, elementTypes[i].loc);
+              }
+              row = tp;
+              rowIndex = elTypes.length;
+            }
+          }
+          case ErrorType: {}
+          case _: {
+            reportNotTupleSpreadable(ctx, resolved, elementTypes[i].loc);
+          }
+        }
+      } else {
+        rejectSecondClassStorage(ctx, resolved, "a tuple", elementTypes[i].loc);
+        elTypes.push(resolved);
+      }
+      i += 1;
+    }
+    new TupleT(elTypes, row, rowIndex)
+  }
+  case InlineTypeAnnotation {typeAnnotation, ifPossible}: {
+    if (ifPossible) {
+      resolveInlineIfPossible(ctx, typeAnnotation)
+    } else {
+      resolveInlineOperand(ctx, typeAnnotation)
+    }
+  }
+  case ThisTypeAnnotation {loc}: {
+    let bound = ctx.bodyThisType;
+    if (bound != null) {
+      bound
+    } else if (ctx.currentClass != null || ctx.inInterface) {
+      new ThisType()
+    } else {
+      ctx.error(
+        "'this' type is only valid inside a class or interface.",
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+      new ErrorType()
+    }
+  }
+};
+}
