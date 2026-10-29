@@ -6189,6 +6189,19 @@ and the future refuses a second consumer, a waiter or a `tail return`
 adopting it, by throwing. The checker sees the program's awaits; the
 throw guards the callers it does not see.
 
+A future of an owner that nothing consumes is released like the owner,
+wherever an implicit drop runs: a binding at scope exit, a parameter
+the body never awaits, a call used as a statement, a tuple element. A
+future that has settled releases its value at once, and a pending one
+releases it when it lands. The work producing the value keeps running,
+since a future cannot cancel what is behind it.
+
+```zena
+async function cleanup(): Future<void> {
+  let f = load(path);   // never awaited
+}                       // the file is released once `f` settles
+```
+
 ## 13. Compilation
 
 ### Dead Code Elimination

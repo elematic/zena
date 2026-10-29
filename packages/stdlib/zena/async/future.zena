@@ -34,6 +34,17 @@ import { Waiter, scheduleTask, drainMicrotasks, parkBlocking } from './executor.
 declare function raiseCancellation(): never;
 
 /**
+ * Releases what a `T` owns, as its implicit drop would. `Future` cannot
+ * name a `T`'s release itself, so the compiler supplies it per
+ * specialization (docs/design/owner-futures.md, "Releasing what nobody
+ * took"). Private to this file: a specialization serves `Own<R>`,
+ * `Borrow<R>` and `Unmanaged<R>` alike, and only an owner's use site
+ * calls `[release]`, which is what makes releasing here right.
+ */
+@intrinsic('release_owned')
+declare function releaseOwned<scoped T>(value: T): void;
+
+/**
  * The type `await x` has when `x: T` (docs/design/type-operators.md):
  * `Future<U>` becomes `U`, a union's future arms unwrap, anything
  * else passes through — one level, matching what one `await` does.
@@ -75,6 +86,8 @@ export symbol adoptFrom;
 export symbol tryComplete;
 export symbol tryFail;
 export symbol cancelComplete;
+/** What an implicit drop of a future of an owner calls (`[release]`). */
+export symbol release;
 
 export enum FutureState {
   /** Explicitly zero: the compiler's shielded-resume guard reads a
@@ -145,6 +158,36 @@ export class Future<scoped T> {
    * future adopting this one. Only a restricted specialization writes
    * it (`#claim`). */
   var #claimed = false;
+  /** Whether `[release]` abandoned a value still pending: it is released
+   * when it lands. Only a restricted specialization writes it. */
+  var #abandoned = false;
+
+  /**
+   * Releases a value nobody will take. This is what the implicit drop of
+   * a future of an owner calls, at the use site that dropped it
+   * (owner-futures.md, "Releasing what nobody took"). It claims the
+   * value, so a later await throws; a settled value is released now and
+   * a pending one when it lands. The work producing it keeps running: a
+   * future cannot cancel what is behind it, which is `FutureClaim`'s
+   * job. A failed or cancelled future has nothing to release.
+   */
+  [release](): void {
+    if (isFirstClass<T>()) {
+      return;
+    }
+    this.#claim();
+    if (this.#state == FutureState.Pending) {
+      this.#abandoned = true;
+      return;
+    }
+    this.#releaseValue();
+  }
+
+  #releaseValue(): void {
+    if (this.#state == FutureState.Resolved) {
+      releaseOwned<T>(this.#value as T);
+    }
+  }
 
   /**
    * Claims a restricted value for its one consumer. The checker sees the
@@ -438,6 +481,12 @@ export class Future<scoped T> {
    * dropped rather than cleared.
    */
   #notify(): void {
+    if (!isFirstClass<T>() && this.#abandoned) {
+      // Settled after `[release]`: nobody is waiting, and the value goes
+      // the way an implicit drop would have sent it.
+      this.#releaseValue();
+      return;
+    }
     let w = this.#waiters;
     if (w == null) {
       return;

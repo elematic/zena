@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 1111
+// A future of an owner that nothing consumes is released wherever an
+// implicit drop runs, through the future's `[release]`
+// (owner-futures.md, "Releasing what nobody took"): a discarded call, a
+// parameter the body never awaits, and a tuple element. An awaited
+// future is consumed and not released again.
+
+import { Own, Disposable } from 'zena:core';
+import { runFuture } from 'zena:async';
+
+var released = 0;
+
+resource class Res {
+  n: i32;
+  new(this.n);
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.n;
+  }
+}
+
+async function make(n: i32): Future<Own<Res>> {
+  return new Res(n);
+}
+
+async function ignore(f: Future<Own<Res>>): Future<void> {
+}
+
+async function run(): Future<void> {
+  make(1);
+  await ignore(make(10));
+  if (true) {
+    let pair = (make(100), 0);
+  }
+  if (true) {
+    let r = await make(1000);
+  }
+}
+
+export let main = (): i32 => {
+  runFuture(run());
+  return released;
+};
