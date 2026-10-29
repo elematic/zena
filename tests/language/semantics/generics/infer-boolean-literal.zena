@@ -1,0 +1,30 @@
+// @mode: check
+// A type argument inferred from a boolean literal is `boolean`, as one
+// inferred from a string literal is `String` and one from an integer
+// literal is `i32` (issue #277). `Cell<true>` would make the cell's
+// value unchangeable.
+
+class Cell<T> {
+  var value: T;
+  new(this.value);
+  set(v: T): void {
+    this.value = v;
+  }
+}
+
+let wrap = <T>(v: T): Cell<T> => new Cell<T>(v);
+
+let flag = new Cell(true); // @type: Cell<boolean>
+let viaFn = wrap(true); // @type: Cell<boolean>
+let name = new Cell("Ada"); // @type: Cell<String>
+let count = new Cell(1); // @type: Cell<i32>
+
+// Written out, a literal type argument stays what was written.
+let fixed = new Cell<true>(true); // @type: Cell<true>
+
+let update = (): void => {
+  flag.set(false);
+  viaFn.set(false);
+  name.set("Grace");
+  count.set(2);
+};

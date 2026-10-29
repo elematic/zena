@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 9
+//
+// `x is I` on a class-typed `x` narrows `x` to `I` in the true branch
+// (issue #448): the narrowed read packs the class into the interface
+// through its type info, so the call dispatches to the subclass. The
+// narrowed `x` is an `I`, with `I`'s members; the class's own members
+// are read before the test or after the branch.
+
+interface Named {
+  name(): String;
+}
+
+class Animal {
+  sound(): String {
+    return "...";
+  }
+}
+
+final class Dog extends Animal implements Named {
+  sound(): String {
+    return "woof";
+  }
+  name(): String {
+    return "dog";
+  }
+}
+
+final class Rock extends Animal {}
+
+function nameLength(a: Animal): i32 {
+  if (a is Named) {
+    return a.name().length;
+  }
+  return 0;
+}
+
+function soundThenName(a: Animal): i32 {
+  let sound = a.sound().length;
+  if (a is Named) {
+    return sound + a.name().length;
+  }
+  return sound;
+}
+
+export function main(): i32 {
+  // 3 + 0 + (4 + 3) - 1 = 9
+  return nameLength(new Dog()) + nameLength(new Rock()) +
+      soundThenName(new Dog()) - 1;
+}

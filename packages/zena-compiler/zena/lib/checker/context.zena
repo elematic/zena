@@ -38,6 +38,7 @@ import {
   computeOwnIntervals
 } from './ownership.zena';
 import { isAssignableTo, typesEqual } from './relations.zena';
+import { subtractNullFromType, unwrapAliases } from './unions.zena';
 
 export function lookupBindingTypeInDeps(ctx: CheckerContext, sym: Symbol): Type | null {
   // A linear scan of every dependency's model, asked once per imported
@@ -81,6 +82,21 @@ export function lookupBindingTypeInDeps(ctx: CheckerContext, sym: Symbol): Type 
  * #materializedTypes. Type parameters are registered there via
  * registerTypeParameter() as soon as each TypeParameterType is created.
  */
+/**
+ * Whether `narrowed` is what `x is I` leaves a binding of type
+ * `declared` as: an interface, on a binding held as a class or another
+ * interface. The class need not be assignable to `I` for the test to
+ * succeed at run time, so this is the one narrowing `flowTypeOfBinding`
+ * keeps without that.
+ */
+function isInterfaceNarrowing(declared: Type, narrowed: Type): boolean {
+  if (!(narrowed is InterfaceType)) {
+    return false;
+  }
+  let held = unwrapAliases(subtractNullFromType(declared));
+  return held is ClassType || held is InterfaceType;
+}
+
 /**
  * Whether `decl` declares a type: a class, interface, mixin, sealed
  * variant, type alias or enum. Each has one canonical type object per
@@ -3225,8 +3241,14 @@ export final class CheckerContext {
     // A narrowing can only narrow. A join can manufacture something
     // wider — a statically-false `x == null` arm narrows a
     // non-nullable binding to `null`, and the branches union — and the
-    // declared type is the ceiling that discards it.
-    if (!isAssignableTo(this, r, declared)) { return declared; }
+    // declared type is the ceiling that discards it. The one narrowing
+    // that is not assignable to the declared type is `x is I` on a
+    // class-typed `x`: the class may not implement `I`, a subclass may,
+    // and the test reads the class's type info (issue #448).
+    if (!isAssignableTo(this, r, declared) &&
+        !isInterfaceNarrowing(declared, r)) {
+      return declared;
+    }
     return r;
   }
 
@@ -3695,6 +3717,10 @@ export final class CheckerContext {
    */
   setDiagnosticsSuppressed(v: boolean): void {
     this.#diagnosticsSuppressed = v;
+  }
+
+  diagnosticsSuppressed: boolean {
+    get { return this.#diagnosticsSuppressed; }
   }
 
   error(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {

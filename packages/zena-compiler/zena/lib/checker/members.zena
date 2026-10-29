@@ -2,7 +2,7 @@ import { HashMap, HashSet, OrderedHashMap, Set } from 'zena:collections';
 import { StringBuilder, growable } from 'zena:core';
 import {
   AccessorDeclaration, AccessorSignature, ClassDeclaration, EnumDeclaration,
-  Expression, FieldDefinition, Identifier, ImportSpecifier,
+  Expression, FieldDefinition, Identifier, ImportSpecifier, IndexExpression,
   InterfaceDeclaration, MemberExpression, MethodDefinition, MethodSignature,
   MixinDeclaration, Node, NumberLiteral, PropertySignature, RecordPattern,
   SourceLocation, SymbolDeclaration, SymbolPropertyName, ThisExpression,
@@ -28,8 +28,9 @@ import {
   borrowWrapFieldRead, isAffineValue, memberConsumesReceiver,
   rejectConsumingThroughNonOwner, tupleElementRead
 } from './ownership.zena';
-import { isBoxablePrimitive, typesEqual } from './relations.zena';
-import { createUnionType, subtractNullFromType } from './unions.zena';
+import { argumentAdaptsToParameter } from './literals.zena';
+import { isAssignableTo, isBoxablePrimitive, typesEqual } from './relations.zena';
+import { createUnionType, subtractNullFromType, unwrapAliases } from './unions.zena';
 
 /**
  * A parent's member re-typed for the subtype that inherits it.
@@ -977,32 +978,12 @@ function resolveMemberType(
       let deps = ctx.currentDependencies();
       if (deps != null) {
         var classSymId = (ct.genericSource ?? ct).symbolId;
-        if (ct.name.length >= 5 && ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
-          let mixinName = ct.name.sliceBytes(0, ct.name.length - 5);
-          var foundId = noSymbolId;
-          let mixinKeys = ctx.model.mixinDeclarations.keys();
-          for (let k in mixinKeys) {
-            let decl = ctx.model.mixinDeclarations[k];
-            if (decl.name.name == mixinName) {
-              foundId = k;
-              break;
-            }
-          }
-          if (foundId as i32 != -1) {
-            classSymId = foundId;
-          } else {
-            let classKeys = ctx.model.classDeclarations.keys();
-            for (let k in classKeys) {
-              let decl = ctx.model.classDeclarations[k];
-              if (decl.name.name == mixinName) {
-                foundId = k;
-                break;
-              }
-            }
-            if (foundId as i32 != -1) {
-              classSymId = foundId;
-            }
-          }
+        // A mixin's body is checked against a synthetic `This` class
+        // whose members are the mixin's, so a member read on it
+        // references the mixin's declaration.
+        let mixinSelf = (ct.genericSource ?? ct).mixinSelf;
+        if (mixinSelf != null && mixinSelf.symbolId != noSymbolId) {
+          classSymId = mixinSelf.symbolId;
         }
         deps.referencedSymbols.add(classSymId);
         if (ct.isExtension) {
@@ -1336,18 +1317,141 @@ export function checkIndexExpression(
 function describeIndexParameters(
   candidates: GrowableArray<FunctionType>,
   typeParams: Array<TypeParameterType> | null,
-  typeArgs: Array<Type> | null
+  typeArgs: Array<Type> | null,
+  at: i32 = 0
 ): String {
   let described = new StringBuilder();
   var first = true;
   for (let candidate in candidates) {
     let resolved = substituteTypeParams(typeParams, typeArgs, candidate) as FunctionType;
-    if (resolved.parameters.length == 0) { continue; }
+    if (resolved.parameters.length <= at) { continue; }
     if (!first) { described.append(" or "); }
-    described.append(`'${typeToString(resolved.parameters[0])}'`);
+    described.append(`'${typeToString(resolved.parameters[at])}'`);
     first = false;
   }
   return described.toString();
+}
+
+/**
+ * The write half of `recv[i] = v` (issue #121): selects an `operator
+ * []=` of the receiver over the index and the value, records it on the
+ * assignment for codegen, and answers the setter's value parameter
+ * type, which is the assignment's type. The `[]` read takes no part: a
+ * `[]=` whose index no `[]` accepts is reachable, and the value is
+ * checked against the setter's parameter rather than the read's result.
+ *
+ * Null when the receiver declares no `[]=`, which leaves the assignment
+ * to the read-based path: a bare array, or a receiver the read reports
+ * as unindexable. The value is unchecked then.
+ */
+export function checkIndexWrite(
+  ctx: CheckerContext,
+  assignment: Expression,
+  target: IndexExpression,
+  value: Expression,
+  loc: SourceLocation | null
+): Type | null {
+  let objectType = ctx.model.getNodeType(target.object);
+  if (objectType == null) {
+    return null;
+  }
+  // A type parameter writes through its bound, as a read does.
+  var receiver = unwrapAliases(objectType);
+  while (receiver is TypeParameterType) {
+    let bound = (receiver as TypeParameterType).constraint;
+    if (bound == null) {
+      break;
+    }
+    receiver = unwrapAliases(bound);
+  }
+  var setter: FunctionType | null = null;
+  var ownerParams: Array<TypeParameterType> | null = null;
+  var ownerArgs: Array<Type> | null = null;
+  var ownerName = "";
+  match (receiver) {
+    case ClassType as ct: {
+      if (ct.members.has("[]=")) {
+        setter = ct.members["[]="].type as FunctionType;
+        ownerParams = ct.typeParameters;
+        ownerArgs = ct.typeArguments;
+        ownerName = ct.name;
+      }
+    }
+    case InterfaceType as it: {
+      if (it.members.has("[]=")) {
+        setter = it.members["[]="].type as FunctionType;
+        ownerParams = it.typeParameters;
+        ownerArgs = it.typeArguments;
+        ownerName = it.name;
+      }
+    }
+    case _: {}
+  }
+  if (setter == null) {
+    return null;
+  }
+  let setterFt = setter as FunctionType;
+  let candidates = growable<FunctionType>([setterFt]);
+  let {overloads} = setterFt;
+  if (overloads != null) {
+    for (let overload in overloads) {
+      candidates.push(overload);
+    }
+  }
+  let indexType = checkExpression(ctx, target.index, null);
+  // The index alone narrows the candidates. When one is left, its value
+  // parameter is the context the value is checked in, as a call's
+  // parameter is for its argument.
+  var byIndex = 0;
+  var valueContext: Type | null = null;
+  for (let candidate in candidates) {
+    let resolved = substituteTypeParams(ownerParams, ownerArgs, candidate) as FunctionType;
+    if (resolved.parameters.length != 2) {
+      continue;
+    }
+    let indexParam = resolved.parameters[0];
+    if (isAssignableTo(ctx, indexType, indexParam) ||
+        argumentAdaptsToParameter(target.index, indexParam)) {
+      byIndex += 1;
+      valueContext = resolved.parameters[1];
+    }
+  }
+  let valueType = checkExpression(ctx, value,
+      if (byIndex == 1) valueContext else null);
+  // Most-specific selection over (index, value); the index adapts, the
+  // value, already typed in context, does not.
+  let applicableRaw = new Array<FunctionType>();
+  let applicableRes = new Array<FunctionType>();
+  collectApplicableOperatorOverloads(
+      ctx, candidates, ownerParams, ownerArgs,
+      growable<Type>([indexType, valueType]),
+      growable<Expression>([target.index, value]), 1, applicableRaw, applicableRes);
+  let selIdx = selectMostSpecificIndex(ctx, applicableRes, 2, loc);
+  if (selIdx < 0) {
+    if (!(indexType is ErrorType) && !(valueType is ErrorType)) {
+      if (byIndex == 0) {
+        ctx.error(
+          `Type mismatch: '${ownerName}' cannot be indexed by '${typeToString(indexType)}'; 'operator []=' expects ${describeIndexParameters(candidates, ownerParams, ownerArgs)}.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      } else {
+        ctx.error(
+          `Type mismatch: '${typeToString(valueType)}' is not assignable to the value of 'operator []=', which expects ${describeIndexParameters(candidates, ownerParams, ownerArgs, 1)}.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+    }
+    ctx.setNodeType(target, new ErrorType());
+    return new ErrorType();
+  }
+  if (candidates.length > 1) {
+    ctx.model.setResolvedOverload(assignment, applicableRaw[selIdx]);
+  }
+  let valueParam = applicableRes[selIdx].parameters[1];
+  ctx.setNodeType(target, valueParam);
+  return valueParam;
 }
 
 /**

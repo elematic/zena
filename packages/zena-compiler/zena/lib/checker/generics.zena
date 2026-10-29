@@ -819,7 +819,7 @@ export function instantiateGenericClass(
     while (ai < args.length && ai < ctor.parameters.length) {
       let paramType = ctor.parameters[ai];
       let argType = checkExpression(ctx, args[ai], null);
-      inferTypeArg(paramType, argType, inferred);
+      inferTypeArg(paramType, inferredArgumentType(argType), inferred);
       ai += 1;
     }
   }
@@ -937,6 +937,20 @@ function findExtendedInterfaceTransitive(it: InterfaceType, name: String): Inter
     }
   }
   return null;
+}
+
+/**
+ * The type an argument expression contributes to inference: its type,
+ * with a boolean literal widened to `boolean`. A string literal is
+ * already a `String` and an integer literal an `i32` by the time it is
+ * an argument; a boolean literal keeps its literal type as a value,
+ * which is not what `new Cell(true)` means (issue #277).
+ */
+export function inferredArgumentType(argType: Type): Type {
+  if (argType is BoolLiteralType) {
+    return new BooleanType();
+  }
+  return argType;
 }
 
 export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<String, Type>): void {
@@ -1353,7 +1367,7 @@ export function instantiateGenericInterface(
   while (ai < args.length && ai < ctor.parameters.length) {
     let paramType = ctor.parameters[ai];
     let argType = checkExpression(ctx, args[ai], null);
-    inferTypeArg(paramType, argType, inferred);
+    inferTypeArg(paramType, inferredArgumentType(argType), inferred);
     ai += 1;
   }
   ctx.setFlow(preInferFlow);

@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 2
+//
+// A literal argument types on its own first (`300` is an i32), so an
+// overload set is judged by that type; a literal that no overload
+// accepts as written adapts to the parameter facing it
+// (docs/design/member-lookup.md, the two applicability tiers). It is
+// never range-checked against the first-declared overload (issue #77).
+
+class Sink {
+  take(v: u8): i32 {
+    return 1;
+  }
+  take(v: i32): i32 {
+    return 2;
+  }
+  narrow(v: u8): i32 {
+    return 1;
+  }
+  narrow(v: String): i32 {
+    return 2;
+  }
+}
+
+export function main(): i32 {
+  let s = new Sink();
+  // `take(300)` is the i32 overload: 2. `narrow(200)` fits no overload
+  // as an i32, so it adapts to the u8 one: 1.
+  return s.take(300) + s.narrow(200) - 1;
+}
