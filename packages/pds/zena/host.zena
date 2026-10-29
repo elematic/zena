@@ -650,6 +650,47 @@ export final class PackageHost {
     return roles;
   }
 
+  /**
+   * Everyone whose attestation could approve `pkg`'s releases: the people
+   * its maintainers record names now, by DID, by a commitment whose entry
+   * the host keeps, or as members of a team it names. A page looks for
+   * each one's attestation in their own repository. Showing one reveals
+   * a private maintainer, as acting in a role always does
+   * (package-manager.md, "Private membership").
+   */
+  async attesters(pkg: String): Future<Array<String>> {
+    let found = new GrowableArray<String>();
+    let seen = new HashSet<String>();
+    let add = (did: String) => {
+      if (!seen.has(did)) {
+        seen.add(did);
+        found.push(did);
+      }
+    };
+    let record = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
+    if (record == null) {
+      return found;
+    }
+    let maintainers = Maintainers.fromValue((record as CurrentRecord).value);
+    for (let maintainer in maintainers.maintainers) {
+      if (maintainer.did != null) {
+        add(maintainer.did as String);
+      }
+    }
+    for (let entry in await this.#committed(pkg, await this.#commitmentsOf(pkg, MAINTAINERS_TYPE, 'self'))) {
+      add(entry.did);
+    }
+    for (let maintainer in maintainers.maintainers) {
+      if (maintainer.org != null && maintainer.team != null) {
+        let org = maintainer.org as String;
+        for (let entry in await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE, maintainer.team as String))) {
+          add(entry.did);
+        }
+      }
+    }
+    return found;
+  }
+
   /** Whether `did` is one of the host's admins. */
   isHostAdmin(did: String): boolean {
     return this.config.admins.has(did);
@@ -845,6 +886,7 @@ export final class PackageHost {
         continue;
       }
       let release = Release.fromValue(value);
+      detail.releaseCids[release.version.toString()] = entry.cid;
       let releases = detail.releases;
       var i = releases.length;
       releases.push(release);
@@ -1437,6 +1479,8 @@ export final class PackageDetail {
   var profile: Profile | null = null;
   /** Newest first. */
   releases = new GrowableArray<Release>();
+  /** Each release record's CID, by version: what an attestation of it names. */
+  releaseCids = new HashMap<String, Cid>();
   /** By version. */
   retractions = new HashMap<String, Retraction>();
   var maintainers: Maintainers | null = null;

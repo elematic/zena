@@ -202,6 +202,29 @@ export final class People {
   }
 
   /**
+   * The record at `collection/rkey` in `person`'s repository, read from
+   * their PDS as `getRecord` answers it, or null when they have none, or
+   * it could not be read. Not cached here; callers cache what they keep.
+   */
+  async record(person: Person, collection: String, rkey: String): Future<JsonObject | null> {
+    let pds = person.pds;
+    if (pds == null) {
+      return null;
+    }
+    let answer = await this.#get(
+        `${pds as String}/xrpc/com.atproto.repo.getRecord?repo=${person.did}&collection=${collection}&rkey=${rkey}`);
+    if (answer == null || answer.status != 200) {
+      return null;
+    }
+    let parsed = parseJson(String.fromBytes(answer.body));
+    if (!(parsed is JsonObject)) {
+      return null;
+    }
+    let value = (parsed as JsonObject)['value'];
+    return if (value is JsonObject) value as JsonObject else null;
+  }
+
+  /**
    * `person`'s avatar, as its MIME type and bytes, when their profile
    * names an image no larger than `MAX_AVATAR_BYTES`; null otherwise.
    */

@@ -8,7 +8,7 @@ themselves are rendered on the server, by the PDS written in Zena
 - `/scopes/<name>`: a scope's packages;
 - `/packages/<handle>`: a package's profile and scope, the command that
   adds it, its versions with their dependencies and the versions they
-  accept, its retractions, and its maintainers;
+  accept, who approved each, its retractions, and its maintainers;
 - `/people/<handle or DID>`: a person's profile, and the packages that
   name them as a maintainer publicly;
 - `/me`: once signed in, the scopes, teams and packages you have a role in,
@@ -40,6 +40,20 @@ serving their avatar, are limited so the host is no tool for anyone else:
   visitor's browser asks no third party, and the host serves only
   avatars its pages linked to. Only images up to 1 MB are served, with
   `nosniff` and a content security policy that allows nothing.
+
+## Approvals
+
+A release's approvers are the maintainers whose own repositories hold an
+attestation of its record (`pds:web/approvals`). An attestation sits at a
+record key fixed by the record's AT-URI and CID, so the page asks each
+maintainer's repository for that key, with no index: the maintainers the
+record names, by DID, by commitment, or through a team
+(`PackageHost.attesters`). Showing one names a private maintainer, as
+acting in a role always does. The page looks at the ten newest releases,
+asks the repositories all at once, and caches what it finds for a day and
+what it does not for ten minutes. It reads each attestation as its PDS
+answers `getRecord`; checking its proof against the maintainer's key is
+the checksum log's work.
 
 ## Pages
 

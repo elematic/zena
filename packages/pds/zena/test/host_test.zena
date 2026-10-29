@@ -23,7 +23,8 @@ import {packSource} from 'package-manager:archive';
 import {verifyRecordProof} from 'atproto:repo';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {
-  ADMIN, Artifact, Dependency, MAINTAINER, MEMBER, Maintainer, Maintainers, Members, OWNER, PUBLISHER, Profile,
+  ADMIN, ATTESTATION_TYPE, Artifact, Attestation, Dependency, MAINTAINER, MAINTAINERS_TYPE, MEMBER, Maintainer,
+  Maintainers, Members, OWNER, PUBLISHER, Profile,
   RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, Team
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
@@ -810,6 +811,34 @@ export let tests = suite('pds:host', () => {
     equal(fixture.get(`/people/${ALICE}/avatar?s=forged`).statusCode, 404, 'forged');
     let signature = ((fixture.host as PackageHost).sessions as Sessions).urlSignature(ALICE);
     equal(fixture.get(`/people/${ALICE}/avatar?s=${signature}`).statusCode, 404, 'no avatar');
+  });
+
+  test('shows who approved each release, from the attestations in their repositories', (ctx) => {
+    let fixture = new Fixture();
+    let router = seedBrowsable(fixture);
+    let bot = runFuture(fixture.pds.storage.accountByHandle('ci.acme.pkg.test')) as Account;
+    // The automation account publishes router too.
+    let current = runFuture(fixture.pds.storage.store(router).getRecord(MAINTAINERS_TYPE, 'self')) as Cid;
+    ok(putMaintainers(fixture, ALICE, router, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(bot.did, null, null, null, PUBLISHER, true)]), [], current.toString()));
+    let release = runFuture(fixture.pds.storage.store(router).getRecord(RELEASE_TYPE, '1.0.0')) as Cid;
+    let uri = `at://${router}/${RELEASE_TYPE}/1.0.0`;
+    let attestation = new Attestation(uri, release, '2026-10-29T00:00:00.000Z');
+    runFuture(fixture.pds.repositoryOf(bot).applyWrites([new CreateRecord(ATTESTATION_TYPE, attestation.recordKey(),
+        attestation.toValue()) as Write], 0 as i64));
+    // An attestation of another record, at 1.1.0's key, approves nothing.
+    let other = runFuture(fixture.pds.storage.store(router).getRecord(RELEASE_TYPE, '1.1.0')) as Cid;
+    let misplaced = new Attestation(uri, release, '2026-10-29T00:00:00.000Z');
+    runFuture(fixture.pds.repositoryOf(bot).applyWrites([new CreateRecord(ATTESTATION_TYPE,
+        new Attestation(`at://${router}/${RELEASE_TYPE}/1.1.0`, other, '2026-10-29T00:00:00.000Z').recordKey(),
+        misplaced.toValue()) as Write], 0 as i64));
+
+    let page = pageOf(fixture.get('/packages/router.acme.pkg.test'));
+    isTrue(page.contains('<th>Approved by</th>'), 'the column');
+    // 1.0.0, newest-but-one, by the bot; 1.1.0 by nobody.
+    let rows = page.split('<tr class=');
+    isTrue(rows[1].contains('>1.1.0<') && !rows[1].contains('href="/people/ci.acme.pkg.test"'), rows[1]);
+    isTrue(rows[2].contains('>1.0.0<') && rows[2].contains('href="/people/ci.acme.pkg.test"'), rows[2]);
   });
 
   test('signs a person in to the pages with their service-auth token, and out', (ctx) => {
