@@ -463,8 +463,7 @@ and with them:
 3. **Release glue.** #649 releases an unconsumed future of an owner
    wherever implicit drop already runs: locals, parameters, tuple
    elements and discarded results (fields of that type are still
-   rejected). `never` releases its resource. Streams follow with stage
-   4. Still to do: `DeferredFuture`'s readable-end drop moving into the
+   rejected). `never` releases its resource. Streams follow with stage 4. Still to do: `DeferredFuture`'s readable-end drop moving into the
    glue, once its `T` is `scoped`, and the release before a store into
    a full `T` field.
 4. **`Completer.create`, streams (`stop()` returning what it has not
