@@ -56,6 +56,14 @@ export let tests = suite('zena publish', () => {
       isTrue(!wit.succeeded() && wit.stderr.contains('the WIT in ./wit') && !wit.stdout.contains('Created'),
           described(wit));
       isTrue(!read(scratch.at('lib/zena-package.json')).contains('"did"'), 'no DID was written');
+
+      // So is a package with no version to publish: the release is checked
+      // before the package is created.
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT"}\n');
+      let unversioned = lib.run(['publish', '--scope', 'acme', '--yes']);
+      isTrue(!unversioned.succeeded() && unversioned.stderr.contains('has no version to publish') &&
+          !unversioned.stdout.contains('Created'), described(unversioned));
+      isTrue(!read(scratch.at('lib/zena-package.json')).contains('"did"'), 'no DID was written for it');
       write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
 
       // A package with no DID needs a scope, which publishing never
