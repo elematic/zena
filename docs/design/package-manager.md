@@ -144,8 +144,9 @@ the section it links to.
   them people; a change to a maintainers or members record, its
   `ownerThreshold` of owners; a change to a team, its `threshold` of the
   team's maintainers or the organization's `adminThreshold` of admins. A
-  change counts under the thresholds of the record it replaces
-  ([Thresholds](#thresholds)).
+  change counts under the thresholds of the record it replaces, and a
+  scope's **policy** record can raise the release thresholds of every
+  package in it ([Thresholds](#thresholds)).
 - A **membership entry** is one person's line in a members or team
   record, or a maintainers record: their DID, their role, and a
   **salt** of 32 random bytes. The entry is private. The record lists
@@ -1030,7 +1031,7 @@ of public records make that possible:
   own PDS. The host cannot write one for a person whose account it does
   not hold.
 - **The policy**: the maintainers record of each package, and the
-  members and team records of each organization. They say who may approve
+  members, team and policy records of each organization. They say who may approve
   what, and how many approvals each thing needs. They are public records
   in the account's repository, because whoever checks an approval has to
   read them: an approval is enough or not only against a threshold, and
@@ -1126,14 +1127,23 @@ A package's repository has a maintainers record at record key `self`:
   many attestations each release needs, and `ownerThreshold` how many
   owners must attest a change to the maintainers record.
 - **An organization** is an account of its own on a package host, with
-  two kinds of record:
+  three kinds of record:
   - `dev.zena-lang.org.members`, at `self`: who belongs to the
     organization and in which role, and the thresholds for changing its
     members and its teams;
   - `dev.zena-lang.org.team`, one per team, keyed by the team's name:
-    who is on the team and in which role.
+    who is on the team and in which role;
+  - `dev.zena-lang.org.policy`, at `self`: the scope's policy for its
+    packages. Its minimums apply to every release in the scope at once: a
+    release needs the larger of its maintainers record's `threshold` and
+    the policy's `minimumThreshold`, and of `humans` and `minimumHumans`.
+    The host refuses a maintainers record that could not meet them. Its
+    defaults, the teams and thresholds a new package's maintainers record
+    starts with, are what `zena` uses when it creates one. Its `creators`
+    are the teams whose members may create packages in the scope, besides
+    its admins.
 
-  Both list their members privately, as
+  The members and team records list their members privately, as
   [Private membership](#private-membership) describes. An organization's
   handle on its host is a scope, and its packages' handles are in it. A
   package maintained by a team names the organization, the team and the
@@ -1249,6 +1259,7 @@ through the host:
 | `zena owner remove <person>`                                              | the package's maintainers | `putMaintainers` |
 | `zena scope settings <scope> --owner-threshold <n> --admin-threshold <n>` | the scope's members       | `putMembers`     |
 | `zena team settings <scope>/<team> --threshold <n>`                       | the team                  | `putTeam`        |
+| `zena scope policy <scope> --minimum-threshold <n> ...`                   | the scope's policy        | `putPolicy`      |
 | `zena owner settings --threshold <n> --owner-threshold <n> --humans <n>`  | the package's maintainers | `putMaintainers` |
 
 The roles are those of [Roles](#roles), and `member` or `publisher` when
@@ -1293,6 +1304,7 @@ have attested it. Only people count; automation chooses no one's roles.
 | Change to                 | Attested by                                                                                             |
 | ------------------------- | ------------------------------------------------------------------------------------------------------- |
 | an organization's members | its `ownerThreshold` of owners                                                                          |
+| an organization's policy  | the members record's `ownerThreshold` of owners                                                         |
 | a team                    | the team's `threshold` of its maintainers, or the organization's `adminThreshold` of admins and owners  |
 | a new team                | the organization's `adminThreshold` of admins and owners                                                |
 | a package's maintainers   | its `ownerThreshold` of owners, listed by DID, by commitment, or as members of a team in the owner role |
@@ -1347,8 +1359,11 @@ recovery key.
   maintainers, through attestations. The maintainers record says how
   many, per package: `threshold` attestations for a release, of which
   `humans` must come from people rather than automation accounts, and
-  `ownerThreshold` owners for a change to the record. A new package
-  starts at 1 and 1, which the publisher's own attestation meets. A
+  `ownerThreshold` owners for a change to the record. A scope's policy
+  can ask more of every release in it, with minimums that apply at
+  once. A new package starts with the policy's defaults, which are 1 and
+  1 unless the scope sets others, so the publisher's own attestation
+  meets them. A
   release with fewer attestations waits, pending on the host and outside
   the package's repository, until `zena approve <package>@<version>` adds
   enough; then the host writes its record, and the log records it.
@@ -1447,6 +1462,7 @@ once the attestations the previous record requires reach the log.
 | `putMaintainers`          | a package's owners                                            | holds a maintainers record, with the entries behind its commitments |
 | `putMembers`              | an organization's owners                                      | holds a members record, with its entries                            |
 | `putTeam`                 | an organization's admins, or a team's maintainers             | holds a new or replaced team                                        |
+| `putPolicy`               | an organization's owners                                      | holds a new policy for the scope's packages                         |
 | `deleteTeam`              | an organization's admins                                      | deletes a team                                                      |
 | `completeChange`          | anyone with a role in the account                             | writes a held record once the record before it allows it            |
 | `getPendingChanges`       | anyone with a role in the account                             | returns the held records, with who has attested each                |

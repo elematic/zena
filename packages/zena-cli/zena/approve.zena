@@ -26,13 +26,14 @@ import { JsonArray, JsonObject } from 'zena:json';
 import { Cid } from 'atproto:cid';
 import { fromJson } from 'atproto:data';
 import {
-  MAINTAINERS_TYPE, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, Release, TEAM_TYPE, Team
+  MAINTAINERS_TYPE, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, POLICY_TYPE, Policy, Release,
+  TEAM_TYPE, Team
 } from 'package-manager:records';
 import { Version } from 'package-manager:version';
 import { Options } from './env.zena';
 import {
-  Held, changeApprovals, completeChange, current, currentPackageDid, describeMaintainer, namedPackage, scopeDid,
-  visibleEntries
+  Held, changeApprovals, completeChange, current, currentPackageDid, describeMaintainer, describePolicy, namedPackage,
+  scopeDid, visibleEntries
 } from './members.zena';
 import {
   Host, PublishError, approvals, attest, completeRelease, findHost, hostClient, runCommand, saveIfRefreshed,
@@ -177,6 +178,9 @@ function whatChanges(change: JsonObject, given: String): String {
   if (collection == TEAM_TYPE) {
     return `the team ${change['rkey'] as String} of ${given}`;
   }
+  if (collection == POLICY_TYPE) {
+    return `the policy of ${given}`;
+  }
   return `the maintainers of ${given}`;
 }
 
@@ -195,7 +199,11 @@ function describeChange(session: Session, host: Host, account: String, given: St
     after.push(MemberEntry.fromValue(fromJson(list[i])));
   }
   let record = fromJson(change['record']);
-  if (collection == MAINTAINERS_TYPE) {
+  if (collection == POLICY_TYPE) {
+    let was = if (held == null) new Policy() else Policy.fromValue(fromJson((held as Held).value));
+    console.log(indent(`was: ${describePolicy(given, was)}`));
+    console.log(indent(`now: ${describePolicy(given, Policy.fromValue(record))}`));
+  } else if (collection == MAINTAINERS_TYPE) {
     let known = new GrowableArray<MemberEntry>();
     for (let entry in before) {
       known.push(entry);
@@ -227,6 +235,15 @@ function describeChange(session: Session, host: Host, account: String, given: St
     }
   }
   console.log(`It is ${changeApprovals(change)}, and waits until ${change['expiresAt'] as String}.`);
+}
+
+/** `text`'s lines, each indented two spaces. */
+function indent(text: String): String {
+  var out = '';
+  for (let line in text.split('\n')) {
+    out = if (out == '') `  ${line}` else `${out}\n    ${line}`;
+  }
+  return out;
 }
 
 function entryLines(entries: Array<MemberEntry>): HashSet<String> {

@@ -189,9 +189,14 @@ zena-cli owner settings --threshold 2 --humans 1   # releases need 2 approvals, 
 zena-cli owner settings --owner-threshold 2        # changes to the maintainers need 2 owners
 zena-cli scope settings acme --owner-threshold 2 --admin-threshold 2
 zena-cli team settings acme/core --threshold 2
+zena-cli scope policy acme --minimum-threshold 2 --default-teams core:publisher --default-threshold 2 --creators core
 ```
 
 The `settings` commands change thresholds, and with no flags print them.
+`zena scope policy` sets the scope's policy for its packages: minimums
+every release in the scope needs at once, the teams and thresholds new
+packages start with, and the teams whose members may create packages
+besides its admins.
 A change to a threshold is approved under the thresholds it replaces: one
 owner raises `--owner-threshold` from 1 to 2, and lowering it again needs
 both.

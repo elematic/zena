@@ -29,7 +29,7 @@ import { Session } from 'atproto:session';
 import { XrpcClient } from 'atproto:xrpc';
 import {
   ADMIN, MAINTAINER, MAINTAINERS_TYPE, MEMBER, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, OWNER,
-  PUBLISHER, TEAM_TYPE, Team
+  POLICY_TYPE, PUBLISHER, Policy, TEAM_TYPE, Team, TeamRole
 } from 'package-manager:records';
 import { DiskFiles, readWorkspace } from 'package-manager:workspace';
 import { Options, repoRoot, userCwd } from './env.zena';
@@ -39,7 +39,7 @@ import {
 } from './publish.zena';
 import { REPO_GET_RECORD } from 'atproto:methods';
 import {
-  COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_TEAM
+  COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_POLICY, PUT_TEAM
 } from 'package-manager:host-methods';
 
 /** A record in an account's repository, as it is now. */
@@ -143,6 +143,109 @@ export function scopeSettingsCommand(args: ParsedArgs, options: Options): i32 {
     }
     saveIfRefreshed(session);
   });
+}
+
+/**
+ * `zena scope policy <scope> [flags]`: the scope's policy for its
+ * packages: the least a release needs, which applies to every package in
+ * it at once (`--minimum-threshold`, `--minimum-humans`); what a new
+ * package's maintainers record starts with (`--default-teams
+ * <team>:<role>,...`, `--default-threshold`, `--default-owner-threshold`,
+ * `--default-humans`); and the teams whose members may create packages
+ * besides its admins (`--creators <team>,...`). A list given empty is
+ * cleared. With no flags, prints it. A change to it waits for the members
+ * record's owners, as a change to the members does.
+ */
+export function scopePolicyCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 2) {
+      throw new PublishError('give the scope: zena scope policy <scope> [--minimum-threshold <n>] ...');
+    }
+    let scope = args.rest[1];
+    let session = signedIn();
+    let host = findHost(args);
+    let org = scopeDid(host, scope);
+    let held = current(org, POLICY_TYPE, 'self');
+    let policy = if (held == null) new Policy() else Policy.fromValue(fromJson((held as Held).value));
+    let minimum = countOption(args, 'minimum-threshold', 1);
+    let minimumHumans = countOption(args, 'minimum-humans', 0);
+    let threshold = countOption(args, 'default-threshold', 1);
+    let owners = countOption(args, 'default-owner-threshold', 1);
+    let humans = countOption(args, 'default-humans', 0);
+    var changed = minimum >= (0 as i64) || minimumHumans >= (0 as i64) || threshold >= (0 as i64) ||
+        owners >= (0 as i64) || humans >= (0 as i64);
+    policy.minimumThreshold = if (minimum < (0 as i64)) policy.minimumThreshold else minimum;
+    policy.minimumHumans = if (minimumHumans < (0 as i64)) policy.minimumHumans else minimumHumans;
+    policy.defaultThreshold = if (threshold < (0 as i64)) policy.defaultThreshold else threshold;
+    policy.defaultOwnerThreshold = if (owners < (0 as i64)) policy.defaultOwnerThreshold else owners;
+    policy.defaultHumans = if (humans < (0 as i64)) policy.defaultHumans else humans;
+    if (let (true, given) = args.getOption('default-teams')) {
+      changed = true;
+      let teams = new GrowableArray<TeamRole>();
+      for (let item in listOption(given)) {
+        let parts = item.split(':');
+        let role = if (parts.length > 1) parts[1] else PUBLISHER;
+        if (parts.length > 2 || (role != PUBLISHER && role != OWNER)) {
+          throw new PublishError(`'${item}' is not <team> or <team>:publisher or <team>:owner`);
+        }
+        teams.push(new TeamRole(parts[0], role));
+      }
+      policy.defaultTeams = teams;
+    }
+    if (let (true, given) = args.getOption('creators')) {
+      changed = true;
+      policy.creators = listOption(given);
+    }
+    if (!changed) {
+      console.log(describePolicy(scope, policy));
+      saveIfRefreshed(session);
+      return;
+    }
+    let input = new JsonObject();
+    input['organization'] = org;
+    input['policy'] = toJson(policy.toValue());
+    if (held != null) {
+      input['swapRecord'] = (held as Held).cid;
+    }
+    if (write(session, host, PUT_POLICY, input, `${scope}'s policy`, `@${scope}`)) {
+      console.log(describePolicy(scope, policy));
+    }
+    saveIfRefreshed(session);
+  });
+}
+
+/** `given`, a list separated by commas, without empty items. */
+function listOption(given: String): GrowableArray<String> {
+  let items = new GrowableArray<String>();
+  for (let part in given.split(',')) {
+    let item = part.trim();
+    if (item != '') {
+      items.push(item);
+    }
+  }
+  return items;
+}
+
+/** What `policy` asks of the packages in `scope`, in words. */
+export function describePolicy(scope: String, policy: Policy): String {
+  let people = if (policy.minimumHumans == (0 as i64)) '' else `, ${policy.minimumHumans} of them from people`;
+  var teams = '';
+  for (let team in policy.defaultTeams) {
+    teams = `${teams} and the team ${team.team} as ${team.role}`;
+  }
+  let humans = if (policy.defaultHumans == (0 as i64)) '' else `, ${policy.defaultHumans} of them from people`;
+  var creators = 'Its admins create its packages';
+  if (policy.creators.length > 0) {
+    var names = '';
+    for (let team in policy.creators) {
+      names = if (names == '') team else `${names}, ${team}`;
+    }
+    creators = `Its admins, and the teams ${names}, create its packages`;
+  }
+  return `Every release in ${scope} needs at least ${count(policy.minimumThreshold, "maintainer's attestation",
+      "maintainers' attestations")}${people}.\nNew packages start maintained by their creator${teams}, with releases needing ${
+      policy.defaultThreshold}${humans}, and changes to the maintainers ${count(policy.defaultOwnerThreshold, "owner's", "owners'")}.\n${
+      creators}.`;
 }
 
 function scopeSettings(scope: String, members: Members): String {
