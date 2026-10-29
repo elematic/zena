@@ -20,6 +20,7 @@
 
 import { ParsedArgs } from 'zena:args';
 import { runFuture } from 'zena:async';
+import { parseI32 } from 'zena:core';
 import { JsonArray, JsonObject, JsonValue } from 'zena:json';
 import { getRandomBytes } from 'wasi:random/random';
 import { Cid } from 'atproto:cid';
@@ -105,6 +106,50 @@ export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
   });
 }
 
+/**
+ * `zena scope settings <scope> [--owner-threshold <n>] [--admin-threshold <n>]`:
+ * how many owners must approve a change to the scope's members, and how
+ * many admins or owners a change to one of its teams. With neither, prints
+ * them. A change to them is a change to the members record, which the
+ * thresholds it replaces must approve.
+ */
+export function scopeSettingsCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 2) {
+      throw new PublishError('give the scope: zena scope settings <scope> [--owner-threshold <n>] [--admin-threshold <n>]');
+    }
+    let scope = args.rest[1];
+    let owners = countOption(args, 'owner-threshold', 1);
+    let admins = countOption(args, 'admin-threshold', 1);
+    let session = signedIn();
+    let host = findHost(args);
+    let org = scopeDid(host, scope);
+    let held = required(current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
+    let members = Members.fromValue(fromJson(held.value));
+    if (owners < 0 && admins < 0) {
+      console.log(scopeSettings(scope, members));
+      saveIfRefreshed(session);
+      return;
+    }
+    let record = new Members(members.members, if (owners < 0) members.ownerThreshold else owners,
+        if (admins < 0) members.adminThreshold else admins);
+    let input = new JsonObject();
+    input['organization'] = org;
+    input['members'] = toJson(record.toValue());
+    input['entries'] = new JsonArray();
+    input['swapRecord'] = held.cid;
+    if (write(session, host, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+      console.log(scopeSettings(scope, record));
+    }
+    saveIfRefreshed(session);
+  });
+}
+
+function scopeSettings(scope: String, members: Members): String {
+  return `Changes to ${scope}'s members need ${count(members.ownerThreshold, 'owner')}, and changes to its teams ${
+      count(members.adminThreshold, 'admin or owner', 'admins or owners')}, or a team's own threshold of its maintainers.`;
+}
+
 /** `zena scope members <scope>`: the members the caller may see. */
 export function scopeMembersCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
@@ -127,7 +172,7 @@ export function scopeMembersCommand(args: ParsedArgs, options: Options): i32 {
  */
 export function teamCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
-    let usage = 'zena team create|delete|members <scope>/<team>, or zena team add|remove <scope>/<team> <handle or DID>';
+    let usage = 'zena team create|delete|members <scope>/<team>, zena team add|remove <scope>/<team> <handle or DID>, or zena team settings <scope>/<team> [--threshold <n>]';
     if (args.rest.length < 2) {
       throw new PublishError(`give a subcommand and a team: ${usage}`);
     }
@@ -160,6 +205,17 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
         console.log(`Deleted the team ${scope}/${name}.`);
       } else if (sub == 'members') {
         printEntries(visibleEntries(session, host, org, name));
+      } else if (sub == 'settings' && args.rest.length == 2) {
+        // How many of the team's maintainers must approve a change to it.
+        let threshold = countOption(args, 'threshold', 1);
+        if (threshold < 0) {
+          console.log(teamSettings(scope, name, team));
+        } else {
+          let changed = new Team(team.members, threshold);
+          if (putTeam(session, host, scope, org, name, changed, [], found.cid)) {
+            console.log(teamSettings(scope, name, changed));
+          }
+        }
       } else if ((sub == 'add' || sub == 'remove') && args.rest.length == 3) {
         let person = args.rest[2];
         let did = personDid(person);
@@ -194,7 +250,7 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
  */
 export function ownerCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
-    let usage = 'zena owner add|remove <handle or DID> [--role publisher|owner] [--automation], zena owner add|remove --team <scope>/<team>, or zena owner list';
+    let usage = 'zena owner add|remove <handle or DID> [--role publisher|owner] [--automation], zena owner add|remove --team <scope>/<team>, zena owner list, or zena owner settings [--threshold <n>] [--owner-threshold <n>] [--humans <n>]';
     if (args.rest.length == 0) {
       throw new PublishError(usage);
     }
@@ -219,7 +275,30 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
       for (let maintainer in record.maintainers) {
         console.log(`${describeMaintainer(maintainer, entries)}  ${maintainer.role}`);
       }
-      console.log(`Releases need ${record.threshold}, and changes to maintainers ${record.ownerThreshold} owners'.`);
+      console.log(packageSettings(record));
+      saveIfRefreshed(session);
+      return;
+    }
+    if (sub == 'settings') {
+      let threshold = countOption(args, 'threshold', 1);
+      let owners = countOption(args, 'owner-threshold', 1);
+      let humans = countOption(args, 'humans', 0);
+      if (threshold < 0 && owners < 0 && humans < 0) {
+        console.log(packageSettings(record));
+        saveIfRefreshed(session);
+        return;
+      }
+      let changed = new Maintainers(record.maintainers, if (threshold < 0) record.threshold else threshold,
+          if (owners < 0) record.ownerThreshold else owners);
+      changed.humans = if (humans < 0) record.humans else humans;
+      let input = new JsonObject();
+      input['package'] = pkg;
+      input['maintainers'] = toJson(changed.toValue());
+      input['entries'] = new JsonArray();
+      input['swapRecord'] = found.cid;
+      if (write(session, host, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAsOf(args, pkg))) {
+        console.log(packageSettings(changed));
+      }
       saveIfRefreshed(session);
       return;
     }
@@ -279,11 +358,7 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
     input['maintainers'] = toJson(changed.toValue());
     input['entries'] = entriesJson(fresh);
     input['swapRecord'] = found.cid;
-    var approveAs = pkg;
-    if (let (true, given) = args.getOption('package')) {
-      approveAs = given;
-    }
-    if (write(session, host, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAs)) {
+    if (write(session, host, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAsOf(args, pkg))) {
       console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.`);
     }
     saveIfRefreshed(session);
@@ -345,6 +420,11 @@ export function changeApprovals(answer: JsonObject): String {
   return phrase;
 }
 
+function teamSettings(scope: String, name: String, team: Team): String {
+  return `Changes to the team ${scope}/${name} need ${count(team.threshold, 'of its maintainers', 'of its maintainers')
+      }, or the admins of ${scope}.`;
+}
+
 function putTeam(session: Session, host: Host, scope: String, org: String, name: String, team: Team,
     fresh: Array<MemberEntry>, swap: String | null): boolean {
   let input = new JsonObject();
@@ -356,6 +436,56 @@ function putTeam(session: Session, host: Host, scope: String, org: String, name:
     input['swapRecord'] = swap as String;
   }
   return write(session, host, PUT_TEAM, input, `the team ${scope}/${name}`, `@${scope}`);
+}
+
+/** What a package's maintainers record asks of its releases and of changes to it. */
+function packageSettings(record: Maintainers): String {
+  let people = if (record.humans == (0 as i64)) ''
+      else `, ${if (record.humans == (1 as i64)) 'one' else `${record.humans}`} of them from people`;
+  return `Releases need ${count(record.threshold, "maintainer's attestation", "maintainers' attestations")}${people
+      }, and changes to the maintainers ${count(record.ownerThreshold, "owner's", "owners'")}.`;
+}
+
+/**
+ * How `zena approve` names the package: as `--package` did, else as
+ * `@scope/name` from the manifest of the package in the current directory,
+ * else by DID.
+ */
+function approveAsOf(args: ParsedArgs, pkg: String): String {
+  if (let (true, given) = args.getOption('package')) {
+    return given;
+  }
+  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+  let manifest = workspace.packageAt(userCwd().value).manifest;
+  let scope = manifest.scope ?? workspace.root.manifest.scope;
+  if (manifest.did == pkg && scope != null && manifest.name != null) {
+    return `@${scope as String}/${manifest.name as String}`;
+  }
+  return pkg;
+}
+
+/** `n` and `one`, or `many` when `n` is not 1 (`one` with an s by default). */
+function count(n: i64, one: String, many: String = ''): String {
+  if (n == (1 as i64)) {
+    return `1 ${one}`;
+  }
+  return `${n} ${if (many == '') `${one}s` else many}`;
+}
+
+/**
+ * The count `--<name>` gives, at least `least`; -1 when it gives none. A
+ * value that is not a whole number, or is too small, is refused.
+ */
+function countOption(args: ParsedArgs, name: String, least: i32): i64 {
+  if (let (true, given) = args.getOption(name)) {
+    if (let (true, n) = parseI32(given)) {
+      if (n >= least) {
+        return n as i64;
+      }
+    }
+    throw new PublishError(`--${name} is a whole number of at least ${least}, not '${given}'`);
+  }
+  return -1 as i64;
 }
 
 /** The two arguments after the subcommand, or a `PublishError` showing `usage`. */

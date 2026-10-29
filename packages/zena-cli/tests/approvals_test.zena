@@ -1,0 +1,104 @@
+/**
+ * Approvals, from end to end, against `tests/fixtures/publish-stack.zena`:
+ * Alice and Bob own a package and its scope, raise their thresholds, and
+ * then neither publishes nor changes who belongs without the other's
+ * approval (`zena owner settings`, `zena scope settings`, `zena approve`).
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {JsonObject, parseJson} from 'zena:json';
+import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, write} from './cli-support.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+
+export let tests = suite('zena approve', () => {
+  test('holds releases and changes until a second owner approves them', (ctx) => {
+    let scratch = Scratch.create('approvals');
+    let stack = startFakePds(scratch, 'publish-stack.zena');
+    try {
+      fakePdsOrigin(scratch, stack);
+      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      let person = (who: String) =>
+        new ZenaCommand(scratch.host('lib'), scratch.at('lib'), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
+          .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
+          .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
+          .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      let alice = person('alice');
+      let bob = person('bob');
+      isTrue(alice.run(['login', ALICE, '--password-stdin'], 'app-password\n').succeeded(), 'alice signs in');
+      isTrue(bob.run(['login', BOB, '--password-stdin'], 'bob-password\n').succeeded(), 'bob signs in');
+      isTrue(alice.run(['scope', 'create', 'acme', '--yes']).succeeded(), 'the scope');
+      let published = alice.run(['publish', '--yes']);
+      isTrue(published.succeeded() && published.stdout.contains('Published greet 1.0.0'), described(published));
+      let did = (parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
+      let manifestAt = (version: String) => write(scratch.at('lib/zena-package.json'),
+          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "${version}"}\n`);
+
+      // Alice alone decides, until Bob is an owner and the package needs both.
+      let settings = alice.run(['owner', 'settings']);
+      isTrue(settings.succeeded() && settings.stdout.contains("Releases need 1 maintainer's attestation") &&
+          settings.stdout.contains("1 owner's"), described(settings));
+      let badCount = alice.run(['owner', 'settings', '--threshold', '0']);
+      isTrue(!badCount.succeeded() && badCount.stderr.contains('at least 1'), described(badCount));
+      isTrue(alice.run(['owner', 'add', BOB, '--role', 'owner']).succeeded(), 'bob owns greet');
+      let raised = alice.run(['owner', 'settings', '--owner-threshold', '2']);
+      isTrue(raised.succeeded() && raised.stdout.contains("2 owners'"), described(raised));
+
+      // Now a change to the maintainers waits for Bob.
+      let waits = alice.run(['owner', 'settings', '--threshold', '2']);
+      isTrue(waits.succeeded() && waits.stdout.contains('is waiting for approval: approved by 1 of the 2 owners') &&
+          waits.stdout.contains('zena approve @acme/greet'), described(waits));
+      let shown = bob.run(['approve', '@acme/greet']);
+      isTrue(shown.succeeded() && shown.stdout.contains('threshold: 1 → 2') &&
+          shown.stdout.contains('Run again with --yes'), described(shown));
+      let approved = bob.run(['approve', '@acme/greet', '--yes']);
+      isTrue(approved.succeeded() && approved.stdout.contains('Changed the maintainers of @acme/greet'),
+          described(approved));
+      let now = alice.run(['owner', 'settings']);
+      isTrue(now.succeeded() && now.stdout.contains("Releases need 2 maintainers' attestations"), described(now));
+
+      // And a release waits for Bob too.
+      manifestAt('1.1.0');
+      let held = alice.run(['publish']);
+      isTrue(held.succeeded() && held.stdout.contains('greet 1.1.0 is waiting for approval') &&
+          held.stdout.contains('approved by 1 of the 2 maintainers'), described(held));
+      let release = bob.run(['approve', '@acme/greet@1.1.0', '--yes']);
+      isTrue(release.succeeded() && release.stdout.contains('Published @acme/greet 1.1.0'), described(release));
+
+      // The scope: Bob joins as an owner, the members then need both
+      // owners, and adding Carol waits for Bob. Removing an owner would
+      // leave too few to approve anything, which the host refuses.
+      isTrue(alice.run(['scope', 'add', 'acme', BOB, '--role', 'owner']).succeeded(), 'bob owns acme');
+      let scope = alice.run(['scope', 'settings', 'acme', '--owner-threshold', '2']);
+      isTrue(scope.succeeded() && scope.stdout.contains("Changes to acme's members need 2 owners"), described(scope));
+      let tooFew = alice.run(['scope', 'remove', 'acme', BOB]);
+      isTrue(!tooFew.succeeded() && tooFew.stderr.contains('cannot meet the thresholds'), described(tooFew));
+      let carol = 'did:plc:carolcarolcarolcarolcaro';
+      let adding = alice.run(['scope', 'add', 'acme', carol]);
+      isTrue(adding.succeeded() && adding.stdout.contains("The change to acme's members is waiting") &&
+          !adding.stdout.contains('Added'), described(adding));
+      let notYet = bob.run(['scope', 'members', 'acme']);
+      isTrue(notYet.succeeded() && !notYet.stdout.contains(carol), described(notYet));
+      let change = bob.run(['approve', '@acme']);
+      isTrue(change.succeeded() && change.stdout.contains(`+ ${carol} member`), described(change));
+      let joined = bob.run(['approve', '@acme', '--yes']);
+      isTrue(joined.succeeded() && joined.stdout.contains('Changed the members of @acme'), described(joined));
+      let members = bob.run(['scope', 'members', 'acme']);
+      isTrue(members.succeeded() && members.stdout.contains(`${carol}  member`), described(members));
+
+      // A team's own threshold.
+      isTrue(alice.run(['team', 'create', 'acme/core']).succeeded(), 'the team');
+      let team = alice.run(['team', 'settings', 'acme/core', '--threshold', '2']);
+      isTrue(team.succeeded() && team.stdout.contains('Changes to the team acme/core need 2 of its maintainers'),
+          described(team));
+    } finally {
+      stack.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});

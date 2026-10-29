@@ -331,7 +331,8 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   Publishing never creates a scope. **`scope add|remove <scope> <person>`**,
   **`scope members`**, **`team create|add|remove|delete|members`** and
   **`owner add|remove|list`** change and show who belongs to a scope, a
-  team and a package.
+  team and a package. **`scope settings`**, **`team settings`** and
+  **`owner settings`** show and change their thresholds.
 - **`fetch`**: Fetch the published packages `zena-lock.json` pins into
   the package cache, checking each against its pins. `ZENA_PLC_DIRECTORY`
   and `ZENA_DNS_OVER_HTTPS` replace the PLC directory and the DNS resolver

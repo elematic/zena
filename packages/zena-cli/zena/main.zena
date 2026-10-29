@@ -32,7 +32,9 @@ import { addCommand, updateCommand } from './add.zena';
 import { loginCommand, logoutCommand } from './login.zena';
 import { packageCreateCommand, publishCommand } from './publish.zena';
 import { scopeCreateCommand, scopeInfoCommand } from './scope.zena';
-import { ownerCommand, scopeAddCommand, scopeMembersCommand, scopeRemoveCommand, teamCommand } from './members.zena';
+import {
+  ownerCommand, scopeAddCommand, scopeMembersCommand, scopeRemoveCommand, scopeSettingsCommand, teamCommand
+} from './members.zena';
 import { approveCommand } from './approve.zena';
 import { retractCommand } from './retract.zena';
 import { ciCommand } from './ci.zena';
@@ -204,24 +206,27 @@ function describe() {
         },
       },
       'scope' => {
-        help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person>',
+        help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope>',
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
           'yes' => {type: OptionType.Flag, help: 'Create it'},
           'role' => {help: 'With add: member (the default), admin or owner'},
+          'owner-threshold' => {help: "With settings: how many owners must approve a change to the scope's members"},
+          'admin-threshold' => {help: "With settings: how many admins or owners must approve a change to one of its teams"},
         },
       },
       'team' => {
-        help: 'team create|delete|members <scope>/<team> | add|remove <scope>/<team> <person>',
+        help: 'team create|delete|members|settings <scope>/<team> | add|remove <scope>/<team> <person>',
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
           'role' => {help: 'With add: member (the default) or maintainer'},
+          'threshold' => {help: "With settings: how many of the team's maintainers must approve a change to it"},
         },
       },
       'owner' => {
-        help: "owner add|remove <person> | add|remove --team <scope>/<team> | list: a package's maintainers",
+        help: "owner add|remove <person> | add|remove --team <scope>/<team> | list | settings: a package's maintainers",
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
@@ -229,6 +234,9 @@ function describe() {
           'team' => {help: 'A team, <scope>/<team>, in place of a person'},
           'package' => {help: 'The package, by DID, handle or @scope/name (default: the one you are in)'},
           'automation' => {type: OptionType.Flag, help: 'With add: the person is an automation account, from zena ci create'},
+          'threshold' => {help: 'With settings: how many maintainers must approve a release'},
+          'owner-threshold' => {help: 'With settings: how many owners must approve a change to the maintainers'},
+          'humans' => {help: "With settings: how many of a release's approvals must come from people, not automation"},
         },
       },
       'ci' => {
@@ -411,7 +419,10 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
     if (sub.rest.length > 0 && sub.rest[0] == 'remove') {
       return scopeRemoveCommand(sub, options);
     }
-    console.error('Error: zena scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person>');
+    if (sub.rest.length > 0 && sub.rest[0] == 'settings') {
+      return scopeSettingsCommand(sub, options);
+    }
+    console.error('Error: zena scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope>');
     return 2;
   }
   if (name == 'team') {
