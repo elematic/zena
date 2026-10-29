@@ -51,6 +51,10 @@ import { DiskFiles, WorkspacePackage, readWorkspace } from 'package-manager:work
 import { Options, repoRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import { configDir, currentSession, saveSession } from './login.zena';
+import { REPO_PUT_RECORD, SERVER_DESCRIBE_SERVER } from 'atproto:methods';
+import {
+  COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, PUBLISH, UPLOAD_ARTIFACT
+} from 'package-manager:host-methods';
 
 let DEFAULT_HOST = 'https://pkg.zena-lang.dev';
 
@@ -198,7 +202,7 @@ export function findHost(args: ParsedArgs): Host {
   if (let (true, given) = args.getOption('host')) {
     origin = given;
   }
-  let described = runFuture(new XrpcClient(origin).query('com.atproto.server.describeServer')) as JsonObject;
+  let described = runFuture(new XrpcClient(origin).query(SERVER_DESCRIBE_SERVER)) as JsonObject;
   let domains = described['availableUserDomains'] as JsonArray;
   let domain = domains[0] as String;
   return new Host(origin, described['did'] as String,
@@ -286,8 +290,8 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
   // The profile says what the manifest says, for the index to show.
   input['profile'] = toJson(new Profile(name, target.manifest.description, target.manifest.license).toValue());
   input['maintainers'] = toJson(new Maintainers([Maintainer.ofDid(session.did, OWNER)]).toValue());
-  let created = runFuture(hostClient(session, host, 'dev.zena-lang.host.createPackage')
-    .procedure('dev.zena-lang.host.createPackage', input)) as JsonObject;
+  let created = runFuture(hostClient(session, host, CREATE_PACKAGE)
+    .procedure(CREATE_PACKAGE, input)) as JsonObject;
   let did = created['did'] as String;
   let text = writeDid(target.text as String, did,
       if (target.manifest.scope == null && rootScope() != scope) scope else null);
@@ -304,8 +308,8 @@ export function createOrganization(session: Session, host: Host, scope: String):
   let input = new JsonObject();
   input['name'] = scope;
   input['recoveryKeys'] = strings(recoveryDidKeys());
-  let created = runFuture(hostClient(session, host, 'dev.zena-lang.host.createOrganization')
-    .procedure('dev.zena-lang.host.createOrganization', input)) as JsonObject;
+  let created = runFuture(hostClient(session, host, CREATE_ORGANIZATION)
+    .procedure(CREATE_ORGANIZATION, input)) as JsonObject;
   console.log(`Created the scope ${created['handle'] as String} (${created['did'] as String}), with you as its owner.`);
   let members = created['members'] as JsonObject;
   attest(session, members['uri'] as String, Cid.parse(members['cid'] as String));
@@ -387,8 +391,8 @@ function publish(session: Session, host: Host, target: WorkspacePackage, manifes
   let release = prepared.release;
   let blob = release.artifact(SOURCE) as Artifact;
 
-  let uploaded = runFuture(hostClient(session, host, 'dev.zena-lang.host.uploadArtifact')
-    .upload('dev.zena-lang.host.uploadArtifact', SOURCE_MIME_TYPE, archive, [('package', did)]))
+  let uploaded = runFuture(hostClient(session, host, UPLOAD_ARTIFACT)
+    .upload(UPLOAD_ARTIFACT, SOURCE_MIME_TYPE, archive, [('package', did)]))
     as JsonObject;
   if (!BlobRef.fromValue(fromJson(uploaded['blob'])).cid.equals(blob.cid)) {
     throw new PublishError('the host stored the archive under another CID');
@@ -396,8 +400,8 @@ function publish(session: Session, host: Host, target: WorkspacePackage, manifes
   let input = new JsonObject();
   input['package'] = did;
   input['release'] = toJson(release.toValue());
-  let published = runFuture(hostClient(session, host, 'dev.zena-lang.host.publish')
-    .procedure('dev.zena-lang.host.publish', input)) as JsonObject;
+  let published = runFuture(hostClient(session, host, PUBLISH)
+    .procedure(PUBLISH, input)) as JsonObject;
   attest(session, published['uri'] as String, Cid.parse(published['cid'] as String));
   completeRelease(session, host, did, version.toString(), `${name} ${version.toString()}`, approveAs);
 }
@@ -413,8 +417,8 @@ export function completeRelease(session: Session, host: Host, pkg: String, versi
   let input = new JsonObject();
   input['package'] = pkg;
   input['version'] = version;
-  let answer = runFuture(hostClient(session, host, 'dev.zena-lang.host.completeRelease')
-    .procedure('dev.zena-lang.host.completeRelease', input)) as JsonObject;
+  let answer = runFuture(hostClient(session, host, COMPLETE_RELEASE)
+    .procedure(COMPLETE_RELEASE, input)) as JsonObject;
   if ((answer['state'] as String) == 'published') {
     console.log(`Published ${label}: ${answer['uri'] as String}`);
     return;
@@ -449,7 +453,7 @@ export function attest(session: Session, uri: String, cid: Cid): void {
   input['collection'] = ATTESTATION_TYPE;
   input['rkey'] = attestation.recordKey();
   input['record'] = toJson(attestation.toValue());
-  runFuture(session.client().procedure('com.atproto.repo.putRecord', input));
+  runFuture(session.client().procedure(REPO_PUT_RECORD, input));
 }
 
 /**

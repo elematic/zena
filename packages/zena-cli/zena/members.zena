@@ -33,6 +33,8 @@ import { packageResolver } from './fetch.zena';
 import {
   Host, PublishError, attest, findHost, hostClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
 } from './publish.zena';
+import { REPO_GET_RECORD } from 'atproto:methods';
+import { DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_TEAM } from 'package-manager:host-methods';
 
 /** A record in an account's repository, as it is now. */
 final class Held {
@@ -63,7 +65,7 @@ export function scopeAddCommand(args: ParsedArgs, options: Options): i32 {
     input['members'] = toJson(record.toValue());
     input['entries'] = entriesJson([added]);
     input['swapRecord'] = held.cid;
-    write(session, host, 'dev.zena-lang.host.putMembers', input);
+    write(session, host, PUT_MEMBERS, input);
     console.log(`Added ${person} to ${scope} as ${role}.${thresholdNote(members.ownerThreshold, 'owners')}`);
     saveIfRefreshed(session);
   });
@@ -90,7 +92,7 @@ export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
     input['members'] = toJson(record.toValue());
     input['entries'] = new JsonArray();
     input['swapRecord'] = held.cid;
-    write(session, host, 'dev.zena-lang.host.putMembers', input);
+    write(session, host, PUT_MEMBERS, input);
     console.log(`Removed ${person} from ${scope}.${thresholdNote(members.ownerThreshold, 'owners')}`);
     saveIfRefreshed(session);
   });
@@ -145,8 +147,8 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
         input['organization'] = org;
         input['name'] = name;
         input['swapRecord'] = found.cid;
-        runFuture(hostClient(session, host, 'dev.zena-lang.host.deleteTeam')
-          .procedure('dev.zena-lang.host.deleteTeam', input));
+        runFuture(hostClient(session, host, DELETE_TEAM)
+          .procedure(DELETE_TEAM, input));
         console.log(`Deleted the team ${scope}/${name}.`);
       } else if (sub == 'members') {
         printEntries(visibleEntries(session, host, org, name));
@@ -265,7 +267,7 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
     input['maintainers'] = toJson(new Maintainers(maintainers, record.threshold, record.ownerThreshold).toValue());
     input['entries'] = entriesJson(fresh);
     input['swapRecord'] = found.cid;
-    write(session, host, 'dev.zena-lang.host.putMaintainers', input);
+    write(session, host, PUT_MAINTAINERS, input);
     console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.${thresholdNote(record.ownerThreshold, 'owners')}`);
     saveIfRefreshed(session);
   });
@@ -287,7 +289,7 @@ function putTeam(session: Session, host: Host, org: String, name: String, team: 
   if (swap != null) {
     input['swapRecord'] = swap as String;
   }
-  write(session, host, 'dev.zena-lang.host.putTeam', input);
+  write(session, host, PUT_TEAM, input);
 }
 
 /** What to say about a change whose record asks for more than one attestation. */
@@ -400,7 +402,7 @@ function current(did: String, collection: String, rkey: String): Held | null {
   }
   let params: Array<(String, String)> = [('repo', did), ('collection', collection), ('rkey', rkey)];
   try {
-    let answer = runFuture(new XrpcClient(document.pds as String).query('com.atproto.repo.getRecord', params))
+    let answer = runFuture(new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params))
       as JsonObject;
     return new Held(answer['value'], answer['cid'] as String, answer['uri'] as String);
   } catch (e) {
@@ -438,8 +440,8 @@ function visibleEntries(session: Session, host: Host, account: String, team: Str
   if (team != null) {
     params = [('account', account), ('team', team as String)];
   }
-  let answer = runFuture(hostClient(session, host, 'dev.zena-lang.host.getEntries')
-    .query('dev.zena-lang.host.getEntries', params)) as JsonObject;
+  let answer = runFuture(hostClient(session, host, GET_ENTRIES)
+    .query(GET_ENTRIES, params)) as JsonObject;
   let list = answer['entries'] as JsonArray;
   let entries = new GrowableArray<MemberEntry>();
   for (var i = 0; i < list.length; i += 1) {

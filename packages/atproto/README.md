@@ -43,6 +43,9 @@ file outside a package can; a package lists
   refreshing and ending the session, and asking the PDS for service-auth
   tokens.
 - `atproto:xrpc`: an XRPC client.
+- `atproto:methods`: the NSIDs of the `com.atproto` methods these
+  libraries call and `packages/pds` serves, and `xrpcPath`, a method's
+  path on a server.
 - `atproto:plc`: `did:plc` operations: building and signing them, the DID
   a genesis operation makes, and sending an operation to a PLC directory.
 - `atproto:identity`: resolving DIDs (`did:plc`, `did:web`) and handles

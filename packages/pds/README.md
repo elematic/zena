@@ -24,8 +24,9 @@ in `LICENSE-pds-js`.
 implementation, what is still missing, and the order of the work.
 
 With a package host, it serves web pages at its origin, rendered on the
-server (`zena/web/`): a visitor browses the host's scopes and packages
-there, and a person signs in with atproto OAuth to see their own. For
+server (`zena/web/`), beside its XRPC routes (`zena/xrpc/`): a visitor
+browses the host's scopes and packages there, and a person signs in with
+atproto OAuth to see their own. For
 that, the host serves the pages' OAuth client metadata at
 `/oauth/client-metadata.json`, resolves handles
 (`com.atproto.identity.resolveHandle`), and trades a service-auth token

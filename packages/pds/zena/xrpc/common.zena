@@ -1,0 +1,137 @@
+/**
+ * What every XRPC route builds from: errors and JSON answers, required
+ * query parameters and JSON bodies, the account a request names, and the
+ * clock. pds.js keeps these in `packages/core/src/handlers/` beside each
+ * handler; here they are shared.
+ */
+
+import {Future} from 'zena:async';
+import {Request, Response} from 'zena:http';
+import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
+import {div} from 'zena:math';
+import {now} from 'wasi:clocks/system-clock';
+import {Cid} from 'atproto:cid';
+import {Pds} from '../pds.zena';
+import {RepositoryError} from '../repository.zena';
+import {SessionError} from '../sessions.zena';
+import {Account} from '../storage.zena';
+
+/** Answers `res` with the XRPC error `error`. */
+export function fail(res: Response, status: i32, error: String, message: String): void {
+  res.statusCode = status;
+  res.type = 'application/json';
+  let body = new JsonObject();
+  body['error'] = error;
+  body['message'] = message;
+  res.body = stringify(body);
+}
+
+/** Answers `res` with `body`. */
+export function json(res: Response, body: JsonObject): void {
+  res.type = 'application/json';
+  res.body = stringify(body);
+}
+
+/**
+ * The query parameters `names`, all of them present and not empty; null,
+ * after answering `InvalidRequest`, when one is missing.
+ */
+export function required(req: Request, res: Response, names: Array<String>): GrowableArray<String> | null {
+  let params = req.url.searchParams();
+  let values = new GrowableArray<String>();
+  for (let name in names) {
+    let value = params.get(name);
+    if (value == null || value == '') {
+      fail(res, 400, 'InvalidRequest', `Missing required parameter: ${name}`);
+      return null;
+    }
+    values.push(value as String);
+  }
+  return values;
+}
+
+/** `text` as a CID, or null when it is not one. */
+export function parseCid(text: String): Cid | null {
+  try {
+    return Cid.parse(text);
+  } catch (e) {
+    return null;
+  }
+}
+
+/** The account `identifier` names; null, after answering `RepoNotFound`, when there is none. */
+export async function accountFor(pds: Pds, identifier: String, res: Response): Future<Account | null> {
+  let account = await pds.findAccount(identifier);
+  if (account == null) {
+    fail(res, 404, 'RepoNotFound', `Could not find repo: ${identifier}`);
+  }
+  return account;
+}
+
+/** The time, in microseconds since the Unix epoch. */
+export function nowMicros(): i64 {
+  let instant = now();
+  return instant.seconds * (1000000 as i64) + div(instant.nanoseconds as i64, 1000 as i64);
+}
+
+/** The time, in seconds since the Unix epoch. */
+export function nowSeconds(): i64 {
+  return now().seconds;
+}
+
+/** The JSON object a request's body holds; null, after answering `InvalidRequest`, when it is not one. */
+export async function jsonBody(req: Request, res: Response): Future<JsonObject | null> {
+  let text = await req.text();
+  let parsed = parseBody(text);
+  if (parsed == null) {
+    fail(res, 400, 'InvalidRequest', 'the body is not a JSON object');
+  }
+  return parsed;
+}
+
+function parseBody(text: String): JsonObject | null {
+  try {
+    let json = parseJson(text);
+    return if (json is JsonObject) json as JsonObject else null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** The strings of a JSON array member, or null when it is not one. */
+export function strings(json: JsonObject, name: String): GrowableArray<String> | null {
+  let value = json[name];
+  if (!(value is JsonArray)) {
+    return null;
+  }
+  let list = value as JsonArray;
+  let out = new GrowableArray<String>();
+  for (var i = 0; i < list.length; i += 1) {
+    if (!(list[i] is String)) {
+      return null;
+    }
+    out.push(list[i] as String);
+  }
+  return out;
+}
+
+/** Answers with `call`'s JSON, or with the error a session or repository refused with. */
+export async function sessionCall(res: Response, call: () => Future<JsonObject | null>): Future<void> {
+  try {
+    let answer = await call();
+    if (answer != null) {
+      json(res, answer as JsonObject);
+    }
+  } catch (e) {
+    if (e is SessionError) {
+      let error = e as SessionError;
+      fail(res, error.status, error.error, error.message);
+      return;
+    }
+    if (e is RepositoryError) {
+      fail(res, 400, (e as RepositoryError).error, e.message);
+      return;
+    }
+    throw e;
+  }
+}

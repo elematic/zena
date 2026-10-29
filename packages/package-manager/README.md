@@ -17,6 +17,9 @@ package in this repository's workspace or from a package that lists it in its
   entries it commits to, read from the atproto data model with the checks
   their lexicons describe, and written back. Also the rules for package
   names.
+- `package-manager:host-methods`: the NSIDs of the package host's XRPC
+  methods, which the host serves and `zena` calls. A test checks them
+  against the host's lexicons.
 - `package-manager:archive`: source archives, the CAR files that hold a
   release's source. Packing is deterministic, so the same files always have
   the same CID, and unpacking accepts only what packing writes.

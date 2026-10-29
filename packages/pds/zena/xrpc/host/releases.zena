@@ -1,0 +1,136 @@
+/**
+ * The host methods of a package's releases: uploading an artifact,
+ * publishing a release, which the host holds until its maintainers attest
+ * it, completing it once they have, listing and withdrawing the releases
+ * waiting, and retracting a published one (package-manager.md,
+ * "Publishing a release").
+ */
+
+import {Future} from 'zena:async';
+import {Router} from 'zena:http';
+import {JsonArray, JsonObject} from 'zena:json';
+import {formatTimestamp} from 'zena:time';
+import {decodeCbor} from 'atproto:cbor';
+import {fromJson, toJson} from 'atproto:data';
+import {
+  COMPLETE_RELEASE, GET_PENDING_RELEASES, PUBLISH, RETRACT, UPLOAD_ARTIFACT, WITHDRAW_RELEASE
+} from 'package-manager:host-methods';
+import {PENDING_MICROS, PackageHost, Tally} from '../../host.zena';
+import {fail, jsonBody, nowMicros} from '../common.zena';
+import {hostProcedure, hostQuery, writtenJson} from './common.zena';
+
+/** Adds the methods of releases to `router`. */
+export function releaseRoutes(router: Router, host: PackageHost): void {
+  hostProcedure(router, host, UPLOAD_ARTIFACT, async (req, res, caller): Future<JsonObject | null> => {
+    let pkg = req.url.searchParams().get('package');
+    if (pkg == null || pkg == '') {
+      fail(res, 400, 'InvalidRequest', 'Missing required parameter: package');
+      return null;
+    }
+    let bytes = await req.bytes();
+    let mimeType = req.getHeader('content-type') ?? 'application/octet-stream';
+    let blob = await host.uploadArtifact(caller, pkg as String, mimeType, bytes);
+    let body = new JsonObject();
+    body['blob'] = toJson(blob.toValue());
+    return body;
+  });
+
+  hostProcedure(router, host, PUBLISH, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['package'] is String) || input['release'] == null) {
+      fail(res, 400, 'InvalidRequest', 'package and release are required');
+      return null;
+    }
+    let created = await host.publish(caller, input['package'] as String, fromJson(input['release']),
+        nowMicros());
+    let answer = writtenJson(created);
+    answer['state'] = 'pending';
+    return answer;
+  });
+
+  hostProcedure(router, host, COMPLETE_RELEASE, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['package'] is String) || !(input['version'] is String)) {
+      fail(res, 400, 'InvalidRequest', 'package and version are required');
+      return null;
+    }
+    let completion = await host.completeRelease(caller, input['package'] as String, input['version'] as String,
+        nowMicros());
+    let answer = tallyJson(completion.tally);
+    answer['uri'] = completion.uri;
+    answer['cid'] = completion.cid.toString();
+    answer['state'] = if (completion.published) 'published' else 'pending';
+    return answer;
+  });
+
+  hostQuery(router, host, GET_PENDING_RELEASES, async (req, res, caller): Future<JsonObject | null> => {
+    let pkg = req.url.searchParams().get('package');
+    if (pkg == null || pkg == '') {
+      fail(res, 400, 'InvalidRequest', 'Missing required parameter: package');
+      return null;
+    }
+    let releases = new JsonArray();
+    for (let waiting in await host.pendingReleases(caller, pkg as String, nowMicros())) {
+      let held = waiting.release;
+      let entry = tallyJson(waiting.tally);
+      entry['version'] = held.version;
+      entry['uri'] = waiting.uri;
+      entry['cid'] = held.cid.toString();
+      entry['publisher'] = held.publisher;
+      entry['heldAt'] = formatTimestamp(held.heldAt * (1000 as i64));
+      entry['expiresAt'] = formatTimestamp((held.heldAt + PENDING_MICROS) * (1000 as i64));
+      entry['release'] = toJson(decodeCbor(held.record));
+      releases.push(entry);
+    }
+    let answer = new JsonObject();
+    answer['releases'] = releases;
+    return answer;
+  });
+
+  hostProcedure(router, host, WITHDRAW_RELEASE, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['package'] is String) || !(input['version'] is String)) {
+      fail(res, 400, 'InvalidRequest', 'package and version are required');
+      return null;
+    }
+    await host.withdrawRelease(caller, input['package'] as String, input['version'] as String, nowMicros());
+    return new JsonObject();
+  });
+
+  hostProcedure(router, host, RETRACT, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    let reason = input['reason'];
+    if (!(input['package'] is String) || !(input['version'] is String) || (reason != null && !(reason is String))) {
+      fail(res, 400, 'InvalidRequest', 'package and version are required, and reason must be a string');
+      return null;
+    }
+    return writtenJson(await host.retract(caller, input['package'] as String, input['version'] as String,
+        if (reason is String) reason as String else null, nowMicros()));
+  });
+}
+
+/** Who attested a release, and what its maintainers record asks for. */
+function tallyJson(tally: Tally): JsonObject {
+  let approvedBy = new JsonArray();
+  for (let did in tally.approvedBy) {
+    approvedBy.push(did);
+  }
+  let answer = new JsonObject();
+  answer['approvedBy'] = approvedBy;
+  answer['people'] = new Box<f64>(tally.people as f64);
+  answer['threshold'] = new Box<f64>(tally.threshold as f64);
+  answer['humans'] = new Box<f64>(tally.humans as f64);
+  return answer;
+}

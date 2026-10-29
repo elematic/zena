@@ -2,8 +2,9 @@
  * The lexicons in `packages/package-manager/lexicons` hold together: each
  * file's `id` is the NSID its path spells, every reference to a
  * `dev.zena-lang` definition names one that exists, every required
- * property is declared, and the permission set covers every host method.
- * No lexicon tool checks them otherwise.
+ * property is declared, the permission set covers every host method, and
+ * `package-manager:host-methods` names exactly the host's methods. No
+ * lexicon tool checks them otherwise.
  */
 
 import {suite, test} from 'zena:test';
@@ -13,6 +14,7 @@ import {join} from 'zena:core';
 import {globSync, readFileSync} from 'zena:fs';
 import {JsonArray, JsonObject, JsonValue, parseJson} from 'zena:json';
 import {isValidNsid} from 'atproto:syntax';
+import {HOST_METHODS} from 'package-manager:host-methods';
 
 let ROOT = 'packages/package-manager/lexicons';
 
@@ -148,5 +150,21 @@ export let tests = suite('package-manager:lexicons', () => {
       }
     }
     equal(covered.size, methods);
+  });
+
+  test('host-methods names each host lexicon, and nothing else', (ctx) => {
+    let all = lexicons();
+    let named = new HashSet<String>();
+    for (let method in HOST_METHODS) {
+      isTrue(!named.has(method), `${method} is listed twice`);
+      named.add(method);
+      let lexicon = all.get(method);
+      isTrue(lexicon is (true, JsonObject), `${method} has no lexicon`);
+    }
+    for (let nsid in all.keys()) {
+      if (nsid.startsWith('dev.zena-lang.host.')) {
+        isTrue(named.has(nsid), `${nsid} has no constant in package-manager:host-methods`);
+      }
+    }
   });
 });

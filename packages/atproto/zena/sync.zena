@@ -20,6 +20,7 @@ import {RecordProof, verifyRecordProof} from './repo.zena';
 import {Value, fromJson} from './data.zena';
 import {XrpcClient} from './xrpc.zena';
 import {JsonArray, JsonObject, JsonValue} from 'zena:json';
+import {REPO_LIST_RECORDS, SYNC_GET_BLOB, SYNC_GET_RECORD} from './methods.zena';
 
 /** A record or blob that could not be fetched or did not check out. */
 export class SyncError extends Error {
@@ -44,7 +45,7 @@ export async function getVerifiedRecord(document: DidDocument, collection: Strin
     throw new SyncError(`${document.id} has no signing key`);
   }
   let key = document.signingKey as PublicKey;
-  let response = await clientFor(document).queryRaw('com.atproto.sync.getRecord', [
+  let response = await clientFor(document).queryRaw(SYNC_GET_RECORD, [
     ('did', document.id),
     ('collection', collection),
     ('rkey', rkey),
@@ -58,7 +59,7 @@ export async function getVerifiedBlob(document: DidDocument, cid: Cid): Future<F
   if (cid.hashType != HASH_SHA256) {
     throw new SyncError(`cannot check blob ${cid.toString()}: not a SHA-256 CID`);
   }
-  let response = await clientFor(document).queryRaw('com.atproto.sync.getBlob', [
+  let response = await clientFor(document).queryRaw(SYNC_GET_BLOB, [
     ('did', document.id),
     ('cid', cid.toString()),
   ]);
@@ -99,7 +100,7 @@ export async function listRecords(document: DidDocument, collection: String): Fu
     if (after != null) {
       params.push(('cursor', after));
     }
-    let answer = await client.query('com.atproto.repo.listRecords', params);
+    let answer = await client.query(REPO_LIST_RECORDS, params);
     if (!(answer is JsonObject)) {
       throw new SyncError('listRecords answered with something other than an object');
     }

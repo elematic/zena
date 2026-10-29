@@ -1,0 +1,26 @@
+/**
+ * The `com.atproto` method names in `atproto:methods`: each a valid NSID
+ * in `com.atproto`, listed once, and its path below `/xrpc/`.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {HashSet} from 'zena:collections';
+import {ATPROTO_METHODS, SYNC_GET_RECORD, xrpcPath} from 'atproto:methods';
+import {isValidNsid} from 'atproto:syntax';
+
+export let tests = suite('atproto:methods', () => {
+  test('names each method once, as a com.atproto NSID', (ctx) => {
+    let seen = new HashSet<String>();
+    for (let method in ATPROTO_METHODS) {
+      isTrue(isValidNsid(method) && method.startsWith('com.atproto.'), method);
+      isTrue(!seen.has(method), `${method} is listed twice`);
+      seen.add(method);
+    }
+    equal(seen.size, 16);
+  });
+
+  test('puts a method below /xrpc/', (ctx) => {
+    equal(xrpcPath(SYNC_GET_RECORD), '/xrpc/com.atproto.sync.getRecord');
+  });
+});

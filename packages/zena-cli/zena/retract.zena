@@ -15,6 +15,7 @@ import { Version } from 'package-manager:version';
 import { Options } from './env.zena';
 import { packageDid } from './members.zena';
 import { PublishError, attest, findHost, hostClient, runCommand, saveIfRefreshed, signedIn } from './publish.zena';
+import { RETRACT } from 'package-manager:host-methods';
 
 export function retractCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
@@ -36,8 +37,8 @@ export function retractCommand(args: ParsedArgs, options: Options): i32 {
     if (let (true, reason) = args.getOption('reason')) {
       input['reason'] = reason;
     }
-    let written = runFuture(hostClient(session, host, 'dev.zena-lang.host.retract')
-      .procedure('dev.zena-lang.host.retract', input)) as JsonObject;
+    let written = runFuture(hostClient(session, host, RETRACT)
+      .procedure(RETRACT, input)) as JsonObject;
     attest(session, written['uri'] as String, Cid.parse(written['cid'] as String));
     console.log(`Retracted ${version} of ${pkg}. Builds that pin it still use it; choosing a version skips it.`);
     saveIfRefreshed(session);

@@ -31,6 +31,17 @@ lexicons are in `packages/package-manager/lexicons`.
   does: storage, accounts, serving repositories, and the host extension.
 - When Zena itself is missing something, the fix goes in the compiler or
   the standard library, in the same change if it is small.
+- XRPC routes go in `zena/xrpc/`, one module per `com.atproto` namespace
+  (`sync.zena`, `repo.zena`, `server.zena`) and, under `xrpc/host/`, one
+  per area of the package host's methods, which `xrpc/host/routes.zena`
+  adds. `server.zena` only puts them, and the pages in `zena/web/`,
+  together. A host method's route is added with `hostQuery` or
+  `hostProcedure`, which check the caller's token for the same method.
+- Method names come from `atproto:methods` and
+  `package-manager:host-methods`, never from a string literal, here and
+  in `zena`. A new host method needs its lexicon and its constant; the
+  lexicon test fails without either. Tests keep the literals, since they
+  check the wire.
 
 ## Storage
 

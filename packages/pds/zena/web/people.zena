@@ -28,6 +28,7 @@ import {now} from 'wasi:clocks/system-clock';
 import {Cid} from 'atproto:cid';
 import {Identity} from 'atproto:identity';
 import {PackageHost} from '../host.zena';
+import {REPO_GET_RECORD, SYNC_GET_BLOB, xrpcPath} from 'atproto:methods';
 
 /** The profile record pages read: Bluesky's, which most atproto accounts have. */
 export let PROFILE_COLLECTION = 'app.bsky.actor.profile';
@@ -192,7 +193,7 @@ export final class People {
       return true;
     }
     person.pds = pds;
-    let url = `${pds as String}/xrpc/com.atproto.repo.getRecord?repo=${person.did}&collection=${PROFILE_COLLECTION}&rkey=self`;
+    let url = `${pds as String}${xrpcPath(REPO_GET_RECORD)}?repo=${person.did}&collection=${PROFILE_COLLECTION}&rkey=self`;
     let answer = await this.#get(url);
     if (answer == null) {
       return false;
@@ -216,7 +217,7 @@ export final class People {
       return null;
     }
     let answer = await this.#get(
-        `${pds as String}/xrpc/com.atproto.repo.getRecord?repo=${person.did}&collection=${collection}&rkey=${rkey}`);
+        `${pds as String}${xrpcPath(REPO_GET_RECORD)}?repo=${person.did}&collection=${collection}&rkey=${rkey}`);
     if (answer == null || answer.status != 200) {
       return null;
     }
@@ -242,7 +243,7 @@ export final class People {
     if (let (true, cached) = this.#avatars.get(key)) {
       return cached;
     }
-    let answer = await this.#get(`${pds as String}/xrpc/com.atproto.sync.getBlob?did=${person.did}&cid=${key}`);
+    let answer = await this.#get(`${pds as String}${xrpcPath(SYNC_GET_BLOB)}?did=${person.did}&cid=${key}`);
     if (answer == null || answer.status != 200 || answer.body.length > MAX_AVATAR_BYTES) {
       return null;
     }

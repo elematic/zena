@@ -24,6 +24,7 @@ import { currentPackageDid, namedPackage } from './members.zena';
 import {
   PublishError, approvals, attest, completeRelease, findHost, hostClient, runCommand, saveIfRefreshed, signedIn
 } from './publish.zena';
+import { GET_PENDING_RELEASES } from 'package-manager:host-methods';
 
 export function approveCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
@@ -44,8 +45,8 @@ export function approveCommand(args: ParsedArgs, options: Options): i32 {
     let pkg = if (parts.length > 1) namedPackage(host, named) else currentPackageDid();
     let label = if (parts.length > 1) named else pkg;
 
-    let pending = runFuture(hostClient(session, host, 'dev.zena-lang.host.getPendingReleases')
-      .query('dev.zena-lang.host.getPendingReleases', [('package', pkg)])) as JsonObject;
+    let pending = runFuture(hostClient(session, host, GET_PENDING_RELEASES)
+      .query(GET_PENDING_RELEASES, [('package', pkg)])) as JsonObject;
     let releases = pending['releases'] as JsonArray;
     var waiting: JsonObject | null = null;
     for (var i = 0; i < releases.length; i += 1) {

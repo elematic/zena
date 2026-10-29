@@ -1,0 +1,63 @@
+/**
+ * What a client needs to find and call the package host: its DID
+ * document, when its service DID is a `did:web`; its
+ * `com.atproto.server.describeServer`, which gives that DID, which tokens
+ * are addressed to, and the domain its handles are under; and
+ * `com.atproto.identity.resolveHandle`, which the web app's sign-in
+ * resolves handles with, since a browser cannot look DNS up itself.
+ */
+
+import {Router} from 'zena:http';
+import {JsonArray, JsonObject} from 'zena:json';
+import {IDENTITY_RESOLVE_HANDLE, SERVER_DESCRIBE_SERVER, xrpcPath} from 'atproto:methods';
+import {PackageHost} from '../../host.zena';
+import {fail, json} from '../common.zena';
+
+/** Adds the host's DID document, `describeServer` and `resolveHandle` to `router`. */
+export function identityRoutes(router: Router, host: PackageHost): void {
+  // A `did:web` resolves to `https://<host>/.well-known/did.json`. It names
+  // the host as a PDS; the host signs nothing as itself, so the document
+  // has no keys.
+  if (host.config.serviceDid.startsWith('did:web:')) {
+    router.get('/.well-known/did.json', async (req, res, next, params) => {
+      let context = new JsonArray();
+      context.push('https://www.w3.org/ns/did/v1');
+      let service = new JsonObject();
+      service['id'] = '#atproto_pds';
+      service['type'] = 'AtprotoPersonalDataServer';
+      service['serviceEndpoint'] = host.config.endpoint;
+      let services = new JsonArray();
+      services.push(service);
+      let body = new JsonObject();
+      body['@context'] = context;
+      body['id'] = host.config.serviceDid;
+      body['service'] = services;
+      json(res, body);
+    });
+  }
+
+  router.get(xrpcPath(SERVER_DESCRIBE_SERVER), async (req, res, next, params) => {
+    let domains = new JsonArray();
+    domains.push(`.${host.config.domain}`);
+    let body = new JsonObject();
+    body['did'] = host.config.serviceDid;
+    body['availableUserDomains'] = domains;
+    json(res, body);
+  });
+
+  router.get(xrpcPath(IDENTITY_RESOLVE_HANDLE), async (req, res, next, params) => {
+    let handle = req.url.searchParams().get('handle');
+    if (handle == null || handle == '') {
+      fail(res, 400, 'InvalidRequest', 'Missing required parameter: handle');
+      return;
+    }
+    let did = await host.resolveHandle(handle as String);
+    if (did == null) {
+      fail(res, 400, 'HandleNotFound', `${handle as String} does not resolve to a DID`);
+      return;
+    }
+    let answer = new JsonObject();
+    answer['did'] = did as String;
+    json(res, answer);
+  });
+}

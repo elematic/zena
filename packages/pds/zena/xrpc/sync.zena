@@ -1,0 +1,92 @@
+/**
+ * The `com.atproto.sync` reads: an account's latest commit, a record with
+ * its proof, the whole repository, and a blob. Ported from pds.js's
+ * `packages/core/src/handlers/xrpc-sync.js` and `handlers/xrpc-blob.js`,
+ * at the revision docs/design/pds.md pins. pds.js serves one account and
+ * answers `RepoNotFound` for any other; this finds the account each
+ * request names.
+ */
+
+import {Router} from 'zena:http';
+import {JsonObject} from 'zena:json';
+import {Cid} from 'atproto:cid';
+import {SYNC_GET_BLOB, SYNC_GET_LATEST_COMMIT, SYNC_GET_RECORD, SYNC_GET_REPO, xrpcPath} from 'atproto:methods';
+import {Pds} from '../pds.zena';
+import {accountFor, fail, json, parseCid, required} from './common.zena';
+
+/** Adds the `com.atproto.sync` routes for the accounts in `pds`. */
+export function syncRoutes(router: Router, pds: Pds): void {
+  router.get(xrpcPath(SYNC_GET_LATEST_COMMIT), async (req, res, next, params) => {
+    let given = required(req, res, ['did']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let head = await pds.storage.store(account.did).getHead();
+    if (head == null) {
+      fail(res, 404, 'RepoNotFound', `${account.did} has no commit`);
+      return;
+    }
+    let body = new JsonObject();
+    body['cid'] = head.cid.toString();
+    body['rev'] = head.rev;
+    json(res, body);
+  });
+
+  router.get(xrpcPath(SYNC_GET_RECORD), async (req, res, next, params) => {
+    let given = required(req, res, ['did', 'collection', 'rkey']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let car = await pds.repositoryOf(account).recordProof(given[1], given[2]);
+    if (car == null) {
+      fail(res, 404, 'RecordNotFound', 'Record not found');
+      return;
+    }
+    res.type = 'application/vnd.ipld.car';
+    res.body = car as FixedArray<u8>;
+  });
+
+  router.get(xrpcPath(SYNC_GET_REPO), async (req, res, next, params) => {
+    let given = required(req, res, ['did']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    res.type = 'application/vnd.ipld.car';
+    res.body = await pds.repositoryOf(account).exportCar();
+  });
+
+  router.get(xrpcPath(SYNC_GET_BLOB), async (req, res, next, params) => {
+    let given = required(req, res, ['did', 'cid']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let cid = parseCid(given[1]);
+    if (cid == null) {
+      fail(res, 400, 'InvalidRequest', `'${given[1]}' is not a CID`);
+      return;
+    }
+    let blob = await pds.storage.store(account.did).getBlob(cid as Cid);
+    if (blob == null) {
+      fail(res, 400, 'BlobNotFound', 'Blob not found');
+      return;
+    }
+    res.type = blob.mimeType;
+    res.body = blob.bytes;
+  });
+}
