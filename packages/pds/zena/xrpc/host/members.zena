@@ -1,0 +1,117 @@
+/**
+ * The host methods of who belongs: the caller's memberships, an
+ * organization's members record and teams, a package's maintainers
+ * record, and the private entries behind their commitments, for those
+ * who may see them (package-manager.md, "Private membership").
+ */
+
+import {Future} from 'zena:async';
+import {Router} from 'zena:http';
+import {JsonArray, JsonObject} from 'zena:json';
+import {fromJson, toJson} from 'atproto:data';
+import {
+  DELETE_TEAM, GET_ENTRIES, GET_MEMBERSHIPS, PUT_MAINTAINERS, PUT_MEMBERS, PUT_TEAM
+} from 'package-manager:host-methods';
+import {Membership, PackageHost} from '../../host.zena';
+import {fail, jsonBody, nowMicros} from '../common.zena';
+import {entriesOf, hostProcedure, hostQuery, swapOf, writtenJson} from './common.zena';
+
+/** Adds the methods of memberships, members, teams, maintainers and entries to `router`. */
+export function memberRoutes(router: Router, host: PackageHost): void {
+  hostQuery(router, host, GET_MEMBERSHIPS, async (req, res, caller): Future<JsonObject | null> => {
+    let memberships = await host.getMemberships(caller);
+    let answer = new JsonObject();
+    answer['did'] = caller;
+    answer['orgs'] = membershipsJson(memberships.orgs, 'scope');
+    answer['teams'] = membershipsJson(memberships.teams, 'team');
+    answer['packages'] = membershipsJson(memberships.packages, 'package');
+    return answer;
+  });
+
+  hostProcedure(router, host, PUT_MEMBERS, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['organization'] is String) || input['members'] == null || !(input['entries'] is JsonArray)) {
+      fail(res, 400, 'InvalidRequest', 'organization, members and entries are required');
+      return null;
+    }
+    return writtenJson(await host.putMembers(caller, input['organization'] as String, fromJson(input['members']),
+        entriesOf(input), swapOf(input), nowMicros()));
+  });
+
+  hostProcedure(router, host, PUT_TEAM, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['organization'] is String) || !(input['name'] is String) || input['team'] == null ||
+        !(input['entries'] is JsonArray)) {
+      fail(res, 400, 'InvalidRequest', 'organization, name, team and entries are required');
+      return null;
+    }
+    return writtenJson(await host.putTeam(caller, input['organization'] as String, input['name'] as String,
+        fromJson(input['team']), entriesOf(input), swapOf(input), nowMicros()));
+  });
+
+  hostProcedure(router, host, DELETE_TEAM, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['organization'] is String) || !(input['name'] is String)) {
+      fail(res, 400, 'InvalidRequest', 'organization and name are required');
+      return null;
+    }
+    await host.deleteTeam(caller, input['organization'] as String, input['name'] as String, swapOf(input),
+        nowMicros());
+    return new JsonObject();
+  });
+
+  hostProcedure(router, host, PUT_MAINTAINERS, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['package'] is String) || input['maintainers'] == null) {
+      fail(res, 400, 'InvalidRequest', 'package and maintainers are required');
+      return null;
+    }
+    return writtenJson(await host.putMaintainers(caller, input['package'] as String,
+        fromJson(input['maintainers']), entriesOf(input), swapOf(input), nowMicros()));
+  });
+
+  hostQuery(router, host, GET_ENTRIES, async (req, res, caller): Future<JsonObject | null> => {
+    let query = req.url.searchParams();
+    let account = query.get('account');
+    if (account == null || account == '') {
+      fail(res, 400, 'InvalidRequest', 'Missing required parameter: account');
+      return null;
+    }
+    let team = query.get('team');
+    let entries = await host.getEntries(caller, account as String, if (team == '') null else team);
+    let list = new JsonArray();
+    for (let entry in entries) {
+      list.push(toJson(entry.toValue()));
+    }
+    let answer = new JsonObject();
+    answer['entries'] = list;
+    return answer;
+  });
+}
+
+/** Memberships as `getMemberships` answers them, each with its role, and `kind`'s name for its name. */
+function membershipsJson(memberships: Array<Membership>, kind: String): JsonArray {
+  let list = new JsonArray();
+  for (let membership in memberships) {
+    let item = new JsonObject();
+    item['did'] = membership.did;
+    item['handle'] = membership.handle;
+    item['scope'] = membership.scope;
+    item['name'] = membership.name;
+    item['role'] = membership.role;
+    list.push(item);
+  }
+  return list;
+}

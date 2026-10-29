@@ -1,0 +1,84 @@
+/**
+ * What the routes of the package host's methods (`dev.zena-lang.host.*`,
+ * `package-manager:host-methods`) build from. `hostQuery` and
+ * `hostProcedure` add a method's route at `/xrpc/<method>` and check that
+ * the caller's service-auth token was issued for that same method, so the
+ * two cannot disagree; then they answer with what the method returns, or
+ * with the error a `HostError` names.
+ */
+
+import {Future} from 'zena:async';
+import {Request, Response, Router} from 'zena:http';
+import {JsonArray, JsonObject} from 'zena:json';
+import {div} from 'zena:math';
+import {Value, fromJson} from 'atproto:data';
+import {xrpcPath} from 'atproto:methods';
+import {Created, HostError, PackageHost} from '../../host.zena';
+import {fail, json, nowMicros} from '../common.zena';
+
+/**
+ * A host method's work, for the caller whose DID its token names: the
+ * JSON to answer with, or null when it has answered already, as with an
+ * error.
+ */
+export type HostMethod = (req: Request, res: Response, caller: String) => Future<JsonObject | null>;
+
+/** Adds the host query `method`, a GET, to `router`. */
+export function hostQuery(router: Router, host: PackageHost, method: String, call: HostMethod): void {
+  router.get(xrpcPath(method), async (req, res, next, params) => {
+    await hostCall(host, req, res, method, call);
+  });
+}
+
+/** Adds the host procedure `method`, a POST, to `router`. */
+export function hostProcedure(router: Router, host: PackageHost, method: String, call: HostMethod): void {
+  router.post(xrpcPath(method), async (req, res, next, params) => {
+    await hostCall(host, req, res, method, call);
+  });
+}
+
+async function hostCall(host: PackageHost, req: Request, res: Response, method: String, call: HostMethod)
+    : Future<void> {
+  try {
+    let caller = await host.authenticate(req.getHeader('authorization'), method,
+        div(nowMicros(), 1000000 as i64));
+    let answer = await call(req, res, caller);
+    if (answer != null) {
+      json(res, answer as JsonObject);
+    }
+  } catch (e) {
+    if (e is HostError) {
+      let error = e as HostError;
+      fail(res, error.status, error.error, error.message);
+      return;
+    }
+    throw e;
+  }
+}
+
+/** The answer to a call that wrote a record: its AT-URI and CID. */
+export function writtenJson(created: Created): JsonObject {
+  let answer = new JsonObject();
+  answer['uri'] = created.uri;
+  answer['cid'] = created.cid.toString();
+  return answer;
+}
+
+/** The `entries` a call gives, as values; none when it gives none. */
+export function entriesOf(input: JsonObject): Array<Value> {
+  let entries = new GrowableArray<Value>();
+  let given = input['entries'];
+  if (given is JsonArray) {
+    let list = given as JsonArray;
+    for (var i = 0; i < list.length; i += 1) {
+      entries.push(fromJson(list[i]));
+    }
+  }
+  return entries;
+}
+
+/** The `swapRecord` a call gives, or null. */
+export function swapOf(input: JsonObject): String | null {
+  let swap = input['swapRecord'];
+  return if (swap is String) swap as String else null;
+}

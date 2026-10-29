@@ -18,6 +18,9 @@ import {JsonObject, JsonValue} from 'zena:json';
 import {IdentityResolver} from './identity.zena';
 import {isValidDid} from './syntax.zena';
 import {XrpcClient, XrpcError} from './xrpc.zena';
+import {
+  SERVER_CREATE_SESSION, SERVER_DELETE_SESSION, SERVER_GET_SERVICE_AUTH, SERVER_REFRESH_SESSION
+} from './methods.zena';
 
 /** A session that cannot be created, read or used. */
 export class SessionError extends Error {
@@ -92,7 +95,7 @@ export async function createSession(identifier: String, password: String,
   let input = new JsonObject();
   input['identifier'] = identity.did;
   input['password'] = password;
-  let answer = await new XrpcClient(pds as String).procedure('com.atproto.server.createSession', input);
+  let answer = await new XrpcClient(pds as String).procedure(SERVER_CREATE_SESSION, input);
   let session = sessionFrom(answer, pds as String);
   if (session.did != identity.did) {
     throw new SessionError(`${pds} signed in ${session.did}, not ${identity.did}`);
@@ -104,7 +107,7 @@ export async function createSession(identifier: String, password: String,
 export async function refreshSession(session: Session): Future<void> {
   let client = new XrpcClient(session.pds);
   client.authorization = `Bearer ${session.refreshJwt}`;
-  let fresh = sessionFrom(await client.procedure('com.atproto.server.refreshSession', null),
+  let fresh = sessionFrom(await client.procedure(SERVER_REFRESH_SESSION, null),
       session.pds);
   if (fresh.did != session.did) {
     throw new SessionError(`${session.pds} refreshed ${fresh.did}, not ${session.did}`);
@@ -118,7 +121,7 @@ export async function refreshSession(session: Session): Future<void> {
 export async function deleteSession(session: Session): Future<void> {
   let client = new XrpcClient(session.pds);
   client.authorization = `Bearer ${session.refreshJwt}`;
-  await client.procedure('com.atproto.server.deleteSession', null);
+  await client.procedure(SERVER_DELETE_SESSION, null);
 }
 
 /**
@@ -137,13 +140,13 @@ export async function getServiceAuth(session: Session, audience: String, method:
   }
   var answer: JsonValue = null;
   try {
-    answer = await session.client().query('com.atproto.server.getServiceAuth', params);
+    answer = await session.client().query(SERVER_GET_SERVICE_AUTH, params);
   } catch (e) {
     if (!(e is XrpcError) || (e as XrpcError).error != 'ExpiredToken') {
       throw e;
     }
     await refreshSession(session);
-    answer = await session.client().query('com.atproto.server.getServiceAuth', params);
+    answer = await session.client().query(SERVER_GET_SERVICE_AUTH, params);
   }
   if (answer is JsonObject) {
     let token = (answer as JsonObject)['token'];

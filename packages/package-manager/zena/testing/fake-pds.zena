@@ -48,6 +48,10 @@ import {fetch} from 'zena:fetch';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {buildMst, compareKeys} from 'atproto:mst';
 import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, RETRACTION_TYPE, Retraction} from '../records.zena';
+import {
+  REPO_LIST_RECORDS, REPO_PUT_RECORD, SERVER_CREATE_SESSION, SERVER_DELETE_SESSION, SERVER_GET_SERVICE_AUTH,
+  SERVER_REFRESH_SESSION, SYNC_GET_BLOB, SYNC_GET_RECORD, xrpcPath
+} from 'atproto:methods';
 
 /** The first package account's DID. */
 export let DID = 'did:plc:routerrouterrouterrouter';
@@ -369,18 +373,18 @@ function serve(pds: FakePds): Server {
       await serveSession(pds, req, res);
       return;
     }
-    if (path == '/xrpc/com.atproto.repo.putRecord') {
+    if (path == xrpcPath(REPO_PUT_RECORD)) {
       await servePutRecord(pds, req, res);
       return;
     }
     let did = params.get('did') ?? params.get('repo') ?? '';
     if (let (true, account) = pds.accounts.get(did)) {
-      if (path == '/xrpc/com.atproto.sync.getRecord') {
+      if (path == xrpcPath(SYNC_GET_RECORD)) {
         res.type = 'application/vnd.ipld.car';
         res.body = account.repositoryCar();
         return;
       }
-      if (path == '/xrpc/com.atproto.sync.getBlob') {
+      if (path == xrpcPath(SYNC_GET_BLOB)) {
         let cid = params.get('cid') ?? '';
         if (let (true, blob) = account.blobs.get(cid)) {
           res.type = 'application/octet-stream';
@@ -392,7 +396,7 @@ function serve(pds: FakePds): Server {
         res.body = '{"error":"BlobNotFound","message":"no such blob"}';
         return;
       }
-      if (path == '/xrpc/com.atproto.repo.listRecords') {
+      if (path == xrpcPath(REPO_LIST_RECORDS)) {
         res.type = 'application/json';
         res.body = account.listRecordsJson(params.get('collection') ?? '');
         return;
@@ -475,7 +479,7 @@ async function serveSession(pds: FakePds, req: Request, res: Response): Future<v
     res.statusCode = status;
     res.body = `{"error":"${error}","message":"${error}"}`;
   };
-  if (path == '/xrpc/com.atproto.server.createSession') {
+  if (path == xrpcPath(SERVER_CREATE_SESSION)) {
     let input = parseJson(await req.text()) as JsonObject;
     let identifier = input['identifier'] as String;
     var found: FakeAccount | null = null;
@@ -493,7 +497,7 @@ async function serveSession(pds: FakePds, req: Request, res: Response): Future<v
     res.body = pds.newSession(account as FakeAccount);
     return;
   }
-  if (path == '/xrpc/com.atproto.server.refreshSession') {
+  if (path == xrpcPath(SERVER_REFRESH_SESSION)) {
     if (let (true, did) = pds.refreshTokens.get(token)) {
       pds.refreshTokens.delete(token);
       res.body = pds.newSession(pds.accounts[did]);
@@ -502,12 +506,12 @@ async function serveSession(pds: FakePds, req: Request, res: Response): Future<v
     fail(400, 'ExpiredToken');
     return;
   }
-  if (path == '/xrpc/com.atproto.server.deleteSession') {
+  if (path == xrpcPath(SERVER_DELETE_SESSION)) {
     pds.refreshTokens.delete(token);
     res.body = '{}';
     return;
   }
-  if (path == '/xrpc/com.atproto.server.getServiceAuth') {
+  if (path == xrpcPath(SERVER_GET_SERVICE_AUTH)) {
     if (let (true, did) = pds.accessTokens.get(token)) {
       let params = req.url.searchParams();
       let aud = params.get('aud') ?? '';

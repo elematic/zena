@@ -1,0 +1,206 @@
+/**
+ * The `com.atproto.repo` methods: reading a repository's description, a
+ * record and a page of records, and, with sessions, an account's writes
+ * to its own repository, `putRecord` and `deleteRecord`. Ported from
+ * pds.js's `packages/core/src/handlers/xrpc-repo.js`, at the revision
+ * docs/design/pds.md pins.
+ */
+
+import {Future} from 'zena:async';
+import {parseI32} from 'zena:core';
+import {Router} from 'zena:http';
+import {JsonArray, JsonObject, JsonValue} from 'zena:json';
+import {decodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {MapValue, fromJson, toJson} from 'atproto:data';
+import {
+  REPO_DELETE_RECORD, REPO_DESCRIBE_REPO, REPO_GET_RECORD, REPO_LIST_RECORDS, REPO_PUT_RECORD, xrpcPath
+} from 'atproto:methods';
+import {Pds} from '../pds.zena';
+import {CreateRecord, DeleteRecord, UpdateRecord, Write} from '../repository.zena';
+import {SessionError, Sessions} from '../sessions.zena';
+import {Account} from '../storage.zena';
+import {accountFor, fail, json, jsonBody, nowMicros, nowSeconds, parseCid, required, sessionCall} from './common.zena';
+
+/** `com.atproto.repo.listRecords`'s page size, when the request gives none, and its largest. */
+let DEFAULT_LIMIT = 50;
+let MAX_LIMIT = 100;
+
+/** Adds the reads of the repositories in `pds`, and with `sessions`, their accounts' writes. */
+export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null): void {
+  router.get(xrpcPath(REPO_DESCRIBE_REPO), async (req, res, next, params) => {
+    let given = required(req, res, ['repo']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let collections = new JsonArray();
+    var last = '';
+    for (let entry in await pds.storage.store(account.did).allRecords()) {
+      // Records come in key order, so a collection's records are together.
+      if (entry.collection != last) {
+        collections.push(entry.collection);
+        last = entry.collection;
+      }
+    }
+    let body = new JsonObject();
+    body['handle'] = account.handle ?? account.did;
+    body['did'] = account.did;
+    body['didDoc'] = new JsonObject();
+    body['collections'] = collections;
+    body['handleIsCorrect'] = new Box<boolean>(account.handle != null);
+    json(res, body);
+  });
+
+  router.get(xrpcPath(REPO_GET_RECORD), async (req, res, next, params) => {
+    let given = required(req, res, ['repo', 'collection', 'rkey']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let store = pds.storage.store(account.did);
+    let cid = await store.getRecord(given[1], given[2]);
+    if (cid == null) {
+      fail(res, 404, 'RecordNotFound', 'Record not found');
+      return;
+    }
+    let found = cid as Cid;
+    let bytes = await store.getBlock(found);
+    let body = new JsonObject();
+    body['uri'] = `at://${account.did}/${given[1]}/${given[2]}`;
+    body['cid'] = found.toString();
+    body['value'] = toJson(decodeCbor(bytes as FixedArray<u8>));
+    json(res, body);
+  });
+
+  router.get(xrpcPath(REPO_LIST_RECORDS), async (req, res, next, params) => {
+    let given = required(req, res, ['repo', 'collection']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let query = req.url.searchParams();
+    var limit = DEFAULT_LIMIT;
+    if (let (true, asked) = parseI32(query.get('limit') ?? '')) {
+      limit = if (asked < 1) 1 else if (asked > MAX_LIMIT) MAX_LIMIT else asked;
+    }
+    // As the reference PDS does, newest record key first, unless `reverse`.
+    let descending = query.get('reverse') != 'true';
+    let store = pds.storage.store(account.did);
+    let page = await store.listRecords(given[1], query.get('cursor'), limit, descending);
+    let records = new JsonArray();
+    for (let entry in page) {
+      let record = new JsonObject();
+      record['uri'] = `at://${account.did}/${entry.collection}/${entry.rkey}`;
+      record['cid'] = entry.cid.toString();
+      record['value'] = toJson(decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>));
+      records.push(record);
+    }
+    let body = new JsonObject();
+    body['records'] = records;
+    if (page.length == limit) {
+      body['cursor'] = page[page.length - 1].rkey;
+    }
+    json(res, body);
+  });
+
+  if (sessions != null) {
+    writeRoutes(router, pds, sessions as Sessions);
+  }
+}
+
+/** Adds an account's writes to its own repository, as its session allows. */
+function writeRoutes(router: Router, pds: Pds, sessions: Sessions): void {
+  router.post(xrpcPath(REPO_PUT_RECORD), async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['collection'] is String) || !(input['rkey'] is String) || !(input['record'] is JsonObject)) {
+        fail(res, 400, 'InvalidRequest', 'repo, collection, rkey and record are required');
+        return null;
+      }
+      let account = await ownRepository(pds, caller.account, input['repo']);
+      let collection = input['collection'] as String;
+      let rkey = input['rkey'] as String;
+      let record = fromJson(input['record']);
+      if (!(record is MapValue)) {
+        fail(res, 400, 'InvalidRequest', 'the record is not an object');
+        return null;
+      }
+      let swap = swapCidOf(input);
+      let store = pds.storage.store(account.did);
+      let exists = (await store.getRecord(collection, rkey)) != null;
+      if (!exists && swap != null) {
+        fail(res, 400, 'InvalidSwap', `${collection}/${rkey} does not exist`);
+        return null;
+      }
+      let write = if (exists) new UpdateRecord(collection, rkey, record as MapValue, swap) as Write
+          else new CreateRecord(collection, rkey, record as MapValue) as Write;
+      await pds.repositoryOf(account).applyWrites([write], nowMicros());
+      let answer = new JsonObject();
+      answer['uri'] = `at://${account.did}/${collection}/${rkey}`;
+      answer['cid'] = ((await store.getRecord(collection, rkey)) as Cid).toString();
+      return answer;
+    });
+  });
+
+  router.post(xrpcPath(REPO_DELETE_RECORD), async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['collection'] is String) || !(input['rkey'] is String)) {
+        fail(res, 400, 'InvalidRequest', 'repo, collection and rkey are required');
+        return null;
+      }
+      let account = await ownRepository(pds, caller.account, input['repo']);
+      let collection = input['collection'] as String;
+      let rkey = input['rkey'] as String;
+      // Deleting a record that is not there is done already.
+      if ((await pds.storage.store(account.did).getRecord(collection, rkey)) != null) {
+        await pds.repositoryOf(account).applyWrites([new DeleteRecord(collection, rkey, swapCidOf(input))],
+            nowMicros());
+      }
+      return new JsonObject();
+    });
+  });
+}
+
+/**
+ * The account a write names as its `repo`, which must be the caller's:
+ * an account writes its own repository only.
+ */
+async function ownRepository(pds: Pds, caller: Account, repo: JsonValue): Future<Account> {
+  let named = if (repo is String) await pds.findAccount(repo as String) else null;
+  if (named == null || named.did != caller.did) {
+    throw new SessionError(403, 'Forbidden', `${caller.did} may write only its own repository`);
+  }
+  return caller;
+}
+
+/** The `swapRecord` CID a write gives, or null; one that is not a CID is refused. */
+function swapCidOf(input: JsonObject): Cid | null {
+  let swap = input['swapRecord'];
+  if (!(swap is String)) {
+    return null;
+  }
+  let cid = parseCid(swap as String);
+  if (cid == null) {
+    throw new SessionError(400, 'InvalidRequest', `swapRecord '${swap as String}' is not a CID`);
+  }
+  return cid;
+}
