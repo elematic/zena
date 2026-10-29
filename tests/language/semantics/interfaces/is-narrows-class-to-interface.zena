@@ -1,0 +1,39 @@
+// @mode: check
+// `x is I` narrows a class-typed `x` to the interface `I` in the true
+// branch, the way it narrows an `anyref` (issue #448). The class may
+// not implement `I` itself; a subclass may, and the test reads the
+// class's type info at run time.
+
+interface Named {
+  name(): String;
+}
+
+class Animal {}
+
+final class Dog extends Animal implements Named {
+  name(): String {
+    return "dog";
+  }
+}
+
+let describe = (a: Animal): String => {
+  if (a is Named) {
+    return a.name();
+  }
+  return "";
+};
+
+let describeNot = (a: Animal): String => {
+  if (!(a is Named)) {
+    return "";
+  }
+  return a.name();
+};
+
+let viaWhile = (a: Animal): i32 => {
+  var n = 0;
+  while (a is Named && n < 1) {
+    n += a.name().length;
+  }
+  return n;
+};

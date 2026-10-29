@@ -1,0 +1,29 @@
+// @mode: check
+// A literal argument is range-checked against the overload that wins,
+// not against the first one declared (issue #77): `take(300)` cannot
+// be the `u8` overload, so it is the `i32` one, and no range error is
+// reported.
+
+class Sink {
+  take(v: u8): i32 {
+    return 1;
+  }
+  take(v: i32): i32 {
+    return 2;
+  }
+  put(v: i32, w: u8): i32 {
+    return 1;
+  }
+  put(v: i32, w: i32): i32 {
+    return 2;
+  }
+}
+
+let s = new Sink();
+let wide: i32 = s.take(300);
+let narrow: i32 = s.take(200);
+let second: i32 = s.put(1, 300);
+let negative: i32 = s.take(-1);
+
+// A literal that fits no overload is still an error, once.
+let none: i32 = s.put(1, 3000000000); // @error: Integer literal 3000000000 is out of range

@@ -44,9 +44,9 @@ import {
 } from './literals.zena';
 import { checkMatchCaseBody, checkMatchExpr } from './match.zena';
 import {
-  accessMemberKey, checkIndexExpression, checkMemberExpression,
-  displayMemberName, isStaticReceiver, resolveArrayBackingClass,
-  staticMemberHint
+  accessMemberKey, checkIndexExpression, checkIndexWrite,
+  checkMemberExpression, displayMemberName, isStaticReceiver,
+  resolveArrayBackingClass, staticMemberHint
 } from './members.zena';
 import {
   applyFalseNarrowingFromCondition, applyTrueNarrowingFromCondition,
@@ -591,7 +591,15 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     if (operator == null && (left is Identifier || receiverFieldTarget)) {
       ctx.setMoveCheckSuppressedNode(left.id as i32);
     }
-    var leftType = checkExpression(ctx, left, null);
+    // `recv[i] = v` selects a `[]=` over the index and the value, and
+    // the `[]` read takes no part (issue #121). Everything else, a
+    // compound index assignment included, reads the target first.
+    let indexWrite = if (operator == null && left is IndexExpression) {
+      checkIndexWrite(ctx, expr, left, value, loc)
+    } else {
+      null
+    };
+    var leftType: Type = indexWrite ?? checkExpression(ctx, left, null);
     ctx.setMoveCheckSuppressedNode(-1);
     match (left) {
       case Identifier: {
@@ -653,7 +661,16 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       }
       case _: {}
     }
-    var effectiveType = checkExpression(ctx, value, leftType);
+    var effectiveType: Type = new ErrorType();
+    if (indexWrite != null) {
+      // Checked by the write half, against the setter's parameter.
+      let checkedValue = ctx.model.getNodeType(value);
+      if (checkedValue != null) {
+        effectiveType = checkedValue;
+      }
+    } else {
+      effectiveType = checkExpression(ctx, value, leftType);
+    }
     if (operator != null) {
       // We know op is set and not "??". Act like a binary expression: left + right.
       effectiveType = checkBinaryExpression(ctx, leftType, operator, left, value, loc, null);
@@ -723,13 +740,13 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       case _: {}
     }
 
-    // Index writes: record the []= overload selection for codegen
-    // (member-lookup.md §5.1/§5.2). Selection is most-specific over
-    // (index, value) and recorded on the ASSIGNMENT node — the read
-    // half of a compound assignment records separately on the
-    // IndexExpression. Only recorded when the setter is overloaded:
-    // no record means the plain name is unambiguous.
-    if (left is IndexExpression) {
+    // Compound index writes: record the []= overload selection for
+    // codegen (member-lookup.md §5.1/§5.2). Selection is most-specific
+    // over (index, value) and recorded on the ASSIGNMENT node — the
+    // read half records separately on the IndexExpression. Only
+    // recorded when the setter is overloaded: no record means the plain
+    // name is unambiguous. A plain index write selected above.
+    if (indexWrite == null && left is IndexExpression) {
       let recvType = ctx.model.getNodeType(left.object);
       let idxNodeType = ctx.model.getNodeType(left.index);
       if (recvType != null && idxNodeType != null) {

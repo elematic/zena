@@ -34,7 +34,8 @@ section is roughly by how much it would simplify.
 - _Check assignable, then instantiate, then adapt._ The sequence
   "if not `isAssignableTo` report a mismatch, else
   `tryInstantiateGenericFunction`, `setNodeType` when that changed
-  something, `checkAndRegisterInterfaceAdaptation`" appears 36 times:
+  something, `checkAndRegisterInterfaceAdaptation`" appears 21 times, and the
+  adaptation call alone 36 times:
   variable and `using` declarations, `return`, `yield`, assignment,
   `??=`, pattern defaults, field initializers (class, mixin and
   decorated), case-class and variant defaults, parameter defaults
@@ -197,20 +198,33 @@ identity exists:
 
 ### Latent bugs
 
-- `flowTypeOfBinding` discards a narrowing that is not assignable to
-  the declared type. Narrowing a class-typed binding to an interface
-  it may implement is exactly that, which is elematic/zena#448.
-- `inferTypeArg` binds a type parameter to `boxedFormOf(argType)`
-  without widening a boolean literal, which is elematic/zena#277.
-- `checkMatchExpr` checks a guard's type and never applies its
-  narrowings to the arm, which is elematic/zena#128.
-- `checkVariableDeclaration` accepts a `void` initializer, which is
-  elematic/zena#80.
-- The argument pre-pass in `checkCallExpressionInner` checks every
-  argument against the first-declared overload's parameter with
-  diagnostics on, which is elematic/zena#77.
-- The assignment arm checks an index target as a read, which is
-  elematic/zena#121.
+Fixed with the split, each with a portable test seen failing first:
+
+- `flowTypeOfBinding` discarded a narrowing that is not assignable to
+  the declared type, so `x is I` on a class-typed `x` narrowed nothing
+  (elematic/zena#448). The narrowed `x` is an `I`; the class's own
+  members are read before the test or after the branch.
+- `inferTypeArg` bound a type parameter to a boolean literal's type, so
+  `new Cell(true)` was a `Cell<true>` (elematic/zena#277). An argument
+  now infers `boolean`; a written `Cell<true>` stays what was written.
+- `checkMatchExpr` checked a guard's type and never applied its
+  narrowings to the arm (elematic/zena#128).
+- The argument pre-pass in `checkCallExpressionInner` typed a numeric
+  literal against the first-declared overload's parameter, reporting
+  range errors on the way, so `take(300)` over `take(u8)` and
+  `take(i32)` was an error (elematic/zena#77). The pre-pass now types
+  the literal on its own, which is what `docs/design/member-lookup.md`
+  describes.
+- The assignment arm checked an index target as a read, so an
+  `operator []=` whose index no `operator []` accepted was unreachable
+  (elematic/zena#121). `checkIndexWrite` selects the `[]=` over the
+  index and the value.
+- `resolveMemberType` recognized a mixin's `this` class by the `_This`
+  suffix of its name and scanned every declaration in the model for
+  the mixin. The class carries `mixinSelf`.
+
+Still open:
+
 - `extractIsPathNarrowing` and `isImmutableMemberPath` call
   `checkExpression` on the subject again, so a condition's member
   path is re-checked up to six times per `if` (true and false
@@ -219,6 +233,8 @@ identity exists:
 - `getMatchedLiteralType` runs before every expression check, so a
   literal in a context typed by a literal union never reaches the
   numeric range rules.
+- elematic/zena#80 (binding a `void` call) no longer reproduces: a
+  `void` local binding is zero-width since issue #435.
 
 ### Performance
 
@@ -306,7 +322,7 @@ Each step is one PR, lands green on `npm test`, and keeps
 
 1. **The split.** This document, `checker/CONTEXT.md`, the moved
    declarations, the added return annotations.
-2. **Quick fixes with tests.** #448, #277, #128, #80, #77 and the
+2. **Quick fixes with tests.** #448, #277, #128, #77, #121 and the
    `_This` scan, each with a portable test seen failing first.
 3. **The shared blocks.** The assignability-and-adaptation helper, the
    type-parameter helper, default splicing, `:dispose` rooting,

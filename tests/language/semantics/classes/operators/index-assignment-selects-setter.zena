@@ -1,0 +1,40 @@
+// @mode: check
+// `recv[i] = v` selects an `operator []=` over the index and the value
+// (issue #121). The `[]` read does not take part: a `[]=` whose index
+// no `[]` accepts is still reachable, and the value is checked against
+// the setter's parameter.
+
+class Bag {
+  var last: i32 = 0;
+  var label: String = "";
+  operator [](i: i32): i32 {
+    return this.last;
+  }
+  operator []=(i: String, v: i32): void {
+    this.last = v;
+  }
+  operator []=(i: i32, v: String): void {
+    this.label = v;
+  }
+}
+
+// A compound assignment reads through `[]` and writes through `[]=`.
+class Counter {
+  var n: i32 = 0;
+  operator [](i: i32): i32 {
+    return this.n;
+  }
+  operator []=(i: i32, v: i32): void {
+    this.n = v;
+  }
+}
+
+let writes = (): void => {
+  let b = new Bag();
+  b["k"] = 7;
+  b[0] = "zero";
+  b[0] = 1; // @error: Type mismatch
+  b["k"] = "x"; // @error: Type mismatch
+  let c = new Counter();
+  c[0] += 1;
+};

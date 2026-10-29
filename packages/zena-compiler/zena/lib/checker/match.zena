@@ -18,7 +18,7 @@ import { checkExpression } from './expressions.zena';
 import { sameTypeArguments } from './generics.zena';
 import { prescanPendingFunctions } from './module.zena';
 import {
-  branchDefinitelyExits, getMemberPathKey, isImmutableMemberPath
+  applyTrueNarrowingFromCondition, branchDefinitelyExits, getMemberPathKey, isImmutableMemberPath
 } from './narrowing.zena';
 import { moveDestructuredTuple, registerPatternOwners } from './ownership.zena';
 import { checkPattern, collectPatternInstantiations } from './patterns.zena';
@@ -653,6 +653,9 @@ export function checkMatchExpr(
           matchCase.loc
         );
       }
+      // The body runs only when the guard held, so it is checked under
+      // the guard's narrowings, as an `if` consequent is (issue #128).
+      applyTrueNarrowingFromCondition(ctx, guard);
     }
 
     // Check the body and collect its type. The owners the pattern bound

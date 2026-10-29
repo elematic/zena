@@ -1,0 +1,28 @@
+// @mode: check
+// A case guard narrows the case body the way an `if` condition narrows
+// its consequent (issue #128): a binding the pattern made and the
+// guard tested is read at the narrowed type in the body.
+
+class User {
+  bio: String | null;
+  new(this.bio);
+}
+
+let getBio = (u: User): String => match (u) {
+  case User {bio} if bio != null: bio
+  case _: ""
+};
+
+let describe = (x: anyref): i32 => match (x) {
+  case let v if v is String: v.length
+  case _: 0
+};
+
+// The narrowing holds in a block body too, and `&&` chains narrow.
+let both = (u: User, x: anyref): i32 => match (u) {
+  case User {bio} if bio != null && x is String: {
+    let n = bio.length;
+    n + x.length
+  }
+  case _: 0
+};
