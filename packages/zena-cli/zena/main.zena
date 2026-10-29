@@ -33,7 +33,8 @@ import { loginCommand, logoutCommand } from './login.zena';
 import { packageCreateCommand, publishCommand } from './publish.zena';
 import { scopeCreateCommand, scopeInfoCommand } from './scope.zena';
 import {
-  ownerCommand, scopeAddCommand, scopeMembersCommand, scopeRemoveCommand, scopeSettingsCommand, teamCommand
+  ownerCommand, scopeAddCommand, scopeMembersCommand, scopePolicyCommand, scopeRemoveCommand, scopeSettingsCommand,
+  teamCommand
 } from './members.zena';
 import { approveCommand } from './approve.zena';
 import { retractCommand } from './retract.zena';
@@ -206,7 +207,7 @@ function describe() {
         },
       },
       'scope' => {
-        help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope>',
+        help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope>',
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
@@ -214,6 +215,13 @@ function describe() {
           'role' => {help: 'With add: member (the default), admin or owner'},
           'owner-threshold' => {help: "With settings: how many owners must approve a change to the scope's members"},
           'admin-threshold' => {help: "With settings: how many admins or owners must approve a change to one of its teams"},
+          'minimum-threshold' => {help: 'With policy: the fewest approvals a release of any package in the scope needs'},
+          'minimum-humans' => {help: "With policy: the fewest of a release's approvals that must come from people"},
+          'default-teams' => {help: 'With policy: the teams new packages start maintained by, as <team>:<role>,...'},
+          'default-threshold' => {help: 'With policy: the release threshold new packages start with'},
+          'default-owner-threshold' => {help: 'With policy: the owner threshold new packages start with'},
+          'default-humans' => {help: 'With policy: the humans new packages start with'},
+          'creators' => {help: 'With policy: the teams whose members may create packages, as <team>,...'},
         },
       },
       'team' => {
@@ -422,7 +430,10 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
     if (sub.rest.length > 0 && sub.rest[0] == 'settings') {
       return scopeSettingsCommand(sub, options);
     }
-    console.error('Error: zena scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope>');
+    if (sub.rest.length > 0 && sub.rest[0] == 'policy') {
+      return scopePolicyCommand(sub, options);
+    }
+    console.error('Error: zena scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope>');
     return 2;
   }
   if (name == 'team') {

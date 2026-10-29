@@ -17,6 +17,9 @@ import {
   MemberEntry,
   Members,
   OWNER,
+  POLICY_TYPE,
+  Policy,
+  TeamRole,
   PROFILE_TYPE,
   PUBLISHER,
   Profile,
@@ -383,6 +386,54 @@ export let tests = suite('package-manager:records', () => {
       }
     }
     equal(refused, 2);
+  });
+
+  test('reads a scope\'s policy and writes it back, leaving out what it does not change', (ctx) => {
+    let parts = POLICY_TYPE.split('.');
+    let lexicon = parseJson(readFileSync(`packages/package-manager/lexicons/dev/zena-lang/org/${parts[parts.length - 1]}.json`))
+      as JsonObject;
+    equal(lexicon['id'] as String, POLICY_TYPE);
+    // An empty policy asks nothing more than a package's own record.
+    let empty = Policy.fromValue(value('{"$type": "dev.zena-lang.org.policy"}'));
+    equal(empty.minimumThreshold, 1 as i64);
+    equal(empty.minimumHumans, 0 as i64);
+    equal(empty.defaultTeams.length, 0);
+    equal(empty.creators.length, 0);
+    jsonEqual(toJson(empty.toValue()), parseJson('{"$type": "dev.zena-lang.org.policy"}'));
+
+    let policy = new Policy();
+    policy.minimumThreshold = 2 as i64;
+    policy.minimumHumans = 1 as i64;
+    policy.defaultTeams = [new TeamRole('core', 'publisher')];
+    policy.defaultThreshold = 2 as i64;
+    policy.defaultHumans = 1 as i64;
+    policy.creators = ['core'];
+    let read = Policy.fromValue(policy.toValue());
+    equal(read.minimumThreshold, 2 as i64);
+    equal(read.minimumHumans, 1 as i64);
+    equal(read.defaultTeams[0].team, 'core');
+    equal(read.defaultTeams[0].role, 'publisher');
+    equal(read.defaultThreshold, 2 as i64);
+    equal(read.defaultOwnerThreshold, 1 as i64);
+    equal(read.defaultHumans, 1 as i64);
+    equal(read.creators[0], 'core');
+
+    var refused = 0;
+    for (let bad in [
+      '{"$type": "dev.zena-lang.org.policy", "minimumThreshold": 0}',
+      '{"$type": "dev.zena-lang.org.policy", "minimumHumans": -1}',
+      '{"$type": "dev.zena-lang.org.policy", "defaultTeams": [{"team": "core", "role": "member"}]}',
+      '{"$type": "dev.zena-lang.org.policy", "creators": ["Not A Team"]}',
+    ]) {
+      try {
+        Policy.fromValue(value(bad));
+      } catch (e) {
+        if (e is RecordError) {
+          refused += 1;
+        }
+      }
+    }
+    equal(refused, 4);
   });
 
   test('keys an attestation by its subject, version and all', (ctx) => {

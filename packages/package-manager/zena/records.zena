@@ -37,6 +37,7 @@ export let RETRACTION_TYPE = 'dev.zena-lang.package.retraction';
 export let MAINTAINERS_TYPE = 'dev.zena-lang.package.maintainers';
 export let MEMBERS_TYPE = 'dev.zena-lang.org.members';
 export let TEAM_TYPE = 'dev.zena-lang.org.team';
+export let POLICY_TYPE = 'dev.zena-lang.org.policy';
 export let ATTESTATION_TYPE = 'dev.zena-lang.package.attestation';
 
 /** The record key of a package's profile. */
@@ -790,6 +791,125 @@ export final class Team {
     map.entries['members'] = new ListValue(items);
     map.entries['threshold'] = new IntValue(this.threshold);
     return map;
+  }
+}
+
+/** A team of an organization, by name, and the role a package gives it. */
+export final class TeamRole {
+  team: String;
+  role: String;
+
+  new(this.team, this.role);
+}
+
+/**
+ * An organization's policy for the packages in its scope, at record key
+ * `self`. What it asks of releases, the host applies at once, to every
+ * package in the scope: a release needs the larger of its maintainers
+ * record's `threshold` and `minimumThreshold`, and of its `humans` and
+ * `minimumHumans`. What a new package starts with, `zena` uses when it
+ * creates one: the default teams, in their roles, beside its creator, and
+ * the default thresholds. And the teams whose members may create packages
+ * in the scope, besides its admins.
+ */
+export final class Policy {
+  var minimumThreshold: i64 = 1 as i64;
+  var minimumHumans: i64 = 0 as i64;
+  var defaultTeams: Array<TeamRole> = [];
+  var defaultThreshold: i64 = 1 as i64;
+  var defaultOwnerThreshold: i64 = 1 as i64;
+  var defaultHumans: i64 = 0 as i64;
+  var creators: Array<String> = [];
+
+  static fromValue(value: Value): Policy {
+    let what = 'policy record';
+    let map = recordMap(value, POLICY_TYPE, what);
+    let policy = new Policy();
+    policy.minimumThreshold = countOr(map, 'minimumThreshold', 1, what);
+    policy.minimumHumans = countOr(map, 'minimumHumans', 0, what);
+    policy.defaultThreshold = countOr(map, 'defaultThreshold', 1, what);
+    policy.defaultOwnerThreshold = countOr(map, 'defaultOwnerThreshold', 1, what);
+    policy.defaultHumans = countOr(map, 'defaultHumans', 0, what);
+    let teams = field(map, 'defaultTeams');
+    if (teams != null) {
+      if (!(teams is ListValue)) {
+        throw new RecordError(`${what}: 'defaultTeams' is not a list`);
+      }
+      let list = new GrowableArray<TeamRole>();
+      for (let item in teams.items) {
+        if (!(item is MapValue)) {
+          throw new RecordError(`${what}: a default team is not an object`);
+        }
+        let team = requiredString(item, 'team', what);
+        let role = requiredString(item, 'role', what);
+        if (!isValidPackageName(team) || (role != PUBLISHER && role != OWNER)) {
+          throw new RecordError(`${what}: the default team '${team}' as '${role}' is not a team as publisher or owner`);
+        }
+        list.push(new TeamRole(team, role));
+      }
+      policy.defaultTeams = list;
+    }
+    let creators = field(map, 'creators');
+    if (creators != null) {
+      if (!(creators is ListValue)) {
+        throw new RecordError(`${what}: 'creators' is not a list`);
+      }
+      let list = new GrowableArray<String>();
+      for (let item in creators.items) {
+        if (!(item is StringValue) || !isValidPackageName(item.value)) {
+          throw new RecordError(`${what}: a creator is not a team's name`);
+        }
+        list.push(item.value);
+      }
+      policy.creators = list;
+    }
+    return policy;
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(POLICY_TYPE);
+    putCount(map, 'minimumThreshold', this.minimumThreshold, 1);
+    putCount(map, 'minimumHumans', this.minimumHumans, 0);
+    if (this.defaultTeams.length > 0) {
+      let items = new FixedArray<Value>(this.defaultTeams.length, new StringValue(''));
+      for (var i = 0; i < this.defaultTeams.length; i += 1) {
+        let entry = newMap();
+        entry.entries['team'] = new StringValue(this.defaultTeams[i].team);
+        entry.entries['role'] = new StringValue(this.defaultTeams[i].role);
+        items[i] = entry;
+      }
+      map.entries['defaultTeams'] = new ListValue(items);
+    }
+    putCount(map, 'defaultThreshold', this.defaultThreshold, 1);
+    putCount(map, 'defaultOwnerThreshold', this.defaultOwnerThreshold, 1);
+    putCount(map, 'defaultHumans', this.defaultHumans, 0);
+    if (this.creators.length > 0) {
+      let items = new FixedArray<Value>(this.creators.length, new StringValue(''));
+      for (var i = 0; i < this.creators.length; i += 1) {
+        items[i] = new StringValue(this.creators[i]);
+      }
+      map.entries['creators'] = new ListValue(items);
+    }
+    return map;
+  }
+}
+
+/** The count at `key`, at least `least`, or `least` when there is none. */
+function countOr(map: MapValue, key: String, least: i32, what: String): i64 {
+  let value = field(map, key);
+  if (value == null) {
+    return least as i64;
+  }
+  if (!(value is IntValue) || value.value < (least as i64)) {
+    throw new RecordError(`${what}: '${key}' is not a whole number of at least ${least}`);
+  }
+  return value.value;
+}
+
+/** Writes `n` at `key`, unless it is `fallback`, which leaving it out means. */
+function putCount(map: MapValue, key: String, n: i64, fallback: i32): void {
+  if (n != (fallback as i64)) {
+    map.entries[key] = new IntValue(n);
   }
 }
 

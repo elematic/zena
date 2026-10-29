@@ -43,7 +43,7 @@ import { packSource } from 'package-manager:archive';
 import { SOURCE_MIME_TYPE, checkDependencies, checkMetadata, validateRelease } from 'package-manager:validate';
 import { Manifest, readManifest, writeDid } from 'package-manager:manifest';
 import {
-  ATTESTATION_TYPE, Artifact, Attestation, Dependency, Maintainer, Maintainers, OWNER, Profile,
+  ATTESTATION_TYPE, Artifact, Attestation, Dependency, Maintainer, Maintainers, OWNER, POLICY_TYPE, Policy, Profile,
   Release, SOURCE
 } from 'package-manager:records';
 import { Version } from 'package-manager:version';
@@ -51,7 +51,7 @@ import { DiskFiles, WorkspacePackage, readWorkspace } from 'package-manager:work
 import { Options, repoRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import { configDir, currentSession, saveSession } from './login.zena';
-import { REPO_PUT_RECORD, SERVER_DESCRIBE_SERVER } from 'atproto:methods';
+import { REPO_GET_RECORD, REPO_PUT_RECORD, SERVER_DESCRIBE_SERVER } from 'atproto:methods';
 import {
   COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, PUBLISH, UPLOAD_ARTIFACT
 } from 'package-manager:host-methods';
@@ -289,7 +289,7 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
   input['recoveryKeys'] = strings(recoveryKeys);
   // The profile says what the manifest says, for the index to show.
   input['profile'] = toJson(new Profile(name, target.manifest.description, target.manifest.license).toValue());
-  input['maintainers'] = toJson(new Maintainers([Maintainer.ofDid(session.did, OWNER)]).toValue());
+  input['maintainers'] = toJson(initialMaintainers(session.did, org as String).toValue());
   let created = runFuture(hostClient(session, host, CREATE_PACKAGE)
     .procedure(CREATE_PACKAGE, input)) as JsonObject;
   let did = created['did'] as String;
@@ -298,6 +298,45 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
   writeFileSync(target.manifestPath(), text);
   console.log(`Created ${created['handle'] as String} (${did}), and wrote its DID into ${target.manifestPath()}.`);
   return text;
+}
+
+/**
+ * A new package's maintainers record, as `org`'s policy has its packages
+ * start: `creator` as its owner, beside the policy's default teams, with
+ * its default thresholds.
+ */
+function initialMaintainers(creator: String, org: String): Maintainers {
+  let policy = scopePolicy(org);
+  let maintainers = new GrowableArray<Maintainer>();
+  maintainers.push(Maintainer.ofDid(creator, OWNER));
+  for (let team in policy.defaultTeams) {
+    maintainers.push(new Maintainer(null, null, org, team.team, team.role));
+  }
+  let list = new FixedArray<Maintainer>(maintainers.length, maintainers[0]);
+  for (var i = 0; i < maintainers.length; i += 1) {
+    list[i] = maintainers[i];
+  }
+  let record = new Maintainers(list, policy.defaultThreshold, policy.defaultOwnerThreshold);
+  record.humans = policy.defaultHumans;
+  return record;
+}
+
+/** `org`'s policy for the packages in its scope, from its repository, or the one that asks nothing. */
+export function scopePolicy(org: String): Policy {
+  let document = runFuture(packageResolver().resolveDid(org));
+  if (document.pds == null) {
+    throw new PublishError(`${org} names no PDS`);
+  }
+  let params: Array<(String, String)> = [('repo', org), ('collection', POLICY_TYPE), ('rkey', 'self')];
+  try {
+    let answer = runFuture(new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params)) as JsonObject;
+    return Policy.fromValue(fromJson(answer['value']));
+  } catch (e) {
+    if (e is XrpcError && (e as XrpcError).error == 'RecordNotFound') {
+      return new Policy();
+    }
+    throw e;
+  }
 }
 
 /**

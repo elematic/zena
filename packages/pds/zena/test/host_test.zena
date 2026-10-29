@@ -26,7 +26,7 @@ import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {
   ADMIN, ATTESTATION_TYPE, Artifact, Attestation, Dependency, MAINTAINER, MAINTAINERS_TYPE, MEMBER, Maintainer,
   MEMBERS_TYPE, Maintainers, Members, OWNER, PUBLISHER, Profile,
-  RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, TEAM_TYPE, Team
+  Policy, RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, TEAM_TYPE, Team, TeamRole
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
@@ -998,6 +998,62 @@ export let tests = suite('pds:host', () => {
     equal(runFuture(host.pendingChanges(ALICE, pkgDid, later)).length, 0);
     fixture.attest(BOB, uri, cid);
     equal(errorOf(completeChange(fixture, ALICE, uri, cid)), 'ChangeNotFound');
+  });
+
+  test('applies a scope\'s policy to its packages at once, and lets its creator teams create them', (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let alice = entriesSeen(fixture, ALICE, orgDid)[0];
+    let bobMember = new MemberEntry(BOB, MEMBER, filled(210));
+    ok(putMembers(fixture, ALICE, orgDid, [alice, bobMember], [bobMember], (org['members'] as JsonObject)['cid'] as String));
+    let bob = new MemberEntry(BOB, MEMBER, filled(211));
+    ok(putTeam(fixture, ALICE, orgDid, 'core', [bob], null));
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let policyCall = (caller: String, policy: Policy): Response => approved(fixture, caller,
+        fixture.call(caller, 'putPolicy', `{"organization": "${orgDid}", "policy": ${stringify(toJson(policy.toValue()))}}`));
+
+    // Only an owner sets it; its teams must exist, and its defaults meet its minimums.
+    let strict = new Policy();
+    strict.minimumThreshold = 2 as i64;
+    strict.defaultThreshold = 2 as i64;
+    strict.defaultTeams = [new TeamRole('core', PUBLISHER)];
+    strict.creators = ['core'];
+    equal(errorOf(policyCall(BOB, strict)), 'Forbidden');
+    let missing = new Policy();
+    missing.creators = ['nobody'];
+    equal(errorOf(policyCall(ALICE, missing)), 'TeamNotFound');
+    let lax = new Policy();
+    lax.minimumThreshold = 2 as i64;
+    equal(errorOf(policyCall(ALICE, lax)), 'InvalidRequest');
+    equal(errorOf(createPackage(fixture, BOB, orgDid, 'parser')), 'Forbidden');
+    let set = ok(policyCall(ALICE, strict));
+    equal(set['state'] as String, 'written');
+
+    // router, which Alice alone maintains, now needs two approvals to release.
+    let held = ok(fixture.call(ALICE, 'publish',
+        `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0')))}}`));
+    fixture.attest(ALICE, held['uri'] as String, held['cid'] as String);
+    let waiting = complete(fixture, ALICE, pkgDid, '1.0.0');
+    equal(waiting['state'] as String, 'pending');
+    equal((waiting['threshold'] as Box<f64>).value as i32, 2);
+    // A record that could never meet that is refused; one with Bob can.
+    let current = runFuture(fixture.pds.storage.store(pkgDid).getRecord(MAINTAINERS_TYPE, 'self')) as Cid;
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER)], 1 as i64),
+        [], current.toString())), 'InvalidRequest');
+    ok(putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        Maintainer.ofDid(BOB, PUBLISHER)]), [], current.toString()));
+    fixture.attest(BOB, held['uri'] as String, held['cid'] as String);
+    equal(complete(fixture, BOB, pkgDid, '1.0.0')['state'] as String, 'published');
+
+    // Bob, on the creator team, creates a package; one maintainer alone
+    // could not approve its releases, so it is created with the team.
+    equal(errorOf(createPackage(fixture, BOB, orgDid, 'parser')), 'InvalidRequest');
+    let profile = stringify(toJson(new Profile('parser').toValue()));
+    let withTeam = stringify(toJson(new Maintainers([Maintainer.ofDid(BOB, OWNER),
+        new Maintainer(null, null, orgDid, 'core', PUBLISHER)], 2 as i64).toValue()));
+    ok(fixture.call(BOB, 'createPackage', `{"organization": "${orgDid}", "recoveryKeys": ["${RECOVERY}"], "profile": ${
+        profile}, "maintainers": ${withTeam}}`));
   });
 
   test('creates an automation account that signs in and publishes, as a publisher only', (ctx) => {

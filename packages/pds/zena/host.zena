@@ -45,6 +45,8 @@ import {
   MemberEntry,
   Members,
   OWNER,
+  POLICY_TYPE,
+  Policy,
   TEAM_TYPE,
   Team,
   PROFILE_KEY,
@@ -591,11 +593,13 @@ export final class PackageHost {
     if (organization == null || organization.kind != AccountKind.Organization) {
       throw new HostError(400, 'InvalidRequest', `${org} is not an organization on this host`);
     }
-    if (!isAdmin(await this.#orgRole(org, caller))) {
-      throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    let policy = await this.#policy(org);
+    if (!isAdmin(await this.#orgRole(org, caller)) && !(await this.#isCreator(org, policy, caller))) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org}, or on a team its policy lets create packages`);
     }
     let profile = readRecord(() => Profile.fromValue(profileValue));
     let maintainers = readRecord(() => Maintainers.fromValue(maintainersValue));
+    meetsPolicy(maintainers, policy, org);
     let committed = new HashSet<String>();
     for (let maintainer in maintainers.maintainers) {
       let commitment = maintainer.commitment;
@@ -827,8 +831,17 @@ export final class PackageHost {
       return tally;
     }
     let record = Maintainers.fromValue((current as CurrentRecord).value);
-    tally.threshold = record.threshold;
-    tally.humans = record.humans;
+    // The scope's policy can ask more of every release than the record does.
+    var policy = new Policy();
+    let held = await this.pds.storage.getAccount(pkg);
+    if (held != null) {
+      let org = await this.#scopeOrganization(held as Account);
+      if (org != null) {
+        policy = await this.#policy(org as String);
+      }
+    }
+    tally.threshold = if (policy.minimumThreshold > record.threshold) policy.minimumThreshold else record.threshold;
+    tally.humans = if (policy.minimumHumans > record.humans) policy.minimumHumans else record.humans;
     let attesters = await this.#attesterList(pkg, record);
     let rkey = attestationKey(uri, cid);
     // Every repository is asked at once.
@@ -853,7 +866,7 @@ export final class PackageHost {
       }
     }
     let counted = tally.people + otherAutomation + (if (tally.people > 0) hostAutomation else 0);
-    tally.enough = (counted as i64) >= record.threshold && (tally.people as i64) >= record.humans;
+    tally.enough = (counted as i64) >= tally.threshold && (tally.people as i64) >= tally.humans;
     return tally;
   }
 
@@ -1439,6 +1452,63 @@ export final class PackageHost {
   }
 
   /**
+   * `putPolicy`: asks for a new policy for the packages in `org`'s scope
+   * (`Policy`), which the members record's owners must approve, as they do
+   * a change to the members. The caller must be an owner of `org`. Its
+   * teams must exist, and its defaults must ask no less than its minimums.
+   */
+  async putPolicy(caller: String, org: String, policyValue: Value, swapRecord: String | null, nowMicros: i64)
+      : Future<Created> {
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    if ((await this.#orgRole(org, caller)) != OWNER) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
+    }
+    let policy = readRecord(() => Policy.fromValue(policyValue));
+    let teams = new GrowableArray<String>();
+    for (let team in policy.defaultTeams) {
+      teams.push(team.team);
+    }
+    for (let team in policy.creators) {
+      teams.push(team);
+    }
+    for (let team in teams) {
+      if ((await this.#current(org, TEAM_TYPE, team)) == null) {
+        throw new HostError(400, 'TeamNotFound', `${org} has no team ${team}`);
+      }
+    }
+    if (policy.defaultThreshold < policy.minimumThreshold || policy.defaultHumans < policy.minimumHumans) {
+      throw new HostError(400, 'InvalidRequest', 'the policy\'s defaults ask less than its minimums');
+    }
+    return await this.#propose(caller, account, POLICY_TYPE, 'self', asMap(policyValue), swapRecord, nowMicros);
+  }
+
+  /** `org`'s policy for the packages in its scope, as it is now, or the one that asks nothing more. */
+  async #policy(org: String): Future<Policy> {
+    let current = await this.#current(org, POLICY_TYPE, 'self');
+    return if (current != null) Policy.fromValue((current as CurrentRecord).value) else new Policy();
+  }
+
+  /** Whether `caller` is on a team `policy` lets create packages in `org`'s scope. */
+  async #isCreator(org: String, policy: Policy, caller: String): Future<boolean> {
+    for (let team in policy.creators) {
+      if ((await this.#teamRole(org, team, caller)) != null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** The organization whose scope the package `account` is in, by its handle, or null. */
+  async #scopeOrganization(account: Account): Future<String | null> {
+    if (account.handle == null) {
+      return null;
+    }
+    // `<name>.<scope>.<domain>`.
+    let labels = scopeOf(account.handle as String, this.config.domain).split('.');
+    return if (labels.length == 2) await this.#store.scopeOwner(labels[1]) else null;
+  }
+
+  /**
    * `deleteTeam`: deletes `org`'s team `name`. The caller must be an owner
    * or admin of `org`. Packages the team maintained keep their other
    * maintainers.
@@ -1531,6 +1601,10 @@ export final class PackageHost {
     if (!teams && (people as i64) < maintainers.humans) {
       throw new HostError(400, 'InvalidRequest',
           `${people} people among the maintainers cannot meet humans: ${maintainers.humans}`);
+    }
+    let org = await this.#scopeOrganization(account);
+    if (org != null) {
+      meetsPolicy(maintainers, await this.#policy(org as String), org as String);
     }
     await this.#store.addEntries(pkg, entries.fresh);
     return await this.#propose(caller, account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue), swapRecord,
@@ -1673,7 +1747,7 @@ export final class PackageHost {
     if (collection == MAINTAINERS_TYPE && rkey == 'self') {
       return new ChangeTarget(await this.#account(parts[0], AccountKind.Package, 'a package'), collection, rkey);
     }
-    if ((collection == MEMBERS_TYPE && rkey == 'self') || collection == TEAM_TYPE) {
+    if (((collection == MEMBERS_TYPE || collection == POLICY_TYPE) && rkey == 'self') || collection == TEAM_TYPE) {
       return new ChangeTarget(await this.#account(parts[0], AccountKind.Organization, 'an organization'), collection,
           rkey);
     }
@@ -1758,7 +1832,8 @@ export final class PackageHost {
       let record = if (members != null) Members.fromValue((members as CurrentRecord).value) else null;
       // TODO(#713): the annotation is only for the compiler.
       let entries: Array<MemberEntry> = if (record != null) await this.#committed(did, record.members) else [];
-      if (target.collection == MEMBERS_TYPE && record != null) {
+      // The members record's owners decide its members and the scope's policy.
+      if ((target.collection == MEMBERS_TYPE || target.collection == POLICY_TYPE) && record != null) {
         tally.requirements.push(await this.#requirement(OWNER, record.ownerThreshold,
             await this.#peopleIn(entries, (role) => role == OWNER), uri, change.cid, rkey));
       }
@@ -1887,12 +1962,7 @@ export final class PackageHost {
     if ((await this.#packageRole(did, caller)) == OWNER) {
       return true;
     }
-    if (account.handle == null) {
-      return false;
-    }
-    // `<name>.<scope>.<domain>`: the organization of the package's scope.
-    let labels = scopeOf(account.handle as String, this.config.domain).split('.');
-    let org = if (labels.length == 2) await this.#store.scopeOwner(labels[1]) else null;
+    let org = await this.#scopeOrganization(account);
     return org != null && isAdmin(await this.#orgRole(org as String, caller));
   }
 
@@ -2054,8 +2124,36 @@ export final class PackageHost {
   }
 }
 
+/**
+ * Throws unless `maintainers` could meet the release thresholds `policy`,
+ * the policy of `org`'s scope, sets: as many maintainers as the larger
+ * threshold, and as many people as the larger `humans`. A team could have
+ * any number.
+ */
+function meetsPolicy(maintainers: Maintainers, policy: Policy, org: String): void {
+  var people = 0;
+  var teams = false;
+  for (let maintainer in maintainers.maintainers) {
+    if (maintainer.org != null) {
+      teams = true;
+    } else if (!maintainer.automation) {
+      people += 1;
+    }
+  }
+  if (teams) {
+    return;
+  }
+  if ((maintainers.maintainers.length as i64) < policy.minimumThreshold || (people as i64) < policy.minimumHumans) {
+    throw new HostError(400, 'InvalidRequest',
+        `the policy of ${org}'s scope asks ${policy.minimumThreshold} maintainers to approve each release, ${policy.minimumHumans} of them people, and ${maintainers.maintainers.length} maintainers, ${people} of them people, cannot`);
+  }
+}
+
 /** The commitments the members, team or maintainers record `value`, of `collection`, lists. */
 function commitmentsIn(collection: String, value: Value): Array<Cid> {
+  if (collection == POLICY_TYPE) {
+    return [];
+  }
   if (collection == MEMBERS_TYPE) {
     return Members.fromValue(value).members;
   }

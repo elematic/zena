@@ -20,12 +20,13 @@ export let tests = suite('zena approve', () => {
     try {
       fakePdsOrigin(scratch, stack);
       let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
-      let person = (who: String) =>
-        new ZenaCommand(scratch.host('lib'), scratch.at('lib'), scratch.host('cache'))
+      let personIn = (who: String, dir: String) =>
+        new ZenaCommand(scratch.host(dir), scratch.at(dir), scratch.host('cache'))
           .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
           .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
           .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
+      let person = (who: String) => personIn(who, 'lib');
       write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
       write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       let alice = person('alice');
@@ -90,6 +91,24 @@ export let tests = suite('zena approve', () => {
       isTrue(joined.succeeded() && joined.stdout.contains('Changed the members of @acme'), described(joined));
       let members = bob.run(['scope', 'members', 'acme']);
       isTrue(members.succeeded() && members.stdout.contains(`${carol}  member`), described(members));
+
+      // The scope's policy, which waits for Bob too: every release in it
+      // needs two approvals, and so a package one person would maintain
+      // alone is refused.
+      let policy = alice.run(['scope', 'policy', 'acme', '--minimum-threshold', '2', '--default-threshold', '2']);
+      isTrue(policy.succeeded() && policy.stdout.contains("The change to acme's policy is waiting"), described(policy));
+      let shownPolicy = bob.run(['approve', '@acme']);
+      isTrue(shownPolicy.succeeded() && shownPolicy.stdout.contains('now: Every release in @acme needs at least 2') &&
+          shownPolicy.stdout.contains('was: Every release in @acme needs at least 1'), described(shownPolicy));
+      let applied = bob.run(['approve', '@acme', '--yes']);
+      isTrue(applied.succeeded() && applied.stdout.contains('Changed the policy of @acme'), described(applied));
+      let printed = alice.run(['scope', 'policy', 'acme']);
+      isTrue(printed.succeeded() && printed.stdout.contains("Every release in acme needs at least 2 maintainers'"),
+          described(printed));
+      write(scratch.at('solo/zena-package.json'), '{"name": "solo", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      write(scratch.at('solo/solo.zena'), 'export let one = 1;\n');
+      let solo = personIn('alice', 'solo').run(['package', 'create', '--yes']);
+      isTrue(!solo.succeeded() && solo.stderr.contains('asks 2 maintainers'), described(solo));
 
       // A team's own threshold.
       isTrue(alice.run(['team', 'create', 'acme/core']).succeeded(), 'the team');

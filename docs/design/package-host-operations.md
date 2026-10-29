@@ -104,6 +104,8 @@ session, because the host holds nothing that can write there
 | Add, remove and change members' roles                | owners (_threshold_)                       | `zena scope add --role`, `scope remove`; `putMembers`                            |
 | Create, change and delete teams                      | admins; a team's maintainers (_threshold_) | `zena team`; `putTeam`, `deleteTeam`                                             |
 | Change the scope's thresholds                        | owners (_threshold_)                       | `zena scope settings`; `putMembers`                                              |
+| Set minimums and defaults for the scope's packages   | owners (_threshold_)                       | `zena scope policy`; `putPolicy`                                                 |
+| Let a team create packages                           | owners (_threshold_)                       | `zena scope policy --creators`; `putPolicy`                                      |
 | Rename a scope                                       | owners, host admins                        | no                                                                               |
 | Dissolve a scope                                     | owners, host admins                        | no                                                                               |
 | Create an automation account                         | admins                                     | `zena ci create`; `createAutomationAccount`                                      |

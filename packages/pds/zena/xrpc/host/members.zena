@@ -16,7 +16,7 @@ import {decodeCbor} from 'atproto:cbor';
 import {fromJson, toJson} from 'atproto:data';
 import {
   COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, GET_MEMBERSHIPS, GET_PENDING_CHANGES, PUT_MAINTAINERS, PUT_MEMBERS,
-  PUT_TEAM, WITHDRAW_CHANGE
+  PUT_POLICY, PUT_TEAM, WITHDRAW_CHANGE
 } from 'package-manager:host-methods';
 import {ChangeTally, Created, Membership, PENDING_MICROS, PackageHost} from '../../host.zena';
 import {fail, jsonBody, nowMicros, parseCid} from '../common.zena';
@@ -45,6 +45,19 @@ export function memberRoutes(router: Router, host: PackageHost): void {
     }
     return heldJson(await host.putMembers(caller, input['organization'] as String, fromJson(input['members']),
         entriesOf(input), swapOf(input), nowMicros()));
+  });
+
+  hostProcedure(router, host, PUT_POLICY, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['organization'] is String) || input['policy'] == null) {
+      fail(res, 400, 'InvalidRequest', 'organization and policy are required');
+      return null;
+    }
+    return heldJson(await host.putPolicy(caller, input['organization'] as String, fromJson(input['policy']),
+        swapOf(input), nowMicros()));
   });
 
   hostProcedure(router, host, PUT_TEAM, async (req, res, caller): Future<JsonObject | null> => {
