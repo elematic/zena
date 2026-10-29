@@ -1905,6 +1905,13 @@ an argument the body may duplicate (#379). A class holds an owner in a
 `T` field only under `scoped T` (§"Scoped type arguments"), which moves
 the value out of the field with a take.
 
+owner-futures.md applies the class half of `scoped T` to the async
+containers and adds an `isFirstClass<T>()` branch for behavior only a
+first-class instantiation has. It needs no at-most-once variant: the
+drops `Future` seemed to need, of an abandoned future and of a lost
+`tryComplete` race, belong to the use site, where an owner is released
+and a must-consume value cannot be dropped.
+
 The opt-in is **declared, not inferred**. Whole-program compilation would allow
 inferring it from bodies, but then errors land inside stdlib bodies at call sites
 the user did not write, a signature stops being the contract, and adding a second
