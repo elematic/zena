@@ -1,0 +1,758 @@
+import { HashSet, Set } from 'zena:collections';
+import { FlowNode } from '../analysis/flow.zena';
+import {
+  AsPattern, BindingPattern, BlockStatement, BooleanLiteral, ClassPattern,
+  EnumDeclaration, Expression, ExpressionStatement, Identifier,
+  IdentifierPattern, LogicalPattern, MatchExpression, MemberExpression, Node,
+  NullLiteral, NumberLiteral, StringLiteral
+} from '../ast.zena';
+import {
+  BoolLiteralType, BooleanType, ClassType, EnumType, InterfaceType,
+  NeverType, NullType, StringLiteralType, Type, UnionType as UnionT,
+  VoidType, isBooleanLike, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { adaptArmToContext, adaptJoinedArm, armValueNode } from './adaptation.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import { sameTypeArguments } from './generics.zena';
+import { prescanPendingFunctions } from './module.zena';
+import {
+  branchDefinitelyExits, getMemberPathKey, isImmutableMemberPath
+} from './narrowing.zena';
+import { moveDestructuredTuple, registerPatternOwners } from './ownership.zena';
+import { checkPattern, collectPatternInstantiations } from './patterns.zena';
+import { isAssignableTo } from './relations.zena';
+import { checkStatement } from './statements.zena';
+import {
+  combineArmTypes, subtractNullFromType, subtractTypeFromUnion,
+  unwrapAliases
+} from './unions.zena';
+
+/**
+ * Collect all concrete (non-sealed) leaf variants of a sealed class type,
+ * recursing into sub-sealed variants (sum of sums).
+ */
+function collectLeafVariants(ct: ClassType): GrowableArray<ClassType> {
+  let result = new Array<ClassType>();
+  if (ct.sealedVariants == null) { return result; }
+  let variants = ct.sealedVariants as GrowableArray<ClassType>;
+  for (let v in variants) {
+    if (v.isSealed && v.sealedVariants != null) {
+      // Recurse: this variant is itself sealed
+      let leaves = collectLeafVariants(v);
+      var li = 0;
+      while (li < leaves.length) {
+        result.push(leaves[li]);
+        li += 1;
+      }
+    } else {
+      result.push(v);
+    }
+  }
+  return result;
+}
+
+/**
+ * Returns true if a type has a finite, enumerable set of values that can be
+ * fully covered by match patterns (sealed classes, booleans, literal types).
+ */
+function isFiniteType(t: Type): boolean {
+  return match (t) {
+    case BooleanType: true
+    case BoolLiteralType: true
+    case StringLiteralType: true
+    case NullType: true
+    case ClassType as ct: ct.isSealed
+    case EnumType: true
+    case UnionT {types}: {
+      var allFinite = true;
+      var i = 0;
+      while (i < types.length) {
+        if (!isFiniteType(types[i])) { allFinite = false; }
+        i += 1;
+      }
+      allFinite
+    }
+    case _: false
+  };
+}
+
+/**
+ * One enum a match's scrutinee can hold, and the members its arms have named
+ * so far. A scrutinee can reach more than one — `Color | Fruit` reaches two —
+ * and a match covers the scrutinee only once it has named every member of
+ * each of them.
+ */
+final class EnumCoverage {
+  declaration: EnumDeclaration;
+  covered: HashSet<String> = new Set<String>();
+  var complete: boolean = false;
+  new(this.declaration);
+}
+
+/**
+ * The enums a value of type `t` can hold. An enum's type is a distinct alias
+ * over its backing primitive, so the declaration hanging off that alias is the
+ * only place its member list survives.
+ */
+function enumsIn(t: Type): GrowableArray<EnumCoverage> {
+  let found = new Array<EnumCoverage>();
+  match (t) {
+    case EnumType as et: {
+      found.push(new EnumCoverage(et.declaration));
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        match (member) {
+          case EnumType as et: {
+            found.push(new EnumCoverage(et.declaration));
+          }
+          case _: {}
+        }
+      }
+    }
+    case _: {}
+  }
+  return found;
+}
+
+/**
+ * Drop everything `ed` can be from `t`, leaving what a scrutinee of that type
+ * could still hold. Every member of an enum has the enum's own type, so this
+ * is all-or-nothing: the caller runs it once the arms have named them all.
+ */
+function subtractEnumFromType(t: Type, ed: EnumDeclaration): Type {
+  match (t) {
+    case EnumType as et: {
+      if (et.declaration.id == ed.id) {
+        return new NeverType();
+      }
+      return t;
+    }
+    case UnionT {types}: {
+      let remaining = new Array<Type>();
+      for (let member in types) {
+        if (!(subtractEnumFromType(member, ed) is NeverType)) {
+          remaining.push(member);
+        }
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
+    case _: { return t; }
+  }
+}
+
+/**
+ * Add the members of `ed` that `pattern` covers to `covered`.
+ *
+ * `case Color.Red` names one member. There is no per-member type to subtract
+ * from the scrutinee — every member of `Color` has type `Color` — so coverage
+ * is tracked by name instead, and the match is exhaustive once the set has
+ * grown to the declared member count. Patterns that cover everything
+ * (`case _`, a binding) name no member and are handled by
+ * `subtractPatternFromType`, which takes the remaining type straight to Never.
+ */
+function collectCoveredEnumMembers(
+  ctx: CheckerContext,
+  pattern: Node,
+  ed: EnumDeclaration,
+  covered: HashSet<String>
+): void {
+  match (pattern) {
+    case MemberExpression as me: {
+      if (me.isSymbolAccess) {
+        return;
+      }
+      // Which enum the member belongs to is the namespace it was read
+      // off: `Color`, the enum type itself. An enum imported under
+      // another name still points here.
+      let objectType = ctx.model.getNodeType(me.object);
+      if (objectType == null) {
+        return;
+      }
+      match (objectType as Type) {
+        case EnumType as et: {
+          if (et.declaration.id == ed.id) {
+            covered.add(me.property.name);
+          }
+        }
+        case _: {}
+      }
+    }
+    case LogicalPattern {operator, left, right}: {
+      // A `|` pattern (spelled "||" here) covers what either side covers.
+      // An `&` pattern covers only their overlap, which names no member.
+      if (operator == "||") {
+        collectCoveredEnumMembers(ctx, left, ed, covered);
+        collectCoveredEnumMembers(ctx, right, ed, covered);
+      }
+    }
+    case AsPattern as ap: {
+      collectCoveredEnumMembers(ctx, ap.pattern, ed, covered);
+    }
+    case BindingPattern as bp: {
+      collectCoveredEnumMembers(ctx, bp.pattern, ed, covered);
+    }
+    case _: {}
+  }
+}
+
+/**
+ * Subtract a pattern from a type, returning the remaining uncovered type.
+ * Returns NeverType when the pattern fully covers the type.
+ */
+function subtractPatternFromType(ctx: CheckerContext, t: Type, pattern: Node): Type {
+  // Wildcard or variable pattern covers everything.
+  match (pattern) {
+    case IdentifierPattern {name}: {
+      if (name == "_") {
+        return new NeverType();
+      }
+      // Check if this identifier names a sealed variant (unit variant pattern).
+      let resolved = ctx.resolveTypeName(name);
+      if (resolved != null) {
+        match (resolved) {
+          case ClassType as patClass: {
+            return subtractClassFromType(ctx, t, patClass);
+          }
+          case InterfaceType as patIface: {
+            return subtractInterfaceFromType(ctx, t, patIface);
+          }
+          case _: {}
+        }
+      }
+      // Regular variable binding — covers everything.
+      return new NeverType();
+    }
+    case Identifier {name}: {
+      // Plain identifier in match pattern (e.g., case _, case Red).
+      if (name == "_") {
+        return new NeverType();
+      }
+      // Check if this identifier names a sealed variant (unit variant pattern).
+      let resolved = patternTestedType(ctx, pattern, name);
+      if (resolved != null) {
+        match (resolved) {
+          case ClassType as patClass: {
+            return subtractClassFromType(ctx, t, patClass);
+          }
+          case InterfaceType as patIface: {
+            return subtractInterfaceFromType(ctx, t, patIface);
+          }
+          case _: {}
+        }
+      }
+      // Regular variable binding — covers everything.
+      return new NeverType();
+    }
+    case ClassPattern as cp: {
+      let resolved = patternTestedType(ctx, cp, cp.name.name);
+      if (resolved != null) {
+        match (resolved) {
+          case ClassType as patClass: {
+            return subtractClassFromType(ctx, t, patClass);
+          }
+          case InterfaceType as patIface: {
+            return subtractInterfaceFromType(ctx, t, patIface);
+          }
+          case _: {}
+        }
+      }
+      return t;
+    }
+    case AsPattern as ap: {
+      return subtractPatternFromType(ctx, t, ap.pattern);
+    }
+    case BindingPattern as bp: {
+      // `case let Leaf {size}: …` — the binding prefix doesn't change
+      // what the inner pattern covers.
+      return subtractPatternFromType(ctx, t, bp.pattern);
+    }
+    case BooleanLiteral {value}: {
+      // Subtract the specific boolean literal from the remaining type.
+      let lit: Type = new BoolLiteralType(value);
+      match (t) {
+        case BooleanType: {
+          // BooleanType = true | false. Subtracting one literal leaves the other.
+          if (value) {
+            return new BoolLiteralType(false);
+          } else {
+            return new BoolLiteralType(true);
+          }
+        }
+        case _: {
+          return subtractTypeFromUnion(t, lit);
+        }
+      }
+    }
+    case StringLiteral {value}: {
+      // Subtract the specific string literal from the remaining type.
+      let lit: Type = new StringLiteralType(value);
+      return subtractTypeFromUnion(t, lit);
+    }
+    case NumberLiteral {}: {
+      // Number literal patterns: no subtraction (no numeric literal types yet).
+      return t;
+    }
+    case NullLiteral {}: {
+      return subtractNullFromType(t);
+    }
+    case _: {
+      // Literal patterns, etc. — don't subtract from sealed types for now.
+      return t;
+    }
+  }
+}
+
+/**
+ * Subtract a class type (from a pattern) from the scrutinee type.
+ * Handles sealed class variant tracking and transitive hierarchies.
+ */
+function subtractClassFromType(ctx: CheckerContext, t: Type, patClass: ClassType): Type {
+  match (unwrapAliases(t)) {
+    case UnionT {types}: {
+      let remaining = new Array<Type>();
+      for (let member in types) {
+        let sub = subtractClassFromType(ctx, member, patClass);
+        if (!(sub is NeverType)) {
+          remaining.push(sub);
+        }
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
+    case ClassType as scrutClass: {
+      // If the pattern class IS the scrutinee class (or a supertype), covers it.
+      if ((scrutClass.genericSource ?? scrutClass).id == (patClass.genericSource ?? patClass).id) {
+        return if (patternCoversInstance(patClass, scrutClass)) new NeverType() else t;
+      }
+      // If the scrutinee is a sealed class, subtract the variant from its set.
+      if (scrutClass.isSealed && scrutClass.sealedVariants != null) {
+        let variants = scrutClass.sealedVariants as GrowableArray<ClassType>;
+        let remaining = new Array<ClassType>();
+        for (let v in variants) {
+          if (v.id == patClass.id) {
+            if (!patternCoversInstance(patClass, variantInstantiation(v, scrutClass))) {
+              remaining.push(v);
+            }
+          } else if (v.isSealed && v.sealedVariants != null) {
+            // Variant is itself sealed — recurse into its sub-variants.
+            let subResult = subtractClassFromType(ctx, variantInstantiation(v, scrutClass), patClass);
+            match (subResult) {
+              case NeverType: {
+                // Fully covered — don't add to remaining.
+              }
+              case ClassType as remainingVariant: {
+                remaining.push(remainingVariant);
+              }
+              case _: {
+                remaining.push(v);
+              }
+            }
+          } else {
+            // Check if patClass is a subtype of this variant.
+            var isSubtype = false;
+            var current = patClass.superType;
+            while (current != null) {
+              let cur = current;
+              if (cur.id == v.id) {
+                isSubtype = true;
+                break;
+              }
+              current = cur.superType;
+            }
+            if (!isSubtype) {
+              remaining.push(v);
+            }
+          }
+        }
+        if (remaining.length == 0) {
+          return new NeverType();
+        }
+        // Return a synthetic sealed type with remaining variants. It keeps
+        // the scrutinee's type arguments, which later arms infer theirs
+        // from.
+        let remainingType = new ClassType(scrutClass.id, scrutClass.symbolId, scrutClass.name);
+        remainingType.isSealed = true;
+        remainingType.isAbstract = true;
+        remainingType.superType = scrutClass.superType;
+        remainingType.sealedVariants = remaining;
+        remainingType.typeParameters = scrutClass.typeParameters;
+        remainingType.typeArguments = scrutClass.typeArguments;
+        remainingType.genericSource = scrutClass.genericSource;
+        return remainingType;
+      }
+    }
+    case _: {}
+  }
+  return t;
+}
+
+/**
+ * The class a pattern node tests for: the instantiation the checker
+ * recorded on it (`Box<f64>`, or `Left<i32, String>` inferred from the
+ * scrutinee), else whatever `name` resolves to.
+ */
+function patternTestedType(ctx: CheckerContext, pattern: Node, name: String): Type | null {
+  let recorded = ctx.model.getNodeType(pattern);
+  if (recorded is ClassType || recorded is InterfaceType) {
+    return recorded;
+  }
+  return ctx.resolveTypeName(name);
+}
+
+/**
+ * Whether a class pattern typed `pattern` matches every value typed
+ * `member`, an instance type of the same class. An instantiation covers
+ * only itself: `Box<f64>` leaves the `Box<String>` of a `Box<f64> |
+ * Box<String>` to match. A pattern at the class's own type parameters
+ * stands for an error already reported, and covers everything so the
+ * error does not cascade.
+ */
+function patternCoversInstance(pattern: ClassType, member: ClassType): boolean {
+  if (pattern.typeArguments == null) {
+    return true;
+  }
+  return member.typeArguments != null && sameTypeArguments(pattern, member);
+}
+
+/**
+ * The sealed variant `v` of `scrut` at the type arguments `scrut` gives
+ * it: `Left` of an `Either<i32, String>` is `Left<i32, String>`. `v`
+ * itself when it is not generic or `scrut` leaves one of its arguments
+ * open.
+ */
+function variantInstantiation(v: ClassType, scrut: ClassType): ClassType {
+  if (v.typeParameters == null || v.typeArguments != null) {
+    return v;
+  }
+  let candidates = new Array<ClassType>();
+  collectPatternInstantiations(v, scrut, candidates);
+  return if (candidates.length == 1) candidates[0] else v;
+}
+
+function subtractInterfaceFromType(ctx: CheckerContext, t: Type, patIface: InterfaceType): Type {
+  match (unwrapAliases(t)) {
+    case UnionT {types}: {
+      let remaining = new Array<Type>();
+      for (let member in types) {
+        let sub = subtractInterfaceFromType(ctx, member, patIface);
+        if (!(sub is NeverType)) {
+          remaining.push(sub);
+        }
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
+    case InterfaceType as scrutIface: {
+      if ((scrutIface.genericSource ?? scrutIface).id == (patIface.genericSource ?? patIface).id) {
+        return new NeverType();
+      }
+    }
+    case _: {}
+  }
+  return t;
+}
+
+function getNarrowedTypeFromPattern(ctx: CheckerContext, pattern: Node): Type | null {
+  match (pattern) {
+    case ClassPattern as cp: {
+      return ctx.model.getNodeType(cp);
+    }
+    case AsPattern as ap: {
+      return getNarrowedTypeFromPattern(ctx, ap.pattern);
+    }
+    case IdentifierPattern as id: {
+      if (id.name == "_") {
+        return null;
+      }
+      let nodeType = ctx.model.getNodeType(id);
+      if (nodeType != null) {
+        return nodeType;
+      }
+      return ctx.resolveTypeName(id.name);
+    }
+    case Identifier as id: {
+      if (id.name == "_") {
+        return null;
+      }
+      let nodeType = ctx.model.getNodeType(id);
+      if (nodeType != null) {
+        return nodeType;
+      }
+      return ctx.resolveTypeName(id.name);
+    }
+    case _: {
+      return null;
+    }
+  }
+}
+
+/**
+ * Check a match expression: discriminant against patterns, return union of case body types.
+ * Also checks exhaustiveness for sealed class discriminants.
+ */
+export function checkMatchExpr(
+  ctx: CheckerContext,
+  matchExpr: MatchExpression,
+  expectedType: Type | null
+): Type {
+  let {discriminant, cases, loc} = matchExpr;
+  // Check the discriminant expression.
+  let scrutineeType = checkExpression(ctx, discriminant, null);
+  moveDestructuredTuple(ctx, discriminant, scrutineeType);
+
+  // Each arm branches from the flow after the discriminant; the arms
+  // join again after the match. Arm-end flow nodes are kept, aligned
+  // with the cases by index, for the branch-join drop decision.
+  let preArmFlow = ctx.currentFlow;
+  let armJoin = ctx.newFlowJoin();
+  let armEnds = new Array<FlowNode>();
+
+  // Track remaining type for exhaustiveness checking.
+  var remainingType = scrutineeType;
+
+  // An enum the scrutinee can hold is tracked by member name alongside the
+  // remaining type, because its members all share the enum's own type and so
+  // cannot be subtracted from it one at a time.
+  let enumCoverages = enumsIn(scrutineeType);
+
+  // Collect result types from each case.
+  let resultTypes = new Array<Type>();
+  
+  // Track matched pattern types for ambiguity detection.
+  let matchedTypes = new Array<Type>();
+
+  var i = 0;
+  while (i < cases.length) {
+    let matchCase = cases[i];
+
+    // Check for unreachable case: if remaining type is Never, nothing can reach this case.
+    if (remainingType is NeverType) {
+      ctx.error(
+        "Unreachable case.",
+        DiagnosticCode.TypeMismatch,
+        matchCase.loc
+      );
+    }
+
+    // Enter a new scope for pattern bindings.
+    ctx.setFlow(preArmFlow);
+    ctx.enterScope();
+
+    // Check the pattern and bind variables. Pass remainingType (not scrutineeType) so
+    // catch-all identifier bindings get the type narrowed by the earlier arms.
+    checkPattern(ctx, matchCase.pattern, remainingType);
+
+    let discPath = getMemberPathKey(ctx, discriminant);
+    let isImmutableDisc = discriminant is Identifier || (discriminant is MemberExpression && isImmutableMemberPath(ctx, discriminant));
+    if (discPath != null && isImmutableDisc) {
+      let narrowedType = getNarrowedTypeFromPattern(ctx, matchCase.pattern);
+      if (narrowedType != null) {
+        ctx.pushFlowPathNarrowing(discPath, narrowedType);
+      }
+    }
+
+    // Get pattern type for ambiguity detection.
+    var patternType: Type | null = null;
+    match (matchCase.pattern) {
+      case ClassPattern as cp: {
+        let clsName = cp.name.name;
+        let classType = ctx.resolveTypeName(clsName);
+        if (classType != null) {
+          patternType = classType;
+        }
+      }
+      case Identifier as ident: {
+        let classType = ctx.resolveTypeName(ident.name);
+        if (classType != null) {
+          if (classType is ClassType) {
+            patternType = classType;
+          } else {}
+        }
+      }
+      case _: {}
+    }
+
+    // Check for ambiguous extension types.
+    if (patternType != null) {
+      var pi = 0;
+      while (pi < matchedTypes.length) {
+        let prev = matchedTypes[pi];
+
+        var ext1: ClassType | null = null;
+        var ext2: ClassType | null = null;
+
+        match (patternType) {
+          case ClassType as ct: {
+            if (ct.isExtension && ct.onType != null) {
+              ext1 = ct;
+            }
+          }
+          case _: {}
+        }
+
+        match (prev) {
+          case ClassType as ct: {
+            if (ct.isExtension && ct.onType != null) {
+              ext2 = ct;
+            }
+          }
+          case _: {}
+        }
+
+        if (ext1 != null) {
+          if (ext2 != null) {
+            let onType1 = ext1.onType;
+            let onType2 = ext2.onType;
+            if (onType1 != null && onType2 != null) {
+              if (isAssignableTo(ctx, onType1, onType2) && isAssignableTo(ctx, onType2, onType1)) {
+                ctx.error(
+                  "Ambiguous match case: '" + typeToString(patternType) + "' and '" +
+                  typeToString(prev) + "' extend the same underlying type and are indistinguishable at runtime.",
+                  DiagnosticCode.TypeMismatch,
+                  matchCase.loc
+                );
+              }
+            }
+          }
+        }
+
+        pi = pi + 1;
+      }
+      matchedTypes.push(patternType);
+    }
+
+    // Update remaining type (only if no guard — guards prevent exhaustiveness).
+    if (matchCase.guard == null) {
+      remainingType = subtractPatternFromType(ctx, remainingType, matchCase.pattern);
+      for (let coverage in enumCoverages) {
+        if (coverage.complete) { continue; }
+        let ed = coverage.declaration;
+        collectCoveredEnumMembers(ctx, matchCase.pattern, ed, coverage.covered);
+        if (coverage.covered.size == ed.members.length) {
+          coverage.complete = true;
+          remainingType = subtractEnumFromType(remainingType, ed);
+        }
+      }
+    }
+
+    // Check the guard if present.
+    let {guard} = matchCase;
+    if (guard != null) {
+      let guardType = checkExpression(ctx, guard, null);
+      if (!isBooleanLike(guardType)) {
+        ctx.error(
+          "Match guard must be a boolean expression.",
+          DiagnosticCode.TypeMismatch,
+          matchCase.loc
+        );
+      }
+    }
+
+    // Check the body and collect its type. The owners the pattern bound
+    // are released at the body's end unless it moves them (#495); the
+    // guard has run by then, so a failed guard releases nothing.
+    ctx.enterOwnScope();
+    registerPatternOwners(ctx, matchCase.pattern);
+    let bodyType = checkMatchCaseBody(ctx, matchCase.body, expectedType);
+    ctx.exitOwnScope(matchCase.body as Node);
+    resultTypes.push(bodyType);
+
+    ctx.exitScope();
+    armEnds.push(ctx.currentFlow);
+    armJoin.add(ctx.currentFlow);
+    i += 1;
+  }
+  ctx.recordPendingEdgeMatch(matchExpr as Node, preArmFlow, armEnds);
+
+  if (armJoin.antecedents.length == 0) {
+    ctx.markFlowUnreachable();
+  } else {
+    ctx.setFlow(armJoin);
+  }
+
+  // Check exhaustiveness: if the scrutinee is a finite type (sealed class,
+  // boolean, literal union, etc.) and remainingType is not Never, report error.
+  if (isFiniteType(scrutineeType) && !(remainingType is NeverType)) {
+    ctx.error(
+      "Non-exhaustive match. Not all cases are covered.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
+
+  // Result is union of all case body types.
+  if (expectedType is VoidType) {
+    return new VoidType();
+  }
+  if (resultTypes.length == 0) {
+    return new NeverType();
+  }
+  if (resultTypes.length == 1) {
+    return resultTypes[0];
+  }
+  let joined = combineArmTypes(resultTypes, ctx, loc);
+  // A class arm the join folded into an interface arm is packed on
+  // its own value node.
+  var ci = 0;
+  for (let matchCase in cases) {
+    if (ci < resultTypes.length) {
+      let valueNode = armValueNode(matchCase.body);
+      if (valueNode != null) { adaptJoinedArm(ctx, valueNode, resultTypes[ci], joined); }
+    }
+    ci += 1;
+  }
+  return joined;
+}
+
+/**
+ * Check the body of a match case (expression or block) and return its type.
+ */
+export function checkMatchCaseBody(ctx: CheckerContext, body: Node, expectedType: Type | null): Type {
+  match (body) {
+    case BlockStatement as block: {
+      // Execute statements; need to track return type.
+      let stmts = block.body;
+      prescanPendingFunctions(ctx, stmts);
+      var lastType: Type = new VoidType();
+      var si = 0;
+      while (si < stmts.length) {
+        let isLast = si == stmts.length - 1;
+        let et = if (isLast) { expectedType } else { new VoidType() as Type };
+        match (stmts[si]) {
+          case ExpressionStatement {expression}: {
+            lastType = adaptArmToContext(ctx, expression,
+                checkExpression(ctx, expression, et), et);
+          }
+          case _: {
+            // A `return` lands here too: checkStatement gives it the
+            // full treatment (return-type inference, async adoption,
+            // and marking the flow unreachable — an arm that returns
+            // must not feed the match join), and definitelyExits makes
+            // the arm `never`, exactly like one ending in `throw`.
+            checkStatement(ctx, stmts[si]);
+            lastType = if (branchDefinitelyExits(stmts[si])) {
+              new NeverType() as Type
+            } else {
+              new VoidType() as Type
+            };
+          }
+        }
+        si = si + 1;
+      }
+      return lastType;
+    }
+    case _: {
+      // Expression body.
+      let bodyExpr = body as Expression;
+      return adaptArmToContext(ctx, bodyExpr,
+          checkExpression(ctx, bodyExpr, expectedType), expectedType);
+    }
+  }
+}

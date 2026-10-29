@@ -1,0 +1,830 @@
+import { HashMap, HashSet, Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import {
+  AccessorDeclaration, ArrayPattern, AsPattern, AssignmentPattern,
+  ClassDeclaration, DeclareFunction, EnumDeclaration, ExportAllDeclaration,
+  ExportFromDeclaration, FunctionDeclaration, FunctionExpression,
+  IdentifierPattern, ImportDeclaration, InterfaceDeclaration,
+  MixinDeclaration, Module, Node, Pattern, RecordPattern, RestPattern,
+  SetterInfo, SourceLocation, Statement, SymbolDeclaration, TuplePattern,
+  TypeAliasDeclaration, VariableDeclaration
+} from '../ast.zena';
+import {
+  AnyRefType, ArrayType, ExternRefType, FunctionType, I32Type, Type,
+  TypeParameterType, U8Type, VoidType, setMemberTypeSubstitution
+} from '../types.zena';
+import { DeferredBodies, SemanticModel } from '../semantic-model.zena';
+import { Diagnostic, DiagnosticCode } from '../diagnostics.zena';
+import { Symbol, SymbolId } from '../scope/symbol.zena';
+import { ModuleExports, ScopeResult } from '../scope/scope-builder.zena';
+import { nowMs, performance } from '../time.zena';
+import {
+  checkClassBodies, checkDeferredClassMember, registerClassDeclaration
+} from './classes.zena';
+import { CheckerContext, SharedCheckerState, lookupBindingTypeInDeps } from './context.zena';
+import {
+  checkDeclareFunction, checkEnumDeclaration,
+  checkInterfaceConstructorBodies, checkInterfaceDeclaration,
+  checkMixinDeclaration, checkSymbolDeclaration, checkTypeAliasDeclaration,
+  registerTypeAliasDeclaration
+} from './declarations.zena';
+import { substituteTypeParams } from './generics.zena';
+import { checkStatement } from './statements.zena';
+
+/**
+ * Register internal compiler intrinsics that are not defined in stdlib source.
+ */
+function registerCompilerIntrinsics(ctx: CheckerContext): void {
+  // Builtin types
+  ctx.registerPreludeType("anyref", new AnyRefType());
+  ctx.registerPreludeType("externref", new ExternRefType());
+
+  // =========================
+  // Compiler Intrinsics
+  // =========================
+  // `ByteArray` used to be a primitive of its own (`ByteArrayType`),
+  // with hand-written `length`/`[]`/`[]=` handling in the checker and a
+  // dedicated wasm array type. It is now simply `array<u8>`: narrow
+  // integers give the element a real type, and packed array storage
+  // gives it the same `(array (mut i8))` representation as before, so
+  // nothing changes at the wasm level.
+  //
+  // Deliberately registered here rather than as a stdlib type alias.
+  // The stdlib is compiled by the PINNED SEED when the compiler is
+  // built, and the seed predates narrow integers — a stdlib source file
+  // saying `u8` would not compile until the seed was re-cut. Keeping
+  // the definition inside the checker means the stdlib text is
+  // unchanged and only the compiler's own `U8Type` class is involved,
+  // which any seed can compile.
+  let byteArrayType = new ArrayType(new U8Type(), true);
+  ctx.registerPreludeType("ByteArray", byteArrayType);
+
+  // __byte_array_new(size: i32): ByteArray
+  let baNewParams = growable<Type>([new I32Type()]);
+  let baNewType = new FunctionType(baNewParams, byteArrayType);
+  ctx.registerPreludeValue("__byte_array_new", baNewType);
+
+  // __byte_array_length(arr: ByteArray): i32
+  let baLenParams = growable<Type>([byteArrayType]);
+  let baLenType = new FunctionType(baLenParams, new I32Type());
+  ctx.registerPreludeValue("__byte_array_length", baLenType);
+
+  // __byte_array_get(arr: ByteArray, index: i32): i32
+  let baGetParams = growable<Type>([byteArrayType, new I32Type()]);
+  let baGetType = new FunctionType(baGetParams, new I32Type());
+  ctx.registerPreludeValue("__byte_array_get", baGetType);
+
+  // __byte_array_set(arr: ByteArray, index: i32, value: i32): void
+  let baSetParams = growable<Type>([
+    byteArrayType,
+    new I32Type(),
+    new I32Type(),
+  ]);
+  let baSetType = new FunctionType(baSetParams, new VoidType());
+  ctx.registerPreludeValue("__byte_array_set", baSetType);
+
+  // __byte_array_copy(dest: ByteArray, destOffset: i32, src: ByteArray, srcOffset: i32, len: i32): void
+  let baCopyParams = growable<Type>([
+    byteArrayType,
+    new I32Type(),
+    byteArrayType,
+    new I32Type(),
+    new I32Type(),
+  ]);
+  let baCopyType = new FunctionType(baCopyParams, new VoidType());
+  ctx.registerPreludeValue("__byte_array_copy", baCopyType);
+
+  // Primitive array intrinsics
+  let primArrayTParam = new TypeParameterType("T", null, null);
+  let primArrayTParams = growable<TypeParameterType>([primArrayTParam]);
+  let primArrayType = new ArrayType(primArrayTParam, true);
+  ctx.registerPreludeType("array", primArrayType);
+
+  // __array_len<T>(arr: array<T>): i32
+  let arrLenParams = growable<Type>([primArrayType]);
+  let arrLenType = new FunctionType(arrLenParams, new I32Type(), null, primArrayTParams);
+  ctx.registerPreludeValue("__array_len", arrLenType);
+
+  // __array_get<T>(arr: array<T>, index: i32): T
+  let arrGetParams = growable<Type>([primArrayType, new I32Type()]);
+  let arrGetType = new FunctionType(arrGetParams, primArrayTParam, null, primArrayTParams);
+  ctx.registerPreludeValue("__array_get", arrGetType);
+
+  // __array_set<T>(arr: array<T>, index: i32, value: T): void
+  let arrSetParams = growable<Type>([
+    primArrayType,
+    new I32Type(),
+    primArrayTParam,
+  ]);
+  let arrSetType = new FunctionType(arrSetParams, new VoidType(), null, primArrayTParams);
+  ctx.registerPreludeValue("__array_set", arrSetType);
+
+  // __array_new<T>(size: i32, value: T): array<T>
+  let arrNewParams = growable<Type>([new I32Type(), primArrayTParam]);
+  let arrNewType = new FunctionType(arrNewParams, primArrayType, null, primArrayTParams);
+  ctx.registerPreludeValue("__array_new", arrNewType);
+
+  // __array_new_empty<T>(size: i32): array<T>
+  let arrNewEmptyParams = growable<Type>([new I32Type()]);
+  let arrNewEmptyType = new FunctionType(arrNewEmptyParams, primArrayType, null, primArrayTParams);
+  ctx.registerPreludeValue("__array_new_empty", arrNewEmptyType);
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/**
+ * Result of checking a module.
+ */
+export final class CheckResult(
+  model: SemanticModel,
+  diagnostics: GrowableArray<Diagnostic>
+)
+
+function collectPatternSymbols(ctx: CheckerContext, pattern: Pattern, symbols: GrowableArray<Symbol>): void {
+  match (pattern) {
+    case IdentifierPattern as ip: {
+      let sym = ctx.model.resolveDeclaration(ip);
+      if (sym != null) {
+        symbols.push(sym);
+      }
+    }
+    case RecordPattern {properties, rest}: {
+      for (let prop in properties) {
+        collectPatternSymbols(ctx, prop.value as Pattern, symbols);
+      }
+      if (rest != null) {
+        collectPatternSymbols(ctx, rest as Pattern, symbols);
+      }
+    }
+    case TuplePattern {elements}: {
+      for (let el in elements) {
+        if (el is Pattern) {
+          collectPatternSymbols(ctx, el, symbols);
+        }
+      }
+    }
+    case ArrayPattern {elements}: {
+      for (let el in elements) {
+        if (el is Pattern) {
+          collectPatternSymbols(ctx, el, symbols);
+        }
+      }
+    }
+    case RestPattern {pattern}: {
+      if (pattern is Pattern) {
+        collectPatternSymbols(ctx, pattern as Pattern, symbols);
+      }
+    }
+    case AsPattern {pattern as inner, name}: {
+      let sym = ctx.model.resolveDeclaration(name);
+      if (sym != null) {
+        symbols.push(sym);
+      }
+      collectPatternSymbols(ctx, inner as Pattern, symbols);
+    }
+    case AssignmentPattern {left}: {
+      collectPatternSymbols(ctx, left as Pattern, symbols);
+    }
+    case _: {}
+  }
+}
+
+/**
+ * Check a module AST and produce type information.
+ *
+ * `scopeResult` is the output of scope analysis for this module.
+ *
+ * `depExports` maps import specifiers (as written in source) to the
+ * ModuleExports of the resolved dependency module. When provided, the
+ * checker resolves imported type and value names from these exports.
+ *
+ * This version loads the standard prelude types (String, Array, etc.)
+ * automatically.
+ */
+/**
+ * Enforce the import-cycle rules (docs/design/import-cycles.md) for one
+ * imported name. When the name's declaration ORIGINATES in a module
+ * that runs later in evaluation order (a cycle back edge):
+ *  - module-level value bindings are rejected — their initializers
+ *    have not run when this module initializes, so a read would
+ *    observe the wasm default value;
+ *  - functions must carry a fully written signature (every parameter
+ *    and the return type) — inference has no stable order across a
+ *    cycle. A function-typed binding annotation also satisfies this.
+ * Type declarations pass through: they resolve on the second checking
+ * pass and involve no initialization order.
+ */
+export function checkCyclicImportRules(
+  ctx: CheckerContext,
+  depMod: ModuleExports,
+  importedName: String,
+  spec: Node
+): void {
+  let later = ctx.cyclicLaterPaths;
+  if (later == null) {
+    return;
+  }
+  let exp = if (let (true, e) = depMod.get(importedName)) { e } else { null };
+  if (exp == null) {
+    return;
+  }
+  let origin = exp.resolveTarget();
+  if (!later.has(origin.modulePath)) {
+    return;
+  }
+  // Whether the origin module is itself re-checked (it is inside a
+  // cycle). Origins outside the re-check set are checked exactly once,
+  // so their types and inferred signatures are unique and stable and
+  // may cross freely — only the value/init-order rule applies to them.
+  let originRechecked = ctx.cyclicRecheckPaths != null &&
+      (ctx.cyclicRecheckPaths as HashSet<String>).has(origin.modulePath);
+  // Only a module-level `let`/`var` binding has an initialization order
+  // to observe (the scope builder records the pattern node and stamps
+  // the binding's shape on the symbol). Every type declaration crosses
+  // as its one canonical object, created on first demand and filled in
+  // by its own registration (docs/design/import-cycles.md), and a
+  // `function` declaration carries its signature.
+  if (!(origin.declaration is IdentifierPattern)) {
+    return;
+  }
+  if (!origin.isFunctionBinding) {
+    ctx.error(
+      "Cyclic import of value '" + importedName +
+        "': module-level bindings cannot cross an import cycle (the exporting module's initializers have not run)",
+      DiagnosticCode.CyclicImport, spec.loc);
+  } else if (!origin.hasFullSignature && originRechecked) {
+    ctx.error(
+      "Cyclic import of '" + importedName +
+        "': a function crossing an import cycle needs an explicit signature (annotate every parameter and the return type)",
+      DiagnosticCode.CyclicImport, spec.loc);
+  }
+}
+
+/**
+ * Index `let f = (…) => …` bindings in a statement list for lazy
+ * resolution, enabling forward references and mutual recursion between
+ * function bindings. Run over the module body AND over every block's
+ * statements: block-scoped function bindings (recursive local `visit`
+ * closures, forward references between siblings) resolve through the
+ * same pending-function machinery.
+ */
+export function prescanPendingFunctions(ctx: CheckerContext, body: GrowableArray<Statement>): void {
+  var fi = 0;
+  while (fi < body.length) {
+    match (body[fi]) {
+      case VariableDeclaration {pattern, init}: {
+        match (pattern) {
+          case IdentifierPattern as pat: {
+            match (init) {
+              case FunctionExpression as fe: {
+                let info = ctx.model.resolveDeclaration(pat);
+                if (info != null) {
+                  ctx.registerPendingFunction(info.id, fe as Node);
+                }
+              }
+              case _: {}
+            }
+          }
+          case _: {}
+        }
+      }
+      case FunctionDeclaration {name as namePat, func}: {
+        let info = ctx.model.resolveDeclaration(namePat as Node);
+        if (info != null) {
+          ctx.registerPendingFunction(info.id, func as Node, true);
+        }
+      }
+      case _: {}
+    }
+    fi += 1;
+  }
+}
+
+/**
+ * A module between the two halves of its check: its declarations are
+ * registered (beginModule) and its bodies are not yet checked
+ * (finishModule). The members of an import cycle are all begun before
+ * any is finished, so every body sees every member's declarations.
+ */
+export final class ModuleCheck {
+  ctx: CheckerContext;
+  ast: Module;
+  scopeResult: ScopeResult;
+  state: SharedCheckerState;
+  /**
+   * Whether finishModule leaves this module's function and class
+   * bodies for something to reach. True for a dependency — a module
+   * the entry point reaches only across a package specifier — whose
+   * unreached bodies would cost a check and report diagnostics on code
+   * this compilation does not run. Its signatures are registered
+   * either way, which is what importers resolve against.
+   */
+  var deferBodies = false;
+  new(this.ctx, this.ast, this.scopeResult, this.state);
+}
+
+/**
+ * The body-level check of one top-level statement — the body half of
+ * checkModule, for one statement of it. Phase 1 registered the
+ * signatures this reads.
+ *
+ * `deferred` is non-null for a module whose function and class member
+ * bodies wait for reachability to ask for them; the statement is
+ * indexed there instead of checked, and a class registers everything
+ * but its member bodies.
+ */
+function checkTopLevelStatement(
+    ctx: CheckerContext,
+    stmt: Statement,
+    deferred: DeferredModule | null = null): void {
+  match (stmt) {
+    case ClassDeclaration as cd: { checkClassBodies(ctx, cd, deferred); }
+    case InterfaceDeclaration as id: { checkInterfaceConstructorBodies(ctx, id); }
+    // Already fully handled in Phase 1.
+    case ImportDeclaration {}: {}
+    case EnumDeclaration {}: {}
+    case MixinDeclaration {}: {}
+    case TypeAliasDeclaration as ta: { checkTypeAliasDeclaration(ctx, ta); }
+    case DeclareFunction {}: {}
+    case SymbolDeclaration {}: {}
+    case ExportAllDeclaration {}: {}
+    case ExportFromDeclaration {}: {}
+    case FunctionDeclaration as fd: {
+      let sym = ctx.model.resolveDeclaration(fd.name as Node);
+      if (deferred != null) {
+        let d = deferred as DeferredModule;
+        if (sym != null) { d.addGlobal(sym.id, stmt); }
+        d.addGlobalNode(fd.func as Node, stmt);
+        resolveDeferredSignature(ctx, fd.func, sym);
+        return;
+      }
+      if (sym != null) {
+        let symId = sym.id;
+        ctx.enterSymbolReferrer(symId);
+        checkStatement(ctx, fd);
+        ctx.exitSymbolReferrer(symId);
+      } else {
+        checkStatement(ctx, fd);
+      }
+    }
+    // Everything else: variable declarations, expression statements, etc.
+    case VariableDeclaration as vd: {
+      let syms = new Array<Symbol>();
+      collectPatternSymbols(ctx, vd.pattern, syms);
+      let {init} = vd;
+      // Only a `let` holding a function waits. Anything else is a
+      // value an importer reads the type of, and checking the
+      // expression that gives it that type is not what this is trying
+      // to avoid.
+      if (deferred != null && init is FunctionExpression) {
+        let d = deferred as DeferredModule;
+        for (let s in syms) { d.addGlobal(s.id, stmt); }
+        d.addGlobalNode(init as Node, stmt);
+        resolveDeferredSignature(ctx, init as FunctionExpression,
+            if (syms.length > 0) syms[0] else null);
+        return;
+      }
+      if (syms.length > 0) {
+        let primarySymId = syms[0].id;
+        ctx.enterSymbolReferrer(primarySymId);
+        checkStatement(ctx, vd);
+        ctx.exitSymbolReferrer(primarySymId);
+      } else {
+        checkStatement(ctx, vd);
+      }
+    }
+    // Anything that is not a declaration. The parser rejects these, so
+    // only a recovering parse — the language service, on source still
+    // being typed — reaches here with one, and it still wants whatever
+    // the statement can tell it about types.
+    case _: {
+      ctx.enterNodeReferrer(stmt.id as i32);
+      checkStatement(ctx, stmt);
+      ctx.exitNodeReferrer(stmt.id as i32);
+    }
+  }
+}
+
+/**
+ * Resolve a deferred function's signature from its annotations, so
+ * that every reader of the declaration's type has one before the body
+ * is checked: the importer, and the wasm signature reachability
+ * builds for it. Only a function with a return annotation — inferring
+ * a return type means checking the body, which is the work the
+ * deferral exists to avoid, and the first reference resolves those
+ * through the same lazy path.
+ */
+function resolveDeferredSignature(
+    ctx: CheckerContext,
+    fe: FunctionExpression,
+    sym: Symbol | null): void {
+  if (sym == null || fe.returnType == null) { return; }
+  if (ctx.model.getBindingTypeDirect(sym) != null) { return; }
+  ctx.lazyResolveFunction(sym, fe as Node);
+}
+
+/**
+ * The deferred bodies of one module: what its check left for
+ * reachability to ask for, and the context to check them in. The
+ * module's `SemanticModel` carries this, so the reachability walk can
+ * reach it without the two passes importing each other.
+ */
+export final class DeferredModule implements DeferredBodies {
+  #ctx: CheckerContext;
+  /** The top-level statements that declare each deferred binding. */
+  #globals = new Map<SymbolId, GrowableArray<Statement>>();
+  /** The top-level statement an arrow in value position belongs to. */
+  #globalNodes = new Map<i32, Statement>();
+  /** The class a deferred member body belongs to, by member node id. */
+  #memberClasses = new Map<i32, ClassDeclaration>();
+  /** The member a node id names: the accessor a setter belongs to. */
+  #memberNodes = new Map<i32, Node>();
+  /** Node ids of the statements and members already checked. */
+  #checked = new Set<i32>();
+
+  new(ctx: CheckerContext) : #ctx = ctx;
+
+  addGlobal(symId: SymbolId, stmt: Statement): void {
+    let list = if (let (true, l) = this.#globals.get(symId)) {
+      l
+    } else {
+      let nl = new Array<Statement>();
+      this.#globals[symId] = nl;
+      nl
+    };
+    list.push(stmt);
+  }
+
+  addGlobalNode(node: Node, stmt: Statement): void {
+    this.#globalNodes[node.id as i32] = stmt;
+  }
+
+  /**
+   * Index one member body. A setter is indexed under its own id as
+   * well as the accessor's: both are nodes reachability can name, and
+   * the accessor is what gets checked either way — its getter and
+   * setter share the declared type.
+   */
+  addMember(member: Node, cd: ClassDeclaration): void {
+    let id = member.id as i32;
+    this.#memberClasses[id] = cd;
+    this.#memberNodes[id] = member;
+    if (let AccessorDeclaration {setter} = member) {
+      match (setter) {
+        case SetterInfo as si: {
+          let sid = si.id as i32;
+          this.#memberClasses[sid] = cd;
+          this.#memberNodes[sid] = member;
+        }
+        case _: {}
+      }
+    }
+  }
+
+  #checkStatement(stmt: Statement): void {
+    if (!this.#checked.add(stmt.id as i32)) { return; }
+    checkTopLevelStatement(this.#ctx, stmt, null);
+  }
+
+  checkGlobalBody(symId: SymbolId): void {
+    if (let (true, stmts) = this.#globals.get(symId)) {
+      for (let stmt in stmts) {
+        this.#checkStatement(stmt);
+      }
+    }
+  }
+
+  checkBodyOfNode(nodeId: i32): void {
+    if (let (true, member) = this.#memberNodes.get(nodeId)) {
+      if (this.#checked.add(member.id as i32)) {
+        checkDeferredClassMember(this.#ctx, this.#memberClasses[nodeId], member);
+      }
+      return;
+    }
+    if (let (true, stmt) = this.#globalNodes.get(nodeId)) {
+      this.#checkStatement(stmt);
+    }
+  }
+}
+
+/**
+ * Check a module: register its declarations, then check its bodies.
+ * The two halves are beginModule and finishModule; a module outside
+ * any import cycle runs them back to back.
+ */
+export function checkModule(
+  ast: Module,
+  scopeResult: ScopeResult,
+  depExports: HashMap<String, ModuleExports> | null,
+  depModels: HashMap<String, SemanticModel> | null = null,
+  emitLocations: boolean = false,
+  sharedState: SharedCheckerState | null = null,
+  warnUnnecessaryCasts: boolean = false,
+  cyclicLaterPaths: HashSet<String> | null = null,
+  cyclicRecheckPaths: HashSet<String> | null = null,
+  priorModel: SemanticModel | null = null,
+  deferBodies: boolean = false
+): CheckResult {
+  return finishModule(beginModule(ast, scopeResult, depExports, depModels,
+      emitLocations, sharedState, warnUnnecessaryCasts, cyclicLaterPaths,
+      cyclicRecheckPaths, priorModel, deferBodies));
+}
+
+/**
+ * The first half of checking a module: imports, scope diagnostics, and
+ * the registration of every declaration's signature, so that all
+ * member signatures exist before any body is checked. The result
+ * carries the module's context to finishModule.
+ */
+export function beginModule(
+  ast: Module,
+  scopeResult: ScopeResult,
+  depExports: HashMap<String, ModuleExports> | null,
+  depModels: HashMap<String, SemanticModel> | null = null,
+  emitLocations: boolean = false,
+  sharedState: SharedCheckerState | null = null,
+  warnUnnecessaryCasts: boolean = false,
+  cyclicLaterPaths: HashSet<String> | null = null,
+  cyclicRecheckPaths: HashSet<String> | null = null,
+  priorModel: SemanticModel | null = null,
+  deferBodies: boolean = false
+): ModuleCheck {
+  let state = if (sharedState != null) sharedState else new SharedCheckerState();
+  // A member table substitutes a parent's type arguments into the members
+  // it reads through that parent with the checker's own substitution.
+  setMemberTypeSubstitution(substituteTypeParams);
+  let ctx = new CheckerContext(state, ast.path, scopeResult, depExports, depModels, emitLocations, warnUnnecessaryCasts);
+  ctx.cyclicLaterPaths = cyclicLaterPaths;
+  ctx.cyclicRecheckPaths = cyclicRecheckPaths;
+  ctx.priorModel = priorModel;
+  ctx.model.typeIdGenerator = state.typeIdGenerator;
+  // Set here rather than when the check finishes: a deferred body is
+  // checked long afterwards, from a walk that found this model and has
+  // only the path to name it by.
+  ctx.model.sourcePath = ast.path;
+  // The per-node tables become arrays over the module's id range.
+  ctx.model.setNodeRange(ast.id, ast.lastNodeId);
+  if (deferBodies) {
+    // Only a module that defers: the context has to outlive its check
+    // so an importer can ask it for a signature its deferred body
+    // never bound, and that is the only module anyone asks. Keeping
+    // every module's would hold the flow-analysis state of the whole
+    // local project for the length of the compile.
+    state.moduleContexts[ast.path] = ctx;
+  }
+
+  // Register standard prelude types only once per shared state.
+  if (!state.preludeRegistered) {
+    registerCompilerIntrinsics(ctx);
+    state.preludeRegistered = true;
+  }
+
+  // Pre-pass: index function declarations for lazy resolution.
+  // This enables forward references and mutual recursion for annotated functions.
+  // Type declarations (classes, interfaces, etc.) are registered eagerly in
+  // Phase 1 below, but are also materialized on demand by resolveTypeName when
+  // first referenced (e.g. during Phase 1 superclass resolution).
+  prescanPendingFunctions(ctx, ast.body);
+
+  // Emit errors for same-scope redeclarations detected by the scope builder.
+  for (let dup in scopeResult.duplicateDeclarations) {
+    var loc: SourceLocation | null = null;
+    if (let TypeAliasDeclaration {name} = dup.node) { loc = name.loc; }
+    ctx.error(`Type '${dup.name}' is already declared in this scope.`, DiagnosticCode.DuplicateDeclaration, loc);
+  }
+
+  // Emit warnings for unused and never-mutated variables.
+  for (let unused in scopeResult.unusedVariables) {
+    if (unused.name.startsWith("_")) { continue; }
+    let loc = if (unused.declaration != null) unused.declaration.loc else null;
+    ctx.diagnostics.reportWarning(`Variable '${unused.name}' is never read.`, DiagnosticCode.UnusedVariable, loc);
+  }
+  
+  for (let neverMut in scopeResult.neverMutatedVariables) {
+    if (neverMut.name.startsWith("_")) { continue; }
+    let loc = if (neverMut.declaration != null) neverMut.declaration.loc else null;
+    ctx.diagnostics.reportWarning(`Variable '${neverMut.name}' is declared as mutable but never written to. Use 'let' instead.`, DiagnosticCode.NeverMutatedVariable, loc);
+  }
+
+  // Emit warnings for unused import declarations (where all symbols are unused).
+  for (let decl in scopeResult.unusedImportDeclarations) {
+    ctx.diagnostics.reportWarning(
+      `Import from '${decl.moduleSpecifier.value}' is never used.`,
+      DiagnosticCode.UnusedImport,
+      decl.loc
+    );
+  }
+
+  // Emit warnings for unused individual imported symbols.
+  for (let sym in scopeResult.unusedImportedSymbols) {
+    let loc = if (sym.declaration != null) sym.declaration.loc else null;
+    ctx.diagnostics.reportWarning(
+      `Imported symbol '${sym.name}' is never used.`,
+      DiagnosticCode.UnusedImportedSymbol,
+      loc
+    );
+  }
+
+  // Emit warnings for unnecessary prelude imports.
+  for (let sym in scopeResult.unnecessaryImports) {
+    let loc = if (sym.declaration != null) sym.declaration.loc else null;
+    ctx.diagnostics.reportWarning(
+      `Imported symbol '${sym.name}' is unnecessary because it is in the prelude.`,
+      DiagnosticCode.UnnecessaryImport,
+      loc
+    );
+  }
+
+  // Emit warnings for duplicate imports.
+  for (let sym in scopeResult.duplicateImports) {
+    let loc = if (sym.declaration != null) sym.declaration.loc else null;
+    ctx.diagnostics.reportWarning(
+      `Duplicate import of '${sym.name}'.`,
+      DiagnosticCode.DuplicateImport,
+      loc
+    );
+  }
+
+  // === Phase 0: Bind top-level symbols ===
+  // Before any type registers, because a member key may name a symbol
+  // declared BELOW the type that uses it, and which symbol names a member
+  // must not depend on where in the file it was declared. A type stamps
+  // its members' symbol identities as it registers them, so the bindings
+  // have to exist by then.
+  for (let stmt in ast.body) {
+    if (stmt is SymbolDeclaration) {
+      checkSymbolDeclaration(ctx, stmt);
+    }
+  }
+
+  // === Phase 1: Register all declaration signatures ===
+  // Process imports and register type declarations (classes, interfaces,
+  // enums, mixins, type aliases, declared functions) so that ALL
+  // member signatures are available before any bodies are checked.
+  // The module's implicit prelude imports first, ahead of the imports
+  // it writes, as though written at the top of the file.
+  let tRegister = nowMs();
+  for (let implicitImport in scopeResult.implicitImportDeclarations) {
+    checkStatement(ctx, implicitImport);
+  }
+  for (let stmt in ast.body) {
+    match (stmt) {
+      case ImportDeclaration {}: { checkStatement(ctx, stmt); }
+      case ClassDeclaration as cd: { registerClassDeclaration(ctx, cd); }
+      case InterfaceDeclaration as id: { checkInterfaceDeclaration(ctx, id); }
+      case EnumDeclaration as ed: { checkEnumDeclaration(ctx, ed); }
+      case MixinDeclaration as md: { checkMixinDeclaration(ctx, md); }
+      case TypeAliasDeclaration as ta: {
+        registerTypeAliasDeclaration(ctx, ta);
+      }
+      case DeclareFunction as df: { checkDeclareFunction(ctx, df); }
+      case SymbolDeclaration {}: {} // Phase 0.
+      case _: {} // Non-declaration statements handled in Phase 2.
+    }
+  }
+  performance.add("check-register", nowMs() - tRegister);
+
+  // Index the module's top-level value declarations. Reachability
+  // reads `globalDeclarations` to find the declaration behind a symbol
+  // it reached, and for a deferred module that lookup comes before the
+  // body check that would otherwise have registered it.
+  for (let stmt in ast.body) {
+    match (stmt) {
+      case FunctionDeclaration as fd: {
+        let sym = ctx.model.resolveDeclaration(fd.name as Node);
+        if (sym != null) {
+          ctx.model.addDeclaredGlobal(sym.id, fd);
+        }
+      }
+      case VariableDeclaration as vd: {
+        let syms = new Array<Symbol>();
+        collectPatternSymbols(ctx, vd.pattern, syms);
+        for (let s in syms) {
+          ctx.model.addDeclaredGlobal(s.id, vd);
+        }
+      }
+      case _: {}
+    }
+  }
+
+  let mc = new ModuleCheck(ctx, ast, scopeResult, state);
+  mc.deferBodies = deferBodies;
+  return mc;
+}
+
+/**
+ * The second half of checking a module: its bodies, against the
+ * declarations every module it imports from has registered by now;
+ * then its diagnostics and export bindings.
+ */
+export function finishModule(mc: ModuleCheck): CheckResult {
+  let ctx = mc.ctx;
+  let ast = mc.ast;
+  let scopeResult = mc.scopeResult;
+  let state = mc.state;
+
+  // === Phase 2: Main Checking Phase ===
+  // This is the actual checking phase where the full structure is validated
+  // (bodies, statements, type aliases, etc.), relying on the signatures
+  // registered in Phase 1 to seamlessly resolve forward references.
+  //
+  // In a module whose bodies are deferred, a function body and a
+  // class's member bodies are indexed instead of checked, and each is
+  // checked when reachability asks for it. Everything else runs here
+  // as it always does — including a class's field initializers, which
+  // are what give an unannotated field its type, and the class rules
+  // that mutate the class.
+  let deferred = if (mc.deferBodies) new DeferredModule(ctx) else null;
+  // Deferred or not, this measures what Phase 2 did here; a body
+  // checked later on reachability's demand is timed where that happens.
+  let tBodies = nowMs();
+  for (let stmt in ast.body) {
+    checkTopLevelStatement(ctx, stmt, deferred);
+  }
+  ctx.model.deferredBodies = deferred;
+
+  performance.add("check-bodies", nowMs() - tBodies);
+  let tExports = nowMs();
+
+  // Collect diagnostics from the bag into the model.
+  for (let diagnostic in ctx.diagnostics.diagnostics) {
+    ctx.model.addDiagnostic(diagnostic);
+  }
+
+  // Finalize: bind exported types directly onto export Symbols
+  // so importers can resolve them cleanly.
+  for (let {key as expName, value as exInfo} in scopeResult.exports) {
+    let {declaration} = exInfo;
+    var exportType = ctx.resolveTypeName(expName);
+    if (exportType == null) {
+      // A re-exported type (`export {X} from './dep'`): this module has
+      // no local type registration for the name, so forward the origin's
+      // type. Without this, importers fall back to the export symbol's
+      // VALUE binding for the type — wrong for enums, whose type (the
+      // alias) and value (the member record) differ. The origin is the
+      // export symbol's target across the re-export, and its type is
+      // found by that symbol: the canonical type its declaration
+      // registered, else its own module's export of the name. Never by
+      // the name across every dependency — two libraries can each
+      // declare a `TemplateValue`, and whichever model came first in
+      // the walk used to answer for both.
+      let origin = exInfo.resolveTarget();
+      if (origin !== exInfo) {
+        exportType = ctx.canonicalTypeOf(origin);
+        let models = ctx.depModels;
+        if (exportType == null && models != null) {
+          if (let (true, originModel) = models.get(origin.modulePath)) {
+            exportType = originModel.getExportType(expName);
+          }
+        }
+      }
+    }
+    if (exportType != null) {
+      ctx.model.setExportType(expName, exportType);
+    }
+
+    var valueType: Type | null = null;
+    if (declaration != null) {
+      let localSi = ctx.model.resolveDeclaration(declaration);
+      if (localSi != null) {
+        valueType = ctx.model.getBindingType(localSi);
+        if (valueType == null && deferred != null) {
+          // An exported `let f = (…) => …` whose body is deferred. Its
+          // signature is still owed to importers, and resolving it
+          // from the annotations costs nothing like checking the
+          // body; a function with no return annotation does have its
+          // body checked, which is the price of inferring a return
+          // type at all.
+          valueType = ctx.resolveExportedFunction(localSi);
+        }
+      }
+    }
+    if (valueType == null) {
+      // Re-exported symbols (export {X} from './dep') were already bound by
+      // the origin module's finalize pass — reuse that binding. Falling
+      // through to `exportType` here would bind the TYPE, which is wrong for
+      // enums: their value namespace is the member record, and the stale
+      // type binding would shadow the origin's record for importers.
+      valueType = lookupBindingTypeInDeps(ctx, exInfo);
+    }
+    if (valueType == null) {
+      valueType = exportType;
+    }
+    if (valueType != null) {
+      ctx.model.setBindingType(exInfo, valueType);
+    }
+  }
+
+  // The model is complete: claim its nodes and bindings in the shared
+  // index, so that any later compile over this result can find the
+  // owner of a node without a `Program` writing a back-pointer into a
+  // model it shares with every other compile in the batch.
+  ctx.model.sourcePath = ast.path;
+  ctx.model.index = state.modelIndex;
+  state.modelIndex.register(ctx.model);
+
+  performance.add("check-exports", nowMs() - tExports);
+  return new CheckResult(ctx.model, ctx.diagnostics.diagnostics);
+}

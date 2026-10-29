@@ -1,0 +1,671 @@
+import { Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import { BooleanLiteral, Expression, NumberLiteral, SourceLocation } from '../ast.zena';
+import {
+  BoolLiteralType, BooleanType, ClassType, ErrorType, F64Type, HoleType,
+  I32Type, InlineTupleType as InlineTupleT, InterfaceType, NeverType,
+  NullType, NumLiteralType, StringLiteralType, TupleType as TupleT, Type,
+  TypeAliasType, UnionType as UnionT, UnknownType, VoidType, baseType,
+  integerLiteralMagnitude, isIntegerType, isNumericType, isOwnershipWrapper,
+  ownershipHandleInner, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown } from '../well-known.zena';
+import { CheckerContext } from './context.zena';
+import { isAssignableTo, typesEqual, unconstrainedTypeParamOf } from './relations.zena';
+
+/**
+ * Check if an array of types already contains a type equal to target.
+ */
+function containsType(types: Array<Type>, target: Type): boolean {
+  var i = 0;
+  while (i < types.length) {
+    if (typesEqual(types[i], target)) { return true; }
+    i += 1;
+  }
+  return false;
+}
+
+/**
+ * Combines the arm types of a `match` or `try` into the type of the
+ * whole expression.
+ *
+ * `never` arms drop out — they never complete, so they contribute no
+ * value (createUnionType does this). A `void` arm instead ABSORBS: it
+ * completes, and completes with nothing, so no value survives every
+ * path and the expression as a whole has none. `T | void` is not a
+ * type any binding can hold and has no wasm representation, so
+ * producing it here only defers the failure to codegen.
+ *
+ * This is what makes a statement-position `try`/`match` whose arms end
+ * in an assignment (`{ … x = v; }`, an expression statement with a
+ * value) come out `void` rather than `T | void`.
+ */
+export function combineArmTypes(types: Array<Type>, ctx: CheckerContext | null = null, loc: SourceLocation | null = null): Type {
+  for (let t in types) {
+    if (t is VoidType) {
+      return new VoidType();
+    }
+  }
+  return createUnionType(types, ctx, loc);
+}
+
+/**
+ * Create a union type, flattening nested unions and deduplicating.
+ */
+/**
+ * Same-handle members of a union merge: `Own<A> | Own<B>` is
+ * `Own<A | B>`. The handles are erased, so the two spellings denote
+ * the same values carrying the same obligation, and one canonical form
+ * keeps every downstream consumer — release, drop candidacy,
+ * assignability — single-path. Other members (null above all) ride
+ * alongside, and handles of different names never merge: their arms
+ * carry different obligations.
+ */
+function mergeHandleMembers(
+  members: GrowableArray<Type>,
+  ctx: CheckerContext | null,
+  loc: SourceLocation | null
+): GrowableArray<Type> {
+  var mergeable = 0;
+  for (let m in members) {
+    if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
+      mergeable += 1;
+    }
+  }
+  if (mergeable < 2) {
+    let out = new Array<Type>();
+    for (let m in members) {
+      out.push(m);
+    }
+    return out;
+  }
+
+  // Group the handle members' inner types by handle name.
+  let names = new Array<String>();
+  let inners = new Array<GrowableArray<Type>>();
+  for (let m in members) {
+    if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
+      let alias = m as TypeAliasType;
+      var idx = -1;
+      for (var i = 0; i < names.length; i += 1) {
+        if (names[i] == alias.name) { idx = i; }
+      }
+      if (idx == -1) {
+        names.push(alias.name);
+        inners.push(new Array<Type>());
+        idx = names.length - 1;
+      }
+      inners[idx].push(ownershipHandleInner(m) as Type);
+    }
+  }
+
+  // Rebuild in member order: each handle name appears once, at its
+  // first position, wrapping the union of its inners.
+  let emitted = new Set<String>();
+  let result = new Array<Type>();
+  for (let m in members) {
+    if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
+      let alias = m as TypeAliasType;
+      if (emitted.has(alias.name)) { continue; }
+      emitted.add(alias.name);
+      var idx = 0;
+      for (var i = 0; i < names.length; i += 1) {
+        if (names[i] == alias.name) { idx = i; }
+      }
+      if (inners[idx].length == 1) {
+        result.push(m);
+      } else {
+        let mergedInner = createUnionType(inners[idx], ctx, loc);
+        let mergedArgs = growable<Type>([mergedInner]);
+        result.push(new TypeAliasType(
+          alias.name, alias.typeParameters, mergedInner, true, mergedArgs,
+          alias.isOpaque, alias.declaringModule));
+      }
+    } else {
+      result.push(m);
+    }
+  }
+  return result;
+}
+
+/**
+ * A class member of a union is absorbed by an interface member it is
+ * assignable to: `HashMap<K, V> | Map<K, V>` is `Map<K, V>`. The two
+ * arms of a `??`, an `if` or a `match` meet here when one is a map a
+ * caller passed as the interface and the other a `new Map()`, which
+ * is a `HashMap`; left as two members, the union has no member access
+ * and no single representation. The arm that produced the class is
+ * adapted to the interface where the join is typed (`adaptJoinedArm`).
+ */
+function foldClassesIntoInterfaces(members: GrowableArray<Type>, ctx: CheckerContext | null): GrowableArray<Type> {
+  if (ctx == null || members.length < 2) { return members; }
+  var hasInterface = false;
+  var hasClass = false;
+  for (let m in members) {
+    if (baseType(m) is InterfaceType) { hasInterface = true; }
+    if (baseType(m) is ClassType) { hasClass = true; }
+  }
+  if (!hasInterface || !hasClass) { return members; }
+  let kept = new Array<Type>();
+  for (let m in members) {
+    var absorbed = false;
+    if (baseType(m) is ClassType) {
+      for (let other in members) {
+        if (baseType(other) is InterfaceType && isAssignableTo(ctx, m, other)) {
+          absorbed = true;
+        }
+      }
+    }
+    if (!absorbed) { kept.push(m); }
+  }
+  return kept;
+}
+
+export function createUnionType(types: Array<Type>, ctx: CheckerContext | null = null, loc: SourceLocation | null = null): Type {
+  var deduped = new Array<Type>();
+  var hasBoolean = false;
+
+  // Flatten nested unions and collect types
+  for (let type in types) {
+    match (type) {
+      case UnionT {types as inner}: {
+        for (let innerType in inner) {
+          if (innerType is BooleanType) { hasBoolean = true; }
+          if (!containsType(deduped, innerType)) { deduped.push(innerType); }
+        }
+      }
+      case NeverType: {}
+      case BooleanType: {
+        hasBoolean = true;
+        if (!containsType(deduped, type)) { deduped.push(type); }
+      }
+      case _: {
+        if (!containsType(deduped, type)) { deduped.push(type); }
+      }
+    }
+  }
+
+  // If the union contains boolean, remove BoolLiteralTypes.
+  if (hasBoolean) {
+    let withoutLits = new Array<Type>();
+    for (let t in deduped) {
+      if (!(t is BoolLiteralType)) {
+        withoutLits.push(t);
+      }
+    }
+    deduped = withoutLits;
+  }
+
+  // Compact NumberLiteralTypes if NumberType exists
+  let hasNum = false;
+  for (let t in deduped) {
+    if (isNumericType(t)) {
+       // Wait, we don't have a single NumberType, but many numeric types like f64.
+       // However, we mainly care about boolean for this bug.
+    }
+  }
+
+  deduped = mergeHandleMembers(deduped, ctx, loc);
+  deduped = foldClassesIntoInterfaces(deduped, ctx);
+
+  if (deduped.length == 0) { return new NeverType(); }
+  if (deduped.length == 1) { return deduped[0]; }
+
+  if (ctx != null) {
+    var hasPrimitive = false;
+    var hasReference = false;
+    var hasInlineTuple = false;
+    var hasErrorMember = false;
+    var represented = 0;
+    let primitiveBases = new Array<String>();
+    let unconstrained = new Array<String>();
+
+    // A type parameter not constrained to references may be bound to a
+    // primitive, so no other member is guaranteed to share its
+    // representation (types.md §"Unbounded Type Parameters in Unions").
+    for (let t in deduped) {
+      if (t is ErrorType) {
+        hasErrorMember = true;
+      }
+      if (!(t is VoidType || t is NeverType || t is ErrorType || t is UnknownType || t is HoleType)) {
+        represented += 1;
+      }
+      let param = unconstrainedTypeParamOf(t);
+      if (param != null && !unconstrained.contains(param.name)) {
+        unconstrained.push(param.name);
+      }
+    }
+
+    for (let t in deduped) {
+      if (t is InlineTupleT) {
+        hasInlineTuple = true;
+      }
+      let baseName: String | null = if (isNumericType(t)) {
+        typeToString(baseType(t))
+      } else if (t is BooleanType || t is BoolLiteralType) {
+        "boolean"
+      } else {
+        null
+      };
+
+      if (baseName != null) {
+        hasPrimitive = true;
+        var found = false;
+        for (let primitiveBase in primitiveBases) {
+          if (primitiveBase == baseName) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          primitiveBases.push(baseName);
+        }
+      } else if (t is VoidType || t is NeverType || t is ErrorType || t is UnknownType || t is HoleType || t is InlineTupleT) {
+        // Neither primitive nor reference.
+      } else {
+        hasReference = true;
+      }      
+    }
+
+    if (unconstrained.length > 0 && represented > 1) {
+      if (!hasErrorMember) {
+        var names = "";
+        for (let n in unconstrained) {
+          names = if (names.length == 0) `'${n}'` else `${names}, '${n}'`;
+        }
+        let first = unconstrained[0];
+        let which = if (unconstrained.length == 1) `Type parameter ${names} is` else `Type parameters ${names} are`;
+        ctx.errorOnceAt(
+          `${which} not constrained to references, so ${if (unconstrained.length == 1) "it" else "they"} may be ` +
+          "bound to a primitive, which cannot be in a union with other types. " +
+          `Constrain it ('${first} extends anyref'), or keep a slot that may be empty as ` +
+          `'WithDefault<${first}>'.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+    } else if (hasInlineTuple && (hasPrimitive || hasReference)) {
+      ctx.errorOnceAt("cannot mix inline tuple types with other representations", DiagnosticCode.TypeMismatch, loc);
+    } else if (hasPrimitive && hasReference) {
+      ctx.errorOnceAt("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, loc);
+    } else if (primitiveBases.length > 1) {
+      ctx.errorOnceAt("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, loc);
+    } else {
+      checkTupleUnionMembers(ctx, deduped, loc);
+    }
+  }
+
+  return if (ctx != null) ctx.interner.union(deduped) else new UnionT(deduped);
+}
+
+/**
+ * Report a union whose tuple members a reader cannot tell apart.
+ *
+ * Zena's primitives carry no runtime type: enums, `boolean`, literal
+ * types and generic arguments erase, so `(Color, i32)` and `(Size, i32)`
+ * are the same struct, and an inline tuple has no type identity at all.
+ * A reader finds the member from a literal the author wrote instead:
+ * every tuple in the union starts with one, a different value in each,
+ * all of the same type. `(true, i32) | (false, String)` and
+ * `(0, _) | (1, T)` qualify. The literals must share a type because
+ * `true` and `1` are the same value at run time. The tuples have the
+ * same length because pattern typing merges them position by position.
+ * Other members, such as classes and `null`, are told apart from the
+ * tuples by their own runtime types. See #371.
+ */
+function checkTupleUnionMembers(ctx: CheckerContext, members: Array<Type>,
+    loc: SourceLocation | null): void {
+  let tuples = new Array<Array<Type>>();
+  var anyRow = false;
+  for (let member in members) {
+    if (let InlineTupleT {elementTypes} = member) {
+      tuples.push(elementTypes);
+    } else if (let TupleT {elementTypes, row} = member) {
+      tuples.push(elementTypes);
+      if (row != null) {
+        anyRow = true;
+      }
+    }
+  }
+  if (tuples.length < 2) {
+    return;
+  }
+  let arity = tuples[0].length;
+  if (!anyRow) {
+    for (let tuple in tuples) {
+      if (tuple.length != arity) {
+        ctx.error(
+          "The tuples in a union must have the same length.",
+          DiagnosticCode.TypeMismatch,
+          loc,
+        );
+        return;
+      }
+    }
+  }
+  var tagType: String | null = null;
+  let seen = new Set<String>();
+  for (let tuple in tuples) {
+    let head = if (tuple.length > 0) tuple[0] else new ErrorType() as Type;
+    let tag = discriminantTag(head);
+    let ok = if (tag == null) {
+      false
+    } else if (tagType != null && tagType != tag.type) {
+      false
+    } else {
+      !seen.has(tag.value)
+    };
+    if (!ok) {
+      ctx.error(
+        "Each tuple in a union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.",
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      return;
+    }
+    if (tag != null) {
+      tagType = tag.type;
+      seen.add(tag.value);
+    }
+  }
+}
+
+/**
+ * Report `x is T` or `x as T` with a tuple type `T`, where `x` is a union
+ * holding tuples, unless `T` is one of them. The test reads the
+ * member's literal and checks its struct, which answers exactly whether
+ * `x` is that member. A tuple type that is not a member, such as
+ * `(true, Animal)` against a `(true, Dog)` member, would need its
+ * elements tested too, and tuples have no wasm subtyping for that.
+ */
+export function checkTupleUnionTest(ctx: CheckerContext, source: Type, target: Type,
+    loc: SourceLocation | null): void {
+  let resolvedTarget = baseType(target);
+  if (!(resolvedTarget is TupleT)) {
+    return;
+  }
+  let resolvedSource = unwrapAliases(source);
+  if (!(resolvedSource is UnionT)) {
+    return;
+  }
+  var hasTuple = false;
+  for (let member in resolvedSource.types) {
+    if (member is TupleT) {
+      hasTuple = true;
+      if (typesEqual(member, resolvedTarget)) {
+        return;
+      }
+    }
+  }
+  if (hasTuple) {
+    ctx.error(
+      `'${typeToString(target)}' is not one of the tuples in '${typeToString(source)}'. Test against one of them, or match on its literal.`,
+      DiagnosticCode.TypeMismatch,
+      loc,
+    );
+  }
+}
+
+/**
+ * The type and value of a literal that can tell union members apart: a
+ * boolean literal, or an integer literal (by its parsed value, so `0x1`
+ * and `1` are the same tag). Null for anything else.
+ */
+function discriminantTag(t: Type): {type: String, value: String} | null {
+  if (let BoolLiteralType {value} = t) {
+    return {type: 'boolean', value: if (value) 'true' else 'false'};
+  }
+  if (let NumLiteralType {raw} = t) {
+    let base = baseType(t);
+    if (!isIntegerType(base)) {
+      return null;
+    }
+    let negative = raw.length > 0 && raw.getByteAt(0) == 45;
+    let digits = if (negative) raw.sliceBytes(1, raw.length) else raw;
+    if (let (true, magnitude) = integerLiteralMagnitude(digits)) {
+      let sign = if (negative) '-' else '';
+      return {type: typeToString(base), value: `${sign}${magnitude}`};
+    }
+  }
+  return null;
+}
+
+/**
+ * Infer a type argument by matching a parameter type against an argument type.
+ * paramType: the expected param type (may be TypeParameterType)
+ * argType: the actual argument type
+ * inferred: map to store inferred type params
+ */
+/**
+ * The boxed tuple member of `expected`, a union, that a tuple literal
+ * starting with a boolean or integer literal is: the one with the same
+ * length that starts with the same value. Null when there is none, or
+ * `expected` is not a union.
+ */
+export function tupleMemberForLiteral(expected: Type, elements: GrowableArray<Expression>): TupleT | null {
+  if (elements.length == 0) {
+    return null;
+  }
+  let resolved = unwrapAliases(expected);
+  if (!(resolved is UnionT)) {
+    return null;
+  }
+  let head: Type | null = match (elements[0]) {
+    case BooleanLiteral {value}: new BoolLiteralType(value) as Type
+    case NumberLiteral {raw}: new NumLiteralType(raw) as Type
+    case _: null
+  };
+  if (head == null) {
+    return null;
+  }
+  let tag = discriminantTag(head);
+  if (tag == null) {
+    return null;
+  }
+  for (let member in resolved.types) {
+    if (let TupleT {elementTypes, row} = member) {
+      if (row != null || elementTypes.length != elements.length) {
+        continue;
+      }
+      let memberTag = discriminantTag(elementTypes[0]);
+      if (memberTag != null && memberTag.value == tag.value) {
+        return member as TupleT;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The tuple among `members` that starts with the same literal as the
+ * tuple `t`, boxed or inline, or null when `t` is not such a tuple.
+ */
+export function tupleWithSameTag(members: Array<Type>, t: Type): Type | null {
+  let tag = tupleTagOf(t);
+  if (tag == null) {
+    return null;
+  }
+  for (let member in members) {
+    let memberTag = tupleTagOf(member);
+    if (memberTag != null && memberTag.type == tag.type &&
+        memberTag.value == tag.value) {
+      return member;
+    }
+  }
+  return null;
+}
+
+/** The discriminant literal a boxed or inline tuple starts with. */
+function tupleTagOf(t: Type): {type: String, value: String} | null {
+  let elements = match (t) {
+    case TupleT {elementTypes}: elementTypes
+    case InlineTupleT {elementTypes}: elementTypes
+    case _: null
+  };
+  if (elements == null || elements.length == 0) {
+    return null;
+  }
+  return discriminantTag(elements[0]);
+}
+
+export function isNullableType(t: Type): boolean {
+  return match (t) {
+  case NullType: true
+  case UnionT as u: {
+    var hasNull = false;
+    for (let member in u.types) {
+      if (member is NullType) {
+        hasNull = true;
+      }
+    }
+    hasNull
+  }
+  case _: false
+};
+}
+
+/**
+ * Remove null from a type. For unions, filters out NullType members.
+ * Returns the narrowed type.
+ */
+export function subtractNullFromType(t: Type): Type {
+  match (unwrapAliases(t)) {
+    case UnionT as u: {
+      let remaining = new Array<Type>();
+      let {types} = u;
+      var i = 0;
+      while (i < types.length) {
+        if (types[i] is NullType) {  } else { remaining.push(types[i]); }
+        i = i + 1;
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
+    case NullType: { return new NeverType(); }
+    case _: { return t; }
+  }
+}
+
+/**
+ * Subtract a specific type from a union type.
+ * For example, subtractTypeFromUnion(Cat | Fish, Cat) => Fish.
+ * For non-union types, returns never if equal, or the original type unchanged.
+ */
+export function subtractTypeFromUnion(original: Type, toRemove: Type): Type {
+  match (unwrapAliases(original)) {
+    case UnionT as u: {
+      let remaining = new Array<Type>();
+      let {types} = u;
+      var i = 0;
+      while (i < types.length) {
+        if (!typesEqual(types[i], toRemove)) {
+          remaining.push(types[i]);
+        }
+        i = i + 1;
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
+    case _: {
+      if (typesEqual(original, toRemove)) { return new NeverType(); }
+      return original;
+    }
+  }
+}
+
+export function unwrapNullableForMemberLookup(t: Type): Type | null {
+  match (t) {
+    case NullType: {
+      return null;
+    }
+    case UnionT as u: {
+      let remaining = new Array<Type>();
+      let members = u.types;
+      for (let member in members) {
+        if (!(member is NullType)) {
+          remaining.push(member);
+        }
+      }
+      if (remaining.length == 0) {
+        return null;
+      }
+      if (remaining.length == 1) {
+        return remaining[0];
+      }
+      return new UnionT(remaining);
+    }
+    case _: {
+      return t;
+    }
+  }
+}
+
+export function unwrapAliases(t: Type): Type {
+  var curr = t;
+  var hops = 0;
+  while (curr is TypeAliasType && hops < 32) {
+    let ta = curr;
+    // Intrinsic aliases stop like distinct ones: their target is a
+    // placeholder, and an instance only survives here while its
+    // argument is still open — nothing to unwrap to yet.
+    if (ta.isDistinct || ta.intrinsicName != null || ta.resolving) { break; }
+    curr = ta.target;
+    hops += 1;
+  }
+  return curr;
+}
+
+/**
+ * The type of a value that is either an `a` or a `b`: the wider of the
+ * two when one is assignable to the other, else their union.
+ */
+export function eitherType(ctx: CheckerContext, a: Type, b: Type): Type {
+  if (isAssignableTo(ctx, a, b)) {
+    return b;
+  }
+  if (isAssignableTo(ctx, b, a)) {
+    return a;
+  }
+  let both = growable<Type>([a, b]);
+  return createUnionType(both, ctx);
+}
+
+/**
+ * Widen a literal type to its base type.
+ * Used for `var` bindings: `var x = true` → x: boolean (not x: true).
+ */
+export function widenType(ctx: CheckerContext, t: Type): Type {
+  return match (t) {
+  case BoolLiteralType {}: new BooleanType()
+  case StringLiteralType {}: {
+    let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
+    if (stringType != null) {
+      stringType
+    } else {
+      t
+    }
+  }
+  case NumLiteralType {raw}: {
+    var isFloat = false;
+    var i = 0;
+    while (i < raw.length) {
+      if (raw.getByteAt(i) == 46) { // '.'
+        isFloat = true;
+        break;
+      }
+      i += 1;
+    }
+    if (isFloat) {
+      let expected = new F64Type();
+      expected as Type
+    } else {
+      let expected = new I32Type();
+      expected as Type
+    }
+  }
+  case _: t
+};
+}

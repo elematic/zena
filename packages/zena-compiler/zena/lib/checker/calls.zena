@@ -1,0 +1,913 @@
+import { growable } from 'zena:core';
+import {
+  CallExpression, Expression, FunctionExpression, Identifier,
+  MemberExpression, NewExpression, Node, NullLiteral, SourceLocation,
+  StringLiteral, TypeAnnotation
+} from '../ast.zena';
+import {
+  ClassType, ErrorType, FunctionType, InterfaceType, NullType, Type,
+  TypeParameterType, UnionType as UnionT, baseType, internFunctionType,
+  requiredParameterCount, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { lineAt } from '../line-index.zena';
+import { WellKnown, isWellKnown } from '../well-known.zena';
+import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { resolveExplicitTypeArgument } from './annotations.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import {
+  anyTypeParamConstrained, applyAndCheckTypeArguments, inferTypeArg,
+  instantiateGenericClass, instantiateGenericInterface, mentionsTypeParams,
+  substituteTypeParams, tryInstantiateGenericFunction
+} from './generics.zena';
+import { getMemberName } from './members.zena';
+import { collectApplicableOverloads, selectMostSpecificIndex } from './overloads.zena';
+import {
+  recordArgumentMove, rejectSecondClassFunctionTypeArgs,
+  scopedElementsExpected
+} from './ownership.zena';
+import { isAssignableTo, isBoxablePrimitive } from './relations.zena';
+import { createUnionType } from './unions.zena';
+
+// ============================================================================
+// New Expression
+// ============================================================================
+export function checkNewExpression(
+  ctx: CheckerContext,
+  newExpr: NewExpression,
+  callee: Identifier,
+  typeArguments: GrowableArray<TypeAnnotation> | null,
+  args: GrowableArray<Expression>,
+  loc: SourceLocation | null,
+  expectedType: Type | null = null
+): Type {
+  let className = callee.name;
+
+  // Resolve the class from the type namespace.
+  var resolved = ctx.resolveTypeReference(callee, className);
+  if (resolved == null) {
+    // Try value namespace (might be imported as a value binding).
+    let valueResolved = ctx.resolveIdentifier(callee);
+    if (valueResolved != null) {
+      match (valueResolved) {
+        case ClassType as ct: { resolved = ct; }
+        case _: {}
+      }
+    }
+  }
+
+  if (resolved == null) {
+    ctx.error(
+      `Class '${className}' not found.`,
+      DiagnosticCode.SymbolNotFound,
+      loc
+    );
+    return new ErrorType();
+  }
+
+  match (resolved) {
+    case ClassType as ct: {
+      // Cannot instantiate abstract classes.
+      if (ct.isAbstract) {
+        ctx.error(
+          `Cannot instantiate abstract class '${ct.name}'.`,
+          DiagnosticCode.CannotInstantiateAbstractClass,
+          loc
+        );
+      }
+
+      // Closure bodies can be checked more than once. If defaults were already
+      // spliced into this node's arguments on an earlier pass, restore the
+      // recorded caller-written argument count so the spliced initializers
+      // (already checked in the callee's scope at definition time) are not
+      // re-checked as caller-supplied arguments.
+      let previousOriginal = ctx.splicedArgCountOf(newExpr);
+      let callerArgCount = if (previousOriginal != -1 && previousOriginal < args.length) {
+        previousOriginal
+      } else {
+        args.length
+      };
+
+      // Instantiate generic class (infers type arguments if not explicit),
+      // inferring only from caller-written arguments.
+      let inferArgs = if (callerArgCount < args.length) {
+        let trimmed = new Array<Expression>();
+        var ti = 0;
+        while (ti < callerArgCount) { trimmed.push(args[ti]); ti += 1; }
+        trimmed
+      } else {
+        args
+      };
+      let ctorName: String | null = if (newExpr.constructorName != null) {
+        getMemberName(ctx, newExpr.constructorName as Node)
+      } else {
+        null
+      };
+      let instantiated = instantiateGenericClass(ctx, ct, typeArguments, inferArgs, loc, ctorName, expectedType);
+
+      var ctorType: FunctionType | null = null;
+      var ctorMethodRef = "<constructor>";
+      if (ctorName != null) {
+        let name = ctorName as String;
+        ctorMethodRef = "<constructor>." + name;
+        // Check private constructor access
+        if (name.length > 0 && name.sliceBytes(0, 1) == "#") {
+          let cur = ctx.currentClass;
+          let isInside = if (cur != null) {
+            (cur as ClassType).canonical() == ct.canonical()
+          } else {
+            false
+          };
+          if (!isInside) {
+            ctx.error(
+              `Private constructor '${name}' can only be accessed within class '${ct.name}'.`,
+              DiagnosticCode.PrivateAccess,
+              loc
+            );
+            return instantiated;
+          }
+        }
+        if (!instantiated.constructors.has(name)) {
+          ctx.error(
+            `Constructor '${name}' not found on class '${instantiated.name}'.`,
+            DiagnosticCode.SymbolNotFound,
+            loc
+          );
+          return instantiated;
+        }
+        ctorType = instantiated.constructors[name];
+      } else {
+        if (instantiated.constructors.size > 0 && instantiated.constructorType == null) {
+          ctx.error(
+            `Class '${instantiated.name}' has no default constructor.`,
+            DiagnosticCode.IncompatibleTypes,
+            loc
+          );
+          return instantiated;
+        }
+        ctorType = instantiated.constructorType;
+      }
+
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        deps.referencedTypes.add(instantiated as Type);
+        deps.referencedClassMethods.add(`${i32ToString((ct.genericSource ?? ct).symbolId as i32)}.${ctorMethodRef}`);
+      }
+      if (ctorType == null) {
+        // No explicit constructor — must have zero args.
+        if (args.length > 0) {
+          ctx.error(
+            `Class '${instantiated.name}' has no constructor, but ${args.length} arguments were provided.`,
+            DiagnosticCode.ArgumentCountMismatch,
+            loc
+          );
+        }
+        return instantiated;
+      }
+
+      // The instantiated class's constructors already have their
+      // parameters substituted (instantiateClassType), so there is
+      // nothing left to substitute. Substituting again is wrong when the
+      // arguments are the class's own type parameters in another order:
+      // `new Pair<V, K>(...)` inside `Pair<K, V>` would swap them back.
+      checkConstructorArguments(ctx, newExpr, args, callerArgCount, ctorType,
+          null, null, loc);
+      return instantiated;
+    }
+    case InterfaceType as it: {
+      // An interface constructor: a factory declared in the interface
+      // body (registerInterfaceConstructor). The expression's type is the
+      // interface at the instantiation's type arguments.
+      let previousOriginal = ctx.splicedArgCountOf(newExpr);
+      let callerArgCount = if (previousOriginal != -1 && previousOriginal < args.length) {
+        previousOriginal
+      } else {
+        args.length
+      };
+      let inferArgs = if (callerArgCount < args.length) {
+        let trimmed = new Array<Expression>();
+        var ti = 0;
+        while (ti < callerArgCount) { trimmed.push(args[ti]); ti += 1; }
+        trimmed
+      } else {
+        args
+      };
+      let ctorName: String | null = if (newExpr.constructorName != null) {
+        getMemberName(ctx, newExpr.constructorName as Node)
+      } else {
+        null
+      };
+      let ctorKey = if (ctorName != null) { ctorName as String } else { "<constructor>" };
+      if (!it.constructors.has(ctorKey)) {
+        if (ctorName != null) {
+          let missing = ctorName as String;
+          ctx.error(
+            `Constructor '${missing}' not found on interface '${it.name}'.`,
+            DiagnosticCode.SymbolNotFound,
+            loc
+          );
+        } else if (it.constructors.size > 0) {
+          ctx.error(
+            `Interface '${it.name}' has no default constructor.`,
+            DiagnosticCode.IncompatibleTypes,
+            loc
+          );
+        } else {
+          ctx.error(
+            `Cannot instantiate interface '${it.name}': it declares no constructor.`,
+            DiagnosticCode.NotCallable,
+            loc
+          );
+        }
+        return new ErrorType();
+      }
+      let instantiated = instantiateGenericInterface(ctx, it, typeArguments, inferArgs, loc, ctorKey, expectedType);
+      let ctorType = instantiated.constructors[ctorKey];
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        deps.referencedTypes.add(instantiated as Type);
+      }
+      // The constructor's signature is written at ITS type parameters:
+      // the interface's, or a restatement with bounds, whose bounds the
+      // type arguments must satisfy.
+      let ctorParams = ctorType.typeParameters;
+      if (ctorParams != null && instantiated.typeArguments != null &&
+          ctorParams != instantiated.typeParameters) {
+        let boundArgs = new Array<Type>();
+        for (let ta in instantiated.typeArguments as Array<Type>) {
+          boundArgs.push(ta);
+        }
+        applyAndCheckTypeArguments(ctx, ctorParams, boundArgs, loc);
+      }
+      checkConstructorArguments(ctx, newExpr, args, callerArgCount, ctorType,
+          ctorParams, instantiated.typeArguments, loc);
+      // The expression's type is the constructor's declared result — the
+      // interface itself unless it narrows — at these type arguments.
+      // Codegen finds the constructor through the CALLEE, which is typed
+      // as the instantiated interface whatever the result narrows to.
+      ctx.setNodeType(callee, instantiated as Type);
+      return substituteTypeParams(
+          ctorParams, instantiated.typeArguments, ctorType.returnType);
+    }
+    case _: {
+      ctx.error(
+        `'${className}' is not a class.`,
+        DiagnosticCode.NotCallable,
+        loc
+      );
+      return new ErrorType();
+    }
+  }
+}
+
+/**
+ * The argument half of `new`, shared by class and interface
+ * constructors: splice the constructor's default values into the
+ * caller's argument list, check the count, then check each written
+ * argument against its parameter type at the instantiation's type
+ * arguments.
+ */
+function checkConstructorArguments(
+  ctx: CheckerContext,
+  newExpr: NewExpression,
+  args: GrowableArray<Expression>,
+  callerArgCount: i32,
+  ctorType: FunctionType,
+  typeParameters: Array<TypeParameterType> | null,
+  typeArguments: Array<Type> | null,
+  loc: SourceLocation | null
+): void {
+      // Fill in missing arguments with default values
+      let parameterInitializers = ctorType.parameterInitializers;
+      if (parameterInitializers != null) {
+        let mutArgs = args as GrowableArray<Expression>;
+        var a = args.length;
+        while (a < ctorType.parameters.length) {
+          let init = parameterInitializers[a];
+          if (init != null) {
+            if (let Identifier {name} = init) {
+              if (name == "__LOCATION__") {
+                if (ctx.emitLocations) {
+                  let locStr = if (loc != null) {
+                    `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
+                  } else {
+                    `${ctx.filePath}:0`
+                  };
+                  mutArgs.push(new StringLiteral(locStr, loc));
+                } else {
+                  mutArgs.push(new NullLiteral(loc));
+                }
+              } else {
+                mutArgs.push(init);
+              }
+            } else {
+              mutArgs.push(init);
+            }
+          } else {
+            // Optional but no default? Inject null.
+            mutArgs.push(new NullLiteral(loc));
+          }
+          a += 1;
+        }
+      }
+
+      // Record the caller-written argument count so later re-checks of this
+      // node don't treat the spliced defaults as caller-supplied arguments.
+      // (Runs on re-check passes too, re-seeding the fresh model.)
+      if (args.length > callerArgCount) {
+        ctx.model.setOriginalArgCount(newExpr, callerArgCount);
+      }
+
+      // Check argument count (accounting for optional and zero-width
+      // parameters — a `void` parameter, which a `void` type argument
+      // produces, is omittable because no argument can express it).
+      let expectedCount = ctorType.parameters.length;
+      let requiredCount = requiredParameterCount(
+          ctorType.parameters, ctorType.optionalParameters);
+      if (callerArgCount < requiredCount || callerArgCount > expectedCount) {
+        let expectedMsg = if (requiredCount == expectedCount) {
+          `${expectedCount}`
+        } else {
+          `${requiredCount}-${expectedCount}`
+        };
+        ctx.error(
+          `Expected ${expectedMsg} arguments, got ${callerArgCount}.`,
+          DiagnosticCode.ArgumentCountMismatch,
+          loc
+        );
+      }
+
+      // Check argument types with substituted parameter types. Only check
+      // caller-written arguments: spliced defaults were already checked in
+      // the callee's scope when the constructor was defined.
+      var ai = 0;
+      while (ai < callerArgCount && ai < expectedCount) {
+        let paramType = ctorType.parameters[ai];
+        // Substitute type parameters with type arguments.
+        let expectedParamType = substituteTypeParams(
+          typeParameters, typeArguments, paramType
+        );
+        // Args were already checked during inference; just validate here.
+        let argType = checkExpression(ctx, args[ai], expectedParamType);
+        if (!isAssignableTo(ctx, argType, expectedParamType)) {
+          ctx.error(
+            "Type mismatch: argument '" + typeToString(argType) +
+            "' is not assignable to parameter '" +
+            typeToString(expectedParamType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        } else {
+          let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
+          if (instantiatedVal !== argType) {
+            ctx.setNodeType(args[ai], instantiatedVal);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
+        }
+        recordArgumentMove(ctx, args[ai], expectedParamType);
+        ai = ai + 1;
+      }
+}
+
+/**
+ * Records the whole-program cancellation gate's evidence: a call to
+ * `cancel` on a `TaskGroup`, the one operation that marks a scope
+ * cancelled. `zena:async` does not export its raise intrinsic, and
+ * its own raise sites (a cancelled future's reads, the checkpoint)
+ * observe a cancellation some group caused. The reachability pass
+ * aggregates the flag over reached bodies; handler syntax (`cancel`
+ * clauses, `shielded`) is deliberately not evidence, since handling
+ * a cancellation that nothing can raise is dead code to elide, not a
+ * reason to emit the machinery.
+ */
+function noteCancellationCause(ctx: CheckerContext, call: CallExpression): void {
+  let deps = ctx.currentDependencies();
+  if (deps == null || deps.causesCancellation) {
+    return;
+  }
+  let callee = call.callee;
+  if (!(callee is MemberExpression)) {
+    return;
+  }
+  if (callee.property.name != 'cancel') {
+    return;
+  }
+  let objType = ctx.model.getNodeType(callee.object);
+  if (objType == null) {
+    return;
+  }
+  let bt = baseType(objType);
+  if (bt is ClassType &&
+      isWellKnown(WellKnown.TaskGroupClass, bt.name, bt.sourcePath)) {
+    deps.causesCancellation = true;
+  }
+}
+
+export function checkCallExpression(
+  ctx: CheckerContext,
+  call: CallExpression,
+  expectedType: Type | null
+): Type {
+  let calleeType = checkExpression(ctx, call.callee, null);
+  noteCancellationCause(ctx, call);
+
+  // Handle optional chaining on nullable callee.
+  var baseCalleeType = calleeType;
+  var isNullable = false;
+  match (calleeType) {
+    case UnionT {types}: {
+      let nonNull = new Array<Type>();
+      var ui = 0;
+      while (ui < types.length) {
+        if (types[ui] is NullType) {
+          isNullable = true;
+        } else {
+          nonNull.push(types[ui]);
+        }
+        ui = ui + 1;
+      }
+      if (nonNull.length == 1) {
+        baseCalleeType = nonNull[0];
+      } else if (nonNull.length > 1) {
+        baseCalleeType = ctx.interner.union(nonNull);
+      }
+    }
+    case NullType: { isNullable = true; }
+    case _: {}
+  }
+
+  // If optional and not nullable, proceed normally.
+  // If optional and nullable, wrap result in union with null.
+  let resultType = checkCallExpressionInner(ctx, call, baseCalleeType, expectedType);
+
+  if (isNullable && call.optional) {
+    if (isBoxablePrimitive(resultType) &&
+        !ctx.nullishSanctioned.has((call as Node).id as i32)) {
+      ctx.error(
+        "Optional call yielding a primitive requires immediate coalescence: follow it with '?? <default>'.",
+        DiagnosticCode.InvalidOperator,
+        call.loc
+      );
+      return new ErrorType();
+    }
+    let types = growable<Type>([resultType, new NullType()]);
+    return createUnionType(types);
+  }
+
+  return resultType;
+}
+
+/**
+ * A function literal whose type depends on its context: at least one
+ * parameter has no annotation, so checking it needs a contextual
+ * function type to give that parameter a type.
+ */
+function isContextSensitiveClosure(e: Expression): boolean {
+  if (e is FunctionExpression) {
+    for (let p in e.params) {
+      if (p.typeAnnotation == null) { return true; }
+    }
+  }
+  return false;
+}
+
+function checkCallExpressionInner(
+  ctx: CheckerContext,
+  call: CallExpression,
+  calleeType: Type,
+  expectedType: Type | null
+): Type {
+  let {callee} = call;
+  let {args} = call;
+  let {typeArguments} = call;
+  let loc = call.loc;
+  match (calleeType) {
+    case UnionT {types}: {
+      var matchedFt: FunctionType | null = null;
+      for (let t in types) {
+        if (t is FunctionType) {
+          var requiredCount = t.parameters.length;
+          let optionalParameters = t.optionalParameters;
+          if (optionalParameters != null) {
+            let optionals = optionalParameters;
+            requiredCount = 0;
+            var oi = 0;
+            while (oi < optionals.length) {
+              if (!optionals[oi]) { requiredCount = requiredCount + 1; }
+              oi += 1;
+            }
+          }
+          if (args.length >= requiredCount && args.length <= t.parameters.length) {
+            matchedFt = t;
+            break;
+          }
+        }
+      }
+      
+      if (matchedFt == null) {
+        ctx.error("No matching signature in union type for call", DiagnosticCode.ArgumentCountMismatch, loc);
+        return new ErrorType();
+      }
+      
+      ctx.setNodeType(callee, matchedFt);
+      ctx.model.setUnionCallCalleeType(callee, calleeType);
+
+      // Args at or beyond the recorded caller-written count are defaults an
+      // earlier pass spliced from the callee; they were checked in the
+      // callee's scope at definition time and must not be re-checked here —
+      // the caller's scope may not resolve them. Re-seed the fresh model's
+      // record so codegen still lowers them under the callee's bindings.
+      let previousOriginal = ctx.splicedArgCountOf(call);
+      let callerArgCount = if (previousOriginal != -1 && previousOriginal < args.length) {
+        previousOriginal
+      } else {
+        args.length
+      };
+      if (args.length > callerArgCount) {
+        ctx.model.setOriginalArgCount(call, callerArgCount);
+        let parameterNames = matchedFt.parameterNames;
+        if (parameterNames != null) {
+          ctx.model.setDefaultArgParamNames(call, parameterNames);
+        }
+      }
+
+      var j = 0;
+      while (j < callerArgCount && j < matchedFt.parameters.length) {
+        let expectedParamType = matchedFt.parameters[j];
+        let argType = checkExpression(ctx, args[j], expectedParamType);
+        if (!isAssignableTo(ctx, argType, expectedParamType)) {
+          ctx.error(
+            "Type mismatch: argument '" + typeToString(argType) +
+            "' is not assignable to parameter '" + typeToString(expectedParamType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        } else {
+          let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
+          if (instantiated !== argType) {
+            ctx.setNodeType(args[j], instantiated);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
+        }
+        recordArgumentMove(ctx, args[j], expectedParamType);
+        j = j + 1;
+      }
+
+      return matchedFt.returnType;
+    }
+    case FunctionType as ft: {
+      var effectiveFt = ft;
+
+      // Closure bodies can be checked more than once. If defaults were already
+      // spliced into this call node's arguments on an earlier pass, args now
+      // ends with the callee's initializer expressions. Those were checked in
+      // the callee's scope at definition time and must not be re-checked here
+      // (the caller's scope may not resolve them), so restore the recorded
+      // caller-written argument count.
+      let previousOriginal = ctx.splicedArgCountOf(call);
+      let callerArgCount = if (previousOriginal != -1 && previousOriginal < args.length) {
+        previousOriginal
+      } else {
+        args.length
+      };
+
+      // Evaluate argument types once for overload resolution. Arguments at or
+      // beyond callerArgCount are previously-spliced defaults: use their
+      // declared parameter type instead of re-checking them in caller scope.
+      // The main argument loop below re-checks every argument against the
+      // selected signature, so this pass must leave the flow where it
+      // found it — otherwise the re-check would run downstream of this
+      // pass's flow nodes and see a different (post-argument) state.
+      //
+      // A context-sensitive closure facing a parameter type that mentions
+      // the callee's type parameters cannot be checked yet: its body would
+      // be judged against the bare type parameter (`a.name` on `T`).
+      // Defer it — infer type arguments from the other arguments first,
+      // then check the closure once against the substituted parameter
+      // type. The deferred slot in `argTypes` holds the raw parameter
+      // type so overload applicability sees a matching shape.
+      let ftTypeParams = ft.typeParameters;
+      let deferredArgs = new Array<boolean>();
+      for (var i = 0; i < args.length; i += 1) {
+        let defer = if (ftTypeParams != null && ftTypeParams.length > 0 &&
+            i < ft.parameters.length && i < callerArgCount &&
+            isContextSensitiveClosure(args[i])) {
+          mentionsTypeParams(ft.parameters[i], ftTypeParams)
+        } else {
+          false
+        };
+        deferredArgs.push(defer);
+      }
+      // The types a deferred argument was eventually checked at, by
+      // argument index; null means the main argument loop below still
+      // has to check it.
+      let deferredCheckedTypes = new Array<Type | null>();
+      for (var i = 0; i < args.length; i += 1) {
+        deferredCheckedTypes.push(null);
+      }
+
+      let preArgsFlow = ctx.currentFlow;
+      let argTypes = new Array<Type>();
+      for (var i = 0; i < args.length; i += 1) {
+        if (deferredArgs[i] || (i >= callerArgCount && i < ft.parameters.length)) {
+          argTypes.push(ft.parameters[i]);
+        } else {
+          let expectedParamType = if (i < ft.parameters.length) {
+            ft.parameters[i]
+          } else {
+            null
+          };
+          argTypes.push(checkExpression(ctx, args[i], expectedParamType));
+        }
+      }
+      ctx.setFlow(preArgsFlow);
+
+      // Overload resolution
+      let {overloads} = ft;
+      if (overloads != null) {
+        let candidates = growable<FunctionType>([ft]);
+        for (let overload in overloads) {
+          candidates.push(overload);
+        }
+
+        // Most-specific selection (member-lookup.md §5.1): collect
+        // every applicable candidate, then pick the unique candidate
+        // at least as specific as all others. Declaration order
+        // carries no meaning; an applicable set with no unique
+        // maximum is an ambiguity error.
+        //
+        // Applicability is collected in two tiers. The first judges
+        // each argument by the type it has on its own, where a bare
+        // `10` is i32 — so `div(10, 3)` still means the i32 division
+        // and an all-literal call never becomes ambiguous across four
+        // numeric signatures. Only when that leaves nothing applicable
+        // does the second tier let a bare numeric literal take its
+        // type from the parameter facing it, which is what resolves
+        // `div(someU32, 10)`. The second tier can therefore only turn
+        // a call that used to be an error into one that compiles.
+        var bestMatch: FunctionType | null = null;
+        var applicable =
+            collectApplicableOverloads(ctx, candidates, args, argTypes, callerArgCount, false);
+        if (applicable.length == 0) {
+          applicable =
+              collectApplicableOverloads(ctx, candidates, args, argTypes, callerArgCount, true);
+        }
+        let selIdx = selectMostSpecificIndex(ctx, applicable, args.length, call.loc);
+        if (selIdx >= 0) {
+          bestMatch = applicable[selIdx];
+        }
+
+        if (bestMatch != null) {
+          effectiveFt = bestMatch;
+          // Record the selection: overload choice is subtype-sensitive
+          // and made exactly once, here. Codegen reads it back instead
+          // of re-deriving from argument types.
+          ctx.model.setResolvedOverload(call, bestMatch);
+        }
+      }
+
+      // The parameters as declared, before a generic call substitutes
+      // its type arguments into them.
+      let declaredParams = effectiveFt.parameters;
+
+      // Handle generic function calls.
+      let typeParams = effectiveFt.typeParameters;
+      if (typeParams != null) {
+        if (typeParams.length > 0) {
+          if (typeArguments != null) {
+            let typeArgs = new Array<Type>();
+            for (let typeArg in typeArguments) {
+              typeArgs.push(resolveExplicitTypeArgument(ctx, typeArg));
+            }
+            // A bound on a function's type parameter binds at the call, the
+            // same way it does for `new Box<String>()`. Without this the
+            // bound is documentation: the body is checked once against the
+            // parameter, so nothing else ever compares the argument to it.
+            if (anyTypeParamConstrained(typeParams)) {
+              applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
+            }
+            rejectSecondClassFunctionTypeArgs(ctx, typeParams, typeArgs, loc);
+            // Substitute type parameters in params and return type.
+            let subParams = new Array<Type>();
+            for (let param in effectiveFt.parameters) {
+              subParams.push(substituteTypeParams(typeParams, typeArgs, param));
+            }
+            let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
+            let newFt = internFunctionType(subParams, subRet, effectiveFt.info, effectiveFt.typeParameters, typeArgs, effectiveFt);
+            newFt.functionSymbolId = effectiveFt.functionSymbolId;
+            newFt.functionSymbolName = effectiveFt.functionSymbolName;
+            effectiveFt = newFt;
+          } else {
+            // Infer type arguments from argument types. Deferred closure
+            // arguments hold a placeholder in argTypes, so they are left
+            // out of this first round.
+            let inferred = new Map<String, Type>();
+            var anyDeferred = false;
+            for (var i = 0; i < args.length && i < effectiveFt.parameters.length; i += 1) {
+              if (i < deferredArgs.length && deferredArgs[i]) {
+                anyDeferred = true;
+                continue;
+              }
+              let argType = argTypes[i];
+              inferTypeArg(effectiveFt.parameters[i], argType, inferred);
+            }
+            // Second round: check each deferred closure against its
+            // parameter type with the bindings so far substituted in
+            // (a type parameter still unbound stays itself), and let
+            // the closure's own type — typically its inferred return
+            // type — bind what remains. This is the only check the
+            // closure gets; the main argument loop below reuses the
+            // recorded type instead of re-checking. Like the first
+            // pass over the arguments, this runs off to the side of
+            // the flow the main loop builds.
+            if (anyDeferred) {
+              let preDeferFlow = ctx.currentFlow;
+              for (var i = 0; i < args.length && i < effectiveFt.parameters.length; i += 1) {
+                if (!(i < deferredArgs.length && deferredArgs[i])) { continue; }
+                let partialArgs = new Array<Type>(typeParams.length);
+                for (let typeParam in typeParams) {
+                  partialArgs.push(if (inferred.has(typeParam.name)) {
+                    inferred[typeParam.name];
+                  } else {
+                    typeParam as Type;
+                  });
+                }
+                let partialParam = substituteTypeParams(
+                    typeParams, partialArgs, effectiveFt.parameters[i]);
+                let argType = checkExpression(ctx, args[i], partialParam);
+                argTypes[i] = argType;
+                deferredCheckedTypes[i] = argType;
+                inferTypeArg(effectiveFt.parameters[i], argType, inferred);
+              }
+              ctx.setFlow(preDeferFlow);
+            }
+            // Build type args array from inferred map.
+            let typeArgs = new Array<Type>(typeParams.length);
+            for (let typeParam in typeParams) {
+              let paramName = typeParam.name;
+              typeArgs.push(if (inferred.has(paramName)) {
+                inferred[paramName];
+              } else {
+                new ErrorType() as Type;
+              });
+            }
+            // Same check as the explicit-argument branch above. A parameter
+            // nothing could be inferred for is an ErrorType here, which
+            // satisfies every constraint, so an inference failure reports
+            // itself rather than arriving as a bogus constraint violation.
+            if (anyTypeParamConstrained(typeParams)) {
+              applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
+            }
+            rejectSecondClassFunctionTypeArgs(ctx, typeParams, typeArgs, loc);
+            // Substitute type parameters in params and return type.
+            let subParams = new Array<Type>();
+            for (let param in effectiveFt.parameters) {
+              subParams.push(substituteTypeParams(typeParams, typeArgs, param));
+            }
+            let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
+            let newFt = internFunctionType(subParams, subRet, effectiveFt.info, effectiveFt.typeParameters, typeArgs, effectiveFt);
+            newFt.functionSymbolId = effectiveFt.functionSymbolId;
+            newFt.functionSymbolName = effectiveFt.functionSymbolName;
+            effectiveFt = newFt;
+          }
+        }
+      }
+
+      // Check argument count.
+      let expectedCount = effectiveFt.parameters.length;
+      let originalActualCount = callerArgCount;
+
+      // Fill in missing arguments with default values
+      var hasDefaults = false;
+      let parameterInitializers = effectiveFt.parameterInitializers;
+      if (parameterInitializers != null) {
+        let mutArgs = args as GrowableArray<Expression>;
+        var a = args.length;
+        while (a < effectiveFt.parameters.length) {
+          let init = parameterInitializers[a];
+          if (init != null) {
+            if (let Identifier {name} = init) {
+              if (name == "__LOCATION__") {
+                if (ctx.emitLocations) {
+                  let locStr = if (loc != null) {
+                    `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
+                  } else {
+                    `${ctx.filePath}:0`
+                  };
+                  mutArgs.push(new StringLiteral(locStr, loc));
+                } else {
+                  mutArgs.push(new NullLiteral(loc));
+                }
+              } else {
+                mutArgs.push(init);
+              }
+            } else {
+              mutArgs.push(init);
+            }
+            hasDefaults = true;
+          } else {
+            // Optional but no default? Inject null.
+            mutArgs.push(new NullLiteral(loc));
+          }
+          a += 1;
+        }
+
+        // Record when this pass spliced defaults OR when args already end
+        // with defaults spliced by an earlier pass — a re-checked file
+        // starts a fresh model, and codegen needs these records in the
+        // final model to lower the injected defaults under the callee's
+        // bindings.
+        if (hasDefaults || args.length > originalActualCount) {
+          ctx.model.setOriginalArgCount(call, originalActualCount);
+          let parameterNames = effectiveFt.parameterNames;
+          if (parameterNames != null) {
+            ctx.model.setDefaultArgParamNames(call, parameterNames);
+          }
+          if (callee is MemberExpression) {
+            let objectType = checkExpression(ctx, callee.object, null);
+            if (objectType is ClassType) {
+              ctx.model.setDefaultArgsOwner(call, objectType);
+            } else {}
+          }
+        }
+      }
+
+
+      let actualCount = args.length;
+
+      // Count required parameters (not optional, not zero-width — see
+      // requiredParameterCount).
+      let requiredCount = requiredParameterCount(
+          effectiveFt.parameters, effectiveFt.optionalParameters);
+
+      if (originalActualCount < requiredCount || originalActualCount > expectedCount) {
+        // Show range for optional parameters, single count otherwise
+        let expectedMsg = if (requiredCount == expectedCount) {
+          `${expectedCount}`
+        } else {
+          `${requiredCount}-${expectedCount}`
+        };
+        // Revert actual count logic to match JS compiler, use original count
+        ctx.error(
+          `Expected ${expectedMsg} arguments, got ${originalActualCount}`,
+          DiagnosticCode.ArgumentCountMismatch,
+          loc
+        );
+      }
+
+      ctx.setNodeType(callee, effectiveFt);
+
+      // Check argument types (re-evaluating to apply generic substitutions and defaults).
+      var j = 0;
+      while (j < originalActualCount && j < expectedCount) {
+        let expectedParamType = effectiveFt.parameters[j];
+        // A deferred closure the inference round already checked keeps
+        // that result; re-checking its body here would report its
+        // errors a second time.
+        let roundTwoType = if (j < deferredCheckedTypes.length) {
+          deferredCheckedTypes[j]
+        } else {
+          null
+        };
+        let outerScopedArgument = ctx.scopedArgument;
+        if (j < declaredParams.length && scopedElementsExpected(declaredParams[j])) {
+          ctx.scopedArgument = args[j];
+        }
+        let argType = if (roundTwoType != null) {
+          roundTwoType
+        } else {
+          checkExpression(ctx, args[j], expectedParamType)
+        };
+        ctx.scopedArgument = outerScopedArgument;
+        if (!isAssignableTo(ctx, argType, expectedParamType)) {
+          ctx.error(
+            "Type mismatch: argument '" + typeToString(argType) +
+            "' is not assignable to parameter '" + typeToString(expectedParamType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        } else {
+          let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
+          if (instantiated !== argType) {
+            ctx.setNodeType(args[j], instantiated);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
+        }
+        recordArgumentMove(ctx, args[j], expectedParamType);
+        j = j + 1;
+      }
+
+      return effectiveFt.returnType;
+    }
+    case ErrorType: { return new ErrorType(); }
+    case _: {
+      ctx.error(
+        `Type '${typeToString(calleeType)}' is not callable.`,
+        DiagnosticCode.NotCallable,
+        loc
+      );
+      return new ErrorType();
+    }
+  }
+}

@@ -1,0 +1,1398 @@
+import { HashMap, HashSet, Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import { Expression, Node, SourceLocation, TypeAnnotation } from '../ast.zena';
+import {
+  ArrayType, BoolLiteralType, BooleanType, ClassType, EnumType, ErrorType,
+  F32Type, F64Type, FunctionType, I16Type, I32Type, I64Type, I8Type,
+  InlineParamType, InlineTupleType as InlineTupleT, InterfaceType, MixinType,
+  NumLiteralType, RecordType as RecordT, StringLiteralType, ThisType,
+  TupleType as TupleT, Type, TypeAliasType, TypeParameterType, U16Type,
+  U32Type, U64Type, U8Type, UnionType as UnionT, applyTypeIntrinsic,
+  inlineOf, instantiateClassType, instantiateFunctionType,
+  instantiateInterfaceType, instantiateMixinType, instantiateTypeAliasType,
+  internFunctionType, isOwnershipWrapper, mergeRow, mergeTupleRow,
+  ownershipHandleInner, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown, isWellKnown } from '../well-known.zena';
+import { boxedFormOf, isInRowSignature, resolveExplicitTypeArgument } from './annotations.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import { rejectSecondClassTypeArguments } from './ownership.zena';
+import { isAssignableTo, typesEqual } from './relations.zena';
+import {
+  createUnionType, subtractNullFromType, tupleWithSameTag, unwrapAliases
+} from './unions.zena';
+
+/**
+ * Substitute type parameters with their corresponding type arguments.
+ * typeParams: the type parameter names/types from the generic class
+ * typeArgs: the actual type arguments
+ * t: the type to substitute within
+ *
+ * TODO: Consider making this generic over the Type t so that it returns the
+ * same type it's given. The only problem is that we don't really want it
+ * monomorphized.
+ */
+export function substituteTypeParams(
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null,
+  t: Type
+): Type {
+  if (typeParams == null || typeArgs == null) { return t; }
+  let tpLen = typeParams.length;
+  let taLen = typeArgs.length;
+
+  match (t) {
+    case TypeParameterType as tpRef: {
+      // Find the matching type parameter (by identity) and substitute.
+      for (var i = 0; i < tpLen && i < taLen; i += 1) {
+        if (typeParams[i] === tpRef) {
+          return typeArgs[i];
+        }
+      }
+      // No match found, return original.
+      return t;
+    }
+    case UnionT {types}: {
+      let substituted = new Array<Type>();
+      for (let t in types) {
+        substituted.push(substituteTypeParams(typeParams, typeArgs, t));
+      }
+      return createUnionType(substituted);
+    }
+    case ArrayType {elementType, elementsMutable}: {
+      let subElem = substituteTypeParams(typeParams, typeArgs, elementType);
+      return new ArrayType(subElem, elementsMutable);
+    }
+    case TupleT {elementTypes, row, rowIndex}: {
+      let subElems = new Array<Type>();
+      for (let elem in elementTypes) {
+        subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
+      }
+      if (row != null) {
+        return mergeTupleRow(subElems, rowIndex,
+            substituteTypeParams(typeParams, typeArgs, row));
+      }
+      return new TupleT(subElems, null, 0);
+    }
+    case InlineTupleT {elementTypes}: {
+      let subElems = new Array<Type>();
+      for (let elem in elementTypes) {
+        subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
+      }
+      return new InlineTupleT(subElems);
+    }
+    case InlineParamType {param}: {
+      return inlineOf(substituteTypeParams(typeParams, typeArgs, param));
+    }
+    case RecordT {properties, optionalProperties, row, isExistential}: {
+      let subProps = new Map<String, Type>();
+      for (let {key} in properties) {
+        subProps[key] = substituteTypeParams(typeParams, typeArgs, properties[key]);
+      }
+      if (row != null) {
+        return mergeRow(subProps, optionalProperties,
+            substituteTypeParams(typeParams, typeArgs, row));
+      }
+      return new RecordT(subProps, optionalProperties, null, isExistential);
+    }
+    case FunctionType as ft: {
+      let subParams = new Array<Type>();
+      for (let param in ft.parameters) {
+        subParams.push(substituteTypeParams(typeParams, typeArgs, param));
+      }
+      let subRet = substituteTypeParams(typeParams, typeArgs, ft.returnType);
+      let res = internFunctionType(subParams, subRet, ft.info, ft.typeParameters,
+          ft.typeArguments, ft.genericSource);
+      let {overloads} = ft;
+      if (overloads != null) {
+        let subOvs = new Array<FunctionType>();
+        let ovs = overloads;
+        for (let ov in ovs) {
+          if (ov == ft) {
+            subOvs.push(res);
+          } else {
+            subOvs.push(substituteTypeParams(typeParams, typeArgs, ov) as FunctionType);
+          }
+        }
+        res.overloads = subOvs;
+      }
+      res.functionSymbolId = ft.functionSymbolId;
+      res.functionSymbolName = ft.functionSymbolName;
+      return res;
+    }
+    case ClassType as ct: {
+      let {typeArguments} = ct;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
+        let subArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParams(typeParams, typeArgs, arg);
+          subArgs.push(sub);
+          if (sub !== arg) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          return instantiateClassType(ct.genericSource ?? ct, subArgs);
+        }
+      }
+      return t;
+    }
+    case InterfaceType as it: {
+      let {typeArguments} = it;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
+        let subArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParams(typeParams, typeArgs, arg);
+          subArgs.push(sub);
+          if (sub !== arg) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          return instantiateInterfaceType(it.genericSource ?? it, subArgs);
+        }
+      }
+      return t;
+    }
+    case MixinType as mt: {
+      let {typeArguments} = mt;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
+        let subArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParams(typeParams, typeArgs, arg);
+          subArgs.push(sub);
+          if (sub !== arg) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          let genSource = mt.genericSource ?? mt;
+          let inst = instantiateMixinType(genSource, subArgs);
+          let {onType} = genSource;
+          if (onType != null && genSource.typeParameters != null) {
+            inst.onType = substituteTypeParams(genSource.typeParameters, subArgs, onType);
+          }
+          return inst;
+        }
+      }
+      return t;
+    }
+    case TypeAliasType as ta: {
+      // `Own<T>` under `T := Descriptor` is `Own<Descriptor>`. Without this
+      // case a generic alias fell through to `case _` and came back
+      // unsubstituted, so a signature returning `Unmanaged<T>` reported
+      // `Unmanaged<T>` at every call site and members of the erased type were
+      // never found.
+      //
+      // Only a distinct alias reaches here — `resolveTypeAnnotation` unwraps a
+      // transparent one to its substituted target — plus one that is still
+      // `resolving`, whose `target` must not be read.
+      let {typeArguments} = ta;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
+        let subArgs = new Array<Type>();
+        var changed = false;
+        for (let arg in srcArgs) {
+          let sub = substituteTypeParams(typeParams, typeArgs, arg);
+          subArgs.push(sub);
+          if (sub !== arg) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          let inst = instantiateTypeAliasType(ta, subArgs);
+          // `ta.target` already has the alias's *own* parameters replaced by
+          // `typeArguments` (resolveTypeAnnotationInner does that), so the
+          // outer substitution applies to it directly. A `TypeAliasType` keeps
+          // no `genericSource`, so there is no declaration-shaped target to go
+          // back to.
+          if (!ta.resolving) {
+            inst.target = substituteTypeParams(typeParams, typeArgs, ta.target);
+          }
+          inst.resolving = ta.resolving;
+          if (inst.intrinsicName != null) {
+            return applyTypeIntrinsic(inst);
+          }
+          return inst;
+        }
+      }
+      return t;
+    }
+    case _: { return t; }
+  }
+}
+
+/**
+ * Substitutes ThisType with a concrete receiver type.
+ * Used when resolving method types at call sites and method body checking.
+ */
+export function substituteThisType(receiverType: Type, t: Type): Type {
+  match (t) {
+    case ThisType: { return receiverType; }
+    case FunctionType as ft: {
+      let subParams = new Array<Type>();
+      var changed = false;
+      for (let param in ft.parameters) {
+        let sub = substituteThisType(receiverType, param);
+        if (sub !== param) { changed = true; }
+        subParams.push(sub);
+      }
+      let subRet = substituteThisType(receiverType, ft.returnType);
+      if (!changed && subRet === ft.returnType) { return t; }
+      let newFt = internFunctionType(subParams, subRet, ft.info, ft.typeParameters);
+      let {overloads} = ft;
+      if (overloads != null) {
+        let subOvs = new Array<FunctionType>();
+        let ovs = overloads;
+        for (let ov in ovs) {
+          if (ov == ft) {
+            subOvs.push(newFt);
+          } else {
+            subOvs.push(substituteThisType(receiverType, ov) as FunctionType);
+          }
+        }
+        newFt.overloads = subOvs;
+      }
+      newFt.functionSymbolId = ft.functionSymbolId;
+      newFt.functionSymbolName = ft.functionSymbolName;
+      return newFt;
+    }
+    case UnionT {types}: {
+      let substituted = new Array<Type>();
+      for (let type in types) {
+        substituted.push(substituteThisType(receiverType, type));
+      }
+      return createUnionType(substituted);
+    }
+    case TypeAliasType as alias: {
+      // `Own<this>` and its siblings: an alias instantiated at `this`
+      // re-instantiates at the receiver. Only the arguments carry it.
+      let args = alias.typeArguments;
+      if (args == null) { return t; }
+      let targs = args as Array<Type>;
+      let newArgs = new Array<Type>();
+      var changed = false;
+      for (let arg in targs) {
+        let sub = substituteThisType(receiverType, arg);
+        if (sub !== arg) { changed = true; }
+        newArgs.push(sub);
+      }
+      if (!changed) { return t; }
+      let inst = new TypeAliasType(alias.name, alias.typeParameters,
+          alias.target, alias.isDistinct, newArgs, alias.isOpaque,
+          alias.declaringModule);
+      inst.intrinsicName = alias.intrinsicName;
+      if (inst.intrinsicName != null) {
+        return applyTypeIntrinsic(inst);
+      }
+      return inst;
+    }
+    case ArrayType {elementType, elementsMutable}: {
+      return new ArrayType(substituteThisType(receiverType, elementType), elementsMutable);
+    }
+    case _: { return t; }
+  }
+}
+
+/**
+ * True if any of these type parameters carries a bound.
+ *
+ * Call sites use this to skip `applyAndCheckTypeArguments` entirely when
+ * there is nothing to check. Generic *function* calls did not run that
+ * pass at all until bounds started binding at the call, so running its
+ * default-application and arity paths there too would be new behaviour
+ * on every generic call in the program rather than the one check being
+ * added.
+ */
+export function anyTypeParamConstrained(typeParams: Array<TypeParameterType>): boolean {
+  for (let p in typeParams) {
+    if (p.constraint != null || p.isRecordRow || p.isTupleRow) { return true; }
+  }
+  return false;
+}
+
+/**
+ * Checks the argument of a row parameter `R extends record`: a record
+ * type, or another row parameter, with none of the fields written beside
+ * `...R` (`rowLacks`). For a row parameter argument that means it lacks
+ * them too.
+ */
+function checkRecordRowArgument(
+  ctx: CheckerContext,
+  param: TypeParameterType,
+  arg: Type,
+  loc: SourceLocation | null,
+  site: Node | null
+): void {
+  if (arg is ErrorType) {
+    return;
+  }
+  var named: HashMap<String, Type> | null = null;
+  var argRow: TypeParameterType | null = null;
+  match (arg) {
+    case RecordT as rec: {
+      if (rec.isExistential) {
+        // A row is specialized on, so it names all its fields.
+        ctx.error(`'${param.name}' cannot be '${typeToString(arg)}': an existential record's fields are not all known.`,
+            DiagnosticCode.TypeMismatch, loc);
+        return;
+      }
+      named = rec.properties;
+      argRow = rec.row;
+    }
+    case TypeParameterType as tp: {
+      if (!tp.isRecordRow) {
+        reportRowConstraint(ctx, param, arg, loc);
+        return;
+      }
+      argRow = tp;
+    }
+    case _: {
+      reportRowConstraint(ctx, param, arg, loc);
+      return;
+    }
+  }
+  let lacks = param.rowLacks;
+  if (lacks == null) {
+    return;
+  }
+  for (let field in lacks) {
+    if (named != null && named.has(field)) {
+      ctx.error(`'${param.name}' cannot be '${typeToString(arg)}': it has field '${field}', which is declared beside '...${param.name}'.`,
+          DiagnosticCode.TypeMismatch, loc);
+      return;
+    }
+    // The argument's own row could still have the field, unless it is
+    // known to lack it. In that row's own signature (`{label: String,
+    // ...R}` written as `Labeled<R>`), the instantiation says it does.
+    if (argRow != null) {
+      let argLacks = argRow.rowLacks;
+      if (argLacks == null || !argLacks.has(field)) {
+        let decl = ctx.rowParameterDeclaration(argRow);
+        if (site != null && (decl == null || isInRowSignature(ctx, site, decl))) {
+          var lacksOfArg = argRow.rowLacks;
+          if (lacksOfArg == null) {
+            let created = new Set<String>();
+            argRow.rowLacks = created;
+            lacksOfArg = created;
+          }
+          lacksOfArg.add(field);
+        } else {
+          ctx.error(`'${param.name}' cannot be '${typeToString(arg)}': it may have field '${field}', which is declared beside '...${param.name}'.`,
+              DiagnosticCode.TypeMismatch, loc);
+          return;
+        }
+      }
+    }
+  }
+}
+
+function reportRowConstraint(
+  ctx: CheckerContext,
+  param: TypeParameterType,
+  arg: Type,
+  loc: SourceLocation | null
+): void {
+  let bound = if (param.isTupleRow) "tuple" else "record";
+  ctx.error("Type '" + typeToString(arg) + "' does not satisfy constraint '" + bound +
+      "' for type parameter '" + param.name + "'.", DiagnosticCode.TypeMismatch, loc);
+}
+
+/** Whether `arg` has the shape a row parameter's argument must: true for any other parameter. */
+function rowArgumentFits(param: TypeParameterType, arg: Type): boolean {
+  if (arg is ErrorType) {
+    return true;
+  }
+  if (param.isRecordRow) {
+    if (arg is RecordT) {
+      let rec = arg;
+      return !rec.isExistential;
+    }
+    return arg is TypeParameterType && arg.isRecordRow;
+  }
+  if (param.isTupleRow) {
+    return arg is TupleT || (arg is TypeParameterType && arg.isTupleRow);
+  }
+  return true;
+}
+
+/**
+ * Checks the argument of a row parameter `R extends tuple`: a tuple
+ * type, or another tuple row parameter. Tuples have no lacks: a row's
+ * elements sit at their own positions.
+ */
+function checkTupleRowArgument(
+  ctx: CheckerContext,
+  param: TypeParameterType,
+  arg: Type,
+  loc: SourceLocation | null
+): void {
+  match (arg) {
+    case ErrorType: {}
+    case TupleT: {}
+    case TypeParameterType as tp: {
+      if (!tp.isTupleRow) {
+        reportRowConstraint(ctx, param, arg, loc);
+      }
+    }
+    case _: {
+      reportRowConstraint(ctx, param, arg, loc);
+    }
+  }
+}
+
+/**
+ * Applies default type arguments and checks constraints.
+ * Modifies `typeArgs` in place if defaults are applied.
+ */
+export function applyAndCheckTypeArguments(
+  ctx: CheckerContext,
+  typeParams: Array<TypeParameterType>,
+  typeArgs: GrowableArray<Type>,
+  loc: SourceLocation | null,
+  /** The type annotation that instantiates, or null for a call. */
+  site: Node | null = null
+): void {
+  // Apply defaults if type arguments are missing
+  for (var i = typeArgs.length; i < typeParams.length; i += 1) {
+    let param = typeParams[i];
+    let {defaultType} = param;
+    if (defaultType != null) {
+      typeArgs.push(substituteTypeParams(typeParams, typeArgs, defaultType));
+    } else {
+      ctx.error(
+        `Expected ${typeParams.length} type arguments, but got ${i}.`,
+        DiagnosticCode.ArgumentCountMismatch,
+        loc
+      );
+      while (typeArgs.length < typeParams.length) {
+        typeArgs.push(new ErrorType());
+      }
+      break;
+    }
+  }
+
+  if (typeArgs.length > typeParams.length) {
+    ctx.error(
+      `Expected ${typeParams.length} type arguments, but got ${typeArgs.length}.`,
+      DiagnosticCode.ArgumentCountMismatch,
+      loc
+    );
+    // Truncate to avoid issues later
+    while (typeArgs.length > typeParams.length) {
+      typeArgs.pop();
+    }
+  }
+
+  // Check constraints
+  for (var j = 0; j < typeParams.length && j < typeArgs.length; j += 1) {
+    let param = typeParams[j];
+    if (param.isRecordRow) {
+      checkRecordRowArgument(ctx, param, typeArgs[j], loc, site);
+    } else if (param.isTupleRow) {
+      checkTupleRowArgument(ctx, param, typeArgs[j], loc);
+    }
+    if (!rowArgumentFits(param, typeArgs[j])) {
+      // Reported above. As an error type, the argument makes every type
+      // spreading the row an error too (`mergeRow`), rather than a
+      // narrower type that the call's arguments then fail to match.
+      typeArgs[j] = new ErrorType();
+    }
+    if (param.constraint != null) {
+      let expectedConstraint = substituteTypeParams(typeParams, typeArgs, param.constraint as Type);
+
+      // If the argument is itself a type parameter with a constraint, check
+      // whether its constraint satisfies the required constraint (e.g.
+      // `class HashMap<K extends Hashable> implements Map<K, V>`).
+      var effectiveArg = typeArgs[j];
+      if (effectiveArg is TypeParameterType) {
+        let argParam = effectiveArg;
+        if (argParam.constraint != null) {
+          effectiveArg = argParam.constraint as Type;
+        }
+      }
+
+      if (!isAssignableTo(ctx, effectiveArg, expectedConstraint) &&
+          !satisfiesHashableConstraint(ctx, effectiveArg, expectedConstraint) &&
+          !satisfiesResourceConstraint(ctx, effectiveArg, expectedConstraint)) {
+        ctx.error(
+          "Type '" + typeToString(typeArgs[j]) + "' does not satisfy constraint '" +
+            typeToString(expectedConstraint) + "' for type parameter '" + param.name + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Special satisfaction rule for the well-known `Hashable` and `Equatable`
+ * interfaces (zena:core). Types that cannot nominally implement an interface
+ * still compare and hash correctly via the `eq`/`hash` intrinsics, so they
+ * satisfy either constraint:
+ *
+ * - Numeric primitives and boolean, which hash by value (i64/u64 fold to
+ *   i32, floats hash their bits with -0.0 normalized to +0.0).
+ * - Enums and distinct type aliases, judged by their underlying type.
+ * - Case classes that derive their hashCode()/operator ==. One that inherits
+ *   them from its base satisfies the constraint only if the base does.
+ * - Records and tuples, which compare and hash field by field.
+ */
+function satisfiesHashableConstraint(
+  ctx: CheckerContext,
+  arg: Type,
+  constraint: Type
+): boolean {
+  if (!(constraint is InterfaceType)) {
+    return false;
+  }
+  if (!isWellKnown(WellKnown.HashableInterface, constraint.name,
+      constraint.sourcePath) &&
+      !isWellKnown(WellKnown.EquatableInterface, constraint.name,
+      constraint.sourcePath)) {
+    return false;
+  }
+
+  // Unwrap type aliases (distinct ones included) and enums to what they
+  // are carried as.
+  var t = arg;
+  while (t is TypeAliasType) {
+    t = t.target;
+  }
+  if (t is EnumType) {
+    t = (t as EnumType).backingType;
+  }
+
+  // A distinct type over a nominally-Hashable type (e.g. distinct T = String)
+  // is hashable via its underlying type.
+  if (t !== arg && isAssignableTo(ctx, t, constraint)) {
+    return true;
+  }
+
+  match (t) {
+    case I32Type: { return true; }
+    case U32Type: { return true; }
+    case I64Type: { return true; }
+    case U64Type: { return true; }
+    case F32Type: { return true; }
+    case F64Type: { return true; }
+    case U8Type: { return true; }
+    case U16Type: { return true; }
+    case I8Type: { return true; }
+    case I16Type: { return true; }
+    case BooleanType: { return true; }
+    // Enum member types: i32-backed enums unwrap to number literals, string
+    // enums to string literals. Both hash by value via the intrinsics.
+    case BoolLiteralType: { return true; }
+    case NumLiteralType: { return true; }
+    case StringLiteralType: { return true; }
+    case UnionT as ut: {
+      for (let member in ut.types) {
+        if (!satisfiesHashableConstraint(ctx, member, constraint)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case ClassType as ct: { return ct.derivesEquality; }
+    // Records and tuples are values: `==` compares their fields, and the
+    // compiler derives a hash per shape from them (equality.md,
+    // "Structural equality for records and tuples").
+    case RecordT: { return true; }
+    case TupleT: { return true; }
+    case _: { return false; }
+  }
+}
+
+/**
+ * Special satisfaction rule for the well-known `Resource` interface from
+ * `zena:ownership`, which `resource class` conforms to without an
+ * `implements` clause — the same arrangement as case classes and
+ * `Hashable`.
+ *
+ * A nominal registration is not usable here: `zena:ownership` is
+ * deliberately out of the prelude, so a file declaring a resource class need
+ * not have `Resource` in scope, and there would be nothing to push onto its
+ * implements list. Recognizing the interface at the constraint check instead
+ * keeps the declaration site import-free.
+ *
+ * The bound may be written over the class or over a handle to it. `disown`
+ * spells its parameter `Own<T>`, so `T` infers to the bare class, but a
+ * hand-written `<T extends Resource>(x: T)` receives the handle — and the
+ * handle is the only form a caller can name. Both mean the same class, so
+ * both satisfy the bound. This mirrors the Hashable rule's treatment of a
+ * distinct type over a hashable target.
+ */
+function satisfiesResourceConstraint(
+  ctx: CheckerContext,
+  arg: Type,
+  constraint: Type
+): boolean {
+  // `Resource` is an ordinary class, so a bare resource class satisfies the
+  // bound by the normal subtype rule and never reaches here. What this rule
+  // exists for is the argument arriving as a *handle*: a caller can only
+  // name `Own<R>`, and a handle is a distinct alias that widens to nothing.
+  if (!(constraint is ClassType)) {
+    return false;
+  }
+  if (!isWellKnown(WellKnown.ResourceClass, constraint.name,
+      constraint.sourcePath)) {
+    return false;
+  }
+
+  // Look through `Own`/`Borrow`/`Unmanaged` to the class they wrap.
+  var t = arg;
+  while (isOwnershipWrapper(t)) {
+    let inner = ownershipHandleInner(t);
+    if (inner == null) { break; }
+    t = inner;
+  }
+
+  // The handle may wrap a type parameter rather than a class: inside
+  // `disown<T extends Resource>(value: Own<T>)`, passing `value` on to
+  // another bounded generic infers `Own<T>`, and what carries the evidence
+  // is `T`'s own bound. The caller does this for a bare type argument; the
+  // unwrap above is what makes it necessary again here.
+  if (t is TypeParameterType) {
+    let tp = t;
+    if (tp.constraint == null) { return false; }
+    t = tp.constraint as Type;
+  }
+
+  return isAssignableTo(ctx, t, constraint);
+}
+
+/**
+ * Does `t` name any of `params` (by identity)? Asked of a static
+ * member's signature, this is what separates the two kinds of static a
+ * generic class can declare: one that cannot see the class's type
+ * parameters lives on the class itself, one that names them needs them
+ * bound at every call.
+ */
+export function mentionsTypeParams(t: Type, params: Array<TypeParameterType>): boolean {
+  let anyOf = (types: Array<Type>): boolean => {
+    for (let each in types) {
+      if (mentionsTypeParams(each, params)) { return true; }
+    }
+    return false;
+  };
+  return match (t) {
+    case TypeParameterType as tp: {
+      for (let p in params) {
+        if (p === tp) { return true; }
+      }
+      false
+    }
+    case UnionT {types}: anyOf(types)
+    case ArrayType {elementType}: mentionsTypeParams(elementType, params)
+    case TupleT {elementTypes, row}: (row != null && mentionsTypeParams(row, params)) || anyOf(elementTypes)
+    case InlineTupleT {elementTypes}: anyOf(elementTypes)
+    case RecordT {properties, row}: {
+      if (row != null && mentionsTypeParams(row, params)) { return true; }
+      for (let {key} in properties) {
+        if (mentionsTypeParams(properties[key], params)) { return true; }
+      }
+      false
+    }
+    case FunctionType as ft: {
+      if (mentionsTypeParams(ft.returnType, params)) { return true; }
+      anyOf(ft.parameters)
+    }
+    case ClassType as ct: {
+      if (ct.typeArguments == null) false else anyOf(ct.typeArguments as Array<Type>)
+    }
+    case InterfaceType as it: {
+      if (it.typeArguments == null) false else anyOf(it.typeArguments as Array<Type>)
+    }
+    case MixinType as mt: {
+      if (mt.typeArguments == null) false else anyOf(mt.typeArguments as Array<Type>)
+    }
+    case TypeAliasType as ta: {
+      if (ta.typeArguments == null) false else anyOf(ta.typeArguments as Array<Type>)
+    }
+    case _: false
+  };
+}
+
+/**
+ * A static is outside its class's generic scope. It belongs to the class
+ * itself, of which there is one however many types the class is used at,
+ * so there is no `T` for it to be written in terms of — and a static must
+ * not acquire a copy per type argument merely by mentioning one.
+ *
+ * A static that needs a type parameter declares its own:
+ * `static of<A>(v: A): Boxed<A>`, solved from the arguments or written at
+ * the call like any generic function's. The test is identity-based, so a
+ * static's own parameters never match — only the class's do.
+ */
+export function rejectClassTypeParamsInStatic(
+  ctx: CheckerContext,
+  classType: ClassType,
+  t: Type,
+  kind: String,
+  name: String,
+  loc: SourceLocation | null
+): void {
+  if (classType.typeParameters == null) { return; }
+  for (let tp in classType.typeParameters as GrowableArray<TypeParameterType>) {
+    let one = growable<TypeParameterType>([tp]);
+    if (!mentionsTypeParams(t, one)) { continue; }
+    let advice = if (kind == "field") {
+      "Make it an instance field, or give it a type that does not mention '" +
+      tp.name + "'."
+    } else if (kind == "method") {
+      "Give the method its own type parameter instead: 'static " + name +
+      "<" + tp.name + ">(...)'."
+    } else {
+      "An accessor cannot take type parameters; make it a method with its " +
+      "own, or an instance accessor."
+    };
+    ctx.error(
+      "Static " + kind + " '" + name + "' cannot use the class's type " +
+      "parameter '" + tp.name + "'. A static belongs to '" + classType.name +
+      "' itself, so there is one of it no matter how many types the class " +
+      "is used at. " + advice,
+      DiagnosticCode.IncompatibleTypes,
+      loc
+    );
+    return;
+  }
+}
+
+/**
+ * Infer type arguments from constructor arguments for a generic class.
+ * Returns a new ClassType with typeArguments set, or the original if not generic.
+ */
+export function instantiateGenericClass(
+  ctx: CheckerContext,
+  ct: ClassType,
+  explicitTypeArgs: GrowableArray<TypeAnnotation> | null,
+  args: GrowableArray<Expression>,
+  loc: SourceLocation | null,
+  ctorName: String | null = null,
+  expectedType: Type | null = null
+): ClassType {
+  let typeParams = ct.typeParameters;
+  if (typeParams == null) { return ct; }
+  if (typeParams.length == 0) { return ct; }
+
+  // If explicit type arguments provided, use those.
+  if (explicitTypeArgs != null) {
+    let typeArgs = new Array<Type>();
+    var i = 0;
+    while (i < explicitTypeArgs.length) {
+      typeArgs.push(resolveExplicitTypeArgument(ctx, explicitTypeArgs[i]));
+      i += 1;
+    }
+    applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
+    rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
+    return instantiateClassType(ct, typeArgs);
+  }
+
+  // Infer type arguments from constructor arguments.
+  let ctor = if (ctorName != null && ct.constructors.has(ctorName as String)) {
+    ct.constructors[ctorName as String]
+  } else {
+    ct.constructorType
+  };
+  // Without a constructor there are no arguments to infer from; only
+  // the context can still name the type arguments.
+  if (ctor == null && expectedType == null) { return ct; }
+
+  // Build a map from type param names to inferred types. The `new`
+  // checking re-checks every argument against the instantiated
+  // signature afterwards, so this inference pass leaves the flow where
+  // it found it (see the call pre-pass for why that matters).
+  let preInferFlow = ctx.currentFlow;
+  let inferred = new Map<String, Type>();
+  if (ctor != null) {
+    var ai = 0;
+    while (ai < args.length && ai < ctor.parameters.length) {
+      let paramType = ctor.parameters[ai];
+      let argType = checkExpression(ctx, args[ai], null);
+      inferTypeArg(paramType, argType, inferred);
+      ai += 1;
+    }
+  }
+  ctx.setFlow(preInferFlow);
+
+  // What the arguments left open, the context may name:
+  // `let m: HashMap<String, i32> = new HashMap();`, or through an
+  // interface the class implements, `let m: HashMap<String, i32> = new
+  // HashMap();`. inferTypeArg keeps the first answer, so the
+  // arguments win where both speak.
+  if (expectedType != null) {
+    inferTypeArgsFromContext(selfTypeOfClass(ct), subtractNullFromType(expectedType), inferred);
+  }
+
+  // Build typeArguments array from inferred map.
+  let typeArgs = new Array<Type>();
+  for (let param in typeParams) {
+    let paramName = param.name;
+    if (let (true, t) = inferred.get(paramName)) {
+      typeArgs.push(t);
+    } else {
+      // No inference possible; use unknown.
+      typeArgs.push(new ErrorType());
+    }
+  }
+
+  // Apply missing default types and check constraints before instantiating.
+  applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
+  rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
+
+  // Create instantiated class type using factory function.
+  return instantiateClassType(ct, typeArgs);
+}
+
+/**
+ * Infer the type arguments a `new` leaves open from the type the context
+ * expects. `self` is the constructed class or interface at its own type
+ * parameters; the expected type is matched against `self` itself, the
+ * interfaces the class implements (its own and its superclasses'), a
+ * superclass, or an interface the constructed interface extends, and the
+ * matching type's arguments are paired with the expected type's.
+ *
+ *   let m: HashMap<String, i32> = new Map.ordered();   // K, V through HashMap
+ *   let a: GrowableArray<i32> = new Array();          // T through MutableArray
+ *   let s: HashSet<String> = new Set.ordered();           // T from Set itself
+ *
+ * Only what the arguments left open is filled in: inferTypeArg keeps
+ * the first answer for a parameter.
+ */
+export function inferTypeArgsFromContext(self: Type, expected: Type, inferred: HashMap<String, Type>): void {
+  match (unwrapAliases(expected)) {
+    case UnionT {types}: {
+      for (let m in types) {
+        inferTypeArgsFromContext(self, m, inferred);
+      }
+    }
+    case InterfaceType as ei: {
+      let name = (ei.genericSource ?? ei).name;
+      var matched: InterfaceType | null = null;
+      if (self is ClassType) {
+        matched = findImplementedInterfaceTransitiveInChecker(self, name);
+      } else if (self is InterfaceType) {
+        matched = findExtendedInterfaceTransitive(self, name);
+      }
+      if (matched != null) {
+        inferTypeArgsPairwise(matched.typeArguments, ei.typeArguments, inferred);
+      }
+    }
+    case ClassType as ec: {
+      var c: ClassType | null = if (self is ClassType) self else null;
+      while (c != null) {
+        let cur = c;
+        if (cur.canonical() == ec.canonical()) {
+          inferTypeArgsPairwise(cur.typeArguments, ec.typeArguments, inferred);
+          return;
+        }
+        c = cur.superType;
+      }
+    }
+    case _: {}
+  }
+}
+
+function inferTypeArgsPairwise(
+  fromArgs: Array<Type> | null,
+  toArgs: Array<Type> | null,
+  inferred: HashMap<String, Type>
+): void {
+  if (fromArgs == null || toArgs == null) {
+    return;
+  }
+  var i = 0;
+  while (i < fromArgs.length && i < toArgs.length) {
+    inferTypeArg(fromArgs[i], toArgs[i], inferred);
+    i += 1;
+  }
+}
+
+/**
+ * The interface named `name` among those `it` extends, transitively, at
+ * `it`'s type arguments; `it` itself when it is that interface.
+ */
+function findExtendedInterfaceTransitive(it: InterfaceType, name: String): InterfaceType | null {
+  let itName = (it.genericSource ?? it).name;
+  if (itName == name) {
+    return it;
+  }
+  for (let ext in it.extendsList) {
+    let resolved = substituteTypeParams(it.typeParameters, it.typeArguments, ext as Type);
+    if (resolved is InterfaceType) {
+      let found = findExtendedInterfaceTransitive(resolved, name);
+      if (found != null) {
+        return found;
+      }
+    }
+  }
+  return null;
+}
+
+export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<String, Type>): void {
+  match (paramType) {
+    case TypeParameterType {name}: {
+      // Direct type parameter — infer from arg type. A type argument
+      // is storage, so an inline argument infers its boxed form.
+      if (!inferred.has(name)) {
+        inferred[name] = boxedFormOf(argType);
+      }
+    }
+    case ArrayType {elementType}: {
+      // Array<T> against Array<i32> → infer T = i32.
+      match (argType) {
+        case ArrayType as argArr: {
+          inferTypeArg(elementType, argArr.elementType, inferred);
+        }
+        case _: {}
+      }
+    }
+    case InterfaceType as pt: {
+      // Array<T> against FixedArray<i32> → infer T = i32, through the
+      // interface the argument implements. Without this, a signature
+      // that takes an interface OF its own type parameter — which is
+      // what `Array.from(seq: GrowableArray<T>)` is — inferred nothing, and
+      // the call was then rejected against its own parameter.
+      let ptName = if (pt.genericSource != null) {
+        (pt.genericSource as InterfaceType).name
+      } else {
+        pt.name
+      };
+      var matched: InterfaceType | null = null;
+      if (argType is InterfaceType) {
+        let atName = if (argType.genericSource != null) {
+          (argType.genericSource as InterfaceType).name
+        } else {
+          argType.name
+        };
+        if (atName == ptName) { matched = argType; }
+      } else if (argType is ClassType) {
+        matched = findImplementedInterfaceTransitiveInChecker(argType, ptName);
+      }
+      if (matched != null) {
+        let {typeArguments} = pt;
+        if (typeArguments != null && matched.typeArguments != null) {
+          let ptArgs = typeArguments;
+          let atArgs = matched.typeArguments as Array<Type>;
+          var i = 0;
+          while (i < ptArgs.length && i < atArgs.length) {
+            inferTypeArg(ptArgs[i], atArgs[i], inferred);
+            i += 1;
+          }
+        }
+      }
+    }
+    case ClassType as pt: {
+      // Box<T> against Box<i32> → infer T = i32.
+      match (argType) {
+        case ClassType as at: {
+          if (pt.id == at.id && pt.typeArguments != null && at.typeArguments != null) {
+            let ptArgs = pt.typeArguments as Array<Type>;
+            let atArgs = at.typeArguments as Array<Type>;
+            var i = 0;
+            while (i < ptArgs.length && i < atArgs.length) {
+              inferTypeArg(ptArgs[i], atArgs[i], inferred);
+              i += 1;
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+    case RecordT as pt: {
+      // {x: T, ...R} against {x: i32, y: f64} → infer T = i32 and
+      // R = {y: f64}: the row is the argument's other fields, and its own
+      // row if it has one. A named field the argument lacks binds
+      // nothing; the argument check reports it.
+      match (argType) {
+        case RecordT as at: {
+          for (let key in pt.properties.keys()) {
+            if (let (true, argField) = at.properties.get(key)) {
+              inferTypeArg(pt.properties[key], argField, inferred);
+            }
+          }
+          let row = pt.row;
+          // From an existential the row is existential too: its fields
+          // are not all known, which the row's constraint check reports.
+          if (row != null && !inferred.has(row.name)) {
+            let rest = new Map<String, Type>();
+            var restOptionals: HashSet<String> | null = null;
+            for (let key in at.properties.keys()) {
+              if (!pt.properties.has(key)) {
+                rest[key] = at.properties[key];
+                if (at.isOptional(key)) {
+                  restOptionals ??= new Set<String>();
+                  restOptionals.add(key);
+                }
+              }
+            }
+            let atRow = at.row;
+            inferred[row.name] = if (rest.size == 0 && atRow != null) {
+              atRow
+            } else {
+              new RecordT(rest, restOptionals, atRow, at.isExistential)
+            };
+          }
+        }
+        case TypeParameterType as at: {
+          // {...R} against a row parameter S → R = S.
+          let row = pt.row;
+          if (row != null && pt.properties.size == 0 && at.isRecordRow &&
+              !inferred.has(row.name)) {
+            inferred[row.name] = at;
+          }
+        }
+        case _: {}
+      }
+    }
+    case TupleT as pt: {
+      // An inline argument converts to its boxed form, element by element.
+      if (let InlineTupleT {elementTypes} = argType) {
+        inferTypeArg(paramType, new TupleT(elementTypes, null, 0), inferred);
+        return;
+      }
+      // (T, ...R, U) against (i32, f64, bool, String) → infer T = i32,
+      // U = String and R = (f64, bool): the elements before the row match
+      // a prefix, the ones after it a suffix, and the row is the rest,
+      // with the argument's own row if that falls there.
+      match (argType) {
+        case TupleT as at: {
+          let row = pt.row;
+          let before = if (row != null) pt.rowIndex else pt.elementTypes.length;
+          let after = pt.elementTypes.length - before;
+          let argLength = at.elementTypes.length;
+          if (argLength < before + after) {
+            return;
+          }
+          for (var i = 0; i < before; i += 1) {
+            inferTypeArg(pt.elementTypes[i], at.elementTypes[i], inferred);
+          }
+          for (var i = 0; i < after; i += 1) {
+            inferTypeArg(pt.elementTypes[before + i],
+                at.elementTypes[argLength - after + i], inferred);
+          }
+          if (row != null && !inferred.has(row.name)) {
+            let argRow = at.row;
+            if (argRow != null &&
+                (at.rowIndex < before || at.rowIndex > argLength - after)) {
+              return;
+            }
+            let middle = new Array<Type>();
+            for (var i = before; i < argLength - after; i += 1) {
+              middle.push(at.elementTypes[i]);
+            }
+            inferred[row.name] = if (middle.length == 0 && argRow != null) {
+              argRow
+            } else if (argRow != null) {
+              new TupleT(middle, argRow, at.rowIndex - before)
+            } else {
+              new TupleT(middle, null, 0)
+            };
+          }
+        }
+        case TypeParameterType as at: {
+          // (...R) against a row parameter S → R = S.
+          let row = pt.row;
+          if (row != null && pt.elementTypes.length == 0 && at.isTupleRow &&
+              !inferred.has(row.name)) {
+            inferred[row.name] = at;
+          }
+        }
+        case _: {}
+      }
+    }
+    case UnionT as pt: {
+      // (true, T) | (false, E) against (true, i32) | (false, String) →
+      // T = i32, E = String. Each tuple in the argument pairs with the
+      // parameter's tuple that starts with the same literal, which the
+      // union rule makes unique (checkTupleUnionMembers).
+      let argMembers = if (argType is UnionT) argType.types else growable<Type>([argType]);
+      for (let argMember in argMembers) {
+        let paramMember = tupleWithSameTag(pt.types, argMember);
+        if (paramMember != null) {
+          inferTypeArg(paramMember, argMember, inferred);
+        }
+      }
+    }
+    case FunctionType as pt: {
+      // (T) => U against (i32) => String → infer T = i32, U = String.
+      match (argType) {
+        case FunctionType as at: {
+          var i = 0;
+          while (i < pt.parameters.length && i < at.parameters.length) {
+            inferTypeArg(pt.parameters[i], at.parameters[i], inferred);
+            i += 1;
+          }
+          inferTypeArg(pt.returnType, at.returnType, inferred);
+        }
+        case _: {}
+      }
+    }
+    case TypeAliasType as pt: {
+      // Own<T> against Own<Descriptor> → infer T = Descriptor.
+      //
+      // A distinct alias is nominal, so the two must name the same alias —
+      // the same test `isAssignableTo` applies to a pair of distinct aliases.
+      // Without this case nothing bound, and the call was then rejected as
+      // "argument 'Own<Descriptor>' is not assignable to parameter 'Own<T>'",
+      // which made a generic alias unusable as a parameter type.
+      match (argType) {
+        case TypeAliasType as at: {
+          // Borrowing at a call site is implicit — an `Own<R>` is accepted
+          // where a `Borrow<R>` is expected — so inference has to see through
+          // that coercion too, or a generic `Borrow<T>` parameter would bind
+          // nothing when handed the owner. See isAssignableTo.
+          let borrowsFromOwn =
+            isWellKnown(WellKnown.BorrowAlias, pt.name, pt.declaringModule) &&
+            isWellKnown(WellKnown.OwnAlias, at.name, at.declaringModule) &&
+            isOwnershipWrapper(pt) && isOwnershipWrapper(at);
+          if (pt.name == at.name || borrowsFromOwn) {
+            let {typeArguments} = pt;
+            if (typeArguments != null && at.typeArguments != null) {
+              let ptArgs = typeArguments;
+              let atArgs = at.typeArguments as Array<Type>;
+              var i = 0;
+              while (i < ptArgs.length && i < atArgs.length) {
+                inferTypeArg(ptArgs[i], atArgs[i], inferred);
+                i += 1;
+              }
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+    case _: {}
+  }
+}
+
+function inferTypeParameter(sourceType: Type, targetType: Type, tpName: String, inferred: HashMap<String, Type>): boolean {
+  if (sourceType is TypeParameterType && sourceType.name == tpName) {
+    inferred[tpName] = boxedFormOf(targetType);
+    return true;
+  }
+  if (sourceType is ArrayType) {
+    if (targetType is ArrayType) {
+      return inferTypeParameter(sourceType.elementType, targetType.elementType, tpName, inferred);
+    }
+  }
+  if (sourceType is ClassType) {
+    if (targetType is ClassType) {
+      let {typeArguments} = sourceType;
+      if (typeArguments != null && targetType.typeArguments != null) {
+        let sArgs = typeArguments;
+        let tArgs = targetType.typeArguments as Array<Type>;
+        if (sArgs.length == tArgs.length) {
+          var i = 0;
+          while (i < sArgs.length) {
+            if (inferTypeParameter(sArgs[i], tArgs[i], tpName, inferred)) {
+              return true;
+            }
+            i += 1;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+export function tryInstantiateGenericFunction(
+  ctx: CheckerContext,
+  source: Type,
+  target: Type,
+): Type {
+  if (source is FunctionType && target is FunctionType) {
+    let {typeParameters} = source;
+    if (typeParameters != null && typeParameters.length > 0) {
+      let tps = typeParameters;
+      let inferred = new Map<String, Type>();
+      for (let tp in tps) {
+        var found = false;
+        var pIdx = 0;
+        while (pIdx < source.parameters.length && !found) {
+          if (pIdx < target.parameters.length) {
+            if (inferTypeParameter(source.parameters[pIdx], target.parameters[pIdx], tp.name, inferred)) {
+              found = true;
+            }
+          }
+          pIdx += 1;
+        }
+        if (!found) {
+          inferTypeParameter(source.returnType, target.returnType, tp.name, inferred);
+        }
+      }
+      if (inferred.size == tps.length) {
+        let typeArgs = new Array<Type>();
+        for (let tp in tps) {
+          typeArgs.push(inferred[tp.name]);
+        }
+        return instantiateFunctionType(source, typeArgs);
+      }
+    }
+  }
+  return source;
+}
+
+export function findImplementedInterfaceTransitiveInChecker(ct: ClassType, name: String): InterfaceType | null {
+  let seen = new Map<String, boolean>();
+  let queue = new Array<InterfaceType>();
+  
+  for (let impl in ct.implementsList) {
+    let resolved = substituteTypeParams(ct.typeParameters, ct.typeArguments, impl) as InterfaceType;
+    queue.push(resolved);
+  }
+  
+  var currSuper = ct.superType;
+  while (currSuper != null) {
+    let superCt = currSuper;
+    for (let impl in superCt.implementsList) {
+      let resolved = substituteTypeParams(superCt.typeParameters, superCt.typeArguments, impl) as InterfaceType;
+      queue.push(resolved);
+    }
+    currSuper = superCt.superType;
+  }
+  
+  var head = 0;
+  while (head < queue.length) {
+    let it = queue[head];
+    head += 1;
+    
+    let sourceName = if (it.genericSource != null) (it.genericSource as InterfaceType).name else it.name;
+    let key = `${sourceName}_${i32ToString(it.id as i32)}`;
+    if (!seen.has(key)) {
+      seen[key] = true;
+      if (sourceName == name) {
+        return it;
+      }
+      for (let ext in it.extendsList) {
+        let resolvedExt = substituteTypeParams(it.typeParameters, it.typeArguments, ext) as InterfaceType;
+        queue.push(resolvedExt);
+      }
+    }
+  }
+  return null;
+}
+
+/** A generic class applied to its own type parameters; the class
+ * itself when it is not generic or already instantiated. */
+export function selfTypeOfClass(cc: ClassType): Type {
+  let tps = cc.typeParameters;
+  if (tps == null || tps.length == 0 || cc.typeArguments != null) {
+    return cc as Type;
+  }
+  let args = new Array<Type>();
+  for (let p in tps) {
+    args.push(p as Type);
+  }
+  return instantiateClassType(cc, args) as Type;
+}
+
+/**
+ * An interface at its own type parameters — `Map<K, V>` inside `Map` —
+ * so that a value of that type substitutes to `Map<String, i32>` at
+ * `new Map<String, i32>()`. A non-generic interface is its own self type.
+ */
+function selfTypeOfInterface(ifaceType: InterfaceType): InterfaceType {
+  let {typeParameters} = ifaceType;
+  if (typeParameters == null || typeParameters.length == 0) {
+    return ifaceType;
+  }
+  let args = new Array<Type>();
+  for (let tp in typeParameters) {
+    args.push(tp as Type);
+  }
+  return instantiateInterfaceType(ifaceType, args);
+}
+
+/**
+ * Instantiate a generic interface for `new`: explicit type arguments
+ * win; otherwise each is inferred from the constructor's parameters
+ * against the written arguments, as instantiateGenericClass does for a
+ * class.
+ */
+export function instantiateGenericInterface(
+  ctx: CheckerContext,
+  it: InterfaceType,
+  explicitTypeArgs: GrowableArray<TypeAnnotation> | null,
+  args: GrowableArray<Expression>,
+  loc: SourceLocation | null,
+  ctorKey: String,
+  expectedType: Type | null = null
+): InterfaceType {
+  let typeParams = it.typeParameters;
+  if (typeParams == null) { return it; }
+  if (typeParams.length == 0) { return it; }
+
+  if (explicitTypeArgs != null) {
+    let typeArgs = new Array<Type>();
+    var i = 0;
+    while (i < explicitTypeArgs.length) {
+      typeArgs.push(resolveExplicitTypeArgument(ctx, explicitTypeArgs[i]));
+      i += 1;
+    }
+    applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
+    rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
+    return instantiateInterfaceType(it, typeArgs);
+  }
+
+  let ctor = it.constructors[ctorKey];
+  let preInferFlow = ctx.currentFlow;
+  let inferred = new Map<String, Type>();
+  var ai = 0;
+  while (ai < args.length && ai < ctor.parameters.length) {
+    let paramType = ctor.parameters[ai];
+    let argType = checkExpression(ctx, args[ai], null);
+    inferTypeArg(paramType, argType, inferred);
+    ai += 1;
+  }
+  ctx.setFlow(preInferFlow);
+
+  // The context's type arguments for what the arguments left open —
+  // `let m: HashMap<String, i32> = new Map();` — through the interface
+  // itself or one it extends. The arguments win where both speak.
+  if (expectedType != null) {
+    inferTypeArgsFromContext(selfTypeOfInterface(it) as Type, subtractNullFromType(expectedType), inferred);
+  }
+
+  let typeArgs = new Array<Type>();
+  for (let param in typeParams) {
+    let paramName = param.name;
+    if (let (true, t) = inferred.get(paramName)) {
+      typeArgs.push(t);
+    } else {
+      typeArgs.push(new ErrorType());
+    }
+  }
+  applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
+  rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
+  return instantiateInterfaceType(it, typeArgs);
+}
+
+/** Whether two instance types of one class have the same type arguments. */
+export function sameTypeArguments(a: ClassType, b: ClassType): boolean {
+  let aArgs = a.typeArguments;
+  let bArgs = b.typeArguments;
+  if (aArgs == null || bArgs == null) {
+    return aArgs == null && bArgs == null;
+  }
+  if (aArgs.length != bArgs.length) {
+    return false;
+  }
+  for (var i = 0; i < aArgs.length; i += 1) {
+    if (!typesEqual(aArgs[i], bArgs[i])) {
+      return false;
+    }
+  }
+  return true;
+}

@@ -1,0 +1,320 @@
+import { BlockStatement, Expression, ExpressionStatement, Node } from '../ast.zena';
+import {
+  BooleanType, ClassType, ErrorType, FunctionType, InterfaceType,
+  RecordType as RecordT, Type, TypeParameterType, UnionType as UnionT,
+  baseType, instantiateClassType, isNumericType, typeContainsTypeParameter,
+  typeToString
+} from '../types.zena';
+import { FunctionAdaptationDependency } from '../semantic-model.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown } from '../well-known.zena';
+import { CheckerContext } from './context.zena';
+import { recordUnionMembersOf } from './members.zena';
+import { isAssignableTo, typesEqual } from './relations.zena';
+import { isNullableType, subtractNullFromType, unwrapAliases } from './unions.zena';
+
+/**
+ * Notes the record types `source` brings into a slot of type `target`
+ * when that slot does not know their shape: anything but a single record
+ * type, so `anyref`, `eqref`, or a union with other kinds of value. A
+ * record in such a slot can reach the erased `==`, which compares it by
+ * shape only if it was noted here (#399). An existential record type is
+ * such a slot too: its `==` compares the records it holds the same way.
+ * A type parameter is not: its code is specialized per argument.
+ */
+function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type): void {
+  let targetBase = baseType(subtractNullFromType(target));
+  if (targetBase is RecordT) {
+    let targetRecord = targetBase;
+    if (!targetRecord.isExistential) {
+      return;
+    }
+  } else if (targetBase is TypeParameterType || targetBase is ErrorType) {
+    return;
+  }
+  match (baseType(subtractNullFromType(source))) {
+    case RecordT as rec: {
+      noteErasedRecord(ctx, rec);
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        let memberBase = baseType(member);
+        if (memberBase is RecordT) {
+          noteErasedRecord(ctx, memberBase);
+        }
+      }
+    }
+    case _: {}
+  }
+}
+
+/**
+ * When `existential` is an existential record type and `other` a closed
+ * one, notes `other` for the erased `==` they compare through.
+ */
+export function noteExistentialComparison(ctx: CheckerContext, existential: Type, other: Type): void {
+  let e = baseType(subtractNullFromType(existential));
+  let o = baseType(subtractNullFromType(other));
+  if (e is RecordT && o is RecordT) {
+    let eRecord = e;
+    let oRecord = o;
+    if (eRecord.isExistential && !oRecord.isExistential) {
+      noteErasedRecord(ctx, oRecord);
+    }
+  }
+}
+
+/** Notes `rec`, and the record types in its fields, which compare through the same erased `==`. */
+function noteErasedRecord(ctx: CheckerContext, rec: RecordT): void {
+  // An existential is no shape; the records packed into it were noted
+  // where they were packed.
+  if (rec.row != null || rec.isExistential) {
+    return;
+  }
+  for (let noted in ctx.model.erasedRecordTypes) {
+    if (noted === rec) {
+      return;
+    }
+  }
+  ctx.model.erasedRecordTypes.push(rec);
+  for (let key in rec.properties.keys()) {
+    let fieldBase = baseType(subtractNullFromType(rec.properties[key]));
+    if (fieldBase is RecordT) {
+      noteErasedRecord(ctx, fieldBase);
+    }
+  }
+}
+
+/**
+ * The `Box<P>` a tag's value type accepts for a primitive interpolation
+ * of type `primitive`, or null when it accepts none. Accepting the box
+ * is how a tag opts into boxing (docs/design/wasm-web-ui.md, "Zena
+ * changes"); the box's constructor is referenced so reachability keeps
+ * it, since no expression names the class.
+ */
+export function boxForTemplateValue(ctx: CheckerContext, primitive: Type, valueType: Type): ClassType | null {
+  let base = baseType(primitive);
+  if (!(isNumericType(base) || base is BooleanType) || typeContainsTypeParameter(base)) {
+    return null;
+  }
+  let boxGeneric = ctx.tryResolveWellKnownType(WellKnown.BoxClass);
+  if (boxGeneric == null || !(boxGeneric is ClassType)) {
+    return null;
+  }
+  let generic = boxGeneric as ClassType;
+  let args = new Array<Type>();
+  args.push(base);
+  let boxed = instantiateClassType(generic, args);
+  if (!isAssignableTo(ctx, boxed, valueType)) {
+    return null;
+  }
+  let deps = ctx.currentDependencies();
+  if (deps != null) {
+    deps.referencedTypes.add(boxed as Type);
+    deps.referencedClassMethods.add(`${i32ToString(generic.symbolId as i32)}.<constructor>`);
+  }
+  return boxed;
+}
+
+export function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void {
+  noteRecordErasure(ctx, sourceType, targetType);
+  // `C | null` is assignable to no single member of `I | null`, so the
+  // payloads are what the adaptation is about: peel null off the source
+  // and match that against the target's members. The peeled fact is
+  // carried to codegen, which packs the fat pointer under a null guard
+  // (null stays null rather than becoming a pointer to nothing).
+  let sourceIsNullable = isNullableType(sourceType);
+  let effectiveSource = if (sourceIsNullable) subtractNullFromType(sourceType)
+      else sourceType;
+
+  var effectiveTarget = unwrapAliases(targetType);
+  if (let UnionT {types} = effectiveTarget) {
+    for (let member in types) {
+      if (isAssignableTo(ctx, effectiveSource, member)) {
+        effectiveTarget = member;
+        break;
+      }
+    }
+  }
+
+  // A class that does not implement the interface has no pack: a
+  // downcast of one (`animal as Named`) is answered by the class's type
+  // info at run time (docs/design/interface-type-tests.md).
+  if (effectiveSource is ClassType && effectiveTarget is InterfaceType &&
+      isAssignableTo(ctx, effectiveSource, effectiveTarget)) {
+    if (ctx.warnUnnecessaryCasts && ctx.model.getInterfaceAdaptationDirect(node) == null) {
+      ctx.warning("'" + typeToString(effectiveSource) + "' is boxed to pass as '" +
+          typeToString(effectiveTarget) + "': an allocation here and an indirect call at each use.",
+          DiagnosticCode.Adaptation, node.loc);
+    }
+    ctx.model.setInterfaceAdaptation(node, effectiveSource, effectiveTarget,
+        sourceIsNullable);
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      let classSymId = (effectiveSource.genericSource ?? effectiveSource).symbolId;
+      let ifaceSymId = (effectiveTarget.genericSource ?? effectiveTarget).symbolId;
+      let key = `${i32ToString(classSymId as i32)}::${i32ToString(ifaceSymId as i32)}`;
+      deps.usedInterfaceAdaptations.add(key);
+    }
+  } else if (effectiveSource is InterfaceType && effectiveTarget is InterfaceType &&
+      !typesEqual(effectiveSource, effectiveTarget) &&
+      isAssignableTo(ctx, effectiveSource, effectiveTarget)) {
+    ctx.model.setInterfaceAdaptation(node, effectiveSource, effectiveTarget,
+        sourceIsNullable);
+    // The upcast copies the target's vtable slots out of the source's.
+    // It references no member itself: codegen gives the target a slot
+    // for each member called through it, and the source, which extends
+    // the target, a slot for each of those too.
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      deps.referencedTypes.add(effectiveSource);
+      deps.referencedTypes.add(effectiveTarget);
+    }
+  } else if (sourceType is FunctionType && effectiveTarget is FunctionType) {
+    if (!typesEqual(sourceType, effectiveTarget)) {
+      if (ctx.warnUnnecessaryCasts && ctx.model.getFunctionAdaptationDirect(node) == null) {
+        ctx.warning("Function value is re-wrapped to match '" + typeToString(effectiveTarget) +
+            "': an allocation here and a second call at each use.",
+            DiagnosticCode.Adaptation, node.loc);
+      }
+      ctx.model.setFunctionAdaptation(node, sourceType, effectiveTarget);
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        deps.functionAdaptations.push(new FunctionAdaptationDependency(node, sourceType, effectiveTarget));
+      }
+    }
+  }
+
+  let nonNullSrc = subtractNullFromType(sourceType);
+  let nonNullTgt = subtractNullFromType(effectiveTarget);
+  if (nonNullSrc is RecordT && nonNullTgt is RecordT) {
+    // A row stands for fields each specialization fills in differently,
+    // so `{x: i32, ...R}` to `{x: i32}` adapts though both name only `x`.
+    // So does an existential to or from a closed type naming the same
+    // fields: one is a pack or projection of the other.
+    var needsAdaptation = nonNullSrc.properties.size != nonNullTgt.properties.size ||
+        nonNullSrc.row !== nonNullTgt.row ||
+        nonNullSrc.isExistential != nonNullTgt.isExistential;
+    if (!needsAdaptation) {
+      let keys = nonNullSrc.properties.keys();
+      for (let key in keys) {
+        if (nonNullTgt.properties.has(key)) {
+          let t1 = nonNullSrc.properties[key];
+          let t2 = nonNullTgt.properties[key];
+          if (!isAssignableTo(ctx, t1, t2) || !isAssignableTo(ctx, t2, t1)) {
+            needsAdaptation = true;
+          }
+          // Same field set and types, but a presence difference still
+          // changes the layout (the target carries a mask slot for its
+          // optional fields).
+          if (nonNullSrc.isOptional(key) != nonNullTgt.isOptional(key)) {
+            needsAdaptation = true;
+          }
+        } else {
+          needsAdaptation = true;
+        }
+      }
+    }
+    if (needsAdaptation) {
+      if (ctx.warnUnnecessaryCasts && ctx.model.getRecordAdaptationDirect(node) == null) {
+        ctx.warning("Record is copied to the shape '" + typeToString(nonNullTgt) +
+            "': an allocation here.",
+            DiagnosticCode.Adaptation, node.loc);
+      }
+      ctx.model.setRecordAdaptation(node, nonNullSrc, nonNullTgt);
+    }
+  }
+
+  // A union of record types reaches the use as one of its members, and
+  // each member has its own layout, so there is no single repack for
+  // the union — codegen picks the member at run time and repacks that
+  // one. The join that produced the union cannot do it earlier: it has
+  // no one shape to adapt the arms to.
+  //
+  // The target here is the DECLARED one rather than the member
+  // `effectiveTarget` narrowed to. A union target reads the value per
+  // member itself, so repacking to one of its members drops what the
+  // others hold — and the repack is a view, so the member chain at the
+  // next use then casts that view's instance to the wrong layout and
+  // traps.
+  let declaredTgt = subtractNullFromType(targetType);
+  if (nonNullSrc is UnionT && declaredTgt is RecordT) {
+    let members = recordUnionMembersOf(nonNullSrc);
+    if (members != null) {
+      ctx.model.setRecordUnionAdaptation(node, members, declaredTgt,
+          sourceIsNullable);
+    }
+  }
+}
+
+/**
+ * Adapts one arm of a multi-arm expression to the type its context
+ * asked for, and reports the arm as having that type.
+ *
+ * An arm checked against a contextual type is in the same position as
+ * the expression that holds it, so a class instance there has to reach
+ * its consumer as a fat pointer, exactly as an initializer does. Left
+ * alone, `a ?? []` in an `Array<String>` context types as
+ * `Array<String> | ImmutableArray<String>` — two arms with two
+ * different representations, one of which traps the moment the value
+ * is read back as an interface.
+ */
+export function adaptArmToContext(
+  ctx: CheckerContext,
+  node: Node,
+  armType: Type,
+  expectedType: Type | null
+): Type {
+  if (expectedType == null) { return armType; }
+  let target = expectedType;
+  if (!(target is InterfaceType)) { return armType; }
+  if (!(baseType(armType) is ClassType)) { return armType; }
+  if (!isAssignableTo(ctx, armType, target)) { return armType; }
+  checkAndRegisterInterfaceAdaptation(ctx, node, armType, target);
+  return target;
+}
+
+/**
+ * Adapts the value `??` pulls out of a maybe-form on its left.
+ *
+ * `m.get(k) ?? []` in an `Array<String>` context yields the tuple's
+ * payload, and when that payload is a `GrowableArray<String>` it has
+ * to reach the consumer as a fat pointer like any other class in an
+ * interface slot. The payload is a slot of the left operand rather
+ * than an expression anyone wrote, so the adaptation goes on the `??`
+ * itself and the coalesce lowering applies it to that arm alone — the
+ * default arm carries its own.
+ */
+export function adaptCoalescedArm(
+  ctx: CheckerContext,
+  node: Expression | null,
+  armType: Type,
+  expectedType: Type | null
+): Type {
+  if (node == null) { return armType; }
+  return adaptArmToContext(ctx, node, armType, expectedType);
+}
+
+/**
+ * After a join's type is known: an arm whose own type is a class the
+ * join folded into an interface is adapted to that interface, as it
+ * would have been had the context asked for it.
+ */
+export function adaptJoinedArm(ctx: CheckerContext, arm: Node, armType: Type, joined: Type): void {
+  if (!(baseType(armType) is ClassType)) { return; }
+  let target = subtractNullFromType(joined);
+  if (!(target is InterfaceType)) { return; }
+  if (typesEqual(armType, target)) { return; }
+  if (!isAssignableTo(ctx, armType, target)) { return; }
+  checkAndRegisterInterfaceAdaptation(ctx, arm, armType, target);
+}
+
+/** The expression a branch's value comes from: a block's last expression statement, else the node. */
+export function armValueNode(node: Node): Node | null {
+  if (node is BlockStatement) {
+    if (node.body.length == 0) { return null; }
+    let last = node.body[node.body.length - 1];
+    return if (last is ExpressionStatement) last.expression else null;
+  }
+  return node;
+}

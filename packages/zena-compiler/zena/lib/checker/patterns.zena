@@ -1,0 +1,1508 @@
+import { growable } from 'zena:core';
+import {
+  AbsencePattern, ArrayPattern, AsPattern, AssignmentPattern, BindingPattern,
+  BooleanLiteral, ClassPattern, Expression, Identifier, IdentifierPattern,
+  LiteralPattern, LogicalPattern, MemberExpression, Node, NullLiteral,
+  NumberLiteral, Pattern, RecordPattern, RestPattern, SourceLocation,
+  StringLiteral, TuplePattern
+} from '../ast.zena';
+import {
+  ArrayType, BoolLiteralType, BooleanType, ClassType, ErrorType, FieldInfo,
+  FunctionType, HoleType, InlineTupleType as InlineTupleT, InterfaceType,
+  NeverType, NumLiteralType, RecordType as RecordT, StringLiteralType,
+  TupleType as TupleT, Type, TypeAliasType, UnionType as UnionT, UnknownType,
+  baseType, instantiateClassType, instantiateInterfaceType, isNumericType,
+  typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown, isWellKnown } from '../well-known.zena';
+import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { resolveTypeAnnotation, tupleElementPatternType } from './annotations.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import {
+  applyAndCheckTypeArguments, inferTypeArgsFromContext, sameTypeArguments,
+  selfTypeOfClass, substituteTypeParams, tryInstantiateGenericFunction
+} from './generics.zena';
+import { displayMemberName, recordPatternMatchedType, recordRestType } from './members.zena';
+import { rejectConcreteSecondClassStorage } from './ownership.zena';
+import { findIterableInterface } from './protocols.zena';
+import { fixedArrayType, isAssignableTo } from './relations.zena';
+import { createUnionType, unwrapAliases } from './unions.zena';
+
+export function isRefutableDeclarationPattern(pattern: Pattern): boolean {
+  match (pattern) {
+    case BindingPattern as bp: {
+      return isRefutableDeclarationPattern(bp.pattern);
+    }
+    case AbsencePattern: {
+      return true;
+    }
+    case IdentifierPattern: {
+      return false;
+    }
+    case ClassPattern: {
+      return true;
+    }
+    case LogicalPattern: {
+      return true;
+    }
+    case LiteralPattern: {
+      return true;
+    }
+    case AsPattern {pattern as inner}: {
+      return if (inner is Pattern) {
+        isRefutableDeclarationPattern(inner)
+      } else {
+        true
+      };
+    }
+    case AssignmentPattern {left}: {
+      return isRefutableDeclarationPattern(left as Pattern);
+    }
+    case RecordPattern {properties}: {
+      for (let property in properties) {
+        if (isRefutableDeclarationPattern((property.value) as Pattern)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case TuplePattern {elements}: {
+      for (let element in elements) {
+        if (element != null) {
+          if (isRefutableDeclarationPattern((element) as Pattern)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case ArrayPattern {elements}: {
+      for (let element in elements) {
+        if (element != null) {
+          if (element is RestPattern) {
+            if (isRefutableDeclarationPattern((element as RestPattern).pattern as Pattern)) {
+              return true;
+            }
+          } else if (isRefutableDeclarationPattern((element) as Pattern)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case RestPattern {pattern}: {
+      return isRefutableDeclarationPattern(pattern as Pattern);
+    }
+  }
+}
+
+/**
+ * Extract element type for array-pattern binding/checking.
+ * Supports ArrayType, FixedArray, GrowableArray, ImmutableArray,
+ * Array, MutableArray, Iterable, Iterator, and unions thereof.
+ */
+function getArrayPatternElementType(ctx: CheckerContext, t: Type): Type | null {
+  let unwrapped = unwrapAliases(t);
+  match (unwrapped) {
+    case ArrayType {elementType}: {
+      return elementType;
+    }
+    case ClassType as ct: {
+      let iteratorPrelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
+      if (iteratorPrelude is InterfaceType && ct.id == (iteratorPrelude as InterfaceType).id) {
+        let {typeArguments} = ct;
+        if (typeArguments != null && typeArguments.length > 0) {
+          return typeArguments[0];
+        }
+      }
+      for (let iface in ct.implementsList) {
+        let elemType = findIterableInterface(ctx, iface);
+        if (elemType != null) {
+          return substituteTypeParams(ct.typeParameters, ct.typeArguments, elemType);
+        }
+      }
+      if (ct.superType != null) {
+        return getArrayPatternElementType(ctx, ct.superType as Type);
+      }
+      return null;
+    }
+    case InterfaceType as it: {
+      if (isWellKnown(WellKnown.IteratorInterface, it.name, it.sourcePath) ||
+          isWellKnown(WellKnown.IterableInterface, it.name, it.sourcePath) ||
+          isWellKnown(WellKnown.ArrayInterface, it.name, it.sourcePath) ||
+          isWellKnown(WellKnown.MutableArrayInterface, it.name,
+              it.sourcePath)) {
+        let {typeArguments} = it;
+        if (typeArguments != null && typeArguments.length > 0) {
+          return typeArguments[0];
+        }
+      }
+      return findIterableInterface(ctx, it);
+    }
+    case UnionT {types}: {
+      if (types.length == 0) { return null; }
+      let memberElemTypes = new Array<Type>();
+      for (let member in types) {
+        let elemType = getArrayPatternElementType(ctx, member);
+        if (elemType == null) { return null; }
+        memberElemTypes.push(elemType);
+      }
+      return createUnionType(memberElemTypes);
+    }
+    case _: {
+      return null;
+    }
+  }
+}
+
+/**
+ * Computes the rest slice type for array destructuring.
+ */
+function getArrayPatternRestType(ctx: CheckerContext, t: Type, elemType: Type): Type {
+  let unwrapped = unwrapAliases(t);
+  if (unwrapped is ArrayType) {
+    // The rest slice is a freshly built array regardless of the
+    // source's element mutability, and codegen builds it mutable.
+    return new ArrayType(elemType, true);
+  }
+  let faType = fixedArrayType(ctx);
+  if (faType is ClassType) {
+    let args = growable<Type>([elemType]);
+    return instantiateClassType(faType as ClassType, args);
+  }
+  return new ArrayType(elemType, true);
+}
+
+/** The position of a tuple pattern's `...rest` element, or -1. */
+function tupleRestIndex(elements: GrowableArray<Node | null>): i32 {
+  for (var i = 0; i < elements.length; i += 1) {
+    if (elements[i] is RestPattern) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * What a tuple pattern with a `...rest` binds: the type of each element,
+ * the rest's included, by position in the pattern.
+ */
+final class TupleRestBinding {
+  types: GrowableArray<Type>;
+  new(this.types);
+}
+
+/**
+ * Types a tuple pattern with a `...rest` against `t`: the elements
+ * before the rest take a prefix of the tuple, the ones after it a
+ * suffix, and the rest the tuple of what is between, with `t`'s row if
+ * that falls there. A row's length is the caller's, so a named element
+ * may not land at or past it. The rest's type is also recorded on the
+ * rest pattern for codegen, which builds that tuple. Null after an
+ * error.
+ */
+function tupleRestBinding(
+  ctx: CheckerContext,
+  elements: GrowableArray<Node | null>,
+  t: Type,
+  loc: SourceLocation | null
+): TupleRestBinding | null {
+  let base = baseType(t);
+  if (!(base is TupleT)) {
+    if (!(base is ErrorType) && !(base is UnknownType)) {
+      ctx.error(`A tuple pattern cannot match a value of type '${typeToString(t)}'.`,
+          DiagnosticCode.TypeMismatch, loc);
+    }
+    return null;
+  }
+  let restIndex = tupleRestIndex(elements);
+  let before = restIndex;
+  let after = elements.length - restIndex - 1;
+  let tupleElements = base.elementTypes;
+  let length = tupleElements.length;
+  let row = base.row;
+  if (row != null) {
+    if (before > base.rowIndex || after > length - base.rowIndex) {
+      ctx.error(`A tuple pattern cannot name an element at or after the row '${row.name}' of type '${typeToString(t)}': the row's elements are the caller's.`,
+          DiagnosticCode.TypeMismatch, loc);
+      return null;
+    }
+  } else if (before + after > length) {
+    ctx.error(`A tuple pattern of ${before + after} elements and a rest cannot match a tuple of ${length}.`,
+        DiagnosticCode.TypeMismatch, loc);
+    return null;
+  }
+  let middle = new Array<Type>();
+  for (var i = before; i < length - after; i += 1) {
+    middle.push(tupleElements[i]);
+  }
+  let restType = if (row != null) {
+    new TupleT(middle, row, base.rowIndex - before)
+  } else {
+    new TupleT(middle, null, 0)
+  };
+  let types = new Array<Type>();
+  for (var i = 0; i < elements.length; i += 1) {
+    if (i < before) {
+      types.push(tupleElements[i]);
+    } else if (i == restIndex) {
+      types.push(restType);
+      ctx.setNodeType(elements[i] as Node, restType);
+    } else {
+      types.push(tupleElements[length - after + (i - restIndex - 1)]);
+    }
+  }
+  return new TupleRestBinding(types);
+}
+
+/**
+ * Extract element types for tuple-pattern binding/checking.
+ * Supports TupleType, InlineTupleType, and unions of tuple-like members.
+ */
+export function getTuplePatternElementTypes(t: Type): Array<Type> | null {
+  match (t) {
+    // A row's elements are not known here; `...rest` patterns will bind
+    // them (row-types.md, Sequencing).
+    case TupleT {elementTypes, row}: {
+      return if (row != null) null else elementTypes;
+    }
+    case InlineTupleT {elementTypes}: {
+      return elementTypes;
+    }
+    case UnionT {types}: {
+      if (types.length == 0) {
+        return null;
+      }
+
+      let tupleMembers = new Array<Array<Type>>();
+      for (let member in types) {
+        match (member) {
+          case TupleT {elementTypes, row}: {
+            if (row != null) {
+              return null;
+            }
+            tupleMembers.push(elementTypes);
+          }
+          case InlineTupleT {elementTypes}: {
+            tupleMembers.push(elementTypes);
+          }
+          case _: {
+            return null;
+          }
+        }
+      }
+
+      if (tupleMembers.length == 0) {
+        return null;
+      }
+      let arity = tupleMembers[0].length;
+
+      for (let member in tupleMembers) {
+        if (member.length != arity) {
+          return null;
+        }
+      }
+
+      let merged = new Array<Type>();
+      
+      for (var i = 0; i < arity; i += 1) {
+        let atIndex = new Array<Type>();
+        for (let member in tupleMembers) {
+          let slotType = member[i];
+          if (slotType is NeverType) {
+            atIndex.push(new HoleType());
+          } else {
+            atIndex.push(slotType);
+          }
+        }
+        merged.push(createUnionType(atIndex));
+      }
+
+      return merged;
+    }
+    case _: {
+      return null;
+    }
+  }
+}
+
+/**
+ * Report a tuple pattern element that reads a position of an inline union
+ * where the members it may be hold values no single type can carry.
+ *
+ * Each member's value at a position has its own wasm slot when the
+ * types differ, so `(false, message)` on `(true, i32) | (false, String)`
+ * reads the `String` slot. A pattern that does not narrow to one member
+ * there reads the union of the members' types, and `i32 | String` is
+ * not a type.
+ */
+function checkInlinePositionReads(ctx: CheckerContext, t: Type,
+    elements: GrowableArray<Node | null>): void {
+  if (!(t is UnionT)) {
+    return;
+  }
+  let members = new Array<InlineTupleT>();
+  for (let member in t.types) {
+    if (member is InlineTupleT) {
+      members.push(member);
+    }
+  }
+  if (members.length < 2) {
+    return;
+  }
+  for (var i = 0; i < elements.length; i += 1) {
+    let element = elements[i];
+    if (element == null || !readsPosition(element)) {
+      continue;
+    }
+    var hasPrimitive = false;
+    var hasReference = false;
+    let bases = new Array<String>();
+    for (let member in members) {
+      if (i >= member.elementTypes.length) {
+        continue;
+      }
+      let el = member.elementTypes[i];
+      if (el is HoleType || el is NeverType || el is ErrorType) {
+        continue;
+      }
+      let base: String | null = if (isNumericType(el)) {
+        typeToString(baseType(el))
+      } else if (el is BooleanType || el is BoolLiteralType) {
+        'boolean'
+      } else {
+        null
+      };
+      if (base != null) {
+        hasPrimitive = true;
+        if (!bases.contains(base)) {
+          bases.push(base);
+        }
+      } else {
+        hasReference = true;
+      }
+    }
+    if ((hasPrimitive && hasReference) || bases.length > 1) {
+      ctx.error(
+        `The members of this inline union hold different kinds of values at position ${i}, so a pattern must match the literal that tells them apart to read it.`,
+        DiagnosticCode.TypeMismatch,
+        element.loc,
+      );
+    }
+  }
+}
+
+/** Whether a tuple pattern element reads its position's value. */
+function readsPosition(element: Node): boolean {
+  return match (element) {
+    case LiteralPattern {}: false
+    case BooleanLiteral {}: false
+    case NumberLiteral {}: false
+    case StringLiteral {}: false
+    case NullLiteral {}: false
+    case Identifier {name}: name != '_'
+    case IdentifierPattern {name}: name != '_'
+    case _: true
+  };
+}
+
+function literalPatternCanMatchType(value: Expression, t: Type): boolean {
+  match (t) {
+    case BoolLiteralType {value as expected}: {
+      return value is BooleanLiteral && value.value == expected;
+    }
+    case BooleanType: {
+      return value is BooleanLiteral;
+    }
+    case StringLiteralType {value as expected}: {
+      return value is StringLiteral && value.value == expected;
+    }
+    case ClassType {name}: {
+      return name == "String" && value is StringLiteral;
+    }
+    case NumLiteralType {raw as expected}: {
+      return value is NumberLiteral && value.raw == expected;
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        if (literalPatternCanMatchType(value, member)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case _: {
+      if (isNumericType(t)) {
+        return value is NumberLiteral;
+      }
+      return false;
+    }
+  }
+}
+
+function patternCanMatchType(ctx: CheckerContext, pattern: Node, t: Type): boolean {
+  match (pattern) {
+    case IdentifierPattern: { return true; }
+    case Identifier: { return true; }
+    case BooleanLiteral as lit: {
+      return literalPatternCanMatchType(lit, t);
+    }
+    case StringLiteral as lit: {
+      return literalPatternCanMatchType(lit, t);
+    }
+    case NumberLiteral as lit: {
+      return literalPatternCanMatchType(lit, t);
+    }
+    case LiteralPattern {value}: {
+      return literalPatternCanMatchType(value, t);
+    }
+    case AssignmentPattern {left}: {
+      return patternCanMatchType(ctx, left, t);
+    }
+    case AsPattern {pattern as inner}: {
+      return patternCanMatchType(ctx, inner, t);
+    }
+    case LogicalPattern {operator, left, right}: {
+      if (operator == "|") {
+        return patternCanMatchType(ctx, left, t)
+          || patternCanMatchType(ctx, right, t);
+      }
+      return patternCanMatchType(ctx, left, t)
+        && patternCanMatchType(ctx, right, t);
+    }
+    case TuplePattern {elements}: {
+      match (t) {
+        case TupleT {elementTypes}: {
+          let restIndex = tupleRestIndex(elements);
+          if (restIndex >= 0) {
+            // The rest is irrefutable; the elements around it match a
+            // prefix and a suffix.
+            let after = elements.length - restIndex - 1;
+            if (restIndex + after > elementTypes.length) { return false; }
+            for (var i = 0; i < elements.length; i += 1) {
+              let elem = elements[i];
+              if (i == restIndex || elem == null) { continue; }
+              let at = if (i < restIndex) i else elementTypes.length - after + (i - restIndex - 1);
+              if (!patternCanMatchType(ctx, elem as Node, elementTypes[at])) {
+                return false;
+              }
+            }
+            return true;
+          }
+          if (elements.length > elementTypes.length) { return false; }
+          for (var i = 0; i < elements.length; i += 1) {
+            let elem = elements[i];
+            if (elem != null && !patternCanMatchType(ctx, elem, elementTypes[i])) {
+              return false;
+            }
+          }
+          return true;
+        }
+        case InlineTupleT {elementTypes}: {
+          if (elements.length > elementTypes.length) { return false; }
+          for (var i = 0; i < elements.length; i += 1) {
+            let elem = elements[i];
+            if (elem != null && !patternCanMatchType(ctx, elem, elementTypes[i])) {
+              return false;
+            }
+          }
+          return true;
+        }
+        case UnionT {types}: {
+          for (let member in types) {
+            if (patternCanMatchType(ctx, pattern, member)) {
+              return true;
+            }
+          }
+          return false;
+        }
+        case _: {
+          return false;
+        }
+      }
+    }
+    case ArrayPattern {elements}: {
+      let elemType = getArrayPatternElementType(ctx, t);
+      if (elemType == null) { return false; }
+      let restType = getArrayPatternRestType(ctx, t, elemType);
+      for (let elem in elements) {
+        if (elem != null) {
+          if (elem is RestPattern) {
+            if (!patternCanMatchType(ctx, (elem as RestPattern).pattern, restType)) {
+              return false;
+            }
+          } else if (!patternCanMatchType(ctx, elem, elemType)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    case RestPattern {pattern}: {
+      return patternCanMatchType(ctx, pattern, t);
+    }
+    case _: {
+      // Keep non-literal complex patterns conservative for narrowing.
+      return true;
+    }
+  }
+}
+
+/**
+ * Drop the members of a union scrutinee that a tuple pattern's literal
+ * lanes rule out, so a discriminated arm binds only the surviving
+ * members' lanes. `case (1, v, _)` over
+ * `inline (0, _, _) | inline (1, V, _) | inline (2, _, F)` keeps just
+ * the `1` arm, so lane 1 types as `V` rather than the whole-union
+ * `V | _`. A member whose discriminant lane is a non-literal type is
+ * kept (the pattern could match it at runtime), so the union collapses
+ * only where the discriminants are literal types. Non-union scrutinees
+ * and unions with a non-tuple member are returned unchanged for the
+ * existing lane merge to handle.
+ */
+function narrowTupleUnionByPattern(ctx: CheckerContext, t: Type,
+    tuplePat: TuplePattern): Type {
+  // Resolve through type aliases (e.g. a named `Step<V>`) so an aliased
+  // union narrows like one written inline.
+  var resolved = t;
+  while (resolved is TypeAliasType) {
+    resolved = resolved.target;
+  }
+  if (let UnionT {types} = resolved) {
+    let kept = new Array<Type>();
+    for (let member in types) {
+      if (!(member is TupleT) && !(member is InlineTupleT)) {
+        return resolved;
+      }
+      if (patternCanMatchType(ctx, tuplePat, member)) {
+        kept.push(member);
+      }
+    }
+    if (kept.length == 0 || kept.length == types.length) {
+      return resolved;
+    }
+    return createUnionType(kept);
+  } else {
+    return resolved;
+  }
+}
+
+export function narrowTypeByPattern(ctx: CheckerContext, pattern: Pattern, t: Type): Type {
+  if (let UnionT {types} = t) {
+    let matched = new Array<Type>();
+    for (let member in types) {
+      if (patternCanMatchType(ctx, pattern, member)) {
+        matched.push(member);
+      }
+    }
+    if (matched.length > 0) {
+      return createUnionType(matched);
+    }
+    return t;
+  } else {
+    return t;
+  }
+}
+
+/**
+ * Bind names from a pattern, registering their types via the
+ * DeclarationMap → Symbol → SemanticModel.setBindingType path.
+ */
+export function bindPattern(ctx: CheckerContext, pattern: Pattern, t: Type): void {
+  match (pattern) {
+    case BindingPattern as bp: {
+      bindPattern(ctx, bp.pattern, t);
+    }
+    case IdentifierPattern as pat: {
+      let info = ctx.model.resolveDeclaration(pat);
+      if (info != null) {
+        let {declaration} = info;
+        if (declaration != null && declaration !== pat) {
+          ctx.error(
+            `Variable '${pat.name}' is already declared in this scope.`,
+            DiagnosticCode.DuplicateDeclaration,
+            pat.loc
+          );
+        } else {
+          ctx.declareBinding(info, t);
+        }
+      }
+    }
+    case RecordPattern as recordPat: {
+      let {properties} = recordPat;
+      // For record destructuring: { x, y } = record.
+      let matched = recordPatternMatchedType(ctx, t, recordPat);
+      let rest = recordPat.rest;
+      if (rest != null) {
+        bindPattern(ctx, rest as Pattern, recordRestType(ctx, recordPat, matched));
+      }
+      match (matched) {
+        case RecordT {properties as recordProps, optionalProperties}: {
+          // Codegen reads the matched record type off the pattern node
+          // for presence tests and guarded defaults.
+          ctx.setNodeType(recordPat, matched);
+          for (let prop in properties) {
+            let propName = prop.name.name;
+            if (recordProps.has(propName)) {
+              // Check if the property is optional and requires a default value
+              let isOptional = optionalProperties != null &&
+                optionalProperties.has(propName);
+              let hasDefault = prop.value is AssignmentPattern;
+              if (prop.value is AbsencePattern) {
+                // No bindings; the refutable-pattern-in-declaration
+                // check reports the misuse.
+              } else if (isOptional && !hasDefault) {
+                ctx.error(
+                  `Optional field '${displayMemberName(propName)}' requires a default value when destructuring.`,
+                  DiagnosticCode.TypeMismatch,
+                  prop.loc
+                );
+              } else {
+                let propType = recordProps[propName];
+                bindPattern(ctx, prop.value as Pattern, propType);
+              }
+            } else {
+              ctx.error(
+                `Type '${typeToString(matched)}' has no property '${displayMemberName(propName)}'.`,
+                DiagnosticCode.PropertyNotFound,
+                prop.loc
+              );
+            }
+          }
+        }
+        case ClassType as ct: {
+          for (let prop in properties) {
+            let propName = prop.name.name;
+            let propType = resolveClassFieldType(ctx, ct, propName, prop.loc);
+            bindPattern(ctx, prop.value as Pattern, propType);
+          }
+        }
+        case _: {
+          if (!(matched is ErrorType) && !(matched is UnknownType)) {
+            ctx.error(
+              "A record pattern cannot match a value of type '" +
+                  typeToString(matched) + "'.",
+              DiagnosticCode.TypeMismatch,
+              recordPat.loc
+            );
+          }
+          // If not a record or class, just bind the property names as unknown.
+          for (let property in properties) {
+            bindPattern(ctx, property.value as Pattern, new ErrorType());
+          }
+        }
+      }
+    }
+    case TuplePattern {elements, loc}: {
+      if (tupleRestIndex(elements) >= 0) {
+        let restBinding = tupleRestBinding(ctx, elements, t, loc);
+        for (var ri = 0; ri < elements.length; ri += 1) {
+          let element = elements[ri];
+          if (element != null) {
+            let elementType = if (restBinding != null) restBinding.types[ri] else new ErrorType();
+            bindPattern(ctx, element as Pattern, elementType);
+          }
+        }
+        return;
+      }
+      let elementTypes = getTuplePatternElementTypes(t);
+      if (elementTypes == null) {
+        if (!(t is ErrorType) && !(t is UnknownType)) {
+          ctx.error(
+            `A tuple pattern cannot match a value of type '${typeToString(t)}'.`,
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        }
+        for (let element in elements) {
+          if (element != null) {
+            bindPattern(ctx, element as Pattern, new ErrorType());
+          }
+        }
+        return;
+      }
+      checkInlinePositionReads(ctx, t, elements);
+      // TODO: we seem to have a narrowing bug here. `elementTypes` should
+      // already be non-null.
+      if (elements.length > elementTypes.length) {
+        ctx.error(
+          "Tuple pattern has more elements than the tuple type.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+
+      for (var i = 0; i < elements.length; i += 1) {
+        let element = elements[i];
+        if (element != null) {
+          if (i < elementTypes.length) {
+            bindPattern(ctx, element as Pattern,
+                tupleElementPatternType(element as Node, elementTypes[i]));
+          } else {
+            bindPattern(ctx, element as Pattern, new ErrorType());
+          }
+        }
+      }
+    }
+    case ArrayPattern {elements, loc}: {
+      let elemType = getArrayPatternElementType(ctx, t);
+      if (elemType == null) {
+        if (!(t is ErrorType) && !(t is UnknownType)) {
+          ctx.error(
+            "An array pattern cannot match a value of type '" +
+                typeToString(t) + "'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        }
+        for (let element in elements) {
+          if (element != null) {
+            if (element is RestPattern) {
+              bindPattern(ctx, (element as RestPattern).pattern as Pattern, new ErrorType());
+            } else {
+              bindPattern(ctx, element as Pattern, new ErrorType());
+            }
+          }
+        }
+        return;
+      }
+      let restType = getArrayPatternRestType(ctx, t, elemType);
+      for (let element in elements) {
+        if (element != null) {
+          if (element is RestPattern) {
+            bindPattern(ctx, (element as RestPattern).pattern as Pattern, restType);
+          } else {
+            bindPattern(ctx, element as Pattern, elemType);
+          }
+        }
+      }
+    }
+    case RestPattern {pattern}: {
+      bindPattern(ctx, pattern as Pattern, t);
+    }
+    case AsPattern {pattern as inner, name}: {
+      // `pattern as name` — bind both the inner pattern and the alias.
+      bindPattern(ctx, inner as Pattern, t);
+      // Narrow the alias to the matched type, not the scrutinee type.
+      var narrowedType = t;
+      if (inner is ClassPattern) {
+        let cls = ctx.model.getNodeType(inner) ?? ctx.resolveTypeName(inner.name.name);
+        if (cls != null) {
+          narrowedType = cls;
+        }
+      } else if (inner is Identifier) {
+        let cls = ctx.resolveTypeName(inner.name);
+        if (cls != null) {
+          narrowedType = cls;
+        }
+      }
+      let info = ctx.model.resolveDeclaration(name);
+      if (info != null) {
+        ctx.declareBinding(info, narrowedType);
+      }
+    }
+    case AssignmentPattern {left, right}: {
+      // `name = default` — default expression must be assignable to the
+      // target binding type, then bind the left-hand pattern.
+      let defaultType = checkExpression(ctx, right, t);
+      if (!isAssignableTo(ctx, defaultType, t)) {
+        ctx.error(
+          `Type mismatch: '${typeToString(defaultType)}' is not assignable to '${typeToString(t)}'.`,
+          DiagnosticCode.TypeMismatch,
+          pattern.loc
+        );
+      } else {
+        let instantiated = tryInstantiateGenericFunction(ctx, defaultType, t);
+        if (instantiated !== defaultType) {
+          ctx.setNodeType(right, instantiated);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, right, instantiated, t);
+      }
+      bindPattern(ctx, left as Pattern, t);
+    }
+    case ClassPattern as cp: {
+      let classType = classPatternType(ctx, cp, t);
+      if (classType == null) {
+        return;
+      }
+      ctx.setNodeType(cp, classType);
+      // Bind property patterns with field types from the class.
+      for (let prop in cp.properties) {
+        let propName = prop.name.name;
+        let propType = resolveClassFieldType(ctx, classType, propName, prop.loc);
+        bindPattern(ctx, prop.value as Pattern, propType);
+      }
+    }
+    case LogicalPattern {operator, left, right}: {
+      // For | (or) and & (and) patterns, bind variables from both sides.
+      bindPattern(ctx, left as Pattern, t);
+      bindPattern(ctx, right as Pattern, t);
+    }
+    case LiteralPattern: {
+      // Literal patterns introduce no bindings.
+    }
+    case AbsencePattern as absent: {
+      // Reached when the enclosing pattern is not an optional record
+      // field (the record arm rejects with a better message first).
+      ctx.error(
+        "An absence test ('!field') can only appear on an optional " +
+            "record field in a refutable pattern.",
+        DiagnosticCode.TypeMismatch,
+        absent.loc
+      );
+    }
+  }
+}
+
+/**
+ * Look up a field type on a class or interface type for pattern destructuring.
+ * Returns ErrorType if the field is not found.
+ */
+function resolveClassFieldType(
+  ctx: CheckerContext,
+  classType: Type,
+  propName: String,
+  loc: SourceLocation | null
+): Type {
+  match (classType) {
+    case ClassType as ct: {
+      if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, ct.members[propName].type);
+      }
+      // Check for getter.
+      let getterName = "get#" + propName;
+      if (ct.members.has(getterName)) {
+        let getterInfo = ct.members[getterName];
+        return substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
+      }
+      // Walk superclass.
+      let {superType} = ct;
+      if (superType != null) {
+        return resolveClassFieldType(ctx, superType as Type, propName, loc);
+      }
+      ctx.error(
+        `Property '${displayMemberName(propName)}' does not exist on type '${ct.name}'.`,
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case _: {
+      return new ErrorType();
+    }
+  }
+}
+
+/**
+ * Levenshtein edit distance, used only to suggest a correction for a name that
+ * failed to resolve. Byte-wise, which is exact for the ASCII identifiers this
+ * is called with.
+ */
+function editDistance(a: String, b: String): i32 {
+  let n = a.length;
+  let m = b.length;
+  if (n == 0) { return m; }
+  if (m == 0) { return n; }
+  let prev = new Array<i32>(m + 1);
+  let curr = new Array<i32>(m + 1);
+  var j = 0;
+  while (j <= m) {
+    prev.push(j);
+    curr.push(0);
+    j += 1;
+  }
+  var i = 1;
+  while (i <= n) {
+    curr[0] = i;
+    var k = 1;
+    while (k <= m) {
+      let cost = if (a.getByteAt(i - 1) == b.getByteAt(k - 1)) { 0 } else { 1 };
+      var best = prev[k] + 1;
+      let insertion = curr[k - 1] + 1;
+      if (insertion < best) { best = insertion; }
+      let substitution = prev[k - 1] + cost;
+      if (substitution < best) { best = substitution; }
+      curr[k] = best;
+      k += 1;
+    }
+    var c = 0;
+    while (c <= m) {
+      prev[c] = curr[c];
+      c += 1;
+    }
+    i += 1;
+  }
+  return prev[m];
+}
+
+/**
+ * Names a bare identifier pattern plausibly meant, given the type being
+ * matched: the type's own name plus, for a sealed class, its variants.
+ * Unions contribute the candidates of each member.
+ */
+function collectPatternNameCandidates(t: Type, out: GrowableArray<String>): void {
+  match (t) {
+    case ClassType as ct: {
+      out.push(ct.name);
+      let variants = ct.sealedVariants;
+      if (variants != null) {
+        for (let variant in variants) {
+          out.push(variant.name);
+        }
+      }
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        collectPatternNameCandidates(member, out);
+      }
+    }
+    case _: {}
+  }
+}
+
+/**
+ * The diagnostic for a bare identifier in a pattern that names no class.
+ * Suggests the closest variant of the scrutinee when there is a near miss —
+ * this error exists to catch mistyped variant names, so the suggestion is the
+ * whole point.
+ *
+ * @param namesNonClassType True when the identifier resolved to a type that
+ *   just isn't a class (a primitive, an alias); the advice differs from a name
+ *   that resolved to nothing at all.
+ */
+function unresolvedPatternNameMessage(
+  name: String,
+  expectedType: Type,
+  namesNonClassType: boolean
+): String {
+  if (namesNonClassType) {
+    return "'" + name + "' names a type, but only classes can be matched by name. " +
+      "Write 'let " + name + "' to bind the matched value to a new variable.";
+  }
+  let candidates = new Array<String>(8);
+  collectPatternNameCandidates(expectedType, candidates);
+  var closest: String | null = null;
+  var closestDistance = 0;
+  for (let candidate in candidates) {
+    let distance = editDistance(name.asciiLowerCase(), candidate.asciiLowerCase());
+    if (closest == null || distance < closestDistance) {
+      closest = candidate;
+      closestDistance = distance;
+    }
+  }
+  // Allow one edit per three characters, at least one, so short names don't
+  // suggest an unrelated variant.
+  var threshold = name.length / 3;
+  if (threshold < 1) { threshold = 1; }
+  if (threshold > 3) { threshold = 3; }
+  let suggestion = if (closest != null && closestDistance <= threshold) {
+    ` Did you mean '${closest}'?`
+  } else {
+    ""
+  };
+  return "'" + name + "' does not name a class, so it cannot be used as a pattern." +
+    suggestion +
+    " Write 'let " + name + "' to bind the matched value to a new variable.";
+}
+
+/**
+ * The instantiation a class named in a pattern without type arguments
+ * stands for, given the type of the value it is matched against.
+ *
+ * A generic class takes its arguments from that type, through the
+ * supertypes it extends and the interfaces it implements: `Left {value}`
+ * against an `Either<i32, String>` is `Left<i32, String>`, and `Box`
+ * against `Box<f64> | String` is `Box<f64>`. Left at its own type
+ * parameters the pattern would test for the template, which no value is
+ * an instance of, so when the matched type leaves an argument open, or
+ * its union members name two different instantiations, that is an error
+ * and the type arguments have to be written.
+ *
+ * Returns ErrorType after reporting.
+ */
+function specializePatternTypeFromExpected(
+  ctx: CheckerContext,
+  resolvedType: Type,
+  expectedType: Type,
+  loc: SourceLocation | null
+): Type {
+  let exp = unwrapAliases(expectedType);
+  match (resolvedType) {
+    case ClassType as ct: {
+      let {typeParameters} = ct;
+      if (typeParameters != null && typeParameters.length > 0 && ct.typeArguments == null) {
+        let candidates = new Array<ClassType>();
+        collectPatternInstantiations(ct, exp, candidates);
+        if (candidates.length == 1) {
+          return candidates[0];
+        }
+        if (exp is ErrorType || exp is UnknownType) {
+          return new ErrorType();
+        }
+        if (candidates.length == 0) {
+          ctx.error(
+            `Cannot infer the type arguments of '${ct.name}' from '${typeToString(expectedType)}'. ` +
+                `Write them after the class name: '${ct.name}<...>'.`,
+            DiagnosticCode.InvalidPattern,
+            loc
+          );
+        } else {
+          ctx.error(
+            `'${ct.name}' could be '${typeToString(candidates[0])}' or '${typeToString(candidates[1])}' ` +
+                `here. Write the type arguments after the class name: '${ct.name}<...>'.`,
+            DiagnosticCode.InvalidPattern,
+            loc
+          );
+        }
+        return new ErrorType();
+      }
+    }
+    case InterfaceType as it: {
+      let {typeParameters} = it;
+      if (typeParameters != null && typeParameters.length > 0 && it.typeArguments == null) {
+        let targetId = (it.genericSource ?? it).id;
+        match (exp) {
+          case InterfaceType as eit: {
+            if ((eit.genericSource ?? eit).id == targetId && eit.typeArguments != null) {
+              return eit;
+            }
+          }
+          case UnionT {types}: {
+            for (let m in types) {
+              let um = unwrapAliases(m);
+              if (um is InterfaceType) {
+                let mit = um as InterfaceType;
+                if ((mit.genericSource ?? mit).id == targetId && mit.typeArguments != null) {
+                  return mit;
+                }
+              }
+            }
+          }
+          case _: {}
+        }
+      }
+    }
+    case _: {}
+  }
+  return resolvedType;
+}
+
+/**
+ * The instantiations of the generic class `ct` a value of type `t` can
+ * be, without repeats: one for each union member that fixes all of
+ * `ct`'s type arguments. A member fixes them when it is `ct` or a class
+ * extending it (`IntCell extends Cell<i32>` gives `Cell<i32>`), or a
+ * supertype `ct` reaches (`Either<i32, String>` gives `Left<i32,
+ * String>` when `Left<L, R> extends Either<L, R>`).
+ */
+export function collectPatternInstantiations(ct: ClassType, t: Type, out: GrowableArray<ClassType>): void {
+  let u = unwrapAliases(t);
+  if (u is UnionT) {
+    for (let member in u.types) {
+      collectPatternInstantiations(ct, member, out);
+    }
+    return;
+  }
+  var found: ClassType | null = null;
+  var c: ClassType | null = if (u is ClassType) u else null;
+  while (c != null && found == null) {
+    let cur = c;
+    if (cur.id == ct.id && cur.typeArguments != null) {
+      found = cur;
+    }
+    c = cur.superType;
+  }
+  let typeParameters = ct.typeParameters;
+  if (found == null && typeParameters != null) {
+    let inferred = new Map<String, Type>();
+    inferTypeArgsFromContext(selfTypeOfClass(ct), u, inferred);
+    let args = new Array<Type>();
+    for (let tp in typeParameters) {
+      if (let (true, arg) = inferred.get(tp.name)) {
+        args.push(arg);
+      }
+    }
+    if (args.length == typeParameters.length) {
+      found = instantiateClassType(ct, args);
+    }
+  }
+  if (found != null) {
+    for (let seen in out) {
+      if (sameTypeArguments(seen, found)) {
+        return;
+      }
+    }
+    out.push(found);
+  }
+}
+
+/**
+ * The type a class pattern tests for and binds its fields at: the
+ * instantiation its type arguments name (`Box<f64> {value}`), or the one
+ * the matched type gives a generic class named bare. Null when the name
+ * resolves to no type, after reporting it.
+ */
+function classPatternType(ctx: CheckerContext, cp: ClassPattern, expectedType: Type): Type | null {
+  let clsName = cp.name.name;
+  let raw = ctx.resolveTypeName(clsName);
+  if (raw == null) {
+    ctx.error(
+      `'${clsName}' is not a class.`,
+      DiagnosticCode.SymbolNotFound,
+      cp.loc
+    );
+    return null;
+  }
+  let {typeArguments} = cp;
+  if (typeArguments == null) {
+    return specializePatternTypeFromExpected(ctx, raw, expectedType, cp.loc);
+  }
+  // Checked as the same mention in a type annotation is (`x is Box<f64>`).
+  let args = new Array<Type>();
+  for (let typeArgument in typeArguments) {
+    let arg = resolveTypeAnnotation(ctx, typeArgument);
+    rejectConcreteSecondClassStorage(ctx, arg, "a container", typeArgument.loc);
+    args.push(arg);
+  }
+  match (raw) {
+    case ClassType as ct: {
+      let {typeParameters} = ct;
+      if (typeParameters != null && ct.typeArguments == null) {
+        applyAndCheckTypeArguments(ctx, typeParameters, args, cp.loc);
+        return instantiateClassType(ct, args);
+      }
+    }
+    case InterfaceType as it: {
+      let {typeParameters} = it;
+      if (typeParameters != null && it.typeArguments == null) {
+        applyAndCheckTypeArguments(ctx, typeParameters, args, cp.loc);
+        return instantiateInterfaceType(it, args);
+      }
+    }
+    case ErrorType: {
+      return raw;
+    }
+    case _: {}
+  }
+  ctx.error(`Type '${clsName}' is not generic.`, DiagnosticCode.TypeMismatch, cp.loc);
+  return raw;
+}
+
+/**
+ * Check a pattern against an expected type and bind pattern variables.
+ * Uses bindPattern for identifier bindings through the DeclarationMap → Symbol path.
+ *
+ * @param expectedType The type to match against. For top-level match arms this is the
+ *   remaining scrutinee type after earlier arms have been subtracted, so an explicit
+ *   catch-all binding (`case let b:`) gets the narrowed type automatically. For nested
+ *   patterns (class fields, tuple elements, etc.) it is the field/element type.
+ */
+export function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: Type): void {
+  match (pattern) {
+    case BindingPattern as bp: {
+      checkPattern(ctx, bp.pattern, expectedType);
+    }
+    case IdentifierPattern as pat: {
+      if (pat.name != "_") {
+        // Use the same binding mechanism as variable declarations.
+        let info = ctx.model.resolveDeclaration(pat);
+        if (info != null) {
+          ctx.declareBinding(info, expectedType);
+        } else {
+          // Fallback: register in type scope.
+          ctx.declareTypeName(pat.name, expectedType);
+        }
+      }
+    }
+    case ClassPattern as cp: {
+      let classType = classPatternType(ctx, cp, expectedType);
+      if (classType == null) {
+        return;
+      }
+      ctx.setNodeType(cp.name, classType);
+      ctx.setNodeType(cp, classType);
+      // Resolve field types from the class.
+      let props = cp.properties;
+      var pi = 0;
+      while (pi < props.length) {
+        let prop = props[pi];
+        let propName = prop.name.name;
+        let propType = resolveClassFieldType(ctx, classType, propName, prop.loc);
+        if (prop.value is AbsencePattern) {
+          // Class fields have no presence; a maybe-field is `T | null`
+          // and null is a value with its own pattern.
+          ctx.error(
+            "'!" + propName + "' tests record-field absence; class " +
+                "fields are always present. Match '" + propName +
+                ": null' to test for null.",
+            DiagnosticCode.TypeMismatch,
+            prop.loc
+          );
+        } else {
+          checkPattern(ctx, prop.value, propType);
+        }
+        pi = pi + 1;
+      }
+    }
+    case RecordPattern as recordPat: {
+      let {properties} = recordPat;
+      let matched = recordPatternMatchedType(ctx, expectedType, recordPat);
+      if (matched is RecordT) {
+        // Codegen reads the matched record type off the pattern node
+        // for presence tests: an optional field named without a
+        // default is a refutable presence pattern here (a match arm or
+        // if-let), unlike in irrefutable destructuring.
+        ctx.setNodeType(recordPat, matched);
+      }
+      let rest = recordPat.rest;
+      if (rest != null) {
+        checkPattern(ctx, rest, recordRestType(ctx, recordPat, matched));
+      }
+      if (expectedType is ClassType) {
+        // Structural patterns match structural types. Classes are
+        // matched nominally — a class pattern names the class and its
+        // field sub-patterns work from there. (Irrefutable
+        // destructuring of a class instance stays legal: it is
+        // statically resolved field access, not dispatch.)
+        ctx.error(
+          "A record pattern cannot match class '" + expectedType.name +
+              "'. Use a class pattern: '" + expectedType.name + " {...}'.",
+          DiagnosticCode.TypeMismatch,
+          recordPat.loc
+        );
+        return;
+      }
+      var pi = 0;
+      while (pi < properties.length) {
+        let prop = properties[pi];
+        let propName = prop.name.name;
+        var propType: Type = new ErrorType();
+        var propOptional = false;
+        match (matched) {
+          case RecordT as rec: {
+            if (rec.properties.has(propName)) {
+              propType = rec.properties[propName];
+              propOptional = rec.isOptional(propName);
+            }
+          }
+          case _: {}
+        }
+        if (prop.value is AbsencePattern) {
+          // `{!field}` — only meaningful where the field CAN be absent.
+          if (!(matched is ErrorType) && !propOptional) {
+            ctx.error(
+              "'!" + propName + "' tests absence, but '" + propName +
+                  "' is not an optional field here.",
+              DiagnosticCode.TypeMismatch,
+              prop.loc
+            );
+          }
+        } else {
+          checkPattern(ctx, prop.value, propType);
+        }
+        pi = pi + 1;
+      }
+    }
+    case TuplePattern as tuplePat: {
+      let {elements} = tuplePat;
+      if (tupleRestIndex(elements) >= 0) {
+        let restBinding = tupleRestBinding(ctx, elements, expectedType, tuplePat.loc);
+        for (var ri = 0; ri < elements.length; ri += 1) {
+          let element = elements[ri];
+          if (element != null) {
+            let elementType = if (restBinding != null) restBinding.types[ri] else new ErrorType();
+            if (element is RestPattern) {
+              checkPattern(ctx, element.pattern, elementType);
+            } else {
+              checkPattern(ctx, element, elementType);
+            }
+          }
+        }
+        return;
+      }
+      let narrowed = narrowTupleUnionByPattern(ctx, expectedType, tuplePat);
+      let elementTypes = getTuplePatternElementTypes(narrowed);
+      if (elementTypes == null) {
+        if (!(expectedType is ErrorType) && !(expectedType is UnknownType)) {
+          ctx.error(
+            "A tuple pattern cannot match a value of type '" +
+                typeToString(expectedType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            tuplePat.loc
+          );
+        }
+        for (let element in elements) {
+          if (element != null) {
+            checkPattern(ctx, element, new ErrorType());
+          }
+        }
+        return;
+      }
+      checkInlinePositionReads(ctx, narrowed, elements);
+
+
+      for (var i = 0; i < elements.length; i += 1) {
+        let elem = elements[i];
+        if (elem != null) {
+          if (i < elementTypes.length) {
+            checkPattern(ctx, elem, tupleElementPatternType(elem as Node, elementTypes[i]));
+          } else {
+            checkPattern(ctx, elem, new ErrorType());
+          }
+        }
+      }
+    }
+    case ArrayPattern as arrayPat: {
+      let {elements} = arrayPat;
+      let elemType = getArrayPatternElementType(ctx, expectedType);
+      if (elemType == null) {
+        if (!(expectedType is ErrorType) && !(expectedType is UnknownType)) {
+          ctx.error(
+            "An array pattern cannot match a value of type '" +
+                typeToString(expectedType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            arrayPat.loc
+          );
+        }
+        for (let element in elements) {
+          if (element != null) {
+            if (element is RestPattern) {
+              checkPattern(ctx, (element as RestPattern).pattern, new ErrorType());
+            } else {
+              checkPattern(ctx, element, new ErrorType());
+            }
+          }
+        }
+        return;
+      }
+      let restType = getArrayPatternRestType(ctx, expectedType, elemType);
+      for (let element in elements) {
+        if (element != null) {
+          if (element is RestPattern) {
+            checkPattern(ctx, (element as RestPattern).pattern, restType);
+          } else {
+            checkPattern(ctx, element, elemType);
+          }
+        }
+      }
+    }
+    case RestPattern {pattern}: {
+      checkPattern(ctx, pattern, expectedType);
+    }
+    case AssignmentPattern {left, right}: {
+      // `{x = default}` in a refutable position: the irrefutable form —
+      // the default must fit the field type and the left side binds it.
+      let defaultType = checkExpression(ctx, right, expectedType);
+      if (!isAssignableTo(ctx, defaultType, expectedType)) {
+        ctx.error(
+          `Type mismatch: default value type '${typeToString(defaultType)}' is not assignable to '${typeToString(expectedType)}'.`,
+          DiagnosticCode.TypeMismatch,
+          right.loc
+        );
+      } else {
+        let instantiated = tryInstantiateGenericFunction(ctx, defaultType, expectedType);
+        if (instantiated !== defaultType) {
+          ctx.setNodeType(right, instantiated);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, right, instantiated, expectedType);
+      }
+      checkPattern(ctx, left, expectedType);
+    }
+    case AsPattern as ap: {
+      checkPattern(ctx, ap.pattern, expectedType);
+      // Narrow the alias to the matched type, not the scrutinee type.
+      var narrowedType = expectedType;
+      if (ap.pattern is ClassPattern) {
+        let cp = ap.pattern as ClassPattern;
+        let cls = ctx.model.getNodeType(cp) ?? ctx.resolveTypeName(cp.name.name);
+        if (cls != null) {
+          narrowedType = cls;
+        }
+      } else if (ap.pattern is Identifier) {
+        let ident = ap.pattern as Identifier;
+        let cls = ctx.model.getNodeType(ident) ?? ctx.resolveTypeName(ident.name);
+        if (cls != null) {
+          narrowedType = cls;
+        }
+      }
+      let info = ctx.model.resolveDeclaration(ap.name);
+      if (info != null) {
+        ctx.declareBinding(info, narrowedType);
+      } else {
+        ctx.declareTypeName(ap.name.name, narrowedType);
+      }
+    }
+    case LogicalPattern {operator, left, right, loc}: {
+      checkPattern(ctx, left, expectedType);
+      checkPattern(ctx, right, expectedType);
+    }
+    case Identifier as ident: {
+      // Match-context patterns produce Identifier nodes; `let x` / `var x`
+      // produces an IdentifierPattern under a BindingPattern instead. So a
+      // bare identifier here is a *reference*, never a binding, and has to
+      // resolve to a class (a variant test). If it doesn't, say so: silently
+      // treating it as a fresh binding turns a mistyped variant name into a
+      // catch-all that swallows every remaining case.
+      if (ident.name != "_") {
+        let rawResolvedType = ctx.resolveTypeName(ident.name);
+        let resolvedType = if (rawResolvedType != null) {
+          specializePatternTypeFromExpected(ctx, rawResolvedType, expectedType, ident.loc)
+        } else {
+          null
+        };
+        if (resolvedType != null) {
+          ctx.setNodeType(ident, resolvedType);
+        }
+        var isVariant = false;
+        if (resolvedType != null) {
+          match (resolvedType) {
+            case ClassType: { isVariant = true; }
+            case InterfaceType: { isVariant = true; }
+            // Reported already: a generic class whose type arguments the
+            // matched type leaves open.
+            case ErrorType: { isVariant = true; }
+            case _: {}
+          }
+        }
+        if (!isVariant) {
+          ctx.error(
+            unresolvedPatternNameMessage(ident.name, expectedType, resolvedType != null),
+            DiagnosticCode.InvalidPattern,
+            ident.loc
+          );
+          // Bind it anyway so the case body reports its own errors rather than
+          // a cascade of "Variable not found" on top of the real diagnostic.
+          let info = ctx.model.resolveDeclaration(ident);
+          if (info != null) {
+            ctx.declareBinding(info, expectedType);
+          } else {
+            ctx.declareTypeName(ident.name, expectedType);
+          }
+        }
+      }
+    }
+    case LiteralPattern {value}: {
+      checkExpression(ctx, value, expectedType);
+    }
+    case MemberExpression as me: {
+      checkExpression(ctx, me as Expression, expectedType);
+    }
+    case NumberLiteral as lit: {
+      checkExpression(ctx, lit as Expression, expectedType);
+    }
+    case StringLiteral as lit: {
+      checkExpression(ctx, lit as Expression, expectedType);
+    }
+    case BooleanLiteral as lit: {
+      checkExpression(ctx, lit as Expression, expectedType);
+    }
+    case NullLiteral as lit: {
+      checkExpression(ctx, lit as Expression, expectedType);
+    }
+    case _: {
+      // Wildcard, etc. - no bindings needed.
+    }
+  }
+}

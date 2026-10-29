@@ -1,0 +1,653 @@
+import { HashMap, Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import { walk, walkEnter } from '../visitor.zena';
+import {
+  AssignmentExpression, BinaryExpression, BlockStatement, BooleanLiteral,
+  BreakStatement, CallExpression, ClassDeclaration, ContinueStatement,
+  Expression, ExpressionStatement, ForInStatement, ForStatement,
+  FunctionExpression, Identifier, IfExpression, IfStatement, IsExpression,
+  MatchExpression, MemberExpression, Node, NullLiteral, ReturnStatement,
+  Statement, ThisExpression, ThrowExpression, UnaryExpression,
+  WhileStatement, getMemberPropertyName
+} from '../ast.zena';
+import {
+  ClassType, FieldInfo, InterfaceType, NeverType, NullType,
+  RecordType as RecordT, Type
+} from '../types.zena';
+import { SemanticModel } from '../semantic-model.zena';
+import { Symbol, SymbolId, noSymbolId } from '../scope/symbol.zena';
+import { resolveTypeAnnotation } from './annotations.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import {
+  createUnionType, subtractNullFromType, subtractTypeFromUnion,
+  unwrapNullableForMemberLookup
+} from './unions.zena';
+
+// ============================================================================
+// Control-Flow Narrowing Helpers
+// ============================================================================
+
+/**
+ * Check if a statement definitely exits (return, break, continue, throw).
+ * Used to propagate narrowing past null-guard patterns like:
+ *   if (x == null) { return; }
+ *   // x is now non-null here
+ *
+ * `neverCompletingLoops` counts a loop that never completes
+ * (`loopNeverCompletes`) as exiting. The unreachable-code reports pass
+ * false until the bootstrap's checker knows the rule (#509).
+ */
+function exprDefinitelyExits(expr: Expression, model: SemanticModel | null = null,
+    neverCompletingLoops: boolean = true): boolean {
+  return match (expr) {
+    case ThrowExpression {}: true
+    case CallExpression as call: {
+      // A call to a never-returning function ends the path like a
+      // `throw`; the type is only known when a model is provided.
+      if (model == null) { false }
+      else {
+        let t = model.getNodeType(call);
+        t != null && t is NeverType
+      }
+    }
+    case MatchExpression {cases}: {
+      if (cases.length == 0) { return false; }
+      var allExit = true;
+      for (let c in cases) {
+        let caseExits = if (c.body is Statement) {
+          branchDefinitelyExits(c.body as Statement, model, neverCompletingLoops)
+        } else {
+          exprDefinitelyExits(c.body as Expression, model, neverCompletingLoops)
+        };
+        if (!caseExits) { allExit = false; }
+      }
+      allExit
+    }
+    case IfExpression {consequent, alternate}: {
+      let consExits = if (consequent is Statement) {
+        branchDefinitelyExits(consequent, model, neverCompletingLoops)
+      } else {
+        exprDefinitelyExits(consequent as Expression, model, neverCompletingLoops)
+      };
+      let altExits = if (alternate == null) {
+        false
+      } else if (alternate is Statement) {
+        branchDefinitelyExits(alternate, model, neverCompletingLoops)
+      } else {
+        exprDefinitelyExits(alternate as Expression, model, neverCompletingLoops)
+      };
+      consExits && altExits
+    }
+    case _: false
+  };
+}
+
+export function branchDefinitelyExits(stmt: Statement, model: SemanticModel | null = null,
+    neverCompletingLoops: boolean = true): boolean {
+  return match (stmt) {
+    case ReturnStatement {}: true
+    case BreakStatement {}: true
+    case ContinueStatement {}: true
+    case ExpressionStatement {expression}:
+      exprDefinitelyExits(expression, model, neverCompletingLoops)
+    case BlockStatement {body}: {
+      if (body.length == 0) { false }
+      else { branchDefinitelyExits(body[body.length - 1], model, neverCompletingLoops) }
+    }
+    case IfStatement {consequent, alternate}: {
+      if (alternate == null) { false }
+      else {
+        branchDefinitelyExits(consequent, model, neverCompletingLoops) &&
+            branchDefinitelyExits(alternate, model, neverCompletingLoops)
+      }
+    }
+    case WhileStatement {test, body}:
+      neverCompletingLoops && loopNeverCompletes(test, body)
+    case ForStatement {test, body}:
+      neverCompletingLoops && loopNeverCompletes(test, body)
+    case _: false
+  };
+}
+
+/** Whether `test` is the literal `true`. */
+export function isTrueLiteral(test: Node): boolean {
+  if (let BooleanLiteral {value} = test) {
+    return value;
+  }
+  return false;
+}
+
+/**
+ * Whether a loop never completes normally: its condition is the literal
+ * `true`, or a `for` has none, and no `break` in its body leaves it. A
+ * `return` or a `throw` is the only way out.
+ */
+function loopNeverCompletes(test: Node | null, body: Statement): boolean {
+  if (test != null && !isTrueLiteral(test)) {
+    return false;
+  }
+  return !breaksOutOf(body);
+}
+
+/**
+ * Whether `node` holds a `break` for the loop around it: one outside
+ * every loop body and function nested in `node`. A nested loop's
+ * condition, initializer and update belong to the outer loop, so a
+ * `break` in one of them counts.
+ */
+function breaksOutOf(node: Node): boolean {
+  var found = false;
+  walk(node, (n) => {
+    if (found) { return false; }
+    if (n is BreakStatement) {
+      found = true;
+      return false;
+    }
+    if (let WhileStatement {test} = n) {
+      found = breaksOutOf(test);
+      return false;
+    }
+    if (let ForStatement {init, test, update} = n) {
+      found = (init != null && breaksOutOf(init)) ||
+          (test != null && breaksOutOf(test)) ||
+          (update != null && breaksOutOf(update));
+      return false;
+    }
+    if (let ForInStatement {iterable} = n) {
+      found = breaksOutOf(iterable);
+      return false;
+    }
+    // A function's breaks belong to its own loops, and a class holds
+    // only functions.
+    return !(n is FunctionExpression) && !(n is ClassDeclaration);
+  }, (_) => {});
+  return found;
+}
+
+/**
+ * The root binding of a member-path narrowing key: "s42.inner" roots at
+ * symbol 42, "this.x" at nothing assignable. The inverse of the "s<id>"
+ * prefix getMemberPathKey builds.
+ */
+export function pathRootSymbolId(path: String): SymbolId {
+  if (path.length < 2 || path.sliceBytes(0, 1) != "s") { return noSymbolId; }
+  var end = 1;
+  // 46 is '.'.
+  while (end < path.length && path.getByteAt(end) != 46) { end += 1; }
+  if (let (true, id) = parseI32(path.sliceBytes(1, end))) {
+    return id as SymbolId;
+  }
+  return noSymbolId;
+}
+
+export function getMemberPathKey(ctx: CheckerContext, expr: Expression): String | null {
+  match (expr) {
+    case Identifier: {
+      let info = ctx.model.resolve(expr);
+      if (info == null) {
+        return null;
+      }
+      return "s" + i32ToString(info.id as i32);
+    }
+    case ThisExpression: {
+      return "this";
+    }
+    case MemberExpression {object, property, isSymbolAccess}: {
+      let base = getMemberPathKey(ctx, object);
+      if (base == null) {
+        return null;
+      }
+      let propStr = getMemberPropertyName(isSymbolAccess, property.name);
+      return `${base}.${propStr}`;
+    }
+    case _: {
+      return null;
+    }
+  }
+}
+
+export function getMemberPathKeyFromAccess(
+  ctx: CheckerContext,
+  object: Expression,
+  property: Identifier,
+  isSymbolAccess: boolean
+): String | null {
+  let base = getMemberPathKey(ctx, object);
+  if (base == null) {
+    return null;
+  }
+  let propStr = getMemberPropertyName(isSymbolAccess, property.name);
+  return `${base}.${propStr}`;
+}
+
+function isImmutableFieldAccess(objectType: Type, propName: String): boolean {
+  let base = unwrapNullableForMemberLookup(objectType);
+  if (base == null) {
+    return false;
+  }
+
+  match (base) {
+    case ClassType as ct: {
+      if (!ct.members.has(propName)) {
+        return false;
+      }
+      let m = ct.members[propName];
+      match (m) {
+        case FieldInfo as fi: {
+          return !fi.isMutable;
+        }
+        case _: { return false; }
+      }
+    }
+    case InterfaceType as it: {
+      if (!it.members.has(propName)) {
+        return false;
+      }
+      let m = it.members[propName];
+      match (m) {
+        case FieldInfo as fi: {
+          return !fi.isMutable;
+        }
+        case _: { return false; }
+      }
+    }
+    case RecordT {properties}: {
+      return properties.has(propName);
+    }
+    case _: {
+      return false;
+    }
+  }
+}
+
+export function isImmutableMemberPath(ctx: CheckerContext, expr: Expression): boolean {
+  if (let MemberExpression {object, property, isSymbolAccess} = expr) {
+    let objectType = checkExpression(ctx, object, null);
+    let propName = getMemberPropertyName(isSymbolAccess, property.name);
+    if (!isImmutableFieldAccess(objectType, propName)) {
+      return false;
+    }
+
+    match (object) {
+      case Identifier: {
+        return true;
+      }
+      case ThisExpression: {
+        return true;
+      }
+      case MemberExpression: {
+        return isImmutableMemberPath(ctx, object);
+      }
+      case _: {
+        return false;
+      }
+    }
+  } else {
+    return false;
+  }
+}
+
+/**
+ * Extract is-expression narrowing from a condition like `x is T`.
+ * Returns the Symbol, the target type, and the original type.
+ */
+function extractIsNarrowing(
+  ctx: CheckerContext,
+  condition: Expression
+): (Symbol | null, Type | null, Type | null) {
+  if (let IsExpression {expression, typeAnnotation} = condition) {
+    if (expression is Identifier) {
+      let info = ctx.model.resolve(expression as Node);
+      if (info == null) {
+        return (null, null, null);
+      }
+      let originalType = ctx.resolveIdentifier(expression as Node);
+      if (originalType == null) {
+        return (null, null, null);
+      }
+      let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
+      return (info, targetType, originalType);
+    } else {
+      return (null, null, null);
+    }
+  } else { return (null, null, null); }
+}
+
+/**
+ * Extract null-guard narrowing from a condition like `x == null` or `x != null`.
+ * Returns the Symbol and the narrowed type for the "after-exit" context.
+ *
+ * For `x == null` with definite exit: inverse narrowing removes null from x.
+ * For `x != null` with definite exit: inverse narrowing narrows x to null.
+ */
+function extractNullGuardNarrowing(
+  ctx: CheckerContext,
+  condition: Expression
+): (Symbol | null, Type | null, boolean) {
+  match (condition) {
+    case BinaryExpression {operator, left, right}: {
+      if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
+        // Check for `x == null` or `null == x`
+        var target: Expression | null = null;
+        if (right is NullLiteral) {
+          target = left;
+        } else {
+          if (left is NullLiteral) { target = right; } else {}
+        }
+        if (target == null) {
+          return (null, null, false);
+        }
+
+        if (let Identifier {name} = target) {
+          let info = ctx.model.resolve(target as Node);
+          if (info == null) {
+            return (null, null, false);
+          }
+          if (!(info is Symbol)) {
+            return (null, null, false);
+          }
+          var originalType = ctx.model.getNodeType(target as Node);
+          if (originalType == null) {
+            originalType = ctx.resolveIdentifier(target as Node);
+          }
+          if (originalType == null || !(originalType is Type)) {
+            return (null, null, false);
+          }
+          let isEqualNull = operator == "==" || operator == "===";
+          return (info, originalType, isEqualNull);
+        } else {
+          return (null, null, false);
+        }
+      } else {
+        return (null, null, false);
+      }
+    }
+    case _: { return (null, null, false); }
+  }
+}
+
+function extractNullGuardPathNarrowing(
+  ctx: CheckerContext,
+  condition: Expression
+): (String | null, Type | null, boolean) {
+  if (let BinaryExpression {operator, left, right} = condition) {
+    if (operator != "==" && operator != "!=" && operator != "===" && operator != "!==") {
+      return (null, null, false);
+    }
+
+    let target: Expression | null = if (right is NullLiteral) {
+      left
+    } else if (left is NullLiteral) {
+      right
+    } else {
+      null
+    };
+    if (target == null) {
+      return (null, null, false);
+    }
+
+    if (!(target is MemberExpression)) {
+      return (null, null, false);
+    }
+    if (!isImmutableMemberPath(ctx, target)) {
+      return (null, null, false);
+    }
+
+    let key = getMemberPathKey(ctx, target);
+    if (key == null) {
+      return (null, null, false);
+    }
+
+    var originalType = ctx.model.getNodeType(target);
+    if (originalType == null) {
+      originalType = checkExpression(ctx, target, null);
+    }
+    return (key, originalType, operator == "==" || operator == "===");
+  } else { return (null, null, false); }
+}
+
+export final class ConditionNarrowings {
+  bindings: HashMap<SymbolId, Type>;
+  paths: HashMap<String, Type>;
+  new() :
+    bindings = new Map<SymbolId, Type>(),
+    paths = new Map<String, Type>();
+}
+
+function mergeNarrowings(ctx: CheckerContext, dest: ConditionNarrowings, src: ConditionNarrowings): void {
+  for (let id in src.bindings.keys()) {
+    if (let (true, t) = src.bindings.get(id)) {
+      dest.bindings[id] = t;
+    }
+  }
+  for (let path in src.paths.keys()) {
+    if (let (true, t) = src.paths.get(path)) {
+      dest.paths[path] = t;
+    }
+  }
+}
+
+function intersectNarrowings(
+  ctx: CheckerContext,
+  dest: ConditionNarrowings,
+  left: ConditionNarrowings,
+  right: ConditionNarrowings
+): void {
+  for (let id in left.bindings.keys()) {
+    if (let (true, leftType) = left.bindings.get(id)) {
+      if (let (true, rightType) = right.bindings.get(id)) {
+        let types = growable<Type>([leftType, rightType]);
+        dest.bindings[id] = createUnionType(types, ctx, null);
+      }
+    }
+  }
+  for (let path in left.paths.keys()) {
+    if (let (true, leftType) = left.paths.get(path)) {
+      if (let (true, rightType) = right.paths.get(path)) {
+        let types = growable<Type>([leftType, rightType]);
+        dest.paths[path] = createUnionType(types, ctx, null);
+      }
+    }
+  }
+}
+
+function getNarrowedTypesFromCondition(
+  ctx: CheckerContext,
+  condition: Expression,
+  truthValue: boolean
+): ConditionNarrowings {
+  let result = new ConditionNarrowings();
+
+  match (condition) {
+    case UnaryExpression {operator, argument}: {
+      if (operator == "!") {
+        return getNarrowedTypesFromCondition(ctx, argument, !truthValue);
+      }
+    }
+    case BinaryExpression {operator, left, right}: {
+      if (operator == "&&") {
+        if (truthValue) {
+          let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, true);
+          // The right side is analyzed under the left's narrowings: a
+          // temporary node on the flow, removed by restoring.
+          let savedFlow = ctx.currentFlow;
+          ctx.pushFlowNarrowings(leftNarrowings);
+          let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, true);
+          ctx.setFlow(savedFlow);
+
+          mergeNarrowings(ctx, result, leftNarrowings);
+          mergeNarrowings(ctx, result, rightNarrowings);
+        } else {
+          let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, false);
+          let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, false);
+          intersectNarrowings(ctx, result, leftNarrowings, rightNarrowings);
+        }
+        return result;
+      }
+      if (operator == "||") {
+        if (truthValue) {
+          let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, true);
+          let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, true);
+          intersectNarrowings(ctx, result, leftNarrowings, rightNarrowings);
+        } else {
+          let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, false);
+          let savedFlow = ctx.currentFlow;
+          ctx.pushFlowNarrowings(leftNarrowings);
+          let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, false);
+          ctx.setFlow(savedFlow);
+
+          mergeNarrowings(ctx, result, leftNarrowings);
+          mergeNarrowings(ctx, result, rightNarrowings);
+        }
+        return result;
+      }
+    }
+    case _: {}
+  }
+
+  // Base cases
+  if (truthValue) {
+    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
+    if (guardInfo != null) {
+      let origType = guardOrigType as Type;
+      if (isEqualNull) {
+        result.bindings[guardInfo.id] = new NullType();
+      } else {
+        result.bindings[guardInfo.id] = subtractNullFromType(origType);
+      }
+      return result;
+    }
+
+    let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, condition);
+    if (guardPathKey != null) {
+      let origType = guardPathOrigType as Type;
+      if (pathIsEqualNull) {
+        result.paths[guardPathKey] = new NullType();
+      } else {
+        result.paths[guardPathKey] = subtractNullFromType(origType);
+      }
+      return result;
+    }
+
+    let (isInfo, isTargetType, isOrigType) = extractIsNarrowing(ctx, condition);
+    if (isInfo != null) {
+      result.bindings[isInfo.id] = isTargetType as Type;
+      return result;
+    }
+
+    let (isPathKey, isPathTargetType, isPathOrigType_) = extractIsPathNarrowing(ctx, condition);
+    if (isPathKey != null) {
+      result.paths[isPathKey] = isPathTargetType as Type;
+      return result;
+    }
+  } else {
+    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
+    if (guardInfo != null) {
+      let origType = guardOrigType as Type;
+      if (isEqualNull) {
+        result.bindings[guardInfo.id] = subtractNullFromType(origType);
+      } else {
+        result.bindings[guardInfo.id] = new NullType();
+      }
+      return result;
+    }
+
+    let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, condition);
+    if (guardPathKey != null) {
+      let origType = guardPathOrigType as Type;
+      if (pathIsEqualNull) {
+        result.paths[guardPathKey] = subtractNullFromType(origType);
+      } else {
+        result.paths[guardPathKey] = new NullType();
+      }
+      return result;
+    }
+
+    let (isInfo, isTargetType, isOrigType) = extractIsNarrowing(ctx, condition);
+    if (isInfo != null) {
+      result.bindings[isInfo.id] = subtractTypeFromUnion(isOrigType as Type, isTargetType as Type);
+      return result;
+    }
+
+    let (isPathKey, isPathTargetType, isPathOrigType_) = extractIsPathNarrowing(ctx, condition);
+    if (isPathKey != null) {
+      result.paths[isPathKey] = subtractTypeFromUnion(isPathOrigType_ as Type, isPathTargetType as Type);
+      return result;
+    }
+  }
+
+  return result;
+}
+
+export function applyTrueNarrowingFromCondition(ctx: CheckerContext, condition: Expression): void {
+  ctx.pushFlowNarrowings(getNarrowedTypesFromCondition(ctx, condition, true));
+}
+
+export function applyFalseNarrowingFromCondition(ctx: CheckerContext, condition: Expression): void {
+  ctx.pushFlowNarrowings(getNarrowedTypesFromCondition(ctx, condition, false));
+}
+
+function extractIsPathNarrowing(
+  ctx: CheckerContext,
+  condition: Expression
+): (String | null, Type | null, Type | null) {
+  if (let IsExpression {expression, typeAnnotation} = condition) {
+    if (!(expression is MemberExpression)) {
+      return (null, null, null);
+    }
+    if (!isImmutableMemberPath(ctx, expression)) {
+      return (null, null, null);
+    }
+
+    let key = getMemberPathKey(ctx, expression);
+    if (key == null) {
+      return (null, null, null);
+    }
+
+    let originalType = checkExpression(ctx, expression, null);
+    let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
+    return (key, targetType, originalType);
+  } else {
+    return (null, null, null);
+  }
+}
+
+/**
+ * Every symbol assigned anywhere under `node`, deduplicated. Loops
+ * record these at the loop header as unknown-type flow assignments:
+ * a reference in the body is checked before the loop's back edge
+ * exists, yet on every iteration after the first it observes the
+ * previous iteration's stores, so the header must already carry them.
+ * Descends into nested functions on purpose — a closure created in the
+ * body can run on any iteration.
+ */
+function collectAssignedSymbolIds(ctx: CheckerContext, node: Node): GrowableArray<SymbolId> {
+  let ids = new Array<SymbolId>();
+  let seen = new Set<i32>();
+  walkEnter(node, (n) => {
+    if (n is AssignmentExpression) {
+      if (n.left is Identifier) {
+        let info = ctx.model.resolve(n.left);
+        if (info != null) {
+          let id = info.id;
+          if (!seen.has(id as i32)) {
+            seen.add(id as i32);
+            ids.push(id);
+          }
+        }
+      }
+    }
+  });
+  return ids;
+}
+
+/**
+ * Record `node`'s assignments at the current position (a loop header)
+ * as unknown-type stores. See collectAssignedSymbolIds.
+ */
+export function recordLoopAssignments(ctx: CheckerContext, node: Node): void {
+  for (let assignedId in collectAssignedSymbolIds(ctx, node)) {
+    ctx.recordFlowAssignment(assignedId, null);
+  }
+}

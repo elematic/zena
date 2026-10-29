@@ -1,0 +1,3382 @@
+import { HashMap, HashSet, Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import { FlowUnreachable } from '../analysis/flow.zena';
+import { walkEnter } from '../visitor.zena';
+import {
+  AccessorDeclaration, BlockStatement, CaseClassParam, ClassDeclaration,
+  Decorator, Expression, FieldDefinition, FieldInitializer, Identifier,
+  MethodDefinition, MethodSignature, MixinDeclaration, Node, NullLiteral,
+  SealedVariant, SetterInfo, SourceLocation, StringLiteral, SuperInitializer,
+  TypeAnnotation, isBuiltinDecoratorName, isSymbolFieldDeclaration,
+  syntacticMemberName
+} from '../ast.zena';
+import {
+  BooleanType, ClassType, DecoratedField, ErrorType, FieldInfo,
+  FunctionDeclInfo, FunctionType, I32Type, InterfaceType, MethodInfo,
+  MixinType, ReceiverKind, Type, TypeParameterType, VoidType,
+  instantiateClassType, isScopedType, ownershipHandleInner,
+  ownershipHandleName, requiredParameterCount, scopedInner,
+  soleNonNullMember, typeCarriesOwner, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { lineAt } from '../line-index.zena';
+import { SymbolId, noSymbolId } from '../scope/symbol.zena';
+import { WellKnown, isWellKnown } from '../well-known.zena';
+import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { resolveBound, resolveTypeAnnotation } from './annotations.zena';
+import { CheckerContext } from './context.zena';
+import { validateFunctionDecorators } from './declarations.zena';
+import { checkExpression } from './expressions.zena';
+import {
+  mentionsTypeParams, rejectClassTypeParamsInStatic, selfTypeOfClass,
+  substituteThisType, substituteTypeParams, tryInstantiateGenericFunction
+} from './generics.zena';
+import {
+  displayMemberName, getMemberName, recordSymbolKeyedMemberIdentities,
+  registerStaticSymbols
+} from './members.zena';
+import { DeferredModule, prescanPendingFunctions } from './module.zena';
+import {
+  findMatchingOverload, functionSignatures, hasSameSignature,
+  signaturesMayOverlap
+} from './overloads.zena';
+import {
+  checkBorrowDerivation, checkReceiverDeclaration, declaresOwningReceiver,
+  ownedResourceClasses, owningReceiverSymbol, recordArgumentMove,
+  registerOwnParamCandidates, registerReceiverCandidate, rejectFieldStorage,
+  rejectGeneratorBorrowParams, scopedTypeParamsOf
+} from './ownership.zena';
+import { bindPattern } from './patterns.zena';
+import {
+  extractAsyncIteratorYieldType, extractFutureValueType,
+  extractIteratorYieldType, makeAsyncIteratorType, makeFutureType,
+  makeIteratorType
+} from './protocols.zena';
+import { isAssignableTo, typesEqual } from './relations.zena';
+import { checkStatement } from './statements.zena';
+import { isNullableType, widenType } from './unions.zena';
+
+/**
+ * Register a class declaration's type identity, flags, superclass,
+ * case-class params, member signatures (fields, methods, accessors),
+ * and sealed variant types. Does NOT check method bodies, field
+ * initializers, or accessor bodies — that happens in checkClassBodies.
+ */
+function addImplicitInterface(ctx: CheckerContext, ct: ClassType, which: WellKnown): void {
+  let iface = ctx.tryResolveWellKnownType(which);
+  if (!(iface is InterfaceType)) {
+    return;
+  }
+  for (let impl in ct.implementsList) {
+    if (impl === iface) { return; }
+  }
+  ct.implementsList.push(iface);
+}
+
+/**
+ * The inherited `operator ==` that a class's own `operator ==` overrides when
+ * it narrows the parameter to the class itself. A class declares its equality
+ * over its own type (`operator ==(other: Point3)` below
+ * `operator ==(other: Point)`); the compiler tests that `other` is exactly the
+ * receiver's class before the body runs, which is what makes the narrowing
+ * sound (equality.md, "Virtual equality with an identity default").
+ */
+function equalityOverrideTarget(ctx: CheckerContext, inherited: FunctionType,
+    own: FunctionType, ct: ClassType): FunctionType | null {
+  if (own.parameters.length != 1 || !typesEqual(own.parameters[0], ct)) {
+    return null;
+  }
+  let candidates = growable<FunctionType>([inherited]);
+  let {overloads} = inherited;
+  if (overloads != null) {
+    for (let ov in overloads) {
+      candidates.push(ov);
+    }
+  }
+  for (let c in candidates) {
+    if (c.parameters.length == 1 && c.parameters[0] is ClassType &&
+        isAssignableTo(ctx, ct, c.parameters[0])) {
+      return c;
+    }
+  }
+  return null;
+}
+
+/**
+ * True when an ancestor of `ct` declares `operator ==` or `hashCode`. A case
+ * class below one derives neither: the base's pair is the hierarchy's
+ * equality, and a derived structural `==` beside the base's hash would put
+ * equal objects in different buckets.
+ */
+function inheritsDeclaredEquality(ct: ClassType): boolean {
+  var curr = ct.superType;
+  while (curr != null) {
+    let anc = curr as ClassType;
+    if (anc.members.has("==") || anc.members.has("hashCode")) {
+      return true;
+    }
+    curr = anc.superType;
+  }
+  return false;
+}
+
+/**
+ * Derives a case class's structural `==` and `hashCode`, together, unless it
+ * inherits either one (inheritsDeclaredEquality) or its `body` declares
+ * either one. A body that declares one must declare both, for the same
+ * reason a subclass of a declaring base derives neither. Runs once the
+ * superclass is known and its members are inherited; a sealed variant has
+ * no body.
+ */
+function synthesizeCaseClassMembers(
+  ctx: CheckerContext,
+  ct: ClassType,
+  body: GrowableArray<Node> | null
+): void {
+  if (inheritsDeclaredEquality(ct)) {
+    return;
+  }
+  var ownEq: MethodDefinition | null = null;
+  var ownHash: MethodDefinition | null = null;
+  if (body != null) {
+    for (let member in body as GrowableArray<Node>) {
+      if (member is MethodDefinition && !member.isStatic) {
+        let name = syntacticMemberName(member.name);
+        if (name == "==") {
+          ownEq = member;
+        } else if (name == "hashCode") {
+          ownHash = member;
+        }
+      }
+    }
+  }
+  if (ownEq != null || ownHash != null) {
+    if (ownHash == null) {
+      ctx.error("Case class '" + ct.name +
+          "' declares 'operator ==' without 'hashCode()'; declare both, or neither.",
+          DiagnosticCode.AbstractMethodNotImplemented, (ownEq as MethodDefinition).loc);
+    } else if (ownEq == null) {
+      ctx.error("Case class '" + ct.name +
+          "' declares 'hashCode()' without 'operator =='; declare both, or neither.",
+          DiagnosticCode.AbstractMethodNotImplemented, (ownHash as MethodDefinition).loc);
+    } else {
+      // Still a hash key without an implements clause, through its own pair.
+      addImplicitInterface(ctx, ct, WellKnown.HashableInterface);
+      addImplicitInterface(ctx, ct, WellKnown.EquatableInterface);
+    }
+    return;
+  }
+  ct.derivesEquality = true;
+  let hashType = new FunctionType(new Array<Type>(), new I32Type());
+  ct.members["hashCode"] = new MethodInfo(hashType, false, false, false, false);
+
+  let eqParams = growable<Type>([ct]);
+  let eqType = new FunctionType(eqParams, new BooleanType());
+  ct.members["=="] = new MethodInfo(eqType, false, false, false, false);
+
+  // Case classes nominally implement Hashable and Equatable: their
+  // synthesized hashCode()/== make them valid hash keys, so they are
+  // assignable to both well-known interfaces without an implements clause.
+  addImplicitInterface(ctx, ct, WellKnown.HashableInterface);
+  addImplicitInterface(ctx, ct, WellKnown.EquatableInterface);
+}
+
+/**
+ * Applies the decorators written on a field of `classType`. Returns true
+ * when one of them is a field decorator: the field is then not registered
+ * as a member, because its storage lives on the decorator's intermediate
+ * class (see `applyFieldDecorator`). Builtin decorators are not field
+ * decorators and are ignored here.
+ */
+function applyFieldDecorators(
+  ctx: CheckerContext,
+  classType: ClassType,
+  fd: FieldDefinition,
+  fieldName: String,
+  fieldType: Type,
+): boolean {
+  var applied = false;
+  for (let dec in fd.decorators) {
+    if (isBuiltinDecoratorName(dec.name)) { continue; }
+    if (dec.path.length > 1) {
+      ctx.error(
+        `Qualified decorator names ('@${dec.name}') are not supported yet; import the decorator by name.`,
+        DiagnosticCode.SymbolNotFound,
+        dec.loc
+      );
+      continue;
+    }
+    let resolved = ctx.resolveTypeName(dec.name);
+    if (resolved == null) {
+      ctx.error(`Unknown decorator '@${dec.name}'.`, DiagnosticCode.SymbolNotFound, dec.loc);
+      continue;
+    }
+    if (!(resolved is MixinType) || !(resolved as MixinType).isDecorator()) {
+      ctx.error(`'${dec.name}' is not a decorator.`, DiagnosticCode.TypeMismatch, dec.loc);
+      continue;
+    }
+    if (applied) {
+      ctx.error(
+        `Field '${displayMemberName(fieldName)}' already has a decorator; a field takes at most one.`,
+        DiagnosticCode.TypeMismatch,
+        dec.loc
+      );
+      continue;
+    }
+    if (dec.args.length > 0) {
+      ctx.error("Decorator arguments are not supported yet.", DiagnosticCode.TypeMismatch, dec.loc);
+    }
+    if (fd.isStatic || fd.isAbstract || fd.isDeclare || fd.setterName != null) {
+      ctx.error(
+        "A decorator applies to a plain instance field: not a static, abstract or declared field, and not a 'var(#x)' field.",
+        DiagnosticCode.TypeMismatch,
+        dec.loc
+      );
+      return true;
+    }
+    if (fd.typeAnnotation == null) {
+      ctx.error(
+        "A decorated field needs a type annotation: the decorator's type is taken from it.",
+        DiagnosticCode.TypeMismatch,
+        fd.loc
+      );
+      return true;
+    }
+    applied = true;
+    applyFieldDecorator(ctx, classType, fd, fieldName, fieldType, resolved as MixinType, dec);
+  }
+  return applied;
+}
+
+/**
+ * Applies one field decorator: inserts an intermediate class into
+ * `classType`'s superclass chain carrying the decorator's members, the
+ * way `with` inserts one per mixin. Three things differ from a mixin
+ * application (docs/design/decorators.md):
+ *
+ * - The private scope key is the decorator's key plus the field's name,
+ *   so each application has its own storage and state fields even when
+ *   one decorator is applied to several fields of one class.
+ * - The subject accessor, written against the placeholder name, is
+ *   registered under the decorated field's name.
+ * - The decorator's type parameter is bound to the field's declared type.
+ */
+function applyFieldDecorator(
+  ctx: CheckerContext,
+  classType: ClassType,
+  fd: FieldDefinition,
+  fieldName: String,
+  fieldType: Type,
+  mt: MixinType,
+  dec: Decorator,
+): void {
+  let source = mt.genericSource ?? mt;
+  let subject = source.decoratorSubjectName as String;
+  let fieldIsVar = fd.mutability != null && fd.mutability == "var";
+  if (fieldIsVar != source.decoratorSubjectMutable) {
+    let message = if (source.decoratorSubjectMutable) {
+      "Decorator '@" + dec.name + "' applies to 'var' fields; declare '" +
+          displayMemberName(fieldName) + "' with 'var'."
+    } else {
+      "Decorator '@" + dec.name + "' applies to immutable fields, and '" +
+          displayMemberName(fieldName) + "' is 'var'."
+    };
+    ctx.error(message, DiagnosticCode.TypeMismatch, dec.loc);
+    return;
+  }
+
+  // The subject's type says how the field's type binds the decorator's
+  // type parameters: a subject typed by a bare parameter binds it to the
+  // field's type; a concrete subject type must accept the field's type.
+  let typeArgs = new Array<Type>();
+  let subjectType = source.decoratorSubjectType;
+  let {typeParameters} = source;
+  if (typeParameters != null && typeParameters.length > 0) {
+    for (let tp in typeParameters) {
+      if (subjectType != null && subjectType === tp) {
+        typeArgs.push(fieldType);
+      } else {
+        ctx.error(
+          "Cannot infer type parameter '" + tp.name + "' of decorator '@" + dec.name +
+              "': only the type parameter that types the decorated field is inferred.",
+          DiagnosticCode.TypeMismatch,
+          dec.loc
+        );
+        typeArgs.push(new ErrorType());
+      }
+    }
+  } else if (subjectType != null && !isAssignableTo(ctx, fieldType, subjectType)) {
+    ctx.error(
+      "Decorator '@" + dec.name + "' applies to fields of type '" + typeToString(subjectType) +
+          "'; '" + displayMemberName(fieldName) + "' has type '" + typeToString(fieldType) + "'.",
+      DiagnosticCode.TypeMismatch,
+      dec.loc
+    );
+    return;
+  }
+
+  // `on`: the host must extend or implement the decorator's constraint,
+  // as a mixin's host must. Checked against the chain before this
+  // application's intermediate joins it.
+  let {onType} = source;
+  if (onType != null) {
+    var satisfied = classType.superType != null &&
+        isAssignableTo(ctx, classType.superType as Type, onType);
+    for (let iface in classType.implementsList) {
+      if (isAssignableTo(ctx, iface as Type, onType)) {
+        satisfied = true;
+      }
+    }
+    if (!satisfied) {
+      ctx.error(
+        "Decorator '@" + dec.name + "' requires its class to extend or implement '" +
+            typeToString(onType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        dec.loc
+      );
+      return;
+    }
+  }
+
+  let declScope = source.privateScopeKey ?? (source.name + "_This");
+  let scope = `${declScope}@${fieldName}`;
+  // `shared` members are one copy per host class, under the declaration's
+  // scope key: a second application of this decorator in the class finds
+  // the first's copies in the chain and adds none of its own.
+  var sharedPlaced = false;
+  var chain = classType.superType;
+  while (chain != null && chain.isMixinIntermediate) {
+    let sc = chain;
+    if (sc.decoratorSubjectName != null &&
+        (sc.genericSource ?? sc).symbolId == source.symbolId) {
+      sharedPlaced = true;
+    }
+    chain = sc.superType;
+  }
+  let intermediate = new ClassType(
+      ctx.freshTypeId(), source.symbolId,
+      `${classType.name}$${source.name}@${fieldName}`);
+  intermediate.isMixinIntermediate = true;
+  intermediate.sourcePath = source.sourcePath;
+  intermediate.superType = classType.superType;
+  intermediate.typeParameters = source.typeParameters;
+  intermediate.privateScopeKey = scope;
+  intermediate.decoratorSharedScopeKey = declScope;
+  intermediate.onType = onType;
+  intermediate.mixins = source.mixins;
+  intermediate.decoratorSubjectName = subject;
+  intermediate.decoratorFieldName = fieldName;
+  // The decorator's members are read through `appliedMixin` by the
+  // intermediate's member table, under the decorator's renaming
+  // (MemberTable).
+  intermediate.appliedMixin = source;
+  intermediate.decoratorSharedPlaced = sharedPlaced;
+  let applied = if (typeArgs.length > 0) {
+    instantiateClassType(intermediate, typeArgs)
+  } else {
+    intermediate
+  };
+  classType.superType = applied;
+
+  var decorated = classType.decoratedFields;
+  if (decorated == null) {
+    let created = new Map<String, DecoratedField>();
+    classType.decoratedFields = created;
+    decorated = created;
+  }
+  (decorated as HashMap<String, DecoratedField>)[fieldName] = new DecoratedField(
+      fieldName, scope, `${scope}::#${subject}`, mt, fd, fieldType);
+}
+
+/**
+ * The field decorated under `name` on `classType`, or null when `name`
+ * is not a decorated field of it.
+ */
+function decoratedFieldOf(classType: ClassType, name: String): DecoratedField | null {
+  let decorated = classType.decoratedFields;
+  if (decorated == null) { return null; }
+  if (let (true, df) = decorated.get(name)) {
+    return df;
+  }
+  return null;
+}
+
+/**
+ * Checks a decorated field's initializer against the field's declared
+ * type. The field has no FieldInfo on the class (its storage is the
+ * decorator's), so `checkFieldInitializer` has nothing to look up.
+ */
+function checkDecoratedFieldInitializer(
+  ctx: CheckerContext,
+  fd: FieldDefinition,
+  df: DecoratedField,
+): void {
+  let {value} = fd;
+  if (value == null) { return; }
+  ctx.enterNodeReferrer(fd.id as i32);
+  let initType = checkExpression(ctx, value, df.fieldType);
+  if (!isAssignableTo(ctx, initType, df.fieldType)) {
+    ctx.error(
+      "Type mismatch: field '" + displayMemberName(df.fieldName) + "' has type '" +
+      typeToString(df.fieldType) + "' but initializer has type '" +
+      typeToString(initType) + "'.",
+      DiagnosticCode.TypeMismatch,
+      fd.loc
+    );
+  } else {
+    let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, df.fieldType);
+    if (instantiatedVal !== initType) {
+      ctx.setNodeType(value, instantiatedVal);
+    }
+    checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, df.fieldType);
+  }
+  ctx.exitNodeReferrer(fd.id as i32);
+}
+
+/**
+ * A `shared` member is one copy per host class, so it cannot be the
+ * storage (which is one per decorated field by definition), and its type
+ * cannot mention the decorator's type parameters, which are bound per
+ * application. A public `shared` member is already rejected as a public
+ * member other than the subject accessor.
+ */
+function validateSharedMember(
+  ctx: CheckerContext,
+  mt: MixinType,
+  name: String,
+  subject: String,
+  loc: SourceLocation | null,
+): void {
+  if (!name.startsWith("#")) {
+    return;
+  }
+  if (name == "#" + subject) {
+    ctx.error(
+      `The storage field '#${subject}' cannot be 'shared': it holds one decorated field's value.`,
+      DiagnosticCode.TypeMismatch, loc);
+    return;
+  }
+  let {typeParameters} = mt;
+  if (typeParameters != null && typeParameters.length > 0 && mt.members.has(name) &&
+      mentionsTypeParams(mt.members[name].type, typeParameters)) {
+    ctx.error(
+      "A 'shared' member's type cannot mention the decorator's type parameters: it is one copy for every decorated field, whatever their types.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+}
+
+/**
+ * The shape a `decorator` body must have: one public member, an accessor
+ * named like the subject, with a setter exactly when the subject is `var`;
+ * a private field named `#<subject>` holding the decorated field's value;
+ * and otherwise only private members. The public accessor is what the
+ * host class gains under the field's name, and the storage field is where
+ * the field's initializer and constructor assignments go.
+ */
+export function validateDecoratorBody(ctx: CheckerContext, md: MixinDeclaration, mt: MixinType): void {
+  let subject = mt.decoratorSubjectName as String;
+  let decoratorName = md.name.name;
+  var sawSubject = false;
+  var sawStorage = false;
+  for (let member in md.body) {
+    match (member) {
+      case AccessorDeclaration as acc: {
+        let name = getMemberName(ctx, acc.name as Node);
+        if (name == subject) {
+          sawSubject = true;
+          if (acc.isStatic) {
+            ctx.error("The decorated field's accessor cannot be static.", DiagnosticCode.TypeMismatch, acc.loc);
+          }
+          if (acc.getter == null) {
+            ctx.error(
+              `Decorator '${decoratorName}' must give '${subject}' a getter.`,
+              DiagnosticCode.TypeMismatch, acc.loc);
+          }
+          if (mt.decoratorSubjectMutable && acc.setter == null) {
+            ctx.error(
+              `Decorator '${decoratorName}' declares 'var ${subject}', so '${subject}' needs a setter.`,
+              DiagnosticCode.TypeMismatch, acc.loc);
+          }
+          if (!mt.decoratorSubjectMutable && acc.setter != null) {
+            ctx.error(
+              "Decorator '" + decoratorName + "' declares an immutable '" + subject +
+                  "', so '" + subject + "' cannot have a setter; declare the subject 'var'.",
+              DiagnosticCode.TypeMismatch, acc.loc);
+          }
+        } else if (!name.startsWith("#")) {
+          ctx.error(
+            "A decorator's only public member is the accessor for '" + subject +
+                "'; make '" + name + "' private.",
+            DiagnosticCode.TypeMismatch, acc.loc);
+        }
+      }
+      case FieldDefinition as fd: {
+        if (isSymbolFieldDeclaration(fd)) { continue; }
+        let name = getMemberName(ctx, fd.name as Node);
+        if (fd.isShared) {
+          validateSharedMember(ctx, mt, name, subject, fd.loc);
+        }
+        if (name == "#" + subject) {
+          sawStorage = true;
+          if (fd.isStatic) {
+            ctx.error("The decorated field's storage cannot be static.", DiagnosticCode.TypeMismatch, fd.loc);
+          }
+        } else if (!name.startsWith("#")) {
+          let hint = if (name == subject) {
+            `; the decorated field is declared as an accessor, with its storage in '#${subject}'`
+          } else {
+            `; make '${name}' private`
+          };
+          ctx.error(
+            `A decorator's only public member is the accessor for '${subject}'${hint}.`,
+            DiagnosticCode.TypeMismatch, fd.loc);
+        }
+      }
+      case MethodDefinition as m: {
+        let name = getMemberName(ctx, m.name as Node);
+        if (!m.isConstructor && !name.startsWith("#")) {
+          ctx.error(
+            "A decorator's only public member is the accessor for '" + subject +
+                "'; make '" + displayMemberName(name) + "' private.",
+            DiagnosticCode.TypeMismatch, m.loc);
+        }
+        if (m.isShared) {
+          validateSharedMember(ctx, mt, name, subject, m.loc);
+        }
+      }
+      case _: {}
+    }
+  }
+  if (!sawSubject) {
+    ctx.error(
+      `Decorator '${decoratorName}' must declare an accessor named '${subject}'.`,
+      DiagnosticCode.TypeMismatch, md.loc);
+  }
+  if (!sawStorage) {
+    ctx.error(
+      "Decorator '" + decoratorName + "' must declare a private field '#" + subject +
+          "' to hold the decorated field's value.",
+      DiagnosticCode.TypeMismatch, md.loc);
+  }
+}
+
+function getOrCreateMixinApplication(
+  ctx: CheckerContext,
+  superClass: ClassType | null,
+  mixinAnn: TypeAnnotation,
+  mt: MixinType,
+): ClassType {
+  let baseKey = if (superClass != null) {
+    `${superClass.sourcePath}#${superClass.name}`
+  } else {
+    ""
+  };
+  let mixinSource = mt.genericSource ?? mt;
+  let mixinKey = `${mixinSource.sourcePath}#${mixinSource.name}`;
+  let appKey = `${baseKey}&${mixinKey}`;
+
+  // The cache holds the intermediate's IDENTITY: one class per (base,
+  // mixin) pair, however many hosts apply it. It holds no members of
+  // its own: its table reads the mixin's through `appliedMixin` and the
+  // base's through `superType` at every lookup (MemberTable), so a
+  // mixin that is an empty shell when a host first registers inside an
+  // import cycle (docs/design/import-cycles.md) is read filled once its
+  // own registration has run, with nothing to rebuild.
+  let template = if (let (true, cached) = ctx.mixinApplications().get(appKey)) {
+    cached
+  } else {
+    let intermediateName = (if (superClass != null) (superClass.name + "$") else "$") + mixinSource.name;
+    let intermediate = new ClassType(ctx.freshTypeId(), mixinSource.symbolId, intermediateName);
+    intermediate.isMixinIntermediate = true;
+    intermediate.sourcePath = mixinSource.sourcePath;
+    intermediate.superType = superClass;
+    intermediate.typeArguments = null;
+    intermediate.genericSource = null;
+    ctx.mixinApplications()[appKey] = intermediate;
+    intermediate
+  };
+  template.typeParameters = mixinSource.typeParameters;
+  template.privateScopeKey = mixinSource.privateScopeKey;
+  template.onType = mixinSource.onType;
+  template.mixins = mixinSource.mixins;
+  template.appliedMixin = mixinSource;
+
+  // Validate method override types
+  let memberKeys = mt.members.keys();
+  for (let key in memberKeys) {
+    let mtMember = mt.members[key];
+    let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
+        key.startsWith("get##") || key.startsWith("set##");
+    if (mtMember is MethodInfo && !isPrivateKey && superClass != null) {
+      if (superClass.members.has(key)) {
+        let existingMember = superClass.members[key];
+        if (!isAssignableTo(ctx, mtMember.type, existingMember.type)) {
+          ctx.error(
+            `Type mismatch in overridden method '${displayMemberName(key)}' is not compatible.`,
+            DiagnosticCode.TypeMismatch,
+            mixinAnn.loc
+          );
+        }
+      }
+    }
+  }
+
+  let {typeArguments} = mt;
+  if (typeArguments != null && typeArguments.length > 0) {
+    return instantiateClassType(template, typeArguments as Array<Type>);
+  } else {
+    return template;
+  }
+}
+
+export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): void {
+  // Access Identifier.name directly. In Zena AST, ClassDeclaration.name is an Identifier
+  // which has a .name: String field. Use cd.name.name directly.
+  let className = cd.name.name;
+
+  // Look up the pre-registered ClassType from the forward-declaration pass.
+  // If not found (shouldn't happen), create one.
+  var classType = new ClassType(ctx.freshTypeId(), noSymbolId, className);
+  let preRegistered = ctx.resolveTypeName(className);
+  if (preRegistered != null) {
+    match (preRegistered) {
+      case ClassType as existing: { classType = existing; }
+      case _: {}
+    }
+  }
+
+  // Record the declaring file for cross-module goto-definition.
+  classType.sourcePath = ctx.filePath;
+
+  // Before the body: a member's key may name a static symbol this very
+  // class declares, and `Owner.sym` has to resolve by the time that
+  // member is registered.
+  registerStaticSymbols(
+      ctx, className, classType.staticSymbols, cd.body);
+
+  // Flags — ClassDeclaration is authoritative, overriding any
+  // previously materialized flags (e.g., from SealedVariant).
+  classType.isFinal = cd.isFinal;
+  classType.isAbstract = cd.isAbstract;
+  classType.isExtension = cd.isExtension;
+  classType.isSealed = cd.isSealed;
+  classType.isCaseClass = false;
+
+  // Registration must be idempotent: the ClassType object may be
+  // shared with an earlier registration (compiler intrinsics, or a
+  // prior checking pass over the same module — identity-stable types
+  // across import-cycle re-checks). Reset everything this pass
+  // rebuilds rather than appending to or layering over stale state;
+  // in particular a stale own-field entry in `members` would be
+  // mistaken for an inherited field.
+  classType.members.clear();
+  classType.implementsList = new Array<InterfaceType>();
+  classType.mixins = new Array<MixinType>();
+  classType.constructorType = null;
+  classType.constructors.clear();
+  classType.fieldSetterNames = null;
+  classType.decoratedFields = null;
+  classType.declaredFields = null;
+  classType.sealedVariants = null;
+
+  ctx.enterScope();
+  let {typeParameters} = cd;
+  if (typeParameters != null) {
+    let tps = typeParameters;
+    let freshParams = new Array<TypeParameterType>();
+    var tpi = 0;
+    while (tpi < tps.length) {
+      let tp = tps[tpi];
+      var constraint: Type | null = null;
+      if (tp.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
+      }
+      var defaultT: Type | null = null;
+      let {defaultType} = tp;
+      if (defaultType != null) {
+        defaultT = resolveTypeAnnotation(ctx, defaultType);
+      }
+      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, defaultT);
+      ctx.declareTypeName(tp.name, tpType);
+      freshParams.push(tpType);
+      tpi = tpi + 1;
+    }
+    classType.typeParameters = freshParams;
+  }
+
+  // Extension classes: resolve the underlying type from the 'on' clause.
+  if (cd.isExtension && cd.onType != null) {
+    classType.onType = resolveTypeAnnotation(ctx, cd.onType as TypeAnnotation);
+  }
+
+  // Sealed classes are implicitly abstract (cannot be instantiated directly).
+  if (cd.isSealed) {
+    classType.isAbstract = true;
+  }
+
+  // Case class: implicitly final (unless sealed).
+  if (cd.caseParams != null && !cd.isSealed) {
+    classType.isFinal = true;
+    classType.isCaseClass = true;
+  }
+
+  // Sealed classes: register forward variant names.
+  if (cd.isSealed && cd.sealedVariants != null) {
+    let variants = cd.sealedVariants as GrowableArray<SealedVariant>;
+    var fvi = 0;
+    while (fvi < variants.length) {
+      let variant = variants[fvi];
+      if (variant.params == null) {
+        let {forwardVariantNames} = classType;
+        if (forwardVariantNames != null) {
+          forwardVariantNames.add(variant.name.name);
+        } else {
+          let set = new Set<String>();
+          set.add(variant.name.name);
+          classType.forwardVariantNames = set;
+        }
+      }
+      fvi = fvi + 1;
+    }
+  }
+
+  // Resolve superclass.
+  var currentSuper: ClassType | null = null;
+  let {superClass} = cd;
+  if (superClass != null) {
+    let superAnn = superClass;
+    // An extends clause names a class, not a value, so a resource class is
+    // spellable here — this is the one annotation position where the bare
+    // form is what is meant. Without this the "no unwrapped form" rule fires
+    // and then reports "Superclass must be a class type, got '<error>'",
+    // advising an `Own<R>` superclass, which is not a thing.
+    ctx.resourceMentionOk = true;
+    let superType = resolveTypeAnnotation(ctx, superAnn);
+    ctx.resourceMentionOk = false;
+    match (superType) {
+      case ClassType as st: {
+        // Resource-ness is inherited, and only from a resource. Both
+        // directions of a mismatch are unsound, in opposite ways:
+        //
+        // - An ordinary subclass of a resource has a spellable bare type,
+        //   so it would alias a resource with no handle at all.
+        // - An ordinary SUPERclass types `this` as itself inside its own
+        //   methods, and that type is spellable, so any method it declares
+        //   can hand a bare alias back out. `Own<>`'s distinctness cannot
+        //   help: the leak happens inside the base, below the handle.
+        //
+        // See ownership.md §"Resource-ness is inherited".
+        if (cd.isResource && !st.isResource) {
+          ctx.error(
+            "The resource class '" + className + "' cannot extend the " +
+            "ordinary class '" + st.name + "'. Inside its own methods '" +
+            st.name + "' sees a bare, freely aliasable reference, which " +
+            "would escape the handle. Make '" + st.name + "' a resource " +
+            "class, or share the code through composition.",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        } else if (!cd.isResource && st.isResource) {
+          ctx.error(
+            "'" + className + "' extends the resource class '" + st.name +
+            "', so it is a resource too and must say so: write 'resource " +
+            "class " + className + "'. Otherwise its own bare type would " +
+            "name a resource that nothing tracks.",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        }
+        if (st.isFinal || st.isCaseClass) {
+          ctx.error(
+            "Cannot extend final class '" + st.name + "'." +
+            if (st.isCaseClass) " Case classes are implicitly final." else "",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        }
+        // Extension classes are erased: a value of one is its
+        // underlying value. So an extension class may only extend
+        // another extension class over the same underlying type, and
+        // then the subtype relation the extends clause declares costs
+        // nothing, because both sides are already the same value at
+        // runtime. The two kinds cannot be mixed: an ordinary subclass
+        // of an extension class would be an allocation whose base is
+        // not one, and an extension class declared `on` an ordinary
+        // class is a second view of that class rather than a subtype
+        // of it.
+        if (cd.isExtension) {
+          if (st.isExtension) {
+            let superOn = st.onType;
+            if (superOn != null) {
+              let ownOn = classType.onType;
+              if (ownOn == null) {
+                // No `on` clause: the underlying type comes from the
+                // superclass.
+                classType.onType = superOn;
+              } else if (!typesEqual(ownOn as Type, superOn as Type)) {
+                ctx.error(
+                  "The extension class '" + className + "' extends '" +
+                  st.name + "', so it must be an extension on '" +
+                  typeToString(superOn as Type) + "' too, and it is declared " +
+                  "on '" + typeToString(ownOn as Type) + "'. Both erase to " +
+                  "their underlying value, and a subtype relation between " +
+                  "them holds only when that value is the same.",
+                  DiagnosticCode.IncompatibleTypes,
+                  cd.loc
+                );
+              }
+            }
+          } else {
+            ctx.error(
+              "The extension class '" + className + "' cannot extend the " +
+              "ordinary class '" + st.name + "'. An extension class is " +
+              "erased to its underlying value, so it has no base object to " +
+              "inherit; write 'extension class " + className + " on " +
+              st.name + "' to add members to '" + st.name + "'.",
+              DiagnosticCode.IncompatibleTypes,
+              cd.loc
+            );
+          }
+        } else if (st.isExtension) {
+          ctx.error(
+            "'" + className + "' cannot extend the extension class '" +
+            st.name + "'. An extension class is erased to its underlying " +
+            "value, so there is no object for an ordinary class to extend. " +
+            "Extend '" + st.name + "' from an extension class, or extend " +
+            "what '" + st.name + "' is declared on.",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        }
+        // Sealed classes can only be extended by their declared variants.
+        if (st.isSealed) {
+          // Check if this class is a forward-declared variant
+          var isForwardVariant = false;
+          let {forwardVariantNames} = st;
+          if (forwardVariantNames != null) {
+            let fwdNames = forwardVariantNames;
+            if (fwdNames.has(className)) {
+              isForwardVariant = true;
+            }
+          }
+          if (!isForwardVariant) {
+            ctx.error(
+              "cannot extend sealed class '" + st.name + "'. " +
+              "Sealed classes can only be extended by their declared variants.",
+              DiagnosticCode.IncompatibleTypes,
+              cd.loc
+            );
+          } else {
+            // Distributed variant (`case X` in the sealed class, defined
+            // as a standalone `final class X(...) extends Base`): this
+            // class IS the variant — link it into the sealed class's
+            // variant list so match exhaustiveness can enumerate it.
+            // Dedup by name: re-check passes revisit this declaration
+            // against the same shared ClassType.
+            if (st.sealedVariants == null) {
+              st.sealedVariants = new Array<ClassType>();
+            }
+            let variantList = st.sealedVariants as GrowableArray<ClassType>;
+            var alreadyLinked = false;
+            for (let v in variantList) {
+              if (v.name == className) {
+                alreadyLinked = true;
+              }
+            }
+            if (!alreadyLinked) {
+              variantList.push(classType);
+            }
+          }
+        }
+        currentSuper = st;
+      }
+      case _: {
+        ctx.error(
+          `Superclass must be a class type, got '${typeToString(superType)}'.`,
+          DiagnosticCode.IncompatibleTypes,
+          cd.loc
+        );
+      }
+    }
+  }
+
+  // Resolve and populate implementsList.
+  let {implementsList} = cd;
+  if (implementsList != null) {
+    let implList = implementsList;
+    for (let ifaceAnn in implList) {
+      let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
+      match (ifaceType) {
+        case InterfaceType as iface: {
+          classType.implementsList.push(iface);
+        }
+        case _: {}
+      }
+    }
+  }
+
+  // Apply mixins
+  let {mixins} = cd;
+  if (mixins != null) {
+    let mixinAnns = mixins;
+    for (let mixinAnn in mixinAnns) {
+      var resolvedMixin = resolveTypeAnnotation(ctx, mixinAnn);
+      // A decorator is a mixin applied one field at a time; `with` is
+      // the whole-class application and does not fit it.
+      if (resolvedMixin is MixinType && (resolvedMixin as MixinType).isDecorator()) {
+        ctx.error(
+          "'" + (resolvedMixin as MixinType).name + "' is a decorator; apply it to a field with '@" +
+          (resolvedMixin as MixinType).name + "' instead of 'with'.",
+          DiagnosticCode.TypeMismatch,
+          mixinAnn.loc
+        );
+        resolvedMixin = new ErrorType();
+      }
+
+      match (resolvedMixin) {
+        case MixinType as mt: {
+          classType.mixins.push(mt);
+          // Check 'on' constraint
+          let {onType} = mt;
+          if (onType != null) {
+            let mtOnType = onType;
+            var satisfied = false;
+            if (currentSuper != null && isAssignableTo(ctx, currentSuper as Type, mtOnType)) {
+              satisfied = true;
+            }
+
+            if (!satisfied && classType.implementsList != null) {
+              var i = 0;
+              while (i < classType.implementsList.length) {
+                if (isAssignableTo(ctx, classType.implementsList[i] as Type, mtOnType)) {
+                  satisfied = true;
+                }
+                i += 1;
+              }
+            }
+            
+            if (!satisfied) {
+              ctx.error(
+                "Mixin '" + mt.name + "' requires target to extend or implement '" + 
+                typeToString(onType) + "'.",
+                DiagnosticCode.TypeMismatch,
+                mixinAnn.loc
+              );
+            }
+          }
+          let intermediate = getOrCreateMixinApplication(ctx, currentSuper, mixinAnn, mt);
+          if (cd.isExtension) {
+            intermediate.isExtension = true;
+          }
+          currentSuper = intermediate;
+        }
+        case _: {
+          if (!(resolvedMixin is ErrorType)) {
+            ctx.error(
+              `'${typeToString(resolvedMixin)}' is not a mixin.`,
+              DiagnosticCode.TypeMismatch,
+              mixinAnn.loc
+            );
+          }
+        }
+      }
+    }
+  }
+
+  classType.superType = currentSuper;
+  if (classType.isCaseClass) {
+    synthesizeCaseClassMembers(ctx, classType, cd.body);
+  }
+
+  // Process case class parameters → generate fields and constructor.
+  if (cd.caseParams != null) {
+    let caseParams = cd.caseParams as GrowableArray<CaseClassParam>;
+    let ctorParamTypes = new Array<Type>();
+    let ctorParamNames = new Array<String>();
+    let ctorOptionalParams = new Array<boolean>();
+    let ctorInitializers = new Array<Expression | null>();
+    var hasCtorInitializers = false;
+
+    var cpi = 0;
+    while (cpi < caseParams.length) {
+      let cp = caseParams[cpi];
+      let fieldName = cp.name.name;
+      var fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
+      rejectFieldStorage(ctx, fieldType, cp.typeAnnotation.loc);
+
+      if (cp.defaultValue != null) {
+        hasCtorInitializers = true;
+        let initExp = cp.defaultValue as Expression;
+        let initType = checkExpression(ctx, initExp, fieldType);
+        if (!isAssignableTo(ctx, initType, fieldType)) {
+          ctx.error(
+            "Type mismatch: default value of type '" + typeToString(initType) +
+            "' is not assignable to parameter type '" + typeToString(fieldType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            initExp.loc
+          );
+        } else {
+          let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+          if (instantiatedVal !== initType) {
+            ctx.setNodeType(initExp, instantiatedVal);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, fieldType);
+        }
+      }
+
+      // Check for duplicate fields (but allow implementing abstract fields).
+      let isImplementingAbstract = classType.members.has(fieldName) && classType.members[fieldName].isAbstract;
+      // A case param may share its name with an INHERITED METHOD (a
+      // sealed base's polymorphic accessor, e.g. docs(): Docs over a
+      // variant's docs field) — the bootstrap accepts this and
+      // wit-parser depends on it. Only a genuine field duplicate errors.
+      let shadowsInheritedMethod = classType.members.has(fieldName) &&
+          classType.members[fieldName] is MethodInfo;
+
+      if (classType.members.has(fieldName) && !isImplementingAbstract &&
+          !shadowsInheritedMethod) {
+        ctx.error(
+          `Duplicate field '${displayMemberName(fieldName)}' in class '${className}'.`,
+          DiagnosticCode.DuplicateField,
+          cp.loc
+        );
+      }
+
+      let isMutable = cp.mutability != null && cp.mutability == "var";
+      classType.members[fieldName] = new FieldInfo(fieldType, isMutable, false, false, false, false);
+
+      ctorParamTypes.push(fieldType);
+      ctorParamNames.push(fieldName);
+      ctorOptionalParams.push(cp.defaultValue != null);
+      ctorInitializers.push(cp.defaultValue);
+      cpi = cpi + 1;
+    }
+
+    // Auto-generate constructor type.
+    let ctorType = new FunctionType(
+      ctorParamTypes,
+      classType,
+      new FunctionDeclInfo(
+        ctorParamNames,
+        null,
+        if (hasCtorInitializers) ctorInitializers else null,
+        ctorOptionalParams
+      )
+    );
+    classType.constructorType = ctorType;
+    classType.constructors["<constructor>"] = ctorType;
+  }
+
+  // Register the class type in both namespaces.
+  ctx.declareTypeName(className, classType);
+
+  // Also register in the value namespace (for `new ClassName` and as a binding).
+  let classInfo = ctx.model.resolveDeclaration(cd);
+  if (classInfo != null) {
+    ctx.declareBinding(classInfo, classType);
+    ctx.model.addDeclaredClass(classInfo.id, cd);
+  }
+
+  // Enter class context for body checking.
+  ctx.enterClass(classType);
+
+  // === Pass 1: Register all field types and method signatures ===
+  // This allows forward references between methods (e.g. this.#foo() calling
+  // a private method defined later in the class body).
+  // Track fields declared directly in this class body (not inherited).
+  let ownFieldNames = new Set<String>();
+  let ownMethodNames = new Set<String>();
+  let ownConstructorNames = new Set<String>();
+  for (let member in cd.body) {
+    match (member) {
+      case FieldDefinition as fd: {
+        // `static symbol sym;` is shaped as a static field annotated
+        // `symbol`, but it declares a symbol rather than storage: it is
+        // registered on the type's staticSymbols and has no member and no
+        // type of its own. Registering it as a field asks for a type
+        // called `symbol`, which does not exist.
+        if (isSymbolFieldDeclaration(fd)) { continue; }
+        if (fd.isShared) {
+          ctx.error("'shared' applies only to a decorator's private members.",
+              DiagnosticCode.TypeMismatch, fd.loc);
+        }
+        let fieldName = getMemberName(ctx, fd.name as Node);
+        let fieldType = if (fd.typeAnnotation != null) {
+          let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
+          rejectFieldStorage(ctx, resolved, fd.loc);
+          resolved
+        } else {
+          new ErrorType() as Type
+        };
+
+        // A decorated field has no storage of its own: the decorator's
+        // intermediate class carries it (docs/design/decorators.md).
+        if (fd.decorators.length > 0 &&
+            applyFieldDecorators(ctx, classType, fd, fieldName, fieldType)) {
+          continue;
+        }
+
+        if (fd.isStatic) {
+          if (ownConstructorNames.has(fieldName)) {
+            ctx.error(
+              `Static field '${displayMemberName(fieldName)}' conflicts with constructor '${displayMemberName(fieldName)}'.`,
+              DiagnosticCode.DuplicateDeclaration,
+              fd.loc
+            );
+          }
+          rejectClassTypeParamsInStatic(
+              ctx, classType, fieldType, "field", fieldName, fd.loc);
+        }
+
+        // Extension classes cannot have instance fields.
+        if (cd.isExtension && !fd.isStatic && !fd.isDeclare) {
+          ctx.error(
+            "Extension classes cannot have instance fields.",
+            DiagnosticCode.IncompatibleTypes,
+            fd.loc
+          );
+        }
+
+        // Abstract fields can only appear in abstract or sealed classes.
+        if (fd.isAbstract) {
+          if (!cd.isAbstract && !cd.isSealed) {
+            ctx.error(
+              `Abstract field '${displayMemberName(fieldName)}' can only appear within an abstract or sealed class.`,
+              DiagnosticCode.IncompatibleTypes,
+              fd.loc
+            );
+          }
+          // Track abstract field.
+          let isMutable = fd.mutability != null && fd.mutability == "var";
+          classType.members[fieldName] = new FieldInfo(
+            fieldType,
+            isMutable,
+            true, // isAbstract
+            fd.isStatic,
+            fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#", // isPrivate
+            fd.value != null // hasInitializer
+          );
+
+          // An abstract field reserves a getter in the members table.
+          let getterName = "get#" + fieldName;
+          if (!classType.members.has(getterName)) {
+            let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
+            classType.members[getterName] = new MethodInfo(
+              new FunctionType(new Array<Type>(), fieldType),
+              true, // isAbstract
+              fd.isStatic,
+              isPrivate,
+              false // isFinal
+            );
+          }
+
+          // If mutable, it also requires a setter.
+          if (fd.mutability != null && fd.mutability == "var") {
+            let setterName = "set#" + fieldName;
+            if (!classType.members.has(setterName)) {
+              let setterParams = growable<Type>([fieldType]);
+              let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
+              classType.members[setterName] = new MethodInfo(
+                new FunctionType(setterParams, new VoidType()),
+                true, // isAbstract
+                fd.isStatic,
+                isPrivate,
+                false // isFinal
+              );
+            }
+          }
+        } else {
+          // Concrete field may satisfy an inherited abstract field.
+          if (classType.members.has(fieldName) && classType.members[fieldName].isAbstract) {
+            // It replaces the abstract field.
+          }
+
+
+
+          var actualFieldName = fieldName;
+          var hasPrivateSetter = false;
+          if (fd.setterName != null) {
+            hasPrivateSetter = true;
+            actualFieldName = if (let Identifier {name} = fd.setterName) {
+              name
+            } else {
+              fieldName
+            };
+            if (fd.setterName is Identifier) {
+              if (classType.fieldSetterNames == null) {
+                classType.fieldSetterNames = new Map<String, String>();
+              }
+              let m = classType.fieldSetterNames as HashMap<String, String>;
+              m[fieldName] = (fd.setterName as Identifier).name;
+            }
+          }
+
+          if (ownFieldNames.has(actualFieldName)) {
+            ctx.error(
+              `Duplicate field '${actualFieldName}' in class '${className}'.`,
+              DiagnosticCode.DuplicateField,
+              fd.loc
+            );
+          } else if (classType.members.has(actualFieldName)) {
+            // Field was inherited from superclass — check type compatibility.
+            let inheritedField = classType.members[actualFieldName];
+            if (!isAssignableTo(ctx, fieldType, inheritedField.type)) {
+              ctx.error(
+                "Field '" + actualFieldName + "' in subclass '" + className +
+                "' must be compatible with inherited field of type '" +
+                typeToString(inheritedField.type) + "'.",
+                DiagnosticCode.IncompatibleTypes,
+                fd.loc
+              );
+            }
+          }
+          ownFieldNames.add(actualFieldName);
+
+          let isMutable = (fd.mutability != null && fd.mutability == "var") || hasPrivateSetter;
+          let registeredField = new FieldInfo(
+            fieldType,
+            isMutable,
+            false, // isAbstract
+            fd.isStatic,
+            actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#", // isPrivate
+            fd.value != null // hasInitializer
+          );
+          classType.members[actualFieldName] = registeredField;
+
+          // A field declared without a type gets it from its initializer,
+          // normally when this class's bodies are checked. Another member
+          // of an import cycle can read the field before then, so the
+          // inference is also available on demand, run once, with the
+          // same scope checkClassBodies would give it.
+          if (fd.typeAnnotation == null && fd.value != null) {
+            let pendingDecl = cd;
+            let pendingClass = classType;
+            let pendingName = fieldName;
+            registeredField.pendingInit = () => {
+              if (registeredField.initializerChecked) {
+                return registeredField.type;
+              }
+              ctx.enterScope();
+              let tps = pendingClass.typeParameters;
+              if (tps != null) {
+                for (let tp in tps) {
+                  ctx.declareTypeName(tp.name, tp);
+                }
+              }
+              ctx.enterClass(pendingClass);
+              let prevBodyThis = ctx.bodyThisType;
+              ctx.setBodyThisType(selfTypeOfClass(pendingClass));
+              let order = new Array<String>();
+              var at = 0;
+              for (let m in pendingDecl.body) {
+                if (m is FieldDefinition) {
+                  if (m === fd) {
+                    at = order.length;
+                  }
+                  order.push(fieldDeclaredName(ctx, m));
+                }
+              }
+              checkFieldInitializer(ctx, pendingClass, fd, pendingName, at, order);
+              ctx.setBodyThisType(prevBodyThis);
+              ctx.exitClass();
+              ctx.exitScope();
+              return registeredField.type;
+            };
+          }
+
+          if (fd.isDeclare) {
+            let df = classType.declaredFields;
+            let dfNonNull = if (df == null) {
+              let newSet = new Set<String>();
+              classType.declaredFields = newSet;
+              newSet
+            } else {
+              df
+            };
+            dfNonNull.add(actualFieldName);
+          }
+
+          if (hasPrivateSetter) {
+            let getterName = "get#" + fieldName;
+            if (!classType.members.has(getterName)) {
+              let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
+              classType.members[getterName] = new MethodInfo(
+                new FunctionType(new Array<Type>(), fieldType),
+                false, // isAbstract
+                fd.isStatic,
+                isPrivate,
+                false // isFinal
+              );
+            }
+          }
+        }      }
+      case MethodDefinition as md: {
+        let methodName = getMemberName(ctx, md.name as Node);
+        if (md.isShared) {
+          ctx.error("'shared' applies only to a decorator's private members.",
+              DiagnosticCode.TypeMismatch, md.loc);
+        }
+
+        if (md.isConstructor) {
+          if (methodName == "<constructor>") {
+            if (cd.caseParams != null && classType.constructorType != null) {
+              ctx.error(
+                "Duplicate constructor in case class '" + className +
+                "'. Case classes auto-generate a constructor from their parameters.",
+                DiagnosticCode.DuplicateMethod,
+                md.loc
+              );
+            } else if (ownConstructorNames.has("<constructor>")) {
+              ctx.error(
+                `Duplicate constructor in class '${className}'.`,
+                DiagnosticCode.DuplicateMethod,
+                md.loc
+              );
+            } else {
+              ownConstructorNames.add("<constructor>");
+              let ctorType = checkMethodSignature(ctx, classType, md).withReturnType(classType);
+              classType.constructorType = ctorType;
+              classType.constructors["<constructor>"] = ctorType;
+            }
+          } else {
+            // Named constructor.
+            if (ownConstructorNames.has(methodName)) {
+              ctx.error(
+                `Duplicate constructor '${displayMemberName(methodName)}' in class '${className}'.`,
+                DiagnosticCode.DuplicateMethod,
+                md.loc
+              );
+            } else {
+              ownConstructorNames.add(methodName);
+            }
+            if (classType.members.has(methodName)) {
+              let existing = classType.members[methodName];
+              if (existing is MethodInfo && (existing as MethodInfo).isStatic) {
+                ctx.error(
+                  `Constructor '${displayMemberName(methodName)}' conflicts with static method '${displayMemberName(methodName)}'.`,
+                  DiagnosticCode.DuplicateDeclaration,
+                  md.loc
+                );
+              } else if (existing is FieldInfo && (existing as FieldInfo).isStatic) {
+                ctx.error(
+                  `Constructor '${displayMemberName(methodName)}' conflicts with static field '${displayMemberName(methodName)}'.`,
+                  DiagnosticCode.DuplicateDeclaration,
+                  md.loc
+                );
+              }
+            }
+            let ctorType = checkMethodSignature(ctx, classType, md).withReturnType(classType);
+            classType.constructors[methodName] = ctorType;
+          }
+        } else {
+          // Regular method.
+          if (md.isStatic && ownConstructorNames.has(methodName)) {
+            ctx.error(
+              `Static method '${displayMemberName(methodName)}' conflicts with constructor '${displayMemberName(methodName)}'.`,
+              DiagnosticCode.DuplicateDeclaration,
+              md.loc
+            );
+          }
+
+          // Check for field/method name conflict.
+          if (ownFieldNames.has(methodName)) {
+            ctx.error(
+              `Method '${displayMemberName(methodName)}' conflicts with field '${displayMemberName(methodName)}'.`,
+              DiagnosticCode.DuplicateDeclaration,
+              md.loc
+            );
+          }
+
+          // Check abstract method in concrete class.
+          if (md.isAbstract && !cd.isAbstract && !cd.isSealed) {
+            ctx.error(
+              `Abstract method '${displayMemberName(methodName)}' can only appear within an abstract class.`,
+              DiagnosticCode.IncompatibleTypes,
+              md.loc
+            );
+          }
+
+          let receiverKind = checkReceiverDeclaration(ctx, classType, md);
+          let consumesReceiver = receiverKind == ReceiverKind.Owning;
+
+          // Check final method override.
+          let {superType} = classType;
+          if (superType != null) {
+            let superCt = superType;
+            if (superCt.members.has(methodName)) {
+              let inheritedMethod = superCt.members[methodName];
+              match (inheritedMethod) {
+                case MethodInfo as mi: {
+                  if (mi.isFinal) {
+                    ctx.error(
+                      `Cannot override final method '${displayMemberName(methodName)}'.`,
+                      DiagnosticCode.IncompatibleTypes,
+                      md.loc
+                    );
+                  }
+                  // The receiver is part of the signature, so an override may
+                  // not change it. A caller working through the base type
+                  // would otherwise move a receiver the override only
+                  // borrows, or borrow one it moves — and which happened
+                  // would depend on the static type at the call.
+                  if (receiverKind != ReceiverKind.Invalid &&
+                      mi.consumesReceiver() != consumesReceiver) {
+                    let inherited = if (mi.consumesReceiver()) {
+                      "consumes its receiver"
+                    } else {
+                      "borrows its receiver"
+                    };
+                    let here = if (consumesReceiver) {
+                      "consumes it"
+                    } else {
+                      "borrows it"
+                    };
+                    ctx.error(
+                      "'" + displayMemberName(methodName) + "' " + inherited + " in '" + superCt.name +
+                      "', and this override " + here + ". A receiver is part of the " +
+                      "signature: a call through '" + superCt.name + "' must do the same " +
+                      "thing to the object whichever override it reaches.",
+                      DiagnosticCode.IncompatibleTypes,
+                      md.loc
+                    );
+                  }
+                }
+                case _: {}
+              }
+            }
+          }
+
+          let methodType = checkMethodSignature(ctx, classType, md);
+
+          if (md.isStatic) {
+            rejectClassTypeParamsInStatic(
+                ctx, classType, methodType, "method", methodName, md.loc);
+          }
+
+          // The derivation rule for methods, checked here rather than in
+          // `checkMethodSignature` because that runs again for the body
+          // pass and would report every method twice. A resource's methods
+          // take `this` as a borrow, so the receiver is the source a
+          // projection like `f.name` derives from; counting it is what
+          // keeps the rule from rejecting the accessors that motivate
+          // borrows in the first place.
+          // A `scoped T` class's `T` comes out of `this`, so the
+          // receiver is the source a returned `T` derives from: the
+          // instance carries the restriction out (ownership.md §"Scoped
+          // type arguments").
+          checkBorrowDerivation(
+            ctx, methodType.parameters, methodType.returnType,
+            classType.isResource ||
+                mentionsTypeParams(methodType.returnType, scopedTypeParamsOf(classType)),
+            md.loc);
+
+          if (ownMethodNames.has(methodName)) {
+            let existingInfo = classType.members[methodName];
+            let existing = existingInfo.type as FunctionType;
+            if (existing.overloads == null) {
+              let ovArray = growable<FunctionType>([existing]);
+              existing.overloads = ovArray;
+            }
+            let ovs = existing.overloads as GrowableArray<FunctionType>;
+            ovs.push(methodType);
+          } else {
+            let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+            if (!isPrivate && classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
+              let inheritedMethodInfo = classType.members[methodName] as MethodInfo;
+              let superMethod = inheritedMethodInfo.type as FunctionType;
+              var matchingSuper = findMatchingOverload(superMethod, methodType);
+              var narrowedEquality: FunctionType | null = null;
+              if (matchingSuper == null && methodName == "==") {
+                narrowedEquality = equalityOverrideTarget(ctx, superMethod, methodType, classType);
+                matchingSuper = narrowedEquality;
+              }
+              if (matchingSuper != null) {
+                if (matchingSuper.isFinal) {
+                  ctx.error(
+                    `Cannot override final method '${displayMemberName(methodName)}'.`,
+                    DiagnosticCode.IncompatibleTypes,
+                    md.loc
+                  );
+                }
+
+                let newOverloads = new Array<FunctionType>();
+                if (!hasSameSignature(superMethod, methodType) &&
+                    superMethod !== narrowedEquality) {
+                  newOverloads.push(superMethod);
+                }
+                let {overloads} = superMethod;
+                if (overloads != null) {
+                  let superOvs = overloads;
+                  for (let overload in superOvs) {
+                    if (!hasSameSignature(overload, methodType) &&
+                        overload !== narrowedEquality) {
+                      newOverloads.push(overload);
+                    }
+                  }
+                }
+                if (newOverloads.length > 0) {
+                  methodType.overloads = newOverloads;
+                }
+
+                let overrideInfo = new MethodInfo(
+                  methodType,
+                  md.isAbstract,
+                  md.isStatic,
+                  isPrivate,
+                  md.isFinal
+                );
+                overrideInfo.receiverKind = receiverKind;
+                classType.members[methodName] = overrideInfo;
+                ownMethodNames.add(methodName);
+              } else {
+                // Overlap restriction (member-lookup.md §5.1): a
+                // subclass may not ADD an overload whose parameters
+                // overlap an inherited signature — some argument
+                // tuple would then select differently through
+                // supertype- vs subclass-typed references. Declare
+                // overlapping alternatives at the base class and
+                // override per-signature instead.
+                let inheritedMethod = inheritedMethodInfo.type as FunctionType;
+                var overlapsInherited = signaturesMayOverlap(ctx, methodType, inheritedMethod);
+                if (!overlapsInherited && inheritedMethod.overloads != null) {
+                  let inhOvs = inheritedMethod.overloads as GrowableArray<FunctionType>;
+                  for (let inh in inhOvs) {
+                    if (signaturesMayOverlap(ctx, methodType, inh)) {
+                      overlapsInherited = true;
+                    }
+                  }
+                }
+                if (overlapsInherited) {
+                  ctx.error(
+                    `Overload of '${displayMemberName(methodName)}' overlaps an inherited signature; declare overlapping overloads in the base class and override per-signature.`,
+                    DiagnosticCode.IncompatibleTypes,
+                    md.loc
+                  );
+                }
+                if (inheritedMethod.overloads == null) {
+                  let ovArray = growable<FunctionType>([inheritedMethod]);
+                  inheritedMethod.overloads = ovArray;
+                }
+                let ovs = inheritedMethod.overloads as GrowableArray<FunctionType>;
+                ovs.push(methodType);
+
+                ownMethodNames.add(methodName);
+              }
+            } else {
+              let info = new MethodInfo(
+                methodType,
+                md.isAbstract, // isAbstract
+                md.isStatic,
+                isPrivate,
+                md.isFinal
+              );
+              info.receiverKind = receiverKind;
+              classType.members[methodName] = info;
+              ownMethodNames.add(methodName);
+            }
+          }
+        }
+      }
+      case AccessorDeclaration as acc: {
+        let accName = getMemberName(ctx, acc.name as Node);
+        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+
+        if (acc.isStatic) {
+          rejectClassTypeParamsInStatic(
+              ctx, classType, accType, "accessor", accName, acc.loc);
+        }
+
+        // Getter creates get#accName method.
+        if (acc.getter != null) {
+          let getterName = "get#" + accName;
+          // Check for final override.
+          let {superType} = classType;
+          if (superType != null) {
+            let superCt = superType;
+            if (superCt.members.has(getterName)) {
+              let superMethod = superCt.members[getterName];
+              match (superMethod) {
+                case MethodInfo as mi: {
+                  if (mi.isFinal) {
+                    ctx.error(
+                      `Cannot override final method '${displayMemberName(getterName)}'.`,
+                      DiagnosticCode.IncompatibleTypes,
+                      acc.loc
+                    );
+                  }
+                }
+                case _: {}
+              }
+            }
+          }
+          let getterType = new FunctionType(new Array<Type>(), accType, new FunctionDeclInfo(null, null, null, null, acc.isFinal));
+          let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
+          classType.members[getterName] = new MethodInfo(
+            getterType,
+            false, // isAbstract
+            acc.isStatic,
+            isPrivate,
+            acc.isFinal
+          );
+        }
+
+        // Setter creates a method set#accName with param type = accType.
+        if (acc.setter != null) {
+          let setterName = "set#" + accName;
+          // Check for final override.
+          let {superType} = classType;
+          if (superType != null) {
+            let superCt = superType;
+            if (superCt.members.has(setterName)) {
+              let superMethod = superCt.members[setterName];
+              match (superMethod) {
+                case MethodInfo as mi: {
+                  if (mi.isFinal) {
+                    ctx.error(
+                      `Cannot override final method '${displayMemberName(setterName)}'.`,
+                      DiagnosticCode.IncompatibleTypes,
+                      acc.loc
+                    );
+                  }
+                }
+                case _: {}
+              }
+            }
+          }
+          let setterParams = growable<Type>([accType]);
+          let setterType = new FunctionType(setterParams, new VoidType(), new FunctionDeclInfo(null, null, null, null, acc.isFinal));
+          let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
+          classType.members[setterName] = new MethodInfo(
+            setterType,
+            false, // isAbstract
+            acc.isStatic,
+            isPrivate,
+            acc.isFinal
+          );
+        }
+      }
+      case MethodSignature as ms: {
+        let methodName = (ms.name as Identifier).name;
+        
+        if (methodName == "new") {
+          if (cd.caseParams != null && classType.constructorType != null) {
+            ctx.error(
+              "Duplicate constructor in case class '" + className +
+              "'. Case classes auto-generate a constructor from their parameters.",
+              DiagnosticCode.DuplicateMethod,
+              ms.loc
+            );
+          } else {
+            let paramTypes = new Array<Type>();
+            let paramNames = new Array<String>();
+            var pi = 0;
+            while (pi < ms.params.length) {
+              let param = ms.params[pi];
+              let paramName = param.name.name;
+              var paramType: Type = new ErrorType();
+              var lookupName = paramName;
+              let {fieldSetterNames} = classType;
+              if (fieldSetterNames != null) {
+                let m = fieldSetterNames;
+                if (m.has(paramName)) {
+                  lookupName = m[paramName];
+                }
+              }
+              let decoratedParamField = if (param.isThisParam) decoratedFieldOf(classType, paramName) else null;
+              if (decoratedParamField != null) {
+                // `this.x` for a decorated field: typed by the field's
+                // declaration; the value lands in the decorator's storage.
+                paramType = decoratedParamField.fieldType;
+              } else if (param.isThisParam && classType.members.has(lookupName)) {
+                paramType = classType.members[lookupName].type;
+              } else if (param.typeAnnotation != null) {
+                paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+              }
+              paramTypes.push(paramType);
+              paramNames.push(paramName);
+              pi = pi + 1;
+            }
+            let ctorType = new FunctionType(paramTypes, classType, new FunctionDeclInfo(paramNames));
+            classType.constructorType = ctorType;
+          }
+        } else {
+          let paramTypes = new Array<Type>();
+          var pi = 0;
+          while (pi < ms.params.length) {
+            let param = ms.params[pi];
+            var paramType: Type = new ErrorType();
+            let {typeAnnotation} = param;
+            if (typeAnnotation != null) {
+              paramType = resolveTypeAnnotation(ctx, typeAnnotation);
+            }
+            paramTypes.push(paramType);
+            pi = pi + 1;
+          }
+          var retType: Type = new VoidType();
+          let {returnType} = ms;
+          if (returnType != null) {
+            retType = resolveTypeAnnotation(ctx, returnType, true);
+          }
+          let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+          classType.members[methodName] = new MethodInfo(
+            new FunctionType(paramTypes, retType),
+            false, // isAbstract
+            false, // isStatic
+            isPrivate,
+            false // isFinal
+          );
+        }
+      }
+      case _: {}
+    }
+  }
+
+  // Handle sealed class variants.
+  if (cd.isSealed && cd.sealedVariants != null) {
+    let variants = cd.sealedVariants as GrowableArray<SealedVariant>;
+    classType.sealedVariants = new Array<ClassType>();
+    for (let variant in variants) {
+      let variantName = variant.name.name;
+
+      // Forward-declared variants (null params, like `case Circle, Rect`)
+      // are defined as separate classes - skip creating inline types.
+      let {params} = variant;
+      if (params != null) {
+        // On-demand: resolveTypeName will materialize from the SealedVariant
+        // declaration in scope analysis if this variant was referenced earlier.
+        // If not, create a fresh ClassType.
+        let existingType = ctx.resolveTypeName(variantName);
+        var variantType = new ClassType(ctx.freshTypeId(), noSymbolId, variantName);
+        if (existingType != null) {
+          // Check scope analysis: if the name's declaration is a SealedVariant,
+          // the existing type was forward-materialized from this variant — reuse.
+          // If it's a ClassDeclaration or other node, it's a name conflict.
+          var isForwardVariant = false;
+          if (ctx.scopeResult != null) {
+            let scopeInfo = ctx.scopeResult.rootScope.resolve(variantName);
+            if (scopeInfo?.declaration is SealedVariant) {
+              isForwardVariant = true;
+            }
+          }
+          if (isForwardVariant && existingType is ClassType) {
+            variantType = existingType;
+          } else {
+            ctx.error(
+              "Duplicate declaration of '" + variantName + "' as inline variant. " +
+              "The name conflicts with an existing type.",
+              DiagnosticCode.DuplicateDeclaration,
+              variant.name.loc
+            );
+          }
+        }
+        variantType.superType = classType;
+        variantType.isCaseClass = true;
+        variantType.isFinal = true;
+
+        // Process variant parameters as fields + constructor.
+        let vParams = params;
+        let vCtorParams = new Array<Type>();
+        let vCtorNames = new Array<String>();
+        let vCtorOptionalParams = new Array<boolean>();
+        let vCtorInitializers = new Array<Expression | null>();
+        var hasVCtorInitializers = false;
+        var vpi = 0;
+        while (vpi < vParams.length) {
+          let vp = vParams[vpi];
+          var vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
+
+          if (vp.defaultValue != null) {
+            hasVCtorInitializers = true;
+            let initExp = vp.defaultValue as Expression;
+            let initType = checkExpression(ctx, initExp, vpType);
+            if (!isAssignableTo(ctx, initType, vpType)) {
+              ctx.error(
+                "Type mismatch: default value of type '" + typeToString(initType) +
+                "' is not assignable to parameter type '" + typeToString(vpType) + "'.",
+                DiagnosticCode.TypeMismatch,
+                initExp.loc
+              );
+            } else {
+              let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, vpType);
+              if (instantiatedVal !== initType) {
+                ctx.setNodeType(initExp, instantiatedVal);
+              }
+              checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, vpType);
+            }
+          }
+
+          let isMut = vp.mutability != null && vp.mutability == "var";
+          variantType.members[vp.name.name] = new FieldInfo(vpType, isMut, false, false, false, false);
+          vCtorParams.push(vpType);
+          vCtorNames.push(vp.name.name);
+          vCtorOptionalParams.push(vp.defaultValue != null);
+          vCtorInitializers.push(vp.defaultValue);
+          vpi = vpi + 1;
+        }
+        let vCtorType = new FunctionType(
+          vCtorParams,
+          variantType,
+          new FunctionDeclInfo(
+            vCtorNames,
+            null,
+            if (hasVCtorInitializers) vCtorInitializers else null,
+            vCtorOptionalParams
+          )
+        );
+        variantType.constructorType = vCtorType;
+        variantType.constructors["<constructor>"] = vCtorType;
+        synthesizeCaseClassMembers(ctx, variantType, null);
+
+        (classType.sealedVariants as GrowableArray<ClassType>).push(variantType);
+
+        // Register variant in type and value namespaces (module scope
+        // so the name is visible in match patterns outside the class).
+        ctx.declareModuleTypeName(variant.name.name, variantType);
+        // Also bind the variant type to its Symbol so cross-module
+        // import resolution can find the fully-typed ClassType.
+        let variantInfo = ctx.model.resolveDeclaration(variant);
+        if (variantInfo != null) {
+          ctx.declareBinding(variantInfo, variantType);
+        }
+      } else {
+        // Forward-declared variant or unit variant (no params).
+        // Look up an existing class type (distributed variant pattern),
+        // otherwise create an inline unit variant.
+        match (ctx.resolveTypeName(variantName)) {
+          case ClassType as ct: {
+            // If this ClassType was forward-materialized on-demand from a
+            // SealedVariant, it won't have superType/constructor yet.
+            // Complete it now.
+            if (ct.superType == null) {
+              ct.superType = classType;
+              // Only fully set up unit variants (not forward-declared ones
+              // which have their own ClassDeclaration that handles fields).
+              var isForwardVariant2 = false;
+              let {forwardVariantNames} = classType;
+              if (forwardVariantNames != null) {
+                let fvn = forwardVariantNames;
+                if (fvn.has(variantName)) { isForwardVariant2 = true; }
+              }
+              if (!isForwardVariant2) {
+                ct.isCaseClass = true;
+                ct.isFinal = true;
+                if (ct.constructorType == null) {
+                  ct.constructorType = new FunctionType(new Array<Type>(), ct, new FunctionDeclInfo(new Array<String>()));
+                }
+                synthesizeCaseClassMembers(ctx, ct, null);
+              }
+            }
+            let sealedVars = classType.sealedVariants as GrowableArray<ClassType>;
+            sealedVars.push(ct);
+          }
+          case _: {
+            let unitType = new ClassType(ctx.freshTypeId(), noSymbolId, variantName);
+            unitType.superType = classType;
+            unitType.isCaseClass = true;
+            unitType.isFinal = true;
+            // Unit variant: zero-arg constructor.
+            unitType.constructorType = new FunctionType(new Array<Type>(), unitType, new FunctionDeclInfo(new Array<String>()));
+            unitType.constructors["<constructor>"] = unitType.constructorType as FunctionType;
+            synthesizeCaseClassMembers(ctx, unitType, null);
+
+            (classType.sealedVariants as GrowableArray<ClassType>).push(unitType);
+            ctx.declareModuleTypeName(variantName, unitType);
+          }
+        }
+      }
+    }
+  }
+
+  if (classType.constructorType == null && classType.constructors.size == 0 && classType.superType != null && !classType.isExtension && cd.caseParams == null) {
+    var scWalk = classType.superType;
+    while (scWalk != null && scWalk.isMixinIntermediate && scWalk.constructorType == null) {
+      scWalk = scWalk.superType;
+    }
+    if (scWalk != null && scWalk.constructorType != null) {
+      classType.constructorType = scWalk.constructorType;
+      classType.constructors["<constructor>"] = scWalk.constructorType as FunctionType;
+    }
+  }
+
+  // Every member is registered by now, so each symbol-keyed one can be
+  // given the identity of the symbol that named it — and a key that names
+  // no symbol is reported.
+  recordSymbolKeyedMemberIdentities(
+      ctx, classType as Type, classType.members, cd.body);
+
+  ctx.exitClass();
+  ctx.exitScope();
+}
+
+/**
+ * Check class method bodies, field initializers, accessor bodies, interface
+ * conformance, and abstract field/method implementation. Called in Phase 2
+ * after all declaration signatures have been registered.
+ */
+/** The name a field is declared under (a symbol-keyed one as `:name`). */
+function fieldDeclaredName(ctx: CheckerContext, fd: FieldDefinition): String {
+  return getMemberName(ctx, fd.name as Node);
+}
+
+/**
+ * Check a field's initializer against its declared type, or infer the
+ * type from it when none is declared. Run once per field: by
+ * checkClassBodies in declaration order, or earlier on demand through
+ * FieldInfo.pendingInit. `fieldIndex` and `fieldOrder` say which fields
+ * were declared before this one; later fields and inherited ones are
+ * hidden while the initializer is checked.
+ */
+function checkFieldInitializer(
+  ctx: CheckerContext,
+  classType: ClassType,
+  fd: FieldDefinition,
+  fieldName: String,
+  fieldIndex: i32,
+  fieldOrder: GrowableArray<String>
+): void {
+  let {value} = fd;
+  if (value == null) {
+    return;
+  }
+  // A `var(#x) x` field is registered under its SETTER name.
+  var lookupField = fieldName;
+  let fsn = classType.fieldSetterNames;
+  if (fsn != null) {
+    if (let (true, mapped) = fsn.get(fieldName)) {
+      lookupField = mapped;
+    }
+  }
+  if (!classType.members.has(lookupField)) {
+    return;
+  }
+  let fieldInfo = classType.members[lookupField];
+  if (fieldInfo is FieldInfo) {
+    if (fieldInfo.initializerChecked) {
+      return;
+    }
+    fieldInfo.initializerChecked = true;
+    fieldInfo.pendingInit = null;
+  }
+
+  ctx.enterNodeReferrer(fd.id as i32);
+
+  // Hide the fields declared after this one and the ones inherited from a
+  // superclass while the initializer is checked, so it cannot read them.
+  let keysToHide = new Array<String>();
+
+  let allFieldKeys = classType.members.keys();
+  for (let k in allFieldKeys) {
+    if (classType.members[k] is FieldInfo) {
+      var isPriorLocal = false;
+      var fi = 0;
+      while (fi <= fieldIndex) {
+        // A `var(#x) x` field's member key is its SETTER name;
+        // fieldOrder carries the declared one.
+        var declared = fieldOrder[fi];
+        let fsnOrder = classType.fieldSetterNames;
+        if (fsnOrder != null) {
+          if (let (true, mapped) = fsnOrder.get(declared)) {
+            declared = mapped;
+          }
+        }
+        if (declared == k) {
+          isPriorLocal = true;
+        }
+        fi = fi + 1;
+      }
+      if (!isPriorLocal) {
+        keysToHide.push(k);
+      }
+    }
+  }
+
+  for (let k in keysToHide) {
+    classType.members.hide(k);
+  }
+
+  let fieldType = fieldInfo.type;
+  let initType = checkExpression(ctx, value, fieldType);
+
+  classType.members.unhideAll();
+
+  // Infer field type from initializer when no explicit annotation.
+  if (fieldType is ErrorType && !(initType is ErrorType)) {
+    let inferredType = if (fd.mutability != null && fd.mutability == "var") {
+      widenType(ctx, initType)
+    } else {
+      initType
+    };
+    fieldInfo.type = inferredType;
+  } else if (!isAssignableTo(ctx, initType, fieldType)) {
+    ctx.error(
+      "Type mismatch: field '" + displayMemberName(fieldName) + "' has type '" +
+      typeToString(fieldType) + "' but initializer has type '" +
+      typeToString(initType) + "'.",
+      DiagnosticCode.TypeMismatch,
+      fd.loc
+    );
+  } else {
+    let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+    if (instantiatedVal !== initType) {
+      ctx.setNodeType(value, instantiatedVal);
+    }
+    checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, fieldType);
+  }
+  ctx.exitNodeReferrer(fd.id as i32);
+}
+
+/**
+ * The class type `registerClassDeclaration` registered for a
+ * declaration, or a fresh empty one when the name resolves to
+ * something else.
+ */
+function classTypeOfDeclaration(ctx: CheckerContext, cd: ClassDeclaration): ClassType {
+  let className = cd.name.name;
+  let resolved = ctx.resolveTypeName(className);
+  if (resolved != null) {
+    match (resolved) {
+      case ClassType as ct: { return ct; }
+      case _: {}
+    }
+  }
+  return new ClassType(ctx.freshTypeId(), noSymbolId, className);
+}
+
+/**
+ * The scope a class's member bodies are checked in: the class's type
+ * parameters by name, the class itself as the enclosing one, and
+ * `this`. Paired with exitClassBodyScope, which restores what the
+ * previous `this` was.
+ */
+function enterClassBodyScope(ctx: CheckerContext, classType: ClassType): Type | null {
+  ctx.enterScope();
+  let {typeParameters} = classType;
+  if (typeParameters != null) {
+    let tps = typeParameters;
+    for (let tp in tps) {
+      ctx.declareTypeName(tp.name, tp);
+    }
+  }
+  ctx.enterClass(classType);
+  // Every body checked under this scope belongs to this class, so a
+  // `this` written in one of them means this class. Saved and
+  // restored rather than cleared, so a class nested inside another
+  // class's body gets its own binding back when it finishes.
+  let prevBodyThis = ctx.bodyThisType;
+  ctx.setBodyThisType(selfTypeOfClass(classType));
+  return prevBodyThis;
+}
+
+function exitClassBodyScope(ctx: CheckerContext, prevBodyThis: Type | null): void {
+  ctx.setBodyThisType(prevBodyThis);
+  ctx.exitClass();
+  ctx.exitScope();
+}
+
+/**
+ * The body of one method or accessor, under a scope
+ * enterClassBodyScope has already set up. Split out of
+ * checkClassBodies so a module whose bodies wait to be reached can
+ * check one member at a time, long after the rest of the class
+ * registered.
+ */
+function checkClassMemberBody(
+    ctx: CheckerContext,
+    classType: ClassType,
+    member: Node): void {
+  match (member) {
+    case MethodDefinition as md: {
+      if (md.body == null) { return; }
+      ctx.enterNodeReferrer(md.id as i32);
+      let methodName = getMemberName(ctx, md.name as Node);
+      if (md.isConstructor) {
+        let ctorType = if (classType.constructors.has(methodName)) {
+          classType.constructors[methodName]
+        } else {
+          classType.constructorType
+        };
+        if (ctorType != null) {
+          checkMethodBody(ctx, classType, ctorType, md);
+        }
+        // Derived class constructors must call super() — except when the
+        // superclass is a root nobody wrote. A `resource class` with no
+        // extends clause is given `Resource` as its superclass, and
+        // `Resource` declares no constructor, so there is nothing for
+        // `super()` to call and requiring it would be an artifact of the
+        // desugaring rather than anything the author owes.
+        var superNeedsInit = false;
+        var scWalk = classType.superType;
+        while (scWalk != null) {
+          if (!scWalk.isMixinIntermediate) {
+            if (scWalk.constructorType != null ||
+                scWalk.constructors.size > 0 ||
+                !isWellKnown(WellKnown.ResourceClass, scWalk.name,
+                    scWalk.sourcePath)) {
+              superNeedsInit = true;
+            }
+            break;
+          }
+          scWalk = scWalk.superType;
+        }
+        if (superNeedsInit && md.superInitializer == null && !classType.isCaseClass) {
+          ctx.error(
+            "Constructors in derived classes must call super().",
+            DiagnosticCode.IncompatibleTypes,
+            md.loc
+          );
+        }
+      } else {
+        if (classType.members.has(methodName)) {
+          let methodType = checkMethodSignature(ctx, classType, md);
+          checkMethodBody(ctx, classType, methodType, md);
+        }
+      }
+      ctx.exitNodeReferrer(md.id as i32);
+    }
+    case AccessorDeclaration as acc: {
+      let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+
+      // Check getter body.
+      let {getter} = acc;
+      if (getter != null) {
+        ctx.enterNodeReferrer(acc.id as i32);
+        let getterBlock = getter;
+        ctx.enterScope();
+        let prevReturnType = ctx.returnType;
+        ctx.setReturnType(accType);
+        let prevFlowState = ctx.enterBodyFlow(false);
+        var gi = 0;
+        while (gi < getterBlock.body.length) {
+          checkStatement(ctx, getterBlock.body[gi]);
+          gi += 1;
+        }
+        ctx.exitBodyFlow(prevFlowState);
+        ctx.setReturnType(prevReturnType);
+        ctx.exitScope();
+        ctx.exitNodeReferrer(acc.id as i32);
+      }
+
+      // Check setter body.
+      let {setter} = acc;
+      if (setter != null) {
+        match (setter) {
+          case SetterInfo as si: {
+            ctx.enterNodeReferrer(si.id as i32);
+            ctx.enterScope();
+            let paramInfo = ctx.model.resolveDeclaration(si.param);
+            if (paramInfo != null) {
+              ctx.declareBinding(paramInfo, accType);
+            }
+            let prevFlowState = ctx.enterBodyFlow(false);
+            for (let stmt in si.body.body) {
+              checkStatement(ctx, stmt);
+            }
+            ctx.exitBodyFlow(prevFlowState);
+            ctx.exitScope();
+            ctx.exitNodeReferrer(si.id as i32);
+          }
+          case _: {}
+        }
+      }
+    }
+    case _: {}
+  }
+}
+
+/**
+ * Check one deferred member's body, rebuilding the class scope around
+ * it. The whole class registered when its module was checked; this is
+ * the one body that waited.
+ */
+export function checkDeferredClassMember(
+    ctx: CheckerContext,
+    cd: ClassDeclaration,
+    member: Node): void {
+  let classType = classTypeOfDeclaration(ctx, cd);
+  let prevBodyThis = enterClassBodyScope(ctx, classType);
+  checkClassMemberBody(ctx, classType, member);
+  exitClassBodyScope(ctx, prevBodyThis);
+}
+
+/**
+ * Everything a class declaration contributes beyond its registered
+ * signatures: field initializers, member bodies, and the conformance
+ * and resource rules the class as a whole has to satisfy.
+ *
+ * `deferred` is non-null for a module whose bodies wait to be
+ * reached. Only the member BODIES wait: a field initializer is what
+ * gives an unannotated field its type, and the rules below mutate the
+ * class — `:dispose` is synthesized here — so both run whether or not
+ * anything reaches the class.
+ */
+export function checkClassBodies(
+    ctx: CheckerContext,
+    cd: ClassDeclaration,
+    deferred: DeferredModule | null = null): void {
+  let className = cd.name.name;
+
+  let classType = classTypeOfDeclaration(ctx, cd);
+  let prevBodyThis = enterClassBodyScope(ctx, classType);
+
+  // Check method bodies and field initializers.
+  // Collect field names in declaration order for forward-reference detection.
+  let fieldOrder = new Array<String>();
+  for (let bodyMember in cd.body) {
+    match (bodyMember) {
+      case FieldDefinition as fd: {
+        let fn = getMemberName(ctx, fd.name as Node);
+        fieldOrder.push(fn);
+      }
+      case _: {}
+    }
+  }
+
+  var fieldIndex = 0;
+  let bi = 0;
+  for (let member in cd.body) {
+    match (member) {
+      case FieldDefinition as fd: {
+        if (fd.value != null) {
+          let declared = fieldDeclaredName(ctx, fd);
+          let decoratedField = decoratedFieldOf(classType, declared);
+          if (decoratedField != null) {
+            checkDecoratedFieldInitializer(ctx, fd, decoratedField);
+          } else {
+            checkFieldInitializer(ctx, classType, fd, declared, fieldIndex, fieldOrder);
+          }
+        }
+        fieldIndex = fieldIndex + 1;
+      }
+      case MethodDefinition {}: {
+        if (deferred != null) {
+          deferred.addMember(member as Node, cd);
+        } else {
+          checkClassMemberBody(ctx, classType, member as Node);
+        }
+      }
+      case AccessorDeclaration {}: {
+        if (deferred != null) {
+          deferred.addMember(member as Node, cd);
+        } else {
+          checkClassMemberBody(ctx, classType, member as Node);
+        }
+      }
+      case _: {}
+    }
+  }
+
+  // Check interface conformance.
+  let {implementsList} = cd;
+  if (implementsList != null) {
+    let implList = implementsList;
+    for (let ifaceAnn in implList) {
+      let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
+      match (ifaceType) {
+        case InterfaceType as iface: {
+          // Check all interface methods are implemented.
+          for (let methodName in iface.members.keys()) {
+            let ifaceMethodInfo = iface.members[methodName];
+            if (ifaceMethodInfo is MethodInfo) {
+              let ifaceMethod = ifaceMethodInfo.type;
+              if (classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
+                let classMethodInfo = classType.members[methodName];
+                let classMethod = classMethodInfo.type;
+                // Check signature compatibility.
+                let expectedMethodType0 = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
+                
+                var receiverType = classType as Type;
+                let tParams = classType.typeParameters;
+                if (tParams != null) {
+                  if (tParams.length > 0) {
+                    let typeArgs = new Array<Type>();
+                    for (let tp in tParams) { typeArgs.push(tp as Type); }
+                    receiverType = instantiateClassType(classType, typeArgs) as Type;
+                  }
+                }
+                
+                let expectedMethodType = substituteThisType(receiverType, expectedMethodType0);
+                // Every signature the interface declares under this name
+                // needs a class method assignable to it, from any of the
+                // class's overloads.
+                let classSignatures = functionSignatures(classMethod);
+                let expectedSignatures = functionSignatures(expectedMethodType);
+                for (let expected in expectedSignatures) {
+                  if (classSignatures.some((candidate) => isAssignableTo(ctx, candidate, expected))) {
+                    continue;
+                  }
+                  let method = `Class '${className}' incorrectly implements interface '${iface.name}': Method '${displayMemberName(methodName)}'`;
+                  let message = if (expectedSignatures.length == 1) {
+                    `${method} is type '${typeToString(classMethod)}' but expected '${typeToString(expected)}'.`
+                  } else {
+                    `${method} has no overload of type '${typeToString(expected)}'.`
+                  };
+                  ctx.error(message, DiagnosticCode.IncompatibleTypes, cd.loc);
+                }
+              } else if (methodName.startsWith("get#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
+                // A field can satisfy a getter interface method.
+              } else if (methodName.startsWith("set#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
+                // A field can satisfy a setter interface method.
+              } else {
+                ctx.error(
+                  "Class '" + className + "' incorrectly implements interface '" + iface.name +
+                  "': Method '" + displayMemberName(methodName) + "' is missing.",
+                  DiagnosticCode.IncompatibleTypes,
+                  cd.loc
+                );
+              }
+            }
+          }
+          // Check all interface fields are implemented.
+          for (let fieldName in iface.members.keys()) {
+            let ifaceFieldInfo = iface.members[fieldName];
+            if (ifaceFieldInfo is FieldInfo) {
+              // Interface field requires at least a getter.
+              let getterName = "get#" + fieldName;
+              let hasField = classType.members.has(fieldName) && classType.members[fieldName] is FieldInfo;
+              let hasGetter = classType.members.has(getterName) && classType.members[getterName] is MethodInfo;
+              if (!hasField && !hasGetter) {
+                ctx.error(
+                  "Class '" + className + "' incorrectly implements interface '" + iface.name +
+                  "': Getter for '" + displayMemberName(fieldName) + "' is missing.",
+                  DiagnosticCode.IncompatibleTypes,
+                  cd.loc
+                );
+              }
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+  }
+
+  // A resource class is defined by holding something the GC cannot reclaim,
+  // so it always has a release action. `resource` is itself the Disposable
+  // conformance — no `implements Disposable` clause is written, following the
+  // way case classes nominally implement Hashable — but the member must
+  // exist, or implicit drop would have nothing to call and `Own<R>` would
+  // mean "unique but never released". See docs/design/ownership.md §Resource.
+  // Affine fields (ownership.md §Affine fields): a field of affine type
+  // is an obligation the object carries, so only a resource class may
+  // declare one — resource-ness is what governs every reference to the
+  // object. The field is immutable (moving out and overwriting are a
+  // consuming method's privilege, not yet implemented). Runs before the
+  // dispose-contract check below, because a class whose only release
+  // action is its fields gets `:dispose` SYNTHESIZED here.
+  var ownAffineFields = 0;
+  var sawOwnDispose = false;
+  for (let member in cd.body) {
+    if (member is MethodDefinition) {
+      let mName = getMemberName(ctx, member.name as Node);
+      if (mName == ":dispose") { sawOwnDispose = true; }
+    }
+    if (member is FieldDefinition && !member.isStatic && !member.isAbstract &&
+        !member.isDeclare) {
+      let fName = if (let Identifier {name} = member.name) name else "";
+      if (fName == "" || !classType.members.has(fName)) { continue; }
+      let fType = classType.members[fName].type;
+      // Detection is deliberately broader than support: anything that
+      // can carry an owner is caught, so no alias or union shape
+      // smuggles an obligation past the rule.
+      if (!typeCarriesOwner(fType)) { continue; }
+      if (!cd.isResource) {
+        ctx.error(
+          "Field '" + fName + "' holds an owner, so '" + className +
+          "' carries its release obligation — only a resource class may " +
+          "hold one. Declare 'resource class " + className + "'.",
+          DiagnosticCode.IncompatibleTypes,
+          member.loc
+        );
+        continue;
+      }
+      let fCore = soleNonNullMember(fType) ?? fType;
+      if (ownershipHandleName(fCore) != "Own") {
+        ctx.error(
+          "Field '" + fName + "' carries an owner in a shape the field " +
+          "rules do not support yet. Declare it as 'Own<R>' or " +
+          "'Own<R> | null' directly.",
+          DiagnosticCode.IncompatibleTypes,
+          member.loc
+        );
+        continue;
+      }
+      ownAffineFields += 1;
+      // The release glue is synthesized by lowering, so nothing in the
+      // AST names the fields' `:dispose` — root it the way `using`
+      // does, and the region needs the exception infrastructure.
+      let inner = ownershipHandleInner(fCore);
+      if (inner != null) {
+        let resources = ownedResourceClasses(inner);
+        if (resources != null) {
+          let deps = ctx.currentDependencies();
+          if (deps != null) {
+            deps.needsExceptionInfra = true;
+            for (let resource in resources) {
+              let rSymId = (resource.genericSource ?? resource).symbolId;
+              deps.referencedSymbols.add(rSymId);
+              deps.referencedClassMethods.add(
+                i32ToString(rSymId as i32) + ".:dispose");
+            }
+          }
+        }
+      }
+    }
+  }
+  if (ownAffineFields > 0 && !sawOwnDispose) {
+    if (classType.members.has(":dispose")) {
+      // An inherited dispose releases only the superclass's state, and
+      // an override does not chain to it automatically, so how the two
+      // compose is the subclass's decision. Requiring the override
+      // keeps that decision written down.
+      ctx.error(
+        "Resource class '" + className + "' holds owner fields but " +
+        "inherits ':dispose' from a superclass. Declare an override " +
+        "(its body may be empty) so the fields release after it.",
+        DiagnosticCode.IncompatibleTypes,
+        cd.loc
+      );
+    } else {
+      // The fields ARE the release action: synthesize the `:dispose`
+      // the resource contract asks for. Lowering emits the field glue
+      // as its whole body, so holding owners needs no ceremony.
+      let dt = new FunctionType(new Array<Type>(), new VoidType(), new FunctionDeclInfo(new Array<String>()));
+      let dm = new MethodInfo(dt);
+      dm.receiverKind = ReceiverKind.Owning;
+      classType.members[":dispose"] = dm;
+      classType.hasSyntheticDispose = true;
+    }
+  }
+
+  if (cd.isResource && !cd.isAbstract) {
+    if (!classType.members.has(":dispose")) {
+      ctx.error(
+        "Resource class '" + className + "' must define " +
+        "'[Disposable.dispose](this: Own<this>): void'. " +
+        "A resource class always has a release action; a class that needs uniqueness " +
+        "but has nothing to release should be an ordinary class used as 'Own<" +
+        className + ">'.",
+        DiagnosticCode.AbstractMethodNotImplemented,
+        cd.loc
+      );
+    } else {
+      // Release ends the object's life, so it takes the owner rather than a
+      // borrow. That is the resource-class contract rather than
+      // `Disposable`'s: an ordinary disposable is aliasable and has no owner
+      // to consume, so one interface signature cannot serve both. See
+      // ownership.md §"Release consumes its receiver".
+      let disposeMember = classType.members[":dispose"];
+      if (disposeMember is MethodInfo) {
+        if (disposeMember.receiverKind != ReceiverKind.Invalid &&
+            !disposeMember.consumesReceiver()) {
+          ctx.error(
+            "Resource class '" + className + "' releases through a borrowing receiver. " +
+            "Releasing ends the resource's life, so it takes the owner: write " +
+            "'[Disposable.dispose](this: Own<this>): void'.",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        }
+      }
+    }
+  }
+
+
+  // Check for unimplemented abstract fields in non-abstract classes.
+  if (!cd.isAbstract && !cd.isSealed) {
+    let fieldKeys = classType.members.keys();
+    for (let absName in fieldKeys) {
+      let memberInfo = classType.members[absName];
+      if (memberInfo is FieldInfo && memberInfo.isAbstract) {
+        ctx.error(
+          `Non-abstract class '${className}' does not implement abstract field '${absName}'.`,
+          DiagnosticCode.AbstractMethodNotImplemented,
+          cd.loc
+        );
+      }
+    }
+    // Check for unimplemented abstract methods in non-abstract classes.
+    for (let name in classType.members.keys()) {
+      let memberInfo = classType.members[name];
+      if (memberInfo is MethodInfo && memberInfo.isAbstract) {
+        var isSatisfiedByField = false;
+        if (name.startsWith("get#")) {
+          let fieldName = name.sliceBytes(4, name.length);
+          if (classType.members.has(fieldName)) {
+            let fieldInfo = classType.members[fieldName];
+            if (fieldInfo is FieldInfo && !fieldInfo.isAbstract) {
+              isSatisfiedByField = true;
+            }
+          }
+        } else if (name.startsWith("set#")) {
+          let fieldName = name.sliceBytes(4, name.length);
+          if (classType.members.has(fieldName)) {
+            let fieldInfo = classType.members[fieldName];
+            if (fieldInfo is FieldInfo && !fieldInfo.isAbstract) {
+              isSatisfiedByField = true;
+            }
+          }
+        }
+        if (!isSatisfiedByField) {
+          ctx.error(
+            `Non-abstract class '${className}' does not implement abstract method '${name}'.`,
+            DiagnosticCode.AbstractMethodNotImplemented,
+            cd.loc
+          );
+        }
+      }
+    }
+
+    // When a concrete class has no explicit constructor of its own,
+    // checkMethodBody never runs for a constructor, so validate here that
+    // every own non-nullable field has an inline initializer.
+    if (!cd.isExtension && !classType.isCaseClass) {
+      var hasOwnConstructor = false;
+      for (let member in cd.body) {
+        if (member is MethodDefinition && (member as MethodDefinition).isConstructor) {
+          hasOwnConstructor = true;
+        }
+      }
+      if (!hasOwnConstructor) {
+        for (let member in cd.body) {
+          if (member is FieldDefinition) {
+            let fd = member as FieldDefinition;
+            if (fd.isStatic || fd.isAbstract || fd.isDeclare || fd.value != null ||
+                isSymbolFieldDeclaration(fd)) {
+              continue;
+            }
+            let declared = fieldDeclaredName(ctx, fd);
+            var lookupField = declared;
+            let fsn = classType.fieldSetterNames;
+            if (fsn != null) {
+              if (let (true, mapped) = fsn.get(declared)) {
+                lookupField = mapped;
+              }
+            }
+            let fType = if (classType.members.has(lookupField) &&
+                classType.members[lookupField] is FieldInfo) {
+              (classType.members[lookupField] as FieldInfo).type
+            } else {
+              let dec = decoratedFieldOf(classType, declared);
+              if (dec != null) dec.fieldType else (new ErrorType() as Type)
+            };
+            if (isNullableType(fType)) {
+              continue;
+            }
+            ctx.error(
+              `Field '${displayMemberName(declared)}' must be initialized. Add an initializer or a constructor.`,
+              DiagnosticCode.UninitializedField,
+              fd.loc
+            );
+          }
+        }
+      }
+    }
+  }
+
+  exitClassBodyScope(ctx, prevBodyThis);
+}
+
+/**
+ * Build a FunctionType for a method from its MethodDefinition.
+ */
+/**
+ * The return type of the nearest superclass method `md` overrides, or
+ * null when no superclass declares one. Private methods are never
+ * inherited, and a static method is not an override.
+ */
+function inheritedMethodReturnType(ctx: CheckerContext, classType: ClassType,
+    md: MethodDefinition): Type | null {
+  let methodName = getMemberName(ctx, md.name as Node);
+  if (methodName.length == 0 || methodName.startsWith("#")) {
+    return null;
+  }
+  var cur = classType.superType;
+  while (cur != null) {
+    let c = cur;
+    if (c.members.has(methodName)) {
+      let member = c.members[methodName];
+      if (member is MethodInfo && !member.isStatic && member.type is FunctionType) {
+        return (member.type as FunctionType).returnType;
+      }
+      return null;
+    }
+    cur = c.superType;
+  }
+  return null;
+}
+
+export function checkMethodSignature(
+    ctx: CheckerContext,
+    classType: ClassType | null,
+    md: MethodDefinition
+  ): FunctionType {
+    // Check decorators
+    validateFunctionDecorators(ctx, md.decorators, false, md.loc);
+
+    ctx.enterScope();
+  let astTypeParameters = md.typeParameters;
+  var resolvedTypeParams: Array<TypeParameterType> | null = null;
+  if (astTypeParameters != null) {
+    let typeParameters = new Array<TypeParameterType>();
+    for (let astParam in astTypeParameters) {
+      // Resolve the bound like class and interface parameters do —
+      // without it, member and index lookup through the bound see an
+      // unconstrained parameter in the method's body.
+      var constraint: Type | null = null;
+      if (astParam.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
+        constraint = resolveBound(ctx, astParam.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
+      }
+      let defaultT: Type | null = if (astParam.defaultType != null) {
+        resolveTypeAnnotation(ctx, astParam.defaultType as TypeAnnotation)
+      } else {
+        null
+      };
+      let tpType = ctx.getOrCreateTypeParameter(astParam, constraint, defaultT);
+      typeParameters.push(tpType);
+      ctx.declareTypeName(astParam.name, tpType);
+      ctx.registerTypeParameter(astParam, tpType);
+    }
+    resolvedTypeParams = typeParameters;
+  }
+
+  let paramTypes = new Array<Type>();
+  let paramNames = new Array<String>();
+  var hasOptionals = false;
+  let optionals = new Array<boolean>();
+  var hasInitializers = false;
+  let initializers = new Array<Expression | null>();
+
+  for (let param in md.params) {
+    let paramName = param.name.name;
+    var paramType: Type = new ErrorType();
+    var lookupName = paramName;
+    if (classType != null && classType.fieldSetterNames != null) {
+      let m = classType.fieldSetterNames as HashMap<String, String>;
+      if (m.has(paramName)) {
+        lookupName = m[paramName];
+      }
+    }
+    let decoratedParamField = if (param.isThisParam && classType != null) {
+      decoratedFieldOf(classType as ClassType, paramName)
+    } else {
+      null
+    };
+    if (decoratedParamField != null) {
+      paramType = decoratedParamField.fieldType;
+    } else if (param.isThisParam && classType != null && classType.members.has(lookupName)) {
+      // this.-style param inherits type from the class field.
+      paramType = classType.members[lookupName].type;
+    } else if (param.typeAnnotation != null) {
+      paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+          }
+
+    // Track optional parameters and widen to T | null.
+    let isOptional = param.optional || param.defaultValue != null;
+    optionals.push(isOptional);
+
+    // Bind parameter type early so subsequent default arguments can reference it.
+    let paramInfo = ctx.model.resolveDeclaration(param);
+    if (paramInfo != null) {
+      ctx.declareBinding(paramInfo, paramType);
+    }
+    let {pattern} = param;
+    if (pattern != null) {
+      bindPattern(ctx, pattern, paramType);
+    }
+
+    let {defaultValue} = param;
+    if (defaultValue != null) { 
+      hasInitializers = true; 
+      let initExp = defaultValue;
+      let pushedReferrer = ctx.currentDependencies() == null;
+      if (pushedReferrer) {
+        ctx.enterNodeReferrer(md.id as i32);
+      }
+      let initType = checkExpression(ctx, initExp, paramType);
+      if (!isAssignableTo(ctx, initType, paramType)) {
+        ctx.error(
+          "Type mismatch: default value of type '" + typeToString(initType) +
+          "' is not assignable to parameter type '" + typeToString(paramType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          initExp.loc
+        );
+      } else {
+        let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, paramType);
+        if (instantiatedVal !== initType) {
+          ctx.setNodeType(initExp, instantiatedVal);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, paramType);
+      }
+      if (pushedReferrer) {
+        ctx.exitNodeReferrer(md.id as i32);
+      }
+    }
+    initializers.push(param.defaultValue);
+    if (isOptional) {
+      hasOptionals = true;
+    }
+
+    paramTypes.push(paramType);
+    paramNames.push(paramName);
+  }
+
+  var retType: Type = new VoidType();
+  let {returnType} = md;
+  if (returnType != null) {
+    retType = resolveTypeAnnotation(ctx, returnType, true);
+  } else if (classType != null && !md.isStatic && !md.isGenerator && !md.isAsync) {
+    // Methods do not infer return types from their bodies, so an
+    // unannotated method is `void` — except an override, which means the
+    // same thing as the method it replaces: `render()` over an abstract
+    // `render(): TemplateResult` returns a `TemplateResult`.
+    let inherited = inheritedMethodReturnType(ctx, classType, md);
+    if (inherited != null) {
+      retType = inherited;
+    }
+  }
+
+  // A `Scoped` return on an async or gen method is validated against
+  // the Future/Iterator it wraps; the signature keeps the wrapper, and
+  // the body check peels it again for the suspension relaxations.
+  var sigCore = retType;
+  if ((md.isGenerator || md.isAsync) && isScopedType(sigCore)) {
+    let sigInner = scopedInner(sigCore);
+    if (sigInner != null) { sigCore = sigInner; }
+  }
+
+  // Generator methods: the annotation is the full Iterator<T> (or
+  // AsyncIterator<T> for `async gen`) return type. Methods do not infer
+  // return types, so it is required.
+  if (md.isGenerator) {
+    if (md.isAsync) {
+      if (md.returnType == null) {
+        ctx.error(
+          "An async generator method requires a return type annotation of 'AsyncIterator<T>'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+        retType = makeAsyncIteratorType(ctx, new ErrorType(), md.loc);
+      } else if (extractAsyncIteratorYieldType(ctx, sigCore) == null) {
+        ctx.error(
+          "An async generator's return type must be 'AsyncIterator<T>', got '" +
+          typeToString(retType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+        retType = makeAsyncIteratorType(ctx, new ErrorType(), md.loc);
+      }
+    } else if (md.returnType == null) {
+      ctx.error(
+        "A generator method requires a return type annotation of 'Iterator<T>'.",
+        DiagnosticCode.TypeMismatch,
+        md.loc
+      );
+      retType = makeIteratorType(ctx, new ErrorType(), md.loc);
+    } else if (extractIteratorYieldType(ctx, sigCore) == null) {
+      ctx.error(
+        "A generator's return type must be 'Iterator<T>', got '" +
+        typeToString(retType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        md.loc
+      );
+      retType = makeIteratorType(ctx, new ErrorType(), md.loc);
+    }
+  }
+
+  // Async methods: the annotation is the full Future<T> return type.
+  // An `async gen` method is validated as a generator (Iterator<T>)
+  // above; `async` only permits await in its body.
+  if (md.isAsync) {
+    // Same as async functions: the transform's failure-capture region
+    // needs the exception infrastructure.
+    let asyncDeps = ctx.currentDependencies();
+    if (asyncDeps != null) {
+      asyncDeps.needsExceptionInfra = true;
+    }
+    if (md.isGenerator) {
+      // return type already checked as Iterator<T>; body may await.
+    } else if (md.returnType == null) {
+      ctx.error(
+        "An async method requires a return type annotation of 'Future<T>'.",
+        DiagnosticCode.TypeMismatch,
+        md.loc
+      );
+      retType = makeFutureType(ctx, new ErrorType(), md.loc);
+    } else if (extractFutureValueType(ctx, sigCore) == null) {
+      ctx.error(
+        "An async function's return type must be 'Future<T>', got '" +
+        typeToString(retType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        md.loc
+      );
+      retType = makeFutureType(ctx, new ErrorType(), md.loc);
+    }
+  }
+
+  let paramSymbols = new Array<SymbolId>();
+  var pi = 0;
+  while (pi < md.params.length) {
+    let paramInfo = ctx.model.resolveDeclaration(md.params[pi].name);
+    if (paramInfo != null) {
+      let symId = paramInfo.id;
+      // Mark as -1 if the parameter is never actually referenced in subsequent default parameters.
+      let isReferenced = growable<boolean>([false]);
+      var pi2 = pi + 1;
+      while (pi2 < md.params.length) {
+        if (md.params[pi2].defaultValue != null) {
+           walkEnter(md.params[pi2].defaultValue as Node, (n) => {
+             if (n is Identifier) {
+               let nSym = ctx.model.resolve(n);
+               if (nSym != null) {
+                 if (nSym.id == symId) {
+                   isReferenced[0] = true;
+                 }
+               }
+             }
+           });
+        }
+        pi2 += 1;
+      }
+      if (isReferenced[0]) {
+        paramSymbols.push(symId);
+      } else {
+        paramSymbols.push(noSymbolId);
+      }
+    } else {
+      paramSymbols.push(noSymbolId);
+    }
+    pi += 1;
+  }
+
+  let ft = new FunctionType(paramTypes, retType,
+      new FunctionDeclInfo(paramNames, paramSymbols,
+          if (hasInitializers) initializers else null,
+          if (hasOptionals) optionals else null,
+          md.isFinal, md.isAbstract),
+      resolvedTypeParams);
+  ctx.setNodeType(md, ft);
+  ctx.exitScope();
+  return ft;
+}
+
+/**
+ * Check a constructor's super(...) call against the superclass
+ * constructor: splice defaulted trailing arguments (exactly as a `new`
+ * expression does), check arity, and check each caller-written
+ * argument against the parameter type — which an instantiated
+ * superclass carries already substituted. Own-typed parameters move
+ * their arguments, the same as at any other call.
+ */
+function checkSuperInitArgs(
+  ctx: CheckerContext,
+  classType: ClassType,
+  superInit: SuperInitializer
+): void {
+  let args = superInit.args;
+  let loc = superInit.loc;
+  var superWithCtor = classType.superType;
+  while (superWithCtor != null && superWithCtor.isMixinIntermediate && superWithCtor.constructorType == null) {
+    superWithCtor = superWithCtor.superType;
+  }
+  let superCt = superWithCtor;
+  if (superCt == null) {
+    // Never legal, but keep the arguments checked so their own errors
+    // still surface.
+    for (let arg in args) {
+      checkExpression(ctx, arg, null);
+    }
+    return;
+  }
+  var ctorType: FunctionType | null = null;
+  if (superInit.constructorName != null) {
+    let targetCtor = getMemberName(ctx, superInit.constructorName as Node);
+    if (!superCt.constructors.has(targetCtor)) {
+      ctx.error(
+        `Constructor '${targetCtor}' not found on superclass '${superCt.name}'.`,
+        DiagnosticCode.IncompatibleTypes,
+        loc
+      );
+      for (let arg in args) {
+        checkExpression(ctx, arg, null);
+      }
+      return;
+    }
+    ctorType = superCt.constructors[targetCtor];
+  } else {
+    if (superCt.constructors.size > 0 && superCt.constructorType == null) {
+      ctx.error(
+        `Superclass '${superCt.name}' has no default constructor.`,
+        DiagnosticCode.IncompatibleTypes,
+        loc
+      );
+      for (let arg in args) {
+        checkExpression(ctx, arg, null);
+      }
+      return;
+    }
+    ctorType = superCt.constructorType;
+  }
+  if (ctorType == null) {
+    // No explicit constructor anywhere up the chain — must have zero args.
+    if (args.length > 0) {
+      ctx.error(
+        `Class '${superCt.name}' has no constructor, but ${args.length} arguments were provided.`,
+        DiagnosticCode.ArgumentCountMismatch,
+        loc
+      );
+      for (let arg in args) {
+        checkExpression(ctx, arg, null);
+      }
+    }
+    return;
+  }
+
+  // Re-check passes see the defaults a prior pass spliced into the
+  // shared AST; only caller-written arguments count as supplied.
+  let previousOriginal = ctx.splicedArgCountOf(superInit as Node);
+  let callerArgCount = if (previousOriginal != -1 && previousOriginal < args.length) {
+    previousOriginal
+  } else {
+    args.length
+  };
+
+  // Fill in missing arguments with default values.
+  let parameterInitializers = ctorType.parameterInitializers;
+  if (parameterInitializers != null) {
+    let mutArgs = args as GrowableArray<Expression>;
+    var a = args.length;
+    while (a < ctorType.parameters.length) {
+      let init = parameterInitializers[a];
+      if (init != null) {
+        if (let Identifier {name} = init) {
+          if (name == "__LOCATION__") {
+            if (ctx.emitLocations) {
+              let locStr = if (loc != null) {
+                `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
+              } else {
+                `${ctx.filePath}:0`
+              };
+              mutArgs.push(new StringLiteral(locStr, loc));
+            } else {
+              mutArgs.push(new NullLiteral(loc));
+            }
+          } else {
+            mutArgs.push(init);
+          }
+        } else {
+          mutArgs.push(init);
+        }
+      } else {
+        // Optional but no default? Inject null.
+        mutArgs.push(new NullLiteral(loc));
+      }
+      a += 1;
+    }
+  }
+
+  // Record the caller-written argument count so later re-checks don't
+  // treat the spliced defaults as caller-supplied arguments.
+  if (args.length > callerArgCount) {
+    ctx.model.setOriginalArgCount(superInit as Node, callerArgCount);
+  }
+
+  // Check argument count (optional and zero-width parameters are
+  // omittable, exactly as at a `new` expression).
+  let expectedCount = ctorType.parameters.length;
+  let requiredCount = requiredParameterCount(
+      ctorType.parameters, ctorType.optionalParameters);
+  if (callerArgCount < requiredCount || callerArgCount > expectedCount) {
+    let expectedMsg = if (requiredCount == expectedCount) {
+      `${expectedCount}`
+    } else {
+      `${requiredCount}-${expectedCount}`
+    };
+    ctx.error(
+      `Expected ${expectedMsg} arguments, got ${callerArgCount}.`,
+      DiagnosticCode.ArgumentCountMismatch,
+      loc
+    );
+  }
+
+  // Check caller-written argument types; spliced defaults were already
+  // checked in the superclass constructor's own scope.
+  var ai = 0;
+  while (ai < callerArgCount && ai < expectedCount) {
+    let paramType = ctorType.parameters[ai];
+    let expectedParamType = substituteTypeParams(
+      superCt.typeParameters, superCt.typeArguments, paramType
+    );
+    let argType = checkExpression(ctx, args[ai], expectedParamType);
+    if (!isAssignableTo(ctx, argType, expectedParamType)) {
+      ctx.error(
+        "Type mismatch: argument '" + typeToString(argType) +
+        "' is not assignable to parameter '" +
+        typeToString(expectedParamType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        args[ai].loc
+      );
+    } else {
+      let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
+      if (instantiatedVal !== argType) {
+        ctx.setNodeType(args[ai], instantiatedVal);
+      }
+      checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
+    }
+    recordArgumentMove(ctx, args[ai], expectedParamType);
+    ai = ai + 1;
+  }
+  // Excess caller-written arguments (already diagnosed above) still
+  // get checked, once, so every node carries a type.
+  while (ai < callerArgCount) {
+    checkExpression(ctx, args[ai], null);
+    ai += 1;
+  }
+}
+
+/**
+ * Check a method body: push method scope, declare params, check body.
+ */
+export function checkMethodBody(
+  ctx: CheckerContext,
+  classType: ClassType,
+  methodType: FunctionType,
+  md: MethodDefinition
+): void {
+  ctx.enterScope();
+
+  let {typeParameters} = methodType;
+  if (typeParameters != null) {
+    for (let tpType in typeParameters) {
+      ctx.declareTypeName(tpType.name, tpType);
+    }
+  }
+
+  // Substitute ThisType with the SELF type — a generic class at its
+  // own parameters — so a declared `this` return agrees with what
+  // `this` now checks as in the body (issue #434).
+  let selfType = selfTypeOfClass(classType);
+  let effectiveReturnType = substituteThisType(selfType, methodType.returnType);
+
+  // Declare parameters.
+  var i = 0;
+  while (i < md.params.length && i < methodType.parameters.length) {
+    let param = md.params[i];
+    let paramType = substituteThisType(selfType, methodType.parameters[i]);
+    let paramInfo = ctx.model.resolveDeclaration(param);
+    if (paramInfo != null) {
+      ctx.declareBinding(paramInfo, paramType);
+    }
+    // For destructured params, also bind the pattern fields.
+    let {pattern} = param;
+    if (pattern != null) {
+      bindPattern(ctx, pattern, paramType);
+    }
+    i += 1;
+  }
+
+  // Set expected return type. Generator methods check their body
+  // against the yield type (extracted back out of Iterator<T>) with a
+  // void return type; async methods check against the Future's value
+  // type; everything else checks against the return type.
+  let prevReturnType = ctx.returnType;
+  let prevYieldType = ctx.yieldType;
+  let prevAsyncValue = ctx.asyncValueType;
+  let prevAsyncFuture = ctx.asyncFutureType;
+  let prevSuspensionRelaxed = ctx.suspensionRelaxed;
+
+  // A `Scoped` return on an async or gen method lifts the
+  // borrow-across-suspension rule and the generator parameter ban, as
+  // on function expressions: the Future/Iterator machinery sees the
+  // peeled type, the signature keeps the wrapper.
+  var mdEffectiveReturn = effectiveReturnType;
+  var mdScopedRelaxed = false;
+  if ((md.isGenerator || md.isAsync) && isScopedType(mdEffectiveReturn)) {
+    let mdInner = scopedInner(mdEffectiveReturn);
+    if (mdInner != null) {
+      mdEffectiveReturn = mdInner;
+      mdScopedRelaxed = true;
+    }
+  }
+  ctx.setSuspensionRelaxed(mdScopedRelaxed);
+
+  // A declared `this: Own<this>` makes `this` the owner for the whole body,
+  // closures included — where capturing it is rejected anyway, since a
+  // resource's `this` may not be captured at all.
+  let prevOwningReceiver = ctx.owningReceiver;
+  ctx.setOwningReceiver(declaresOwningReceiver(md));
+  let prevReceiverSymbol = ctx.receiverSymbol;
+  let prevInDispose = ctx.inDispose;
+  let isDispose = getMemberName(ctx, md.name) == ":dispose";
+  ctx.setInDispose(isDispose);
+  ctx.setReceiverSymbol(owningReceiverSymbol(ctx, md, classType));
+  let prevFlowState = ctx.enterBodyFlow(false);
+
+  if (md.isGenerator) {
+    // The other half of the generator-disposal gate (see the
+    // ForInStatement arm): the program creates a generator.
+    let genDeps = ctx.currentDependencies();
+    if (genDeps != null) {
+      genDeps.createsGenerator = true;
+      if (md.isAsync) {
+        genDeps.createsAsyncGenerator = true;
+      }
+    }
+    var yieldT: Type = new ErrorType();
+    if (let InterfaceType {typeArguments} = mdEffectiveReturn) {
+      if (typeArguments != null) {
+        if (typeArguments.length > 0) { yieldT = typeArguments[0]; }
+      }
+    }
+    if (!mdScopedRelaxed) {
+      rejectGeneratorBorrowParams(ctx, md.params, methodType.parameters);
+    }
+    ctx.setReturnType(new VoidType());
+    ctx.setYieldType(yieldT);
+    // An `async gen` may await: a non-null asyncValueType opens the
+    // gate (checkAwaitExpression), and void is right because a
+    // generator returns through `yield`, not a frame value. No
+    // asyncFutureType: `return` ends the iteration, it does not adopt.
+    ctx.setAsyncValueType(if (md.isAsync) new VoidType() as Type else null);
+    ctx.setAsyncFutureType(null);
+  } else if (md.isAsync) {
+    var valueT: Type = new ErrorType();
+    let fv = extractFutureValueType(ctx, mdEffectiveReturn);
+    if (fv != null) {
+      valueT = fv;
+    }
+    ctx.setReturnType(valueT);
+    ctx.setYieldType(null);
+    ctx.setAsyncValueType(valueT);
+    ctx.setAsyncFutureType(mdEffectiveReturn);
+  } else {
+    ctx.setReturnType(effectiveReturnType);
+    ctx.setYieldType(null);
+    ctx.setAsyncValueType(null);
+    ctx.setAsyncFutureType(null);
+  }
+
+  let methodName = if (let Identifier {name} = md.name) name else "";
+  let isCtor = md.isConstructor || methodName == "<constructor>";
+  let prevUsingDepth = ctx.usingDepth;
+  ctx.setUsingDepth(0);
+  let prevInConstructor = ctx.inConstructor;
+  ctx.setInConstructor(isCtor);
+  if (isCtor) {
+    // The constructor prologue evaluates before the body: field
+    // defaults, then the initializer list, then the super call. It is
+    // checked in that order too, so flow-sensitive analysis — move
+    // checking above all — sees evaluation order, not source order.
+    let fieldsInInitializerList = new Set<String>();
+    let {initializerList} = md;
+    if (initializerList != null) {
+      for (let item in initializerList) {
+        if (item is FieldInitializer) {
+          let fieldName = item.field.name;
+          let actualFieldName = if (classType.fieldSetterNames != null && (classType.fieldSetterNames as HashMap<String, String>).has(fieldName)) {
+            (classType.fieldSetterNames as HashMap<String, String>)[fieldName]
+          } else {
+            fieldName
+          };
+          fieldsInInitializerList.add(actualFieldName);
+          let decoratedInit = decoratedFieldOf(classType, fieldName);
+          let fieldType: Type | null = if (decoratedInit != null) {
+            decoratedInit.fieldType
+          } else if (classType.members.has(actualFieldName)) {
+            classType.members[actualFieldName].type
+          } else {
+            null
+          };
+          let initType = checkExpression(ctx, item.value, fieldType);
+          if (fieldType != null && isAssignableTo(ctx, initType, fieldType)) {
+            let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+            if (instantiatedVal !== initType) {
+              ctx.setNodeType(item.value, instantiatedVal);
+            }
+            checkAndRegisterInterfaceAdaptation(ctx, item.value, instantiatedVal, fieldType);
+          }
+        }
+      }
+    }
+    if (classType.isExtension && !md.isStatic) {
+      // An extension-class constructor produces its value solely
+      // through super(<underlying value>): required, exactly one
+      // argument, assignable to the extended type.
+      if (md.superInitializer == null) {
+        ctx.error(
+          "Extension class constructor must call 'super' with the underlying value.",
+          DiagnosticCode.ArgumentCountMismatch,
+          md.loc
+        );
+      } else {
+        let superInit = md.superInitializer as SuperInitializer;
+        if (superInit.args.length != 1) {
+          ctx.error(
+            "Extension class constructor must call 'super' with exactly one argument.",
+            DiagnosticCode.ArgumentCountMismatch,
+            superInit.loc
+          );
+          for (let arg in superInit.args) {
+            checkExpression(ctx, arg, null);
+          }
+        } else {
+          let argType = checkExpression(ctx, superInit.args[0], null);
+          if (classType.onType != null &&
+              !isAssignableTo(ctx, argType, classType.onType as Type)) {
+            ctx.error(
+              "Type mismatch in super call: expected " +
+              typeToString(classType.onType as Type) + ", got " +
+              typeToString(argType),
+              DiagnosticCode.TypeMismatch,
+              superInit.args[0].loc
+            );
+          }
+        }
+      }
+    } else if (md.superInitializer != null) {
+      checkSuperInitArgs(ctx, classType, md.superInitializer as SuperInitializer);
+    }
+    for (let param in md.params) {
+      if (param.isThisParam) {
+        let paramName = param.name.name;
+        let actualFieldName = if (classType.fieldSetterNames != null && (classType.fieldSetterNames as HashMap<String, String>).has(paramName)) {
+          (classType.fieldSetterNames as HashMap<String, String>)[paramName]
+        } else {
+          paramName
+        };
+        fieldsInInitializerList.add(actualFieldName);
+      }
+    }
+
+    // Validate that all non-nullable fields are initialized
+    let {superType} = classType;
+    let keys = classType.members.keys();
+    for (let fieldName in keys) {
+      let member = classType.members[fieldName];
+      if (member is FieldInfo && !fieldName.startsWith(":")) {
+
+        // Skip inherited fields (they're already initialized by superclass)
+        var isInherited = false;
+        if (superType != null) {
+          if (superType.members.has(fieldName) && !fieldName.startsWith("#")) {
+            isInherited = true;
+          }
+        }
+        if (isInherited) {
+          continue;
+        }
+
+        // Skip declared fields (e.g., @intrinsic fields)
+        var isDeclared = false;
+        let {declaredFields} = classType;
+        if (declaredFields != null && declaredFields.has(fieldName)) {
+          isDeclared = true;
+        }
+        let {genericSource} = classType;
+        if (genericSource != null) {
+          let gs = genericSource;
+          if (gs.declaredFields != null && (gs.declaredFields as HashSet<String>).has(fieldName)) {
+            isDeclared = true;
+          }
+        }
+        if (isDeclared) {
+          continue;
+        }
+
+        // Skip fields with inline initializers
+        if (member.hasInitializer) {
+          continue;
+        }
+
+        // Skip fields initialized in the initializer list or via this.field parameters
+        if (fieldsInInitializerList.has(fieldName)) {
+          continue;
+        }
+
+        // Skip nullable fields (they default to null)
+        if (isNullableType(member.type)) {
+          continue;
+        }
+
+        // Error: non-nullable field without initializer
+        ctx.error(
+          `Field '${displayMemberName(fieldName)}' must be initialized. Add an initializer or a constructor.`,
+          DiagnosticCode.UninitializedField,
+          md.name.loc
+        );
+      }
+    }
+  }
+
+  // Check body.
+  match (md.body as Node) {
+    case BlockStatement as block: {
+      ctx.enterOwnScope();
+      if (!isCtor) {
+        registerReceiverCandidate(ctx, md, classType, isDispose);
+        registerOwnParamCandidates(ctx, md.params, methodType.parameters);
+      }
+      prescanPendingFunctions(ctx, block.body);
+      var j = 0;
+      while (j < block.body.length) {
+        ctx.beginOwnStatement();
+        checkStatement(ctx, block.body[j]);
+        ctx.endOwnStatement(j, block.body[j]);
+        j = j + 1;
+      }
+      ctx.exitOwnScope(block as Node);
+    }
+    case Expression as bodyExpr: {
+      ctx.enterOwnScope();
+      // Async expression bodies stay out: their lowering completes the
+      // frame's future directly, before the parameter regions exist.
+      if (!isCtor && ctx.asyncValueType == null) {
+        registerReceiverCandidate(ctx, md, classType, isDispose);
+        registerOwnParamCandidates(ctx, md.params, methodType.parameters);
+      }
+      let bodyType = checkExpression(ctx, bodyExpr, effectiveReturnType);
+      if (!isAssignableTo(ctx, bodyType, effectiveReturnType)) {
+        ctx.error(
+          "Type mismatch: method body returns '" + typeToString(bodyType) +
+          "' but expects '" + typeToString(effectiveReturnType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+      } else {
+        // The body's value is the return, adapted to the declared type
+        // the way a `return` statement's argument is.
+        checkAndRegisterInterfaceAdaptation(ctx, bodyExpr, bodyType,
+            effectiveReturnType);
+      }
+      ctx.exitOwnScope(bodyExpr as Node);
+    }
+    case _: {}
+  }
+
+  // Decide field move-outs while the body's flow state is still live;
+  // dispose glue skips the verified ones.
+  let movedOut = ctx.finishBodyPathMoves(!(ctx.currentFlow is FlowUnreachable));
+  if (movedOut.length > 0) {
+    ctx.model.setMovedOutFields(md as Node, movedOut);
+  }
+
+  ctx.setReturnType(prevReturnType);
+  ctx.setYieldType(prevYieldType);
+  ctx.setAsyncValueType(prevAsyncValue);
+  ctx.setAsyncFutureType(prevAsyncFuture);
+  ctx.setSuspensionRelaxed(prevSuspensionRelaxed);
+  ctx.setOwningReceiver(prevOwningReceiver);
+  ctx.setReceiverSymbol(prevReceiverSymbol);
+  ctx.setInDispose(prevInDispose);
+  ctx.setUsingDepth(prevUsingDepth);
+  ctx.setInConstructor(prevInConstructor);
+  ctx.exitBodyFlow(prevFlowState);
+  ctx.exitScope();
+}

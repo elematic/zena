@@ -1,0 +1,2617 @@
+import { HashMap, HashSet, Set } from 'zena:collections';
+import { growable } from 'zena:core';
+import { analyzeTryBodyAssignments } from '../analysis/capture.zena';
+import {
+  ArrayLiteral, AsExpression, AssignmentExpression, AwaitExpression,
+  BinaryExpression, BlockStatement, BooleanLiteral, CallExpression,
+  CatchClause, Expression, ExpressionStatement, FunctionExpression,
+  Identifier, IfExpression, IndexExpression, IsExpression,
+  LetPatternCondition, MapLiteral, MatchExpression, MemberExpression,
+  NewExpression, Node, NullLiteral, NumberLiteral, PipePlaceholder,
+  PipelineExpression, PropertyAssignment, RangeExpression, RecordLiteral,
+  SourceLocation, SpreadElement, StringLiteral, SuperExpression,
+  TaggedTemplateExpression, TemplateLiteral, ThisExpression, ThrowExpression,
+  TryExpression, TupleLiteral, UnaryExpression, getMemberPropertyName
+} from '../ast.zena';
+import {
+  ArrayType, BoolLiteralType, BooleanType, ClassType, ErrorType, F32Type,
+  F64Type, FieldInfo, FunctionType, HoleType, I32Type, I64Type,
+  InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NeverType,
+  NullType, RecordType as RecordT, TupleType as TupleT, Type, TypeAliasType,
+  TypeParameterType, U64Type, UnionType as UnionT, UnknownType, VoidType,
+  applyTypeIntrinsic, baseType, instantiateClassType,
+  instantiateTypeAliasType, isBooleanLike, isIntegerType, isNumericType,
+  isScopedType, isSecondClass, ownershipHandleInner, ownershipHandleName,
+  promoteNumeric, scopedInner, soleNonNullMember, typeCarriesOwner,
+  typeContainsTypeParameter, typeToString
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown, isWellKnown } from '../well-known.zena';
+import {
+  adaptArmToContext, adaptCoalescedArm, adaptJoinedArm, armValueNode,
+  boxForTemplateValue, checkAndRegisterInterfaceAdaptation,
+  noteExistentialComparison
+} from './adaptation.zena';
+import { noteFieldsBesideRow, reportTwoRows, resolveTypeAnnotation } from './annotations.zena';
+import { checkCallExpression, checkNewExpression } from './calls.zena';
+import { CheckerContext } from './context.zena';
+import { checkFunctionExpression } from './functions.zena';
+import { selfTypeOfClass, tryInstantiateGenericFunction } from './generics.zena';
+import {
+  checkIntegerLiteral, checkLiteralBeside, extractContextualRangeBoundType,
+  getMatchedLiteralType, isContextTypedNumber, isIntLiteralExpr,
+  isNumericOrNumericTypeParam
+} from './literals.zena';
+import { checkMatchCaseBody, checkMatchExpr } from './match.zena';
+import {
+  accessMemberKey, checkIndexExpression, checkMemberExpression,
+  displayMemberName, isStaticReceiver, resolveArrayBackingClass,
+  staticMemberHint
+} from './members.zena';
+import {
+  applyFalseNarrowingFromCondition, applyTrueNarrowingFromCondition,
+  getMemberPathKey
+} from './narrowing.zena';
+import { collectApplicableOperatorOverloads, selectMostSpecificIndex } from './overloads.zena';
+import {
+  affineOwnerFieldType, isAffineValue, isScopedValueType,
+  mentionsParamDerived, moveDestructuredTuple, ownedResourceClasses,
+  ownerTypeArgumentMessage, recordArgumentMove, registerPatternOwners,
+  rejectSecondClassStorage, rejectSecondClassTypeArguments,
+  scopedElementsExpected, wrapResourceInBorrow, wrapResourceInOwn
+} from './ownership.zena';
+import {
+  checkPattern, getTuplePatternElementTypes, narrowTypeByPattern
+} from './patterns.zena';
+import { extractFutureValueType, protocolPayloadType } from './protocols.zena';
+import {
+  ClosedRelation, checkOpaqueCast, checkTypeParameterCast, closedRelation,
+  expectedArrayElementType, isAssignableTo, isReferenceType, isValidCast,
+  isValuePrimitive, isWellKnownClassType, isWellKnownInterfaceType,
+  operandText, representationOf, typesEqual
+} from './relations.zena';
+import { checkStatement } from './statements.zena';
+import {
+  checkTupleUnionTest, combineArmTypes, createUnionType, eitherType,
+  isNullableType, subtractNullFromType, tupleMemberForLiteral, widenType
+} from './unions.zena';
+
+/**
+ * Check an expression and return its inferred type.
+ * `expectedType` is a contextual type hint (may be null).
+ */
+/**
+ * Check a branch node of an IfExpression (Expression or BlockStatement).
+ */
+function checkIfBranchNode(ctx: CheckerContext, node: Node, expectedType: Type | null): Type {
+  if (node is BlockStatement) {
+    ctx.enterScope();
+    // Check all statements except the last; the last is the block's
+    // value when it is an expression statement. Checking it exactly
+    // once matters beyond cost: a re-check runs downstream of the
+    // first check's flow nodes, and when a branch diverges that flow
+    // proves the guard's inverse, so the re-check would overwrite the
+    // recorded types with the dead-path view.
+    var resultType: Type = new VoidType();
+    var i = 0;
+    while (i < node.body.length) {
+      let statement = node.body[i];
+      let isLast = i == node.body.length - 1;
+      if (isLast && statement is ExpressionStatement) {
+        resultType = adaptArmToContext(ctx, statement.expression,
+            checkExpression(ctx, statement.expression, expectedType),
+            expectedType);
+      } else {
+        checkStatement(ctx, statement);
+      }
+      i += 1;
+    }
+    ctx.exitScope();
+    return resultType;
+  }
+  if (node is Expression) {
+    return adaptArmToContext(ctx, node,
+        checkExpression(ctx, node, expectedType), expectedType);
+  }
+  return new VoidType();
+}
+
+export function checkExpression(ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type {
+  let t = checkExpressionInner(ctx, expr, expectedType);
+  // Record the inferred type in the semantic model.
+  ctx.setNodeType(expr, t);
+  return t;
+}
+
+function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type {
+  if (expectedType != null) {
+    let matched = getMatchedLiteralType(expr, expectedType);
+    if (matched != null) {
+      return matched;
+    }
+  }
+  
+  return match (expr) {
+  // --- Literals ---
+
+  case NumberLiteral {raw, loc}: {
+    // Check if the literal has a decimal point → float.
+    if (raw.contains('.')) {
+      // Float literal — default to f64; use context to pick f32.
+      if (expectedType is F32Type || expectedType is F64Type) {
+        // TODO: Fix the type narrowing issue that's requiring a cast here
+        expectedType as Type
+      } else {
+        new F64Type()
+      }
+    } else {
+      // Integer literal — default to i32; use context to pick other int or
+      // float types.
+      checkIntegerLiteral(ctx, raw, false, expectedType, loc)
+    }
+  }
+
+  case StringLiteral {value, loc}: {
+    // String literals ALWAYS have type String (the stdlib class from the prelude).
+    let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
+    if (stringType != null) {
+      return stringType;
+    }
+    // String not in scope — prelude was not loaded correctly.
+    ctx.error(
+      "Built-in type 'String' is not available. Ensure the standard prelude is loaded.",
+      DiagnosticCode.SymbolNotFound,
+      loc
+    );
+    new ErrorType()
+  }
+
+  case BooleanLiteral {value, loc}: {
+    // Boolean literals get literal types (true or false).
+    new BoolLiteralType(value)
+  }
+
+  case NullLiteral {loc}: new NullType()
+
+  // --- Identifiers ---
+
+  case Identifier {name, loc}: {
+    // The hole literal `_` carries an internal unreadable placeholder type.
+    // It is intended for inline tuple hole slots and requires control-flow
+    // narrowing before safe use.
+    if (name == "_") { return new HoleType(); }
+
+    if (name == "__LOCATION__") {
+      let stringType = ctx.resolveTypeName("String");
+      if (stringType != null) {
+        let uTypes = growable<Type>([stringType, new NullType()]);
+        return createUnionType(uTypes);
+      }
+      return new UnknownType();
+    }
+
+    // Resolve through the scope pass's ReferenceMap → Symbol → binding type.
+    let resolved = ctx.resolveIdentifier(expr);
+    if (resolved != null) {
+      // An owned binding is dead after a move on any path to here, and
+      // a scoped binding after the consumption that moved it.
+      if (ownershipHandleName(resolved) == "Own" || isScopedValueType(resolved) ||
+          isAffineValue(resolved)) {
+        let moveSym = ctx.model.resolve(expr);
+        if (moveSym != null) {
+          ctx.checkMoveUse(expr, moveSym);
+        }
+      }
+      // A second-class borrow read in a suspending body is decided at
+      // body exit: live across a suspension is the error.
+      if (isSecondClass(resolved)) {
+        let borrowSym = ctx.model.resolve(expr);
+        if (borrowSym != null) {
+          ctx.recordBorrowUse(expr, borrowSym);
+        }
+      }
+      resolved
+    } else {
+      // Fall back to prelude values (intrinsics / built-ins without scope info)
+      let preludeVal = ctx.resolvePreludeValue(name);
+      if (preludeVal != null) {
+        preludeVal
+      } else {
+        ctx.error(
+          `Variable '${name}' not found.${staticMemberHint(ctx, name)}`,
+          DiagnosticCode.SymbolNotFound,
+          loc
+        );
+        new ErrorType() as Type
+      }
+    }
+  }
+
+  // --- Binary Expressions ---
+
+  case BinaryExpression {operator, left, right, loc}: {
+    checkBinaryExpression(ctx, expectedType, operator, left, right, loc, expr)
+  }
+
+  // --- Unary Expressions ---
+
+  case UnaryExpression {operator, argument, loc}: {
+    // A negated integer literal is typed as a single unit, because the
+    // bound that applies to `-128` is i8's lower bound, which the bare
+    // literal `128` would fail, and `-2147483648` is i32's. Every integer
+    // literal is range-checked, so this holds in any context but a
+    // float's, which takes the literal through the float path.
+    if (operator == "-" && argument is NumberLiteral &&
+        !(expectedType is F32Type || expectedType is F64Type)) {
+      if (!argument.raw.contains('.')) {
+        let litType = checkIntegerLiteral(ctx, argument.raw, true, expectedType, loc);
+        ctx.setNodeType(argument, litType);
+        return litType;
+      }
+    }
+
+    let argType = checkExpression(ctx, argument, expectedType);
+
+    if (operator == "-") {
+      if (isNumericType(argType)) {
+        return argType;
+      }
+      ctx.error(
+        `Unary '-' requires a numeric type, got '${typeToString(argType)}'.`,
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new ErrorType();
+    }
+    if (operator == "!") {
+      if (isBooleanLike(argType)) {
+        return new BooleanType();
+      }
+      ctx.error(
+        `Unary '!' requires a boolean type, got '${typeToString(argType)}'.`,
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new BooleanType();
+    }
+    new ErrorType()
+  }
+
+  // --- Assignment ---
+
+  case AssignmentExpression {left, value, operator, loc}: {
+    // Check for assignment to immutable let binding
+    if (let Identifier {name} = left) {
+      let info = ctx.model.resolve(left);
+      if (info != null) {
+        if (!info.isMutable) {
+          ctx.error(
+            `Cannot assign to immutable variable '${name}'.`,
+            DiagnosticCode.InvalidAssignment,
+            loc
+          );
+          return new ErrorType();
+        }
+        let target = info.resolveTarget().id;
+        let assignmentId = expr.id as i32;
+        if (let (true, last) = ctx.model.lastAssignment.get(target)) {
+          if (last < assignmentId) {
+            ctx.model.lastAssignment[target] = assignmentId;
+          }
+        } else {
+          ctx.model.lastAssignment[target] = assignmentId;
+        }
+      }
+    }
+
+    // Check for read-only indexer assignment: arr[i] = x
+    match (left) {
+      case IndexExpression {object, index}: {
+        let objectType = checkExpression(ctx, object, null);
+        match (objectType) {
+          case ClassType as ct: {
+            // Check for setter []=
+            if (!ct.members.has("[]=")) {
+              // Check if there's a getter only (read-only indexer)
+              if (ct.members.has("[]")) {
+                ctx.error(
+                  "Cannot assign to read-only indexer.",
+                  DiagnosticCode.InvalidAssignment,
+                  loc
+                );
+                return new ErrorType();
+              }
+            } else {
+              let deps = ctx.currentDependencies();
+              if (deps != null) {
+                let classSymId = (ct.genericSource ?? ct).symbolId;
+                deps.referencedSymbols.add(classSymId);
+                deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".[]=");
+              }
+            }
+          }
+          case InterfaceType as it: {
+            if (!it.members.has("[]=")) {
+              if (it.members.has("[]")) {
+                ctx.error(
+                  "Cannot assign to read-only indexer.",
+                  DiagnosticCode.InvalidAssignment,
+                  loc
+                );
+                return new ErrorType();
+              }
+            } else {
+              let deps = ctx.currentDependencies();
+              if (deps != null) {
+                deps.referencedSymbols.add((it.genericSource ?? it).symbolId);
+              }
+            }
+          }
+          case ArrayType {elementsMutable}: {
+            // `(array T)` has no array.set; only the mutable-element
+            // array can be written through.
+            if (!elementsMutable) {
+              ctx.error(
+                "Cannot assign to an element of 'array<" +
+                    typeToString((objectType as ArrayType).elementType) +
+                    ">'; its elements are immutable. Use 'array<var T>' " +
+                    "or a FixedArray for mutable elements.",
+                DiagnosticCode.InvalidAssignment,
+                loc
+              );
+              return new ErrorType();
+            }
+          }
+          case _: {}
+        }
+      }
+      case MemberExpression {object, property, isSymbolAccess, symbolPath} as targetMe: {
+        let propName = accessMemberKey(
+            ctx, targetMe as Node, isSymbolAccess, property, symbolPath);
+        // Handle private field assignment outside class
+        if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
+          if (ctx.currentClass == null) {
+            ctx.error(
+              `Private field '${displayMemberName(propName)}' can only be accessed within a class.`,
+              DiagnosticCode.PrivateAccess,
+              loc
+            );
+            return new ErrorType();
+          }
+        }
+        // Check for read-only property assignment
+        let objectType = checkExpression(ctx, object, null);
+        match (objectType) {
+          case ClassType as ct: {
+            let isStatic = isStaticReceiver(ctx, object);
+            // Check if it's a field
+            if (ct.members.has(propName)) {
+              let m = ct.members[propName];
+              match (m) {
+                case FieldInfo as fi: {
+                  if (isStatic && !fi.isStatic) {
+                    ctx.error(
+                      `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
+                      DiagnosticCode.InvalidAssignment,
+                      loc
+                    );
+                    return new ErrorType();
+                  }
+                  if (!isStatic && fi.isStatic) {
+                    ctx.error(
+                      `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
+                      DiagnosticCode.InvalidAssignment,
+                      loc
+                    );
+                    return new ErrorType();
+                  }
+                  if (!fi.isMutable) {
+                    ctx.error(
+                      `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
+                      DiagnosticCode.InvalidAssignment,
+                      loc
+                    );
+                    return new ErrorType();
+                  }
+                }
+                case _: {
+                  // Check for setter method (set#propName)
+                  let setterName = "set#" + propName;
+                  if (ct.members.has(setterName)) {
+                    let setterInfo = ct.members[setterName];
+                    match (setterInfo) {
+                      case MethodInfo as mi: {
+                        if (isStatic && !mi.isStatic) {
+                          ctx.error(
+                            `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
+                            DiagnosticCode.InvalidAssignment,
+                            loc
+                          );
+                          return new ErrorType();
+                        }
+                        if (!isStatic && mi.isStatic) {
+                          ctx.error(
+                            `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
+                            DiagnosticCode.InvalidAssignment,
+                            loc
+                          );
+                          return new ErrorType();
+                        }
+                      }
+                      case _: {}
+                    }
+                  } else {
+                    // Check if there's a getter only (read-only property)
+                    let getterName = "get#" + propName;
+                    if (ct.members.has(getterName)) {
+                      ctx.error(
+                        `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
+                        DiagnosticCode.InvalidAssignment,
+                        loc
+                      );
+                      return new ErrorType();
+                    }
+                  }
+                }
+              }
+            } else {
+              // Check for setter method (set#propName)
+              let setterName = "set#" + propName;
+              if (ct.members.has(setterName)) {
+                let setterInfo = ct.members[setterName];
+                match (setterInfo) {
+                  case MethodInfo as mi: {
+                    if (isStatic && !mi.isStatic) {
+                      ctx.error(
+                        `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
+                        DiagnosticCode.InvalidAssignment,
+                        loc
+                      );
+                      return new ErrorType();
+                    }
+                    if (!isStatic && mi.isStatic) {
+                      ctx.error(
+                        `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
+                        DiagnosticCode.InvalidAssignment,
+                        loc
+                      );
+                      return new ErrorType();
+                    }
+                  }
+                  case _: {}
+                }
+              } else {
+                // Check if there's a getter only (read-only property)
+                let getterName = "get#" + propName;
+                if (ct.members.has(getterName)) {
+                  ctx.error(
+                    `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
+                    DiagnosticCode.InvalidAssignment,
+                    loc
+                  );
+                  return new ErrorType();
+                }
+              }
+            }
+          }
+          case _: {}
+        }
+      }
+      case _: {}
+    }
+
+    // Null-coalescing assignment: x ??= value
+    // Result type is the non-null part of left's type.
+    // Narrows the binding to non-null afterward.
+    if (operator != null && operator == "??" && left is MemberExpression) {
+      if (affineOwnerFieldType(ctx, left) != null) {
+        ctx.error(
+          "'??=' on an owner field is not supported: write the store as " +
+          "an 'if' so the move of the right-hand side is unconditional.",
+          DiagnosticCode.InvalidAssignment,
+          loc
+        );
+        return new ErrorType();
+      }
+    }
+    if (operator != null && operator == "??") {
+      let leftType = checkExpression(ctx, left, null);
+
+      // Warn if LHS is not nullable (??= is a no-op).
+      var leftIsNullable = false;
+      var leftIsAlwaysNull = false;
+      match (leftType) {
+        case NullType: { leftIsNullable = true; leftIsAlwaysNull = true; }
+        case UnionT as u: {
+          let members = u.types;
+          var ni = 0;
+          while (ni < members.length) {
+            if (members[ni] is NullType) { leftIsNullable = true; }
+            ni += 1;
+          }
+        }
+        case _: {}
+      }
+      if (!leftIsNullable) {
+        ctx.warning(
+          "Left operand of '??=' is not nullable and will always be returned.",
+          DiagnosticCode.UnnecessaryNullish,
+          loc
+        );
+        return leftType;
+      }
+      if (leftIsAlwaysNull) {
+        ctx.warning(
+          "Left operand of '??=' is always null and will never be returned.",
+          DiagnosticCode.UnnecessaryNullish,
+          loc
+        );
+      }
+
+      let nonNullType = subtractNullFromType(leftType);
+      let rightType = checkExpression(ctx, value, nonNullType);
+      if (!isAssignableTo(ctx, rightType, nonNullType)) {
+        ctx.error(
+          "Type mismatch in '??=' assignment: '" + typeToString(rightType) +
+          "' is not assignable to '" + typeToString(nonNullType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      } else {
+        let instantiated = tryInstantiateGenericFunction(ctx, rightType, nonNullType);
+        if (instantiated !== rightType) {
+          ctx.setNodeType(value, instantiated);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, value, instantiated, nonNullType);
+      }
+      // The assignment's stored type is the narrowing: a later read
+      // walks back to this flow node and sees the non-null type.
+      if (left is Identifier) {
+        let info = ctx.model.resolve(left);
+        if (info != null) {
+          ctx.recordFlowAssignment(info.id, nonNullType);
+        }
+      }
+      return nonNullType;
+    }
+
+    // For assignment, use the declared (binding) type of the LHS,
+    // not the narrowed type. The RHS must be compatible with what the
+    // variable was declared as, not what it was narrowed to.
+    // A plain `=` writes without reading, so its identifier target is
+    // exempt from the use-after-move check: writing to a dead owned
+    // binding is the reinitialization that revives it.
+    // The same for a store into a field of a consuming method's `this`:
+    // whether the field held a value to release is decided once the
+    // right-hand side has run, below.
+    var receiverFieldTarget = false;
+    if (left is MemberExpression) {
+      receiverFieldTarget = left.object is ThisExpression && ctx.owningReceiver;
+    }
+    if (operator == null && (left is Identifier || receiverFieldTarget)) {
+      ctx.setMoveCheckSuppressedNode(left.id as i32);
+    }
+    var leftType = checkExpression(ctx, left, null);
+    ctx.setMoveCheckSuppressedNode(-1);
+    match (left) {
+      case Identifier: {
+        let info = ctx.model.resolve(left);
+        if (info != null) {
+          let bindingType = ctx.model.getBindingType(info);
+          if (bindingType != null) {
+            leftType = bindingType;
+          }
+        }
+      }
+      case MemberExpression as lm: {
+        // A store into an owner field takes ownership: the sink is the
+        // field's declared Own<R>, so the right-hand side is moved and
+        // a borrow is rejected. The store releases the previous value
+        // (lowering), which roots the field's dispose here, unless a
+        // dispose moved the field out, which the flow record below
+        // decides once the right-hand side has run.
+        let ownerFieldType = affineOwnerFieldType(ctx, lm);
+        if (ownerFieldType != null) {
+          leftType = ownerFieldType;
+          // The receiver must be an owner. A store releases the old
+          // value, and through a borrow of the holder that value could
+          // still be borrowed elsewhere, by a caller that handed this
+          // borrow out or by another argument of the same call; nothing
+          // here can see those. An owner receiver is exclusive: a
+          // caller that moved the holder in holds no borrow of it, and a
+          // local owner's borrows are in view of the checker
+          // (ownership.md §"Borrow provenance").
+          let recvT = ctx.model.getNodeType(lm.object);
+          let recvCore = if (recvT == null) null
+            else soleNonNullMember(recvT) ?? recvT;
+          if (recvCore == null || ownershipHandleName(recvCore) != "Own") {
+            ctx.error(
+              "A store into an owner field needs an owner for its receiver: " +
+              "through a borrow of the holder, the value the store releases " +
+              "could still be borrowed elsewhere. Store through an 'Own' " +
+              "binding, or in a method taking 'this: Own<this>'.",
+              DiagnosticCode.InvalidAssignment,
+              loc
+            );
+          }
+          let coreT = soleNonNullMember(ownerFieldType) ?? ownerFieldType;
+          let innerT = ownershipHandleInner(coreT);
+          if (innerT != null) {
+            let resources = ownedResourceClasses(innerT);
+            let deps = ctx.currentDependencies();
+            if (resources != null && deps != null) {
+              deps.needsExceptionInfra = true;
+              for (let resource in resources) {
+                let classSymId = (resource.genericSource ?? resource).symbolId;
+                deps.referencedSymbols.add(classSymId);
+                deps.referencedClassMethods.add(
+                  i32ToString(classSymId as i32) + ".:dispose");
+              }
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+    var effectiveType = checkExpression(ctx, value, leftType);
+    if (operator != null) {
+      // We know op is set and not "??". Act like a binary expression: left + right.
+      effectiveType = checkBinaryExpression(ctx, leftType, operator, left, value, loc, null);
+      ctx.setNodeType(value, effectiveType);
+    }
+
+    // `g = f` with an owned `f` transfers ownership, exactly like an
+    // initializer; then the store is recorded for narrowing.
+    if (operator == null) {
+      recordArgumentMove(ctx, value, leftType);
+    }
+
+    // Record the store on the flow graph: a later read walks back to
+    // it and takes the stored type. Clamped to the declared type here,
+    // once, so the walk never re-checks assignability. Structural types
+    // are stored ADAPTED — the value in the slot has the declared
+    // type's representation, not the source expression's — so they
+    // keep the declared type.
+    match (left) {
+      case Identifier: {
+        let info = ctx.model.resolve(left);
+        if (info != null) {
+          let structural = effectiveType is RecordT ||
+            effectiveType is TupleT || effectiveType is InlineTupleT;
+          let stored = if (!structural &&
+              isAssignableTo(ctx, effectiveType, leftType)) {
+            effectiveType
+          } else {
+            leftType
+          };
+          // A plain store into a `var` owner binding releases the value
+          // it held, when it held one: noted before the store revives it.
+          if (operator == null) {
+            ctx.noteOwnerStore(info.id, expr);
+          }
+          ctx.recordFlowAssignment(info.id, stored);
+        }
+      }
+      case MemberExpression as lm: {
+        // A store into an owner field that a dispose moved out on every
+        // path here, the right-hand side included, revives it and
+        // releases nothing. Moved on only some paths, the store could
+        // not tell whether it replaces a value to release.
+        if (operator == null && lm.object is ThisExpression &&
+            ctx.owningReceiver && affineOwnerFieldType(ctx, lm) != null) {
+          let pathKey = getMemberPathKey(ctx, lm);
+          if (pathKey != null &&
+              ctx.findLivePathMove(pathKey, ctx.currentFlow) != null) {
+            if (ctx.pathDefinitelyMoved(pathKey, ctx.currentFlow)) {
+              ctx.model.setRevivingStore(expr as Node);
+              ctx.recordFlowPathRevive(pathKey);
+            } else {
+              let display = "this." +
+                  getMemberPropertyName(lm.isSymbolAccess, lm.property.name);
+              ctx.error(
+                "'" + display + "' is moved out on some paths to this " +
+                  "store and not on others, so the store cannot tell " +
+                  "whether it replaces a value to release: move it on " +
+                  "every path, or on none.",
+                DiagnosticCode.UseAfterMove,
+                loc
+              );
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+
+    // Index writes: record the []= overload selection for codegen
+    // (member-lookup.md §5.1/§5.2). Selection is most-specific over
+    // (index, value) and recorded on the ASSIGNMENT node — the read
+    // half of a compound assignment records separately on the
+    // IndexExpression. Only recorded when the setter is overloaded:
+    // no record means the plain name is unambiguous.
+    if (left is IndexExpression) {
+      let recvType = ctx.model.getNodeType(left.object);
+      let idxNodeType = ctx.model.getNodeType(left.index);
+      if (recvType != null && idxNodeType != null) {
+          var setterFt: FunctionType | null = null;
+          var ownerParams: Array<TypeParameterType> | null = null;
+          var ownerArgs: Array<Type> | null = null;
+          match (baseType(recvType)) {
+            case ClassType as ct: {
+              if (ct.members.has("[]=")) {
+                setterFt = ct.members["[]="].type as FunctionType;
+                ownerParams = ct.typeParameters;
+                ownerArgs = ct.typeArguments;
+              }
+            }
+            case InterfaceType as it: {
+              if (it.members.has("[]=")) {
+                setterFt = it.members["[]="].type as FunctionType;
+                ownerParams = it.typeParameters;
+                ownerArgs = it.typeArguments;
+              }
+            }
+            case _: {}
+          }
+          if (setterFt != null && setterFt.overloads != null) {
+            let candidates = growable<FunctionType>([setterFt]);
+            for (let ov in setterFt.overloads as GrowableArray<FunctionType>) {
+              candidates.push(ov);
+            }
+            let applicableRaw = new Array<FunctionType>();
+            let applicableRes = new Array<FunctionType>();
+            let operandTypes = growable<Type>([idxNodeType, effectiveType]);
+            let operands = growable<Expression>([left.index, value]);
+            collectApplicableOperatorOverloads(
+                ctx, candidates, ownerParams, ownerArgs,
+                operandTypes, operands, 1, applicableRaw, applicableRes);
+            let selIdx = selectMostSpecificIndex(ctx, applicableRes, 2, loc);
+            if (selIdx >= 0) {
+              ctx.model.setResolvedOverload(expr, applicableRaw[selIdx]);
+            }
+          }
+        }
+    }
+
+    if (!isAssignableTo(ctx, effectiveType, leftType)) {
+      ctx.error(
+        "Type mismatch in assignment: '" + typeToString(effectiveType) +
+        "' is not assignable to '" + typeToString(leftType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    } else {
+      let instantiated = tryInstantiateGenericFunction(ctx, effectiveType, leftType);
+      if (instantiated !== effectiveType) {
+        ctx.setNodeType(value, instantiated);
+        effectiveType = instantiated;
+      }
+      checkAndRegisterInterfaceAdaptation(ctx, value, effectiveType, leftType);
+    }
+
+    leftType
+  }
+
+  // --- Functions ---
+
+  case FunctionExpression as fe: {
+    checkFunctionExpression(ctx, fe, expectedType)
+  }
+
+  case CallExpression as call: {
+    checkCallExpression(ctx, call, expectedType)
+  }
+
+  // --- If Expression ---
+
+  case IfExpression {test, consequent, alternate, loc}: {
+    match (test) {
+      case LetPatternCondition as lpc: {
+        let initType = checkExpression(ctx, lpc.init, null);
+        moveDestructuredTuple(ctx, lpc.init, initType);
+        let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
+        let preBranchFlow = ctx.currentFlow;
+        ctx.enterScope();
+        checkPattern(ctx, lpc.pattern, narrowedInitType);
+        ctx.enterOwnScope();
+        registerPatternOwners(ctx, lpc.pattern as Node);
+        let consType = checkIfBranchNode(ctx, consequent, expectedType);
+        ctx.exitOwnScope(consequent as Node);
+        ctx.exitScope();
+        let trueEnd = ctx.currentFlow;
+        ctx.setFlow(preBranchFlow);
+
+        var altType: Type = new VoidType();
+        if (alternate != null) {
+          ctx.enterScope();
+          altType = checkIfBranchNode(ctx, alternate, expectedType);
+          ctx.exitScope();
+        }
+        ctx.mergeFlow(trueEnd, ctx.currentFlow);
+
+        if (expectedType is VoidType) {
+          return new VoidType();
+        }
+        let branches = growable<Type>([consType, altType]);
+        let joined = createUnionType(branches, ctx, loc);
+        let consNode = armValueNode(consequent);
+        if (consNode != null) { adaptJoinedArm(ctx, consNode, consType, joined); }
+        if (alternate != null) {
+          let altNode = armValueNode(alternate as Node);
+          if (altNode != null) { adaptJoinedArm(ctx, altNode, altType, joined); }
+        }
+        joined
+      }
+      case _: {
+        let testExpr = test as Expression;
+        let testType = checkExpression(ctx, testExpr, null);
+        validateConditionType(ctx, testType, testExpr);
+
+        // The same condition engine the if-statement uses: each branch
+        // is checked under its narrowings on the flow, so `&&` chains
+        // and path guards narrow in expression position too.
+        let preBranchFlow = ctx.currentFlow;
+        applyTrueNarrowingFromCondition(ctx, testExpr);
+        let consType = checkIfBranchNode(ctx, consequent, expectedType);
+        let trueEnd = ctx.currentFlow;
+
+        ctx.setFlow(preBranchFlow);
+        applyFalseNarrowingFromCondition(ctx, testExpr);
+        var altType: Type = new VoidType();
+        if (alternate != null) {
+          altType = checkIfBranchNode(ctx, alternate, expectedType);
+        }
+        ctx.mergeFlow(trueEnd, ctx.currentFlow);
+
+        // Result type is the union of both branches.
+        if (expectedType is VoidType) {
+          return new VoidType();
+        }
+        let branches = growable<Type>([consType, altType]);
+        let joined = createUnionType(branches, ctx, loc);
+        let consNode = armValueNode(consequent);
+        if (consNode != null) { adaptJoinedArm(ctx, consNode, consType, joined); }
+        if (alternate != null) {
+          let altNode = armValueNode(alternate as Node);
+          if (altNode != null) { adaptJoinedArm(ctx, altNode, altType, joined); }
+        }
+        joined
+      }
+    }
+  }
+
+  // --- TODO: Other expression types ---
+
+  case MemberExpression as memExpr: {
+    checkMemberExpression(ctx, memExpr, memExpr.object, memExpr.property, memExpr.optional, memExpr.isSymbolAccess, memExpr.loc)
+  }
+  case IndexExpression as idxExpr: {
+    checkIndexExpression(ctx, idxExpr.object, idxExpr.index, idxExpr.optional, idxExpr.loc, idxExpr)
+  }
+  case ThisExpression {loc}: {
+    let cc = ctx.currentClass;
+    // A consuming method's `this` is dead once the body moves it on.
+    let receiver = ctx.receiverSymbol;
+    if (receiver != null) {
+      ctx.checkMoveUse(expr as Node, receiver);
+    }
+    if (cc == null) {
+      ctx.error("'this' used outside of a class.", DiagnosticCode.SymbolNotFound, loc);
+      new ErrorType()
+    } else {
+      // In extension classes, 'this' resolves to the underlying type, not the extension class.
+      if (cc.isExtension && cc.onType != null) {
+        let onT = cc.onType as Type;
+        var thisType = onT;
+        // The underlying value is what a body wants nearly everywhere,
+        // since the extension type carries no members of its own —
+        // `this.length` inside an extension on String is String's.
+        // But nothing reaches the extension type from that value except
+        // a cast, so where one is what's wanted and the underlying
+        // value will not do — a `this` return, most of all — hand back
+        // the extension type, which the receiver provably is. Asking
+        // for the underlying type first keeps every existing body
+        // reading `this` as the value it always was.
+        if (expectedType != null) {
+          let expected = expectedType;
+          let selfT = selfTypeOfClass(cc);
+          if (!isAssignableTo(ctx, onT, expected) &&
+              isAssignableTo(ctx, selfT, expected)) {
+            thisType = selfT;
+          }
+        }
+        thisType
+      } else if (cc.isResource) {
+        // A resource's `this` is a borrow: usable for anything a method
+        // does to its own receiver, and second-class, so it cannot be
+        // captured, stored or handed to something that takes ownership.
+        // A method that declared `this: Own<this>` was handed the owner
+        // instead, and may do all three — that is what declaring it buys.
+        if (ctx.owningReceiver) {
+          wrapResourceInOwn(ctx, cc as Type, loc)
+        } else {
+          wrapResourceInBorrow(ctx, cc)
+        }
+      } else {
+        // The self type: a generic class's `this` is the class AT ITS
+        // OWN PARAMETERS (`Future<T>`), not the bare source — the
+        // source has no type arguments, and everything that inspects
+        // an instantiated type (an await's operand check, a call
+        // binding T from the receiver) rejects it (issue #434).
+        selfTypeOfClass(cc)
+      }
+    }
+  }
+  case SuperExpression {loc}: {
+    let cc = ctx.currentClass;
+    if (cc == null) {
+      ctx.error("'super' can only be used inside a class.", DiagnosticCode.SymbolNotFound, loc);
+      new ErrorType()
+    } else {
+      let st = cc.superType;
+      if (st == null) {
+        ctx.error(`Class '${cc.name}' does not have a superclass.`, DiagnosticCode.SymbolNotFound, loc);
+        new ErrorType()
+      } else {
+        st as Type
+      }
+    }
+  }
+  case NewExpression as newExpr: {
+    let constructed = checkNewExpression(ctx, newExpr, newExpr.callee, newExpr.typeArguments, newExpr.args, newExpr.loc, expectedType);
+    wrapResourceInOwn(ctx, constructed, newExpr.loc)
+  }
+  case AsExpression {expression, typeAnnotation, loc}: {
+    let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
+    // A cast to a reference type hands its operand a contextual type:
+    // `[] as GrowableArray<String>` has no other way to learn its element type,
+    // and without one it builds an array over an error type that codegen
+    // later has no vtable for. Casts to primitives stay uncontextual,
+    // because there the cast is a conversion and typing the operand as
+    // the target would change what is being converted — `-1 as u32`
+    // reinterprets an i32, it does not range-check a u32 literal.
+    var castContext: Type | null = null;
+    if (isReferenceType(representationOf(targetType))) {
+      castContext = targetType;
+    }
+    // A literal cast to a primitive is measured against the cast's
+    // width (see `castLiteralTarget`).
+    var sourceType: Type = new ErrorType();
+    if (castContext == null && isContextTypedNumber(expression) && isNumericType(targetType)) {
+      let previous = ctx.castLiteralTarget;
+      ctx.setCastLiteralTarget(targetType);
+      sourceType = checkExpression(ctx, expression, null);
+      ctx.setCastLiteralTarget(previous);
+    } else {
+      sourceType = checkExpression(ctx, expression, castContext);
+    }
+    let isNarrowed = ctx.isExpressionNarrowed(expression);
+    let isAutoCasted = if (expression is Identifier) {
+      targetType is ClassType || targetType is InterfaceType
+    } else {
+      false
+    };
+    let warnCast = (!isNarrowed || isAutoCasted) && !(expression is ThisExpression);
+    if (ctx.warnUnnecessaryCasts && warnCast && typesEqual(sourceType, targetType)) {
+      ctx.warning(`Unnecessary cast: expression is already of type '${typeToString(targetType)}'.`, DiagnosticCode.UnnecessaryCast, loc);
+    }
+    if (targetType is UnionT) {
+      ctx.error(
+        `Cannot use union type '${typeToString(targetType)}' as cast target. Cast to each type separately.`,
+        DiagnosticCode.TypeMismatch,
+        typeAnnotation.loc
+      );
+    }
+    checkTupleUnionTest(ctx, sourceType, targetType, loc);
+    let validCast = isValidCast(sourceType, targetType);
+    if (!validCast) {
+      var errorMsg = `Cannot cast type '${typeToString(sourceType)}' to '${typeToString(targetType)}'.`;
+      if (sourceType is NullType && !isNullableType(targetType)) {
+        errorMsg = `Cannot cast 'null' to non-nullable type '${typeToString(targetType)}'.`;
+      } else if (isValuePrimitive(sourceType) && !isValuePrimitive(targetType)) {
+        errorMsg = "Cannot cast primitive type '" + typeToString(sourceType) + "' to reference type '" + typeToString(targetType) + "'. " +
+                   "Use string concatenation or a conversion function instead.";
+      } else if (isReferenceType(representationOf(sourceType)) &&
+          isValuePrimitive(representationOf(targetType))) {
+        errorMsg = "Cannot cast reference type '" + typeToString(sourceType) + "' to primitive type '" + typeToString(targetType) + "'. " +
+                   "A reference holds no scalar to reinterpret; read the value out of the " +
+                   "object holding it — for a boxed primitive, '(x as Box<" +
+                   typeToString(targetType) + ">).value'.";
+      }
+      ctx.error(
+        errorMsg,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
+    // A closed record or tuple never has fields or elements its type
+    // does not name, so a cast to a type naming more cannot succeed. One
+    // to a type naming fewer projects (the conversion recorded below).
+    if (validCast &&
+        closedRelation(ctx, subtractNullFromType(sourceType), targetType) == ClosedRelation.Never) {
+      let why = if (baseType(targetType) is TupleT) "a tuple has exactly its type's elements"
+          else "a closed record never has fields its type does not name";
+      ctx.error(`Cannot cast '${typeToString(sourceType)}' to '${typeToString(targetType)}': ${why}.`,
+          DiagnosticCode.TypeMismatch, loc);
+    }
+    // Only when the cast is otherwise well-formed: a cast already rejected as
+    // impossible does not also need to be reported as a forge.
+    if (validCast) {
+      checkOpaqueCast(ctx, sourceType, targetType, loc);
+      checkTypeParameterCast(ctx, sourceType, targetType, loc);
+    }
+    checkAndRegisterInterfaceAdaptation(ctx, expr, sourceType, targetType);
+    targetType
+  }
+  case IsExpression {expression, typeAnnotation, loc}: {
+    let operandType = checkExpression(ctx, expression, null);
+    let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
+    // On closed record and tuple types the answer is the types'. A
+    // nullable operand is still a null test.
+    if (!isNullableType(operandType)) {
+      match (closedRelation(ctx, operandType, targetType)) {
+        case ClosedRelation.Same: {
+          if (ctx.warnUnnecessaryCasts) {
+            ctx.warning(`${operandText(expression)} is always a '${typeToString(targetType)}': the test can go.`,
+                DiagnosticCode.UnnecessaryCast, loc);
+          }
+        }
+        case ClosedRelation.Never | ClosedRelation.Projection: {
+          ctx.error(`${operandText(expression)} is never a '${typeToString(targetType)}': a value of type '${typeToString(operandType)}' has exactly its type's fields.`,
+              DiagnosticCode.TypeMismatch, loc);
+        }
+        case _: {}
+      }
+    }
+    checkTupleUnionTest(ctx, operandType, targetType, loc);
+    ctx.setNodeType(typeAnnotation, targetType);
+    new BooleanType()
+  }
+  case ArrayLiteral {elements, loc}: {
+    let expectedElementType = expectedArrayElementType(ctx, expectedType);
+    var inferredElementType = new ErrorType() as Type;
+    if (elements.length == 0) {
+      // Empty array: only the context can say what it holds.
+      if (expectedElementType != null) {
+        inferredElementType = expectedElementType;
+      }
+    } else {
+      let elementTypes = new Array<Type>();
+      var allFitExpected = expectedElementType != null;
+      for (let element in elements) {
+        let elementType = checkExpression(ctx, element, expectedElementType);
+        elementTypes.push(elementType);
+        if (expectedElementType != null &&
+            !isAssignableTo(ctx, elementType, expectedElementType)) {
+          allFitExpected = false;
+        }
+      }
+      if (allFitExpected) {
+        // `let xs: GrowableArray<Animal> = [dog, cat]`: arrays are invariant, so
+        // the literal has to be an array of the expected element type
+        // itself for the assignment to go through.
+        let target = expectedElementType as Type;
+        for (var i = 0; i < elements.length; i += 1) {
+          checkAndRegisterInterfaceAdaptation(ctx, elements[i], elementTypes[i], target);
+        }
+        inferredElementType = target;
+      } else {
+        // With no usable context the elements decide. When one element's
+        // type holds all the others (`[animal, dog]`) that is the element
+        // type; otherwise it is their union (`[dog, cat]` holds
+        // `Dog | Cat`). When there was an expected type the elements did
+        // not fit, the assignment of the literal reports the mismatch.
+        let widened = new Array<Type>();
+        for (let elementType in elementTypes) {
+          widened.push(widenType(ctx, elementType));
+        }
+        var common: Type | null = null;
+        for (let candidate in widened) {
+          var holdsAll = true;
+          for (let other in widened) {
+            if (!isAssignableTo(ctx, other, candidate)) {
+              holdsAll = false;
+              break;
+            }
+          }
+          if (holdsAll) {
+            common = candidate;
+            break;
+          }
+        }
+        inferredElementType = if (common != null) {
+          common
+        } else {
+          createUnionType(widened, ctx, loc)
+        };
+      }
+    }
+
+    // Inference reaches `Array<Borrow<R>>` with no one writing the type
+    // down, so the annotation-level check above is not enough on its own.
+    // The one sanctioned shape is the call-site temporary: a literal
+    // checked against an expected type whose element is already
+    // second-class — a `scoped T` parameter, raw or substituted — is
+    // consumed by the call it flows into, so its elements never
+    // outlive their extents (ownership.md §"Scoped containers and
+    // extent nesting"). Spelling such a type in an annotation is
+    // rejected at the annotation, so a binding cannot reach here with
+    // one.
+    if (!scopedElementsExpected(expectedType) && ctx.scopedArgument !== expr) {
+      rejectSecondClassStorage(ctx, inferredElementType, "an array", loc);
+      // A literal instantiates its array as `new` would, so an owner
+      // element meets the rule a `new FixedArray<Own<R>>` does: the
+      // array's `T` is unrestricted, and an index read copies it
+      // (ownership.md §"Affine type arguments"). Once, because a call
+      // checks its arguments twice.
+      if (typeCarriesOwner(inferredElementType)) {
+        ctx.errorOnce(expr, ownerTypeArgumentMessage("T", inferredElementType),
+            DiagnosticCode.TypeMismatch);
+      }
+    }
+
+    // A literal is an ImmutableArray unless the context demands mutable
+    // elements: an expected FixedArray or GrowableArray, the
+    // MutableArray interface, or a mutable-element `array<var T>`.
+    // (resolveArrayBackingClass carries the same by-name currentClass
+    // match this site used to hold; see
+    // docs/design/stdlib-organization.md for why it is by name.)
+    var wantsMutable = false;
+    if (expectedType != null) {
+      // `FixedArray<T>?` wants mutable elements as much as
+      // `FixedArray<T>` does.
+      match (baseType(subtractNullFromType(expectedType))) {
+        case ClassType as ect: {
+          if (isWellKnownClassType(ctx, ect, WellKnown.FixedArrayClass) ||
+              isWellKnownClassType(ctx, ect, WellKnown.GrowableArrayClass)) {
+            wantsMutable = true;
+          }
+        }
+        case InterfaceType as eit: {
+          if (isWellKnownInterfaceType(ctx, eit, WellKnown.MutableArrayInterface)) {
+            wantsMutable = true;
+          }
+        }
+        case ArrayType {elementsMutable as em}: {
+          if (em) { wantsMutable = true; }
+        }
+        case _: {}
+      }
+    }
+    let faType = resolveArrayBackingClass(ctx, wantsMutable);
+    if (faType == null) {
+      throw new Error("prelude array backing class not found");
+    }
+    let typeArgs = growable<Type>([inferredElementType]);
+    instantiateClassType(faType as ClassType, typeArgs) as Type
+  }
+  case RecordLiteral {properties, loc}: {
+    // Contextual typing: expected property types flow into the property
+    // values, and (below) an assignable literal takes the expected record
+    // type as its own. Codegen mints one struct per distinct record type,
+    // so two literals of the same declared type must not come out as two
+    // different mints ({p: null} and {p: somePofTypeP} against {p: P | null}) —
+    // record dispatch casts the receiver to the declared type's mint.
+    var expectedProps: HashMap<String, Type> | null = null;
+    if (expectedType != null) {
+      let baseExpected = baseType(expectedType);
+      if (baseExpected is RecordT) {
+        expectedProps = baseExpected.properties;
+      }
+    }
+    let propTypes = new Map<String, Type>();
+    // A field fed only by a spread source where it is optional stays
+    // optional in the literal's own type — its runtime presence follows
+    // the source's. An explicit assignment (or a required spread field)
+    // later in the literal makes it definite again.
+    var literalOptionals: HashSet<String> | null = null;
+    // Each explicit key, by the property that wrote it, so a repeat and
+    // a key a later spread always overwrites can be reported.
+    let explicitKeys = new HashMap<String, Identifier>();
+    // The row of a spread row-typed record (`{...p, x: 1}` with `p:
+    // {x: i32, ...R}`): the literal's type spreads it too.
+    var literalRow: TypeParameterType | null = null;
+    var i = 0;
+    while (i < properties.length) {
+      match (properties[i]) {
+        case PropertyAssignment {name, value}: {
+          if (explicitKeys.has(name.name)) {
+            ctx.error(`Duplicate property '${name.name}' in record literal.`,
+                DiagnosticCode.DuplicateField, name.loc);
+          } else {
+            explicitKeys[name.name] = name;
+          }
+          var propExpected: Type | null = null;
+          if (expectedProps != null &&
+              expectedProps.has(name.name)) {
+            propExpected = expectedProps[name.name];
+          }
+          let valType = checkExpression(ctx, value, propExpected);
+          if (propExpected != null) {
+            checkAndRegisterInterfaceAdaptation(ctx, value, valType, propExpected);
+          }
+          propTypes[name.name] = valType;
+          if (literalOptionals != null) { literalOptionals.delete(name.name); }
+        }
+        case SpreadElement {argument}: {
+          // Spread: merge properties from the argument's record/class type.
+          let spreadType = checkExpression(ctx, argument, null);
+          let nonNullSpread = subtractNullFromType(spreadType);
+          match (nonNullSpread) {
+            case RecordT as spreadRec: {
+              if (spreadRec.isExistential) {
+                // Its other fields are not known, so neither is the
+                // literal's type (row-types.md, Decisions).
+                ctx.error(`Cannot spread '${typeToString(spreadType)}': an existential record's fields are not all known.`,
+                    DiagnosticCode.TypeMismatch, argument.loc);
+              }
+              let spreadRow = spreadRec.row;
+              if (spreadRow != null) {
+                if (literalRow != null && literalRow !== spreadRow) {
+                  reportTwoRows(ctx, argument.loc);
+                }
+                literalRow = spreadRow;
+              }
+              let spreadProps = spreadRec.properties;
+              let keys = spreadProps.keys();
+              for (let key in keys) {
+                let spreadT = spreadProps[key];
+                if (spreadRec.isOptional(key)) {
+                  // A spread copies only the fields present in it, so an
+                  // earlier source of the key still supplies it when the
+                  // spread's is absent: the key keeps that source's
+                  // presence, and takes either type.
+                  if (let (true, prior) = propTypes.get(key)) {
+                    propTypes[key] = eitherType(ctx, prior, spreadT);
+                  } else {
+                    propTypes[key] = spreadT;
+                    literalOptionals ??= new Set<String>();
+                    literalOptionals.add(key);
+                  }
+                } else {
+                  propTypes[key] = spreadT;
+                  reportOverwrittenProperty(ctx, explicitKeys, key);
+                  if (literalOptionals != null) {
+                    literalOptionals.delete(key);
+                  }
+                }
+              }
+            }
+            case ClassType as ct: {
+              let keys = ct.members.keys();
+              for (let key in keys) {
+                let member = ct.members[key];
+                if (member is FieldInfo && !member.isStatic && !member.isPrivate && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
+                  propTypes[key] = member.type;
+                  reportOverwrittenProperty(ctx, explicitKeys, key);
+                }
+              }
+            }
+            case _: {}
+          }
+        }
+        case _: {}
+      }
+      i += 1;
+    }
+    if (literalOptionals != null && literalOptionals.size == 0) {
+      literalOptionals = null;
+    }
+    if (literalRow != null) {
+      // A field the row could also have would make the result's type
+      // depend on the row: a later one replaces it (TypeScript's rule),
+      // an earlier one is replaced. So every field here is one the row
+      // lacks, which only its declaration's signature says.
+      noteFieldsBesideRow(ctx, literalRow, propTypes, expr);
+    }
+    let recT = new RecordT(propTypes, literalOptionals, literalRow, false);
+    if (expectedType != null) {
+      // A closed record type names all its fields, so a literal checked
+      // against one may write no others (row-types.md §3.2): a typo is
+      // an error rather than a field dropped. Fields a spread brings are
+      // a projection, as they are from a variable; a type with a row
+      // takes the extra fields as the row.
+      let exactExpected = baseType(expectedType);
+      if (exactExpected is RecordT) {
+        let closedExpected = exactExpected;
+        if (closedExpected.row == null && !closedExpected.isExistential) {
+          for (let key in explicitKeys.keys()) {
+            if (!closedExpected.properties.has(key)) {
+              ctx.errorOnce(explicitKeys[key],
+                  `Field '${key}' is not in '${typeToString(expectedType)}': a literal of a closed record type names exactly its fields.`,
+                  DiagnosticCode.PropertyNotFound);
+            }
+          }
+        }
+      }
+    }
+    if (expectedType != null) {
+      let baseExpected = baseType(expectedType);
+      if (baseExpected is RecordT && isAssignableTo(ctx, recT, baseExpected)) {
+        // A literal is a closed record; packing it into an existential
+        // is the conversion at the use, not the literal's type.
+        let expectedRecord = baseExpected;
+        if (!expectedRecord.isExistential) {
+          return baseExpected;
+        }
+      }
+    }
+    recT
+  }
+  case TupleLiteral {elements, spreadIndices, loc}: {
+    if (spreadIndices != null) {
+      return checkTupleLiteralWithSpreads(ctx, elements, spreadIndices, expectedType);
+    }
+    // Inline tuple literals are parsed as TupleLiteral nodes.
+    // If the expected type is an inline tuple (or union of inline tuples),
+    // check against those element expectations and produce an InlineTupleType.
+    var expectedElementTypes: Array<Type> | null = null;
+    var useInlineTuple = false;
+    if (expectedType != null) {
+      let maybeElems = getTuplePatternElementTypes(expectedType);
+      if (maybeElems != null) {
+        expectedElementTypes = maybeElems;
+      }
+      match (expectedType) {
+        case InlineTupleT {}: {
+          useInlineTuple = true;
+        }
+        case UnionT {types}: {
+          for (let member in types) {
+            if (member is InlineTupleT) {
+              useInlineTuple = true;
+              break;
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+    // Written against a union of boxed tuples, the literal is the member
+    // its leading literal names, so it builds that member's struct, the
+    // one a reader of the union tests for: `(true, some(x))` against
+    // `(true, Option<X>) | (false, E)` is a `(true, Option<X>)`, not a
+    // `(true, Some<X>)`.
+    var memberExpected: TupleT | null = null;
+    if (expectedType != null && !useInlineTuple) {
+      memberExpected = tupleMemberForLiteral(expectedType, elements);
+      if (memberExpected != null) {
+        expectedElementTypes = memberExpected.elementTypes;
+      }
+    }
+
+    // Check each element and collect their types.
+    let elementTypes = new Array<Type>();
+    var i = 0;
+    while (i < elements.length) {
+      let elemExpected: Type | null = if (expectedElementTypes != null && i < expectedElementTypes.length) {
+        expectedElementTypes[i]
+      } else {
+        null
+      };
+      let elemType = checkExpression(ctx, elements[i], elemExpected);
+      // An owner, or a tuple holding one, moves into the tuple (#495).
+      recordArgumentMove(ctx, elements[i], elemType);
+      elementTypes.push(elemType);
+      i += 1;
+    }
+    if (useInlineTuple) {
+      let inlineT = new InlineTupleT(elementTypes);
+      if (expectedType != null) {
+        let baseExpected = baseType(expectedType);
+        if (baseExpected is InlineTupleT && isAssignableTo(ctx, inlineT, baseExpected)) {
+          return baseExpected;
+        }
+      }
+      return inlineT;
+    }
+    let tupleT = new TupleT(elementTypes, null, 0);
+    if (memberExpected != null && isAssignableTo(ctx, tupleT, memberExpected)) {
+      return memberExpected;
+    }
+    if (expectedType != null) {
+      let baseExpected = baseType(expectedType);
+      if (baseExpected is TupleT && isAssignableTo(ctx, tupleT, baseExpected)) {
+        return baseExpected;
+      }
+    }
+    tupleT
+  }
+  case MapLiteral {entries, loc}: {
+    var expectedKeyType: Type | null = null;
+    var expectedValType: Type | null = null;
+    if (expectedType != null) {
+      let nonNullExpected = baseType(subtractNullFromType(expectedType as Type));
+      match (nonNullExpected) {
+        case ClassType as ct: {
+          if (ct.typeArguments != null) {
+            let targs = ct.typeArguments as Array<Type>;
+            if (targs.length >= 2) {
+              expectedKeyType = targs[0];
+              expectedValType = targs[1];
+            }
+          }
+        }
+        case InterfaceType as it: {
+          if (it.typeArguments != null) {
+            let targs = it.typeArguments as Array<Type>;
+            if (targs.length >= 2) {
+              expectedKeyType = targs[0];
+              expectedValType = targs[1];
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+    if (entries.length == 0) {
+      if (expectedKeyType != null && expectedValType != null) {
+        mapLiteralType(ctx, expectedKeyType as Type, expectedValType as Type, loc)
+      } else {
+        ctx.error("Empty map literal requires type annotation. Use 'new HashMap<K, V>()' instead.", DiagnosticCode.TypeMismatch, loc);
+        new ErrorType()
+      }
+    } else {
+      // Check all entries and unify key/value types.
+      let firstKeyType = checkExpression(ctx, entries[0].key, expectedKeyType);
+      let firstValType = checkExpression(ctx, entries[0].value, expectedValType);
+      let targetKeyType = if (expectedKeyType != null) expectedKeyType as Type else firstKeyType;
+      let targetValType = if (expectedValType != null) expectedValType as Type else firstValType;
+      if (expectedKeyType != null) {
+        checkAndRegisterInterfaceAdaptation(ctx, entries[0].key, firstKeyType, targetKeyType);
+      }
+      if (expectedValType != null) {
+        checkAndRegisterInterfaceAdaptation(ctx, entries[0].value, firstValType, targetValType);
+      }
+      var ei = 1;
+      while (ei < entries.length) {
+        let kt = checkExpression(ctx, entries[ei].key, expectedKeyType);
+        if (!isAssignableTo(ctx, kt, targetKeyType)) {
+          ctx.error(
+            `Map key type mismatch: expected '${typeToString(targetKeyType)}', got '${typeToString(kt)}'.`,
+            DiagnosticCode.TypeMismatch, entries[ei].key.loc
+          );
+        } else if (expectedKeyType != null) {
+          checkAndRegisterInterfaceAdaptation(ctx, entries[ei].key, kt, targetKeyType);
+        }
+        let vt = checkExpression(ctx, entries[ei].value, expectedValType);
+        if (!isAssignableTo(ctx, vt, targetValType)) {
+          ctx.error(
+            `Map value type mismatch: expected '${typeToString(targetValType)}', got '${typeToString(vt)}'.`,
+            DiagnosticCode.TypeMismatch, entries[ei].value.loc
+          );
+        } else if (expectedValType != null) {
+          checkAndRegisterInterfaceAdaptation(ctx, entries[ei].value, vt, targetValType);
+        }
+        ei += 1;
+      }
+      mapLiteralType(ctx, targetKeyType, targetValType, loc)
+    }
+  }
+  case TemplateLiteral {expressions, loc}: {
+    for (let subExpr in expressions) {
+      checkExpression(ctx, subExpr, null);
+    }
+    let stringType = ctx.resolveTypeName("String");
+    if (stringType != null) {
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        if (stringType is ClassType) {
+          let classSymId = (stringType.genericSource ?? stringType).symbolId;
+          deps.referencedSymbols.add(classSymId);
+          deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".fromRawParts");
+        }
+      }
+      return stringType;
+    }
+    ctx.error(
+      "Built-in type 'String' is not available. Ensure the standard prelude is loaded.",
+      DiagnosticCode.SymbolNotFound,
+      loc
+    );
+    new ErrorType()
+  }
+  case TaggedTemplateExpression {tag, quasi, loc}: {
+    // Check the tag function first to obtain the expected interpolation element type.
+    let tagType = checkExpression(ctx, tag, null);
+    var valueType: Type | null = null;
+    if (tagType is FunctionType) {
+      let ft = tagType as FunctionType;
+      if (ft.parameters.length >= 2) {
+        let elem = expectedArrayElementType(ctx, ft.parameters[1]);
+        if (elem != null && !typeContainsTypeParameter(elem)) {
+          valueType = elem;
+        }
+      }
+    }
+    // Check the interpolated expressions against the tag's value type.
+    // A tag receives its values as they are, with none of the
+    // conversion an untagged literal performs, so a value the tag's
+    // array cannot hold is an error here rather than a lowering bail
+    // or a trap in the tag.
+    for (let expr in quasi.expressions) {
+      let exprType = checkExpression(ctx, expr, valueType);
+      if (valueType != null) {
+        if (isAssignableTo(ctx, exprType, valueType)) {
+          checkAndRegisterInterfaceAdaptation(ctx, expr, exprType, valueType);
+        } else if (!(exprType is ErrorType)) {
+          // A primitive where the tag takes its box. A tag opts into
+          // boxing by accepting `Box<P>` among its values; the box is
+          // recorded for codegen to construct around the value, as an
+          // untagged literal converts a primitive to text in the same
+          // position. A tag that accepts no box keeps the error.
+          let box = boxForTemplateValue(ctx, exprType, valueType);
+          if (box != null) {
+            ctx.model.setBoxAdaptation(expr, box);
+          } else {
+            ctx.error(
+              `Type mismatch: interpolated value '${typeToString(exprType)}' is not assignable to the tag's value type '${typeToString(valueType)}'.`,
+              DiagnosticCode.TypeMismatch, expr.loc
+            );
+          }
+        }
+      }
+    }
+    match (tagType) {
+      case FunctionType as ft: ft.returnType
+      case _: {
+        ctx.error(
+          `Tagged template tag must be a function, got '${typeToString(tagType)}'.`,
+          DiagnosticCode.TypeMismatch, loc
+        );
+        new ErrorType()
+      }
+    }
+  }
+  case MatchExpression as matchExpr: {
+    checkMatchExpr(ctx, matchExpr, expectedType)
+  }
+  case AwaitExpression as aw: {
+    checkAwaitExpression(ctx, aw)
+  }
+
+  case ThrowExpression {argument, loc}: {
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      deps.needsExceptionInfra = true;
+    }
+    let argType = checkExpression(ctx, argument, null);
+    // `throw` is defined over the stdlib `Error`, so ask for that
+    // declaration rather than for whatever the name resolves to here: a
+    // program may declare its own class called `Error`.
+    let errorType = ctx.tryResolveWellKnownType(WellKnown.ErrorClass);
+    if (errorType != null) {
+      let isError = isAssignableTo(ctx, argType, errorType);
+      var isActuallyError = isError;
+      if (!isError) {
+        match (argType) {
+          case ClassType as cType: {
+            var cur: ClassType | null = cType;
+            while (cur != null) {
+              let c = cur;
+              if (isWellKnown(WellKnown.ErrorClass, c.name, c.sourcePath)) {
+                isActuallyError = true;
+              }
+              cur = c.superType;
+            }
+          }
+          case _: {}
+        }
+      }
+
+      if (!isActuallyError) {
+        ctx.error(
+          `Thrown value must be an instance of Error, got '${typeToString(argType)}'.`,
+          DiagnosticCode.TypeMismatch, loc
+        );
+      }
+    }
+    ctx.markFlowUnreachable();
+    new NeverType()
+  }
+  case TryExpression {body, handler, cancelBlock, finalizer, loc}: {
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      deps.needsExceptionInfra = true;
+    }
+    // yield is rejected anywhere inside try/catch/finally (v1).
+    ctx.enterTry();
+    // The body can throw at any point, so the catch entry joins the
+    // pre-try flow with every assignment inside the body (they add
+    // themselves; see recordFlowAssignment).
+    let catchEntry = ctx.enterFlowTry();
+    let tryType = checkMatchCaseBody(ctx, body as Node, expectedType);
+    ctx.exitFlowTry();
+    let bodyEnd = ctx.currentFlow;
+    var catchType: Type | null = null;
+    if (handler != null) {
+      ctx.setFlow(catchEntry);
+      ctx.enterScope();
+      let {param} = handler;
+      if (param != null) {
+        let paramId = param;
+        let info = ctx.model.resolveDeclaration(paramId);
+        if (info != null) {
+          // The catch parameter binds the stdlib `Error`; see the note on
+          // `throw` above.
+          let errorType = ctx.tryResolveWellKnownType(WellKnown.ErrorClass);
+          ctx.declareBinding(info, if (errorType != null) errorType else new ErrorType());
+        }
+      }
+      catchType = checkMatchCaseBody(ctx, handler.body as Node, expectedType);
+      ctx.exitScope();
+      ctx.mergeFlow(bodyEnd, ctx.currentFlow);
+    } else {
+      // No handler: code after the try runs only when the body
+      // completed normally.
+      ctx.setFlow(bodyEnd);
+    }
+    if (cancelBlock != null) {
+      let cb = cancelBlock;
+      if (ctx.asyncFutureType == null) {
+        ctx.error(
+          "A 'cancel' clause is only legal in an async function: " +
+          "cancellation is delivered only at checkpoints, so in sync code " +
+          "the clause is unreachable.",
+          DiagnosticCode.TypeMismatch, loc);
+      }
+      // The block runs on a cancellation unwind and the unwind then
+      // continues, so it contributes no value and no flow to the code
+      // after the try. Its entry is the catch entry's ("anywhere in
+      // the body"); leaving it early is rejected at the return/break/
+      // continue sites via the floor.
+      let afterFlow = ctx.currentFlow;
+      ctx.setFlow(catchEntry);
+      let prevFloor = ctx.cancelBlockFloor;
+      ctx.setCancelBlockFloor(ctx.loopDepth);
+      checkMatchCaseBody(ctx, cb as Node, new VoidType());
+      ctx.setCancelBlockFloor(prevFloor);
+      ctx.setFlow(afterFlow);
+    }
+    if (finalizer != null) {
+      // The finalizer also runs on the unwind paths, so its entry joins
+      // in the catch entry (which stands in for "anywhere in the body").
+      ctx.mergeFlow(ctx.currentFlow, catchEntry);
+      // Void context, not `null`: the finalizer's value is discarded,
+      // and checkMatchCaseBody passes the expected type down to the
+      // block's TAIL statement. With no expectation there, a tail
+      // `if` without an `else` types as `T | void` — which has no
+      // wasm value type, so lowering it in a void context bails.
+      let prevInFinalizer = ctx.inFinalizer;
+      ctx.setInFinalizer(true);
+      checkMatchCaseBody(ctx, finalizer as Node, new VoidType());
+      ctx.setInFinalizer(prevInFinalizer);
+    }
+    ctx.exitTry();
+    if (deps != null && (ctx.yieldType != null || ctx.asyncFutureType != null)) {
+      // Enclosing locals the body assigns cannot ride the protected
+      // edge (see analyzeTryBodyAssignments). In an ordinary function
+      // ZIR mirrors them into a wasm local; inside a `gen`/`async`
+      // body a local does not survive a suspension, so those are
+      // celled instead — which is what this records. Runs after the
+      // body is checked, so its identifiers resolve.
+      for (let symId in analyzeTryBodyAssignments(body as Node, ctx.model)) {
+        deps.tryMutatedSymbols.add(symId);
+      }
+    }
+    // Like a match: a try in a void context (a statement) discards its
+    // value, so its arms need not join; otherwise they join as a match's
+    // do, which rejects a union no value representation can hold.
+    if (expectedType is VoidType) {
+      new VoidType() as Type
+    } else if (catchType != null) {
+      let types = growable<Type>([tryType, catchType]);
+      let joined = combineArmTypes(types, ctx, loc);
+      let bodyValue = armValueNode(body as Node);
+      if (bodyValue != null) { adaptJoinedArm(ctx, bodyValue, tryType, joined); }
+      let handlerValue = armValueNode((handler as CatchClause).body as Node);
+      if (handlerValue != null) { adaptJoinedArm(ctx, handlerValue, catchType, joined); }
+      joined
+    } else {
+      tryType
+    }
+  }
+  case RangeExpression {start, end, loc}: {
+    // Check start/end are a numeric type or StringIndex.
+    let stringIndexType = ctx.resolveTypeName("StringIndex");
+    let contextualBoundType = extractContextualRangeBoundType(expectedType);
+    let numericContextualBound: Type | null = if (contextualBoundType != null &&
+        isNumericType(contextualBoundType as Type)) {
+      contextualBoundType
+    } else {
+      null
+    };
+    var startIsStringIndex = false;
+    var endIsStringIndex = false;
+    var startType: Type | null = null;
+    var endType: Type | null = null;
+    if (start != null && end != null) {
+      let sExpr = start as Expression;
+      let eExpr = end as Expression;
+      if ((isContextTypedNumber(sExpr) && !isContextTypedNumber(eExpr)) ||
+          (isIntLiteralExpr(sExpr) && !isIntLiteralExpr(eExpr))) {
+        let et = checkExpression(ctx, eExpr, numericContextualBound);
+        endType = et;
+        let stContext = if (isNumericType(et)) et else numericContextualBound;
+        let st = checkExpression(ctx, sExpr, stContext);
+        startType = st;
+      } else {
+        let st = checkExpression(ctx, sExpr, numericContextualBound);
+        startType = st;
+        let etContext = if (isNumericType(st)) st else numericContextualBound;
+        let et = checkExpression(ctx, eExpr, etContext);
+        endType = et;
+      }
+    } else if (start != null) {
+      startType = checkExpression(ctx, start, numericContextualBound);
+    } else if (end != null) {
+      endType = checkExpression(ctx, end, numericContextualBound);
+    }
+
+    if (startType != null) {
+      let st = startType as Type;
+      if (stringIndexType != null && isAssignableTo(ctx, st, stringIndexType)) {
+        startIsStringIndex = true;
+      } else if (!isNumericType(st) && !(st is ErrorType)) {
+        ctx.error(
+          `Range start must be a numeric type or StringIndex, got '${typeToString(st)}'.`,
+          DiagnosticCode.TypeMismatch, loc
+        );
+      }
+    }
+    if (endType != null) {
+      let et = endType as Type;
+      if (stringIndexType != null && isAssignableTo(ctx, et, stringIndexType)) {
+        endIsStringIndex = true;
+      } else if (!isNumericType(et) && !(et is ErrorType)) {
+        ctx.error(
+          `Range end must be a numeric type or StringIndex, got '${typeToString(et)}'.`,
+          DiagnosticCode.TypeMismatch, loc
+        );
+      }
+    }
+    if (start != null && end != null) {
+      let st = startType as Type;
+      let et = endType as Type;
+      if (!(st is ErrorType) && !(et is ErrorType)) {
+        if (startIsStringIndex != endIsStringIndex ||
+            (!startIsStringIndex && isNumericType(st) && isNumericType(et) &&
+             !typesEqual(baseType(st), baseType(et)))) {
+          ctx.error(
+            `Range bounds must have the same type, got '${typeToString(st)}' and '${typeToString(et)}'.`,
+            DiagnosticCode.TypeMismatch, loc
+          );
+        }
+      }
+    }
+    // Determine the bound type and range variant to return.
+    let boundType: Type = if (startIsStringIndex && stringIndexType != null) {
+      stringIndexType as Type
+    } else if (endIsStringIndex && stringIndexType != null) {
+      stringIndexType as Type
+    } else if (startType != null && isNumericType(startType as Type)) {
+      baseType(startType as Type)
+    } else if (endType != null && isNumericType(endType as Type)) {
+      baseType(endType as Type)
+    } else if (contextualBoundType != null &&
+               (isNumericType(contextualBoundType as Type) ||
+                (stringIndexType != null && isAssignableTo(ctx, contextualBoundType as Type, stringIndexType)))) {
+      contextualBoundType as Type
+    } else {
+      new I32Type()
+    };
+    let rangeTypeName = if (start != null && end != null) { "BoundedRange" }
+      else if (start != null) { "FromRange" }
+      else if (end != null) { "ToRange" }
+      else { "FullRange" };
+    let rangeType = ctx.resolveTypeName(rangeTypeName);
+    if (rangeType is ClassType) {
+      let ct = rangeType as ClassType;
+      let tparams = ct.typeParameters;
+      if (tparams != null && tparams.length == 1) {
+        instantiateClassType(ct, [boundType])
+      } else {
+        ct
+      }
+    } else if (rangeType != null) {
+      rangeType
+    } else {
+      new ErrorType()
+    }
+  }
+  case PipelineExpression {left, right, loc}: {
+    let leftType = checkExpression(ctx, left, null);
+    ctx.pushPipelineValue(leftType);
+    let resultType = checkExpression(ctx, right, null);
+    ctx.popPipelineValue();
+    resultType
+  }
+  case PipePlaceholder {loc}: {
+    let pipeType = ctx.pipelineValueType;
+    if (pipeType == null) {
+      ctx.error("'$' can only be used inside a pipeline expression (|>).", DiagnosticCode.SymbolNotFound, loc);
+      new ErrorType()
+    } else {
+      pipeType
+    }
+  }
+  };
+}
+
+/**
+ * The `HashMap<K, V>` a map literal builds. The literal instantiates it
+ * as `new HashMap<K, V>()` would, so its arguments meet the same rules:
+ * no borrow stored, no owner bound to an unrestricted parameter.
+ */
+function mapLiteralType(
+  ctx: CheckerContext,
+  keyType: Type,
+  valueType: Type,
+  loc: SourceLocation | null
+): Type {
+  let hashMapType = ctx.resolveTypeName("HashMap");
+  if (hashMapType is ClassType) {
+    let typeArgs = growable<Type>([keyType, valueType]);
+    let typeParams = hashMapType.typeParameters;
+    if (typeParams != null) {
+      rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
+    }
+    return instantiateClassType(hashMapType, typeArgs);
+  }
+  return new ErrorType();
+}
+
+/**
+ * Reports the explicit property for `key` in a record literal, if one
+ * came earlier, as dead: the spread now being merged always supplies
+ * `key`, so that property's value could never be read. Forgets the
+ * property, so one that is overwritten twice is reported once.
+ */
+function reportOverwrittenProperty(ctx: CheckerContext,
+    explicitKeys: HashMap<String, Identifier>, key: String): void {
+  if (let (true, name) = explicitKeys.get(key)) {
+    ctx.error(
+      `Property '${key}' is always overwritten by the spread that follows.`,
+      DiagnosticCode.DuplicateField, name.loc);
+    explicitKeys.delete(key);
+  }
+}
+
+/**
+ * Resolve the result type of an index operation.
+ */
+/**
+ * A tuple literal with `...t` elements: each spread tuple's elements
+ * splice in where it is written, and a spread whose type has a row
+ * (`(...R)`, or a value typed R) gives the literal's type that row at
+ * that position. One row at most: two would leave the elements between
+ * them at no known position.
+ */
+function checkTupleLiteralWithSpreads(
+  ctx: CheckerContext,
+  elements: GrowableArray<Expression>,
+  spreadIndices: GrowableArray<i32>,
+  expectedType: Type | null
+): Type {
+  let spliced = new Array<Type>();
+  var row: TypeParameterType | null = null;
+  var rowIndex = 0;
+  var i = 0;
+  for (let element in elements) {
+    let elementType = checkExpression(ctx, element, null);
+    // Spread or not, an owner or a tuple holding one moves in (#495).
+    recordArgumentMove(ctx, element, elementType);
+    if (spreadIndices.contains(i)) {
+      match (baseType(elementType)) {
+        case TupleT as tuple: {
+          let tupleRow = tuple.row;
+          if (tupleRow != null) {
+            if (row != null) {
+              reportTwoTupleLiteralRows(ctx, element.loc);
+            }
+            row = tupleRow;
+            rowIndex = spliced.length + tuple.rowIndex;
+          }
+          for (let spreadElement in tuple.elementTypes) {
+            spliced.push(spreadElement);
+          }
+        }
+        case TypeParameterType as tp: {
+          if (!tp.isTupleRow) {
+            reportNotTupleLiteralSpreadable(ctx, elementType, element.loc);
+          } else {
+            if (row != null) {
+              reportTwoTupleLiteralRows(ctx, element.loc);
+            }
+            row = tp;
+            rowIndex = spliced.length;
+          }
+        }
+        case ErrorType: {}
+        case _: {
+          reportNotTupleLiteralSpreadable(ctx, elementType, element.loc);
+        }
+      }
+    } else {
+      spliced.push(elementType);
+    }
+    i += 1;
+  }
+  let tupleT = new TupleT(spliced, row, rowIndex);
+  if (expectedType != null) {
+    let baseExpected = baseType(expectedType);
+    if (baseExpected is TupleT && isAssignableTo(ctx, tupleT, baseExpected)) {
+      return baseExpected;
+    }
+  }
+  return tupleT;
+}
+
+function reportTwoTupleLiteralRows(ctx: CheckerContext, loc: SourceLocation | null): void {
+  ctx.error("A tuple can spread at most one row type parameter.",
+      DiagnosticCode.TypeMismatch, loc);
+}
+
+function reportNotTupleLiteralSpreadable(ctx: CheckerContext, t: Type, loc: SourceLocation | null): void {
+  ctx.error(`Cannot spread '${typeToString(t)}' into a tuple: only a tuple can be spread.`,
+      DiagnosticCode.TypeMismatch, loc);
+}
+
+function checkBinaryExpression(
+  ctx: CheckerContext,
+  expectedType: Type | null,
+  operator: String,
+  left: Expression,
+  right: Expression,
+  loc: SourceLocation | null,
+  // The expression itself, when there is one. `??` coalescing a
+  // maybe-form takes its value out of the left operand — a tuple slot
+  // or an optional record field — and that value has no expression
+  // node of its own to hang an interface adaptation on, so the node
+  // for the whole `??` carries it. Null from compound assignment,
+  // which never reaches the `??` branch.
+  node: Expression | null
+): Type {
+  // For && and ||, handle short-circuit evaluation and narrowing.
+  if (operator == "&&") {
+    let leftType = checkExpression(ctx, left, null);
+    // The right operand runs conditionally, under the left's
+    // narrowings; the join with the skip path un-narrows afterwards.
+    let preRight = ctx.currentFlow;
+    applyTrueNarrowingFromCondition(ctx, left);
+    let rightType = checkExpression(ctx, right, null);
+    ctx.mergeFlow(preRight, ctx.currentFlow);
+    // && returns the type of the right operand (if left is truthy).
+    return rightType;
+  }
+  if (operator == "||") {
+    let leftType = checkExpression(ctx, left, null);
+    let preRight = ctx.currentFlow;
+    applyFalseNarrowingFromCondition(ctx, left);
+    let rightType = checkExpression(ctx, right, null);
+    ctx.mergeFlow(preRight, ctx.currentFlow);
+    // || returns union of both types.
+    let types = growable<Type>([leftType, rightType]);
+    return createUnionType(types, ctx, left.loc);
+  }
+
+  // Arithmetic operators: +, -, *, /, %, **
+  if (operator == "+" || operator == "-" || operator == "*" ||
+      operator == "/" || operator == "%" || operator == "**") {
+    
+    // Determine the contextual type from expectedType (only for numeric context)
+    let contextualType: Type | null = if (expectedType != null && isNumericOrNumericTypeParam(expectedType)) {
+      expectedType
+    } else {
+      null
+    };
+
+    // Check left first with expected context, and give the right the
+    // left's type; but a literal on the left takes the right's.
+    var leftType: Type = new ErrorType();
+    var rightType: Type = new ErrorType();
+    if (isContextTypedNumber(left) && !isContextTypedNumber(right)) {
+      let (literalType, otherType) = checkLiteralBeside(ctx, left, right, contextualType);
+      leftType = literalType;
+      rightType = otherType;
+    } else {
+      leftType = checkExpression(ctx, left, contextualType);
+      let rightContext = if (isNumericOrNumericTypeParam(leftType)) { leftType } else { contextualType };
+      rightType = checkExpression(ctx, right, rightContext);
+    }
+
+    if (leftType is TypeParameterType && rightType is TypeParameterType &&
+        isNumericOrNumericTypeParam(leftType) &&
+        isAssignableTo(ctx, leftType, rightType) &&
+        isAssignableTo(ctx, rightType, leftType) &&
+        operator != "/") {
+      return leftType;
+    }
+
+    // If left is numeric and right was checked without context, re-check
+    // right with left's type as context.
+    if (isNumericType(leftType) && !isNumericType(rightType)) {
+      // Right wasn't numeric — error.
+      ctx.error(
+        "Type mismatch: cannot apply operator '" + operator + "' to " +
+        typeToString(leftType) + " and " + typeToString(rightType),
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new ErrorType();
+    }
+
+    if (!isNumericType(leftType)) {
+      // Check for operator overloading on class types (e.g., String.+).
+      match (leftType) {
+        case ClassType as ct: {
+          if (ct.members.has(operator)) {
+            let deps = ctx.currentDependencies();
+            if (deps != null) {
+              let classSymId = (ct.genericSource ?? ct).symbolId;
+              deps.referencedSymbols.add(classSymId);
+              deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${operator}`);
+            }
+            let methodInfo = ct.members[operator];
+            let method = methodInfo.type as FunctionType;
+            if (method.parameters.length != 1) {
+              ctx.error(
+                `Operator '${operator}' must take exactly one argument.`,
+                DiagnosticCode.ArgumentCountMismatch,
+                loc
+              );
+              return new ErrorType();
+            }
+            if (!isAssignableTo(ctx, rightType, method.parameters[0])) {
+              ctx.error(
+                "Type mismatch in operator '" + operator + "': expected '" +
+                typeToString(method.parameters[0]) + "', got '" + typeToString(rightType) + "'.",
+                DiagnosticCode.TypeMismatch,
+                loc
+              );
+              return new ErrorType();
+            }
+            return method.returnType;
+          }
+        }
+        case _: {}
+      }
+      ctx.error(
+        "Type mismatch: cannot apply operator '" + operator + "' to " +
+        typeToString(leftType) + " and " + typeToString(rightType),
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new ErrorType();
+    }
+
+    let promoted = promoteNumeric(leftType, rightType);
+    if (promoted == null) {
+      ctx.error(
+        "Type mismatch: cannot apply operator '" + operator + "' to " +
+        typeToString(leftType) + " and " + typeToString(rightType),
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return new ErrorType();
+    }
+    // Division always returns a float type.
+    if (operator == "/") {
+      if (promoted is F64Type || promoted is I64Type || promoted is U64Type) {
+        return new F64Type();
+      }
+      return new F32Type();
+    }
+    return promoted;
+  }
+
+  // Comparison operators: <, <=, >, >=
+  if (operator == "<" || operator == "<=" || operator == ">" || operator == ">=") {
+    // Check right first and give the left the right's type; but a
+    // literal on the right takes the left's.
+    var leftType: Type = new ErrorType();
+    var rightType: Type = new ErrorType();
+    if (isContextTypedNumber(right) && !isContextTypedNumber(left)) {
+      let (literalType, otherType) = checkLiteralBeside(ctx, right, left, null);
+      rightType = literalType;
+      leftType = otherType;
+    } else {
+      rightType = checkExpression(ctx, right, null);
+      let contextualType: Type | null = if (isNumericType(rightType)) {
+        rightType
+      } else {
+        null
+      };
+      leftType = checkExpression(ctx, left, contextualType);
+    }
+
+    if (!isNumericType(leftType) || !isNumericType(rightType)) {
+      if (!(leftType is TypeParameterType && rightType is TypeParameterType && isAssignableTo(ctx, leftType, rightType) && isAssignableTo(ctx, rightType, leftType))) {
+        ctx.error(
+          "Type mismatch: cannot apply operator '" + operator + "' to " +
+          typeToString(leftType) + " and " + typeToString(rightType),
+          DiagnosticCode.InvalidOperator,
+          loc
+        );
+      }
+    } else {
+      // Reject mixed signedness (e.g., u32 < i32)
+      let promoted = promoteNumeric(leftType, rightType);
+      if (promoted == null) {
+        ctx.error(
+          "Type mismatch: cannot apply operator '" + operator + "' to " +
+          typeToString(leftType) + " and " + typeToString(rightType),
+          DiagnosticCode.InvalidOperator,
+          loc
+        );
+      }
+    }
+    return new BooleanType();
+  }
+
+  // Equality operators: ==, !=, ===, !==
+  if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
+    // Check left with no context, and give the right the left's type
+    // when it is numeric; but a literal on the left takes the right's.
+    var leftType: Type = new ErrorType();
+    var rightType: Type = new ErrorType();
+    if (isContextTypedNumber(left) && !isContextTypedNumber(right)) {
+      let (literalType, otherType) = checkLiteralBeside(ctx, left, right, null);
+      leftType = literalType;
+      rightType = otherType;
+    } else {
+      leftType = checkExpression(ctx, left, null);
+      let rightContext: Type | null = if (isNumericType(leftType)) {
+        leftType
+      } else {
+        null
+      };
+      rightType = checkExpression(ctx, right, rightContext);
+    }
+    // Identity is not observable on records and tuples: they are
+    // values, and the compiler is free to copy or dissolve them (width
+    // adaptation, argument explosion). `==` is structural equality and
+    // `== null` is the null test, so nothing `===` could answer here
+    // is answerable.
+    if (operator == "===" || operator == "!==") {
+      let lBase = baseType(subtractNullFromType(leftType));
+      let rBase = baseType(subtractNullFromType(rightType));
+      if (lBase is RecordT || lBase is TupleT ||
+          rBase is RecordT || rBase is TupleT) {
+        ctx.error(
+          "'" + operator + "' compares identity; records and tuples " +
+          "are values — use '" +
+          (if (operator == "===") { "==" } else { "!=" }) + "'.",
+          DiagnosticCode.InvalidOperator,
+          loc
+        );
+        return new BooleanType();
+      }
+    }
+    // `==` between an existential record and a closed one compares them
+    // through the erased comparison, which knows only the shapes noted
+    // for it.
+    if (operator == "==" || operator == "!=") {
+      noteExistentialComparison(ctx, leftType, rightType);
+      noteExistentialComparison(ctx, rightType, leftType);
+    }
+    // Comparing against `null` is the null test, and a value primitive
+    // has no null to find: `42 == null` is not a cautious check, it is
+    // a mistake, and it had been passing because a `null` operand
+    // skipped the comparison rule entirely.
+    //
+    // A REFERENCE operand is left alone even when its static type says
+    // non-null. The narrowing that produces that claim is known to
+    // outlive the fact that established it when a closure assigns the
+    // binding (elematic/zena#111), so a redundant
+    // null check on a reference is defensive code against a hole the
+    // compiler still has — not something to reject. It also fires on
+    // ~40 sites across the compiler and stdlib, which is a warning's
+    // worth of churn, not an error's.
+    if (leftType is NullType || rightType is NullType) {
+      let other = if (leftType is NullType) { rightType } else { leftType };
+      if (isValuePrimitive(baseType(other))) {
+        ctx.error(
+          `Type mismatch: cannot apply operator '${operator}' to \
+'${typeToString(leftType)}' and '${typeToString(rightType)}'.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+      return new BooleanType();
+    }
+
+    // A class that declares `operator ==` says what it may be compared
+    // with, so an operand that operator accepts settles `==`/`!=` —
+    // overloads and all, by the same most-specific selection `[]` uses.
+    // `===`/`!==` are identity and never route through it.
+    //
+    // This WIDENS what is comparable, it does not narrow it: an
+    // operator taking an interface makes every implementation of that
+    // interface a valid operand, well past what relatedness allows. An
+    // operand the operator does not accept falls through to the
+    // relatedness rule rather than being rejected here, because a
+    // generic case class's synthesized `==` carries the raw template as
+    // its parameter — `Pair<i32, i32>` is not assignable to `Pair` —
+    // and reference equality is a perfectly good answer for it.
+    //
+    // Null is already gone from both sides above, and is subtracted
+    // from the operand because `p == maybeP` is a legitimate comparison
+    // that happens to be false when the right side is null.
+    let receiver = baseType(subtractNullFromType(leftType));
+    if ((operator == "==" || operator == "!=") &&
+        receiver is ClassType && receiver.members.has("==")) {
+      let baseMethod = receiver.members["=="].type as FunctionType;
+      let candidates = growable<FunctionType>([baseMethod]);
+      let {overloads} = baseMethod;
+      if (overloads != null) {
+        for (let ov in overloads as GrowableArray<FunctionType>) {
+          candidates.push(ov);
+        }
+      }
+      let operandTypes = growable<Type>([subtractNullFromType(rightType)]);
+      let operands = growable<Expression>([right]);
+      let applicableRaw = new Array<FunctionType>();
+      let applicableRes = new Array<FunctionType>();
+      collectApplicableOperatorOverloads(
+          ctx, candidates, receiver.typeParameters, receiver.typeArguments,
+          operandTypes, operands, 1, applicableRaw, applicableRes);
+      if (applicableRaw.length > 0) {
+        return new BooleanType();
+      }
+    }
+
+    // Validate that types are comparable:
+    // - Both boolean: always allowed
+    // - Both numeric: always allowed
+    // - Both interface: always allowed. A value typed as one interface
+    //   may dynamically be a class implementing the other as well, so
+    //   the comparison can genuinely be true.
+    // - Otherwise: at least one direction must be assignable
+    //
+    // Two CLASS types used to be allowed unconditionally, on the
+    // grounds that reference equality always makes sense. It does not:
+    // two unrelated classes name disjoint sets of objects, so the
+    // answer is statically false. That blanket is what let
+    // `p1 != "hello"` through — String is a class — for every class
+    // without an `operator ==` to catch it above.
+    let typesMatch = (leftType is BooleanType && rightType is BooleanType) ||
+      (leftType is BoolLiteralType && (rightType is BooleanType || rightType is BoolLiteralType)) ||
+      (rightType is BoolLiteralType && (leftType is BooleanType || leftType is BoolLiteralType)) ||
+      (isNumericType(leftType) && isNumericType(rightType)) ||
+      (leftType is InterfaceType && rightType is InterfaceType) ||
+      leftType is ErrorType || rightType is ErrorType ||
+      isAssignableTo(ctx, leftType, rightType) ||
+      isAssignableTo(ctx, rightType, leftType);
+    if (!typesMatch) {
+      ctx.error(
+        "Type mismatch: cannot apply operator '" + operator + "' to '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
+    return new BooleanType();
+  }
+
+  // Bitwise operators: &, |, ^, <<, >>, >>>
+  if (operator == "&" || operator == "|" || operator == "^" ||
+      operator == "<<" || operator == ">>" || operator == ">>>") {
+    let leftType = checkExpression(ctx, left, null);
+    let rightType = checkExpression(ctx, right, leftType);
+
+    if (!isIntegerType(leftType) || !isIntegerType(rightType)) {
+      ctx.error(
+        "Operator '" + operator + "' cannot be applied to type '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+    }
+
+    let promoted = promoteNumeric(leftType, rightType);
+    if (promoted != null) { return promoted; }
+    return leftType;
+  }
+
+  // Null coalescing operator: ??
+  // Returns the left operand if not null, otherwise the right operand.
+  // Type is the union of (non-null left type) and right type, or just right type
+  // if left is definitely nullable.
+  //
+  // `??` is also the licensed expression-position consumer of the
+  // language's other two maybe-forms (patterns being the general one):
+  //  - an OPTIONAL RECORD FIELD: `opts.timeout ?? d` — direct access
+  //    stays an error; under `??` it is the guarded read.
+  //  - a PROTOCOL INLINE TUPLE: a two-arm `inline (true, V, ...) |
+  //    inline (false, ...)` union — `m.get(k) ?? d` yields the true
+  //    arm's payload or the default (a Result-shaped union drops its
+  //    error, deliberately: `??` means "value or default, regardless
+  //    of why").
+  if (operator == "??") {
+    // The immediate left operand may be a primitive-yielding optional
+    // chain, an optional record field read, or a protocol inline
+    // tuple: sanction exactly this node before typing it (see
+    // CheckerContext.nullishSanctioned).
+    ctx.nullishSanctioned.add(left.id as i32);
+    let leftType = checkExpression(ctx, left, null);
+    // The right operand runs conditionally (only when left is null).
+    // It also sits in the same type position as the whole `??`, so the
+    // context that types the expression types the default too: without
+    // it `m.get(k) ?? []` has nothing to infer the literal's element
+    // type from.
+    let preRight = ctx.currentFlow;
+    let rightType = adaptArmToContext(ctx, right,
+        checkExpression(ctx, right, expectedType), expectedType);
+    ctx.mergeFlow(preRight, ctx.currentFlow);
+
+    // Optional record field read (member check returned the field type
+    // under the sanction): present value, else the default.
+    if (left is MemberExpression) {
+      let member = left as MemberExpression;
+      let objType = ctx.model.getNodeType(member.object);
+      if (objType != null) {
+        let objBase = baseType(subtractNullFromType(objType));
+        if (objBase is RecordT && objBase.isOptional(member.property.name)) {
+          let arms = growable<Type>([
+            adaptCoalescedArm(ctx, node, leftType, expectedType),
+            rightType,
+          ]);
+          let joinedRec = createUnionType(arms, ctx, loc);
+          adaptJoinedArm(ctx, right, rightType, joinedRec);
+          return joinedRec;
+        }
+      }
+    }
+
+    // Protocol inline tuple: the true arm's payload, or the default (a
+    // Result-shaped union drops its error — `??` means "value or
+    // default, regardless of why").
+    let payloadOpt = protocolPayloadType(leftType);
+    if (payloadOpt != null) {
+      let arms = growable<Type>([
+        adaptCoalescedArm(ctx, node, payloadOpt as Type, expectedType),
+        rightType,
+      ]);
+      let joinedPayload = createUnionType(arms, ctx, loc);
+      adaptJoinedArm(ctx, right, rightType, joinedPayload);
+      return joinedPayload;
+    }
+
+    // Extract non-null part of left type.
+    // For T | null, result is T | rightType (simplified to rightType if T = rightType).
+    match (leftType) {
+      case UnionT as u: {
+        // Filter out null from union members.
+        let nonNullMembers = new Array<Type>();
+        let members = u.types;
+        var i = 0;
+        while (i < members.length) {
+          if (members[i] is NullType) {
+            
+          } else {
+            nonNullMembers.push(members[i]);
+          }
+          i += 1;
+        }
+        // The value arm is the left operand with null ruled out, and
+        // the coalesce packs it after the null test has already run,
+        // so what adapts is the non-null type.
+        if (nonNullMembers.length == 1) {
+          nonNullMembers[0] =
+              adaptCoalescedArm(ctx, node, nonNullMembers[0], expectedType);
+        }
+        // Result type: union of non-null left members with right type.
+        let leftArmType = if (nonNullMembers.length == 1) nonNullMembers[0] else leftType;
+        nonNullMembers.push(rightType);
+        let joined = createUnionType(nonNullMembers, ctx, left.loc);
+        // A class arm the join folded into an interface arm is packed
+        // on its own node; the left arm's pack rides on the `??`.
+        adaptJoinedArm(ctx, right, rightType, joined);
+        if (nonNullMembers.length == 2 && baseType(leftArmType) is ClassType &&
+            baseType(subtractNullFromType(joined)) is InterfaceType &&
+            !typesEqual(leftArmType, subtractNullFromType(joined))) {
+          adaptCoalescedArm(ctx, node, leftArmType, subtractNullFromType(joined));
+        }
+        return joined;
+      }
+      case NullType: {
+        // Left is just null, result is right type.
+        ctx.warning(
+          "Left operand of '??' is always null and will never be returned.",
+          DiagnosticCode.UnnecessaryNullish,
+          loc
+        );
+        return rightType;
+      }
+      case _: {
+        // Left is not nullable, ?? is redundant but valid. Return left type.
+        ctx.warning(
+          "Left operand of '??' is not nullable and will always be returned.",
+          DiagnosticCode.UnnecessaryNullish,
+          loc
+        );
+        return adaptCoalescedArm(ctx, node, leftType, expectedType);
+      }
+    }
+  }
+
+  ctx.error(
+    `Unknown operator '${operator}'.`,
+    DiagnosticCode.InvalidOperator,
+    loc
+  );
+  return new ErrorType();
+}
+
+/**
+ * Types `await e` (async.md §1): the operand must be Future<T>
+ * (result T) or a distinguishable union T | Future<T> (result T).
+ */
+function checkAwaitExpression(ctx: CheckerContext, aw: AwaitExpression): Type {
+  var operandType = checkExpression(ctx, aw.argument, null);
+  // Awaiting a future of an owner consumes it: the awaiting frame is its
+  // one consumer, so the binding is dead afterwards
+  // (docs/design/owner-futures.md).
+  if (isAffineValue(operandType) && aw.argument is Identifier) {
+    let affineSym = ctx.model.resolve(aw.argument);
+    if (affineSym != null) {
+      ctx.recordFlowMove(affineSym.id, affineSym.name, aw.argument.loc);
+    }
+  }
+  // Awaiting is a scoped future's consumption (ownership.md §"Required
+  // consumption"): the binding is moved into the await, and the rest of
+  // the check sees the future behind the wrapper.
+  // A `scoped T` operand consumes the same way a concrete scoped
+  // future does; only the concrete wrapper has an inner to peel.
+  if (isScopedValueType(operandType) && !isScopedType(operandType)) {
+    if (aw.argument is Identifier) {
+      let scopedTSym = ctx.model.resolve(aw.argument);
+      if (scopedTSym != null) {
+        ctx.recordFlowMove(scopedTSym.id, scopedTSym.name, aw.argument.loc);
+      }
+    }
+  }
+  if (isScopedType(operandType)) {
+    let inner = scopedInner(operandType);
+    if (inner != null) {
+      if (aw.argument is Identifier) {
+        let scopedSym = ctx.model.resolve(aw.argument);
+        if (scopedSym != null) {
+          ctx.recordFlowMove(scopedSym.id, scopedSym.name, aw.argument.loc);
+        }
+      }
+      // Awaiting parks this frame on the scoped chain until it
+      // settles. When the chain is rooted in a parameter, its extent
+      // is the caller's, so this frame's own future must be Scoped
+      // too — a first-class future here could be stored past that
+      // extent and resume the chain after the owner released.
+      if (!ctx.suspensionRelaxed && mentionsParamDerived(ctx, aw.argument as Node)) {
+        ctx.error(
+          "Awaiting a scoped value derived from a parameter requires " +
+          "this function to return 'Scoped<Future<...>>': the frame " +
+          "waits on work bounded by the caller's extent, and a " +
+          "first-class future could outlive it.",
+          DiagnosticCode.TypeMismatch,
+          aw.loc
+        );
+      }
+      operandType = inner;
+    }
+  }
+  if (ctx.asyncValueType == null) {
+    // Includes non-async closures nested in async bodies: they are
+    // their own functions and cannot suspend their lexical parent.
+    ctx.error(
+      "'await' is only valid inside the body of an 'async' function.",
+      DiagnosticCode.TypeMismatch,
+      aw.loc
+    );
+    return new ErrorType();
+  }
+  // The operand evaluates before the suspension, so its own reads are
+  // on the safe side; everything after this point is post-suspend.
+  ctx.recordFlowSuspend();
+  let direct = extractFutureValueType(ctx, operandType);
+  if (direct != null) {
+    return direct;
+  }
+  if (operandType is UnionT) {
+    // Partition the arms: future arms unwrap to their payloads, bare
+    // arms pass through (with one queue hop — async.md §1). The result
+    // is the union of bare arms and payloads; T | Future<T> collapses
+    // to T through the dedup in createUnionType.
+    let arms = operandType.types;
+    let resultArms = new Array<Type>();
+    var futureCount = 0;
+    for (let arm in arms) {
+      let fv = extractFutureValueType(ctx, arm);
+      if (fv != null) {
+        futureCount += 1;
+        resultArms.push(fv);
+      } else {
+        resultArms.push(arm);
+      }
+    }
+    if (futureCount > 0) {
+      let dedup = new Array<Type>();
+      for (let arm in resultArms) {
+        var seen = false;
+        for (let existing in dedup) {
+          if (typesEqual(existing, arm)) {
+            seen = true;
+            break;
+          }
+        }
+        if (!seen) {
+          dedup.push(arm);
+        }
+      }
+      let result = if (dedup.length == 1) {
+        dedup[0]
+      } else {
+        createUnionType(dedup)
+      };
+      if (dedup.length > 1) {
+        for (let arm in dedup) {
+          if (isValuePrimitive(arm)) {
+            ctx.error(
+              "Type mismatch: awaiting '" + typeToString(operandType) +
+              "' would yield '" + typeToString(result) +
+              "', which mixes a value primitive into a union.",
+              DiagnosticCode.TypeMismatch,
+              aw.loc
+            );
+            return new ErrorType();
+          }
+        }
+      }
+      return result;
+    }
+  }
+  if (operandType is ErrorType) {
+    return new ErrorType();
+  }
+  if (operandType is TypeParameterType) {
+    // The generic await: `await x` with `x: T` open is typed
+    // Awaited<T> — every instantiation awaits what it finds, a future
+    // unwrapping one level and anything else passing through with the
+    // queue hop (async.md §1, docs/design/type-operators.md). The
+    // operator instance stays symbolic until substitution closes T.
+    let args = growable<Type>([operandType]);
+    let awaitedAlias = ctx.tryResolveWellKnownType(WellKnown.AwaitedAlias);
+    if (awaitedAlias != null && awaitedAlias is TypeAliasType) {
+      let inst = instantiateTypeAliasType(awaitedAlias, args);
+      inst.target = operandType;
+      return applyTypeIntrinsic(inst);
+    }
+    // Inside zena:async's own files, where the library's async code
+    // lives, the declared operator may not be recorded yet. Mint the
+    // operator instance directly: alias equality is by name and
+    // arguments, so this and the declared operator's instances agree.
+    let synth = new TypeAliasType('Awaited', null, operandType, false,
+        args, false, 'zena:async/future.zena');
+    synth.intrinsicName = 'type.awaited';
+    return applyTypeIntrinsic(synth);
+  }
+  ctx.error(
+    "Type mismatch: 'await' operand must be 'Future<T>', a union with a 'Future' arm, or an open type parameter, got '" +
+    typeToString(operandType) + "'.",
+    DiagnosticCode.TypeMismatch,
+    aw.loc
+  );
+  return new ErrorType();
+}
+
+/**
+ * Validate that a condition expression has a boolean-compatible type.
+ */
+export function validateConditionType(ctx: CheckerContext, t: Type, expr: Expression): void {
+  if (!isBooleanLike(t)) {
+    ctx.error(
+      `Condition must be a boolean type, got '${typeToString(t)}'.`,
+      DiagnosticCode.TypeMismatch,
+      expr.loc
+    );
+  }
+}
