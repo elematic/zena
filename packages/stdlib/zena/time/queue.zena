@@ -6,7 +6,7 @@
  * `time/host.zena`, which supply the one thing that genuinely differs
  * per target: a `Clock`.
  */
-import { Completer, Parker, setParker } from 'zena:async';
+import { Completer, Future, Parker, setParker } from 'zena:async';
 import { Instant, Duration } from './types.zena';
 
 /**
@@ -77,9 +77,30 @@ class TimerQueue implements Parker {
   #timers = new Array<Timer>();
   var #nextSeq = 0;
 
-  arm(deadline: Instant, completer: Completer<void>): void {
-    this.#timers.push(new Timer(deadline, this.#nextSeq, completer));
+  arm(deadline: Instant, completer: Completer<void>): Timer {
+    let timer = new Timer(deadline, this.#nextSeq, completer);
+    this.#timers.push(timer);
     this.#nextSeq += 1;
+    return timer;
+  }
+
+  /**
+   * Removes `timer` if it has not fired, so a drain no longer waits for
+   * it. Shifts the tail down, as `park` does, to keep insertion order.
+   */
+  disarm(timer: Timer): void {
+    var i = 0;
+    while (i < this.#timers.length && this.#timers[i] != timer) {
+      i += 1;
+    }
+    if (i == this.#timers.length) {
+      return;
+    }
+    while (i < this.#timers.length - 1) {
+      this.#timers[i] = this.#timers[i + 1];
+      i += 1;
+    }
+    this.#timers.pop();
   }
 
   /**
@@ -160,7 +181,22 @@ export function sleep(d: Duration): Future<void> {
   if (d.isNegative()) {
     throw new Error('zena:time: sleep() needs a non-negative duration');
   }
+  return sleepUntil(monotonic() + d);
+}
+
+/**
+ * Waits for a timer at `deadline`. When the waiting frame is cancelled,
+ * as the loser of `zena:task`'s `timeout` is, the `finally` runs on the
+ * cancellation's unwind and disarms the timer, so a drain does not wait
+ * for a deadline nothing awaits any more. Disarming a timer that fired
+ * does nothing.
+ */
+async function sleepUntil(deadline: Instant): Future<void> {
   let c = new Completer<void>();
-  timers.arm(monotonic() + d, c);
-  return c.future;
+  let timer = timers.arm(deadline, c);
+  try {
+    await c.future;
+  } finally {
+    timers.disarm(timer);
+  }
 }

@@ -103,6 +103,27 @@ suite('Runtime - zena:time host integration', () => {
     assert.deepStrictEqual(logs, ['A', 'B']);
   });
 
+  // zena:task's timeout cancels the timer when the work wins. run() waits
+  // for every outstanding timer, so one left armed would hold it to the
+  // full budget.
+  test("a timeout's timer is cleared when the work wins", async () => {
+    const main = await run_(`
+      import { Future } from 'zena:async';
+      import { timeout } from 'zena:task';
+      import { milliseconds } from 'zena:time';
+
+      export async function main(): Future<i32> {
+        return await timeout<i32>(milliseconds(20000), async (): Future<i32> => 7)();
+      }
+    `);
+    const start = performance.now();
+    assert.strictEqual(await main(), 7);
+    assert.ok(
+      performance.now() - start < 5000,
+      `run() waited ${Math.round(performance.now() - start)} ms for a cancelled timer`,
+    );
+  });
+
   test('sleep(0) is still asynchronous', async () => {
     const main = await run_(`
       import { Future } from 'zena:async';

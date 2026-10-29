@@ -121,6 +121,7 @@ async function loadLsp(): Promise<LspHandle> {
       time: {
         now_ms: () => performance.now(),
         sleep_ms: () => {},
+        sleep_cancel: () => {},
       },
       console: consoleImports,
       compiler: compilerImports,

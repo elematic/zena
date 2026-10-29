@@ -383,6 +383,13 @@ does: in `packages/stdlib/tests/fetch/fetch_test.zena`, a request to a
 server that answers after three seconds fails after the 100 ms the test
 gives it.
 
+The timer that loses is cancelled the same way. `sleep` waits in a frame
+of its own and disarms its timer in a `finally`, which runs on the
+cancellation's unwind, so a program does not wait out the deadline of a
+timeout its work beat (`packages/zena-cli/tests/timers_test.zena`). On the
+js target the `finally` calls `time.sleep_cancel`, which clears the host's
+`setTimeout`.
+
 What cancelling does not yet do is cancel the host's side of an async
 import. The frame unwinds, but the import's subtask is abandoned rather
 than cancelled (see "Streams and Component Model async" below, and
