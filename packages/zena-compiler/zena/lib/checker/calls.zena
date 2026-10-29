@@ -12,24 +12,22 @@ import {
 import { DiagnosticCode } from '../diagnostics.zena';
 import { lineAt } from '../line-index.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
-import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { adaptToExpected } from './adaptation.zena';
 import { resolveExplicitTypeArgument } from './annotations.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
 import {
-  anyTypeParamConstrained, applyAndCheckTypeArguments, inferTypeArg, inferredArgumentType,
-  instantiateGenericClass, instantiateGenericInterface, mentionsTypeParams,
-  substituteTypeParams, tryInstantiateGenericFunction
+  anyTypeParamConstrained, applyAndCheckTypeArguments, inferTypeArg, inferredArgumentType, instantiateGenericClass, instantiateGenericInterface, mentionsTypeParams, substituteTypeParams
 } from './generics.zena';
 import { isContextTypedNumber } from './literals.zena';
 import { getMemberName } from './members.zena';
-import { collectApplicableOverloads, selectMostSpecificIndex } from './overloads.zena';
+import { overloadCandidates, collectApplicableOverloads, selectMostSpecificIndex } from './overloads.zena';
 import {
   recordArgumentMove, rejectSecondClassFunctionTypeArgs,
   scopedElementsExpected
 } from './ownership.zena';
 import { isAssignableTo, isBoxablePrimitive } from './relations.zena';
-import { createUnionType } from './unions.zena';
+import { createUnionType, stripNull } from './unions.zena';
 
 // ============================================================================
 // New Expression
@@ -153,8 +151,8 @@ export function checkNewExpression(
       let deps = ctx.currentDependencies();
       if (deps != null) {
         deps.referencedTypes.add(instantiated as Type);
-        deps.referencedClassMethods.add(`${i32ToString((ct.genericSource ?? ct).symbolId as i32)}.${ctorMethodRef}`);
       }
+      ctx.referenceClassMethod(ct, ctorMethodRef);
       if (ctorType == null) {
         // No explicit constructor — must have zero args.
         if (args.length > 0) {
@@ -263,6 +261,53 @@ export function checkNewExpression(
 }
 
 /**
+ * Splices the callee's default initializers into `args` for the
+ * parameters the caller left out, from `args.length` to the end of the
+ * signature: the initializer expression itself, which lowering
+ * evaluates under the callee's bindings; for a `__LOCATION__` default
+ * the call site as `file:line`, or null when locations are off; and
+ * null for an optional parameter with no default. This mutates the
+ * shared AST, which is why `splicedArgCountOf` records how many
+ * arguments the caller wrote. Whether an initializer was spliced.
+ */
+export function spliceDefaultArguments(
+  ctx: CheckerContext,
+  args: GrowableArray<Expression>,
+  ft: FunctionType,
+  loc: SourceLocation | null
+): boolean {
+  let parameterInitializers = ft.parameterInitializers;
+  if (parameterInitializers == null) {
+    return false;
+  }
+  var spliced = false;
+  var a = args.length;
+  while (a < ft.parameters.length) {
+    let init = parameterInitializers[a];
+    if (init == null) {
+      args.push(new NullLiteral(loc));
+    } else {
+      spliced = true;
+      let isLocation = if (let Identifier {name} = init) name == "__LOCATION__" else false;
+      if (!isLocation) {
+        args.push(init);
+      } else if (ctx.emitLocations) {
+        let locStr = if (loc != null) {
+          `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
+        } else {
+          `${ctx.filePath}:0`
+        };
+        args.push(new StringLiteral(locStr, loc));
+      } else {
+        args.push(new NullLiteral(loc));
+      }
+    }
+    a += 1;
+  }
+  return spliced;
+}
+
+/**
  * The argument half of `new`, shared by class and interface
  * constructors: splice the constructor's default values into the
  * caller's argument list, check the count, then check each written
@@ -279,39 +324,7 @@ function checkConstructorArguments(
   typeArguments: Array<Type> | null,
   loc: SourceLocation | null
 ): void {
-      // Fill in missing arguments with default values
-      let parameterInitializers = ctorType.parameterInitializers;
-      if (parameterInitializers != null) {
-        let mutArgs = args as GrowableArray<Expression>;
-        var a = args.length;
-        while (a < ctorType.parameters.length) {
-          let init = parameterInitializers[a];
-          if (init != null) {
-            if (let Identifier {name} = init) {
-              if (name == "__LOCATION__") {
-                if (ctx.emitLocations) {
-                  let locStr = if (loc != null) {
-                    `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
-                  } else {
-                    `${ctx.filePath}:0`
-                  };
-                  mutArgs.push(new StringLiteral(locStr, loc));
-                } else {
-                  mutArgs.push(new NullLiteral(loc));
-                }
-              } else {
-                mutArgs.push(init);
-              }
-            } else {
-              mutArgs.push(init);
-            }
-          } else {
-            // Optional but no default? Inject null.
-            mutArgs.push(new NullLiteral(loc));
-          }
-          a += 1;
-        }
-      }
+      spliceDefaultArguments(ctx, args, ctorType, loc);
 
       // Record the caller-written argument count so later re-checks of this
       // node don't treat the spliced defaults as caller-supplied arguments.
@@ -360,11 +373,7 @@ function checkConstructorArguments(
             loc
           );
         } else {
-          let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
-          if (instantiatedVal !== argType) {
-            ctx.setNodeType(args[ai], instantiatedVal);
-          }
-          checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
+          adaptToExpected(ctx, args[ai], argType, expectedParamType);
         }
         recordArgumentMove(ctx, args[ai], expectedParamType);
         ai = ai + 1;
@@ -414,29 +423,7 @@ export function checkCallExpression(
   noteCancellationCause(ctx, call);
 
   // Handle optional chaining on nullable callee.
-  var baseCalleeType = calleeType;
-  var isNullable = false;
-  match (calleeType) {
-    case UnionT {types}: {
-      let nonNull = new Array<Type>();
-      var ui = 0;
-      while (ui < types.length) {
-        if (types[ui] is NullType) {
-          isNullable = true;
-        } else {
-          nonNull.push(types[ui]);
-        }
-        ui = ui + 1;
-      }
-      if (nonNull.length == 1) {
-        baseCalleeType = nonNull[0];
-      } else if (nonNull.length > 1) {
-        baseCalleeType = ctx.interner.union(nonNull);
-      }
-    }
-    case NullType: { isNullable = true; }
-    case _: {}
-  }
+  let (baseCalleeType, isNullable) = stripNull(ctx, calleeType);
 
   // If optional and not nullable, proceed normally.
   // If optional and nullable, wrap result in union with null.
@@ -545,11 +532,7 @@ function checkCallExpressionInner(
             loc
           );
         } else {
-          let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
-          if (instantiated !== argType) {
-            ctx.setNodeType(args[j], instantiated);
-          }
-          checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
+          adaptToExpected(ctx, args[j], argType, expectedParamType);
         }
         recordArgumentMove(ctx, args[j], expectedParamType);
         j = j + 1;
@@ -640,10 +623,7 @@ function checkCallExpressionInner(
       // Overload resolution
       let {overloads} = ft;
       if (overloads != null) {
-        let candidates = growable<FunctionType>([ft]);
-        for (let overload in overloads) {
-          candidates.push(overload);
-        }
+        let candidates = overloadCandidates(ft);
 
         // Most-specific selection (member-lookup.md §5.1): collect
         // every applicable candidate, then pick the unique candidate
@@ -792,41 +772,8 @@ function checkCallExpressionInner(
       let expectedCount = effectiveFt.parameters.length;
       let originalActualCount = callerArgCount;
 
-      // Fill in missing arguments with default values
-      var hasDefaults = false;
-      let parameterInitializers = effectiveFt.parameterInitializers;
-      if (parameterInitializers != null) {
-        let mutArgs = args as GrowableArray<Expression>;
-        var a = args.length;
-        while (a < effectiveFt.parameters.length) {
-          let init = parameterInitializers[a];
-          if (init != null) {
-            if (let Identifier {name} = init) {
-              if (name == "__LOCATION__") {
-                if (ctx.emitLocations) {
-                  let locStr = if (loc != null) {
-                    `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
-                  } else {
-                    `${ctx.filePath}:0`
-                  };
-                  mutArgs.push(new StringLiteral(locStr, loc));
-                } else {
-                  mutArgs.push(new NullLiteral(loc));
-                }
-              } else {
-                mutArgs.push(init);
-              }
-            } else {
-              mutArgs.push(init);
-            }
-            hasDefaults = true;
-          } else {
-            // Optional but no default? Inject null.
-            mutArgs.push(new NullLiteral(loc));
-          }
-          a += 1;
-        }
-
+      let hasDefaults = spliceDefaultArguments(ctx, args, effectiveFt, loc);
+      if (effectiveFt.parameterInitializers != null) {
         // Record when this pass spliced defaults OR when args already end
         // with defaults spliced by an earlier pass — a re-checked file
         // starts a fresh model, and codegen needs these records in the
@@ -902,11 +849,7 @@ function checkCallExpressionInner(
             loc
           );
         } else {
-          let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
-          if (instantiated !== argType) {
-            ctx.setNodeType(args[j], instantiated);
-          }
-          checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
+          adaptToExpected(ctx, args[j], argType, expectedParamType);
         }
         recordArgumentMove(ctx, args[j], expectedParamType);
         j = j + 1;

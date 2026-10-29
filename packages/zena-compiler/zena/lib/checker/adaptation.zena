@@ -9,6 +9,7 @@ import { FunctionAdaptationDependency } from '../semantic-model.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown } from '../well-known.zena';
 import { CheckerContext } from './context.zena';
+import { tryInstantiateGenericFunction } from './generics.zena';
 import { recordUnionMembersOf } from './members.zena';
 import { isAssignableTo, typesEqual } from './relations.zena';
 import { isNullableType, subtractNullFromType, unwrapAliases } from './unions.zena';
@@ -111,8 +112,8 @@ export function boxForTemplateValue(ctx: CheckerContext, primitive: Type, valueT
   let deps = ctx.currentDependencies();
   if (deps != null) {
     deps.referencedTypes.add(boxed as Type);
-    deps.referencedClassMethods.add(`${i32ToString(generic.symbolId as i32)}.<constructor>`);
   }
+  ctx.referenceClassMethod(generic, "<constructor>");
   return boxed;
 }
 
@@ -259,6 +260,23 @@ export function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: N
  * different representations, one of which traps the moment the value
  * is read back as an interface.
  */
+/**
+ * The tail of checking a value against the type its position expects,
+ * once assignability holds: a generic function value is instantiated
+ * at the expected signature, and the node retyped with it, and a
+ * crossing of a representation boundary (class to interface, function
+ * re-wrapping, record repacking) is recorded for codegen. Answers the
+ * type the node now has.
+ */
+export function adaptToExpected(ctx: CheckerContext, node: Node, actual: Type, expected: Type): Type {
+  let instantiated = tryInstantiateGenericFunction(ctx, actual, expected);
+  if (instantiated !== actual) {
+    ctx.setNodeType(node, instantiated);
+  }
+  checkAndRegisterInterfaceAdaptation(ctx, node, instantiated, expected);
+  return instantiated;
+}
+
 export function adaptArmToContext(
   ctx: CheckerContext,
   node: Node,

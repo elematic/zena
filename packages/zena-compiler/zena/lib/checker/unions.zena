@@ -603,6 +603,37 @@ export function unwrapNullableForMemberLookup(t: Type): Type | null {
   }
 }
 
+/**
+ * `t` without its null member, and whether it had one: the receiver a
+ * member read, index or call on a maybe-null value resolves against.
+ * Several non-null members stay a union; bare `null` has no receiver
+ * and comes back as itself, flagged.
+ */
+export function stripNull(ctx: CheckerContext, t: Type): inline (Type, boolean) {
+  if (t is NullType) {
+    return (t, true);
+  }
+  if (let UnionT {types} = t) {
+    var hasNull = false;
+    let nonNull = new Array<Type>();
+    for (let member in types) {
+      if (member is NullType) {
+        hasNull = true;
+      } else {
+        nonNull.push(member);
+      }
+    }
+    if (nonNull.length == 1) {
+      return (nonNull[0], hasNull);
+    }
+    if (nonNull.length > 1 && hasNull) {
+      return (ctx.interner.union(nonNull), true);
+    }
+    return (t, hasNull);
+  }
+  return (t, false);
+}
+
 export function unwrapAliases(t: Type): Type {
   var curr = t;
   var hops = 0;

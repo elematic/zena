@@ -3,12 +3,7 @@ import { growable } from 'zena:core';
 import { FlowUnreachable } from '../analysis/flow.zena';
 import { walkEnter } from '../visitor.zena';
 import {
-  AccessorDeclaration, BlockStatement, CaseClassParam, ClassDeclaration,
-  Decorator, Expression, FieldDefinition, FieldInitializer, Identifier,
-  MethodDefinition, MethodSignature, MixinDeclaration, Node, NullLiteral,
-  SealedVariant, SetterInfo, SourceLocation, StringLiteral, SuperInitializer,
-  TypeAnnotation, isBuiltinDecoratorName, isSymbolFieldDeclaration,
-  syntacticMemberName
+  AccessorDeclaration, BlockStatement, CaseClassParam, ClassDeclaration, Decorator, Expression, FieldDefinition, FieldInitializer, Identifier, MethodDefinition, MethodSignature, MixinDeclaration, Node, SealedVariant, SetterInfo, SourceLocation, SuperInitializer, TypeAnnotation, isBuiltinDecoratorName, isSymbolFieldDeclaration, syntacticMemberName
 } from '../ast.zena';
 import {
   BooleanType, ClassType, DecoratedField, ErrorType, FieldInfo,
@@ -19,17 +14,16 @@ import {
   soleNonNullMember, typeCarriesOwner, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
-import { lineAt } from '../line-index.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
-import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
-import { resolveBound, resolveTypeAnnotation } from './annotations.zena';
+import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
+import { spliceDefaultArguments } from './calls.zena';
 import { CheckerContext } from './context.zena';
 import { validateFunctionDecorators } from './declarations.zena';
 import { checkExpression } from './expressions.zena';
 import {
-  mentionsTypeParams, rejectClassTypeParamsInStatic, selfTypeOfClass,
-  substituteThisType, substituteTypeParams, tryInstantiateGenericFunction
+  mentionsTypeParams, rejectClassTypeParamsInStatic, selfTypeOfClass, substituteThisType, substituteTypeParams
 } from './generics.zena';
 import {
   displayMemberName, getMemberName, recordSymbolKeyedMemberIdentities,
@@ -37,8 +31,7 @@ import {
 } from './members.zena';
 import { DeferredModule, prescanPendingFunctions } from './module.zena';
 import {
-  findMatchingOverload, functionSignatures, hasSameSignature,
-  signaturesMayOverlap
+  findMatchingOverload, functionSignatures, hasSameSignature, overloadCandidates, signaturesMayOverlap
 } from './overloads.zena';
 import {
   checkBorrowDerivation, checkReceiverDeclaration, declaresOwningReceiver,
@@ -86,13 +79,7 @@ function equalityOverrideTarget(ctx: CheckerContext, inherited: FunctionType,
   if (own.parameters.length != 1 || !typesEqual(own.parameters[0], ct)) {
     return null;
   }
-  let candidates = growable<FunctionType>([inherited]);
-  let {overloads} = inherited;
-  if (overloads != null) {
-    for (let ov in overloads) {
-      candidates.push(ov);
-    }
-  }
+  let candidates = overloadCandidates(inherited);
   for (let c in candidates) {
     if (c.parameters.length == 1 && c.parameters[0] is ClassType &&
         isAssignableTo(ctx, ct, c.parameters[0])) {
@@ -424,11 +411,7 @@ function checkDecoratedFieldInitializer(
       fd.loc
     );
   } else {
-    let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, df.fieldType);
-    if (instantiatedVal !== initType) {
-      ctx.setNodeType(value, instantiatedVal);
-    }
-    checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, df.fieldType);
+    adaptToExpected(ctx, value, initType, df.fieldType);
   }
   ctx.exitNodeReferrer(fd.id as i32);
 }
@@ -680,32 +663,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
   classType.sealedVariants = null;
 
   ctx.enterScope();
-  let {typeParameters} = cd;
-  if (typeParameters != null) {
-    let tps = typeParameters;
-    let freshParams = new Array<TypeParameterType>();
-    var tpi = 0;
-    while (tpi < tps.length) {
-      let tp = tps[tpi];
-      var constraint: Type | null = null;
-      if (tp.constraint != null) {
-        // A bound names a class, not a value, so a resource class is
-        // spellable here — same reason as an extends clause.
-        ctx.resourceMentionOk = true;
-        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
-        ctx.resourceMentionOk = false;
-      }
-      var defaultT: Type | null = null;
-      let {defaultType} = tp;
-      if (defaultType != null) {
-        defaultT = resolveTypeAnnotation(ctx, defaultType);
-      }
-      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, defaultT);
-      ctx.declareTypeName(tp.name, tpType);
-      freshParams.push(tpType);
-      tpi = tpi + 1;
-    }
-    classType.typeParameters = freshParams;
+  if (cd.typeParameters != null) {
+    classType.typeParameters = resolveTypeParameters(ctx, cd.typeParameters);
   }
 
   // Extension classes: resolve the underlying type from the 'on' clause.
@@ -1020,11 +979,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             initExp.loc
           );
         } else {
-          let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
-          if (instantiatedVal !== initType) {
-            ctx.setNodeType(initExp, instantiatedVal);
-          }
-          checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, fieldType);
+          adaptToExpected(ctx, initExp, initType, fieldType);
         }
       }
 
@@ -1801,11 +1756,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
                 initExp.loc
               );
             } else {
-              let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, vpType);
-              if (instantiatedVal !== initType) {
-                ctx.setNodeType(initExp, instantiatedVal);
-              }
-              checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, vpType);
+              adaptToExpected(ctx, initExp, initType, vpType);
             }
           }
 
@@ -2020,11 +1971,7 @@ function checkFieldInitializer(
       fd.loc
     );
   } else {
-    let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
-    if (instantiatedVal !== initType) {
-      ctx.setNodeType(value, instantiatedVal);
-    }
-    checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, fieldType);
+    adaptToExpected(ctx, value, initType, fieldType);
   }
   ctx.exitNodeReferrer(fd.id as i32);
 }
@@ -2138,53 +2085,58 @@ function checkClassMemberBody(
       ctx.exitNodeReferrer(md.id as i32);
     }
     case AccessorDeclaration as acc: {
-      let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-
-      // Check getter body.
-      let {getter} = acc;
-      if (getter != null) {
-        ctx.enterNodeReferrer(acc.id as i32);
-        let getterBlock = getter;
-        ctx.enterScope();
-        let prevReturnType = ctx.returnType;
-        ctx.setReturnType(accType);
-        let prevFlowState = ctx.enterBodyFlow(false);
-        var gi = 0;
-        while (gi < getterBlock.body.length) {
-          checkStatement(ctx, getterBlock.body[gi]);
-          gi += 1;
-        }
-        ctx.exitBodyFlow(prevFlowState);
-        ctx.setReturnType(prevReturnType);
-        ctx.exitScope();
-        ctx.exitNodeReferrer(acc.id as i32);
-      }
-
-      // Check setter body.
-      let {setter} = acc;
-      if (setter != null) {
-        match (setter) {
-          case SetterInfo as si: {
-            ctx.enterNodeReferrer(si.id as i32);
-            ctx.enterScope();
-            let paramInfo = ctx.model.resolveDeclaration(si.param);
-            if (paramInfo != null) {
-              ctx.declareBinding(paramInfo, accType);
-            }
-            let prevFlowState = ctx.enterBodyFlow(false);
-            for (let stmt in si.body.body) {
-              checkStatement(ctx, stmt);
-            }
-            ctx.exitBodyFlow(prevFlowState);
-            ctx.exitScope();
-            ctx.exitNodeReferrer(si.id as i32);
-          }
-          case _: {}
-        }
-      }
+      checkAccessorBodies(ctx, acc, resolveTypeAnnotation(ctx, acc.typeAnnotation));
     }
     case _: {}
   }
+}
+
+/**
+ * The bodies of an accessor: the getter with the accessor's type as
+ * its return type, the setter with its parameter bound to that type.
+ * Each is a body of its own for the flow graph.
+ */
+export function checkAccessorBodies(
+  ctx: CheckerContext,
+  acc: AccessorDeclaration,
+  accType: Type
+): void {
+  let {getter} = acc;
+  if (getter != null) {
+    ctx.enterNodeReferrer(acc.id as i32);
+    ctx.enterScope();
+    let prevReturnType = ctx.returnType;
+    ctx.setReturnType(accType);
+    let prevFlowState = ctx.enterBodyFlow(false);
+    for (let stmt in getter.body) {
+      checkStatement(ctx, stmt);
+    }
+    ctx.exitBodyFlow(prevFlowState);
+    ctx.setReturnType(prevReturnType);
+    ctx.exitScope();
+    ctx.exitNodeReferrer(acc.id as i32);
+  }
+  let {setter} = acc;
+  if (setter == null) {
+    return;
+  }
+  // Bound with a test rather than a pattern on the nullable: the
+  // bootstrap compiles `if (let SetterInfo {...} = setter)` to a read
+  // before the null test.
+  let si = setter as SetterInfo;
+  ctx.enterNodeReferrer(si.id as i32);
+  ctx.enterScope();
+  let paramInfo = ctx.model.resolveDeclaration(si.param);
+  if (paramInfo != null) {
+    ctx.declareBinding(paramInfo, accType);
+  }
+  let prevFlowState = ctx.enterBodyFlow(false);
+  for (let stmt in si.body.body) {
+    checkStatement(ctx, stmt);
+  }
+  ctx.exitBodyFlow(prevFlowState);
+  ctx.exitScope();
+  ctx.exitNodeReferrer(si.id as i32);
 }
 
 /**
@@ -2412,16 +2364,7 @@ export function checkClassBodies(
       if (inner != null) {
         let resources = ownedResourceClasses(inner);
         if (resources != null) {
-          let deps = ctx.currentDependencies();
-          if (deps != null) {
-            deps.needsExceptionInfra = true;
-            for (let resource in resources) {
-              let rSymId = (resource.genericSource ?? resource).symbolId;
-              deps.referencedSymbols.add(rSymId);
-              deps.referencedClassMethods.add(
-                i32ToString(rSymId as i32) + ".:dispose");
-            }
-          }
+          ctx.rootReleases(resources, true);
         }
       }
     }
@@ -2617,35 +2560,8 @@ export function checkMethodSignature(
     // Check decorators
     validateFunctionDecorators(ctx, md.decorators, false, md.loc);
 
-    ctx.enterScope();
-  let astTypeParameters = md.typeParameters;
-  var resolvedTypeParams: Array<TypeParameterType> | null = null;
-  if (astTypeParameters != null) {
-    let typeParameters = new Array<TypeParameterType>();
-    for (let astParam in astTypeParameters) {
-      // Resolve the bound like class and interface parameters do —
-      // without it, member and index lookup through the bound see an
-      // unconstrained parameter in the method's body.
-      var constraint: Type | null = null;
-      if (astParam.constraint != null) {
-        // A bound names a class, not a value, so a resource class is
-        // spellable here — same reason as an extends clause.
-        ctx.resourceMentionOk = true;
-        constraint = resolveBound(ctx, astParam.constraint as TypeAnnotation);
-        ctx.resourceMentionOk = false;
-      }
-      let defaultT: Type | null = if (astParam.defaultType != null) {
-        resolveTypeAnnotation(ctx, astParam.defaultType as TypeAnnotation)
-      } else {
-        null
-      };
-      let tpType = ctx.getOrCreateTypeParameter(astParam, constraint, defaultT);
-      typeParameters.push(tpType);
-      ctx.declareTypeName(astParam.name, tpType);
-      ctx.registerTypeParameter(astParam, tpType);
-    }
-    resolvedTypeParams = typeParameters;
-  }
+  ctx.enterScope();
+  let resolvedTypeParams = resolveTypeParameters(ctx, md.typeParameters);
 
   let paramTypes = new Array<Type>();
   let paramNames = new Array<String>();
@@ -2709,11 +2625,7 @@ export function checkMethodSignature(
           initExp.loc
         );
       } else {
-        let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, paramType);
-        if (instantiatedVal !== initType) {
-          ctx.setNodeType(initExp, instantiatedVal);
-        }
-        checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, paramType);
+        adaptToExpected(ctx, initExp, initType, paramType);
       }
       if (pushedReferrer) {
         ctx.exitNodeReferrer(md.id as i32);
@@ -2948,39 +2860,7 @@ function checkSuperInitArgs(
     args.length
   };
 
-  // Fill in missing arguments with default values.
-  let parameterInitializers = ctorType.parameterInitializers;
-  if (parameterInitializers != null) {
-    let mutArgs = args as GrowableArray<Expression>;
-    var a = args.length;
-    while (a < ctorType.parameters.length) {
-      let init = parameterInitializers[a];
-      if (init != null) {
-        if (let Identifier {name} = init) {
-          if (name == "__LOCATION__") {
-            if (ctx.emitLocations) {
-              let locStr = if (loc != null) {
-                `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
-              } else {
-                `${ctx.filePath}:0`
-              };
-              mutArgs.push(new StringLiteral(locStr, loc));
-            } else {
-              mutArgs.push(new NullLiteral(loc));
-            }
-          } else {
-            mutArgs.push(init);
-          }
-        } else {
-          mutArgs.push(init);
-        }
-      } else {
-        // Optional but no default? Inject null.
-        mutArgs.push(new NullLiteral(loc));
-      }
-      a += 1;
-    }
-  }
+  spliceDefaultArguments(ctx, args, ctorType, loc);
 
   // Record the caller-written argument count so later re-checks don't
   // treat the spliced defaults as caller-supplied arguments.
@@ -3024,11 +2904,7 @@ function checkSuperInitArgs(
         args[ai].loc
       );
     } else {
-      let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
-      if (instantiatedVal !== argType) {
-        ctx.setNodeType(args[ai], instantiatedVal);
-      }
-      checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
+      adaptToExpected(ctx, args[ai], argType, expectedParamType);
     }
     recordArgumentMove(ctx, args[ai], expectedParamType);
     ai = ai + 1;
@@ -3196,11 +3072,7 @@ export function checkMethodBody(
           };
           let initType = checkExpression(ctx, item.value, fieldType);
           if (fieldType != null && isAssignableTo(ctx, initType, fieldType)) {
-            let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
-            if (instantiatedVal !== initType) {
-              ctx.setNodeType(item.value, instantiatedVal);
-            }
-            checkAndRegisterInterfaceAdaptation(ctx, item.value, instantiatedVal, fieldType);
+            adaptToExpected(ctx, item.value, initType, fieldType);
           }
         }
       }

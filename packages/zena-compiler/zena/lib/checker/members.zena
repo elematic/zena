@@ -10,7 +10,7 @@ import {
 } from '../ast.zena';
 import {
   ArrayType, ClassType, EnumType, ErrorType, FieldInfo, FunctionType,
-  InterfaceType, MemberTable, MethodInfo, MixinType, NullType,
+  InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType,
   RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type,
   TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType,
   baseType, instantiateClassType, isIntegerType, ownershipHandleInner,
@@ -23,14 +23,14 @@ import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
 import { substituteThisType, substituteTypeParams } from './generics.zena';
 import { getMemberPathKeyFromAccess } from './narrowing.zena';
-import { collectApplicableOperatorOverloads, selectMostSpecificIndex } from './overloads.zena';
+import { overloadCandidates, collectApplicableOperatorOverloads, selectMostSpecificIndex } from './overloads.zena';
 import {
   borrowWrapFieldRead, isAffineValue, memberConsumesReceiver,
   rejectConsumingThroughNonOwner, tupleElementRead
 } from './ownership.zena';
 import { argumentAdaptsToParameter } from './literals.zena';
 import { isAssignableTo, isBoxablePrimitive, typesEqual } from './relations.zena';
-import { createUnionType, subtractNullFromType, unwrapAliases } from './unions.zena';
+import { createUnionType, stripNull, subtractNullFromType, unwrapAliases } from './unions.zena';
 
 /**
  * A parent's member re-typed for the subtype that inherits it.
@@ -595,30 +595,7 @@ export function checkMemberExpression(
   }
 
   // Unwrap union types for optional chaining.
-  var receiverType = objectType;
-  var isNullable = false;
-  match (objectType) {
-    case UnionT {types}: {
-      // If the union includes null, strip it for the member check.
-      let nonNull = new Array<Type>();
-      var ui = 0;
-      while (ui < types.length) {
-        if (types[ui] is NullType) {
-          isNullable = true;
-        } else {
-          nonNull.push(types[ui]);
-        }
-        ui = ui + 1;
-      }
-      if (nonNull.length == 1) {
-        receiverType = nonNull[0];
-      } else if (nonNull.length > 1) {
-        receiverType = ctx.interner.union(nonNull);
-      }
-    }
-    case NullType: { isNullable = true; }
-    case _: {}
-  }
+  let (receiverType, isNullable) = stripNull(ctx, objectType);
 
   if (isSymbolAccess && expr.symbolPath != null) {
     if (!checkSymbolKeyAccess(ctx, expr.symbolPath as Expression)) {
@@ -951,6 +928,40 @@ function settleFieldType(fi: FieldInfo): void {
 }
 
 /**
+ * Reports a static member read on an instance, or an instance member
+ * read on the class, and says so: a member is reached through the one
+ * of the two it belongs to. `code` is the diagnostic code the caller
+ * reports under.
+ */
+export function staticAccessMismatch(
+  ctx: CheckerContext,
+  isStaticAccess: boolean,
+  member: MemberInfo,
+  propName: String,
+  className: String,
+  code: DiagnosticCode,
+  loc: SourceLocation | null
+): boolean {
+  if (isStaticAccess && !member.isStatic) {
+    ctx.error(
+      `Cannot access instance member '${displayMemberName(propName)}' on class '${className}'.`,
+      code,
+      loc
+    );
+    return true;
+  }
+  if (!isStaticAccess && member.isStatic) {
+    ctx.error(
+      `Cannot access static member '${displayMemberName(propName)}' on an instance of '${className}'.`,
+      code,
+      loc
+    );
+    return true;
+  }
+  return false;
+}
+
+/**
  * Look up a member (field or method) on a type.
  */
 function resolveMemberType(
@@ -1003,20 +1014,8 @@ function resolveMemberType(
       // Check fields first.
       if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
         let fi = ct.members[propName] as FieldInfo;
-        if (isStaticAccess && !fi.isStatic) {
-          ctx.error(
-            `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
-            DiagnosticCode.PropertyNotFound,
-            loc
-          );
-          return new ErrorType();
-        }
-        if (!isStaticAccess && fi.isStatic) {
-          ctx.error(
-            `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
-            DiagnosticCode.PropertyNotFound,
-            loc
-          );
+        if (staticAccessMismatch(ctx, isStaticAccess, fi, propName, ct.name,
+            DiagnosticCode.PropertyNotFound, loc)) {
           return new ErrorType();
         }
         settleFieldType(fi);
@@ -1036,20 +1035,8 @@ function resolveMemberType(
       // Check methods.
       if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
         let methodInfo = ct.members[propName] as MethodInfo;
-        if (isStaticAccess && !methodInfo.isStatic) {
-          ctx.error(
-            `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
-            DiagnosticCode.PropertyNotFound,
-            loc
-          );
-          return new ErrorType();
-        }
-        if (!isStaticAccess && methodInfo.isStatic) {
-          ctx.error(
-            `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
-            DiagnosticCode.PropertyNotFound,
-            loc
-          );
+        if (staticAccessMismatch(ctx, isStaticAccess, methodInfo, propName, ct.name,
+            DiagnosticCode.PropertyNotFound, loc)) {
           return new ErrorType();
         }
         let subMethod = substituteTypeParams(ct.typeParameters, ct.typeArguments, methodInfo.type);
@@ -1061,20 +1048,8 @@ function resolveMemberType(
         let getterMember = ct.members[getterName];
         match (getterMember) {
           case MethodInfo as getterInfo: {
-            if (isStaticAccess && !getterInfo.isStatic) {
-              ctx.error(
-                `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
-                DiagnosticCode.PropertyNotFound,
-                loc
-              );
-              return new ErrorType();
-            }
-            if (!isStaticAccess && getterInfo.isStatic) {
-              ctx.error(
-                `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
-                DiagnosticCode.PropertyNotFound,
-                loc
-              );
+            if (staticAccessMismatch(ctx, isStaticAccess, getterInfo, propName, ct.name,
+                DiagnosticCode.PropertyNotFound, loc)) {
               return new ErrorType();
             }
             // Return the return type of the getter
@@ -1267,29 +1242,7 @@ export function checkIndexExpression(
   let objectType = checkExpression(ctx, object, null);
 
   // Handle optional chaining on nullable object.
-  var baseType_ = objectType;
-  var isNullable = false;
-  match (objectType) {
-    case UnionT {types}: {
-      let nonNull = new Array<Type>();
-      var ui = 0;
-      while (ui < types.length) {
-        if (types[ui] is NullType) {
-          isNullable = true;
-        } else {
-          nonNull.push(types[ui]);
-        }
-        ui = ui + 1;
-      }
-      if (nonNull.length == 1) {
-        baseType_ = nonNull[0];
-      } else if (nonNull.length > 1) {
-        baseType_ = ctx.interner.union(nonNull);
-      }
-    }
-    case NullType: { isNullable = true; }
-    case _: {}
-  }
+  let (baseType_, isNullable) = stripNull(ctx, objectType);
 
   let resultType = resolveIndexType(ctx, baseType_, index, loc, node);
 
@@ -1391,13 +1344,7 @@ export function checkIndexWrite(
     return null;
   }
   let setterFt = setter as FunctionType;
-  let candidates = growable<FunctionType>([setterFt]);
-  let {overloads} = setterFt;
-  if (overloads != null) {
-    for (let overload in overloads) {
-      candidates.push(overload);
-    }
-  }
+  let candidates = overloadCandidates(setterFt);
   let indexType = checkExpression(ctx, target.index, null);
   // The index alone narrows the candidates. When one is left, its value
   // parameter is the context the value is checked in, as a call's
@@ -1488,6 +1435,53 @@ function indexText(index: Expression): String {
   return if (let NumberLiteral {raw} = index) raw else "expression";
 }
 
+/**
+ * The type `recv[index]` reads through `indexMethod`, an `operator []`
+ * of the class or interface `ownerName` at `typeArgs`: the most
+ * specific of its overloads the index is applicable to
+ * (member-lookup.md §5.1), recorded on `node` for codegen when there is
+ * more than one. An index no overload accepts is reported; the
+ * first-declared signature would type the expression off a method the
+ * read can never reach.
+ */
+function selectIndexRead(
+  ctx: CheckerContext,
+  ownerName: String,
+  indexMethod: FunctionType,
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null,
+  indexType: Type,
+  index: Expression,
+  node: Node | null,
+  loc: SourceLocation | null
+): Type {
+  let candidates = overloadCandidates(indexMethod);
+  let applicableRaw = new Array<FunctionType>();
+  let applicableRes = new Array<FunctionType>();
+  collectApplicableOperatorOverloads(
+      ctx, candidates, typeParams, typeArgs,
+      growable<Type>([indexType]), growable<Expression>([index]), 1,
+      applicableRaw, applicableRes);
+  let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
+  if (selIdx < 0) {
+    if (!(indexType is ErrorType)) {
+      ctx.error(
+        `Type mismatch: '${ownerName}' cannot be indexed by \
+'${typeToString(indexType)}'; 'operator []' expects \
+${describeIndexParameters(candidates, typeParams, typeArgs)}.`,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
+    return new ErrorType();
+  }
+  let selectedMethod = applicableRaw[selIdx];
+  if (node != null && candidates.length > 1) {
+    ctx.model.setResolvedOverload(node, selectedMethod);
+  }
+  return substituteTypeParams(typeParams, typeArgs, selectedMethod.returnType);
+}
+
 function resolveIndexType(
   ctx: CheckerContext,
   objectType: Type,
@@ -1514,16 +1508,7 @@ function resolveIndexType(
         if (ct.members.has("[]")) {
           let opMethodInfo = ct.members["[]"];
           let baseMethod = opMethodInfo.type as FunctionType;
-          let candidates = growable<FunctionType>([baseMethod]);
-          let {overloads} = baseMethod;
-          if (overloads != null) {
-            let ovs = overloads;
-            var oi = 0;
-            while (oi < ovs.length) {
-              candidates.push(ovs[oi]);
-              oi = oi + 1;
-            }
-          }
+          let candidates = overloadCandidates(baseMethod);
           // Most-specific selection over the applicable candidates
           // (member-lookup.md §5.1).
           let applicableRaw = new Array<FunctionType>();
@@ -1600,53 +1585,9 @@ function resolveIndexType(
     case ClassType as ct: {
       // Check for operator [] method.
       if (ct.members.has("[]")) {
-        let deps = ctx.currentDependencies();
-        if (deps != null) {
-          let classSymId = (ct.genericSource ?? ct).symbolId;
-          deps.referencedSymbols.add(classSymId);
-          deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".[]");
-        }
-        let opMethodInfo = ct.members["[]"];
-        let baseMethod = opMethodInfo.type as FunctionType;
-        let candidates = growable<FunctionType>([baseMethod]);
-        let {overloads} = baseMethod;
-        if (overloads != null) {
-          let ovs = overloads;
-          var oi = 0;
-          while (oi < ovs.length) {
-            candidates.push(ovs[oi]);
-            oi = oi + 1;
-          }
-        }
-        // Most-specific selection over the applicable candidates
-        // (member-lookup.md §5.1).
-        var selectedMethod = baseMethod;
-        let applicableRaw = new Array<FunctionType>();
-        let applicableRes = new Array<FunctionType>();
-        collectApplicableOperatorOverloads(
-            ctx, candidates, ct.typeParameters, ct.typeArguments,
-            operandTypes, operands, 1, applicableRaw, applicableRes);
-        let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
-        if (selIdx >= 0) {
-          selectedMethod = applicableRaw[selIdx];
-        } else if (!(indexType is ErrorType)) {
-          // No overload accepts this index. Falling back to the
-          // first-declared signature would type the expression off a
-          // method the call can never reach, so say so instead.
-          ctx.error(
-            `Type mismatch: '${ct.name}' cannot be indexed by \
-'${typeToString(indexType)}'; 'operator []' expects \
-${describeIndexParameters(candidates, ct.typeParameters, ct.typeArguments)}.`,
-            DiagnosticCode.TypeMismatch,
-            loc
-          );
-          return new ErrorType();
-        }
-        if (node != null && candidates.length > 1) {
-          // Record the subtype-sensitive selection for codegen.
-          ctx.model.setResolvedOverload(node, selectedMethod);
-        }
-        return substituteTypeParams(ct.typeParameters, ct.typeArguments, selectedMethod.returnType);
+        ctx.referenceClassMethod(ct, "[]");
+        return selectIndexRead(ctx, ct.name, ct.members["[]"].type as FunctionType,
+            ct.typeParameters, ct.typeArguments, indexType, index, node, loc);
       }
       ctx.error(
         `Type '${ct.name}' does not support indexing (no 'operator []' method).`,
@@ -1657,43 +1598,8 @@ ${describeIndexParameters(candidates, ct.typeParameters, ct.typeArguments)}.`,
     }
     case InterfaceType as it: {
       if (it.members.has("[]")) {
-        let opMethodInfo = it.members["[]"];
-        let baseMethod = opMethodInfo.type as FunctionType;
-        let candidates = growable<FunctionType>([baseMethod]);
-        let {overloads} = baseMethod;
-        if (overloads != null) {
-          let ovs = overloads;
-          var oi = 0;
-          while (oi < ovs.length) {
-            candidates.push(ovs[oi]);
-            oi = oi + 1;
-          }
-        }
-        // Most-specific selection over the applicable candidates
-        // (member-lookup.md §5.1).
-        var selectedMethod = baseMethod;
-        let applicableRaw = new Array<FunctionType>();
-        let applicableRes = new Array<FunctionType>();
-        collectApplicableOperatorOverloads(
-            ctx, candidates, it.typeParameters, it.typeArguments,
-            operandTypes, operands, 1, applicableRaw, applicableRes);
-        let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
-        if (selIdx >= 0) {
-          selectedMethod = applicableRaw[selIdx];
-        } else if (!(indexType is ErrorType)) {
-          ctx.error(
-            `Type mismatch: '${it.name}' cannot be indexed by \
-'${typeToString(indexType)}'; 'operator []' expects \
-${describeIndexParameters(candidates, it.typeParameters, it.typeArguments)}.`,
-            DiagnosticCode.TypeMismatch,
-            loc
-          );
-          return new ErrorType();
-        }
-        if (node != null && candidates.length > 1) {
-          ctx.model.setResolvedOverload(node, selectedMethod);
-        }
-        return substituteTypeParams(it.typeParameters, it.typeArguments, selectedMethod.returnType);
+        return selectIndexRead(ctx, it.name, it.members["[]"].type as FunctionType,
+            it.typeParameters, it.typeArguments, indexType, index, node, loc);
       }
       ctx.error(
         `Interface '${it.name}' does not support indexing (no 'operator []' method).`,

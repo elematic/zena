@@ -28,7 +28,7 @@ import { ModuleExports, ScopeResult } from '../scope/scope-builder.zena';
 import { WellKnown, wellKnownLibrary, wellKnownName } from '../well-known.zena';
 import { nowMs, performance } from '../time.zena';
 import {
-  isRecordRowBound, isTupleRowBound, resolveBound, resolveTypeAnnotation
+  isRecordRowBound, isTupleRowBound, resolveTypeAnnotation, resolveTypeParameters
 } from './annotations.zena';
 import { typeOperatorTarget } from './declarations.zena';
 import { checkFunctionExpression } from './functions.zena';
@@ -79,8 +79,8 @@ export function lookupBindingTypeInDeps(ctx: CheckerContext, sym: Symbol): Type 
  * (i32, f64, etc.) at #typeScopes[0]. Type annotation resolution for
  * all other names — including type parameters — delegates to the scope
  * pass's ReferenceMap: model.resolve(node) → Symbol.id →
- * #materializedTypes. Type parameters are registered there via
- * registerTypeParameter() as soon as each TypeParameterType is created.
+ * #materializedTypes. Type parameters are registered there by
+ * getOrCreateTypeParameter() as each TypeParameterType is created.
  */
 /**
  * Whether `narrowed` is what `x is I` leaves a binding of type
@@ -292,8 +292,8 @@ export final class SharedCheckerState {
  * (i32, f64, etc.) at #typeScopes[0]. Type annotation resolution for
  * all other names — including type parameters — delegates to the scope
  * pass's ReferenceMap: model.resolve(node) → Symbol.id →
- * #materializedTypes. Type parameters are registered there via
- * registerTypeParameter() as soon as each TypeParameterType is created.
+ * #materializedTypes. Type parameters are registered there by
+ * getOrCreateTypeParameter() as each TypeParameterType is created.
  */
 export final class CheckerContext {
   model = new SemanticModel();
@@ -777,6 +777,36 @@ export final class CheckerContext {
     return null;
   }
 
+  /**
+   * Records a reference to the member `member` of `owner` (a generic
+   * class by its source) for reachability, as a call written in the
+   * source would.
+   */
+  referenceClassMethod(owner: ClassType, member: String): void {
+    let deps = this.currentDependencies();
+    if (deps == null) { return; }
+    let classSymId = (owner.genericSource ?? owner).symbolId;
+    deps.referencedSymbols.add(classSymId);
+    deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${member}`);
+  }
+
+  /**
+   * Roots the release action of each of `resources`: lowering
+   * synthesizes the call, so nothing in the AST names it. A release
+   * region is a try_table, so one that needs it also needs the
+   * exception infrastructure, whether or not a source `try` appears.
+   */
+  rootReleases(resources: GrowableArray<ClassType>, needsExceptionInfra: boolean): void {
+    let deps = this.currentDependencies();
+    if (deps == null) { return; }
+    if (needsExceptionInfra) {
+      deps.needsExceptionInfra = true;
+    }
+    for (let resource in resources) {
+      this.referenceClassMethod(resource, releaseMemberOf(resource));
+    }
+  }
+
   setNodeType(node: Node, type: Type): void {
     this.model.setNodeType(node, type);
     if (type is FunctionType) {
@@ -970,7 +1000,7 @@ export final class CheckerContext {
   /**
    * Push a new scope frame (for narrowings).
    * Value-namespace scoping is handled by the scope pass's ReferenceMap.
-   * Type-parameter scoping is handled by registerTypeParameter → #materializedTypes.
+   * Type-parameter scoping is handled by getOrCreateTypeParameter → #materializedTypes.
    */
   enterScope(): void {
     this.#typeScopes.push(new Map<String, Type>());
@@ -1247,23 +1277,7 @@ export final class CheckerContext {
   ): Type {
     // Enter a temporary scope for type parameter names.
     this.enterScope();
-    var resolvedTypeParams: Array<TypeParameterType> | null = null;
-    if (typeParameters != null) {
-      resolvedTypeParams = new Array<TypeParameterType>();
-      for (let tp in typeParameters) {
-        var constraint: Type | null = null;
-        if (tp.constraint != null) {
-          // A bound names a class, not a value, so a resource class is
-          // spellable here for the same reason it is in an extends clause.
-          this.resourceMentionOk = true;
-          constraint = resolveBound(this, tp.constraint as TypeAnnotation);
-          this.resourceMentionOk = false;
-        }
-        let tpType = this.getOrCreateTypeParameter(tp, constraint, null);
-        this.declareTypeName(tp.name, tpType);
-        resolvedTypeParams.push(tpType);
-      }
-    }
+    let resolvedTypeParams = resolveTypeParameters(this, typeParameters);
 
     // Resolve parameter types. Optional parameters are recorded the way
     // checkFunctionExpression records them — a `?` parameter without a
@@ -1326,23 +1340,6 @@ export final class CheckerContext {
   registerType(info: Symbol, t: Type): void {
     this.#materializedTypes[info.id] = t;
     this.model.setBindingType(info, t);
-  }
-
-  /**
-   * Register a TypeParameterType in the materialized types cache by the
-   * Symbol identity of the corresponding TypeParameter AST node.
-   *
-   * Called immediately after creating each TypeParameterType so that
-   * resolveTypeReference → model.resolve → #materializeFromSymbol finds
-   * the correct object (by Symbol.id) instead of falling back to the
-   * name-string #typeScopes stack.
-   */
-  registerTypeParameter(tp: TypeParameter, tpType: TypeParameterType): void {
-    let info = this.model.resolveDeclaration(tp as Node);
-    if (info != null) {
-      this.#materializedTypes[info.id] = tpType as Type;
-      this.model.setBindingType(info, tpType as Type);
-    }
   }
 
   /** The declaration of the row parameter `tp`, or null if it is not one. */
@@ -1836,36 +1833,7 @@ export final class CheckerContext {
           return aliasType;
         }
         this.enterScope();
-        let declarationParams = ta.typeParameters;
-        var typeParams: Array<TypeParameterType> | null = null;
-        if (declarationParams != null) {
-          let tempTypeParams = new Array<TypeParameterType>();
-          typeParams = tempTypeParams;
-          for (let param in declarationParams) {
-            let tpType = this.getOrCreateTypeParameter(param, null, null);
-            tempTypeParams.push(tpType);
-            this.declareTypeName(tpType.name, tpType);
-            this.registerTypeParameter(param, tpType);
-          }
-
-          // Resolve constraints
-          for (var i = 0; i < declarationParams.length; i += 1) {
-            let param = declarationParams[i];
-            let {constraint} = param;
-            if (constraint != null) {
-              // See the matching flag in the type-parameter loop above.
-              this.resourceMentionOk = true;
-              tempTypeParams[i].constraint = resolveBound(this, constraint);
-              this.resourceMentionOk = false;
-            }
-            let {defaultType} = param;
-            if (defaultType != null) {
-              tempTypeParams[i].defaultType =
-                resolveTypeAnnotation(this, defaultType, false);
-            }
-          }
-        }
-        
+        let typeParams = resolveTypeParameters(this, ta.typeParameters);
         aliasType.typeParameters = typeParams;
         // A decorated alias names a builtin type operator; validation
         // of the decorator itself happens when the STATEMENT checks
@@ -2990,20 +2958,7 @@ export final class CheckerContext {
         }
       }
       if (drop) {
-        // The release call is synthesized by lowering, so nothing in
-        // the AST names `:dispose` — root it the way `using` does. The
-        // release region is a try_table, so the module needs the
-        // exception infrastructure even if no source `try` appears.
-        let deps = this.currentDependencies();
-        if (deps != null) {
-          deps.needsExceptionInfra = true;
-          for (let resource in c.resources) {
-            let classSymId = (resource.genericSource ?? resource).symbolId;
-            deps.referencedSymbols.add(classSymId);
-            deps.referencedClassMethods.add(
-              i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
-          }
-        }
+        this.rootReleases(c.resources, true);
       }
     }
   }
@@ -3030,15 +2985,7 @@ export final class CheckerContext {
     drop.armIndex = armIndex;
     kept.push(drop);
     this.model.setEdgeDrops(node, kept);
-    let deps = this.currentDependencies();
-    if (deps != null) {
-      for (let resource in resources) {
-        let classSymId = (resource.genericSource ?? resource).symbolId;
-        deps.referencedSymbols.add(classSymId);
-        deps.referencedClassMethods.add(
-          i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
-      }
-    }
+    this.rootReleases(resources, false);
   }
 
   /**

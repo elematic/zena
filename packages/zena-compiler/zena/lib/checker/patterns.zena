@@ -16,13 +16,12 @@ import {
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
-import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { adaptToExpected } from './adaptation.zena';
 import { resolveTypeAnnotation, tupleElementPatternType } from './annotations.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
 import {
-  applyAndCheckTypeArguments, inferTypeArgsFromContext, sameTypeArguments,
-  selfTypeOfClass, substituteTypeParams, tryInstantiateGenericFunction
+  applyAndCheckTypeArguments, inferTypeArgsFromContext, sameTypeArguments, selfTypeOfClass, substituteTypeParams
 } from './generics.zena';
 import { displayMemberName, recordPatternMatchedType, recordRestType } from './members.zena';
 import { rejectConcreteSecondClassStorage } from './ownership.zena';
@@ -814,11 +813,7 @@ export function bindPattern(ctx: CheckerContext, pattern: Pattern, t: Type): voi
           pattern.loc
         );
       } else {
-        let instantiated = tryInstantiateGenericFunction(ctx, defaultType, t);
-        if (instantiated !== defaultType) {
-          ctx.setNodeType(right, instantiated);
-        }
-        checkAndRegisterInterfaceAdaptation(ctx, right, instantiated, t);
+        adaptToExpected(ctx, right, defaultType, t);
       }
       bindPattern(ctx, left as Pattern, t);
     }
@@ -1402,11 +1397,7 @@ export function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: T
           right.loc
         );
       } else {
-        let instantiated = tryInstantiateGenericFunction(ctx, defaultType, expectedType);
-        if (instantiated !== defaultType) {
-          ctx.setNodeType(right, instantiated);
-        }
-        checkAndRegisterInterfaceAdaptation(ctx, right, instantiated, expectedType);
+        adaptToExpected(ctx, right, defaultType, expectedType);
       }
       checkPattern(ctx, left, expectedType);
     }

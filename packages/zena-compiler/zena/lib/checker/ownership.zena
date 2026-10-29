@@ -10,14 +10,7 @@ import {
   TuplePattern, TypeAnnotation, VariableDeclaration, getMemberPropertyName
 } from '../ast.zena';
 import {
-  ArrayType, ClassType, ErrorType, FieldInfo,
-  InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType,
-  ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType,
-  UnionType as UnionT, instantiateTypeAliasType, isAffineContainer,
-  isOwnershipWrapper, isScopedClassParam, isScopedType, ownershipHandleInner,
-  ownershipHandleName, releasableFuture, releaseMemberOf, soleNonNullMember,
-  typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped,
-  typeContainsSecondClass, typeToString
+  ArrayType, ClassType, ErrorType, FieldInfo, InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType, ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, instantiateTypeAliasType, isAffineContainer, isOwnershipWrapper, isScopedClassParam, isScopedType, ownershipHandleInner, ownershipHandleName, releasableFuture, soleNonNullMember, typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped, typeContainsSecondClass, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
@@ -1214,16 +1207,7 @@ export function releaseDiscardedOwner(ctx: CheckerContext, stmt: Node, expressio
     return;
   }
   ctx.model.setScopeExitDrop(stmt, true);
-  let deps = ctx.currentDependencies();
-  if (deps != null) {
-    deps.needsExceptionInfra = true;
-    for (let resource in resources) {
-      let classSymId = (resource.genericSource ?? resource).symbolId;
-      deps.referencedSymbols.add(classSymId);
-      deps.referencedClassMethods.add(
-          i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
-    }
-  }
+  ctx.rootReleases(resources, true);
 }
 
 /**
@@ -1433,12 +1417,7 @@ export function requireDisposable(ctx: CheckerContext, t: Type, loc: SourceLocat
 
   for (let one in targets) {
     if (one is ClassType) {
-      let deps = ctx.currentDependencies();
-      if (deps != null) {
-        let classSymId = (one.genericSource ?? one).symbolId;
-        deps.referencedSymbols.add(classSymId);
-        deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".:dispose");
-      }
+      ctx.referenceClassMethod(one, ":dispose");
     }
   }
 }

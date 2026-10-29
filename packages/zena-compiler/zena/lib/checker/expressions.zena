@@ -28,15 +28,13 @@ import {
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
 import {
-  adaptArmToContext, adaptCoalescedArm, adaptJoinedArm, armValueNode,
-  boxForTemplateValue, checkAndRegisterInterfaceAdaptation,
-  noteExistentialComparison
+  adaptArmToContext, adaptCoalescedArm, adaptJoinedArm, adaptToExpected, armValueNode, boxForTemplateValue, checkAndRegisterInterfaceAdaptation, noteExistentialComparison
 } from './adaptation.zena';
 import { noteFieldsBesideRow, reportTwoRows, resolveTypeAnnotation } from './annotations.zena';
 import { checkCallExpression, checkNewExpression } from './calls.zena';
 import { CheckerContext } from './context.zena';
 import { checkFunctionExpression } from './functions.zena';
-import { selfTypeOfClass, tryInstantiateGenericFunction } from './generics.zena';
+import { selfTypeOfClass } from './generics.zena';
 import {
   checkIntegerLiteral, checkLiteralBeside, extractContextualRangeBoundType,
   getMatchedLiteralType, isContextTypedNumber, isIntLiteralExpr,
@@ -44,15 +42,15 @@ import {
 } from './literals.zena';
 import { checkMatchCaseBody, checkMatchExpr } from './match.zena';
 import {
-  accessMemberKey, checkIndexExpression, checkIndexWrite,
-  checkMemberExpression, displayMemberName, isStaticReceiver,
-  resolveArrayBackingClass, staticMemberHint
+  accessMemberKey, checkIndexExpression, checkIndexWrite, checkMemberExpression, displayMemberName, isStaticReceiver, resolveArrayBackingClass, staticAccessMismatch, staticMemberHint
 } from './members.zena';
 import {
   applyFalseNarrowingFromCondition, applyTrueNarrowingFromCondition,
   getMemberPathKey
 } from './narrowing.zena';
-import { collectApplicableOperatorOverloads, selectMostSpecificIndex } from './overloads.zena';
+import {
+  collectApplicableOperatorOverloads, overloadCandidates, selectMostSpecificIndex
+} from './overloads.zena';
 import {
   affineOwnerFieldType, isAffineValue, isScopedValueType,
   mentionsParamDerived, moveDestructuredTuple, ownedResourceClasses,
@@ -322,12 +320,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
                 return new ErrorType();
               }
             } else {
-              let deps = ctx.currentDependencies();
-              if (deps != null) {
-                let classSymId = (ct.genericSource ?? ct).symbolId;
-                deps.referencedSymbols.add(classSymId);
-                deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".[]=");
-              }
+              ctx.referenceClassMethod(ct, "[]=");
             }
           }
           case InterfaceType as it: {
@@ -389,20 +382,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
               let m = ct.members[propName];
               match (m) {
                 case FieldInfo as fi: {
-                  if (isStatic && !fi.isStatic) {
-                    ctx.error(
-                      `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
-                      DiagnosticCode.InvalidAssignment,
-                      loc
-                    );
-                    return new ErrorType();
-                  }
-                  if (!isStatic && fi.isStatic) {
-                    ctx.error(
-                      `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
-                      DiagnosticCode.InvalidAssignment,
-                      loc
-                    );
+                  if (staticAccessMismatch(ctx, isStatic, fi, propName, ct.name,
+                      DiagnosticCode.InvalidAssignment, loc)) {
                     return new ErrorType();
                   }
                   if (!fi.isMutable) {
@@ -421,20 +402,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
                     let setterInfo = ct.members[setterName];
                     match (setterInfo) {
                       case MethodInfo as mi: {
-                        if (isStatic && !mi.isStatic) {
-                          ctx.error(
-                            `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
-                            DiagnosticCode.InvalidAssignment,
-                            loc
-                          );
-                          return new ErrorType();
-                        }
-                        if (!isStatic && mi.isStatic) {
-                          ctx.error(
-                            `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
-                            DiagnosticCode.InvalidAssignment,
-                            loc
-                          );
+                        if (staticAccessMismatch(ctx, isStatic, mi, propName, ct.name,
+                            DiagnosticCode.InvalidAssignment, loc)) {
                           return new ErrorType();
                         }
                       }
@@ -461,20 +430,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
                 let setterInfo = ct.members[setterName];
                 match (setterInfo) {
                   case MethodInfo as mi: {
-                    if (isStatic && !mi.isStatic) {
-                      ctx.error(
-                        `Cannot access instance member '${displayMemberName(propName)}' on class '${ct.name}'.`,
-                        DiagnosticCode.InvalidAssignment,
-                        loc
-                      );
-                      return new ErrorType();
-                    }
-                    if (!isStatic && mi.isStatic) {
-                      ctx.error(
-                        `Cannot access static member '${displayMemberName(propName)}' on an instance of '${ct.name}'.`,
-                        DiagnosticCode.InvalidAssignment,
-                        loc
-                      );
+                    if (staticAccessMismatch(ctx, isStatic, mi, propName, ct.name,
+                        DiagnosticCode.InvalidAssignment, loc)) {
                       return new ErrorType();
                     }
                   }
@@ -558,11 +515,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
           loc
         );
       } else {
-        let instantiated = tryInstantiateGenericFunction(ctx, rightType, nonNullType);
-        if (instantiated !== rightType) {
-          ctx.setNodeType(value, instantiated);
-        }
-        checkAndRegisterInterfaceAdaptation(ctx, value, instantiated, nonNullType);
+        adaptToExpected(ctx, value, rightType, nonNullType);
       }
       // The assignment's stored type is the narrowing: a later read
       // walks back to this flow node and sees the non-null type.
@@ -646,15 +599,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
           let innerT = ownershipHandleInner(coreT);
           if (innerT != null) {
             let resources = ownedResourceClasses(innerT);
-            let deps = ctx.currentDependencies();
-            if (resources != null && deps != null) {
-              deps.needsExceptionInfra = true;
-              for (let resource in resources) {
-                let classSymId = (resource.genericSource ?? resource).symbolId;
-                deps.referencedSymbols.add(classSymId);
-                deps.referencedClassMethods.add(
-                  i32ToString(classSymId as i32) + ".:dispose");
-              }
+            if (resources != null) {
+              ctx.rootReleases(resources, true);
             }
           }
         }
@@ -771,10 +717,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
             case _: {}
           }
           if (setterFt != null && setterFt.overloads != null) {
-            let candidates = growable<FunctionType>([setterFt]);
-            for (let ov in setterFt.overloads as GrowableArray<FunctionType>) {
-              candidates.push(ov);
-            }
+            let candidates = overloadCandidates(setterFt);
             let applicableRaw = new Array<FunctionType>();
             let applicableRes = new Array<FunctionType>();
             let operandTypes = growable<Type>([idxNodeType, effectiveType]);
@@ -798,12 +741,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         loc
       );
     } else {
-      let instantiated = tryInstantiateGenericFunction(ctx, effectiveType, leftType);
-      if (instantiated !== effectiveType) {
-        ctx.setNodeType(value, instantiated);
-        effectiveType = instantiated;
-      }
-      checkAndRegisterInterfaceAdaptation(ctx, value, effectiveType, leftType);
+      effectiveType = adaptToExpected(ctx, value, effectiveType, leftType);
     }
 
     leftType
@@ -1511,13 +1449,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
     let stringType = ctx.resolveTypeName("String");
     if (stringType != null) {
-      let deps = ctx.currentDependencies();
-      if (deps != null) {
-        if (stringType is ClassType) {
-          let classSymId = (stringType.genericSource ?? stringType).symbolId;
-          deps.referencedSymbols.add(classSymId);
-          deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".fromRawParts");
-        }
+      if (stringType is ClassType) {
+        ctx.referenceClassMethod(stringType, "fromRawParts");
       }
       return stringType;
     }
@@ -2063,12 +1996,7 @@ function checkBinaryExpression(
       match (leftType) {
         case ClassType as ct: {
           if (ct.members.has(operator)) {
-            let deps = ctx.currentDependencies();
-            if (deps != null) {
-              let classSymId = (ct.genericSource ?? ct).symbolId;
-              deps.referencedSymbols.add(classSymId);
-              deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${operator}`);
-            }
+            ctx.referenceClassMethod(ct, operator);
             let methodInfo = ct.members[operator];
             let method = methodInfo.type as FunctionType;
             if (method.parameters.length != 1) {
@@ -2259,13 +2187,7 @@ function checkBinaryExpression(
     if ((operator == "==" || operator == "!=") &&
         receiver is ClassType && receiver.members.has("==")) {
       let baseMethod = receiver.members["=="].type as FunctionType;
-      let candidates = growable<FunctionType>([baseMethod]);
-      let {overloads} = baseMethod;
-      if (overloads != null) {
-        for (let ov in overloads as GrowableArray<FunctionType>) {
-          candidates.push(ov);
-        }
-      }
+      let candidates = overloadCandidates(baseMethod);
       let operandTypes = growable<Type>([subtractNullFromType(rightType)]);
       let operands = growable<Expression>([right]);
       let applicableRaw = new Array<FunctionType>();

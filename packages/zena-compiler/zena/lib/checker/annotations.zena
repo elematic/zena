@@ -434,6 +434,46 @@ function isBodyOf(parent: Node, child: Node): boolean {
   };
 }
 
+/**
+ * The canonical `TypeParameterType`s a declaration's type parameters
+ * stand for, each declared in the current type scope. Every parameter
+ * is created before any bound or default resolves, so a bound may name
+ * a parameter declared after it. A bound names a class, not a value, so
+ * a resource class is spellable in one, as in an extends clause. Null
+ * for a declaration with no parameters.
+ */
+export function resolveTypeParameters(
+  ctx: CheckerContext,
+  declared: GrowableArray<TypeParameter> | null
+): Array<TypeParameterType> | null {
+  if (declared == null || declared.length == 0) {
+    return null;
+  }
+  let params = new Array<TypeParameterType>(declared.length);
+  for (let tp in declared) {
+    let tpType = ctx.getOrCreateTypeParameter(tp, null, null);
+    ctx.declareTypeName(tp.name, tpType);
+    params.push(tpType);
+  }
+  for (var i = 0; i < declared.length; i += 1) {
+    let tp = declared[i];
+    let bound = tp.constraint;
+    if (bound != null) {
+      ctx.resourceMentionOk = true;
+      let constraint = resolveBound(ctx, bound);
+      ctx.resourceMentionOk = false;
+      if (constraint != null) {
+        params[i].constraint = constraint;
+      }
+    }
+    let defaultAnn = tp.defaultType;
+    if (defaultAnn != null) {
+      params[i].defaultType = resolveTypeAnnotation(ctx, defaultAnn, false);
+    }
+  }
+  return params;
+}
+
 export function resolveTypeAnnotation(ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean = false): Type {
   let t = resolveTypeAnnotationInner(ctx, ann);
   if (!allowInlineTuple) {
