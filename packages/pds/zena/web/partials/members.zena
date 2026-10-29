@@ -1,0 +1,115 @@
+/**
+ * Members and maintainers, named to those who may see them. Each member
+ * is a commitment to a private entry, so a page names one only when
+ * `PackageHost.getEntries` shows the person signed in their entry.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {GrowableArray} from 'zena:core';
+import {HTMLPartial, html} from 'zena:http';
+import {Cid} from 'atproto:cid';
+import {Maintainer, MemberEntry} from 'package-manager:records';
+import {Person} from '../people.zena';
+import {PageContext} from '../session.zena';
+import {chip, each, when} from './common.zena';
+import {personLink} from './person.zena';
+
+/**
+ * What a page knows of the people it names: the private entries the
+ * viewer may see, by commitment; each person named, by DID; and the
+ * scope of each organization a team is in.
+ */
+export final class Shown {
+  context: PageContext;
+  entries: HashMap<String, MemberEntry>;
+  people: HashMap<String, Person>;
+  scopes = new HashMap<String, String>();
+
+  new(this.context, this.entries, this.people);
+
+  /** `did`'s person, as the page read them. */
+  person(did: String): Person {
+    if (let (true, person) = this.people.get(did)) {
+      return person;
+    }
+    return new Person(did);
+  }
+}
+
+/** The people behind `entries` and `dids`, read for a page. */
+export async function shownWith(context: PageContext, entries: HashMap<String, MemberEntry>, dids: Array<String>)
+    : Future<Shown> {
+  let all = new GrowableArray<String>();
+  for (let did in dids) {
+    all.push(did);
+  }
+  for (let entry in entries) {
+    all.push(entry.value.did);
+  }
+  return new Shown(context, entries, await context.people.each(all));
+}
+
+/**
+ * A maintainer as the record names it: a person, by DID; a team; or a
+ * commitment, whose person is private unless the viewer may see its entry.
+ */
+export function describe(maintainer: Maintainer, shown: Shown): HTMLPartial {
+  let automation = when(maintainer.automation, () => chip('automation'));
+  let did = maintainer.did;
+  if (did != null) {
+    return html`${personLink(shown.context, shown.person(did as String))} ${automation}`;
+  }
+  let team = maintainer.team;
+  if (team != null) {
+    let org = maintainer.org ?? '';
+    if (let (true, scope) = shown.scopes.get(org)) {
+      return html`the team <a class="mono" href="/scopes/${scope}">@${scope}/${team as String}</a>`;
+    }
+    return html`the team <span class="mono">${team as String}</span> of <span class="mono">${org}</span>`;
+  }
+  let commitment = maintainer.commitment;
+  if (commitment != null) {
+    if (let (true, entry) = shown.entries.get(commitment.toString())) {
+      return html`${personLink(shown.context, shown.person(entry.did))} <span class="muted">(private)</span> ${automation}`;
+    }
+  }
+  return html`<span class="muted">a private member</span> ${automation}`;
+}
+
+/**
+ * The private entries behind `account`'s members or maintainers record,
+ * or its team `team`, that the person signed in may see, by commitment:
+ * their own; all of them for the account's owners and admins, a team's
+ * maintainers, and the host's admins (`PackageHost.getEntries`). None for
+ * a visitor.
+ */
+export async function visibleEntries(context: PageContext, account: String, team: String | null)
+    : Future<HashMap<String, MemberEntry>> {
+  let found = new HashMap<String, MemberEntry>();
+  let who = context.who;
+  if (who == null) {
+    return found;
+  }
+  for (let entry in await context.host.getEntries(who.did, account, team)) {
+    found[entry.commitment().toString()] = entry;
+  }
+  return found;
+}
+
+/** Members, by commitment, each named when the viewer may see their entry; or `empty`. */
+export function members(commitments: FixedArray<Cid>, shown: Shown, empty: String): HTMLPartial {
+  if (commitments.length == 0) {
+    return html`<p class="muted">${empty}</p>`;
+  }
+  return html`<ul class="plain">${each(commitments, (commitment: Cid) => member(commitment, shown))}</ul>`;
+}
+
+function member(commitment: Cid, shown: Shown): HTMLPartial {
+  if (let (true, entry) = shown.entries.get(commitment.toString())) {
+    return html`
+      <li>${personLink(shown.context, shown.person(entry.did))} ${chip(entry.role)}
+        ${when(entry.automation, () => chip('automation'))}</li>`;
+  }
+  return html`<li class="muted">a private member</li>`;
+}

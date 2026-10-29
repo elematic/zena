@@ -1,0 +1,37 @@
+/**
+ * Signing in and out (`../session.zena`): the page a person's PDS sends
+ * them back to, where the page's script finishes signing in, and the form
+ * post that signs out.
+ */
+
+import {Router, html} from 'zena:http';
+import {PackageHost} from '../../host.zena';
+import {page} from '../layout.zena';
+import {People} from '../people.zena';
+import {clearSessionCookie, contextOf} from '../session.zena';
+
+/** Where a person's PDS sends them back to; the web app's OAuth client metadata names it. */
+export let CALLBACK_PATH = '/oauth/callback';
+
+/** Adds the sign-in callback and `/signout` to `router`. */
+export function signInPages(router: Router, host: PackageHost, people: People): void {
+  // The page's script finishes the sign-in here: it reads the OAuth answer
+  // in the URL, trades a service-auth token for a web session, and moves on.
+  router.get(CALLBACK_PATH, async (req, res, next, params) => {
+    res.type = 'text/html; charset=utf-8';
+    res.body = page('Signing in · Zena packages', (await contextOf(req, host, people)), html`
+      <h1>Signing in</h1>
+      <p class="muted" data-sign-in-status>Finishing your sign-in with your PDS…</p>
+    `);
+  });
+
+  // A form post, so it works without the page's script, which also ends
+  // the OAuth session in the browser first. SameSite=Lax keeps another
+  // site's form from sending the cookie.
+  router.post('/signout', async (req, res, next, params) => {
+    clearSessionCookie(res);
+    res.statusCode = 303;
+    res.setHeader('location', '/');
+    res.body = '';
+  });
+}

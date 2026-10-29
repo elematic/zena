@@ -1,19 +1,21 @@
 /**
  * A person's page, and their avatar. The page shows their profile
- * (`./people.zena`) and the packages that name them publicly; their
+ * (`../people.zena`) and the packages that name them publicly; their
  * private roles stay on `/me`, for them alone.
  */
 
 import {HTMLPartial, Router, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
-import {Membership, PackageHost} from '../host.zena';
-import {avatar, chip, each, page, when} from './layout.zena';
-import {notFound} from './pages.zena';
-import {People, Person} from './people.zena';
-import {PageContext, contextOf} from './session.zena';
+import {Membership, PackageHost} from '../../host.zena';
+import {page} from '../layout.zena';
+import {People, Person} from '../people.zena';
+import {PageContext, contextOf} from '../session.zena';
+import {chip, each, when} from '../partials/common.zena';
+import {avatar} from '../partials/person.zena';
+import {notFound} from './not-found.zena';
 
 /** Adds the people pages to `router`. */
-export function peoplePages(router: Router, host: PackageHost, people: People): void {
+export function personPage(router: Router, host: PackageHost, people: People): void {
   router.get('/people/:id', async (req, res, next, params) => {
     let context = await contextOf(req, host, people);
     let id = percentDecode(params['id'] ?? '');
@@ -25,7 +27,7 @@ export function peoplePages(router: Router, host: PackageHost, people: People): 
     let person = await people.person(did as String);
     let roles = await host.publicRolesOf(person.did);
     res.type = 'text/html; charset=utf-8';
-    res.body = page(`${person.name()} · Zena packages`, context, personPage(context, person, roles));
+    res.body = page(`${person.name()} · Zena packages`, context, personBody(context, person, roles));
   });
 
   // Only an avatar a page linked to: the URL's signature is the host's
@@ -52,7 +54,7 @@ export function peoplePages(router: Router, host: PackageHost, people: People): 
   });
 }
 
-function personPage(context: PageContext, person: Person, roles: Array<Membership>): HTMLPartial {
+function personBody(context: PageContext, person: Person, roles: Array<Membership>): HTMLPartial {
   let handle = person.handle;
   let description = person.description;
   let who = context.who;

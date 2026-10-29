@@ -33,13 +33,11 @@ import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, Repository, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {SessionError, Sessions, Tokens} from './sessions.zena';
 import {Account} from './storage.zena';
-import {notFound, publicPages} from './web/pages.zena';
+import {notFound} from './web/pages/not-found.zena';
+import {CALLBACK_PATH} from './web/pages/sign-in.zena';
+import {webPages} from './web/routes.zena';
 import {contextOf, setSessionCookie} from './web/session.zena';
-import {CALLBACK_PATH, accountPages} from './web/account.zena';
-import {adminPages} from './web/admin.zena';
 import {People} from './web/people.zena';
-import {Approvals} from './web/approvals.zena';
-import {peoplePages} from './web/profiles.zena';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {isValidDid} from 'atproto:syntax';
 import {hex} from 'zena:encoding';
@@ -986,10 +984,7 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
   hostRoutes(router, pages);
   // One cache of the people the pages show, for every page.
   let people = People.forHost(pages);
-  publicPages(router, pages, people, Approvals.forHost(pages, people));
-  accountPages(router, pages, people);
-  adminPages(router, pages, people);
-  peoplePages(router, pages, people);
+  webPages(router, pages, people);
   app.use(router.routes());
   // A page path no route took: the web app's not-found page.
   app.use(async (req, res, next): Future<void> => {

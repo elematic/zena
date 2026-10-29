@@ -1,0 +1,34 @@
+/** Lists of packages, as cards, and of scopes. */
+
+import {HTMLPartial, html} from 'zena:http';
+import {PackageSummary, ScopeSummary} from '../../host.zena';
+import {chip, count, each, when} from './common.zena';
+
+/** Packages as cards: name, handle, latest version, license and description; or `empty`. */
+export function packageList(packages: Array<PackageSummary>, empty: String): HTMLPartial {
+  if (packages.length == 0) {
+    return html`<p class="muted">${empty}</p>`;
+  }
+  return html`<div class="cards">${each(packages, (pkg) => html`
+    <a class="card" href="/packages/${pkg.handle}">
+      <div class="card-top">
+        <span class="name">${pkg.name}</span>
+        <span class="mono muted">${pkg.handle}</span>
+        <span class="chips">
+          ${if (pkg.latest == null) chip('unreleased') else chip(pkg.latest as String, 'primary')}
+          ${when(pkg.license != null, () => chip(pkg.license as String, 'success'))}
+        </span>
+      </div>
+      ${when(pkg.description != null, () => html`<p>${pkg.description as String}</p>`)}
+    </a>`)}
+  </div>`;
+}
+
+export function scopeList(scopes: Array<ScopeSummary>): HTMLPartial {
+  if (scopes.length == 0) {
+    return html`<p class="muted">No scopes yet.</p>`;
+  }
+  return html`<ul class="plain">${each(scopes, (scope) => html`
+    <li><a href="/scopes/${scope.name}">@${scope.name}</a> <span class="muted">${count(scope.packages, 'package')}</span></li>`)}
+  </ul>`;
+}

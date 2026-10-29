@@ -1,0 +1,59 @@
+/** A scope's page: its packages, and its organization's members and teams. */
+
+import {GrowableArray} from 'zena:core';
+import {Router, TemplateValue, html} from 'zena:http';
+import {percentDecode} from 'zena:url';
+import {PackageHost, ScopeDetail} from '../../host.zena';
+import {page} from '../layout.zena';
+import {People} from '../people.zena';
+import {contextOf} from '../session.zena';
+import {when} from '../partials/common.zena';
+import {members, shownWith, visibleEntries} from '../partials/members.zena';
+import {packageList} from '../partials/packages.zena';
+import {notFound} from './not-found.zena';
+
+/** Adds the scope page, `/scopes/<name>`, to `router`. */
+export function scopePage(router: Router, host: PackageHost, people: People): void {
+  router.get('/scopes/:name', async (req, res, next, params) => {
+    let context = await contextOf(req, host, people);
+    let name = percentDecode(params['name'] ?? '');
+    let scope = await host.getScope(name);
+    if (scope == null) {
+      notFound(res, context, `No scope here is named @${name}.`);
+      return;
+    }
+    let found = scope as ScopeDetail;
+    let packages = await host.listPackages(name);
+    // The entries the viewer may see, of the members and of every team,
+    // in one map: each commitment is a different hash.
+    let entries = await visibleEntries(context, found.did, null);
+    for (let named in found.teams) {
+      for (let teamEntry in await visibleEntries(context, found.did, named.name)) {
+        entries[teamEntry.key] = teamEntry.value;
+      }
+    }
+    let shown = await shownWith(context, entries, []);
+    let teams = new GrowableArray<TemplateValue>();
+    for (let named in found.teams) {
+      teams.push(html`
+        <h3 class="mono">${named.name}</h3>
+        ${members(named.team.members, shown, 'No members.')}`);
+    }
+    res.type = 'text/html; charset=utf-8';
+    res.body = page(`@${name} · Zena packages`, context, html`
+      <div>
+        <h1>@${name}</h1>
+        <div class="meta mono muted"><span>${found.handle}</span><span>${found.did}</span></div>
+      </div>
+      <section>
+        <h2>Packages</h2>
+        ${packageList(packages, 'This scope has no packages yet.')}
+      </section>
+      <section>
+        <h2>Members</h2>
+        ${members(found.members, shown, 'No members record.')}
+      </section>
+      ${when(teams.length > 0, () => html`<section><h2>Teams</h2>${teams}</section>`)}
+    `);
+  });
+}
