@@ -1,0 +1,40 @@
+/**
+ * What this host may reach when it reads another server for someone: the
+ * PDS in a DID document, an avatar's URL.
+ */
+
+import {URL} from 'zena:url';
+
+/**
+ * Whether this host may read `url`: HTTPS, at a host name. An address, or
+ * a name for this machine or a private network, is refused, so a DID
+ * document cannot point the host's reads at itself or what is behind it.
+ * A public name can still resolve to a private address; refusing those
+ * needs the address the name resolves to (#643).
+ */
+export function isPublicHttps(url: String): boolean {
+  let parsed = URL.parse(url);
+  if (parsed == null) {
+    return false;
+  }
+  let target = parsed as URL;
+  if (target.protocol != 'https:' || target.port != '') {
+    return false;
+  }
+  let name = target.hostname.asciiLowerCase();
+  if (name == '' || name.startsWith('[') || name == 'localhost' || name.endsWith('.localhost') ||
+      name.endsWith('.local') || name.endsWith('.internal') || !name.contains('.')) {
+    return false;
+  }
+  // An IPv4 address: every label digits.
+  var digits = true;
+  for (let label in name.split('.')) {
+    for (var i = 0; i < label.length; i += 1) {
+      let b = label.getByteAt(i);
+      if (b < 0x30 || b > 0x39) {
+        digits = false;
+      }
+    }
+  }
+  return !digits;
+}

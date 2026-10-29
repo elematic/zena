@@ -23,7 +23,7 @@ import {JsonObject, parseJson} from 'zena:json';
 import {div} from 'zena:math';
 import {timeout} from 'zena:task';
 import {milliseconds} from 'zena:time';
-import {URL} from 'zena:url';
+import {isPublicHttps} from '../egress.zena';
 import {now} from 'wasi:clocks/system-clock';
 import {Cid} from 'atproto:cid';
 import {Identity} from 'atproto:identity';
@@ -121,18 +121,22 @@ export final class People {
   /** The avatars' keys, oldest first, and their bytes in all. */
   var #avatarOrder = new GrowableArray<String>();
   var #avatarBytes = 0;
+  /** Whether a PDS at this URL may be read (`PackageHost.mayRead`). */
+  var mayRead = (url: String): boolean => isPublicHttps(url);
 
   new(sources: PeopleSources) : #sources = sources;
 
   /** People reading through `host`'s storage and identity resolver, and the network. */
   static forHost(host: PackageHost): People {
-    return new People(new PeopleSources(
+    let people = new People(new PeopleSources(
         async (did: String): Future<LocalAccount | null> => {
           let held = await host.pds.storage.getAccount(did);
           return if (held != null) new LocalAccount(held.handle) else null;
         },
         async (did: String): Future<Identity | null> => await host.identityOf(did),
         async (url: String): Future<Fetched | null> => await httpGet(url)));
+    people.mayRead = (url: String): boolean => host.mayRead(url);
+    return people;
   }
 
   /**
@@ -184,7 +188,7 @@ export final class People {
     }
     person.handle = identity.handle;
     let pds = identity.document.pds;
-    if (pds == null || !isPublicHttps(pds as String)) {
+    if (pds == null || !this.mayRead(pds as String)) {
       return true;
     }
     person.pds = pds;
@@ -343,38 +347,4 @@ function imageType(contentType: String, declared: String | null): String | null 
     }
   }
   return null;
-}
-
-/**
- * Whether this host may read `url`: HTTPS, at a host name. An address, or
- * a name for this machine or a private network, is refused, so a DID
- * document cannot point the host's reads at itself or what is behind it.
- * A public name can still resolve to a private address; refusing those
- * needs the address the name resolves to (#643).
- */
-export function isPublicHttps(url: String): boolean {
-  let parsed = URL.parse(url);
-  if (parsed == null) {
-    return false;
-  }
-  let target = parsed as URL;
-  if (target.protocol != 'https:' || target.port != '') {
-    return false;
-  }
-  let name = target.hostname.asciiLowerCase();
-  if (name == '' || name.startsWith('[') || name == 'localhost' || name.endsWith('.localhost') ||
-      name.endsWith('.local') || name.endsWith('.internal') || !name.contains('.')) {
-    return false;
-  }
-  // An IPv4 address: every label digits.
-  var digits = true;
-  for (let label in name.split('.')) {
-    for (var i = 0; i < label.length; i += 1) {
-      let b = label.getByteAt(i);
-      if (b < 0x30 || b > 0x39) {
-        digits = false;
-      }
-    }
-  }
-  return !digits;
 }

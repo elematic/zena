@@ -1,0 +1,104 @@
+/**
+ * `zena approve [<package>@]<version>`: approving a release that waits for
+ * its maintainers (docs/design/package-manager.md, "Publishing a
+ * release"). The host holds a published release out of the package's
+ * repository until enough maintainers attest it. The command shows the
+ * release, who published it, its dependencies, and who has approved it so
+ * far; with `--yes` it writes the maintainer's attestation to their own
+ * repository and asks the host to complete the release, as `zena publish`
+ * does for the publisher's own.
+ *
+ * The package is a DID, a handle or `@scope/name` on the host, else the
+ * package in the current directory.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { JsonArray, JsonObject } from 'zena:json';
+import { Cid } from 'atproto:cid';
+import { fromJson } from 'atproto:data';
+import { Release } from 'package-manager:records';
+import { Version } from 'package-manager:version';
+import { Options } from './env.zena';
+import { currentPackageDid, namedPackage } from './members.zena';
+import {
+  PublishError, approvals, attest, completeRelease, findHost, hostClient, runCommand, saveIfRefreshed, signedIn
+} from './publish.zena';
+
+export function approveCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 1) {
+      throw new PublishError('give the release: zena approve [<package>@]<version> [--yes]');
+    }
+    let given = args.rest[0];
+    let parts = given.split('@');
+    let version = parts[parts.length - 1];
+    try {
+      Version.parse(version);
+    } catch (e) {
+      throw new PublishError(`'${version}' is not a version: zena approve [<package>@]<version>`);
+    }
+    let session = signedIn();
+    let host = findHost(args);
+    let named = given.sliceBytes(0, given.length - version.length - 1);
+    let pkg = if (parts.length > 1) namedPackage(host, named) else currentPackageDid();
+    let label = if (parts.length > 1) named else pkg;
+
+    let pending = runFuture(hostClient(session, host, 'dev.zena-lang.host.getPendingReleases')
+      .query('dev.zena-lang.host.getPendingReleases', [('package', pkg)])) as JsonObject;
+    let releases = pending['releases'] as JsonArray;
+    var waiting: JsonObject | null = null;
+    for (var i = 0; i < releases.length; i += 1) {
+      let entry = releases[i] as JsonObject;
+      if ((entry['version'] as String) == version) {
+        waiting = entry;
+      }
+    }
+    if (waiting == null) {
+      throw new PublishError(`no release ${version} of ${label} is waiting for approval`);
+    }
+    let entry = waiting as JsonObject;
+    describe(entry, label);
+    let approvedBy = entry['approvedBy'] as JsonArray;
+    var mine = false;
+    for (var i = 0; i < approvedBy.length; i += 1) {
+      if ((approvedBy[i] as String) == session.did) {
+        mine = true;
+      }
+    }
+    if (!args.getFlag('yes')) {
+      if (mine) {
+        console.log(`You have approved it. Run again with --yes to ask ${host.origin} to complete it.`);
+      } else {
+        console.log(`Run again with --yes to approve it as ${session.handle}.`);
+      }
+      return;
+    }
+    if (!mine) {
+      attest(session, entry['uri'] as String, Cid.parse(entry['cid'] as String));
+    }
+    completeRelease(session, host, pkg, version, `${label} ${version}`, label);
+    saveIfRefreshed(session);
+  });
+}
+
+/** Prints what a maintainer approves: the release `entry` describes, of the package `label`. */
+function describe(entry: JsonObject, label: String): void {
+  let release = Release.fromValue(fromJson(entry['release']));
+  console.log(`${label} ${release.version.toString()}, published by ${entry['publisher'] as String} at ${entry['heldAt'] as String}`);
+  console.log(`  record: ${entry['uri'] as String} (${entry['cid'] as String})`);
+  for (let artifact in release.artifacts) {
+    console.log(`  artifact: ${artifact.kind} (${artifact.size} bytes, ${artifact.cid.toString()})`);
+  }
+  if (release.dependencies.length == 0) {
+    console.log('  no dependencies');
+  }
+  for (let dependency in release.dependencies) {
+    console.log(`  depends on ${dependency.name} ${dependency.version.toString()} (${dependency.did})`);
+  }
+  let approvedBy = entry['approvedBy'] as JsonArray;
+  for (var i = 0; i < approvedBy.length; i += 1) {
+    console.log(`  approved by ${approvedBy[i] as String}`);
+  }
+  console.log(`It is ${approvals(entry)}, and waits until ${entry['expiresAt'] as String}.`);
+}

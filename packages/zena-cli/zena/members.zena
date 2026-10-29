@@ -360,24 +360,34 @@ function personDid(person: String): String {
  */
 export function packageDid(host: Host, args: ParsedArgs): String {
   if (let (true, given) = args.getOption('package')) {
-    if (given.startsWith('did:')) {
-      return given;
-    }
-    var handle = given;
-    if (given.startsWith('@')) {
-      let (scope, name) = teamName(given.sliceBytes(1, given.length));
-      handle = `${name}.${scope}.${host.domain}`;
-    }
-    let did = scopeOrganization(handle);
-    if (did == null) {
-      throw new PublishError(`${given} does not resolve to a package`);
-    }
-    return did as String;
+    return namedPackage(host, given);
   }
+  return currentPackageDid();
+}
+
+/** The package `given` names, by DID, handle or `@scope/name` on the host. */
+export function namedPackage(host: Host, given: String): String {
+  if (given.startsWith('did:')) {
+    return given;
+  }
+  var handle = given;
+  if (given.startsWith('@')) {
+    let (scope, name) = teamName(given.sliceBytes(1, given.length));
+    handle = `${name}.${scope}.${host.domain}`;
+  }
+  let did = scopeOrganization(handle);
+  if (did == null) {
+    throw new PublishError(`${given} does not resolve to a package`);
+  }
+  return did as String;
+}
+
+/** The DID of the package in the current directory, from its manifest. */
+export function currentPackageDid(): String {
   let workspace = readWorkspace(repoRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
   if (target.manifest.did == null) {
-    throw new PublishError('run this in a published package, or name one with --package');
+    throw new PublishError('run this in a published package, or name the package');
   }
   return target.manifest.did as String;
 }

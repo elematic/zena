@@ -38,6 +38,10 @@
  *   - `PDS_RESERVED_SCOPES`: scope names no one may take, comma-separated,
  *     beside the host's own.
  *   - `PDS_MAX_BLOB_BYTES`: the largest artifact the host stores.
+ *   - `PDS_PRIVATE_READS`: `1` lets the host read PDSes at addresses on
+ *     this machine or a private network, as a stack on one machine needs
+ *     (tests, demos). Off by default, so a DID document cannot point the
+ *     host's reads at what is behind it.
  *   - `PDS_HANDLE_RECORDS`: where the host writes its handles' DNS records
  *     (`pds:handles`): `cloud-dns`, a Cloud DNS managed zone, or `memory`,
  *     for local runs. `memory` by default, but required with `firestore`,
@@ -139,6 +143,8 @@ export final class HostSettings {
   var admins: Array<String> = [];
   /** The largest artifact the host stores, or none for the host's default. */
   maxBlobSize: Option<i64>;
+  /** Whether the host may read PDSes on this machine or a private network (`PDS_PRIVATE_READS`). */
+  var privateReads = false;
   records: RecordsChoice;
 
   new(this.domain, this.serviceDid, this.publicUrl, this.rotationKey, this.reservedScopes, this.maxBlobSize,
@@ -303,6 +309,10 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
         }
       }
     }
+    let privateReads = value('PDS_PRIVATE_READS');
+    if (privateReads != null && privateReads != '1' && privateReads != '0') {
+      problems.push(`PDS_PRIVATE_READS is 1 or 0, not ${privateReads as String}`);
+    }
     var records: RecordsChoice = new RecordsInMemory();
     let recordsKind = value('PDS_HANDLE_RECORDS');
     let zone = value('PDS_DNS_ZONE');
@@ -328,11 +338,12 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     settings.rotationKmsKey = kmsKey;
     settings.admins = admins;
     settings.offlineRotationKey = offlineKey;
+    settings.privateReads = privateReads == '1';
     host = settings;
   } else {
     for (let name in ['PDS_ROTATION_KEY', 'PDS_ROTATION_KMS_KEY', 'PDS_OFFLINE_ROTATION_KEY', 'PDS_SERVICE_DID',
         'PDS_PUBLIC_URL', 'PDS_RESERVED_SCOPES', 'PDS_ADMIN_DIDS',
-        'PDS_MAX_BLOB_BYTES', 'PDS_HANDLE_RECORDS', 'PDS_DNS_ZONE', 'PDS_DNS_PROJECT']) {
+        'PDS_MAX_BLOB_BYTES', 'PDS_PRIVATE_READS', 'PDS_HANDLE_RECORDS', 'PDS_DNS_ZONE', 'PDS_DNS_PROJECT']) {
       if (value(name) != null) {
         problems.push(`${name} needs PDS_HOST_DOMAIN`);
       }
@@ -441,6 +452,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
       else new LocalRotationKey(settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32)));
   let hostConfig = new HostConfig(settings.serviceDid, settings.domain, settings.publicUrl ?? endpoint, rotationKey);
   hostConfig.offlineRotationKey = settings.offlineRotationKey;
+  hostConfig.privateReads = settings.privateReads;
   for (let did in settings.admins) {
     hostConfig.admins.add(did);
   }

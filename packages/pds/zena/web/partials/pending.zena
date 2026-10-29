@@ -1,0 +1,91 @@
+/**
+ * Releases waiting for their maintainers' approval, as a maintainer sees
+ * them (`PackageHost.pendingReleases`): who published each, who has
+ * approved it so far, until when it waits, and the command that approves
+ * it. No one else sees them: until it is approved, a release is in no
+ * repository.
+ */
+
+import {Future} from 'zena:async';
+import {GrowableArray} from 'zena:core';
+import {HTMLPartial, html} from 'zena:http';
+import {div} from 'zena:math';
+import {formatTimestamp} from 'zena:time';
+import {now} from 'wasi:clocks/system-clock';
+import {HostError, PENDING_MICROS, PackageHost, Tally, Waiting} from '../../host.zena';
+import {PageContext} from '../session.zena';
+import {each, when} from './common.zena';
+import {personLink} from './person.zena';
+
+/** A release waiting for approval, and the handle and name of its package. */
+export final class PendingRow {
+  handle: String;
+  name: String;
+  waiting: Waiting;
+
+  new(this.handle, this.name, this.waiting);
+}
+
+/** The releases of the package `pkg` waiting for approval, or none when `caller` does not maintain it. */
+export async function pendingOf(host: PackageHost, caller: String, pkg: String): Future<Array<Waiting>> {
+  try {
+    let instant = now();
+    let micros = instant.seconds * (1000000 as i64) + div(instant.nanoseconds as i64, 1000 as i64);
+    return await host.pendingReleases(caller, pkg, micros);
+  } catch (e) {
+    if (e is HostError) {
+      return new GrowableArray<Waiting>();
+    }
+    throw e;
+  }
+}
+
+/**
+ * `rows` as a table, with a column naming each release's package when
+ * `withPackage` is true.
+ */
+export async function pendingTable(context: PageContext, rows: Array<PendingRow>, withPackage: boolean)
+    : Future<HTMLPartial> {
+  let dids = new GrowableArray<String>();
+  for (let row in rows) {
+    dids.push(row.waiting.release.publisher);
+    for (let did in row.waiting.tally.approvedBy) {
+      dids.push(did);
+    }
+  }
+  let people = await context.people.each(dids);
+  let person = (did: String) => personLink(context, people[did]);
+  return html`
+    <table>
+      <thead><tr>${when(withPackage, () => html`<th>Package</th>`)}<th>Version</th><th>Published by</th><th>Approved by</th><th>Approve with</th></tr></thead>
+      <tbody>${each(rows, (row) => {
+        let held = row.waiting.release;
+        let tally = row.waiting.tally;
+        return html`
+        <tr>
+          ${when(withPackage, () => html`<td><a href="/packages/${row.handle}">${row.name}</a></td>`)}
+          <td>
+            <span class="version mono">${held.version}</span>
+            <div class="muted">until ${formatTimestamp((held.heldAt + PENDING_MICROS) * (1000 as i64)).sliceBytes(0, 10)}</div>
+          </td>
+          <td>${person(held.publisher)}</td>
+          <td>
+            ${when(tally.approvedBy.length > 0, () =>
+                html`<ul class="plain">${each(tally.approvedBy, (did) => html`<li>${person(did)}</li>`)}</ul>`)}
+            <div class="muted">${needs(tally)}</div>
+          </td>
+          <td><code class="mono">zena approve ${row.handle}@${held.version}</code></td>
+        </tr>`;
+      })}
+      </tbody>
+    </table>
+  `;
+}
+
+/** What a release's maintainers record asks of its attestations. */
+function needs(tally: Tally): String {
+  let maintainers = if (tally.threshold == (1 as i64)) '1 maintainer' else `${tally.threshold} maintainers`;
+  let people = if (tally.humans == (0 as i64)) '' else if (tally.humans == (1 as i64)) ', one of them a person'
+      else `, ${tally.humans} of them people`;
+  return `Needs ${maintainers}${people}.`;
+}

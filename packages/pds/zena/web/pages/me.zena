@@ -1,11 +1,16 @@
-/** `/me`: the scopes, teams and packages of the person signed in, each with their role. */
+/**
+ * `/me`: the scopes, teams and packages of the person signed in, each with
+ * their role, and the releases of their packages waiting for approval.
+ */
 
+import {GrowableArray} from 'zena:core';
 import {HTMLPartial, Router, html} from 'zena:http';
 import {Membership, Memberships, PackageHost} from '../../host.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {contextOf} from '../session.zena';
-import {chip, each} from '../partials/common.zena';
+import {chip, each, when} from '../partials/common.zena';
+import {PendingRow, pendingOf, pendingTable} from '../partials/pending.zena';
 
 /** Adds `/me` to `router`. */
 export function mePage(router: Router, host: PackageHost, people: People): void {
@@ -21,14 +26,26 @@ export function mePage(router: Router, host: PackageHost, people: People): void 
       return;
     }
     let memberships = await host.getMemberships(who.did);
-    res.body = page('Your packages · Zena packages', context, meBody(memberships));
+    let rows = new GrowableArray<PendingRow>();
+    for (let pkg in memberships.packages) {
+      for (let held in await pendingOf(host, who.did, pkg.did)) {
+        rows.push(new PendingRow(pkg.handle, pkg.name, held));
+      }
+    }
+    let waiting = if (rows.length > 0) await pendingTable(context, rows, true) else null;
+    res.body = page('Your packages · Zena packages', context, meBody(memberships, waiting));
   });
 }
 
 /** The scopes, teams and packages of the person signed in, each with their role. */
-function meBody(memberships: Memberships): HTMLPartial {
+function meBody(memberships: Memberships, waiting: HTMLPartial | null): HTMLPartial {
   return html`
     <h1>Your packages</h1>
+    ${when(waiting != null, () => html`
+    <section>
+      <h2>Waiting for approval</h2>
+      ${waiting}
+    </section>`)}
     <section>
       <h2>Scopes</h2>
       ${list(memberships.orgs, (org) => html`<a href="/scopes/${org.scope}">@${org.scope}</a>

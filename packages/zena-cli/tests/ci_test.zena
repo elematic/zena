@@ -2,7 +2,8 @@
  * Publishing from CI, from end to end, against
  * `tests/fixtures/publish-stack.zena`: Alice creates an automation account
  * in her scope and adds it to a package, and the account signs in with its
- * app password, as CI would, and publishes.
+ * app password, as CI would, and publishes. The host holds the account's
+ * keys, so its release waits until Alice approves it.
  */
 
 import {suite, test} from 'zena:test';
@@ -68,7 +69,20 @@ export let tests = suite('zena ci', () => {
       let added = alice.run(['owner', 'add', 'ci.acme.pkg.test', '--automation']);
       isTrue(added.succeeded(), described(added));
       let byBot = bot.run(['publish']);
-      isTrue(byBot.succeeded() && byBot.stdout.contains('Published greet 1.1.0'), described(byBot));
+      isTrue(byBot.succeeded() && byBot.stdout.contains('greet 1.1.0 is waiting for approval') &&
+          byBot.stdout.contains('zena approve @acme/greet@1.1.0'), described(byBot));
+
+      // Alice sees what she approves, and approves it.
+      let none = alice.run(['approve', '@acme/greet@9.9.9']);
+      isTrue(!none.succeeded() && none.stderr.contains('no release 9.9.9 of @acme/greet is waiting'), described(none));
+      let shown = alice.run(['approve', '@acme/greet@1.1.0']);
+      isTrue(shown.succeeded() && shown.stdout.contains('@acme/greet 1.1.0, published by ') &&
+          shown.stdout.contains('Run again with --yes'), described(shown));
+      let approved = alice.run(['approve', '1.1.0', '--yes']);
+      isTrue(approved.succeeded() && approved.stdout.contains('Published ') &&
+          approved.stdout.contains('/dev.zena-lang.package.release/1.1.0'), described(approved));
+      let done = alice.run(['approve', '1.1.0']);
+      isTrue(!done.succeeded() && done.stderr.contains('is waiting for approval'), described(done));
 
       // Its attestation of the release is in its own repository, on the host.
       let listed = runFuture(fetch(

@@ -57,6 +57,7 @@ of what the command does.
 | `login <handle or DID> [--password-stdin]`           | Signs in to your atproto account with an app password, to publish.                                                                                                                            |
 | `logout`                                             | Ends the session `login` started.                                                                                                                                                             |
 | `publish [--scope <name> --yes] [--host <url>]`      | Publishes the package you are in at its manifest's `version`, creating it on the host first, in the scope `--scope` names, when it has no `did`.                                              |
+| `approve [<package>@]<version> [--yes]`              | Shows a release waiting for its maintainers' approval, and with `--yes` approves it.                                                                                                          |
 | `package create --scope <name> --yes [--host <url>]` | Creates the package you are in on the host, and writes its DID into `zena-package.json`, without publishing.                                                                                  |
 | `doc <path> [-o <out.json>]`                         | Extracts a package's public API as JSON.                                                                                                                                                      |
 | `bench <suite.json> [-o <out.json>]`                 | Runs a benchmark suite.                                                                                                                                                                       |
@@ -126,9 +127,14 @@ The host holds the package's keys, as a PDS holds its users'. If you keep
 a recovery key, a secp256k1 private key in hex in `recovery-key` in the
 configuration directory, it is ranked above the host's, so you can move
 the package without the host. None is made for you. Each publish uploads
-the package's source archive, writes the release, and writes your
-attestation of it to your own repository. Raise `version` to publish
-again.
+the package's source archive, which the host checks, writes your
+attestation of the release to your own repository, and asks the host to
+complete it. The host writes the release once the attestations meet the
+package's maintainers record, its `threshold` of maintainers, of whom
+`humans` are people; with one maintainer, that is your own. Until then
+the release waits, for seven days, and the other maintainers approve it
+with `zena approve <package>@<version>`, which shows the release first and
+approves it with `--yes`. Raise `version` to publish again.
 
 ```bash
 zena-cli scope create acme --yes       # once per scope
@@ -145,6 +151,15 @@ secret `ZENA_APP_PASSWORD`, and runs `zena login <handle>` and
 ```bash
 zena-cli ci create acme/ci                          # prints the app password, once
 zena-cli owner add ci.acme.pkg.zena-lang.dev --automation
+```
+
+The host holds an automation account's keys, so its attestation counts
+only together with a person's: a release CI publishes waits until a
+maintainer approves it.
+
+```bash
+zena-cli approve @acme/router@1.5.0         # shows the release, and who has approved it
+zena-cli approve @acme/router@1.5.0 --yes   # approves it
 ```
 
 `zena retract <version>` marks a release as retracted. Builds whose

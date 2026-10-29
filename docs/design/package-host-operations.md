@@ -124,12 +124,14 @@ session, because the host holds nothing that can write there
 
 ## Releases
 
-| Operation                        | Who                       | Exists                                                 |
-| -------------------------------- | ------------------------- | ------------------------------------------------------ |
-| Publish a release                | maintainers               | `zena publish`; `uploadArtifact`, `publish`            |
-| Approve a release                | maintainers (_threshold_) | `zena publish` attests its own; `zena approve` to come |
-| Retract a release, with a reason | maintainers               | `zena retract`; `retract`                              |
-| Withdraw a retraction            | maintainers               | no                                                     |
+| Operation                          | Who                       | Exists                                                                            |
+| ---------------------------------- | ------------------------- | --------------------------------------------------------------------------------- |
+| Publish a release                  | maintainers               | `zena publish`; `uploadArtifact`, `publish`, `completeRelease`                    |
+| See releases waiting for approval  | maintainers               | `zena approve`; the package page and `/me`; `getPendingReleases`                  |
+| Approve a release                  | maintainers (_threshold_) | `zena publish` attests its own, `zena approve --yes` another's; `completeRelease` |
+| Withdraw a release before approval | its publisher, owners     | `withdrawRelease`                                                                 |
+| Retract a release, with a reason   | maintainers               | `zena retract`; `retract`                                                         |
+| Withdraw a retraction              | maintainers               | no                                                                                |
 
 ## Moderation
 

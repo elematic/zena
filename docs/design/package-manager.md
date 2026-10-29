@@ -862,16 +862,47 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
    ([package-manifest.md](package-manifest.md#publishing-a-workspace-package)).
    The record's CID is known before it is written, since it is the
    record's hash.
-2. It calls `dev.zena-lang.host.publish` with the record and the
-   artifacts, with a service-auth token as above. The host checks that the
-   caller is a maintainer, stores the artifacts as blobs of the package's
-   account, and writes the release record. It refuses a version that
-   exists.
-3. It writes an attestation of the release to the maintainer's own
-   repository.
-4. It looks the version up in the checksum log, which records it.
+2. It uploads the artifacts (`dev.zena-lang.host.uploadArtifact`), and
+   calls `dev.zena-lang.host.publish` with the record, each with a
+   service-auth token as above. The host checks everything a fetch will:
+   that the caller is a maintainer, the archive against the record and
+   its manifest, the dependencies, and that the version is free. The
+   client's own checks only save a round trip. The host then holds the
+   release as **pending**, outside the package's repository, which
+   reserves the version, and answers with the AT-URI and CID its record
+   will have.
+3. `zena publish` writes an attestation of that AT-URI and CID to the
+   maintainer's own repository. An attestation names a record by its hash,
+   so it can be made before the record exists.
+4. It calls `dev.zena-lang.host.completeRelease`. The host reads the
+   attestation of each of the package's maintainers from their own
+   repositories, checks each against the signing key in the maintainer's
+   DID document, and counts them against the maintainers record (see
+   [Thresholds](#thresholds)). Once they are enough, it writes the release
+   record, and only then is the release in the package's repository, its
+   firehose, the index, and what `zena add` and `zena update` choose
+   from.
+5. Otherwise the release waits. The other maintainers see it on the
+   package's page and their `/me` page, and with
+   `zena approve <package>@<version>`, which shows the release
+   (`dev.zena-lang.host.getPendingReleases`), writes the maintainer's
+   attestation, and calls `completeRelease` again. A pending release
+   expires after seven days, which frees its version, and its publisher
+   or an owner can withdraw it sooner
+   (`dev.zena-lang.host.withdrawRelease`).
+6. `zena publish` looks the version up in the checksum log, which records
+   it.
 
-`zena retract <version>` writes a retraction record the same way.
+With the usual single maintainer and a threshold of 1, steps 2 to 4
+happen within one `zena publish`. Holding a release back, rather than
+writing a record that says it is pending and changing it later, keeps
+release records unchanged once written, so nothing that reads them needs
+to know a release can be pending, and the checksum log's
+`release-mutated` label keeps its meaning.
+
+`zena retract <version>` writes a retraction record, by any one
+maintainer, without waiting: a retraction stops new builds from choosing
+a release and changes no one's existing builds.
 
 Publishing changes the package's repository and not its DID document. The
 DID document changes only when the package moves to another host, its
@@ -882,9 +913,9 @@ CI publishes as an automation account: a maintainer marked `automation`,
 which an organization's host creates on request, from `zena ci create` or
 the management interface, and whose app password is a CI secret. The host
 holds that account, so its attestation is one the host could make itself.
-The log therefore counts an automation account on the package's own host
-only together with at least one person's attestation; an automation
-account on another PDS counts like any maintainer. A package's owners add
+The host therefore counts an automation account on the package's own host
+only together with at least one person's attestation, and so does the
+log; an automation account on another PDS counts like any maintainer. A package's owners add
 it with `zena owner add <handle> --automation`, as a publisher: the host
 refuses an automation account that is not marked as one, or that is an
 owner, since an owner chooses the maintainers. CI signs in to it with
@@ -919,13 +950,16 @@ and PyPI allow with GitHub's OIDC tokens, is an open question.
   without listing their records. Successive maintainers records share an
   AT-URI, and the CID keeps their attestations apart.
 
-The checksum log fetches the attestations when it records a release, and
-records the release only when the package's threshold of maintainers have
-attested it. Clients already check releases against the log, so they
-rely on attestations without fetching them, and anyone can fetch them to
-audit the log. A release in the log was approved by the package's
-maintainers, each through a PDS they chose, and the host cannot make one
-alone. A host that also holds the maintainers' own accounts could, which
+The host writes a release record only once its maintainers have attested
+it (see [Publishing a release](#publishing-a-release)). The checksum log
+checks again, independently: it fetches the attestations when it records
+a release, and records the release only when the package's threshold of
+maintainers have attested it. So a host that wrote a release record
+without them, compromised or misconfigured, writes one the log refuses.
+Clients already check releases against the log, so they rely on
+attestations without fetching them, and anyone can fetch them to audit
+the log. A release in the log was approved by the package's maintainers,
+each through a PDS they chose, and the host cannot make one alone. A host that also holds the maintainers' own accounts could, which
 is why the Zena project's host holds package and organization accounts,
 and automation accounts that cannot publish without a person (see
 [Publishing a release](#publishing-a-release)), and no one's own account.
@@ -1129,9 +1163,14 @@ recovery key.
 ### Thresholds
 
 - **Releases and changes of maintainers** can require M of N
-  maintainers, through attestations. A release with fewer attestations
-  than its threshold waits. `zena approve <package>@<version>` adds one,
-  and the log records the release once it has enough.
+  maintainers, through attestations. The maintainers record says how
+  many, per package: `threshold` attestations for a release, of which
+  `humans` must come from people rather than automation accounts, and
+  `ownerThreshold` owners for a change to the record. A new package
+  starts at 1 and 1, which the publisher's own attestation meets. A
+  release with fewer attestations waits, pending on the host and outside
+  the package's repository, until `zena approve <package>@<version>` adds
+  enough; then the host writes its record, and the log records it.
 - **Control of the DID** cannot. PLC accepts an operation signed by any
   one rotation key, with rank deciding conflicts for 72 hours, and has no
   thresholds. The host signs with its own rotation key only for changes
@@ -1217,7 +1256,10 @@ once the attestations the previous record requires reach the log.
 | `createPackage`           | an organization's admins, or a team they allow                  | creates a package with its profile and maintainers record            |
 | `createAutomationAccount` | an organization's admins                                        | creates an account for CI and returns its app password once          |
 | `uploadArtifact`          | a package's maintainers                                         | stores an artifact, or one part of it, as a blob of the package      |
-| `publish`                 | a package's maintainers                                         | writes a release record, refusing a version that exists              |
+| `publish`                 | a package's maintainers                                         | checks a release and holds it, refusing a version that is taken      |
+| `completeRelease`         | a package's maintainers                                         | writes a held release once its attestations are enough               |
+| `getPendingReleases`      | a package's maintainers                                         | returns the held releases, with who has attested each                |
+| `withdrawRelease`         | a held release's publisher, or a package's owners               | stops holding a release, which frees its version                     |
 | `retract`                 | a package's maintainers                                         | writes a retraction record                                           |
 | `putProfile`              | a package's owners                                              | replaces the profile                                                 |
 | `renamePackage`           | a package's owners                                              | changes the handle, with a PLC operation, and the profile's name     |
