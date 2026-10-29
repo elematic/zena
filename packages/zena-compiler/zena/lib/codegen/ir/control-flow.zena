@@ -20,7 +20,8 @@ import {
   NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
   isOwnershipWrapper, ownershipHandleInner, ownershipHandleName,
-  soleNonNullMember, UnionType, isScopedType, scopedInner,
+  soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, releasableFuture,
+  representsRestricted,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -1838,6 +1839,8 @@ export function disposeOwnerClasses(cx: LoweringContext, t: Type): GrowableArray
  */
 function emitDispose(cx: LoweringContext, value: i32, ownerClass: ClassType) {
   let ct = ownerClass;
+  // `:dispose`, or a future's `[release]` (releaseMemberOf).
+  let member = releaseMemberOf(ct);
   let cKey = getClassKey(ct);
   let classInfo = if (let (true, info) = cx.wasm.classInfos.get(cKey)) info else null;
   if (classInfo == null) {
@@ -1849,7 +1852,7 @@ function emitDispose(cx: LoweringContext, value: i32, ownerClass: ClassType) {
   while (curr != null && method == null) {
     var g: ClassType | null = curr;
     while (g != null && method == null) {
-      let key = getClassMethodKey(getClassKey(g), ':dispose');
+      let key = getClassMethodKey(getClassKey(g), member);
       if (let (true, m) = cx.wasm.classMethodMap.get(key)) {
         method = m;
       }
@@ -1871,11 +1874,11 @@ function emitDispose(cx: LoweringContext, value: i32, ownerClass: ClassType) {
   let args = growable<i32>([receiver]);
 
   if (!cx.exactValues.has(value) &&
-      cx.memberProvidedBySubclass(classInfo, ':dispose')) {
-    if (cx.vtableSlotIndex(classInfo, ':dispose') < 0) {
+      cx.memberProvidedBySubclass(classInfo, member)) {
+    if (cx.vtableSlotIndex(classInfo, member) < 0) {
       bail(cx, 'overridden dispose without vtable slot');
     }
-    cx.lowerVtableCall(receiver, classInfo, ':dispose', sig, args, null);
+    cx.lowerVtableCall(receiver, classInfo, member, sig, args, null);
     return;
   }
   cx.b.callFunc(cx.b.addRef(new IrRefFunc(method)), args, null);
@@ -1972,6 +1975,35 @@ export function dropPlanOf(cx: LoweringContext, t: Type): DropPlan {
   return new DropPlan(disposeOwnerClasses(cx, t), null);
 }
 
+/**
+ * Releases what a value of `t` owns, as its implicit drop would: the
+ * `release_owned` intrinsic, which a generic body calls for a value
+ * only its use site knew to release (`Future`'s `[release]`). It is
+ * lowered in every specialization of that body, first-class ones
+ * included, and a handle is its resource class there, so ownership is
+ * read off the representation: a resource class, a future of one, or
+ * a tuple holding an owner. Anything else releases nothing.
+ */
+export function emitReleaseOwned(cx: LoweringContext, value: i32, t: Type): void {
+  let core = soleNonNullMember(t) ?? t;
+  if (tupleHoldsOwner(core)) {
+    emitDrop(cx, value, new DropPlan(null, t));
+    return;
+  }
+  var target = core;
+  while (isOwnershipWrapper(target)) {
+    let inner = ownershipHandleInner(target);
+    if (inner == null) { break; }
+    target = inner;
+  }
+  let base = unwrapAliases(target);
+  if (!(base is ClassType)) { return; }
+  let ct = base as ClassType;
+  let isFuture = releaseMemberOf(ct) == ":release" && representsRestricted(ct);
+  if (!ct.isResource && !isFuture) { return; }
+  emitDrop(cx, value, new DropPlan(growable<ClassType>([ct]), null));
+}
+
 /** Releases `value` by its plan. */
 export function emitDrop(cx: LoweringContext, value: i32, plan: DropPlan): void {
   let owners = plan.owners;
@@ -2012,7 +2044,8 @@ function tupleHoldsOwner(t: Type): boolean {
 /** Whether a tuple element is an owner, or a tuple holding one. */
 function elementHoldsOwner(t: Type): boolean {
   let core = soleNonNullMember(t) ?? t;
-  return ownershipHandleName(core) == "Own" || tupleHoldsOwner(core);
+  return ownershipHandleName(core) == "Own" || tupleHoldsOwner(core) ||
+      releasableFuture(core) != null;
 }
 
 /**

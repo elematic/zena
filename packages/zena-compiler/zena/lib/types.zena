@@ -4332,6 +4332,55 @@ export function isAffineContainer(t: Type): boolean {
   return false;
 }
 
+/**
+ * The member an implicit drop calls on `owner`: `:dispose` on a
+ * resource class, and `[release]` on a `Future` or a subclass of one,
+ * which releases the owner the future's value holds when it lands
+ * (owner-futures.md, "Releasing what nobody took").
+ */
+export function releaseMemberOf(owner: ClassType): String {
+  var c: ClassType | null = owner;
+  while (c != null) {
+    let cls = c as ClassType;
+    if (isFutureClassType(cls.genericSource ?? cls)) { return ":release"; }
+    c = cls.superType;
+  }
+  return ":dispose";
+}
+
+/**
+ * `t` as a future whose value carries an owner and that an implicit
+ * drop releases, or null: a `Future` (or a subclass) at an owner, when
+ * `Future` declares `[release]`. The checker roots the call and
+ * lowering emits it from the same test.
+ */
+export function releasableFuture(t: Type): ClassType | null {
+  if (t is TypeAliasType) {
+    let alias = t as TypeAliasType;
+    if (alias.isDistinct || alias.intrinsicName != null || alias.resolving ||
+        isOwnershipWrapper(alias)) {
+      return null;
+    }
+    alias.resolving = true;
+    let res = releasableFuture(alias.target);
+    alias.resolving = false;
+    return res;
+  }
+  if (!(t is ClassType)) { return null; }
+  let ct = t as ClassType;
+  if (!isAffineContainer(ct)) { return null; }
+  var c: ClassType | null = ct;
+  while (c != null) {
+    let cls = c as ClassType;
+    let declaring = cls.genericSource ?? cls;
+    if (isFutureClassType(declaring)) {
+      return if (declaring.members.has(":release")) ct else null;
+    }
+    c = cls.superType;
+  }
+  return null;
+}
+
 /** Whether `cls`'s declaration marks its type parameter `i` `scoped`. */
 export function isScopedClassParam(cls: ClassType, i: i32): boolean {
   let params = (cls.genericSource ?? cls).typeParameters;

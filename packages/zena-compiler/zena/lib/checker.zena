@@ -116,7 +116,7 @@ import {
   isScopedType, scopedInner,
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
   typeContainsConcreteSecondClass, borrowInnerRestricts,
-  typeCarriesOwner, isAffineContainer, isScopedClassParam
+  typeCarriesOwner, isAffineContainer, isScopedClassParam, releaseMemberOf, releasableFuture
 , ErasedType, FunctionDeclInfo, internFunctionType, mergeRow, mergeTupleRow } from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
@@ -3074,7 +3074,7 @@ final class CheckerContext {
             let classSymId = (resource.genericSource ?? resource).symbolId;
             deps.referencedSymbols.add(classSymId);
             deps.referencedClassMethods.add(
-              i32ToString(classSymId as i32) + ".:dispose");
+              i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
           }
         }
       }
@@ -3109,7 +3109,7 @@ final class CheckerContext {
         let classSymId = (resource.genericSource ?? resource).symbolId;
         deps.referencedSymbols.add(classSymId);
         deps.referencedClassMethods.add(
-          i32ToString(classSymId as i32) + ".:dispose");
+          i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
       }
     }
   }
@@ -6138,6 +6138,23 @@ function collectOwnedResources(t: Type, result: GrowableArray<ClassType>): boole
     }
     return true;
   }
+  // A future of an owner is released through the future: its
+  // `[release]` takes the value when it lands and releases what it
+  // holds (owner-futures.md, "Releasing what nobody took"). The
+  // future's class stands in the list for that call, and the owners
+  // in its value are listed too, so their `:dispose` is rooted.
+  let releasable = releasableFuture(handleType);
+  if (releasable != null) {
+    let fut = releasable as ClassType;
+    if (!result.contains(fut)) {
+      result.push(fut);
+    }
+    let args = fut.typeArguments;
+    if (args != null && args.length == 1) {
+      collectOwnedResources(args[0], result);
+    }
+    return true;
+  }
   if (!isAffineTuple(handleType)) {
     return true;
   }
@@ -6183,7 +6200,7 @@ function releaseDiscardedOwner(ctx: CheckerContext, stmt: Node, expression: Expr
       let classSymId = (resource.genericSource ?? resource).symbolId;
       deps.referencedSymbols.add(classSymId);
       deps.referencedClassMethods.add(
-          i32ToString(classSymId as i32) + ".:dispose");
+          i32ToString(classSymId as i32) + "." + releaseMemberOf(resource));
     }
   }
 }

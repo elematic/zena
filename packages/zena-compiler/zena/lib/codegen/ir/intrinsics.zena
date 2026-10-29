@@ -28,6 +28,7 @@ import { LoweringContext } from './lowering-context.zena';
 import { lowerEqIntrinsic, lowerHashIntrinsic } from './equality.zena';
 import { convertValueToString } from './templates.zena';
 import { lowerExpr } from './lowering.zena';
+import { emitReleaseOwned } from './control-flow.zena';
 import { growable } from 'zena:core';
 
 /**
@@ -285,6 +286,26 @@ function lowerIsFirstClass(cx: LoweringContext, call: CallExpression): i32 {
   }
   let firstClass = !representsRestricted(args[0]);
   return cx.b.constI32(if (firstClass) 1 else 0, new ValTypeI32());
+}
+
+/**
+ * `releaseOwned<T>(value)`: releases what `value` owns, as its implicit
+ * drop would, at this specialization's `T` (control-flow.zena
+ * emitReleaseOwned).
+ */
+function lowerReleaseOwned(cx: LoweringContext, call: CallExpression): i32 {
+  let calleeType = cx.substitutedNodeType(call.callee);
+  if (!(calleeType is FunctionType)) {
+    return cx.failValue('releaseOwned callee type');
+  }
+  let ft = calleeType as FunctionType;
+  let args = ft.typeArguments;
+  if (args == null || args.length != 1 || call.args.length != 1) {
+    return cx.failValue('releaseOwned arguments');
+  }
+  let value = lowerExpr(cx, call.args[0], null);
+  emitReleaseOwned(cx, value, args[0]);
+  return -1;
 }
 
 /** __array_new: array.new with an explicit init value. */
@@ -843,6 +864,7 @@ export function lowerIntrinsic(cx: LoweringContext, name: String, call: CallExpr
     }
     case 'default_value': lowerDefaultValue(cx, call)
     case 'is_first_class': lowerIsFirstClass(cx, call)
+    case 'release_owned': lowerReleaseOwned(cx, call)
     case _: {
       // SIMD instructions are not listed above: one table row in
       // lib/simd.zena carries the opcode, shape and result for all 236,
