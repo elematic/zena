@@ -1,0 +1,35 @@
+// @mode: run
+// @result: 1
+// A body that calls `releaseOwned<T>` is lowered at every specialization
+// that reaches it, whether or not the release runs, so the `:dispose`
+// it names has to exist. Here it is the dispose of a resource class in a
+// dependency library, `zena:fs`'s `Descriptor`, whose member bodies are
+// checked only when reachability asks for them, and nothing else
+// reaches it. The WIT bindings' `Future<Unmanaged<Descriptor>>` lowers
+// `Future`'s release this way. The dead branch also obtains a
+// `Descriptor`, as a real program does; without one the component
+// encoder takes the reached dispose for the program providing the
+// resource (#648).
+
+import {Unmanaged, WithDefault, defaultValue} from 'zena:core';
+import {Descriptor, getRootDir} from 'zena:fs';
+
+@intrinsic('release_owned')
+declare function releaseOwned<scoped T>(value: T): void;
+
+class Holder<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  release(): void {
+    releaseOwned<T>(this.#value as T);
+  }
+}
+
+export let main = (): i32 => {
+  let h = new Holder<Unmanaged<Descriptor>>();
+  var go = false;
+  if (go) {
+    let root = getRootDir();
+    h.release();
+  }
+  return 1;
+};
