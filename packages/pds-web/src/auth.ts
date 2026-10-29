@@ -22,8 +22,12 @@ import {
   type OAuthSession,
 } from '@atproto/oauth-client-browser';
 
-/** The scope the page asks for; the host's metadata document says the same. */
-const SCOPE = 'atproto transition:generic';
+/**
+ * The scope the page asks for: service-auth tokens for `createWebSession`,
+ * and no access to the person's repository or other apps' data. The
+ * host's metadata document says the same (`pds:server`, `OAUTH_SCOPE`).
+ */
+const SCOPE = 'atproto rpc:dev.zena-lang.host.createWebSession?aud=*';
 
 /** Where the person's PDS sends them back; a page of the host's (`pds:web/account`). */
 export const CALLBACK_PATH = '/oauth/callback';
