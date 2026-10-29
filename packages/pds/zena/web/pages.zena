@@ -11,14 +11,18 @@ import {GrowableArray} from 'zena:core';
 import {HTMLPartial, Request, Response, Router, TemplateValue, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
 import {Cid} from 'atproto:cid';
-import {Dependency, Maintainer, Maintainers, MemberEntry, Release} from 'package-manager:records';
+import {Dependency, Maintainer, Maintainers, MemberEntry, RELEASE_TYPE, Release} from 'package-manager:records';
 import {PackageDetail, PackageHost, PackageSummary, ScopeDetail, ScopeSummary} from '../host.zena';
 import {chip, count, each, page, personLink, when} from './layout.zena';
 import {PageContext, contextOf} from './session.zena';
 import {People, Person} from './people.zena';
+import {Approvals} from './approvals.zena';
 
 /** Adds the public pages to `router`. */
-export function publicPages(router: Router, host: PackageHost, people: People): void {
+/** How many of a package's newest releases its page shows the approvers of. */
+let APPROVALS_SHOWN = 10;
+
+export function publicPages(router: Router, host: PackageHost, people: People, approvals: Approvals): void {
   router.get('/', async (req, res, next, params) => {
     let context = await contextOf(req, host, people);
     let query = (req.url.searchParams().get('q') ?? '').trim();
@@ -121,7 +125,26 @@ export function publicPages(router: Router, host: PackageHost, people: People): 
         }
       }
     }
+    // Who approved the newest releases: each attester's repository is
+    // asked once per release, so the oldest are left out.
+    let attesters = await host.attesters(found.did);
+    let approvedBy = new HashMap<String, Array<String>>();
+    var checked = 0;
+    for (let release in found.releases) {
+      let version = release.version.toString();
+      if (checked < APPROVALS_SHOWN) {
+        if (let (true, cid) = found.releaseCids.get(version)) {
+          let approvers = await approvals.of(`at://${found.did}/${RELEASE_TYPE}/${version}`, cid, attesters);
+          approvedBy[version] = approvers;
+          for (let did in approvers) {
+            named.push(did);
+          }
+        }
+      }
+      checked += 1;
+    }
     let shown = await shownWith(context, entries, named);
+    shown.approvedBy = approvedBy;
     if (record != null) {
       for (let maintainer in record.maintainers) {
         let org = maintainer.org;
@@ -233,7 +256,7 @@ function packagePage(detail: PackageDetail, handles: HashMap<String, String>, sh
     <pre class="mono">zena add ${detail.handle}</pre>
     <section>
       <h2>Versions</h2>
-      ${if (detail.releases.length == 0) html`<p class="muted">Nothing is published yet.</p>` else versions(detail, handles)}
+      ${if (detail.releases.length == 0) html`<p class="muted">Nothing is published yet.</p>` else versions(detail, handles, shown)}
     </section>
     <section>
       <h2>Maintainers</h2>
@@ -243,10 +266,24 @@ function packagePage(detail: PackageDetail, handles: HashMap<String, String>, sh
   `;
 }
 
-function versions(detail: PackageDetail, handles: HashMap<String, String>): HTMLPartial {
+/**
+ * Who approved release `version`: its approvers, or a dash when none of
+ * the maintainers' repositories holds an attestation of it, or it is too
+ * old to have been looked for.
+ */
+function approvers(version: String, shown: Shown): TemplateValue {
+  if (let (true, dids) = shown.approvedBy.get(version)) {
+    if (dids.length > 0) {
+      return html`<ul class="plain">${each(dids, (did) => html`<li>${personLink(shown.context, shown.person(did))}</li>`)}</ul>`;
+    }
+  }
+  return html`<span class="muted">—</span>`;
+}
+
+function versions(detail: PackageDetail, handles: HashMap<String, String>, shown: Shown): HTMLPartial {
   return html`
     <table>
-      <thead><tr><th>Version</th><th>Published</th><th>Dependencies</th></tr></thead>
+      <thead><tr><th>Version</th><th>Published</th><th>Dependencies</th><th>Approved by</th></tr></thead>
       <tbody>${each(detail.releases, (release) => {
         let version = release.version.toString();
         var retracted = false;
@@ -264,6 +301,7 @@ function versions(detail: PackageDetail, handles: HashMap<String, String>): HTML
           </td>
           <td class="muted">${release.createdAt.sliceBytes(0, 10)}</td>
           <td>${dependencies(release, handles)}</td>
+          <td>${approvers(version, shown)}</td>
         </tr>`;
       })}
       </tbody>
@@ -322,6 +360,8 @@ final class Shown {
   entries: HashMap<String, MemberEntry>;
   people: HashMap<String, Person>;
   scopes = new HashMap<String, String>();
+  /** The approvers of each release looked at, by version. */
+  var approvedBy = new HashMap<String, Array<String>>();
 
   new(this.context, this.entries, this.people);
 

@@ -1,0 +1,81 @@
+/**
+ * `pds:web/approvals`: finding who attested a release, through fakes of
+ * the host's storage and of the maintainers' PDSes.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {GrowableArray} from 'zena:core';
+import {JsonObject, stringify} from 'zena:json';
+import {Cid} from 'atproto:cid';
+import {Value, toJson} from 'atproto:data';
+import {DidDocument} from 'atproto:did';
+import {Identity} from 'atproto:identity';
+import {Attestation, attestationKey} from 'package-manager:records';
+import {Approvals} from 'pds:web/approvals';
+import {Fetched, LocalAccount, People, PeopleSources} from 'pds:web/people';
+
+let URI = 'at://did:plc:routerrouterrouterrouter/dev.zena-lang.package.release/1.0.0';
+let CID = Cid.forDagCbor(new FixedArray<u8>(4, 1 as u8));
+let OTHER_CID = Cid.forDagCbor(new FixedArray<u8>(4, 2 as u8));
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+let CAROL = 'did:plc:carolcarolcarolcarolcaro';
+let BOT = 'did:plc:botbotbotbotbotbotbotbot';
+
+/** Alice attested the release; Bob attested another CID at the same key; Carol attested nothing; the bot is local. */
+final class World {
+  asked = new GrowableArray<String>();
+
+  people(): People {
+    return new People(new PeopleSources(
+        async (did: String): Future<LocalAccount | null> => null,
+        async (did: String): Future<Identity | null> =>
+            new Identity(did, null, new DidDocument(did, null, null, `https://${did.sliceBytes(8, 13)}.example.com`,
+                new JsonObject())),
+        async (url: String): Future<Fetched | null> => {
+          if (url.contains('collection=app.bsky.actor.profile')) {
+            return new Fetched(400, '{}'.toBytes() as FixedArray<u8>, 'application/json');
+          }
+          this.asked.push(url);
+          var subject: Cid | null = null;
+          if (url.contains(`repo=${ALICE}`)) {
+            subject = CID;
+          } else if (url.contains(`repo=${BOB}`)) {
+            subject = OTHER_CID;
+          }
+          if (subject == null) {
+            return new Fetched(400, '{"error":"RecordNotFound"}'.toBytes() as FixedArray<u8>, 'application/json');
+          }
+          let value = toJson(new Attestation(URI, subject as Cid, '2026-10-29T00:00:00.000Z').toValue());
+          return new Fetched(200, `{"value":${stringify(value)}}`.toBytes() as FixedArray<u8>, 'application/json');
+        }));
+  }
+}
+
+export let tests = suite('pds:web/approvals', () => {
+  test("finds the attesters whose repositories hold an attestation of the release, and remembers", (ctx) => {
+    let world = new World();
+    let approvals = new Approvals(world.people(),
+        async (did: String, collection: String, rkey: String): Future<Value | null> =>
+            if (did == BOT && rkey == attestationKey(URI, CID)) new Attestation(URI, CID, '2026-10-29T00:00:00.000Z').toValue()
+            else null);
+    let approved = runFuture(approvals.of(URI, CID, [ALICE, BOB, CAROL, BOT]));
+    equal(approved.length, 2);
+    equal(approved[0], ALICE);
+    equal(approved[1], BOT);
+    // Each remote attester was asked at the key the release fixes.
+    equal(world.asked.length, 3);
+    eachAsksFor(world.asked, attestationKey(URI, CID));
+    // Asked again, nobody is asked again.
+    runFuture(approvals.of(URI, CID, [ALICE, BOB, CAROL, BOT]));
+    equal(world.asked.length, 3);
+  });
+});
+
+function eachAsksFor(urls: Array<String>, rkey: String): void {
+  for (let url in urls) {
+    equal(url.contains(`&rkey=${rkey}`), true);
+  }
+}

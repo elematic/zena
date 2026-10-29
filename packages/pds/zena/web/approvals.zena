@@ -1,0 +1,113 @@
+/**
+ * Who approved each release: the maintainers whose repositories hold an
+ * attestation of its record (package-manager.md, "Who signs what"). An
+ * attestation of a record sits at a record key fixed by the record's
+ * AT-URI and CID (`attestationKey`), so a page finds one by asking each
+ * maintainer's repository for that key, with no index.
+ *
+ * An attestation is read as its PDS answers `getRecord`, without checking
+ * its proof against the maintainer's signing key. That is the checksum
+ * log's work, for a release that is relied on; here, a page says who
+ * approved. Reads are cached: an attestation found for a day, and one
+ * missing for ten minutes, so a new one shows soon after it is written.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {GrowableArray} from 'zena:core';
+import {now} from 'wasi:clocks/system-clock';
+import {decodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {Value, fromJson} from 'atproto:data';
+import {ATTESTATION_TYPE, Attestation, attestationKey} from 'package-manager:records';
+import {PackageHost} from '../host.zena';
+import {People} from './people.zena';
+
+let FOUND_SECONDS: i64 = (24 * 60 * 60) as i64;
+let MISSING_SECONDS: i64 = (10 * 60) as i64;
+
+/**
+ * The record at `collection/rkey` in the repository of `did`, an account
+ * this host holds, or null when it holds no such account or record.
+ */
+export type LocalRecord = (did: String, collection: String, rkey: String) => Future<Value | null>;
+
+final class Known {
+  approved: boolean;
+  until: i64;
+
+  new(this.approved, this.until);
+}
+
+/** Finds, and remembers, who attested a release. */
+export final class Approvals {
+  #people: People;
+  #local: LocalRecord;
+  #known = new HashMap<String, Known>();
+
+  new(people: People, local: LocalRecord) : #people = people, #local = local;
+
+  /** Approvals reading accounts this host holds from its storage, and anyone else's from their PDS. */
+  static forHost(host: PackageHost, people: People): Approvals {
+    return new Approvals(people, async (did: String, collection: String, rkey: String): Future<Value | null> => {
+      if ((await host.pds.storage.getAccount(did)) == null) {
+        return null;
+      }
+      let store = host.pds.storage.store(did);
+      let cid = await store.getRecord(collection, rkey);
+      if (cid == null) {
+        return null;
+      }
+      let block = await store.getBlock(cid as Cid);
+      return if (block != null) decodeCbor(block as FixedArray<u8>) else null;
+    });
+  }
+
+  /**
+   * Of `attesters`, in their order, those whose repository holds an
+   * attestation of the release record at `uri` whose CID is `cid`. The
+   * repositories are asked all at once.
+   */
+  async of(uri: String, cid: Cid, attesters: Array<String>): Future<Array<String>> {
+    let rkey = attestationKey(uri, cid);
+    let checks = new GrowableArray<Future<boolean>>();
+    for (let did in attesters) {
+      checks.push(this.#attested(did, uri, cid, rkey));
+    }
+    let approved = new GrowableArray<String>();
+    for (var i = 0; i < attesters.length; i += 1) {
+      if (await checks[i]) {
+        approved.push(attesters[i]);
+      }
+    }
+    return approved;
+  }
+
+  async #attested(did: String, uri: String, cid: Cid, rkey: String): Future<boolean> {
+    let key = `${did} ${rkey}`;
+    let nowSeconds = now().seconds;
+    if (let (true, known) = this.#known.get(key)) {
+      if (known.until > nowSeconds) {
+        return known.approved;
+      }
+    }
+    var approved = false;
+    try {
+      var value = await this.#local(did, ATTESTATION_TYPE, rkey);
+      if (value == null) {
+        let json = await this.#people.record(await this.#people.person(did), ATTESTATION_TYPE, rkey);
+        if (json != null) {
+          value = fromJson(json);
+        }
+      }
+      if (value != null) {
+        let attestation = Attestation.fromValue(value as Value);
+        approved = attestation.uri == uri && attestation.cid.equals(cid);
+      }
+    } catch (e) {
+      approved = false;
+    }
+    this.#known[key] = new Known(approved, nowSeconds + (if (approved) FOUND_SECONDS else MISSING_SECONDS));
+    return approved;
+  }
+}
