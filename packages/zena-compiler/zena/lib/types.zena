@@ -3071,6 +3071,61 @@ export function declaringModuleOf(t: Type): String | null {
 }
 
 /**
+ * True when codegen compiles a for-in over this class to a direct
+ * index loop (lowerForIn in ir/control-flow.zena): FixedArray,
+ * ImmutableArray, Array and GrowableArray lower to array.len/array.get,
+ * and BoundedRange and FromRange to a loop counting from the range's
+ * start. None of them touch the Iterable/Iterator protocol, so a for-in
+ * iterable of one of these types must not register an interface
+ * adaptation, and reachability must not root the protocol for it.
+ * Mirrors lowerForIn's dispatch, including the type-argument
+ * requirement for the arrays — a bare mention with no arguments has no
+ * element type there and falls back to the iterator path — and the
+ * `i32` requirement for the ranges. The classes are told by identity:
+ * a program's own `FixedArray` iterates through the protocol.
+ */
+export function forInLowersToIndexLoop(ct: ClassType): boolean {
+  var canonical = ct;
+  while (canonical.genericSource != null) {
+    canonical = canonical.genericSource as ClassType;
+  }
+  if (isCountingRangeClass(canonical)) {
+    return isI32Range(ct);
+  }
+  let targs = ct.typeArguments;
+  if (!isWellKnown(WellKnown.FixedArrayClass, canonical.name,
+          canonical.sourcePath) &&
+      !isWellKnown(WellKnown.ImmutableArrayClass, canonical.name,
+          canonical.sourcePath) &&
+      !isWellKnown(WellKnown.ArrayInterface, canonical.name,
+          canonical.sourcePath) &&
+      !isWellKnown(WellKnown.GrowableArrayClass, canonical.name,
+          canonical.sourcePath)) {
+    return false;
+  }
+  return targs != null && targs.length > 0;
+}
+
+/** True for the standard library's `BoundedRange` and `FromRange`, the
+ * two ranges a `for`-in counts through, whatever their arguments. */
+function isCountingRangeClass(ct: ClassType): boolean {
+  return isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) ||
+      isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath);
+}
+
+/** True when a range class's argument is `i32`, or defaulted to it. */
+function isI32Range(ct: ClassType): boolean {
+  let targs = ct.typeArguments;
+  return targs == null || (targs.length == 1 && targs[0] is I32Type);
+}
+
+/** True for the standard library's `BoundedRange<i32>` and
+ * `FromRange<i32>`: the ranges a `for`-in compiles to a counting loop. */
+export function isIterableRangeClass(ct: ClassType): boolean {
+  return isCountingRangeClass(ct) && isI32Range(ct);
+}
+
+/**
  * Whether `t` is one of the three ownership handles from `zena:ownership`.
  * A `resource class` may only be named as a type argument of one of these —
  * see docs/design/ownership.md §"Resource-ness and affineness are different

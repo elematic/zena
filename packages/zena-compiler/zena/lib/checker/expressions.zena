@@ -180,7 +180,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     if (name == "_") { return new HoleType(); }
 
     if (name == "__LOCATION__") {
-      let stringType = ctx.resolveTypeName("String");
+      let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
       if (stringType != null) {
         let uTypes = growable<Type>([stringType, new NullType()]);
         return createUnionType(uTypes);
@@ -1447,7 +1447,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     for (let subExpr in expressions) {
       checkExpression(ctx, subExpr, null);
     }
-    let stringType = ctx.resolveTypeName("String");
+    let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
     if (stringType != null) {
       if (stringType is ClassType) {
         ctx.referenceClassMethod(stringType, "fromRawParts");
@@ -1663,7 +1663,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
   }
   case RangeExpression {start, end, loc}: {
     // Check start/end are a numeric type or StringIndex.
-    let stringIndexType = ctx.resolveTypeName("StringIndex");
+    let stringIndexType = ctx.tryResolveWellKnownType(WellKnown.StringIndexAlias);
     let contextualBoundType = extractContextualRangeBoundType(expectedType);
     let numericContextualBound: Type | null = if (contextualBoundType != null &&
         isNumericType(contextualBoundType as Type)) {
@@ -1750,11 +1750,11 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     } else {
       new I32Type()
     };
-    let rangeTypeName = if (start != null && end != null) { "BoundedRange" }
-      else if (start != null) { "FromRange" }
-      else if (end != null) { "ToRange" }
-      else { "FullRange" };
-    let rangeType = ctx.resolveTypeName(rangeTypeName);
+    let rangeClass = if (start != null && end != null) { WellKnown.BoundedRangeClass }
+      else if (start != null) { WellKnown.FromRangeClass }
+      else if (end != null) { WellKnown.ToRangeClass }
+      else { WellKnown.FullRangeClass };
+    let rangeType = ctx.resolveWellKnownType(rangeClass);
     if (rangeType is ClassType) {
       let ct = rangeType as ClassType;
       let tparams = ct.typeParameters;
@@ -1763,10 +1763,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       } else {
         ct
       }
-    } else if (rangeType != null) {
-      rangeType
     } else {
-      new ErrorType()
+      rangeType
     }
   }
   case PipelineExpression {left, right, loc}: {
@@ -1799,7 +1797,7 @@ function mapLiteralType(
   valueType: Type,
   loc: SourceLocation | null
 ): Type {
-  let hashMapType = ctx.resolveTypeName("HashMap");
+  let hashMapType = ctx.tryResolveWellKnownType(WellKnown.HashMapClass);
   if (hashMapType is ClassType) {
     let typeArgs = growable<Type>([keyType, valueType]);
     let typeParams = hashMapType.typeParameters;
@@ -1808,6 +1806,11 @@ function mapLiteralType(
     }
     return instantiateClassType(hashMapType, typeArgs);
   }
+  ctx.error(
+    "A map literal builds a 'HashMap', and 'zena:collections' is not loaded.",
+    DiagnosticCode.SymbolNotFound,
+    loc
+  );
   return new ErrorType();
 }
 

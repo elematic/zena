@@ -17,7 +17,7 @@ import {
   I8Type, InterfaceType, MixinType, NeverType, NullType, SymbolType, Type,
   TypeAliasType, TypeId, TypeInterner, TypeParameterType, U16Type, U32Type,
   U64Type, U8Type, UnionType as UnionT, V128Type, VoidType,
-  makeTypeIdGenerator, releaseMemberOf
+  declaringModuleOf, makeTypeIdGenerator, releaseMemberOf
 } from '../types.zena';
 import {
   ClosureDependency, EdgeDrop, ModelIndex, SemanticModel, SymbolDependencies
@@ -25,7 +25,7 @@ import {
 import { DiagnosticBag, DiagnosticCode } from '../diagnostics.zena';
 import { Symbol, SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { ModuleExports, ScopeResult } from '../scope/scope-builder.zena';
-import { WellKnown, wellKnownLibrary, wellKnownName } from '../well-known.zena';
+import { WellKnown, isWellKnown, wellKnownLibrary, wellKnownName } from '../well-known.zena';
 import { nowMs, performance } from '../time.zena';
 import {
   isRecordRowBound, isTupleRowBound, resolveTypeAnnotation, resolveTypeParameters
@@ -1113,33 +1113,27 @@ export final class CheckerContext {
     }
 
     // On-demand: if the declaration is a type (class, interface, mixin,
-    // sealed variant), materialize it via resolveTypeName so forward
-    // references work.
+    // sealed variant), materialize it from the symbol so forward
+    // references work. The canonical type is keyed by the declaring
+    // symbol, so an import materializes through its target: by its own
+    // id it would mint a second, empty identity for the declaration.
     // For DeclareFunction, register a placeholder so forward refs don't fail.
-    // TODO: It feels like this might be duplicating some functionality...
     let decl = info.declaration;
     if (decl != null) {
-      // Extract type name from declaration node
-      // TODO: Let's make a named Node interface or at least
-      // a getName() utility. We should definitely add an isType() utility.
-      let tn = match (decl) {
-        case ClassDeclaration {name}: { name.name }
-        case InterfaceDeclaration {name}: { name.name }
-        case MixinDeclaration {name}: { name.name }
-        case SealedVariant {name}: { name.name }
+      let isNominal = match (decl) {
+        case ClassDeclaration: true
+        case InterfaceDeclaration: true
+        case MixinDeclaration: true
+        case SealedVariant: true
         case DeclareFunction: {
           this.declareBinding(info, new ErrorType());
-          null
+          false
         }
-        case _: { null }
+        case _: false
       };
-      
-      if (tn != null) {
-        let t = this.resolveTypeName(tn);
-        if (t != null) { return t; }
+      if (isNominal) {
+        return this.#materializeFromSymbol(info, info.name, resolvedSym);
       }
-      
-      
     }
     return null;
   }
@@ -1512,17 +1506,27 @@ export final class CheckerContext {
   }
 
   /**
-   * Materialize a type for its declaration node.
+   * The type a declaration node declares: the canonical object every
+   * reference to it already shares, materialized from the node if no
+   * one has asked yet. Null when the scope pass declared no symbol for
+   * the node. A declaration asking for its own type comes here rather
+   * than resolving its own name, which another declaration could hold.
    */
-  materializeDeclaration(node: Node, fallbackName: String): Type | null {
+  declaredTypeOf(node: Node): Type | null {
     let info = this.model.resolveDeclaration(node);
-    if (info != null) {
-      let t = this.#materializeFromSymbol(info, fallbackName);
-      if (t != null) {
-        return t;
-      }
+    if (info == null) {
+      return null;
     }
-    return this.resolveTypeName(fallbackName);
+    return this.#materializeFromSymbol(info, info.name);
+  }
+
+  /**
+   * What the symbol `sym` materialized to, or materializes to now: a
+   * type declaration's canonical type, a value's binding type. Null for
+   * a symbol with nothing behind it.
+   */
+  materializedType(sym: Symbol): Type | null {
+    return this.#materializeFromSymbol(sym, sym.name);
   }
 
   /**
@@ -1902,12 +1906,26 @@ export final class CheckerContext {
    * Nothing a program declares is ever returned: the map is filled by
    * matching a module's library against the well-known registry, not by
    * name. A caller that falls back to name resolution on null undoes that.
+   *
+   * The map gains a row as the declaring file finishes checking, so
+   * that library's own files ask before the row exists: `WithDefault`
+   * points at `Scoped` from inside `zena:core`. They are answered from
+   * scope, and only with the declaration the row would hold.
    */
   tryResolveWellKnownType(w: WellKnown): Type | null {
     if (let (true, t) = this.#sharedState.wellKnownTypes.get(w as i32)) {
       return t;
     }
-    return null;
+    let name = wellKnownName(w);
+    let t = this.#materializeFromScope(name);
+    if (t == null) {
+      return null;
+    }
+    let declaredIn = declaringModuleOf(t);
+    if (declaredIn == null || !isWellKnown(w, name, declaredIn)) {
+      return null;
+    }
+    return t;
   }
 
   /**
@@ -1920,7 +1938,8 @@ export final class CheckerContext {
    * loads wants `tryResolveWellKnownType` instead.
    */
   resolveWellKnownType(w: WellKnown): Type {
-    if (let (true, t) = this.#sharedState.wellKnownTypes.get(w as i32)) {
+    let t = this.tryResolveWellKnownType(w);
+    if (t != null) {
       return t;
     }
     throw new Error("No standard library '" + wellKnownLibrary(w) +

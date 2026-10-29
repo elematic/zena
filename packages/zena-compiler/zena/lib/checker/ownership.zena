@@ -14,6 +14,7 @@ import {
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
+import { WellKnown } from '../well-known.zena';
 import { CheckerContext } from './context.zena';
 import { mentionsTypeParams, selfTypeOfClass } from './generics.zena';
 import { displayMemberName } from './members.zena';
@@ -32,20 +33,21 @@ import {
  * `let d = new Descriptor(…)` would be bare `Descriptor`, which is not a
  * spellable type, so the value could not be named or passed anywhere.
  *
- * `Own` is resolved by ordinary scope lookup rather than through the prelude —
- * putting `zena:ownership` in the prelude would add it to every program's
- * module graph, which is measurable even for programs with no resources. A file
- * that constructs a resource must therefore import `Own`, and if it has not,
- * this reports that rather than silently leaving the value unwrapped.
+ * `Own` is the standard library's, by identity: a program's own `Own`
+ * alias is not a handle (`isOwnershipWrapper`), so wrapping in it would
+ * leave the value unowned. The file need not import `Own` to construct
+ * a resource, any more than it imports `String` to write a literal. A
+ * compilation without `zena:core` has no handle to wrap in, which is
+ * reported rather than silently leaving the value unwrapped.
  */
 export function wrapResourceInOwn(ctx: CheckerContext, t: Type, loc: SourceLocation | null): Type {
   if (!(t is ClassType)) { return t; }
   if (!t.isResource) { return t; }
-  let own = ctx.resolveTypeName("Own");
+  let own = ctx.tryResolveWellKnownType(WellKnown.OwnAlias);
   if (own == null || !(own is TypeAliasType)) {
     ctx.error(
       "Constructing the resource class '" + t.name + "' produces an 'Own<" +
-      t.name + ">', but 'Own' is not in scope. Add: import { Own } from 'zena:core';",
+      t.name + ">', but 'zena:core' is not loaded.",
       DiagnosticCode.SymbolNotFound,
       loc
     );
@@ -62,19 +64,45 @@ export function wrapResourceInOwn(ctx: CheckerContext, t: Type, loc: SourceLocat
  * handle; `Own<R>` would be wrong, since the method did not receive
  * ownership and must not release or move its receiver.
  *
- * Returns the bare type when `Borrow` does not resolve. In practice it
- * always does, and not because files import it: a stdlib module's exported
- * type names resolve without an import today (elematic/zena#91), which is also
- * why `wrapResourceInOwn`'s "add: import { Own }" diagnostic looks
- * unreachable. The fallback is here so that tightening resolution
- * degrades this to a bare `this` rather than a crash.
+ * Returns the bare type when `zena:core` is not loaded, so that such a
+ * compilation degrades to a bare `this` rather than a crash.
  */
 export function wrapResourceInBorrow(ctx: CheckerContext, ct: ClassType): Type {
-  let borrow = ctx.resolveTypeName("Borrow");
+  let borrow = ctx.tryResolveWellKnownType(WellKnown.BorrowAlias);
   if (borrow == null || !(borrow is TypeAliasType)) { return ct as Type; }
   if (borrow.typeParameters == null) { return ct as Type; }
   let args = growable<Type>([ct as Type]);
   return instantiateTypeAliasType(borrow, args);
+}
+
+/**
+ * Whether a field declared with type `declared` holds its class's
+ * `scoped T`: the parameter bare, as `WithDefault<T>`, or under null.
+ * Reading such a field is a take (ownership.md §"Takes"), not a
+ * borrow: the move leaves the slot empty, which is what makes a
+ * `Slot<Own<R>>` release its resource once. The question is asked of
+ * the declared type, before substitution: the owner-ness of a
+ * `WithDefault<Own<R>>` instance comes from its argument, and a
+ * written `Own<R>` field reads as a borrow.
+ */
+export function fieldReadsAsTake(declared: Type): boolean {
+  return match (declared) {
+    case TypeParameterType {isScoped}: isScoped
+    case TypeAliasType {typeArguments}: {
+      if (typeArguments == null) { return false; }
+      for (let arg in typeArguments) {
+        if (fieldReadsAsTake(arg)) { return true; }
+      }
+      false
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        if (fieldReadsAsTake(member)) { return true; }
+      }
+      false
+    }
+    case _: false
+  };
 }
 
 /**
@@ -90,7 +118,7 @@ export function borrowWrapFieldRead(ctx: CheckerContext, t: Type): Type {
   if (ownershipHandleName(core) != "Own") { return t; }
   let inner = ownershipHandleInner(core);
   if (inner == null) { return t; }
-  let borrow = ctx.resolveTypeName("Borrow");
+  let borrow = ctx.tryResolveWellKnownType(WellKnown.BorrowAlias);
   if (borrow == null || !(borrow is TypeAliasType)) { return t; }
   if (borrow.typeParameters == null) { return t; }
   let args = growable<Type>([inner]);

@@ -39,7 +39,7 @@ import {
   isComponentEntryPath, componentSyncExportSuffix, componentEntryRunName,
   hasAsyncMain
 } from '../../component-entry.zena';
-import { WellKnown, isWellKnown } from '../../well-known.zena';
+import { WellKnown, isWellKnown, wellKnownName } from '../../well-known.zena';
 
 final class ParsedMethodRef {
   classSymId: SymbolId;
@@ -308,8 +308,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   reachedReachableClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
 
   var mixinToClasses = new Map<MixinKey, GrowableArray<ClassType>>();
-  #preludeClassCache = new Map<String, ClassType>();
-  #preludeInterfaceCache = new Map<String, InterfaceType>();
+  #preludeClassCache = new Map<i32, ClassType>();
+  #preludeInterfaceCache = new Map<i32, InterfaceType>();
 
   reachableQueue = new Array<Referrer>();
   checkableQueue = new Array<Referrer>();
@@ -5209,30 +5209,34 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     return null;
   }
 
-  findPreludeClass(name: String): ClassType | null {
-    if (this.#preludeClassCache.has(name)) {
-      return this.#preludeClassCache[name];
+  findPreludeClass(w: WellKnown): ClassType | null {
+    let key = w as i32;
+    if (this.#preludeClassCache.has(key)) {
+      return this.#preludeClassCache[key];
     }
+    let name = wellKnownName(w);
     for (let unit in this.program.units) {
       let {model} = unit;
       let t = model.getExportType(name);
-      if (t is ClassType) {
-        this.#preludeClassCache[name] = t;
+      if (t is ClassType && isWellKnown(w, t.name, t.sourcePath)) {
+        this.#preludeClassCache[key] = t;
         return t;
       }
     }
     return null;
   }
 
-  findPreludeInterface(name: String): InterfaceType | null {
-    if (this.#preludeInterfaceCache.has(name)) {
-      return this.#preludeInterfaceCache[name];
+  findPreludeInterface(w: WellKnown): InterfaceType | null {
+    let key = w as i32;
+    if (this.#preludeInterfaceCache.has(key)) {
+      return this.#preludeInterfaceCache[key];
     }
+    let name = wellKnownName(w);
     for (let unit in this.program.units) {
       let {model} = unit;
       let t = model.getExportType(name);
-      if (t is InterfaceType) {
-        this.#preludeInterfaceCache[name] = t;
+      if (t is InterfaceType && isWellKnown(w, t.name, t.sourcePath)) {
+        this.#preludeInterfaceCache[key] = t;
         return t;
       }
     }

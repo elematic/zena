@@ -12,7 +12,8 @@ import {
 import { SemanticModel, memberKeyOf, accessKeyOf } from '../../semantic-model.zena';
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
-  isScopedType, scopedInner, internFunctionType } from '../../types.zena';
+  isScopedType, scopedInner, internFunctionType, forInLowersToIndexLoop,
+  isIterableRangeClass } from '../../types.zena';
 import {
   Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
 } from '../../ast.zena';
@@ -447,12 +448,12 @@ export final class TypeLowerer implements TypeLowererInterface {
         // placeholder structs are not name evidence.
         let savedSuppress = this.pass.suppressNameEvidence;
         this.pass.suppressNameEvidence = true;
-        let faClass = this.pass.findPreludeClass("FixedArray");
+        let faClass = this.pass.findPreludeClass(WellKnown.FixedArrayClass);
         if (faClass != null) {
           let typeArgs = growable<Type>([t.elementType]);
           this.discoverType(instantiateClassType(faClass, typeArgs), model);
         }
-        let iaClass = this.pass.findPreludeClass("ImmutableArray");
+        let iaClass = this.pass.findPreludeClass(WellKnown.ImmutableArrayClass);
         if (iaClass != null) {
           let typeArgs = growable<Type>([t.elementType]);
           this.discoverType(instantiateClassType(iaClass, typeArgs), model);
@@ -1276,10 +1277,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         // A resource `new` TYPES as its wrapper — `Own<C>` is an
         // OPAQUE type, so the arm above skips entirely — but it
         // CONSTRUCTS the resource class the CALLEE names. The callee
-        // is the honest "constructed class" for every `new`.
+        // is the honest "constructed class" for every `new`. An
+        // imported class is bound in its own module's model, which
+        // `getBindingType` reaches through the binding index; a lookup
+        // by id in this model alone missed it, and the constructor of
+        // an imported resource class was never rooted.
         let calleeSym = model.resolve(n.callee);
         if (calleeSym != null) {
-          let calleeT = model.getBindingTypeById(calleeSym.resolveTarget().id);
+          let calleeT = model.getBindingType(calleeSym.resolveTarget());
           if (calleeT is ClassType) {
             this.queueExplicitCtor(resolveType(calleeT) as ClassType, ctorMethodKey);
           }
@@ -2032,17 +2037,17 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // Demanding a member of Iterable demands it of every interface
       // that extends Iterable too, so this covers an interface-typed
       // iterable as well as the iterator a class's `:iterator` returns.
-      this.#demandPreludeMember("Iterable", ":iterator");
-      this.#demandPreludeMember("Iterator", "next");
+      this.#demandPreludeMember(WellKnown.IterableInterface, ":iterator");
+      this.#demandPreludeMember(WellKnown.IteratorInterface, "next");
       if (n.isAwait) {
-        this.#demandPreludeMember("AsyncIterable", ":asyncIterator");
-        this.#demandPreludeMember("AsyncIterator", "next");
+        this.#demandPreludeMember(WellKnown.AsyncIterableInterface, ":asyncIterator");
+        this.#demandPreludeMember(WellKnown.AsyncIteratorInterface, "next");
       }
     }
   }
 
-  #demandPreludeMember(interfaceName: String, memberName: String): void {
-    let iface = this.pass.findPreludeInterface(interfaceName);
+  #demandPreludeMember(w: WellKnown, memberName: String): void {
+    let iface = this.pass.findPreludeInterface(w);
     if (iface != null) {
       this.pass.demandInterfaceMember(iface, memberName);
     }
@@ -2054,9 +2059,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * interface and its implementation of the symbol member. The slots
    * the loop dispatches through are noteInterfaceDispatch's.
    */
-  rootIterationProtocol(iterableName: String, symbolKey: String,
+  rootIterationProtocol(iterable: WellKnown, symbolKey: String,
       protocolClasses: GrowableArray<ClassType>, model: SemanticModel): void {
-    let iterableIface = this.pass.findPreludeInterface(iterableName);
+    let iterableIface = this.pass.findPreludeInterface(iterable);
     if (iterableIface != null) {
       let iterableKey = getInterfaceKey(iterableIface);
       let cha = this.pass.cha;
@@ -2075,7 +2080,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
         }
 
-        let specializedIterable = findImplementedInterfaceTransitive(this.pass.wasm, resolvedClass, iterableName);
+        let specializedIterable = findImplementedInterfaceTransitive(this.pass.wasm, resolvedClass, iterableIface.name);
         if (specializedIterable != null) {
           typeLowerer.discoverType(specializedIterable, model);
         }
@@ -2717,10 +2722,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         // A resource `new` TYPES as its wrapper — `Own<C>` is an
         // OPAQUE type, so the arm above skips entirely — but it
         // CONSTRUCTS the resource class the CALLEE names. The callee
-        // is the honest "constructed class" for every `new`.
+        // is the honest "constructed class" for every `new`. An
+        // imported class is bound in its own module's model, which
+        // `getBindingType` reaches through the binding index; a lookup
+        // by id in this model alone missed it, and the constructor of
+        // an imported resource class was never rooted.
         let calleeSym = model.resolve(n.callee);
         if (calleeSym != null) {
-          let calleeT = model.getBindingTypeById(calleeSym.resolveTarget().id);
+          let calleeT = model.getBindingType(calleeSym.resolveTarget());
           if (calleeT is ClassType) {
             this.queueExplicitCtor(resolveType(calleeT) as ClassType, ctorMethodKey);
           }
@@ -3010,10 +3019,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               rootAsync = !rootSync;
             }
             if (rootSync) {
-              this.rootIterationProtocol("Iterable", ":iterator", syncClasses, model);
+              this.rootIterationProtocol(WellKnown.IterableInterface, ":iterator", syncClasses, model);
             }
             if (rootAsync) {
-              this.rootIterationProtocol("AsyncIterable", ":asyncIterator", asyncClasses, model);
+              this.rootIterationProtocol(WellKnown.AsyncIterableInterface, ":asyncIterator", asyncClasses, model);
             }
           }
         }
@@ -4118,32 +4127,6 @@ function interfaceReceiver(object: Expression, model: SemanticModel,
   }
   let resolved = getNonNullableType(resolveType(t));
   return if (resolved is InterfaceType) resolved else null;
-}
-
-function forInLowersToIndexLoop(ct: ClassType): boolean {
-  var canonical = ct;
-  while (canonical.genericSource != null) {
-    canonical = canonical.genericSource as ClassType;
-  }
-  if (isIterableRangeClass(canonical)) {
-    return true;
-  }
-  if (canonical.name != "FixedArray" && canonical.name != "ImmutableArray" &&
-      canonical.name != "Array" && canonical.name != "GrowableArray") {
-    return false;
-  }
-  let targs = ct.typeArguments;
-  return targs != null && targs.length > 0;
-}
-
-/** True for the stdlib's BoundedRange<i32> and FromRange<i32> classes. */
-function isIterableRangeClass(ct: ClassType): boolean {
-  if (!isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) &&
-      !isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath)) {
-    return false;
-  }
-  let targs = ct.typeArguments;
-  return targs == null || (targs.length == 1 && targs[0] is I32Type);
 }
 
 /**
