@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, revised 2026-10-28 (fifth revision). Part of elematic/zena#284: switching
+Draft, revised 2026-10-29 (sixth revision). Part of elematic/zena#284: switching
 `wasi:http` and `zena-cli:host/http-server` to resource classes needs it,
 and so does the open "lifted `future<T>` ownership" item there.
 
@@ -270,12 +270,23 @@ is lost.
 
 Dropping a restricted future is decided at the use site, never in the
 container's body. Where the drop is legal, at an owner instantiation,
-the future's drop plan (a `DropPlan`, like a tuple's) registers a
-**releasing waiter** in the one waiter slot. When the future settles, or
-at once if it already has, the waiter takes the value and releases it.
-A future that settles with an error, or is cancelled, leaves it nothing
-to do. At a must-consume instantiation no drop plan exists, because the
-drop it would serve is already an error.
+the implicit drop calls the future's `[release]` where it would call a
+resource's `:dispose`. `[release]` claims the value, so a later await
+throws. A settled value is released at once. A pending one is marked
+abandoned, and the settle releases it as it lands instead of waking
+anyone: `#notify`, which every settle runs, adoption included, checks
+the mark. A flag does what the one waiting consumer would, without an
+object per drop. A future that settles with an error, or is cancelled,
+leaves nothing to release. At a must-consume instantiation there is no
+drop, because the drop it would serve is already an error.
+
+The body cannot name a `T`'s release, so the compiler supplies it: the
+`release_owned` intrinsic, `releaseOwned<T>(value)`, lowers to the
+implicit drop of a `T` in each specialization. It reads ownership off
+the representation, where `Own<R>`, `Borrow<R>` and `Unmanaged<R>` are
+one body (§"Specialization"). That is right because only an owner's use
+site calls `[release]`, and the intrinsic is private to `future.zena`
+for the same reason.
 
 The producing frame keeps running: a `Future` cannot cancel the work
 behind it, since that work may have started other work or had other
@@ -449,12 +460,13 @@ and with them:
    with a `WithDefault<T>` slot, takes it in `valueOrThrow`, `result()`
    and adoption, refuses a second consumer, and returns `tryComplete`'s
    loser. #613's check that names `Future` is gone.
-3. **Release glue.** Drop plans for owner futures and streams that
-   register the releasing waiter, everywhere implicit drop already
-   runs: locals, parameters, fields, tuple elements, discarded results.
-   `never` releases its resource. `DeferredFuture`'s readable-end drop
-   moves into the glue, and so does the release before a store into a
-   full `T` field.
+3. **Release glue.** #649 releases an unconsumed future of an owner
+   wherever implicit drop already runs: locals, parameters, tuple
+   elements and discarded results (fields of that type are still
+   rejected). `never` releases its resource. Streams follow with stage
+   4. Still to do: `DeferredFuture`'s readable-end drop moving into the
+   glue, once its `T` is `scoped`, and the release before a store into
+   a full `T` field.
 4. **`Completer.create`, streams (`stop()` returning what it has not
    delivered), and `FutureClaim`** at restricted types, with
    loop-variable release for `for await`.
