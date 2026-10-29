@@ -21,7 +21,7 @@ import {
 import { SemanticModel } from '../semantic-model.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { Symbol } from '../scope/symbol.zena';
-import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
 import { boxedFormOf, resolveTypeAnnotation } from './annotations.zena';
 import { checkClassBodies, registerClassDeclaration } from './classes.zena';
 import { CheckerContext, lookupBindingTypeInDeps } from './context.zena';
@@ -31,9 +31,7 @@ import {
   checkMixinDeclaration, checkSymbolDeclaration, checkTypeAliasDeclaration
 } from './declarations.zena';
 import { checkExpression, validateConditionType } from './expressions.zena';
-import {
-  findImplementedInterfaceTransitiveInChecker, tryInstantiateGenericFunction
-} from './generics.zena';
+import { findImplementedInterfaceTransitiveInChecker } from './generics.zena';
 import { checkCyclicImportRules, prescanPendingFunctions } from './module.zena';
 import {
   applyFalseNarrowingFromCondition, applyTrueNarrowingFromCondition,
@@ -244,11 +242,7 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
               );
             }
           } else {
-            let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedReturn);
-            if (instantiated !== argType) {
-              ctx.setNodeType(argument, instantiated);
-            }
-            checkAndRegisterInterfaceAdaptation(ctx, argument, instantiated, expectedReturn);
+            adaptToExpected(ctx, argument, argType, expectedReturn);
           }
         } else {
           // No expected return type at all (shouldn't happen in a function, but collect anyway)
@@ -342,11 +336,7 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
               loc
             );
           } else {
-            let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedYield);
-            if (instantiated !== argType) {
-              ctx.setNodeType(argument, instantiated);
-            }
-            checkAndRegisterInterfaceAdaptation(ctx, argument, instantiated, expectedYield);
+            adaptToExpected(ctx, argument, argType, expectedYield);
           }
         }
         // The yielded value evaluated before the suspension; everything
@@ -930,17 +920,7 @@ function checkVariableDeclaration(
         loc
       );
     } else {
-      let instantiated = tryInstantiateGenericFunction(ctx, initType, expectedType);
-      if (instantiated !== initType) {
-        ctx.setNodeType(init, instantiated);
-      }
-      if (instantiated is RecordT && expectedType is RecordT) {
-        // TODO: Fix narrowing here
-        if (instantiated.properties.size != expectedType.properties.size) {
-          ctx.model.setRecordAdaptation(init, instantiated, expectedType);
-        }
-      }
-      checkAndRegisterInterfaceAdaptation(ctx, init, instantiated, expectedType);
+      adaptToExpected(ctx, init, initType, expectedType);
     }
     declType = expectedType;
   }
@@ -1143,11 +1123,7 @@ function checkUsingStatement(
         loc
       );
     } else {
-      let instantiated = tryInstantiateGenericFunction(ctx, initType, expectedType);
-      if (instantiated !== initType) {
-        ctx.setNodeType(init, instantiated);
-      }
-      checkAndRegisterInterfaceAdaptation(ctx, init, instantiated, expectedType);
+      adaptToExpected(ctx, init, initType, expectedType);
     }
     declType = expectedType;
   }

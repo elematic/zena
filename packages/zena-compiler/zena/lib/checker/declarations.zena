@@ -19,14 +19,14 @@ import {
 import { DiagnosticCode } from '../diagnostics.zena';
 import { noSymbolId } from '../scope/symbol.zena';
 import { WellKnown, protocolSymbolKey } from '../well-known.zena';
-import { checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
-import { resolveBound, resolveTypeAnnotation } from './annotations.zena';
+import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
+import { resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
 import {
-  checkMethodBody, checkMethodSignature, validateDecoratorBody
+  checkAccessorBodies, checkMethodBody, checkMethodSignature, validateDecoratorBody
 } from './classes.zena';
 import { CheckerContext, newEnumType } from './context.zena';
 import { checkExpression } from './expressions.zena';
-import { selfTypeOfClass, tryInstantiateGenericFunction } from './generics.zena';
+import { selfTypeOfClass } from './generics.zena';
 import {
   displayMemberName, getMemberName, recordSymbolKeyedMemberIdentities,
   registerStaticSymbols
@@ -90,31 +90,7 @@ export function registerTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasD
   }
   let alias = aliasType as TypeAliasType;
   ctx.enterScope();
-  let declParams = ta.typeParameters;
-  var typeParams: Array<TypeParameterType> | null = null;
-  if (declParams != null) {
-    let tps = new Array<TypeParameterType>();
-    typeParams = tps;
-    for (let param in declParams) {
-      let tp = ctx.getOrCreateTypeParameter(param, null, null);
-      tps.push(tp);
-      ctx.declareTypeName(tp.name, tp);
-      ctx.registerTypeParameter(param, tp);
-    }
-    for (var i = 0; i < declParams.length; i += 1) {
-      let param = declParams[i];
-      let c = param.constraint;
-      if (c != null) {
-        ctx.resourceMentionOk = true;
-        tps[i].constraint = resolveBound(ctx, c);
-        ctx.resourceMentionOk = false;
-      }
-      let dt = param.defaultType;
-      if (dt != null) {
-        tps[i].defaultType = resolveTypeAnnotation(ctx, dt, false);
-      }
-    }
-  }
+  let typeParams = resolveTypeParameters(ctx, ta.typeParameters);
   alias.typeParameters = typeParams;
   // The alias may be the shell an importer across an import cycle made,
   // which knows only the name and parameters: registration supplies the
@@ -337,24 +313,8 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
 
   // Type parameters.
   ctx.enterScope();
-  let {typeParameters} = md;
-  if (typeParameters != null) {
-    let tps = typeParameters;
-    let resolvedTps = new Array<TypeParameterType>();
-    for (let tp in tps) {
-      var constraint: Type | null = null;
-      if (tp.constraint != null) {
-        // A bound names a class, not a value, so a resource class is
-        // spellable here — same reason as an extends clause.
-        ctx.resourceMentionOk = true;
-        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
-        ctx.resourceMentionOk = false;
-      }
-      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
-      ctx.declareTypeName(tp.name, tpType);
-      resolvedTps.push(tpType);
-    }
-    mixinType.typeParameters = resolvedTps;
+  if (md.typeParameters != null) {
+    mixinType.typeParameters = resolveTypeParameters(ctx, md.typeParameters);
   }
 
   // A decorator's subject: the placeholder field its body is written
@@ -549,11 +509,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
               fd.loc
             );
           } else {
-            let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
-            if (instantiatedVal !== initType) {
-              ctx.setNodeType(value, instantiatedVal);
-            }
-            checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, fieldType);
+            adaptToExpected(ctx, value, initType, fieldType);
           }
           ctx.exitNodeReferrer(fd.id as i32);
         }
@@ -688,49 +644,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
          }
       }
       case AccessorDeclaration as acc: {
-        // Mirrors class accessor body checking: getter with the
-        // accessor type as return context, setter with its parameter
-        // bound to the accessor type.
-        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-        let {getter} = acc;
-        if (getter != null) {
-          ctx.enterNodeReferrer(acc.id as i32);
-          let getterBlock = getter;
-          ctx.enterScope();
-          let prevReturnType = ctx.returnType;
-          ctx.setReturnType(accType);
-          let prevFlowState = ctx.enterBodyFlow(false);
-          var gi = 0;
-          while (gi < getterBlock.body.length) {
-            checkStatement(ctx, getterBlock.body[gi]);
-            gi += 1;
-          }
-          ctx.exitBodyFlow(prevFlowState);
-          ctx.setReturnType(prevReturnType);
-          ctx.exitScope();
-          ctx.exitNodeReferrer(acc.id as i32);
-        }
-        let {setter} = acc;
-        if (setter != null) {
-          match (setter) {
-            case SetterInfo as si: {
-              ctx.enterNodeReferrer(si.id as i32);
-              ctx.enterScope();
-              let paramInfo = ctx.model.resolveDeclaration(si.param);
-              if (paramInfo != null) {
-                ctx.declareBinding(paramInfo, accType);
-              }
-              let prevFlowState = ctx.enterBodyFlow(false);
-              for (let stmt in si.body.body) {
-                checkStatement(ctx, stmt);
-              }
-              ctx.exitBodyFlow(prevFlowState);
-              ctx.exitScope();
-              ctx.exitNodeReferrer(si.id as i32);
-            }
-            case _: {}
-          }
-        }
+        checkAccessorBodies(ctx, acc, resolveTypeAnnotation(ctx, acc.typeAnnotation));
       }
       case _: {}
     }
@@ -789,26 +703,7 @@ export function checkDeclareFunction(ctx: CheckerContext, df: DeclareFunction): 
   // DeclareFunction always has full annotations — no body to check.
   ctx.enterScope();
 
-  // Type parameters.
-  var resolvedTypeParams: Array<TypeParameterType> | null = null;
-  let {typeParameters} = df;
-  if (typeParameters != null) {
-    let tps = typeParameters;
-    resolvedTypeParams = new Array<TypeParameterType>();
-    for (let tp in tps) {
-      var constraint: Type | null = null;
-      if (tp.constraint != null) {
-        // A bound names a class, not a value, so a resource class is
-        // spellable here — same reason as an extends clause.
-        ctx.resourceMentionOk = true;
-        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
-        ctx.resourceMentionOk = false;
-      }
-      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
-      ctx.declareTypeName(tp.name, tpType);
-      resolvedTypeParams.push(tpType);
-    }
-  }
+  let resolvedTypeParams = resolveTypeParameters(ctx, df.typeParameters);
 
   // Parameter types.
   let paramTypes = new Array<Type>();
@@ -902,23 +797,8 @@ export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDecl
 
   // Type parameters.
   ctx.enterScope();
-  let {typeParameters} = id;
-  if (typeParameters != null) {
-    let tps = typeParameters;
-    ifaceType.typeParameters = new Array<TypeParameterType>();
-    for (let tp in tps) {
-      var constraint: Type | null = null;
-      if (tp.constraint != null) {
-        // A bound names a class, not a value, so a resource class is
-        // spellable here — same reason as an extends clause.
-        ctx.resourceMentionOk = true;
-        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
-        ctx.resourceMentionOk = false;
-      }
-      let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
-      ctx.declareTypeName(tp.name, tpType);
-      (ifaceType.typeParameters as GrowableArray<TypeParameterType>).push(tpType);
-    }
+  if (id.typeParameters != null) {
+    ifaceType.typeParameters = resolveTypeParameters(ctx, id.typeParameters);
   }
 
   // Resolve extends list.
@@ -962,25 +842,7 @@ export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDecl
       }
       case MethodSignature as ms: {
         ctx.enterScope();
-        var typeParams: Array<TypeParameterType> | null = null;
-        if (ms.typeParameters != null) {
-          let tpArr = new Array<TypeParameterType>();
-          let tps = ms.typeParameters as GrowableArray<TypeParameter>;
-          for (let tp in tps) {
-            var constraint: Type | null = null;
-            if (tp.constraint != null) {
-              // A bound names a class, not a value, so a resource class is
-              // spellable here — same reason as an extends clause.
-              ctx.resourceMentionOk = true;
-              constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
-              ctx.resourceMentionOk = false;
-            }
-            let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
-            ctx.declareTypeName(tp.name, tpType);
-            tpArr.push(tpType);
-          }
-          typeParams = tpArr;
-        }
+        let typeParams = resolveTypeParameters(ctx, ms.typeParameters);
         let paramTypes = new Array<Type>();
         for (let param in ms.params) {
           var paramType: Type = new ErrorType();

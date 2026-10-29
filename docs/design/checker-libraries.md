@@ -29,57 +29,58 @@ section is roughly by how much it would simplify.
 
 ### Duplication
 
-**The same block in many places.**
+**The same block in many places.** The first eight below are now
+one helper each; the rest are still open.
 
 - _Check assignable, then instantiate, then adapt._ The sequence
-  "if not `isAssignableTo` report a mismatch, else
-  `tryInstantiateGenericFunction`, `setNodeType` when that changed
-  something, `checkAndRegisterInterfaceAdaptation`" appears 21 times, and the
-  adaptation call alone 36 times:
+  "`tryInstantiateGenericFunction`, `setNodeType` when that changed
+  something, `checkAndRegisterInterfaceAdaptation`" appeared 21 times
+  after an assignability check whose message differs per site:
   variable and `using` declarations, `return`, `yield`, assignment,
   `??=`, pattern defaults, field initializers (class, mixin and
   decorated), case-class and variant defaults, parameter defaults
   (method and function), constructor and call arguments, super
-  arguments, interface constructor bodies. One helper that takes the
-  node, the source and target types and a message prefix replaces all
-  of them.
+  arguments, interface constructor bodies. `adaptToExpected`
+  (adaptation.zena) is the sequence; the message stays at the site.
 - _Resolving a declaration's type parameters._ The loop "set
   `resourceMentionOk`, `resolveBound`, resolve the default,
   `getOrCreateTypeParameter`, `declareTypeName`, sometimes
-  `registerTypeParameter`" is written out in
-  `resolveFunctionFromAnnotations`, `#materializeType` (alias arm),
-  `registerTypeAliasDeclaration`, `registerClassDeclaration`,
-  `checkMethodSignature`, `checkInterfaceDeclaration` (twice),
-  `checkMixinDeclaration`, `checkDeclareFunction` and
-  `checkFunctionExpression`. Whether the loop calls
-  `registerTypeParameter` differs between copies for no stated reason;
-  one helper would settle that.
-- _Default-argument splicing._ The `__LOCATION__` splice and the
-  argument-count report are copied in `checkSuperInitArgs`,
-  `checkConstructorArguments` and `checkCallExpressionInner`.
-- _Rooting `:dispose`._ "Add the class symbol to `referencedSymbols`
+  `registerTypeParameter`" was written out eleven times, and whether
+  it resolved defaults or called `registerTypeParameter` differed
+  between copies. `resolveTypeParameters` (annotations.zena) declares
+  every parameter before resolving any bound, so a bound may name a
+  later parameter, and resolves defaults everywhere.
+  `registerTypeParameter` is gone: `getOrCreateTypeParameter` already
+  did what it did.
+- _Default-argument splicing._ The `__LOCATION__` splice was copied in
+  `checkSuperInitArgs`, `checkConstructorArguments` and
+  `checkCallExpressionInner`; `spliceDefaultArguments` (calls.zena).
+- _Rooting a release._ "Add the class symbol to `referencedSymbols`
   and `<symbol>.:dispose` to `referencedClassMethods`, set
-  `needsExceptionInfra`" appears in `exitOwnScope`, `#addEdgeDrop`,
+  `needsExceptionInfra`" appeared in `exitOwnScope`, `#addEdgeDrop`,
   `releaseDiscardedOwner`, `requireDisposable`, the owner-field store
-  in the assignment arm, and `checkClassBodies`.
+  in the assignment arm and `checkClassBodies`;
+  `CheckerContext.rootReleases`, over
+  `CheckerContext.referenceClassMethod`, which the other
+  "reference a method by `<symbol>.<name>`" sites use too.
 - _Overload candidates._ "The base method, then each of its
-  `overloads`" is built in `resolveIndexType` (three arms),
-  `equalityOverrideTarget`, the `==` operator, the `[]=` selection and
-  `checkCallExpressionInner`.
+  `overloads`" was built eight times; `overloadCandidates`
+  (overloads.zena).
 - _The nullable receiver strip._ "Split a union into its null and
-  non-null members" is written in `checkMemberExpression`,
-  `checkIndexExpression`, `checkCallExpression`, and again as
-  `unwrapNullableForMemberLookup`, `subtractNullFromType` and the
-  `??=` nullability test.
+  non-null members" was written in `checkMemberExpression`,
+  `checkIndexExpression` and `checkCallExpression`; `stripNull`
+  (unions.zena). `unwrapNullableForMemberLookup` and
+  `subtractNullFromType` remain as the two no-flag forms.
 - _Static versus instance access._ The pair of "Cannot access instance
   member on class" and "Cannot access static member on an instance"
-  errors appears six times across `resolveMemberType` and the
-  assignment arm; the setter-lookup block in the assignment arm is
-  pasted twice in full.
-- _Accessor bodies._ Getter and setter body checking is the same code
-  in `checkClassMemberBody` and `checkMixinDeclaration`.
+  errors appeared six times across `resolveMemberType` and the
+  assignment arm; `staticAccessMismatch` (members.zena).
+- _Accessor bodies._ Getter and setter body checking was the same code
+  in `checkClassMemberBody` and `checkMixinDeclaration`;
+  `checkAccessorBodies` (classes.zena).
 - _Index overload selection._ The `ClassType` and `InterfaceType` arms
-  of `resolveIndexType` differ only in the receiver's type.
+  of `resolveIndexType` differed only in the receiver's type;
+  `selectIndexRead` (members.zena).
 - _Walks over the flow graph._ `findLiveMove`, `findLivePathMove` and
   `#findFlowSuspend` are the same backward search with a different
   stopping condition; `#mustMoveWalk` and `#definitelyConsumed` are the
@@ -106,7 +107,8 @@ section is roughly by how much it would simplify.
   `getNarrowedTypeFromPattern`'s and `subtractPatternFromType`'s
   `Identifier`/`IdentifierPattern` arms; the four arms of
   `substituteTypeParams` that substitute a type-argument list and
-  re-instantiate when anything changed.
+  re-instantiate when anything changed; the setter-lookup block in the
+  assignment arm, pasted twice in full.
 
 **Dead and stale code.** `#resolveCheckerTypeName` has no callers.
 `createUnionType` carries an empty loop under a "Wait, we don't have a
@@ -324,10 +326,10 @@ Each step is one PR, lands green on `npm test`, and keeps
    declarations, the added return annotations.
 2. **Quick fixes with tests.** #448, #277, #128, #77, #121 and the
    `_This` scan, each with a portable test seen failing first.
-3. **The shared blocks.** The assignability-and-adaptation helper, the
-   type-parameter helper, default splicing, `:dispose` rooting,
-   overload candidates, the nullable strip, the static/instance check,
-   accessor bodies, index selection.
+3. **The shared blocks.** The nine helpers listed under duplication:
+   assignability-and-adaptation, type parameters, default splicing,
+   release rooting, overload candidates, the nullable strip, the
+   static/instance check, accessor bodies, index selection.
 4. **Name to identity.** The #288 sites above, each with a test where
    a user type borrows the name.
 5. **Condition narrowing.** One subject type (binding or path), one
