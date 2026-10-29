@@ -23,6 +23,12 @@ const loadAuth = () => import('./auth.js');
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/**
+ * What someone typed to sign in, as the OAuth client takes it: a handle or
+ * a DID, without the `@` handles are shown with, or spaces.
+ */
+const accountOf = (typed: string) => typed.trim().replace(/^@/, '');
+
 /** The header's sign-in button opens the dialog, which sends the browser to the person's PDS. */
 const wireSignIn = () => {
   const dialog = document.querySelector<HTMLDialogElement>('dialog#sign-in');
@@ -40,10 +46,15 @@ const wireSignIn = () => {
     ?.addEventListener('click', () => dialog.close());
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const identifier = String(
-      new FormData(form).get('identifier') ?? '',
-    ).trim();
+    const identifier = accountOf(
+      String(new FormData(form).get('identifier') ?? ''),
+    );
     if (identifier === '') {
+      return;
+    }
+    if (!identifier.startsWith('did:') && !identifier.includes('.')) {
+      error.textContent = `${identifier} is not a whole handle: a handle is a domain name, such as ${identifier}.bsky.social or ${identifier}.com.`;
+      error.hidden = false;
       return;
     }
     error.hidden = true;
