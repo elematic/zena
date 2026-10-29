@@ -5,7 +5,7 @@ import {
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType,
+  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType, releaseMemberOf,
 } from '../../types.zena';
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
@@ -696,8 +696,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         if (func.intrinsic != null && (func.intrinsic as String) == "release_owned" &&
             releaseArgs != null) {
           for (let ta in releaseArgs as Array<Type>) {
-            this.notePendingStaticTargets(ta, ":dispose");
-            this.notePendingStaticTargets(ta, ":release");
+            this.noteReleaseTargets(ta, func.model);
           }
         }
         // A synthesized :dispose releases each resource field the same way.
@@ -2272,6 +2271,33 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * looking through unions (`C | null`) and type aliases (the ownership
    * handles `Own<C>` and friends are aliases).
    */
+  /**
+   * Reaches what releasing a `t` calls: the `:dispose` of each resource
+   * class it names, and the `[release]` of each future, through the
+   * same record a checker-rooted implicit drop leaves
+   * (`traverseDependencies`). For `releaseOwned<T>` in a specialized
+   * body, whose generic record could not name `T`'s classes. A slot
+   * target would not do: a final resource class's `:dispose` has no
+   * slot, and it is called directly.
+   */
+  noteReleaseTargets(t: Type, model: SemanticModel): void {
+    let classes = new Array<ClassType>();
+    collectNamedClasses(t, classes, 0);
+    let deps = new SymbolDependencies();
+    for (let ct in classes) {
+      let member = releaseMemberOf(ct);
+      if (member == ":dispose" && !ct.isResource) {
+        continue;
+      }
+      let symId = (ct.genericSource ?? ct).symbolId;
+      deps.referencedSymbols.add(symId);
+      deps.referencedClassMethods.add(`${i32ToString(symId as i32)}.${member}`);
+    }
+    if (deps.referencedClassMethods.size > 0) {
+      this.traverseDependencies(deps, model, null);
+    }
+  }
+
   notePendingStaticTargets(t: Type, memberName: String): void {
     let classes = new Array<ClassType>();
     collectNamedClasses(t, classes, 0);
