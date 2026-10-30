@@ -332,6 +332,92 @@ final class FlowSubject {
   new(this.binding, this.pathKey, this.root, this.memoKey, this.fallback);
 }
 
+/**
+ * The context of one function, method, accessor or constructor body:
+ * what a `return`, `yield` or `await` in it is checked against, and
+ * what `this` is. Every body checker builds one, installs it with
+ * `CheckerContext.enterBody` and restores the enclosing one with
+ * `exitBody`; the defaults are the module's top level, and what a
+ * nested body starts from.
+ */
+export final class BodyContext {
+  /** The body's expected return type, or null outside a function. */
+  var returnType: Type | null = null;
+  /** Return types collected from `return` statements, for a body
+   * with no return annotation. */
+  var inferredReturnTypes: GrowableArray<Type> = new Array<Type>();
+  /** A generator's expected yield type, or null when the body is not a
+   * `gen` function. VoidType is the inference sentinel, mirroring
+   * `returnType`'s convention. */
+  var yieldType: Type | null = null;
+  /** Yield types collected from `yield` statements, for a generator
+   * with no yield annotation. */
+  var inferredYieldTypes: GrowableArray<Type> = new Array<Type>();
+  /** Depth of enclosing `try` blocks within the body. `yield`/`await`
+   * inside `try` are rejected in v1 (generators.md §6, async.md §1). */
+  var tryDepth: i32 = 0;
+  /** How many `using` bindings of the body are live at this point:
+   * each owes a release on every path out of its block, so a `tail
+   * return` under one would discard the frame that still has to run
+   * it (tail-calls.md §3). */
+  var usingDepth: i32 = 0;
+  /** Whether the body is a constructor's. A constructor body is
+   * inlined into a factory that returns the new instance, so `return`
+   * there does not return the operand (tail-calls.md §3). */
+  var inConstructor: boolean = false;
+  /** The value type T of an async body's Future<T>, or null when the
+   * body is not async. VoidType is the inference sentinel. */
+  var asyncValueType: Type | null = null;
+  /** The declared Future<T> of an async body — the return-adoption
+   * target (async.md §2). Null while inferring (no adoption during
+   * inference) and outside async bodies. */
+  var asyncFutureType: Type | null = null;
+  /** Whether the body declared a `Scoped` return, which lifts the
+   * borrow-across-suspension rule for it: the frame's only first-class
+   * escape is the returned scoped value, and the scoped rules keep
+   * that inside the borrow's extent (ownership.md §"What the
+   * annotation allows"). */
+  var suspensionRelaxed: boolean = false;
+  /** Loop depth at entry to the innermost enclosing `cancel` block, or
+   * -1 outside one. `return` is rejected inside, and `break`/`continue`
+   * are rejected unless their loop opened inside the block: the
+   * cancellation unwind continues unconditionally, so nothing may
+   * leave through the clause (docs/design/cancellation.md). */
+  var cancelBlockFloor: i32 = -1;
+  /** Whether checking is inside a `finally` block. Read only by
+   * `yield`: a generator's finalizer must run to completion during
+   * disposal, and a suspension point inside it would let a disposed
+   * generator park mid-cleanup. Saved and restored around each
+   * finalizer. */
+  var inFinalizer: boolean = false;
+  /** Whether the method declared `this: Own<this>`, which makes `this`
+   * in its body the owner rather than a borrow — closures included,
+   * where capturing it is rejected anyway. */
+  var owningReceiver: boolean = false;
+  /** The receiver's symbol in a method that declared `this: Own<this>`:
+   * the release bookkeeping tracks `this` there like an owned parameter
+   * (ownership.md §"Implicit drop"). Null in every other body. */
+  var receiverSymbol: Symbol | null = null;
+  /** Whether the body is a `[Disposable.dispose]`, the one consuming
+   * method that may move a non-null owner field out. */
+  var inDispose: boolean = false;
+  /**
+   * What a written `this` type annotation means at the current
+   * position, or null when it means the polymorphic `this` itself.
+   *
+   * In a signature `this` stays polymorphic: it is what makes a
+   * subclass's `clone()` return the subclass. Inside a body there is
+   * nothing left to be polymorphic about — the receiver is the class
+   * being checked — so the method's declared `this` return already
+   * substitutes to the self type (issue #434), and a `this` written
+   * in the body has to mean the same thing or the two disagree and a
+   * cast like `return value as this` cannot type-check. Set around a
+   * class body rather than per method body, so a nested closure keeps
+   * it.
+   */
+  var bodyThisType: Type | null = null;
+}
+
 export final class CheckerContext {
   model = new SemanticModel();
 
@@ -636,64 +722,11 @@ export final class CheckerContext {
 
 
   /**
-   * The current function's expected return type, or null if not in a function.
+   * The per-body context: what a `return`, `yield`, `await` or `this`
+   * means in the body being checked. Swapped whole around a nested
+   * body by `enterBody`/`exitBody`, as the flow state is.
    */
-  var #returnType: Type | null = null;
-
-  /**
-   * Inferred return types collected from return statements.
-   * Used when a function has no explicit return type annotation.
-   */
-  var #inferredReturnTypes: GrowableArray<Type> = new Array<Type>();
-
-  /**
-   * The current generator's expected yield type, or null when the
-   * nearest enclosing function is not a `gen` function. VoidType is
-   * the inference sentinel, mirroring #returnType's convention.
-   */
-  var #yieldType: Type | null = null;
-
-  /**
-   * Inferred yield types collected from yield statements.
-   * Used when a generator has no explicit yield type annotation.
-   */
-  var #inferredYieldTypes: GrowableArray<Type> = new Array<Type>();
-
-  /**
-   * Depth of enclosing try blocks within the current function body.
-   * `yield`/`await` inside `try` are rejected in v1 (generators.md §6,
-   * async.md §1).
-   */
-  var #tryDepth: i32 = 0;
-
-  /**
-   * How many `using` bindings of the current function body are live at
-   * this point: each owes a release on every path out of its block, so
-   * a `tail return` under one would discard the frame that still has
-   * to run it (tail-calls.md §3).
-   */
-  var #usingDepth: i32 = 0;
-
-  /**
-   * Whether the body being checked is a constructor's. A constructor
-   * body is inlined into a factory that returns the new instance, so
-   * `return` there does not return the operand (tail-calls.md §3).
-   */
-  var #inConstructor: boolean = false;
-
-  /**
-   * The value type T of the enclosing async function's Future<T>, or
-   * null when the nearest enclosing function is not async. VoidType is
-   * the inference sentinel, mirroring #returnType's convention.
-   */
-  var #asyncValueType: Type | null = null;
-
-  /**
-   * The declared Future<T> of the enclosing async function — the
-   * return-adoption target (async.md §2). Null while inferring (no
-   * adoption during inference) and outside async bodies.
-   */
-  var #asyncFutureType: Type | null = null;
+  var #body = new BodyContext();
 
   /**
    * Stack of class types being checked. The top is the innermost class.
@@ -703,39 +736,6 @@ export final class CheckerContext {
 
   /** Whether we are currently checking an interface declaration body. */
   var #inInterface = false;
-
-  /**
-   * What a written `this` type annotation means at the current
-   * position, or null when it means the polymorphic `this` itself.
-   *
-   * In a signature `this` stays polymorphic: it is what makes a
-   * subclass's `clone()` return the subclass. Inside a body there is
-   * nothing left to be polymorphic about — the receiver is the class
-   * being checked — so the method's declared `this` return already
-   * substitutes to the self type (issue #434), and a `this` written
-   * in the body has to mean the same thing or the two disagree and a
-   * cast like `return value as this` cannot type-check.
-   */
-  var #bodyThisType: Type | null = null;
-
-  /**
-   * Whether the method being checked declared `this: Own<this>`, which makes
-   * `this` in its body the owner rather than a borrow.
-   */
-  var #owningReceiver = false;
-
-  /**
-   * The receiver's symbol in a method that declared `this: Own<this>`:
-   * the release bookkeeping tracks `this` there like an owned parameter
-   * (ownership.md §"Implicit drop"). Null in every other body.
-   */
-  var #receiverSymbol: Symbol | null = null;
-
-  /**
-   * Whether the body being checked is a `[Disposable.dispose]`, the one
-   * consuming method that may move a non-null owner field out.
-   */
-  var #inDispose = false;
 
   /**
    * Loop nesting depth (for break/continue validation).
@@ -2072,119 +2072,84 @@ export final class CheckerContext {
     return null;
   }
 
-  // --- Return type ---
+  // --- The body context ---
+
+  /** The context of the body being checked (`BodyContext`). */
+  body: BodyContext { get { return this.#body; } }
+
+  /**
+   * Installs `body` as the context of the body about to be checked and
+   * returns the one it replaces, for `exitBody`. A nested body starts
+   * from a fresh `BodyContext`: a closure inside a generator, an async
+   * body, a `try`, a `cancel` block or a finalizer is in none of them,
+   * and owes nothing to the enclosing body's `using` bindings or
+   * constructor.
+   */
+  enterBody(body: BodyContext): BodyContext {
+    let prev = this.#body;
+    this.#body = body;
+    return prev;
+  }
+
+  exitBody(prev: BodyContext): void {
+    this.#body = prev;
+  }
 
   returnType: Type | null {
-    get { return this.#returnType; }
+    get { return this.#body.returnType; }
   }
-
-  setReturnType(t: Type | null): void {
-    this.#returnType = t;
-  }
-
-  // --- Inferred return types ---
 
   inferredReturnTypes: GrowableArray<Type> {
-    get { return this.#inferredReturnTypes; }
-  }
-
-  setInferredReturnTypes(a: GrowableArray<Type>): void {
-    this.#inferredReturnTypes = a;
+    get { return this.#body.inferredReturnTypes; }
   }
 
   addInferredReturnType(t: Type): void {
-    this.#inferredReturnTypes.push(t);
+    this.#body.inferredReturnTypes.push(t);
   }
-
-  // --- Yield type (generators) ---
 
   yieldType: Type | null {
-    get { return this.#yieldType; }
-  }
-
-  setYieldType(t: Type | null): void {
-    this.#yieldType = t;
+    get { return this.#body.yieldType; }
   }
 
   inferredYieldTypes: GrowableArray<Type> {
-    get { return this.#inferredYieldTypes; }
-  }
-
-  setInferredYieldTypes(a: GrowableArray<Type>): void {
-    this.#inferredYieldTypes = a;
+    get { return this.#body.inferredYieldTypes; }
   }
 
   addInferredYieldType(t: Type): void {
-    this.#inferredYieldTypes.push(t);
+    this.#body.inferredYieldTypes.push(t);
   }
-
-  // --- Try depth (yield-in-try rejection) ---
 
   tryDepth: i32 {
-    get { return this.#tryDepth; }
+    get { return this.#body.tryDepth; }
   }
 
-  setTryDepth(d: i32): void {
-    this.#tryDepth = d;
-  }
-
-  enterTry(): void { this.#tryDepth = this.#tryDepth + 1; }
-  exitTry(): void { this.#tryDepth = this.#tryDepth - 1; }
-
-  // --- Live `using` bindings and constructor bodies (tail returns) ---
+  enterTry(): void { this.#body.tryDepth = this.#body.tryDepth + 1; }
+  exitTry(): void { this.#body.tryDepth = this.#body.tryDepth - 1; }
 
   usingDepth: i32 {
-    get { return this.#usingDepth; }
+    get { return this.#body.usingDepth; }
   }
 
   setUsingDepth(d: i32): void {
-    this.#usingDepth = d;
+    this.#body.usingDepth = d;
   }
 
-  noteUsingBinding(): void { this.#usingDepth = this.#usingDepth + 1; }
+  noteUsingBinding(): void { this.#body.usingDepth = this.#body.usingDepth + 1; }
 
   inConstructor: boolean {
-    get { return this.#inConstructor; }
+    get { return this.#body.inConstructor; }
   }
-
-  setInConstructor(v: boolean): void {
-    this.#inConstructor = v;
-  }
-
-  // --- Async context ---
 
   asyncValueType: Type | null {
-    get { return this.#asyncValueType; }
+    get { return this.#body.asyncValueType; }
   }
-
-  setAsyncValueType(t: Type | null): void {
-    this.#asyncValueType = t;
-  }
-
-  /**
-   * Whether the body being checked declared a `Scoped` return, which
-   * lifts the borrow-across-suspension rule for it: the frame's only
-   * first-class escape is the returned scoped value, and the scoped
-   * rules keep that inside the borrow's extent (ownership.md §"What
-   * the annotation allows"). Per-function, like the suspension
-   * context itself.
-   */
-  var #suspensionRelaxed: boolean = false;
 
   suspensionRelaxed: boolean {
-    get { return this.#suspensionRelaxed; }
-  }
-
-  setSuspensionRelaxed(v: boolean): void {
-    this.#suspensionRelaxed = v;
+    get { return this.#body.suspensionRelaxed; }
   }
 
   asyncFutureType: Type | null {
-    get { return this.#asyncFutureType; }
-  }
-
-  setAsyncFutureType(t: Type | null): void {
-    this.#asyncFutureType = t;
+    get { return this.#body.asyncFutureType; }
   }
 
   // --- Loop depth ---
@@ -2196,33 +2161,15 @@ export final class CheckerContext {
     get { return this.#loopDepth; }
   }
 
-  /**
-   * Loop depth at entry to the innermost enclosing `cancel` block, or
-   * -1 outside one. `return` is rejected inside, and `break`/
-   * `continue` are rejected unless their loop opened inside the block:
-   * the cancellation unwind continues unconditionally, so nothing may
-   * leave through the clause (docs/design/cancellation.md). Reset per
-   * function body — a closure inside the block returns from itself.
-   */
-  var #cancelBlockFloor: i32 = -1;
   cancelBlockFloor: i32 {
-    get { return this.#cancelBlockFloor; }
+    get { return this.#body.cancelBlockFloor; }
   }
-  setCancelBlockFloor(d: i32): void { this.#cancelBlockFloor = d; }
+  setCancelBlockFloor(d: i32): void { this.#body.cancelBlockFloor = d; }
 
-  /**
-   * Whether checking is inside a `finally` block. Read only by
-   * `yield`: a generator's finalizer must run to completion during
-   * disposal, and a suspension point inside it would let a disposed
-   * generator park mid-cleanup. Saved and restored around each
-   * finalizer, and reset per function body — a closure or nested
-   * `gen` inside a finalizer is its own function.
-   */
-  var #inFinalizer = false;
   inFinalizer: boolean {
-    get { return this.#inFinalizer; }
+    get { return this.#body.inFinalizer; }
   }
-  setInFinalizer(v: boolean): void { this.#inFinalizer = v; }
+  setInFinalizer(v: boolean): void { this.#body.inFinalizer = v; }
 
   /**
    * The target of the primitive cast whose operand, a bare or negated
@@ -2262,25 +2209,19 @@ export final class CheckerContext {
   declaringTypes: Array<Type> { get { return this.#declaringTypes; } }
 
   /** Whether the method being checked consumes its receiver. */
-  owningReceiver: boolean { get { return this.#owningReceiver; } }
+  owningReceiver: boolean { get { return this.#body.owningReceiver; } }
 
-  receiverSymbol: Symbol | null { get { return this.#receiverSymbol; } }
+  receiverSymbol: Symbol | null { get { return this.#body.receiverSymbol; } }
 
-  setReceiverSymbol(s: Symbol | null): void { this.#receiverSymbol = s; }
-
-  inDispose: boolean { get { return this.#inDispose; } }
-
-  setInDispose(v: boolean): void { this.#inDispose = v; }
-
-  setOwningReceiver(v: boolean): void { this.#owningReceiver = v; }
+  inDispose: boolean { get { return this.#body.inDispose; } }
 
   /**
    * What a written `this` type means here: the self type inside a
    * class or mixin body, null in a signature.
    */
-  bodyThisType: Type | null { get { return this.#bodyThisType; } }
+  bodyThisType: Type | null { get { return this.#body.bodyThisType; } }
 
-  setBodyThisType(t: Type | null): void { this.#bodyThisType = t; }
+  setBodyThisType(t: Type | null): void { this.#body.bodyThisType = t; }
 
   /** Enter an interface declaration context (for ThisType resolution). */
   enterInterface(): void { this.#inInterface = true; }
@@ -2611,7 +2552,7 @@ export final class CheckerContext {
    */
   recordBorrowUse(expr: Node, si: Symbol): void {
     if (this.yieldType == null && this.asyncValueType == null) { return; }
-    if (this.#suspensionRelaxed) { return; }
+    if (this.#body.suspensionRelaxed) { return; }
     this.#bodyBorrowUses.push(new BorrowUseRec(
       si.id, si.name, this.#currentFlow, expr.id as i32, expr.loc));
   }
