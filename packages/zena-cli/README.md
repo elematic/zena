@@ -123,6 +123,13 @@ It writes the DID into the manifest, with the scope when only `--scope`
 gave it. Later publishes check that the package's handle is still in that
 scope.
 
+The release holds the files the manifest's `files` patterns name, such as
+`["src", "docs", "!src/internal"]`, or without them every file but tests
+(`*_test.zena`, and `test` and `tests` directories). Any file can go in:
+documentation, images, demos. The manifest, a README and a license always
+do, and hidden files, `node_modules` and the lockfile never do. See
+docs/design/package-manifest.md, "files".
+
 The host holds the package's keys, as a PDS holds its users'. If you keep
 a recovery key, a secp256k1 private key in hex in `recovery-key` in the
 configuration directory, it is ranked above the host's, so you can move

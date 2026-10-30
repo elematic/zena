@@ -24,6 +24,7 @@
  */
 
 import {HashSet, OrderedHashMap} from 'zena:collections';
+import {globToRegex} from 'zena:glob';
 import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {isValidDid} from 'atproto:syntax';
 import {isValidPackageName, isValidScopeName} from './records.zena';
@@ -72,6 +73,17 @@ export final class Manifest {
    * file or directory, relative to the manifest's.
    */
   var wits = new OrderedHashMap<String, String>();
+  /**
+   * The patterns of the files a published archive holds, relative to the
+   * manifest's directory, or null for the default (`package-manager:files`).
+   */
+  var files: Array<String> | null = null;
+  /**
+   * The entry files of the libraries `exports` names, relative to the
+   * manifest's directory: none for an open package, which exports every
+   * file. A published archive must hold each.
+   */
+  var exportFiles = new GrowableArray<String>();
 
   new(name: String | null, did: String | null, requirements: OrderedHashMap<String, Requirement>,
       paths: OrderedHashMap<String, String>, workspacePackages: GrowableArray<String>,
@@ -185,7 +197,78 @@ export function readManifest(text: String | null): Manifest {
   manifest.scope = scope;
   manifest.description = optionalString(root, 'description');
   manifest.license = optionalString(root, 'license');
+  manifest.files = filePatterns(root);
+  manifest.exportFiles = exportedFiles(root);
   return manifest;
+}
+
+/**
+ * The `files` list: patterns, each perhaps negated with `!`, of paths
+ * inside the package. Null when there is none.
+ */
+function filePatterns(root: JsonObject): Array<String> | null {
+  if (!root.has('files')) {
+    return null;
+  }
+  let value = root['files'];
+  if (!(value is JsonArray)) {
+    throw new ManifestError('zena-package.json: files is not a list of paths');
+  }
+  let list = value as JsonArray;
+  let patterns = new GrowableArray<String>();
+  for (var i = 0; i < list.length; i += 1) {
+    let item = list[i];
+    if (!(item is String)) {
+      throw new ManifestError('zena-package.json: an entry of files is not a string');
+    }
+    let pattern = item as String;
+    let path = if (pattern.startsWith('!')) pattern.sliceBytes(1, pattern.length) else pattern;
+    var outside = path == '' || path.startsWith('/');
+    for (let segment in path.split('/')) {
+      if (segment == '..') {
+        outside = true;
+      }
+    }
+    if (outside) {
+      throw new ManifestError(`zena-package.json: '${pattern}' in files is not a path inside the package`);
+    }
+    try {
+      globToRegex(path);
+    } catch (e) {
+      throw new ManifestError(`zena-package.json: '${pattern}' in files is not a pattern: ${e.message}`);
+    }
+    patterns.push(pattern);
+  }
+  return patterns;
+}
+
+/** The entry files of the libraries `exports` names (package-manifest.md, "exports"). */
+function exportedFiles(root: JsonObject): GrowableArray<String> {
+  let files = new GrowableArray<String>();
+  let exports = root['exports'];
+  if (!(exports is JsonObject)) {
+    return files;
+  }
+  (exports as JsonObject).forEach((name, value) => {
+    if (!(value is JsonObject)) {
+      return;
+    }
+    let entry = value as JsonObject;
+    let path = entry['path'];
+    let virtual = entry['virtual'];
+    if (path is String) {
+      files.push(path as String);
+    } else if (virtual is JsonObject) {
+      (virtual as JsonObject).forEach((target, file) => {
+        if (file is String) {
+          files.push(file as String);
+        }
+      });
+    } else {
+      files.push(`${name}.zena`);
+    }
+  });
+  return files;
 }
 
 /**

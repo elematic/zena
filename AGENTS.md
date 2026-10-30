@@ -317,7 +317,8 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
 - **`publish [--scope <name> --yes] [--host <url>]`**: Publish the package
   you are in at its manifest's `version` to a package host
   (`ZENA_PACKAGE_HOST`), creating its account first when it has no `did`,
-  in the scope its manifest's `scope` or `--scope` names. The host holds
+  in the scope its manifest's `scope` or `--scope` names, with the files
+  its `files` patterns name (by default, all but tests). The host holds
   the release until enough maintainers attest it.
   **`approve [<package>@]<version> | @<scope> | <package> [--yes]`** shows a
   release, or changes to who belongs, waiting for approval and, with

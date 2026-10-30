@@ -89,6 +89,35 @@ export let tests = suite('package-manager:validate', () => {
     equal(checkSource(releaseOf('1.4.2', complete, json('2.0.0')), PACKAGE, complete, 'router', true).length, 0);
   });
 
+  test('publishes only the files the manifest publishes, and every file its exports name', (ctx) => {
+    let manifest = (extra: String) => `{"name": "router", "version": "1.4.2", "description": "Routes requests", "license": "MIT", ${extra}"dependencies": {"json": {"did": "${JSON_DID}", "version": "2.0.0"}}}`;
+    let archive = (manifestText: String, paths: Array<String>): FixedArray<u8> => {
+      let files = new HashMap<String, FixedArray<u8>>();
+      files['zena-package.json'] = manifestText.toBytes() as FixedArray<u8>;
+      for (let path in paths) {
+        files[path] = 'export let x = 1;\n'.toBytes() as FixedArray<u8>;
+      }
+      return packSource(files);
+    };
+    let check = (source: FixedArray<u8>, publishing: boolean) =>
+        checkSource(releaseOf('1.4.2', source, json('2.0.0')), PACKAGE, source, 'router', publishing);
+
+    // Tests stay out by default, and documents and assets are anyone's.
+    let fine = archive(manifest(''), ['router.zena', 'README.md', 'docs/guide.md', 'assets/logo.png']);
+    equal(check(fine, true).length, 0, lines(check(fine, true)));
+    let tests = archive(manifest(''), ['router.zena', 'router_test.zena', 'test/fixture.json']);
+    var problems = check(tests, true);
+    isTrue(has(problems, 'holds router_test.zena') && has(problems, 'holds test/fixture.json'), lines(problems));
+    // A release published before the rule still fetches.
+    equal(check(tests, false).length, 0);
+    // A files list decides, and the exports must be in it.
+    let listed = archive(manifest('"files": ["src"], "exports": {"router": {"path": "src/router.zena"}, "match": {}}, '),
+        ['src/router.zena', 'bench/fast.zena']);
+    problems = check(listed, true);
+    isTrue(has(problems, 'holds bench/fast.zena') && has(problems, 'has no match.zena') &&
+        !has(problems, 'src/router.zena'), lines(problems));
+  });
+
   test('finds every way an archive disagrees with its release', (ctx) => {
     let source = archiveOf(GOOD);
     let release = releaseOf('1.4.2', source, json('2.0.0'));

@@ -9,7 +9,7 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {runFuture} from 'zena:async';
-import {existsSync} from 'zena:fs';
+import {existsSync, listDirSync} from 'zena:fs';
 import {fetch} from 'zena:fetch';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {
@@ -35,6 +35,10 @@ export let tests = suite('zena publish', () => {
       write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
       write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       write(scratch.at('lib/.notes'), 'hidden files stay out of the archive\n');
+      // Tests stay out too, by default, and any other file goes in.
+      write(scratch.at('lib/greet_test.zena'), 'export let x = 1;\n');
+      write(scratch.at('lib/test/fixture.txt'), 'a fixture\n');
+      write(scratch.at('lib/docs/guide.md'), '# Greeting\n');
       let lib = zenaIn('lib');
 
       let notSignedIn = lib.run(['publish']);
@@ -179,6 +183,20 @@ export let tests = suite('zena publish', () => {
       let app = zenaIn('app');
       let added = app.run(['add', 'greet.acme.pkg.test']);
       isTrue(added.succeeded(), described(added));
+      // Each archive it fetched holds the package's files, but not its tests
+      // or hidden files.
+      let sources = scratch.at('cache/packages/sources');
+      var unpacked = 0;
+      for (let entry in listDirSync(sources)) {
+        let dir = `${sources}/${entry.name}`;
+        if (existsSync(`${dir}/greet.zena`)) {
+          unpacked += 1;
+          isTrue(existsSync(`${dir}/docs/guide.md`), `${dir} has docs/guide.md`);
+          isTrue(!existsSync(`${dir}/greet_test.zena`) && !existsSync(`${dir}/test`) && !existsSync(`${dir}/.notes`),
+              `${dir} has no tests or hidden files`);
+        }
+      }
+      isTrue(unpacked > 0, 'greet is in the cache');
       isTrue(read(scratch.at('app/zena-package.json')).contains('1.1.0'), read(scratch.at('app/zena-package.json')));
       let ran = app.run(['run', 'prog.zena']);
       isTrue(ran.succeeded(), described(ran));

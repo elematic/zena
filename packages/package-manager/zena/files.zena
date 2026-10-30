@@ -1,0 +1,75 @@
+/**
+ * Which files a package publishes in its source archive
+ * (package-manifest.md, "files"): any files at all, docs, images and demos
+ * among them, chosen by the patterns of its manifest's `files` list, or
+ * by default every file but tests. Whatever the list says, an archive
+ * always holds the manifest and the README and license files at the
+ * package's root, and never hidden files, `node_modules`, or the
+ * workspace's lockfile. `zena publish` packs the files this allows, and a
+ * host refuses an archive that holds any other.
+ */
+
+import {GlobSet} from 'zena:glob';
+import {Manifest} from './manifest.zena';
+import {MANIFEST} from './workspace.zena';
+
+/** The files a package without a `files` list publishes: all but its tests. */
+export let DEFAULT_FILES: Array<String> = ['**', '!**/*_test.zena', '!**/test', '!**/tests'];
+
+/** The paths, relative to its root, a package publishes. */
+export final class PublishedFiles {
+  #set: GlobSet;
+
+  /**
+   * The files `patterns` choose, read as a `files` list is: the last
+   * pattern that matches a path decides, a `!` excludes, and a pattern that
+   * names a directory takes everything under it.
+   */
+  new(patterns: Array<String>) : #set = new GlobSet(expanded(patterns));
+
+  /** The files `manifest` publishes: its `files` list, or `DEFAULT_FILES`. */
+  static of(manifest: Manifest): PublishedFiles {
+    return new PublishedFiles(manifest.files ?? DEFAULT_FILES);
+  }
+
+  /** Whether the file at `path`, relative to the package's root, is published. */
+  includes(path: String): boolean {
+    let segments = path.split('/');
+    for (let segment in segments) {
+      if (segment.startsWith('.') || segment == 'node_modules') {
+        return false;
+      }
+    }
+    if (path == 'zena-lock.json') {
+      return false;
+    }
+    if (segments.length == 1 && (path == MANIFEST || isReadmeOrLicense(path))) {
+      return true;
+    }
+    return this.#set.matches(path);
+  }
+}
+
+/** Whether `name`, a file at a package's root, is its README or a license, which every archive keeps. */
+function isReadmeOrLicense(name: String): boolean {
+  let lower = name.asciiLowerCase();
+  for (let stem in ['readme', 'license', 'licence', 'copying']) {
+    if (lower == stem || lower.startsWith(`${stem}.`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Each pattern, and the pattern with `/**` after it, so that one naming a directory takes all of it. */
+function expanded(patterns: Array<String>): GrowableArray<String> {
+  let out = new GrowableArray<String>();
+  for (let pattern in patterns) {
+    let trimmed = if (pattern.endsWith('/')) pattern.sliceBytes(0, pattern.length - 1) else pattern;
+    out.push(trimmed);
+    if (!trimmed.endsWith('/**')) {
+      out.push(`${trimmed}/**`);
+    }
+  }
+  return out;
+}

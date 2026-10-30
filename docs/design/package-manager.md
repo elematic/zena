@@ -423,10 +423,14 @@ of the file's contents, and each file is a raw block:
 }
 ```
 
-An archive holds every file under the package's directory except hidden
-files (a name starting with `.`), `node_modules`, the workspace's
-`zena-lock.json`, and the directories of packages nested in it, which have
-their own `zena-package.json` and are published on their own.
+An archive holds the files the manifest's `files` list publishes, or
+without one every file under the package's directory but its tests
+([package-manifest.md](package-manifest.md#files)). It never holds
+hidden files (a name starting with `.`), `node_modules`, the workspace's
+`zena-lock.json`, or the directories of packages nested in it, which have
+their own `zena-package.json` and are published on their own. The host
+refuses an archive that holds any other file, or lacks a library's entry
+file that the manifest exports.
 
 The format uses only what Zena's atproto support needs anyway, CAR and
 DAG-CBOR. It needs no compression library, which Zena does not have yet.
