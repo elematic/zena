@@ -1,10 +1,14 @@
 # The PDS's web assets
 
-The stylesheet and script of the package host's web pages. The pages
-themselves are rendered on the server, by the PDS written in Zena
-(`packages/pds/zena/web`), as `zena:http` routes using its `html` tag:
+The stylesheet, script, and static documentation (`/docs/`) of the package
+host's web pages. The dynamic pages are rendered on the server, by the PDS
+written in Zena (`packages/pds/zena/web`), as `zena:http` routes using its
+`html` tag:
 
-- `/`: every package, with a search form (`?q=`), and every scope;
+- `/`: the landing page, with a hero search form (`?q=`), every package,
+  every scope, and links into `/docs/`;
+- `/docs/`: static documentation for the package manager, built with
+  Eleventy (`site/docs/` → `out/docs/`);
 - `/scopes/<name>`: a scope's profile and packages;
 - `/packages/<handle>`: a package's profile and scope, the command that
   adds it, the releases waiting for approval, for its maintainers, its
@@ -138,9 +142,9 @@ serves the assets from its image (`packages/pds/deploy`).
 
 ## How the PDS serves them
 
-`PDS_WEB_DIR` names `out/`, and the PDS serves its files at `/assets/`
-(`pds:service`). A program run by `zena run` or `zena-run` sees only the
-directories it is given, so the directory is given with `--dir`:
-`npm run demo` passes `--dir packages/pds-web/out::/web` with
+`PDS_WEB_DIR` names `out/`, and the PDS serves its files at `/assets/` and
+`out/docs/` at `/docs/` (`pds:service`). A program run by `zena run` or
+`zena-run` sees only the directories it is given, so the directory is given
+with `--dir`: `npm run demo` passes `--dir packages/pds-web/out::/web` with
 `PDS_WEB_DIR=/web`, and the image passes `--dir /app/web::/web`. Without
-it, the pages still render, unstyled.
+it, the dynamic pages still render, unstyled.

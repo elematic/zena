@@ -1,0 +1,85 @@
+---
+layout: base.njk
+---
+
+{% from "outline-items.njk" import outlineList %}
+{% set headings = content | outline %}
+{% set hasOutline = headings.length > 0 %}
+{% set hasAside = aside !== false %}
+
+<div
+  class="local-nav{% if hasSidebar %} has-sidebar{% endif %}{% if not hasOutline %} empty{% endif %}"
+>
+  <div class="container">
+    {% if hasSidebar %}
+      <button
+        class="menu"
+        type="button"
+        aria-expanded="false"
+        aria-controls="sidebar-nav"
+        data-toggle-sidebar
+      >
+        <span class="icon-align-left menu-icon"></span>
+        <span class="menu-text">Menu</span>
+      </button>
+    {% endif %}
+
+    <div class="local-nav-outline" data-local-outline>
+      {% if hasOutline %}
+        <button type="button" aria-expanded="false" data-local-outline-toggle>
+          <span class="menu-text">On this page</span>
+          <span class="icon-chevron-right icon"></span>
+        </button>
+        <div class="items" hidden>
+          <div class="header">
+            <a class="top-link" href="#">Return to top</a>
+          </div>
+          <div class="outline">{{ outlineList(headings, false) }}</div>
+        </div>
+      {% else %}
+        <a class="top-link" href="#">Return to top</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="docs-workspace" id="site-content">
+  {% if hasSidebar %}{% include "sidebar.njk" %}{% endif %}
+
+  <div class="doc-main{% if hasSidebar %} has-sidebar{% endif %}{% if hasAside %} has-aside{% endif %}">
+    <div class="doc-container">
+      <div class="doc-content">
+        <main class="doc-article">
+          <div class="prose">
+            <h1>
+              {{ title }}
+              {%- if status %}
+                <span class="badge {{ statusType or 'warning' }}">
+                  {{- status -}}
+                </span>
+              {% endif %}
+            </h1>
+            {% if lead %}<p class="lead">{{ lead }}</p>{% endif %}
+            {{ content | safe }}
+          </div>
+        </main>
+
+        {% include "doc-footer.njk" %}
+      </div>
+
+      {% if hasAside %}
+        <aside class="doc-aside-rail" aria-label="On this page">
+          <div class="doc-outline{% if hasOutline %} has-outline{% endif %}" data-doc-outline>
+            <div class="content">
+              <div class="outline-marker"></div>
+              <div class="outline-title" role="heading" aria-level="2">
+                On this page
+              </div>
+              {{ outlineList(headings, true) }}
+            </div>
+          </div>
+        </aside>
+      {% endif %}
+    </div>
+  </div>
+</div>
