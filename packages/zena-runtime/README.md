@@ -68,6 +68,14 @@ it:
     memory limit and a per-call time limit when asked for, and a trap
     fails one call and restarts the instance. It is granted on its own
     (`Grant::extensions`, `--allow-extensions`).
+  - `http-server`: the server behind `zena:http`'s `Server`, which
+    listens on `HOST` (127.0.0.1 by default) and speaks HTTP/1.1. A
+    connection must send each request's headers within
+    `ZENA_HTTP_HEADER_TIMEOUT_SECONDS` (30 by default) or is closed, and
+    at most `ZENA_HTTP_MAX_CONNECTIONS` (1024) are open at once, the next
+    waiting, unaccepted, for one to close (`ServerLimits`), so slow or
+    many clients cannot hold the server. How large a body may be is the
+    program's to say (`Request.bodyLimit`).
 
 A component's `main` is lifted async with a callback, so calling it goes
 through wasmtime's concurrent machinery: `component::run_main` builds a
@@ -152,4 +160,6 @@ self-signed certificate (from `rcgen`) that offers HTTP/2, a plain
 HTTP/1.1 one, and a plain HTTP/2-only (h2c) one. They check the negotiated protocol, connection reuse
 (by counting accepted connections), trailers, and error mapping, and
 that a client denying private egress refuses a local server unless its
-host is exempt.
+host is exempt. The `server_tests` in `component.rs` check that the
+inbound server closes a connection that sends nothing and holds one past
+its cap until another closes.
