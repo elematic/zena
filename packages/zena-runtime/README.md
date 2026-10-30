@@ -59,8 +59,9 @@ it:
     imports, with `attach` minting an object per extension and each
     method forwarding to that extension's export as wasmtime values;
     a load binds every import the extension has to the host, to a
-    resource the program exports (one object per extension, made by
-    its `create`), or to another extension, and checks the two sides'
+    resource the program exports (one object per extension, vended by
+    the plugin object the load names, through the plugin kind's
+    `create`), or to another extension, and checks the two sides'
     types. A resource the shared interface declares crosses as a proxy
     in the other store's table, with its method calls and its drop
     forwarded to the owner. Each extension has a store on a thread of

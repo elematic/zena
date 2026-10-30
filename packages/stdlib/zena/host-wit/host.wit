@@ -128,11 +128,16 @@ interface wasm {
 /// docs/design/runtime-components.md:
 ///
 /// - An interface the program serves is exported as a resource whose
-///   methods are the extension's free functions, with a static
-///   `create: static func(extension: u32) -> own<resource>`. The first
-///   call from an extension on that interface makes its object through
-///   `create`, and every later call lands on that object, so the object
-///   is the extension's identity.
+///   methods are the extension's free functions. The object serving an
+///   extension comes from the program's plugin object: the program
+///   exports a resource per plugin kind, named after the plugin's
+///   world, whose methods vend one object per served interface
+///   (`storage: func() -> own<storage>`) and whose static
+///   `create: static func(token: u32) -> own<kind>` returns the object
+///   the program registered under `token` when it loaded the
+///   extension. The host calls `create` once per extension and each
+///   vendor once, so the objects are the extension's identity, and the
+///   program's code sees no handle.
 /// - An interface the program calls is imported as a resource whose
 ///   methods are the extension's exported functions, each result wrapped
 ///   in `result<_, string>` (the string says why a call failed), with a
@@ -165,6 +170,14 @@ interface extensions {
     served-by: source,
   }
 
+  /// The program's object for an extension: the plugin kind, a
+  /// resource the program exports, and the token under which the
+  /// program registered the object, which the kind's `create` takes.
+  record plugin-ref {
+    kind: string,
+    token: u32,
+  }
+
   record load-options {
     /// The most memory the instance may hold, linear memory and GC heap
     /// together, in bytes; no limit when 0.
@@ -181,13 +194,15 @@ interface extensions {
   /// `bindings` as everything it may import, checks its types against
   /// this program's, and instantiates it. The result is the extension's
   /// handle, or why it could not be loaded. The load runs on a thread
-  /// of its own, and the caller's other tasks run meanwhile.
-  load: async func(path: string, bindings: list<binding>, options: load-options) -> result<u32, string>;
+  /// of its own, and the caller's other tasks run meanwhile. `plugin`
+  /// is the program's object for the extension, which a load that
+  /// serves the extension any interface of the program's needs.
+  load: async func(path: string, bindings: list<binding>, options: load-options, plugin: option<plugin-ref>) -> result<u32, string>;
 
   /// `load` for a component the program trusts as it trusts itself: it
   /// may import every interface this host serves, and every interface
   /// this program exports, by the same name.
-  load-trusted: async func(path: string, options: load-options) -> result<u32, string>;
+  load-trusted: async func(path: string, options: load-options, plugin: option<plugin-ref>) -> result<u32, string>;
 
   /// Checks the component at `path` against world `world-name` of the
   /// WIT document at `wit-path`, as a load would: it must export every

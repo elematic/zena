@@ -252,6 +252,31 @@ export function exportedFunctionIsAsync(ast: Module, name: String,
   return false;
 }
 
+/**
+ * Whether the entry declares class `className` with a static `member`.
+ * The wrapper for a plugin kind's `create` asks, to write the static
+ * itself when the class leaves it out.
+ */
+export function classHasStatic(ast: Module, className: String, member: String): boolean {
+  for (let stmt in ast.body) {
+    if (stmt is ClassDeclaration) {
+      if (stmt.name.name == className) {
+        for (let m in stmt.body) {
+          if (m is MethodDefinition) {
+            let mname = m.name;
+            if (mname is Identifier) {
+              if (mname.name == member && m.isStatic) {
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /** The module's exported `main` function, in either spelling, or
  * null. */
 function exportedMainOf(ast: Module): FunctionExpression | null {
