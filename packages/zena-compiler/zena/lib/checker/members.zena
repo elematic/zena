@@ -180,9 +180,9 @@ function declaresStaticMember(t: Type, name: String): boolean {
     return true;
   }
   let members: MemberTable | null = match (t) {
-    case ClassType as ct: ct.members
+    case ClassType as ct: ct.staticMembers
     case InterfaceType as it: it.members
-    case MixinType as mt: mt.members
+    case MixinType as mt: mt.staticMembers
     case _: null
   };
   if (members == null) {
@@ -413,6 +413,17 @@ export function recordSymbolKeyedMemberIdentities(
     if (nameNode == null) { continue; }
     let ref = symbolRefOfMemberName(nameNode as Node);
     if (ref == null) { continue; }
+    let isStaticMember = match (member) {
+      case FieldDefinition as fd: fd.isStatic
+      case MethodDefinition as md: md.isStatic
+      case AccessorDeclaration as acc: acc.isStatic
+      case _: false
+    };
+    let targetMembers = match (owner) {
+      case ClassType as ct: ct.memberTable(isStaticMember)
+      case MixinType as mt: mt.memberTable(isStaticMember)
+      case _: members
+    };
     let key = getMemberName(ctx, nameNode as Node);
     // A body is walked once per registration pass, and a module in an
     // import cycle is registered more than once. Stamping is idempotent;
@@ -420,7 +431,7 @@ export function recordSymbolKeyedMemberIdentities(
     // left alone. The key carries the symbol's identity, so a member
     // stamped here can only have been stamped by this same symbol.
     var settled = false;
-    if (let (true, seen) = members.get(key)) {
+    if (let (true, seen) = targetMembers.get(key)) {
       settled = seen.symbolTypeId >= 0;
     }
     if (settled) { continue; }
@@ -431,7 +442,7 @@ export function recordSymbolKeyedMemberIdentities(
     let id = sym.id as i32;
     let candidates = growable<String>([key, "get#" + key, "set#" + key]);
     for (let candidate in candidates) {
-      if (let (true, info) = members.get(candidate)) {
+      if (let (true, info) = targetMembers.get(candidate)) {
         info.symbolTypeId = id;
       }
     }
@@ -594,7 +605,10 @@ export function checkMemberExpression(
     let cur = ctx.currentClass as ClassType;
     if (!cur.members.has(propName) &&
         !cur.members.has("get#" + propName) &&
-        !cur.members.has("set#" + propName)) {
+        !cur.members.has("set#" + propName) &&
+        !cur.staticMembers.has(propName) &&
+        !cur.staticMembers.has("get#" + propName) &&
+        !cur.staticMembers.has("set#" + propName)) {
       ctx.error(
         `Property '${displayMemberName(propName)}' does not exist on type '${cur.name}'.`,
         DiagnosticCode.PropertyNotFound,
@@ -915,29 +929,24 @@ function settleFieldType(fi: FieldInfo): void {
 export function staticAccessMismatch(
   ctx: CheckerContext,
   isStaticAccess: boolean,
-  member: MemberInfo,
   propName: String,
   className: String,
   code: DiagnosticCode,
   loc: SourceLocation | null
-): boolean {
-  if (isStaticAccess && !member.isStatic) {
+): void {
+  if (isStaticAccess) {
     ctx.error(
       `Cannot access instance member '${displayMemberName(propName)}' on class '${className}'.`,
       code,
       loc
     );
-    return true;
-  }
-  if (!isStaticAccess && member.isStatic) {
+  } else {
     ctx.error(
       `Cannot access static member '${displayMemberName(propName)}' on an instance of '${className}'.`,
       code,
       loc
     );
-    return true;
   }
-  return false;
 }
 
 /**
@@ -965,6 +974,9 @@ function resolveMemberType(
 
   match (objectType) {
     case ClassType as ct: {
+      let members = ct.memberTable(isStaticAccess);
+      let otherMembers = ct.memberTable(!isStaticAccess);
+      let getterName = "get#" + propName;
       let deps = ctx.currentDependencies();
       if (deps != null) {
         var classSymId = (ct.genericSource ?? ct).symbolId;
@@ -979,24 +991,20 @@ function resolveMemberType(
         if (ct.isExtension) {
           deps.referencedTypes.add(ct);
         }
-        if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
+        if (members.has(propName) && members[propName] is MethodInfo) {
           deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${propName}`);
-        } else if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
-          let fi = ct.members[propName] as FieldInfo;
+        } else if (members.has(propName) && members[propName] is FieldInfo) {
+          let fi = members[propName] as FieldInfo;
           if (ct.isExtension || fi.isAbstract) {
-            deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
+            deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${getterName}`);
           }
-        } else if (ct.members.has("get#" + propName)) {
-          deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
+        } else if (members.has(getterName)) {
+          deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${getterName}`);
         }
       }
       // Check fields first.
-      if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
-        let fi = ct.members[propName] as FieldInfo;
-        if (staticAccessMismatch(ctx, isStaticAccess, fi, propName, ct.name,
-            DiagnosticCode.PropertyNotFound, loc)) {
-          return new ErrorType();
-        }
+      if (members.has(propName) && members[propName] is FieldInfo) {
+        let fi = members[propName] as FieldInfo;
         settleFieldType(fi);
         let fieldType = fi.type;
         // Substitute type parameters if this is an instantiated generic class.
@@ -1016,31 +1024,28 @@ function resolveMemberType(
         return borrowWrapFieldRead(ctx, resolved);
       }
       // Check methods.
-      if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
-        let methodInfo = ct.members[propName] as MethodInfo;
-        if (staticAccessMismatch(ctx, isStaticAccess, methodInfo, propName, ct.name,
-            DiagnosticCode.PropertyNotFound, loc)) {
-          return new ErrorType();
-        }
+      if (members.has(propName) && members[propName] is MethodInfo) {
+        let methodInfo = members[propName] as MethodInfo;
         let subMethod = substituteTypeParams(ct.typeParameters, ct.typeArguments, methodInfo.type);
         return substituteThisType(ct as Type, subMethod);
       }
       // Check for getter method (get#propName)
-      let getterName = "get#" + propName;
-      if (ct.members.has(getterName)) {
-        let getterMember = ct.members[getterName];
+      if (members.has(getterName)) {
+        let getterMember = members[getterName];
         match (getterMember) {
           case MethodInfo as getterInfo: {
-            if (staticAccessMismatch(ctx, isStaticAccess, getterInfo, propName, ct.name,
-                DiagnosticCode.PropertyNotFound, loc)) {
-              return new ErrorType();
-            }
             // Return the return type of the getter
             let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
             return substituteThisType(ct as Type, subGetter);
           }
           case _: {}
         }
+      }
+      // If not found in the receiver's namespace, check the other namespace to report a static/instance mismatch.
+      if (otherMembers.has(propName) || otherMembers.has(getterName)) {
+        staticAccessMismatch(ctx, isStaticAccess, propName, ct.name,
+            DiagnosticCode.PropertyNotFound, loc);
+        return new ErrorType();
       }
       ctx.error(
         `Property '${displayMemberName(propName)}' does not exist on type '${ct.name}'.`,

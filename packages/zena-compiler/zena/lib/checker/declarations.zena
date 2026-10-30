@@ -304,6 +304,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
   // composed mixin twice. The members map is cleared in place because
   // instantiations share it.
   mixinType.members.clear();
+  mixinType.staticMembers.clear();
   mixinType.mixins = new Array<MixinType>();
   mixinType.sharedMembers = null;
 
@@ -483,7 +484,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
           isPrivate,
           fd.value != null // hasInitializer
         );
-        mixinType.members[fieldName] = fdInfo;
+        mixinType.memberTable(fd.isStatic)[fieldName] = fdInfo;
         if (fd.isShared) {
           if (md.decoratorSubject == null) {
             ctx.error("'shared' applies only to a decorator's private members.",
@@ -548,7 +549,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
             isPrivate,
             methDef.isFinal
           );
-          mixinType.members[methodName] = mi;
+          mixinType.memberTable(methDef.isStatic)[methodName] = mi;
           if (methDef.isShared) {
             if (md.decoratorSubject == null) {
               ctx.error("'shared' applies only to a decorator's private members.",
@@ -565,6 +566,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
         let accName = getMemberName(ctx, acc.name as Node);
         let isPrivate = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
+        let members = mixinType.memberTable(acc.isStatic);
         if (isPrivate) {
           // Private accessors register only their get#/set# methods,
           // like class accessors: no bare-name entry (a bare
@@ -574,13 +576,13 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
           if (acc.getter != null) {
             let getterFt = new FunctionType(new Array<Type>(), accType);
             let gi = new MethodInfo(getterFt, false, acc.isStatic, true, acc.isFinal);
-            mixinType.members["get#" + accName] = gi;
+            members["get#" + accName] = gi;
           }
           if (acc.setter != null) {
             let setterParams = growable<Type>([accType]);
             let setterFt = new FunctionType(setterParams, new VoidType());
             let si = new MethodInfo(setterFt, false, acc.isStatic, true, acc.isFinal);
-            mixinType.members["set#" + accName] = si;
+            members["set#" + accName] = si;
           }
         } else {
           // Public accessors register get#/set# too, like class
@@ -592,13 +594,13 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
           if (acc.getter != null) {
             let getterFt = new FunctionType(new Array<Type>(), accType);
             let gi = new MethodInfo(getterFt, false, acc.isStatic, isPrivate, acc.isFinal);
-            mixinType.members["get#" + accName] = gi;
+            members["get#" + accName] = gi;
           }
           if (acc.setter != null) {
             let setterParams = growable<Type>([accType]);
             let setterFt = new FunctionType(setterParams, new VoidType());
             let si = new MethodInfo(setterFt, false, acc.isStatic, isPrivate, acc.isFinal);
-            mixinType.members["set#" + accName] = si;
+            members["set#" + accName] = si;
           }
         }
       }
@@ -635,13 +637,14 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
     match (member) {
       case MethodDefinition as methDef: {
         let methodName = getMemberName(ctx, methDef.name as Node);
-         if (!methDef.isConstructor && methodName != "<constructor>" && methDef.body != null && mixinType.members.has(methodName)) {
-           if (let (true, methodTypeInfo) = mixinType.members.get(methodName)) {
-             ctx.enterNodeReferrer(methDef.id as i32);
-             checkMethodBody(ctx, thisType, methodTypeInfo.type as FunctionType, methDef);
-             ctx.exitNodeReferrer(methDef.id as i32);
-           }
-         }
+        let members = mixinType.memberTable(methDef.isStatic);
+        if (!methDef.isConstructor && methodName != "<constructor>" && methDef.body != null && members.has(methodName)) {
+          if (let (true, methodTypeInfo) = members.get(methodName)) {
+            ctx.enterNodeReferrer(methDef.id as i32);
+            checkMethodBody(ctx, thisType, methodTypeInfo.type as FunctionType, methDef);
+            ctx.exitNodeReferrer(methDef.id as i32);
+          }
+        }
       }
       case AccessorDeclaration as acc: {
         checkAccessorBodies(ctx, acc, resolveTypeAnnotation(ctx, acc.typeAnnotation));

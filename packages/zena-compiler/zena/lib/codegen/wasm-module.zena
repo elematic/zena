@@ -1565,7 +1565,12 @@ export final class WasmModule {
   /** Each candidate class's `TypeInfo` global. */
   typeInfoGlobals = new Map<ClassKey, WasmGlobal>();
   classMethodMap = new Map<ClassMethodKey, WasmFunction>();
+  staticMethodMap = new Map<ClassMethodKey, WasmFunction>();
   classMethods = new Map<String, GrowableArray<WasmFunction>>();
+
+  methodMap(isStatic: boolean): HashMap<ClassMethodKey, WasmFunction> {
+    return if (isStatic) this.staticMethodMap else this.classMethodMap;
+  }
   var stringHashHelper: WasmFunction | null = null;
   functionAdaptations = new Map<FunctionAdaptationKey, WasmFunction>();
   /**
@@ -2402,7 +2407,7 @@ export final class WasmModule {
     let {classType} = func;
     if (classType != null && func.methodName != null) {
       let key = getClassMethodKey(getClassKey(classType), func.methodName as String);
-      this.classMethodMap[key] = func;
+      this.methodMap(func.isStatic)[key] = func;
       let cKey = getClassKey(classType) as String;
       if (!this.classMethods.has(cKey)) {
         this.classMethods[cKey] = new Array<WasmFunction>();
@@ -2779,6 +2784,7 @@ export final class WasmModule {
     this.isLayoutLocked = true;
     
     this.classMethodMap.clear();
+    this.staticMethodMap.clear();
     this.classMethods.clear();
     this.functionAdaptations.clear();
     this.arrayMethods = new Array<WasmFunction>();
@@ -2786,7 +2792,7 @@ export final class WasmModule {
       let {classType} = func;
       if (classType != null && func.methodName != null) {
         let key = getClassMethodKey(getClassKey(classType), func.methodName as String);
-        this.classMethodMap[key] = func;
+        this.methodMap(func.isStatic)[key] = func;
         let cKey = getClassKey(classType) as String;
         if (!this.classMethods.has(cKey)) {
           this.classMethods[cKey] = new Array<WasmFunction>();

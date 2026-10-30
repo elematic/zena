@@ -1411,7 +1411,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (!isConcrete(resolved)) {
       return;
     }
-    let md = this.pass.cha.findImplementingMethod(resolved, name);
+    let md = this.pass.cha.findImplementingMethod(resolved, name, model.isStaticAccess(callee));
     if (md == null) {
       return;
     }
@@ -2192,8 +2192,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     if (!(resolvedObj is ClassType)) { return; }
     let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
-    if (!resolvedObj.members.has(propName)) { return; }
-    let mi = resolvedObj.members[propName];
+    let isStatic = model.isStaticAccess(mem);
+    let members = resolvedObj.memberTable(isStatic);
+    if (!members.has(propName)) { return; }
+    let mi = members[propName];
     if (!(mi is MethodInfo)) { return; }
     // A static's receiver is the class NAME, so `resolvedObj` is the
     // unspecialized template — and that is the right registration
@@ -2252,7 +2254,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let unspecId = (targetClass.genericSource ?? targetClass).symbolId;
     let cd = if (let (true, decl) = this.pass.classDecls.get(unspecId)) decl else null;
     let targetModel = this.pass.getClassModel(targetClass);
-    for (let md in this.pass.cha.findImplementingMethods(targetClass, propName)) {
+            for (let md in this.pass.cha.findImplementingMethods(targetClass, propName)) {
+      if (md.isStatic != isStatic) { continue; }
       let fn = this.pass.specializer.instantiateGenericMethod(targetClass, cd, propName, md as Node,
           typeArgs, this.pass.getNodeModel(md as Node, targetModel));
       // Registering is not enough. `WasmModule.layout()` REBUILDS
@@ -3046,6 +3049,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               this.queueMixinPrivateMember(resolvedObj, bodyScope, propName);
             }
 
+            let isStaticAccess = model.isStaticAccess(n);
             var isMethod = false;
             var isStaticMethod = false;
             var isGenericMethod = false;
@@ -3053,8 +3057,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             var currClassWalk: ClassType | null = resolvedObj;
             while (currClassWalk != null && !isMethod) {
               let cc = currClassWalk;
-              if (cc.members.has(propName)) {
-                let mi = cc.members[propName];
+              let ccMembers = cc.memberTable(isStaticAccess);
+              if (ccMembers.has(propName)) {
+                let mi = ccMembers[propName];
                 if (mi is MethodInfo) {
                   isMethod = true;
                   isStaticMethod = mi.isStatic;
@@ -3107,6 +3112,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             }
             let mds = cha.findImplementingMethods(resolvedObj, resolvedName);
             for (let md in mds) {
+              if (md.isStatic != isStaticAccess) { continue; }
               if (isGenericMethod && methodTypeArgs != null) {
                 // Arguments still open after resolution mean this walk
                 // is a template's: the mention is the template of a
@@ -3130,13 +3136,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               }
             }
             if (!isMethod) {
-              let fd = cha.findImplementingField(resolvedObj, propName);
-              if (fd != null) {
-                this.pass.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.pass.getNodeModel(fd as Node, targetModel), resolvedObj, this.pass.currentReachable));
+              for (let fd in cha.findImplementingFields(resolvedObj, propName)) {
+                if (fd.isStatic == isStaticAccess) {
+                  this.pass.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.pass.getNodeModel(fd as Node, targetModel), resolvedObj, this.pass.currentReachable));
+                }
               }
-              let acc = cha.findImplementingAccessor(resolvedObj, resolvedName);
-              if (acc != null) {
-                this.pass.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), resolvedObj, this.pass.currentReachable));
+              for (let acc in cha.findImplementingAccessors(resolvedObj, resolvedName)) {
+                if (acc.isStatic == isStaticAccess) {
+                  this.pass.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), resolvedObj, this.pass.currentReachable));
+                }
               }
             }
           }
@@ -3151,10 +3159,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             if (resolvedObj is ClassType) {
               let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
               let setterName = "set#" + propName;
-              let acc = this.pass.cha.findImplementingAccessor(resolvedObj, setterName);
-              if (acc != null) {
-                let targetModel = this.pass.getClassModel(resolvedObj);
-                this.pass.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), resolvedObj, this.pass.currentReachable));
+              let isStaticAssign = model.isStaticAccess(mem);
+              for (let acc in this.pass.cha.findImplementingAccessors(resolvedObj, setterName)) {
+                if (acc.isStatic == isStaticAssign) {
+                  let targetModel = this.pass.getClassModel(resolvedObj);
+                  this.pass.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), resolvedObj, this.pass.currentReachable));
+                }
               }
             }
           }

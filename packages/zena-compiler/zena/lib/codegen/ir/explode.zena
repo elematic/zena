@@ -1482,7 +1482,7 @@ function methodCandidateFor(wasm: WasmModule, pass: ReachabilityAnalysis,
   if (sig.returns.length > 1 || sig.params.length != md.params.length + receiver) {
     return null;
   }
-  if (let (true, mapped) = wasm.classMethodMap.get(
+  if (let (true, mapped) = wasm.methodMap(f.isStatic).get(
       getClassMethodKey(getClassKey(ct), methodName))) {
     if (mapped !== f) {
       return null;
@@ -1499,7 +1499,7 @@ function methodCandidateFor(wasm: WasmModule, pass: ReachabilityAnalysis,
   // is named for its type arguments.
   let declaredName = if (spec) memberKeyOf(f.model, md.name as Node) else methodName;
   var ft: Type | null = null;
-  if (let (true, info) = ct.members.get(declaredName)) {
+  if (let (true, info) = ct.memberTable(f.isStatic).get(declaredName)) {
     ft = info.type;
   }
   // As for functions, a generator or async method's result is its
@@ -1882,7 +1882,7 @@ function methodTargetOf(dc: DemandContext, member: MemberExpression,
   if (name == "") {
     return null;
   }
-  let md = dc.pass.cha.findImplementingMethod(receiver, name);
+  let md = dc.pass.cha.findImplementingMethod(receiver, name, model.isStaticAccess(member));
   if (md == null) {
     return null;
   }

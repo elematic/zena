@@ -1,0 +1,34 @@
+// @mode: check
+
+// Static and instance members live in distinct namespaces and may share names,
+// even across different member kinds or incompatible types.
+class DistinctNamespaces {
+  static var v: i32 = 1;
+  var v: String = "hello";
+
+  static compute(): i32 { return 1; }
+  compute(): String { return "world"; }
+
+  static fieldVsMethod: i32 = 42;
+  fieldVsMethod(): String { return "ok"; }
+
+  static methodVsField(): i32 { return 7; }
+  var methodVsField: String = "seven";
+}
+
+// Collisions within the SAME namespace are still rejected.
+class DuplicateStaticFields {
+  static var x: i32 = 1;
+  static var x: i32 = 2; // @error: Duplicate field 'x' in class 'DuplicateStaticFields'.
+}
+
+class StaticFieldMethodConflict {
+  static var y: String | null;
+  static y(): i32 { return 2; } // @error: Method 'y' conflicts with field 'y'.
+}
+
+class InstanceFieldMethodConflict {
+  var z: i32;
+  new(this.z);
+  z(): i32 { return 2; } // @error: Method 'z' conflicts with field 'z'.
+}

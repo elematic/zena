@@ -377,77 +377,41 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         match (objectType) {
           case ClassType as ct: {
             let isStatic = isStaticReceiver(ctx, object);
-            // Check if it's a field
-            if (ct.members.has(propName)) {
-              let m = ct.members[propName];
-              match (m) {
-                case FieldInfo as fi: {
-                  if (staticAccessMismatch(ctx, isStatic, fi, propName, ct.name,
-                      DiagnosticCode.InvalidAssignment, loc)) {
-                    return new ErrorType();
-                  }
-                  if (!fi.isMutable) {
-                    ctx.error(
-                      `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
-                      DiagnosticCode.InvalidAssignment,
-                      loc
-                    );
-                    return new ErrorType();
-                  }
-                }
-                case _: {
-                  // Check for setter method (set#propName)
-                  let setterName = "set#" + propName;
-                  if (ct.members.has(setterName)) {
-                    let setterInfo = ct.members[setterName];
-                    match (setterInfo) {
-                      case MethodInfo as mi: {
-                        if (staticAccessMismatch(ctx, isStatic, mi, propName, ct.name,
-                            DiagnosticCode.InvalidAssignment, loc)) {
-                          return new ErrorType();
-                        }
-                      }
-                      case _: {}
-                    }
-                  } else {
-                    // Check if there's a getter only (read-only property)
-                    let getterName = "get#" + propName;
-                    if (ct.members.has(getterName)) {
-                      ctx.error(
-                        `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
-                        DiagnosticCode.InvalidAssignment,
-                        loc
-                      );
-                      return new ErrorType();
-                    }
-                  }
-                }
+            let members = ct.memberTable(isStatic);
+            let otherMembers = ct.memberTable(!isStatic);
+            let setterName = "set#" + propName;
+            let getterName = "get#" + propName;
+            let deps = ctx.currentDependencies();
+            if (deps != null && members.has(setterName)) {
+              let classSymId = (ct.genericSource ?? ct).symbolId;
+              deps.referencedSymbols.add(classSymId);
+              deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${setterName}`);
+            }
+            if (members.has(propName) && members[propName] is FieldInfo) {
+              let fi = members[propName] as FieldInfo;
+              if (!fi.isMutable) {
+                ctx.error(
+                  `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
+                  DiagnosticCode.InvalidAssignment,
+                  loc
+                );
+                return new ErrorType();
               }
-            } else {
-              // Check for setter method (set#propName)
-              let setterName = "set#" + propName;
-              if (ct.members.has(setterName)) {
-                let setterInfo = ct.members[setterName];
-                match (setterInfo) {
-                  case MethodInfo as mi: {
-                    if (staticAccessMismatch(ctx, isStatic, mi, propName, ct.name,
-                        DiagnosticCode.InvalidAssignment, loc)) {
-                      return new ErrorType();
-                    }
-                  }
-                  case _: {}
-                }
-              } else {
-                // Check if there's a getter only (read-only property)
-                let getterName = "get#" + propName;
-                if (ct.members.has(getterName)) {
-                  ctx.error(
-                    `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
-                    DiagnosticCode.InvalidAssignment,
-                    loc
-                  );
-                  return new ErrorType();
-                }
+            } else if (!members.has(setterName)) {
+              if (members.has(getterName)) {
+                ctx.error(
+                  `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
+                  DiagnosticCode.InvalidAssignment,
+                  loc
+                );
+                return new ErrorType();
+              }
+              if ((otherMembers.has(propName) && otherMembers[propName] is FieldInfo) ||
+                  otherMembers.has(setterName) ||
+                  otherMembers.has(getterName)) {
+                staticAccessMismatch(ctx, isStatic, propName, ct.name,
+                    DiagnosticCode.InvalidAssignment, loc);
+                return new ErrorType();
               }
             }
           }

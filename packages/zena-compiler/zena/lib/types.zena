@@ -572,6 +572,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
 
   /** The type whose members these are. Set by its constructor. */
   var owner: Type | null = null;
+  var isStaticTable: boolean = false;
   #own = new OrderedHashMap<String, MemberInfo>();
   /** Keys every read reports absent until `unhideAll`; null when none. */
   var #hidden: HashSet<String> | null = null;
@@ -711,12 +712,12 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
     // included, and the members of the interface the mixin is `on`.
     let self = ct.mixinSelf;
     if (self != null) {
-      let own = self.members.lookup(key);
+      let own = self.memberTable(this.isStaticTable).lookup(key);
       if (own != null) {
         return own;
       }
       let on = ct.onType;
-      if (on is InterfaceType && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
+      if (!this.isStaticTable && on is InterfaceType && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
         let onMember = (on as InterfaceType).members.lookup(key);
         if (onMember != null) {
           return inheritedMember(onMember as MemberInfo, on.typeParameters, on.typeArguments, false);
@@ -753,15 +754,16 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
     var i = mt.mixins.length - 1;
     while (i >= 0) {
       let composed = mt.mixins[i];
+      let composedTable = composed.memberTable(this.isStaticTable);
       let prefix = composedScopeKey(composed) + "::";
       if (key.startsWith(prefix)) {
         let inner = key.sliceBytes(prefix.length, key.length);
-        let member = composed.members.lookup(inner);
+        let member = composedTable.lookup(inner);
         if (member != null && isScopedByComposition(inner, member as MemberInfo)) {
           return member;
         }
       } else {
-        let member = composed.members.lookup(key);
+        let member = composedTable.lookup(key);
         if (member != null && !isScopedByComposition(key, member as MemberInfo)) {
           return member;
         }
@@ -779,7 +781,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
     if (parent == null) {
       return null;
     }
-    let member = parent.members.lookup(key);
+    let member = parent.memberTable(this.isStaticTable).lookup(key);
     if (member == null) {
       return null;
     }
@@ -796,18 +798,19 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
     if (ct.decoratorSubjectName != null) {
       return this.#decoratorMember(ct, mixin, key);
     }
+    let mixinTable = mixin.memberTable(this.isStaticTable);
     let scope = mixin.privateScopeKey ?? (mixin.name + "_This");
     let prefix = scope + "::";
     if (key.startsWith(prefix)) {
       let inner = key.sliceBytes(prefix.length, key.length);
-      let member = mixin.members.lookup(inner);
+      let member = mixinTable.lookup(inner);
       if (member != null && isPrivateMixinKey(inner) &&
           (member is FieldInfo || member is MethodInfo)) {
         return member;
       }
       return null;
     }
-    let member = mixin.members.lookup(key);
+    let member = mixinTable.lookup(key);
     if (member == null) {
       return null;
     }
@@ -828,13 +831,14 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
    * declaration.
    */
   #decoratorMember(ct: ClassType, source: MixinType, key: String): MemberInfo | null {
+    let sourceTable = source.memberTable(this.isStaticTable);
     let subject = ct.decoratorSubjectName as String;
     let fieldName = ct.decoratorFieldName as String;
     if (key == "get#" + fieldName) {
-      return source.members.lookup("get#" + subject);
+      return sourceTable.lookup("get#" + subject);
     }
     if (key == "set#" + fieldName) {
-      return source.members.lookup("set#" + subject);
+      return sourceTable.lookup("set#" + subject);
     }
     let shared = source.sharedMembers;
     let sharedScope = ct.decoratorSharedScopeKey;
@@ -848,7 +852,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
         if (!shared.has(inner)) {
           return null;
         }
-        return source.members.lookup(inner);
+        return sourceTable.lookup(inner);
       }
     }
     let scope = ct.privateScopeKey;
@@ -866,7 +870,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
     if (shared != null && shared.has(inner)) {
       return null;
     }
-    return source.members.lookup(inner);
+    return sourceTable.lookup(inner);
   }
 
   /** The key the intermediate of a decorator application carries `key` under, or null. */
@@ -915,7 +919,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
       case ClassType as ct: {
         let parent = ct.superType;
         if (parent != null) {
-          for (let key in parent.members.keys()) {
+          for (let key in parent.memberTable(this.isStaticTable).keys()) {
             if (!isPrivateMemberKey(key) && !seen.has(key)) {
               seen.add(key);
               out.push(key);
@@ -925,7 +929,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
         let self = ct.mixinSelf;
         if (self != null) {
           let on = ct.onType;
-          if (on is InterfaceType) {
+          if (!this.isStaticTable && on is InterfaceType) {
             for (let key in (on as InterfaceType).members.keys()) {
               if (!(key.length > 0 && key.sliceBytes(0, 1) == "#") && !seen.has(key)) {
                 seen.add(key);
@@ -933,7 +937,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
               }
             }
           }
-          for (let key in self.members.keys()) {
+          for (let key in self.memberTable(this.isStaticTable).keys()) {
             if (!seen.has(key)) {
               seen.add(key);
               out.push(key);
@@ -942,13 +946,14 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
         }
         let mixin = ct.appliedMixin;
         if (mixin != null) {
+          let mixinTable = mixin.memberTable(this.isStaticTable);
           let scope = mixin.privateScopeKey ?? (mixin.name + "_This");
-          for (let key in mixin.members.keys()) {
+          for (let key in mixinTable.keys()) {
             var stored: String | null = key;
             if (ct.decoratorSubjectName != null) {
               stored = this.#decoratorStoredKey(ct, mixin, key);
             } else if (isPrivateMixinKey(key)) {
-              let member = mixin.members.lookup(key);
+              let member = mixinTable.lookup(key);
               if (member is FieldInfo || member is MethodInfo) {
                 stored = `${scope}::${key}`;
               }
@@ -972,9 +977,10 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
       }
       case MixinType as mt: {
         for (let composed in mt.mixins) {
+          let composedTable = composed.memberTable(this.isStaticTable);
           let scope = composedScopeKey(composed);
-          for (let key in composed.members.keys()) {
-            let member = composed.members.lookup(key);
+          for (let key in composedTable.keys()) {
+            let member = composedTable.lookup(key);
             let stored = if (member != null && isScopedByComposition(key, member as MemberInfo)) {
               `${scope}::${key}`
             } else {
@@ -1312,6 +1318,11 @@ export final class ClassType extends Type {
    * reads the table as immutable to emit `WasmStruct`s.
    */
   var members: MemberTable = new MemberTable();
+  var staticMembers: MemberTable = new MemberTable();
+
+  memberTable(isStatic: boolean): MemberTable {
+    return if (isStatic) this.staticMembers else this.members;
+  }
   /**
    * For the intermediate class a `with M` application or a field
    * decorator inserts into the host's chain: the mixin (or decorator)
@@ -1398,6 +1409,8 @@ export final class ClassType extends Type {
   new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super() {
     _classTypes += 1;
     this.members.owner = this;
+    this.staticMembers.owner = this;
+    this.staticMembers.isStaticTable = true;
   }
 
   /**
@@ -2190,6 +2203,7 @@ function substituteInType(
         inst.declaredFields = template.declaredFields;
         inst.forwardVariantNames = template.forwardVariantNames;
         inst.members = template.members;
+        inst.staticMembers = template.staticMembers;
         inst.staticSymbols = template.staticSymbols;
         if (template.onType != null) {
           inst.onType = substituteInType(template.onType, combinedParams, combinedArgs);
@@ -2383,6 +2397,7 @@ function substituteInType(
         inst.genericSource = mt.genericSource ?? mt;
         inst.onType = mt.onType;
         inst.members = mt.members;
+        inst.staticMembers = mt.staticMembers;
         inst.staticSymbols = mt.staticSymbols;
         inst.sourcePath = mt.sourcePath;
         inst
@@ -2644,6 +2659,7 @@ export function instantiateClassType(
     result.mixins.push((subM ?? m) as MixinType);
   }
   result.members = source.members;
+  result.staticMembers = source.staticMembers;
   result.staticSymbols = source.staticSymbols;
   result.constructorType = if (source.constructorType != null) {
     let ctor = source.constructorType as FunctionType;
@@ -2848,6 +2864,11 @@ export final class MixinType extends Type {
    * table reads them from here (MemberTable).
    */
   var members: MemberTable = new MemberTable();
+  var staticMembers: MemberTable = new MemberTable();
+
+  memberTable(isStatic: boolean): MemberTable {
+    return if (isStatic) this.staticMembers else this.members;
+  }
   /**
    * Always empty: only an interface declares `static symbol`s, and the
    * checker rejects one written on a class or mixin body. Carried so that
@@ -2897,6 +2918,8 @@ export final class MixinType extends Type {
   new(name: String) : name = name, super() {
     _mixinTypes += 1;
     this.members.owner = this;
+    this.staticMembers.owner = this;
+    this.staticMembers.isStaticTable = true;
   }
 }
 
@@ -2927,6 +2950,7 @@ export function instantiateMixinType(
   result.genericSource = source;
   result.onType = source.onType;
   result.members = source.members;
+  result.staticMembers = source.staticMembers;
   result.staticSymbols = source.staticSymbols;
   result.sourcePath = source.sourcePath;
   result.mixins = new Array<MixinType>();

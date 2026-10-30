@@ -239,7 +239,7 @@ sealed class WasmRecipe {
 /** How to compute a ref-table entry for a member. */
 sealed class RefRecipe {
   case RSame(ref: IrRef)
-  case RMethod(classKey: KeyPattern, method: String)
+  case RMethod(classKey: KeyPattern, method: String, isStatic: boolean)
   case RClassVTableGlobal(classKey: KeyPattern)
   case RSingletonGlobal(classKey: KeyPattern)
   case RPairGlobal(classKey: KeyPattern, ifaceKey: KeyPattern)
@@ -1103,18 +1103,18 @@ final class Learner {
     let c2 = f2.classType;
     let m1 = f1.methodName;
     let m2 = f2.methodName;
-    if (c1 == null || c2 == null || m1 == null || m2 == null || m1 != m2) {
+    if (c1 == null || c2 == null || m1 == null || m2 == null || m1 != m2 || f1.isStatic != f2.isStatic) {
       this.why = 'function is not a class method';
       return null;
     }
     let k1 = getClassKey(c1 as ClassType);
     let k2 = getClassKey(c2 as ClassType);
-    let map = this.families.wasm.classMethodMap;
+    let map = this.families.wasm.methodMap(f1.isStatic);
     if (let (true, g1) = map.get(new ClassMethodKey(k1, m1 as String))) {
       if (let (true, g2) = map.get(new ClassMethodKey(k2, m2 as String))) {
         if (g1 === f1 && g2 === f2) {
           let p = this.#pattern(k1 as String, k2 as String);
-          return if (p == null) null else new RMethod(p as KeyPattern, m1 as String);
+          return if (p == null) null else new RMethod(p as KeyPattern, m1 as String, f1.isStatic);
         }
       }
     }
@@ -1227,7 +1227,7 @@ final class Resolver {
       case RSame as s: s.ref
       case RMethod as m: {
         let key = new ClassMethodKey(m.classKey.apply(this.args) as ClassKey, m.method);
-        if (let (true, f) = module.classMethodMap.get(key)) {
+        if (let (true, f) = module.methodMap(m.isStatic).get(key)) {
           return new IrRefFunc(f);
         }
         null

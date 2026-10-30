@@ -23,6 +23,29 @@ class Sink {
   }
 }
 
+// A narrow range-checked parameter declared first, followed by wider
+// integer overloads (#77).
+class WideSink {
+  take(v: u8): i64 {
+    return (v as i64) + 1000;
+  }
+  take(v: i32): i64 {
+    return (v as i64) + 2000;
+  }
+  take(v: i64): i64 {
+    return v;
+  }
+}
+
+class NarrowPair {
+  take(v: u8): i32 {
+    return v as i32;
+  }
+  take(v: i16): i32 {
+    return (v as i32) + 1000;
+  }
+}
+
 export let main = (): i32 => {
   // The issue's own case.
   var u: u32 = 100 as u32;
@@ -75,6 +98,27 @@ export let main = (): i32 => {
   let n: i32 = 10;
   if (div(n, 3) != 3) {
     return 9;
+  }
+
+  // A narrow overload declared first does not reject a literal that
+  // fits a wider overload (#77), nor does it steal a literal from the
+  // default i32 tier.
+  let ws = new WideSink();
+  if (ws.take(300) != 2300 as i64) {
+    return 10;
+  }
+  if (ws.take(200) != 2200 as i64) {
+    return 11;
+  }
+  if (ws.take(3000000000) != 3000000000 as i64) {
+    return 12;
+  }
+
+  // When no i32 overload exists, Tier 2 skips the out-of-range u8
+  // first overload and adapts 300 to i16 without reporting a range error.
+  let np = new NarrowPair();
+  if (np.take(300) != 1300) {
+    return 13;
   }
 
   return 0;

@@ -4,7 +4,7 @@ import {
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, FunctionDeclInfo, AnyRefType, RecordType } from '../../types.zena';
 import {
-  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, decoratorStringArg, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
+  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, decoratorStringArg, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
 } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
 import {
@@ -118,8 +118,8 @@ export final class Specializer implements SpecializerInterface {
         if (existing.name == name) { already = true; }
       }
       if (already) { continue; }
-      let fType = if (classType.members.has(fieldName)) {
-        classType.members[fieldName].type
+      let fType = if (classType.staticMembers.has(fieldName)) {
+        classType.staticMembers[fieldName].type
       } else {
         model.getNodeType(member)
       };
@@ -831,6 +831,7 @@ export final class Specializer implements SpecializerInterface {
           applyMixinPrivateScope(regS, setter, msScope);
         }
       } else if (ms is FieldDefinition) {
+        if (ms.isStatic) { continue; }
         let declNode = allDecls[msIdx];
         let fieldName = memberKeyOf(sourceModel, ms.name as Node);
         if (fieldName != "" && !this.#isDecoratedField(ct, fieldName)) {
@@ -1064,10 +1065,48 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
+    var isStatic = false;
+    if (methodNode != null) {
+      if (methodNode is MethodDefinition) {
+        isStatic = methodNode.isStatic;
+      } else if (methodNode is AccessorDeclaration) {
+        isStatic = methodNode.isStatic;
+      } else if (methodNode is FieldDefinition) {
+        isStatic = methodNode.isStatic;
+      } else if (methodNode is SetterInfo) {
+        let parentNode = model.getParent(methodNode);
+        if (parentNode is AccessorDeclaration) {
+          isStatic = parentNode.isStatic;
+        } else if (cDecl is ClassDeclaration) {
+          for (let ms in cDecl.body) {
+            if (ms is AccessorDeclaration && ms.setter === methodNode) {
+              isStatic = ms.isStatic;
+              break;
+            }
+          }
+        } else if (cDecl is MixinDeclaration) {
+          for (let ms in cDecl.body) {
+            if (ms is AccessorDeclaration && ms.setter === methodNode) {
+              isStatic = ms.isStatic;
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (!isStatic && methodNode == null && !isSynthesizedGetter && !isSynthesizedSetter &&
+        cType != null && !cType.members.has(methName) && cType.staticMembers.has(methName)) {
+      let mi = cType.staticMembers[methName];
+      if (mi is MethodInfo) {
+        isStatic = mi.isStatic;
+      }
+    }
+
     var realMethName = methName;
     var methodTypeNode: Type | null = null;
     var origMethodFt: FunctionType | null = null;
     if (cType != null) {
+      let cTypeMembers = cType.memberTable(isStatic);
       if (methName == "<constructor>") {
         methodTypeNode = cType.constructorType;
         // A self-referential generic class instantiates ITSELF while its
@@ -1103,8 +1142,8 @@ export final class Specializer implements SpecializerInterface {
         var specificFuncType: FunctionType | null = null;
         var hasOverloads = false;
         if (methodNode is MethodDefinition) {
-          if (cType.members.has(methName)) {
-            let mInfo = cType.members[methName];
+          if (cTypeMembers.has(methName)) {
+            let mInfo = cTypeMembers[methName];
             if (mInfo.type is FunctionType) {
               let ft = mInfo.type as FunctionType;
               if (ft.overloads != null) {
@@ -1154,9 +1193,10 @@ export final class Specializer implements SpecializerInterface {
           var currClass: ClassType | null = cType;
           while (currClass != null && methodTypeNode == null) {
             let cc = currClass;
+            let ccMembers = cc.memberTable(isStatic);
             if (baseName != methName) {
-              if (cc.members.has(baseName)) {
-                let mInfo = cc.members[baseName];
+              if (ccMembers.has(baseName)) {
+                let mInfo = ccMembers[baseName];
                 if (mInfo.type is FunctionType) {
                   let ft = mInfo.type as FunctionType;
                   if (specIdx >= 0) {
@@ -1174,8 +1214,8 @@ export final class Specializer implements SpecializerInterface {
                   }
                 }
               }
-            } else if (cc.members.has(methName)) {
-              let mInfo = cc.members[methName];
+            } else if (ccMembers.has(methName)) {
+              let mInfo = ccMembers[methName];
               // A METHOD registration must not take its signature from
               // a same-named FIELD: a distributed variant's case param
               // may shadow the sealed base's accessor method (docs()
@@ -1187,9 +1227,9 @@ export final class Specializer implements SpecializerInterface {
                 methodTypeNode = mInfo.type;
               }
             } else {
-              for (let k in cc.members.keys()) {
+              for (let k in ccMembers.keys()) {
                 if (k.endsWith("::" + methName)) {
-                  let mInfo = cc.members[k];
+                  let mInfo = ccMembers[k];
                   let isMethodReg = methodNode != null &&
                       methodNode is MethodDefinition;
                   if (!isMethodReg || mInfo is MethodInfo) {
@@ -1215,10 +1255,10 @@ export final class Specializer implements SpecializerInterface {
             let parts = strippedMethName.split(".");
             strippedMethName = parts[parts.length - 1];
           }
-          if (methName == "==") {
+          if (methName == "==" && !isStatic) {
             let eqParams = growable<Type>([cType]);
             methodTypeNode = new FunctionType(eqParams, new BooleanType());
-          } else if (methName == "hashCode") {
+          } else if (methName == "hashCode" && !isStatic) {
             methodTypeNode = new FunctionType(new Array<Type>(), new I32Type());
           } else if (strippedMethName.startsWith("get#")) {
             let fieldName = strippedMethName.sliceBytes(4, strippedMethName.length);
@@ -1226,36 +1266,37 @@ export final class Specializer implements SpecializerInterface {
             var curr: ClassType | null = cType;
             while (curr != null && pType == null) {
               let cc = curr;
-              if (cc.members.has(methName)) {
-                let m = cc.members[methName];
+              let ccMembers = cc.memberTable(isStatic);
+              if (ccMembers.has(methName)) {
+                let m = ccMembers[methName];
                 if (m is MethodInfo && m.type is FunctionType) {
                   pType = (m.type as FunctionType).returnType;
                 }
               }
-              if (pType == null && cc.members.has(strippedMethName)) {
-                let m = cc.members[strippedMethName];
+              if (pType == null && ccMembers.has(strippedMethName)) {
+                let m = ccMembers[strippedMethName];
                 if (m is MethodInfo && m.type is FunctionType) {
                   pType = (m.type as FunctionType).returnType;
                 }
               }
-              if (pType == null && cc.members.has(fieldName)) {
-                let m = cc.members[fieldName];
+              if (pType == null && ccMembers.has(fieldName)) {
+                let m = ccMembers[fieldName];
                 if (m is FieldInfo) {
                   pType = m.type;
                 } else if (m is MethodInfo && m.type is FunctionType) {
                   pType = (m.type as FunctionType).returnType;
                 }
               }
-              if (pType == null && cc.members.has("#" + fieldName)) {
-                let m = cc.members["#" + fieldName];
+              if (pType == null && ccMembers.has("#" + fieldName)) {
+                let m = ccMembers["#" + fieldName];
                 if (m is FieldInfo) {
                   pType = m.type;
                 }
               }
               if (pType == null) {
-                for (let k in cc.members.keys()) {
+                for (let k in ccMembers.keys()) {
                   if (k.endsWith("::" + methName) || k.endsWith("::" + strippedMethName) || k.endsWith("::" + fieldName) || k.endsWith("::#" + fieldName)) {
-                    let m = cc.members[k];
+                    let m = ccMembers[k];
                     if (m is FieldInfo) {
                       pType = m.type;
                       break;
@@ -1277,8 +1318,9 @@ export final class Specializer implements SpecializerInterface {
             var curr: ClassType | null = cType;
             while (curr != null && pType == null) {
               let cc = curr;
-              if (cc.members.has(methName)) {
-                let m = cc.members[methName];
+              let ccMembers = cc.memberTable(isStatic);
+              if (ccMembers.has(methName)) {
+                let m = ccMembers[methName];
                 if (m is MethodInfo && m.type is FunctionType) {
                   let ft = m.type as FunctionType;
                   if (ft.parameters.length > 0) {
@@ -1288,8 +1330,8 @@ export final class Specializer implements SpecializerInterface {
                   }
                 }
               }
-              if (pType == null && cc.members.has(strippedMethName)) {
-                let m = cc.members[strippedMethName];
+              if (pType == null && ccMembers.has(strippedMethName)) {
+                let m = ccMembers[strippedMethName];
                 if (m is MethodInfo && m.type is FunctionType) {
                   let ft = m.type as FunctionType;
                   if (ft.parameters.length > 0) {
@@ -1299,8 +1341,8 @@ export final class Specializer implements SpecializerInterface {
                   }
                 }
               }
-              if (pType == null && cc.members.has(fieldName)) {
-                let m = cc.members[fieldName];
+              if (pType == null && ccMembers.has(fieldName)) {
+                let m = ccMembers[fieldName];
                 if (m is FieldInfo) {
                   pType = m.type;
                 } else if (m is MethodInfo && m.type is FunctionType) {
@@ -1312,16 +1354,16 @@ export final class Specializer implements SpecializerInterface {
                   }
                 }
               }
-              if (pType == null && cc.members.has("#" + fieldName)) {
-                let m = cc.members["#" + fieldName];
+              if (pType == null && ccMembers.has("#" + fieldName)) {
+                let m = ccMembers["#" + fieldName];
                 if (m is FieldInfo) {
                   pType = m.type;
                 }
               }
               if (pType == null) {
-                for (let k in cc.members.keys()) {
+                for (let k in ccMembers.keys()) {
                   if (k.endsWith("::" + methName) || k.endsWith("::" + strippedMethName) || k.endsWith("::" + fieldName) || k.endsWith("::#" + fieldName)) {
-                    let m = cc.members[k];
+                    let m = ccMembers[k];
                     if (m is FieldInfo) {
                       pType = m.type;
                       break;
@@ -1385,24 +1427,7 @@ export final class Specializer implements SpecializerInterface {
     let returns = new Array<ValType>();
 
     let isCtor = isConstructorMethodName(methName);
-    let rootClass = if (isCtor) cType else getMemberRootClass(cType, methName);
-
-    var isStatic = false;
-    if (methodNode != null) {
-      if (methodNode is MethodDefinition) {
-        isStatic = methodNode.isStatic;
-      } else if (methodNode is AccessorDeclaration) {
-        isStatic = methodNode.isStatic;
-      } else if (methodNode is FieldDefinition) {
-        isStatic = methodNode.isStatic;
-      }
-    }
-    if (!isStatic && cType.members.has(methName)) {
-      let mi = cType.members[methName];
-      if (mi is MethodInfo) {
-        isStatic = mi.isStatic;
-      }
-    }
+    let rootClass = if (isCtor || isStatic) cType else getMemberRootClass(cType, methName);
 
     if (!isStatic) {
       // Constructors take no receiver: a non-extension constructor is a
@@ -1550,8 +1575,9 @@ export final class Specializer implements SpecializerInterface {
                             (cType.typeArguments == null || !isConcrete(cType));
 
     let registeredKey = getClassMethodKey(getClassKey(cType), realMethName);
-    if (this.pass.wasm.classMethodMap.has(registeredKey)) {
-      let func = this.pass.wasm.classMethodMap[registeredKey];
+    let methodMap = this.pass.wasm.methodMap(isStatic);
+    if (methodMap.has(registeredKey)) {
+      let func = methodMap[registeredKey];
       if (func.node == null && methodNode != null) {
         func.node = methodNode;
       }
@@ -1593,7 +1619,7 @@ export final class Specializer implements SpecializerInterface {
       this.#reachRegisteredMethod(wasmFunc);
     }
 
-    this.pass.wasm.classMethodMap[registeredKey] = wasmFunc;
+    methodMap[registeredKey] = wasmFunc;
     let cKey = getClassKey(cType) as String;
     if (!this.pass.wasm.classMethods.has(cKey)) {
       this.pass.wasm.classMethods[cKey] = new Array<WasmFunction>();
@@ -1852,8 +1878,9 @@ export final class Specializer implements SpecializerInterface {
           let methName = memberKeyOf(sourceModel, ms.name as Node);
           if (methName != "") {
             var vtableMethName = methName;
-            if (ct.members.has(methName)) {
-              let mInfo = ct.members[methName];
+            let msMembers = ct.memberTable(ms.isStatic);
+            if (msMembers.has(methName)) {
+              let mInfo = msMembers[methName];
               if (mInfo.type is FunctionType) {
                 let ft = mInfo.type as FunctionType;
                 let specificType = matchOverload(allModels[msIdx], ft, ms);
@@ -1916,6 +1943,7 @@ export final class Specializer implements SpecializerInterface {
             applyMixinPrivateScope(regS, setter, msScope);
           }
         } else if (ms is FieldDefinition) {
+          if (ms.isStatic) { continue; }
           let declNode = allDecls[msIdx];
           let fieldName = memberKeyOf(sourceModel, ms.name as Node);
           if (fieldName != "" && !this.#isDecoratedField(ct, fieldName)) {
@@ -2062,21 +2090,6 @@ export final class Specializer implements SpecializerInterface {
       fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), false));
     }
 
-    let isStaticField = (targetFieldName: String): boolean => {
-      if (cd == null) return false;
-      let cdDecl = if (cd is ClassDeclaration) cd else null;
-      if (cdDecl == null) return false;
-      for (let ms in cdDecl.body) {
-        if (ms is FieldDefinition) {
-          let fieldName = memberKeyOf(sourceModel, ms.name as Node);
-          if (fieldName == targetFieldName) {
-            return ms.isStatic;
-          }
-        }
-      }
-      return false;
-    };
-
     let ctParams = getClassTypeParameters(ct);
     for (let pair in ct.members) {
       if (pair.value is MethodInfo) {
@@ -2085,7 +2098,7 @@ export final class Specializer implements SpecializerInterface {
       if (pair.value.isAbstract) {
         continue;
       }
-      if (isStaticField(pair.key)) {
+      if (pair.value is FieldInfo && (pair.value as FieldInfo).isStatic) {
         continue;
       }
       var isInherited = false;
@@ -2455,8 +2468,10 @@ export final class Specializer implements SpecializerInterface {
   instantiateGenericMethod(ct: ClassType, cd: Node | null, methName: String, methodNode: Node, typeArgs: Array<Type>, model: SemanticModel): WasmFunction {
     let specKey = getSpecializedName(methName, typeArgs);
     let registeredKey = getClassMethodKey(getClassKey(ct), specKey);
-    if (this.pass.wasm.classMethodMap.has(registeredKey)) {
-      return this.pass.wasm.classMethodMap[registeredKey];
+    let isStatic = methodNode is MethodDefinition && methodNode.isStatic;
+    let methodMap = this.pass.wasm.methodMap(isStatic);
+    if (methodMap.has(registeredKey)) {
+      return methodMap[registeredKey];
     }
     return this.registerClassMethod(ct, cd, specKey, methodNode, false, false, null, model, typeArgs);
   }
