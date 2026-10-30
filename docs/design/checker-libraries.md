@@ -300,6 +300,13 @@ Fixed with the split, each with a portable test seen failing first:
   return. Its
   result is the interface at the parameters its restatement declared,
   each standing where the interface's parameter of that name stands.
+- A nullable member of an `is`-narrowed binding, read as a null test's
+  subject on the right of `&&` (`b is Sub && b.arr != null`), failed in
+  lowering (elematic/zena#85): the condition's false branch was
+  computed by checking `b.arr` again without the narrowing, which
+  overwrote its recorded type. The subject's type is read from the
+  model now, and the right operand is read under the left's narrowing
+  on both branches.
 - `tryInstantiateGenericFunction` inferred a generic method's
   parameter only through a bare parameter, an array or a class, so
   `map<U>` on the array classes, whose `U` appears in a callback's

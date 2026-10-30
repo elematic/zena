@@ -1,0 +1,42 @@
+// @mode: run
+// @result: 5
+//
+// A nullable member of an `is`-narrowed binding, read as a null test's
+// subject on the right of `&&`, is read under the left operand's
+// narrowing: `v.x` exists because `v is A`. The condition's false
+// branch used to be computed by checking `v.x` again without that
+// narrowing, which overwrote its recorded type with the check of `x`
+// on `A | B`, and lowering then failed on the member's receiver
+// ("member receiver kind", "member not found"; issue #85).
+
+class A {
+  x: String | null;
+  new(this.x);
+}
+
+class B {
+  y: i32;
+  new(this.y);
+}
+
+function f(v: A | B): i32 {
+  if (v is A && v.x != null) {
+    return v.x.length;
+  }
+  return 0;
+}
+
+// The issue's own shape: a subclass's nullable member, in a closure.
+class Base { x: i32 = 1; }
+class Sub extends Base {
+  arr: GrowableArray<i32> | null;
+  new(filled: boolean) : arr = if (filled) new GrowableArray<i32>() else null, super();
+}
+
+export function main(): i32 {
+  let g = (b: Base): i32 => {
+    if (b is Sub && b.arr != null) { return 1; }
+    return 0;
+  };
+  return f(new A("abcd")) + f(new B(1)) + g(new Sub(true)) + g(new Sub(false)) + g(new Base());
+}
