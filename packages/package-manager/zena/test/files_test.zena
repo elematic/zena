@@ -1,0 +1,86 @@
+/**
+ * Which files a package publishes (`package-manager:files`): its
+ * manifest's `files` list, or by default everything but tests, never
+ * hidden files, `node_modules` or the lockfile, and always the manifest,
+ * a README and a license.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {PublishedFiles} from 'package-manager:files';
+import {ManifestError, readManifest} from 'package-manager:manifest';
+
+/** The files `manifest` publishes, read from its text. */
+function publishedBy(manifest: String): PublishedFiles {
+  return PublishedFiles.of(readManifest(manifest));
+}
+
+/** Whether `manifest` cannot be read. */
+function refused(manifest: String): boolean {
+  try {
+    readManifest(manifest);
+    return false;
+  } catch (e) {
+    return e is ManifestError;
+  }
+}
+
+export let tests = suite('package-manager:files', () => {
+  test('publishes everything but tests by default, assets and documents included', (ctx) => {
+    let files = publishedBy('{"name": "router"}');
+    for (let path in ['zena-package.json', 'router.zena', 'match/route.zena', 'README.md', 'LICENSE',
+        'docs/guide.md', 'assets/logo.png', 'demo/index.html', 'testing/fake.zena']) {
+      isTrue(files.includes(path), path);
+    }
+    for (let path in ['router_test.zena', 'match/route_test.zena', 'test/fixtures/a.json', 'tests/b.zena',
+        'match/test/c.zena']) {
+      isFalse(files.includes(path), path);
+    }
+  });
+
+  test('publishes what the files list names, with exclusions, and a directory whole', (ctx) => {
+    let files = publishedBy('{"name": "router", "files": ["src", "docs/**/*.md", "!src/internal", "src/internal/keep.zena"]}');
+    for (let path in ['src/router.zena', 'src/match/route.zena', 'docs/guide.md', 'docs/api/router.md',
+        'src/internal/keep.zena', 'src/router_test.zena']) {
+      isTrue(files.includes(path), path);
+    }
+    for (let path in ['src/internal/secret.zena', 'docs/logo.png', 'bench/fast.zena', 'router.zena']) {
+      isFalse(files.includes(path), path);
+    }
+  });
+
+  test('always publishes the manifest, a README and a license, and never hidden files or dependencies', (ctx) => {
+    let files = publishedBy('{"name": "router", "files": ["**"]}');
+    for (let path in ['zena-package.json', 'README.md', 'readme.txt', 'LICENSE', 'LICENCE.md', 'COPYING']) {
+      isTrue(publishedBy('{"name": "router", "files": ["src"]}').includes(path), path);
+    }
+    for (let path in ['.env', 'src/.secret', '.github/workflows/ci.yml', 'node_modules/a/index.js',
+        'src/node_modules/b.js', 'zena-lock.json']) {
+      isFalse(files.includes(path), path);
+    }
+    // Only at the root: a README deeper in is an ordinary file.
+    isFalse(publishedBy('{"name": "router", "files": ["src"]}').includes('docs/README.md'));
+  });
+
+  test('refuses a files list that is not one of paths inside the package', (ctx) => {
+    for (let manifest in ['{"files": "src"}', '{"files": [3]}', '{"files": [""]}', '{"files": ["/etc"]}',
+        '{"files": ["../other"]}', '{"files": ["src/../../x"]}', '{"files": ["src/{a"]}']) {
+      isTrue(refused(manifest), manifest);
+    }
+    // TODO(#735): `files?.length ?? 0` fails to lower on an interface.
+    let listed: Array<String> = readManifest('{"files": ["src", "!src/internal"]}').files ?? [];
+    equal(listed.length, 2);
+  });
+
+  test('names the files the exports point at', (ctx) => {
+    let manifest = readManifest(`{"name": "router", "exports": {"router": {}, "url": {"path": "url/index.zena"},
+        "console": {"virtual": {"js": "console/host.zena", "component": "console/component.zena"}}}}`);
+    let exported = manifest.exportFiles;
+    equal(exported.length, 4);
+    for (let path in ['router.zena', 'url/index.zena', 'console/host.zena', 'console/component.zena']) {
+      isTrue(exported.contains(path), path);
+    }
+    // An open package names none.
+    equal(readManifest('{"name": "router"}').exportFiles.length, 0);
+  });
+});

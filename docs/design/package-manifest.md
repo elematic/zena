@@ -56,6 +56,7 @@ else moved.
 | `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish         |
 | `version`      | `string`                        | any package    | The version `zena publish` publishes next                              |
 | `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                |
+| `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                       |
 | `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name            |
 | `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                      |
 | `scopes`       | `Record<string, string>`        | workspace root | Domains for `@scope/name` (see package-manager.md, "Names and scopes") |
@@ -151,6 +152,48 @@ Without `exports`, the package is **open**: every `.zena` file under its
 root can be imported. With `exports`, it is **closed**: only the listed
 libraries can. A file a closed package does not list is private to it,
 reachable only through relative imports from the package's own files.
+
+### `files`
+
+The files `zena publish` puts in the package's source archive: patterns
+relative to the package's root, read as `.gitignore` reads its own (and
+as `zena:glob`'s `GlobSet` does). The last pattern that matches a path
+decides, a `!` excludes, and a pattern that names a directory takes
+everything under it.
+
+```json
+{
+  "files": [
+    "src",
+    "docs/**/*.md",
+    "assets",
+    "!src/internal",
+    "src/internal/api.zena"
+  ]
+}
+```
+
+A package can publish any files: documentation, images, video, demos. Some
+paths mean something to the compiler: the manifest itself, and, in a
+package with `exports`, each library's entry file, which a published
+archive must hold. Other kinds of package may give other paths a meaning
+(#734).
+
+- **Without `files`**, the archive holds every file but tests:
+  `*_test.zena` files, and directories named `test` or `tests`, at any
+  depth.
+- **Always**: the manifest, and a README and license (`README`,
+  `LICENSE`, `LICENCE` or `COPYING`, with any extension, at the root).
+- **Never**: hidden files and directories (a name starting with `.`),
+  `node_modules`, the workspace's `zena-lock.json`, and packages nested in
+  this one, which have their own `zena-package.json` and are published
+  on their own.
+
+A pattern must be a path inside the package: not empty, not absolute, and
+without `..`. The package host refuses an archive that holds a file its
+manifest does not publish, or lacks a file its `exports` name
+(`package-manager:files`, `package-manager:validate`). Releases published
+before the rule are fetched as they are.
 
 ### `dependencies`
 

@@ -22,6 +22,7 @@ import {HashSet} from 'zena:collections';
 import {Cid} from 'atproto:cid';
 import {IdentityResolver} from 'atproto:identity';
 import {SourceFile, unpackSource} from './archive.zena';
+import {PublishedFiles} from './files.zena';
 import {Manifest, readManifest} from './manifest.zena';
 import {Dependency, Release, SOURCE, isValidLicenseExpression} from './records.zena';
 import {Versions, listVersions} from './registry.zena';
@@ -103,6 +104,22 @@ export function checkSource(release: Release, did: String, source: FixedArray<u8
   if (publishing) {
     for (let problem in checkMetadata(manifest, `the archive's ${MANIFEST}`)) {
       problems.push(problem);
+    }
+    // The archive holds what its manifest publishes, the file of every
+    // library it exports among them (package-manifest.md, "files").
+    let published = PublishedFiles.of(manifest);
+    let held = new HashSet<String>();
+    for (let file in files as FixedArray<SourceFile>) {
+      held.add(file.path);
+      if (!published.includes(file.path)) {
+        problems.push(`the archive holds ${file.path}, which its ${MANIFEST} does not publish`);
+      }
+    }
+    for (let path in manifest.exportFiles) {
+      let relative = if (path.startsWith('./')) path.sliceBytes(2, path.length) else path;
+      if (!held.has(relative)) {
+        problems.push(`the archive has no ${relative}, which its ${MANIFEST} exports`);
+      }
     }
   }
 

@@ -13,11 +13,12 @@
  * A package that has a DID is checked against its scope: its handle must
  * be its name in that scope.
  *
- * Publishing packs the package's files into a source archive, uploads it,
- * writes the release for the manifest's `version`, and writes the
- * maintainer's attestation of the release to their own repository. The
- * release is checked first, before the host is asked anything, so a
- * package whose release would be refused is never created.
+ * Publishing packs the files the manifest publishes (`package-manager:files`)
+ * into a source archive, uploads it, writes the release for the manifest's
+ * `version`, and writes the maintainer's attestation of the release to
+ * their own repository. The release is checked first, before the host is
+ * asked anything, so a package whose release would be refused is never
+ * created.
  *
  * The host is `--host`, else `ZENA_PACKAGE_HOST`, else
  * `https://pkg.zena-lang.dev`; its service DID and handle domain come from
@@ -41,6 +42,7 @@ import { Session, getServiceAuth } from 'atproto:session';
 import { XrpcClient, XrpcError } from 'atproto:xrpc';
 import { packSource } from 'package-manager:archive';
 import { SOURCE_MIME_TYPE, checkDependencies, checkMetadata, validateRelease } from 'package-manager:validate';
+import { PublishedFiles } from 'package-manager:files';
 import { Manifest, readManifest, writeDid } from 'package-manager:manifest';
 import {
   ATTESTATION_TYPE, Artifact, Attestation, Dependency, Maintainer, Maintainers, OWNER, POLICY_TYPE, Policy, Profile,
@@ -403,7 +405,7 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
   if (manifest.version == null) {
     throw new PublishError(`${target.manifestPath()} has no version to publish`);
   }
-  let files = sourceFiles(target.dir);
+  let files = sourceFiles(target.dir, manifest);
   files['zena-package.json'] = manifestText.toBytes() as FixedArray<u8>;
   let archive = packSource(files);
   // The blob the host will store, named by its contents, so the release is
@@ -521,17 +523,24 @@ function dependenciesOf(target: WorkspacePackage, manifest: Manifest): FixedArra
 }
 
 /**
- * The files of the package in `dir`, by path from it: every file but
- * hidden ones, `node_modules`, `zena-lock.json`, and the files of packages
- * nested in it, which are published on their own.
+ * The files of the package in `dir` that `manifest` publishes, by path
+ * from it (`package-manager:files`): those its `files` list names, or all
+ * but its tests, and never hidden ones, `node_modules`, `zena-lock.json`,
+ * or the files of packages nested in it, which are published on their own.
  */
-function sourceFiles(dir: String): OrderedHashMap<String, FixedArray<u8>> {
+function sourceFiles(dir: String, manifest: Manifest): OrderedHashMap<String, FixedArray<u8>> {
   let files = new OrderedHashMap<String, FixedArray<u8>>();
-  addFiles(dir, '', files);
+  addFiles(dir, '', PublishedFiles.of(manifest), files);
   return files;
 }
 
-function addFiles(dir: String, prefix: String, files: OrderedHashMap<String, FixedArray<u8>>): void {
+/**
+ * Adds the files under `dir`, at `prefix` in the package, that `published`
+ * takes. A directory that holds a `zena-package.json` is a package of its
+ * own, published on its own.
+ */
+function addFiles(dir: String, prefix: String, published: PublishedFiles,
+    files: OrderedHashMap<String, FixedArray<u8>>): void {
   for (let entry in listDirSync(dir)) {
     let name = entry.name;
     if (name.startsWith('.') || name == 'node_modules' || (prefix == '' && name == 'zena-lock.json')) {
@@ -541,9 +550,9 @@ function addFiles(dir: String, prefix: String, files: OrderedHashMap<String, Fix
     let relative = if (prefix == '') name else `${prefix}/${name}`;
     if (entry.fileType == FileType.Directory) {
       if (!existsSync(`${path}/zena-package.json`)) {
-        addFiles(path, relative, files);
+        addFiles(path, relative, published, files);
       }
-    } else if (entry.fileType == FileType.RegularFile) {
+    } else if (entry.fileType == FileType.RegularFile && published.includes(relative)) {
       files[relative] = readFileBytesSync(path);
     }
   }
