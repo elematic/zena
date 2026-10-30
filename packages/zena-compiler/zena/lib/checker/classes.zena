@@ -19,7 +19,7 @@ import { WellKnown, isWellKnown } from '../well-known.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
 import { resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
 import { spliceDefaultArguments } from './calls.zena';
-import { CheckerContext } from './context.zena';
+import { BodyContext, CheckerContext } from './context.zena';
 import { validateFunctionDecorators } from './declarations.zena';
 import { checkExpression } from './expressions.zena';
 import {
@@ -2120,14 +2120,16 @@ export function checkAccessorBodies(
   if (getter != null) {
     ctx.enterNodeReferrer(acc.id as i32);
     ctx.enterScope();
-    let prevReturnType = ctx.returnType;
-    ctx.setReturnType(accType);
+    let body = new BodyContext();
+    body.returnType = accType;
+    body.bodyThisType = ctx.bodyThisType;
+    let prevBody = ctx.enterBody(body);
     let prevFlowState = ctx.enterBodyFlow(false);
     for (let stmt in getter.body) {
       checkStatement(ctx, stmt);
     }
     ctx.exitBodyFlow(prevFlowState);
-    ctx.setReturnType(prevReturnType);
+    ctx.exitBody(prevBody);
     ctx.exitScope();
     ctx.exitNodeReferrer(acc.id as i32);
   }
@@ -2989,11 +2991,8 @@ export function checkMethodBody(
   // against the yield type (extracted back out of Iterator<T>) with a
   // void return type; async methods check against the Future's value
   // type; everything else checks against the return type.
-  let prevReturnType = ctx.returnType;
-  let prevYieldType = ctx.yieldType;
-  let prevAsyncValue = ctx.asyncValueType;
-  let prevAsyncFuture = ctx.asyncFutureType;
-  let prevSuspensionRelaxed = ctx.suspensionRelaxed;
+  let body = new BodyContext();
+  body.bodyThisType = ctx.bodyThisType;
 
   // A `Scoped` return on an async or gen method lifts the
   // borrow-across-suspension rule and the generator parameter ban, as
@@ -3008,18 +3007,16 @@ export function checkMethodBody(
       mdScopedRelaxed = true;
     }
   }
-  ctx.setSuspensionRelaxed(mdScopedRelaxed);
+  body.suspensionRelaxed = mdScopedRelaxed;
 
   // A declared `this: Own<this>` makes `this` the owner for the whole body,
   // closures included — where capturing it is rejected anyway, since a
   // resource's `this` may not be captured at all.
-  let prevOwningReceiver = ctx.owningReceiver;
-  ctx.setOwningReceiver(declaresOwningReceiver(md));
-  let prevReceiverSymbol = ctx.receiverSymbol;
-  let prevInDispose = ctx.inDispose;
+  body.owningReceiver = declaresOwningReceiver(md);
   let isDispose = getMemberName(ctx, md.name) == ":dispose";
-  ctx.setInDispose(isDispose);
-  ctx.setReceiverSymbol(owningReceiverSymbol(ctx, md, classType));
+  body.inDispose = isDispose;
+  body.receiverSymbol = owningReceiverSymbol(ctx, md, classType);
+  let prevBody = ctx.enterBody(body);
   let prevFlowState = ctx.enterBodyFlow(false);
 
   if (md.isGenerator) {
@@ -3041,37 +3038,29 @@ export function checkMethodBody(
     if (!mdScopedRelaxed) {
       rejectGeneratorBorrowParams(ctx, md.params, methodType.parameters);
     }
-    ctx.setReturnType(new VoidType());
-    ctx.setYieldType(yieldT);
+    body.returnType = new VoidType();
+    body.yieldType = yieldT;
     // An `async gen` may await: a non-null asyncValueType opens the
     // gate (checkAwaitExpression), and void is right because a
     // generator returns through `yield`, not a frame value. No
     // asyncFutureType: `return` ends the iteration, it does not adopt.
-    ctx.setAsyncValueType(if (md.isAsync) new VoidType() as Type else null);
-    ctx.setAsyncFutureType(null);
+    if (md.isAsync) { body.asyncValueType = new VoidType(); }
   } else if (md.isAsync) {
     var valueT: Type = new ErrorType();
     let fv = extractFutureValueType(ctx, mdEffectiveReturn);
     if (fv != null) {
       valueT = fv;
     }
-    ctx.setReturnType(valueT);
-    ctx.setYieldType(null);
-    ctx.setAsyncValueType(valueT);
-    ctx.setAsyncFutureType(mdEffectiveReturn);
+    body.returnType = valueT;
+    body.asyncValueType = valueT;
+    body.asyncFutureType = mdEffectiveReturn;
   } else {
-    ctx.setReturnType(effectiveReturnType);
-    ctx.setYieldType(null);
-    ctx.setAsyncValueType(null);
-    ctx.setAsyncFutureType(null);
+    body.returnType = effectiveReturnType;
   }
 
   let methodName = if (let Identifier {name} = md.name) name else "";
   let isCtor = md.isConstructor || methodName == "<constructor>";
-  let prevUsingDepth = ctx.usingDepth;
-  ctx.setUsingDepth(0);
-  let prevInConstructor = ctx.inConstructor;
-  ctx.setInConstructor(isCtor);
+  body.inConstructor = isCtor;
   if (isCtor) {
     // The constructor prologue evaluates before the body: field
     // defaults, then the initializer list, then the super call. It is
@@ -3266,16 +3255,7 @@ export function checkMethodBody(
     ctx.model.setMovedOutFields(md as Node, movedOut);
   }
 
-  ctx.setReturnType(prevReturnType);
-  ctx.setYieldType(prevYieldType);
-  ctx.setAsyncValueType(prevAsyncValue);
-  ctx.setAsyncFutureType(prevAsyncFuture);
-  ctx.setSuspensionRelaxed(prevSuspensionRelaxed);
-  ctx.setOwningReceiver(prevOwningReceiver);
-  ctx.setReceiverSymbol(prevReceiverSymbol);
-  ctx.setInDispose(prevInDispose);
-  ctx.setUsingDepth(prevUsingDepth);
-  ctx.setInConstructor(prevInConstructor);
+  ctx.exitBody(prevBody);
   ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
 }

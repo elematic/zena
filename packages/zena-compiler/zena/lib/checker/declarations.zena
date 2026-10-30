@@ -24,7 +24,7 @@ import { resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena
 import {
   checkAccessorBodies, checkMethodBody, checkMethodSignature, validateDecoratorBody
 } from './classes.zena';
-import { CheckerContext, newEnumType } from './context.zena';
+import { BodyContext, CheckerContext, newEnumType } from './context.zena';
 import { checkExpression } from './expressions.zena';
 import { selfTypeOfClass } from './generics.zena';
 import {
@@ -1189,18 +1189,10 @@ function checkInterfaceConstructorBody(
     }
     i += 1;
   }
-  let prevReturnType = ctx.returnType;
-  let prevYieldType = ctx.yieldType;
-  let prevAsyncValue = ctx.asyncValueType;
-  let prevAsyncFuture = ctx.asyncFutureType;
-  ctx.setReturnType(ctorType.returnType);
-  ctx.setYieldType(null);
-  ctx.setAsyncValueType(null);
-  ctx.setAsyncFutureType(null);
-  let prevUsingDepth = ctx.usingDepth;
-  ctx.setUsingDepth(0);
-  let prevInConstructor = ctx.inConstructor;
-  ctx.setInConstructor(false);
+  let body = new BodyContext();
+  body.returnType = ctorType.returnType;
+  body.bodyThisType = ctx.bodyThisType;
+  let prevBody = ctx.enterBody(body);
   ctx.enterInterface();
   let prevFlowState = ctx.enterBodyFlow(false);
   match (md.body as Node) {
@@ -1239,12 +1231,7 @@ function checkInterfaceConstructorBody(
     case _: {}
   }
   ctx.exitInterface();
-  ctx.setReturnType(prevReturnType);
-  ctx.setYieldType(prevYieldType);
-  ctx.setAsyncValueType(prevAsyncValue);
-  ctx.setAsyncFutureType(prevAsyncFuture);
-  ctx.setUsingDepth(prevUsingDepth);
-  ctx.setInConstructor(prevInConstructor);
+  ctx.exitBody(prevBody);
   ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
 }
