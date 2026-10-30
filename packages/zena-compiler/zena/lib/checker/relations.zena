@@ -72,50 +72,95 @@ export function isWellKnownInterfaceType(ctx: CheckerContext, it: InterfaceType,
   }
 }
 
+/**
+ * What a type is made of at run time, for the questions that are about
+ * representation rather than assignability: whether a cast can
+ * reinterpret a value, what a union may hold beside `null`, what
+ * `anyref` accepts, what a type argument boxes. The kinds are told
+ * apart exactly where some question answers differently: `eqref` is a
+ * reference a union may hold but not one `anyref` is handed, and
+ * `externref` is a reference that is neither.
+ */
+export enum Representation {
+  /** A number: the ten numeric types, and a numeric literal's type. */
+  Numeric,
+  /** `boolean`, or a boolean literal's type. */
+  Boolean,
+  /** `v128`: 128 bits that carry no interpretation until an
+   * instruction reads them, so no cast converts them. */
+  Vector,
+  /** One heap reference the program can hold as `anyref`: a class, an
+   * interface, an array, a record, a tuple, a function, `null`,
+   * `anyref` itself, or a string literal's type. An extension class
+   * counts as a class here; `isReferenceType` asks what it extends. */
+  Reference,
+  /** `eqref`: a reference, but not one a value is handed to `anyref`
+   * as. */
+  EqRef,
+  /** `externref`: a host reference, in a union only beside `null`. */
+  ExternRef,
+  /** An inline tuple: flattened into several values, not one
+   * reference. */
+  Inline,
+  /** No single representation of its own: a type parameter, a union,
+   * an alias, an enum, `void`, `never`, an error. */
+  Other,
+}
+
+export function representationKind(t: Type): Representation {
+  return match (t) {
+    case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
+        U8Type | U16Type | I8Type | I16Type | NumLiteralType: Representation.Numeric
+    case BooleanType | BoolLiteralType: Representation.Boolean
+    case V128Type: Representation.Vector
+    case ClassType | InterfaceType | ArrayType | RecordT | TupleT | FunctionType |
+        NullType | AnyRefType | StringLiteralType: Representation.Reference
+    case EqRefType: Representation.EqRef
+    case ExternRefType: Representation.ExternRef
+    case InlineTupleT: Representation.Inline
+    case _: Representation.Other
+  };
+}
+
+/** Whether `t` is a number, a boolean or a vector: a value, not a
+ * reference. A `v128` is one no cast reaches: `isValidCast` asks
+ * separately whether both sides are numeric or both boolean. */
 export function isValuePrimitive(type: Type): boolean {
-  return match (type) {
-    case I32Type: true
-    case U32Type: true
-    case I64Type: true
-    case U64Type: true
-    case F32Type: true
-    case F64Type: true
-    case U8Type: true
-    case U16Type: true
-    case I8Type: true
-    case I16Type: true
-    // A value, not a reference — but one no cast reaches. `isValidCast`
-    // asks separately whether both sides are numeric or both boolean,
-    // and `v128` is neither, so every cast to or from it is rejected.
-    case V128Type: true
-    case BooleanType: true
-    case BoolLiteralType: true
-    case NumLiteralType: true
+  return match (representationKind(type)) {
+    case Representation.Numeric: true
+    case Representation.Boolean: true
+    case Representation.Vector: true
     case _: false
   };
 }
 
+/** Whether `t` is held as a reference: one `anyref` accepts, an
+ * `eqref`, or an inline tuple of references. An extension class is
+ * what it extends. */
 export function isReferenceType(type: Type): boolean {
-  return match (type) {
-    case ClassType as ct: {
-      if (ct.isExtension && ct.onType != null) {
-        !isValuePrimitive(ct.onType as Type)
-      } else {
-        true
-      }
+  if (type is ClassType) {
+    let ct = type as ClassType;
+    let onType = ct.onType;
+    if (ct.isExtension && onType != null) {
+      return !isValuePrimitive(onType);
     }
-    case InterfaceType: true
-    case ArrayType: true
-    case RecordT: true
-    case TupleT: true
-    case InlineTupleT: true
-    case FunctionType: true
-    case NullType: true
-    case AnyRefType: true
-    case EqRefType: true
-    case StringLiteralType: true
+  }
+  return match (representationKind(type)) {
+    case Representation.Reference: true
+    case Representation.EqRef: true
+    case Representation.Inline: true
     case _: false
   };
+}
+
+/** Whether `t` is a number or a numeric literal's type. */
+function isNumericRepresentation(t: Type): boolean {
+  return representationKind(t) == Representation.Numeric;
+}
+
+/** Whether `t` is `boolean` or a boolean literal's type. */
+function isBooleanRepresentation(t: Type): boolean {
+  return representationKind(t) == Representation.Boolean;
 }
 
 /**
@@ -285,53 +330,18 @@ export function isValidCast(sourceType: Type, targetType: Type): boolean {
 
   // Primitive → Primitive: VALID only if both are numeric or both are boolean
   if (isValuePrimitive(sourceType) && isValuePrimitive(targetType)) {
-    let isSrcNum: boolean = match (sourceType) {
-      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
-          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
-      case _: false
-    };
-    let isTgtNum: boolean = match (targetType) {
-      case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
-          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
-      case _: false
-    };
-    let isSrcBool: boolean = match (sourceType) {
-      case BooleanType | BoolLiteralType: true
-      case _: false
-    };
-    let isTgtBool: boolean = match (targetType) {
-      case BooleanType | BoolLiteralType: true
-      case _: false
-    };
-    return (isSrcNum && isTgtNum) || (isSrcBool && isTgtBool);
+    return (isNumericRepresentation(sourceType) && isNumericRepresentation(targetType)) ||
+        (isBooleanRepresentation(sourceType) && isBooleanRepresentation(targetType));
   }
 
   // Primitive → Extension on same primitive: VALID (distinct type wrapping)
   if (isValuePrimitive(sourceType) && targetType is ClassType) {
     if (targetType.isExtension && targetType.onType != null) {
       let onType = targetType.onType as Type;
-      let isSrcNum: boolean = match (sourceType) {
-        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
-          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
-        case _: false
-      };
-      let isOnNum: boolean = match (onType) {
-        case I32Type | U32Type | I64Type | U64Type | F32Type | F64Type |
-          U8Type | U16Type | I8Type | I16Type | NumLiteralType: true
-        case _: false
-      };
-      if (isSrcNum && isOnNum) {
+      if (isNumericRepresentation(sourceType) && isNumericRepresentation(onType)) {
         return true;
       }
-      let isSrcBool: boolean = match (sourceType) {
-        case BooleanType | BoolLiteralType: true
-        case _: false
-      };
-      let isOnBool: boolean = match (onType) {
-        case BooleanType | BoolLiteralType: true
-        case _: false
-      };
-      if (isSrcBool && isOnBool) {
+      if (isBooleanRepresentation(sourceType) && isBooleanRepresentation(onType)) {
         return true;
       }
     }
@@ -746,21 +756,11 @@ export function expectedArrayElementType(ctx: CheckerContext, expectedType: Type
   return null;
 }
 
+/** Whether a `T` argument of `t` boxes: a number or a boolean, with a
+ * literal's type as its base type. A `v128` does not box. */
 export function isBoxablePrimitive(t: Type): boolean {
-  return match (baseType(t)) {
-  case I32Type: true
-  case U32Type: true
-  case I64Type: true
-  case U64Type: true
-  case F32Type: true
-  case F64Type: true
-  case U8Type: true
-  case U16Type: true
-  case I8Type: true
-  case I16Type: true
-  case BooleanType: true
-  case _: false
-};
+  let base = baseType(t);
+  return isNumericRepresentation(base) || isBooleanRepresentation(base);
 }
 
 /**
@@ -769,10 +769,7 @@ export function isBoxablePrimitive(t: Type): boolean {
  * multi-value aggregates, not single references.
  */
 function isAnyRefSource(t: Type): boolean {
-  if (t is ClassType || t is InterfaceType || t is ArrayType ||
-      t is RecordT || t is TupleT || t is FunctionType ||
-      t is NullType || t is AnyRefType ||
-      t is StringLiteralType) {
+  if (representationKind(t) == Representation.Reference) {
     return true;
   }
   if (t is EnumType) {
@@ -845,15 +842,10 @@ function isGuaranteedReference(t: Type): boolean {
       let onType = ct.onType;
       if (ct.isExtension && onType != null) isGuaranteedReference(onType) else true
     }
-    case InterfaceType: true
-    case ArrayType: true
-    case TupleT: true
-    case RecordT: true
-    case FunctionType: true
-    case AnyRefType: true
-    case EqRefType: true
-    case ExternRefType: true
-    case NullType: true
+    // Every reference kind but a string literal's type, which is a
+    // `String` value and not a union member of its own.
+    case InterfaceType | ArrayType | TupleT | RecordT | FunctionType |
+        AnyRefType | EqRefType | ExternRefType | NullType: true
     case UnionT {types}: {
       for (let m in types) {
         if (!isGuaranteedReference(m)) { return false; }
