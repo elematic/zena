@@ -23,6 +23,12 @@ RUN /app/zena-run --precompile /app/pds.wasm
 ENV HOST=0.0.0.0
 ENV PORT=8080
 ENV PDS_WEB_DIR=/web
+# The server reads URLs other people chose (the PDS a DID document names),
+# so zena-run connects only to public addresses, and refuses a public
+# name pointed at a private one. The metadata server, which is link-local,
+# gives the service its Google credentials.
+ENV ZENA_DENY_PRIVATE_EGRESS=1
+ENV ZENA_ALLOW_EGRESS=metadata.google.internal
 EXPOSE 8080
 
 USER www-data

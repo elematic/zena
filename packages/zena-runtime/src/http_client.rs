@@ -31,6 +31,14 @@
 //! TLS handshake, the first-byte timeout bounds the wait for response
 //! headers once a connection has taken the request, and the
 //! between-bytes timeout bounds the gap between response body frames.
+//!
+//! Where a request may connect is the process's [`EgressPolicy`], which the
+//! embedder sets in the environment: anywhere by default, and with
+//! `ZENA_DENY_PRIVATE_EGRESS=1` only to addresses on the public internet,
+//! but for the host names `ZENA_ALLOW_EGRESS` lists. A server that reads
+//! URLs other people chose (a DID document's PDS, an avatar) sets it, so
+//! that a public name pointed at a private address cannot reach what is
+//! behind the server.
 
 use bytes::Bytes;
 use http::uri::Scheme;
@@ -43,6 +51,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use std::error::Error as StdError;
 use std::fmt;
 use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, ready};
@@ -122,6 +131,110 @@ impl WasiHttpHooks for HttpHooks {
     }
 }
 
+/// Where outgoing requests may connect. By default anywhere. With
+/// `deny_private`, only to public addresses ([`is_public`]): a name is
+/// resolved once, refused with `DestinationIpProhibited` when any of its
+/// addresses is not public, and connected to at exactly the addresses
+/// checked, so a second lookup cannot answer differently (DNS rebinding).
+/// The hosts in `allowed` are exempt: on Cloud Run, for one, the metadata
+/// server that gives the service its credentials is link-local.
+#[derive(Clone, Debug, Default)]
+pub struct EgressPolicy {
+    pub deny_private: bool,
+    /// Host names, or IP addresses as written in a URL, compared without
+    /// regard to case.
+    pub allowed: Vec<String>,
+}
+
+impl EgressPolicy {
+    /// The policy the environment sets: `ZENA_DENY_PRIVATE_EGRESS=1`
+    /// denies private addresses, and `ZENA_ALLOW_EGRESS` lists the exempt
+    /// hosts, separated by commas.
+    pub fn from_env() -> EgressPolicy {
+        EgressPolicy::from_vars(
+            std::env::var("ZENA_DENY_PRIVATE_EGRESS").ok(),
+            std::env::var("ZENA_ALLOW_EGRESS").ok(),
+        )
+    }
+
+    fn from_vars(deny: Option<String>, allow: Option<String>) -> EgressPolicy {
+        EgressPolicy {
+            deny_private: deny.as_deref().map(str::trim) == Some("1"),
+            allowed: allow
+                .unwrap_or_default()
+                .split(',')
+                .map(|host| host.trim().to_ascii_lowercase())
+                .filter(|host| !host.is_empty())
+                .collect(),
+        }
+    }
+
+    /// Whether requests to `host` may connect anywhere.
+    fn exempts(&self, host: &str) -> bool {
+        self.allowed
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(host))
+    }
+}
+
+/// Whether `ip` is an address on the public internet: not unspecified,
+/// loopback, private, link-local, shared (carrier-grade NAT), reserved for
+/// documentation, benchmarking or the IETF, multicast or broadcast, nor
+/// an IPv6 address that is unique-local, site-local or embeds an IPv4
+/// address that is none of those.
+pub fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_v4(v4);
+            }
+            let s = v6.segments();
+            let embedded = |high: u16, low: u16| {
+                Ipv4Addr::new((high >> 8) as u8, high as u8, (low >> 8) as u8, low as u8)
+            };
+            // NAT64 (64:ff9b::/96) and 6to4 (2002::/16) reach the IPv4
+            // address they embed.
+            if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+                return is_public_v4(embedded(s[6], s[7]));
+            }
+            if s[0] == 0x2002 {
+                return is_public_v4(embedded(s[1], s[2]));
+            }
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                // IPv4-compatible (::a.b.c.d), deprecated.
+                || s[0..6] == [0, 0, 0, 0, 0, 0]
+                // Unique local (fc00::/7), link-local (fe80::/10) and
+                // site-local (fec0::/10).
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xffc0) == 0xfec0
+                // Documentation (2001:db8::/32) and discard (100::/64).
+                || (s[0] == 0x2001 && s[1] == 0x0db8)
+                || s[0..4] == [0x0100, 0, 0, 0])
+        }
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    !(o[0] == 0
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        // Shared address space (100.64.0.0/10), for carrier-grade NAT.
+        || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        // IETF protocol assignments (192.0.0.0/24) and benchmarking
+        // (198.18.0.0/15).
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        || (o[0] == 198 && (o[1] & 0xfe) == 18)
+        || ip.is_documentation()
+        // Multicast, reserved and broadcast (224.0.0.0 and up).
+        || o[0] >= 224)
+}
+
 /// A pooled HTTP client. Clones share its pools.
 #[derive(Clone)]
 pub struct HttpClient {
@@ -133,18 +246,29 @@ pub struct HttpClient {
 
 impl HttpClient {
     /// The process-wide client, which trusts the Mozilla roots bundled in
-    /// `webpki-roots` (the roots the default implementation trusts).
+    /// `webpki-roots` (the roots the default implementation trusts), and
+    /// connects where the environment's [`EgressPolicy`] allows.
     pub fn shared() -> &'static HttpClient {
         static SHARED: OnceLock<HttpClient> = OnceLock::new();
         SHARED.get_or_init(|| {
-            HttpClient::with_roots(rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.into(),
-            })
+            HttpClient::with_egress(
+                rustls::RootCertStore {
+                    roots: webpki_roots::TLS_SERVER_ROOTS.into(),
+                },
+                EgressPolicy::from_env(),
+            )
         })
     }
 
-    /// A client with its own pool that trusts `roots` for `https://`.
+    /// A client with its own pool that trusts `roots` for `https://`, and
+    /// connects anywhere.
     pub fn with_roots(roots: rustls::RootCertStore) -> HttpClient {
+        HttpClient::with_egress(roots, EgressPolicy::default())
+    }
+
+    /// A client with its own pool that trusts `roots` for `https://`, and
+    /// connects where `egress` allows.
+    pub fn with_egress(roots: rustls::RootCertStore, egress: EgressPolicy) -> HttpClient {
         let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
@@ -155,6 +279,7 @@ impl HttpClient {
         tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         let connector = Connector {
             tls: tokio_rustls::TlsConnector::from(Arc::new(tls)),
+            egress: Arc::new(egress),
         };
         let client = Client::builder(TokioExecutor::new())
             .timer(TokioTimer::new())
@@ -443,6 +568,7 @@ impl Body for ResponseBody {
 #[derive(Clone)]
 struct Connector {
     tls: tokio_rustls::TlsConnector,
+    egress: Arc<EgressPolicy>,
 }
 
 impl tower_service::Service<Uri> for Connector {
@@ -459,8 +585,9 @@ impl tower_service::Service<Uri> for Connector {
             .try_with(|timeout| *timeout)
             .unwrap_or(DEFAULT_TIMEOUT);
         let tls = self.tls.clone();
+        let egress = self.egress.clone();
         Box::pin(async move {
-            connect(tls, dst, timeout)
+            connect(tls, &egress, dst, timeout)
                 .await
                 .map(TokioIo::new)
                 .map_err(Carried::new)
@@ -468,9 +595,11 @@ impl tower_service::Service<Uri> for Connector {
     }
 }
 
-/// Connects to `dst`, with the errors the default implementation reports.
+/// Connects to `dst`, where `egress` allows, with the errors the default
+/// implementation reports.
 async fn connect(
     tls: tokio_rustls::TlsConnector,
+    egress: &EgressPolicy,
     dst: Uri,
     timeout: Duration,
 ) -> Result<Stream, Error> {
@@ -482,8 +611,15 @@ async fn connect(
         let port = if use_tls { 443 } else { 80 };
         format!("{authority}:{port}")
     };
-    let tcp = match tokio::time::timeout(timeout, TcpStream::connect(&authority)).await {
-        Ok(stream) => stream.map_err(Error::Connect)?,
+    // An IPv6 host is bracketed in the URI, and listed without brackets.
+    let host = dst
+        .host()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let checked = egress.deny_private && !egress.exempts(host);
+    let tcp = match tokio::time::timeout(timeout, open(&authority, checked)).await {
+        Ok(stream) => stream?,
         Err(_) => return Err(Error::ConnectionTimeout),
     };
     // Small writes (gRPC messages, HTTP/2 control frames) should not wait
@@ -497,6 +633,28 @@ async fn connect(
         Ok(stream) => Ok(Stream::Tls(Box::new(stream.map_err(Error::Tls)?))),
         Err(_) => Err(Error::ConnectionTimeout),
     }
+}
+
+/// A TCP connection to `authority`, `host:port`. When `checked`, the name
+/// is resolved here, refused unless every address it has is public, and
+/// connected to at those addresses, so nothing resolves it again.
+async fn open(authority: &str, checked: bool) -> Result<TcpStream, Error> {
+    if !checked {
+        return TcpStream::connect(authority).await.map_err(Error::Connect);
+    }
+    let addresses: Vec<SocketAddr> = tokio::net::lookup_host(authority)
+        .await
+        .map_err(Error::Connect)?
+        .collect();
+    if addresses.is_empty() {
+        return Err(Error::DestinationNotFound);
+    }
+    if addresses.iter().any(|address| !is_public(address.ip())) {
+        return Err(Error::DestinationIpProhibited);
+    }
+    TcpStream::connect(&addresses[..])
+        .await
+        .map_err(Error::Connect)
 }
 
 /// The rustls server name for an outbound `host:port` authority, where
@@ -896,6 +1054,95 @@ mod tests {
         let mut hooks = HttpHooks::default();
         let result = send(&mut hooks, get(format!("http://127.0.0.1:{port}/")), None).await;
         assert!(matches!(result, Err(Error::Connect(_))), "{result:?}");
+    }
+
+    #[test]
+    fn only_internet_addresses_are_public() {
+        let public = |text: &str| is_public(text.parse().unwrap());
+        for address in [
+            "93.184.216.34",
+            "8.8.8.8",
+            "2606:4700::1111",
+            "::ffff:8.8.8.8",
+            "64:ff9b::808:808",
+        ] {
+            assert!(public(address), "{address}");
+        }
+        for address in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "192.0.0.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+            "2001:db8::1",
+            "::ffff:10.0.0.1",
+            "::ffff:127.0.0.1",
+            "64:ff9b::a00:1",
+            "2002:a00:1::1",
+            "100::1",
+        ] {
+            assert!(!public(address), "{address}");
+        }
+    }
+
+    #[test]
+    fn the_policy_comes_from_the_environment() {
+        let open = EgressPolicy::from_vars(None, None);
+        assert!(!open.deny_private);
+        let closed = EgressPolicy::from_vars(
+            Some("1".into()),
+            Some(" metadata.google.internal , Example.COM".into()),
+        );
+        assert!(closed.deny_private);
+        assert!(closed.exempts("metadata.google.internal"));
+        assert!(closed.exempts("example.com"));
+        assert!(!closed.exempts("example.org"));
+        assert!(!EgressPolicy::from_vars(Some("0".into()), None).deny_private);
+    }
+
+    #[tokio::test]
+    async fn a_private_address_is_prohibited_unless_its_host_is_exempt() {
+        let server = plain_server().await;
+        let uri = format!("http://127.0.0.1:{}/", server.addr.port());
+        let deny = |allowed: Vec<String>| {
+            HttpHooks::new(HttpClient::with_egress(
+                rustls::RootCertStore::empty(),
+                EgressPolicy {
+                    deny_private: true,
+                    allowed,
+                },
+            ))
+        };
+        let result = send(&mut deny(vec![]), get(uri.clone()), None).await;
+        assert!(
+            matches!(result, Err(Error::DestinationIpProhibited)),
+            "{result:?}"
+        );
+        // A name is resolved and checked too: localhost is loopback.
+        let by_name = format!("http://localhost:{}/", server.addr.port());
+        let result = send(&mut deny(vec![]), get(by_name), None).await;
+        assert!(
+            matches!(result, Err(Error::DestinationIpProhibited)),
+            "{result:?}"
+        );
+        assert_eq!(server.accepted(), 0);
+        let allowed = send(&mut deny(vec!["127.0.0.1".into()]), get(uri.clone()), None).await;
+        assert_eq!(allowed.unwrap().status(), 200);
+        let open = send(&mut HttpHooks::default(), get(uri), None).await;
+        assert_eq!(open.unwrap().status(), 200);
     }
 
     #[tokio::test]

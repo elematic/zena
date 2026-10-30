@@ -22,7 +22,15 @@ it:
   the request options' timeouts mean what they mean in the default
   handler. Connections run on a background runtime of their own
   (thread `zena-http`), so they outlive the per-call runtimes
-  `run_main` builds.
+  `run_main` builds. Where requests may connect is the process's
+  `EgressPolicy`, from the environment: anywhere by default, and with
+  `ZENA_DENY_PRIVATE_EGRESS=1` only to public addresses, except for the
+  hosts `ZENA_ALLOW_EGRESS` lists, separated by commas. A name is then
+  resolved once, refused with `destination-ip-prohibited` when any of its
+  addresses is private, loopback, link-local or otherwise not on the
+  internet, and connected to at those same addresses, so a second lookup
+  cannot answer differently. A server that reads URLs other people chose
+  sets it; the package host's image does.
 - **The `zena-cli:host@1.0.0` interfaces**, declared in
   `packages/stdlib/zena/host-wit/host.wit` and implemented in
   `src/component.rs` with `bindgen!`:
@@ -142,4 +150,6 @@ cargo test -p zena-runtime
 The `http_client` tests start local servers: a TLS one with a
 self-signed certificate (from `rcgen`) that offers HTTP/2, a plain
 HTTP/1.1 one, and a plain HTTP/2-only (h2c) one. They check the negotiated protocol, connection reuse
-(by counting accepted connections), trailers, and error mapping.
+(by counting accepted connections), trailers, and error mapping, and
+that a client denying private egress refuses a local server unless its
+host is exempt.
