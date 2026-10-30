@@ -19,22 +19,82 @@ export function homePage(router: Router, host: PackageHost, people: People): voi
     let scopes = await host.listScopes();
     res.type = 'text/html; charset=utf-8';
     res.body = page('Zena packages', context, html`
-      <div class="columns">
-        <section>
-          <h1>Packages</h1>
-          <form class="search" action="/" method="get">
-            <input type="search" name="q" value="${query}" placeholder="Search by name or description"
+      <section class="pkg-hero">
+        <div class="pkg-hero-inner">
+          <span class="chip chip-primary">AT Protocol Package Registry</span>
+          <h1>Packages for Zena</h1>
+          <p class="pkg-hero-tagline">
+            Discover, publish, and verify WebAssembly GC packages built on the AT Protocol — with
+            decentralized identity, maintainer attestations, and minimal version selection.
+          </p>
+          <form class="search hero-search" action="/" method="get">
+            <input type="search" name="q" value="${query}" placeholder="Search packages by name, handle, or description…"
                 aria-label="Search packages">
             <button type="submit">Search</button>
           </form>
+          ${when(query == '', () => html`
+          <div class="hero-quick">
+            <code class="mono hero-cmd">zena add @scope/pkg</code>
+            <code class="mono hero-cmd">zena publish</code>
+            <a class="hero-cta" href="/docs/getting-started/">Getting started →</a>
+            <a class="hero-cta" href="/docs/">Read the docs →</a>
+          </div>`)}
+        </div>
+      </section>
+      <div class="columns">
+        <section>
+          <h2>${if (query == '') 'Packages' else 'Search results'}</h2>
           ${when(query != '', () => html`<p class="muted">${count(shown.length, 'package')} matching “${query}”.</p>`)}
           ${packageList(shown, if (query == '') 'Nothing is published here yet.' else 'No packages match.')}
         </section>
         <aside>
-          <h2>Scopes</h2>
-          ${scopeList(scopes)}
+          <div>
+            <h2>Scopes</h2>
+            ${scopeList(scopes)}
+          </div>
+          <div class="aside-card">
+            <h3>Publish a package</h3>
+            <p class="muted">Sign in with your Atmosphere account and publish to a scope:</p>
+            <pre class="mono">zena login alice.bsky.social
+zena scope create acme
+zena publish --scope acme</pre>
+            <p><a href="/docs/publishing/">Publishing guide →</a></p>
+          </div>
         </aside>
       </div>
+      ${when(query == '', () => html`
+      <section class="home-docs">
+        <div class="section-heading">
+          <h2>Documentation</h2>
+          <a href="/docs/">Browse all docs →</a>
+        </div>
+        <div class="doc-cards">
+          <a class="card doc-card" href="/docs/getting-started/">
+            <span class="name">Getting Started</span>
+            <p class="muted">Add dependencies with <code class="mono">zena add</code>, pin versions in <code class="mono">zena-lock.json</code>, and fetch verified archives.</p>
+          </a>
+          <a class="card doc-card" href="/docs/publishing/">
+            <span class="name">Publishing Packages</span>
+            <p class="muted">Sign in with an Atmosphere account, create a scope, and publish releases without shared package passwords.</p>
+          </a>
+          <a class="card doc-card" href="/docs/manifests/">
+            <span class="name">Manifests &amp; Workspaces</span>
+            <p class="muted">Configure <code class="mono">zena-package.json</code>, library <code class="mono">exports</code>, local dependency names, and multi-package workspaces.</p>
+          </a>
+          <a class="card doc-card" href="/docs/orgs-and-teams/">
+            <span class="name">Scopes, Orgs &amp; Teams</span>
+            <p class="muted">Manage organization members and teams, with cryptographic commitments that keep memberships private until members act.</p>
+          </a>
+          <a class="card doc-card" href="/docs/approvals-and-settings/">
+            <span class="name">Approvals &amp; Security</span>
+            <p class="muted">Require M-of-N maintainer attestations, set scope policies, retract broken versions, and manage CI accounts.</p>
+          </a>
+          <a class="card doc-card" href="/docs/architecture/">
+            <span class="name">AT Protocol Architecture</span>
+            <p class="muted">How packages work as DIDs, signed Merkle repositories, content-addressed blobs, and transparency logs.</p>
+          </a>
+        </div>
+      </section>`)}
     `);
   });
 }

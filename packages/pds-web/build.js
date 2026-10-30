@@ -6,12 +6,17 @@
  */
 
 import * as esbuild from 'esbuild';
-import {readFile} from 'node:fs/promises';
+import {copyFile, mkdir, readFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, 'out');
+await mkdir(out, {recursive: true});
+await copyFile(
+  join(here, '../website/src/public/logo.svg'),
+  join(out, 'logo.svg'),
+);
 
 /**
  * Radica's components import their styles as CSS module scripts
