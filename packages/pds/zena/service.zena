@@ -79,7 +79,8 @@ import {CloudDns} from 'google-cloud:dns';
 import {Firestore} from 'google-cloud:firestore';
 import {Storage as CloudStorage} from 'google-cloud:storage';
 import {KeyType} from 'atproto:didkey';
-import {IdentityResolver} from 'atproto:identity';
+import {IdentityResolver, didWebFor} from 'atproto:identity';
+import {URL} from 'zena:url';
 import {PlcOperation, submitPlcOperation} from 'atproto:plc';
 import {
   BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreCredentialStore, FirestoreHostStore, FirestorePlcLog,
@@ -129,7 +130,13 @@ export sealed class RecordsChoice {
 /** The package host's settings. */
 export final class HostSettings {
   domain: String;
-  serviceDid: String;
+  /**
+   * The host's DID, which callers' tokens are addressed to, or null for the
+   * `did:web` of its endpoint (`did:web:127.0.0.1%3A2583`), which a server
+   * that picks its port at start can only know then. `zena` refuses a host
+   * whose DID does not name its origin.
+   */
+  serviceDid: String | null;
   /** The accounts' PDS endpoint, or null for the server's own origin. */
   publicUrl: String | null;
   /** The host's PLC rotation key, or null to make one up at start. */
@@ -450,7 +457,9 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let kmsKey = settings.rotationKmsKey;
   let rotationKey: RotationKey = if (kmsKey != null) await KmsRotationKey.connect(CloudKms.connect(kmsKey as String))
       else new LocalRotationKey(settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32)));
-  let hostConfig = new HostConfig(settings.serviceDid, settings.domain, settings.publicUrl ?? endpoint, rotationKey);
+  let hostEndpoint = settings.publicUrl ?? endpoint;
+  let serviceDid = settings.serviceDid ?? didWebOfOrigin(hostEndpoint);
+  let hostConfig = new HostConfig(serviceDid, settings.domain, hostEndpoint, rotationKey);
   hostConfig.offlineRotationKey = settings.offlineRotationKey;
   hostConfig.privateReads = settings.privateReads;
   for (let did in settings.admins) {
@@ -580,4 +589,14 @@ export async function serve(config: ServiceConfig): Future<Running> {
   let service = await buildService(config, origin);
   inner = service.app;
   return new Running(server, service, origin);
+}
+
+/** The `did:web` of the server at `origin`, with its port, if it has one, percent-encoded. */
+function didWebOfOrigin(origin: String): String {
+  let url = URL.parse(origin);
+  if (url == null) {
+    throw new Error(`the host's endpoint is not a URL: ${origin}`);
+  }
+  let parsed = url as URL;
+  return didWebFor(if (parsed.port == '') parsed.hostname else `${parsed.hostname}:${parsed.port}`);
 }

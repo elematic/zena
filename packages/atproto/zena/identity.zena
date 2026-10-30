@@ -15,7 +15,7 @@
  * both directions.
  */
 
-import {StringBuilder} from 'zena:core';
+import {StringBuilder, join} from 'zena:core';
 import {fetch} from 'zena:fetch';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {DidDocument, parseDidDocument} from './did.zena';
@@ -98,7 +98,7 @@ export final class IdentityResolver {
     let url = if (did.startsWith('did:plc:')) {
       `${this.plcDirectory}/${did}`
     } else if (did.startsWith('did:web:')) {
-      `${this.originOf(webHost(did))}/.well-known/did.json`
+      `${this.originOf(didWebHost(did))}/.well-known/did.json`
     } else {
       throw new IdentityError(`unsupported DID method: ${did}`)
     };
@@ -207,8 +207,20 @@ export final class IdentityResolver {
   }
 }
 
-/** The host of a `did:web`, with a percent-encoded port decoded. */
-function webHost(did: String): String {
+/**
+ * The `did:web` of the server at `host`, a host name with an optional
+ * port, which is percent-encoded: `did:web:127.0.0.1%3A2583`.
+ */
+export function didWebFor(host: String): String {
+  return `did:web:${join(host.split(':'), '%3A')}`;
+}
+
+/**
+ * The host of a `did:web`, with a percent-encoded port decoded: the only
+ * origin that can hold its document. Throws for one with a path, which
+ * atproto does not use.
+ */
+export function didWebHost(did: String): String {
   let id = did.sliceBytes(8, did.length);
   if (id.contains(':')) {
     throw new IdentityError(`did:web with a path is not used by atproto: ${did}`);

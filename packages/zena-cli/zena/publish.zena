@@ -22,7 +22,8 @@
  *
  * The host is `--host`, else `ZENA_PACKAGE_HOST`, else
  * `https://pkg.zena-lang.dev`; its service DID and handle domain come from
- * its `com.atproto.server.describeServer`.
+ * its `com.atproto.server.describeServer`, and the DID must be the
+ * origin's own (`checkHostDid`) before any token is made for it.
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -52,6 +53,8 @@ import { Version } from 'package-manager:version';
 import { DiskFiles, WorkspacePackage, readWorkspace } from 'package-manager:workspace';
 import { Options, repoRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
+import { didWebHost } from 'atproto:identity';
+import { URL } from 'zena:url';
 import { configDir, currentSession, saveSession } from './login.zena';
 import { REPO_GET_RECORD, REPO_PUT_RECORD, SERVER_DESCRIBE_SERVER } from 'atproto:methods';
 import {
@@ -207,8 +210,50 @@ export function findHost(args: ParsedArgs): Host {
   let described = runFuture(new XrpcClient(origin).query(SERVER_DESCRIBE_SERVER)) as JsonObject;
   let domains = described['availableUserDomains'] as JsonArray;
   let domain = domains[0] as String;
-  return new Host(origin, described['did'] as String,
-      if (domain.startsWith('.')) domain.sliceBytes(1, domain.length) else domain);
+  let did = described['did'] as String;
+  checkHostDid(origin, did);
+  return new Host(origin, did, if (domain.startsWith('.')) domain.sliceBytes(1, domain.length) else domain);
+}
+
+/**
+ * Throws unless `did`, the DID the server at `origin` says it has, is the
+ * origin's own: a `did:web` by its host, which only the origin's domain can
+ * hold, and a `did:plc` by the PDS endpoint its document names. Tokens for
+ * the host are addressed to its DID, so a server at any other origin that
+ * answered with the real host's DID would be given tokens it could replay
+ * to the real host, as whoever asked for them.
+ */
+function checkHostDid(origin: String, did: String): void {
+  let url = URL.parse(origin);
+  if (url == null) {
+    throw new PublishError(`the package host ${origin} is not a URL`);
+  }
+  let parsed = url as URL;
+  let authority = if (parsed.port == '') parsed.hostname else `${parsed.hostname}:${parsed.port}`;
+  if (did.startsWith('did:web:')) {
+    let named = try {
+      didWebHost(did)
+    } catch (e) {
+      throw new PublishError(`the package host ${origin} says it is ${did}: ${e.message}`);
+    };
+    if (named.asciiLowerCase() != authority.asciiLowerCase()) {
+      throw new PublishError(`the package host ${origin} says it is ${did}, which is the host at ${named}, not ${authority}`);
+    }
+    return;
+  }
+  if (did.startsWith('did:plc:')) {
+    let endpoint = runFuture(packageResolver().resolveDid(did)).pds;
+    if (endpoint == null || trimSlash(endpoint as String) != trimSlash(`${parsed.protocol}//${authority}`)) {
+      throw new PublishError(`the package host ${origin} says it is ${did}, whose PDS is ${endpoint ?? 'none'}`);
+    }
+    return;
+  }
+  throw new PublishError(`the package host ${origin} says it is ${did}, which is neither a did:web nor a did:plc`);
+}
+
+/** `url` without a trailing `/`. */
+function trimSlash(url: String): String {
+  return if (url.endsWith('/')) url.sliceBytes(0, url.length - 1) else url;
 }
 
 /** A client for `host` that calls `method` as the signed-in maintainer. */
