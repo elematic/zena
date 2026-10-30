@@ -494,6 +494,12 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let host = new PackageHost(pds, hostConfig, hostStore, records, keys, submit, (count: i32) => randomBytes(count),
       dependencies);
   host.sessions = sessions;
+  // A DID document is written by whoever controls the DID, so the PDS it
+  // names is read only where the host may read (`PackageHost.mayRead`):
+  // anywhere else, the document resolves with no PDS.
+  let readable = (url: String): boolean => host.mayRead(url);
+  resolver.allowsPds = readable;
+  dependencies.allowsPds = readable;
   return new Service(withAssets(withPlc(createApp(pds, host, sessions), plc), config.webDir), pds, host, records, plc,
       sessions);
 }

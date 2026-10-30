@@ -186,6 +186,30 @@ export let tests = suite('package-manager:validate', () => {
     isTrue(has(problems, 'not 1.5.0') && has(problems, 'is not published'), lines(problems));
     pds.close();
   });
+
+  test('reads no PDS its resolver refuses, and need not say why a dependency was not found', (ctx) => {
+    let pds = new FakePds();
+    pds.start();
+    publish(pds.account(JSON_DID, 'json.acme.pkg.zena-lang.dev'), '2.0.0');
+    // The fake PDS is at http://127.0.0.1, which a host reading only public
+    // HTTPS endpoints refuses: the document resolves, without a PDS.
+    let resolver = pds.resolver();
+    resolver.allowsPds = (url) => url.startsWith('https://');
+    let document = runFuture(resolver.resolveDid(JSON_DID));
+    isTrue(document.pds == null, 'no PDS');
+    isTrue(document.signingKey != null, 'the key is kept');
+    let explained = runFuture(checkDependencies(json('2.0.0'), resolver));
+    isTrue(has(explained, 'its PDS cannot be read') && has(explained, 'names no PDS'), lines(explained));
+    // A host says no more than that, so its answers map nothing of its network.
+    let terse = runFuture(checkDependencies(json('2.0.0'), resolver, false));
+    isTrue(has(terse, 'json 2.0.0') && has(terse, 'its PDS cannot be read') && !has(terse, 'names no PDS'),
+        lines(terse));
+    let nowhere = new GrowableArray<Dependency>();
+    nowhere.push(new Dependency('did:plc:nowherenowherenowherenow', Version.parse('1.0.0'), 'nowhere'));
+    let unknown = runFuture(checkDependencies(nowhere, resolver, false));
+    isTrue(has(unknown, 'its DID does not resolve') && !has(unknown, 'http'), lines(unknown));
+    pds.close();
+  });
 });
 
 /** Publishes `version` on `account`, with an archive of its own. */
