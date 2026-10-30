@@ -1,8 +1,10 @@
 # The PDS's web assets (For AI Agents)
 
-`packages/pds-web` builds the stylesheet and script of the package host's
-pages. The pages are rendered on the server, in Zena, in
-`packages/pds/zena/web/`; read this package's README first.
+`packages/pds-web` builds the stylesheet, script, and static documentation
+(`/docs/`) of the package host's pages. The dynamic pages are rendered on
+the server, in Zena, in `packages/pds/zena/web/`; the static documentation
+pages are rendered by Eleventy from `site/docs/` into `out/docs/` and
+served at `/docs/` by `pds:service`. Read this package's README first.
 
 - Each page is a module of its own under `packages/pds/zena/web/pages/`
   (`pds:web/pages/package`, `.../scope`, ...), which exports a function

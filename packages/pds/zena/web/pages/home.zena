@@ -1,42 +1,148 @@
-/** The home page: every package on the host, with a search form, and every scope. */
+/**
+ * The home page: rendered from `packages/pds-web/site/index.md` (`HOME_TEMPLATE`,
+ * or `${webDir}/home.html` when present on disk) with server-generated slots
+ * for the package search form and the featured packages section.
+ */
 
-import {Router, html} from 'zena:http';
-import {GrowableArray} from 'zena:core';
-import {PackageHost, PackageSummary} from '../../host.zena';
-import {page} from '../layout.zena';
-import {People} from '../people.zena';
-import {contextOf} from '../session.zena';
-import {count, when} from '../partials/common.zena';
-import {packageList, scopeList} from '../partials/packages.zena';
+import { getEnv } from 'zena:cli';
+import { HashMap } from 'zena:collections';
+import { GrowableArray } from 'zena:core';
+import { existsSync, readFileSync } from 'zena:fs';
+import { HTMLPartial, Router, TemplateValue, html } from 'zena:http';
+import { PackageHost, PackageSummary } from '../../host.zena';
+import { page } from '../layout.zena';
+import { People } from '../people.zena';
+import { contextOf } from '../session.zena';
+import { count, each, renderSlots } from '../partials/common.zena';
+import { packageList } from '../partials/packages.zena';
+import { HOME_TEMPLATE } from './home-template.zena';
+
+/** A featured package shown in the `featured-packages` slot on the home page. */
+final class FeaturedPackage {
+  icon: String;
+  name: String;
+  version: String;
+  description: String;
+  href: String;
+
+  new(this.icon, this.name, this.version, this.description, this.href);
+}
+
+let FEATURED_PACKAGES = [
+  new FeaturedPackage('🌐', '@zena/http', '0.4.2',
+      'HTTP client, router, and streaming HTML templates for WASI HTTP components and servers.',
+      '/docs/getting-started/'),
+  new FeaturedPackage('📄', '@zena/json', '0.3.1',
+      'Fast JSON parser, schema validator, and typed serializer for WebAssembly GC records and classes.',
+      '/docs/getting-started/'),
+  new FeaturedPackage('🗄️', '@zena/sqlite', '0.2.0',
+      'Embedded SQLite bindings, typed query builder, and schema migrations with prepared statement caching.',
+      '/docs/getting-started/'),
+  new FeaturedPackage('🔐', '@zena/crypto', '0.5.0',
+      'SHA-256, Ed25519, secp256k1 signatures, and content-addressed CIDs for verifiable data structures.',
+      '/docs/getting-started/'),
+  new FeaturedPackage('⌨️', '@zena/cli', '0.3.0',
+      'Command-line flag parsing, subcommand dispatch, ANSI terminal styling, and interactive prompts.',
+      '/docs/getting-started/'),
+  new FeaturedPackage('⏱️', '@zena/bench', '0.1.4',
+      'Microbenchmarking harness and statistical regression runner for performance-critical Zena libraries.',
+      '/docs/getting-started/'),
+];
 
 /** Adds the home page, `/`, to `router`. */
 export function homePage(router: Router, host: PackageHost, people: People): void {
   router.get('/', async (req, res, next, params) => {
     let context = await contextOf(req, host, people);
     let query = (req.url.searchParams().get('q') ?? '').trim();
-    let packages = await host.listPackages(null);
-    let shown = filtered(packages, query);
-    let scopes = await host.listScopes();
     res.type = 'text/html; charset=utf-8';
-    res.body = page('Zena packages', context, html`
-      <div class="columns">
-        <section>
-          <h1>Packages</h1>
-          <form class="search" action="/" method="get">
-            <input type="search" name="q" value="${query}" placeholder="Search by name or description"
-                aria-label="Search packages">
-            <button type="submit">Search</button>
-          </form>
-          ${when(query != '', () => html`<p class="muted">${count(shown.length, 'package')} matching “${query}”.</p>`)}
-          ${packageList(shown, if (query == '') 'Nothing is published here yet.' else 'No packages match.')}
-        </section>
-        <aside>
-          <h2>Scopes</h2>
-          ${scopeList(scopes)}
-        </aside>
-      </div>
-    `);
+
+    if (query != '') {
+      let packages = await host.listPackages(null);
+      let shown = filtered(packages, query);
+      res.body = page('Search · Zena packages', context, html`
+        <div class="home-page">
+          <div class="hero hero-centered">
+            <div class="container">
+              <div class="main">
+                <h1><span class="name clip">Packages for Zena</span></h1>
+                ${searchForm(query)}
+              </div>
+            </div>
+          </div>
+          <div class="home-section">
+            <div class="container">
+              <h2>Search results</h2>
+              <p class="muted">${count(shown.length, 'package')} matching “${query}”.</p>
+              ${packageList(shown, 'No packages match.')}
+            </div>
+          </div>
+        </div>
+      `);
+      return;
+    }
+
+    let slots = new HashMap<String, TemplateValue>();
+    slots['search-form'] = searchForm('');
+    slots['featured-packages'] = featuredPackagesSlot();
+    res.body = page('Zena packages', context, renderSlots(loadHomeTemplate(), slots));
   });
+}
+
+/**
+ * Reads `${PDS_WEB_DIR}/home.html` when available so local `eleventy` edits
+ * take effect immediately without recompiling `pds.wasm`, falling back to
+ * the compiled-in `HOME_TEMPLATE` (used by unit tests and standalone builds).
+ */
+function loadHomeTemplate(): String {
+  let webDir = getEnv('PDS_WEB_DIR');
+  if (webDir != null && webDir.length > 0) {
+    let path = `${webDir}/home.html`;
+    if (existsSync(path)) {
+      return readFileSync(path);
+    }
+  }
+  return HOME_TEMPLATE;
+}
+
+/** Server-rendered `search-form` slot (escapes `query` and any hidden form fields such as XSRF tokens). */
+function searchForm(query: String): HTMLPartial {
+  return html`
+    <form class="search hero-search" action="/" method="get">
+      <input type="search" name="q" value="${query}" placeholder="Search Zena packages by name, @scope, or description…"
+          aria-label="Search packages">
+      <button type="submit">Search</button>
+    </form>`;
+}
+
+/** Server-rendered `featured-packages` slot injected into `site/index.md`. */
+function featuredPackagesSlot(): HTMLPartial {
+  return html`
+    <div class="features featured-packages">
+      <div class="container">
+        <div class="featured-header">
+          <h2>Featured Packages</h2>
+          <p class="muted">Popular libraries and foundational packages for Zena applications.</p>
+        </div>
+        <div class="items">
+          ${each(FEATURED_PACKAGES, (pkg) => html`
+          <div class="item grid-3">
+            <a class="feature link" href="${pkg.href}">
+              <article class="box">
+                <div class="header">
+                  <div class="icon">${pkg.icon}</div>
+                  <h3 class="title mono">${pkg.name}</h3>
+                  <span class="chip chip-primary">${pkg.version}</span>
+                </div>
+                <p class="details">${pkg.description}</p>
+                <div class="link-text">
+                  <p class="link-text-value mono">zena add ${pkg.name}</p>
+                </div>
+              </article>
+            </a>
+          </div>`)}
+        </div>
+      </div>
+    </div>`;
 }
 
 /** The packages whose name, handle or description has `query` in it, ignoring case; all for an empty query. */

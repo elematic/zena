@@ -1,11 +1,18 @@
 /**
  * The script every page of the PDS's web app loads. The pages are rendered
- * on the server (`packages/pds/zena/web`); this defines the Radica elements
- * they use, and does what must happen in the browser: signing in and out
- * with atproto OAuth (`./auth.ts`, loaded only when it is needed).
+ * on the server (`packages/pds/zena/web`) or built statically (`site/docs/`);
+ * this defines the shared Zena website custom elements (`packages/website-client`)
+ * and does what must happen in the browser: signing in and out with atproto
+ * OAuth (`./auth.ts`, loaded only when it is needed).
  */
 
-import '@radica/ui/components/theme-select/theme-select.js';
+import '../../website-client/src/zena-appearance.js';
+import '../../website-client/src/zena-code-copy.js';
+import '../../website-client/src/zena-code-group.js';
+import '../../website-client/src/zena-layout.js';
+import '../../website-client/src/zena-local-outline.js';
+import '../../website-client/src/zena-outline.js';
+import '../../website-client/src/zena-sidebar.js';
 
 /**
  * The DID the browser last signed in as, kept so that a page with no web
@@ -18,6 +25,7 @@ const RENEW_TRIED = 'zena-pkg:renew-tried';
 const body = document.body;
 const serviceDid = body.dataset['serviceDid'] ?? '';
 const signedIn = body.dataset['did'] ?? '';
+const isStaticPage = body.dataset['static'] === 'true';
 
 const loadAuth = () => import('./auth.js');
 
@@ -122,6 +130,14 @@ wireSignIn();
 wireSignOut();
 if (location.pathname === '/oauth/callback') {
   void finishSignIn();
+} else if (isStaticPage) {
+  const domainEl = document.querySelector<HTMLElement>('[data-host-domain]');
+  if (domainEl && location.host) {
+    domainEl.textContent = location.host;
+  }
+  if (localStorage.getItem(SIGNED_IN_AS) !== null) {
+    document.querySelector<HTMLElement>('[data-static-me]')?.removeAttribute('hidden');
+  }
 } else if (signedIn === '') {
   const remembered = localStorage.getItem(SIGNED_IN_AS);
   if (remembered !== null && sessionStorage.getItem(RENEW_TRIED) === null) {

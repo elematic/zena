@@ -5,8 +5,9 @@
  * iterable of those.
  */
 
+import {HashMap} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
-import {HTMLPartial, TemplateValue, html} from 'zena:http';
+import {HTMLPartial, TemplateValue, html, unsafeHTML} from 'zena:http';
 import {URL} from 'zena:url';
 
 /** A chip: `text` in a pill, colored by `kind`, one of `app.css`'s `chip-*` classes. */
@@ -49,4 +50,23 @@ export function externalLink(url: String | null, label: String): TemplateValue {
 /** `content` when `condition` holds, else nothing. */
 export function when(condition: boolean, content: () => TemplateValue): TemplateValue {
   return if (condition) content() else null;
+}
+
+/**
+ * Splices server-rendered `slots` into an Eleventy-built HTML `template`
+ * at `<!--zena-slot-->name<!--zena-slot-->` markers. Even segments are
+ * static build-time HTML (`unsafeHTML`), and odd segments name a slot in
+ * `slots` (rendered via `zena:http`'s escaping `html` tag).
+ */
+export function renderSlots(template: String, slots: HashMap<String, TemplateValue>): HTMLPartial {
+  let chunks = template.split('<!--zena-slot-->');
+  let out = new GrowableArray<TemplateValue>();
+  for (var i = 0; i < chunks.length; i += 1) {
+    if (i % 2 == 0) {
+      out.push(unsafeHTML(chunks[i]));
+    } else if (let (true, value) = slots.get(chunks[i])) {
+      out.push(value);
+    }
+  }
+  return html`${out}`;
 }
