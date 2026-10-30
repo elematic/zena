@@ -21,6 +21,7 @@ import {
 } from './codegen-utils.zena';
 import { HashMap } from 'zena:collections';
 import { growable } from 'zena:core';
+import { WellKnown, isWellKnown } from '../well-known.zena';
 
 export function getClassTypeParameters(ct: ClassType): Array<TypeParameterType> | null {
   return (ct.genericSource ?? ct).typeParameters;
@@ -705,13 +706,16 @@ export function substituteTypeParamsInClassContext(
 }
 
 /**
- * The (substituted) InterfaceType named `name` that `ct` implements,
- * searching the class's own implements list, its superclasses', and
- * every interface's transitive extends chain. Was duplicated
- * per-module (stmt/loops.zena, reachability/visitor.zena, ir/); this
- * is the one shared copy.
+ * The (substituted) instantiation of one interface declaration that
+ * `ct` implements — the one `accept` answers true for — searching the
+ * class's own implements list, its superclasses', and every
+ * interface's transitive extends chain. `findImplementedWellKnownInterface`
+ * and `findImplementedInterfaceType` are the two tests callers need.
+ * Was duplicated per-module (stmt/loops.zena, reachability/visitor.zena,
+ * ir/); this is the one shared copy.
  */
-export function findImplementedInterfaceTransitive(wasm: WasmModule, ct: ClassType, name: String): InterfaceType | null {
+function findImplementedInterface(wasm: WasmModule, ct: ClassType,
+    accept: (it: InterfaceType) => boolean): InterfaceType | null {
   let seen = new Map<InterfaceKey, boolean>();
   let queue = new Array<InterfaceType>();
 
@@ -740,7 +744,7 @@ export function findImplementedInterfaceTransitive(wasm: WasmModule, ct: ClassTy
     let key = getInterfaceKey(it);
     if (!seen.has(key)) {
       seen[key] = true;
-      if (it.name == name) {
+      if (accept(it)) {
         return it;
       }
       let itParams = getInterfaceTypeParameters(it);
@@ -753,12 +757,33 @@ export function findImplementedInterfaceTransitive(wasm: WasmModule, ct: ClassTy
   return null;
 }
 
+/** Whether `it` is an instantiation of the well-known interface `w`. */
+function isWellKnownInterface(it: InterfaceType, w: WellKnown): boolean {
+  let canonical = it.genericSource ?? it;
+  return isWellKnown(w, canonical.name, canonical.sourcePath);
+}
+
+/** Whether `it` is an instantiation of `target`'s declaration. */
+function isSameInterfaceDeclaration(it: InterfaceType, target: InterfaceType): boolean {
+  return (it.genericSource ?? it).id == (target.genericSource ?? target).id;
+}
+
+/** The (substituted) well-known interface `w` that `ct` implements. */
+export function findImplementedWellKnownInterface(wasm: WasmModule, ct: ClassType, w: WellKnown): InterfaceType | null {
+  return findImplementedInterface(wasm, ct, (it) => isWellKnownInterface(it, w));
+}
+
+/** The (substituted) instantiation of `target`'s declaration that `ct` implements. */
+export function findImplementedInterfaceType(wasm: WasmModule, ct: ClassType, target: InterfaceType): InterfaceType | null {
+  return findImplementedInterface(wasm, ct, (it) => isSameInterfaceDeclaration(it, target));
+}
+
 /**
- * The (substituted) InterfaceType named `name` that `it` is or extends,
- * transitively — findImplementedInterfaceTransitive for a receiver that
+ * The (substituted) well-known interface `w` that `it` is or extends,
+ * transitively — findImplementedWellKnownInterface for a receiver that
  * is an interface value rather than a class.
  */
-export function findExtendedInterfaceTransitive(wasm: WasmModule, it: InterfaceType, name: String): InterfaceType | null {
+export function findExtendedWellKnownInterface(wasm: WasmModule, it: InterfaceType, w: WellKnown): InterfaceType | null {
   let seen = new Map<InterfaceKey, boolean>();
   let queue = growable<InterfaceType>([it]);
   var head = 0;
@@ -768,7 +793,7 @@ export function findExtendedInterfaceTransitive(wasm: WasmModule, it: InterfaceT
     let key = getInterfaceKey(cur);
     if (!seen.has(key)) {
       seen[key] = true;
-      if (cur.name == name) {
+      if (isWellKnownInterface(cur, w)) {
         return cur;
       }
       let curParams = getInterfaceTypeParameters(cur);

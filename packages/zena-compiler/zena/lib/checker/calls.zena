@@ -696,7 +696,7 @@ function checkCallExpressionInner(
             // Infer type arguments from argument types. Deferred closure
             // arguments hold a placeholder in argTypes, so they are left
             // out of this first round.
-            let inferred = new Map<String, Type>();
+            let inferred = new Map<TypeParameterType, Type>();
             var anyDeferred = false;
             for (var i = 0; i < args.length && i < effectiveFt.parameters.length; i += 1) {
               if (i < deferredArgs.length && deferredArgs[i]) {
@@ -721,8 +721,8 @@ function checkCallExpressionInner(
                 if (!(i < deferredArgs.length && deferredArgs[i])) { continue; }
                 let partialArgs = new Array<Type>(typeParams.length);
                 for (let typeParam in typeParams) {
-                  partialArgs.push(if (inferred.has(typeParam.name)) {
-                    inferred[typeParam.name];
+                  partialArgs.push(if (inferred.has(typeParam)) {
+                    inferred[typeParam];
                   } else {
                     typeParam as Type;
                   });
@@ -739,9 +739,8 @@ function checkCallExpressionInner(
             // Build type args array from inferred map.
             let typeArgs = new Array<Type>(typeParams.length);
             for (let typeParam in typeParams) {
-              let paramName = typeParam.name;
-              typeArgs.push(if (inferred.has(paramName)) {
-                inferred[paramName];
+              typeArgs.push(if (inferred.has(typeParam)) {
+                inferred[typeParam];
               } else {
                 new ErrorType() as Type;
               });

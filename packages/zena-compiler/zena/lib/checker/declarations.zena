@@ -1012,6 +1012,7 @@ function registerInterfaceConstructor(
   // a HashMap and so needs more of K than the interface asks. A
   // restatement names the interface's parameters, in order; its bounds
   // are checked at each `new`.
+  var resultSet = false;
   if (md.typeParameters != null) {
     let restated = md.typeParameters as GrowableArray<TypeParameter>;
     let ifaceParams = ifaceType.typeParameters;
@@ -1042,6 +1043,27 @@ function registerInterfaceConstructor(
         DiagnosticCode.IncompatibleTypes,
         md.loc
       );
+      // The body resolves the names the restatement declared, so the
+      // result is the interface at those parameters, each standing
+      // where the interface's parameter of its name stands; one the
+      // restatement left out is the interface's own. Only the error
+      // above is then reported for the constructor, not every use of a
+      // parameter in its body.
+      if (md.returnType == null && ifaceParams != null) {
+        resultSet = true;
+        let own = ctorType.typeParameters;
+        let args = new Array<Type>();
+        for (let ip in ifaceParams as Array<TypeParameterType>) {
+          var stands: Type = ip;
+          if (own != null) {
+            for (let tp in own) {
+              if (tp.name == ip.name) { stands = tp; }
+            }
+          }
+          args.push(stands);
+        }
+        ctorType = ctorType.withReturnType(instantiateInterfaceType(ifaceType, args) as Type);
+      }
       ctorType = ctorType.withTypeParameters(ifaceType.typeParameters);
     }
   } else {
@@ -1054,7 +1076,7 @@ function registerInterfaceConstructor(
   // interface; that is checked with the body, in the second phase,
   // because a class declared below the interface has no `implements`
   // list yet.
-  if (md.returnType == null) {
+  if (md.returnType == null && !resultSet) {
     ctorType = ctorType.withReturnType(constructorSelfType(ifaceType, ctorType));
   }
   ifaceType.constructors[ctorName] = ctorType;

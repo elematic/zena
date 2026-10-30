@@ -1,0 +1,46 @@
+// @mode: run
+// @result: 6
+//
+// A class implementing the standard library's `Iterable` and an
+// interface that happens to be called `Iterator` iterates through
+// `Iterable`: codegen finds the protocol by identity, not by the name
+// of the first interface it meets (issue #288).
+
+import { Iterator as Peekable } from './user_iterator_helper.zena';
+
+class Counter implements Iterator<i32> {
+  var n: i32 = 0;
+  limit: i32;
+  new(this.limit);
+  next(): Step<i32> {
+    if (this.n < this.limit) {
+      this.n += 1;
+      return (1, this.n, _);
+    }
+    return (0, _, _);
+  }
+}
+
+class Counting implements Peekable<i32>, Iterable<i32> {
+  limit: i32;
+  new(this.limit);
+  peek(): i32 { return this.limit; }
+  [Iterable.iterator](): Iterator<i32> {
+    return new Counter(this.limit);
+  }
+
+  contains(value: i32): boolean { return false; }
+  all(predicate: (item: i32) => boolean): boolean { return false; }
+  some(predicate: (item: i32) => boolean): boolean { return false; }
+  fold<R>(initial: R, combine: (acc: R, item: i32) => R): R { return initial; }
+  find(predicate: (item: i32) => boolean): inline (true, i32) | inline (false, _) { return (false, _); }
+  filter(predicate: (item: i32) => boolean): Iterable<i32> { return this; }
+}
+
+export function main(): i32 {
+  var sum = 0;
+  for (let i in new Counting(3)) {
+    sum += i;
+  }
+  return sum;
+}

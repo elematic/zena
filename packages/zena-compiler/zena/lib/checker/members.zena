@@ -457,43 +457,14 @@ function checkSymbolKeyAccess(ctx: CheckerContext, path: Expression): boolean {
   return checkSymbolPath(ctx, path) != null;
 }
 
-export function isStaticReceiver(ctx: CheckerContext, object: Expression): boolean {
-  if (object is Identifier) {
-    let sym = ctx.model.resolve(object);
-    if (sym != null) {
-      if (sym.declaration is ClassDeclaration || sym.declaration is EnumDeclaration) {
-        return true;
-      } else if (sym.declaration is ImportSpecifier) {
-        let spec = sym.declaration as ImportSpecifier;
-        let importedName = spec.imported.name;
-        let deps = ctx.depExports;
-        if (deps != null) {
-          for (let specifier in deps.keys()) {
-            if (let (true, depMod) = deps.get(specifier)) {
-              if (let (true, exp) = depMod.get(importedName)) {
-                if (exp.isType()) {
-                  return true;
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  return false;
-}
-
 /**
- * Whether `object` names a class, interface or mixin, so that a member
- * read on it is a static read. `isStaticReceiver` answers for classes
- * (and imported types); an interface or mixin name can hold static
- * symbols too.
+ * Whether `object` names a type that has static members — a class, an
+ * enum, an interface or a mixin — so that a member read on it is a
+ * static read. An import is judged by the declaration it resolves to,
+ * never by its name: another dependency exporting a class called
+ * `Config` does not make an imported `Config` instance a type.
  */
-function namesDeclaredType(ctx: CheckerContext, object: Expression): boolean {
-  if (isStaticReceiver(ctx, object)) {
-    return true;
-  }
+export function isStaticReceiver(ctx: CheckerContext, object: Expression): boolean {
   if (!(object is Identifier)) {
     return false;
   }
@@ -501,8 +472,16 @@ function namesDeclaredType(ctx: CheckerContext, object: Expression): boolean {
   if (sym == null) {
     return false;
   }
-  let decl = sym.declaration;
-  return decl is InterfaceDeclaration || decl is MixinDeclaration;
+  let decl = sym.resolveTarget().declaration;
+  return decl is ClassDeclaration || decl is EnumDeclaration ||
+      decl is InterfaceDeclaration || decl is MixinDeclaration;
+}
+
+/** Whether `object` names a type whose static symbols a member read
+ * can reach: `isStaticReceiver`'s answer, under the name its callers
+ * ask the question by. */
+function namesDeclaredType(ctx: CheckerContext, object: Expression): boolean {
+  return isStaticReceiver(ctx, object);
 }
 
 export function checkMemberExpression(
