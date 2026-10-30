@@ -18,6 +18,7 @@
  */
 
 import {Future} from 'zena:async';
+import {join} from 'zena:core';
 import {HashMap, HashSet} from 'zena:collections';
 import {decodeCbor, encodeCbor} from 'atproto:cbor';
 import {readCar} from 'atproto:car';
@@ -30,7 +31,7 @@ import {KeyType, PublicKey, parseDidKey, verifySignature} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {Identity, IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
-import {validateRelease} from 'package-manager:validate';
+import {ARTIFACT_MIME_TYPES, artifactMimeType, validateRelease} from 'package-manager:validate';
 import {Version} from 'package-manager:version';
 import {
   ADMIN,
@@ -664,10 +665,20 @@ export final class PackageHost {
     return written;
   }
 
-  /** `uploadArtifact`: stores `bytes` as a blob of `pkg`, for a release. */
-  async uploadArtifact(caller: String, pkg: String, mimeType: String, bytes: FixedArray<u8>)
+  /**
+   * `uploadArtifact`: stores `bytes` as a blob of `pkg`, for a release, when
+   * `contentType` is one of an artifact's (`ARTIFACT_MIME_TYPES`).
+   */
+  async uploadArtifact(caller: String, pkg: String, contentType: String, bytes: FixedArray<u8>)
       : Future<BlobRef> {
     let account = await this.#maintainedPackage(caller, pkg);
+    // Only what an artifact can be: a blob the host serves as a page or a
+    // script would run on its origin.
+    let type = artifactMimeType(contentType);
+    if (type == null) {
+      throw new HostError(400, 'InvalidRequest', `'${contentType}' is not an artifact's type: ${join(ARTIFACT_MIME_TYPES, ', ')}`);
+    }
+    let mimeType = type as String;
     if ((bytes.length as i64) > this.config.maxBlobSize) {
       throw new HostError(400, 'TooLarge', `the blob is larger than ${this.config.maxBlobSize} bytes`);
     }

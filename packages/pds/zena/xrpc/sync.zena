@@ -86,7 +86,11 @@ export function syncRoutes(router: Router, pds: Pds): void {
       fail(res, 400, 'BlobNotFound', 'Blob not found');
       return;
     }
+    // As the reference PDS does: whatever its type, a blob is never a page
+    // or a script on this origin, where the web session's cookie is.
     res.type = blob.mimeType;
+    res.setHeader('content-security-policy', "default-src 'none'; sandbox");
+    res.setHeader('x-content-type-options', 'nosniff');
     res.body = blob.bytes;
   });
 }
