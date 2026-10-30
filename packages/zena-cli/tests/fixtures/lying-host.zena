@@ -1,0 +1,27 @@
+/**
+ * A server that says it is another package host, for
+ * `tests/host-did_test.zena`: its `com.atproto.server.describeServer`
+ * answers with `did:web:pkg.zena-lang.dev`, which names another origin.
+ * Run with `--dir <scratch>::/out`, it writes `/out/plc.txt`, its origin
+ * followed by `/plc` as `fakePdsOrigin` reads it, and serves until it is
+ * killed.
+ */
+
+import {Future} from 'zena:async';
+import {writeFileSync} from 'zena:fs';
+import {App, Router, Server} from 'zena:http';
+
+export async function main(): Future<i32> {
+  let router = new Router();
+  router.get('/xrpc/com.atproto.server.describeServer', async (req, res, next, params) => {
+    res.type = 'application/json';
+    res.body = '{"did": "did:web:pkg.zena-lang.dev", "availableUserDomains": [".pkg.zena-lang.dev"]}';
+  });
+  let app = new App();
+  app.use(router.routes());
+  let server = new Server(app, 0 as u16);
+  let serving = server.start();
+  writeFileSync('/out/plc.txt', `http://127.0.0.1:${server.port as i32}/plc`);
+  await serving;
+  return 0;
+}

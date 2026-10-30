@@ -18,7 +18,9 @@ gets service-auth tokens (`getServiceAuth`), and writes its own repository
 no other password. With a `PackageHost`, it also serves the package host's
 methods, each checked with a service-auth token from the caller's PDS, and
 `com.atproto.server.describeServer`, which tells `zena` its service DID and
-handle domain. pds.js's license is
+handle domain. `zena` refuses a host whose DID does not name its origin, so
+`PDS_SERVICE_DID` defaults to `did:web:<domain>`, and the demo's to the
+`did:web` of `127.0.0.1` and its port. pds.js's license is
 in `LICENSE-pds-js`.
 [docs/design/pds.md](../../docs/design/pds.md) describes the reference
 implementation, what is still missing, and the order of the work.

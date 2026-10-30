@@ -1,0 +1,28 @@
+/**
+ * `zena` sends a package host tokens addressed to the DID the host says it
+ * has, so it first checks that the DID is the host's own: a server at one
+ * origin that answers with another host's DID is refused before any token
+ * is made (#688).
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {Scratch, described, ensureDir, fakePdsOrigin, startFakePds, zenaIn} from './cli-support.zena';
+
+export let tests = suite("zena: the package host's DID", () => {
+  test("refuses a host that answers with another host's DID", (ctx) => {
+    let scratch = Scratch.create('host-did');
+    let stack = startFakePds(scratch, 'lying-host.zena');
+    try {
+      let plc = fakePdsOrigin(scratch, stack);
+      let origin = plc.sliceBytes(0, plc.length - '/plc'.length);
+      ensureDir(scratch.at('project'));
+      let refused = zenaIn(scratch, 'project').run(['scope', 'info', 'acme', '--host', origin]);
+      isTrue(!refused.succeeded() && refused.stderr.contains('says it is did:web:pkg.zena-lang.dev') &&
+          refused.stderr.contains('the host at pkg.zena-lang.dev'), described(refused));
+    } finally {
+      stack.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});

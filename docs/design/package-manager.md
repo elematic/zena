@@ -844,7 +844,12 @@ does only this, for scripts.
 
 The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
 `zena` reads its service DID and the domain its handles are under from its
-`com.atproto.server.describeServer`.
+`com.atproto.server.describeServer`, and checks that the DID is the
+host's own before asking for any token addressed to it. A `did:web` must
+name the host's origin, which only that domain can hold. A `did:plc`'s
+document must name the origin as its PDS. Otherwise a server at any
+origin could answer with the real host's DID, and replay the tokens it
+was given to the real host.
 
 1. **Sign in.** Once per machine, `zena login` signs the maintainer in to
    their own PDS with atproto OAuth, through the browser and a redirect to

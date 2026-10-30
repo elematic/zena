@@ -16,7 +16,7 @@ import {Cid} from 'atproto:cid';
 import {MapValue, stringField} from 'atproto:data';
 import {DidDocument} from 'atproto:did';
 import {PublicKey, formatDidKey} from 'atproto:didkey';
-import {Identity, IdentityError, IdentityResolver} from 'atproto:identity';
+import {Identity, IdentityError, IdentityResolver, didWebFor, didWebHost} from 'atproto:identity';
 import {RecordProof} from 'atproto:repo';
 import {SyncError, getVerifiedBlob, getVerifiedRecord} from 'atproto:sync';
 import {XrpcClient, XrpcError} from 'atproto:xrpc';
@@ -186,6 +186,20 @@ export let tests = suite('atproto:xrpc, atproto:identity and atproto:sync', () =
     isTrue(message.contains(`${originOf(server)}/plc/did:plc:nobodynobodynobodynobody`) &&
         message.contains('HTTP '), message);
     server.close();
+  });
+
+  test('names a server by did:web and reads the host back', (ctx) => {
+    equal(didWebFor('pkg.zena-lang.dev'), 'did:web:pkg.zena-lang.dev');
+    equal(didWebFor('127.0.0.1:2583'), 'did:web:127.0.0.1%3A2583');
+    equal(didWebHost('did:web:127.0.0.1%3A2583'), '127.0.0.1:2583');
+    equal(didWebHost('did:web:127.0.0.1%3a2583'), '127.0.0.1:2583');
+    var refused = false;
+    try {
+      didWebHost('did:web:example.com:user:alice');
+    } catch (e) {
+      refused = e is IdentityError;
+    }
+    isTrue(refused, 'a did:web with a path');
   });
 
   test('resolves a did:web from its host', (ctx) => {
