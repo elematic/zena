@@ -35,8 +35,8 @@ import { checkExpression, validateConditionType } from './expressions.zena';
 import { findImplementedInterfaceTransitiveInChecker } from './generics.zena';
 import { checkCyclicImportRules, prescanPendingFunctions } from './module.zena';
 import {
-  applyFalseNarrowingFromCondition, applyTrueNarrowingFromCondition,
-  branchDefinitelyExits, isTrueLiteral, recordLoopAssignments
+  branchDefinitelyExits, conditionNarrowings, isTrueLiteral,
+  recordLoopAssignments
 } from './narrowing.zena';
 import {
   castOperand, isScopedValueType, mentionsParamDerived,
@@ -375,10 +375,11 @@ case _: {
           validateConditionType(ctx, testType, testExpr);
 
           let preBranchFlow = ctx.currentFlow;
+          let branches = conditionNarrowings(ctx, testExpr);
 
           // Consequent body with TRUE narrowings on its flow path.
           ctx.enterScope();
-          applyTrueNarrowingFromCondition(ctx, testExpr);
+          ctx.pushFlowNarrowings(branches.whenTrue);
           checkStatement(ctx, consequent);
           ctx.exitScope();
           let trueEnd = ctx.currentFlow;
@@ -391,7 +392,7 @@ case _: {
           // branch's end is unreachable and drops out, and the
           // assignment's stored type rides the true path.
           ctx.setFlow(preBranchFlow);
-          applyFalseNarrowingFromCondition(ctx, testExpr);
+          ctx.pushFlowNarrowings(branches.whenFalse);
           if (alternate != null) {
             ctx.enterScope();
             checkStatement(ctx, alternate);
@@ -438,13 +439,14 @@ case _: {
           // engine, so compound conditions narrow too — and leaving the
           // loop normally means the condition was false, so the exit
           // edge carries the inverse.
-          applyTrueNarrowingFromCondition(ctx, testExpr);
+          let branches = conditionNarrowings(ctx, testExpr);
+          ctx.pushFlowNarrowings(branches.whenTrue);
           ctx.enterLoop();
           checkStatement(ctx, body);
           ctx.exitLoop();
           let bodyEnd = ctx.currentFlow;
           ctx.setFlow(afterTest);
-          applyFalseNarrowingFromCondition(ctx, testExpr);
+          ctx.pushFlowNarrowings(branches.whenFalse);
           // `while (true)` is left only by a `break`.
           let falseExit = if (isTrueLiteral(testExpr)) {
             ctx.unreachableFlow()
@@ -481,11 +483,12 @@ case _: {
         let testType = checkExpression(ctx, test, null);
         validateConditionType(ctx, testType, test);
         afterTest = ctx.currentFlow;
-        applyTrueNarrowingFromCondition(ctx, test);
+        let branches = conditionNarrowings(ctx, test);
+        ctx.pushFlowNarrowings(branches.whenTrue);
         // The exit means the test was false.
         let inBody = ctx.currentFlow;
         ctx.setFlow(afterTest);
-        applyFalseNarrowingFromCondition(ctx, test);
+        ctx.pushFlowNarrowings(branches.whenFalse);
         falseExit = ctx.currentFlow;
         ctx.setFlow(inBody);
       }

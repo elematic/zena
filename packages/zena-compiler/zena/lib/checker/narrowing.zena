@@ -261,9 +261,16 @@ function isImmutableFieldAccess(objectType: Type, propName: String): boolean {
   }
 }
 
+/**
+ * Whether `expr` is a member path whose every step is an immutable
+ * field read off a binding or `this`, so that a narrowing of it holds
+ * for as long as the root does. The object types are the ones the
+ * expression's own check recorded; a path no check has reached yet is
+ * checked here once.
+ */
 export function isImmutableMemberPath(ctx: CheckerContext, expr: Expression): boolean {
   if (let MemberExpression {object, property, isSymbolAccess} = expr) {
-    let objectType = checkExpression(ctx, object, null);
+    let objectType = ctx.model.getNodeType(object) ?? checkExpression(ctx, object, null);
     let propName = getMemberPropertyName(isSymbolAccess, property.name);
     if (!isImmutableFieldAccess(objectType, propName)) {
       return false;
@@ -289,122 +296,47 @@ export function isImmutableMemberPath(ctx: CheckerContext, expr: Expression): bo
 }
 
 /**
- * Extract is-expression narrowing from a condition like `x is T`.
- * Returns the Symbol, the target type, and the original type.
+ * What a condition narrows: a binding, keyed by its symbol, or an
+ * immutable member path, keyed by `getMemberPathKey`, with the type the
+ * subject has where the condition is tested — the flow type a read
+ * there sees, which is what the condition's own check recorded.
  */
-function extractIsNarrowing(
-  ctx: CheckerContext,
-  condition: Expression
-): (Symbol | null, Type | null, Type | null) {
-  if (let IsExpression {expression, typeAnnotation} = condition) {
-    if (expression is Identifier) {
-      let info = ctx.model.resolve(expression as Node);
+final class NarrowingSubject {
+  binding: SymbolId;
+  path: String | null;
+  type: Type;
+  new(this.binding, this.path, this.type);
+}
+
+/** The subject `expr` names, or null when a condition on it narrows nothing. */
+function narrowingSubject(ctx: CheckerContext, expr: Expression): NarrowingSubject | null {
+  match (expr) {
+    case Identifier: {
+      let info = ctx.model.resolve(expr);
       if (info == null) {
-        return (null, null, null);
+        return null;
       }
-      let originalType = ctx.resolveIdentifier(expression as Node);
-      if (originalType == null) {
-        return (null, null, null);
+      let t = ctx.model.getNodeType(expr) ?? ctx.resolveIdentifier(expr);
+      if (t == null) {
+        return null;
       }
-      let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
-      return (info, targetType, originalType);
-    } else {
-      return (null, null, null);
+      return new NarrowingSubject(info.id, null, t);
     }
-  } else { return (null, null, null); }
-}
-
-/**
- * Extract null-guard narrowing from a condition like `x == null` or `x != null`.
- * Returns the Symbol and the narrowed type for the "after-exit" context.
- *
- * For `x == null` with definite exit: inverse narrowing removes null from x.
- * For `x != null` with definite exit: inverse narrowing narrows x to null.
- */
-function extractNullGuardNarrowing(
-  ctx: CheckerContext,
-  condition: Expression
-): (Symbol | null, Type | null, boolean) {
-  match (condition) {
-    case BinaryExpression {operator, left, right}: {
-      if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
-        // Check for `x == null` or `null == x`
-        var target: Expression | null = null;
-        if (right is NullLiteral) {
-          target = left;
-        } else {
-          if (left is NullLiteral) { target = right; } else {}
-        }
-        if (target == null) {
-          return (null, null, false);
-        }
-
-        if (let Identifier {name} = target) {
-          let info = ctx.model.resolve(target as Node);
-          if (info == null) {
-            return (null, null, false);
-          }
-          if (!(info is Symbol)) {
-            return (null, null, false);
-          }
-          var originalType = ctx.model.getNodeType(target as Node);
-          if (originalType == null) {
-            originalType = ctx.resolveIdentifier(target as Node);
-          }
-          if (originalType == null || !(originalType is Type)) {
-            return (null, null, false);
-          }
-          let isEqualNull = operator == "==" || operator == "===";
-          return (info, originalType, isEqualNull);
-        } else {
-          return (null, null, false);
-        }
-      } else {
-        return (null, null, false);
+    case MemberExpression: {
+      if (!isImmutableMemberPath(ctx, expr)) {
+        return null;
       }
+      let key = getMemberPathKey(ctx, expr);
+      if (key == null) {
+        return null;
+      }
+      let t = ctx.model.getNodeType(expr) ?? checkExpression(ctx, expr, null);
+      return new NarrowingSubject(noSymbolId, key, t);
     }
-    case _: { return (null, null, false); }
+    case _: {
+      return null;
+    }
   }
-}
-
-function extractNullGuardPathNarrowing(
-  ctx: CheckerContext,
-  condition: Expression
-): (String | null, Type | null, boolean) {
-  if (let BinaryExpression {operator, left, right} = condition) {
-    if (operator != "==" && operator != "!=" && operator != "===" && operator != "!==") {
-      return (null, null, false);
-    }
-
-    let target: Expression | null = if (right is NullLiteral) {
-      left
-    } else if (left is NullLiteral) {
-      right
-    } else {
-      null
-    };
-    if (target == null) {
-      return (null, null, false);
-    }
-
-    if (!(target is MemberExpression)) {
-      return (null, null, false);
-    }
-    if (!isImmutableMemberPath(ctx, target)) {
-      return (null, null, false);
-    }
-
-    let key = getMemberPathKey(ctx, target);
-    if (key == null) {
-      return (null, null, false);
-    }
-
-    var originalType = ctx.model.getNodeType(target);
-    if (originalType == null) {
-      originalType = checkExpression(ctx, target, null);
-    }
-    return (key, originalType, operator == "==" || operator == "===");
-  } else { return (null, null, false); }
 }
 
 export final class ConditionNarrowings {
@@ -413,6 +345,26 @@ export final class ConditionNarrowings {
   new() :
     bindings = new Map<SymbolId, Type>(),
     paths = new Map<String, Type>();
+
+  /** Records that `subject` is a `t` on this branch. */
+  narrow(subject: NarrowingSubject, t: Type): void {
+    let {path} = subject;
+    if (path != null) {
+      this.paths[path] = t;
+    } else {
+      this.bindings[subject.binding] = t;
+    }
+  }
+}
+
+/**
+ * What a condition establishes on each of its branches: the narrowings
+ * in force where it was true, and where it was false.
+ */
+export final class BranchNarrowings {
+  whenTrue: ConditionNarrowings;
+  whenFalse: ConditionNarrowings;
+  new(this.whenTrue, this.whenFalse);
 }
 
 function mergeNarrowings(ctx: CheckerContext, dest: ConditionNarrowings, src: ConditionNarrowings): void {
@@ -452,165 +404,114 @@ function intersectNarrowings(
   }
 }
 
-function getNarrowedTypesFromCondition(
-  ctx: CheckerContext,
-  condition: Expression,
-  truthValue: boolean
-): ConditionNarrowings {
+/** The one-sided conjunction: both held, so both narrowings hold. */
+function both(ctx: CheckerContext, a: ConditionNarrowings, b: ConditionNarrowings): ConditionNarrowings {
   let result = new ConditionNarrowings();
-
-  match (condition) {
-    case UnaryExpression {operator, argument}: {
-      if (operator == "!") {
-        return getNarrowedTypesFromCondition(ctx, argument, !truthValue);
-      }
-    }
-    case BinaryExpression {operator, left, right}: {
-      if (operator == "&&") {
-        if (truthValue) {
-          let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, true);
-          // The right side is analyzed under the left's narrowings: a
-          // temporary node on the flow, removed by restoring.
-          let savedFlow = ctx.currentFlow;
-          ctx.pushFlowNarrowings(leftNarrowings);
-          let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, true);
-          ctx.setFlow(savedFlow);
-
-          mergeNarrowings(ctx, result, leftNarrowings);
-          mergeNarrowings(ctx, result, rightNarrowings);
-        } else {
-          let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, false);
-          let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, false);
-          intersectNarrowings(ctx, result, leftNarrowings, rightNarrowings);
-        }
-        return result;
-      }
-      if (operator == "||") {
-        if (truthValue) {
-          let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, true);
-          let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, true);
-          intersectNarrowings(ctx, result, leftNarrowings, rightNarrowings);
-        } else {
-          let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, false);
-          let savedFlow = ctx.currentFlow;
-          ctx.pushFlowNarrowings(leftNarrowings);
-          let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, false);
-          ctx.setFlow(savedFlow);
-
-          mergeNarrowings(ctx, result, leftNarrowings);
-          mergeNarrowings(ctx, result, rightNarrowings);
-        }
-        return result;
-      }
-    }
-    case _: {}
-  }
-
-  // Base cases
-  if (truthValue) {
-    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
-    if (guardInfo != null) {
-      let origType = guardOrigType as Type;
-      if (isEqualNull) {
-        result.bindings[guardInfo.id] = new NullType();
-      } else {
-        result.bindings[guardInfo.id] = subtractNullFromType(origType);
-      }
-      return result;
-    }
-
-    let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, condition);
-    if (guardPathKey != null) {
-      let origType = guardPathOrigType as Type;
-      if (pathIsEqualNull) {
-        result.paths[guardPathKey] = new NullType();
-      } else {
-        result.paths[guardPathKey] = subtractNullFromType(origType);
-      }
-      return result;
-    }
-
-    let (isInfo, isTargetType, isOrigType) = extractIsNarrowing(ctx, condition);
-    if (isInfo != null) {
-      result.bindings[isInfo.id] = isTargetType as Type;
-      return result;
-    }
-
-    let (isPathKey, isPathTargetType, isPathOrigType_) = extractIsPathNarrowing(ctx, condition);
-    if (isPathKey != null) {
-      result.paths[isPathKey] = isPathTargetType as Type;
-      return result;
-    }
-  } else {
-    let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, condition);
-    if (guardInfo != null) {
-      let origType = guardOrigType as Type;
-      if (isEqualNull) {
-        result.bindings[guardInfo.id] = subtractNullFromType(origType);
-      } else {
-        result.bindings[guardInfo.id] = new NullType();
-      }
-      return result;
-    }
-
-    let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, condition);
-    if (guardPathKey != null) {
-      let origType = guardPathOrigType as Type;
-      if (pathIsEqualNull) {
-        result.paths[guardPathKey] = subtractNullFromType(origType);
-      } else {
-        result.paths[guardPathKey] = new NullType();
-      }
-      return result;
-    }
-
-    let (isInfo, isTargetType, isOrigType) = extractIsNarrowing(ctx, condition);
-    if (isInfo != null) {
-      result.bindings[isInfo.id] = subtractTypeFromUnion(isOrigType as Type, isTargetType as Type);
-      return result;
-    }
-
-    let (isPathKey, isPathTargetType, isPathOrigType_) = extractIsPathNarrowing(ctx, condition);
-    if (isPathKey != null) {
-      result.paths[isPathKey] = subtractTypeFromUnion(isPathOrigType_ as Type, isPathTargetType as Type);
-      return result;
-    }
-  }
-
+  mergeNarrowings(ctx, result, a);
+  mergeNarrowings(ctx, result, b);
   return result;
 }
 
-export function applyTrueNarrowingFromCondition(ctx: CheckerContext, condition: Expression): void {
-  ctx.pushFlowNarrowings(getNarrowedTypesFromCondition(ctx, condition, true));
+/** The one-sided disjunction: one of them held, so a subject is what
+ * either says, and a subject only one speaks of is unnarrowed. */
+function either(ctx: CheckerContext, a: ConditionNarrowings, b: ConditionNarrowings): ConditionNarrowings {
+  let result = new ConditionNarrowings();
+  intersectNarrowings(ctx, result, a, b);
+  return result;
 }
 
-export function applyFalseNarrowingFromCondition(ctx: CheckerContext, condition: Expression): void {
-  ctx.pushFlowNarrowings(getNarrowedTypesFromCondition(ctx, condition, false));
-}
-
-function extractIsPathNarrowing(
-  ctx: CheckerContext,
-  condition: Expression
-): (String | null, Type | null, Type | null) {
-  if (let IsExpression {expression, typeAnnotation} = condition) {
-    if (!(expression is MemberExpression)) {
-      return (null, null, null);
+/**
+ * The narrowings `condition` establishes on its true and false
+ * branches, in one pass over it. Two rules, each on a binding or an
+ * immutable member path: a null test (`s == null`, `s != null`, either
+ * way round) narrows the subject to `null` on one branch and takes
+ * `null` off it on the other; an `is` test narrows it to the tested
+ * type on one branch and takes that type out of its union on the
+ * other. `!` swaps the branches. `a && b` holds both when true, and
+ * when false one of them failed, so a subject is what either side's
+ * false branch says; `a || b` the other way around. The right operand
+ * is read under the left's narrowings in force where it runs — the
+ * left's true branch for `&&`, its false branch for `||`.
+ */
+export function conditionNarrowings(ctx: CheckerContext, condition: Expression): BranchNarrowings {
+  match (condition) {
+    case UnaryExpression {operator, argument}: {
+      if (operator == "!") {
+        let inner = conditionNarrowings(ctx, argument);
+        return new BranchNarrowings(inner.whenFalse, inner.whenTrue);
+      }
     }
-    if (!isImmutableMemberPath(ctx, expression)) {
-      return (null, null, null);
+    case BinaryExpression {operator, left, right}: {
+      if (operator == "&&" || operator == "||") {
+        let isAnd = operator == "&&";
+        let a = conditionNarrowings(ctx, left);
+        // The right side is analyzed under the left's narrowings: a
+        // temporary node on the flow, removed by restoring.
+        let savedFlow = ctx.currentFlow;
+        ctx.pushFlowNarrowings(if (isAnd) a.whenTrue else a.whenFalse);
+        let b = conditionNarrowings(ctx, right);
+        ctx.setFlow(savedFlow);
+        return if (isAnd) {
+          new BranchNarrowings(both(ctx, a.whenTrue, b.whenTrue), either(ctx, a.whenFalse, b.whenFalse))
+        } else {
+          new BranchNarrowings(either(ctx, a.whenTrue, b.whenTrue), both(ctx, a.whenFalse, b.whenFalse))
+        };
+      }
+      if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
+        let tested: Expression | null = if (right is NullLiteral) {
+          left
+        } else if (left is NullLiteral) {
+          right
+        } else {
+          null
+        };
+        if (tested == null) {
+          return new BranchNarrowings(new ConditionNarrowings(), new ConditionNarrowings());
+        }
+        let subject = narrowingSubject(ctx, tested);
+        if (subject == null) {
+          return new BranchNarrowings(new ConditionNarrowings(), new ConditionNarrowings());
+        }
+        let isNull = new ConditionNarrowings();
+        isNull.narrow(subject, new NullType());
+        let isNotNull = new ConditionNarrowings();
+        isNotNull.narrow(subject, subtractNullFromType(subject.type));
+        return if (operator == "==" || operator == "===") {
+          new BranchNarrowings(isNull, isNotNull)
+        } else {
+          new BranchNarrowings(isNotNull, isNull)
+        };
+      }
     }
-
-    let key = getMemberPathKey(ctx, expression);
-    if (key == null) {
-      return (null, null, null);
+    case IsExpression {expression, typeAnnotation}: {
+      let subject = narrowingSubject(ctx, expression);
+      if (subject == null) {
+        return new BranchNarrowings(new ConditionNarrowings(), new ConditionNarrowings());
+      }
+      let target = resolveTypeAnnotation(ctx, typeAnnotation);
+      let whenTrue = new ConditionNarrowings();
+      whenTrue.narrow(subject, target);
+      let whenFalse = new ConditionNarrowings();
+      whenFalse.narrow(subject, subtractTypeFromUnion(subject.type, target));
+      return new BranchNarrowings(whenTrue, whenFalse);
     }
-
-    let originalType = checkExpression(ctx, expression, null);
-    let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
-    return (key, targetType, originalType);
-  } else {
-    return (null, null, null);
+    case _: {}
   }
+  return new BranchNarrowings(new ConditionNarrowings(), new ConditionNarrowings());
+}
+
+/** Puts `condition`'s true-branch narrowings on the flow: for a
+ * consumer that has only that branch, such as `&&`'s right operand or
+ * a match guard's arm. A consumer with both branches calls
+ * `conditionNarrowings` once. */
+export function applyTrueNarrowingFromCondition(ctx: CheckerContext, condition: Expression): void {
+  ctx.pushFlowNarrowings(conditionNarrowings(ctx, condition).whenTrue);
+}
+
+/** Puts `condition`'s false-branch narrowings on the flow: `||`'s
+ * right operand. */
+export function applyFalseNarrowingFromCondition(ctx: CheckerContext, condition: Expression): void {
+  ctx.pushFlowNarrowings(conditionNarrowings(ctx, condition).whenFalse);
 }
 
 /**

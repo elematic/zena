@@ -89,11 +89,14 @@ one helper each; the rest are still open.
   because one keys by `i64` and the other by `String`.
 - _Condition narrowing._ `extractIsNarrowing`,
   `extractNullGuardNarrowing`, `extractNullGuardPathNarrowing` and
-  `extractIsPathNarrowing` are two rules (an `is` test, a null test)
+  `extractIsPathNarrowing` were two rules (an `is` test, a null test)
   times two subjects (a binding, a member path).
-  `getNarrowedTypesFromCondition` then calls all four for the true
+  `getNarrowedTypesFromCondition` then called all four for the true
   branch and all four again for the false branch, with the result
-  inverted by hand.
+  inverted by hand. Now `narrowingSubject` names the subject once,
+  and `conditionNarrowings` applies each rule once, producing both
+  branches (`BranchNarrowings`); an `if` or loop calls it once for
+  both of its edges.
 - _Smaller repeats._ `isPrivate` as `name.sliceBytes(0, 1) == "#"` (22
   sites); `fd.mutability == "var"` (10); `fieldSetterNames` lookup
   (5); the getter/setter "Cannot override final method" block (twice);
@@ -317,11 +320,13 @@ Fixed with the split, each with a portable test seen failing first:
 
 Still open:
 
-- `extractIsPathNarrowing` and `isImmutableMemberPath` call
+- `extractIsPathNarrowing` and `isImmutableMemberPath` called
   `checkExpression` on the subject again, so a condition's member
-  path is re-checked up to six times per `if` (true and false
+  path was re-checked up to six times per `if` (true and false
   branches, each through the null-guard and `is` extractors), and the
-  re-check records flow nodes and adaptations again.
+  re-check recorded flow nodes and adaptations again. The subject's
+  type is now read from the model, where the condition's own check
+  put it, and the condition is walked once per `if`.
 - `getMatchedLiteralType` runs before every expression check, so a
   literal in a context typed by a literal union never reaches the
   numeric range rules.
@@ -334,8 +339,8 @@ The compile-time budget is mostly codegen (see the baseline below), so
 the checker's cleanups are judged by not regressing rather than by
 what they save. What stood out:
 
-- The condition re-checks above: a member-path condition costs six
-  expression checks.
+- The condition re-checks above: a member-path condition cost six
+  expression checks; it costs none now.
 - `collectAssignedSymbolIds` walks a loop's whole body for every loop,
   so nested loops cost depth times size.
 - `classifyOwnUses` walks a block's subtree at every block exit that
@@ -389,16 +394,18 @@ allocation history, so a layout change can move 700 ms between the
 phases; the run-to-run spread is then under 1%.
 
 With that setting, on an idle machine, before and after the split, and
-after each of the two name-to-identity PRs (on a loaded machine):
+after each later step (on a loaded machine; the narrowing column ran at
+a load average of 11, which is where its `check-register`, untouched by
+that step, picked up 7 ms):
 
-| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) |
-| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- |
-| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           |
-| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          |
-| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          |
-| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           |
-| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          |
-| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           |
+| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) | narrowing (ms) |
+| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- | -------------- |
+| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           |
+| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          |
+| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          |
+| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           |
+| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          |
+| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           |
 
 `portable-semantics` compiles `zena/test/portable_semantics.zena`,
 which imports the compiler, so it is the one fixture whose input the
@@ -427,7 +434,7 @@ Each step is one PR, lands green on `npm test`, and keeps
    `typesEqual` and `isStaticReceiver`.
 5. **Condition narrowing.** One subject type (binding or path), one
    pass per condition producing both branches' narrowings, no
-   re-checking of the subject.
+   re-checking of the subject. Done.
 6. **The flow walks.** One backward search parameterized by its stop
    rule; one memoized walk keyed by a single key type.
 7. **The body context record.** Replace the fifteen getter/setter
