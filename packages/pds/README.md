@@ -38,7 +38,12 @@ does and see every account it holds, at `/admin`, and every private entry.
 
 The host reads other PDSes, for maintainers' attestations and profiles,
 only at public HTTPS names. `PDS_PRIVATE_READS=1` lifts that, for a stack
-on one machine, such as the demo's.
+on one machine, such as the demo's. A public name can still point at a
+private address, which only the runtime sees: the image sets
+`ZENA_DENY_PRIVATE_EGRESS=1`, so `zena-run` connects only to public
+addresses, with `ZENA_ALLOW_EGRESS=metadata.google.internal` for the
+metadata server that gives the service its Google credentials
+(`packages/zena-runtime`).
 
 The atproto libraries it is built on are in [`packages/atproto`](../atproto).
 

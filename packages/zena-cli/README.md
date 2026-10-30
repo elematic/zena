@@ -207,15 +207,17 @@ The workspace's root is the repository root, `ZENA_REPO_ROOT`, which
 defaults to the checkout the binary was built in, or the current directory
 for a standalone binary.
 
-| Variable              | Effect                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `ZENA_CACHE_DIR`      | The cache directory, holding fetched packages under `packages/`. Defaults to `$XDG_CACHE_HOME/zena`, or `~/.cache/zena`. |
-| `ZENA_PROJECT_CACHE`  | When set, caches go in `.zena/` in the workspace.                                                                        |
-| `ZENA_PLC_DIRECTORY`  | The PLC directory DIDs are resolved with, in place of `https://plc.directory`, for mirrors and tests.                    |
-| `ZENA_DNS_OVER_HTTPS` | The DNS-over-HTTPS endpoint handles are resolved with, in place of Cloudflare's.                                         |
-| `ZENA_CONFIG_DIR`     | Where `login` keeps the session. Defaults to `$XDG_CONFIG_HOME/zena`, or `~/.config/zena`.                               |
-| `ZENA_APP_PASSWORD`   | The app password `login` uses when `--password-stdin` is not given.                                                      |
-| `ZENA_PACKAGE_HOST`   | The package host `publish` and `package create` use, in place of `https://pkg.zena-lang.dev`.                            |
+| Variable                   | Effect                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ZENA_CACHE_DIR`           | The cache directory, holding fetched packages under `packages/`. Defaults to `$XDG_CACHE_HOME/zena`, or `~/.cache/zena`. |
+| `ZENA_PROJECT_CACHE`       | When set, caches go in `.zena/` in the workspace.                                                                        |
+| `ZENA_PLC_DIRECTORY`       | The PLC directory DIDs are resolved with, in place of `https://plc.directory`, for mirrors and tests.                    |
+| `ZENA_DNS_OVER_HTTPS`      | The DNS-over-HTTPS endpoint handles are resolved with, in place of Cloudflare's.                                         |
+| `ZENA_CONFIG_DIR`          | Where `login` keeps the session. Defaults to `$XDG_CONFIG_HOME/zena`, or `~/.config/zena`.                               |
+| `ZENA_APP_PASSWORD`        | The app password `login` uses when `--password-stdin` is not given.                                                      |
+| `ZENA_DENY_PRIVATE_EGRESS` | `1`: outgoing requests, the command's and those of the programs it runs, connect only to public addresses.               |
+| `ZENA_ALLOW_EGRESS`        | Host names exempt from `ZENA_DENY_PRIVATE_EGRESS`, separated by commas.                                                  |
+| `ZENA_PACKAGE_HOST`        | The package host `publish` and `package create` use, in place of `https://pkg.zena-lang.dev`.                            |
 
 ## Development and Architecture
 

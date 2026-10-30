@@ -29,7 +29,7 @@ import {
   ErrorCodeDNSTimeout, ErrorCodeDestinationNotFound,
   ErrorCodeDestinationUnavailable, ErrorCodeConnectionRefused,
   ErrorCodeConnectionTimeout, ErrorCodeConnectionTerminated,
-  ErrorCodeHTTPRequestURIInvalid, ErrorCodeInternalError
+  ErrorCodeHTTPRequestURIInvalid, ErrorCodeInternalError, ErrorCodeDestinationIPProhibited
 } from 'wasi:http/types';
 import { send } from 'wasi:http/client';
 import { RequestInit } from './options.zena';
@@ -239,6 +239,10 @@ let describe = (code: ErrorCode): String => {
       code is ErrorCodeConnectionRefused ||
       code is ErrorCodeConnectionTimeout) {
     return 'the server could not be reached';
+  }
+  if (code is ErrorCodeDestinationIPProhibited) {
+    // The embedder's policy, such as zena-run's ZENA_DENY_PRIVATE_EGRESS.
+    return 'the host prohibits connecting to that address';
   }
   if (code is ErrorCodeConnectionTerminated) {
     return 'the connection was closed before a response arrived';

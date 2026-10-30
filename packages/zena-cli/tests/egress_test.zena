@@ -1,0 +1,45 @@
+/**
+ * Where a program `zena run` runs may send requests: anywhere by default,
+ * and with `ZENA_DENY_PRIVATE_EGRESS=1` only to public addresses, but for
+ * the hosts `ZENA_ALLOW_EGRESS` lists (the runtime's `EgressPolicy`). The
+ * private address here is the fake PDS, on 127.0.0.1.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {Scratch, described, fakePdsOrigin, startFakePds, write, zenaIn} from './cli-support.zena';
+
+export let tests = suite('zena run: outgoing requests', () => {
+  test('reach private addresses unless the environment denies them', (ctx) => {
+    let scratch = Scratch.create('egress');
+    let stack = startFakePds(scratch, 'fetch-pds.zena');
+    try {
+      let plc = fakePdsOrigin(scratch, stack);
+      // A program that says whether its request reached the server.
+      write(scratch.at('project/prog.zena'), `import {Future} from 'zena:async';
+import {fetch} from 'zena:fetch';
+
+export async ${'function'} main(): Future<i32> {
+  try {
+    let response = await fetch('${plc}');
+    console.log(\`reached \${response.status}\`);
+  } catch (e) {
+    console.log(\`refused: \${e.message}\`);
+  }
+  return 0;
+}
+`);
+      let open = zenaIn(scratch, 'project').run(['run', 'prog.zena']);
+      isTrue(open.succeeded() && open.stdout.contains('reached'), described(open));
+      let denied = zenaIn(scratch, 'project').set('ZENA_DENY_PRIVATE_EGRESS', '1').run(['run', 'prog.zena']);
+      isTrue(denied.succeeded() && denied.stdout.contains('refused') &&
+          denied.stdout.contains('the host prohibits connecting to that address'), described(denied));
+      let exempt = zenaIn(scratch, 'project').set('ZENA_DENY_PRIVATE_EGRESS', '1')
+        .set('ZENA_ALLOW_EGRESS', 'metadata.google.internal,127.0.0.1').run(['run', 'prog.zena']);
+      isTrue(exempt.succeeded() && exempt.stdout.contains('reached'), described(exempt));
+    } finally {
+      stack.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});
