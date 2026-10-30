@@ -374,14 +374,19 @@ memo and step budget, and `findLiveMove` keeps a visited set.
 
 ### Idiom
 
-- `CheckerContext` keeps fifteen fields as a private field plus a
+- `CheckerContext` kept fifteen fields as a private field plus a
   getter and a setter each (`returnType`, `yieldType`, `tryDepth`,
   `usingDepth`, `inConstructor`, `asyncValueType`, `asyncFutureType`,
   `suspensionRelaxed`, `cancelBlockFloor`, `inFinalizer`,
   `castLiteralTarget`, `owningReceiver`, `receiverSymbol`,
-  `inDispose`, `bodyThisType`), and every body checker saves and
-  restores them by hand. A record of the per-body context, swapped as
-  `FlowBodyState` already is, would replace all of it.
+  `inDispose`, `bodyThisType`), and every body checker saved and
+  restored them by hand. They are now one `BodyContext`, built by each
+  body checker and swapped by `enterBody`/`exitBody` as
+  `FlowBodyState` is; the getters delegate, and the setters that
+  remain are the ones a construct inside a body uses
+  (`setCancelBlockFloor`, `setInFinalizer`, `setUsingDepth`,
+  `setBodyThisType`, `setCastLiteralTarget`, which stays per
+  expression on the context).
 - `while (i < xs.length) { ...; i += 1; }` where `for (let x in xs)`
   would do: 58 loops.
 - `match (x) { case T as t: {...} case _: {} }` with one arm: 107
@@ -410,14 +415,20 @@ after each later step (on a loaded machine; the narrowing column ran at
 a load average of 11, which is where its `check-register`, untouched by
 that step, picked up 7 ms):
 
-| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) | narrowing (ms) | walks (ms) |
-| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- | -------------- | ---------- |
-| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           | 15.3       |
-| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          | 134.4      |
-| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          | 206.4      |
-| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           | 32.1       |
-| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          | 159.0      |
-| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           | 4005       |
+| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) | narrowing (ms) | walks (ms) | body (ms) |
+| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- | -------------- | ---------- | --------- |
+| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           | 15.3       | 16.0      |
+| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          | 134.4      | 154.0     |
+| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          | 206.4      | 249.6     |
+| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           | 32.1       | 38.4      |
+| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          | 159.0      | 191.2     |
+| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           | 4005       | 4751      |
+
+The body column ran at a load average of 13 to 23, twice; `scope` and
+`check-register`, which the step does not touch, moved by the same
+fifth as `check-bodies`, and the fixture's codegen phases by the same.
+A body is one small allocation and its fields one load further away,
+which is not a fifth of anything; the column wants an idle machine.
 
 The flow walks' column is the one real change in the table: the path
 walk's memo was keyed by a string built per join visit, and
@@ -458,5 +469,6 @@ Each step is one PR, lands green on `npm test`, and keeps
 7. **The body context record.** Replace the fifteen getter/setter
    pairs and the hand-written save/restore in `checkMethodBody`,
    `checkFunctionExpression` and `checkInterfaceConstructorBody`.
+   Done.
 8. **Representation predicates.** One representation kind for casts,
    unions and `anyref`.
