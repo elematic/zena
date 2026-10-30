@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Stores an artifact, or one part of a large artifact, as a blob of a package, for a release that 'dev.zena-lang.host.publish' writes next. The caller must be a maintainer of the package. A blob no release references is deleted after a while, as a PDS deletes unreferenced blobs.",
+      "description": "Stores an artifact, or one part of a large artifact, as a blob of a package, for a release that 'dev.zena-lang.host.publish' writes next. The caller must be a maintainer of the package. The body's type must be one an artifact has: 'application/vnd.ipld.car' for a source archive, 'application/wasm' for a component or core module, 'text/plain' for a component's WIT, or 'application/octet-stream' for a part; its parameters are dropped. A blob no release references is deleted after a while, as a PDS deletes unreferenced blobs.",
       "parameters": {
         "type": "params",
         "required": ["package"],
@@ -16,18 +16,26 @@
           }
         }
       },
-      "input": {"encoding": "*/*"},
+      "input": {
+        "encoding": "*/*"
+      },
       "output": {
         "encoding": "application/json",
         "schema": {
           "type": "object",
           "required": ["blob"],
           "properties": {
-            "blob": {"type": "blob"}
+            "blob": {
+              "type": "blob"
+            }
           }
         }
       },
       "errors": [
+        {
+          "name": "InvalidRequest",
+          "description": "The body's type is not one an artifact has."
+        },
         {
           "name": "TooLarge",
           "description": "The blob is larger than the host stores in one blob; upload it in parts."
