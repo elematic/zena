@@ -1198,6 +1198,25 @@ export let tests = suite('pds:host', () => {
     equal(served.getHeader('x-content-type-options') ?? '', 'nosniff');
   });
 
+  test('refuses a request body larger than its method takes, before reading it all', (ctx) => {
+    let fixture = new Fixture();
+    // A body before any authentication: 2 MiB of JSON for a session.
+    let big = new FixedArray<u8>(2 * 1024 * 1024, 32 as u8);
+    let session = fixture.post('/xrpc/com.atproto.server.createSession', String.fromBytes(big), null);
+    equal(session.statusCode, 413);
+    equal(errorOf(session), 'PayloadTooLarge');
+    // An artifact may be as large as the host stores, and no larger.
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    (fixture.host as PackageHost).config.maxBlobSize = 1000 as i64;
+    let over = fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>(2000, 1 as u8), `?package=${pkgDid}`,
+        'application/octet-stream');
+    equal(over.statusCode, 413);
+    equal(errorOf(over), 'TooLarge');
+    ok(fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>(1000, 1 as u8), `?package=${pkgDid}`,
+        'application/octet-stream'));
+  });
+
   test('renders the pages a visitor browses', (ctx) => {
     let fixture = new Fixture();
     let router = seedBrowsable(fixture);

@@ -3,7 +3,9 @@
  */
 
 import { HashMap } from 'zena:collections';
-import { Stream, StreamWriter, readAllBytes, readAllText } from 'zena:stream';
+import { Stream, StreamLimitError, StreamWriter, readAllBytes } from 'zena:stream';
+import { parseI64 } from 'zena:core';
+import { HttpError } from './error.zena';
 import { URL } from 'zena:url';
 import { parseCookies } from './cookie.zena';
 
@@ -40,6 +42,14 @@ export class Request {
   var #bodyStream: Stream<u8> | null = null;
   var #bodyText: String | null = null;
   var #bodyBytes: FixedArray<u8> | null = null;
+  /**
+   * The most bytes `text()` and `bytes()` read of the body, or -1 for no
+   * limit. A body over it is refused with an `HttpError` of 413, which
+   * `App` answers: one whose `Content-Length` is over it before anything
+   * is read, and one that does not say once it passes it. A server sets
+   * it before its handlers read, and a handler that takes more raises it.
+   */
+  var bodyLimit: i64 = -1 as i64;
 
   /**
    * Constructs a Request with explicit parameters or a lazy RequestSource.
@@ -296,25 +306,43 @@ export class Request {
   }
 
   /**
-   * Reads and decodes the full request body as text.
+   * Reads and decodes the full request body as text, within `bodyLimit`.
    */
   async text(): Future<String> {
     if (this.#bodyText != null) {
       return this.#bodyText as String;
     }
-    let str = await readAllText(this.body);
+    let str = String.fromBytes(await this.bytes());
     this.#bodyText = str;
     return str;
   }
 
   /**
-   * Reads the full request body as bytes.
+   * Reads the full request body as bytes, within `bodyLimit`.
    */
   async bytes(): Future<FixedArray<u8>> {
     if (this.#bodyBytes != null) {
       return this.#bodyBytes as FixedArray<u8>;
     }
-    let b = await readAllBytes(this.body);
+    let limit = this.bodyLimit;
+    if (limit >= (0 as i64)) {
+      let declared = this.getHeader('content-length');
+      if (declared != null) {
+        if (let (true, length) = parseI64((declared as String).trim())) {
+          if (length > limit) {
+            throw new HttpError(413);
+          }
+        }
+      }
+    }
+    let b = try {
+      await readAllBytes(this.body, limit)
+    } catch (e) {
+      if (e is StreamLimitError) {
+        throw new HttpError(413);
+      }
+      throw e;
+    };
     this.#bodyBytes = b;
     return b;
   }

@@ -381,20 +381,36 @@ export {
   waits, buffered,
 } from './multicast.zena';
 
+/** A stream longer than the most a read of it would take (`readAllBytes`). */
+export final class StreamLimitError extends Error {
+  /** The most it would take, in bytes. */
+  limit: i64;
+
+  new(limit: i64) : limit = limit, super(`the stream is longer than ${limit} bytes`);
+}
+
 /**
  * Every byte of `stream` from here to end-of-stream, in one array:
  * reads until a read returns 0. A response body is the usual case; a
  * stream that never ends never resolves. Bytes rather than any `T`
  * because a read needs a scratch buffer, and a buffer of `T` needs a
  * value of `T` to fill it with.
+ *
+ * With a `limit` of zero or more, a stream that runs past that many
+ * bytes is stopped, and the read fails with `StreamLimitError`, so a
+ * body someone else sends cannot fill memory.
  */
-export async function readAllBytes(stream: Stream<u8>): Future<FixedArray<u8>> {
+export async function readAllBytes(stream: Stream<u8>, limit: i64 = -1 as i64): Future<FixedArray<u8>> {
   let chunk = new Array<u8>.fixed(4096, 0);
   let collected = new Array<u8>();
   while (true) {
     let n = await stream.read(chunk);
     if (n == 0) {
       break;
+    }
+    if (limit >= (0 as i64) && ((collected.length + n) as i64) > limit) {
+      stream.stop();
+      throw new StreamLimitError(limit);
     }
     for (var i = 0; i < n; i += 1) {
       collected.push(chunk[i]);
@@ -408,8 +424,8 @@ export async function readAllBytes(stream: Stream<u8>): Future<FixedArray<u8>> {
  * strings are WTF-8 views over byte arrays, so nothing is re-encoded:
  * the bytes are collected and wrapped.
  */
-export async function readAllText(stream: Stream<u8>): Future<String> {
-  return String.fromBytes(await readAllBytes(stream));
+export async function readAllText(stream: Stream<u8>, limit: i64 = -1 as i64): Future<String> {
+  return String.fromBytes(await readAllBytes(stream, limit));
 }
 
 export final class TextStream extends Stream<u8> {

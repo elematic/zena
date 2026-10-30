@@ -7,7 +7,7 @@
  */
 
 import {Future} from 'zena:async';
-import {Router} from 'zena:http';
+import {HttpError, Router} from 'zena:http';
 import {JsonArray, JsonObject} from 'zena:json';
 import {formatTimestamp} from 'zena:time';
 import {decodeCbor} from 'atproto:cbor';
@@ -27,7 +27,17 @@ export function releaseRoutes(router: Router, host: PackageHost): void {
       fail(res, 400, 'InvalidRequest', 'Missing required parameter: package');
       return null;
     }
-    let bytes = await req.bytes();
+    // As large as the host stores, and refused before more is read.
+    req.bodyLimit = host.config.maxBlobSize;
+    let bytes = try {
+      await req.bytes()
+    } catch (e) {
+      if (e is HttpError && (e as HttpError).status == 413) {
+        fail(res, 413, 'TooLarge', `the blob is larger than ${host.config.maxBlobSize} bytes`);
+        return null;
+      }
+      throw e;
+    };
     let mimeType = req.getHeader('content-type') ?? 'application/octet-stream';
     let blob = await host.uploadArtifact(caller, pkg as String, mimeType, bytes);
     let body = new JsonObject();

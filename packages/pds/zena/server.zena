@@ -21,6 +21,7 @@ import {notFound} from './web/pages/not-found.zena';
 import {webPages} from './web/routes.zena';
 import {contextOf} from './web/session.zena';
 import {People} from './web/people.zena';
+import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
 import {hostRoutes} from './xrpc/host/routes.zena';
 import {repoRoutes} from './xrpc/repo.zena';
 import {serverRoutes} from './xrpc/server.zena';
@@ -38,6 +39,11 @@ let banner = 'An AT Protocol PDS written in Zena\n';
 export function createApp(pds: Pds, host: PackageHost | null = null, sessions: Sessions | null = null): App {
   let app = new App();
   let router = new Router();
+  // Before any route reads a body (`REQUEST_BODY_LIMIT`).
+  app.use(async (req, res, next): Future<void> => {
+    req.bodyLimit = REQUEST_BODY_LIMIT;
+    await next();
+  });
 
   if (host == null) {
     router.get('/', async (req, res, next, params) => {

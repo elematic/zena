@@ -6,7 +6,7 @@
  */
 
 import {Future} from 'zena:async';
-import {Request, Response} from 'zena:http';
+import {HttpError, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {div} from 'zena:math';
 import {now} from 'wasi:clocks/system-clock';
@@ -15,6 +15,13 @@ import {Pds} from '../pds.zena';
 import {RepositoryError} from '../repository.zena';
 import {SessionError} from '../sessions.zena';
 import {Account} from '../storage.zena';
+
+/**
+ * The most bytes of a request body the server reads, unless a method that
+ * takes more (`uploadArtifact`) raises its own: a session or a record is
+ * far smaller, and a body read before authentication must not fill memory.
+ */
+export let REQUEST_BODY_LIMIT: i64 = (1024 * 1024) as i64;
 
 /** Answers `res` with the XRPC error `error`. */
 export function fail(res: Response, status: i32, error: String, message: String): void {
@@ -81,7 +88,15 @@ export function nowSeconds(): i64 {
 
 /** The JSON object a request's body holds; null, after answering `InvalidRequest`, when it is not one. */
 export async function jsonBody(req: Request, res: Response): Future<JsonObject | null> {
-  let text = await req.text();
+  let text = try {
+    await req.text()
+  } catch (e) {
+    if (e is HttpError && (e as HttpError).status == 413) {
+      fail(res, 413, 'PayloadTooLarge', `the body is larger than the ${req.bodyLimit} bytes this method takes`);
+      return null;
+    }
+    throw e;
+  };
   let parsed = parseBody(text);
   if (parsed == null) {
     fail(res, 400, 'InvalidRequest', 'the body is not a JSON object');
