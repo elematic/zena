@@ -653,6 +653,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
   // in particular a stale own-field entry in `members` would be
   // mistaken for an inherited field.
   classType.members.clear();
+  classType.staticMembers.clear();
   classType.implementsList = new Array<InterfaceType>();
   classType.mixins = new Array<MixinType>();
   classType.constructorType = null;
@@ -1045,6 +1046,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
   // Track fields declared directly in this class body (not inherited).
   let ownFieldNames = new Set<String>();
   let ownMethodNames = new Set<String>();
+  let ownStaticFieldNames = new Set<String>();
+  let ownStaticMethodNames = new Set<String>();
   let ownConstructorNames = new Set<String>();
   for (let member in cd.body) {
     match (member) {
@@ -1096,6 +1099,9 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           );
         }
 
+        let members = classType.memberTable(fd.isStatic);
+        let targetOwnFields = if (fd.isStatic) ownStaticFieldNames else ownFieldNames;
+
         // Abstract fields can only appear in abstract or sealed classes.
         if (fd.isAbstract) {
           if (!cd.isAbstract && !cd.isSealed) {
@@ -1107,7 +1113,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           }
           // Track abstract field.
           let isMutable = fd.mutability != null && fd.mutability == "var";
-          classType.members[fieldName] = new FieldInfo(
+          members[fieldName] = new FieldInfo(
             fieldType,
             isMutable,
             true, // isAbstract
@@ -1118,9 +1124,9 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
 
           // An abstract field reserves a getter in the members table.
           let getterName = "get#" + fieldName;
-          if (!classType.members.has(getterName)) {
+          if (!members.has(getterName)) {
             let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
-            classType.members[getterName] = new MethodInfo(
+            members[getterName] = new MethodInfo(
               new FunctionType(new Array<Type>(), fieldType),
               true, // isAbstract
               fd.isStatic,
@@ -1132,10 +1138,10 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           // If mutable, it also requires a setter.
           if (fd.mutability != null && fd.mutability == "var") {
             let setterName = "set#" + fieldName;
-            if (!classType.members.has(setterName)) {
+            if (!members.has(setterName)) {
               let setterParams = growable<Type>([fieldType]);
               let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
-              classType.members[setterName] = new MethodInfo(
+              members[setterName] = new MethodInfo(
                 new FunctionType(setterParams, new VoidType()),
                 true, // isAbstract
                 fd.isStatic,
@@ -1146,7 +1152,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           }
         } else {
           // Concrete field may satisfy an inherited abstract field.
-          if (classType.members.has(fieldName) && classType.members[fieldName].isAbstract) {
+          if (members.has(fieldName) && members[fieldName].isAbstract) {
             // It replaces the abstract field.
           }
 
@@ -1170,15 +1176,15 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             }
           }
 
-          if (ownFieldNames.has(actualFieldName)) {
+          if (targetOwnFields.has(actualFieldName)) {
             ctx.error(
               `Duplicate field '${actualFieldName}' in class '${className}'.`,
               DiagnosticCode.DuplicateField,
               fd.loc
             );
-          } else if (classType.members.has(actualFieldName)) {
+          } else if (members.has(actualFieldName)) {
             // Field was inherited from superclass — check type compatibility.
-            let inheritedField = classType.members[actualFieldName];
+            let inheritedField = members[actualFieldName];
             if (!isAssignableTo(ctx, fieldType, inheritedField.type)) {
               ctx.error(
                 "Field '" + actualFieldName + "' in subclass '" + className +
@@ -1189,7 +1195,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
               );
             }
           }
-          ownFieldNames.add(actualFieldName);
+          targetOwnFields.add(actualFieldName);
 
           let isMutable = (fd.mutability != null && fd.mutability == "var") || hasPrivateSetter;
           let registeredField = new FieldInfo(
@@ -1200,7 +1206,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             actualFieldName.length > 0 && actualFieldName.sliceBytes(0, 1) == "#", // isPrivate
             fd.value != null // hasInitializer
           );
-          classType.members[actualFieldName] = registeredField;
+          members[actualFieldName] = registeredField;
 
           // A field declared without a type gets it from its initializer,
           // normally when this class's bodies are checked. Another member
@@ -1228,7 +1234,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
               let order = new Array<String>();
               var at = 0;
               for (let m in pendingDecl.body) {
-                if (m is FieldDefinition) {
+                if (m is FieldDefinition && m.isStatic == fd.isStatic) {
                   if (m === fd) {
                     at = order.length;
                   }
@@ -1257,9 +1263,9 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
 
           if (hasPrivateSetter) {
             let getterName = "get#" + fieldName;
-            if (!classType.members.has(getterName)) {
+            if (!members.has(getterName)) {
               let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
-              classType.members[getterName] = new MethodInfo(
+              members[getterName] = new MethodInfo(
                 new FunctionType(new Array<Type>(), fieldType),
                 false, // isAbstract
                 fd.isStatic,
@@ -1308,8 +1314,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             } else {
               ownConstructorNames.add(methodName);
             }
-            if (classType.members.has(methodName)) {
-              let existing = classType.members[methodName];
+            if (classType.staticMembers.has(methodName)) {
+              let existing = classType.staticMembers[methodName];
               if (existing is MethodInfo && (existing as MethodInfo).isStatic) {
                 ctx.error(
                   `Constructor '${displayMemberName(methodName)}' conflicts with static method '${displayMemberName(methodName)}'.`,
@@ -1329,6 +1335,10 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           }
         } else {
           // Regular method.
+          let members = classType.memberTable(md.isStatic);
+          let targetOwnFields = if (md.isStatic) ownStaticFieldNames else ownFieldNames;
+          let targetOwnMethods = if (md.isStatic) ownStaticMethodNames else ownMethodNames;
+
           if (md.isStatic && ownConstructorNames.has(methodName)) {
             ctx.error(
               `Static method '${displayMemberName(methodName)}' conflicts with constructor '${displayMemberName(methodName)}'.`,
@@ -1338,7 +1348,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           }
 
           // Check for field/method name conflict.
-          if (ownFieldNames.has(methodName)) {
+          if (targetOwnFields.has(methodName)) {
             ctx.error(
               `Method '${displayMemberName(methodName)}' conflicts with field '${displayMemberName(methodName)}'.`,
               DiagnosticCode.DuplicateDeclaration,
@@ -1362,8 +1372,9 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           let {superType} = classType;
           if (superType != null) {
             let superCt = superType;
-            if (superCt.members.has(methodName)) {
-              let inheritedMethod = superCt.members[methodName];
+            let superMembers = superCt.memberTable(md.isStatic);
+            if (superMembers.has(methodName)) {
+              let inheritedMethod = superMembers[methodName];
               match (inheritedMethod) {
                 case MethodInfo as mi: {
                   if (mi.isFinal) {
@@ -1429,8 +1440,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
                 mentionsTypeParams(methodType.returnType, scopedTypeParamsOf(classType)),
             md.loc);
 
-          if (ownMethodNames.has(methodName)) {
-            let existingInfo = classType.members[methodName];
+          if (targetOwnMethods.has(methodName)) {
+            let existingInfo = members[methodName];
             let existing = existingInfo.type as FunctionType;
             if (existing.overloads == null) {
               let ovArray = growable<FunctionType>([existing]);
@@ -1440,12 +1451,12 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             ovs.push(methodType);
           } else {
             let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
-            if (!isPrivate && classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
-              let inheritedMethodInfo = classType.members[methodName] as MethodInfo;
+            if (!isPrivate && members.has(methodName) && members[methodName] is MethodInfo) {
+              let inheritedMethodInfo = members[methodName] as MethodInfo;
               let superMethod = inheritedMethodInfo.type as FunctionType;
               var matchingSuper = findMatchingOverload(superMethod, methodType);
               var narrowedEquality: FunctionType | null = null;
-              if (matchingSuper == null && methodName == "==") {
+              if (matchingSuper == null && methodName == "==" && !md.isStatic) {
                 narrowedEquality = equalityOverrideTarget(ctx, superMethod, methodType, classType);
                 matchingSuper = narrowedEquality;
               }
@@ -1485,8 +1496,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
                   md.isFinal
                 );
                 overrideInfo.receiverKind = receiverKind;
-                classType.members[methodName] = overrideInfo;
-                ownMethodNames.add(methodName);
+                members[methodName] = overrideInfo;
+                targetOwnMethods.add(methodName);
               } else {
                 // Overlap restriction (member-lookup.md §5.1): a
                 // subclass may not ADD an overload whose parameters
@@ -1519,7 +1530,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
                 let ovs = inheritedMethod.overloads as GrowableArray<FunctionType>;
                 ovs.push(methodType);
 
-                ownMethodNames.add(methodName);
+                targetOwnMethods.add(methodName);
               }
             } else {
               let info = new MethodInfo(
@@ -1530,8 +1541,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
                 md.isFinal
               );
               info.receiverKind = receiverKind;
-              classType.members[methodName] = info;
-              ownMethodNames.add(methodName);
+              members[methodName] = info;
+              targetOwnMethods.add(methodName);
             }
           }
         }
@@ -1539,6 +1550,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
       case AccessorDeclaration as acc: {
         let accName = getMemberName(ctx, acc.name as Node);
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+        let members = classType.memberTable(acc.isStatic);
 
         if (acc.isStatic) {
           rejectClassTypeParamsInStatic(
@@ -1552,8 +1564,9 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           let {superType} = classType;
           if (superType != null) {
             let superCt = superType;
-            if (superCt.members.has(getterName)) {
-              let superMethod = superCt.members[getterName];
+            let superMembers = superCt.memberTable(acc.isStatic);
+            if (superMembers.has(getterName)) {
+              let superMethod = superMembers[getterName];
               match (superMethod) {
                 case MethodInfo as mi: {
                   if (mi.isFinal) {
@@ -1570,7 +1583,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           }
           let getterType = new FunctionType(new Array<Type>(), accType, new FunctionDeclInfo(null, null, null, null, acc.isFinal));
           let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
-          classType.members[getterName] = new MethodInfo(
+          members[getterName] = new MethodInfo(
             getterType,
             false, // isAbstract
             acc.isStatic,
@@ -1586,8 +1599,9 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           let {superType} = classType;
           if (superType != null) {
             let superCt = superType;
-            if (superCt.members.has(setterName)) {
-              let superMethod = superCt.members[setterName];
+            let superMembers = superCt.memberTable(acc.isStatic);
+            if (superMembers.has(setterName)) {
+              let superMethod = superMembers[setterName];
               match (superMethod) {
                 case MethodInfo as mi: {
                   if (mi.isFinal) {
@@ -1605,7 +1619,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           let setterParams = growable<Type>([accType]);
           let setterType = new FunctionType(setterParams, new VoidType(), new FunctionDeclInfo(null, null, null, null, acc.isFinal));
           let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
-          classType.members[setterName] = new MethodInfo(
+          members[setterName] = new MethodInfo(
             setterType,
             false, // isAbstract
             acc.isStatic,
@@ -1893,6 +1907,7 @@ function checkFieldInitializer(
   if (value == null) {
     return;
   }
+  let members = classType.memberTable(fd.isStatic);
   // A `var(#x) x` field is registered under its SETTER name.
   var lookupField = fieldName;
   let fsn = classType.fieldSetterNames;
@@ -1901,10 +1916,10 @@ function checkFieldInitializer(
       lookupField = mapped;
     }
   }
-  if (!classType.members.has(lookupField)) {
+  if (!members.has(lookupField)) {
     return;
   }
-  let fieldInfo = classType.members[lookupField];
+  let fieldInfo = members[lookupField];
   if (fieldInfo is FieldInfo) {
     if (fieldInfo.initializerChecked) {
       return;
@@ -1919,9 +1934,9 @@ function checkFieldInitializer(
   // superclass while the initializer is checked, so it cannot read them.
   let keysToHide = new Array<String>();
 
-  let allFieldKeys = classType.members.keys();
+  let allFieldKeys = members.keys();
   for (let k in allFieldKeys) {
-    if (classType.members[k] is FieldInfo) {
+    if (members[k] is FieldInfo) {
       var isPriorLocal = false;
       var fi = 0;
       while (fi <= fieldIndex) {
@@ -1946,13 +1961,13 @@ function checkFieldInitializer(
   }
 
   for (let k in keysToHide) {
-    classType.members.hide(k);
+    members.hide(k);
   }
 
   let fieldType = fieldInfo.type;
   let initType = checkExpression(ctx, value, fieldType);
 
-  classType.members.unhideAll();
+  members.unhideAll();
 
   // Infer field type from initializer when no explicit annotation.
   if (fieldType is ErrorType && !(initType is ErrorType)) {
@@ -2077,7 +2092,7 @@ function checkClassMemberBody(
           );
         }
       } else {
-        if (classType.members.has(methodName)) {
+        if (classType.memberTable(md.isStatic).has(methodName)) {
           let methodType = checkMethodSignature(ctx, classType, md);
           checkMethodBody(ctx, classType, methodType, md);
         }
@@ -2176,22 +2191,30 @@ export function checkClassBodies(
 
   // Check method bodies and field initializers.
   // Collect field names in declaration order for forward-reference detection.
-  let fieldOrder = new Array<String>();
+  let instanceFieldOrder = new Array<String>();
+  let staticFieldOrder = new Array<String>();
   for (let bodyMember in cd.body) {
     match (bodyMember) {
       case FieldDefinition as fd: {
         let fn = getMemberName(ctx, fd.name as Node);
-        fieldOrder.push(fn);
+        if (fd.isStatic) {
+          staticFieldOrder.push(fn);
+        } else {
+          instanceFieldOrder.push(fn);
+        }
       }
       case _: {}
     }
   }
 
-  var fieldIndex = 0;
+  var instanceFieldIndex = 0;
+  var staticFieldIndex = 0;
   let bi = 0;
   for (let member in cd.body) {
     match (member) {
       case FieldDefinition as fd: {
+        let fieldOrder = if (fd.isStatic) staticFieldOrder else instanceFieldOrder;
+        let fieldIndex = if (fd.isStatic) staticFieldIndex else instanceFieldIndex;
         if (fd.value != null) {
           let declared = fieldDeclaredName(ctx, fd);
           let decoratedField = decoratedFieldOf(classType, declared);
@@ -2201,7 +2224,11 @@ export function checkClassBodies(
             checkFieldInitializer(ctx, classType, fd, declared, fieldIndex, fieldOrder);
           }
         }
-        fieldIndex = fieldIndex + 1;
+        if (fd.isStatic) {
+          staticFieldIndex = staticFieldIndex + 1;
+        } else {
+          instanceFieldIndex = instanceFieldIndex + 1;
+        }
       }
       case MethodDefinition {}: {
         if (deferred != null) {

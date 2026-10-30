@@ -75,9 +75,12 @@ itself: `T.foo` resolves in the static namespace, `t.foo` in the
 instance namespace. The same name may exist in both without
 conflict.
 
-> **Status.** The implementation keeps statics in the same map as
-> instance members with an `isStatic` flag, so a static and an
-> instance member of the same name currently collide.
+_Implementation note._ `ClassType` and `MixinType` carry a separate
+`staticMembers: MemberTable` alongside `members` (and `WasmModule`
+carries `staticMethodMap` alongside `classMethodMap`), selected by
+`memberTable(isStatic)` / `methodMap(isStatic)`. Pinned by
+`classes/static-instance-namespace.zena` and
+`classes/static-instance-same-name.zena`.
 
 ### 2.3 Inheritance
 
@@ -152,11 +155,6 @@ and each signature has its own implementation body.
 - **Interfaces**: interfaces may declare overloaded methods, e.g.
   `Array` declaring both `[](i: i32)` and `[](r: Range)`.
   Conformance and dispatch are per-signature (§5.4).
-
-  > **Status.** Interface overloads are not implemented: a second
-  > same-named interface method silently overwrites the first
-  > ([#93](https://github.com/elematic/zena/issues/93)). Until
-  > implemented, this must become a checker error.
 
 > **Status.** The implementation represents an overload set as a
 > "primary" `FunctionType` (the first declaration) carrying the later
@@ -582,24 +580,18 @@ Summarizing the contract this spec creates:
 
 Every **Status** block above, in one place, each with its issue:
 
-1. Interface overloads unimplemented; same-name interface methods
-   silently last-win, must become an error until implemented (§4) —
-   [#93](https://github.com/elematic/zena/issues/93).
-2. Overloaded tear-offs silently pick the first-declared signature
+1. Overloaded tear-offs silently pick the first-declared signature
    instead of context-sensitive resolution (§7) —
    [#98](https://github.com/elematic/zena/issues/98).
-3. Cross-arm member access on non-null unions unimplemented (§3) —
+2. Cross-arm member access on non-null unions unimplemented (§3) —
    [#99](https://github.com/elematic/zena/issues/99).
-4. Static/instance members share one namespace in the
-   implementation (§2.2) —
-   [#96](https://github.com/elematic/zena/issues/96).
-5. Cross-kind member collisions not uniformly diagnosed; probe order
+3. Cross-kind member collisions not uniformly diagnosed; probe order
    acts as precedence (§2.1) —
    [#97](https://github.com/elematic/zena/issues/97).
-6. Bodyless methods in regular classes silently parse as empty-body
+4. Bodyless methods in regular classes silently parse as empty-body
    overloads (interacts with §4's one-member-per-name model) —
    [#95](https://github.com/elematic/zena/issues/95).
-7. Index writes are typed by the `[]` read selection rather than by
+5. Index writes are typed by the `[]` read selection rather than by
    `[]=` (§5.1) — [#121](https://github.com/elematic/zena/issues/121).
 
 ## 10. Deferred designs

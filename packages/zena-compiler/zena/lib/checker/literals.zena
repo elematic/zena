@@ -3,8 +3,8 @@ import {
   UnaryExpression
 } from '../ast.zena';
 import {
-  BoolLiteralType, ClassType, F32Type, F64Type, I16Type, I32Type, I64Type,
-  I8Type, NumLiteralType, StringLiteralType, Type, TypeParameterType,
+  BoolLiteralType, ClassType, F32Type, F64Type, HoleType, I16Type, I32Type,
+  I64Type, I8Type, NumLiteralType, StringLiteralType, Type, TypeParameterType,
   U16Type, U32Type, U64Type, U8Type, UnionType as UnionT, baseType,
   integerLiteralFits, integerLiteralMagnitude, isNumericType,
   signedLiteralFits, typeToString
@@ -76,6 +76,9 @@ export function checkIntegerLiteral(
   loc: SourceLocation | null
 ): Type {
   if (expectedType == null) {
+    if (ctx.diagnosticsSuppressed && !signedLiteralFits(raw, negative, false)) {
+      return new HoleType();
+    }
     return signedLiteralType(ctx, raw, negative, new I32Type(), loc);
   }
   // Note these are deliberately direct `is` tests rather than
@@ -100,7 +103,7 @@ export function checkIntegerLiteral(
     return expectedType;
   }
   let sign = if (negative) "-" else "";
-  ctx.error(
+  ctx.errorOnceAt(
     "Integer literal " + sign + raw + " is out of range for type '" +
     typeToString(expectedType) + "'.",
     DiagnosticCode.TypeMismatch,
@@ -127,7 +130,7 @@ function signedLiteralType(
   if (castTarget != null) {
     if (!literalFitsCastWidth(raw, negative, castTarget as Type)) {
       let sign = if (negative) "-" else "";
-      ctx.error(
+      ctx.errorOnceAt(
         `Integer literal ${sign}${raw} is out of range for type '${typeToString(castTarget as Type)}'.`,
         DiagnosticCode.TypeMismatch,
         loc
@@ -137,7 +140,7 @@ function signedLiteralType(
   }
   if (!signedLiteralFits(raw, negative, t is I64Type)) {
     let sign = if (negative) "-" else "";
-    ctx.error(
+    ctx.errorOnceAt(
       `Integer literal ${sign}${raw} is out of range for type '${typeToString(t)}'.`,
       DiagnosticCode.TypeMismatch,
       loc

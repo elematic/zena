@@ -2162,6 +2162,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     for (let k in unreachedKeys) {
       this.wasm.classMethodMap.delete(k);
     }
+    let unreachedStaticKeys = new Array<ClassMethodKey>();
+    for (let mPair in this.wasm.staticMethodMap) {
+      if (!this.reachedFunctionsSet.has(mPair.value)) {
+        unreachedStaticKeys.push(mPair.key);
+      }
+    }
+    for (let k in unreachedStaticKeys) {
+      this.wasm.staticMethodMap.delete(k);
+    }
 
     if (this.wasm.stringCreateFunc != null) { this.markTypeReached((this.wasm.stringCreateFunc as WasmFunction).signature); }
     if (this.wasm.stringSetByteFunc != null) { this.markTypeReached((this.wasm.stringSetByteFunc as WasmFunction).signature); }
@@ -3485,6 +3494,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let targetModel = this.getClassModel(classType);
     let methodDecls = this.cha.findImplementingMethods(classType, demand.methodName);
     for (let methodDecl in methodDecls) {
+      if (methodDecl.isStatic || methodDecl.typeParameters == null ||
+          methodDecl.typeParameters.length != demand.typeArgs.length) {
+        continue;
+      }
       let mixScope = if (this.classModels.has(unspecializedId)) {
         mixinScopeOfMember(this.program, this.classModels[unspecializedId], classDecl, methodDecl)
       } else {
@@ -4008,6 +4021,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let cd = if (let (true, decl) = this.classDecls.get(unspecCdId)) decl else null;
       let targetModel = this.getClassModel(cType);
       for (let md in this.cha.findImplementingMethods(cType, d.methName)) {
+        if (md.isStatic) { continue; }
         let fn = this.specializer.instantiateGenericMethod(cType, cd, d.methName, md as Node, d.typeArgs, this.getNodeModel(md as Node, targetModel));
         this.markFunctionReached(fn);
       }
@@ -4795,50 +4809,43 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             // instantiated). Record the member against the generic;
             // discovery and instantiation replay it per specialization.
             let recMds = cha.findImplementingMethods(targetClassType, mName);
-            if (recMds.length > 0) {
-              for (let md in recMds) {
-                let mdNode = md as Node;
-                this.nodeIdToNode[mdNode.id as i32] = mdNode;
-                this.nodeIdToModel[mdNode.id as i32] = this.getNodeModel(mdNode, targetModel);
-                this.recordReachedClassMember(classSymId, mdNode.id as i32,
-                    this.getNodeModel(mdNode, targetModel), this.currentReachable);
-              }
-            } else {
-              let recAcc = cha.findImplementingAccessor(targetClassType, mName);
-              if (recAcc != null) {
-                let accNode = recAcc as Node;
-                this.nodeIdToNode[accNode.id as i32] = accNode;
-                this.nodeIdToModel[accNode.id as i32] = this.getNodeModel(accNode, targetModel);
-                this.recordReachedClassMember(classSymId, accNode.id as i32,
-                    this.getNodeModel(accNode, targetModel), this.currentReachable);
-              }
+            for (let md in recMds) {
+              let mdNode = md as Node;
+              this.nodeIdToNode[mdNode.id as i32] = mdNode;
+              this.nodeIdToModel[mdNode.id as i32] = this.getNodeModel(mdNode, targetModel);
+              this.recordReachedClassMember(classSymId, mdNode.id as i32,
+                  this.getNodeModel(mdNode, targetModel), this.currentReachable);
+            }
+            for (let recAcc in cha.findImplementingAccessors(targetClassType, mName)) {
+              let accNode = recAcc as Node;
+              this.nodeIdToNode[accNode.id as i32] = accNode;
+              this.nodeIdToModel[accNode.id as i32] = this.getNodeModel(accNode, targetModel);
+              this.recordReachedClassMember(classSymId, accNode.id as i32,
+                  this.getNodeModel(accNode, targetModel), this.currentReachable);
             }
             for (let subCt in list) {
               let subModel = this.getClassModel(subCt);
               let mds = cha.findImplementingMethods(subCt, mName);
-              if (mds.length > 0) {
-                for (let md in mds) {
-                  this.queueMember((md as Node).id as i32, this.getNodeModel(md as Node, subModel), subCt, this.currentReachable);
+              for (let md in mds) {
+                this.queueMember((md as Node).id as i32, this.getNodeModel(md as Node, subModel), subCt, this.currentReachable);
+              }
+              let accs = cha.findImplementingAccessors(subCt, mName);
+              for (let acc in accs) {
+                this.queueMember((acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable);
+              }
+              if (mName == "==" || mName == "hashCode" ||
+                  (mName == ":dispose" && subCt.hasSyntheticDispose)) {
+                // A case class's synthesized ==/hashCode — and a
+                // resource's synthesized :dispose — have no AST node
+                // to find; reach the registered function by key,
+                // deferred past its registration.
+                if (this.currentReachable && mds.length == 0 && accs.length == 0) {
+                  this.notePendingMemberReach(getClassMethodKey(getClassKey(subCt), mName));
                 }
-              } else {
-                let acc = cha.findImplementingAccessor(subCt, mName);
-                if (acc != null) {
-                  this.queueMember((acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable);
-                } else if (mName == "==" || mName == "hashCode" ||
-                    (mName == ":dispose" && subCt.hasSyntheticDispose)) {
-                  // A case class's synthesized ==/hashCode — and a
-                  // resource's synthesized :dispose — have no AST node
-                  // to find; reach the registered function by key,
-                  // deferred past its registration.
-                  if (this.currentReachable) {
-                    this.notePendingMemberReach(getClassMethodKey(getClassKey(subCt), mName));
-                  }
-                } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
-                  let fieldName = mName.sliceBytes(4, mName.length);
-                  let fd = cha.findImplementingField(subCt, fieldName);
-                  if (fd != null) {
-                    this.queueMember((fd as Node).id as i32, this.getNodeModel(fd as Node, subModel), subCt, this.currentReachable);
-                  }
+              } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
+                let fieldName = mName.sliceBytes(4, mName.length);
+                for (let fd in cha.findImplementingFields(subCt, fieldName)) {
+                  this.queueMember((fd as Node).id as i32, this.getNodeModel(fd as Node, subModel), subCt, this.currentReachable);
                 }
               }
             }
@@ -5594,7 +5601,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     let regG = specializer.registerClassMethod(ct, cd, `${accPrefix}get#${accName}`, node, false, false, null, nodeModel, null);
                     regG.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, node);
                     applyMixinPrivateScope(regG, node, mixScope);
-                    if (refItem.isReachable && isConcrete(ct)) {
+                    if (refItem.isReachable && (isConcrete(ct) || node.isStatic)) {
                       this.wasm.addFunction(regG);
                       this.markFunctionReached(regG);
                     }
@@ -5604,7 +5611,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     let regS = specializer.registerClassMethod(ct, cd, `${accPrefix}set#${accName}`, setter, false, false, null, nodeModel, null);
                     regS.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, setter as Node);
                     applyMixinPrivateScope(regS, setter, mixScope);
-                    if (refItem.isReachable && isConcrete(ct)) {
+                    if (refItem.isReachable && (isConcrete(ct) || node.isStatic)) {
                       this.wasm.addFunction(regS);
                       this.markFunctionReached(regS);
                     }
@@ -5612,24 +5619,35 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 }
               } else if (node is FieldDefinition && refItem.classType != null) {
                 let ct = refItem.classType as ClassType;
-                let cKey = getClassKey(ct);
-                let propName = memberKeyOf(model, node.name as Node);
-                let {typeParameters} = ct;
-                let isGenericTemplate = typeParameters != null && 
-                                        typeParameters.length > 0 && 
-                                        (ct.typeArguments == null || !isConcrete(ct));
-                if (propName != "" && !isGenericTemplate) {
-                  let getterKey = getClassMethodKey(cKey, "get#" + propName);
-                  if (let (true, f) = this.wasm.classMethodMap.get(getterKey)) {
-                    this.markFunctionReached(f);
-                  } else if (refItem.isReachable) {
-                    this.#pendingMemberReaches.push(getterKey);
+                if (node.isStatic) {
+                  if (refItem.isReachable) {
+                    let lookupId = (ct.genericSource ?? ct).symbolId;
+                    if (let (true, cd) = this.classDecls.get(lookupId)) {
+                      if (cd is ClassDeclaration) {
+                        specializer.discoverStaticFields(ct, cd, this.classModels[lookupId]);
+                      }
+                    }
                   }
-                  let setterKey = getClassMethodKey(cKey, "set#" + propName);
-                  if (let (true, f) = this.wasm.classMethodMap.get(setterKey)) {
-                    this.markFunctionReached(f);
-                  } else if (refItem.isReachable) {
-                    this.#pendingMemberReaches.push(setterKey);
+                } else {
+                  let cKey = getClassKey(ct);
+                  let propName = memberKeyOf(model, node.name as Node);
+                  let {typeParameters} = ct;
+                  let isGenericTemplate = typeParameters != null && 
+                                          typeParameters.length > 0 && 
+                                          (ct.typeArguments == null || !isConcrete(ct));
+                  if (propName != "" && !isGenericTemplate) {
+                    let getterKey = getClassMethodKey(cKey, "get#" + propName);
+                    if (let (true, f) = this.wasm.classMethodMap.get(getterKey)) {
+                      this.markFunctionReached(f);
+                    } else if (refItem.isReachable) {
+                      this.#pendingMemberReaches.push(getterKey);
+                    }
+                    let setterKey = getClassMethodKey(cKey, "set#" + propName);
+                    if (let (true, f) = this.wasm.classMethodMap.get(setterKey)) {
+                      this.markFunctionReached(f);
+                    } else if (refItem.isReachable) {
+                      this.#pendingMemberReaches.push(setterKey);
+                    }
                   }
                 }
               }

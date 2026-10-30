@@ -98,15 +98,16 @@ export final class ClassHierarchyAnalysis {
     }
   }
 
-  findImplementingMethod(cType: ClassType, mName: String): MethodDefinition | null {
+  findImplementingMethod(cType: ClassType, mName: String, isStatic: boolean = false): MethodDefinition | null {
     let startClassId = if (cType.genericSource != null) (cType.genericSource as ClassType).id else cType.id;
+    let cacheKey = (if (isStatic) "static#" else "") + mName;
     if (let (true, nulls) = this.implementingMethodNulls.get(startClassId)) {
-      if (nulls.has(mName)) {
+      if (nulls.has(cacheKey)) {
         return null;
       }
     }
     if (let (true, cache) = this.implementingMethodCache.get(startClassId)) {
-      if (let (true, cached) = cache.get(mName)) {
+      if (let (true, cached) = cache.get(cacheKey)) {
         return cached;
       }
     }
@@ -119,13 +120,13 @@ export final class ClassHierarchyAnalysis {
         let body = decl.body;
         for (let member in body) {
           if (member is MethodDefinition) {
-            if (member.isAbstract) { continue; }
+            if (member.isAbstract || member.isStatic != isStatic) { continue; }
             let name = getMethodName(model, member);
             if (matchMemberName(name, mName)) {
               if (!this.implementingMethodCache.has(startClassId)) {
                 this.implementingMethodCache[startClassId] = new Map<String, MethodDefinition>();
               }
-              this.implementingMethodCache[startClassId][mName] = member;
+              this.implementingMethodCache[startClassId][cacheKey] = member;
               return member;
             }
           }
@@ -136,7 +137,7 @@ export final class ClassHierarchyAnalysis {
     if (!this.implementingMethodNulls.has(startClassId)) {
       this.implementingMethodNulls[startClassId] = new Set<String>();
     }
-    this.implementingMethodNulls[startClassId].add(mName);
+    this.implementingMethodNulls[startClassId].add(cacheKey);
     return null;
   }
 
@@ -163,7 +164,7 @@ export final class ClassHierarchyAnalysis {
             if (matchMemberName(name, mName)) {
               let mType = model.getNodeType(member);
               if (mType is FunctionType) {
-                let sigKey = getSignatureKey(mType);
+                let sigKey = (if (member.isStatic) "static#" else "") + getSignatureKey(mType);
                 if (!seenSigs.has(sigKey)) {
                   methods.push(member);
                   seenSigs.add(sigKey);
@@ -276,6 +277,83 @@ export final class ClassHierarchyAnalysis {
     }
     this.implementingAccessorNulls[startClassId].add(accName);
     return null;
+  }
+
+  findImplementingFields(cType: ClassType, fName: String): GrowableArray<FieldDefinition> {
+    let fields = new Array<FieldDefinition>();
+    var seenStatic = false;
+    var seenInstance = false;
+    var curr: ClassType | null = cType;
+    while (curr != null && (!seenStatic || !seenInstance)) {
+      let ct = curr;
+      for (let decl in this.#declarationBodies(ct)) {
+        let model = decl.model;
+        let body = decl.body;
+        for (let member in body) {
+          if (member is FieldDefinition) {
+            if (member.isAbstract) { continue; }
+            if (member.isStatic && seenStatic) { continue; }
+            if (!member.isStatic && seenInstance) { continue; }
+            let name = memberKeyOf(model, member.name as Node);
+            if (matchMemberName(name, fName)) {
+              fields.push(member);
+              if (member.isStatic) {
+                seenStatic = true;
+              } else {
+                seenInstance = true;
+              }
+            }
+          }
+        }
+      }
+      curr = ct.superType;
+    }
+    return fields;
+  }
+
+  findImplementingAccessors(cType: ClassType, accName: String): GrowableArray<AccessorDeclaration> {
+    let accessors = new Array<AccessorDeclaration>();
+    var seenStatic = false;
+    var seenInstance = false;
+    var curr: ClassType | null = cType;
+    while (curr != null && (!seenStatic || !seenInstance)) {
+      let ct = curr;
+      for (let decl in this.#declarationBodies(ct)) {
+        let model = decl.model;
+        let body = decl.body;
+        for (let member in body) {
+          if (member is AccessorDeclaration) {
+            if (member.isStatic && seenStatic) { continue; }
+            if (!member.isStatic && seenInstance) { continue; }
+            let name = getAccessorName(model, member);
+            if (accName.length > 4 && member.getter != null && accName.sliceBytes(0, 4) == "get#") {
+              let targetProp = accName.sliceBytes(4, accName.length);
+              if (matchMemberName(name, targetProp)) {
+                accessors.push(member);
+                if (member.isStatic) {
+                  seenStatic = true;
+                } else {
+                  seenInstance = true;
+                }
+              }
+            }
+            if (accName.length > 4 && member.setter != null && accName.sliceBytes(0, 4) == "set#") {
+              let targetProp = accName.sliceBytes(4, accName.length);
+              if (matchMemberName(name, targetProp)) {
+                accessors.push(member);
+                if (member.isStatic) {
+                  seenStatic = true;
+                } else {
+                  seenInstance = true;
+                }
+              }
+            }
+          }
+        }
+      }
+      curr = ct.superType;
+    }
+    return accessors;
   }
 
   isSubclassOf(ct: ClassType, baseType: ClassType): boolean {

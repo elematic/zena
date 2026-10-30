@@ -1,0 +1,62 @@
+// @mode: run
+// @result: 1211
+
+class S {
+  static var v: i32 = 1;
+  var v: i32 = 2;
+
+  static v3(): i32 {
+    return 10;
+  }
+  v3(): i32 {
+    return 20;
+  }
+
+  static prop: i32 {
+    get { return S.v * 100; }
+    set(x) { S.v = x; }
+  }
+  prop: i32 {
+    get { return this.v * 100; }
+    set(x) { this.v = x; }
+  }
+
+  static ov(x: i32): i32 { return x + 10; }
+  static ov(x: String): i32 { return 20; }
+  ov(x: i32): i32 { return x + 30; }
+  ov(x: String): i32 { return 40; }
+
+  static id<T>(x: T): T { return x; }
+  id<T>(x: T): T { return x; }
+}
+
+class Sub extends S {
+  v3(): i32 {
+    return 30;
+  }
+}
+
+export let main = (): i32 => {
+  let s = new S();
+  let a = S.v + s.v; // 1 + 2 = 3
+  let b = S.v3() + s.v3(); // 10 + 20 = 30
+  let c = S.prop + s.prop; // 100 + 200 = 300
+
+  S.prop = 4;
+  s.prop = 3;
+  let d = S.prop + s.prop; // 400 + 300 = 700
+  let e = S.v + s.v; // 4 + 3 = 7
+
+  let sub = new Sub();
+  let f = Sub.v3() + sub.v3() + Sub.v + sub.v; // 10 + 30 + 4 + 2 = 46
+  let k = CrossKind.item() + new CrossKind().item; // 15 + 10 = 25
+  let m = S.ov(0) + S.ov("a") + s.ov(0) + s.ov("a") + S.id(5) + s.id(5); // 10 + 20 + 30 + 40 + 5 - 5 = 100
+  return a + b + c + d + e + f + k + (m - 10);
+};
+
+class CrossKind {
+  var item: i32 = 10;
+  static item(): i32 {
+    return 15;
+  }
+}

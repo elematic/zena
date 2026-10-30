@@ -4526,12 +4526,12 @@ export final class FunctionLowerer {
     }
     let ct = eraseTypeParameters(this.wasm, resolved) as ClassType;
     let propName = accessKeyOf(this.func.model, member);
-    let name = this.#resolveClassMethodSlotName(ct, propName, call);
+    let name = this.#resolveClassMethodSlotName(ct, propName, call, true);
     var target: WasmFunction | null = null;
     var curr: ClassType | null = ct;
     while (curr != null && target == null) {
       let key = getClassMethodKey(getClassKey(curr), name);
-      if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+      if (let (true, f) = this.wasm.staticMethodMap.get(key)) {
         if (f.isStatic) {
           target = f;
         }
@@ -7542,14 +7542,15 @@ export final class FunctionLowerer {
    * members via `MemberTable`).
    */
   #resolveClassMethodSlotName(
-      classType: ClassType, propName: String, call: CallExpression): String {
+      classType: ClassType, propName: String, call: CallExpression,
+      isStatic: boolean = false): String {
     let chosenOverload = this.func.model.getResolvedOverload(call);
     var slotName = if (chosenOverload != null) {
       propName + getSignatureKey(chosenOverload)
     } else {
       propName
     };
-    if (let (true, memberInfo) = classType.members.get(propName)) {
+    if (let (true, memberInfo) = classType.memberTable(isStatic).get(propName)) {
       let memberType = memberInfo.type;
       if (memberType is FunctionType) {
         let {typeParameters} = memberType;
@@ -7670,7 +7671,7 @@ export final class FunctionLowerer {
     while (currClass != null && setter == null) {
       let key = getClassMethodKey(
           getClassKey(currClass), 'set#' + propName);
-      if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+      if (let (true, f) = this.wasm.staticMethodMap.get(key)) {
         if (f.isStatic) {
           setter = f;
         }
@@ -7726,7 +7727,7 @@ export final class FunctionLowerer {
     while (currClass != null && getter == null) {
       let key = getClassMethodKey(
           getClassKey(currClass), 'get#' + propName);
-      if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+      if (let (true, f) = this.wasm.staticMethodMap.get(key)) {
         if (f.isStatic) {
           getter = f;
         }
