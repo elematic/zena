@@ -89,6 +89,13 @@ export final class IdentityResolver {
    * test points it elsewhere.
    */
   var originOf: (host: String) => String = (host) => `https://${host}`;
+  /**
+   * Whether a DID document's PDS endpoint is one its caller may read. One
+   * it may not resolves as no PDS, keeping the document's handle and key:
+   * a server that reads other people's PDSes refuses an endpoint on its
+   * own network this way. Any endpoint by default.
+   */
+  var allowsPds: (url: String) => boolean = (url) => true;
 
   /** The DID document of `did`, a `did:plc` or `did:web`. */
   async resolveDid(did: String): Future<DidDocument> {
@@ -106,7 +113,12 @@ export final class IdentityResolver {
     if (response.status != 200) {
       throw new IdentityError(`${did} did not resolve at ${url}: HTTP ${response.status}`);
     }
-    return parseDidDocument(parseJson(await response.text()), did);
+    let document = parseDidDocument(parseJson(await response.text()), did);
+    let pds = document.pds;
+    if (pds != null && !this.allowsPds(pds)) {
+      return new DidDocument(document.id, document.handle, document.signingKey, null, document.json);
+    }
+    return document;
   }
 
   /**

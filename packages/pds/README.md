@@ -36,8 +36,11 @@ does and see every account it holds, at `/admin`, and every private entry.
 `PDS_WEB_DIR` names the build of the pages' stylesheet and script
 (`packages/pds-web`), which it serves at `/assets/`.
 
-The host reads other PDSes, for maintainers' attestations and profiles,
-only at public HTTPS names. `PDS_PRIVATE_READS=1` lifts that, for a stack
+The host reads other PDSes, for maintainers' attestations, profiles and
+the dependencies of the releases it is given, only at public HTTPS names:
+a DID document that names any other PDS resolves as naming none, and a
+release whose dependency cannot be found is refused without the error
+behind it. `PDS_PRIVATE_READS=1` lifts that, for a stack
 on one machine, such as the demo's. A public name can still point at a
 private address, which only the runtime sees: the image sets
 `ZENA_DENY_PRIVATE_EGRESS=1`, so `zena-run` connects only to public

@@ -182,15 +182,17 @@ function unpacked(source: FixedArray<u8>, problems: GrowableArray<String>): Fixe
 /**
  * The problems with `dependencies`: each must be a release its package has
  * published and not retracted, or the release that names it could never be
- * resolved. Empty when there are none.
+ * resolved. Empty when there are none. With `explain`, a dependency that
+ * cannot be found says why in full; without, only whether its DID or its
+ * PDS failed, as a host answers.
  */
-export async function checkDependencies(dependencies: Array<Dependency>, resolver: IdentityResolver)
-    : Future<GrowableArray<String>> {
+export async function checkDependencies(dependencies: Array<Dependency>, resolver: IdentityResolver,
+    explain: boolean = true): Future<GrowableArray<String>> {
   let problems = new GrowableArray<String>();
   for (let dependency in dependencies) {
     let text = dependency.version.toString();
     let named = `${dependency.name} ${text} (${dependency.did})`;
-    let found = await versionsOf(dependency, resolver);
+    let found = await versionsOf(dependency, resolver, explain);
     if (found is String) {
       problems.push(`${named} cannot be found: ${found as String}`);
     } else if (!(found as Versions).has(dependency.version)) {
@@ -202,20 +204,27 @@ export async function checkDependencies(dependencies: Array<Dependency>, resolve
   return problems;
 }
 
-/** The versions `dependency`'s package lists, or why they could not be read. */
-async function versionsOf(dependency: Dependency, resolver: IdentityResolver): Future<Versions | String> {
-  try {
-    return await listVersions(await resolver.resolveDid(dependency.did));
+/**
+ * The versions `dependency`'s package lists, or why they could not be
+ * read: whether its DID does not resolve or its PDS cannot be read, and
+ * with `explain`, the error. A host leaves the error out, since its
+ * answer would tell a refused connection from a timeout from a status,
+ * on whatever network a DID document points it at.
+ */
+async function versionsOf(dependency: Dependency, resolver: IdentityResolver, explain: boolean)
+    : Future<Versions | String> {
+  let document = try {
+    await resolver.resolveDid(dependency.did)
   } catch (e) {
-    return e.message;
+    return if (explain) `its DID does not resolve: ${e.message}` else 'its DID does not resolve';
+  };
+  try {
+    return await listVersions(document);
+  } catch (e) {
+    return if (explain) `its PDS cannot be read: ${e.message}` else 'its PDS cannot be read';
   }
 }
 
-/**
- * Every problem with publishing `release` of the package `did`, with
- * `source` as its source archive and `profileName` as its profile's name:
- * `checkSource`'s and `checkDependencies`'.
- */
 /**
  * What publishing requires of `manifest`, called `where` in the problems:
  * a description, and a license as an SPDX expression.
@@ -235,10 +244,16 @@ export function checkMetadata(manifest: Manifest, where: String): GrowableArray<
   return problems;
 }
 
+/**
+ * Every problem with publishing `release` of the package `did`, with
+ * `source` as its source archive and `profileName` as its profile's name:
+ * `checkSource`'s and `checkDependencies`', the errors behind a dependency
+ * that cannot be found included unless `explain` is false.
+ */
 export async function validateRelease(release: Release, did: String, source: FixedArray<u8>,
-    profileName: String, resolver: IdentityResolver): Future<GrowableArray<String>> {
+    profileName: String, resolver: IdentityResolver, explain: boolean = true): Future<GrowableArray<String>> {
   let problems = checkSource(release, did, source, profileName, true);
-  for (let problem in await checkDependencies(release.dependencies, resolver)) {
+  for (let problem in await checkDependencies(release.dependencies, resolver, explain)) {
     problems.push(problem);
   }
   return problems;
