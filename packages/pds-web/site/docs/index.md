@@ -1,6 +1,5 @@
 ---
 title: Overview
-lead: How the Zena package manager publishes, resolves, and verifies packages on the AT Protocol.
 status: Preview
 ---
 

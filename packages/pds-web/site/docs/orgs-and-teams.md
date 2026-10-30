@@ -1,6 +1,5 @@
 ---
 title: Scopes, Orgs & Teams
-lead: Manage organization scopes, team memberships, package maintainers, and privacy-preserving member commitments.
 ---
 
 Every scope on a package host (such as `@acme` on `pkg.zena-lang.dev`) is an organization backed by its own AT Protocol account (`acme.pkg.zena-lang.dev`). Organizations group packages under a shared namespace, manage members and teams, and enforce security policies across their packages.

@@ -1,7 +1,8 @@
 ---
 title: Getting Started
-lead: Create a package manifest, add published dependencies, and import them in Zena code.
 ---
+
+Create a package manifest, add published dependencies, and import them in Zena code.
 
 ## Creating a package
 

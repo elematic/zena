@@ -1,6 +1,5 @@
 ---
 title: AT Protocol Architecture
-lead: How the Zena package manager uses AT Protocol identities, signed Merkle repositories, lexicons, and content-addressed blobs.
 ---
 
 Zena's package manager is built directly on the [AT Protocol](https://atproto.com) (`packages/atproto`, `packages/package-manager`, and `packages/pds`). Rather than inventing a bespoke registry database and authentication protocol, packages use standard atproto primitives: DIDs, handles, signed Merkle Search Tree (MST) repositories, DAG-CBOR records, and content-addressed blobs.

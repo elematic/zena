@@ -13,11 +13,13 @@ import {when} from './partials/common.zena';
 import {avatar} from './partials/person.zena';
 
 /**
- * Applies the theme the theme select saved before the page paints, as the
- * select itself would once its script loads: `rad-theme-dark` on `<html>`
- * for `dark`, or for `auto` when the system prefers dark.
+ * Applies the stored theme (`zena-appearance`) before first paint so the page
+ * never flashes light before flipping to dark. Sets both `dark` and
+ * `rad-theme-dark` on `<html>`, matching `<zena-appearance>`.
  */
-let THEME_SCRIPT = "try{let t=localStorage.getItem('themeName')??'auto';if(t==='dark'||(t==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.classList.add('rad-theme-dark')}catch{}";
+let THEME_SCRIPT = "(()=>{const s=localStorage.getItem('zena-appearance');const d=s==='dark'||(s!=='light'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);document.documentElement.classList.toggle('rad-theme-dark',d)})()";
+
+let GITHUB_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" /></svg>';
 
 /**
  * A whole page: `title`, the header, with the host's domain and who is
@@ -34,41 +36,85 @@ export function page(title: String, context: PageContext, body: TemplateValue): 
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${title}</title>
     <link rel="icon" href="/assets/logo.svg" type="image/svg+xml">
-    <script>${unsafeHTML(THEME_SCRIPT)}</script>
     <link rel="stylesheet" href="/assets/app.css">
+    <script>${unsafeHTML(THEME_SCRIPT)}</script>
     <script type="module" src="/assets/app.js"></script>
   </head>
   <body data-service-did="${context.host.config.serviceDid}" data-did="${if (who != null) who.did else ''}">
-    <header class="site">
-      <a class="title" href="/">
-        <img class="site-logo" src="/assets/logo.svg" alt="" width="24" height="24">
-        <span>Zena packages</span>
-      </a>
-      <span class="mono muted domain-badge">${context.domain}</span>
-      <nav class="site-links" aria-label="Main navigation">
-        <a href="/">Packages</a>
-        <a href="/docs/">Docs</a>
-        <a href="https://zena-lang.dev" target="_blank" rel="noopener">zena-lang.dev</a>
-      </nav>
-      <span class="spacer"></span>
-      <div class="site-actions">
-        ${if (who != null) signedIn(context, who, context.isAdmin) else signInButton()}
-        <rad-theme-select></rad-theme-select>
-      </div>
-    </header>
-    <main>${body}</main>
-    <footer class="site-footer">
-      <div class="site-footer-inner">
-        <span>Zena Package Registry · <span class="mono">${context.domain}</span></span>
-        <nav class="site-footer-links" aria-label="Footer navigation">
-          <a href="/docs/">Documentation</a>
-          <a href="/docs/cli/">CLI Reference</a>
-          <a href="/docs/architecture/">Architecture</a>
-          <a href="https://zena-lang.dev" target="_blank" rel="noopener">zena-lang.dev</a>
-          <a href="https://github.com/elematic/zena" target="_blank" rel="noopener">GitHub</a>
-        </nav>
-      </div>
-    </footer>
+    <zena-layout class="layout">
+      <a href="#site-content" class="skip-link visually-hidden">Skip to content</a>
+      <div class="backdrop"></div>
+      <header class="site-nav">
+        <div class="nav-bar">
+          <div class="wrapper">
+            <div class="container">
+              <div class="title">
+                <div class="nav-bar-title">
+                  <a class="title" href="/">
+                    <img class="logo" src="/assets/logo.svg" alt="" width="24" height="24">
+                    <span>Zena packages</span>
+                  </a>
+                  <span class="mono muted domain-badge">${context.domain}</span>
+                </div>
+              </div>
+              <div class="content">
+                <div class="content-body">
+                  <nav class="nav-bar-menu menu" aria-labelledby="main-nav-aria-label">
+                    <span id="main-nav-aria-label" class="visually-hidden">Main Navigation</span>
+                    <a class="nav-bar-menu-link active" href="/"><span>Packages</span></a>
+                    <a class="nav-bar-menu-link" href="/docs/"><span>Docs</span></a>
+                    <a class="nav-bar-menu-link" href="https://zena-lang.dev" target="_blank" rel="noopener"><span>zena-lang.dev</span></a>
+                  </nav>
+                  <div class="nav-bar-appearance appearance">
+                    <zena-appearance></zena-appearance>
+                  </div>
+                  <div class="social-links nav-bar-social-links">
+                    <a class="social-link no-icon" href="https://github.com/elematic/zena" aria-label="Zena on GitHub" target="_blank" rel="noopener">
+                      ${unsafeHTML(GITHUB_SVG)}
+                    </a>
+                  </div>
+                  <div class="nav-bar-account">
+                    ${if (who != null) signedIn(context, who, context.isAdmin) else signInButton()}
+                  </div>
+                  <button type="button" class="nav-bar-hamburger hamburger" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-screen" data-toggle-nav-screen>
+                    <span class="container">
+                      <span class="top"></span>
+                      <span class="middle"></span>
+                      <span class="bottom"></span>
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="divider"><div class="divider-line"></div></div>
+        </div>
+        <div class="nav-screen" id="nav-screen">
+          <div class="container">
+            <nav class="nav-screen-menu menu">
+              <a class="nav-screen-menu-link" href="/"><span>Packages</span></a>
+              <a class="nav-screen-menu-link" href="/docs/"><span>Docs</span></a>
+              <a class="nav-screen-menu-link" href="https://zena-lang.dev"><span>zena-lang.dev</span></a>
+              <a class="nav-screen-menu-link" href="https://github.com/elematic/zena"><span>GitHub</span></a>
+            </nav>
+            <div class="nav-screen-appearance appearance">
+              <p class="text">Appearance</p>
+              <zena-appearance></zena-appearance>
+            </div>
+          </div>
+        </div>
+      </header>
+      ${when(who == null, () => signInDialog())}
+      <zena-code-copy class="site-content" id="site-content">
+        <main class="page">${body}</main>
+      </zena-code-copy>
+      <footer class="footer">
+        <div class="container">
+          <p class="message">Released under the MIT License.</p>
+          <p class="copyright">Zena Package Registry · <span class="mono">${context.domain}</span></p>
+        </div>
+      </footer>
+    </zena-layout>
   </body>
 </html>
 `;
@@ -81,8 +127,8 @@ export function page(title: String, context: PageContext, body: TemplateValue): 
 function signedIn(context: PageContext, who: WebCaller, admin: boolean): HTMLPartial {
   let person = context.person;
   return html`
-    ${when(admin, () => html`<a href="/admin">Admin</a>`)}
-    <a href="/me">Your packages</a>
+    ${when(admin, () => html`<a class="nav-bar-menu-link" href="/admin"><span>Admin</span></a>`)}
+    <a class="nav-bar-menu-link" href="/me"><span>Your packages</span></a>
     ${if (person != null) html`<a class="who" href="${person.path()}">${avatar(context, person)}
       <span class="mono muted">${who.name()}</span></a>` else html`<span class="mono muted">${who.name()}</span>`}
     <form class="sign-out" method="post" action="/signout">
@@ -91,13 +137,17 @@ function signedIn(context: PageContext, who: WebCaller, admin: boolean): HTMLPar
 }
 
 /**
- * The header's sign-in button, and the dialog it opens, which asks for a
- * handle and sends the browser to that person's PDS. The page's script
- * does both; without it, the button does nothing.
+ * The header's sign-in button, which opens `signInDialog`.
  */
 function signInButton(): HTMLPartial {
+  return html`<button type="button" class="nav-sign-in" data-sign-in>Sign in with Atmosphere</button>`;
+}
+
+/**
+ * The dialog that asks for a handle and sends the browser to that person's PDS.
+ */
+function signInDialog(): HTMLPartial {
   return html`
-    <button type="button" data-sign-in>Sign in with Atmosphere</button>
     <dialog id="sign-in">
       <form method="dialog" class="sign-in">
         <h2>Sign in with Atmosphere</h2>

@@ -1,11 +1,18 @@
 /**
  * The script every page of the PDS's web app loads. The pages are rendered
- * on the server (`packages/pds/zena/web`); this defines the Radica elements
- * they use, and does what must happen in the browser: signing in and out
- * with atproto OAuth (`./auth.ts`, loaded only when it is needed).
+ * on the server (`packages/pds/zena/web`) or built statically (`site/docs/`);
+ * this defines the shared Zena website custom elements (`packages/website-client`)
+ * and does what must happen in the browser: signing in and out with atproto
+ * OAuth (`./auth.ts`, loaded only when it is needed).
  */
 
-import '@radica/ui/components/theme-select/theme-select.js';
+import '../../website-client/src/zena-appearance.js';
+import '../../website-client/src/zena-code-copy.js';
+import '../../website-client/src/zena-code-group.js';
+import '../../website-client/src/zena-layout.js';
+import '../../website-client/src/zena-local-outline.js';
+import '../../website-client/src/zena-outline.js';
+import '../../website-client/src/zena-sidebar.js';
 
 /**
  * The DID the browser last signed in as, kept so that a page with no web
@@ -119,166 +126,8 @@ const wireSignOut = () => {
   });
 };
 
-/** Progressive enhancement for the static `/docs/` pages: sidebar, outline, and code copy. */
-const wireDocs = () => {
-  const sidebar = document.querySelector<HTMLElement>('[data-docs-sidebar]');
-  const backdrop = document.querySelector<HTMLElement>('[data-close-sidebar]');
-  const menuBtn = document.querySelector<HTMLButtonElement>('[data-toggle-sidebar]');
-
-  const setSidebarOpen = (open: boolean) => {
-    sidebar?.classList.toggle('open', open);
-    backdrop?.classList.toggle('open', open);
-    menuBtn?.setAttribute('aria-expanded', String(open));
-  };
-
-  menuBtn?.addEventListener('click', () => {
-    const open = !sidebar?.classList.contains('open');
-    setSidebarOpen(open);
-  });
-  backdrop?.addEventListener('click', () => setSidebarOpen(false));
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && sidebar?.classList.contains('open')) {
-      setSidebarOpen(false);
-    }
-  });
-
-  // Expand/collapse sidebar sections.
-  const toggleSection = (section: HTMLElement) => {
-    const collapsed = section.classList.toggle('collapsed');
-    section
-      .querySelector('.item > .caret')
-      ?.setAttribute('aria-expanded', String(!collapsed));
-    section
-      .querySelector('.item[role="button"]')
-      ?.setAttribute('aria-expanded', String(!collapsed));
-  };
-
-  sidebar?.addEventListener('click', (e) => {
-    const target = e.target as HTMLElement;
-    const item = target.closest<HTMLElement>('.item');
-    const section = item?.parentElement?.closest<HTMLElement>(
-      '.sidebar-item.collapsible',
-    );
-    if (!item || !section || item.parentElement !== section) return;
-    const isCaret = !!target.closest('.caret');
-    if (section.classList.contains('is-link') && !isCaret) return;
-    e.preventDefault();
-    toggleSection(section);
-  });
-
-  sidebar?.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    const target = e.target as HTMLElement;
-    const item = target.closest<HTMLElement>('.item[role="button"], .caret');
-    const section = item?.closest<HTMLElement>('.sidebar-item.collapsible');
-    if (!section) return;
-    e.preventDefault();
-    toggleSection(section);
-  });
-
-  // Mobile "On this page" outline dropdown.
-  const localOutline = document.querySelector<HTMLElement>(
-    '[data-local-outline]',
-  );
-  const localToggle = localOutline?.querySelector<HTMLButtonElement>(
-    '[data-local-outline-toggle]',
-  );
-  const localItems = localOutline?.querySelector<HTMLElement>('.items');
-  if (localOutline && localToggle && localItems) {
-    localToggle.addEventListener('click', () => {
-      const open = Boolean(localItems.hidden);
-      localItems.hidden = !open;
-      localToggle.setAttribute('aria-expanded', String(open));
-      localOutline.classList.toggle('open', open);
-    });
-    localItems.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('a')) {
-        localItems.hidden = true;
-        localToggle.setAttribute('aria-expanded', 'false');
-        localOutline.classList.remove('open');
-      }
-    });
-  }
-
-  // Right-hand "On this page" scroll-spy outline.
-  const docOutline = document.querySelector<HTMLElement>('[data-doc-outline]');
-  if (docOutline) {
-    const marker = docOutline.querySelector<HTMLElement>('.outline-marker');
-    const links = [
-      ...docOutline.querySelectorAll<HTMLAnchorElement>('.outline-link'),
-    ];
-    const headings = links
-      .map((a) => document.getElementById(decodeURIComponent(a.hash.slice(1))))
-      .filter((el): el is HTMLElement => el !== null);
-    let prevActive: HTMLAnchorElement | null = null;
-
-    const updateOutline = () => {
-      if (headings.length === 0) return;
-      const scrollY = window.scrollY;
-      const innerHeight = window.innerHeight;
-      const offsetHeight = document.body.offsetHeight;
-      const atBottom = Math.abs(scrollY + innerHeight - offsetHeight) < 2;
-
-      let active: HTMLElement | undefined;
-      if (atBottom) {
-        active = headings[headings.length - 1];
-      } else {
-        for (const h of headings) {
-          if (h.getBoundingClientRect().top > 100) break;
-          active = h;
-        }
-        active ??= headings[0];
-      }
-
-      const link =
-        links.find(
-          (a) => decodeURIComponent(a.hash.slice(1)) === active!.id,
-        ) ?? null;
-      if (link === prevActive) return;
-      prevActive?.classList.remove('active');
-      link?.classList.add('active');
-      prevActive = link;
-      if (marker) {
-        if (link) {
-          marker.style.top = `${link.offsetTop + 6}px`;
-          marker.style.opacity = '1';
-        } else {
-          marker.style.opacity = '0';
-        }
-      }
-    };
-
-    if (headings.length > 0) {
-      window.addEventListener('scroll', updateOutline, {passive: true});
-      window.addEventListener('resize', updateOutline, {passive: true});
-      requestAnimationFrame(updateOutline);
-    }
-  }
-
-  // Copy-to-clipboard for Shiki code blocks.
-  document.addEventListener('click', async (e) => {
-    const button = (e.target as HTMLElement).closest<HTMLButtonElement>(
-      'button.copy',
-    );
-    if (!button) return;
-    const code = button.parentElement?.querySelector('code');
-    if (!code) return;
-    try {
-      await navigator.clipboard.writeText(code.textContent ?? '');
-      button.classList.add('copied');
-      clearTimeout(Number(button.dataset['timer']));
-      button.dataset['timer'] = String(
-        setTimeout(() => button.classList.remove('copied'), 2000),
-      );
-    } catch {
-      // Clipboard unavailable.
-    }
-  });
-};
-
 wireSignIn();
 wireSignOut();
-wireDocs();
 if (location.pathname === '/oauth/callback') {
   void finishSignIn();
 } else if (isStaticPage) {

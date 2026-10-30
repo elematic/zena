@@ -3,70 +3,161 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{{ title }} · {{ site.title }}</title>
+    <title>{{ title }} | {{ site.title }}</title>
     <meta name="description" content="{{ description or site.description }}" />
     <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
-    <script>
-      try{let t=localStorage.getItem('themeName')??'auto';if(t==='dark'||(t==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.classList.add('rad-theme-dark')}catch{}
-    </script>
     <link rel="stylesheet" href="/assets/app.css" />
+    <script>
+      (() => {
+        const stored = localStorage.getItem('zena-appearance');
+        const dark =
+          stored === 'dark' ||
+          (stored !== 'light' &&
+            matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('dark', dark);
+        document.documentElement.classList.toggle('rad-theme-dark', dark);
+      })();
+    </script>
     <script type="module" src="/assets/app.js"></script>
   </head>
-  <body class="is-docs-page" data-static="true">
-    <a href="#site-content" class="skip-link visually-hidden">Skip to content</a>
-    <div class="docs-backdrop" data-close-sidebar></div>
+  <body data-static="true">
+    <zena-layout class="layout">
+      <a href="#site-content" class="skip-link visually-hidden">Skip to content</a>
+      <div class="backdrop"></div>
 
-    <header class="site">
-      <a class="title" href="/">
-        <img class="site-logo" src="/assets/logo.svg" alt="" width="24" height="24" />
-        <span>{{ site.title }}</span>
-      </a>
-      <span class="mono muted domain-badge" data-host-domain>{{ site.domain }}</span>
-      <nav class="site-links" aria-label="Main navigation">
-        <a href="/">Packages</a>
-        <a href="/docs/" class="active" aria-current="page">Docs</a>
-        <a href="{{ site.mainSiteUrl }}" target="_blank" rel="noopener">zena-lang.dev</a>
-      </nav>
-      <span class="spacer"></span>
-      <div class="site-actions">
-        <a href="/me" data-static-me hidden>Your packages</a>
-        <button type="button" data-sign-in>Sign in with Atmosphere</button>
-        <dialog id="sign-in">
-          <form method="dialog" class="sign-in">
-            <h2>Sign in with Atmosphere</h2>
-            <p>
-              Sign in with your Atmosphere account: the one you use with Bluesky
-              and other atproto apps. Your own PDS asks for your password; this
-              site never sees it.
-            </p>
-            <label>
-              Handle or DID
-              <input name="identifier" placeholder="alice.bsky.social" required autocomplete="username" />
-            </label>
-            <p class="error" hidden></p>
-            <div class="actions">
-              <button type="submit" value="sign-in">Sign in</button>
-              <button type="button" class="quiet" data-close>Cancel</button>
+      <header class="site-nav">
+        <div class="nav-bar{% if hasSidebar %} has-sidebar{% endif %}">
+          <div class="wrapper">
+            <div class="container">
+              <div class="title">
+                <div class="nav-bar-title{% if hasSidebar %} has-sidebar{% endif %}">
+                  <a class="title" href="/">
+                    <img class="logo" src="/assets/logo.svg" alt="" width="24" height="24" />
+                    <span>{{ site.title }}</span>
+                  </a>
+                  <span class="mono muted domain-badge" data-host-domain>{{ site.domain }}</span>
+                </div>
+              </div>
+
+              <div class="content">
+                <div class="content-body">
+                  <nav class="nav-bar-menu menu" aria-labelledby="main-nav-aria-label">
+                    <span id="main-nav-aria-label" class="visually-hidden">
+                      Main Navigation
+                    </span>
+                    <a class="nav-bar-menu-link" href="/">
+                      <span>Packages</span>
+                    </a>
+                    <a class="nav-bar-menu-link active" href="/docs/" aria-current="page">
+                      <span>Docs</span>
+                    </a>
+                    <a class="nav-bar-menu-link" href="{{ site.mainSiteUrl }}" target="_blank" rel="noopener">
+                      <span>zena-lang.dev</span>
+                    </a>
+                  </nav>
+
+                  <div class="nav-bar-appearance appearance">
+                    <zena-appearance></zena-appearance>
+                  </div>
+
+                  <div class="social-links nav-bar-social-links">
+                    <a
+                      class="social-link no-icon"
+                      href="{{ site.repo }}"
+                      aria-label="Zena on GitHub"
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      {% include "icon-github.njk" %}
+                    </a>
+                  </div>
+
+                  <div class="nav-bar-account">
+                    <a class="nav-bar-menu-link" href="/me" data-static-me hidden>
+                      <span>Your packages</span>
+                    </a>
+                    <button type="button" class="nav-sign-in" data-sign-in>
+                      Sign in with Atmosphere
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    class="nav-bar-hamburger hamburger"
+                    aria-label="Toggle navigation"
+                    aria-expanded="false"
+                    aria-controls="nav-screen"
+                    data-toggle-nav-screen
+                  >
+                    <span class="container">
+                      <span class="top"></span>
+                      <span class="middle"></span>
+                      <span class="bottom"></span>
+                    </span>
+                  </button>
+                </div>
+              </div>
             </div>
-          </form>
-        </dialog>
-        <rad-theme-select></rad-theme-select>
-      </div>
-    </header>
+          </div>
 
-    {{ content | safe }}
+          <div class="divider"><div class="divider-line"></div></div>
+        </div>
 
-    <footer class="site-footer{% if hasSidebar %} has-sidebar{% endif %}">
-      <div class="site-footer-inner">
-        <span>Zena Package Registry · <span class="mono">{{ site.domain }}</span></span>
-        <nav class="site-footer-links" aria-label="Footer navigation">
-          <a href="/docs/">Documentation</a>
-          <a href="/docs/cli/">CLI Reference</a>
-          <a href="/docs/architecture/">Architecture</a>
-          <a href="{{ site.mainSiteUrl }}" target="_blank" rel="noopener">zena-lang.dev</a>
-          <a href="{{ site.repo }}" target="_blank" rel="noopener">GitHub</a>
-        </nav>
-      </div>
-    </footer>
+        <div class="nav-screen" id="nav-screen">
+          <div class="container">
+            <nav class="nav-screen-menu menu">
+              <a class="nav-screen-menu-link" href="/">
+                <span>Packages</span>
+              </a>
+              <a class="nav-screen-menu-link" href="/docs/">
+                <span>Docs</span>
+              </a>
+              <a class="nav-screen-menu-link" href="{{ site.mainSiteUrl }}">
+                <span>zena-lang.dev</span>
+              </a>
+              <a class="nav-screen-menu-link" href="{{ site.repo }}">
+                <span>GitHub</span>
+              </a>
+            </nav>
+
+            <div class="nav-screen-appearance appearance">
+              <p class="text">Appearance</p>
+              <zena-appearance></zena-appearance>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <dialog id="sign-in">
+        <form method="dialog" class="sign-in">
+          <h2>Sign in with Atmosphere</h2>
+          <p>
+            Sign in with your Atmosphere account: the one you use with Bluesky
+            and other atproto apps. Your own PDS asks for your password; this
+            site never sees it.
+          </p>
+          <label>
+            Handle or DID
+            <input name="identifier" placeholder="alice.bsky.social" required autocomplete="username" />
+          </label>
+          <p class="error" hidden></p>
+          <div class="actions">
+            <button type="submit" value="sign-in">Sign in</button>
+            <button type="button" class="quiet" data-close>Cancel</button>
+          </div>
+        </form>
+      </dialog>
+
+      {{ content | safe }}
+
+      {% if not hideFooter %}
+      <footer class="footer{% if hasSidebar %} has-sidebar{% endif %}">
+        <div class="container">
+          <p class="message">{{ site.footer.message }}</p>
+          <p class="copyright">{{ site.footer.copyright }}</p>
+        </div>
+      </footer>
+      {% endif %}
+    </zena-layout>
   </body>
 </html>
