@@ -2,6 +2,7 @@ import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { runFuture, Completer, TaskGroup, drainMicrotasks } from 'zena:async';
 import { Some, None, Option, none, Result } from 'zena:core';
+import { bytesStream } from 'zena:stream';
 import {
   App, AppOptions, Request, Response, Router, Server,
   compose, mount, matchPath, HttpError, statusText, Middleware,
@@ -84,6 +85,47 @@ export let tests = suite('zena:http', () => {
     equal(res.statusCode, 302);
     equal(res.getHeader('location') as String, '/login');
     equal(res.body as String, 'Redirecting to /login.');
+  });
+
+  test('a request body over its limit is refused, declared or not', (ctx) => {
+    let body = new FixedArray<u8>(100, 7 as u8);
+    // A Content-Length over the limit is refused before the body is read.
+    let declared = new Request.fromUrl('http://localhost/', 'POST', {'content-length' => '100'}, bytesStream(body));
+    declared.bodyLimit = 10 as i64;
+    var status = 0;
+    try {
+      runFuture(declared.bytes());
+    } catch (e) {
+      status = if (e is HttpError) e.status else -1;
+    }
+    equal(status, 413);
+    // A body that does not say how long it is stops being read past it.
+    let chunked = new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(), bytesStream(body));
+    chunked.bodyLimit = 10 as i64;
+    status = 0;
+    try {
+      runFuture(chunked.text());
+    } catch (e) {
+      status = if (e is HttpError) e.status else -1;
+    }
+    equal(status, 413);
+    // Within it, or with none, the body reads whole.
+    let within = new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(), bytesStream(body));
+    within.bodyLimit = 100 as i64;
+    equal(runFuture(within.bytes()).length, 100);
+    equal(runFuture(new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(),
+        bytesStream(body)).bytes()).length, 100);
+
+    // The app answers 413.
+    let app = new App();
+    app.use(async (req, res, next) => {
+      req.bodyLimit = 10 as i64;
+      res.body = await req.text();
+    });
+    let res = new Response();
+    runFuture(app.handleRequest(new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(),
+        bytesStream(body)), res));
+    equal(res.statusCode, 413);
   });
 
   test('Request exposes URL, method, and headers', (ctx) => {
