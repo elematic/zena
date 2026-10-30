@@ -46,7 +46,7 @@ import {
 } from './members.zena';
 import {
   applyFalseNarrowingFromCondition, applyTrueNarrowingFromCondition,
-  getMemberPathKey
+  conditionNarrowings, getMemberPathKey
 } from './narrowing.zena';
 import {
   collectApplicableOperatorOverloads, overloadCandidates, selectMostSpecificIndex
@@ -770,12 +770,13 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         // is checked under its narrowings on the flow, so `&&` chains
         // and path guards narrow in expression position too.
         let preBranchFlow = ctx.currentFlow;
-        applyTrueNarrowingFromCondition(ctx, testExpr);
+        let narrowings = conditionNarrowings(ctx, testExpr);
+        ctx.pushFlowNarrowings(narrowings.whenTrue);
         let consType = checkIfBranchNode(ctx, consequent, expectedType);
         let trueEnd = ctx.currentFlow;
 
         ctx.setFlow(preBranchFlow);
-        applyFalseNarrowingFromCondition(ctx, testExpr);
+        ctx.pushFlowNarrowings(narrowings.whenFalse);
         var altType: Type = new VoidType();
         if (alternate != null) {
           altType = checkIfBranchNode(ctx, alternate, expectedType);
