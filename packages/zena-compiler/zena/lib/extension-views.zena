@@ -5,15 +5,18 @@
  *
  * An extension's interfaces are plain functions. The program declares
  * its side of each as a resource: for an interface it serves, a
- * resource whose methods are the extension's functions, with a static
- * `create(extension: u32) -> own<it>`; for an interface it calls, a
- * resource whose methods are the extension's functions with each
- * result wrapped in `result<_, string>`, with a static
- * `attach(extension: u32) -> own<it>`. Resources the extension's
+ * resource whose methods are the extension's functions; for an
+ * interface it calls, a resource whose methods are the extension's
+ * functions with each result wrapped in `result<_, string>`, with a
+ * static `attach(extension: u32) -> own<it>`. Resources the extension's
  * interface declares appear on the program's side by the same name
  * with the same methods, their results wrapped when the extension owns
- * them. The runtime checks all of this against the real extension when
- * it loads; this checks it when the program is built, against the
+ * them. The objects serving an extension come from the program's
+ * plugin kind: a resource the world exports, named after a world of
+ * the extension document, with `create: static func(token: u32) ->
+ * own<it>` and a method vending each served interface that world
+ * imports. The runtime checks all of this against the real extension
+ * when it loads; this checks it when the program is built, against the
  * extension WIT the program names with `--extension-wit`, so a view
  * that drifts from the interface is a build error naming what drifted.
  *
@@ -88,6 +91,60 @@ function findWorld(ast: Ast, worldName: String): WorldDef | null {
     }
   }
   return null;
+}
+
+/** Every world of a document. */
+function worldsOf(ast: Ast): GrowableArray<WorldDef> {
+  let worlds = new GrowableArray<WorldDef>();
+  for (let item in ast.items) {
+    if (item.tag == AstItemTag.World) {
+      worlds.push(item.worldDef as WorldDef);
+    }
+  }
+  return worlds;
+}
+
+/** Whether `f` is `static func(<one u32>) -> own<resource>`. */
+function isFactoryShape(f: Func, resource: String): boolean {
+  return f.params.length == 1 && f.params[0].type.tag == TypeTag.U32 &&
+      f.result != null && (f.result as Type).tag == TypeTag.Own &&
+      spell((f.result as Type).inner) == resource;
+}
+
+/** The interfaces a world imports and exports by path, qualified. */
+final class WorldInterfaces {
+  imported = new GrowableArray<String>();
+  exported = new GrowableArray<String>();
+}
+
+function worldInterfaces(ast: Ast, world: WorldDef): WorldInterfaces {
+  let found = new WorldInterfaces();
+  for (let item in world.items) {
+    var path: UsePath | null = null;
+    var isImport = false;
+    if (item.tag == WorldItemTag.Import) {
+      let kind = (item.importItem as Import).kind;
+      if (kind.tag == ExternKindTag.Path) {
+        path = kind.path;
+        isImport = true;
+      }
+    } else if (item.tag == WorldItemTag.Export) {
+      let kind = (item.exportItem as Export).kind;
+      if (kind.tag == ExternKindTag.Path) {
+        path = kind.path;
+      }
+    }
+    if (path == null) {
+      continue;
+    }
+    let qualified = externTarget(ast, path as UsePath);
+    if (isImport) {
+      found.imported.push(qualified);
+    } else {
+      found.exported.push(qualified);
+    }
+  }
+  return found;
 }
 
 /** The qualified name a world's `import x;` or `import a:b/x;` reaches. */
@@ -393,11 +450,6 @@ final class ViewCheck {
     this.#errors.push(`${this.#prefix}: ${message}`);
   }
 
-  /** `own` or `create`, by the view. */
-  #factory(): String {
-    return if (this.#kind == ViewKind.Called) 'attach' else 'create';
-  }
-
   run(): void {
     // The program's own resource: the one not in the extension's interface.
     let own = new GrowableArray<String>();
@@ -407,22 +459,19 @@ final class ViewCheck {
       }
     }
     if (own.length != 1) {
+      let factory = if (this.#kind == ViewKind.Called) ', with a static attach' else '';
       this.#fail(`it must declare one resource of its own, whose methods are the ` +
-          `extension's functions, with a static ${this.#factory()}; it declares ${own.length}`);
+          `extension's functions${factory}; it declares ${own.length}`);
       return;
     }
     let resource = own[0];
-    let factory = this.#host.resourceFunc(resource, this.#factory(), ResourceFuncTag.Static);
-    if (factory == null) {
-      this.#fail(`${resource} must declare ${this.#factory()}: static func(extension: u32) ` +
-          `-> own<${resource}>`);
-    } else {
-      let f = (factory as NamedFunc).func;
-      let shape = f.params.length == 1 && f.params[0].type.tag == TypeTag.U32 &&
-          f.result != null && (f.result as Type).tag == TypeTag.Own &&
-          spell((f.result as Type).inner) == resource;
-      if (!shape) {
-        this.#fail(`${resource}.${this.#factory()} must be static func(extension: u32) ` +
+    if (this.#kind == ViewKind.Called) {
+      let factory = this.#host.resourceFunc(resource, 'attach', ResourceFuncTag.Static);
+      if (factory == null) {
+        this.#fail(`${resource} must declare attach: static func(extension: u32) ` +
+            `-> own<${resource}>`);
+      } else if (!isFactoryShape((factory as NamedFunc).func, resource)) {
+        this.#fail(`${resource}.attach must be static func(extension: u32) ` +
             `-> own<${resource}>`);
       }
     }
@@ -488,9 +537,13 @@ final class ViewCheck {
         this.#fail(`${resource}.${name} has no counterpart in the extension's interface`);
       } else if (rf.tag == ResourceFuncTag.Constructor) {
         this.#fail(`${resource} declares a constructor, which the runtime never calls`);
-      } else if (rf.tag == ResourceFuncTag.Static && name != this.#factory()) {
-        this.#fail(`${resource}.${name} is a static the runtime never calls; ` +
-            `only ${this.#factory()} is`);
+      } else if (rf.tag == ResourceFuncTag.Static) {
+        if (this.#kind == ViewKind.Called && name == 'attach') {
+          continue;
+        }
+        let only = if (this.#kind == ViewKind.Called) 'only attach is'
+            else 'a served view has none; its object comes from the plugin kind';
+        this.#fail(`${resource}.${name} is a static the runtime never calls; ${only}`);
       }
     }
   }
@@ -561,43 +614,151 @@ export function checkExtensionViews(host: Ast, worldName: String, guest: Ast,
   }
   let imported = new Map<String, InterfaceDef>();
   let exported = new Map<String, InterfaceDef>();
-  for (let item in (world as WorldDef).items) {
-    var path: UsePath | null = null;
-    var isImport = false;
-    if (item.tag == WorldItemTag.Import) {
-      let kind = (item.importItem as Import).kind;
-      if (kind.tag == ExternKindTag.Path) {
-        path = kind.path;
-        isImport = true;
-      }
-    } else if (item.tag == WorldItemTag.Export) {
-      let kind = (item.exportItem as Export).kind;
-      if (kind.tag == ExternKindTag.Path) {
-        path = kind.path;
-      }
-    }
-    if (path == null) {
-      continue;
-    }
-    let qualified = externTarget(host, path as UsePath);
-    if (!hostInterfaces.has(qualified)) {
-      continue;
-    }
-    if (isImport) {
+  let mentioned = worldInterfaces(host, world as WorldDef);
+  for (let qualified in mentioned.imported) {
+    if (hostInterfaces.has(qualified)) {
       imported[qualified] = hostInterfaces[qualified];
-    } else {
+    }
+  }
+  for (let qualified in mentioned.exported) {
+    if (hostInterfaces.has(qualified)) {
       exported[qualified] = hostInterfaces[qualified];
     }
   }
+  // The served views: by the import's qualified name, the program's own
+  // resource in it, which a plugin kind vends.
+  let servedOwn = new Map<String, String>();
   for (let iface in interfacesOf(guest)) {
     if (imported.has(iface.qualified)) {
       new ViewCheck(errors, `${iface.qualified}, imported by world ${worldName} ` +
           `(${guestLabel})`, ViewKind.Called, iface.def, imported[iface.qualified]).run();
     }
     if (exported.has(iface.qualified)) {
+      let view = exported[iface.qualified];
       new ViewCheck(errors, `${iface.qualified}, exported by world ${worldName} ` +
-          `(${guestLabel})`, ViewKind.Served, iface.def, exported[iface.qualified]).run();
+          `(${guestLabel})`, ViewKind.Served, iface.def, view).run();
+      let guestMembers = new Members(iface.def);
+      let own = new GrowableArray<String>();
+      for (let name in new Members(view).resourceNames) {
+        if (!guestMembers.resources.has(name)) {
+          own.push(name);
+        }
+      }
+      if (own.length == 1) {
+        servedOwn[iface.qualified] = own[0];
+      }
     }
   }
+  checkKinds(errors, guest, guestLabel, worldName, exported, servedOwn);
   return errors;
+}
+
+/**
+ * The plugin kinds: each resource of an interface the program's world
+ * exports that declares `create: static func(token: u32) -> own<it>`.
+ * A kind is named after a world of the extension document, and its
+ * methods vend the served views that world imports from the program,
+ * one each, nothing else. A world of the extension document that
+ * imports a served view needs a kind of its name.
+ */
+function checkKinds(errors: GrowableArray<String>, guest: Ast, guestLabel: String,
+    worldName: String, exported: Map<String, InterfaceDef>,
+    servedOwn: Map<String, String>): void {
+  // The served view each own resource name belongs to.
+  let viewOfOwn = new Map<String, String>();
+  let ownTwice = new HashSet<String>();
+  for (let qualified in servedOwn.keys()) {
+    let own = servedOwn[qualified];
+    if (viewOfOwn.has(own)) {
+      ownTwice.add(own);
+    }
+    viewOfOwn[own] = qualified;
+  }
+  let kinds = new HashSet<String>();
+  for (let qualified in exported.keys()) {
+    let members = new Members(exported[qualified]);
+    for (let name in members.resourceNames) {
+      let create = members.resourceFunc(name, 'create', ResourceFuncTag.Static);
+      if (create == null) {
+        continue;
+      }
+      let prefix = `plugin kind ${name} (${qualified}, ${guestLabel})`;
+      let fail = (message: String) => {
+        errors.push(`${prefix}: ${message}`);
+      };
+      kinds.add(name);
+      if (!isFactoryShape((create as NamedFunc).func, name)) {
+        fail(`create must be static func(token: u32) -> own<${name}>`);
+      }
+      let world = findWorld(guest, name);
+      if (world == null) {
+        fail(`it declares create, so it is a plugin kind, but ${guestLabel} has no ` +
+            `world ${name} for its plugins to be written to`);
+        continue;
+      }
+      let imports = worldInterfaces(guest, world as WorldDef).imported;
+      let vended = new HashSet<String>();
+      for (let rf in (members.resources[name] as TypeDef).resourceFuncs as GrowableArray<ResourceFunc>) {
+        let fname = rf.func.name.name;
+        if (rf.tag == ResourceFuncTag.Constructor) {
+          fail('it declares a constructor, which the runtime never calls');
+          continue;
+        }
+        if (rf.tag == ResourceFuncTag.Static) {
+          if (fname != 'create') {
+            fail(`${fname} is a static the runtime never calls; only create is`);
+          }
+          continue;
+        }
+        let f = rf.func.func;
+        let result = f.result;
+        let ownName = if (result != null && (result as Type).tag == TypeTag.Own)
+            spell((result as Type).inner) else '';
+        if (f.params.length != 0 || ownName == '' || !viewOfOwn.has(ownName)) {
+          fail(`${fname} must vend a served view, taking nothing and returning own<r> ` +
+              `for the program's resource r of an interface the world exports; it is ` +
+              `(${spellParams(f, 0)}) -> ${spell(result)}`);
+          continue;
+        }
+        if (ownTwice.contains(ownName)) {
+          fail(`${fname} returns own<${ownName}>, which names the program's resource in ` +
+              `more than one served view`);
+          continue;
+        }
+        let view = viewOfOwn[ownName];
+        if (vended.contains(view)) {
+          fail(`${fname} vends ${view}, which another method vends already`);
+          continue;
+        }
+        vended.add(view);
+        var imported = false;
+        for (let q in imports) {
+          if (q == view) { imported = true; }
+        }
+        if (!imported) {
+          fail(`${fname} vends ${view}, which world ${name} does not import`);
+        }
+      }
+      for (let q in imports) {
+        if (servedOwn.has(q) && !vended.contains(q)) {
+          fail(`world ${name} imports ${q}, which the program serves, and no method ` +
+              `vends it: it needs one returning own<${servedOwn[q]}>`);
+        }
+      }
+    }
+  }
+  for (let world in worldsOf(guest)) {
+    if (kinds.contains(world.name.name)) {
+      continue;
+    }
+    for (let q in worldInterfaces(guest, world).imported) {
+      if (servedOwn.has(q)) {
+        errors.push(`world ${world.name.name} (${guestLabel}) imports ${q}, which world ` +
+            `${worldName} serves, and the program declares no plugin kind ${world.name.name}: ` +
+            `a resource with create: static func(token: u32) -> own<${world.name.name}>, ` +
+            `whose methods vend what the world imports`);
+        break;
+      }
+    }
+  }
 }

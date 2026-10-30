@@ -8,7 +8,8 @@
   day; the build-time check of a program's world against its
   extensions' WIT (`--extension-wit`) and the check of a component
   against that WIT (`checkExtension`) the same day; `load` made
-  asynchronous and calls into one extension made concurrent 2026-10-28
+  asynchronous and calls into one extension made concurrent 2026-10-28;
+  plugin kinds in place of per-resource `create` 2026-10-30
 - **Issue**: #593
 - **For**: a PDS written in Zena that loads extensions at run time
   ([pds-extensions.md](./pds-extensions.md))
@@ -96,8 +97,8 @@ always says what it grants, and a reader can tell the trusted loads
 from the rest by name.
 
 A loaded extension is named by a handle, a `u32`, never reused within
-a run. The handle appears in exactly two places in the program's code:
-the argument of `attach`, and the parameter of `create`, below.
+a run. The handle appears in exactly one place in the program's code:
+the argument of `attach`, below.
 
 ### The program's side of a shared interface
 
@@ -106,10 +107,10 @@ caller argument and no `self` has nowhere to learn it from. In the
 Component Model a program cannot hand out a function, only exports,
 and a resource's methods are exports too. So the program declares its
 side of each interface it shares with extensions as a resource, and
-identity is the object: one per extension, made by the program, known
-to the runtime, so a method call knows whom it serves. The extension's
-WIT is written plainly, with free functions, and the runtime pairs the
-two shapes.
+identity is the object: one per extension, made by the program before
+the load and known to the runtime, so a method call knows whom it
+serves. The extension's WIT is written plainly, with free functions,
+and the runtime pairs the two shapes.
 
 **An interface the program serves.** Given the extension's import
 
@@ -128,32 +129,74 @@ interface storage {
   resource storage {
     get: func(key: string) -> option<list<u8>>;
     put: func(key: string, value: list<u8>);
-    create: static func(extension: u32) -> own<storage>;
   }
 }
 ```
 
 The rule: one resource of the program's own, whose methods are the
 extension's free functions with the same parameters after `self` and
-the same results, and whose static `create` the runtime calls once,
-the first time the extension calls on that interface, to make the
-object for that extension. Every later call from that extension lands
-on that object. The factory is a static rather than a free function so
-that a program serving several interfaces has a `create` on each
-resource, where a module's exported functions share one namespace. In
-Zena the resource is an exported `Disposable` class, as any exported
-resource is written:
+the same results. The object serving an extension comes from the
+program's plugin object for that extension, below; every call from
+that extension lands on it. In Zena the resource is an exported
+`Disposable` class, as any exported resource is written:
 
 ```zena
 export class Storage implements Disposable {
-  #extension: u32;
-  new(ext: u32) : #extension = ext;
+  #account: Account;
+  new(account: Account) : #account = account;
   get(key: String): Option<FixedArray<u8>> { ... }
   put(key: String, value: FixedArray<u8>): void { ... }
-  static create(ext: u32): Storage { return new Storage(ext); }
   [Disposable.dispose](): void {}
 }
 ```
+
+**The plugin kind.** The program exports one resource per kind of
+plugin it loads, named after the world those plugins are written to,
+whose methods vend the objects serving that world's imports from the
+program:
+
+```wit
+interface plugins {
+  use storage.{storage};
+  use callbacks.{callbacks};
+  resource write-hook {
+    storage: func() -> own<storage>;
+    callbacks: func() -> own<callbacks>;
+    create: static func(token: u32) -> own<write-hook>;
+  }
+}
+```
+
+The rule: a kind declares `create` and, for each interface its world
+imports from the program, one method taking nothing and returning an
+own of that interface's resource; no other methods, statics or
+constructors. The program makes the plugin object before it loads the
+extension, with whatever the object should know, and names it and its
+kind in the load. The runtime calls `create` once per extension, the
+first time it calls on any served interface, and each vendor once, so
+the objects are the extension's identity:
+
+```zena
+export class WriteHook implements Disposable {
+  #account: Account;
+  new(account: Account) : #account = account;
+  storage(): Storage { return new Storage(this.#account); }
+  callbacks(): Callbacks { return new Callbacks(this.#account); }
+  [Disposable.dispose](): void {}
+}
+
+let ext = await loadExtension(path, bindings, {plugin: new WriteHook(account), kind: 'write-hook'});
+```
+
+The `create` static is the only way the runtime can be handed the
+object: a host import cannot take an `own<write-hook>`, since WIT has
+no type for a resource of the program's choosing, and the only channel
+is an export the runtime calls. The program's code never writes it.
+`loadExtension` registers the object under a token it mints and passes
+the token with the kind's name to the host, and the compiler writes
+the kind's `create`, which takes the object registered under the
+token and checks its class. The token ties the load the program made
+to the `create` the runtime makes, and appears nowhere else.
 
 **An interface the program calls.** Given the extension's export
 
@@ -212,7 +255,6 @@ interface store {
   resource store {
     begin: func() -> own<txn>;
     size: func(txn: borrow<txn>) -> u32;
-    create: static func(extension: u32) -> own<store>;
   }
 }
 ```
@@ -245,11 +287,15 @@ zena build app.zena -o app.wasm --target component \
 
 The compiler reads the extension document and compares each interface
 it declares that the world imports or exports with the program's view
-of it, by the rules above. A view that differs is a build error naming
-the interface, the method and what differs, so the two documents
-drifting apart is found before anything is loaded. Interfaces the
-world does not mention are not checked. The flag repeats, one
-document per extension.
+of it, by the rules above, and each plugin kind the world exports with
+the extension world of its name: the kind must vend every interface
+that world imports from the program, and nothing else. A world of the
+extension document that imports a served interface and has no kind of
+its name is an error too. A view or a kind that differs is a build
+error naming the interface, the method and what differs, so the two
+documents drifting apart is found before anything is loaded.
+Interfaces the world does not mention are not checked. The flag
+repeats, one document per extension.
 
 The check compares the two documents as parsed, without resolving
 them: a type both sides define is compared by structure (records,
@@ -325,9 +371,11 @@ is loaded, from its component type: each function is a concurrent host
 function that sends the call to the program through the channel of the
 program's call whose guest task it runs in, and waits for the answer.
 The task that serves
-it in the program looks up the object made for that extension on that
-interface, calls `create` first if there is none yet, and calls the
-method with the object as `self`. An extension that calls such an import
+it in the program looks up the object vended for that extension on that
+interface, first asking the extension's plugin object for it, and the
+plugin kind's `create` for the plugin object before that, if either is
+not made yet, and calls the method with the object as `self`. An
+extension that calls such an import
 outside any call from the program, say from a task it started itself,
 fails that call, since there is no program task to serve it.
 
@@ -336,10 +384,10 @@ thread, with the program's call-back channel along, so that the serving
 extension's own calls to the program land in the forwarder that is
 waiting. Dropping an extension ends its thread even while another is
 bound to it, and the other's calls on that interface then fail. The
-objects the program made for the dropped extension through `create`
-are dropped as tasks of the program's store, which run when the
-program next yields, since their destructors are the program's own
-code and cannot run inside the `drop` call.
+dropped extension's plugin object and the objects it vended are
+dropped as tasks of the program's store, which run when the program
+next yields, since their destructors are the program's own code and
+cannot run inside the `drop` call.
 
 Values cross as `wasmtime::component::Val`, with one translation for
 resources. A handle is an index into one instance's table, so it
@@ -437,8 +485,13 @@ interface extensions {
     debug: bool,
   }
 
-  load: async func(path: string, bindings: list<binding>, options: load-options) -> result<u32, string>;
-  load-trusted: async func(path: string, options: load-options) -> result<u32, string>;
+  record plugin-ref {
+    kind: string,
+    token: u32,
+  }
+
+  load: async func(path: string, bindings: list<binding>, options: load-options, plugin: option<plugin-ref>) -> result<u32, string>;
+  load-trusted: async func(path: string, options: load-options, plugin: option<plugin-ref>) -> result<u32, string>;
   check: func(path: string, wit-path: string, world-name: string, deps: list<string>) -> result<_, string>;
   drop: func(extension: u32);
 }
@@ -464,6 +517,9 @@ export type LoadOptions = {
   memoryLimit?: i64,
   callTimeout?: Duration,
   debug?: boolean,
+  /** The program's object for the extension, and the kind it is of. */
+  plugin?: anyref,
+  kind?: String,
 };
 
 /** A loaded extension; `handle` is what `attach` takes. */
@@ -494,8 +550,11 @@ future, which is safe here because a load serves no calls back.
 
 The program's side of the extension interfaces is ordinary WIT interop:
 it declares a world that imports its views of what extensions export
-and exports its views of what they import, implements the exported
-resources as classes, and awaits each call on an attached object.
+and exports its views of what they import and its plugin kinds,
+implements the exported resources as classes, makes a plugin object per
+load, and awaits each call on an attached object. A load that serves
+the extension anything needs a plugin object; a load of a component
+that imports nothing from the program needs none.
 
 ### Tests
 
@@ -532,6 +591,14 @@ instance; two loads in flight at once get distinct handles.
   and nothing tied a handle to the code serving it. One object per
   extension puts the identity where the program's code already keeps
   state.
+- **A `create(extension: u32)` on every served resource.** The first
+  shape with objects: the runtime made each served object through a
+  factory that took the extension's handle, and the program mapped
+  the handle to what it knew about the load. The handle was plumbing
+  the program had no use for, and the served classes had to know about
+  it. The plugin kind puts the identity in an object the program makes
+  before the load, and the one factory the runtime still needs is
+  written by the compiler.
 - **A fixed set of interfaces served by the host.** The runtime could
   implement storage and the like itself, which would keep the program's
   interface free of extension concerns. The PDS's storage and account

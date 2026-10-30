@@ -553,7 +553,7 @@ export final class ComponentTypeEncoder {
     let source = this.#resolveInterface(use.from, contextPackage);
     for (let n in use.names) {
       let componentIndex =
-          this.#aliasTypeExport(source.qualifiedName, n.name.name);
+          this.#usedTypeIndex(new UseHop(source.qualifiedName, n.name.name));
       scope.decls.writeByte(0x02); // instancedecl: alias
       scope.decls.writeByte(0x03); // sort: type
       scope.decls.writeByte(0x02); // target: outer
@@ -875,7 +875,7 @@ export final class ComponentTypeEncoder {
       let outerIndex = if (hop == null) {
         this.#encodeExportedOwnType(reg, r)
       } else {
-        this.#aliasTypeExport(hop.source, hop.typeName)
+        this.#usedTypeIndex(hop)
       };
       let imp = new ByteBuffer();
       imp.writeULEB128(1);
@@ -989,7 +989,7 @@ export final class ComponentTypeEncoder {
       }
       owner = source;
       tdName = h.typeName;
-      outerIndex = this.#aliasTypeExport(h.source, h.typeName);
+      outerIndex = this.#usedTypeIndex(h);
     }
     var found: TypeDef | null = null;
     for (let item in owner.items) {
@@ -1143,6 +1143,30 @@ export final class ComponentTypeEncoder {
       }
     }
     return null;
+  }
+
+  /**
+   * The component-level type index of the type a `use` hop names: an
+   * alias out of the source's instance when the source is imported,
+   * or, when the source is an exported interface, its own declaration
+   * at component level (`#encodeExportedOwnType`), following a further
+   * `use` of the source's first. An exported interface may `use` a
+   * type another exported interface declares, as a plugin kind uses
+   * the resources of the views it vends.
+   */
+  #usedTypeIndex(hop: UseHop): i32 {
+    if (this.#instanceIndex.has(hop.source)) {
+      return this.#aliasTypeExport(hop.source, hop.typeName);
+    }
+    let source = this.#findRegistered(hop.source);
+    if (source == null) {
+      throw new EncodeError(`'${hop.source}' is not a known interface`);
+    }
+    let further = this.#useSourceOf(source, hop.typeName);
+    if (further != null) {
+      return this.#usedTypeIndex(further);
+    }
+    return this.#encodeExportedOwnType(source, hop.typeName);
   }
 
   #aliasTypeExport(qualifiedInterface: String, typeName: String): i32 {
@@ -1574,8 +1598,9 @@ export final class ComponentTypeEncoder {
       }
       // An imported interface's types alias out of its instance. An
       // exported interface has no instance to alias from; a type it
-      // `use`s aliases out of the imported source instead, under the
-      // source's own name for it.
+      // `use`s comes from its source instead, under the source's own
+      // name for it: an alias out of an imported source's instance, or
+      // an exported source's own component-level declaration.
       var index = -1;
       if (this.#instanceIndex.has(reg.qualifiedName)) {
         index = this.#aliasTypeExport(reg.qualifiedName, name);
@@ -1586,8 +1611,7 @@ export final class ComponentTypeEncoder {
           // component level, and exported from its instance.
           index = this.#encodeExportedOwnType(reg, name);
         } else {
-          let h = hop;
-          index = this.#aliasTypeExport(h.source, h.typeName);
+          index = this.#usedTypeIndex(hop);
         }
       }
       // The alias appended a component-level type; a component-level

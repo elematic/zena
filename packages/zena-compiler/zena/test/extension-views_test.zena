@@ -48,7 +48,6 @@ interface store {
   resource store {
     begin: func() -> own<txn>;
     size: func(txn: borrow<txn>) -> u32;
-    create: static func(extension: u32) -> own<store>;
   }
 }
 
@@ -61,9 +60,18 @@ interface policy {
   }
 }
 
+interface plugins {
+  use store.{store};
+  resource extension {
+    store: func() -> own<store>;
+    create: static func(token: u32) -> own<extension>;
+  }
+}
+
 world app {
   import policy;
   export store;
+  export plugins;
 }
 `;
 
@@ -119,7 +127,7 @@ export let tests = suite('extension views', () => {
         wrongAttach);
   });
 
-  test('a served view keeps results and declares create', () => {
+  test('a served view keeps results and has no statics', () => {
     let wrapped = joined(edited(
         '    begin: func() -> own<txn>;',
         '    begin: func() -> result<own<txn>, string>;'));
@@ -127,10 +135,48 @@ export let tests = suite('extension views', () => {
         wrapped);
     isTrue(wrapped.contains('exported by world app'), wrapped);
 
-    let noCreate = joined(edited(
-        '    create: static func(extension: u32) -> own<store>;', ''));
-    isTrue(noCreate.contains('store must declare create: static func(extension: u32) -> own<store>'),
-        noCreate);
+    let withStatic = joined(edited(
+        '    size: func(txn: borrow<txn>) -> u32;',
+        '    size: func(txn: borrow<txn>) -> u32;\n    create: static func(extension: u32) -> own<store>;'));
+    isTrue(withStatic.contains('store.create is a static the runtime never calls; a served view has none'),
+        withStatic);
+  });
+
+  test('a plugin kind is named after a world and vends what it imports', () => {
+    // The kind's world imports `store`, which the kind vends: fine.
+    equal(joined(host), '');
+
+    let noWorld = joined(edited('  resource extension {', '  resource plugin {'));
+    isTrue(noWorld.contains('plugin kind plugin'), noWorld);
+    isTrue(noWorld.contains('has no world plugin'), noWorld);
+
+    let noVendor = joined(edited('    store: func() -> own<store>;\n', ''));
+    isTrue(noVendor.contains('world extension imports test:ext/store, which the program serves, and no method vends it'),
+        noVendor);
+
+    let wrongVendor = joined(edited(
+        '    store: func() -> own<store>;',
+        '    store: func(n: u32) -> own<store>;'));
+    isTrue(wrongVendor.contains('store must vend a served view'), wrongVendor);
+
+    let wrongCreate = joined(edited(
+        '    create: static func(token: u32) -> own<extension>;',
+        '    create: static func(token: u64) -> own<extension>;'));
+    isTrue(wrongCreate.contains('create must be static func(token: u32) -> own<extension>'),
+        wrongCreate);
+
+    let extra = joined(edited(
+        '    store: func() -> own<store>;',
+        '    store: func() -> own<store>;\n    reset: static func();'));
+    isTrue(extra.contains('reset is a static the runtime never calls; only create is'), extra);
+  });
+
+  test('a world that imports a served view needs a kind of its name', () => {
+    let unserved = `${guest.split('world extension {')[0]}world other {\n  import store;\n}\n\nworld extension {${guest.split('world extension {')[1]}`;
+    let found = checkExtensionViews(parseSyntax(host), 'app', parseSyntax(unserved), 'ext.wit');
+    isTrue(found.length == 1, `${found.length} problems`);
+    isTrue(found[0].contains('world other (ext.wit) imports test:ext/store, which world app serves, and the program declares no plugin kind other'),
+        found[0]);
   });
 
   test('every function of the extension needs a method, and no more', () => {

@@ -3,8 +3,9 @@
 // `ops`, which the caller calls, as a resource whose methods are the
 // extension's functions with their results wrapped, and a static
 // `attach`; `callbacks` and `store`, which the caller serves, as
-// resources whose methods are the extension's functions, and a static
-// `create`, with the resources the extension's side declares kept.
+// resources whose methods are the extension's functions, with the
+// resources the extension's side declares kept; and `plugins`, the
+// caller's plugin kind `child`, which vends the served objects.
 package test:ext@1.0.0;
 
 interface ops {
@@ -29,7 +30,6 @@ interface store {
   resource store {
     begin: func() -> own<txn>;
     size: func(txn: borrow<txn>) -> u32;
-    create: static func(extension: u32) -> own<store>;
   }
 }
 
@@ -55,7 +55,19 @@ interface callbacks {
   resource callbacks {
     lookup: async func(key: s32) -> s32;
     wait: async func(ms: u32);
-    create: static func(extension: u32) -> own<callbacks>;
+  }
+}
+
+/// The caller's plugin kinds: one per world of child.wit that imports
+/// from the caller. `child` is the caller's object for an extension
+/// written to `world child`; its methods vend what that world imports.
+interface plugins {
+  use callbacks.{callbacks};
+  use store.{store};
+  resource child {
+    callbacks: func() -> own<callbacks>;
+    store: func() -> own<store>;
+    create: static func(token: u32) -> own<child>;
   }
 }
 
@@ -70,5 +82,6 @@ world caller {
   import sessions;
   export callbacks;
   export store;
+  export plugins;
   export main: async func();
 }

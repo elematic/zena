@@ -16,8 +16,8 @@ import { Session, Sessions } from 'test:ext/sessions';
 let fixtures = 'packages/stdlib/tests/extensions/fixtures';
 
 /**
- * What the caller serves to one extension: the object `create` makes
- * for it, which knows which extension it serves.
+ * What the caller serves to one extension: the object its plugin
+ * object vends, which knows which extension it serves.
  */
 export class Callbacks implements Disposable {
   #extension: u32;
@@ -33,14 +33,35 @@ export class Callbacks implements Disposable {
     await sleep(milliseconds(ms as i64));
   }
 
-  static create(ext: u32): Callbacks {
-    return new Callbacks(ext);
-  }
-
   [Disposable.dispose](): void {
     console.log(`callbacks ${this.#extension} disposed`);
   }
 }
+
+/**
+ * The caller's plugin kind for extensions written to `world child`:
+ * one object per loaded extension, made by the caller before the load
+ * with the number it gives the extension, vending the served objects.
+ * The host asks for each once. The `create` static the WIT declares is
+ * written by the compiler.
+ */
+export class Child implements Disposable {
+  #number: u32;
+
+  new(number: u32) : #number = number;
+
+  callbacks(): Callbacks {
+    return new Callbacks(this.#number);
+  }
+
+  store(): Store {
+    return new Store(this.#number);
+  }
+
+  [Disposable.dispose](): void {}
+}
+
+var loadCount = 0 as u32;
 
 /** A transaction: the caller's resource, which the extension holds. */
 export class Txn implements Disposable {
@@ -82,18 +103,23 @@ export class Store implements Disposable {
     return txn.puts();
   }
 
-  static create(ext: u32): Store {
-    return new Store(ext);
-  }
-
   [Disposable.dispose](): void {}
 }
 
 /** Loads `name`, which may import this program's `callbacks`. */
+/** Loads `name` as the `child` kind, numbering the loads from 1. */
 async function load(name: String, options: LoadOptions = {}): Future<Extension> {
+  loadCount += 1 as u32;
+  let plugin = new Child(loadCount);
+  var full: LoadOptions = {plugin, kind: 'child'};
+  if (let {callTimeout} = options) {
+    full = {plugin, kind: 'child', callTimeout};
+  } else if (let {memoryLimit} = options) {
+    full = {plugin, kind: 'child', memoryLimit};
+  }
   let loaded = await loadExtension(`${fixtures}/${name}`,
       [fromProgram('test:ext/callbacks@1.0.0'), fromProgram('test:ext/store@1.0.0')],
-      options);
+      full);
   if (loaded is (true, Extension)) {
     return loaded[1];
   }

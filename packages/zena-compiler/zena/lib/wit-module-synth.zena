@@ -78,7 +78,7 @@ import {
   ComponentEntryWrapper, componentEntryPathFor,
   componentEntrySpecifierFor, componentExportSuffix, resourceWrapperBase,
   mainWrapperResultOf, mainWrapperAbiImports, hasAsyncMain, renderMainWrapper,
-  renderWrapperHeader, exportedFunctionIsAsync,
+  renderWrapperHeader, exportedFunctionIsAsync, classHasStatic,
   componentSyncExportSuffix
 } from './component-entry.zena';
 import { zena, emit, ZenaTemplate } from './code-template.zena';
@@ -830,6 +830,8 @@ final class FutureEntry {
 /** What one module's rendering pulled in, for its import lines. */
 final class SynthUses {
   var hasAsync = false;
+  /** Whether a plugin kind's `create` was written — pulls in `claimPlugin`. */
+  var plugin = false;
   var fixedArray = false;
   var array = false;
   var error = false;
@@ -3984,6 +3986,31 @@ export function synthesizeExportWrapper(
       if (target.kind == "constructor") {
         target.implicitResult = resourceTy;
       }
+      if (isPluginKindCreate(target, e.func) &&
+          !classHasStatic(entryAst, target.className, target.member)) {
+        // A plugin kind's `create`: the wrapper writes it, returning
+        // the object the program registered under the token when it
+        // loaded the extension (zena:extensions, `claimPlugin`).
+        uses.plugin = true;
+        uses.error = true;
+        let fn = `${target.className}__create`;
+        target.calleeOverride = fn;
+        body.append("\n");
+        body.append("/** The plugin kind's create: the object the program registered under\n");
+        body.append(" * `token` when it loaded the extension, which must be a ")
+            .append(target.className).append(". */\n");
+        body.append("function ").append(fn).append("(token: u32): ")
+            .append(target.className).append(" {\n");
+        body.append("  let object = claimPlugin(token);\n");
+        body.append("  if (object is ").append(target.className).append(") {\n");
+        body.append("    return object;\n");
+        body.append("  }\n");
+        body.append("  throw new Error(if (object == null) ")
+            .append("`no plugin object was registered under token ${token}`")
+            .append(" else `the plugin object registered under token ${token} is not a ")
+            .append(target.className).append("`);\n");
+        body.append("}\n");
+      }
     } else {
       importFromEntry(target.base);
     }
@@ -4013,6 +4040,9 @@ export function synthesizeExportWrapper(
   }
   sb.append(" } from '").append(specifier).append("';\n");
   sb.append("import { finishTask, finishVoidTask } from 'zena:wasi';\n");
+  if (uses.plugin) {
+    sb.append("import { claimPlugin } from 'zena:extensions';\n");
+  }
   if (uses.option) {
     sb.append("import { Option, Some, some, none } from 'zena:core';\n");
   }
@@ -4119,6 +4149,26 @@ function needsSyncWrapper(func: Func, items: GrowableArray<InterfaceItem>): bool
  * identifier base (`describe`, `surface__method__onFrame`), which
  * `componentExportNameOf` reads the export name back from.
  */
+/**
+ * Whether `target` is a plugin kind's `create`: a static `create` of
+ * a resource taking one `u32` and returning an own of that resource.
+ */
+function isPluginKindCreate(target: ExportTarget, func: Func): boolean {
+  if (target.kind != "static" || target.member != "create") {
+    return false;
+  }
+  if (func.params.length != 1 || func.params[0].type.tag != TypeTag.U32) {
+    return false;
+  }
+  let result = func.result;
+  if (result == null || (result as Type).tag != TypeTag.Own) {
+    return false;
+  }
+  let inner = (result as Type).inner;
+  return inner != null && (inner as Type).tag == TypeTag.Name &&
+      ((inner as Type).name as Id).name == target.resourceName;
+}
+
 final class ExportTarget {
   witName: String;
   base: String;
@@ -4132,11 +4182,17 @@ final class ExportTarget {
   member: String;
   /** A constructor's implicit result: an own of the resource. */
   var implicitResult: Ty | null = null;
+  /** A function the wrapper calls in place of the class's member, when
+   * the wrapper writes the member itself: a plugin kind's `create`. */
+  var calleeOverride = "";
   new(this.witName, this.base, this.className = "", this.resourceName = "",
       this.kind = "", this.member = "");
 
   /** The expression the wrapper calls, before its argument list. */
   callee(): String {
+    if (this.calleeOverride != "") {
+      return this.calleeOverride;
+    }
     if (this.kind == "constructor") {
       return "new " + this.className;
     }

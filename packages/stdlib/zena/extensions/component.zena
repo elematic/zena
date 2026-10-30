@@ -20,10 +20,13 @@
  * shape the host pairs with the extension's, in full in
  * docs/design/runtime-components.md. An interface this program serves
  * is exported as a resource whose methods are the extension's free
- * functions, with a static `create(extension: u32) -> own<resource>`; the
- * first call from an extension makes its object through `create`, and
- * every later call lands on that object, so the object is the
- * extension's identity. An interface this program calls is imported as
+ * functions. The object serving an extension comes from this program's
+ * plugin object, which the load names (`LoadOptions.plugin`): an
+ * instance of the class behind a plugin kind, a resource this program
+ * exports, named after the extension's world, whose methods vend one
+ * object per served interface. The host asks the plugin object for
+ * each once, so the objects are the extension's identity and this
+ * program's code sees no handle. An interface this program calls is imported as
  * a resource whose methods are the extension's functions with their
  * results wrapped in `result<_, string>`, with a static
  * `attach(extension: u32) -> own<resource>`, which the host serves with
@@ -54,11 +57,11 @@
 
 import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
-import { Disposable, Result } from 'zena:core';
+import { Disposable, Option, Result, none, some } from 'zena:core';
 import { Duration } from 'zena:time';
 import {
   Binding, LoadOptions as HostLoadOptions, SourceExtension, SourceHost,
-  SourceProgram, check, drop, load, loadTrusted,
+  PluginRef, SourceProgram, check, drop, load, loadTrusted,
 } from 'zena-cli:host/extensions';
 
 export { Binding } from 'zena-cli:host/extensions';
@@ -83,12 +86,26 @@ export type LoadOptions = {
    * on the way to it. This program's own setting if absent.
    */
   debug?: boolean,
+  /**
+   * This program's object for the extension: an instance of the class
+   * behind the plugin kind `kind`, which the host asks for the object
+   * serving each interface the extension imports from this program. A
+   * load that serves the extension anything needs one. An exported
+   * resource's class is a `Disposable`, as the host disposes it with
+   * the extension.
+   */
+  plugin?: Disposable,
+  /**
+   * The plugin kind: the name of the resource this program exports for
+   * `plugin`'s class, which is also the name of the world the extension
+   * is written to.
+   */
+  kind?: String,
 };
 
 /**
- * A loaded extension. `handle` is what `attach` takes, and what this
- * program's `create` statics receive. Disposing it drops it; so does
- * the end of this program's run.
+ * A loaded extension. `handle` is what `attach` takes. Disposing it
+ * drops it; so does the end of this program's run.
  */
 export final class Extension implements Disposable {
   handle: u32;
@@ -99,10 +116,10 @@ export final class Extension implements Disposable {
   /**
    * Drops the extension and its memory. Calls already made complete;
    * later calls on an object attached to it fail. Dropping again does
-   * nothing. The objects this program made for it through `create` are
-   * disposed when this program next yields to the host, since their
-   * disposal is this program's own code, which cannot run inside this
-   * call.
+   * nothing. The plugin object and the objects it vended for the
+   * extension are disposed when this program next yields to the host,
+   * since their disposal is this program's own code, which cannot run
+   * inside this call.
    */
   drop(): void {
     if (this.#loaded) {
@@ -122,7 +139,7 @@ export let fromHost = (name: String): Binding => new Binding(name, new SourceHos
 /**
  * `name`, served by this program's export `exported`, which is `name`
  * when absent: a resource whose methods are the extension's functions,
- * and `create`.
+ * vended by the plugin object the load names.
  */
 export let fromProgram = (name: String, exported: String | null = null): Binding =>
   new Binding(name, new SourceProgram(exported ?? name));
@@ -141,6 +158,45 @@ let configure = (options: LoadOptions) => {
   }
   let limit = if (memoryLimit > (0 as i64)) memoryLimit as u64 else 0 as u64;
   return new HostLoadOptions(limit, timeoutNanos, debug);
+};
+
+/**
+ * The plugin objects of loads in flight, by token, until the host asks
+ * for each through its kind's `create`, which the compiler writes for
+ * the kind's class and which calls `claimPlugin`.
+ */
+let pending = new Map<u32, Disposable>();
+var nextToken = 1 as u32;
+
+/**
+ * The plugin object registered under `token` by a load, taken out of
+ * the registry; null when none is. For the `create` static the compiler
+ * generates for a plugin kind, not for programs.
+ */
+export function claimPlugin(token: u32): Disposable | null {
+  if (!pending.has(token)) {
+    return null;
+  }
+  let object = pending[token];
+  pending.delete(token);
+  return object;
+}
+
+let pluginOf = (options: LoadOptions): Option<PluginRef> => {
+  if (let {plugin} = options) {
+    if (let {kind} = options) {
+      let token = nextToken;
+      nextToken += 1 as u32;
+      pending[token] = plugin;
+      return some(new PluginRef(kind, token));
+    }
+    throw new Error('zena:extensions: a plugin object needs its kind, the name of the ' +
+        'resource this program exports for its class');
+  }
+  if (let {kind} = options) {
+    throw new Error(`zena:extensions: plugin kind ${kind} without a plugin object`);
+  }
+  return none;
 };
 
 let extensionOf = (loaded: Result<u32, String>): Result<Extension, String> => {
@@ -175,7 +231,7 @@ export async function loadExtension(
   for (let binding in bindings) {
     list.push(binding);
   }
-  return extensionOf(await load(path, list, configure(options)));
+  return extensionOf(await load(path, list, configure(options), pluginOf(options)));
 }
 
 /**
@@ -188,7 +244,7 @@ export async function loadTrustedExtension(
   path: String,
   options: LoadOptions = {},
 ): Future<Result<Extension, String>> {
-  return extensionOf(await loadTrusted(path, configure(options)));
+  return extensionOf(await loadTrusted(path, configure(options), pluginOf(options)));
 }
 
 /**

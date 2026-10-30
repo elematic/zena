@@ -10,12 +10,16 @@
 //! with the extension's:
 //!
 //! - An interface the program serves is exported as a resource whose
-//!   methods are the extension's free functions, with a static
-//!   `create: static func(extension: u32) -> own<resource>`. The first call from
-//!   an extension on that interface makes its object through `create`;
-//!   every later call lands on the same object, so the object is the
-//!   extension's identity, and the program sees the extension's handle in
-//!   `create` and nowhere else.
+//!   methods are the extension's free functions. The object serving an
+//!   extension comes from the program's plugin object: the program
+//!   exports a resource per plugin kind, named after the plugin's world,
+//!   whose methods vend one object per served interface and whose static
+//!   `create: static func(token: u32) -> own<kind>` returns the object
+//!   the program registered under `token` when it loaded the extension.
+//!   The first call from an extension on a served interface makes the
+//!   plugin object through `create`, if it is not made yet, and the
+//!   interface's object through the vendor; every later call lands on
+//!   that object, so the objects are the extension's identity.
 //! - An interface the program calls is imported as a resource whose
 //!   methods are the extension's exported functions with their results
 //!   wrapped in `result<_, string>`, with a static
@@ -67,8 +71,8 @@ use wasmtime::component::types::{
     ComponentFunc, ComponentInstance as InterfaceType, ComponentItem, Type,
 };
 use wasmtime::component::{
-    Accessor, AccessorTask, Component, ComponentExportIndex, Func, GuestTaskId, Instance,
-    InstancePre, Linker, Resource, ResourceAny, ResourceType, Val,
+    Accessor, AccessorTask, Component, Func, GuestTaskId, Instance, InstancePre, Linker,
+    Resource, ResourceAny, ResourceType, Val,
 };
 use wasmtime::{
     AsContextMut, Engine, Result, Store, StoreContextMut, StoreLimitsBuilder, Trap, bail,
@@ -486,6 +490,27 @@ struct Served {
     export: String,
     resource: String,
     object: Mutex<Option<ResourceAny>>,
+    /// The plugin kind's method that vends the object, by full export
+    /// name.
+    vendor: String,
+    plugin: Arc<Plugin>,
+}
+
+/// The program's object for one extension: the plugin kind it is made
+/// through, the token `create` takes, and the object once made.
+struct Plugin {
+    /// The export the kind resource is in.
+    export: String,
+    resource: String,
+    token: u32,
+    object: Mutex<Option<ResourceAny>>,
+}
+
+/// A plugin kind and token, as a load names them.
+#[derive(Clone)]
+pub(crate) struct PluginRef {
+    kind: String,
+    token: u32,
 }
 
 /// A loaded extension, from the program's side.
@@ -500,6 +525,8 @@ pub(crate) struct Extension {
     component: Component,
     /// By the name of the extension's import.
     served: HashMap<String, Arc<Served>>,
+    /// The program's object for it, when it is served anything.
+    plugin: Option<Arc<Plugin>>,
 }
 
 /// Another extension, as a binding target: its component and channel.
@@ -522,6 +549,8 @@ struct LoadRequest {
     caller: Component,
     /// The extensions the bindings name, by handle.
     peers: HashMap<u32, Peer>,
+    /// The program's object for the extension, when the load names one.
+    plugin: Option<PluginRef>,
 }
 
 // ============================================================================
@@ -1140,19 +1169,35 @@ impl AccessorTask<ComponentState> for ServeCallback {
             let on_resource = method_resource(&func).is_some();
             let mut object = served.object.lock().await;
             if !on_resource && object.is_none() {
-                let (create, count) = accessor.with(|mut a| {
-                    let mut store = a.as_context_mut();
-                    let factory = format!("[static]{}.create", served.resource);
-                    let f = lookup(&mut store, &instance, &served.export, &factory)?;
-                    let count = f.ty(&store).results().len();
-                    Ok::<_, wasmtime::Error>((f, count))
-                })?;
-                let mut made = vec![Val::Bool(false); count];
-                create
-                    .call_concurrent(accessor, &[Val::U32(extension)], &mut made)
+                let plugin = served.plugin.clone();
+                let mut plugin_object = plugin.object.lock().await;
+                if plugin_object.is_none() {
+                    let factory = format!("[static]{}.create", plugin.resource);
+                    let made = call_export(
+                        accessor,
+                        &instance,
+                        &plugin.export,
+                        &factory,
+                        &[Val::U32(plugin.token)],
+                    )
                     .await?;
+                    let Some(Val::Resource(any)) = made.into_iter().next() else {
+                        bail!("{}'s {} did not return a resource", plugin.export, factory);
+                    };
+                    *plugin_object = Some(any);
+                }
+                let receiver = plugin_object.expect("set above");
+                let made = call_export(
+                    accessor,
+                    &instance,
+                    &plugin.export,
+                    &served.vendor,
+                    &[Val::Resource(receiver)],
+                )
+                .await?;
+                drop(plugin_object);
                 let Some(Val::Resource(any)) = made.into_iter().next() else {
-                    bail!("{}'s {}.create did not return a resource", served.export, served.resource);
+                    bail!("{}'s {} did not return a resource", plugin.export, served.vendor);
                 };
                 *object = Some(any);
             }
@@ -1193,6 +1238,26 @@ impl AccessorTask<ComponentState> for ServeCallback {
         let _ = reply.send(served);
         Ok(())
     }
+}
+
+/// Calls the program's export `interface`#`name` with `params`, as a
+/// concurrent task, and returns its results.
+async fn call_export(
+    accessor: &Accessor<ComponentState>,
+    instance: &Instance,
+    interface: &str,
+    name: &str,
+    params: &[Val],
+) -> Result<Vec<Val>> {
+    let (f, count) = accessor.with(|mut a| {
+        let mut store = a.as_context_mut();
+        let f = lookup(&mut store, instance, interface, name)?;
+        let count = f.ty(&store).results().len();
+        Ok::<_, wasmtime::Error>((f, count))
+    })?;
+    let mut results = vec![Val::Bool(false); count];
+    f.call_concurrent(accessor, params, &mut results).await?;
+    Ok(results)
 }
 
 /// Finds `interface`'s function `name` among `instance`'s exports.
@@ -1310,17 +1375,18 @@ async fn forward_peer(
     Ok(())
 }
 
-/// The program's exported view of an interface an extension imports:
-/// the served resource, `create`, the methods, and the interface's own
-/// resources with theirs. Checks the extension's functions against the
-/// methods, and returns the served resource's name.
+/// The program's export `export` as the view of the extension's import
+/// `import`, which the program serves: every resource the extension's
+/// interface declares, paired by name, and one resource of the
+/// program's own whose methods are the extension's functions. Returns
+/// that resource's name and type; the plugin kind vends it.
 fn check_served(
     engine: &Engine,
     program: &Component,
     import: &str,
     import_ty: &InterfaceType,
     export: &str,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<(String, ResourceType), String> {
     let Some(ComponentItem::ComponentInstance(export_ty)) =
         program.component_type().get_export(engine, export).map(|e| e.ty)
     else {
@@ -1349,20 +1415,6 @@ fn check_served(
         ));
     };
     let exported = functions(engine, &export_ty);
-    let factory = format!("[static]{resource}.create");
-    let Some((_, create)) = exported.iter().find(|(n, _)| *n == factory) else {
-        return Err(format!(
-            "{import} is bound to {export}, whose {resource} must declare \
-             create: static func(extension: u32) -> own<{resource}>"
-        ));
-    };
-    let create_ok = params_of(create) == vec![Type::U32]
-        && create.results().collect::<Vec<_>>() == vec![Type::Own(resource_ty.clone())];
-    if !create_ok {
-        return Err(format!(
-            "{export}'s {resource}.create must be static func(extension: u32) -> own<{resource}>"
-        ));
-    }
     let own: Vec<ResourceType> = theirs.iter().map(|(_, r)| r.clone()).collect();
     for (fname, f) in functions(engine, import_ty) {
         if is_identityless(&fname) {
@@ -1402,7 +1454,89 @@ fn check_served(
             ));
         }
     }
-    Ok(resource.clone())
+    Ok((resource.clone(), resource_ty.clone()))
+}
+
+/// A served view of the extension's import, before the kind is checked.
+struct View {
+    import: String,
+    export: String,
+    resource: String,
+    resource_ty: ResourceType,
+}
+
+/// The program's plugin kind `kind`: an exported resource of that name,
+/// with `create: static func(token: u32) -> own<kind>` and, for each
+/// served view, a method of no parameters returning that view's own
+/// resource. Returns the export the kind is in and the vendor of each
+/// view, by the import's name.
+fn check_kind(
+    engine: &Engine,
+    program: &Component,
+    kind: &str,
+    views: &[View],
+) -> std::result::Result<(String, HashMap<String, String>), String> {
+    let ty = program.component_type();
+    let mut found: Option<(String, InterfaceType, ResourceType)> = None;
+    for (name, e) in ty.exports(engine) {
+        if is_host_interface(name) {
+            continue;
+        }
+        let ComponentItem::ComponentInstance(iface) = e.ty else {
+            continue;
+        };
+        let Some((_, r)) = resources(engine, &iface)
+            .into_iter()
+            .find(|(n, _)| n == kind)
+        else {
+            continue;
+        };
+        if found.is_some() {
+            return Err(format!(
+                "this program exports a resource {kind} in two interfaces; a plugin kind's \
+                 name must be unique"
+            ));
+        }
+        found = Some((name.to_string(), iface, r));
+    }
+    let Some((export, iface, kind_ty)) = found else {
+        return Err(format!(
+            "this program exports no resource {kind}, the plugin kind the load names"
+        ));
+    };
+    let funcs = functions(engine, &iface);
+    let factory = format!("[static]{kind}.create");
+    let shape = format!("create: static func(token: u32) -> own<{kind}>");
+    let Some((_, create)) = funcs.iter().find(|(n, _)| *n == factory) else {
+        return Err(format!("{export}'s {kind} must declare {shape}"));
+    };
+    let create_ok = params_of(create) == vec![Type::U32]
+        && create.results().collect::<Vec<_>>() == vec![Type::Own(kind_ty.clone())];
+    if !create_ok {
+        return Err(format!("{export}'s {kind}.create must be {shape}"));
+    }
+    let prefix = format!("[method]{kind}.");
+    let mut vendors = HashMap::new();
+    for view in views {
+        let vendor = funcs.iter().find(|(n, f)| {
+            n.starts_with(&prefix)
+                && params_of(f) == vec![Type::Borrow(kind_ty.clone())]
+                && f.results().collect::<Vec<_>>() == vec![Type::Own(view.resource_ty.clone())]
+        });
+        match vendor {
+            Some((n, _)) => {
+                vendors.insert(view.import.clone(), n.clone());
+            }
+            None => {
+                return Err(format!(
+                    "imports {}, which plugin kind {kind} does not vend: no method of {kind} \
+                     returns own<{}> of {}",
+                    view.import, view.resource, view.export
+                ));
+            }
+        }
+    }
+    Ok((export, vendors))
 }
 
 /// An extension's import against another extension's export: the same
@@ -1759,13 +1893,14 @@ fn serve(
     rt.block_on(async {
         let prepared = prepare(&request, calls.clone()).await;
         let (alive, mut dropped) = oneshot::channel::<()>();
-        let (state, live, served, component) = match prepared {
+        let (state, live, served, plugin, component) = match prepared {
             Ok(Prepared {
                 loaded: state,
                 live,
                 served,
+                plugin,
                 component,
-            }) => (state, live, served, component),
+            }) => (state, live, served, plugin, component),
             Err(message) => {
                 let _ = loaded.send(Err(message));
                 return;
@@ -1776,6 +1911,7 @@ fn serve(
             _alive: alive,
             component,
             served,
+            plugin,
         }));
         let shared: Shared = Default::default();
         let mut live = Some(live);
@@ -1893,6 +2029,7 @@ struct Prepared {
     loaded: Loaded,
     live: Live,
     served: HashMap<String, Arc<Served>>,
+    plugin: Option<Arc<Plugin>>,
     component: Component,
 }
 
@@ -1929,7 +2066,7 @@ async fn prepare(
     // component's imports are fixed by its type, so an interface the
     // linker could serve beyond them is out of its reach.
     let mut linker = linker(&engine).map_err(|e| format!("{e:#}"))?;
-    let served = bind_imports(&mut linker, &engine, request, &child).map_err(at)?;
+    let (served, plugin) = bind_imports(&mut linker, &engine, request, &child).map_err(at)?;
     let pre = linker
         .instantiate_pre(&child)
         .map_err(|e| format!("{}: {e:#}", path.display()))?;
@@ -1951,6 +2088,7 @@ async fn prepare(
         loaded,
         live,
         served,
+        plugin,
         component: child,
     })
 }
@@ -1958,13 +2096,14 @@ async fn prepare(
 /// Resolves every import of `child` through the request's bindings,
 /// checks it, and defines the forwarders and proxies the program-served
 /// and extension-served ones need. Returns what the program serves, by
-/// the import's name.
+/// the import's name, and the program's object for the extension when
+/// it serves anything.
 fn bind_imports(
     linker: &mut Linker<ComponentState>,
     engine: &Engine,
     request: &LoadRequest,
     child: &Component,
-) -> std::result::Result<HashMap<String, Arc<Served>>, String> {
+) -> std::result::Result<(HashMap<String, Arc<Served>>, Option<Arc<Plugin>>), String> {
     let program_exports: Vec<String> = request
         .caller
         .component_type()
@@ -1974,7 +2113,7 @@ fn bind_imports(
         })
         .map(|(name, _)| name.to_string())
         .collect();
-    let mut served = HashMap::new();
+    let mut views: Vec<View> = Vec::new();
     let ty = child.component_type();
     for (name, import) in ty.imports(engine) {
         let ComponentItem::ComponentInstance(iface) = import.ty else {
@@ -2007,15 +2146,14 @@ fn bind_imports(
                 }
             }
             Source::Program(export) => {
-                let resource = check_served(engine, &request.caller, name, &iface, &export)?;
-                served.insert(
-                    name.to_string(),
-                    Arc::new(Served {
-                        export,
-                        resource,
-                        object: Mutex::new(None),
-                    }),
-                );
+                let (resource, resource_ty) =
+                    check_served(engine, &request.caller, name, &iface, &export)?;
+                views.push(View {
+                    import: name.to_string(),
+                    export,
+                    resource,
+                    resource_ty,
+                });
                 let mut li = linker.instance(name).map_err(|e| format!("{e:#}"))?;
                 for (rname, _) in resources(engine, &iface) {
                     define_proxy(&mut li, &rname).map_err(|e| format!("{e:#}"))?;
@@ -2067,7 +2205,38 @@ fn bind_imports(
             }
         }
     }
-    Ok(served)
+    if views.is_empty() {
+        return Ok((HashMap::new(), None));
+    }
+    let Some(plugin_ref) = &request.plugin else {
+        return Err(format!(
+            "imports {}, which this program serves, so the load needs a plugin object: the \
+             program's object for the extension, of a plugin kind that vends the interface",
+            views[0].import
+        ));
+    };
+    let (export, vendors) = check_kind(engine, &request.caller, &plugin_ref.kind, &views)?;
+    let plugin = Arc::new(Plugin {
+        export,
+        resource: plugin_ref.kind.clone(),
+        token: plugin_ref.token,
+        object: Mutex::new(None),
+    });
+    let mut served = HashMap::new();
+    for view in views {
+        let vendor = vendors[&view.import].clone();
+        served.insert(
+            view.import,
+            Arc::new(Served {
+                export: view.export,
+                resource: view.resource,
+                object: Mutex::new(None),
+                vendor,
+                plugin: plugin.clone(),
+            }),
+        );
+    }
+    Ok((served, Some(plugin)))
 }
 
 // ============================================================================
@@ -2368,6 +2537,7 @@ impl ComponentState {
         path: String,
         imports: Imports,
         options: extensions::LoadOptions,
+        plugin: Option<PluginRef>,
     ) -> Result<std::result::Result<Pending, String>> {
         let grant = self.extensions_granted()?;
         let Some(host_path) = translate(&path, &grant.path_map) else {
@@ -2420,6 +2590,7 @@ impl ComponentState {
             debug: options.debug || grant.debug,
             caller,
             peers,
+            plugin,
         };
         self.extensions.push(None);
         let (tx, loaded) = oneshot::channel();
@@ -2454,8 +2625,13 @@ async fn load_extension(
     path: String,
     imports: Imports,
     options: extensions::LoadOptions,
+    plugin: Option<extensions::PluginRef>,
 ) -> Result<std::result::Result<u32, String>> {
-    let pending = accessor.with(|mut a| a.get().start_load(path, imports, options))?;
+    let plugin = plugin.map(|p| PluginRef {
+        kind: p.kind,
+        token: p.token,
+    });
+    let pending = accessor.with(|mut a| a.get().start_load(path, imports, options, plugin))?;
     let Pending { index, loaded } = match pending {
         Ok(pending) => pending,
         Err(message) => return Ok(Err(message)),
@@ -2521,20 +2697,22 @@ impl extensions::HostWithStore<ComponentState> for wasmtime::component::HasSelf<
         path: String,
         bindings: Vec<extensions::Binding>,
         options: extensions::LoadOptions,
+        plugin: Option<extensions::PluginRef>,
     ) -> Result<std::result::Result<u32, String>> {
         let bound = bindings
             .into_iter()
             .map(|b| (b.name, b.served_by.into()))
             .collect();
-        load_extension(accessor, path, Imports::Bound(bound), options).await
+        load_extension(accessor, path, Imports::Bound(bound), options, plugin).await
     }
 
     async fn load_trusted(
         accessor: &Accessor<ComponentState, Self>,
         path: String,
         options: extensions::LoadOptions,
+        plugin: Option<extensions::PluginRef>,
     ) -> Result<std::result::Result<u32, String>> {
-        load_extension(accessor, path, Imports::Trusted, options).await
+        load_extension(accessor, path, Imports::Trusted, options, plugin).await
     }
 
     /// Drops the extension, and the objects the program made for it
@@ -2556,6 +2734,12 @@ impl extensions::HostWithStore<ComponentState> for wasmtime::component::HasSelf<
         };
         for served in taken.served.values() {
             let object = served.object.try_lock().ok().and_then(|mut o| o.take());
+            if let Some(any) = object {
+                host.spawn(DropOwn { any })?;
+            }
+        }
+        if let Some(plugin) = &taken.plugin {
+            let object = plugin.object.try_lock().ok().and_then(|mut o| o.take());
             if let Some(any) = object {
                 host.spawn(DropOwn { any })?;
             }
