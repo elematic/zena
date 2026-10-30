@@ -119,7 +119,7 @@ jobs:
       # three binaries and their links) took about two minutes of every run.
       # This cache keeps them, keyed by their sources, and falls back to the
       # newest entry; the key also covers this file, so a change to the paths
-      # above saves a new entry. scripts/ci-cargo-freshness.sh then gives each
+      # above saves a new entry. scripts/ci-cargo-freshness.py then gives each
       # source whose content matches the cached build the modification time
       # it had when that build compiled it, so cargo reuses what was compiled
       # from it and recompiles what a change reaches. Only main saves an
@@ -129,11 +129,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.WORKSPACE_CRATES }}
-          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.sh', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
+          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
           restore-keys: rust-workspace-${{ runner.os }}-
 
       - name: Restore the Rust sources' times from the cached build
-        run: scripts/ci-cargo-freshness.sh restore
+        run: python3 scripts/ci-cargo-freshness.py restore
 
       # Every Rust crate depends on packages/workspace-hack, which gives
       # them one set of features for the dependencies they share, so the
@@ -196,7 +196,7 @@ jobs:
 
       - name: Record the Rust sources this build compiled
         if: github.ref == 'refs/heads/main' && steps.workspace-crates.outputs.cache-hit != 'true'
-        run: scripts/ci-cargo-freshness.sh record
+        run: python3 scripts/ci-cargo-freshness.py record
 
       - name: Save the workspace crates
         if: github.ref == 'refs/heads/main' && steps.workspace-crates.outputs.cache-hit != 'true'

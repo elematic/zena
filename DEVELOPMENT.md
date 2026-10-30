@@ -81,7 +81,7 @@ has more, including how to check that the binaries share their build.
 The GitHub workflow (`.github/workflows/test.yml`) runs `npm test` in the
 dev shell. It restores three caches, so a run rebuilds only what its change
 reaches: the Rust dependencies (rust-cache), the workspace crates' own
-build, which `scripts/ci-cargo-freshness.sh` lets cargo reuse, and wireit's
+build, which `scripts/ci-cargo-freshness.py` lets cargo reuse, and wireit's
 script results.
 
 `nix flake check` builds the whole monorepo hermetically in the Nix
