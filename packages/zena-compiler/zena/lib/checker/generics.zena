@@ -6,7 +6,7 @@ import {
   F32Type, F64Type, FunctionType, I16Type, I32Type, I64Type, I8Type,
   InlineParamType, InlineTupleType as InlineTupleT, InterfaceType, MixinType,
   NumLiteralType, RecordType as RecordT, StringLiteralType, ThisType,
-  TupleType as TupleT, Type, TypeAliasType, TypeParameterType, U16Type,
+  TupleType as TupleT, Type, TypeAliasType, TypeId, TypeParameterType, U16Type,
   U32Type, U64Type, U8Type, UnionType as UnionT, applyTypeIntrinsic,
   inlineOf, instantiateClassType, instantiateFunctionType,
   instantiateInterfaceType, instantiateMixinType, instantiateTypeAliasType,
@@ -813,7 +813,7 @@ export function instantiateGenericClass(
   // signature afterwards, so this inference pass leaves the flow where
   // it found it (see the call pre-pass for why that matters).
   let preInferFlow = ctx.currentFlow;
-  let inferred = new Map<String, Type>();
+  let inferred = new Map<TypeParameterType, Type>();
   if (ctor != null) {
     var ai = 0;
     while (ai < args.length && ai < ctor.parameters.length) {
@@ -837,8 +837,7 @@ export function instantiateGenericClass(
   // Build typeArguments array from inferred map.
   let typeArgs = new Array<Type>();
   for (let param in typeParams) {
-    let paramName = param.name;
-    if (let (true, t) = inferred.get(paramName)) {
+    if (let (true, t) = inferred.get(param)) {
       typeArgs.push(t);
     } else {
       // No inference possible; use unknown.
@@ -869,7 +868,7 @@ export function instantiateGenericClass(
  * Only what the arguments left open is filled in: inferTypeArg keeps
  * the first answer for a parameter.
  */
-export function inferTypeArgsFromContext(self: Type, expected: Type, inferred: HashMap<String, Type>): void {
+export function inferTypeArgsFromContext(self: Type, expected: Type, inferred: HashMap<TypeParameterType, Type>): void {
   match (unwrapAliases(expected)) {
     case UnionT {types}: {
       for (let m in types) {
@@ -877,12 +876,11 @@ export function inferTypeArgsFromContext(self: Type, expected: Type, inferred: H
       }
     }
     case InterfaceType as ei: {
-      let name = (ei.genericSource ?? ei).name;
       var matched: InterfaceType | null = null;
       if (self is ClassType) {
-        matched = findImplementedInterfaceTransitiveInChecker(self, name);
+        matched = findImplementedInterfaceTransitiveInChecker(self, ei);
       } else if (self is InterfaceType) {
-        matched = findExtendedInterfaceTransitive(self, name);
+        matched = findExtendedInterfaceTransitive(self, ei);
       }
       if (matched != null) {
         inferTypeArgsPairwise(matched.typeArguments, ei.typeArguments, inferred);
@@ -906,7 +904,7 @@ export function inferTypeArgsFromContext(self: Type, expected: Type, inferred: H
 function inferTypeArgsPairwise(
   fromArgs: Array<Type> | null,
   toArgs: Array<Type> | null,
-  inferred: HashMap<String, Type>
+  inferred: HashMap<TypeParameterType, Type>
 ): void {
   if (fromArgs == null || toArgs == null) {
     return;
@@ -918,19 +916,23 @@ function inferTypeArgsPairwise(
   }
 }
 
+/** Whether `a` and `b` are instantiations of one interface declaration. */
+export function sameInterfaceDeclaration(a: InterfaceType, b: InterfaceType): boolean {
+  return (a.genericSource ?? a).id == (b.genericSource ?? b).id;
+}
+
 /**
- * The interface named `name` among those `it` extends, transitively, at
- * `it`'s type arguments; `it` itself when it is that interface.
+ * The instantiation of `target`'s declaration among those `it` extends,
+ * transitively, at `it`'s type arguments; `it` itself when it is one.
  */
-function findExtendedInterfaceTransitive(it: InterfaceType, name: String): InterfaceType | null {
-  let itName = (it.genericSource ?? it).name;
-  if (itName == name) {
+function findExtendedInterfaceTransitive(it: InterfaceType, target: InterfaceType): InterfaceType | null {
+  if (sameInterfaceDeclaration(it, target)) {
     return it;
   }
   for (let ext in it.extendsList) {
     let resolved = substituteTypeParams(it.typeParameters, it.typeArguments, ext as Type);
     if (resolved is InterfaceType) {
-      let found = findExtendedInterfaceTransitive(resolved, name);
+      let found = findExtendedInterfaceTransitive(resolved, target);
       if (found != null) {
         return found;
       }
@@ -953,13 +955,13 @@ export function inferredArgumentType(argType: Type): Type {
   return argType;
 }
 
-export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<String, Type>): void {
+export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<TypeParameterType, Type>): void {
   match (paramType) {
-    case TypeParameterType {name}: {
+    case TypeParameterType as tp: {
       // Direct type parameter — infer from arg type. A type argument
       // is storage, so an inline argument infers its boxed form.
-      if (!inferred.has(name)) {
-        inferred[name] = boxedFormOf(argType);
+      if (!inferred.has(tp)) {
+        inferred[tp] = boxedFormOf(argType);
       }
     }
     case ArrayType {elementType}: {
@@ -977,21 +979,11 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<S
       // that takes an interface OF its own type parameter — which is
       // what `Array.from(seq: GrowableArray<T>)` is — inferred nothing, and
       // the call was then rejected against its own parameter.
-      let ptName = if (pt.genericSource != null) {
-        (pt.genericSource as InterfaceType).name
-      } else {
-        pt.name
-      };
       var matched: InterfaceType | null = null;
       if (argType is InterfaceType) {
-        let atName = if (argType.genericSource != null) {
-          (argType.genericSource as InterfaceType).name
-        } else {
-          argType.name
-        };
-        if (atName == ptName) { matched = argType; }
+        if (sameInterfaceDeclaration(argType, pt)) { matched = argType; }
       } else if (argType is ClassType) {
-        matched = findImplementedInterfaceTransitiveInChecker(argType, ptName);
+        matched = findImplementedInterfaceTransitiveInChecker(argType, pt);
       }
       if (matched != null) {
         let {typeArguments} = pt;
@@ -1038,7 +1030,7 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<S
           let row = pt.row;
           // From an existential the row is existential too: its fields
           // are not all known, which the row's constraint check reports.
-          if (row != null && !inferred.has(row.name)) {
+          if (row != null && !inferred.has(row)) {
             let rest = new Map<String, Type>();
             var restOptionals: HashSet<String> | null = null;
             for (let key in at.properties.keys()) {
@@ -1051,7 +1043,7 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<S
               }
             }
             let atRow = at.row;
-            inferred[row.name] = if (rest.size == 0 && atRow != null) {
+            inferred[row] = if (rest.size == 0 && atRow != null) {
               atRow
             } else {
               new RecordT(rest, restOptionals, atRow, at.isExistential)
@@ -1062,8 +1054,8 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<S
           // {...R} against a row parameter S → R = S.
           let row = pt.row;
           if (row != null && pt.properties.size == 0 && at.isRecordRow &&
-              !inferred.has(row.name)) {
-            inferred[row.name] = at;
+              !inferred.has(row)) {
+            inferred[row] = at;
           }
         }
         case _: {}
@@ -1095,7 +1087,7 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<S
             inferTypeArg(pt.elementTypes[before + i],
                 at.elementTypes[argLength - after + i], inferred);
           }
-          if (row != null && !inferred.has(row.name)) {
+          if (row != null && !inferred.has(row)) {
             let argRow = at.row;
             if (argRow != null &&
                 (at.rowIndex < before || at.rowIndex > argLength - after)) {
@@ -1105,7 +1097,7 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<S
             for (var i = before; i < argLength - after; i += 1) {
               middle.push(at.elementTypes[i]);
             }
-            inferred[row.name] = if (middle.length == 0 && argRow != null) {
+            inferred[row] = if (middle.length == 0 && argRow != null) {
               argRow
             } else if (argRow != null) {
               new TupleT(middle, argRow, at.rowIndex - before)
@@ -1118,8 +1110,8 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<S
           // (...R) against a row parameter S → R = S.
           let row = pt.row;
           if (row != null && pt.elementTypes.length == 0 && at.isTupleRow &&
-              !inferred.has(row.name)) {
-            inferred[row.name] = at;
+              !inferred.has(row)) {
+            inferred[row] = at;
           }
         }
         case _: {}
@@ -1190,37 +1182,16 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<S
   }
 }
 
-function inferTypeParameter(sourceType: Type, targetType: Type, tpName: String, inferred: HashMap<String, Type>): boolean {
-  if (sourceType is TypeParameterType && sourceType.name == tpName) {
-    inferred[tpName] = boxedFormOf(targetType);
-    return true;
-  }
-  if (sourceType is ArrayType) {
-    if (targetType is ArrayType) {
-      return inferTypeParameter(sourceType.elementType, targetType.elementType, tpName, inferred);
-    }
-  }
-  if (sourceType is ClassType) {
-    if (targetType is ClassType) {
-      let {typeArguments} = sourceType;
-      if (typeArguments != null && targetType.typeArguments != null) {
-        let sArgs = typeArguments;
-        let tArgs = targetType.typeArguments as Array<Type>;
-        if (sArgs.length == tArgs.length) {
-          var i = 0;
-          while (i < sArgs.length) {
-            if (inferTypeParameter(sArgs[i], tArgs[i], tpName, inferred)) {
-              return true;
-            }
-            i += 1;
-          }
-        }
-      }
-    }
-  }
-  return false;
-}
-
+/**
+ * A generic function type instantiated to fit the function type it is
+ * being compared with: each of `source`'s own type parameters is
+ * inferred from `target`'s parameter and return types, by the same
+ * walk a call's arguments are inferred through (`inferTypeArg`), so a
+ * parameter that appears only in a callback's return type, or in a
+ * class returned where the target returns an interface, is found. The
+ * source itself when it is not generic, or when some parameter stays
+ * open; the comparison then fails on that parameter.
+ */
 export function tryInstantiateGenericFunction(
   ctx: CheckerContext,
   source: Type,
@@ -1230,36 +1201,35 @@ export function tryInstantiateGenericFunction(
     let {typeParameters} = source;
     if (typeParameters != null && typeParameters.length > 0) {
       let tps = typeParameters;
-      let inferred = new Map<String, Type>();
+      let inferred = new Map<TypeParameterType, Type>();
+      var pIdx = 0;
+      while (pIdx < source.parameters.length && pIdx < target.parameters.length) {
+        inferTypeArg(source.parameters[pIdx], target.parameters[pIdx], inferred);
+        pIdx += 1;
+      }
+      inferTypeArg(source.returnType, target.returnType, inferred);
+      let typeArgs = new Array<Type>();
       for (let tp in tps) {
-        var found = false;
-        var pIdx = 0;
-        while (pIdx < source.parameters.length && !found) {
-          if (pIdx < target.parameters.length) {
-            if (inferTypeParameter(source.parameters[pIdx], target.parameters[pIdx], tp.name, inferred)) {
-              found = true;
-            }
-          }
-          pIdx += 1;
-        }
-        if (!found) {
-          inferTypeParameter(source.returnType, target.returnType, tp.name, inferred);
+        if (let (true, t) = inferred.get(tp)) {
+          typeArgs.push(t);
+        } else {
+          return source;
         }
       }
-      if (inferred.size == tps.length) {
-        let typeArgs = new Array<Type>();
-        for (let tp in tps) {
-          typeArgs.push(inferred[tp.name]);
-        }
-        return instantiateFunctionType(source, typeArgs);
-      }
+      return instantiateFunctionType(source, typeArgs);
     }
   }
   return source;
 }
 
-export function findImplementedInterfaceTransitiveInChecker(ct: ClassType, name: String): InterfaceType | null {
-  let seen = new Map<String, boolean>();
+/**
+ * The instantiation of `target`'s declaration that `ct` implements, at
+ * `ct`'s type arguments: through the class's own implements list, its
+ * superclasses', and every interface's transitive extends chain. The
+ * declaration is matched by identity, never by name.
+ */
+export function findImplementedInterfaceTransitiveInChecker(ct: ClassType, target: InterfaceType): InterfaceType | null {
+  let seen = new Set<TypeId>();
   let queue = new Array<InterfaceType>();
   
   for (let impl in ct.implementsList) {
@@ -1282,11 +1252,9 @@ export function findImplementedInterfaceTransitiveInChecker(ct: ClassType, name:
     let it = queue[head];
     head += 1;
     
-    let sourceName = if (it.genericSource != null) (it.genericSource as InterfaceType).name else it.name;
-    let key = `${sourceName}_${i32ToString(it.id as i32)}`;
-    if (!seen.has(key)) {
-      seen[key] = true;
-      if (sourceName == name) {
+    if (!seen.has(it.id)) {
+      seen.add(it.id);
+      if (sameInterfaceDeclaration(it, target)) {
         return it;
       }
       for (let ext in it.extendsList) {
@@ -1362,7 +1330,7 @@ export function instantiateGenericInterface(
 
   let ctor = it.constructors[ctorKey];
   let preInferFlow = ctx.currentFlow;
-  let inferred = new Map<String, Type>();
+  let inferred = new Map<TypeParameterType, Type>();
   var ai = 0;
   while (ai < args.length && ai < ctor.parameters.length) {
     let paramType = ctor.parameters[ai];
@@ -1381,8 +1349,7 @@ export function instantiateGenericInterface(
 
   let typeArgs = new Array<Type>();
   for (let param in typeParams) {
-    let paramName = param.name;
-    if (let (true, t) = inferred.get(paramName)) {
+    if (let (true, t) = inferred.get(param)) {
       typeArgs.push(t);
     } else {
       typeArgs.push(new ErrorType());

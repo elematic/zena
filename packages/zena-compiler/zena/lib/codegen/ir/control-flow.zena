@@ -33,8 +33,8 @@ import {
   WasmTag, asWasmArray, isValSubtype,
 } from '../wasm-module.zena';
 import {
-  eraseTypeParameters, findExtendedInterfaceTransitive,
-  findImplementedInterfaceTransitive, getNonNullableType,
+  eraseTypeParameters, findExtendedWellKnownInterface,
+  findImplementedWellKnownInterface, getNonNullableType,
   typeToValTypeWithSub, InlineLayout, inlineLayoutOf, iteratorInterfaceOf,
   stepInlineValue,
 } from '../type-mapping.zena';
@@ -3105,10 +3105,10 @@ export function lowerForInIterator(cx: LoweringContext, stmt: ForInStatement, it
   if (resolved is ClassType) {
     let ct = eraseTypeParameters(cx.wasm, resolved) as ClassType;
     let recv = lowerExprRaw(cx, stmt.iterable);
-    let iteratorIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterator');
-    let iterableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterable');
-    let asyncIteratorIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'AsyncIterator');
-    let asyncIterableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'AsyncIterable');
+    let iteratorIface = findImplementedWellKnownInterface(cx.wasm, ct, WellKnown.IteratorInterface);
+    let iterableIface = findImplementedWellKnownInterface(cx.wasm, ct, WellKnown.IterableInterface);
+    let asyncIteratorIface = findImplementedWellKnownInterface(cx.wasm, ct, WellKnown.AsyncIteratorInterface);
+    let asyncIterableIface = findImplementedWellKnownInterface(cx.wasm, ct, WellKnown.AsyncIterableInterface);
     if (iteratorIface != null) {
       // The iterable IS an iterator: no :iterator call.
       iter = cx.packInterface(recv, ct, iteratorIface);
@@ -3135,12 +3135,12 @@ export function lowerForInIterator(cx: LoweringContext, stmt: ForInStatement, it
         resolved.sourcePath)) {
       iter = recv;
       protocol = resolved;
-    } else if (findExtendedInterfaceTransitive(cx.wasm, resolved, 'Iterable') != null) {
+    } else if (findExtendedWellKnownInterface(cx.wasm, resolved, WellKnown.IterableInterface) != null) {
       iter = cx.slotCallSingle(recv, ':iterator');
-      protocol = findExtendedInterfaceTransitive(cx.wasm, resolved, 'Iterable');
-    } else if (findExtendedInterfaceTransitive(cx.wasm, resolved, 'AsyncIterable') != null) {
+      protocol = findExtendedWellKnownInterface(cx.wasm, resolved, WellKnown.IterableInterface);
+    } else if (findExtendedWellKnownInterface(cx.wasm, resolved, WellKnown.AsyncIterableInterface) != null) {
       iter = cx.slotCallSingle(recv, ':asyncIterator');
-      protocol = findExtendedInterfaceTransitive(cx.wasm, resolved, 'AsyncIterable');
+      protocol = findExtendedWellKnownInterface(cx.wasm, resolved, WellKnown.AsyncIterableInterface);
     } else {
       bail(cx, 'for-in iterable kind');
     }

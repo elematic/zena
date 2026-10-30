@@ -14,12 +14,13 @@ import {
 } from '../ast.zena';
 import {
   ArrayType, ClassType, ErrorType, FieldInfo, FunctionType,
-  InlineTupleType as InlineTupleT, NeverType, NullType,
+  InlineTupleType as InlineTupleT, InterfaceType, NeverType, NullType,
   RecordType as RecordT, Type, VoidType, isScopedType, isSecondClass,
   scopedInner, typeCarriesOwner, typeToString, forInLowersToIndexLoop
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
+import { WellKnown } from '../well-known.zena';
 import { Symbol } from '../scope/symbol.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
 import { boxedFormOf, resolveTypeAnnotation } from './annotations.zena';
@@ -829,15 +830,21 @@ case _: {
           !forInLowersToIndexLoop(baseT)) {
         // The synchronous protocol's interfaces, or — for a `for await`
         // over a class that has only the asynchronous one — its.
-        let iterableName = if (protocol.isAsync) "AsyncIterable" else "Iterable";
-        let iteratorName = if (protocol.isAsync) "AsyncIterator" else "Iterator";
-        let iterableIface = findImplementedInterfaceTransitiveInChecker(baseT, iterableName);
-        if (iterableIface != null) {
-          checkAndRegisterInterfaceAdaptation(ctx, iterable, baseT, iterableIface);
+        let iterableW = if (protocol.isAsync) WellKnown.AsyncIterableInterface else WellKnown.IterableInterface;
+        let iteratorW = if (protocol.isAsync) WellKnown.AsyncIteratorInterface else WellKnown.IteratorInterface;
+        let iterableProtocol = ctx.tryResolveWellKnownType(iterableW);
+        if (iterableProtocol is InterfaceType) {
+          let iterableIface = findImplementedInterfaceTransitiveInChecker(baseT, iterableProtocol);
+          if (iterableIface != null) {
+            checkAndRegisterInterfaceAdaptation(ctx, iterable, baseT, iterableIface);
+          }
         }
-        let iteratorIface = findImplementedInterfaceTransitiveInChecker(baseT, iteratorName);
-        if (iteratorIface != null) {
-          checkAndRegisterInterfaceAdaptation(ctx, iterable, baseT, iteratorIface);
+        let iteratorProtocol = ctx.tryResolveWellKnownType(iteratorW);
+        if (iteratorProtocol is InterfaceType) {
+          let iteratorIface = findImplementedInterfaceTransitiveInChecker(baseT, iteratorProtocol);
+          if (iteratorIface != null) {
+            checkAndRegisterInterfaceAdaptation(ctx, iterable, baseT, iteratorIface);
+          }
         }
       }
       // A `for await` over an asynchronous iterator suspends on a Pending

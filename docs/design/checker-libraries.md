@@ -207,24 +207,43 @@ which a program declares the borrowed name.
   could stand in for the protocol. They take a `WellKnown` and check
   the identity.
 
-Still open:
-
-- Type-argument inference keyed by parameter _name_
-  (`HashMap<String, Type>` in `inferTypeArg`, `inferTypeParameter`,
-  `instantiateGenericClass`, `instantiateGenericInterface`,
-  `tryInstantiateGenericFunction`, `collectPatternInstantiations`), so
-  two parameters called `T` in scope at once share one slot.
+- Type-argument inference keyed its map by the parameter's _name_
+  (`HashMap<String, Type>` in `inferTypeArg`, `instantiateGenericClass`,
+  `instantiateGenericInterface`, `tryInstantiateGenericFunction`,
+  `collectPatternInstantiations` and the call checker). The map is
+  keyed by the `TypeParameterType`, the object substitution already
+  matches by identity.
 - Interfaces matched by name in `inferTypeArg`,
   `inferTypeArgsFromContext`, `findExtendedInterfaceTransitive` and
   `findImplementedInterfaceTransitiveInChecker`, and in codegen's
-  `findImplementedInterfaceTransitive`; the for-in arm of
-  `checkStatement` and reachability's `rootIterationProtocol` pass
-  the strings `"Iterable"` and `"AsyncIterable"` into them.
+  `findImplementedInterfaceTransitive` and
+  `findExtendedInterfaceTransitive`, which lowering, reachability and
+  template conversion fed the strings `"Iterator"`, `"Iterable"`,
+  `"AsyncIterator"`, `"AsyncIterable"` and `"Stringable"`. The
+  checker's take the interface type and match its declaration
+  (`sameInterfaceDeclaration`); codegen's are
+  `findImplementedWellKnownInterface`, `findImplementedInterfaceType`
+  and `findExtendedWellKnownInterface`. A class implementing the
+  standard library's `Iterable` and an interface that happened to be
+  called `Iterator` was lowered as an iterator and failed; one
+  implementing `Stringable` beside an interface of that name
+  converted to `<Point>`.
 - `typesEqual` comparing type parameters, type aliases and mixins by
-  name; `isAssignableTo` comparing two distinct aliases by name;
-  `mergeHandleMembers` grouping handles by alias name.
+  name, and `isAssignableTo` two distinct aliases by name, so two
+  modules' `distinct type Meters = i32` were one type. Parameters are
+  the same only as the same object, mixins by declaration and
+  arguments, aliases by name and declaring module
+  (`sameAliasDeclaration`). `mergeHandleMembers` still groups handles
+  by alias name, which is sound: every member it groups has passed
+  `isOwnershipWrapper`.
+
 - `isStaticReceiver` deciding an import names a type by scanning
-  every dependency's exports for the imported name.
+  every dependency's exports for the imported name, so an imported
+  instance called `Config` was a static receiver whenever some other
+  dependency exported a class called `Config`, and `Config.size` was
+  "Cannot access instance member". It judges the declaration the import
+  resolves to, and now answers for interfaces and mixins too, which
+  `namesDeclaredType` used to add for local declarations only.
 - `extractFutureValueType` goes through `isFutureClassType`, which is
   the right identity test; the comment explains why the well-known
   table cannot serve inside `zena:async` itself.
@@ -264,6 +283,28 @@ Fixed with the split, each with a portable test seen failing first:
   demand an imported `Own`, and a synthesized WIT module that had not
   imported it was handed the bare class and so never took the resource
   path. Constructing a resource no longer requires importing `Own`.
+- `hasSameSignature` and `signaturesMayOverlap` compared two generic
+  methods' parameter types directly, so `measure<T>(tag: T)` was the
+  same signature as an inherited `measure<T>(tag: T)` only because
+  both spelled `T`. `alignTypeParameters` renames one method's
+  parameters into the other's, position by position, before either
+  comparison; the override of a generic method, and the array classes'
+  `fold<R>` against `Iterable`'s, depend on it.
+- A mis-restated interface constructor (`new swapped<V, K>` on
+  `Table<K, V>`) had its own parameters replaced by the interface's,
+  so its body's `HashTable<K, V>` was then compared with a
+  `Table<K, V>` over different objects and reported again at every
+  return. Its
+  result is the interface at the parameters its restatement declared,
+  each standing where the interface's parameter of that name stands.
+- `tryInstantiateGenericFunction` inferred a generic method's
+  parameter only through a bare parameter, an array or a class, so
+  `map<U>` on the array classes, whose `U` appears in a callback's
+  return type and in a `FixedArray<U>` returned where `Array<U>` is
+  expected, was never instantiated; the comparison passed because
+  both sides spelled `U`, and a class spelling it `V` was rejected.
+  Comparing parameters by identity exposed it. The instantiation
+  infers through `inferTypeArg`, the walk a call's arguments use.
 - Whether a field read was wrapped in `Borrow` depended on whether the
   file had imported `Borrow`, since `borrowWrapFieldRead` and
   `wrapResourceInBorrow` found the handle by name and did nothing when
@@ -348,16 +389,16 @@ allocation history, so a layout change can move 700 ms between the
 phases; the run-to-run spread is then under 1%.
 
 With that setting, on an idle machine, before and after the split, and
-after the name-to-identity step (on a loaded machine):
+after each of the two name-to-identity PRs (on a loaded machine):
 
-| fixture            | phase          | before (ms) | split (ms) | identity (ms) |
-| ------------------ | -------------- | ----------- | ---------- | ------------- |
-| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          |
-| portable-semantics | scope          | 135.6       | 137.5      | 127.0         |
-| portable-semantics | check          | 246.8       | 256.2      | 248.0         |
-| portable-semantics | check-register | 22.5        | 30.2       | 30.6          |
-| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         |
-| portable-semantics | total          | 4110        | 4179       | 4104          |
+| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) |
+| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- |
+| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           |
+| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          |
+| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          |
+| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           |
+| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          |
+| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           |
 
 `portable-semantics` compiles `zena/test/portable_semantics.zena`,
 which imports the compiler, so it is the one fixture whose input the
@@ -381,9 +422,9 @@ Each step is one PR, lands green on `npm test`, and keeps
    release rooting, overload candidates, the nullable strip, the
    static/instance check, accessor bodies, index selection.
 4. **Name to identity.** The #288 sites above, each with a test where
-   a user type borrows the name. The well-known and own-declaration
-   sites are done; inference and interface matching by identity, and
-   `typesEqual`, are next.
+   a user type borrows the name. Done, in two PRs: the well-known and
+   own-declaration sites, then inference, interface matching,
+   `typesEqual` and `isStaticReceiver`.
 5. **Condition narrowing.** One subject type (binding or path), one
    pass per condition producing both branches' narrowings, no
    re-checking of the subject.

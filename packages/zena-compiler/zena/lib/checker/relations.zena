@@ -996,7 +996,7 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
           }
           case TypeAliasType as tgtAlias: {
             if (tgtAlias.isDistinct) {
-              return srcAlias.name == tgtAlias.name && isAssignableTo(ctx, srcAlias.target, tgtAlias.target);
+              return sameAliasDeclaration(srcAlias, tgtAlias) && isAssignableTo(ctx, srcAlias.target, tgtAlias.target);
             }
           }
           case _: {}
@@ -1387,6 +1387,15 @@ function tupleElementsEqual(ea: Array<Type>, eb: Array<Type>): boolean {
 /**
  * Check if two types are structurally equal.
  */
+/**
+ * Whether two alias types come from one `type` declaration: the same
+ * name in the same module. A synthesized alias has no module and
+ * matches by name alone.
+ */
+export function sameAliasDeclaration(a: TypeAliasType, b: TypeAliasType): boolean {
+  return a.name == b.name && a.declaringModule == b.declaringModule;
+}
+
 export function typesEqual(a: Type, b: Type): boolean {
   if (a === b) { return true; }
   if (a is TypeAliasType && !(b is TypeAliasType)) {
@@ -1485,9 +1494,10 @@ export function typesEqual(a: Type, b: Type): boolean {
         case _: false
       }
     }
-    case TypeParameterType {name as na}: {
-      if (let TypeParameterType {name as nb} = b) na == nb else false
-    }
+    // One object per declaration (getOrCreateTypeParameter), so two
+    // parameters are the same parameter only when they are the same
+    // object; a `T` of one function is not a `T` of another.
+    case TypeParameterType: false
     case ArrayType {elementType as ea, elementsMutable as ma}: {
       if (let ArrayType {elementType as eb, elementsMutable as mb} = b) {
         ma == mb && typesEqual(ea, eb)
@@ -1556,7 +1566,18 @@ export function typesEqual(a: Type, b: Type): boolean {
     }
     case MixinType as ma: {
       match (b) {
-        case MixinType as mb: ma.name == mb.name
+        case MixinType as mb: {
+          if ((ma.genericSource ?? ma) !== (mb.genericSource ?? mb)) { return false; }
+          if (ma.typeArguments == null && mb.typeArguments == null) { return true; }
+          if (ma.typeArguments == null || mb.typeArguments == null) { return false; }
+          let argsA = ma.typeArguments as Array<Type>;
+          let argsB = mb.typeArguments as Array<Type>;
+          if (argsA.length != argsB.length) { return false; }
+          for (var i = 0; i < argsA.length; i += 1) {
+            if (!typesEqual(argsA[i], argsB[i])) { return false; }
+          }
+          true
+        }
         case _: false
       }
     }
@@ -1568,9 +1589,12 @@ export function typesEqual(a: Type, b: Type): boolean {
     }
     case ThisType: b is ThisType
     case TypeAliasType as ta: {
+      // An instantiation is a fresh object, so two aliases are the same
+      // declaration by name and declaring module, as an enum is; two
+      // modules' `Id` aliases are two aliases.
       match (b) {
         case TypeAliasType as tb: {
-          if (ta.name != tb.name) {
+          if (!sameAliasDeclaration(ta, tb)) {
             return false;
           }
           if (ta.typeArguments == null && tb.typeArguments == null) {

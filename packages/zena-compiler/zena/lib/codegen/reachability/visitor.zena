@@ -28,7 +28,7 @@ import {
   getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, findExtendedInterfaceTransitive, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType,
+  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedWellKnownInterface, findImplementedInterfaceType, findExtendedWellKnownInterface, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType,
 } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -2080,7 +2080,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
         }
 
-        let specializedIterable = findImplementedInterfaceTransitive(this.pass.wasm, resolvedClass, iterableIface.name);
+        let specializedIterable = findImplementedInterfaceType(this.pass.wasm, resolvedClass, iterableIface);
         if (specializedIterable != null) {
           typeLowerer.discoverType(specializedIterable, model);
         }
@@ -2354,9 +2354,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (isWellKnown(WellKnown.StringClass, bt.name, bt.sourcePath)) {
         return;
       }
-      let stringableIface = findImplementedInterfaceTransitive(this.pass.wasm, bt, "Stringable");
-      if (stringableIface != null &&
-          isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
+      let stringableIface = findImplementedWellKnownInterface(this.pass.wasm, bt, WellKnown.StringableInterface);
+      if (stringableIface != null) {
         let ccModel = this.pass.getClassModel(bt);
         let mds = this.pass.cha.findImplementingMethods(bt, ":toString");
         for (let md in mds) {
@@ -2373,9 +2372,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         this.noteStringLiteral(`<${bt.name}>`);
       }
     } else if (bt is InterfaceType) {
-      let stringableIface = findExtendedInterfaceTransitive(this.pass.wasm, bt, "Stringable");
-      if (stringableIface != null &&
-          isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
+      let stringableIface = findExtendedWellKnownInterface(this.pass.wasm, bt, WellKnown.StringableInterface);
+      if (stringableIface != null) {
         this.pass.demandInterfaceMember(bt, ":toString");
         this.pass.demandInterfaceMember(stringableIface, ":toString");
       } else {
@@ -3004,8 +3002,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let syncClasses = new Array<ClassType>();
             let asyncClasses = new Array<ClassType>();
             for (let rc in protocolClasses) {
-              if (findImplementedInterfaceTransitive(this.pass.wasm, rc, "Iterator") != null ||
-                  findImplementedInterfaceTransitive(this.pass.wasm, rc, "Iterable") != null) {
+              if (findImplementedWellKnownInterface(this.pass.wasm, rc, WellKnown.IteratorInterface) != null ||
+                  findImplementedWellKnownInterface(this.pass.wasm, rc, WellKnown.IterableInterface) != null) {
                 syncClasses.push(rc);
               } else {
                 asyncClasses.push(rc);
@@ -3014,8 +3012,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             var rootSync = protocolClasses.length == 0 || syncClasses.length > 0;
             var rootAsync = n.isAwait && (protocolClasses.length == 0 || asyncClasses.length > 0);
             if (resolvedIterable is InterfaceType) {
-              rootSync = findExtendedInterfaceTransitive(this.pass.wasm, resolvedIterable, "Iterable") != null ||
-                  findExtendedInterfaceTransitive(this.pass.wasm, resolvedIterable, "Iterator") != null;
+              rootSync = findExtendedWellKnownInterface(this.pass.wasm, resolvedIterable, WellKnown.IterableInterface) != null ||
+                  findExtendedWellKnownInterface(this.pass.wasm, resolvedIterable, WellKnown.IteratorInterface) != null;
               rootAsync = !rootSync;
             }
             if (rootSync) {

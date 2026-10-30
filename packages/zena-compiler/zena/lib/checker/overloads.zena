@@ -2,7 +2,7 @@ import { growable } from 'zena:core';
 import { Expression, SourceLocation } from '../ast.zena';
 import {
   ClassType, FunctionType, InterfaceType, Type, TypeParameterType,
-  UnionType as UnionT
+  UnionType as UnionT, instantiateFunctionType
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { CheckerContext } from './context.zena';
@@ -85,12 +85,36 @@ export function collectApplicableOperatorOverloads(
 // ============================================================================
 // Class & Interface Checking
 // ============================================================================
+/**
+ * `a` with its own type parameters replaced by `b`'s, position by
+ * position, when both are generic over the same number of parameters;
+ * `a` itself otherwise. Two generic methods have the same signature
+ * when they agree up to the names of their parameters — `measure<T>(tag:
+ * T)` overrides `measure<U>(tag: U)` — and a parameter is the same only
+ * as the same object, so one side is renamed into the other before
+ * the comparison.
+ */
+export function alignTypeParameters(a: FunctionType, b: FunctionType): FunctionType {
+  let aParams = a.typeParameters;
+  let bParams = b.typeParameters;
+  if (aParams == null || bParams == null || aParams.length == 0 ||
+      aParams.length != bParams.length) {
+    return a;
+  }
+  let args = new Array<Type>();
+  for (let tp in bParams) {
+    args.push(tp as Type);
+  }
+  return instantiateFunctionType(a, args);
+}
+
 export function hasSameSignature(a: FunctionType, b: FunctionType): boolean {
   if (a.parameters.length != b.parameters.length) {
     return false;
   }
-  for (var i = 0; i < a.parameters.length; i += 1) {
-    if (!typesEqual(a.parameters[i], b.parameters[i])) {
+  let aligned = alignTypeParameters(a, b);
+  for (var i = 0; i < aligned.parameters.length; i += 1) {
+    if (!typesEqual(aligned.parameters[i], b.parameters[i])) {
       return false;
     }
   }
@@ -339,9 +363,10 @@ function typesMayOverlap(ctx: CheckerContext, a: Type, b: Type): boolean {
  */
 export function signaturesMayOverlap(
   ctx: CheckerContext,
-  a: FunctionType,
+  a0: FunctionType,
   b: FunctionType
 ): boolean {
+  let a = alignTypeParameters(a0, b);
   var aRequired = a.parameters.length;
   let aOpt = a.optionalParameters;
   if (aOpt != null) {

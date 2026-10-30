@@ -22,7 +22,7 @@ import {
 } from '../wasm-module.zena';
 import { getClassKey, getClassMethodKey, templateConvertHelperName } from '../codegen-utils.zena';
 import {
-  eraseTypeParameters, findExtendedInterfaceTransitive, findImplementedInterfaceTransitive,
+  eraseTypeParameters, findExtendedWellKnownInterface, findImplementedWellKnownInterface,
   getNonNullableType, substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
@@ -210,9 +210,8 @@ function convertClassToString(cx: LoweringContext, value: i32, ct: ClassType, lo
   if (isWellKnown(WellKnown.StringClass, ct.name, ct.sourcePath)) {
     return value;
   }
-  let stringableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Stringable');
-  if (stringableIface != null &&
-      isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
+  let stringableIface = findImplementedWellKnownInterface(cx.wasm, ct, WellKnown.StringableInterface);
+  if (stringableIface != null) {
     let toStringMethod = cx.resolveDevirtualizedMethod(ct, ':toString');
     if (toStringMethod != null) {
       return callUnaryToString(cx, toStringMethod, value);
@@ -263,9 +262,8 @@ function convertNonNullValueToString(cx: LoweringContext, value: i32, tOpt: Type
     return convertClassToString(cx, value, bt, loc);
   }
   if (bt is InterfaceType) {
-    let stringableIface = findExtendedInterfaceTransitive(cx.wasm, bt, 'Stringable');
-    if (stringableIface != null &&
-        isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
+    let stringableIface = findExtendedWellKnownInterface(cx.wasm, bt, WellKnown.StringableInterface);
+    if (stringableIface != null) {
       return cx.slotCallSingle(value, ':toString');
     }
     return lowerStringLiteral(cx, new StringLiteral(`<${bt.name}>`, loc));
