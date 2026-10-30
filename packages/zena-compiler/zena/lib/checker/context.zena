@@ -295,6 +295,43 @@ export final class SharedCheckerState {
  * #materializedTypes. Type parameters are registered there by
  * getOrCreateTypeParameter() as each TypeParameterType is created.
  */
+/**
+ * What a backward search over the flow graph does at a node: it has
+ * found what it was looking for, the path it is on ends here (an
+ * assignment that revived the binding), or it continues to the node's
+ * antecedents.
+ */
+enum BackwardStep { Found, EndsPath, Continue }
+
+/**
+ * A must-analysis's answer at one node: the property holds on this
+ * path, it fails, or the node says nothing and the antecedents decide.
+ */
+enum MustVerdict { Yes, No, Through }
+
+/**
+ * What a flow-type walk asks after: a binding, or an immutable member
+ * path. One walk serves both; the subject says where each differs.
+ */
+final class FlowSubject {
+  /** The binding, or noSymbolId for a path. */
+  binding: SymbolId;
+  /** The path key: "s<id>" for a binding, since a narrowing may record
+   * a binding under its path key, and the member path otherwise. */
+  pathKey: String;
+  /** The binding whose assignment un-narrows the subject: the binding
+   * itself, a path's root, or noSymbolId for a `this`-rooted path. */
+  root: SymbolId;
+  /** The subject's half of a memo key: a binding's symbol id, or a
+   * path's interned id, which is negative so the two never collide. */
+  memoKey: i32;
+  /** The un-narrowed answer: a binding's declared type, or the path
+   * veto marker. Also the answer a join gives when one antecedent
+   * gives it: an un-narrowed path un-narrows the join. */
+  fallback: Type;
+  new(this.binding, this.pathKey, this.root, this.memoKey, this.fallback);
+}
+
 export final class CheckerContext {
   model = new SemanticModel();
 
@@ -483,8 +520,9 @@ export final class CheckerContext {
   }
 
   /**
-   * Flow-type results at join nodes, keyed by (join id, symbol id) and
-   * shared across queries — a reference after N sequential joins would
+   * Flow-type results at join nodes, keyed by (join id, subject) —
+   * `#flowMemoKey` — for bindings and member paths alike, and shared
+   * across queries — a reference after N sequential joins would
    * otherwise recompute each of them per reference, which is quadratic
    * over a body. The graph only mutates behind a query at a loop's back
    * edge, so exitFlowLoop invalidates exactly the entries written while
@@ -493,12 +531,6 @@ export final class CheckerContext {
   #flowTypeMemo = new Map<i64, Type>();
   #flowTypeMemoLog = new Array<i64>();
   #flowLoopMemoMarks = new Array<i32>();
-
-  /** The path walk's memo, keyed "<join id>|<path>"; #pathVeto included. */
-  #flowPathMemo = new Map<String, Type>();
-  #flowPathMemoLog = new Array<String>();
-  #flowPathMemoLogIds = new Array<i32>();
-  #flowLoopPathMemoMarks = new Array<i32>();
 
   /**
    * The FlowStart id of the body each binding was declared in. A walk
@@ -2337,7 +2369,6 @@ export final class CheckerContext {
     this.#flowLoopMoves.push(new Array<FlowMove>());
     this.#flowLoopDeclared.push(new Set<i32>());
     this.#flowLoopMemoMarks.push(this.#flowTypeMemoLog.length);
-    this.#flowLoopPathMemoMarks.push(this.#flowPathMemoLog.length);
     this.#currentFlow = head;
     return head;
   }
@@ -2393,17 +2424,6 @@ export final class CheckerContext {
           this.#flowTypeMemo.delete(key);
         }
         li += 1;
-      }
-    }
-    if (this.#flowLoopPathMemoMarks.length > 0) {
-      let pmark = this.#flowLoopPathMemoMarks[this.#flowLoopPathMemoMarks.length - 1];
-      this.#flowLoopPathMemoMarks.pop();
-      var pli = pmark;
-      while (pli < this.#flowPathMemoLog.length) {
-        if (this.#flowPathMemoLogIds[pli] >= head.id) {
-          this.#flowPathMemo.delete(this.#flowPathMemoLog[pli]);
-        }
-        pli += 1;
       }
     }
     exit.add(afterTest);
@@ -2471,32 +2491,16 @@ export final class CheckerContext {
    * null. A store that revived the path ends the search on its path.
    */
   findLivePathMove(pathKey: String, from: FlowNode): FlowMove | null {
-    let visited = new Set<i32>();
-    let pending = growable<FlowNode>([from]);
-    while (pending.length > 0) {
-      let node = pending.pop();
-      if (visited.has(node.id)) { continue; }
-      visited.add(node.id);
-      match (node) {
-        case FlowStart: {}
-        case FlowUnreachable: {}
-        case FlowNarrowings as nw: { pending.push(nw.antecedent); }
-        case FlowSuspend as sp: { pending.push(sp.antecedent); }
-        case FlowMove as mv: {
-          if (mv.pathKey == pathKey) { return mv; }
-          pending.push(mv.antecedent);
-        }
-        case FlowAssign as assign: {
-          if (assign.pathKey != pathKey) { pending.push(assign.antecedent); }
-        }
-        case FlowJoin as join: {
-          for (let a in join.antecedents) {
-            pending.push(a);
-          }
-        }
+    let found = this.#findBackward(from, -1, (node) => match (node) {
+      case FlowMove as mv: {
+        if (mv.pathKey == pathKey) BackwardStep.Found else BackwardStep.Continue
       }
-    }
-    return null;
+      case FlowAssign as assign: {
+        if (assign.pathKey == pathKey) BackwardStep.EndsPath else BackwardStep.Continue
+      }
+      case _: BackwardStep.Continue
+    });
+    return if (found is FlowMove) found else null;
   }
 
   /**
@@ -2506,36 +2510,18 @@ export final class CheckerContext {
    * Cycles answer false, conservatively.
    */
   pathDefinitelyMoved(pathKey: String, from: FlowNode): boolean {
-    let memo = new Map<i32, boolean>();
-    return this.#mustMoveWalk(pathKey, from, memo);
-  }
-
-  #mustMoveWalk(pathKey: String, node: FlowNode, memo: HashMap<i32, boolean>): boolean {
-    if (let (true, m) = memo.get(node.id)) { return m; }
-    memo[node.id] = false;
-    let result = match (node) {
+    return this.#onEveryBackwardPath(from, false, new Map<i32, boolean>(), (node) => match (node) {
       case FlowMove as mv: {
-        if (mv.pathKey == pathKey) { true }
-        else { this.#mustMoveWalk(pathKey, mv.antecedent, memo) }
+        if (mv.pathKey == pathKey) MustVerdict.Yes else MustVerdict.Through
       }
-      case FlowStart: false
-      case FlowUnreachable: true
       case FlowAssign as assign: {
-        if (assign.pathKey == pathKey) { false }
-        else { this.#mustMoveWalk(pathKey, assign.antecedent, memo) }
+        if (assign.pathKey == pathKey) MustVerdict.No else MustVerdict.Through
       }
-      case FlowNarrowings as nw: this.#mustMoveWalk(pathKey, nw.antecedent, memo)
-      case FlowSuspend as sp: this.#mustMoveWalk(pathKey, sp.antecedent, memo)
-      case FlowJoin as join: {
-        var all = true;
-        for (let a in join.antecedents) {
-          if (!this.#mustMoveWalk(pathKey, a, memo)) { all = false; }
-        }
-        all
-      }
-    };
-    memo[node.id] = result;
-    return result;
+      // Reaching the start without a move: not moved on this path.
+      case FlowStart: MustVerdict.No
+      case FlowUnreachable: MustVerdict.Yes
+      case _: MustVerdict.Through
+    });
   }
 
   /**
@@ -2641,32 +2627,14 @@ export final class CheckerContext {
    * the value read was produced after it — exactly as in findLiveMove.
    */
   #findFlowSuspend(id: SymbolId, from: FlowNode, stopAtId: i32): boolean {
-    let visited = new Set<i32>();
-    let pending = growable<FlowNode>([from]);
-    while (pending.length > 0) {
-      let node = pending.pop();
-      if (node.id == stopAtId) { continue; }
-      if (visited.has(node.id)) { continue; }
-      visited.add(node.id);
-      match (node) {
-        case FlowStart: {}
-        case FlowUnreachable: {}
-        case FlowSuspend: { return true; }
-        case FlowNarrowings as nw: { pending.push(nw.antecedent); }
-        case FlowMove as mv: { pending.push(mv.antecedent); }
-        case FlowAssign as assign: {
-          if ((assign.symbolId as i32) != (id as i32)) {
-            pending.push(assign.antecedent);
-          }
-        }
-        case FlowJoin as join: {
-          for (let a in join.antecedents) {
-            pending.push(a);
-          }
-        }
+    let found = this.#findBackward(from, stopAtId, (node) => match (node) {
+      case FlowSuspend: BackwardStep.Found
+      case FlowAssign as assign: {
+        if ((assign.symbolId as i32) == (id as i32)) BackwardStep.EndsPath else BackwardStep.Continue
       }
-    }
-    return false;
+      case _: BackwardStep.Continue
+    });
+    return found != null;
   }
 
   /** Decide the collected borrow reads of the body being exited. */
@@ -2736,34 +2704,22 @@ export final class CheckerContext {
    */
   #definitelyConsumed(id: SymbolId, from: FlowNode, birthId: i32,
       memo: HashMap<i32, boolean>): boolean {
-    if (from.id == birthId) { return false; }
-    if (let (true, v) = memo.get(from.id)) { return v; }
-    memo[from.id] = true;
-    let result: boolean = match (from) {
-      case FlowStart: true
-      case FlowUnreachable: true
-      case FlowSuspend as sp:
-        this.#definitelyConsumed(id, sp.antecedent, birthId, memo)
-      case FlowNarrowings as nw:
-        this.#definitelyConsumed(id, nw.antecedent, birthId, memo)
-      case FlowMove as mv: {
-        if ((mv.symbolId as i32) == (id as i32)) { true }
-        else { this.#definitelyConsumed(id, mv.antecedent, birthId, memo) }
-      }
-      case FlowAssign as assign: {
-        if ((assign.symbolId as i32) == (id as i32)) { false }
-        else { this.#definitelyConsumed(id, assign.antecedent, birthId, memo) }
-      }
-      case FlowJoin as join: {
-        var all = true;
-        for (let a in join.antecedents) {
-          if (!this.#definitelyConsumed(id, a, birthId, memo)) { all = false; }
+    return this.#onEveryBackwardPath(from, true, memo, (node) => {
+      // The declaration reached without a move: the failure.
+      if (node.id == birthId) { return MustVerdict.No; }
+      return match (node) {
+        // The body start bypassed the declaration: nothing is held.
+        case FlowStart: MustVerdict.Yes
+        case FlowUnreachable: MustVerdict.Yes
+        case FlowMove as mv: {
+          if ((mv.symbolId as i32) == (id as i32)) MustVerdict.Yes else MustVerdict.Through
         }
-        all
-      }
-    };
-    memo[from.id] = result;
-    return result;
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) == (id as i32)) MustVerdict.No else MustVerdict.Through
+        }
+        case _: MustVerdict.Through
+      };
+    });
   }
 
   /** The frame depth at each open loop's entry, for break/continue. */
@@ -3015,6 +2971,28 @@ export final class CheckerContext {
    * stopAtId to walk to the start.
    */
   findLiveMove(id: SymbolId, from: FlowNode, stopAtId: i32): FlowMove | null {
+    let found = this.#findBackward(from, stopAtId, (node) => match (node) {
+      case FlowMove as mv: {
+        if ((mv.symbolId as i32) == (id as i32)) BackwardStep.Found else BackwardStep.Continue
+      }
+      // An assignment to the binding revives it: this path is clean.
+      case FlowAssign as assign: {
+        if ((assign.symbolId as i32) == (id as i32)) BackwardStep.EndsPath else BackwardStep.Continue
+      }
+      case _: BackwardStep.Continue
+    });
+    return if (found is FlowMove) found else null;
+  }
+
+  /**
+   * The first node on some backward path from `from` that `step` finds,
+   * or null. Narrowings, moves of other subjects, suspensions and joins
+   * are transparent unless `step` says otherwise; a path ends at a
+   * start, an unreachable node, `stopAtId` (a loop header, for the
+   * back-edge check; -1 to walk to the start), or where `step` ends it.
+   * Behind `findLiveMove`, `findLivePathMove` and `#findFlowSuspend`.
+   */
+  #findBackward(from: FlowNode, stopAtId: i32, step: (node: FlowNode) => BackwardStep): FlowNode | null {
     let visited = new Set<i32>();
     let pending = growable<FlowNode>([from]);
     while (pending.length > 0) {
@@ -3022,35 +3000,71 @@ export final class CheckerContext {
       if (node.id == stopAtId) { continue; }
       if (visited.has(node.id)) { continue; }
       visited.add(node.id);
-      match (node) {
-        case FlowStart: {}
-        case FlowUnreachable: {}
-        case FlowNarrowings as nw: {
-          // A narrowing does not change liveness.
-          pending.push(nw.antecedent);
-        }
-        case FlowMove as mv: {
-          if ((mv.symbolId as i32) == (id as i32)) { return mv; }
-          pending.push(mv.antecedent);
-        }
-        case FlowAssign as assign: {
-          if ((assign.symbolId as i32) != (id as i32)) {
-            pending.push(assign.antecedent);
-          }
-          // An assignment to the binding revives it: this path is clean.
-        }
-        case FlowSuspend as sp: {
-          // A suspension does not change move liveness.
-          pending.push(sp.antecedent);
-        }
-        case FlowJoin as join: {
-          for (let a in join.antecedents) {
-            pending.push(a);
-          }
-        }
+      match (step(node)) {
+        case BackwardStep.Found: { return node; }
+        case BackwardStep.EndsPath: {}
+        case BackwardStep.Continue: { this.#pushAntecedents(node, pending); }
       }
     }
     return null;
+  }
+
+  /** The nodes a backward search continues to from `node`: a join's
+   * antecedents, a chain node's one, none from a start or an
+   * unreachable node. */
+  #pushAntecedents(node: FlowNode, pending: GrowableArray<FlowNode>): void {
+    match (node) {
+      case FlowStart: {}
+      case FlowUnreachable: {}
+      case FlowNarrowings as nw: { pending.push(nw.antecedent); }
+      case FlowMove as mv: { pending.push(mv.antecedent); }
+      case FlowAssign as assign: { pending.push(assign.antecedent); }
+      case FlowSuspend as sp: { pending.push(sp.antecedent); }
+      case FlowJoin as join: {
+        for (let a in join.antecedents) {
+          pending.push(a);
+        }
+      }
+    }
+  }
+
+  /**
+   * Whether `verdict` holds on EVERY backward path from `from`: a node
+   * it answers decides its path, a node it leaves through passes the
+   * question to its antecedents, and a join holds when all of its do.
+   * `memo` holds each node's answer, and `optimistic` is what a node
+   * answers while its own evaluation is in progress — what a loop's
+   * back edge sees. Behind `pathDefinitelyMoved` and
+   * `#definitelyConsumed`.
+   */
+  #onEveryBackwardPath(from: FlowNode, optimistic: boolean,
+      memo: HashMap<i32, boolean>, verdict: (node: FlowNode) => MustVerdict): boolean {
+    if (let (true, m) = memo.get(from.id)) { return m; }
+    memo[from.id] = optimistic;
+    let result = match (verdict(from)) {
+      case MustVerdict.Yes: true
+      case MustVerdict.No: false
+      case MustVerdict.Through: {
+        match (from) {
+          case FlowNarrowings as nw: this.#onEveryBackwardPath(nw.antecedent, optimistic, memo, verdict)
+          case FlowSuspend as sp: this.#onEveryBackwardPath(sp.antecedent, optimistic, memo, verdict)
+          case FlowMove as mv: this.#onEveryBackwardPath(mv.antecedent, optimistic, memo, verdict)
+          case FlowAssign as assign: this.#onEveryBackwardPath(assign.antecedent, optimistic, memo, verdict)
+          case FlowJoin as join: {
+            var all = true;
+            for (let a in join.antecedents) {
+              if (!this.#onEveryBackwardPath(a, optimistic, memo, verdict)) { all = false; }
+            }
+            all
+          }
+          // A leaf the rule left through holds nothing against it.
+          case FlowStart: true
+          case FlowUnreachable: true
+        }
+      }
+    };
+    memo[from.id] = result;
+    return result;
   }
 
   /**
@@ -3201,8 +3215,8 @@ export final class CheckerContext {
     if (!narrowed && !assigned) { return declared; }
     this.#walkCycleMin = 2147483647;
     this.#walkBudget = 100000;
-    let r = this.#walkBindingType(
-      this.#currentFlow, si.id, pathKey, declared, new Array<i32>());
+    let subject = new FlowSubject(si.id, pathKey, si.id, id, declared);
+    let r = this.#walkFlowType(this.#currentFlow, subject, new Array<i32>());
     if (r == null) { return declared; }
     // A narrowing can only narrow. A join can manufacture something
     // wider — a statically-false `x == null` arm narrows a
@@ -3245,225 +3259,57 @@ export final class CheckerContext {
    * exponentially. Each entry is bucketed by its lowlink; when the join
    * at stack depth d pops, buckets >= d are purged.
    */
-  #taintedBindingMemo = new Map<i64, Type>();
-  #taintedBindingBuckets = new Array<GrowableArray<i64>>();
-  #taintedPathMemo = new Map<String, Type>();
-  #taintedPathBuckets = new Array<GrowableArray<String>>();
+  #taintedMemo = new Map<i64, Type>();
+  #taintedBuckets = new Array<GrowableArray<i64>>();
 
   #purgeTaintedFrom(depth: i32): void {
     var b = depth;
-    while (b < this.#taintedBindingBuckets.length) {
-      let bucket = this.#taintedBindingBuckets[b];
-      for (let bKey in bucket) {
-        this.#taintedBindingMemo.delete(bKey);
+    while (b < this.#taintedBuckets.length) {
+      let bucket = this.#taintedBuckets[b];
+      for (let key in bucket) {
+        this.#taintedMemo.delete(key);
       }
       bucket.clear();
       b += 1;
     }
-    var pb = depth;
-    while (pb < this.#taintedPathBuckets.length) {
-      let bucket = this.#taintedPathBuckets[pb];
-      for (let pKey in bucket) {
-        this.#taintedPathMemo.delete(pKey);
-      }
-      bucket.clear();
-      pb += 1;
-    }
   }
 
-  #taintedBucketAdd(depth: i32, bindingKey: i64): void {
-    while (this.#taintedBindingBuckets.length <= depth) {
-      this.#taintedBindingBuckets.push(new Array<i64>());
+  #taintedBucketAdd(depth: i32, key: i64): void {
+    while (this.#taintedBuckets.length <= depth) {
+      this.#taintedBuckets.push(new Array<i64>());
     }
-    this.#taintedBindingBuckets[depth].push(bindingKey);
-  }
-
-  #taintedPathBucketAdd(depth: i32, pathKey: String): void {
-    while (this.#taintedPathBuckets.length <= depth) {
-      this.#taintedPathBuckets.push(new Array<String>());
-    }
-    this.#taintedPathBuckets[depth].push(pathKey);
+    this.#taintedBuckets[depth].push(key);
   }
 
   /**
-   * The walk behind flowTypeOfBinding. Chains descend iteratively;
-   * recursion happens only at joins, whose result is the union of their
-   * antecedents'. A null return is a cycle contribution (a loop back
-   * edge reached its own header) and is skipped by the join above it —
-   * the optimistic reading is sound because a loop that changes the
-   * binding declares that with the unknown-type assignments recorded at
-   * its header. Join results computed without touching an in-progress
-   * cycle are memoized for the duration of one query.
-   */
-  #walkBindingType(
-    from: FlowNode,
-    symId: SymbolId,
-    pathKey: String,
-    declared: Type,
-    inProgress: GrowableArray<i32>
-  ): Type | null {
-    var n = from;
-    while (true) {
-      if (this.#walkBudget <= 0) {
-        this.#walkCycleMin = -1;
-        return declared;
-      }
-      this.#walkBudget -= 1;
-      match (n) {
-        case FlowNarrowings as nw: {
-          if (let (true, t) = nw.bindings.get(symId)) { return t; }
-          if (let (true, pt) = nw.paths.get(pathKey)) { return pt; }
-          n = nw.antecedent;
-        }
-        case FlowAssign as assign: {
-          if ((assign.symbolId as i32) == (symId as i32)) {
-            // The stored type is clamped to the declared type at the
-            // recording site, so it is returned as-is here.
-            let at = assign.assignedType;
-            if (at != null) { return at; }
-            return declared;
-          }
-          n = assign.antecedent;
-        }
-        case FlowMove as mv: {
-          n = mv.antecedent;
-        }
-        case FlowSuspend as sp: {
-          // A suspension does not change what holds for the binding.
-          n = sp.antecedent;
-        }
-        case FlowStart as st: {
-          // The declaring body's entry has seen everything that could
-          // narrow the binding; only a capture keeps looking outward.
-          if (let (true, bodyId) = this.#bindingBodyStart.get(symId as i32)) {
-            if (bodyId == st.id) { return declared; }
-          } else {
-            return declared;
-          }
-          let enc = st.enclosing;
-          if (enc == null) { return declared; }
-          // Crossing into the enclosing body is computed once per key:
-          // the enclosing flow is frozen at the closure's creation, so
-          // the answer there never changes (modulo loop back edges,
-          // which the log invalidation covers).
-          let crossKey = (st.id as i64) * 4294967296 + (symId as i32 as i64);
-          if (let (true, cm) = this.#flowTypeMemo.get(crossKey)) { return cm; }
-          let outerMin = this.#walkCycleMin;
-          this.#walkCycleMin = 2147483647;
-          let sub = this.#walkBindingType(
-            enc, symId, pathKey, declared, inProgress);
-          let myMin = this.#walkCycleMin;
-          if (sub != null && myMin >= inProgress.length) {
-            this.#flowTypeMemo[crossKey] = sub;
-            this.#flowTypeMemoLog.push(crossKey);
-          }
-          this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
-          return sub;
-        }
-        case FlowUnreachable: {
-          return declared;
-        }
-        case FlowJoin as join: {
-          let memoKey = (join.id as i64) * 4294967296 + (symId as i32 as i64);
-          if (let (true, m) = this.#flowTypeMemo.get(memoKey)) { return m; }
-          if (let (true, tm) = this.#taintedBindingMemo.get(memoKey)) { return tm; }
-          var pi = 0;
-          var cycled = false;
-          while (pi < inProgress.length) {
-            if (inProgress[pi] == join.id) {
-              if (pi < this.#walkCycleMin) { this.#walkCycleMin = pi; }
-              cycled = true;
-            }
-            pi += 1;
-          }
-          if (cycled) { return null; }
-          let depth = inProgress.length;
-          inProgress.push(join.id);
-          // Lowlink accounting: cycles seen under THIS join, kept apart
-          // from what the siblings already saw.
-          let outerMin = this.#walkCycleMin;
-          this.#walkCycleMin = 2147483647;
-          // The antecedents nearly always agree on one type, so the
-          // list of distinct results is only built once a second one
-          // appears: this walk runs millions of times in a large
-          // compile, and an array per join was a tenth of its garbage.
-          var first: Type | null = null;
-          var results: Array<Type> | null = null;
-          var sawCycle = false;
-          for (let a in join.antecedents) {
-            let r = this.#walkBindingType(
-              a, symId, pathKey, declared, inProgress);
-            if (r == null) {
-              sawCycle = true;
-            } else if (first == null) {
-              first = r;
-            } else if (results == null) {
-              if (!typesEqual(first as Type, r)) {
-                let list = growable<Type>([first as Type, r]);
-                results = list;
-              }
-            } else {
-              let list = results as GrowableArray<Type>;
-              var dup = false;
-              for (let existing in list) {
-                if (typesEqual(existing, r)) { dup = true; }
-              }
-              if (!dup) { list.push(r); }
-            }
-          }
-          let myMin = this.#walkCycleMin;
-          inProgress.pop();
-          // Anything provisional that depended on this join dies with
-          // its evaluation.
-          this.#purgeTaintedFrom(depth);
-          if (first == null) {
-            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
-            if (sawCycle) { return null; }
-            return declared;
-          }
-          // Two distinct narrowings meeting (an `is A` arm and an
-          // `is B` arm whose else diverged) merge to the declared type:
-          // member lookup cannot see through an A | B union of
-          // subclasses, so the union would reject code the un-narrowed
-          // type accepts.
-          let result = if (results == null) {
-            first as Type
-          } else {
-            let kept = this.#dropSubsumed(results as GrowableArray<Type>);
-            if (kept.length == 1) { kept[0] } else { declared }
-          };
-          if (myMin >= depth) {
-            // Cycles, if any, pointed only at this join: it is a
-            // completed loop header and this is its fixpoint.
-            this.#flowTypeMemo[memoKey] = result;
-            this.#flowTypeMemoLog.push(memoKey);
-            this.#walkCycleMin = outerMin;
-          } else {
-            // Provisional under an in-progress ancestor: cached until
-            // that ancestor pops. A negative lowlink is the budget
-            // cut's mark — those results are not cached at all.
-            if (myMin >= 0) {
-              this.#taintedBindingMemo[memoKey] = result;
-              this.#taintedBucketAdd(myMin, memoKey);
-            }
-            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
-          }
-          return result;
-        }
-      }
-    }
-  }
-
-  /**
-   * The narrowed type of a member path at the current position, or null
-   * when it is not narrowed. Any assignment to the path's root binding
-   * on some incoming path un-narrows it (the object was replaced), so a
-   * join only keeps the narrowing when every reachable antecedent
-   * carries one; cycle contributions are skipped as in the binding
-   * walk. `#pathVeto` is the un-narrowed marker inside the walk, so it
-   * can be told apart from a cycle.
+   * The un-narrowed answer for a member path inside the walk, so it can
+   * be told apart from a cycle contribution (null). Any assignment to
+   * the path's root binding un-narrows it (the object was replaced), so
+   * a join only keeps a narrowing when every reachable antecedent
+   * carries one.
    */
   #pathVeto: Type = new ErrorType();
+
+  /** Interned member paths, for the path half of a memo key. */
+  #pathIds = new Map<String, i32>();
+
+  /** The memo id of `path`: negative, so it never collides with a
+   * binding's symbol id. */
+  #pathMemoId(path: String): i32 {
+    if (let (true, id) = this.#pathIds.get(path)) { return id; }
+    let id = -1 - this.#pathIds.size;
+    this.#pathIds[path] = id;
+    return id;
+  }
+
+  /**
+   * A memo key: the flow node's id above the subject's. The subject half
+   * is shifted into the non-negative range so that `exitFlowLoop` reads
+   * the node id back by division.
+   */
+  #flowMemoKey(nodeId: i32, s: FlowSubject): i64 {
+    return (nodeId as i64) * 4294967296 + ((s.memoKey as i64) + 2147483648);
+  }
 
   /**
    * Drop union members another member already covers: a join of an
@@ -3496,8 +3342,9 @@ export final class CheckerContext {
     if (!this.#everNarrowedPaths.has(path)) { return null; }
     this.#walkCycleMin = 2147483647;
     this.#walkBudget = 100000;
-    let r = this.#walkPathType(
-      this.#currentFlow, path, pathRootSymbolId(path), new Array<i32>());
+    let subject = new FlowSubject(noSymbolId, path, pathRootSymbolId(path),
+        this.#pathMemoId(path), this.#pathVeto);
+    let r = this.#walkFlowType(this.#currentFlow, subject, new Array<i32>());
     if (r == null) { return null; }
     // Identity via uid: Type equality is structural, and any ErrorType
     // would otherwise look like the veto marker.
@@ -3505,27 +3352,49 @@ export final class CheckerContext {
     return r;
   }
 
-  #walkPathType(
+  /**
+   * The walk behind flowTypeOfBinding and flowTypeOfPath. Chains
+   * descend iteratively; recursion happens only at joins, whose result
+   * is the union of their antecedents'. A null return is a cycle
+   * contribution (a loop back edge reached its own header) and is
+   * skipped by the join above it — the optimistic reading is sound
+   * because a loop that changes the binding declares that with the
+   * unknown-type assignments recorded at its header. The subject's
+   * fallback — a binding's declared type, a path's veto — is the
+   * un-narrowed answer, and one antecedent giving it un-narrows the
+   * join. Join results computed without touching an in-progress cycle
+   * are memoized for the duration of one query.
+   */
+  #walkFlowType(
     from: FlowNode,
-    path: String,
-    rootId: SymbolId,
+    s: FlowSubject,
     inProgress: GrowableArray<i32>
   ): Type | null {
     var n = from;
     while (true) {
       if (this.#walkBudget <= 0) {
         this.#walkCycleMin = -1;
-        return this.#pathVeto;
+        return s.fallback;
       }
       this.#walkBudget -= 1;
       match (n) {
         case FlowNarrowings as nw: {
-          if (let (true, t) = nw.paths.get(path)) { return t; }
+          if ((s.binding as i32) >= 0) {
+            if (let (true, t) = nw.bindings.get(s.binding)) { return t; }
+          }
+          if (let (true, pt) = nw.paths.get(s.pathKey)) { return pt; }
           n = nw.antecedent;
         }
         case FlowAssign as assign: {
-          if ((assign.symbolId as i32) == (rootId as i32)) {
-            return this.#pathVeto;
+          if ((assign.symbolId as i32) == (s.root as i32)) {
+            // A binding reads the stored type, clamped to the declared
+            // type at the recording site; a path's object was replaced,
+            // so the path is un-narrowed.
+            if ((s.binding as i32) >= 0) {
+              let at = assign.assignedType;
+              if (at != null) { return at; }
+            }
+            return s.fallback;
           }
           n = assign.antecedent;
         }
@@ -3533,46 +3402,52 @@ export final class CheckerContext {
           n = mv.antecedent;
         }
         case FlowSuspend as sp: {
-          // A suspension does not change what holds for the path.
+          // A suspension does not change what holds for the subject.
           n = sp.antecedent;
         }
         case FlowStart as st: {
-          // A rooted path stops at its root's declaring body the way a
-          // binding walk does. A `this`-rooted path stops where `this`
-          // stops: at a method or accessor root — only a closure that
-          // shares its `this` keeps looking outward.
-          if ((rootId as i32) >= 0) {
-            if (let (true, bodyId) = this.#bindingBodyStart.get(rootId as i32)) {
-              if (bodyId == st.id) { return this.#pathVeto; }
+          // The root's declaring body's entry has seen everything that
+          // could narrow the subject; only a capture keeps looking
+          // outward. A `this`-rooted path stops where `this` stops: at
+          // a method or accessor root — only a closure that shares its
+          // `this` keeps looking outward.
+          if ((s.root as i32) >= 0) {
+            if (let (true, bodyId) = this.#bindingBodyStart.get(s.root as i32)) {
+              if (bodyId == st.id) { return s.fallback; }
             } else {
-              return this.#pathVeto;
+              return s.fallback;
             }
-          } else {
-            if (!st.sharesThis) { return this.#pathVeto; }
+          } else if (!st.sharesThis) {
+            return s.fallback;
           }
           let enc = st.enclosing;
-          if (enc == null) { return this.#pathVeto; }
-          let crossKey = `${i32ToString(st.id)}|${path}`;
-          if (let (true, cm) = this.#flowPathMemo.get(crossKey)) { return cm; }
+          if (enc == null) { return s.fallback; }
+          // Crossing into the enclosing body is computed once per key:
+          // the enclosing flow is frozen at the closure's creation, so
+          // the answer there never changes (modulo loop back edges,
+          // which the log invalidation covers).
+          let crossKey = this.#flowMemoKey(st.id, s);
+          if (let (true, cm) = this.#flowTypeMemo.get(crossKey)) { return cm; }
           let outerMin = this.#walkCycleMin;
           this.#walkCycleMin = 2147483647;
-          let sub = this.#walkPathType(enc, path, rootId, inProgress);
+          let sub = this.#walkFlowType(enc, s, inProgress);
           let myMin = this.#walkCycleMin;
           if (sub != null && myMin >= inProgress.length) {
-            this.#flowPathMemo[crossKey] = sub;
-            this.#flowPathMemoLog.push(crossKey);
-            this.#flowPathMemoLogIds.push(st.id);
+            this.#flowTypeMemo[crossKey] = sub;
+            this.#flowTypeMemoLog.push(crossKey);
           }
           this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
           return sub;
         }
         case FlowUnreachable: {
+          // Only a query's own position is ever unreachable: a join
+          // records no unreachable antecedent. Nothing holds there.
           return null;
         }
         case FlowJoin as join: {
-          let memoKey = `${i32ToString(join.id)}|${path}`;
-          if (let (true, m) = this.#flowPathMemo.get(memoKey)) { return m; }
-          if (let (true, tm) = this.#taintedPathMemo.get(memoKey)) { return tm; }
+          let memoKey = this.#flowMemoKey(join.id, s);
+          if (let (true, m) = this.#flowTypeMemo.get(memoKey)) { return m; }
+          if (let (true, tm) = this.#taintedMemo.get(memoKey)) { return tm; }
           var pi = 0;
           var cycled = false;
           while (pi < inProgress.length) {
@@ -3585,62 +3460,76 @@ export final class CheckerContext {
           if (cycled) { return null; }
           let depth = inProgress.length;
           inProgress.push(join.id);
+          // Lowlink accounting: cycles seen under THIS join, kept apart
+          // from what the siblings already saw.
           let outerMin = this.#walkCycleMin;
           this.#walkCycleMin = 2147483647;
-          // As in the binding walk, the list of distinct results is
-          // only built once a second one appears.
+          // The antecedents nearly always agree on one type, so the
+          // list of distinct results is only built once a second one
+          // appears: this walk runs millions of times in a large
+          // compile, and an array per join was a tenth of its garbage.
           var first: Type | null = null;
           var results: Array<Type> | null = null;
-          var vetoed = false;
+          var unnarrowed = false;
           for (let a in join.antecedents) {
-            let r = this.#walkPathType(a, path, rootId, inProgress);
-            if (r != null) {
-              if (r.uid == this.#pathVeto.uid) {
-                vetoed = true;
-              } else if (first == null) {
-                first = r;
-              } else if (results == null) {
-                if (!typesEqual(first as Type, r)) {
-                  let list = growable<Type>([first as Type, r]);
-                  results = list;
-                }
-              } else {
-                let list = results as GrowableArray<Type>;
-                var dup = false;
-                for (let existing in list) {
-                  if (typesEqual(existing, r)) { dup = true; }
-                }
-                if (!dup) { list.push(r); }
+            let r = this.#walkFlowType(a, s, inProgress);
+            if (r == null) {
+              // A cycle contribution: skipped.
+            } else if (r.uid == s.fallback.uid) {
+              unnarrowed = true;
+            } else if (first == null) {
+              first = r;
+            } else if (results == null) {
+              if (!typesEqual(first as Type, r)) {
+                let list = growable<Type>([first as Type, r]);
+                results = list;
               }
+            } else {
+              let list = results as GrowableArray<Type>;
+              var dup = false;
+              for (let existing in list) {
+                if (typesEqual(existing, r)) { dup = true; }
+              }
+              if (!dup) { list.push(r); }
             }
           }
           let myMin = this.#walkCycleMin;
           inProgress.pop();
+          // Anything provisional that depended on this join dies with
+          // its evaluation.
           this.#purgeTaintedFrom(depth);
           var result: Type | null = null;
-          if (vetoed) {
-            result = this.#pathVeto;
+          if (unnarrowed) {
+            result = s.fallback;
           } else if (results == null) {
             result = first;
           } else {
-            // As in the binding walk: distinct narrowings meeting means
-            // the path is no longer usefully narrowed.
+            // Two distinct narrowings meeting (an `is A` arm and an
+            // `is B` arm whose else diverged) merge to the un-narrowed
+            // answer: member lookup cannot see through an A | B union
+            // of subclasses, so the union would reject code the
+            // un-narrowed type accepts.
             let kept = this.#dropSubsumed(results as GrowableArray<Type>);
-            result = if (kept.length == 1) { kept[0] } else { this.#pathVeto };
+            result = if (kept.length == 1) { kept[0] } else { s.fallback };
           }
           if (result == null) {
+            // Every antecedent was a cycle contribution.
             this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
             return null;
           }
           if (myMin >= depth) {
-            this.#flowPathMemo[memoKey] = result;
-            this.#flowPathMemoLog.push(memoKey);
-            this.#flowPathMemoLogIds.push(join.id);
+            // Cycles, if any, pointed only at this join: it is a
+            // completed loop header and this is its fixpoint.
+            this.#flowTypeMemo[memoKey] = result;
+            this.#flowTypeMemoLog.push(memoKey);
             this.#walkCycleMin = outerMin;
           } else {
+            // Provisional under an in-progress ancestor: cached until
+            // that ancestor pops. A negative lowlink is the budget
+            // cut's mark — those results are not cached at all.
             if (myMin >= 0) {
-              this.#taintedPathMemo[memoKey] = result;
-              this.#taintedPathBucketAdd(myMin, memoKey);
+              this.#taintedMemo[memoKey] = result;
+              this.#taintedBucketAdd(myMin, memoKey);
             }
             this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
           }

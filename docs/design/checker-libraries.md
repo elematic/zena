@@ -82,11 +82,16 @@ one helper each; the rest are still open.
   of `resolveIndexType` differed only in the receiver's type;
   `selectIndexRead` (members.zena).
 - _Walks over the flow graph._ `findLiveMove`, `findLivePathMove` and
-  `#findFlowSuspend` are the same backward search with a different
-  stopping condition; `#mustMoveWalk` and `#definitelyConsumed` are the
+  `#findFlowSuspend` were the same backward search with a different
+  stopping condition; `#mustMoveWalk` and `#definitelyConsumed` the
   same recursive must-analysis. `#walkBindingType` and `#walkPathType`
-  are 350 lines of the same lowlink and memo machinery, duplicated
-  because one keys by `i64` and the other by `String`.
+  were 350 lines of the same lowlink and memo machinery, duplicated
+  because one keyed by `i64` and the other by `String`. Now
+  `#findBackward` takes the step rule (`BackwardStep`),
+  `#onEveryBackwardPath` the verdict (`MustVerdict`), and
+  `#walkFlowType` walks for a `FlowSubject` — a binding or a path, with
+  its fallback (the declared type, or the path veto) — over one memo
+  keyed by node id and subject, paths interned to negative ids.
 - _Condition narrowing._ `extractIsNarrowing`,
   `extractNullGuardNarrowing`, `extractNullGuardPathNarrowing` and
   `extractIsPathNarrowing` were two rules (an `is` test, a null test)
@@ -405,14 +410,20 @@ after each later step (on a loaded machine; the narrowing column ran at
 a load average of 11, which is where its `check-register`, untouched by
 that step, picked up 7 ms):
 
-| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) | narrowing (ms) |
-| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- | -------------- |
-| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           |
-| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          |
-| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          |
-| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           |
-| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          |
-| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           |
+| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) | narrowing (ms) | walks (ms) |
+| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- | -------------- | ---------- |
+| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           | 15.3       |
+| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          | 134.4      |
+| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          | 206.4      |
+| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           | 32.1       |
+| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          | 159.0      |
+| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           | 4005       |
+
+The flow walks' column is the one real change in the table: the path
+walk's memo was keyed by a string built per join visit, and
+`flowTypeOfPath` runs at every member read of a narrowed path, so
+interning the paths and keying both walks by `i64` took 40 ms off
+`check-bodies` on this fixture, measured twice.
 
 `portable-semantics` compiles `zena/test/portable_semantics.zena`,
 which imports the compiler, so it is the one fixture whose input the
@@ -443,7 +454,7 @@ Each step is one PR, lands green on `npm test`, and keeps
    pass per condition producing both branches' narrowings, no
    re-checking of the subject. Done.
 6. **The flow walks.** One backward search parameterized by its stop
-   rule; one memoized walk keyed by a single key type.
+   rule; one memoized walk keyed by a single key type. Done.
 7. **The body context record.** Replace the fifteen getter/setter
    pairs and the hand-written save/restore in `checkMethodBody`,
    `checkFunctionExpression` and `checkInterfaceConstructorBody`.
