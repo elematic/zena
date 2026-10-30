@@ -25,7 +25,7 @@ import {verifyRecordProof} from 'atproto:repo';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {
   ADMIN, ATTESTATION_TYPE, Artifact, Attestation, Dependency, MAINTAINER, MAINTAINERS_TYPE, MEMBER, Maintainer,
-  MEMBERS_TYPE, Maintainers, Members, OWNER, PUBLISHER, Profile,
+  MEMBERS_TYPE, Maintainers, Members, OWNER, PROFILE_TYPE, PUBLISHER, Profile,
   Policy, RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, TEAM_TYPE, Team, TeamRole
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
@@ -36,7 +36,7 @@ import {
 } from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
-import {CreateRecord, RepositoryError, Write} from 'pds:repository';
+import {CreateRecord, RepositoryError, UpdateRecord, Write} from 'pds:repository';
 import {createApp} from 'pds:server';
 import {MemoryCredentialStore, Sessions} from 'pds:sessions';
 import {LocalRotationKey} from 'pds:rotation';
@@ -1163,11 +1163,17 @@ export let tests = suite('pds:host', () => {
   test('links a package\'s homepage and source only when they are web addresses', (ctx) => {
     let fixture = new Fixture();
     let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let profile = stringify(toJson(new Profile('router', null, null, 'javascript:alert(document.cookie)',
-        'https://example.com/router').toValue()));
+    let planted = new Profile('router', null, null, 'javascript:alert(document.cookie)', 'https://example.com/router');
     let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
-    ok(fixture.call(ALICE, 'createPackage',
-        `{"organization": "${orgDid}", "profile": ${profile}, "maintainers": ${maintainers}}`));
+    // The host refuses such a profile.
+    equal(errorOf(fixture.call(ALICE, 'createPackage', `{"organization": "${orgDid}", "profile": ${
+        stringify(toJson(planted.toValue()))}, "maintainers": ${maintainers}}`)), 'InvalidRequest');
+    // One written some other way still shows no such link.
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let account = runFuture(fixture.pds.storage.getAccount(pkgDid)) as Account;
+    let current = runFuture(fixture.pds.storage.store(pkgDid).getRecord(PROFILE_TYPE, 'self')) as Cid;
+    runFuture(fixture.pds.repositoryOf(account).applyWrites([new UpdateRecord(PROFILE_TYPE, 'self', planted.toValue(),
+        current) as Write], 0 as i64));
     let page = pageOf(fixture.get('/packages/router.acme.pkg.test'));
     isTrue(!page.contains('javascript:'), page);
     isTrue(page.contains('href="https://example.com/router"'), page);
