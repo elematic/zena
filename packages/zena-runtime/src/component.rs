@@ -1368,6 +1368,151 @@ impl http_server::HostServerWithStore<ComponentState> for HasSelf<ComponentState
     }
 }
 
+/// What the inbound server allows each connection: how long it may take to
+/// send a request's headers, the first request's or the next one's on a
+/// kept-alive connection, before it is closed, and how many connections
+/// may be open at once, the next waiting, unaccepted, for one to close.
+/// Without them a slow client holds a connection as long as it likes, and
+/// many hold every one.
+#[derive(Clone, Copy, Debug)]
+pub struct ServerLimits {
+    pub header_read_timeout: Duration,
+    pub max_connections: usize,
+}
+
+impl Default for ServerLimits {
+    fn default() -> ServerLimits {
+        ServerLimits {
+            header_read_timeout: Duration::from_secs(30),
+            max_connections: 1024,
+        }
+    }
+}
+
+impl ServerLimits {
+    /// The defaults, with `ZENA_HTTP_HEADER_TIMEOUT_SECONDS` and
+    /// `ZENA_HTTP_MAX_CONNECTIONS` in place of either when set to a
+    /// positive whole number.
+    pub fn from_env() -> ServerLimits {
+        ServerLimits::from_vars(
+            std::env::var("ZENA_HTTP_HEADER_TIMEOUT_SECONDS").ok(),
+            std::env::var("ZENA_HTTP_MAX_CONNECTIONS").ok(),
+        )
+    }
+
+    fn from_vars(timeout: Option<String>, connections: Option<String>) -> ServerLimits {
+        let positive = |value: Option<String>| {
+            value
+                .and_then(|text| text.trim().parse::<u64>().ok())
+                .filter(|n| *n > 0)
+        };
+        let mut limits = ServerLimits::default();
+        if let Some(seconds) = positive(timeout) {
+            limits.header_read_timeout = Duration::from_secs(seconds);
+        }
+        if let Some(count) = positive(connections) {
+            limits.max_connections = count as usize;
+        }
+        limits
+    }
+}
+
+/// Accepts connections on `listener` within `limits`, and sends each
+/// request they carry to `request_tx`, until `shutdown_rx` fires or
+/// `shutdown` is set.
+async fn accept_connections(
+    listener: tokio::net::TcpListener,
+    limits: ServerLimits,
+    request_tx: tokio::sync::mpsc::UnboundedSender<IncomingRequest>,
+    mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let permits = Arc::new(tokio::sync::Semaphore::new(limits.max_connections));
+    loop {
+        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        // A connection past the cap waits, unaccepted, for one to close.
+        let permit = tokio::select! {
+            permit = permits.clone().acquire_owned() => permit,
+            _ = &mut shutdown_rx => break,
+        };
+        let Ok(permit) = permit else { break };
+        let accept_res = tokio::select! {
+            res = listener.accept() => res,
+            _ = &mut shutdown_rx => break,
+        };
+        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let (stream, _) = match accept_res {
+            Ok(conn) => conn,
+            Err(_) => continue,
+        };
+        let _ = stream.set_nodelay(true);
+        let io = wasmtime_wasi_http::io::TokioIo::new(stream);
+        let req_tx = request_tx.clone();
+
+        tokio::spawn(async move {
+            let _permit = permit;
+            use http_body_util::BodyExt as _;
+            let service = hyper::service::service_fn(
+                move |req: http::Request<hyper::body::Incoming>| {
+                    let req_tx = req_tx.clone();
+                    let rt = tokio::runtime::Handle::current();
+                    let req = req.map(move |body| DrainOnDropBody {
+                        inner: Some(body),
+                        rt,
+                    });
+                    async move {
+                        let (res_tx, res_rx) = tokio::sync::oneshot::channel();
+
+                        if req_tx.send(IncomingRequest { req, res_tx }).is_err() {
+                            let err_resp = http::Response::builder()
+                                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(
+                                    http_body_util::Full::new(bytes::Bytes::from_static(
+                                        b"server closed",
+                                    ))
+                                    .map_err(
+                                        |e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
+                                            match e {}
+                                        },
+                                    )
+                                    .boxed_unsync(),
+                                )
+                                .unwrap();
+                            return Ok::<_, std::convert::Infallible>(err_resp);
+                        }
+
+                        match res_rx.await {
+                            Ok(resp) => Ok(resp),
+                            Err(_) => {
+                                let err_resp = http::Response::builder()
+                                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(
+                                    http_body_util::Full::new(bytes::Bytes::from_static(b"response cancelled"))
+                                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                                        .boxed_unsync()
+                                )
+                                .unwrap();
+                                Ok(err_resp)
+                            }
+                        }
+                    }
+                },
+            );
+
+            let _ = hyper::server::conn::http1::Builder::new()
+                .timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(limits.header_read_timeout)
+                .pipeline_flush(true)
+                .serve_connection(io, service)
+                .await;
+        });
+    }
+}
+
 impl http_server::HostServer for ComponentState {
     fn create(
         &mut self,
@@ -1403,7 +1548,7 @@ impl http_server::HostServer for ComponentState {
         let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
         let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let s_shutdown = shutdown_flag.clone();
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let accept_thread = std::thread::spawn(move || {
             rt.block_on(async move {
@@ -1439,72 +1584,14 @@ impl http_server::HostServer for ComponentState {
                     }
                 };
 
-                loop {
-                    if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                        break;
-                    }
-                    let accept_res = tokio::select! {
-                        res = listener.accept() => res,
-                        _ = &mut shutdown_rx => break,
-                    };
-                    if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                        break;
-                    }
-                    let (stream, _) = match accept_res {
-                        Ok(conn) => conn,
-                        Err(_) => continue,
-                    };
-                    let _ = stream.set_nodelay(true);
-                    let io = wasmtime_wasi_http::io::TokioIo::new(stream);
-                    let req_tx = request_tx.clone();
-
-                    tokio::spawn(async move {
-                        use http_body_util::BodyExt as _;
-                        let service = hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
-                            let req_tx = req_tx.clone();
-                            let rt = tokio::runtime::Handle::current();
-                            let req = req.map(move |body| DrainOnDropBody {
-                                inner: Some(body),
-                                rt,
-                            });
-                            async move {
-                                let (res_tx, res_rx) = tokio::sync::oneshot::channel();
-
-                                if req_tx.send(IncomingRequest { req, res_tx }).is_err() {
-                                    let err_resp = http::Response::builder()
-                                        .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                                        .body(
-                                            http_body_util::Full::new(bytes::Bytes::from_static(b"server closed"))
-                                                .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
-                                                .boxed_unsync()
-                                        )
-                                        .unwrap();
-                                    return Ok::<_, std::convert::Infallible>(err_resp);
-                                }
-
-                                match res_rx.await {
-                                    Ok(resp) => Ok(resp),
-                                    Err(_) => {
-                                        let err_resp = http::Response::builder()
-                                            .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                                            .body(
-                                                http_body_util::Full::new(bytes::Bytes::from_static(b"response cancelled"))
-                                                    .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
-                                                    .boxed_unsync()
-                                            )
-                                            .unwrap();
-                                        Ok(err_resp)
-                                    }
-                                }
-                            }
-                        });
-
-                        let _ = hyper::server::conn::http1::Builder::new()
-                            .pipeline_flush(true)
-                            .serve_connection(io, service)
-                            .await;
-                    });
-                }
+                accept_connections(
+                    listener,
+                    ServerLimits::from_env(),
+                    request_tx,
+                    shutdown_rx,
+                    s_shutdown,
+                )
+                .await;
             });
         });
 
@@ -1538,3 +1625,133 @@ impl http_server::HostServer for ComponentState {
 
 
 
+
+#[cfg(test)]
+mod server_tests {
+    use super::*;
+    use http_body_util::BodyExt as _;
+    use std::sync::atomic::AtomicBool;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// A server on a free port with `limits`, answering every request 200.
+    async fn serve(limits: ServerLimits) -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, mut request_rx) =
+            tokio::sync::mpsc::unbounded_channel::<IncomingRequest>();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        // Kept alive as long as the server runs.
+        std::mem::forget(shutdown_tx);
+        tokio::spawn(accept_connections(
+            listener,
+            limits,
+            request_tx,
+            shutdown_rx,
+            Arc::new(AtomicBool::new(false)),
+        ));
+        tokio::spawn(async move {
+            while let Some(incoming) = request_rx.recv().await {
+                let body = http_body_util::Empty::<bytes::Bytes>::new()
+                    .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
+                        match e {}
+                    })
+                    .boxed_unsync();
+                let _ = incoming.res_tx.send(http::Response::new(body));
+            }
+        });
+        addr
+    }
+
+    /// Everything `stream` sends until it closes, or None if it stays open past `wait`.
+    async fn until_closed(stream: &mut TcpStream, wait: Duration) -> Option<Vec<u8>> {
+        let mut received = Vec::new();
+        tokio::time::timeout(wait, async {
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => received.extend_from_slice(&buf[..n]),
+                }
+            }
+        })
+        .await
+        .ok()?;
+        Some(received)
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_sends_nothing_is_closed() {
+        let addr = serve(ServerLimits {
+            header_read_timeout: Duration::from_millis(300),
+            max_connections: 4,
+        })
+        .await;
+        let mut silent = TcpStream::connect(addr).await.unwrap();
+        assert!(
+            until_closed(&mut silent, Duration::from_secs(5))
+                .await
+                .is_some(),
+            "the server kept a connection that sent nothing open"
+        );
+        // One that sends its request in time is answered.
+        let mut prompt = TcpStream::connect(addr).await.unwrap();
+        prompt
+            .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let answer = until_closed(&mut prompt, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(
+            answer.starts_with(b"HTTP/1.1 200"),
+            "{}",
+            String::from_utf8_lossy(&answer)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_past_the_cap_waits_for_one_to_close() {
+        let addr = serve(ServerLimits {
+            header_read_timeout: Duration::from_secs(30),
+            max_connections: 1,
+        })
+        .await;
+        let holder = TcpStream::connect(addr).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut waiting = TcpStream::connect(addr).await.unwrap();
+        waiting
+            .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = [0u8; 64];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), waiting.read(&mut buf))
+                .await
+                .is_err(),
+            "a connection past the cap was served"
+        );
+        drop(holder);
+        let answer = until_closed(&mut waiting, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(
+            answer.starts_with(b"HTTP/1.1 200"),
+            "{}",
+            String::from_utf8_lossy(&answer)
+        );
+    }
+
+    #[test]
+    fn the_limits_come_from_the_environment() {
+        let defaults = ServerLimits::from_vars(None, None);
+        assert_eq!(defaults.header_read_timeout, Duration::from_secs(30));
+        assert_eq!(defaults.max_connections, 1024);
+        let set = ServerLimits::from_vars(Some("5".into()), Some(" 64 ".into()));
+        assert_eq!(set.header_read_timeout, Duration::from_secs(5));
+        assert_eq!(set.max_connections, 64);
+        let bad = ServerLimits::from_vars(Some("0".into()), Some("many".into()));
+        assert_eq!(bad.header_read_timeout, Duration::from_secs(30));
+        assert_eq!(bad.max_connections, 1024);
+    }
+}
