@@ -1,4 +1,7 @@
-/** The home page: hero, documentation feature cards, every package on the host, and every scope. */
+/**
+ * The home page: centered hero with package search, feature & architecture
+ * cards, and featured packages (or search results when `?q=` is present).
+ */
 
 import {Router, html} from 'zena:http';
 import {GrowableArray} from 'zena:core';
@@ -6,92 +9,76 @@ import {PackageHost, PackageSummary} from '../../host.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {contextOf} from '../session.zena';
-import {count, when} from '../partials/common.zena';
-import {packageList, scopeList} from '../partials/packages.zena';
+import {count} from '../partials/common.zena';
+import {packageList} from '../partials/packages.zena';
 
 /** Adds the home page, `/`, to `router`. */
 export function homePage(router: Router, host: PackageHost, people: People): void {
   router.get('/', async (req, res, next, params) => {
     let context = await contextOf(req, host, people);
     let query = (req.url.searchParams().get('q') ?? '').trim();
-    let packages = await host.listPackages(null);
-    let shown = filtered(packages, query);
-    let scopes = await host.listScopes();
     res.type = 'text/html; charset=utf-8';
-    res.body = page('Zena packages', context, html`
-      <div class="home-page">
-        <div class="hero">
-          <div class="container">
-            <div class="hero-grid">
+
+    if (query != '') {
+      let packages = await host.listPackages(null);
+      let shown = filtered(packages, query);
+      res.body = page('Search · Zena packages', context, html`
+        <div class="home-page">
+          <div class="hero hero-centered">
+            <div class="container">
               <div class="main">
                 <h1><span class="name clip">Packages for Zena</span></h1>
-                <p class="title">Decentralized packages on the AT Protocol.</p>
-                <p class="tagline">
-                  Discover, publish, and verify WebAssembly GC packages identified by DID,
-                  backed by signed Merkle repositories and maintainer attestations.
-                </p>
                 <form class="search hero-search" action="/" method="get">
                   <input type="search" name="q" value="${query}" placeholder="Search packages by name, handle, or description…"
                       aria-label="Search packages">
                   <button type="submit">Search</button>
                 </form>
-                <div class="actions">
-                  <div class="action">
-                    <a class="button brand" href="/docs/getting-started/">Get Started</a>
-                  </div>
-                  <div class="action">
-                    <a class="button alt" href="/docs/">Documentation</a>
-                  </div>
-                  <div class="action">
-                    <a class="button alt" href="/docs/publishing/">Publish a Package</a>
-                  </div>
-                </div>
               </div>
-              <div class="hero-code prose">
-                <zena-code-group class="code-group">
-                  <div class="tabs" role="tablist">
-                    <button type="button" class="tab active" role="tab" aria-selected="true" tabindex="0">Install</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1">Publish</button>
-                    <button type="button" class="tab" role="tab" aria-selected="false" tabindex="-1">Approve</button>
-                  </div>
-                  <div class="blocks">
-                    <div class="language-sh active" role="tabpanel">
-                      <button type="button" title="Copy Code" class="copy"></button>
-                      <span class="lang">sh</span>
-                      <pre class="shiki"><code><span class="line"># Add a dependency by @scope/name, handle, or DID</span>
-<span class="line">zena add @acme/router</span>
-<span class="line"></span>
-<span class="line"># Verify and fetch pinned archives from zena-lock.json</span>
-<span class="line">zena fetch --frozen</span></code></pre>
-                    </div>
-                    <div class="language-sh" role="tabpanel" hidden>
-                      <button type="button" title="Copy Code" class="copy"></button>
-                      <span class="lang">sh</span>
-                      <pre class="shiki"><code><span class="line"># Sign in with your Atmosphere (atproto) account</span>
-<span class="line">zena login alice.bsky.social</span>
-<span class="line"></span>
-<span class="line"># Create an organization scope and publish a release</span>
-<span class="line">zena scope create acme</span>
-<span class="line">zena publish --scope acme</span></code></pre>
-                    </div>
-                    <div class="language-sh" role="tabpanel" hidden>
-                      <button type="button" title="Copy Code" class="copy"></button>
-                      <span class="lang">sh</span>
-                      <pre class="shiki"><code><span class="line"># Require 2-of-N maintainer attestations for releases</span>
-<span class="line">zena maintainers threshold @acme/router --releases 2</span>
-<span class="line"></span>
-<span class="line"># Inspect and co-sign a pending release from your repo</span>
-<span class="line">zena pending @acme/router</span>
-<span class="line">zena approve @acme/router@1.4.2</span></code></pre>
-                    </div>
-                  </div>
-                </zena-code-group>
+            </div>
+          </div>
+          <div class="home-section">
+            <div class="container">
+              <h2>Search results</h2>
+              <p class="muted">${count(shown.length, 'package')} matching “${query}”.</p>
+              ${packageList(shown, 'No packages match.')}
+            </div>
+          </div>
+        </div>
+      `);
+      return;
+    }
+
+    res.body = page('Zena packages', context, html`
+      <div class="home-page">
+        <div class="hero hero-centered">
+          <div class="container">
+            <div class="main">
+              <h1><span class="name clip">Packages for Zena</span></h1>
+              <p class="title">Find, verify, and ship libraries for WebAssembly GC.</p>
+              <p class="tagline">
+                Cryptographically signed releases, M-of-N maintainer approvals, and independent
+                security labelers — in a decentralized package ecosystem with no registry lock-in.
+              </p>
+              <form class="search hero-search" action="/" method="get">
+                <input type="search" name="q" value="" placeholder="Search packages by name, @scope, or description…"
+                    aria-label="Search packages">
+                <button type="submit">Search</button>
+              </form>
+              <div class="actions">
+                <div class="action">
+                  <a class="button brand" href="/docs/getting-started/">Get Started</a>
+                </div>
+                <div class="action">
+                  <a class="button alt" href="/docs/">Documentation</a>
+                </div>
+                <div class="action">
+                  <a class="button alt" href="/docs/publishing/">Publish a Package</a>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        ${when(query == '', () => html`
         <div class="features">
           <div class="container">
             <div class="items">
@@ -102,9 +89,23 @@ export function homePage(router: Router, host: PackageHost, people: People): voi
                       <div class="icon">🚀</div>
                       <h2 class="title">Getting Started</h2>
                     </div>
-                    <p class="details">Add dependencies with <code>zena add</code>, pin versions in <code>zena-lock.json</code>, and import libraries by local alias.</p>
+                    <p class="details">Add dependencies with <code>zena add</code>, pin versions reproducibly in <code>zena-lock.json</code>, and import libraries by local alias.</p>
                     <div class="link-text">
                       <p class="link-text-value">Quickstart guide <span class="icon-arrow-right link-text-icon"></span></p>
+                    </div>
+                  </article>
+                </a>
+              </div>
+              <div class="item grid-3">
+                <a class="feature link" href="/docs/approvals-and-settings/">
+                  <article class="box">
+                    <div class="header">
+                      <div class="icon">🛡️</div>
+                      <h2 class="title">Security &amp; Labelers</h2>
+                    </div>
+                    <p class="details">Protect releases with M-of-N maintainer approvals, signed Merkle proofs, and independent security labelers that flag vulnerabilities.</p>
+                    <div class="link-text">
+                      <p class="link-text-value">Security &amp; policies <span class="icon-arrow-right link-text-icon"></span></p>
                     </div>
                   </article>
                 </a>
@@ -113,26 +114,12 @@ export function homePage(router: Router, host: PackageHost, people: People): voi
                 <a class="feature link" href="/docs/publishing/">
                   <article class="box">
                     <div class="header">
-                      <div class="icon">📦</div>
-                      <h2 class="title">Publishing Packages</h2>
+                      <div class="icon">🔓</div>
+                      <h2 class="title">No Registry Lock-In</h2>
                     </div>
-                    <p class="details">Sign in with your Atmosphere account, create a scope, and publish verified source archives without shared package passwords.</p>
+                    <p class="details">Decentralized by design with no single gatekeeper or namespace monopoly. Move hosts anytime without breaking existing dependents.</p>
                     <div class="link-text">
                       <p class="link-text-value">Publishing workflow <span class="icon-arrow-right link-text-icon"></span></p>
-                    </div>
-                  </article>
-                </a>
-              </div>
-              <div class="item grid-3">
-                <a class="feature link" href="/docs/manifests/">
-                  <article class="box">
-                    <div class="header">
-                      <div class="icon">📋</div>
-                      <h2 class="title">Manifests &amp; Workspaces</h2>
-                    </div>
-                    <p class="details">Configure <code>zena-package.json</code>, library <code>exports</code>, conditional targets, and multi-package workspaces.</p>
-                    <div class="link-text">
-                      <p class="link-text-value">Manifest reference <span class="icon-arrow-right link-text-icon"></span></p>
                     </div>
                   </article>
                 </a>
@@ -144,7 +131,7 @@ export function homePage(router: Router, host: PackageHost, people: People): voi
                       <div class="icon">👥</div>
                       <h2 class="title">Scopes, Orgs &amp; Teams</h2>
                     </div>
-                    <p class="details">Manage organization members and teams with salted cryptographic commitments that keep memberships private until members act.</p>
+                    <p class="details">Organize packages under <code>@scope</code> namespaces and manage team roles with commitments that keep memberships private until members act.</p>
                     <div class="link-text">
                       <p class="link-text-value">Orgs &amp; teams <span class="icon-arrow-right link-text-icon"></span></p>
                     </div>
@@ -152,15 +139,15 @@ export function homePage(router: Router, host: PackageHost, people: People): voi
                 </a>
               </div>
               <div class="item grid-3">
-                <a class="feature link" href="/docs/approvals-and-settings/">
+                <a class="feature link" href="/docs/manifests/">
                   <article class="box">
                     <div class="header">
-                      <div class="icon">🔐</div>
-                      <h2 class="title">Approvals &amp; Security</h2>
+                      <div class="icon">📋</div>
+                      <h2 class="title">Manifests &amp; Workspaces</h2>
                     </div>
-                    <p class="details">Require M-of-N maintainer attestations, enforce scope-wide policies, retract broken releases, and manage CI accounts.</p>
+                    <p class="details">Configure <code>zena-package.json</code>, library <code>exports</code>, conditional targets, minimal version selection, and multi-package workspaces.</p>
                     <div class="link-text">
-                      <p class="link-text-value">Security &amp; policies <span class="icon-arrow-right link-text-icon"></span></p>
+                      <p class="link-text-value">Manifest reference <span class="icon-arrow-right link-text-icon"></span></p>
                     </div>
                   </article>
                 </a>
@@ -170,41 +157,116 @@ export function homePage(router: Router, host: PackageHost, people: People): voi
                   <article class="box">
                     <div class="header">
                       <div class="icon">🌐</div>
-                      <h2 class="title">AT Protocol Architecture</h2>
+                      <h2 class="title">Built on AT Protocol</h2>
                     </div>
-                    <p class="details">Every package is a DID with a signed Merkle repository, content-addressed CAR archives, and minimal version selection.</p>
+                    <p class="details">Curious how it works under the hood? Every package and scope is an Atmosphere account with a DID, signed repository, and CAR archives.</p>
                     <div class="link-text">
-                      <p class="link-text-value">Architecture deep dive <span class="icon-arrow-right link-text-icon"></span></p>
+                      <p class="link-text-value">AT Protocol architecture <span class="icon-arrow-right link-text-icon"></span></p>
                     </div>
                   </article>
                 </a>
               </div>
             </div>
           </div>
-        </div>`)}
+        </div>
 
-        <div class="home-section">
+        <div class="features featured-packages">
           <div class="container">
-            <div class="columns">
-              <section>
-                <h2>${if (query == '') 'Packages' else 'Search results'}</h2>
-                ${when(query != '', () => html`<p class="muted">${count(shown.length, 'package')} matching “${query}”.</p>`)}
-                ${packageList(shown, if (query == '') 'Nothing is published here yet.' else 'No packages match.')}
-              </section>
-              <aside>
-                <div>
-                  <h2>Scopes</h2>
-                  ${scopeList(scopes)}
-                </div>
-                <div class="aside-card">
-                  <h3>CLI Reference</h3>
-                  <p class="muted">Manage dependencies, scopes, teams, and releases from the command line:</p>
-                  <pre class="mono">zena add @scope/pkg
-zena publish --scope acme
-zena approve @scope/pkg@1.0.0</pre>
-                  <p><a href="/docs/cli/">All CLI commands →</a></p>
-                </div>
-              </aside>
+            <div class="featured-header">
+              <h2>Featured Packages</h2>
+              <p class="muted">Popular libraries and foundational packages for Zena applications.</p>
+            </div>
+            <div class="items">
+              <div class="item grid-3">
+                <a class="feature link" href="/docs/getting-started/">
+                  <article class="box">
+                    <div class="header">
+                      <div class="icon">🌐</div>
+                      <h3 class="title mono">@zena/http</h3>
+                      <span class="chip chip-primary">0.4.2</span>
+                    </div>
+                    <p class="details">HTTP client, router, and streaming HTML templates for WASI HTTP components and servers.</p>
+                    <div class="link-text">
+                      <p class="link-text-value mono">zena add @zena/http</p>
+                    </div>
+                  </article>
+                </a>
+              </div>
+              <div class="item grid-3">
+                <a class="feature link" href="/docs/getting-started/">
+                  <article class="box">
+                    <div class="header">
+                      <div class="icon">📄</div>
+                      <h3 class="title mono">@zena/json</h3>
+                      <span class="chip chip-primary">0.3.1</span>
+                    </div>
+                    <p class="details">Fast JSON parser, schema validator, and typed serializer for WebAssembly GC records and classes.</p>
+                    <div class="link-text">
+                      <p class="link-text-value mono">zena add @zena/json</p>
+                    </div>
+                  </article>
+                </a>
+              </div>
+              <div class="item grid-3">
+                <a class="feature link" href="/docs/getting-started/">
+                  <article class="box">
+                    <div class="header">
+                      <div class="icon">🗄️</div>
+                      <h3 class="title mono">@zena/sqlite</h3>
+                      <span class="chip chip-primary">0.2.0</span>
+                    </div>
+                    <p class="details">Embedded SQLite bindings, typed query builder, and schema migrations with prepared statement caching.</p>
+                    <div class="link-text">
+                      <p class="link-text-value mono">zena add @zena/sqlite</p>
+                    </div>
+                  </article>
+                </a>
+              </div>
+              <div class="item grid-3">
+                <a class="feature link" href="/docs/getting-started/">
+                  <article class="box">
+                    <div class="header">
+                      <div class="icon">🔐</div>
+                      <h3 class="title mono">@zena/crypto</h3>
+                      <span class="chip chip-primary">0.5.0</span>
+                    </div>
+                    <p class="details">SHA-256, Ed25519, secp256k1 signatures, and content-addressed CIDs for verifiable data structures.</p>
+                    <div class="link-text">
+                      <p class="link-text-value mono">zena add @zena/crypto</p>
+                    </div>
+                  </article>
+                </a>
+              </div>
+              <div class="item grid-3">
+                <a class="feature link" href="/docs/getting-started/">
+                  <article class="box">
+                    <div class="header">
+                      <div class="icon">⌨️</div>
+                      <h3 class="title mono">@zena/cli</h3>
+                      <span class="chip chip-primary">0.3.0</span>
+                    </div>
+                    <p class="details">Command-line flag parsing, subcommand dispatch, ANSI terminal styling, and interactive prompts.</p>
+                    <div class="link-text">
+                      <p class="link-text-value mono">zena add @zena/cli</p>
+                    </div>
+                  </article>
+                </a>
+              </div>
+              <div class="item grid-3">
+                <a class="feature link" href="/docs/getting-started/">
+                  <article class="box">
+                    <div class="header">
+                      <div class="icon">⏱️</div>
+                      <h3 class="title mono">@zena/bench</h3>
+                      <span class="chip chip-primary">0.1.4</span>
+                    </div>
+                    <p class="details">Microbenchmarking harness and statistical regression runner for performance-critical Zena libraries.</p>
+                    <div class="link-text">
+                      <p class="link-text-value mono">zena add @zena/bench</p>
+                    </div>
+                  </article>
+                </a>
+              </div>
             </div>
           </div>
         </div>
