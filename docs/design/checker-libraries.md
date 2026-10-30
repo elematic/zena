@@ -149,9 +149,13 @@ section banners).
 - `isValuePrimitive`, `isReferenceType`, `isAnyRefSource`,
   `isGuaranteedReference`, `isBoxablePrimitive`, `representationOf`
   and the inline "is this numeric" matches in `isValidCast` (six of
-  them) are seven answers to "what representation does this type
-  have". One function returning a representation kind would serve
-  casts, unions and `anyref` alike.
+  them) were seven answers to "what representation does this type
+  have". `representationKind` answers once, with a `Representation`
+  whose kinds are told apart exactly where some question answered
+  differently (`eqref` is a reference a union may hold but not one
+  `anyref` is handed; `externref` neither), and the predicates are
+  one-line readings of it. `representationOf`, which peels aliases
+  and enums, stays: it answers a different question.
 - `isAssignableTo`'s class-to-interface case walks the class and then
   each superclass with the same loop body written twice; and it
   unwraps transparent aliases in two places with slightly different
@@ -415,14 +419,14 @@ after each later step (on a loaded machine; the narrowing column ran at
 a load average of 11, which is where its `check-register`, untouched by
 that step, picked up 7 ms):
 
-| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) | narrowing (ms) | walks (ms) | body (ms) |
-| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- | -------------- | ---------- | --------- |
-| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           | 15.3       | 15.2      |
-| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          | 134.4      | 137.7     |
-| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          | 206.4      | 231.2     |
-| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           | 32.1       | 33.7      |
-| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          | 159.0      | 184.5     |
-| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           | 4005       | 5750      |
+| fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) | narrowing (ms) | walks (ms) | body (ms) | kind (ms) |
+| ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- | -------------- | ---------- | --------- | --------- |
+| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           | 15.3       | 15.2      | 15.4      |
+| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          | 134.4      | 137.7     | 125.1     |
+| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          | 206.4      | 231.2     | 204.3     |
+| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           | 32.1       | 33.7      | 30.8      |
+| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          | 159.0      | 184.5     | 158.8     |
+| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           | 4005       | 5750      | 3985      |
 
 The body column was measured on an idle machine against the main it
 sits on (the walks step merged), alternating the two builds twice. The
@@ -430,7 +434,9 @@ main binary gave `check-bodies` 196.3 then 176.6 ms, the body binary
 187.3 then 184.5 ms: the step lands inside the baseline's own spread.
 The idle machine ran the whole fixture slower than the loaded one did
 (a lower clock, it seems), which is why its `total` is not comparable
-with the earlier columns.
+with the other columns. The kind column, which includes the body step,
+was measured on the loaded machine like the walks column and matches
+it.
 
 The flow walks' column is the one real change in the table: the path
 walk's memo was keyed by a string built per join visit, and
@@ -473,4 +479,4 @@ Each step is one PR, lands green on `npm test`, and keeps
    `checkFunctionExpression` and `checkInterfaceConstructorBody`.
    Done.
 8. **Representation predicates.** One representation kind for casts,
-   unions and `anyref`.
+   unions and `anyref`. Done.
