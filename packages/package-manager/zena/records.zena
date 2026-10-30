@@ -29,6 +29,7 @@ import {
   newMap
 } from 'atproto:data';
 import {isValidCidSyntax, isValidDatetime, isValidDid} from 'atproto:syntax';
+import {URL} from 'zena:url';
 import {Version} from './version.zena';
 
 export let PROFILE_TYPE = 'dev.zena-lang.package.profile';
@@ -216,15 +217,21 @@ export final class Profile {
       : name = name, description = description, license = license,
         homepage = homepage, source = source;
 
-  static fromValue(value: Value): Profile {
+  /**
+   * The profile `value` holds. Its `homepage` and `source` are links, so
+   * each must be an `http:` or `https:` URL: one that is not reads as
+   * none, since a page must never link it, and with `writing`, as the
+   * host checks a profile it is given, is refused.
+   */
+  static fromValue(value: Value, writing: boolean = false): Profile {
     let map = recordMap(value, PROFILE_TYPE, 'profile');
     let name = requiredString(map, 'name', 'profile');
     if (!isValidPackageName(name)) {
       throw new RecordError(`profile: '${name}' is not a valid package name`);
     }
     return new Profile(name, optionalString(map, 'description', 'profile'),
-        optionalString(map, 'license', 'profile'), optionalString(map, 'homepage', 'profile'),
-        optionalString(map, 'source', 'profile'));
+        optionalString(map, 'license', 'profile'), webLink(map, 'homepage', writing),
+        webLink(map, 'source', writing));
   }
 
   toValue(): MapValue {
@@ -1033,6 +1040,25 @@ function optionalString(map: MapValue, key: String, what: String): String | null
     throw new RecordError(`${what}: '${key}' is not a string`);
   }
   return value.value;
+}
+
+/**
+ * The `http:` or `https:` URL at `key`, or null when there is none or,
+ * unless `strict`, when it is not one.
+ */
+function webLink(map: MapValue, key: String, strict: boolean): String | null {
+  let value = optionalString(map, key, 'profile');
+  if (value == null) {
+    return null;
+  }
+  let parsed = URL.parse(value as String);
+  if (parsed == null || (parsed.protocol != 'https:' && parsed.protocol != 'http:')) {
+    if (strict) {
+      throw new RecordError(`profile: '${key}' is not an http: or https: URL: '${value as String}'`);
+    }
+    return null;
+  }
+  return value;
 }
 
 function putString(map: MapValue, key: String, value: String | null): void {

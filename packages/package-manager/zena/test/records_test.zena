@@ -241,6 +241,20 @@ export let tests = suite('package-manager:records', () => {
     rejectsProfile('{"$type": "dev.zena-lang.package.profile", "name": "Router"}');
     rejectsProfile('{"$type": "dev.zena-lang.package.profile", "name": "router", "license": 3}');
     rejectsProfile('{"$type": "dev.zena-lang.package.release", "name": "router"}');
+
+    // A link that is not a web address reads as none, and refuses a
+    // profile that is being written.
+    let bad = '{"$type": "dev.zena-lang.package.profile", "name": "r", "homepage": "javascript:alert(1)", "source": "ftp://example.com/r"}';
+    let read = Profile.fromValue(value(bad));
+    isNull(read.homepage);
+    isNull(read.source);
+    var refused = false;
+    try {
+      Profile.fromValue(value(bad), true);
+    } catch (e) {
+      refused = e is RecordError;
+    }
+    isTrue(refused, 'a profile written with a javascript: homepage');
   });
 
   test('reads retractions', (ctx) => {
