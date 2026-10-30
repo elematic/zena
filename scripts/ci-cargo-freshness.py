@@ -21,9 +21,10 @@ The recorded time is restored to the nanosecond, not to some older time: a
 build script that declares no `rerun-if-changed`, such as workspace-hack's,
 makes cargo store the newest mtime in its package and treat any other value
 as a change. Every crate depends on workspace-hack, so one input off by a
-nanosecond recompiles all of them. That is why this is Python: `os.utime`
-takes integer nanoseconds, while the runner's `touch -d @<seconds>` rounds
-the fraction (it moved 1793210666.612279336 to .612279400).
+nanosecond recompiles all of them. That is why this is Python: `st_mtime_ns`
+and `os.utime(ns=...)` are integer nanoseconds, while the runner's
+coreutils rounds the fraction (`stat -c '%.9Y'` recorded 1793210666.612279336
+as .612279400).
 
 The inputs are the git-tracked files under PATHS. A file cargo reads that
 is not among them keeps the checkout's time, which costs a recompile and
