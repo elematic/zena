@@ -1,6 +1,5 @@
 ---
 title: Package Manifests
-lead: Reference for zena-package.json, library exports, virtual targets, and dependency declarations.
 ---
 
 Every Zena package has a `zena-package.json` manifest at its root. The manifest defines the package's name, published metadata, exported libraries, and dependencies.

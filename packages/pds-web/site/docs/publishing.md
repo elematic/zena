@@ -1,6 +1,5 @@
 ---
 title: Publishing Packages
-lead: Sign in with an Atmosphere account, create a scope, and publish releases to a package host.
 ---
 
 Packages on `pkg.zena-lang.dev` do not have separate registry usernames or package passwords. You sign in with your own AT Protocol (Atmosphere) account—such as a Bluesky account or an account on your own PDS—and publish under an organization scope.

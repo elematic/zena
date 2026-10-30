@@ -1,6 +1,5 @@
 ---
 title: CLI Commands
-lead: Command-line reference for managing dependencies, publishing packages, and administering scopes and teams.
 ---
 
 The `zena` CLI includes all package manager commands alongside the compiler, test runner, formatter, and linter.

@@ -51,7 +51,7 @@ export default async function (eleventyConfig) {
     dir: {
       input: 'site',
       output: 'out',
-      includes: '_includes',
+      includes: '../../website/src/_includes',
       layouts: '_layouts',
       data: '_data',
     },

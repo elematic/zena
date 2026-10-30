@@ -1,6 +1,5 @@
 ---
 title: Workspaces & Lockfiles
-lead: Develop multiple packages together in one repository and pin dependencies reproducibly with zena-lock.json.
 ---
 
 A **workspace** is the root directory you work in: either a single package or a multi-package repository sharing one `zena-lock.json` lockfile.

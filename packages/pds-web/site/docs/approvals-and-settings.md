@@ -1,6 +1,5 @@
 ---
 title: Approvals, Thresholds & Policies
-lead: Require M-of-N maintainer attestations for releases and membership changes, set scope-wide policies, and manage CI accounts.
 ---
 
 The Zena package manager protects packages against single-account compromise by separating proposing a change from approving it, and verifying approvals through independent AT Protocol repositories.
