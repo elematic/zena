@@ -4,10 +4,14 @@
  * who opened them should act on, prints what happened, and exits:
  *
  * - a PR is merged or closed;
- * - a PR's checks finish (or a new push's checks finish);
+ * - a PR's checks fail;
  * - someone other than the agent account reviews or comments;
  * - the PR a stacked PR is based on is merged, so the stacked PR needs
  *   rebasing onto main.
+ *
+ * Checks that pass are printed and the watch goes on, since there is
+ * nothing to do about them; exiting there left a session that forgot to
+ * restart it unaware of the merge that followed.
  *
  * Run it as a background task after pushing, so a merge or a red check
  * reaches the session without anyone relaying it, and start it again after
@@ -107,12 +111,14 @@ const changes = (before, after) => {
     const failed = after.checks.filter(
       (c) => !['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(c.result),
     );
-    events.push(
-      failed.length === 0
-        ? `${n}'s checks passed`
-        : `${n}'s checks failed: ${failed.map((c) => `${c.name} ${c.result}`).join(', ')} ` +
-            `(gh run view --log-failed, from gh pr checks ${after.number})`,
-    );
+    if (failed.length === 0) {
+      console.log(`${n}'s checks passed; still watching`);
+    } else {
+      events.push(
+        `${n}'s checks failed: ${failed.map((c) => `${c.name} ${c.result}`).join(', ')} ` +
+          `(gh run view --log-failed, from gh pr checks ${after.number})`,
+      );
+    }
   }
   if (after.feedback > before.feedback) {
     events.push(
@@ -149,7 +155,7 @@ for (;;) {
         (pr) => basePr(pr.base) === n,
       );
       events.push(
-        `base #${n} is merged; rebase ${stacked.map((pr) => `#${pr.number}`).join(', ')} onto main (AGENTS.md, "Stacked pull requests")`,
+        `base #${n} is merged; rebase ${stacked.map((pr) => `#${pr.number}`).join(', ')} onto main (AGENTS.md, "Pull Requests")`,
       );
     }
     bases.set(n, after);

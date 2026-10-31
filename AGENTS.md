@@ -667,8 +667,9 @@ All prose — design docs, commit messages, comments — follows
   documentation alone. PRs are squash-merged, so the title becomes the
   commit on `main`.
 - **After pushing**, run `npm run watch-prs -- <numbers>` as a
-  background task. It exits when a PR is merged, its checks finish,
-  someone comments, or the PR a stacked PR is based on merges. Act on
+  background task. It exits when a PR is merged, its checks fail,
+  someone comments, or the PR a stacked PR is based on merges; passing
+  checks are printed and it keeps watching. Act on
   what it prints (fix the failing check, answer the comment, rebase),
   then start it again while any of the PRs are open.
 - **Stacked PRs.** When the PR below yours is squash-merged, its commits
