@@ -26,7 +26,10 @@
  *   `names/{name}.{scope}`: `did`, `scope` and `name`;
  *   `summaries/{did}`: a package's summary, `handle`, `scope`, `name`,
  *   `description`, `license` and `latest` (each absent for none),
- *   `releases`, and `rev`, the revision of the commit it was made from; and
+ *   `releases`, and `rev`, the revision of the commit it was made from;
+ *   `mentions/{subject}/by/{account}`: `account`, for each account whose
+ *   records or entries mention a person's DID or a team, `<org DID> <team>`;
+ *   and
  *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR.
  * - Sessions' (`FirestoreCredentialStore`): `accounts/{did}/appPasswords/{name}`:
  *   `hash` and `createdAt`; and `sessions/{jti}`: `did`, `scope`,
@@ -493,6 +496,28 @@ export final class FirestoreHostStore implements HostStore {
       tx.set(ref, fields);
       return true;
     });
+  }
+
+  async addMentions(account: String, subjects: Array<String>): Future<void> {
+    var i = 0;
+    while (i < subjects.length) {
+      let batch = this.#db.batch();
+      let end = if (subjects.length - i > BATCH_WRITES) i + BATCH_WRITES else subjects.length;
+      for (var j = i; j < end; j += 1) {
+        batch.set(this.#root.collection('mentions').doc(subjects[j]).collection('by').doc(account),
+            new Fields().string('account', account));
+      }
+      await batch.commit();
+      i = end;
+    }
+  }
+
+  async mentionsOf(subject: String): Future<Array<String>> {
+    let out = new GrowableArray<String>();
+    for (let snapshot in await this.#root.collection('mentions').doc(subject).collection('by').get()) {
+      out.push(snapshot.id);
+    }
+    return out;
   }
 
   async summaries(scope: String | null): Future<Array<PackageSummary>> {
