@@ -166,7 +166,7 @@ for language completeness.
 - **Intrinsics**: `length`, concatenation (`+`), equality (`==`, `!=`).
 - **Status**: ✅ Implemented
 
-See `docs/design/strings.md` for full details.
+See the [strings design page](../../packages/website/src/development/design/strings.md) for full details.
 
 #### 2. FixedArray<T>
 

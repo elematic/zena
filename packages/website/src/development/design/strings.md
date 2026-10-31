@@ -1,6 +1,6 @@
 ---
 title: 'Strings'
-description: 'One String type, an encoding chosen per binary rather than per language, and views instead of copies.'
+description: 'One String type, a representation chosen per compile target, views instead of copies, and what Unicode costs in a small binary.'
 ---
 
 Note: The design of Zena strings is still somewhat in flux.
@@ -81,133 +81,257 @@ These goals are often in tension and it is hard to meet all of them.
 ## Design overview
 
 We take inspiration from Swift and Go for our string design, emphasizing small
-implementation size, Unicode-safe operations and zero-copy host interop. We will
-flex on trying to make one Wasm binary be optimal for all hosts, and use
-compiler flags to adjust the default encoding.
+implementation size, Unicode-safe operations and zero-copy host interop. Rather
+than make one Wasm binary optimal for every host, the representation is chosen
+per compile target.
 
-- String is a class with a final and fixed/sealed hierarchy, not an interface.
-  - We can pay for virtual dispatch, and often optimize it away. We don't want
-    to pay for the extra indirection of fat pointers for interfaces.
-  - Most public String methods will be final and delegate to a few virtual
-    methods that concrete implementations provide. When we can't devirtualize
-    those calls, we can possibly customize the emit strategy to use branches at
-    the callsites instead of vtable lookups.
-  - To keep Zena binaries small and enable devirtualization, we will have one
-    main String implemenation for all Zena-native strings that's backed by a
-    single byte-array.
-  - If we have other String subclasses, they might include:
-    - HostString - a string created and managed by the host, such as a
-      JavaScript string. Such strings will hold an externref, which is not an
-      eqref, so will have to delegate to host functions, like the JS String
-      Builtins.
-    - LinearMemoryString - a string backed by linear memory for zero-copy access
-      to WASI and other linear memory provided data.
-    - RopeString - if we need, we can implement a rope-based string. We will
-      hold off on this because unlike HostString and LinearMemoryString, it's
-      very likely that simple programs will use RopeString and thus multiple
-      String implementations, which will hinder devirtualization.
-- To encourage Unicode safe operations, the encoding will be hidden and we will
-  discourage the use of byte-indexing. Strings will not have a `[](i32)`
-  operator. They will have a Swift-style `[](String.Index)` operator iteration
-  over codepoints (or grapheme clusters?), and possibly a `getByteAt()` method.
-- To reduce the need for random-access APIs and provide a building block for
-  parsers and such, we will add a StringReader class that keeps a current
-  position and has methods for safely navigating the string, including consuming
-  some common character classes (whitespace, etc) to reduce the need for
-  potentially expensive regular expressions.
-- To make slicing fast and enable string literals to sharing data segments in
-  the binary, strings will be a view onto a backing byte array, Go-style. This
-  may cause extra memory to be held onto, so a copy() method will create a new
-  backing array to allow the old one to be released.
-- For fast concatenation we will add a StringBuilder class, JavaScript-style
-  template literals, and a join function.
-  - Without a rope implementation, piecewise concatenation with the `+` operator
-    will be a foot gun, which we will attempt to discourage with compiler
-    warnings. _Note_: This is a provisional decision. It may turn out that the
-    complexity of a StringBuilder is similar to including a rope-based String
-    implementation, and that the cost of multiple String implementations isn't
-    insurmountable or a deal-breaker. We will need benchmarks.
+- **One final `String` class per target.** On the byte targets (`zena-cli`,
+  `component`, `freestanding`), a `String` is a view onto a byte array of
+  WTF-8. On the js target it holds a JavaScript string. A program has exactly
+  one `String` class, with no subclasses, so every call on a string is direct.
+  [Why not subclasses](#why-not-subclasses) below says what that gave up.
+- **The encoding is hidden.** There is no `[](i32)` operator. Strings are
+  indexed by an opaque `StringIndex`, Swift-style, that can only lie on a
+  character boundary, and byte-level work goes through explicit UTF-8 and
+  UTF-16 views.
+- **Slicing is a view.** A slice shares its parent's bytes, Go-style, so it
+  costs one small object and copies nothing. This can keep a large parent
+  alive, so `copy()` makes a slice its own backing array.
+- **Parsers walk a `StringReader`** rather than index at random: it keeps a
+  position and consumes whitespace, runs of bytes matching a predicate, and
+  text up to a delimiter, which also reduces the need for regular expressions.
+- **Concatenation in bulk goes through `StringBuilder`**, template literals and
+  `join`. Without a rope implementation, piecewise concatenation with `+` in a
+  loop takes quadratic time. A compiler warning for it is planned. _Note_: This
+  is a provisional decision. It may turn out that the complexity of a
+  `StringBuilder` is similar to that of a rope-based `String`, and that the cost
+  of several `String` implementations is acceptable. We will need benchmarks.
 
-## Host interop
+### Why not subclasses
 
-A `String` is a Wasm GC struct wrapping a GC array. Both are opaque to the host:
-JavaScript cannot read a GC struct's fields, and a GC array cannot be viewed as
-a typed array. Every string crossing the boundary is copied.
+The earlier plan was a `String` class with a closed set of subclasses sharing
+their algorithms through a few virtual primitives (`length`, `byteAt`): one
+backed by a GC byte array, a `HostString` holding a JavaScript string, a
+`LinearMemoryString` over WASI data, and possibly a `RopeString` for cheap
+concatenation.
 
-### Which side runs the loop
+What happened instead is that the js target got a `String` of its own, chosen
+when the program is compiled (`core/string-js.zena` in place of
+`core/string.zena`). Each program then has one `String`, which keeps what the
+subclasses would have cost out of every program:
 
-Wasm calling the host once per byte is the slow approach. The advice, from the
-dart2wasm team in
-[WebAssembly/gc#568](https://github.com/WebAssembly/gc/issues/568), is to invert
-it: pass the string to the host as an `externref` and let the host drive the
-loop, calling a small exported function to read each byte, "because V8 optimizes
-JS calling Wasm better than Wasm calling JS." dart2wasm ships exactly this, as
-`$wasmI8ArrayGet`.
+- No virtual dispatch on any string operation, and no reliance on the
+  optimizer to remove it.
+- The struct type is final, which makes casts to it cheap: in wasmtime a cast
+  to a final type is a type-index comparison, and a failing cast to an open one
+  calls out of JIT code.
+- Neither representation's code is linked into a program that uses the other.
 
-The compiler emits three helpers for this, exported from every module that uses
-strings:
+The costs are two implementations of the same API to keep in step, and that one
+module cannot hold both representations: a byte-target module running in
+JavaScript copies every string that crosses the boundary.
 
-| Export           | Signature                     | Direction   |
-| ---------------- | ----------------------------- | ----------- |
-| `$stringGetByte` | `(externref, i32) -> i32`     | Wasm → host |
-| `$stringCreate`  | `(i32) -> externref`          | host → Wasm |
-| `$stringSetByte` | `(externref, i32, i32) -> ()` | host → Wasm |
+Subclasses could still come back for a representation a target needs alongside
+its main one: a linear-memory string for zero-copy WASI data, or a rope if `+`
+in loops turns out to be common. Either would make `String` non-final and its
+calls virtual in a program that uses both kinds; devirtualization could still
+make them direct in a program that creates only one.
 
-Reading a string means calling `$stringGetByte` in a loop and decoding:
+## Representation
 
-```js
-const readString = (strRef, length) => {
-  const bytes = new Uint8Array(length);
-  for (let i = 0; i < length; i++) {
-    bytes[i] = getByte(strRef, i) & 0xff;
-  }
-  return new TextDecoder().decode(bytes);
-};
+### On the byte targets
+
+```zena
+export final class String implements Hashable, Stringable, Iterable<String> {
+  #data: ByteArray; // may be shared with other Strings
+  #start: i32; // inclusive
+  #end: i32; // exclusive
+  #encoding: Encoding; // always WTF-8 today
+  var #hashCode: i32 = 0; // 0 until computed
+}
 ```
 
-Writing goes the other way: encode with `TextEncoder`, call `$stringCreate(len)`
-to allocate, then `$stringSetByte` per byte. `@zena-lang/runtime` packages both
-as `createStringReader` and `createStringWriter`.
+All fields are private, and the compiler leaves `#hashCode` out of the struct
+in a program that never reads it. A slice is a new `String` over the same
+`#data`:
 
-Byte-streaming out of Wasm, the alternative, costs N+2 Wasm-to-JS calls per
-string. This costs one, plus a loop the engine can optimize.
+```zena
+let json = await readFile('data.json'); // #start = 0, #end = 10000
+let key = json[start..end]; // shares #data
+let owned = key.copy(); // its own ByteArray
+```
 
-### Why the signature is `externref`
+A 10-byte slice of a 10 MB string keeps the 10 MB alive until the slice is
+collected. Go makes the same trade with its `string`, and it works well in
+practice: most slices are short-lived, and where they are not, `copy()` makes
+the ownership explicit.
 
-`$stringGetByte` takes an `externref` and casts it back to a `String` inside the
-function body, which looks like pointless work when it could take a typed
-reference directly. It isn't. In the same thread, Jakob Kummerow of the V8 team
-noted two things:
+The `Encoding` field can say `WTF16`, and the views handle a WTF-16 string, but
+nothing on the byte targets constructs one: literals, concatenation, the
+builder and decoding all produce WTF-8.
 
-- V8's Wasm-into-JS inlining "currently only triggers for (nullable!)
-  `externref` in the Wasm signature." A typed reference, or even `anyref`, does
-  not get inlined.
-- Implicit type checks at the boundary are "quite a bit slower than using
-  `externref` and then an explicit `ref.cast` on the Wasm side."
+::: info Why WTF, not UTF
+JavaScript strings can contain unpaired surrogates, so they are not always valid
+UTF-16. WTF-8 and WTF-16 are the variants that permit them. Well-formed text is
+a subset of both, so valid UTF-8 and UTF-16 behave identically. An unpaired
+surrogate reaches a Zena string only from the host or through the deprecated
+`sliceBytes`; strings built in Zena keep scalar boundaries.
+:::
 
-The cast is the fast path, not overhead.
+### On the js target
 
-### The advice is V8-specific
+```zena
+export final class String implements Hashable, Stringable, Iterable<String> {
+  #handle: externref; // a JavaScript string
+}
+```
 
-All of the above describes one engine's current behavior, and the V8 engineer
-in that thread says as much: "I'm not saying that you should optimize for V8's
-current behavior, I'm just describing what that behavior is for now."
+Most operations call the
+[JS String Builtins](https://github.com/WebAssembly/js-string-builtins)
+(`wasm:js-string`): length, `charCodeAt`, substring, concatenation, equality
+and comparison. String literals are imported string constants, so they cost no
+code to build. `encoding` reports `WTF16`, and a `StringIndex` is a UTF-16 code
+unit offset. A few operations import a JavaScript function instead, where that
+is smaller or faster than the same work in Zena: case conversion, `indexOf` and
+`replaceAll`.
 
-A custom Wasmtime embedding has no JIT inlining an exported Wasm function into a
-host loop, so per-call overhead may dominate and a bulk copy is likely better.
-Zena has not measured this outside V8.
+## Literals
 
-The underlying problem is that Wasm GC has no bulk transfer between a GC array
-and host memory at all. That is what issue #568 is asking for, and it is still
-open.
+On the byte targets, the bytes of every distinct literal are packed into one
+passive data segment. The module copies the segment into one byte array when it
+starts, and a literal's first evaluation creates a view onto its part of that
+array and caches it by literal, so later evaluations return the same object and
+copy nothing.
 
-### WASI
+Strings built at run time are not interned. A parser that wants one object per
+distinct identifier can intern with the `StringTable` in `zena:string-reader`
+([working notes](https://github.com/elematic/zena/blob/main/docs/design/string-interning.md)).
 
-WASI is a separate problem. The canonical ABI passes strings in linear memory,
-so a GC-backed string must be copied into linear memory for the call, and the
-helpers above do not apply. Component Model GC removes that copy — wasmtime
-already has `-W component-model-gc=y` — but until it is stable and arrives in a
-post-0.3 WASI update, the copy stays.
+## Indexing and views
+
+Raw integer indexing (`str[0]`) is rejected at compile time, so code cannot
+split a multi-byte UTF-8 sequence or a surrogate pair. `String` is indexed by
+`StringIndex` instead:
+
+```zena
+export opaque type StringIndex = i32;
+```
+
+Outside `zena:core`, `StringIndex` is opaque (`0 as StringIndex` is a compile
+error), and every `StringIndex` a `String` produces lies on a Unicode scalar
+boundary of that string. At run time it is an unboxed `i32`, an offset in the
+string's own encoding: bytes on the byte targets, UTF-16 code units on the js
+target. That is why `String` has no byte-level API of its own. The bytes belong
+to the views, `str.utf8` and `str.utf16`, and each maps its own offsets back to
+`StringIndex` with `indexAt`.
+
+### Navigation
+
+- `str.startIndex` and `str.endIndex` — the first index and the one past the
+  end.
+- `str.indexAfter(i)` and `str.indexBefore(i)` — the next and previous extended
+  grapheme cluster boundary.
+- `str.scalarIndexAfter(i)` and `str.scalarIndexBefore(i)` — the next and
+  previous code point boundary.
+- `str.indexOffsetBy(from, count)` — steps `count` grapheme clusters (backward
+  when negative), returning `(false, _)` past either end.
+- `str.indexOf(needle)` — where `needle` first occurs, as a `StringIndex`.
+- `str.utf8.indexAt(offset)` — the index for a UTF-8 offset into the view, when
+  the offset is in `[0, length]` and not on a continuation byte. $O(1)$ when the
+  view shares the string's storage; for a WTF-16 string it counts the code units
+  of the scalars before the offset. `str.utf16.indexAt` is the same for code
+  unit offsets, rejecting one that splits a surrogate pair. An index found in a
+  sub-view from `slice` still indexes the whole string.
+
+Indexing with a `StringIndex` returns the grapheme cluster there, and indexing
+with a range of them returns a slice. Both share the string's storage:
+
+```zena
+let s = 'café😀';
+let first = s[s.startIndex]; // "c"
+let rest = s[s.indexAfter(s.startIndex)..]; // "afé😀"
+
+if (let (true, pos) = s.indexOf('é')) {
+  let prefix = s[..pos]; // "caf"
+  let suffix = s[pos..]; // "é😀"
+}
+```
+
+### Iteration and views
+
+- `for (let g in str)` and `str.graphemes` yield each extended grapheme cluster
+  as a slice. `str.reverse()` reverses by grapheme cluster, so combining marks
+  and emoji sequences stay intact.
+- `str.codePoints` yields Unicode scalar values as `i32`. Like `graphemes`, it
+  is a view that allocates nothing of its own.
+- `str.utf8` is a view of UTF-8 bytes (`u8`), with $O(1)$ `length`, `utf8[i]`,
+  `slice`, `copyTo` and `toArray`. It shares a WTF-8 string's storage and
+  transcodes a WTF-16 one, so on the js target it allocates.
+- `str.utf16` is a view of UTF-16 code units (`u16`), with $O(1)$ `length`,
+  `utf16[i]`, `slice` and `toArray`. It shares a WTF-16 string's storage and
+  transcodes a WTF-8 one.
+
+The older byte-oriented members of `String` — `length`, `getByteAt`,
+`sliceBytes`, and `codePointAt(index: i32)` — read the string's own encoding,
+so their results differ by target. They are `@deprecated` in favor of
+`isEmpty`, the views, the counts, and `codePointAt(index: StringIndex)`.
+
+### Lengths
+
+`str.isEmpty`, `str.utf8.length` and `str.utf16.length` are $O(1)$ when the view
+shares storage. `str.codePoints.count()` and `str.graphemes.count()` walk the
+string.
+
+| String         | `utf8.length` | `utf16.length` | `codePoints.count()` | `graphemes.count()` |
+| -------------- | ------------- | -------------- | -------------------- | ------------------- |
+| `"hello"`      | 5             | 5              | 5                    | 5                   |
+| `"café"`       | 5             | 4              | 4                    | 4                   |
+| `"cafe\u0301"` | 6             | 5              | 5                    | 4                   |
+| `"😀"`         | 4             | 2              | 1                    | 1                   |
+| `"👨‍👩‍👧"`         | 18            | 8              | 5                    | 1                   |
+
+### Grapheme clusters without tables
+
+The `Grapheme_Cluster_Break` tables of UAX #29 run to tens of kilobytes, which
+would dominate a small module. `indexAfter` and `indexBefore` approximate the
+rules with range checks and arithmetic instead:
+
+1. **CR LF** is one cluster (GB3).
+2. **Controls** (`< 0x20`, `0x7F..0x9F`) break before and after (GB4, GB5).
+3. **Hangul** syllable sequences join (GB6–GB8). The leading, vowel and
+   trailing jamo are ranges, and a precomposed syllable is `LV` or `LVT` by
+   `(cp - 0xAC00) % 28`.
+4. **Extending characters** never start a cluster (GB9, GB9a): the Combining
+   Diacritical Marks blocks, the Cyrillic, Hebrew, Arabic, Devanagari and Thai
+   combining marks, ZWJ and ZWNJ, variation selectors, the keycap mark, emoji
+   skin-tone modifiers, and the tag characters of subdivision flags.
+5. **After a ZWJ** there is no break, which keeps sequences like `👨‍👩‍👧‍👦` and `🏳️‍🌈`
+   together (GB11, approximated: the rule does not check that an emoji precedes
+   the ZWJ).
+6. **Regional indicators** pair two by two, by counting the run backward
+   (GB12, GB13), so flags stay whole.
+
+What it does not implement: prepended characters (GB9b), spacing marks outside
+the blocks above, and Indic conjunct rules (GB9c). Text in those scripts can
+split where UAX #29 would not.
+
+## Building and comparing
+
+- **`a + b`** allocates an array of the combined length and copies both
+  strings into it.
+- **`StringBuilder`** collects bytes in chunks that double in size.
+  `toString()` returns a view of the chunk when there is only one, and
+  otherwise copies the chunks into one array. The js target has its own
+  builder.
+- **Template literals** and **`join(items, separator)`** are the other ways to
+  build a string from parts.
+- **`==`** compares by value: the same object, then the lengths, then the two
+  cached hash codes when both are computed, then the bytes.
+- **`hashCode()`** is 32-bit FNV-1a over the bytes, computed once and kept in
+  `#hashCode`; a hash of 0 is stored as 1, so 0 can mean "not computed". On the
+  js target it is computed over the UTF-16 code units each time, since the
+  object holds only the JavaScript string.
+- **`compareTo`** compares bytes, which in UTF-8 is code point order.
 
 ## Case conversion
 
@@ -336,58 +460,127 @@ beyond the conversion tables: it reads the three mapping tables, but not
 Final_Sigma's two, and can fold both strings one code point at a time as it
 compares them, without allocating either folded form.
 
-## Current implementation
+## Host interop
 
-::: warning
-The implementation predates the design above and has not caught up to it. This
-section describes what exists today, not what is intended.
-:::
+On the js target nothing is copied: a `String` holds the JavaScript string,
+and the compiler's `$stringGetHandle` export hands it over as it is.
 
-`String` is a `final` class holding a view onto a backing byte array:
+On the byte targets, a `String` is a Wasm GC struct wrapping a GC array. Both
+are opaque to the host: JavaScript cannot read a GC struct's fields, and a GC
+array cannot be viewed as a typed array. Every string crossing to JavaScript is
+copied.
 
-```zena
-export final class String implements Hashable {
-  #data: ByteArray; // may be shared with other Strings
-  #start: i32; // inclusive
-  #end: i32; // exclusive
-  #encoding: Encoding; // WTF8 or WTF16
-}
+### Which side runs the loop
+
+Wasm calling the host once per byte is the slow approach. The advice, from the
+dart2wasm team in
+[WebAssembly/gc#568](https://github.com/WebAssembly/gc/issues/568), is to invert
+it: pass the string to the host as an `externref` and let the host drive the
+loop, calling a small exported function to read each byte, "because V8 optimizes
+JS calling Wasm better than Wasm calling JS." dart2wasm ships exactly this, as
+`$wasmI8ArrayGet`.
+
+The compiler emits helpers for this when a `String` crosses one of the
+module's exports or host imports, and only for the direction it crosses in:
+
+| Export             | Signature                     | Direction   |
+| ------------------ | ----------------------------- | ----------- |
+| `$stringGetLength` | `(externref) -> i32`          | Wasm → host |
+| `$stringGetByte`   | `(externref, i32) -> i32`     | Wasm → host |
+| `$stringCreate`    | `(i32) -> externref`          | host → Wasm |
+| `$stringSetByte`   | `(externref, i32, i32) -> ()` | host → Wasm |
+
+Reading a string means calling `$stringGetByte` in a loop and decoding:
+
+```js
+const readString = (strRef, length) => {
+  const bytes = new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    bytes[i] = getByte(strRef, i) & 0xff;
+  }
+  return new TextDecoder().decode(bytes);
+};
 ```
 
-All fields are private. Slicing is O(1) and shares `#data`; `copy()` allocates a
-new backing array so the parent can be collected.
+Writing goes the other way: encode with `TextEncoder`, call `$stringCreate(len)`
+to allocate, then `$stringSetByte` per byte. `@zena-lang/runtime` packages both
+as `createStringReader` and `createStringWriter`.
 
-```zena
-let json = readFile('data.json');
-let key = json.sliceBytes(100, 110); // shares the backing array
-let owned = key.copy(); // new backing array
-```
+Byte-streaming out of Wasm, the alternative, costs N+2 Wasm-to-JS calls per
+string. This costs one, plus a loop the engine can optimize.
 
-`StringBuilder` handles incremental construction. `StringReader` walks a string
-by code point and provides `mark()`, which returns a position on a code point
-boundary.
+### Why the signature is `externref`
 
-::: info Why WTF, not UTF
-JavaScript strings can contain unpaired surrogates, so they are not always valid
-UTF-16. WTF-8 and WTF-16 are the variants that permit them. Well-formed text is
-a subset of both, so valid UTF-8 and UTF-16 behave identically.
-:::
+`$stringGetByte` takes an `externref` and casts it back to a `String` inside the
+function body, which looks like pointless work when it could take a typed
+reference directly. It isn't. In the same thread, Jakob Kummerow of the V8 team
+noted two things:
 
-### Where it differs from the design
+- V8's Wasm-into-JS inlining "currently only triggers for (nullable!)
+  `externref` in the Wasm signature." A typed reference, or even `anyref`, does
+  not get inlined.
+- Implicit type checks at the boundary are "quite a bit slower than using
+  `externref` and then an explicit `ref.cast` on the Wasm side."
 
-- **The encoding is not hidden.** `length` returns a byte count, and `getByteAt`
-  and `sliceBytes` are byte-indexed. `sliceBytes` will split a multi-byte
-  character if given an unaligned index.
-- **There is no `[]` operator**, and no `String.Index` type to index by.
-- **Only WTF-8 is produced.** The `Encoding` field exists and `WTF16` is
-  defined, but nothing constructs a WTF-16 string, and `StringReader` decodes
-  WTF-8 only.
-- **`--default-encoding` does not exist.** The encoding of string literals is
-  not configurable.
-- **There are no `String` subclasses.** `HostString`, `LinearMemoryString`, and
-  `RopeString` are unimplemented; the class is `final`.
-- **Concatenation with `+` produces no warning**, so the quadratic-time foot gun
-  is unguarded.
+The cast is the fast path, not overhead.
 
-→ Working document:
-[`docs/design/strings.md`](https://github.com/elematic/zena/blob/main/docs/design/strings.md)
+### The advice is V8-specific
+
+All of the above describes one engine's current behavior, and the V8 engineer
+in that thread says as much: "I'm not saying that you should optimize for V8's
+current behavior, I'm just describing what that behavior is for now."
+
+A custom Wasmtime embedding has no JIT inlining an exported Wasm function into a
+host loop, so per-call overhead may dominate and a bulk copy is likely better.
+Zena has not measured this outside V8.
+
+The underlying problem is that Wasm GC has no bulk transfer between a GC array
+and host memory at all. That is what issue #568 is asking for, and it is still
+open.
+
+### WASI
+
+WASI is a separate problem. The canonical ABI passes strings in linear memory,
+so a GC-backed string must be copied into linear memory for the call, and the
+helpers above do not apply. Component Model GC removes that copy — wasmtime
+already has `-W component-model-gc=y` — but until it is stable and arrives in a
+post-0.3 WASI update, the copy stays.
+
+## Not done yet
+
+- **`+` in a loop has no warning**, so the quadratic-time foot gun is
+  unguarded.
+- **The byte-indexed API still exists**, deprecated. `StringReader` positions,
+  from `mark()`, are still `i32` byte offsets used with `sliceBytes`.
+- **There are no `String` subclasses**: no rope, no linear-memory string, and no
+  host string in a byte-target module.
+- **WTF-16 exists only on the js target.** On the byte targets nothing produces
+  a WTF-16 string, and there is no option to make literals WTF-16.
+- **Grapheme segmentation is approximate**, as described above.
+- **No case-insensitive comparison**, and no locale-sensitive operations.
+- **Batch transcoding.** Many `utf8` views of slices of one WTF-16 string, or
+  `utf16` views of one WTF-8 string, transcode the shared part once per slice. A
+  batch API could transcode the backing array once.
+
+## What operations cost
+
+| Operation                                     | Time           | Allocates                                      | Shares storage |
+| --------------------------------------------- | -------------- | ---------------------------------------------- | -------------- |
+| `str[start..end]`, `slice`                    | $O(1)$         | the `String` struct                            | yes            |
+| `str[i]` (one grapheme cluster)               | cluster length | the `String` struct                            | yes            |
+| `str.copy()`                                  | $O(n)$         | a byte array and a struct                      | no             |
+| `str.reverse()`                               | $O(n)$         | a byte array and a struct                      | no             |
+| `str + other`                                 | $O(n)$         | a byte array and a struct                      | no             |
+| `str == other`                                | $O(n)$         | nothing                                        | —              |
+| `str.hashCode()`                              | $O(n)$, once   | nothing                                        | —              |
+| `str.isEmpty`                                 | $O(1)$         | nothing                                        | —              |
+| `str.utf8`, `str.utf16` (same encoding)       | $O(1)$         | the view struct                                | yes            |
+| `str.utf8`, `str.utf16` (transcoded)          | $O(n)$         | a byte array and a view                        | no             |
+| `view[i]`, `view.length`                      | $O(1)$         | nothing                                        | —              |
+| `view.indexAt(i)` (same encoding)             | $O(1)$         | nothing                                        | —              |
+| `view.indexAt(i)` (transcoded)                | $O(n)$         | nothing                                        | —              |
+| `str.codePoints.count()`, `graphemes.count()` | $O(n)$         | nothing                                        | —              |
+| `toLowerCase()`, `toUpperCase()`              | $O(n)$         | a byte array and a struct, if anything changes | no             |
+
+The table is for the byte targets. On the js target the engine decides, and
+`str.utf8` always transcodes.
