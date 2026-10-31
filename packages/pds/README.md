@@ -104,6 +104,14 @@ The same configuration with the argument `sync-handles`
 handle record again from the host's store and exits, for after a record
 write failed or records were lost.
 
+The package listings, on the pages and from `listPackages` and
+`listScopes`, read a summary of each package that the host writes with
+every commit to the package's repository, rather than the repositories
+themselves. `sync-indexes` writes the host's indexes, every package's
+summary, again from the repositories and exits: for packages made before
+the host kept them, and for a commit whose summary could not be written,
+which the server logs.
+
 With `encrypt-keys`, it encrypts every account's signing key that
 Firestore keeps in the clear with `PDS_KEY_ENCRYPTION_KMS_KEY`, and
 exits. Keys are encrypted as they are written once the server has that

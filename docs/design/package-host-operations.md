@@ -181,5 +181,6 @@ The three ways to remove a release differ in who does it and what stays:
 | Undo a misused online key's PLC operations | `main.zena plc-restore`              |
 | Create a scope for an organization         | `main.zena create-scope`             |
 | Rewrite every handle's DNS records         | `main.zena sync-handles`             |
+| Rewrite every package's summary            | `main.zena sync-indexes`             |
 | Encrypt signing keys kept in the clear     | `main.zena encrypt-keys`             |
 | Name the host's admins                     | `PDS_ADMIN_DIDS`                     |

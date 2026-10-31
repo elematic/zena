@@ -56,13 +56,21 @@ export sealed class Write {
 }
 
 /** An account's repository, over its store. */
+/**
+ * What runs after a commit of writes, with the account, its new head and
+ * the records the commit changed (`Pds.onCommit`).
+ */
+export type CommitListener = (account: Account, head: Head, changes: GrowableArray<RecordChange>) => Future<void>;
+
 export final class Repository {
   #account: Account;
   #store: AccountStore;
   #clock: TidClock;
+  #listeners: GrowableArray<CommitListener>;
 
-  new(account: Account, store: AccountStore, clock: TidClock)
-      : #account = account, #store = store, #clock = clock;
+  new(account: Account, store: AccountStore, clock: TidClock,
+      listeners: GrowableArray<CommitListener> = new GrowableArray<CommitListener>())
+      : #account = account, #store = store, #clock = clock, #listeners = listeners;
 
   /**
    * Writes the repository's first commit, of an empty tree, unless it has
@@ -95,6 +103,9 @@ export final class Repository {
       let changes = await this.#changes(writes, blocks);
       let head = await this.#commit(previous, blocks, changes, nowMicros);
       if (head != null) {
+        for (let listener in this.#listeners) {
+          await listener(this.#account, head as Head, changes);
+        }
         return head as Head;
       }
     }

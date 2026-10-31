@@ -23,7 +23,10 @@
  *   the number of operations; and under it `ops/{index}`: `json`, each
  *   operation, with indexes padded to eight digits so they list in order.
  * - The package host's (`FirestoreHostStore`): `scopes/{scope}`: `org`;
- *   `names/{name}.{scope}`: `did`, `scope` and `name`; and
+ *   `names/{name}.{scope}`: `did`, `scope` and `name`;
+ *   `summaries/{did}`: a package's summary, `handle`, `scope`, `name`,
+ *   `description`, `license` and `latest` (each absent for none),
+ *   `releases`, and `rev`, the revision of the commit it was made from; and
  *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR.
  * - Sessions' (`FirestoreCredentialStore`): `accounts/{did}/appPasswords/{name}`:
  *   `hash` and `createdAt`; and `sessions/{jti}`: `did`, `scope`,
@@ -55,7 +58,7 @@ import {compareKeys} from 'atproto:mst';
 import {MemberEntry} from 'package-manager:records';
 import {JsonValue, parseJson, stringify} from 'zena:json';
 import {PlcOperation} from 'atproto:plc';
-import {ClaimedName, ClaimedScope, HostStore, PendingChange, PendingRelease} from './host.zena';
+import {ClaimedName, ClaimedScope, HostStore, PackageSummary, PendingChange, PendingRelease} from './host.zena';
 import {PlcLog} from './plc-directory.zena';
 import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
@@ -463,6 +466,57 @@ export final class FirestoreHostStore implements HostStore {
       }
     }
     return all;
+  }
+
+  async putSummary(summary: PackageSummary, rev: String): Future<void> {
+    let ref = this.#root.collection('summaries').doc(summary.did);
+    await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+      let kept = stringAt(await tx.get(ref), 'rev');
+      if (kept != null && compareKeys(kept as String, rev) >= 0) {
+        return false;
+      }
+      let fields = new Fields()
+        .string('handle', summary.handle)
+        .string('scope', summary.scope)
+        .string('name', summary.name)
+        .integer('releases', summary.releases as i64)
+        .string('rev', rev);
+      if (summary.description != null) {
+        fields.string('description', summary.description as String);
+      }
+      if (summary.license != null) {
+        fields.string('license', summary.license as String);
+      }
+      if (summary.latest != null) {
+        fields.string('latest', summary.latest as String);
+      }
+      tx.set(ref, fields);
+      return true;
+    });
+  }
+
+  async summaries(scope: String | null): Future<Array<PackageSummary>> {
+    let collection = this.#root.collection('summaries');
+    let snapshots = if (scope != null) await collection.where('scope', Operator.Equal, stringValue(scope)).get()
+        else await collection.get();
+    let out = new GrowableArray<PackageSummary>();
+    for (let snapshot in snapshots) {
+      let handle = stringAt(snapshot, 'handle');
+      let inScope = stringAt(snapshot, 'scope');
+      let name = stringAt(snapshot, 'name');
+      if (handle == null || inScope == null || name == null) {
+        continue;
+      }
+      let summary = new PackageSummary(snapshot.id, handle as String, inScope as String, name as String);
+      summary.description = stringAt(snapshot, 'description');
+      summary.license = stringAt(snapshot, 'license');
+      summary.latest = stringAt(snapshot, 'latest');
+      if (let (true, releases) = snapshot.getInteger('releases')) {
+        summary.releases = releases as i32;
+      }
+      out.push(summary);
+    }
+    return out;
   }
 
   async entries(account: String): Future<Array<MemberEntry>> {

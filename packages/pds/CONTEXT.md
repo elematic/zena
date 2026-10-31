@@ -53,6 +53,9 @@ lexicons are in `packages/package-manager/lexicons`.
   decrypts it the first time when the store keeps it encrypted
   (`FirestoreStorage` with a `KeyEncryption`, `pds:key-encryption`).
   Never write a key in the clear where a store has key encryption.
+- The package listings read `HostStore.summaries`, which the host writes
+  from `Pds.onCommit` after each commit to a package's repository. A
+  method that lists every package must not read every repository.
 - Several servers may share a store. Write through `AccountStore.commit`,
   which checks the head, and take names with `HostStore.claimScope` and
   `claimName`, never with a read and then a write.

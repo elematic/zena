@@ -9,13 +9,14 @@
 import {Future} from 'zena:async';
 import {normalizeHandle} from 'atproto:syntax';
 import {TidClock} from 'atproto:tid';
-import {Repository} from './repository.zena';
+import {CommitListener, Repository} from './repository.zena';
 import {Account, AccountKind, SigningKey, Storage} from './storage.zena';
 
 export final class Pds {
   storage: Storage;
   /** Hands out every commit's `rev`. */
   #clock: TidClock;
+  #listeners = new GrowableArray<CommitListener>();
 
   /**
    * `clockId`, 0 to 1023, keeps this server's revisions apart from another's
@@ -44,6 +45,16 @@ export final class Pds {
   }
 
   repositoryOf(account: Account): Repository {
-    return new Repository(account, this.storage.store(account.did), this.#clock);
+    return new Repository(account, this.storage.store(account.did), this.#clock, this.#listeners);
+  }
+
+  /**
+   * Runs `listener` after each commit of writes to a repository this
+   * server makes, before the write returns: the package host keeps its
+   * package summaries with it. A listener that throws fails the write
+   * after its commit, so a listener catches what it can live without.
+   */
+  onCommit(listener: CommitListener): void {
+    this.#listeners.push(listener);
   }
 }
