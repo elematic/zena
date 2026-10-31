@@ -291,6 +291,28 @@ export function hostStoreConformance(make: () => HostStore): void {
     isNull(replaced[0].description);
   });
 
+  test('notes which accounts mention a person or a team, and forgets none', (ctx) => {
+    let store = make();
+    equal(runFuture(store.mentionsOf(ALICE)).length, 0);
+    let org = 'did:plc:orgorgorgorgorgorgorgorgo';
+    let pkg = 'did:plc:pkgpkgpkgpkgpkgpkgpkgpkgp';
+    runFuture(store.addMentions(org, [ALICE, BOB]));
+    runFuture(store.addMentions(pkg, [ALICE, `${org} core`]));
+    // Again, as each commit notes them: once is enough.
+    runFuture(store.addMentions(pkg, [ALICE]));
+    let alice = runFuture(store.mentionsOf(ALICE));
+    equal(alice.length, 2);
+    isTrue((alice[0] == org && alice[1] == pkg) || (alice[0] == pkg && alice[1] == org), 'both accounts');
+    let bob = runFuture(store.mentionsOf(BOB));
+    equal(bob.length, 1);
+    equal(bob[0], org);
+    let team = runFuture(store.mentionsOf(`${org} core`));
+    equal(team.length, 1);
+    equal(team[0], pkg);
+    runFuture(store.addMentions(org, []));
+    equal(runFuture(store.mentionsOf(BOB)).length, 1);
+  });
+
   test('lists every scope and name', (ctx) => {
     let store = make();
     runFuture(store.claimScope('acme', ALICE));

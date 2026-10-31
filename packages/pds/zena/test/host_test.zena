@@ -263,6 +263,10 @@ final class StaleHostStore implements HostStore {
   async allNames(): Future<Array<ClaimedName>> { return await this.#inner.allNames(); }
   async putSummary(summary: PackageSummary, rev: String): Future<void> { await this.#inner.putSummary(summary, rev); }
   async summaries(scope: String | null): Future<Array<PackageSummary>> { return await this.#inner.summaries(scope); }
+  async addMentions(account: String, subjects: Array<String>): Future<void> {
+    await this.#inner.addMentions(account, subjects);
+  }
+  async mentionsOf(subject: String): Future<Array<String>> { return await this.#inner.mentionsOf(subject); }
   async entries(account: String): Future<Array<MemberEntry>> { return await this.#inner.entries(account); }
   async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
     await this.#inner.addEntries(account, entries);
@@ -1181,7 +1185,7 @@ export let tests = suite('pds:host', () => {
     equal(storage.reads, 2);
   });
 
-  test("writes again the summaries a commit outside the host's hook left behind", (ctx) => {
+  test("writes again the indexes a commit outside the host's hook left behind", (ctx) => {
     let fixture = new Fixture();
     let router = seedBrowsable(fixture);
     let account = runFuture(fixture.pds.storage.getAccount(router)) as Account;
@@ -1196,8 +1200,17 @@ export let tests = suite('pds:host', () => {
       return (packages[1] as JsonObject)['description'] as String;
     };
     equal(listed(), 'Routes requests');
-    equal(runFuture((fixture.host as PackageHost).syncIndexes()), 2);
+    // Nor did one that names Bob a maintainer reach the index of mentions.
+    let maintainers = runFuture(store.getRecord(MAINTAINERS_TYPE, 'self')) as Cid;
+    runFuture(new Repository(account, store, new TidClock(9)).applyWrites([new UpdateRecord(MAINTAINERS_TYPE, 'self',
+        new Maintainers([Maintainer.ofDid(ALICE, OWNER), Maintainer.ofDid(BOB, PUBLISHER)]).toValue(), maintainers)
+        as Write], 0 as i64));
+    let bobs = () => pageOf(fixture.get(`/people/${BOB}`)).contains('href="/packages/router.acme.pkg.test"');
+    isTrue(!bobs(), 'not yet indexed');
+    // The two organizations and the two packages.
+    equal(runFuture((fixture.host as PackageHost).syncIndexes()), 4);
     equal(listed(), 'Routes everything');
+    isTrue(bobs(), "router on Bob's page");
   });
 
   test('lets a scope\'s admins say how it presents itself, which its page shows', (ctx) => {
@@ -1382,6 +1395,46 @@ export let tests = suite('pds:host', () => {
     // Tokens for signing in to the pages, and nothing else.
     equal(metadata['scope'] as String, 'atproto rpc:dev.zena-lang.host.createWebSession?aud=*');
     equal(metadata['token_endpoint_auth_method'] as String, 'none');
+  });
+
+  test('reads only the accounts that mention a caller, for their memberships and their page', (ctx) => {
+    let storage = new CountingStorage();
+    let fixture = new Fixture(new MemoryHostStore(), storage);
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let alice = entriesSeen(fixture, ALICE, orgDid);
+    let bobAdmin = new MemberEntry(BOB, ADMIN, filled(190));
+    ok(putMembers(fixture, ALICE, orgDid, [alice[0], bobAdmin], [bobAdmin], (org['members'] as JsonObject)['cid'] as String));
+    ok(putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(191))], null));
+    let router = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    ok(putMaintainers(fixture, ALICE, router['did'] as String, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, null, orgDid, 'core', PUBLISHER)]), [], (router['maintainers'] as JsonObject)['cid'] as String));
+    let parser = ok(createPackage(fixture, ALICE, orgDid, 'parser'));
+    ok(putMaintainers(fixture, ALICE, parser['did'] as String, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        Maintainer.ofDid(BOB, PUBLISHER)]), [], (parser['maintainers'] as JsonObject)['cid'] as String));
+
+    storage.reads = 0;
+    let before = stringify(ok(fixture.query(BOB, 'getMemberships', '')));
+    let membershipReads = storage.reads;
+    isTrue(before.contains('router.acme.pkg.test') && before.contains('parser.acme.pkg.test'), before);
+    // The first view fills the pages' cache of people.
+    pageOf(fixture.get(`/people/${BOB}`));
+    storage.reads = 0;
+    let page = pageOf(fixture.get(`/people/${BOB}`));
+    let pageReads = storage.reads;
+    isTrue(page.contains('href="/packages/parser.acme.pkg.test"'), page);
+
+    // Another scope, with packages, that names Bob nowhere.
+    let zeta = ok(createOrganization(fixture, ALICE, 'zeta'))['did'] as String;
+    for (let name in ['one', 'two', 'three']) {
+      ok(createPackage(fixture, ALICE, zeta, name));
+    }
+    storage.reads = 0;
+    equal(stringify(ok(fixture.query(BOB, 'getMemberships', ''))), before);
+    equal(storage.reads, membershipReads);
+    storage.reads = 0;
+    pageOf(fixture.get(`/people/${BOB}`));
+    equal(storage.reads, pageReads);
   });
 
   test("links maintainers to their pages, which list the packages that name them", (ctx) => {

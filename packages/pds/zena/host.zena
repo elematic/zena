@@ -131,6 +131,15 @@ export interface HostStore {
   putSummary(summary: PackageSummary, rev: String): Future<void>;
   /** The package summaries kept, of every scope or of `scope`, in no order. */
   summaries(scope: String | null): Future<Array<PackageSummary>>;
+  /**
+   * Notes that `account`'s records or entries mention each of `subjects`:
+   * a person's DID, or a team as `<org DID> <team>`. Notes are never
+   * taken back, so one can outlive the mention; a reader reads the
+   * account's records to find the role.
+   */
+  addMentions(account: String, subjects: Array<String>): Future<void>;
+  /** The accounts noted as mentioning `subject`, in no order. */
+  mentionsOf(subject: String): Future<Array<String>>;
   /** The entries behind the commitments in `account`'s records. */
   entries(account: String): Future<Array<MemberEntry>>;
   addEntries(account: String, entries: Array<MemberEntry>): Future<void>;
@@ -228,6 +237,30 @@ export final class MemoryHostStore implements HostStore {
   #scopes = new HashMap<String, String>();
   /** Package summaries by DID. */
   #summaries = new HashMap<String, KeptSummary>();
+  /** The accounts that mention each subject. */
+  #mentions = new HashMap<String, HashSet<String>>();
+
+  async addMentions(account: String, subjects: Array<String>): Future<void> {
+    for (let subject in subjects) {
+      if (let (true, accounts) = this.#mentions.get(subject)) {
+        accounts.add(account);
+      } else {
+        let accounts = new HashSet<String>();
+        accounts.add(account);
+        this.#mentions[subject] = accounts;
+      }
+    }
+  }
+
+  async mentionsOf(subject: String): Future<Array<String>> {
+    let out = new GrowableArray<String>();
+    if (let (true, accounts) = this.#mentions.get(subject)) {
+      for (let account in accounts) {
+        out.push(account);
+      }
+    }
+    return out;
+  }
 
   async putSummary(summary: PackageSummary, rev: String): Future<void> {
     if (let (true, kept) = this.#summaries.get(summary.did)) {
@@ -493,51 +526,96 @@ export final class PackageHost {
   /**
    * A host over `pds`, keeping its names in `store`, writing its handles'
    * DNS records to `records`, and resolving the dependencies of the
-   * releases it checks with `resolver`. It keeps each package's summary,
-   * which `listPackages` lists, with every commit to the package's
-   * repository that `pds` makes.
+   * releases it checks with `resolver`. It keeps its indexes with every
+   * commit `pds` makes: each package's summary, which `listPackages`
+   * lists, and which accounts mention each person and team, which
+   * `getMemberships` and `publicRolesOf` start from.
    */
   new(pds: Pds, config: HostConfig, store: HostStore, records: HandleRecords, keys: SigningKeyLookup,
       submit: PlcSubmitter, random: RandomBytes, resolver: IdentityResolver)
       : pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
         #random = random, #resolver = resolver {
     pds.onCommit(async (account: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> => {
-      await this.#summarizeCommit(account, head, changes);
+      await this.#indexCommit(account, head, changes);
     });
   }
 
   /**
-   * Writes the summary of the package `account` is after a commit that
-   * changed its profile, a release or a retraction. The commit stands
-   * whatever happens here, so a summary that cannot be written is left
-   * until the next commit, or `syncIndexes`.
+   * Keeps the indexes after a commit to `account`'s repository: the
+   * summary of a package whose profile, releases or retractions changed,
+   * and the mentions of an organization whose members or teams changed,
+   * or of a package whose maintainers did. The commit stands whatever
+   * happens here, so an index that cannot be written is left until the
+   * next commit, or `syncIndexes`.
    */
-  async #summarizeCommit(account: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> {
-    if (account.kind != AccountKind.Package) {
-      return;
-    }
+  async #indexCommit(account: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> {
     var shown = false;
+    var mentions = false;
     for (let change in changes) {
-      if (change.collection == PROFILE_TYPE || change.collection == RELEASE_TYPE ||
-          change.collection == RETRACTION_TYPE) {
-        shown = true;
+      let collection = change.collection;
+      if (account.kind == AccountKind.Package) {
+        shown = shown || collection == PROFILE_TYPE || collection == RELEASE_TYPE || collection == RETRACTION_TYPE;
+        mentions = mentions || collection == MAINTAINERS_TYPE;
+      } else if (account.kind == AccountKind.Organization) {
+        mentions = mentions || collection == MEMBERS_TYPE || collection == TEAM_TYPE;
       }
     }
+    try {
+      let labels = this.#handleLabels(account);
+      if (shown && labels != null && labels.length == 2) {
+        await this.#store.putSummary(
+            await this.#summarize(account.did, account.handle ?? '', labels[1], labels[0]), head.rev);
+      }
+      if (mentions) {
+        await this.#store.addMentions(account.did, await this.#subjectsOf(account));
+      }
+    } catch (e) {
+      console.error(`the indexes of ${account.did} were not written: ${e.message}`);
+    }
+  }
+
+  /**
+   * The labels of `account`'s handle before the host's domain: `[scope]`
+   * for an organization, `[name, scope]` for a package; null for a handle
+   * of no such form.
+   */
+  #handleLabels(account: Account): Array<String> | null {
     let handle = account.handle;
     let suffix = `.${this.config.domain}`;
-    if (!shown || handle == null || !handle.endsWith(suffix)) {
-      return;
+    if (handle == null || !handle.endsWith(suffix)) {
+      return null;
     }
-    // A package's handle is `<name>.<scope>.<domain>`.
-    let labels = handle.sliceBytes(0, handle.length - suffix.length).split('.');
-    if (labels.length != 2) {
-      return;
+    return handle.sliceBytes(0, handle.length - suffix.length).split('.');
+  }
+
+  /**
+   * Everyone and every team `account`'s records may give a role: each
+   * person its entries name, and a package's maintainers named by DID,
+   * and its teams, as `<org DID> <team>`.
+   */
+  async #subjectsOf(account: Account): Future<Array<String>> {
+    let subjects = new HashSet<String>();
+    for (let entry in await this.#store.entries(account.did)) {
+      subjects.add(entry.did);
     }
-    try {
-      await this.#store.putSummary(await this.#summarize(account.did, handle, labels[1], labels[0]), head.rev);
-    } catch (e) {
-      console.error(`the summary of ${account.did} was not written: ${e.message}`);
+    if (account.kind == AccountKind.Package) {
+      let record = await this.#current(account.did, MAINTAINERS_TYPE, 'self');
+      if (record != null) {
+        for (let maintainer in Maintainers.fromValue(record.value).maintainers) {
+          if (maintainer.did != null) {
+            subjects.add(maintainer.did as String);
+          }
+          if (maintainer.org != null && maintainer.team != null) {
+            subjects.add(`${maintainer.org as String} ${maintainer.team as String}`);
+          }
+        }
+      }
     }
+    let out = new GrowableArray<String>();
+    for (let subject in subjects) {
+      out.push(subject);
+    }
+    return out;
   }
 
   /**
@@ -579,13 +657,21 @@ export final class PackageHost {
   }
 
   /**
-   * Writes the host's indexes again, each package's summary, from the
-   * repositories as they are now, and returns how many packages it wrote:
-   * for packages a server before the indexes made, or a commit whose
-   * summary was not written.
+   * Writes the host's indexes again, each package's summary and the
+   * mentions of every organization and package, from the repositories as
+   * they are now, and returns how many accounts it indexed: for accounts
+   * a server before the indexes made, or a commit whose indexes were not
+   * written.
    */
   async syncIndexes(): Future<i32> {
     var written = 0;
+    for (let claimed in await this.#store.allScopes()) {
+      let org = await this.pds.storage.getAccount(claimed.org);
+      if (org != null && org.kind == AccountKind.Organization) {
+        await this.#store.addMentions(claimed.org, await this.#subjectsOf(org));
+        written += 1;
+      }
+    }
     for (let claimed in await this.#store.allNames()) {
       let account = await this.pds.storage.getAccount(claimed.did);
       if (account == null || account.kind != AccountKind.Package) {
@@ -598,6 +684,7 @@ export final class PackageHost {
       }
       let summary = await this.#summarize(claimed.did, account.handle ?? '', claimed.scope, claimed.name);
       await this.#store.putSummary(summary, (head as Head).rev);
+      await this.#store.addMentions(claimed.did, await this.#subjectsOf(account));
       written += 1;
     }
     return written;
@@ -1105,39 +1192,55 @@ export final class PackageHost {
    * `getMemberships`: the organizations, teams and packages on this host
    * that `caller` has a role in, each with the role, as the records stand
    * now. A package `caller` maintains through a team is listed with the
-   * team's role.
+   * team's role. Only the accounts noted as mentioning `caller`, or a team
+   * of theirs, are read.
    */
   async getMemberships(caller: String): Future<Memberships> {
     let memberships = new Memberships();
-    for (let claimed in await this.#store.allScopes()) {
-      let org = await this.pds.storage.getAccount(claimed.org);
-      if (org == null || org.kind != AccountKind.Organization) {
+    let packages = new HashSet<String>();
+    for (let did in await this.#store.mentionsOf(caller)) {
+      let account = await this.pds.storage.getAccount(did);
+      if (account == null) {
         continue;
       }
-      let role = await this.#orgRole(claimed.org, caller);
-      if (role != null) {
-        memberships.orgs.push(new Membership(claimed.org, org.handle ?? '', claimed.scope, claimed.scope, role as String));
+      if (account.kind == AccountKind.Package) {
+        packages.add(did);
+        continue;
       }
-      for (let entry in await this.pds.storage.store(claimed.org).allRecords()) {
+      let labels = this.#handleLabels(account);
+      if (account.kind != AccountKind.Organization || labels == null || labels.length != 1) {
+        continue;
+      }
+      let scope = labels[0];
+      let role = await this.#orgRole(did, caller);
+      if (role != null) {
+        memberships.orgs.push(new Membership(did, account.handle ?? '', scope, scope, role));
+      }
+      for (let entry in await this.pds.storage.store(did).allRecords()) {
         if (entry.collection != TEAM_TYPE) {
           continue;
         }
-        let teamRole = await this.#teamRole(claimed.org, entry.rkey, caller);
+        let teamRole = await this.#teamRole(did, entry.rkey, caller);
         if (teamRole != null) {
-          memberships.teams.push(new Membership(claimed.org, org.handle ?? '', claimed.scope, entry.rkey,
-              teamRole as String));
+          memberships.teams.push(new Membership(did, account.handle ?? '', scope, entry.rkey, teamRole));
+          for (let pkg in await this.#store.mentionsOf(`${did} ${entry.rkey}`)) {
+            packages.add(pkg);
+          }
         }
       }
     }
-    for (let claimed in await this.#store.allNames()) {
-      let pkg = await this.pds.storage.getAccount(claimed.did);
+    for (let did in packages) {
+      let pkg = await this.pds.storage.getAccount(did);
       if (pkg == null || pkg.kind != AccountKind.Package) {
         continue;
       }
-      let role = await this.#packageRole(claimed.did, caller);
+      let labels = this.#handleLabels(pkg);
+      if (labels == null || labels.length != 2) {
+        continue;
+      }
+      let role = await this.#packageRole(did, caller);
       if (role != null) {
-        memberships.packages.push(new Membership(claimed.did, pkg.handle ?? '', claimed.scope, claimed.name,
-            role as String));
+        memberships.packages.push(new Membership(did, pkg.handle ?? '', labels[1], labels[0], role));
       }
     }
     sortByName(memberships.orgs);
@@ -1150,21 +1253,23 @@ export final class PackageHost {
    * The packages whose maintainers records name `did` directly, each with
    * its role there, for anyone to see. A role behind a commitment is
    * private, so it is left out here even when the caller could see it.
+   * Only the packages noted as mentioning `did` are read.
    */
   async publicRolesOf(did: String): Future<Array<Membership>> {
     let roles = new GrowableArray<Membership>();
-    for (let claimed in await this.#store.allNames()) {
-      let pkg = await this.pds.storage.getAccount(claimed.did);
+    for (let mentioning in await this.#store.mentionsOf(did)) {
+      let pkg = await this.pds.storage.getAccount(mentioning);
       if (pkg == null || pkg.kind != AccountKind.Package) {
         continue;
       }
-      let record = await this.#current(claimed.did, MAINTAINERS_TYPE, 'self');
-      if (record == null) {
+      let labels = this.#handleLabels(pkg);
+      let record = await this.#current(mentioning, MAINTAINERS_TYPE, 'self');
+      if (labels == null || labels.length != 2 || record == null) {
         continue;
       }
       for (let maintainer in Maintainers.fromValue((record as CurrentRecord).value).maintainers) {
         if (maintainer.did == did) {
-          roles.push(new Membership(claimed.did, pkg.handle ?? '', claimed.scope, claimed.name, maintainer.role));
+          roles.push(new Membership(mentioning, pkg.handle ?? '', labels[1], labels[0], maintainer.role));
         }
       }
     }
