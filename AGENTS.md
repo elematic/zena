@@ -21,15 +21,14 @@ sound type system with no implicit coercion.
 let x = 42;
 var y = 'hello';
 
-// Functions: arrow syntax
-let add = (a: i32, b: i32) => a + b;
-let greet = (name: String) => {
-  return 'Hello, ' + name;
-};
+// Top-level functions: `function` declarations, which are never closures
+function add(a: i32, b: i32) {
+  return a + b;
+}
 
-// ...or a top-level `function` declaration, which is never a closure
-function addOne(a: i32): i32 {
-  return a + 1;
+// Arrow functions are values: closures and callbacks
+function greeter(greeting: String): (name: String) => String {
+  return (name) => `${greeting}, ${name}`;
 }
 
 // Classes: fields immutable by default, Dart-style constructors
@@ -54,10 +53,12 @@ sealed class Expr {
 }
 
 // Pattern matching with match() expressions
-let eval = (e: Expr): i32 => match (e) {
-  case Lit {value}: value
-  case Add {left, right}: eval(left) + eval(right)
-};
+function evaluate(e: Expr): i32 {
+  return match (e) {
+    case Lit {value}: value
+    case Add {left, right}: evaluate(left) + evaluate(right)
+  };
+}
 
 // Enums: nominal wrapper types
 enum Color { Red, Green, Blue }
@@ -203,6 +204,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - **`tests/language/`**: Portable language tests.
 - **`docs/language-reference.md`**: Official language reference.
 - **`docs/design/`**: Design documents for complex features.
+- **`docs/agents/`**: The checks that run on agents' changes, and the loop that adds one when a mistake repeats.
 - **`PLAN.md`**: Completed and planned work.
 
 ## Interaction Guidelines
@@ -568,6 +570,32 @@ Do not skip step 1. A test that was never seen to fail proves nothing.
 
 ## Coding Standards
 
+### Across the codebase
+
+The person reviewing this repository has had to ask for each of these
+more than once:
+
+- **Fix or file bugs in Zena; don't work around them.** When the
+  compiler, the standard library or a tool gets in the way, fix it on
+  its own branch, with a test, and stack the work that needs it on top;
+  or file an issue with a reproduction. A workaround that has to stay
+  until then names the issue in a comment.
+- **Put general code in its general home.** Search the standard library
+  before writing a helper, and add a missing utility there (or as a
+  method on the type it is about) instead of in the package that first
+  needed it. One general code path beats a case per type.
+- **Zena has no users yet.** Change the language, the standard library
+  and file formats directly. Don't keep compatibility shims, deprecated
+  paths or migrations for old code.
+- **Write new tools and tests in Zena**, unless they have to run before
+  Zena is built (the pre-push check and editor hooks are JavaScript for
+  that reason).
+- **Key things by what they are.** Don't key a map by a source offset,
+  an `i32` id or a name where the object itself, or a typed key, works;
+  hidden global state needs a reason too.
+- **Name things precisely, without abbreviations.** A Zena source file
+  is a _library_; a _module_ is a Wasm module.
+
 ### TypeScript (scripts, runtime, tooling)
 
 - **Strict TypeScript**, modern ES2024.
@@ -624,3 +652,33 @@ Design documents live in `docs/design/`. See the directory listing for topics.
 
 All prose — design docs, commit messages, comments — follows
 `docs/writing-style.md`. Read it before writing any of these.
+
+## Pull Requests
+
+- **Before pushing**, `npm run check` (the pre-push hook that `npm ci`
+  installs runs it): prettier on the changed files CI checks, `zena lint`
+  on the changed lines of `.zena` files, commit subject tags, and words
+  that must stay out of this public repository. `npm run check -- --fix`
+  formats. Check a PR's title and description the same way by saving
+  them to a file and running `npm run check -- --text <file>`.
+- **Commit subjects and PR titles** start with the packages they touch:
+  `[stdlib] Add String.repeat`, `[pds][zena-cli] ...`, `[docs] ...` for
+  documentation alone. PRs are squash-merged, so the title becomes the
+  commit on `main`.
+- **After pushing**, run `npm run watch-prs -- <numbers>` as a
+  background task. It exits when a PR is merged, its checks finish,
+  someone comments, or the PR a stacked PR is based on merges. Act on
+  what it prints (fix the failing check, answer the comment, rebase),
+  then start it again while any of the PRs are open.
+- **Stacked PRs.** When the PR below yours is squash-merged, its commits
+  land on `main` as one new commit, so rebase only your own commits:
+  `git rebase --onto origin/main <old tip of the base branch> <branch>`,
+  check that `git diff <old tip of your branch> HEAD` shows nothing
+  unexpected, `gh pr edit <n> --base main`, and push with
+  `--force-with-lease`. Do it as soon as the base merges, without
+  waiting to be asked. Keep stacks one PR deep where you can.
+- Link the issue a PR fixes or advances (`Fixes #n`, `Part of #n`), and
+  update the issue when the plan changes.
+
+How these checks are maintained, and how a repeated mistake becomes a
+new check: `docs/agents/README.md`.
