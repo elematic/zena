@@ -145,12 +145,12 @@ Lists and modifies a package's maintainers (`owner` and `publisher` roles) and r
 
 ## Environment variables
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `ZENA_PACKAGE_HOST` | `https://pkg.zena-lang.dev` | Default package host URL for `publish`, `scope`, `team`, `owner`, and `@scope/name` lookups |
-| `ZENA_CONFIG_DIR` | `~/.config/zena` | Directory where `session.json` is stored |
-| `ZENA_CACHE_DIR` | `~/.cache/zena` | Base directory for the unpacked package cache (`packages/sources/<cid>`) |
-| `ZENA_PROJECT_CACHE` | *(unset)* | When set, stores the package cache in `.zena/packages` inside the workspace |
-| `ZENA_APP_PASSWORD` | *(unset)* | App password used by `zena login` when not reading from terminal or stdin |
-| `ZENA_PLC_DIRECTORY` | `https://plc.directory` | PLC directory URL used to resolve `did:plc:` identities |
-| `ZENA_DNS_OVER_HTTPS` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS endpoint used to resolve `_atproto.<handle>` TXT records |
+| Variable              | Default                                | Description                                                                                 |
+| --------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `ZENA_PACKAGE_HOST`   | `https://pkg.zena-lang.dev`            | Default package host URL for `publish`, `scope`, `team`, `owner`, and `@scope/name` lookups |
+| `ZENA_CONFIG_DIR`     | `~/.config/zena`                       | Directory where `session.json` is stored                                                    |
+| `ZENA_CACHE_DIR`      | `~/.cache/zena`                        | Base directory for the unpacked package cache (`packages/sources/<cid>`)                    |
+| `ZENA_PROJECT_CACHE`  | _(unset)_                              | When set, stores the package cache in `.zena/packages` inside the workspace                 |
+| `ZENA_APP_PASSWORD`   | _(unset)_                              | App password used by `zena login` when not reading from terminal or stdin                   |
+| `ZENA_PLC_DIRECTORY`  | `https://plc.directory`                | PLC directory URL used to resolve `did:plc:` identities                                     |
+| `ZENA_DNS_OVER_HTTPS` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS endpoint used to resolve `_atproto.<handle>` TXT records                     |

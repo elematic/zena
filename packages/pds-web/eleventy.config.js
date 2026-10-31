@@ -9,7 +9,10 @@
  */
 
 import {readFile, writeFile} from 'node:fs/promises';
-import {createZenaHighlighter, renderCodeBlock} from '../website/lib/highlight.js';
+import {
+  createZenaHighlighter,
+  renderCodeBlock,
+} from '../website/lib/highlight.js';
 import {configureMarkdown} from '../website/lib/markdown.js';
 import {
   containsActive,
@@ -65,7 +68,10 @@ export default async function (eleventyConfig) {
   );
 
   eleventyConfig.on('eleventy.after', async () => {
-    const html = await readFile(new URL('./out/home.html', import.meta.url), 'utf8');
+    const html = await readFile(
+      new URL('./out/home.html', import.meta.url),
+      'utf8',
+    );
     const zenaSource = [
       '// Generated from packages/pds-web/site/index.md by Eleventy. Do not edit by hand.',
       `export let HOME_TEMPLATE = ${JSON.stringify(html)};`,

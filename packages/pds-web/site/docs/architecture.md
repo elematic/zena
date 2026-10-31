@@ -20,26 +20,26 @@ A package's metadata and releases are stored as DAG-CBOR records in its atproto 
 
 ### Package records (in a package's repository)
 
-| Collection NSID | Record key | Contents |
-| --- | --- | --- |
-| `dev.zena-lang.package.profile` | `self` | Package name, description, SPDX license, homepage, and source repository URL |
-| `dev.zena-lang.package.release` | `<version>` | Semantic version, timestamp, artifact CIDs (`source` CAR archive), and dependency `{did, version, name}` list |
-| `dev.zena-lang.package.retraction` | `<version>` | Reason and timestamp marking a release as retracted |
-| `dev.zena-lang.package.maintainers` | `self` | Maintainer entries (by DID, commitment, or team reference), release `threshold`, and `ownerThreshold` |
+| Collection NSID                     | Record key  | Contents                                                                                                      |
+| ----------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------- |
+| `dev.zena-lang.package.profile`     | `self`      | Package name, description, SPDX license, homepage, and source repository URL                                  |
+| `dev.zena-lang.package.release`     | `<version>` | Semantic version, timestamp, artifact CIDs (`source` CAR archive), and dependency `{did, version, name}` list |
+| `dev.zena-lang.package.retraction`  | `<version>` | Reason and timestamp marking a release as retracted                                                           |
+| `dev.zena-lang.package.maintainers` | `self`      | Maintainer entries (by DID, commitment, or team reference), release `threshold`, and `ownerThreshold`         |
 
 ### Organization records (in a scope's repository)
 
-| Collection NSID | Record key | Contents |
-| --- | --- | --- |
-| `dev.zena-lang.org.profile` | `self` | Scope display name, description, and website |
-| `dev.zena-lang.org.members` | `self` | Member commitments/DIDs (`owner`, `admin`, `member`) and `ownerThreshold` |
-| `dev.zena-lang.org.team` | `<team-name>` | Team member commitments/DIDs (`maintainer`, `member`) and approval `threshold` |
-| `dev.zena-lang.org.policy` | `self` | Scope-wide minimum and default thresholds (`minReleaseThreshold`, `minOwnerThreshold`, `packageCreators`) |
+| Collection NSID             | Record key    | Contents                                                                                                  |
+| --------------------------- | ------------- | --------------------------------------------------------------------------------------------------------- |
+| `dev.zena-lang.org.profile` | `self`        | Scope display name, description, and website                                                              |
+| `dev.zena-lang.org.members` | `self`        | Member commitments/DIDs (`owner`, `admin`, `member`) and `ownerThreshold`                                 |
+| `dev.zena-lang.org.team`    | `<team-name>` | Team member commitments/DIDs (`maintainer`, `member`) and approval `threshold`                            |
+| `dev.zena-lang.org.policy`  | `self`        | Scope-wide minimum and default thresholds (`minReleaseThreshold`, `minOwnerThreshold`, `packageCreators`) |
 
 ### Maintainer records (in a maintainer's own repository)
 
-| Collection NSID | Record key | Contents |
-| --- | --- | --- |
+| Collection NSID                        | Record key                   | Contents                                                                    |
+| -------------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
 | `dev.zena-lang.maintainer.attestation` | Base32 hash of `uri` + `cid` | AT-URI and CID of a release or membership record approved by the maintainer |
 
 ## Source archives and verification

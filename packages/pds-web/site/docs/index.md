@@ -50,13 +50,13 @@ On the first publish, the package host creates an atproto account for the packag
 
 ## Documentation guide
 
-| Section | Topics covered |
-| --- | --- |
-| [Getting Started](/docs/getting-started/) | Creating `zena-package.json`, adding dependencies, importing libraries, updating, and fetching |
-| [Publishing Packages](/docs/publishing/) | Signing in, creating scopes, publishing releases, approving held releases, and retracting versions |
-| [Package Manifests](/docs/manifests/) | `zena-package.json` fields, open vs. closed packages, `exports`, `virtual` targets, and dependency types |
-| [Workspaces & Lockfiles](/docs/workspaces/) | Multi-package workspaces, path dependencies, minimal version selection, and `zena-lock.json` |
-| [Scopes, Orgs & Teams](/docs/orgs-and-teams/) | Organization scopes, member roles, teams, package maintainers, and private membership commitments |
-| [Approvals, Thresholds & Policies](/docs/approvals-and-settings/) | M-of-N release approvals, owner thresholds, scope policies, and CI automation accounts |
-| [CLI Commands](/docs/cli/) | Subcommands, flags, and environment variables for `zena` |
-| [AT Protocol Architecture](/docs/architecture/) | DIDs, handles, repository records, `dev.zena-lang.*` lexicons, CAR archives, and transparency logs |
+| Section                                                           | Topics covered                                                                                           |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [Getting Started](/docs/getting-started/)                         | Creating `zena-package.json`, adding dependencies, importing libraries, updating, and fetching           |
+| [Publishing Packages](/docs/publishing/)                          | Signing in, creating scopes, publishing releases, approving held releases, and retracting versions       |
+| [Package Manifests](/docs/manifests/)                             | `zena-package.json` fields, open vs. closed packages, `exports`, `virtual` targets, and dependency types |
+| [Workspaces & Lockfiles](/docs/workspaces/)                       | Multi-package workspaces, path dependencies, minimal version selection, and `zena-lock.json`             |
+| [Scopes, Orgs & Teams](/docs/orgs-and-teams/)                     | Organization scopes, member roles, teams, package maintainers, and private membership commitments        |
+| [Approvals, Thresholds & Policies](/docs/approvals-and-settings/) | M-of-N release approvals, owner thresholds, scope policies, and CI automation accounts                   |
+| [CLI Commands](/docs/cli/)                                        | Subcommands, flags, and environment variables for `zena`                                                 |
+| [AT Protocol Architecture](/docs/architecture/)                   | DIDs, handles, repository records, `dev.zena-lang.*` lexicons, CAR archives, and transparency logs       |
