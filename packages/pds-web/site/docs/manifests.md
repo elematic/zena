@@ -33,18 +33,18 @@ Every Zena package has a `zena-package.json` manifest at its root. The manifest 
 
 ## Field reference
 
-| Field | Type | Where | Description |
-| --- | --- | --- | --- |
-| `name` | `string` | Any package | The package's name (a single lowercase DNS label), suggested as the default local name to dependents |
-| `did` | `string` | Any package | The package's AT Protocol DID, written by `zena publish` or `zena package create` |
-| `scope` | `string` | Any package | The scope on the package host where the package is created (e.g., `acme`) |
-| `version` | `string` | Any package | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena publish` |
-| `description` | `string` | Any package | One-sentence summary of the package; required to publish |
-| `license` | `string` | Any package | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish |
-| `exports` | `Record<string, Export>` | Any package | Libraries other packages may import as `<local-name>:<library>` |
-| `dependencies` | `Record<string, Dependency>` | Any package | Packages imported by this package's libraries, keyed by local name |
-| `workspace` | `{packages: string[]}` | Workspace root | Directories or `/*` globs of workspace member packages |
-| `scopes` | `Record<string, string>` | Workspace root | Custom host domains for `@scope/name` lookups |
+| Field          | Type                         | Where          | Description                                                                                          |
+| -------------- | ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
+| `name`         | `string`                     | Any package    | The package's name (a single lowercase DNS label), suggested as the default local name to dependents |
+| `did`          | `string`                     | Any package    | The package's AT Protocol DID, written by `zena publish` or `zena package create`                    |
+| `scope`        | `string`                     | Any package    | The scope on the package host where the package is created (e.g., `acme`)                            |
+| `version`      | `string`                     | Any package    | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena publish`                        |
+| `description`  | `string`                     | Any package    | One-sentence summary of the package; required to publish                                             |
+| `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish            |
+| `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>:<library>`                                      |
+| `dependencies` | `Record<string, Dependency>` | Any package    | Packages imported by this package's libraries, keyed by local name                                   |
+| `workspace`    | `{packages: string[]}`       | Workspace root | Directories or `/*` globs of workspace member packages                                               |
+| `scopes`       | `Record<string, string>`     | Workspace root | Custom host domains for `@scope/name` lookups                                                        |
 
 All file and directory paths in `zena-package.json` are relative to the directory containing that manifest.
 

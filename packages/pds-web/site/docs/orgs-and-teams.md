@@ -8,11 +8,11 @@ Every scope on a package host (such as `@acme` on `pkg.zena-lang.dev`) is an org
 
 Each member of a scope has one of three roles:
 
-| Role | Permissions |
-| --- | --- |
-| **`owner`** | Full control: add or remove owners, admins, and members; change owner thresholds and scope policies; create teams and packages |
-| **`admin`** | Manage members and teams; update the scope's profile (`displayName`, `description`, `website`); create packages and CI automation accounts |
-| **`member`** | Belong to the organization and its teams; can create packages when the scope's policy sets `packageCreators` to `member` |
+| Role         | Permissions                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`owner`**  | Full control: add or remove owners, admins, and members; change owner thresholds and scope policies; create teams and packages             |
+| **`admin`**  | Manage members and teams; update the scope's profile (`displayName`, `description`, `website`); create packages and CI automation accounts |
+| **`member`** | Belong to the organization and its teams; can create packages when the scope's policy sets `packageCreators` to `member`                   |
 
 ### Managing scope members
 
@@ -58,10 +58,10 @@ zena team delete acme core
 
 Each package has its own `dev.zena-lang.package.maintainers` record listing who can publish releases and who can change the package's maintainers. A maintainer entry can name either an individual person or an organization team:
 
-| Role | Permissions |
-| --- | --- |
-| **`owner`** | Can publish and approve releases, retract versions, and add or remove package maintainers |
-| **`publisher`** | Can publish and approve releases and retract versions |
+| Role            | Permissions                                                                               |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| **`owner`**     | Can publish and approve releases, retract versions, and add or remove package maintainers |
+| **`publisher`** | Can publish and approve releases and retract versions                                     |
 
 ```sh
 # List a package's maintainers

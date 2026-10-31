@@ -136,7 +136,9 @@ if (location.pathname === '/oauth/callback') {
     domainEl.textContent = location.host;
   }
   if (localStorage.getItem(SIGNED_IN_AS) !== null) {
-    document.querySelector<HTMLElement>('[data-static-me]')?.removeAttribute('hidden');
+    document
+      .querySelector<HTMLElement>('[data-static-me]')
+      ?.removeAttribute('hidden');
   }
 } else if (signedIn === '') {
   const remembered = localStorage.getItem(SIGNED_IN_AS);
