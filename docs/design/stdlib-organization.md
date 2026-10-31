@@ -159,6 +159,15 @@ with the user; it resolves to the declaration's own symbol; and it
 crosses an import cycle by the same rules as any other import. A prelude
 binding the module never reads is never wired and adds no edge.
 
+A literal uses `String` without naming it: a string or template literal,
+or a string enum's member, has the type of the standard library's
+`String`. So a module with one depends on the module declaring `String`
+whether or not it reads the prelude binding, and the compiler adds that
+edge (`CompilerTarget.#addStringModule`), with no import, since nothing
+in the module resolves the name. Without it, a library that
+`core/string.zena` imports was checked before `String` was registered,
+and could not type its literals.
+
 The implicit import names the declaring module rather than the prelude
 specifier (`zena:core`) because that module is the real dependency. It
 is also how the library's own files import each other: a file behind the
