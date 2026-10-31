@@ -95,6 +95,7 @@ export let tests = suite('pds:service', () => {
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
       ('PDS_FIRESTORE_DATABASE', 'pkg'),
+      ('PDS_KEY_ENCRYPTION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/signing-keys'),
       ('PDS_HOST_DOMAIN', 'pkg.example.dev'),
       ('PDS_ROTATION_KEY', KEY),
       ('PDS_RESERVED_SCOPES', 'std, core,,'),
@@ -110,9 +111,10 @@ export let tests = suite('pds:service', () => {
     equal(config.clockId, 7);
     equal(config.plcDirectory, 'http://plc.test');
     match (config.storage) {
-      case InFirestore {tenant, blobs, database}: {
+      case InFirestore {tenant, blobs, database, keyEncryptionKey}: {
         equal(tenant, 'pkg');
         equal(database as String, 'pkg');
+        equal(keyEncryptionKey as String, 'projects/p/locations/l/keyRings/r/cryptoKeys/signing-keys');
         isTrue(blobs is InBucket && (blobs as InBucket).bucket == 'zena-blobs', 'the bucket');
       }
       case InMemory {}: {
@@ -178,6 +180,8 @@ export let tests = suite('pds:service', () => {
       ('PDS_DNS_PROJECT', 'meta-garage-420114'),
       ('PDS_PLC', 'staging'),
       ('GOOGLE_CLOUD_PROJECT', 'meta-garage-420114'),
+      ('PDS_KEY_ENCRYPTION_KMS_KEY',
+          'projects/meta-garage-420114/locations/us-central1/keyRings/zena-pkg-staging/cryptoKeys/signing-keys'),
       ('PDS_ROTATION_KEY', KEY),
     ]));
     isTrue(config.plcStaging, 'its own PLC directory');
@@ -237,6 +241,11 @@ export let tests = suite('pds:service', () => {
     isTrue(zoneAlone.contains('need PDS_HANDLE_RECORDS=cloud-dns'), zoneAlone);
     let noHost = refusal([('PDS_HANDLE_RECORDS', 'memory')]);
     isTrue(noHost.contains('PDS_HANDLE_RECORDS needs PDS_HOST_DOMAIN'), noHost);
+    let keysInMemory = refusal([('PDS_KEY_ENCRYPTION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k')]);
+    isTrue(keysInMemory.contains('PDS_KEY_ENCRYPTION_KMS_KEY needs PDS_STORAGE=firestore'), keysInMemory);
+    let keyVersion = refusal([('PDS_STORAGE', 'firestore'),
+        ('PDS_KEY_ENCRYPTION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1')]);
+    isTrue(keyVersion.contains('PDS_KEY_ENCRYPTION_KMS_KEY is a key, projects/…/cryptoKeys/<key>'), keyVersion);
 
     let values = refusal([
       ('PORT', 'eighty'),

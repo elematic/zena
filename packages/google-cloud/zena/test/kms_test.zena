@@ -10,7 +10,21 @@ import {secp256k1, sha256} from 'zena:crypto';
 import {hex} from 'zena:encoding';
 import {AccessTokenCredentials} from '../auth.zena';
 import {CloudKms, KmsError, ecPointFromPem} from '../kms.zena';
-import {FAKE_KMS_KEY, FAKE_KMS_PRIVATE_KEY, startFakeKms} from '../testing/fake-kms.zena';
+import {FAKE_KMS_CRYPTO_KEY, FAKE_KMS_KEY, FAKE_KMS_PRIVATE_KEY, startFakeKms} from '../testing/fake-kms.zena';
+
+function bytesOf(text: String): FixedArray<u8> {
+  return text.toBytes() as FixedArray<u8>;
+}
+
+/** The status of the `KmsError` `call` throws, or -1 when it throws none. */
+function refusedWith(call: () => void): i32 {
+  try {
+    call();
+  } catch (e) {
+    return if (e is KmsError) (e as KmsError).status else -2;
+  }
+  return -1;
+}
 
 export let tests = suite('google-cloud:kms', () => {
   test('signs a digest, and reads the public key it verifies with', (ctx) => {
@@ -35,6 +49,31 @@ export let tests = suite('google-cloud:kms', () => {
         status = if (e is KmsError) (e as KmsError).status else -1;
       }
       equal(status, 403);
+    } finally {
+      server.close();
+    }
+  });
+
+  test('encrypts with a symmetric key, and decrypts with the same additional data', (ctx) => {
+    let server = startFakeKms();
+    try {
+      let origin = `http://127.0.0.1:${server.port as i32}`;
+      let kms = new CloudKms(FAKE_KMS_CRYPTO_KEY, new AccessTokenCredentials('token'), origin);
+      let secret = bytesOf('a signing key, thirty-two bytes!');
+      let ciphertext = runFuture(kms.encrypt(secret, bytesOf('did:plc:alice')));
+      isTrue(hex.encode(ciphertext) != hex.encode(secret) && !hex.encode(ciphertext).contains(hex.encode(secret)),
+          'the ciphertext does not hold the plaintext');
+      equal(hex.encode(runFuture(kms.decrypt(ciphertext, bytesOf('did:plc:alice')))), hex.encode(secret));
+      // Other additional data, or another ciphertext, does not decrypt.
+      equal(refusedWith(() => { runFuture(kms.decrypt(ciphertext, bytesOf('did:plc:bob'))); }), 400);
+      let tampered = new FixedArray<u8>(ciphertext.length, 0 as u8);
+      for (var i = 0; i < ciphertext.length; i += 1) {
+        tampered[i] = ciphertext[i];
+      }
+      tampered[ciphertext.length - 1] = (tampered[ciphertext.length - 1] ^ (1 as u8)) as u8;
+      equal(refusedWith(() => { runFuture(kms.decrypt(tampered, bytesOf('did:plc:alice'))); }), 400);
+      let refused = new CloudKms(FAKE_KMS_CRYPTO_KEY, new AccessTokenCredentials('wrong'), origin);
+      equal(refusedWith(() => { runFuture(refused.encrypt(secret, bytesOf('did:plc:alice'))); }), 403);
     } finally {
       server.close();
     }

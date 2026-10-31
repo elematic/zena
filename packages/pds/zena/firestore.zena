@@ -5,8 +5,10 @@
  * documents are under `tenants/{tenant}`, and its blobs' objects under
  * `{tenant}/`. Under `tenants/{tenant}`:
  *
- * - `accounts/{did}`: `handle` (absent for none), `kind`, `keyType` and
- *   `privateKey`, the repository signing key's bytes.
+ * - `accounts/{did}`: `handle` (absent for none), `kind`, `keyType`, and
+ *   the repository signing key: `encryptedKey`, its bytes encrypted by
+ *   the store's `KeyEncryption` for the account's DID, or, in a store
+ *   with none, `privateKey`, its bytes.
  * - `handles/{handle}`: `did`.
  * - `heads/{did}`: `cid` and `rev`, the repository's current commit.
  * - `accounts/{did}/blocks/{cid}`: `bytes`.
@@ -57,8 +59,8 @@ import {ClaimedName, ClaimedScope, HostStore, PendingChange, PendingRelease} fro
 import {PlcLog} from './plc-directory.zena';
 import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
-  Account, AccountKind, AccountStore, Head, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob,
-  sameHead, sortRecordEntries
+  Account, AccountKind, AccountStore, EncryptedKey, Head, KeyEncryption, RecordChange, RecordEntry, SigningKey,
+  Storage, StoredBlob, sameHead, sortRecordEntries
 } from './storage.zena';
 
 /** The most writes one batch of blocks holds. */
@@ -153,19 +155,58 @@ function tenantRoot(db: Firestore, tenant: String): DocumentReference {
 
 /**
  * A tenant's accounts and repositories in `db`, and their blobs' bytes in
- * `blobs`.
+ * `blobs`. With `keys`, accounts' signing keys are written encrypted;
+ * without, in the clear, and an account whose key is encrypted cannot be
+ * read.
  */
 export final class FirestoreStorage implements Storage {
   #db: Firestore;
   #root: DocumentReference;
   #tenant: String;
   #blobs: BlobBytes;
+  #keys: KeyEncryption | null;
 
-  new(db: Firestore, tenant: String, blobs: BlobBytes)
-    : #db = db, #root = tenantRoot(db, tenant), #tenant = tenant, #blobs = blobs;
+  new(db: Firestore, tenant: String, blobs: BlobBytes, keys: KeyEncryption | null = null)
+    : #db = db, #root = tenantRoot(db, tenant), #tenant = tenant, #blobs = blobs, #keys = keys;
 
   async getAccount(did: String): Future<Account | null> {
-    return accountFrom(did, await this.#root.collection('accounts').doc(did).get());
+    return accountFrom(did, await this.#root.collection('accounts').doc(did).get(), this.#keys);
+  }
+
+  /**
+   * Encrypts each signing key the tenant keeps in the clear, written
+   * before the store had `keys`, and returns how many it encrypted.
+   * Throws without `keys`.
+   */
+  async encryptKeys(): Future<i32> {
+    let keys = this.#keys;
+    if (keys == null) {
+      throw new Error('there is no key encryption to encrypt signing keys with');
+    }
+    var encrypted = 0;
+    let accounts = this.#root.collection('accounts');
+    for (let listed in await accounts.get()) {
+      if (bytesAt(listed, 'privateKey') == null) {
+        continue;
+      }
+      let did = listed.id;
+      let ref = listed.ref;
+      // Read again in the transaction, so that a key another run or server
+      // encrypted first is left as it is.
+      let changed = await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+        let privateKey = bytesAt(await tx.get(ref), 'privateKey');
+        if (privateKey == null) {
+          return false;
+        }
+        let ciphertext = await keys.encrypt(did, privateKey as FixedArray<u8>);
+        tx.update(ref, new Fields().set('encryptedKey', bytesValue(ciphertext as ByteArray)).deleteField('privateKey'));
+        return true;
+      });
+      if (changed) {
+        encrypted += 1;
+      }
+    }
+    return encrypted;
   }
 
   async accountByHandle(handle: String): Future<Account | null> {
@@ -186,6 +227,7 @@ export final class FirestoreStorage implements Storage {
    */
   async putAccount(account: Account): Future<void> {
     let root = this.#root;
+    let fields = await accountFields(account, this.#keys);
     await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
       let ref = root.collection('accounts').doc(account.did);
       let handle = account.handle;
@@ -207,7 +249,7 @@ export final class FirestoreStorage implements Storage {
           tx.delete(root.collection('handles').doc(previous));
         }
       }
-      tx.set(ref, accountFields(account));
+      tx.set(ref, fields);
       if (claim != null) {
         tx.set(claim, new Fields().string('did', account.did));
       }
@@ -728,11 +770,25 @@ function entryFrom(collection: String, snapshot: DocumentSnapshot): RecordEntry 
   return new RecordEntry(collection, rkey as String, cid as Cid);
 }
 
-function accountFields(account: Account): Fields {
-  let fields = new Fields()
-    .string('kind', kindName(account.kind))
-    .string('keyType', keyTypeName(account.key.type))
-    .set('privateKey', bytesValue(account.key.privateKey as ByteArray));
+/**
+ * `account`'s document: its signing key as it was read, if it was read
+ * encrypted, or else encrypted with `keys`, or in the clear without.
+ */
+async function accountFields(account: Account, keys: KeyEncryption | null): Future<Fields> {
+  let fields = new Fields().string('kind', kindName(account.kind));
+  let encrypted = account.encryptedKey;
+  if (encrypted != null) {
+    fields.string('keyType', keyTypeName(encrypted.type))
+      .set('encryptedKey', bytesValue(encrypted.ciphertext as ByteArray));
+  } else {
+    let key = await account.signingKey();
+    fields.string('keyType', keyTypeName(key.type));
+    if (keys != null) {
+      fields.set('encryptedKey', bytesValue(await keys.encrypt(account.did, key.privateKey) as ByteArray));
+    } else {
+      fields.set('privateKey', bytesValue(key.privateKey as ByteArray));
+    }
+  }
   let handle = account.handle;
   if (handle != null) {
     fields.string('handle', handle);
@@ -740,15 +796,32 @@ function accountFields(account: Account): Fields {
   return fields;
 }
 
-function accountFrom(did: String, snapshot: DocumentSnapshot): Account | null {
+/**
+ * The account in `snapshot`, with its signing key encrypted by `keys`, or
+ * in the clear; null when there is none. Throws for an encrypted key
+ * without `keys`.
+ */
+function accountFrom(did: String, snapshot: DocumentSnapshot, keys: KeyEncryption | null): Account | null {
   let kind = stringAt(snapshot, 'kind');
   let keyType = stringAt(snapshot, 'keyType');
-  let privateKey = bytesAt(snapshot, 'privateKey');
-  if (kind == null || keyType == null || privateKey == null) {
+  if (kind == null || keyType == null) {
     return null;
   }
-  let key = new SigningKey(keyTypeNamed(keyType as String), privateKey as FixedArray<u8>);
-  return new Account(did, stringAt(snapshot, 'handle'), key, kindNamed(kind as String));
+  let type = keyTypeNamed(keyType as String);
+  let handle = stringAt(snapshot, 'handle');
+  let ciphertext = bytesAt(snapshot, 'encryptedKey');
+  if (ciphertext != null) {
+    if (keys == null) {
+      throw new Error(`${did}'s signing key is encrypted, and the server has no key encryption (PDS_KEY_ENCRYPTION_KMS_KEY) to decrypt it`);
+    }
+    return new Account(did, handle, new EncryptedKey(type, ciphertext as FixedArray<u8>, keys as KeyEncryption),
+        kindNamed(kind as String));
+  }
+  let privateKey = bytesAt(snapshot, 'privateKey');
+  if (privateKey == null) {
+    return null;
+  }
+  return new Account(did, handle, new SigningKey(type, privateKey as FixedArray<u8>), kindNamed(kind as String));
 }
 
 function kindName(kind: AccountKind): String {

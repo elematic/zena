@@ -1,0 +1,54 @@
+/**
+ * Signing keys encrypted with a Cloud KMS symmetric key
+ * (`pds:key-encryption`), against the fake Cloud KMS served in the same
+ * program (`google-cloud:testing/fake-kms`).
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {hex} from 'zena:encoding';
+import {AccessTokenCredentials} from 'google-cloud:auth';
+import {CloudKms} from 'google-cloud:kms';
+import {FAKE_KMS_CRYPTO_KEY, startFakeKms} from 'google-cloud:testing/fake-kms';
+import {KmsKeyEncryption} from 'pds:key-encryption';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+
+/** Whether `call` throws. */
+function throws(call: () => void): boolean {
+  try {
+    call();
+  } catch (e) {
+    return true;
+  }
+  return false;
+}
+
+export let tests = suite('pds:key-encryption', () => {
+  test("encrypts a signing key for its account's DID, and keeps what it decrypts", (ctx) => {
+    let server = startFakeKms();
+    var closed = false;
+    try {
+      let origin = `http://127.0.0.1:${server.port as i32}`;
+      let keys = new KmsKeyEncryption(new CloudKms(FAKE_KMS_CRYPTO_KEY, new AccessTokenCredentials('token'), origin));
+      let secret = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+      let ciphertext = runFuture(keys.encrypt(ALICE, secret));
+      isTrue(!hex.encode(ciphertext).contains(hex.encode(secret)), 'the ciphertext does not hold the key');
+      equal(hex.encode(runFuture(keys.decrypt(ALICE, ciphertext))), hex.encode(secret));
+      isTrue(throws(() => { runFuture(keys.decrypt(BOB, ciphertext)); }), "decrypted Alice's key as Bob's");
+
+      // Decrypting it again needs no Cloud KMS; another ciphertext does.
+      let other = runFuture(keys.encrypt(ALICE, hex.decode('0101010101010101010101010101010101010101010101010101010101010101')));
+      server.close();
+      closed = true;
+      equal(hex.encode(runFuture(keys.decrypt(ALICE, ciphertext))), hex.encode(secret));
+      isTrue(throws(() => { runFuture(keys.decrypt(ALICE, other)); }), 'decrypted a ciphertext it had not kept without Cloud KMS');
+    } finally {
+      if (!closed) {
+        server.close();
+      }
+    }
+  });
+});

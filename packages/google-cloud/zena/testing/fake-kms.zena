@@ -1,12 +1,18 @@
 /**
- * A fake Cloud KMS key version, served by `zena:http` in the same program,
- * for tests of code that signs through `google-cloud:kms`: it answers
- * asymmetricSign and getPublicKey for one secp256k1 key, as Cloud KMS may,
- * with DER signatures whose s is high, and refuses any token but `token`.
+ * A fake Cloud KMS, served by `zena:http` in the same program, for tests
+ * of code that signs or encrypts through `google-cloud:kms`. It answers
+ * asymmetricSign and getPublicKey for one secp256k1 key version, as Cloud
+ * KMS may, with DER signatures whose s is high, and encrypt and decrypt
+ * for one symmetric key, and refuses any token but `token`.
+ *
+ * Its encryption only has to be what the tests check: a ciphertext that
+ * does not hold the plaintext, and that decrypts only with the same
+ * additional data. It is a SHA-256 keystream, not a cipher to keep
+ * anything with.
  */
 
 import {Future} from 'zena:async';
-import {secp256k1} from 'zena:crypto';
+import {secp256k1, sha256} from 'zena:crypto';
 import {base64, hex} from 'zena:encoding';
 import {App, Server} from 'zena:http';
 import {JsonObject, parseJson, stringify} from 'zena:json';
@@ -15,6 +21,10 @@ import {JsonObject, parseJson, stringify} from 'zena:json';
 export let FAKE_KMS_KEY = 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1';
 /** Its private key. */
 export let FAKE_KMS_PRIVATE_KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+/** The symmetric key's name. */
+export let FAKE_KMS_CRYPTO_KEY = 'projects/p/locations/global/keyRings/r/cryptoKeys/signing-keys';
+/** What the symmetric key's keystream and tags are made from. */
+let SYMMETRIC_SECRET = hex.decode('5eb63bbbe01eeed093cb22bb8f5acdc35eb63bbbe01eeed093cb22bb8f5acdc3');
 let ORDER = hex.decode('fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141');
 /** A secp256k1 SubjectPublicKeyInfo, up to the point. */
 let SPKI_PREFIX = '3056301006072a8648ce3d020106052b8104000a034200';
@@ -64,7 +74,46 @@ function highSDer(digest: FixedArray<u8>): FixedArray<u8> {
   return join(head, body);
 }
 
-/** A started server for the key; its origin is `http://127.0.0.1:<port>`. */
+/** `bytes` XORed with the keystream for `additionalData`. */
+function keystreamed(bytes: FixedArray<u8>, additionalData: FixedArray<u8>): FixedArray<u8> {
+  let out = new FixedArray<u8>(bytes.length, 0 as u8);
+  for (var block = 0; block * 32 < bytes.length; block += 1) {
+    let counter = new FixedArray<u8>(1, block as u8);
+    let stream = sha256(join(join(SYMMETRIC_SECRET, additionalData), counter));
+    for (var i = 0; i < 32 && block * 32 + i < bytes.length; i += 1) {
+      out[block * 32 + i] = (bytes[block * 32 + i] ^ stream[i]) as u8;
+    }
+  }
+  return out;
+}
+
+/** The tag that binds `plaintext` to `additionalData`. */
+function tagOf(plaintext: FixedArray<u8>, additionalData: FixedArray<u8>): FixedArray<u8> {
+  let length = new FixedArray<u8>(1, additionalData.length as u8);
+  return sha256(join(join(join(SYMMETRIC_SECRET, length), additionalData), plaintext));
+}
+
+/** The tag, then the keystreamed plaintext. */
+function fakeEncrypt(plaintext: FixedArray<u8>, additionalData: FixedArray<u8>): FixedArray<u8> {
+  return join(tagOf(plaintext, additionalData), keystreamed(plaintext, additionalData));
+}
+
+/** The plaintext of `ciphertext`, or null when it was not encrypted with `additionalData`. */
+function fakeDecrypt(ciphertext: FixedArray<u8>, additionalData: FixedArray<u8>): FixedArray<u8> | null {
+  if (ciphertext.length < 32) {
+    return null;
+  }
+  let plaintext = keystreamed(ciphertext[32..ciphertext.length], additionalData);
+  return if (hex.encode(tagOf(plaintext, additionalData)) == hex.encode(ciphertext[0..32])) plaintext else null;
+}
+
+/** The base64 member `name` of `body`, decoded; empty when it is missing. */
+function bytesMember(body: JsonObject, name: String): FixedArray<u8> {
+  let value = body[name];
+  return if (value is String) base64.decode(value as String) else new FixedArray<u8>(0, 0 as u8);
+}
+
+/** A started server for the keys; its origin is `http://127.0.0.1:<port>`. */
 export function startFakeKms(): Server {
   let app = new App();
   app.use(async (req, res, next): Future<void> => {
@@ -80,6 +129,28 @@ export function startFakeKms(): Server {
       let answer = new JsonObject();
       answer['name'] = FAKE_KMS_KEY;
       answer['signature'] = base64.encode(highSDer(digest));
+      res.body = stringify(answer);
+      return;
+    }
+    if (req.method == 'POST' && req.path == `/v1/${FAKE_KMS_CRYPTO_KEY}:encrypt`) {
+      let body = parseJson(await req.text()) as JsonObject;
+      let answer = new JsonObject();
+      answer['name'] = `${FAKE_KMS_CRYPTO_KEY}/cryptoKeyVersions/1`;
+      answer['ciphertext'] = base64.encode(fakeEncrypt(bytesMember(body, 'plaintext'),
+          bytesMember(body, 'additionalAuthenticatedData')));
+      res.body = stringify(answer);
+      return;
+    }
+    if (req.method == 'POST' && req.path == `/v1/${FAKE_KMS_CRYPTO_KEY}:decrypt`) {
+      let body = parseJson(await req.text()) as JsonObject;
+      let plaintext = fakeDecrypt(bytesMember(body, 'ciphertext'), bytesMember(body, 'additionalAuthenticatedData'));
+      if (plaintext == null) {
+        res.statusCode = 400;
+        res.body = '{"error":{"code":400,"message":"Decryption failed: the ciphertext is invalid."}}';
+        return;
+      }
+      let answer = new JsonObject();
+      answer['plaintext'] = base64.encode(plaintext);
       res.body = stringify(answer);
       return;
     }

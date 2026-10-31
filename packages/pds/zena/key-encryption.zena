@@ -1,0 +1,56 @@
+/**
+ * Accounts' repository signing keys encrypted at rest with a Cloud KMS
+ * symmetric key, for `FirestoreStorage` to keep
+ * (docs/design/package-manager.md, "Keys"), so that a database export or
+ * backup holds no key that signs. The service account needs
+ * `roles/cloudkms.cryptoKeyEncrypterDecrypter` on that key alone.
+ *
+ * Cloud KMS encrypts each signing key itself, with the account's DID as
+ * additional authenticated data, so a ciphertext decrypts only as its own
+ * account's key. A data key of each account's, wrapped by Cloud KMS, would
+ * be a second 32-byte key wrapping the first; Cloud KMS encrypts up to
+ * 64 KiB, so the signing key is the data key.
+ *
+ * A key is decrypted the first time the server signs with it, and kept in
+ * memory, by DID, so that an account costs one call to Cloud KMS on each
+ * server.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {hex} from 'zena:encoding';
+import {CloudKms} from 'google-cloud:kms';
+import {KeyEncryption} from './storage.zena';
+
+/** A ciphertext, and the key it decrypted to. */
+final class Decrypted {
+  ciphertext: String;
+  key: FixedArray<u8>;
+
+  new(this.ciphertext, this.key);
+}
+
+/** Signing keys encrypted with the Cloud KMS symmetric key `kms` names. */
+export final class KmsKeyEncryption implements KeyEncryption {
+  #kms: CloudKms;
+  /** By DID, the last key decrypted, with its ciphertext in hex. */
+  #decrypted = new HashMap<String, Decrypted>();
+
+  new(kms: CloudKms) : #kms = kms;
+
+  async encrypt(did: String, privateKey: FixedArray<u8>): Future<FixedArray<u8>> {
+    return await this.#kms.encrypt(privateKey, did.toBytes() as FixedArray<u8>);
+  }
+
+  async decrypt(did: String, ciphertext: FixedArray<u8>): Future<FixedArray<u8>> {
+    let text = hex.encode(ciphertext);
+    if (let (true, kept) = this.#decrypted.get(did)) {
+      if (kept.ciphertext == text) {
+        return kept.key;
+      }
+    }
+    let key = await this.#kms.decrypt(ciphertext, did.toBytes() as FixedArray<u8>);
+    this.#decrypted[did] = new Decrypted(text, key);
+    return key;
+  }
+}

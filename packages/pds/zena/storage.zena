@@ -23,6 +23,25 @@ import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, curveOf, publicKeyFor} from 'atproto:didkey';
 import {compareKeys} from 'atproto:mst';
 
+/**
+ * Encrypts the signing keys a store keeps, and decrypts them to sign
+ * with. Each ciphertext is bound to its account's DID, so that it does
+ * not decrypt as another account's key.
+ */
+export interface KeyEncryption {
+  encrypt(did: String, privateKey: FixedArray<u8>): Future<FixedArray<u8>>;
+  decrypt(did: String, ciphertext: FixedArray<u8>): Future<FixedArray<u8>>;
+}
+
+/** A repository signing key as a store keeps it: encrypted with `encryption`, for its account's DID. */
+export final class EncryptedKey {
+  type: KeyType;
+  ciphertext: FixedArray<u8>;
+  encryption: KeyEncryption;
+
+  new(this.type, this.ciphertext, this.encryption);
+}
+
 /** A repository's current commit. */
 export final class Head {
   cid: Cid;
@@ -67,15 +86,35 @@ export enum AccountKind {
   Automation
 }
 
-/** An account the server holds. */
+/**
+ * An account the server holds, with its repository signing key: held in
+ * the clear, or as a store keeps it encrypted, decrypted when it is first
+ * used (`signingKey`).
+ */
 export final class Account {
   did: String;
   var handle: String | null;
-  key: SigningKey;
   kind: AccountKind;
+  /** The signing key as the store keeps it, when it keeps it encrypted. */
+  encryptedKey: EncryptedKey | null;
+  var #key: SigningKey | null;
 
-  new(did: String, handle: String | null, key: SigningKey, kind: AccountKind = AccountKind.Person)
-      : did = did, handle = handle, key = key, kind = kind;
+  new(did: String, handle: String | null, key: SigningKey | EncryptedKey, kind: AccountKind = AccountKind.Person)
+      : did = did, handle = handle, kind = kind,
+        encryptedKey = if (key is EncryptedKey) key as EncryptedKey else null,
+        #key = if (key is SigningKey) key as SigningKey else null;
+
+  /** The repository signing key, decrypted the first time it is asked for when it is encrypted. */
+  async signingKey(): Future<SigningKey> {
+    let held = this.#key;
+    if (held != null) {
+      return held;
+    }
+    let encrypted = this.encryptedKey as EncryptedKey;
+    let key = new SigningKey(encrypted.type, await encrypted.encryption.decrypt(this.did, encrypted.ciphertext));
+    this.#key = key;
+    return key;
+  }
 
   /** Whether the account may hold records of `collection`. */
   allows(collection: String): boolean {
