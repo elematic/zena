@@ -655,7 +655,8 @@ All prose — design docs, commit messages, comments — follows
 
 - **Before pushing**, `npm run check` (the pre-push hook that `npm ci`
   installs runs it): prettier on the changed files CI checks, `zena lint`
-  on the changed lines of `.zena` files, commit subject tags, and words
+  on the changed lines of `.zena` files, type errors in changed libraries
+  that their tests would not report (#510), commit subject tags, and words
   that must stay out of this public repository. `npm run check -- --fix`
   formats. Check a PR's title and description the same way by saving
   them to a file and running `npm run check -- --text <file>`.

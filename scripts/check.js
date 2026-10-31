@@ -150,10 +150,27 @@ if (linted.length > 0) {
     const touched = new Map(
       linted.map((file) => [file, new Set(addedLines(file).map(([n]) => n))]),
     );
-    for (const finding of lines(result.stdout)) {
+    for (const finding of lines(`${result.stdout}\n${result.stderr}`)) {
       const match = /^(.+?):(\d+):\d+: /.exec(finding);
       if (match && touched.get(match[1])?.has(Number(match[2]))) {
         errors.push(`${finding} (zena lint --fix ${match[1]})`);
+      }
+      // A type error in a library that tests import by package specifier is
+      // not reported by those tests (#510), but lint checks each file on its
+      // own and says so. Libraries for the js target cannot check under the
+      // default one.
+      const unchecked = /^(.+?): does not check \((.*)\); skipped$/.exec(
+        finding,
+      );
+      if (
+        unchecked &&
+        !/(^|[-/])js\.zena$/.test(unchecked[1]) &&
+        !unchecked[2].includes("'zena:js'")
+      ) {
+        errors.push(
+          `${unchecked[1]}: has a type error, line ${unchecked[2]} ` +
+            `(zena-cli build ${unchecked[1]} -o <out.wasm> shows all of them)`,
+        );
       }
     }
   }
