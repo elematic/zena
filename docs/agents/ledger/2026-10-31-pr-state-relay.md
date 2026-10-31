@@ -11,4 +11,6 @@
   week of 2026-10-24. Next step if it stays: GitHub's stacked PRs
   (`gh stack sync`), which rebase and retarget after a merge.
 - Review: 2026-11-14
-- Outcome:
+- Outcome: the first use exited when #753's checks passed, the session did
+  not start it again, and the merge was relayed by hand. `watch-prs` now
+  keeps watching through passing checks.

@@ -70,9 +70,10 @@ and the root is not the session's own project directory.
 ## After pushing
 
 `npm run watch-prs -- <numbers>`, run as a background task, exits when one
-of the PRs is merged or closed, when its checks finish, when someone other
+of the PRs is merged or closed, when its checks fail, when someone other
 than the agent account comments, or when the PR a stacked PR is based on
-merges. The agent acts on what it printed and starts it again. In October
+merges; passing checks are printed and the watch goes on. The agent acts on
+what it printed and starts it again. In October
 2026 about a third of the messages people sent to agents only passed on
 this kind of GitHub state ("#n is merged, #m needs a rebase").
 
