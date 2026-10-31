@@ -35,6 +35,7 @@ import {
   buildStdlibConfig, withBuiltinPackages
 } from './package-manifest.zena';
 import { getStandardPrelude, getTargetRuntimeModules } from './prelude.zena';
+import { WellKnown, wellKnownLibrary, wellKnownName } from './well-known.zena';
 import {
   ModuleExports as ScopeModuleExports, ScopeBuilder, ScopeResult, UnresolvedName
 } from './scope/scope-builder.zena';
@@ -263,17 +264,13 @@ export final class CompilerTarget {
     // Wire again, now including the implicit imports, then record what
     // is still missing.
     this.#wireToFixpoint(files, null);
-    let stringModule = if (let (true, specifier) = preludeNames.get("String")) {
-      this.#declaringModule("String", specifier)
-    } else {
-      null
-    };
+    let wellKnownModules = new Map<i32, String>();
     for (let lib in files) {
       let {scopeResult} = lib;
       if (scopeResult != null) {
         this.#wireImports(lib, scopeResult, true);
         this.#addDeclaringModules(lib, scopeResult);
-        this.#addStringModule(lib, scopeResult, stringModule);
+        this.#addImpliedModules(lib, scopeResult, wellKnownModules);
       }
     }
   }
@@ -398,23 +395,56 @@ export final class CompilerTarget {
   }
 
   /**
-   * Make a module whose literals are strings depend on the module that
-   * declares `String`, as a written `String` would (#addDeclaringModules).
-   * A literal never names the type, so nothing else orders the module
-   * after that declaration; and a library the declaration's own module
-   * imports would otherwise be checked before `String` is registered,
-   * and fail to type its literals. With the edge, such a library is on a
-   * cycle with the declaring module, and is checked as a cycle member is.
+   * Make a module depend on the declarations its syntax implies
+   * (`ScopeResult.impliedDeclarations`): the module declaring `String`
+   * for a string literal, `ImmutableArray` for an array literal, and so
+   * on, as a written name would (#addDeclaringModules). Nothing else
+   * orders the module after those declarations; and a library one of
+   * their own modules imports would otherwise be checked before the
+   * declaration is registered, and fail to type the syntax. With the
+   * edge, such a library is on a cycle with that module, and is checked
+   * as a cycle member is.
+   *
+   * `modules` caches each declaration's module across the compile; ""
+   * records one this compilation does not load.
    */
-  #addStringModule(lib: SourceFile, scopeResult: ScopeResult,
-      stringModule: String | null): void {
-    if (stringModule == null || !scopeResult.literalsUseString) {
-      return;
+  #addImpliedModules(lib: SourceFile, scopeResult: ScopeResult,
+      modules: HashMap<i32, String>): void {
+    for (let w in scopeResult.impliedDeclarations) {
+      if (!modules.has(w as i32)) {
+        modules[w as i32] = this.#wellKnownModule(w) ?? "";
+      }
+      let declaredIn = modules[w as i32];
+      if (declaredIn != "" && declaredIn != lib.path) {
+        lib.imports[declaredIn] = declaredIn;
+      }
     }
-    let declaredIn = stringModule as String;
-    if (declaredIn != lib.path && this.#loader.get(declaredIn) != null) {
-      lib.imports[declaredIn] = declaredIn;
+  }
+
+  /**
+   * The loaded module that declares `w`, found through its library's
+   * facade (`zena:core` for `String`), or null when this compilation does
+   * not load it.
+   */
+  #wellKnownModule(w: WellKnown): String | null {
+    var facade = "";
+    try {
+      facade = this.#resolver.resolve(`zena:${wellKnownLibrary(w)}`, "").path;
+    } catch (e) {
+      return null;
     }
+    let facadeLib = this.#loader.get(facade);
+    if (facadeLib == null || facadeLib.scopeResult == null) {
+      return null;
+    }
+    let exports = (facadeLib.scopeResult as ScopeResult).exports;
+    if (let (true, exp) = exports.get(wellKnownName(w))) {
+      let declaredIn = exp.resolveTarget().modulePath;
+      if (declaredIn != "" && this.#loader.get(declaredIn) != null) {
+        return declaredIn;
+      }
+    }
+    return null;
   }
 
   /**
