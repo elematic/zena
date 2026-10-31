@@ -11,11 +11,12 @@
  * The prelude is a set of ordinary imports every module gets without
  * writing them, so a prelude name on a cycle is no different: a module
  * that uses one depends on the module that declares it, and the two are
- * ordered and checked like any other pair on a cycle.
+ * ordered and checked like any other pair on a cycle. So is a module
+ * whose string literals have the type `String` without naming it.
  */
 
 import { suite, test } from 'zena:test';
-import { equal } from 'zena:assert';
+import { equal, isTrue } from 'zena:assert';
 import { checkCompilation } from '../lib/compiler.zena';
 import { Diagnostic } from '../lib/diagnostics.zena';
 import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
@@ -231,6 +232,43 @@ export let tests = suite('Declarations on Import Cycles', () => {
     let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "prelude name on a cycle");
+    equal(errors.length, 0);
+  });
+
+  test('a string literal depends on the module declaring String', () => {
+    let host = new MockHost();
+    let compiler = makeCompiler(host);
+    // `tables.zena` never names `String`, but its literals have that
+    // type and its enum is backed by it. `string.zena` imports it, so
+    // without the literals' own dependency on `String`, `tables.zena`
+    // is checked first, before `String` is registered. With it, the two
+    // are a cycle. The js target's `String` is `string-js.zena`, the
+    // others' `string.zena`; give both the same source.
+    let stringSource =
+      "import { TABLE, describe } from './tables.zena';\n" +
+      "export class String {}\n" +
+      "export let table = TABLE;\n";
+    host.addFile("zena:core/string.zena", stringSource);
+    host.addFile("zena:core/string-js.zena", stringSource);
+    host.addFile("zena:core/tables.zena",
+      "export let TABLE = 'abc';\n" +
+      "export let describe = (n: i32) => `${n} entries`;\n" +
+      "export enum Mode { Lower = 'lower', Upper = 'upper' }\n");
+    host.addFile("/project/main.zena",
+      "export function main(): i32 { return 0; }\n");
+    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    // A dependency's errors are left out of the program's diagnostics,
+    // so read the library's own.
+    let checked = checkCompilation(result);
+    var tables: Array<Diagnostic> | null = null;
+    for (let path in checked.results.keys()) {
+      if (path.endsWith("core/tables.zena")) {
+        tables = checked.results[path].diagnostics;
+      }
+    }
+    isTrue(tables != null);
+    let errors = errorDiagnostics(tables as Array<Diagnostic>);
+    show(errors, "string literal");
     equal(errors.length, 0);
   });
 

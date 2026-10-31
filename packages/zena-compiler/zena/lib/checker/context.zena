@@ -1845,9 +1845,19 @@ export final class CheckerContext {
       }
       case EnumDeclaration as ed: {
         let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
-        let backingType = if (isStringEnum) { this.tryResolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
         let enumType = newEnumType(info.id, info.modulePath, ed);
-        enumType.backingType = backingType;
+        // A string enum on the cycle `String` is declared on can be
+        // materialized before `String` is registered. It keeps its
+        // placeholder then, and its registration fills the backing type
+        // in (checkEnumDeclaration).
+        let backingType = if (isStringEnum) {
+          this.tryResolveWellKnownType(WellKnown.StringClass)
+        } else {
+          new I32Type() as Type
+        };
+        if (backingType != null) {
+          enumType.backingType = backingType;
+        }
         return enumType;
       }
       case TypeAliasDeclaration as ta: {

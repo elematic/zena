@@ -215,7 +215,15 @@ export final class ScopeResult(
    * says: tools that read it — documentation, formatting, the language
    * service — see only what was written.
    */
-  implicitImportDeclarations: GrowableArray<ImportDeclaration>
+  implicitImportDeclarations: GrowableArray<ImportDeclaration>,
+
+  /**
+   * Whether the module's literals have the prelude's `String` as their
+   * type: a string or template literal, or a string enum. The module
+   * depends on the module declaring `String` then, whether or not it
+   * names it, and the compiler adds that edge.
+   */
+  literalsUseString: boolean
 )
 
 function populateParents(ast: Node, parents: DenseNodeMap<Node>): void {
@@ -267,6 +275,11 @@ export final class ScopeBuilder {
 
   /** The prelude scope's bindings, one per prelude name, in prelude order. */
   #preludeBindings = new Array<ImplicitImport>();
+
+  /** The prelude's binding of `String`, the type of a string literal. */
+  var #preludeString: Symbol | null = null;
+  /** Whether a literal here has the prelude's `String` as its type. */
+  var #literalsUseString = false;
 
   new(modulePath: String, preludeNames: HashMap<String, String> | null = null,
       symbolIdGenerator: IdGenerator<SymbolId> | null = null,
@@ -406,7 +419,8 @@ export final class ScopeBuilder {
       duplicateImports,
       this.#parents,
       this.#usedPreludeBindings(),
-      new Array<ImportDeclaration>(0)
+      new Array<ImportDeclaration>(0),
+      this.#literalsUseString
     );
   }
 
@@ -461,10 +475,27 @@ export final class ScopeBuilder {
       let spec = new ImportSpecifier(imported, local, loc);
       spec.id = this.#nodeIds.next();
       prelude.declare(name, false, spec, this.#modulePath);
-      this.#symbols.record(spec, prelude.getLocal(name) as Symbol);
+      let binding = prelude.getLocal(name) as Symbol;
+      this.#symbols.record(spec, binding);
       this.#preludeBindings.push(new ImplicitImport(spec, preludeNames[name]));
+      if (name == "String") {
+        this.#preludeString = binding;
+      }
     }
     this.#current = new Scope(ScopeKind.Module, prelude, this.#symbolIdGenerator);
+  }
+
+  /**
+   * Note a string or template literal, or a string enum's member: its
+   * type is the standard library's `String` though the module may never
+   * name it. Recorded only while that is the `String` in scope, so a
+   * module declaring a `String` of its own records nothing.
+   */
+  #useLiteralString(): void {
+    let binding = this.#preludeString;
+    if (binding != null && this.#current.resolve("String") === binding) {
+      this.#literalsUseString = true;
+    }
   }
 
   /** The prelude bindings this module read: its implicit imports. */
@@ -906,7 +937,14 @@ export final class ScopeBuilder {
       }
       case BreakStatement: {}
       case ContinueStatement: {}
-      case EnumDeclaration: {}
+      case EnumDeclaration {members}: {
+        // A string enum is backed by `String`.
+        for (let member in members) {
+          if (member.initializer is StringLiteral) {
+            this.#useLiteralString();
+          }
+        }
+      }
       case TypeAliasDeclaration {typeParameters, typeAnnotation}: {
         this.#enterScope(ScopeKind.Block);
         if (typeParameters != null) {
@@ -1069,6 +1107,7 @@ export final class ScopeBuilder {
         }
       }
       case TemplateLiteral {expressions}: {
+        this.#useLiteralString();
         for (let expression in expressions) {
           this.#processExpression(expression);
         }
@@ -1145,7 +1184,9 @@ export final class ScopeBuilder {
       case ThisExpression: {}
       case SuperExpression: {}
       case NumberLiteral: {}
-      case StringLiteral: {}
+      case StringLiteral: {
+        this.#useLiteralString();
+      }
       case BooleanLiteral: {}
       case NullLiteral: {}
       case PipePlaceholder: {}

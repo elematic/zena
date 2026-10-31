@@ -263,11 +263,17 @@ export final class CompilerTarget {
     // Wire again, now including the implicit imports, then record what
     // is still missing.
     this.#wireToFixpoint(files, null);
+    let stringModule = if (let (true, specifier) = preludeNames.get("String")) {
+      this.#declaringModule("String", specifier)
+    } else {
+      null
+    };
     for (let lib in files) {
       let {scopeResult} = lib;
       if (scopeResult != null) {
         this.#wireImports(lib, scopeResult, true);
         this.#addDeclaringModules(lib, scopeResult);
+        this.#addStringModule(lib, scopeResult, stringModule);
       }
     }
   }
@@ -337,19 +343,8 @@ export final class CompilerTarget {
     let origins = new Array<String>();
     let byOrigin = new Map<String, GrowableArray<ImportSpecifier>>();
     for (let implicit in scopeResult.implicitImports) {
-      let name = implicit.spec.imported.name;
-      let preludePath = this.#resolver.resolve(implicit.preludeSpecifier, "").path;
-      var origin = preludePath;
-      let preludeLib = this.#loader.get(preludePath);
-      if (preludeLib != null && preludeLib.scopeResult != null) {
-        let exports = (preludeLib.scopeResult as ScopeResult).exports;
-        if (let (true, exp) = exports.get(name)) {
-          let declaredIn = exp.resolveTarget().modulePath;
-          if (declaredIn != "") {
-            origin = declaredIn;
-          }
-        }
-      }
+      let origin = this.#declaringModule(
+          implicit.spec.imported.name, implicit.preludeSpecifier);
       if (!byOrigin.has(origin)) {
         origins.push(origin);
         byOrigin[origin] = new Array<ImportSpecifier>();
@@ -379,6 +374,46 @@ export final class CompilerTarget {
       // itself; the resolver is not asked, as a user could not name a
       // library's private member file this way.
       lib.imports[origin] = origin;
+    }
+  }
+
+  /**
+   * The module declaring the prelude name `name`, found by following the
+   * prelude specifier's export to its declaration; the prelude module's
+   * own path when the export does not lead to one.
+   */
+  #declaringModule(name: String, preludeSpecifier: String): String {
+    let preludePath = this.#resolver.resolve(preludeSpecifier, "").path;
+    let preludeLib = this.#loader.get(preludePath);
+    if (preludeLib != null && preludeLib.scopeResult != null) {
+      let exports = (preludeLib.scopeResult as ScopeResult).exports;
+      if (let (true, exp) = exports.get(name)) {
+        let declaredIn = exp.resolveTarget().modulePath;
+        if (declaredIn != "") {
+          return declaredIn;
+        }
+      }
+    }
+    return preludePath;
+  }
+
+  /**
+   * Make a module whose literals are strings depend on the module that
+   * declares `String`, as a written `String` would (#addDeclaringModules).
+   * A literal never names the type, so nothing else orders the module
+   * after that declaration; and a library the declaration's own module
+   * imports would otherwise be checked before `String` is registered,
+   * and fail to type its literals. With the edge, such a library is on a
+   * cycle with the declaring module, and is checked as a cycle member is.
+   */
+  #addStringModule(lib: SourceFile, scopeResult: ScopeResult,
+      stringModule: String | null): void {
+    if (stringModule == null || !scopeResult.literalsUseString) {
+      return;
+    }
+    let declaredIn = stringModule as String;
+    if (declaredIn != lib.path && this.#loader.get(declaredIn) != null) {
+      lib.imports[declaredIn] = declaredIn;
     }
   }
 
