@@ -12,7 +12,8 @@
  * writing them, so a prelude name on a cycle is no different: a module
  * that uses one depends on the module that declares it, and the two are
  * ordered and checked like any other pair on a cycle. So is a module
- * whose string literals have the type `String` without naming it.
+ * whose syntax implies a declaration it never names: a string literal's
+ * `String`, an array literal's `ImmutableArray`, a range's class.
  */
 
 import { suite, test } from 'zena:test';
@@ -270,6 +271,56 @@ export let tests = suite('Declarations on Import Cycles', () => {
     let errors = errorDiagnostics(tables as Array<Diagnostic>);
     show(errors, "string literal");
     equal(errors.length, 0);
+  });
+
+  test('array, map and range literals depend on the modules declaring their classes', () => {
+    let host = new MockHost();
+    let compiler = makeCompiler(host);
+    // As for `String`: each library uses a literal whose class it never
+    // names, and the class's own module imports it.
+    host.addFile("zena:core/index.zena",
+      "export * from './string.zena';\n" +
+      "export * from './array.zena';\n" +
+      "export * from './iterator.zena';\n" +
+      "export * from './ownership.zena';\n" +
+      "export * from './hashable.zena';\n" +
+      "export * from './range.zena';\n");
+    host.addFile("zena:core/array.zena",
+      "import { XS } from './arrays.zena';\n" +
+      "export class Array {} export class FixedArray<T> {} export class GrowableArray<T> {}\n" +
+      "export class ImmutableArray<T> {}\n");
+    host.addFile("zena:core/arrays.zena", "export let XS = [1, 2, 3];\n");
+    host.addFile("zena:core/range.zena",
+      "import { upTo } from './ranges.zena';\n" +
+      "export class Range<T> {}\n" +
+      "export class BoundedRange<T> extends Range<T> {}\n" +
+      "export class FromRange<T> extends Range<T> {}\n" +
+      "export class ToRange<T> extends Range<T> {}\n" +
+      "export class FullRange extends Range<i32> {}\n");
+    host.addFile("zena:core/ranges.zena",
+      "export let upTo = (n: i32) => 0..n;\n");
+    host.addFile("zena:collections/index.zena",
+      "import { pairs } from './maps.zena';\n" +
+      "export class HashMap<K, V> {}\n");
+    host.addFile("zena:collections/maps.zena",
+      "export let pairs = () => ({1 => 2});\n");
+    host.addFile("/project/main.zena",
+      "export function main(): i32 { return 0; }\n");
+    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let checked = checkCompilation(result);
+    var found = 0;
+    var errorCount = 0;
+    for (let path in checked.results.keys()) {
+      if (path.endsWith("core/arrays.zena") || path.endsWith("core/ranges.zena") ||
+          path.endsWith("collections/maps.zena")) {
+        found += 1;
+        let errors = errorDiagnostics(checked.results[path].diagnostics);
+        show(errors, path);
+        errorCount += errors.length;
+      }
+    }
+    equal(found, 3);
+    equal(errorCount, 0);
   });
 
   test('enum member resolves across a back edge', () => {

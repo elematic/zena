@@ -26,7 +26,7 @@ import {
   typeContainsTypeParameter, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
-import { WellKnown, isWellKnown } from '../well-known.zena';
+import { WellKnown, isWellKnown, wellKnownName } from '../well-known.zena';
 import {
   adaptArmToContext, adaptCoalescedArm, adaptJoinedArm, adaptToExpected, armValueNode, boxForTemplateValue, checkAndRegisterInterfaceAdaptation, noteExistentialComparison
 } from './adaptation.zena';
@@ -1098,12 +1098,20 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         case _: {}
       }
     }
+    // Missing in a compilation without `zena:core`, and, like a range's
+    // class, in a first registration inside the cycle that declares it.
     let faType = resolveArrayBackingClass(ctx, wantsMutable);
     if (faType == null) {
-      throw new Error("prelude array backing class not found");
+      ctx.error(
+        "An array literal builds a 'FixedArray' or an 'ImmutableArray', and 'zena:core' is not loaded.",
+        DiagnosticCode.SymbolNotFound,
+        loc
+      );
+      new ErrorType()
+    } else {
+      let typeArgs = growable<Type>([inferredElementType]);
+      instantiateClassType(faType as ClassType, typeArgs) as Type
     }
-    let typeArgs = growable<Type>([inferredElementType]);
-    instantiateClassType(faType as ClassType, typeArgs) as Type
   }
   case RecordLiteral {properties, loc}: {
     // Contextual typing: expected property types flow into the property
@@ -1719,7 +1727,11 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       else if (start != null) { WellKnown.FromRangeClass }
       else if (end != null) { WellKnown.ToRangeClass }
       else { WellKnown.FullRangeClass };
-    let rangeType = ctx.resolveWellKnownType(rangeClass);
+    // Asked for rather than required: inside the import cycle the range
+    // classes are declared on, a module's first registration can check a
+    // range before they are registered. That registration is discarded,
+    // and its diagnostics with it; the second one finds them.
+    let rangeType = ctx.tryResolveWellKnownType(rangeClass);
     if (rangeType is ClassType) {
       let ct = rangeType as ClassType;
       let tparams = ct.typeParameters;
@@ -1728,8 +1740,15 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       } else {
         ct
       }
-    } else {
+    } else if (rangeType != null) {
       rangeType
+    } else {
+      ctx.error(
+        `A range literal builds a '${wellKnownName(rangeClass)}', and 'zena:core' is not loaded.`,
+        DiagnosticCode.SymbolNotFound,
+        loc
+      );
+      new ErrorType()
     }
   }
   case PipelineExpression {left, right, loc}: {

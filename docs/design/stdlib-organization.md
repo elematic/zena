@@ -159,14 +159,20 @@ with the user; it resolves to the declaration's own symbol; and it
 crosses an import cycle by the same rules as any other import. A prelude
 binding the module never reads is never wired and adds no edge.
 
-A literal uses `String` without naming it: a string or template literal,
-or a string enum's member, has the type of the standard library's
-`String`. So a module with one depends on the module declaring `String`
-whether or not it reads the prelude binding, and the compiler adds that
-edge (`CompilerTarget.#addStringModule`), with no import, since nothing
-in the module resolves the name. Without it, a library that
-`core/string.zena` imports was checked before `String` was registered,
-and could not type its literals.
+Some syntax uses a declaration without naming it. A string literal is a
+`String`, an array literal an `ImmutableArray` or a `FixedArray`, a map
+literal a `HashMap`, a range one of the range classes; `throw` and `catch`
+are typed with `Error`, `await` and `async` with `Future`, `for`-in with
+`Iterable` and `Iterator`; a case class implements `Hashable` and
+`Equatable`, and a resource class is held through `Own` and `Borrow`. The
+scope builder records which well-known declarations a module's syntax
+implies (`ScopeResult.impliedDeclarations`), and the compiler adds an edge
+to each declaring module (`CompilerTarget.#addImpliedModules`), with no
+import, since nothing in the module resolves the name. Without the edges,
+a library that one of those modules imports was checked before the
+declaration was registered: its literals were not typed, and an array or
+range literal crashed the compiler. With them, such a library is on a
+cycle with the declaring module, and checked as a cycle member.
 
 The implicit import names the declaring module rather than the prelude
 specifier (`zena:core`) because that module is the real dependency. It
