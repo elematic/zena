@@ -6,7 +6,11 @@
  *
  * With the argument `sync-handles`, it writes the DNS record of every
  * handle the host has given out instead, from its store, and exits: for
- * after records were lost, or a write of one failed.
+ * after records were lost, or a write of one failed. `sync-indexes`
+ * writes the host's indexes, the summary of every package that the
+ * package listings read, from the repositories, and exits: for packages
+ * made before the host kept them, or a commit whose summary was not
+ * written.
  *
  * With `encrypt-keys`, it encrypts every signing key Firestore keeps in
  * the clear with `PDS_KEY_ENCRYPTION_KMS_KEY`, and exits: for keys
@@ -75,6 +79,10 @@ export async function main(): Future<void> {
   }
   if (hasArgument('sync-handles')) {
     await syncHandles(config as ServiceConfig);
+    return;
+  }
+  if (hasArgument('sync-indexes')) {
+    await syncIndexes(config as ServiceConfig);
     return;
   }
   if (hasArgument('create-scope')) {
@@ -268,6 +276,20 @@ async function encryptKeys(config: ServiceConfig): Future<void> {
   let service = await buildService(config, '');
   let encrypted = await (service.pds.storage as FirestoreStorage).encryptKeys();
   console.log(`encrypted ${encrypted} signing keys`);
+  exit(0);
+}
+
+/** Writes the host's indexes from the repositories, and exits. */
+async function syncIndexes(config: ServiceConfig): Future<void> {
+  let service = await buildService(config, '');
+  let host = service.host;
+  if (host == null) {
+    console.error('sync-indexes needs a package host: set PDS_HOST_DOMAIN');
+    exit(2);
+    return;
+  }
+  let written = await host.syncIndexes();
+  console.log(`wrote ${written} package summaries for ${host.config.domain}`);
   exit(0);
 }
 

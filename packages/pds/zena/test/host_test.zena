@@ -32,21 +32,47 @@ import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
 import {
   ClaimedName, ClaimedScope, HostConfig, HostError, HostStore, MemoryHostStore, PENDING_MICROS, PackageHost,
-  PendingChange, PendingRelease
+  PackageSummary, PendingChange, PendingRelease
 } from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
-import {CreateRecord, RepositoryError, UpdateRecord, Write} from 'pds:repository';
+import {CreateRecord, Repository, RepositoryError, UpdateRecord, Write} from 'pds:repository';
+import {TidClock} from 'atproto:tid';
 import {createApp} from 'pds:server';
 import {MemoryCredentialStore, Sessions} from 'pds:sessions';
 import {LocalRotationKey} from 'pds:rotation';
-import {Account, AccountKind, MemoryStorage, SigningKey} from 'pds:storage';
+import {Account, AccountKind, AccountStore, MemoryStorage, SigningKey, Storage} from 'pds:storage';
 
 let HOST = 'did:web:pkg.test';
 let ALICE = 'did:plc:alicealicealicealicealic';
 let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 let ALICE_KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
 let BOB_KEY = hex.decode('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
+
+/** Storage in memory that counts the accounts and repositories read from it. */
+final class CountingStorage implements Storage {
+  #inner = new MemoryStorage();
+  var reads = 0;
+
+  async getAccount(did: String): Future<Account | null> {
+    this.reads += 1;
+    return await this.#inner.getAccount(did);
+  }
+
+  async accountByHandle(handle: String): Future<Account | null> {
+    this.reads += 1;
+    return await this.#inner.accountByHandle(handle);
+  }
+
+  async putAccount(account: Account): Future<void> {
+    await this.#inner.putAccount(account);
+  }
+
+  store(did: String): AccountStore {
+    this.reads += 1;
+    return this.#inner.store(did);
+  }
+}
 
 /** A host on a PDS in memory, and the PLC operations it sent. */
 final class Fixture {
@@ -67,7 +93,8 @@ final class Fixture {
   var #jti = 0;
   var #random = 0;
 
-  new(store: HostStore = new MemoryHostStore()) : pds = new Pds(new MemoryStorage()), app = new App() {
+  new(store: HostStore = new MemoryHostStore(), storage: Storage = new MemoryStorage())
+      : pds = new Pds(storage), app = new App() {
     let rotation = new SigningKey(KeyType.Secp256k1, filled(200));
     let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', new LocalRotationKey(rotation));
     let callers = new HashMap<String, PublicKey>();
@@ -234,6 +261,8 @@ final class StaleHostStore implements HostStore {
   }
   async allScopes(): Future<Array<ClaimedScope>> { return await this.#inner.allScopes(); }
   async allNames(): Future<Array<ClaimedName>> { return await this.#inner.allNames(); }
+  async putSummary(summary: PackageSummary, rev: String): Future<void> { await this.#inner.putSummary(summary, rev); }
+  async summaries(scope: String | null): Future<Array<PackageSummary>> { return await this.#inner.summaries(scope); }
   async entries(account: String): Future<Array<MemberEntry>> { return await this.#inner.entries(account); }
   async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
     await this.#inner.addEntries(account, entries);
@@ -1136,6 +1165,39 @@ export let tests = suite('pds:host', () => {
     equal(listed['latest'] as String, '1.0.0');
     equal((listed['releases'] as Box<f64>).value as i32, 2);
     equal((ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages?scope=zeta'))['packages'] as JsonArray).length, 0);
+  });
+
+  test("lists packages from their summaries, reading no package's account or repository", (ctx) => {
+    let storage = new CountingStorage();
+    let fixture = new Fixture(new MemoryHostStore(), storage);
+    seedBrowsable(fixture);
+    storage.reads = 0;
+    let packages = ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages'))['packages'] as JsonArray;
+    equal(packages.length, 2);
+    equal(storage.reads, 0);
+    let scopes = ok(fixture.get('/xrpc/dev.zena-lang.host.listScopes'))['scopes'] as JsonArray;
+    equal(((scopes[0] as JsonObject)['packages'] as Box<f64>).value as i32, 2);
+    // The scopes' organizations, and nothing of their packages.
+    equal(storage.reads, 2);
+  });
+
+  test("writes again the summaries a commit outside the host's hook left behind", (ctx) => {
+    let fixture = new Fixture();
+    let router = seedBrowsable(fixture);
+    let account = runFuture(fixture.pds.storage.getAccount(router)) as Account;
+    let store = fixture.pds.storage.store(router);
+    let current = runFuture(store.getRecord(PROFILE_TYPE, 'self')) as Cid;
+    // A repository of its own tells no listener: as another server, or this
+    // one before it kept summaries, would have written.
+    runFuture(new Repository(account, store, new TidClock(9)).applyWrites([new UpdateRecord(PROFILE_TYPE, 'self',
+        new Profile('router', 'Routes everything', 'MIT').toValue(), current) as Write], 0 as i64));
+    let listed = () => {
+      let packages = ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages?scope=acme'))['packages'] as JsonArray;
+      return (packages[1] as JsonObject)['description'] as String;
+    };
+    equal(listed(), 'Routes requests');
+    equal(runFuture((fixture.host as PackageHost).syncIndexes()), 2);
+    equal(listed(), 'Routes everything');
   });
 
   test('lets a scope\'s admins say how it presents itself, which its page shows', (ctx) => {

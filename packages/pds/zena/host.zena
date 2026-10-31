@@ -71,7 +71,7 @@ import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from '
 import {Sessions} from './sessions.zena';
 import {RotationKey} from './rotation.zena';
 import {formatTimestamp, milliseconds} from 'zena:time';
-import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
+import {Account, AccountKind, Head, RecordChange, SigningKey, StoredBlob} from './storage.zena';
 import {compareKeys} from 'atproto:mst';
 import {SYNC_GET_RECORD, xrpcPath} from 'atproto:methods';
 
@@ -122,6 +122,15 @@ export interface HostStore {
   allScopes(): Future<Array<ClaimedScope>>;
   /** Every name in every scope, and the account it is given to. */
   allNames(): Future<Array<ClaimedName>>;
+  /**
+   * Keeps `summary`, made from the commit whose revision is `rev`, unless
+   * the summary kept for its package was made from that commit or a later
+   * one: two servers that commit to a package at once leave the later
+   * commit's summary.
+   */
+  putSummary(summary: PackageSummary, rev: String): Future<void>;
+  /** The package summaries kept, of every scope or of `scope`, in no order. */
+  summaries(scope: String | null): Future<Array<PackageSummary>>;
   /** The entries behind the commitments in `account`'s records. */
   entries(account: String): Future<Array<MemberEntry>>;
   addEntries(account: String, entries: Array<MemberEntry>): Future<void>;
@@ -217,6 +226,27 @@ export final class ClaimedName {
 /** The host's store in memory. */
 export final class MemoryHostStore implements HostStore {
   #scopes = new HashMap<String, String>();
+  /** Package summaries by DID. */
+  #summaries = new HashMap<String, KeptSummary>();
+
+  async putSummary(summary: PackageSummary, rev: String): Future<void> {
+    if (let (true, kept) = this.#summaries.get(summary.did)) {
+      if (compareKeys(kept.rev, rev) >= 0) {
+        return;
+      }
+    }
+    this.#summaries[summary.did] = new KeptSummary(summary, rev);
+  }
+
+  async summaries(scope: String | null): Future<Array<PackageSummary>> {
+    let out = new GrowableArray<PackageSummary>();
+    this.#summaries.forEach((did, kept) => {
+      if (scope == null || kept.summary.scope == scope as String) {
+        out.push(kept.summary);
+      }
+    });
+    return out;
+  }
   /** Held releases by `<pkg> <version>`. */
   #held = new HashMap<String, PendingRelease>();
 
@@ -463,12 +493,115 @@ export final class PackageHost {
   /**
    * A host over `pds`, keeping its names in `store`, writing its handles'
    * DNS records to `records`, and resolving the dependencies of the
-   * releases it checks with `resolver`.
+   * releases it checks with `resolver`. It keeps each package's summary,
+   * which `listPackages` lists, with every commit to the package's
+   * repository that `pds` makes.
    */
   new(pds: Pds, config: HostConfig, store: HostStore, records: HandleRecords, keys: SigningKeyLookup,
       submit: PlcSubmitter, random: RandomBytes, resolver: IdentityResolver)
       : pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
-        #random = random, #resolver = resolver;
+        #random = random, #resolver = resolver {
+    pds.onCommit(async (account: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> => {
+      await this.#summarizeCommit(account, head, changes);
+    });
+  }
+
+  /**
+   * Writes the summary of the package `account` is after a commit that
+   * changed its profile, a release or a retraction. The commit stands
+   * whatever happens here, so a summary that cannot be written is left
+   * until the next commit, or `syncIndexes`.
+   */
+  async #summarizeCommit(account: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> {
+    if (account.kind != AccountKind.Package) {
+      return;
+    }
+    var shown = false;
+    for (let change in changes) {
+      if (change.collection == PROFILE_TYPE || change.collection == RELEASE_TYPE ||
+          change.collection == RETRACTION_TYPE) {
+        shown = true;
+      }
+    }
+    let handle = account.handle;
+    let suffix = `.${this.config.domain}`;
+    if (!shown || handle == null || !handle.endsWith(suffix)) {
+      return;
+    }
+    // A package's handle is `<name>.<scope>.<domain>`.
+    let labels = handle.sliceBytes(0, handle.length - suffix.length).split('.');
+    if (labels.length != 2) {
+      return;
+    }
+    try {
+      await this.#store.putSummary(await this.#summarize(account.did, handle, labels[1], labels[0]), head.rev);
+    } catch (e) {
+      console.error(`the summary of ${account.did} was not written: ${e.message}`);
+    }
+  }
+
+  /**
+   * The summary of the package `did`, named `name` in `scope`, from its
+   * profile and the release and retraction records in its repository.
+   */
+  async #summarize(did: String, handle: String, scope: String, name: String): Future<PackageSummary> {
+    let summary = new PackageSummary(did, handle, scope, name);
+    let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
+    if (profile != null) {
+      let read = Profile.fromValue((profile as CurrentRecord).value);
+      summary.description = read.description;
+      summary.license = read.license;
+    }
+    let retracted = new HashSet<String>();
+    let versions = new GrowableArray<String>();
+    for (let entry in await this.pds.storage.store(did).allRecords()) {
+      if (entry.collection == RETRACTION_TYPE) {
+        retracted.add(entry.rkey);
+      } else if (entry.collection == RELEASE_TYPE) {
+        versions.push(entry.rkey);
+      }
+    }
+    summary.releases = versions.length;
+    var latest: Version | null = null;
+    for (let text in versions) {
+      if (retracted.has(text)) {
+        continue;
+      }
+      let version = Version.parse(text);
+      if (latest == null || version.compareTo(latest as Version) > 0) {
+        latest = version;
+      }
+    }
+    if (latest != null) {
+      summary.latest = (latest as Version).toString();
+    }
+    return summary;
+  }
+
+  /**
+   * Writes the host's indexes again, each package's summary, from the
+   * repositories as they are now, and returns how many packages it wrote:
+   * for packages a server before the indexes made, or a commit whose
+   * summary was not written.
+   */
+  async syncIndexes(): Future<i32> {
+    var written = 0;
+    for (let claimed in await this.#store.allNames()) {
+      let account = await this.pds.storage.getAccount(claimed.did);
+      if (account == null || account.kind != AccountKind.Package) {
+        continue;
+      }
+      // The head first, so the summary is of that commit or a later one.
+      let head = await this.pds.storage.store(claimed.did).getHead();
+      if (head == null) {
+        continue;
+      }
+      let summary = await this.#summarize(claimed.did, account.handle ?? '', claimed.scope, claimed.name);
+      await this.#store.putSummary(summary, (head as Head).rev);
+      written += 1;
+    }
+    return written;
+  }
 
   /**
    * The DID of the account a call to `method` comes from, read from its
@@ -934,11 +1067,12 @@ export final class PackageHost {
 
   /**
    * `listScopes`: every scope whose organization exists, by name, with how
-   * many packages each has. Public: scope names are in DNS anyway.
+   * many packages each has, from the packages' summaries. Public: scope
+   * names are in DNS anyway.
    */
   async listScopes(): Future<Array<ScopeSummary>> {
     let counts = new HashMap<String, i32>();
-    for (let claimed in await this.listPackages(null)) {
+    for (let claimed in await this.#store.summaries(null)) {
       var count = 0;
       if (let (true, held) = counts.get(claimed.scope)) {
         count = held;
@@ -1167,49 +1301,14 @@ export final class PackageHost {
   /**
    * `listPackages`: the packages on the host, or in `scope`, by scope and
    * name, each with its profile's description and license and its latest
-   * release that is not retracted. Public, as the records are. Automation
-   * accounts, which also take names in a scope, are left out.
+   * release that is not retracted. Public, as the records are. It reads
+   * the packages' summaries, which the host keeps with each commit, and no
+   * repository. Automation accounts, which also take names in a scope,
+   * have none.
    */
   async listPackages(scope: String | null): Future<Array<PackageSummary>> {
     let packages = new GrowableArray<PackageSummary>();
-    for (let claimed in await this.#store.allNames()) {
-      if (scope != null && claimed.scope != scope as String) {
-        continue;
-      }
-      let account = await this.pds.storage.getAccount(claimed.did);
-      if (account == null || account.kind != AccountKind.Package) {
-        continue;
-      }
-      let summary = new PackageSummary(claimed.did, account.handle ?? '', claimed.scope, claimed.name);
-      let profile = await this.#current(claimed.did, PROFILE_TYPE, PROFILE_KEY);
-      if (profile != null) {
-        let read = Profile.fromValue((profile as CurrentRecord).value);
-        summary.description = read.description;
-        summary.license = read.license;
-      }
-      let retracted = new HashSet<String>();
-      let versions = new GrowableArray<String>();
-      for (let entry in await this.pds.storage.store(claimed.did).allRecords()) {
-        if (entry.collection == RETRACTION_TYPE) {
-          retracted.add(entry.rkey);
-        } else if (entry.collection == RELEASE_TYPE) {
-          versions.push(entry.rkey);
-        }
-      }
-      summary.releases = versions.length;
-      var latest: Version | null = null;
-      for (let text in versions) {
-        if (retracted.has(text)) {
-          continue;
-        }
-        let version = Version.parse(text);
-        if (latest == null || version.compareTo(latest as Version) > 0) {
-          latest = version;
-        }
-      }
-      if (latest != null) {
-        summary.latest = (latest as Version).toString();
-      }
+    for (let summary in await this.#store.summaries(scope)) {
       var i = packages.length;
       packages.push(summary);
       while (i > 0 && compareKeys(packages[i - 1].sortKey(), summary.sortKey()) > 0) {
@@ -2329,6 +2428,14 @@ export final class PackageSummary {
   sortKey(): String {
     return `${this.scope} ${this.name}`;
   }
+}
+
+/** A package's summary, and the revision of the commit it was made from. */
+final class KeptSummary {
+  summary: PackageSummary;
+  rev: String;
+
+  new(this.summary, this.rev);
 }
 
 /** A scope, as `getScope` reads it. */

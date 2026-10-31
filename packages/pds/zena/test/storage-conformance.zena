@@ -14,7 +14,7 @@ import {MapValue, StringValue, newMap} from 'atproto:data';
 import {KeyType} from 'atproto:didkey';
 import {decodeCommit} from 'atproto:repo';
 import {MemberEntry, OWNER} from 'package-manager:records';
-import {HostStore, PendingChange, PendingRelease} from 'pds:host';
+import {HostStore, PackageSummary, PendingChange, PendingRelease} from 'pds:host';
 import {PlcLog} from 'pds:plc-directory';
 import {AppPassword, CredentialStore, RefreshSession} from 'pds:sessions';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
@@ -248,6 +248,47 @@ export function hostStoreConformance(make: () => HostStore): void {
     equal(runFuture(store.nameInScope('acme', 'router')) as String, ALICE);
     runFuture(store.releaseName('acme', 'router', ALICE));
     isNull(runFuture(store.nameInScope('acme', 'router')));
+  });
+
+  test("keeps each package's latest summary, by scope", (ctx) => {
+    let store = make();
+    equal(runFuture(store.summaries(null)).length, 0);
+    let router = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
+    router.description = 'Routes requests';
+    router.license = 'MIT';
+    router.latest = '1.0.0';
+    router.releases = 2;
+    runFuture(store.putSummary(router, '3l3qo2vutsw2b'));
+    runFuture(store.putSummary(new PackageSummary(BOB, 'json.other.pkg.test', 'other', 'json'), '3l3qo2vutsw2a'));
+    let all = runFuture(store.summaries(null));
+    equal(all.length, 2);
+    let acme = runFuture(store.summaries('acme'));
+    equal(acme.length, 1);
+    let read = acme[0];
+    equal(read.did, ALICE);
+    equal(read.handle, 'router.acme.pkg.test');
+    equal(read.name, 'router');
+    equal(read.description as String, 'Routes requests');
+    equal(read.license as String, 'MIT');
+    equal(read.latest as String, '1.0.0');
+    equal(read.releases, 2);
+    let json = runFuture(store.summaries('other'))[0];
+    isNull(json.description);
+    isNull(json.license);
+    isNull(json.latest);
+    equal(json.releases, 0);
+
+    // A summary of an earlier commit does not replace one of a later.
+    let older = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
+    runFuture(store.putSummary(older, '3l3qo2vutsw2a'));
+    equal(runFuture(store.summaries('acme'))[0].latest as String, '1.0.0');
+    let newer = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
+    newer.latest = '1.1.0';
+    runFuture(store.putSummary(newer, '3l3qo2vutsw2c'));
+    let replaced = runFuture(store.summaries('acme'));
+    equal(replaced.length, 1);
+    equal(replaced[0].latest as String, '1.1.0');
+    isNull(replaced[0].description);
   });
 
   test('lists every scope and name', (ctx) => {

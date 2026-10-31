@@ -104,6 +104,27 @@ export let tests = suite('pds:repository', () => {
     isTrue(verifyWith(runFuture(account.signingKey()))(commit.signedBytes(), commit.sig));
   });
 
+  test("tells the PDS's commit listeners what each commit changed", (ctx) => {
+    let (pds, account, repository) = setUp();
+    var seen = '';
+    pds.onCommit(async (committed: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> => {
+      var line = `${committed.did} ${head.rev}`;
+      for (let change in changes) {
+        line = `${line} ${change.collection}/${change.rkey}`;
+      }
+      seen = `${seen}${line}\n`;
+    });
+    let head = runFuture(pds.repositoryOf(account).applyWrites([
+      new CreateRecord(POST, '3l3qo2vutsw2b', record(POST, 'one')),
+      new CreateRecord(POST, '3l3qo2vutsw2c', record(POST, 'two')),
+    ], NOW));
+    equal(seen, `${DID} ${head.rev} ${POST}/3l3qo2vutsw2b ${POST}/3l3qo2vutsw2c\n`);
+    // A write the repository refuses commits nothing, and tells no one.
+    equal(refusal(pds.repositoryOf(account), [new CreateRecord(POST, '3l3qo2vutsw2b', record(POST, 'again'))]),
+        'InvalidRequest');
+    equal(seen, `${DID} ${head.rev} ${POST}/3l3qo2vutsw2b ${POST}/3l3qo2vutsw2c\n`);
+  });
+
   test('commits writes, and proves each record against the new commit', (ctx) => {
     let (pds, account, repository) = setUp();
     let first = runFuture(repository.applyWrites([
