@@ -307,7 +307,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
 - **`add <package>[@version] [--name <local>]`**: Add a published package,
   by DID, handle or `@scope/name`, to `zena-package.json`; select versions
   for everything it leads to, pin them in `zena-lock.json`, and fetch
-  them.
+  them. It prints what changed in the lockfile, and refuses a pinned
+  release whose CIDs changed at the same version unless given
+  `--allow-changed`.
 - **`update [names...]`**: Raise dependencies to the latest version of their
   major version that is not retracted, then pin and fetch as `add` does.
 - **`login <handle or DID> [--password-stdin]`**: Sign in to an atproto

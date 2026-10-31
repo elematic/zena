@@ -3,7 +3,8 @@
  * (docs/design/package-manifest.md, "zena-lock.json"). `zena fetch`
  * fetches them, and the compiler reads them from the package cache.
  *
- * `writeLockfile` writes a `Resolution` as `zena-lock.json`.
+ * `writeLockfile` writes a `Resolution` as `zena-lock.json`, and
+ * `diffPins` sorts what writing it changes in the pins already there.
  *
  * ```json
  * "resolved": {
@@ -201,4 +202,55 @@ export function writeLockfile(resolution: Resolution): String {
   let root = new JsonObject();
   root['resolved'] = resolved;
   return stringify(root, '  ');
+}
+
+/**
+ * How a package's pin changes when a lockfile is written for a new
+ * resolution (`diffPins`).
+ */
+export sealed class PinChange {
+  /** A package the lockfile did not pin. */
+  case PinAdded(now: ResolvedPackage)
+  /** A package the lockfile pinned, and no longer does. */
+  case PinRemoved(pin: Pin)
+  /** A package pinned at another version of its major version, higher or lower. */
+  case PinVersionChanged(pin: Pin, now: ResolvedPackage)
+  /**
+   * A package at the version it was pinned at, with another release
+   * record or source archive: the release was changed in place, which a
+   * published version never is (docs/design/package-manager.md,
+   * "Immutability").
+   */
+  case PinChangedInPlace(pin: Pin, now: ResolvedPackage)
+}
+
+/**
+ * What writing `after` changes in the pins `before`: a change for each
+ * package `after` selects, in its order, and then each package `before`
+ * pins that `after` does not, in theirs. A package whose pin stays the
+ * same has no change.
+ */
+export function diffPins(before: GrowableArray<Pin>, after: Resolution): GrowableArray<PinChange> {
+  let pinned = new HashMap<String, Pin>();
+  for (let pin in before) {
+    pinned[pin.key] = pin;
+  }
+  let changes = new GrowableArray<PinChange>();
+  after.packages.forEach((key, now) => {
+    if (let (true, pin) = pinned.get(key)) {
+      if (pin.version.compareTo(now.version) != 0) {
+        changes.push(new PinVersionChanged(pin, now));
+      } else if (!pin.release.equals(now.release) || !pin.source.equals(now.source)) {
+        changes.push(new PinChangedInPlace(pin, now));
+      }
+    } else {
+      changes.push(new PinAdded(now));
+    }
+  });
+  for (let pin in before) {
+    if (!after.packages.has(pin.key)) {
+      changes.push(new PinRemoved(pin));
+    }
+  }
+  return changes;
 }

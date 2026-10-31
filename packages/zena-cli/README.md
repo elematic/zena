@@ -93,8 +93,13 @@ in: the workspace package whose directory holds the current directory, or
 else the root, whose manifest `add` creates if there is none. They then
 select versions for the whole workspace, so every package uses one
 version of each package and major version, write `zena-lock.json`, and
-fetch what it pins. `fetch` checks each release against the CIDs the
-lockfile pins and the signed proofs its package's PDS serves.
+fetch what it pins. They print what changed in the lockfile: packages
+added and removed, versions upgraded and downgraded. A release the
+lockfile pins that now has other CIDs at the same version was changed in
+place, which a published version never is, so they refuse and write
+nothing, unless you pass `--allow-changed`. `fetch` checks each release
+against the CIDs the lockfile pins and the signed proofs its package's PDS
+serves.
 
 Publishing acts as you, through your own atproto account: the one you
 use for Bluesky or any other app. `zena login` signs in with an app
