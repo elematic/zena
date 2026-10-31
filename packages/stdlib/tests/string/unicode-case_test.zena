@@ -1,0 +1,64 @@
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+
+// Unicode case mapping on the byte targets' `String`: the default mappings
+// JavaScript's `toLowerCase` and `toUpperCase` apply, which the js target's
+// `String` calls. The expected strings are JavaScript's.
+// `packages/stdlib/dev/case-difftest.js` compares every code point.
+export let tests = suite('Unicode case mapping', () => {
+  test('maps letters beyond ASCII', (ctx) => {
+    equal('ÀB'.toLowerCase(), 'àb');
+    equal('àb'.toUpperCase(), 'ÀB');
+    equal('Hello, Wörld!'.toUpperCase(), 'HELLO, WÖRLD!');
+    equal('Привет'.toUpperCase(), 'ПРИВЕТ');
+    equal('Ⱥ'.toLowerCase(), 'ⱥ');
+    equal('ꞵ'.toUpperCase(), 'Ꞵ');
+    // Outside the Basic Multilingual Plane: Deseret.
+    equal('𐐀'.toLowerCase(), '𐐨');
+  });
+
+  test('maps alternating pairs and titlecase digraphs', (ctx) => {
+    equal('Ā'.toLowerCase(), 'ā');
+    equal('ā'.toUpperCase(), 'Ā');
+    equal('ǅ'.toLowerCase(), 'ǆ');
+    equal('ǅ'.toUpperCase(), 'Ǆ');
+  });
+
+  test('maps to several code points where Unicode does', (ctx) => {
+    equal('Straße'.toUpperCase(), 'STRASSE');
+    equal('ﬃ'.toUpperCase(), 'FFI');
+    equal('և'.toUpperCase(), 'ԵՒ');
+    // Ι, then combining diaeresis and acute, written as code points: an
+    // editor would compose the first two into Ϊ.
+    let iota = 'ΐ'.toUpperCase();
+    equal(iota.codePoints.count(), 3);
+    let points = iota.codePoints.toArray();
+    equal(points[0], 0x0399);
+    equal(points[1], 0x0308);
+    equal(points[2], 0x0301);
+    // U+0130 lowercases to i and a combining dot above.
+    equal('İ'.toLowerCase(), 'i̇');
+  });
+
+  test('lowercases a final sigma to ς', (ctx) => {
+    equal('ΑΣ'.toLowerCase(), 'ας');
+    equal('ΑΣ Β'.toLowerCase(), 'ας β');
+    equal('ΑΣ.'.toLowerCase(), 'ας.');
+    // A full stop is case-ignorable, so the sigma still follows a letter.
+    equal('Α.Σ'.toLowerCase(), 'α.ς');
+    // Not at the end of a word, or not after a letter.
+    equal('ΑΣΑ'.toLowerCase(), 'ασα');
+    equal('Σ'.toLowerCase(), 'σ');
+    equal(' Σ'.toLowerCase(), ' σ');
+  });
+
+  test('returns the same string when nothing changes', (ctx) => {
+    let lower = 'already lower, 日本';
+    isTrue(lower.toLowerCase() === lower);
+    let upper = 'ALREADY UPPER, 日本';
+    isTrue(upper.toUpperCase() === upper);
+    let ascii = 'abc';
+    isTrue(ascii.toLowerCase() === ascii);
+    equal(''.toUpperCase(), '');
+  });
+});

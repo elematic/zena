@@ -324,9 +324,15 @@ split(separator: String): FixedArray<String>;
 For cursor-based tokenization, sequential scanning, and parsing at UTF-8 code point
 boundaries, use [`StringReader`](/api/core/#stringreader).
 
-### ASCII case conversion
+### Case conversion
 
 ```zena
+// Returns a copy with Unicode's default lowercase mapping applied
+toLowerCase(): String;
+
+// Returns a copy with Unicode's default uppercase mapping applied
+toUpperCase(): String;
+
 // Returns a copy with ASCII characters (A-Z) converted to lowercase
 asciiLowerCase(): String;
 
@@ -334,10 +340,15 @@ asciiLowerCase(): String;
 asciiUpperCase(): String;
 ```
 
-These methods operate strictly on ASCII bytes (`0x41..0x5A` and `0x61..0x7A`).
-They do not perform full Unicode case folding. This keeps WebAssembly binaries
-compact by avoiding large Unicode case-mapping tables. If no characters change,
-they return `this` directly without allocating a new string.
+`toLowerCase` and `toUpperCase` map as JavaScript's methods of those names
+do: one character can become several (`ß` → `SS`, `İ` → `i̇`), a capital
+sigma at the end of a word lowercases to `ς`, and language-specific mappings
+are not applied. On the js target they call the host; on the other targets
+they read case tables compiled into the module, about 5 KB per method.
+
+`asciiLowerCase` and `asciiUpperCase` change only the bytes `0x41..0x5A` and
+`0x61..0x7A`, and need no tables. All four return `this` without allocating
+when no character changes.
 
 ### Hashing
 
