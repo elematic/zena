@@ -417,18 +417,20 @@ that step, picked up 7 ms):
 
 | fixture            | phase          | before (ms) | split (ms) | identity (ms) | inference (ms) | narrowing (ms) | walks (ms) | body (ms) |
 | ------------------ | -------------- | ----------- | ---------- | ------------- | -------------- | -------------- | ---------- | --------- |
-| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           | 15.3       | 16.0      |
-| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          | 134.4      | 154.0     |
-| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          | 206.4      | 249.6     |
-| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           | 32.1       | 38.4      |
-| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          | 159.0      | 191.2     |
-| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           | 4005       | 4751      |
+| stdlib-moderate    | check          | 15.5        | 15.7       | 15.1          | 15.5           | 23.6           | 15.3       | 15.2      |
+| portable-semantics | scope          | 135.6       | 137.5      | 127.0         | 130.7          | 146.6          | 134.4      | 137.7     |
+| portable-semantics | check          | 246.8       | 256.2      | 248.0         | 244.7          | 254.2          | 206.4      | 231.2     |
+| portable-semantics | check-register | 22.5        | 30.2       | 30.6          | 30.6           | 37.2           | 32.1       | 33.7      |
+| portable-semantics | check-bodies   | 212.5       | 211.0      | 202.9         | 199.1          | 197.9          | 159.0      | 184.5     |
+| portable-semantics | total          | 4110        | 4179       | 4104          | 4211           | 4801           | 4005       | 5750      |
 
-The body column ran at a load average of 13 to 23, twice; `scope` and
-`check-register`, which the step does not touch, moved by the same
-fifth as `check-bodies`, and the fixture's codegen phases by the same.
-A body is one small allocation and its fields one load further away,
-which is not a fifth of anything; the column wants an idle machine.
+The body column was measured on an idle machine against the main it
+sits on (the walks step merged), alternating the two builds twice. The
+main binary gave `check-bodies` 196.3 then 176.6 ms, the body binary
+187.3 then 184.5 ms: the step lands inside the baseline's own spread.
+The idle machine ran the whole fixture slower than the loaded one did
+(a lower clock, it seems), which is why its `total` is not comparable
+with the earlier columns.
 
 The flow walks' column is the one real change in the table: the path
 walk's memo was keyed by a string built per join visit, and
