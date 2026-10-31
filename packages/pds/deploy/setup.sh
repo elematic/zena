@@ -2,7 +2,8 @@
 #
 # One-time Google Cloud setup for one environment of the package host
 # (env.sh). Idempotent: safe to re-run, and re-running is the fix when a
-# step failed part way. It never replaces the rotation key once made.
+# step failed part way. It never replaces a key once made: the rotation
+# key, or the key that encrypts accounts' signing keys.
 #
 #   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:setup -w @zena-lang/pds
 #
@@ -82,13 +83,31 @@ gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member "$MEMBER" 
   --role roles/storage.objectAdmin --quiet > /dev/null
 echo "    $SERVICE_ACCOUNT may use it"
 
+echo "==> Cloud KMS key ring $KMS_KEYRING ($KMS_LOCATION)"
+if gcloud kms keyrings describe "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists"
+else
+  gcloud kms keyrings create "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" --quiet
+fi
+
+echo "==> Signing-key encryption key $SIGNING_KEYS_KMS_KEY"
+if gcloud kms keys describe "$SIGNING_KEYS_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
+    --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists; left as it is"
+else
+  # Symmetric, so that Cloud KMS itself encrypts and decrypts accounts'
+  # signing keys, and the key never leaves it. Destroying it loses every
+  # signing key it encrypted.
+  gcloud kms keys create "$SIGNING_KEYS_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
+    --project "$PROJECT" --purpose encryption --protection-level software --quiet
+  echo "    made"
+fi
+gcloud kms keys add-iam-policy-binding "$SIGNING_KEYS_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
+  --project "$PROJECT" --member "$MEMBER" --role roles/cloudkms.cryptoKeyEncrypterDecrypter --quiet > /dev/null
+echo "    $SERVICE_ACCOUNT may encrypt and decrypt with it"
+
 if [ "$ROTATION_KMS" = 1 ]; then
-  echo "==> Rotation key $KMS_KEY in Cloud KMS key ring $KMS_KEYRING ($KMS_LOCATION)"
-  if gcloud kms keyrings describe "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" > /dev/null 2>&1; then
-    echo "    key ring exists"
-  else
-    gcloud kms keyrings create "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" --quiet
-  fi
+  echo "==> Rotation key $KMS_KEY"
   if gcloud kms keys describe "$KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" \
       > /dev/null 2>&1; then
     echo "    key exists; left as it is"

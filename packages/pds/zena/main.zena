@@ -8,6 +8,10 @@
  * handle the host has given out instead, from its store, and exits: for
  * after records were lost, or a write of one failed.
  *
+ * With `encrypt-keys`, it encrypts every signing key Firestore keeps in
+ * the clear with `PDS_KEY_ENCRYPTION_KMS_KEY`, and exits: for keys
+ * written before the server had that key.
+ *
  * Two commands are for the operator's offline rotation key, on the
  * operator's own machine, and read no configuration but
  * `PDS_PLC_DIRECTORY`:
@@ -39,7 +43,8 @@ import {PlcError, PlcOperation, submitPlcOperation, undoOperation} from 'atproto
 import {SigningKey} from './storage.zena';
 import {HostError} from './host.zena';
 import {nowMicros} from './xrpc/common.zena';
-import {ConfigError, ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
+import {FirestoreStorage} from './firestore.zena';
+import {ConfigError, InFirestore, ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
 
 /** The configuration the environment gives, or null, having said why. */
 function readConfig(): ServiceConfig | null {
@@ -74,6 +79,10 @@ export async function main(): Future<void> {
   }
   if (hasArgument('create-scope')) {
     await createScope(config as ServiceConfig);
+    return;
+  }
+  if (hasArgument('encrypt-keys')) {
+    await encryptKeys(config as ServiceConfig);
     return;
   }
   let running = await serve(config as ServiceConfig);
@@ -242,6 +251,23 @@ async function plcRestore(): Future<void> {
     }
     throw e;
   }
+  exit(0);
+}
+
+/** Encrypts the signing keys Firestore keeps in the clear, and exits. */
+async function encryptKeys(config: ServiceConfig): Future<void> {
+  var encrypts = false;
+  if (let InFirestore {keyEncryptionKey} = config.storage) {
+    encrypts = keyEncryptionKey != null;
+  }
+  if (!encrypts) {
+    console.error('encrypt-keys needs PDS_STORAGE=firestore and PDS_KEY_ENCRYPTION_KMS_KEY');
+    exit(2);
+    return;
+  }
+  let service = await buildService(config, '');
+  let encrypted = await (service.pds.storage as FirestoreStorage).encryptKeys();
+  console.log(`encrypted ${encrypted} signing keys`);
   exit(0);
 }
 

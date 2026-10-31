@@ -1,17 +1,24 @@
 /**
- * A Cloud KMS client for signing with an asymmetric key version, over the
- * REST API (`https://cloudkms.googleapis.com/v1`): the key never leaves
- * Cloud KMS, which signs a digest on request.
+ * A Cloud KMS client, over the REST API
+ * (`https://cloudkms.googleapis.com/v1`), for signing with an asymmetric
+ * key version and for encrypting with a symmetric key. Neither key ever
+ * leaves Cloud KMS, which signs a digest, or encrypts and decrypts a
+ * value, on request.
  *
  *     let key = CloudKms.connect('projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1');
  *     let der = await key.asymmetricSign(sha256(message));
  *     let publicKey = await key.publicKey();
  *
+ *     let symmetric = CloudKms.connect('projects/p/locations/l/keyRings/r/cryptoKeys/s');
+ *     let ciphertext = await symmetric.encrypt(secret, additionalData);
+ *     let plaintext = await symmetric.decrypt(ciphertext, additionalData);
+ *
  * A signature comes back DER-encoded (`zena:crypto`'s
  * `signatureFromDer` reads it), and a public key as PEM, which
  * `ecPointFromPem` reads. Each call asks its `Credentials` for an access
  * token, with the `cloud-platform` or `cloudkms` scope; the caller needs
- * `roles/cloudkms.signerVerifier` on the key.
+ * `roles/cloudkms.signerVerifier` on a signing key, and
+ * `roles/cloudkms.cryptoKeyEncrypterDecrypter` on a symmetric one.
  */
 
 import {Future} from 'zena:async';
@@ -41,11 +48,18 @@ export final class KmsPublicKey {
   new(this.algorithm, this.pem);
 }
 
-/** One asymmetric signing key version. */
+/**
+ * One key: an asymmetric signing key version, to sign with, or a
+ * symmetric key, to encrypt and decrypt with.
+ */
 export final class CloudKms {
   #origin: String;
   #credentials: Credentials;
-  /** `projects/…/cryptoKeyVersions/<n>`. */
+  /**
+   * `projects/…/cryptoKeys/<key>/cryptoKeyVersions/<n>` for a signing key
+   * version, and `projects/…/cryptoKeys/<key>` for a symmetric key, whose
+   * primary version encrypts.
+   */
   name: String;
 
   /**
@@ -73,6 +87,40 @@ export final class CloudKms {
       throw new KmsError(0, 'Cloud KMS answered asymmetricSign without a signature');
     }
     return base64.decode(signature as String);
+  }
+
+  /**
+   * `plaintext`, at most 64 KiB, encrypted with the symmetric key, and
+   * bound to `additionalData`, which is not encrypted, and which
+   * decrypting needs too.
+   */
+  async encrypt(plaintext: FixedArray<u8>, additionalData: FixedArray<u8>): Future<FixedArray<u8>> {
+    let request = new JsonObject();
+    request['plaintext'] = base64.encode(plaintext);
+    request['additionalAuthenticatedData'] = base64.encode(additionalData);
+    let response = await this.#call('POST', `/v1/${this.name}:encrypt`, stringify(request));
+    let answer = jsonObject(await checked(response, 'encrypting'));
+    let ciphertext = answer['ciphertext'];
+    if (!(ciphertext is String)) {
+      throw new KmsError(0, 'Cloud KMS answered encrypt without a ciphertext');
+    }
+    return base64.decode(ciphertext as String);
+  }
+
+  /**
+   * `ciphertext`, from `encrypt` with the same `additionalData`,
+   * decrypted. Throws `KmsError` with status 400 for a ciphertext that is
+   * not one, or other additional data.
+   */
+  async decrypt(ciphertext: FixedArray<u8>, additionalData: FixedArray<u8>): Future<FixedArray<u8>> {
+    let request = new JsonObject();
+    request['ciphertext'] = base64.encode(ciphertext);
+    request['additionalAuthenticatedData'] = base64.encode(additionalData);
+    let response = await this.#call('POST', `/v1/${this.name}:decrypt`, stringify(request));
+    let answer = jsonObject(await checked(response, 'decrypting'));
+    let plaintext = answer['plaintext'];
+    // An empty plaintext comes back without the member.
+    return if (plaintext is String) base64.decode(plaintext as String) else new FixedArray<u8>(0, 0 as u8);
   }
 
   /** The key version's public key. */

@@ -21,7 +21,11 @@ import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {curveOf, publicKeyFor} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
 import {CreateRecord, DeleteRecord, UpdateRecord, Write} from 'pds:repository';
-import {Account, AccountKind, Head, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob} from 'pds:storage';
+import {
+  Account, AccountKind, Head, KeyEncryption, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob
+} from 'pds:storage';
+import {Future} from 'zena:async';
+import {sha256} from 'zena:crypto';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
 let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
@@ -29,6 +33,46 @@ let NOW = 1792800000000000 as i64;
 
 function key(type: KeyType = KeyType.P256): SigningKey {
   return new SigningKey(type, hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
+}
+
+/**
+ * Encrypts signing keys for tests, and counts what it encrypts and
+ * decrypts. A
+ * ciphertext is the key XORed with its DID's hash, after the hash's first
+ * four bytes, which tie it to the DID: it is not a cipher to keep
+ * anything with.
+ */
+export final class TestKeyEncryption implements KeyEncryption {
+  var encrypted = 0;
+  var decrypted = 0;
+
+  async encrypt(did: String, privateKey: FixedArray<u8>): Future<FixedArray<u8>> {
+    this.encrypted += 1;
+    let pad = sha256(did.toBytes() as FixedArray<u8>);
+    let out = new FixedArray<u8>(4 + privateKey.length, 0 as u8);
+    for (var i = 0; i < 4; i += 1) {
+      out[i] = pad[i];
+    }
+    for (var i = 0; i < privateKey.length; i += 1) {
+      out[4 + i] = (privateKey[i] ^ pad[i % 32]) as u8;
+    }
+    return out;
+  }
+
+  async decrypt(did: String, ciphertext: FixedArray<u8>): Future<FixedArray<u8>> {
+    let pad = sha256(did.toBytes() as FixedArray<u8>);
+    for (var i = 0; i < 4; i += 1) {
+      if (ciphertext[i] != pad[i]) {
+        throw new Error(`this key is not ${did}'s`);
+      }
+    }
+    this.decrypted += 1;
+    let out = new FixedArray<u8>(ciphertext.length - 4, 0 as u8);
+    for (var i = 0; i < out.length; i += 1) {
+      out[i] = (ciphertext[4 + i] ^ pad[i % 32]) as u8;
+    }
+    return out;
+  }
 }
 
 function cidOf(text: String): Cid {
@@ -72,8 +116,9 @@ export function storageConformance(make: () => Storage): void {
     let read = runFuture(storage.getAccount(ALICE)) as Account;
     equal(read.handle as String, 'alice.test');
     isTrue(read.kind == AccountKind.Package, 'kind');
-    isTrue(read.key.type == KeyType.P256, 'key type');
-    isTrue(sameBytes(read.key.privateKey, alice.key.privateKey), 'private key');
+    let readKey = runFuture(read.signingKey());
+    isTrue(readKey.type == KeyType.P256, 'key type');
+    isTrue(sameBytes(readKey.privateKey, key().privateKey), 'private key');
     equal((runFuture(storage.accountByHandle('alice.test')) as Account).did, ALICE);
 
     // A new handle frees the old one.
@@ -83,7 +128,8 @@ export function storageConformance(make: () => Storage): void {
     equal((runFuture(storage.accountByHandle('alice2.test')) as Account).did, ALICE);
     runFuture(storage.putAccount(new Account(BOB, 'alice.test', key(KeyType.Secp256k1))));
     equal((runFuture(storage.accountByHandle('alice.test')) as Account).did, BOB);
-    isTrue((runFuture(storage.getAccount(BOB)) as Account).key.type == KeyType.Secp256k1, 'secp256k1');
+    let bob = runFuture(storage.getAccount(BOB)) as Account;
+    isTrue(runFuture(bob.signingKey()).type == KeyType.Secp256k1, 'secp256k1');
     isTrue((runFuture(storage.getAccount(BOB)) as Account).kind == AccountKind.Person, 'person');
     runFuture(storage.putAccount(new Account('did:plc:nohandlenohandlenohandle', null, key())));
     isNull((runFuture(storage.getAccount('did:plc:nohandlenohandlenohandle')) as Account).handle);

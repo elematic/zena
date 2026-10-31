@@ -25,11 +25,30 @@ import {buildService, configFromEnv} from 'pds:service';
 import {HashMap} from 'zena:collections';
 import {Request, Response} from 'zena:http';
 import {Account, Head, RecordChange, SigningKey, Storage, StoredBlob} from 'pds:storage';
+import {hex} from 'zena:encoding';
 import {Cid} from 'atproto:cid';
 import {KeyType} from 'atproto:didkey';
 import {
-  credentialStoreConformance, hostStoreConformance, plcLogConformance, storageConformance
+  TestKeyEncryption, credentialStoreConformance, hostStoreConformance, plcLogConformance, storageConformance
 } from '../storage-conformance.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+
+/** The account document of `did` in `db`'s tenant `test`. */
+function accountDocument(db: Firestore, did: String) {
+  return runFuture(db.collection('tenants').doc('test').collection('accounts').doc(did).get());
+}
+
+/** Whether `call` throws. */
+function throws(call: () => void): boolean {
+  try {
+    call();
+  } catch (e) {
+    return true;
+  }
+  return false;
+}
 
 /** A database in a new project on the emulator. */
 function freshDatabase(): Firestore {
@@ -46,6 +65,7 @@ function freshDatabase(): Firestore {
 export let tests = suite('Firestore storage', () => {
   // TODO(#520): drop the return types.
   storageConformance((): Storage => new FirestoreStorage(freshDatabase(), 'test', new MemoryBlobs()));
+  storageConformance((): Storage => new FirestoreStorage(freshDatabase(), 'test', new MemoryBlobs(), new TestKeyEncryption()));
   hostStoreConformance((): HostStore => new FirestoreHostStore(freshDatabase(), 'test'));
   plcLogConformance((): PlcLog => new FirestorePlcLog(freshDatabase(), 'test'));
   credentialStoreConformance((): CredentialStore => new FirestoreCredentialStore(freshDatabase(), 'test'));
@@ -69,6 +89,68 @@ export let tests = suite('Firestore storage', () => {
     let hostOne = new FirestoreHostStore(db, 'one');
     isTrue(runFuture(hostOne.claimScope('acme', did)), 'claimed');
     isTrue(runFuture(new FirestoreHostStore(db, 'two').claimScope('acme', did)), 'claimed in the other tenant');
+  });
+
+  test('keeps signing keys encrypted, and decrypts one when it is first used', (ctx) => {
+    let db = freshDatabase();
+    let keys = new TestKeyEncryption();
+    let storage = new FirestoreStorage(db, 'test', new MemoryBlobs(), keys);
+    let key = new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8));
+    runFuture(storage.putAccount(new Account(ALICE, 'alice.test', key)));
+    let document = accountDocument(db, ALICE);
+    isTrue(document.get('privateKey') == null, 'no key in the clear');
+    isTrue(document.get('encryptedKey') != null, 'an encrypted key');
+
+    let read = runFuture(storage.getAccount(ALICE)) as Account;
+    isTrue(read.encryptedKey != null, 'read encrypted');
+    equal(keys.decrypted, 0);
+    equal(hex.encode(runFuture(read.signingKey()).privateKey), hex.encode(key.privateKey));
+    equal(keys.decrypted, 1);
+
+    // Written again, with a new handle, it keeps its ciphertext.
+    equal(keys.encrypted, 1);
+    read.handle = 'alice2.test';
+    runFuture(storage.putAccount(read));
+    equal(keys.encrypted, 1);
+    let again = runFuture(storage.accountByHandle('alice2.test')) as Account;
+    equal(hex.encode(runFuture(again.signingKey()).privateKey), hex.encode(key.privateKey));
+
+    // A store with no key encryption cannot read it.
+    isTrue(throws(() => { runFuture(new FirestoreStorage(db, 'test', new MemoryBlobs()).getAccount(ALICE)); }),
+        'read an encrypted key without key encryption');
+  });
+
+  test('encrypts the signing keys a store kept in the clear', (ctx) => {
+    let db = freshDatabase();
+    let plain = new FirestoreStorage(db, 'test', new MemoryBlobs());
+    let aliceKey = new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8));
+    let bobKey = new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 9 as u8));
+    runFuture(plain.putAccount(new Account(ALICE, 'alice.test', aliceKey)));
+    runFuture(plain.putAccount(new Account(BOB, 'bob.test', bobKey)));
+    isTrue(accountDocument(db, ALICE).get('privateKey') != null, 'in the clear');
+    isTrue(throws(() => { runFuture(plain.encryptKeys()); }), 'encrypted keys without key encryption');
+
+    let keys = new TestKeyEncryption();
+    let encrypting = new FirestoreStorage(db, 'test', new MemoryBlobs(), keys);
+    // A key kept in the clear is still read, so the server works until it is encrypted.
+    let before = runFuture(encrypting.getAccount(BOB)) as Account;
+    isTrue(before.encryptedKey == null, 'read in the clear');
+    equal(runFuture(encrypting.encryptKeys()), 2);
+    for (let did in [ALICE, BOB]) {
+      let document = accountDocument(db, did);
+      isTrue(document.get('privateKey') == null && document.get('encryptedKey') != null, did);
+      if (let (true, handle) = document.getString('handle')) {
+        equal(handle, if (did == ALICE) 'alice.test' else 'bob.test');
+      } else {
+        isTrue(false, `${did} lost its handle`);
+      }
+    }
+    let bob = runFuture(encrypting.getAccount(BOB)) as Account;
+    let opened = runFuture(bob.signingKey());
+    isTrue(opened.type == KeyType.Secp256k1, 'key type');
+    equal(hex.encode(opened.privateKey), hex.encode(bobKey.privateKey));
+    // Once encrypted, there is nothing more to do.
+    equal(runFuture(encrypting.encryptKeys()), 0);
   });
 
   test('serves a PDS on Firestore, as PDS_STORAGE=firestore configures it', (ctx) => {

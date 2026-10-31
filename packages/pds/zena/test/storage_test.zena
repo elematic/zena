@@ -1,13 +1,23 @@
-/** The storage conformance tests (`storage-conformance.zena`) in memory. */
+/**
+ * The storage conformance tests (`storage-conformance.zena`) in memory,
+ * and an account's signing key as a store keeps it.
+ */
 
-import {suite} from 'zena:test';
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {hex} from 'zena:encoding';
+import {KeyType} from 'atproto:didkey';
 import {HostStore, MemoryHostStore} from 'pds:host';
 import {MemoryPlcLog, PlcLog} from 'pds:plc-directory';
 import {CredentialStore, MemoryCredentialStore} from 'pds:sessions';
-import {MemoryStorage, Storage} from 'pds:storage';
+import {Account, EncryptedKey, MemoryStorage, SigningKey, Storage} from 'pds:storage';
 import {
-  credentialStoreConformance, hostStoreConformance, plcLogConformance, storageConformance
+  TestKeyEncryption, credentialStoreConformance, hostStoreConformance, plcLogConformance, storageConformance
 } from './storage-conformance.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 
 export let tests = suite('in-memory storage', () => {
   // TODO(#520): drop the return types.
@@ -15,4 +25,33 @@ export let tests = suite('in-memory storage', () => {
   hostStoreConformance((): HostStore => new MemoryHostStore());
   plcLogConformance((): PlcLog => new MemoryPlcLog());
   credentialStoreConformance((): CredentialStore => new MemoryCredentialStore());
+
+  test('decrypts a signing key a store keeps encrypted when it is first used, and once', (ctx) => {
+    let encryption = new TestKeyEncryption();
+    let key = new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8));
+    let ciphertext = runFuture(encryption.encrypt(ALICE, key.privateKey));
+    let account = new Account(ALICE, null, new EncryptedKey(KeyType.P256, ciphertext, encryption));
+    isTrue(account.encryptedKey != null, 'kept encrypted');
+    equal(encryption.decrypted, 0);
+    let opened = runFuture(account.signingKey());
+    isTrue(opened.type == KeyType.P256, 'key type');
+    equal(hex.encode(opened.privateKey), hex.encode(key.privateKey));
+    runFuture(account.signingKey());
+    equal(encryption.decrypted, 1);
+
+    // The ciphertext is Alice's: as Bob's, it does not decrypt.
+    let bob = new Account(BOB, null, new EncryptedKey(KeyType.P256, ciphertext, encryption));
+    var refused = false;
+    try {
+      runFuture(bob.signingKey());
+    } catch (e) {
+      refused = true;
+    }
+    isTrue(refused, "decrypted Alice's key as Bob's");
+
+    // An account made with its key holds it, and has none encrypted.
+    let plain = new Account(ALICE, null, key);
+    isTrue(plain.encryptedKey == null, 'not encrypted');
+    isTrue(runFuture(plain.signingKey()) == key, 'the same key');
+  });
 });

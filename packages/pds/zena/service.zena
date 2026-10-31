@@ -14,6 +14,10 @@
  *   - and either `PDS_BLOB_BUCKET`, the Cloud Storage bucket for blob bytes,
  *     or `PDS_BLOB_DIR`, a directory for them, for a server on one machine.
  *   - `PDS_FIRESTORE_DATABASE`, the database, `(default)` when unset.
+ *   - `PDS_KEY_ENCRYPTION_KMS_KEY`, a Cloud KMS symmetric key,
+ *     `projects/…/cryptoKeys/<key>`, that accounts' signing keys are
+ *     encrypted with in Firestore (`pds:key-encryption`). Without it they
+ *     are kept in the clear, and an encrypted one cannot be read.
  *   - The project and credentials come from `google-cloud:firestore`'s
  *     defaults, and `FIRESTORE_EMULATOR_HOST` points it at the emulator.
  * - `PDS_HOST_DOMAIN`: the package host's domain, such as
@@ -98,6 +102,7 @@ import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
 import {CredentialStore, MemoryCredentialStore, Sessions} from './sessions.zena';
 import {KmsRotationKey, LocalRotationKey, RotationKey} from './rotation.zena';
 import {CloudKms} from 'google-cloud:kms';
+import {KmsKeyEncryption} from './key-encryption.zena';
 import {MemoryStorage, SigningKey, Storage} from './storage.zena';
 
 /** A configuration `configFromEnv` refuses, with every problem it found. */
@@ -110,9 +115,11 @@ export sealed class StorageChoice {
   case InMemory
   /**
    * Firestore, for `tenant`, in the database `database`, or the project's
-   * default one when null, with blob bytes in `blobs`.
+   * default one when null, with blob bytes in `blobs`, and signing keys
+   * encrypted with the Cloud KMS key `keyEncryptionKey`, or in the clear
+   * when it is null.
    */
-  case InFirestore(tenant: String, blobs: BlobChoice, database: String | null)
+  case InFirestore(tenant: String, blobs: BlobChoice, database: String | null, keyEncryptionKey: String | null)
 }
 
 /** Where blob bytes go beside Firestore. */
@@ -225,6 +232,11 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   let storageKind = value('PDS_STORAGE') ?? 'memory';
   let bucket = value('PDS_BLOB_BUCKET');
   let blobDir = value('PDS_BLOB_DIR');
+  let keyEncryptionKey = value('PDS_KEY_ENCRYPTION_KMS_KEY');
+  if (keyEncryptionKey != null && (!keyEncryptionKey.contains('/cryptoKeys/') ||
+      keyEncryptionKey.contains('/cryptoKeyVersions/'))) {
+    problems.push(`PDS_KEY_ENCRYPTION_KMS_KEY is a key, projects/…/cryptoKeys/<key>, not ${keyEncryptionKey}`);
+  }
   if (storageKind == 'firestore') {
     let tenant = value('PDS_TENANT');
     if (tenant == null) {
@@ -237,11 +249,14 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     }
     if (tenant != null && (bucket == null) != (blobDir == null)) {
       let blobs: BlobChoice = if (bucket != null) new InBucket(bucket as String) else new InDirectory(blobDir as String);
-      storage = new InFirestore(tenant as String, blobs, value('PDS_FIRESTORE_DATABASE'));
+      storage = new InFirestore(tenant as String, blobs, value('PDS_FIRESTORE_DATABASE'), keyEncryptionKey);
     }
   } else if (storageKind == 'memory') {
     if (bucket != null || blobDir != null || value('PDS_FIRESTORE_DATABASE') != null) {
       problems.push('PDS_BLOB_BUCKET, PDS_BLOB_DIR and PDS_FIRESTORE_DATABASE need PDS_STORAGE=firestore');
+    }
+    if (keyEncryptionKey != null) {
+      problems.push('PDS_KEY_ENCRYPTION_KMS_KEY needs PDS_STORAGE=firestore: memory keeps signing keys as they are');
     }
   } else {
     problems.push(`PDS_STORAGE is memory or firestore, not ${storageKind}`);
@@ -430,9 +445,10 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   var credentials: CredentialStore = new MemoryCredentialStore();
   match (config.storage) {
     case InMemory {}: {}
-    case InFirestore {tenant, blobs, database}: {
+    case InFirestore {tenant, blobs, database, keyEncryptionKey}: {
       let db = if (database != null) await Firestore.connect({databaseId: database}) else await Firestore.connect();
-      storage = new FirestoreStorage(db, tenant, blobBytes(blobs));
+      let keys = if (keyEncryptionKey != null) new KmsKeyEncryption(CloudKms.connect(keyEncryptionKey)) else null;
+      storage = new FirestoreStorage(db, tenant, blobBytes(blobs), keys);
       hostStore = new FirestoreHostStore(db, tenant);
       plcLog = new FirestorePlcLog(db, tenant);
       credentials = new FirestoreCredentialStore(db, tenant);

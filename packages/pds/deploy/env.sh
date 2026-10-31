@@ -72,6 +72,11 @@ KMS_LOCATION="${ZENA_KMS_LOCATION:-$REGION}"
 KMS_KEYRING="zena-pkg${SUFFIX}"
 KMS_KEY=rotation
 KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_KEY}/cryptoKeyVersions/1"
+# The symmetric key in the same key ring that encrypts accounts' repository
+# signing keys in Firestore (PDS_KEY_ENCRYPTION_KMS_KEY), in both
+# environments.
+SIGNING_KEYS_KMS_KEY=signing-keys
+SIGNING_KEYS_KMS_NAME="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${SIGNING_KEYS_KMS_KEY}"
 OFFLINE_ROTATION_KEY="${ZENA_OFFLINE_ROTATION_KEY:-}"
 ADMIN_DIDS="${ZENA_ADMIN_DIDS:-}"
 # The environment's own zone, delegated from zena-lang.dev's, so the

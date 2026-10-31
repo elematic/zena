@@ -104,6 +104,11 @@ The same configuration with the argument `sync-handles`
 handle record again from the host's store and exits, for after a record
 write failed or records were lost.
 
+With `encrypt-keys`, it encrypts every account's signing key that
+Firestore keeps in the clear with `PDS_KEY_ENCRYPTION_KMS_KEY`, and
+exits. Keys are encrypted as they are written once the server has that
+key, so this is for the ones written before it had one.
+
 With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`, it
 creates a scope owned by that DID and exits. This is how the operator
 takes a name the host reserves (`www`, `api`, `admin`, `zena`, `pkg`,
@@ -202,12 +207,39 @@ operation the offline key signs. Staging's own PLC directory does not take
 an operation that replaces others, so the procedure cannot be rehearsed
 there.
 
+### Signing keys
+
+Each account's repository signing key, which signs its commits and the
+service-auth tokens it asks for, is in its Firestore document. With
+`PDS_KEY_ENCRYPTION_KMS_KEY`, a Cloud KMS symmetric key that
+`deploy:setup` makes for each environment (`signing-keys` in the
+environment's key ring), it is kept encrypted, bound to the account's DID,
+so that a backup or an export of the database holds no key that signs.
+The server decrypts a key the first time it signs with it, and keeps it in
+memory. The service account may encrypt and decrypt with that key, and
+the key never leaves Cloud KMS: destroying it loses every signing key it
+encrypted. Without the variable, keys are kept in the clear, as in tests
+and on the emulator.
+
+Keys written before the server had the variable stay in the clear until
+`encrypt-keys` encrypts them. After the first deploy with it, run it once
+with the deployment's configuration, as a user who may use the key:
+
+```sh
+GOOGLE_CLOUD_PROJECT=<project> PDS_STORAGE=firestore PDS_FIRESTORE_DATABASE=zena-pkg-staging PDS_TENANT=pkg \
+PDS_BLOB_BUCKET=<bucket> PDS_JWT_SECRET=<hex> \
+PDS_KEY_ENCRYPTION_KMS_KEY=projects/<project>/locations/<region>/keyRings/zena-pkg-staging/cryptoKeys/signing-keys \
+  zena-cli run packages/pds/zena/main.zena -- encrypt-keys
+```
+
 ## Layout
 
 - `zena/`: the server, the Zena package `pds`, imported as `pds:<library>`:
   - `storage`: the storage interfaces, and `MemoryStorage`;
   - `firestore`: the storage in Firestore, and where blob bytes go beside
     it;
+  - `key-encryption`: accounts' signing keys encrypted with a Cloud KMS
+    key, for Firestore to keep;
   - `repository`: an account's repository: writes, commits, proofs and
     exports;
   - `pds`: the accounts and their repositories;

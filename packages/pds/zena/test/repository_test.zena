@@ -101,7 +101,7 @@ export let tests = suite('pds:repository', () => {
     equal(commit.did, DID);
     isNull(commit.prev);
     isTrue(isValidTid(commit.rev), commit.rev);
-    isTrue(verifyWith(account.key)(commit.signedBytes(), commit.sig));
+    isTrue(verifyWith(runFuture(account.signingKey()))(commit.signedBytes(), commit.sig));
   });
 
   test('commits writes, and proves each record against the new commit', (ctx) => {
@@ -118,7 +118,7 @@ export let tests = suite('pds:repository', () => {
     isTrue(first.rev.compareTo(second.rev) < 0, `${first.rev} < ${second.rev}`);
 
     let proof = verifyRecordProof(readCar(runFuture(repository.recordProof(POST, '3l3qo2vutsw2b')) as FixedArray<u8>),
-        DID, POST, '3l3qo2vutsw2b', verifyWith(account.key));
+        DID, POST, '3l3qo2vutsw2b', verifyWith(runFuture(account.signingKey())));
     isTrue(proof.commit.rev == second.rev);
     isTrue((proof.commit.prev as Cid).equals(first.cid));
     equal(stringField(proof.record as MapValue, 'text') as String, 'one, edited');

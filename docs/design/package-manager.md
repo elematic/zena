@@ -743,7 +743,7 @@ package depends on the Zena project's host to stay readable or to leave.
 | ------------------------------------------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | A maintainer's account keys                                  | the maintainer's PDS                         | the maintainer's PDS                                                                                                | the maintainer's repository, where their attestations are           |
 | A maintainer's OAuth session: a refresh token and a DPoP key | `zena login`                                 | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                           |
-| The package's signing key                                    | the host, when it creates the package        | the host, encrypted at rest                                                                                         | commits to the package's repository                                 |
+| The package's signing key                                    | the host, when it creates the package        | the host, encrypted at rest by a key in its key management service                                                  | commits to the package's repository                                 |
 | The host's online rotation key                               | the host, once                               | the host, in a key management service apart from its database                                                       | PLC operations for every account it hosts, ranked last              |
 | The host's offline rotation key                              | the operator, once                           | the operator, offline                                                                                               | PLC operations, ranked above the online key, to undo what it signed |
 | Recovery keys, if the owners add them                        | a maintainer                                 | up to three maintainers, in a hardware key, the OS keychain, or `$XDG_CONFIG_HOME/zena/recovery-key`, mode 0600     | PLC operations, ranked above the host's keys                        |
@@ -761,6 +761,17 @@ every commit, so it is in use all the time. A rotation key signs only the
 rare change to a DID document, so it can be kept where using it is slow
 and stealing it is hard, and it is what replaces a signing key that
 leaks.
+
+The host's database holds each signing key encrypted by a symmetric key
+in the key management service, with the account's DID bound to the
+ciphertext so that it decrypts as no other account's key. The host
+decrypts a key when it first signs with it, and keeps it in memory. A
+copy of the database, such as a backup or an export, then holds no key
+that signs: decrypting one needs the key service as well, where only the
+host's own service account may use that key. A leaked signing key would
+let its holder write releases, but not attestations, so none of them
+would count ([What the records guarantee](#what-the-records-guarantee));
+the encryption is defence in depth.
 
 Releases do not depend on who holds the rotation keys. A release counts
 only with its maintainers' attestations, which the log checks (see

@@ -49,6 +49,10 @@ lexicons are in `packages/package-manager/lexicons`.
   memory; `pds:firestore` keeps it in Firestore, under a tenant, with blob
   bytes in Cloud Storage. Both pass `zena/test/storage-conformance.zena`;
   add a test there for anything a store must do.
+- An account's signing key comes from `Account.signingKey()`, which
+  decrypts it the first time when the store keeps it encrypted
+  (`FirestoreStorage` with a `KeyEncryption`, `pds:key-encryption`).
+  Never write a key in the clear where a store has key encryption.
 - Several servers may share a store. Write through `AccountStore.commit`,
   which checks the head, and take names with `HostStore.claimScope` and
   `claimName`, never with a read and then a write.
