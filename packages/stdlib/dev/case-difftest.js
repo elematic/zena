@@ -11,7 +11,7 @@
 //   node packages/stdlib/dev/case-difftest.js [sigmaCaseCount]
 //
 // Requires a Node whose ICU implements the Unicode version the tables in
-// zena/core/string.zena were generated from.
+// zena/core/case-tables.zena were generated from.
 
 import {execFileSync} from 'node:child_process';
 import {readFileSync, writeFileSync, mkdirSync} from 'node:fs';

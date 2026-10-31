@@ -1,0 +1,260 @@
+/*
+ * Unicode case mapping, for the byte targets' `String.toLowerCase` and
+ * `toUpperCase`: the Default Case Algorithms of Unicode 3.13 without the
+ * language-specific mappings, which is also what JavaScript's
+ * `toLowerCase` and `toUpperCase` apply (and what the js target's
+ * `String` calls).
+ *
+ * The data is in case-tables.zena, generated from the Unicode Character
+ * Database; its header describes the encoding. Each table is decoded on
+ * first use and binary-searched.
+ */
+
+import {
+  CASE_RANGES, UPPER_SPECIALS, LOWER_SPECIALS, CASED, CASE_IGNORABLE,
+} from './case-tables.zena';
+
+/** A generated table's integer at `pos`, as (value, position after it). */
+function readCaseVarint(table: String, pos: i32): inline (i32, i32) {
+  var value = 0;
+  var shift = 0;
+  var p = pos;
+  while (true) {
+    let raw = table.getByteAt(p) - 0x30;
+    p += 1;
+    value = value | ((raw & 0x1F) << shift);
+    if (raw < 0x20) {
+      return (value, p);
+    }
+    shift += 5;
+  }
+}
+
+function unzigzagCase(n: i32) {
+  return (n >> 1) ^ (0 - (n & 1));
+}
+
+/**
+ * The decoded tables, built on first use. A range table has four slots to
+ * an entry: the first code point, the number of code points after it in
+ * the range, then the entry's data. A case range's data is its zigzag
+ * upper and lower distances, as the table stores them; a property range
+ * has none. A special mapping has eight: its code point, 0, the number of
+ * code points it maps to, and then those code points.
+ */
+var caseRanges: FixedArray<i32> | null = null;
+var upperSpecials: FixedArray<i32> | null = null;
+var lowerSpecials: FixedArray<i32> | null = null;
+var cased: FixedArray<i32> | null = null;
+var caseIgnorable: FixedArray<i32> | null = null;
+
+/**
+ * A table of ranges, each `fields` integers: the start, from the previous
+ * start, then the rest as written.
+ */
+function decodeCaseRanges(table: String, fields: i32) {
+  let (count, first) = readCaseVarint(table, 0);
+  let out = new FixedArray<i32>(count * 4, 0);
+  var pos = first;
+  var start = 0;
+  for (var i = 0; i < count; i += 1) {
+    for (var f = 0; f < fields; f += 1) {
+      let (value, next) = readCaseVarint(table, pos);
+      pos = next;
+      if (f == 0) {
+        start += value;
+        out[i * 4] = start;
+      } else {
+        out[i * 4 + f] = value;
+      }
+    }
+  }
+  return out;
+}
+
+function decodeCaseSpecials(table: String) {
+  let (count, first) = readCaseVarint(table, 0);
+  let out = new FixedArray<i32>(count * 8, 0);
+  var pos = first;
+  var cp = 0;
+  for (var i = 0; i < count; i += 1) {
+    let (delta, p1) = readCaseVarint(table, pos);
+    let (length, p2) = readCaseVarint(table, p1);
+    cp += delta;
+    out[i * 8] = cp;
+    out[i * 8 + 2] = length;
+    pos = p2;
+    for (var k = 0; k < length; k += 1) {
+      let (target, next) = readCaseVarint(table, pos);
+      out[i * 8 + 3 + k] = cp + unzigzagCase(target);
+      pos = next;
+    }
+  }
+  return out;
+}
+
+function caseRangeTable() {
+  let existing = caseRanges;
+  if (existing != null) {
+    return existing;
+  }
+  let built = decodeCaseRanges(CASE_RANGES, 4);
+  caseRanges = built;
+  return built;
+}
+
+function upperSpecialTable() {
+  let existing = upperSpecials;
+  if (existing != null) {
+    return existing;
+  }
+  let built = decodeCaseSpecials(UPPER_SPECIALS);
+  upperSpecials = built;
+  return built;
+}
+
+function lowerSpecialTable() {
+  let existing = lowerSpecials;
+  if (existing != null) {
+    return existing;
+  }
+  let built = decodeCaseSpecials(LOWER_SPECIALS);
+  lowerSpecials = built;
+  return built;
+}
+
+function casedTable() {
+  let existing = cased;
+  if (existing != null) {
+    return existing;
+  }
+  let built = decodeCaseRanges(CASED, 2);
+  cased = built;
+  return built;
+}
+
+function caseIgnorableTable() {
+  let existing = caseIgnorable;
+  if (existing != null) {
+    return existing;
+  }
+  let built = decodeCaseRanges(CASE_IGNORABLE, 2);
+  caseIgnorable = built;
+  return built;
+}
+
+/**
+ * The index of the entry in `table` whose range holds `cp`, or -1. Entries
+ * are `1 << shift` slots wide, starting with the range's first code point
+ * and how many follow it, and sorted.
+ */
+function findCaseEntry(table: FixedArray<i32>, shift: i32, cp: i32): i32 {
+  var lo = 0;
+  var hi = (table.length >> shift) - 1;
+  while (lo <= hi) {
+    let mid = (lo + hi) >> 1;
+    let at = mid << shift;
+    if (cp < table[at]) {
+      hi = mid - 1;
+    } else if (cp > table[at] + table[at + 1]) {
+      lo = mid + 1;
+    } else {
+      return at;
+    }
+  }
+  return -1;
+}
+
+/** `cp`'s one-to-one uppercase or lowercase mapping, or `cp`. */
+export function simpleCaseOf(cp: i32, upper: boolean): i32 {
+  let table = caseRangeTable();
+  let at = findCaseEntry(table, 2, cp);
+  if (at < 0) {
+    return cp;
+  }
+  let upperDelta = table[at + 2];
+  let lowerDelta = table[at + 3];
+  if (upperDelta == 0 && lowerDelta == 0) {
+    let even = ((cp - table[at]) & 1) == 0;
+    if (upper) {
+      return if (even) cp else cp - 1;
+    }
+    return if (even) cp + 1 else cp;
+  }
+  return cp + unzigzagCase(if (upper) upperDelta else lowerDelta);
+}
+
+/**
+ * Where `cp`'s uppercase or lowercase of several code points is, for
+ * `writeUpperSpecial` or `writeLowerSpecial`, or -1 when its mapping is
+ * one code point.
+ */
+export function upperSpecialAt(cp: i32): i32 {
+  return findCaseEntry(upperSpecialTable(), 3, cp);
+}
+export function lowerSpecialAt(cp: i32): i32 {
+  return findCaseEntry(lowerSpecialTable(), 3, cp);
+}
+
+export function isCasedCodePoint(cp: i32): boolean {
+  return findCaseEntry(casedTable(), 2, cp) >= 0;
+}
+
+export function isCaseIgnorableCodePoint(cp: i32): boolean {
+  return findCaseEntry(caseIgnorableTable(), 2, cp) >= 0;
+}
+
+/**
+ * Writes `cp` to `out` at `at` as UTF-8 (WTF-8 for a lone surrogate) and
+ * returns the position after it. `out` has room for four bytes.
+ */
+export function writeCaseUtf8(out: ByteArray, at: i32, cp: i32): i32 {
+  if (cp < 0x80) {
+    __byte_array_set(out, at, cp);
+    return at + 1;
+  }
+  let width = if (cp < 0x800) 2 else if (cp < 0x10000) 3 else 4;
+  var rest = cp;
+  for (var k = width - 1; k > 0; k -= 1) {
+    __byte_array_set(out, at + k, 0x80 | (rest & 0x3F));
+    rest = rest >> 6;
+  }
+  // The lead byte's marker: 0xC0, 0xE0 or 0xF0 for two, three or four bytes.
+  __byte_array_set(out, at, ((0xF00 >> width) & 0xF0) | rest);
+  return at + width;
+}
+
+/**
+ * `out`, or a copy of its first `n` bytes with more room: a case mapping
+ * writes at most three code points of four bytes for each one it reads.
+ */
+export function withCaseRoom(out: ByteArray, n: i32): ByteArray {
+  if (n + 12 <= __byte_array_length(out)) {
+    return out;
+  }
+  let grown = __byte_array_new(__byte_array_length(out) * 2 + 12);
+  __byte_array_copy(grown, 0, out, 0, n);
+  return grown;
+}
+
+function writeSpecialFrom(out: ByteArray, n: i32, specials: FixedArray<i32>, at: i32) {
+  var end = n;
+  for (var k = 0; k < specials[at + 2]; k += 1) {
+    end = writeCaseUtf8(out, end, specials[at + 3 + k]);
+  }
+  return end;
+}
+
+/**
+ * Writes the uppercase that `upperSpecialAt` found at `at` to `out` at `n`,
+ * and returns the position after it. (One function per direction, so a
+ * program that maps one way links only that way's table.)
+ */
+export function writeUpperSpecial(out: ByteArray, n: i32, at: i32): i32 {
+  return writeSpecialFrom(out, n, upperSpecialTable(), at);
+}
+
+/** Writes the lowercase that `lowerSpecialAt` found at `at`, likewise. */
+export function writeLowerSpecial(out: ByteArray, n: i32, at: i32): i32 {
+  return writeSpecialFrom(out, n, lowerSpecialTable(), at);
+}

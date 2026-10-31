@@ -261,7 +261,8 @@ There are no locale-sensitive or titlecase variants.
 
 A generator, `packages/stdlib/scripts/generate-case-tables.js`, reads
 `UnicodeData.txt`, `SpecialCasing.txt` and `DerivedCoreProperties.txt` and
-writes five tables into `core/string.zena`. Before writing, it checks every
+writes five tables into `core/case-tables.zena`, a file of its own whose
+header describes the encoding. Before writing, it checks every
 code point's mapping against Node's ICU when the Unicode versions match. For
 Unicode 17.0:
 
@@ -287,10 +288,12 @@ binary-search.
 `packages/stdlib/dev/case-difftest.js` compares both methods with JavaScript
 over every code point and over 20,000 strings built to exercise Final_Sigma.
 
-The tables and their lookups live in `core/string.zena`, above the `String`
-class, rather than in a library of their own. A library that
-`core/string.zena` imports cannot contain a string literal; the compiler
-reports that the built-in `String` type is not available.
+The lookups are in `core/case-mapping.zena`, which `core/string.zena`
+imports for the two methods. The tables can be string literals in a library
+`String`'s own module depends on because the compiler orders a module with
+string literals after the module declaring `String`, which puts such a
+library on a cycle with it
+([#752](https://github.com/elematic/zena/pull/752)).
 
 ### What it costs
 
