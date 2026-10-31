@@ -22,6 +22,10 @@ instruction when the same mistake shows up a second time.
   `packages/`. CI does not lint, so this is stricter than CI on purpose:
   new code is held to the lint rules, and the findings already in a file
   are left for a cleanup PR;
+- type errors in changed `.zena` libraries, which lint finds by checking
+  each file on its own. A library that tests import by package specifier
+  can fail to check while its tests pass, because a dependency's errors
+  are not reported (#510);
 - the `[package]` tags of commit subjects;
 - the words listed in `<git common dir>/info/private-words`, a file outside
   the repository, so the list itself stays private.
