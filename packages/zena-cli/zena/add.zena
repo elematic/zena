@@ -12,17 +12,26 @@
  * name is the one the package's profile suggests, unless `--name` gives
  * another. `zena update [<name>...]` raises each named dependency, or all
  * of them, to the latest version of its major version that is not retracted.
+ *
+ * Both print what the new selection changes in the lockfile's pins, and
+ * refuse, writing nothing, when a pinned version's release record or
+ * source archive has other CIDs than the lockfile pins: a published
+ * version never changes, so its PDS or its host changed it. With
+ * `--allow-changed`, the new CIDs are pinned.
  */
 
 import { ParsedArgs } from 'zena:args';
 import { runFuture } from 'zena:async';
 import { OrderedHashMap } from 'zena:collections';
-import { writeFileSync } from 'zena:fs';
+import { existsSync, readFileSync, writeFileSync } from 'zena:fs';
+import { Cid } from 'atproto:cid';
 import { IdentityResolver } from 'atproto:identity';
 import { writeDependencies } from 'package-manager:manifest';
 import { isValidPackageName } from 'package-manager:records';
 import { fetchProfile, listVersions, networkReleases, resolveIdentifier } from 'package-manager:registry';
-import { readPins, writeLockfile } from 'package-manager:resolution';
+import {
+  Pin, PinAdded, PinChange, PinChangedInPlace, PinRemoved, PinVersionChanged, diffPins, readPins, writeLockfile
+} from 'package-manager:resolution';
 import { Requirement, resolve } from 'package-manager:resolve';
 import { Version } from 'package-manager:version';
 import { DiskFiles, Workspace, WorkspacePackage, readWorkspace } from 'package-manager:workspace';
@@ -78,7 +87,7 @@ export function addCommand(args: ParsedArgs, options: Options): i32 {
 
   requirements[name] = new Requirement(did, chosen);
   console.log(`Adding ${name} to ${target.manifestPath()}: ${did} ${chosen.toString()}`);
-  return resolveWriteAndFetch(workspace, target, resolver, options);
+  return resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
 }
 
 export function updateCommand(args: ParsedArgs, options: Options): i32 {
@@ -113,7 +122,7 @@ export function updateCommand(args: ParsedArgs, options: Options): i32 {
   updated.forEach((name, requirement) => {
     requirements[name] = requirement;
   });
-  return resolveWriteAndFetch(workspace, target, resolver, options);
+  return resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
 }
 
 /**
@@ -149,20 +158,80 @@ function nameTaken(workspace: Workspace, target: WorkspacePackage, name: String,
 
 /**
  * Selects versions for the whole workspace, with `target`'s changed
- * requirements, writes `target`'s manifest and the lockfile, and fetches
- * what the lockfile pins. Nothing is written when selection fails.
+ * requirements, writes `target`'s manifest and the lockfile, prints what
+ * changed in its pins, and fetches what it pins. Nothing is written when
+ * selection fails, or when a pinned release changed in place and
+ * `allowChanged` is false.
  */
 function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePackage,
-    resolver: IdentityResolver, options: Options): i32 {
+    resolver: IdentityResolver, allowChanged: boolean, options: Options): i32 {
   let requirements = target.manifest.requirements;
+  let lockfilePath = workspace.lockfilePath();
+  let before = if (existsSync(lockfilePath)) readPins(readFileSync(lockfilePath)) else new GrowableArray<Pin>();
   let resolution = runFuture(resolve(workspace.requirements(), networkReleases(resolver)));
+  let changes = diffPins(before, resolution);
+  if (!allowChanged && refuseChangedInPlace(changes)) {
+    return 1;
+  }
   let lockfile = writeLockfile(resolution);
   writeFileSync(target.manifestPath(), writeDependencies(target.text, requirements, target.manifest.paths));
-  writeFileSync(workspace.lockfilePath(), lockfile);
-  resolution.packages.forEach((key, pkg) => {
-    console.log(`Selected ${key} ${pkg.version.toString()}`);
-  });
+  writeFileSync(lockfilePath, lockfile);
+  if (changes.length == 0) {
+    console.log('zena-lock.json is unchanged.');
+  }
+  for (let change in changes) {
+    console.log(describeChange(change));
+  }
   return fetchAndReport(readPins(lockfile), options);
+}
+
+/**
+ * Whether `changes` has a release changed in place; if so, says which,
+ * and how to pin them anyway.
+ */
+function refuseChangedInPlace(changes: GrowableArray<PinChange>): boolean {
+  var refused = false;
+  for (let change in changes) {
+    if (let PinChangedInPlace {pin, now} = change) {
+      if (!refused) {
+        console.error('Error: these releases have other CIDs than zena-lock.json pins, at the same version:');
+        refused = true;
+      }
+      console.error(`  ${pin.key} ${pin.version.toString()}: ${cidsChanged(pin, now.release, now.source)}`);
+    }
+  }
+  if (refused) {
+    console.error('A published version never changes, so its PDS or its package host changed it. Nothing was written.');
+    console.error('To pin these releases as they are now, run the command again with --allow-changed.');
+  }
+  return refused;
+}
+
+/** A line saying what `change` does to the lockfile. */
+function describeChange(change: PinChange): String {
+  return match (change) {
+    case PinAdded {now}: `Added ${now.key} ${now.version.toString()}`
+    case PinRemoved {pin}: `Removed ${pin.key} ${pin.version.toString()}`
+    case PinVersionChanged {pin, now}: {
+      let verb = if (now.version.compareTo(pin.version) > 0) 'Upgraded' else 'Downgraded';
+      `${verb} ${pin.key} ${pin.version.toString()} -> ${now.version.toString()}`
+    }
+    case PinChangedInPlace {pin, now}:
+      `Changed ${pin.key} ${pin.version.toString()} in place: ${cidsChanged(pin, now.release, now.source)}`
+  };
+}
+
+/** Which of `pin`'s CIDs `release` and `source` replace. */
+function cidsChanged(pin: Pin, release: Cid, source: Cid): String {
+  var out = '';
+  if (!pin.release.equals(release)) {
+    out = `release ${pin.release.toString()} -> ${release.toString()}`;
+  }
+  if (!pin.source.equals(source)) {
+    let sourceChanged = `source ${pin.source.toString()} -> ${source.toString()}`;
+    out = if (out == '') sourceChanged else `${out}, ${sourceChanged}`;
+  }
+  return out;
 }
 
 /** `text` split into the package and the version after its last `@`, if any. */

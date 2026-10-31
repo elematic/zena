@@ -28,7 +28,8 @@ package in this repository's workspace or from a package that lists it in its
   release's source. Packing is deterministic, so the same files always have
   the same CID, and unpacking accepts only what packing writes.
 - `package-manager:resolution`: the packages a workspace's lockfile,
-  `zena-lock.json`, pins, and writing it.
+  `zena-lock.json`, pins, writing it, and what writing it changes in the
+  pins already there (`diffPins`), including releases changed in place.
 - `package-manager:cache`: the package cache, where each source archive is
   unpacked into `sources/<CID>` for the compiler to read.
 - `package-manager:fetch`: fetching pinned packages into the cache, which

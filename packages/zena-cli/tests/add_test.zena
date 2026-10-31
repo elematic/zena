@@ -1,15 +1,18 @@
 /**
  * `zena add` and `zena update` against `tests/fixtures/add-pds.zena`, which
  * serves `@acme/router` (1.4.2 and 1.5.0, which need json 2.1.0, and a
- * retracted 1.6.0) and `@acme/json` (2.0.0 and 2.1.0).
+ * retracted 1.6.0), `@acme/json` (2.0.0 and 2.1.0) and `@acme/log` (1.0.0).
  */
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {ProcessResult} from 'zena:process';
 import {
-  MAIN, Scratch, ZenaCommand, described, dnsBeside, fakePdsOrigin, read, startFakePds, write
+  MAIN, Scratch, ZenaCommand, described, dnsBeside, ensureDir, fakePdsOrigin, read, startFakePds, write
 } from './cli-support.zena';
+
+let JSON_KEY = 'did:plc:jsonjsonjsonjsonjsonjson@2';
+let LOG_KEY = 'did:plc:loglogloglogloglogloglog@1';
 
 export let tests = suite('zena add and zena update', () => {
   test('select versions for the whole workspace, pin them, and fetch them', (ctx) => {
@@ -101,6 +104,59 @@ export let tests = suite('zena add and zena update', () => {
       equal(read(manifest), text);
     } finally {
       pds.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+
+  test('refuse a pinned release that changed in place', (ctx) => {
+    let scratch = Scratch.create('add-changed');
+    try {
+      let zenaWith = (plc: String) =>
+        new ZenaCommand(scratch.host('workspace'), scratch.at('workspace'), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', plc)
+          .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc));
+      let manifest = scratch.at('workspace/zena-package.json');
+      let lockfile = scratch.at('workspace/zena-lock.json');
+      ensureDir(scratch.at('workspace'));
+      let first = startFakePds(scratch, 'add-pds.zena');
+      try {
+        let add = zenaWith(fakePdsOrigin(scratch, first)).run(['add', '@acme/router@1.5.0']);
+        isTrue(add.succeeded() && add.stdout.contains(`Added ${JSON_KEY} 2.1.0`), described(add));
+      } finally {
+        first.waitFor(1 as i64);
+      }
+
+      // The PDS serves json 2.1.0 again, with other bytes.
+      write(scratch.at('pds/plc.txt'), '');
+      write(scratch.at('pds/republish'), '');
+      let second = startFakePds(scratch, 'add-pds.zena');
+      try {
+        let zena = zenaWith(fakePdsOrigin(scratch, second));
+        let text = read(manifest);
+        let pins = read(lockfile);
+
+        // Adding a package that does not need json selects json again, and
+        // is refused, with nothing written; so is updating.
+        let refused = zena.run(['add', '@acme/log']);
+        isTrue(!refused.succeeded() && refused.stderr.contains(`${JSON_KEY} 2.1.0`) &&
+            refused.stderr.contains('--allow-changed'), described(refused));
+        equal(read(manifest), text);
+        equal(read(lockfile), pins);
+        let update = zena.run(['update']);
+        isTrue(!update.succeeded() && update.stderr.contains(`${JSON_KEY} 2.1.0`), described(update));
+        equal(read(lockfile), pins);
+
+        // Allowed, the new pins replace the old.
+        let allowed = zena.run(['add', '@acme/log', '--allow-changed']);
+        isTrue(allowed.succeeded() && allowed.stdout.contains(`Changed ${JSON_KEY} 2.1.0 in place`) &&
+            allowed.stdout.contains(`Added ${LOG_KEY} 1.0.0`), described(allowed));
+        isTrue(read(lockfile) != pins && read(manifest).contains('"log"'), read(lockfile));
+        let again = zena.run(['update']);
+        isTrue(again.succeeded() && again.stdout.contains('zena-lock.json is unchanged'), described(again));
+      } finally {
+        second.waitFor(1 as i64);
+      }
+    } finally {
       scratch.remove();
     }
   });

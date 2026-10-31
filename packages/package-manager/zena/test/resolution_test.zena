@@ -4,9 +4,16 @@ import {OrderedHashMap} from 'zena:collections';
 import {parseJson} from 'zena:json';
 import {Cid} from 'atproto:cid';
 import {
+  Pin,
+  PinAdded,
+  PinChange,
+  PinChangedInPlace,
+  PinRemoved,
+  PinVersionChanged,
   Resolution,
   ResolutionError,
   ResolvedPackage,
+  diffPins,
   packageKey,
   readPins,
   writeLockfile
@@ -15,10 +22,34 @@ import {Version} from 'package-manager:version';
 
 let RELEASE = 'bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm';
 let SOURCE = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku';
+let OTHER_RELEASE = Cid.forDagCbor(new FixedArray<u8>(1, 1 as u8)).toString();
+let OTHER_SOURCE = Cid.forBlob(new FixedArray<u8>(1, 1 as u8)).toString();
 
 function entry(version: String = '1.4.2', release: String = RELEASE, source: String = SOURCE,
     extra: String = '') {
   return `{"version": "${version}", "release": "${release}", "source": "${source}"${extra}}`;
+}
+
+function resolved(did: String, version: String, release: String = RELEASE, source: String = SOURCE) {
+  let parsed = Version.parse(version);
+  return new ResolvedPackage(packageKey(did, parsed.major), did, parsed, Cid.parse(release), Cid.parse(source),
+      new OrderedHashMap<String, String>());
+}
+
+/** `changes` as one line each, to compare. */
+function describe(changes: GrowableArray<PinChange>): String {
+  var out = '';
+  for (let change in changes) {
+    let line = match (change) {
+      case PinAdded {now}: `added ${now.key} ${now.version.toString()}`
+      case PinRemoved {pin}: `removed ${pin.key} ${pin.version.toString()}`
+      case PinVersionChanged {pin, now}: `${pin.key} ${pin.version.toString()} -> ${now.version.toString()}`
+      case PinChangedInPlace {pin, now}:
+        `changed ${pin.key} ${pin.version.toString()}: ${now.release.toString()} ${now.source.toString()}`
+    };
+    out = `${out}${line}\n`;
+  }
+  return out;
 }
 
 function rejects(text: String) {
@@ -101,5 +132,49 @@ export let tests = suite('package-manager:resolution', () => {
     let pins = readPins(text);
     equal(pins.length, 2);
     equal(pins[0].key, `${router}@1`);
+  });
+
+  test('sorts what a new resolution changes in the pins', (ctx) => {
+    let before = readPins(`{
+      "resolved": {
+        "did:plc:kept@1": ${entry('1.0.0')},
+        "did:plc:raised@1": ${entry('1.4.2')},
+        "did:plc:lowered@2": ${entry('2.1.0')},
+        "did:plc:changed@1": ${entry('1.0.0')},
+        "did:plc:sourced@1": ${entry('1.0.0')},
+        "did:plc:dropped@1": ${entry('1.0.0')}
+      }
+    }`);
+    let packages = new OrderedHashMap<String, ResolvedPackage>();
+    for (let pkg in [
+      resolved('did:plc:added', '3.0.0'),
+      resolved('did:plc:changed', '1.0.0', OTHER_RELEASE),
+      resolved('did:plc:kept', '1.0.0'),
+      resolved('did:plc:lowered', '2.0.0'),
+      // Another major version is another package.
+      resolved('did:plc:raised', '2.0.0'),
+      resolved('did:plc:raised', '1.5.0'),
+      resolved('did:plc:sourced', '1.0.0', RELEASE, OTHER_SOURCE),
+    ]) {
+      packages[pkg.key] = pkg;
+    }
+    equal(describe(diffPins(before, new Resolution(packages))),
+        `added did:plc:added@3 3.0.0
+changed did:plc:changed@1 1.0.0: ${OTHER_RELEASE} ${SOURCE}
+did:plc:lowered@2 2.1.0 -> 2.0.0
+added did:plc:raised@2 2.0.0
+did:plc:raised@1 1.4.2 -> 1.5.0
+changed did:plc:sourced@1 1.0.0: ${RELEASE} ${OTHER_SOURCE}
+removed did:plc:dropped@1 1.0.0
+`);
+  });
+
+  test('finds no changes in the same pins', (ctx) => {
+    let packages = new OrderedHashMap<String, ResolvedPackage>();
+    let kept = resolved('did:plc:kept', '1.0.0');
+    packages[kept.key] = kept;
+    let lockfile = writeLockfile(new Resolution(packages));
+    equal(diffPins(readPins(lockfile), new Resolution(packages)).length, 0);
+    equal(describe(diffPins(new GrowableArray<Pin>(), new Resolution(packages))), 'added did:plc:kept@1 1.0.0\n');
   });
 });

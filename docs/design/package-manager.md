@@ -543,6 +543,8 @@ release's own local names resolve. The workspace's own names are in its
 manifests, so the lockfile holds only pins. The compiler reads the
 manifests and the pins, and finds each published package in the cache by
 its source artifact's CID ([package-manifest.md](package-manifest.md#how-the-compiler-finds-packages)).
+Writing it again checks the old pins against the new
+([Lockfiles](#lockfiles)).
 
 ## Fetching and verification
 
@@ -605,6 +607,15 @@ log. There are four layers.
 
 The lockfile pins the CID of each release record and artifact. A build
 from an existing lockfile gets those bytes or fails.
+
+`zena add` and `zena update` select versions again, from the network, so
+they compare the new pins with the old. A package pinned at the version
+it was before, with another release or source CID, was changed in place,
+and the command refuses, writing nothing and naming the old and the new
+CIDs, unless it is given `--allow-changed`. Each command also prints what
+it changes in the lockfile: packages added and removed, versions raised
+and lowered, and releases changed in place. This guards only what the
+lockfile already pins; the checksum log below guards the rest.
 
 ### The checksum log
 

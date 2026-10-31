@@ -1,19 +1,22 @@
 /**
- * A PLC directory, DNS-over-HTTPS resolver and PDS serving two published
- * packages, for `tests/package_map.rs`:
+ * A PLC directory, DNS-over-HTTPS resolver and PDS serving three published
+ * packages, for `tests/add_test.zena`:
  *
  * - `@acme/router` (router.acme.pkg.zena-lang.dev): 1.4.2 and 1.5.0, which
  *   need json 2.1.0, and 1.6.0, which is retracted;
- * - `@acme/json` (json.acme.pkg.zena-lang.dev): 2.0.0 and 2.1.0.
+ * - `@acme/json` (json.acme.pkg.zena-lang.dev): 2.0.0 and 2.1.0;
+ * - `@acme/log` (log.acme.pkg.zena-lang.dev): 1.0.0.
  *
  * Run from the repository root with `--dir <scratch>::/out`, it writes the
  * PLC directory's origin to `/out/plc.txt` and then serves until it is
  * killed. The DNS-over-HTTPS endpoint is `/dns-query` on the same origin.
+ * When `/out/republish` exists, json 2.1.0 has other bytes: a release
+ * changed in place, as a PDS can change one.
  */
 
 import {Future} from 'zena:async';
 import {OrderedHashMap} from 'zena:collections';
-import {writeFileSync} from 'zena:fs';
+import {existsSync, writeFileSync} from 'zena:fs';
 import {BlobRef} from 'atproto:data';
 import {packSource} from 'package-manager:archive';
 import {Artifact, Dependency, Profile, Release, SOURCE, Retraction} from 'package-manager:records';
@@ -21,6 +24,7 @@ import {DID, FakeAccount, FakePds} from 'package-manager:testing/fake-pds';
 import {Version} from 'package-manager:version';
 
 let JSON_DID = 'did:plc:jsonjsonjsonjsonjsonjson';
+let LOG_DID = 'did:plc:loglogloglogloglogloglog';
 
 function bytesOf(text: String) {
   let out = new FixedArray<u8>(text.length, 0 as u8);
@@ -65,12 +69,17 @@ export async function main(): Future<i32> {
   pds.start();
   let router = pds.account(DID, 'router.acme.pkg.zena-lang.dev');
   let json = pds.account(JSON_DID, 'json.acme.pkg.zena-lang.dev');
+  let log = pds.account(LOG_DID, 'log.acme.pkg.zena-lang.dev');
   router.setProfile(new Profile('router'));
   json.setProfile(new Profile('json'));
+  log.setProfile(new Profile('log'));
 
   let none = new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), ''));
   publish(json, '2.0.0', jsonFiles('2.0.0'), none);
-  publish(json, '2.1.0', jsonFiles('2.1.0'), none);
+  publish(json, '2.1.0', jsonFiles(if (existsSync('/out/republish')) '2.1.0, republished' else '2.1.0'), none);
+  let logFiles = new OrderedHashMap<String, FixedArray<u8>>();
+  logFiles['log.zena'] = bytesOf('export function log(): i32 { return 0; }\n');
+  publish(log, '1.0.0', logFiles, none);
   let needsJson = new FixedArray<Dependency>(1, new Dependency(JSON_DID, Version.parse('2.1.0'), 'json'));
   publish(router, '1.4.2', routerFiles('1.4.2'), needsJson);
   publish(router, '1.5.0', routerFiles('1.5.0'), needsJson);
