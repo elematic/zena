@@ -4,6 +4,8 @@ Most changes to this repository are written by coding agents (Claude Code,
 Gemini) and reviewed by a person. This directory describes the checks that
 catch the agents' mistakes, and the loop that adds a check, a tool or an
 instruction when the same mistake shows up a second time.
+[`research.md`](research.md) lists what others have published on this and
+which of it the loop uses now, next, or later.
 
 ## Checks
 
