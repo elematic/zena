@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runs scripts/check.js before a push of the checked-out branch. Pushes of
+# other refs, and deletions, are let through unchecked, because the check
+# reads the working tree. `git push --no-verify` skips it.
+#
+# `npm ci` installs this directory as core.hooksPath (the root package's
+# `prepare` script).
+
+head=$(git rev-parse HEAD)
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  if [ "$local_sha" = "$head" ]; then
+    exec node scripts/check.js
+  fi
+done
+exit 0
