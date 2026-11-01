@@ -107,10 +107,13 @@ write failed or records were lost.
 The package listings, on the pages and from `listPackages` and
 `listScopes`, read a summary of each package that the host writes with
 every commit to the package's repository, rather than the repositories
-themselves. `sync-indexes` writes the host's indexes, every package's
-summary, again from the repositories and exits: for packages made before
-the host kept them, and for a commit whose summary could not be written,
-which the server logs.
+themselves. The memberships of `/me` (`getMemberships`) and the roles on
+a person's page start from a second index, of the accounts whose records
+or entries mention each person and team, which the host writes with
+every commit to an organization's members or teams or a package's
+maintainers. `sync-indexes` writes both again from the repositories and
+exits: for accounts made before the host kept them, and for a commit
+whose indexes could not be written, which the server logs.
 
 With `encrypt-keys`, it encrypts every account's signing key that
 Firestore keeps in the clear with `PDS_KEY_ENCRYPTION_KMS_KEY`, and
