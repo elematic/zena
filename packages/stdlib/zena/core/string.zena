@@ -2,6 +2,11 @@ import { hash } from './hashable.zena';
 import { FilteredIterable } from './iterable-utils.zena';
 
 import { Encoding } from './encoding.zena';
+import {
+  simpleCaseOf, upperSpecialAt, lowerSpecialAt, isCasedCodePoint,
+  isCaseIgnorableCodePoint, writeCaseUtf8, withCaseRoom, writeUpperSpecial,
+  writeLowerSpecial,
+} from './case-mapping.zena';
 export { Encoding } from './encoding.zena';
 
 
@@ -1355,6 +1360,152 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   /** Returns this string with every ASCII letter uppercased. */
   asciiUpperCase(): String {
     return this.#mapAscii(false);
+  }
+
+  /**
+   * Returns this string lowercased by Unicode's default case mapping, as
+   * JavaScript's `toLowerCase` does: `'ÀB'` becomes `'àb'`, `'İ'` becomes
+   * `'i̇'` (two code points), and a `Σ` that ends a word becomes `ς`.
+   * Language-specific mappings, such as the Turkish dotless `ı`, are not
+   * applied. Returns `this` when nothing changes. For ASCII letters only,
+   * use `asciiLowerCase`.
+   */
+  toLowerCase(): String {
+    let len = this.#end - this.#start;
+    var out: ByteArray | null = null;
+    var n = 0;
+    var pos = 0;
+    while (pos < len) {
+      let (cp, next) = this.#caseScalarAt(pos);
+      var special = -1;
+      var mapped = cp;
+      if (cp < 0x80) {
+        mapped = asciiLowerByte(cp);
+      } else {
+        special = lowerSpecialAt(cp);
+        mapped = if (cp == 0x03A3 && this.#isFinalSigma(pos, next)) 0x03C2
+            else simpleCaseOf(cp, false);
+      }
+      if (special >= 0 || mapped != cp || out != null) {
+        let buffer = this.#caseOutput(out, pos, n);
+        let at = if (out == null) pos else n;
+        n = if (special >= 0) writeLowerSpecial(buffer, at, special)
+            else writeCaseUtf8(buffer, at, mapped);
+        out = buffer;
+      }
+      pos = next;
+    }
+    if (out == null) {
+      return this;
+    }
+    return new String.#fromBytes(out as ByteArray, 0, n, Encoding.WTF8);
+  }
+
+  /**
+   * Returns this string uppercased by Unicode's default case mapping, as
+   * JavaScript's `toUpperCase` does: `'àb'` becomes `'ÀB'` and `'ß'` becomes
+   * `'SS'`. Returns `this` when nothing changes. For ASCII letters only, use
+   * `asciiUpperCase`.
+   */
+  toUpperCase(): String {
+    let len = this.#end - this.#start;
+    var out: ByteArray | null = null;
+    var n = 0;
+    var pos = 0;
+    while (pos < len) {
+      let (cp, next) = this.#caseScalarAt(pos);
+      var special = -1;
+      var mapped = cp;
+      if (cp < 0x80) {
+        mapped = asciiUpperByte(cp);
+      } else {
+        special = upperSpecialAt(cp);
+        mapped = simpleCaseOf(cp, true);
+      }
+      if (special >= 0 || mapped != cp || out != null) {
+        let buffer = this.#caseOutput(out, pos, n);
+        let at = if (out == null) pos else n;
+        n = if (special >= 0) writeUpperSpecial(buffer, at, special)
+            else writeCaseUtf8(buffer, at, mapped);
+        out = buffer;
+      }
+      pos = next;
+    }
+    if (out == null) {
+      return this;
+    }
+    return new String.#fromBytes(out as ByteArray, 0, n, Encoding.WTF8);
+  }
+
+  /**
+   * The buffer a case mapping writes its next code point to: on the first
+   * change (`out` is null), a new one holding this string's bytes before
+   * `pos`; after that `out`, with room for the next code point's mapping
+   * after its first `n` bytes.
+   */
+  #caseOutput(out: ByteArray | null, pos: i32, n: i32): ByteArray {
+    if (out == null) {
+      let len = this.#end - this.#start;
+      let fresh = __byte_array_new(len + 16);
+      __byte_array_copy(fresh, 0, this.#data, this.#start, pos);
+      return fresh;
+    }
+    return withCaseRoom(out as ByteArray, n);
+  }
+
+  /**
+   * The code point at `pos` and the position after it, reading this string
+   * as WTF-8, as the other byte-level methods here do. A truncated sequence
+   * reads as its first byte.
+   */
+  #caseScalarAt(pos: i32): inline (i32, i32) {
+    let base = this.#start + pos;
+    let b0 = __byte_array_get(this.#data, base);
+    let width = if (b0 < 0xC0) 1 else if (b0 < 0xE0) 2 else if (b0 < 0xF0) 3 else 4;
+    if (width == 1 || base + width > this.#end) {
+      return (b0, pos + 1);
+    }
+    var cp = b0 & (0x7F >> width);
+    for (var k = 1; k < width; k += 1) {
+      cp = (cp << 6) | (__byte_array_get(this.#data, base + k) & 0x3F);
+    }
+    return (cp, pos + width);
+  }
+
+  /**
+   * Whether the `Σ` at `[pos, next)` ends a word, by Unicode's Final_Sigma
+   * condition: it follows a cased letter, with only case-ignorable
+   * characters between, and no cased letter follows it the same way.
+   */
+  #isFinalSigma(pos: i32, next: i32): boolean {
+    var before = pos;
+    var precededByCased = false;
+    while (before > 0) {
+      // Back to the lead byte of the previous code point.
+      var lead = before - 1;
+      while (lead > 0 && (__byte_array_get(this.#data, this.#start + lead) & 0xC0) == 0x80) {
+        lead -= 1;
+      }
+      let (cp, _) = this.#caseScalarAt(lead);
+      if (!isCaseIgnorableCodePoint(cp)) {
+        precededByCased = isCasedCodePoint(cp);
+        break;
+      }
+      before = lead;
+    }
+    if (!precededByCased) {
+      return false;
+    }
+    let len = this.#end - this.#start;
+    var after = next;
+    while (after < len) {
+      let (cp, following) = this.#caseScalarAt(after);
+      if (!isCaseIgnorableCodePoint(cp)) {
+        return !isCasedCodePoint(cp);
+      }
+      after = following;
+    }
+    return true;
   }
 
   /**

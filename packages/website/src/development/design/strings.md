@@ -209,6 +209,133 @@ helpers above do not apply. Component Model GC removes that copy — wasmtime
 already has `-W component-model-gc=y` — but until it is stable and arrives in a
 post-0.3 WASI update, the copy stays.
 
+## Case conversion
+
+Case conversion is the clearest instance of the binary-size goal above in
+tension with the Unicode-safety one. Doing it correctly takes data, and on most
+targets that data has to ship in the binary.
+
+### How Unicode defines case
+
+Whether a character is upper- or lowercase and what it converts to are separate
+facts in the Unicode Character Database:
+
+- **Properties.** The general category says whether a letter is uppercase
+  (`Lu`), lowercase (`Ll`) or titlecase (`Lt`, the digraphs `ǅ` `ǈ` `ǋ` `ǲ`).
+  The derived `Lowercase` and `Uppercase` properties add characters that are
+  not letters of those categories but behave like them, such as `ª`, the
+  modifier letter `ʰ` and the circled `Ⓐ`. `Cased` is the union of the three.
+- **Mappings.** `UnicodeData.txt` gives each code point at most one simple
+  upper-, lower- and titlecase mapping. `SpecialCasing.txt` adds the mappings
+  to several code points (`ß` → `SS`, `ﬃ` → `FFI`, `İ` → `i̇`) and the
+  conditional ones: Final_Sigma, and language-specific rules for Turkish,
+  Azeri and Lithuanian.
+
+The two disagree more than one might expect. `ℂ` is uppercase and has no
+lowercase, `ĸ` is lowercase and has no uppercase, and `ß` has an uppercase only
+as two letters. A conversion follows the mappings; the properties matter only
+to Final_Sigma.
+
+Unicode's default case conversion (section 3.13 of the standard) applies the
+full mappings, unconditional and Final_Sigma, and leaves out the
+language-specific ones. That is what JavaScript's `toLowerCase` and
+`toUpperCase` do, and Rust's and Python's. (Java's `toLowerCase()` uses the
+default locale, so it applies the Turkish rules on a Turkish system.)
+
+### What Zena provides
+
+- `toLowerCase()` and `toUpperCase()` apply the default case conversion, with
+  the same result as JavaScript. On the js target they call the host's methods,
+  since the host already carries the data. On the other targets they read
+  tables compiled into the module.
+- `asciiLowerCase()` and `asciiUpperCase()` change only `A`–`Z` and `a`–`z`.
+  They are for text that is ASCII by definition — header names, URL schemes,
+  hexadecimal digits — where Unicode mapping would be wrong as well as
+  costly: `'ﬁle'.toUpperCase()` is `'FILE'`, and a protocol keyword should
+  not be produced by a ligature.
+
+All four return the string itself, without allocating, when nothing changes.
+There are no locale-sensitive or titlecase variants.
+
+### The tables
+
+A generator, `packages/stdlib/scripts/generate-case-tables.js`, reads
+`UnicodeData.txt`, `SpecialCasing.txt` and `DerivedCoreProperties.txt` and
+writes five tables into `core/case-tables.zena`, a file of its own whose
+header describes the encoding. Before writing, it checks every
+code point's mapping against Node's ICU when the Unicode versions match. For
+Unicode 17.0:
+
+| Table                     | Contents                                        | Entries | Bytes |
+| ------------------------- | ----------------------------------------------- | ------- | ----- |
+| `CASE_RANGES`             | One-to-one mappings, as ranges sharing a delta  | 329     | 1,735 |
+| `UPPER_SPECIALS`          | Uppercase mappings to several code points       | 102     | 835   |
+| `LOWER_SPECIALS`          | Lowercase mappings to several code points (`İ`) | 1       | 8     |
+| `CASED`, `CASE_IGNORABLE` | The two properties Final_Sigma reads            | 622     | 1,585 |
+
+A range covers either a run of code points with the same upper and lower
+deltas (`а`–`я` are all 32 below `А`–`Я`) or a run of alternating
+uppercase/lowercase pairs (`Ā ā Ă ă …`), which is how most of Latin Extended
+and Cyrillic is laid out.
+
+Each table is a string literal of printable ASCII: a stream of variable-length
+integers with five payload bits per byte, as the IDNA table in `zena:url` is.
+A string literal is the cheapest constant data a module can hold — it sits
+in a data segment, with no code to construct it — and the streams are under a
+quarter of the size of the decoded tables, 4,163 bytes against 18,512. On the
+first call, a table is decoded into a sorted `FixedArray<i32>` that lookups
+binary-search.
+`packages/stdlib/dev/case-difftest.js` compares both methods with JavaScript
+over every code point and over 20,000 strings built to exercise Final_Sigma.
+
+The lookups are in `core/case-mapping.zena`, which `core/string.zena`
+imports for the two methods. The tables can be string literals in a library
+`String`'s own module depends on because the compiler orders a module with
+string literals after the module declaring `String`, which puts such a
+library on a cycle with it
+([#752](https://github.com/elematic/zena/pull/752)).
+
+### What it costs
+
+`toLowerCase` and `toUpperCase` have separate loops, so a program links only
+the tables of the methods it calls. Over an empty freestanding module at
+`-O2`:
+
+| Calls            | Adds   |
+| ---------------- | ------ |
+| `asciiLowerCase` | 0.6 KB |
+| `toUpperCase`    | 4.6 KB |
+| `toLowerCase`    | 5.8 KB |
+
+About 1.7 KB of `toLowerCase` is Final_Sigma: the `CASED` and
+`CASE_IGNORABLE` tables, which nothing else reads, and the scan around each
+`Σ`. A rule that approximates both properties with the mapping tables would
+save it and differ from JavaScript in rare contexts;
+[#750](https://github.com/elematic/zena/issues/750) measures where. For now
+the methods match JavaScript exactly, so a program gives the same answer on
+every target.
+
+### Case-insensitive comparison
+
+Zena has no case-insensitive comparison yet. Unicode's tool for it is case
+folding (`CaseFolding.txt`), and neither conversion alone is a substitute:
+
+- Comparing lowercase forms treats as different 23 groups of characters that
+  folding treats as equal, among them `s` and `ſ`, `μ` and the micro sign `µ`,
+  `σ` and `ς`, `θ` and `ϑ`. `ß` lowercases to itself and `SS` to `ss`.
+- Comparing uppercase forms treats the Kelvin sign `K` as different from `k`,
+  `Å` from the Ångström sign, and `Ω` from the Ohm sign, and treats dotless `ı`
+  as equal to `i`.
+
+Lowercasing the uppercase form, one code point at a time and so without
+Final_Sigma, gives exactly the equivalence of full case folding on every
+string, with two exceptions to patch: `ẞ` (U+1E9E) must become `ss` rather
+than `ß`, and `ı` must stay `ı`. (Checked by testing, for every code point,
+that each form is a function of the other.) So a comparison needs no tables
+beyond the conversion tables: it reads the three mapping tables, but not
+Final_Sigma's two, and can fold both strings one code point at a time as it
+compares them, without allocating either folded form.
+
 ## Current implementation
 
 ::: warning

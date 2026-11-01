@@ -207,9 +207,26 @@ For cursor-based tokenization, custom parsing, or scanning character by characte
 across safe Unicode boundaries, use [`StringReader`](/api/core/#stringreader)
 from `zena:core`.
 
-### ASCII case conversion
+### Case conversion
 
-The `asciiLowerCase()` and `asciiUpperCase()` methods transform ASCII characters:
+`toLowerCase()` and `toUpperCase()` apply Unicode's default case mappings,
+the same ones JavaScript's methods of those names apply:
+
+```zena
+let greeting = "Grüß Gott";
+let lower = greeting.toLowerCase(); // "grüß gott"
+let upper = greeting.toUpperCase(); // "GRÜSS GOTT"
+```
+
+A character can map to several (`ß` uppercases to `SS`), and a capital
+sigma lowercases to `ς` at the end of a word and to `σ` elsewhere. The
+language-specific mappings, such as Turkish dotless `ı`, are not applied.
+
+On the js target these call the host's methods. On the other targets the
+case tables are compiled into the module, which adds about 5 KB for each of
+the two methods a program uses. When the text is known to be ASCII, such as
+a header name or a hexadecimal digit, `asciiLowerCase()` and
+`asciiUpperCase()` change only `A`–`Z` and `a`–`z` and need no tables:
 
 ```zena
 let title = "Zena Language";
@@ -217,10 +234,7 @@ let lower = title.asciiLowerCase(); // "zena language"
 let upper = title.asciiUpperCase(); // "ZENA LANGUAGE"
 ```
 
-These methods operate strictly on ASCII bytes (`0x41..0x5A` and `0x61..0x7A`).
-Restricting case mapping to ASCII avoids embedding large Unicode case-folding
-tables into WebAssembly binaries. When a string contains no characters that need
-changing, these methods return `this` directly with zero allocations.
+All four return `this`, without allocating, when there is nothing to change.
 
 ## Slices, views, and copies
 
