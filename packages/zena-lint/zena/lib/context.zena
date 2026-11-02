@@ -559,14 +559,19 @@ export final class RuleContext {
           t != null && t is ClassType && t.typeArguments != null
         }
       }
+      // Branches of different types join to the type the context gives
+      // them: `let s: Shape = if (c) new Square() else new Circle()` is
+      // a `Shape`, and without the annotation a `Square | Circle`.
       case IfExpression {consequent, alternate}: {
         this.isContextuallyTyped(consequent) ||
-            (alternate != null && this.isContextuallyTyped(alternate))
+            (alternate != null && (this.isContextuallyTyped(alternate) ||
+                !this.sameType(this.typeOf(consequent), this.typeOf(alternate))))
       }
       case MatchExpression {cases}: {
         var any = false;
         for (let c in cases) {
-          if (this.isContextuallyTyped(c.body)) {
+          if (this.isContextuallyTyped(c.body) ||
+              !this.sameType(this.typeOf(cases[0].body), this.typeOf(c.body))) {
             any = true;
           }
         }
