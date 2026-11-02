@@ -1030,9 +1030,20 @@ What the checker enforces for that half:
   describes, `T` unrestricted where the call is known true, is not
   implemented: no body needs it yet.
 
-Releasing an instance nobody consumed, and a store into a `T` field
-that still holds a value, are left to release glue
-(owner-futures.md): today the old value is not released.
+- **Release.** An instance at an owner that nothing consumes is released
+  where it is dropped, as an owner is, through the class's `[release]`.
+  A class that declares none and holds `T` in its own fields gets one
+  synthesized: it releases what each such field owns, `releaseOwned`
+  style, last field first, recursing into a nested `scoped` instance or
+  a tuple. `Future` declares its own, which defers the release to the
+  settle (owner-futures.md, "Releasing what nobody took"). Only an
+  owner's drop calls it, so the body an `Unmanaged<R>` instantiation
+  shares never releases. A subclass that adds `T` fields under an
+  inherited `[release]` is rejected for now, since that release does
+  not know them and an override has no way to release a `T`.
+
+A store into a `T` field that still holds a value is left to release
+glue (owner-futures.md): today the old value is not released.
 
 Alternatives considered for the spelling: keeping two modifiers with
 `<affine scoped T>` as their composition (the fold above removes the

@@ -1,0 +1,35 @@
+// @mode: run
+// @result: 1
+// A `scoped T` instance at an owner passed as `this` to a parameter of
+// its own type is released once: the callee, the caller's binding and
+// the synthesized `[release]` must not each release the resource.
+import {Own, Disposable, WithDefault, defaultValue} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Slot<scoped T> {
+  var value: WithDefault<T> = defaultValue<T>();
+  put(v: T): void {
+    this.value = v;
+  }
+  hand(): void {
+    sink(this);
+  }
+}
+
+function sink<scoped T>(s: Slot<T>): void {}
+
+export function main(): i32 {
+  if (true) {
+    let a = new Slot<Own<Res>>();
+    a.put(new Res());
+    a.hand();
+  }
+  return released;
+}

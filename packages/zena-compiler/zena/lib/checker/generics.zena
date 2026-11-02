@@ -10,8 +10,8 @@ import {
   U32Type, U64Type, U8Type, UnionType as UnionT, applyTypeIntrinsic,
   inlineOf, instantiateClassType, instantiateFunctionType,
   instantiateInterfaceType, instantiateMixinType, instantiateTypeAliasType,
-  internFunctionType, isOwnershipWrapper, mergeRow, mergeTupleRow,
-  ownershipHandleInner, typeToString
+  internFunctionType, isOwnershipWrapper, mentionsTypeParams, mergeRow,
+  mergeTupleRow, ownershipHandleInner, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
@@ -669,58 +669,6 @@ function satisfiesResourceConstraint(
   }
 
   return isAssignableTo(ctx, t, constraint);
-}
-
-/**
- * Does `t` name any of `params` (by identity)? Asked of a static
- * member's signature, this is what separates the two kinds of static a
- * generic class can declare: one that cannot see the class's type
- * parameters lives on the class itself, one that names them needs them
- * bound at every call.
- */
-export function mentionsTypeParams(t: Type, params: Array<TypeParameterType>): boolean {
-  let anyOf = (types: Array<Type>): boolean => {
-    for (let each in types) {
-      if (mentionsTypeParams(each, params)) { return true; }
-    }
-    return false;
-  };
-  return match (t) {
-    case TypeParameterType as tp: {
-      for (let p in params) {
-        if (p === tp) { return true; }
-      }
-      false
-    }
-    case UnionT {types}: anyOf(types)
-    case ArrayType {elementType}: mentionsTypeParams(elementType, params)
-    case TupleT {elementTypes, row}: (row != null && mentionsTypeParams(row, params)) || anyOf(elementTypes)
-    case InlineTupleT {elementTypes}: anyOf(elementTypes)
-    case RecordT {properties, row}: {
-      if (row != null && mentionsTypeParams(row, params)) { return true; }
-      for (let {key} in properties) {
-        if (mentionsTypeParams(properties[key], params)) { return true; }
-      }
-      false
-    }
-    case FunctionType as ft: {
-      if (mentionsTypeParams(ft.returnType, params)) { return true; }
-      anyOf(ft.parameters)
-    }
-    case ClassType as ct: {
-      if (ct.typeArguments == null) false else anyOf(ct.typeArguments as Array<Type>)
-    }
-    case InterfaceType as it: {
-      if (it.typeArguments == null) false else anyOf(it.typeArguments as Array<Type>)
-    }
-    case MixinType as mt: {
-      if (mt.typeArguments == null) false else anyOf(mt.typeArguments as Array<Type>)
-    }
-    case TypeAliasType as ta: {
-      if (ta.typeArguments == null) false else anyOf(ta.typeArguments as Array<Type>)
-    }
-    case _: false
-  };
 }
 
 /**

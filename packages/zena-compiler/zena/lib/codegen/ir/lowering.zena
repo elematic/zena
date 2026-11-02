@@ -87,7 +87,7 @@ import {
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
   returnMultiThroughFinally,
   collectAffineDropFields, emitMarkDropped, lowerFieldDropRegions,
-  lowerSyntheticDispose, disposeOwnerClasses, emitMaybeDispose, emitDrop, dropPlanOf, emitSlotsDrop,
+  lowerSyntheticRelease, disposeOwnerClasses, emitMaybeDispose, emitDrop, dropPlanOf, emitSlotsDrop,
   lowerLetCondition, lowerMatch, lowerParamDropRegions,
   lowerScopeDropRegion, lowerStatementRange, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
@@ -1097,9 +1097,9 @@ function lowerFunctionOrThrow(wasm: WasmModule, func: WasmFunction): IrBody {
     let lowerer = new FunctionLowerer(wasm, func);
     return lowerer.lowerCaseClassHash();
   }
-  if (func.isSyntheticDispose) {
+  if (func.isSyntheticRelease) {
     let lowerer = new FunctionLowerer(wasm, func);
-    return lowerer.lowerSyntheticDispose();
+    return lowerer.lowerSyntheticRelease();
   }
   // Constructor phases (non-nullable-refs.md, Construction protocol):
   // the value phase and written-body phase of a superclass
@@ -1951,9 +1951,9 @@ export final class FunctionLowerer {
     return lowerValueHashFunction(this.#cx());
   }
 
-  /** Synthesized resource `:dispose` (see ir/control-flow.zena). */
-  lowerSyntheticDispose(): IrBody {
-    return lowerSyntheticDispose(this.#cx());
+  /** A synthesized release member (see ir/control-flow.zena). */
+  lowerSyntheticRelease(): IrBody {
+    return lowerSyntheticRelease(this.#cx());
   }
 
   /** Synthesized case-class hashCode (see ir/equality.zena). */

@@ -11,7 +11,8 @@ import {
   MixinType, ReceiverKind, Type, TypeParameterType, VoidType,
   instantiateClassType, isScopedType, ownershipHandleInner,
   ownershipHandleName, requiredParameterCount, scopedInner,
-  soleNonNullMember, typeCarriesOwner, typeToString
+  mentionsTypeParams, scopedFieldNames, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner,
+  typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
@@ -23,7 +24,7 @@ import { BodyContext, CheckerContext } from './context.zena';
 import { validateFunctionDecorators } from './declarations.zena';
 import { checkExpression } from './expressions.zena';
 import {
-  mentionsTypeParams, rejectClassTypeParamsInStatic, selfTypeOfClass, substituteThisType, substituteTypeParams
+  rejectClassTypeParamsInStatic, selfTypeOfClass, substituteThisType, substituteTypeParams
 } from './generics.zena';
 import {
   displayMemberName, getMemberName, recordSymbolKeyedMemberIdentities,
@@ -37,7 +38,7 @@ import {
   checkBorrowDerivation, checkReceiverDeclaration, declaresOwningReceiver,
   ownedResourceClasses, owningReceiverSymbol, recordArgumentMove,
   registerOwnParamCandidates, registerReceiverCandidate, rejectFieldStorage,
-  rejectGeneratorBorrowParams, scopedTypeParamsOf
+  rejectGeneratorBorrowParams
 } from './ownership.zena';
 import { bindPattern } from './patterns.zena';
 import {
@@ -1867,6 +1868,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
     }
   }
 
+  synthesizeScopedRelease(ctx, cd, classType);
+
   // Every member is registered by now, so each symbol-keyed one can be
   // given the identity of the symbol that named it — and a key that names
   // no symbol is reported.
@@ -1875,6 +1878,39 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
 
   ctx.exitClass();
   ctx.exitScope();
+}
+
+/**
+ * A `scoped T` class that holds `T` in its fields releases what they
+ * hold when an instance at an owner is dropped (owner-futures.md,
+ * "Releasing what nobody took"). One that declares no `[release]` gets
+ * one here, at registration, so every drop site checked later finds
+ * it; lowering releases the fields as its whole body.
+ */
+function synthesizeScopedRelease(ctx: CheckerContext, cd: ClassDeclaration,
+    classType: ClassType): void {
+  if (cd.isResource || scopedFieldNames(classType).length == 0) {
+    return;
+  }
+  for (let member in cd.body) {
+    if (member is MethodDefinition && getMemberName(ctx, member.name) == ":release") {
+      return;
+    }
+  }
+  if (classType.members.has(":release")) {
+    // The inherited release does not know these fields, and an
+    // override cannot release a `T` itself (`releaseOwned` is private
+    // to zena:async).
+    ctx.error(
+      `Class '${cd.name.name}' holds its 'scoped' type parameter in fields and inherits '[release]', which does not release them. A subclass cannot add such fields yet.`,
+      DiagnosticCode.IncompatibleTypes,
+      cd.loc
+    );
+    return;
+  }
+  let rt = new FunctionType(new Array<Type>(), new VoidType(), new FunctionDeclInfo(new Array<String>()));
+  classType.members[":release"] = new MethodInfo(rt);
+  classType.hasSyntheticRelease = true;
 }
 
 /**
@@ -2419,7 +2455,7 @@ export function checkClassBodies(
       let dm = new MethodInfo(dt);
       dm.receiverKind = ReceiverKind.Owning;
       classType.members[":dispose"] = dm;
-      classType.hasSyntheticDispose = true;
+      classType.hasSyntheticRelease = true;
     }
   }
 

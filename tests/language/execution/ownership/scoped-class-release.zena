@@ -1,0 +1,102 @@
+// @mode: run
+// @result: 7
+// An instance of a `scoped T` class at an owner that nothing consumes is
+// released where it is dropped, as an owner is: its synthesized
+// `[release]` releases what each field holding `T` owns
+// (owner-futures.md, "Releasing what nobody took").
+import {Own, Disposable, WithDefault, defaultValue} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+}
+
+class Holder<scoped T> {
+  value: T;
+  new(this.value);
+}
+
+class Two<scoped T> {
+  first: T;
+  second: T;
+  new(this.first, this.second);
+}
+
+class Outer<scoped T> {
+  var #inner: Slot<T> | null = null;
+  fill(inner: Slot<T>): void {
+    this.#inner = inner;
+  }
+}
+
+function full(): void {
+  let s = new Slot<Own<Res>>();
+  s.put(new Res());
+}
+
+function empty(): void {
+  let s = new Slot<Own<Res>>();
+}
+
+function holder(): void {
+  let h = new Holder<Own<Res>>(new Res());
+}
+
+function two(): void {
+  let t = new Two<Own<Res>>(new Res(), new Res());
+}
+
+function nested(): void {
+  let inner = new Slot<Own<Res>>();
+  inner.put(new Res());
+  let o = new Outer<Own<Res>>();
+  o.fill(inner);
+}
+
+function sink(s: Slot<Own<Res>>): void {}
+
+function moved(): void {
+  let s = new Slot<Own<Res>>();
+  s.put(new Res());
+  sink(s);
+}
+
+function make(): Slot<Own<Res>> {
+  let s = new Slot<Own<Res>>();
+  s.put(new Res());
+  return s;
+}
+
+function plain(): i32 {
+  let s = new Slot<String>();
+  s.put('a');
+  return 0;
+}
+
+export function main(): i32 {
+  full();
+  if (released != 1) { return 100 + released; }
+  empty();
+  if (released != 1) { return 200 + released; }
+  holder();
+  if (released != 2) { return 300 + released; }
+  two();
+  if (released != 4) { return 400 + released; }
+  nested();
+  if (released != 5) { return 500 + released; }
+  moved();
+  if (released != 6) { return 600 + released; }
+  make();
+  if (released != 7) { return 700 + released; }
+  return released + plain();
+}

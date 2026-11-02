@@ -11,13 +11,13 @@ import {
   TypeAnnotation, VariableDeclaration, getMemberPropertyName
 } from '../ast.zena';
 import {
-  ArrayType, ClassType, ErrorType, FieldInfo, InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType, ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, instantiateTypeAliasType, isAffineContainer, isOwnershipWrapper, isScopedClassParam, isScopedType, ownershipHandleInner, ownershipHandleName, releasableFuture, soleNonNullMember, typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped, typeContainsSecondClass, typeToString
+  ArrayType, ClassType, ErrorType, FieldInfo, InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType, ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, instantiateTypeAliasType, isAffineContainer, isOwnershipWrapper, isScopedClassParam, isScopedType, mentionsTypeParams, ownershipHandleInner, ownershipHandleName, releasableContainer, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped, typeContainsSecondClass, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
 import { WellKnown } from '../well-known.zena';
 import { CheckerContext } from './context.zena';
-import { mentionsTypeParams, selfTypeOfClass } from './generics.zena';
+import { selfTypeOfClass } from './generics.zena';
 import { displayMemberName } from './members.zena';
 import { getMemberPathKey } from './narrowing.zena';
 import {
@@ -336,18 +336,6 @@ export function rejectSecondClassStorage(
     DiagnosticCode.TypeMismatch,
     loc
   );
-}
-
-/** The type parameters `ct` declares `scoped`. */
-export function scopedTypeParamsOf(ct: ClassType): Array<TypeParameterType> {
-  let scoped = new GrowableArray<TypeParameterType>();
-  let params = ct.typeParameters;
-  if (params != null) {
-    for (let p in params) {
-      if (p.isScoped) { scoped.push(p); }
-    }
-  }
-  return scoped;
 }
 
 /**
@@ -1182,20 +1170,24 @@ function collectOwnedResources(t: Type, result: GrowableArray<ClassType>): boole
     }
     return true;
   }
-  // A future of an owner is released through the future: its
-  // `[release]` takes the value when it lands and releases what it
-  // holds (owner-futures.md, "Releasing what nobody took"). The
-  // future's class stands in the list for that call, and the owners
-  // in its value are listed too, so their `:dispose` is rooted.
-  let releasable = releasableFuture(handleType);
-  if (releasable != null) {
-    let fut = releasable as ClassType;
-    if (!result.contains(fut)) {
-      result.push(fut);
+  // A `scoped T` container of an owner is released through its
+  // `[release]`: a future's takes the value when it lands
+  // (owner-futures.md, "Releasing what nobody took"), a synthesized one
+  // releases its `T` fields. The container's class stands in the list
+  // for that call, and the owners its arguments hold are listed too, so
+  // their `:dispose` is rooted.
+  let container = releasableContainer(handleType);
+  if (container != null) {
+    if (!result.contains(container)) {
+      result.push(container);
     }
-    let args = fut.typeArguments;
-    if (args != null && args.length == 1) {
-      collectOwnedResources(args[0], result);
+    let args = container.typeArguments;
+    if (args != null) {
+      for (var i = 0; i < args.length; i += 1) {
+        if (isScopedClassParam(container, i)) {
+          collectOwnedResources(args[i], result);
+        }
+      }
     }
     return true;
   }
