@@ -1230,7 +1230,7 @@ export final class CheckerContext {
         let resolvedList = new Array<FunctionType>();
         for (let ovNode in overloads) {
           if (ovNode is FunctionExpression) {
-            let ovFe = ovNode as FunctionExpression;
+            let ovFe = ovNode;
             let ovType = if (ovFe.returnType != null) {
               this.resolveFunctionFromAnnotations(
                   ovFe.typeParameters, ovFe.params, ovFe.returnType as TypeAnnotation, si)
@@ -1337,7 +1337,7 @@ export final class CheckerContext {
     for (let param in params) {
       paramNames.push(param.name.name);
       let {typeAnnotation} = param;
-      var paramType = if (typeAnnotation != null) {
+      let paramType = if (typeAnnotation != null) {
         resolveTypeAnnotation(this, typeAnnotation, false)
       } else {
         new ErrorType() as Type
@@ -1531,10 +1531,7 @@ export final class CheckerContext {
    */
   resolveTypeName(name: String): Type | null {
     let localType = this.#materializeFromScope(name);
-    if (localType != null) {
-      return localType;
-    }
-    return this.#resolveBuiltinOrPreludeType(name);
+    return localType ?? this.#resolveBuiltinOrPreludeType(name);
   }
 
   /**
@@ -2764,7 +2761,7 @@ export final class CheckerContext {
           "path before its scope exits: await it, or move it. A scoped " +
           "value has no release glue to fall back on.",
           DiagnosticCode.UseAfterMove,
-          if (loc != null) loc else c.node.loc
+          loc ?? c.node.loc
         );
       }
     }
@@ -3473,8 +3470,8 @@ export final class CheckerContext {
             } else if (first == null) {
               first = r;
             } else if (results == null) {
-              if (!typesEqual(first as Type, r)) {
-                let list = growable<Type>([first as Type, r]);
+              if (!typesEqual(first, r)) {
+                let list = growable<Type>([first, r]);
                 results = list;
               }
             } else {

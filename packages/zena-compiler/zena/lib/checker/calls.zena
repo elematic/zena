@@ -108,13 +108,13 @@ export function checkNewExpression(
       var ctorType: FunctionType | null = null;
       var ctorMethodRef = "<constructor>";
       if (ctorName != null) {
-        let name = ctorName as String;
+        let name = ctorName;
         ctorMethodRef = "<constructor>." + name;
         // Check private constructor access
         if (name.length > 0 && name.sliceBytes(0, 1) == "#") {
           let cur = ctx.currentClass;
           let isInside = if (cur != null) {
-            (cur as ClassType).canonical() == ct.canonical()
+            cur.canonical() == ct.canonical()
           } else {
             false
           };
@@ -197,10 +197,10 @@ export function checkNewExpression(
       } else {
         null
       };
-      let ctorKey = if (ctorName != null) { ctorName as String } else { "<constructor>" };
+      let ctorKey = ctorName ?? "<constructor>";
       if (!it.constructors.has(ctorKey)) {
         if (ctorName != null) {
-          let missing = ctorName as String;
+          let missing = ctorName;
           ctx.error(
             `Constructor '${missing}' not found on interface '${it.name}'.`,
             DiagnosticCode.SymbolNotFound,
@@ -391,7 +391,7 @@ function checkConstructorArguments(
  * a cancellation that nothing can raise is dead code to elide, not a
  * reason to emit the machinery.
  */
-function noteCancellationCause(ctx: CheckerContext, call: CallExpression): void {
+function noteCancellationCause(ctx: CheckerContext, call: CallExpression) {
   let deps = ctx.currentDependencies();
   if (deps == null || deps.causesCancellation) {
     return;
@@ -839,11 +839,7 @@ function checkCallExpressionInner(
         if (j < declaredParams.length && scopedElementsExpected(declaredParams[j])) {
           ctx.scopedArgument = args[j];
         }
-        let argType = if (roundTwoType != null) {
-          roundTwoType
-        } else {
-          checkExpression(ctx, args[j], expectedParamType)
-        };
+        let argType = roundTwoType ?? checkExpression(ctx, args[j], expectedParamType);
         ctx.scopedArgument = outerScopedArgument;
         if (!isAssignableTo(ctx, argType, expectedParamType)) {
           ctx.error(

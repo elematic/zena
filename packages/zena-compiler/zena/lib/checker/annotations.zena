@@ -351,7 +351,7 @@ export function resolveBound(ctx: CheckerContext, ann: TypeAnnotation): Type | n
   return resolveTypeAnnotation(ctx, ann, false);
 }
 
-function reportRepeatedRecordField(ctx: CheckerContext, name: String, loc: SourceLocation | null): void {
+function reportRepeatedRecordField(ctx: CheckerContext, name: String, loc: SourceLocation | null) {
   ctx.error(`Record type declares field '${name}' more than once.`, DiagnosticCode.DuplicateField, loc);
 }
 
@@ -360,17 +360,17 @@ export function reportTwoRows(ctx: CheckerContext, loc: SourceLocation | null): 
       DiagnosticCode.TypeMismatch, loc);
 }
 
-function reportTwoTupleRows(ctx: CheckerContext, loc: SourceLocation | null): void {
+function reportTwoTupleRows(ctx: CheckerContext, loc: SourceLocation | null) {
   ctx.error("A tuple type can spread at most one row type parameter.",
       DiagnosticCode.TypeMismatch, loc);
 }
 
-function reportNotTupleSpreadable(ctx: CheckerContext, t: Type, loc: SourceLocation | null): void {
+function reportNotTupleSpreadable(ctx: CheckerContext, t: Type, loc: SourceLocation | null) {
   ctx.error(`Cannot spread '${typeToString(t)}' into a tuple type: only a tuple type or a type parameter declared 'extends tuple' can be spread.`,
       DiagnosticCode.TypeMismatch, loc);
 }
 
-function reportNotSpreadable(ctx: CheckerContext, t: Type, loc: SourceLocation | null): void {
+function reportNotSpreadable(ctx: CheckerContext, t: Type, loc: SourceLocation | null) {
   ctx.error(`Cannot spread '${typeToString(t)}' into a record type: only a record type or a type parameter declared 'extends record' can be spread.`,
       DiagnosticCode.TypeMismatch, loc);
 }
@@ -426,7 +426,7 @@ export function isInRowSignature(ctx: CheckerContext, node: Node, decl: TypePara
   var child = node;
   var parent = ctx.model.getParent(node);
   while (parent != null) {
-    let p = parent as Node;
+    let p = parent;
     if (isBodyOf(p, child)) {
       return false;
     }
@@ -586,7 +586,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
     // to a user generic does not name a slot. See
     // docs/design/array-mutability.md.
     if (elementsMutable &&
-        !(resolved is ArrayType && (resolved as ArrayType).elementType is TypeParameterType)) {
+        !(resolved is ArrayType && resolved.elementType is TypeParameterType)) {
       ctx.error(
         "The 'var' element modifier only applies to the builtin 'array' type constructor.",
         DiagnosticCode.TypeMismatch,
@@ -967,9 +967,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
   }
   case ThisTypeAnnotation {loc}: {
     let bound = ctx.bodyThisType;
-    if (bound != null) {
-      bound
-    } else if (ctx.currentClass != null || ctx.inInterface) {
+    bound ?? if (ctx.currentClass != null || ctx.inInterface) {
       new ThisType()
     } else {
       ctx.error(

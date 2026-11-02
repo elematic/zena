@@ -13,6 +13,7 @@ import { tryInstantiateGenericFunction } from './generics.zena';
 import { recordUnionMembersOf } from './members.zena';
 import { isAssignableTo, typesEqual } from './relations.zena';
 import { isNullableType, subtractNullFromType, unwrapAliases } from './unions.zena';
+import { growable } from 'zena:core';
 
 /**
  * Notes the record types `source` brings into a slot of type `target`
@@ -23,7 +24,7 @@ import { isNullableType, subtractNullFromType, unwrapAliases } from './unions.ze
  * such a slot too: its `==` compares the records it holds the same way.
  * A type parameter is not: its code is specialized per argument.
  */
-function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type): void {
+function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type) {
   let targetBase = baseType(subtractNullFromType(target));
   if (targetBase is RecordT) {
     let targetRecord = targetBase;
@@ -102,9 +103,8 @@ export function boxForTemplateValue(ctx: CheckerContext, primitive: Type, valueT
   if (boxGeneric == null || !(boxGeneric is ClassType)) {
     return null;
   }
-  let generic = boxGeneric as ClassType;
-  let args = new Array<Type>();
-  args.push(base);
+  let generic = boxGeneric;
+  let args = growable<Type>([base]);
   let boxed = instantiateClassType(generic, args);
   if (!isAssignableTo(ctx, boxed, valueType)) {
     return null;

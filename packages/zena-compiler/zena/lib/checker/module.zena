@@ -34,7 +34,7 @@ import { checkStatement } from './statements.zena';
 /**
  * Register internal compiler intrinsics that are not defined in stdlib source.
  */
-function registerCompilerIntrinsics(ctx: CheckerContext): void {
+function registerCompilerIntrinsics(ctx: CheckerContext) {
   // Builtin types
   ctx.registerPreludeType("anyref", new AnyRefType());
   ctx.registerPreludeType("externref", new ExternRefType());
@@ -174,7 +174,7 @@ function collectPatternSymbols(ctx: CheckerContext, pattern: Pattern, symbols: G
     }
     case RestPattern {pattern}: {
       if (pattern is Pattern) {
-        collectPatternSymbols(ctx, pattern as Pattern, symbols);
+        collectPatternSymbols(ctx, pattern, symbols);
       }
     }
     case AsPattern {pattern as inner, name}: {
@@ -338,7 +338,7 @@ export final class ModuleCheck {
 function checkTopLevelStatement(
     ctx: CheckerContext,
     stmt: Statement,
-    deferred: DeferredModule | null = null): void {
+    deferred: DeferredModule | null = null) {
   match (stmt) {
     case ClassDeclaration as cd: { checkClassBodies(ctx, cd, deferred); }
     case InterfaceDeclaration as id: { checkInterfaceConstructorBodies(ctx, id); }
@@ -354,7 +354,7 @@ function checkTopLevelStatement(
     case FunctionDeclaration as fd: {
       let sym = ctx.model.resolveDeclaration(fd.name as Node);
       if (deferred != null) {
-        let d = deferred as DeferredModule;
+        let d = deferred;
         if (sym != null) { d.addGlobal(sym.id, stmt); }
         d.addGlobalNode(fd.func as Node, stmt);
         resolveDeferredSignature(ctx, fd.func, sym);
@@ -379,10 +379,10 @@ function checkTopLevelStatement(
       // expression that gives it that type is not what this is trying
       // to avoid.
       if (deferred != null && init is FunctionExpression) {
-        let d = deferred as DeferredModule;
+        let d = deferred;
         for (let s in syms) { d.addGlobal(s.id, stmt); }
         d.addGlobalNode(init as Node, stmt);
-        resolveDeferredSignature(ctx, init as FunctionExpression,
+        resolveDeferredSignature(ctx, init,
             if (syms.length > 0) syms[0] else null);
         return;
       }
@@ -551,7 +551,7 @@ export function beginModule(
   priorModel: SemanticModel | null = null,
   deferBodies: boolean = false
 ): ModuleCheck {
-  let state = if (sharedState != null) sharedState else new SharedCheckerState();
+  let state = sharedState ?? new SharedCheckerState();
   // A member table substitutes a parent's type arguments into the members
   // it reads through that parent with the checker's own substitution.
   setMemberTypeSubstitution(substituteTypeParams);
