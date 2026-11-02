@@ -274,19 +274,16 @@ export function prescanPendingFunctions(ctx: CheckerContext, body: GrowableArray
   for (let statement in body) {
     match (statement) {
       case VariableDeclaration {pattern, init}: {
-        match (pattern) {
-          case IdentifierPattern as pat: {
-            match (init) {
-              case FunctionExpression as fe: {
-                let info = ctx.model.resolveDeclaration(pat);
-                if (info != null) {
-                  ctx.registerPendingFunction(info.id, fe as Node);
-                }
+        if (pattern is IdentifierPattern) {
+          match (init) {
+            case FunctionExpression as fe: {
+              let info = ctx.model.resolveDeclaration(pattern);
+              if (info != null) {
+                ctx.registerPendingFunction(info.id, fe as Node);
               }
-              case _: {}
             }
+            case _: {}
           }
-          case _: {}
         }
       }
       case FunctionDeclaration {name as namePat, func}: {
@@ -470,13 +467,10 @@ export final class DeferredModule implements DeferredBodies {
     this.#memberClasses[id] = cd;
     this.#memberNodes[id] = member;
     if (let AccessorDeclaration {setter} = member) {
-      match (setter) {
-        case SetterInfo as si: {
-          let sid = si.id as i32;
-          this.#memberClasses[sid] = cd;
-          this.#memberNodes[sid] = member;
-        }
-        case _: {}
+      if (setter is SetterInfo) {
+        let sid = setter.id as i32;
+        this.#memberClasses[sid] = cd;
+        this.#memberNodes[sid] = member;
       }
     }
   }

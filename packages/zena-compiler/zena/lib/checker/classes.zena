@@ -618,10 +618,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
   var classType = new ClassType(ctx.freshTypeId(), noSymbolId, className);
   let preRegistered = ctx.declaredTypeOf(cd);
   if (preRegistered != null) {
-    match (preRegistered) {
-      case ClassType as existing: { classType = existing; }
-      case _: {}
-    }
+    if (preRegistered is ClassType) { classType = preRegistered; }
   }
 
   // Record the declaring file for cross-module goto-definition.
@@ -863,11 +860,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
     let implList = implementsList;
     for (let ifaceAnn in implList) {
       let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
-      match (ifaceType) {
-        case InterfaceType as iface: {
-          classType.implementsList.push(iface);
-        }
-        case _: {}
+      if (ifaceType is InterfaceType) {
+        classType.implementsList.push(ifaceType);
       }
     }
   }
@@ -1361,43 +1355,40 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             let superMembers = superCt.memberTable(md.isStatic);
             if (superMembers.has(methodName)) {
               let inheritedMethod = superMembers[methodName];
-              match (inheritedMethod) {
-                case MethodInfo as mi: {
-                  if (mi.isFinal) {
-                    ctx.error(
-                      `Cannot override final method '${displayMemberName(methodName)}'.`,
-                      DiagnosticCode.IncompatibleTypes,
-                      md.loc
-                    );
-                  }
-                  // The receiver is part of the signature, so an override may
-                  // not change it. A caller working through the base type
-                  // would otherwise move a receiver the override only
-                  // borrows, or borrow one it moves — and which happened
-                  // would depend on the static type at the call.
-                  if (receiverKind != ReceiverKind.Invalid &&
-                      mi.consumesReceiver() != consumesReceiver) {
-                    let inherited = if (mi.consumesReceiver()) {
-                      "consumes its receiver"
-                    } else {
-                      "borrows its receiver"
-                    };
-                    let here = if (consumesReceiver) {
-                      "consumes it"
-                    } else {
-                      "borrows it"
-                    };
-                    ctx.error(
-                      "'" + displayMemberName(methodName) + "' " + inherited + " in '" + superCt.name +
-                      "', and this override " + here + ". A receiver is part of the " +
-                      "signature: a call through '" + superCt.name + "' must do the same " +
-                      "thing to the object whichever override it reaches.",
-                      DiagnosticCode.IncompatibleTypes,
-                      md.loc
-                    );
-                  }
+              if (inheritedMethod is MethodInfo) {
+                if (inheritedMethod.isFinal) {
+                  ctx.error(
+                    `Cannot override final method '${displayMemberName(methodName)}'.`,
+                    DiagnosticCode.IncompatibleTypes,
+                    md.loc
+                  );
                 }
-                case _: {}
+                // The receiver is part of the signature, so an override may
+                // not change it. A caller working through the base type
+                // would otherwise move a receiver the override only
+                // borrows, or borrow one it moves — and which happened
+                // would depend on the static type at the call.
+                if (receiverKind != ReceiverKind.Invalid &&
+                    inheritedMethod.consumesReceiver() != consumesReceiver) {
+                  let inherited = if (inheritedMethod.consumesReceiver()) {
+                    "consumes its receiver"
+                  } else {
+                    "borrows its receiver"
+                  };
+                  let here = if (consumesReceiver) {
+                    "consumes it"
+                  } else {
+                    "borrows it"
+                  };
+                  ctx.error(
+                    "'" + displayMemberName(methodName) + "' " + inherited + " in '" + superCt.name +
+                    "', and this override " + here + ". A receiver is part of the " +
+                    "signature: a call through '" + superCt.name + "' must do the same " +
+                    "thing to the object whichever override it reaches.",
+                    DiagnosticCode.IncompatibleTypes,
+                    md.loc
+                  );
+                }
               }
             }
           }
@@ -1570,17 +1561,14 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             let superMembers = superCt.memberTable(acc.isStatic);
             if (superMembers.has(getterName)) {
               let superMethod = superMembers[getterName];
-              match (superMethod) {
-                case MethodInfo as mi: {
-                  if (mi.isFinal) {
-                    ctx.error(
-                      `Cannot override final method '${displayMemberName(getterName)}'.`,
-                      DiagnosticCode.IncompatibleTypes,
-                      acc.loc
-                    );
-                  }
+              if (superMethod is MethodInfo) {
+                if (superMethod.isFinal) {
+                  ctx.error(
+                    `Cannot override final method '${displayMemberName(getterName)}'.`,
+                    DiagnosticCode.IncompatibleTypes,
+                    acc.loc
+                  );
                 }
-                case _: {}
               }
             }
           }
@@ -1605,17 +1593,14 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             let superMembers = superCt.memberTable(acc.isStatic);
             if (superMembers.has(setterName)) {
               let superMethod = superMembers[setterName];
-              match (superMethod) {
-                case MethodInfo as mi: {
-                  if (mi.isFinal) {
-                    ctx.error(
-                      `Cannot override final method '${displayMemberName(setterName)}'.`,
-                      DiagnosticCode.IncompatibleTypes,
-                      acc.loc
-                    );
-                  }
+              if (superMethod is MethodInfo) {
+                if (superMethod.isFinal) {
+                  ctx.error(
+                    `Cannot override final method '${displayMemberName(setterName)}'.`,
+                    DiagnosticCode.IncompatibleTypes,
+                    acc.loc
+                  );
                 }
-                case _: {}
               }
             }
           }
@@ -2022,10 +2007,7 @@ function classTypeOfDeclaration(ctx: CheckerContext, cd: ClassDeclaration) {
   let className = cd.name.name;
   let resolved = ctx.declaredTypeOf(cd);
   if (resolved != null) {
-    match (resolved) {
-      case ClassType as ct: { return ct; }
-      case _: {}
-    }
+    if (resolved is ClassType) { return resolved; }
   }
   return new ClassType(ctx.freshTypeId(), noSymbolId, className);
 }
@@ -2218,16 +2200,13 @@ export function checkClassBodies(
   let instanceFieldOrder = new Array<String>();
   let staticFieldOrder = new Array<String>();
   for (let bodyMember in cd.body) {
-    match (bodyMember) {
-      case FieldDefinition as fd: {
-        let fn = getMemberName(ctx, fd.name);
-        if (fd.isStatic) {
-          staticFieldOrder.push(fn);
-        } else {
-          instanceFieldOrder.push(fn);
-        }
+    if (bodyMember is FieldDefinition) {
+      let fn = getMemberName(ctx, bodyMember.name);
+      if (bodyMember.isStatic) {
+        staticFieldOrder.push(fn);
+      } else {
+        instanceFieldOrder.push(fn);
       }
-      case _: {}
     }
   }
 
@@ -2278,81 +2257,78 @@ export function checkClassBodies(
     let implList = implementsList;
     for (let ifaceAnn in implList) {
       let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
-      match (ifaceType) {
-        case InterfaceType as iface: {
-          // Check all interface methods are implemented.
-          for (let methodName in iface.members.keys()) {
-            let ifaceMethodInfo = iface.members[methodName];
-            if (ifaceMethodInfo is MethodInfo) {
-              let ifaceMethod = ifaceMethodInfo.type;
-              if (classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
-                let classMethodInfo = classType.members[methodName];
-                let classMethod = classMethodInfo.type;
-                // Check signature compatibility.
-                let expectedMethodType0 = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
-                
-                var receiverType = classType as Type;
-                let tParams = classType.typeParameters;
-                if (tParams != null) {
-                  if (tParams.length > 0) {
-                    let typeArgs = new Array<Type>();
-                    for (let tp in tParams) { typeArgs.push(tp as Type); }
-                    receiverType = instantiateClassType(classType, typeArgs) as Type;
-                  }
+      if (ifaceType is InterfaceType) {
+        // Check all interface methods are implemented.
+        for (let methodName in ifaceType.members.keys()) {
+          let ifaceMethodInfo = ifaceType.members[methodName];
+          if (ifaceMethodInfo is MethodInfo) {
+            let ifaceMethod = ifaceMethodInfo.type;
+            if (classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
+              let classMethodInfo = classType.members[methodName];
+              let classMethod = classMethodInfo.type;
+              // Check signature compatibility.
+              let expectedMethodType0 = substituteTypeParams(ifaceType.typeParameters, ifaceType.typeArguments, ifaceMethod);
+              
+              var receiverType = classType as Type;
+              let tParams = classType.typeParameters;
+              if (tParams != null) {
+                if (tParams.length > 0) {
+                  let typeArgs = new Array<Type>();
+                  for (let tp in tParams) { typeArgs.push(tp as Type); }
+                  receiverType = instantiateClassType(classType, typeArgs) as Type;
                 }
-                
-                let expectedMethodType = substituteThisType(receiverType, expectedMethodType0);
-                // Every signature the interface declares under this name
-                // needs a class method assignable to it, from any of the
-                // class's overloads.
-                let classSignatures = functionSignatures(classMethod);
-                let expectedSignatures = functionSignatures(expectedMethodType);
-                for (let expected in expectedSignatures) {
-                  if (classSignatures.some((candidate) => isAssignableTo(ctx, candidate, expected))) {
-                    continue;
-                  }
-                  let method = `Class '${className}' incorrectly implements interface '${iface.name}': Method '${displayMemberName(methodName)}'`;
-                  let message = if (expectedSignatures.length == 1) {
-                    `${method} is type '${typeToString(classMethod)}' but expected '${typeToString(expected)}'.`
-                  } else {
-                    `${method} has no overload of type '${typeToString(expected)}'.`
-                  };
-                  ctx.error(message, DiagnosticCode.IncompatibleTypes, cd.loc);
+              }
+              
+              let expectedMethodType = substituteThisType(receiverType, expectedMethodType0);
+              // Every signature the interface declares under this name
+              // needs a class method assignable to it, from any of the
+              // class's overloads.
+              let classSignatures = functionSignatures(classMethod);
+              let expectedSignatures = functionSignatures(expectedMethodType);
+              for (let expected in expectedSignatures) {
+                if (classSignatures.some((candidate) => isAssignableTo(ctx, candidate, expected))) {
+                  continue;
                 }
-              } else if (methodName.startsWith("get#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
-                // A field can satisfy a getter interface method.
-              } else if (methodName.startsWith("set#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
-                // A field can satisfy a setter interface method.
-              } else {
-                ctx.error(
-                  "Class '" + className + "' incorrectly implements interface '" + iface.name +
-                  "': Method '" + displayMemberName(methodName) + "' is missing.",
-                  DiagnosticCode.IncompatibleTypes,
-                  cd.loc
-                );
+                let method = `Class '${className}' incorrectly implements interface '${ifaceType.name}': Method '${displayMemberName(methodName)}'`;
+                let message = if (expectedSignatures.length == 1) {
+                  `${method} is type '${typeToString(classMethod)}' but expected '${typeToString(expected)}'.`
+                } else {
+                  `${method} has no overload of type '${typeToString(expected)}'.`
+                };
+                ctx.error(message, DiagnosticCode.IncompatibleTypes, cd.loc);
               }
-            }
-          }
-          // Check all interface fields are implemented.
-          for (let fieldName in iface.members.keys()) {
-            let ifaceFieldInfo = iface.members[fieldName];
-            if (ifaceFieldInfo is FieldInfo) {
-              // Interface field requires at least a getter.
-              let getterName = "get#" + fieldName;
-              let hasField = classType.members.has(fieldName) && classType.members[fieldName] is FieldInfo;
-              let hasGetter = classType.members.has(getterName) && classType.members[getterName] is MethodInfo;
-              if (!hasField && !hasGetter) {
-                ctx.error(
-                  "Class '" + className + "' incorrectly implements interface '" + iface.name +
-                  "': Getter for '" + displayMemberName(fieldName) + "' is missing.",
-                  DiagnosticCode.IncompatibleTypes,
-                  cd.loc
-                );
-              }
+            } else if (methodName.startsWith("get#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
+              // A field can satisfy a getter interface method.
+            } else if (methodName.startsWith("set#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
+              // A field can satisfy a setter interface method.
+            } else {
+              ctx.error(
+                "Class '" + className + "' incorrectly implements interface '" + ifaceType.name +
+                "': Method '" + displayMemberName(methodName) + "' is missing.",
+                DiagnosticCode.IncompatibleTypes,
+                cd.loc
+              );
             }
           }
         }
-        case _: {}
+        // Check all interface fields are implemented.
+        for (let fieldName in ifaceType.members.keys()) {
+          let ifaceFieldInfo = ifaceType.members[fieldName];
+          if (ifaceFieldInfo is FieldInfo) {
+            // Interface field requires at least a getter.
+            let getterName = "get#" + fieldName;
+            let hasField = classType.members.has(fieldName) && classType.members[fieldName] is FieldInfo;
+            let hasGetter = classType.members.has(getterName) && classType.members[getterName] is MethodInfo;
+            if (!hasField && !hasGetter) {
+              ctx.error(
+                "Class '" + className + "' incorrectly implements interface '" + ifaceType.name +
+                "': Getter for '" + displayMemberName(fieldName) + "' is missing.",
+                DiagnosticCode.IncompatibleTypes,
+                cd.loc
+              );
+            }
+          }
+        }
       }
     }
   }

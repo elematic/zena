@@ -288,10 +288,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
   var mixinType = new MixinType(mixinName);
   let preRegistered = ctx.declaredTypeOf(md);
   if (preRegistered != null) {
-    match (preRegistered) {
-      case MixinType as existing: { mixinType = existing; }
-      case _: {}
-    }
+    if (preRegistered is MixinType) { mixinType = preRegistered; }
   }
 
   // Record the declaring file for cross-module lookup and reachability.
@@ -785,10 +782,7 @@ export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDecl
   var ifaceType = new InterfaceType(ctx.freshTypeId(), noSymbolId, ifaceName);
   let preRegistered = ctx.declaredTypeOf(id);
   if (preRegistered != null) {
-    match (preRegistered) {
-      case InterfaceType as existing: { ifaceType = existing; }
-      case _: {}
-    }
+    if (preRegistered is InterfaceType) { ifaceType = preRegistered; }
   }
 
   ifaceType.sourcePath = ctx.filePath;
@@ -811,24 +805,21 @@ export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDecl
     let extends_ = extendsList;
     for (let currentExtends in extends_) {
       let parentType = resolveTypeAnnotation(ctx, currentExtends);
-      match (parentType) {
-        case InterfaceType as pt: {
-          // Registration can run twice on one canonical object (a
-          // member of an import cycle registers again once every
-          // member has); the parents list is shared with the
-          // interface's instantiations, so it is deduplicated rather
-          // than replaced.
-          var alreadyListed = false;
-          for (let listed in ifaceType.extendsList) {
-            if (listed === pt) { alreadyListed = true; }
-          }
-          if (!alreadyListed) {
-            ifaceType.extendsList.push(pt);
-          }
-          // The parent's members are read through `extendsList` by the
-          // interface's member table, substituted at the read.
+      if (parentType is InterfaceType) {
+        // Registration can run twice on one canonical object (a
+        // member of an import cycle registers again once every
+        // member has); the parents list is shared with the
+        // interface's instantiations, so it is deduplicated rather
+        // than replaced.
+        var alreadyListed = false;
+        for (let listed in ifaceType.extendsList) {
+          if (listed === parentType) { alreadyListed = true; }
         }
-        case _: {}
+        if (!alreadyListed) {
+          ifaceType.extendsList.push(parentType);
+        }
+        // The parent's members are read through `extendsList` by the
+        // interface's member table, substituted at the read.
       }
     }
   }
