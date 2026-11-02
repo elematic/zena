@@ -173,7 +173,9 @@ jobs:
       # "killed": the runner ran out of memory, and a kernel that kills the
       # runner agent leaves it no chance to log why. The sampler below
       # records the memory trajectory as it goes, which is how that was
-      # found.
+      # found. Each sample names the three largest processes by the start
+      # of their command line, since every compile, precompile and test
+      # run is a `zena-cli` process.
       #
       # Wireit runs two scripts per CPU by default, 8 on this 4 CPU / 16 GB
       # runner, and one script can hold 5 GiB: stage B, the compiler's test
@@ -194,7 +196,7 @@ jobs:
             while true; do
               printf 'mem %s ' "$(date -u +%H:%M:%S)"
               free -m | awk '/^Mem:/ {printf "used=%sMi available=%sMi ", $3, $7}'
-              ps -eo rss=,comm= --sort=-rss | awk 'NR<=3 {printf "%s=%dMi ", $2, $1/1024}'
+              ps -eo rss=,args= --sort=-rss | sed "s|$PWD/||g" | awk 'NR<=3 {rss = $1; $1 = ""; printf "%dMi[%s] ", rss / 1024, substr($0, 2, 90)}'
               echo
               sleep 30
             done
