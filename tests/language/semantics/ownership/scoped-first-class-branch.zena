@@ -28,6 +28,21 @@ class Pipe<scoped T> {
     }
   }
 
+  // A branch that returns only sometimes falls through to code that
+  // still has the value: on the first-class path it needs no move, and
+  // it is not dead either.
+  offer(value: T): boolean {
+    if (isFirstClass<T>()) {
+      let b = this.#buf;
+      if (b != null) {
+        b[0] = value;
+        return true;
+      }
+    }
+    this.#slot = value;
+    return false;
+  }
+
   size(): i32 {
     if (isFirstClass<T>()) {
       let b = this.#buf;
