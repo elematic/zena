@@ -60,6 +60,12 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # A run that runs out of memory can hang instead of failing: wireit
+    # crashes when it kills a child the kernel already killed (`kill
+    # ESRCH`), and the job then waits on the orphaned processes, for six
+    # hours by default. The slowest of the 200 passing runs before
+    # 2026-11-02 took 39 minutes.
+    timeout-minutes: 60
     env:
       # What compiling the workspace's own crates leaves in target/, which
       # rust-cache leaves out. See "Restore the workspace crates".
@@ -176,10 +182,13 @@ jobs:
       # edit), summing the RSS of the suite's processes: 8 at once peaked
       # at 19.5 GiB and spent 35s above 16 GiB; 4 at once peaked at 13.9 GiB,
       # and the suite took 270s against 276s, since 4 CPUs are busy either
-      # way.
+      # way. By 2026-11-02, runs that rebuild the compiler peaked at 12.8 to
+      # 15.4 GiB with 4, single processes reached 6 to 8 GiB, and two runs
+      # that afternoon ran out of memory (stage B with two others, and two
+      # `zena test` runs at 7.2 and 6.0 GiB), so 3.
       - name: Run test suite
         env:
-          WIREIT_PARALLEL: 4
+          WIREIT_PARALLEL: 3
         run: |
           (
             while true; do
