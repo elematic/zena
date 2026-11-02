@@ -1,0 +1,63 @@
+// @mode: run
+// @result: 3729
+// A completer of an owner (owner-futures.md §"Completer"). The pair is
+// made together, since the future has one consumer. A value that loses
+// the race comes back from `tryComplete`, and a completer dropped
+// before settling fails its future rather than leaving it pending.
+import {Own, Disposable} from 'zena:core';
+import {Completer} from 'zena:async';
+
+var released = 0;
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  n(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+/** The consumer gets the value and releases it. */
+async function settled(): Future<i32> {
+  let (completer, future) = Completer.create<Own<Res>>();
+  completer.complete(new Res(7));
+  let r = await future;
+  return r.n();
+}
+
+/** The second value loses and comes back to its writer. */
+async function lost(): Future<i32> {
+  let (completer, future) = Completer.create<Own<Res>>();
+  completer.complete(new Res(1));
+  var back = 0;
+  if (let (false, loser) = completer.tryComplete(new Res(2))) {
+    back = loser.n();
+  }
+  let r = await future;
+  return back * 10 + r.n();
+}
+
+function dropCompleter(completer: Completer<Own<Res>>): void {}
+
+/** A completer dropped before settling fails the future. */
+async function dropped(): Future<i32> {
+  let (completer, future) = Completer.create<Own<Res>>();
+  dropCompleter(completer);
+  try {
+    let r = await future;
+    return 0;
+  } catch (e) {
+    return 9;
+  }
+}
+
+export async function main(): Future<i32> {
+  let a = await settled();
+  if (a != 7 || released != 1) { return 100 + released; }
+  let b = await lost();
+  if (b != 21 || released != 3) { return 200 + released; }
+  let c = await dropped();
+  if (c != 9 || released != 3) { return 300 + released; }
+  return released * 1000 + a * 100 + b + c - 1;
+}
