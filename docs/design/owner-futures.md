@@ -322,6 +322,16 @@ A `Completer<T>` holds no value; its future does. At a restricted `T`:
   `Completer.create<T>(): (Completer<T>, Future<T>)` whose result is a
   restricted tuple. The completer half stays copyable, since several
   writers racing to settle is a supported pattern.
+- **The completer's reference is not an owner's.** The completer keeps
+  the future it settles, and the caller holds that same future, so the
+  pair needs two references to one affine object. `create` makes the
+  second with `share_reference`, an intrinsic the standard library
+  containers declare privately: it returns its argument, and the
+  checker records no move or take for it. The future's runtime state
+  (one consumer, settled once) guards what the types no longer see. A
+  new kind of type parameter for producer-side classes, one that takes
+  `T` values but never holds one it could hand out, was the
+  alternative; it is more checker for one pattern.
 - **A value that loses the race comes back** from `tryComplete`, above.
   `complete(v)` on a settled future still throws while it holds `v`.
   That is a programming error, and it falls in the gap ownership.md
@@ -372,6 +382,15 @@ write in a `FixedArray<T>` field, which a `scoped T` class may declare
 but reads and writes only under `isFirstClass<T>()` (§"The class half of
 `scoped T`"). At a restricted `T` a write parks in one `WithDefault<T>`
 slot instead.
+
+**The pair is made together.** At a restricted `T` the stream has one
+reader, so `writer.stream` is not readable: a read of the immutable
+field would be a take. `StreamWriter.create<T>()` returns the writer
+and the stream, and the writer keeps a `share_reference` view of the
+stream its reader owns, as a completer does of its future
+(§"Completer"). Dropping the writer closes the stream, as dropping a
+Rust `Sender` does; it never releases the stream. At a first-class `T`,
+`new StreamWriter<T>()` and `writer.stream` work as before.
 
 **The typed WIT stream pump** lifts a chunk's elements one at a time
 and writes each. When a write is refused, the pump releases the element
@@ -512,9 +531,11 @@ and with them:
    from its `T` fields), #789 (a generic function at an owner is
    specialized at the owner's resource class, not as an erasure), and
    #790 (`Some` takes `scoped T`; a union with a container member is
-   affine and released by its member). Next: the static half of
-   `isFirstClass<T>()` with first-class-only fields, then streams with
-   writes that hand refused elements back.
+   affine and released by its member), #791 (the static half of
+   `isFirstClass<T>()`, and first-class-only fields), and #796 (streams
+   whose writes hand refused elements back, `StreamWriter.create`, and
+   the `share_reference` intrinsic). Next: `Completer.create`,
+   `FutureClaim`, and loop-variable release for `for await`.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
    `zena:fetch` and the protobuf transports removed.
 
