@@ -123,12 +123,15 @@ function enumsIn(t: Type): GrowableArray<EnumCoverage> {
  * is all-or-nothing: the caller runs it once the arms have named them all.
  */
 function subtractEnumFromType(t: Type, ed: EnumDeclaration): Type {
-  return narrowUnion(t, (member: Type): Type => {
-    if (member is EnumType && member.declaration.id == ed.id) {
-      return new NeverType();
-    }
-    return member;
-  });
+  return narrowUnion(t, (member) => subtractEnumFromMember(member, ed));
+}
+
+/** `subtractEnumFromType` for one member of the scrutinee's type. */
+function subtractEnumFromMember(member: Type, ed: EnumDeclaration): Type {
+  if (member is EnumType && member.declaration.id == ed.id) {
+    return new NeverType();
+  }
+  return member;
 }
 
 /**
@@ -298,7 +301,7 @@ function subtractPatternFromType(ctx: CheckerContext, t: Type, pattern: Node): T
  * Handles sealed class variant tracking and transitive hierarchies.
  */
 function subtractClassFromType(ctx: CheckerContext, t: Type, patClass: ClassType): Type {
-  return narrowUnion(t, (member: Type): Type => subtractClassFromMember(ctx, member, patClass));
+  return narrowUnion(t, (member) => subtractClassFromMember(ctx, member, patClass));
 }
 
 /** `subtractClassFromType` for one member of the scrutinee's type. */
@@ -417,15 +420,18 @@ function variantInstantiation(v: ClassType, scrut: ClassType): ClassType {
 }
 
 function subtractInterfaceFromType(ctx: CheckerContext, t: Type, patIface: InterfaceType): Type {
-  return narrowUnion(t, (member: Type): Type => {
-    let scrut = unwrapAliases(member);
-    if (scrut is InterfaceType) {
-      if (sameInterfaceDeclaration(scrut, patIface)) {
-        return new NeverType();
-      }
+  return narrowUnion(t, (member) => subtractInterfaceFromMember(member, patIface));
+}
+
+/** `subtractInterfaceFromType` for one member of the scrutinee's type. */
+function subtractInterfaceFromMember(member: Type, patIface: InterfaceType): Type {
+  let scrut = unwrapAliases(member);
+  if (scrut is InterfaceType) {
+    if (sameInterfaceDeclaration(scrut, patIface)) {
+      return new NeverType();
     }
-    return member;
-  });
+  }
+  return member;
 }
 
 function getNarrowedTypeFromPattern(ctx: CheckerContext, pattern: Node): Type | null {
