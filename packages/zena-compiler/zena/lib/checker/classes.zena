@@ -683,9 +683,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
   // Sealed classes: register forward variant names.
   if (cd.isSealed && cd.sealedVariants != null) {
     let variants = cd.sealedVariants as GrowableArray<SealedVariant>;
-    var fvi = 0;
-    while (fvi < variants.length) {
-      let variant = variants[fvi];
+    for (let variant in variants) {
       if (variant.params == null) {
         let {forwardVariantNames} = classType;
         if (forwardVariantNames != null) {
@@ -696,7 +694,6 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           classType.forwardVariantNames = set;
         }
       }
-      fvi = fvi + 1;
     }
   }
 
@@ -906,12 +903,10 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             }
 
             if (!satisfied && classType.implementsList != null) {
-              var i = 0;
-              while (i < classType.implementsList.length) {
-                if (isAssignableTo(ctx, classType.implementsList[i] as Type, mtOnType)) {
+              for (let implemented in classType.implementsList) {
+                if (isAssignableTo(ctx, implemented as Type, mtOnType)) {
                   satisfied = true;
                 }
-                i += 1;
               }
             }
             
@@ -957,9 +952,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
     let ctorInitializers = new Array<Expression | null>();
     var hasCtorInitializers = false;
 
-    var cpi = 0;
-    while (cpi < caseParams.length) {
-      let cp = caseParams[cpi];
+    for (let cp in caseParams) {
       let fieldName = cp.name.name;
       let fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
       rejectFieldStorage(ctx, fieldType, cp.typeAnnotation.loc);
@@ -1005,7 +998,6 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
       ctorParamNames.push(fieldName);
       ctorOptionalParams.push(cp.defaultValue != null);
       ctorInitializers.push(cp.defaultValue);
-      cpi = cpi + 1;
     }
 
     // Auto-generate constructor type.
@@ -1653,9 +1645,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           } else {
             let paramTypes = new Array<Type>();
             let paramNames = new Array<String>();
-            var pi = 0;
-            while (pi < ms.params.length) {
-              let param = ms.params[pi];
+            for (let param in ms.params) {
               let paramName = param.name.name;
               var paramType: Type = new ErrorType();
               var lookupName = paramName;
@@ -1679,23 +1669,19 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
               }
               paramTypes.push(paramType);
               paramNames.push(paramName);
-              pi = pi + 1;
             }
             let ctorType = new FunctionType(paramTypes, classType, new FunctionDeclInfo(paramNames));
             classType.constructorType = ctorType;
           }
         } else {
           let paramTypes = new Array<Type>();
-          var pi = 0;
-          while (pi < ms.params.length) {
-            let param = ms.params[pi];
+          for (let param in ms.params) {
             var paramType: Type = new ErrorType();
             let {typeAnnotation} = param;
             if (typeAnnotation != null) {
               paramType = resolveTypeAnnotation(ctx, typeAnnotation);
             }
             paramTypes.push(paramType);
-            pi = pi + 1;
           }
           var retType: Type = new VoidType();
           let {returnType} = ms;
@@ -1765,9 +1751,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
         let vCtorOptionalParams = new Array<boolean>();
         let vCtorInitializers = new Array<Expression | null>();
         var hasVCtorInitializers = false;
-        var vpi = 0;
-        while (vpi < vParams.length) {
-          let vp = vParams[vpi];
+        for (let vp in vParams) {
           let vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
 
           if (vp.defaultValue != null) {
@@ -1792,7 +1776,6 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           vCtorNames.push(vp.name.name);
           vCtorOptionalParams.push(vp.defaultValue != null);
           vCtorInitializers.push(vp.defaultValue);
-          vpi = vpi + 1;
         }
         let vCtorType = new FunctionType(
           vCtorParams,
