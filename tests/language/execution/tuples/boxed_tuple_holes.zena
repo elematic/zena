@@ -3,7 +3,8 @@
 // A `_` in a boxed tuple literal holds nothing, and its field takes the
 // default. Members whose fields have the same wasm types share a struct,
 // so `(0, _)` and `(1, i32)` are both two `i32`s: reading one back through
-// a pattern takes field 1 for the member that has a value there.
+// a pattern takes field 1 for the member that has a value there. Boxing an
+// inline value with a hole fills the hole's field with its default too.
 
 type Boxed = (0, _) | (1, i32);
 
@@ -26,9 +27,29 @@ let viaIfLet = (n: i32): i32 => {
   return -1;
 };
 
+// The inline form: every member writes `_` at position 2, which is one
+// `nullref` slot.
+type Wide = (0, _, _) | (1, i32, _);
+
+let inlineStep = (n: i32): inline Wide => {
+  if (n == 0) {
+    return (0, _, _);
+  }
+  return (1, n, _);
+};
+
+let valueOf = (w: Wide): i32 => match (w) {
+  case (0, _, _): 100
+  case (1, let p, _): p
+};
+
+// Passed straight to a parameter that holds it boxed.
+let boxedFromInline = (n: i32): i32 => valueOf(inlineStep(n));
+
 export let main = (): i32 => {
   var failures = 0;
   if (viaMatch(0) != 100 || viaMatch(3) != 3) { failures += 1; }
   if (viaIfLet(0) != -1 || viaIfLet(4) != 4) { failures += 2; }
+  if (boxedFromInline(0) != 100 || boxedFromInline(5) != 5) { failures += 4; }
   return failures;
 };

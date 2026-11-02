@@ -40,7 +40,7 @@ import {
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
-import { boxInline, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
+import { boxInline, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported, noValues,
 } from './lowering-context.zena';
@@ -50,7 +50,7 @@ import {
   recordDispatchOfValue,
 } from './patterns.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
-import { HashMap } from 'zena:collections';
+import { HashMap, HashSet } from 'zena:collections';
 import { growable } from 'zena:core';
 
 /** Bail with the lowering-side message shape (reason @function). */
@@ -89,7 +89,8 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
   // One value per element, a nested tuple pattern at a nested inline
   // position read leaf by leaf.
   let elements = new Array<Node | null>();
-  let values = multiPositions(cx, multiSource(cx, lpc.init), pat, elements);
+  let source = multiSource(cx, lpc.init);
+  let values = multiPositions(cx, source, pat, elements);
   if (values.length != elements.length) {
     bail(cx, 'let-condition arity');
   }
@@ -174,7 +175,90 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
     bindValues.push(values[i]);
     vts.push(bindVt);
   }
-  return new LetCondBinds(cond, syms, bindValues, vts, patterns, patternValues);
+  let binds = new LetCondBinds(cond, syms, bindValues, vts, patterns, patternValues);
+  let layout = source.layout;
+  if (layout != null && layoutHoldsOwner(layout)) {
+    let allowed = inlineMembersMatching(layout, pat.elements);
+    binds.ownerSource = source;
+    binds.ownerAllowed = allowed;
+    binds.ownerKept = boundPaths(cx, layout, allowed, pat.elements);
+  }
+  return binds;
+}
+
+/** Whether some member of `layout` holds an owner. */
+function layoutHoldsOwner(layout: InlineLayout): boolean {
+  for (var m = 0; m < layout.members.length; m += 1) {
+    if (memberReleases(layout, m, null)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The paths a tuple pattern binds a name at, read against the members
+ * `allowed` keeps: the owner at each is its binding's to release. A
+ * position under `_`, or one a literal tests, binds nothing.
+ */
+function boundPaths(cx: LoweringContext, layout: InlineLayout,
+    allowed: GrowableArray<boolean> | null,
+    elements: GrowableArray<Node | null>): HashSet<String> {
+  let bound = new HashSet<String>();
+  let rep = representativeMember(layout, allowed);
+  for (let entry in pathElements(layout.originals[rep], elements)) {
+    let node = entry.node;
+    if (node != null && patternBinds(cx, node)) {
+      bound.add(entry.path);
+    }
+  }
+  return bound;
+}
+
+/**
+ * The owners a let-condition's pattern took out of its source without
+ * binding them, released in the taken block once its tests pass: the
+ * pattern consumed the source, and only a bound owner is its branch's.
+ */
+export function emitTakenOwnerDrops(cx: LoweringContext, binds: LetCondBinds): void {
+  let source = binds.ownerSource;
+  if (source != null) {
+    emitSlotsDropExcept(cx, source, binds.ownerAllowed, binds.ownerKept);
+  }
+}
+
+/**
+ * The source of a let-condition whose pattern did not match, released
+ * on the not-taken side: the pattern consumed it.
+ */
+export function emitNotTakenOwnerDrops(cx: LoweringContext, binds: LetCondBinds): void {
+  let source = binds.ownerSource;
+  if (source != null) {
+    emitSlotsDrop(cx, source);
+  }
+}
+
+/**
+ * The owners a `match` arm over a tuple union took out of the source
+ * without binding them: those under `_` in a tuple pattern, or the whole
+ * source for `case _`.
+ */
+function emitArmOwnerDrops(cx: LoweringContext, source: MultiValues, pattern: Node) {
+  let layout = source.layout;
+  if (layout == null || !layoutHoldsOwner(layout)) {
+    return;
+  }
+  if (let TuplePattern {elements} = pattern) {
+    let allowed = inlineMembersMatching(layout, elements);
+    emitSlotsDropExcept(cx, source, allowed, boundPaths(cx, layout, allowed, elements));
+  } else {
+    emitSlotsDrop(cx, source);
+  }
+}
+
+/** Whether a let-condition owes its source a release on either side. */
+function letBindsOwnSource(binds: LetCondBinds | null) {
+  return binds != null && binds.ownerSource != null;
 }
 
 /** Whether any deferred let-condition pattern is refutable. */
@@ -229,7 +313,8 @@ export function applyLetBinds(cx: LoweringContext, binds: LetCondBinds, failB: i
  * null when the context is void. Returns -1 when the arm ends
  * unreachable (or the context is void).
  */
-export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean, ctxVt: ValType | null): i32 {
+export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean,
+    ctxVt: ValType | null, tail: boolean = false): i32 {
   if (node is Expression) {
     if (node is ThrowExpression) {
       // A bare throw as an arm: the arm ends unreachable and
@@ -246,6 +331,10 @@ export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean,
         return -1;
       }
     }
+    if (tail) {
+      returnInlineTail(cx, node);
+      return -1;
+    }
     let value = lowerExpr(cx, node, ctxVt);
     return if (isVoid) -1 else value;
   }
@@ -258,7 +347,7 @@ export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean,
       bail(cx, 'empty value block');
     }
     cx.precellBindings(body);
-    return lowerBlockValueFrom(cx, body, 0, isVoid, ctxVt);
+    return lowerBlockValueFrom(cx, body, 0, isVoid, ctxVt, tail);
   }
   cx.fail('value arm kind');
 }
@@ -272,7 +361,7 @@ export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean,
  * exactly as a valued try/finally does.
  */
 function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>,
-    start: i32, isVoid: boolean, ctxVt: ValType | null): i32 {
+    start: i32, isVoid: boolean, ctxVt: ValType | null, tail: boolean = false): i32 {
   if (isVoid) {
     // A void block (a try body, a statement arm) is a statement list
     // like any other, tail included.
@@ -294,7 +383,7 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
       let raw = varDropIntervalEnd(plan, i, body.length);
       if (raw == -2) { continue; }
       if (raw < 0) {
-        return lowerValueRegionRestVar(cx, plan, body, i, ctxVt);
+        return lowerValueRegionRestVar(cx, plan, body, i, ctxVt, tail);
       }
       lowerVarDropRegion(cx, plan, body, i, raw, false);
       openedEnd = raw;
@@ -328,7 +417,7 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
         cx.bindPatternSym(symOpt, value);
       }
       return lowerValueRegionRest(cx, growable<i32>([value]),
-          growable<DropPlan>([usingPlan]), 0, body, i + 1, ctxVt);
+          growable<DropPlan>([usingPlan]), 0, body, i + 1, ctxVt, tail);
     }
     if (body[i] is VariableDeclaration &&
         declScopeDrop(cx, body[i] as VariableDeclaration)) {
@@ -336,7 +425,7 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
       let drops = scopeDropsOf(cx, vd);
       varDecl(cx, vd);
       let values = cx.envValues(drops.syms);
-      return lowerValueRegionRest(cx, values, drops.plans, 0, body, i + 1, ctxVt);
+      return lowerValueRegionRest(cx, values, drops.plans, 0, body, i + 1, ctxVt, tail);
     }
     lowerStmt(cx, body[i]);
     i += 1;
@@ -360,6 +449,10 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
         lowerStmt(cx, last);
         return -1;
       }
+    }
+    if (tail) {
+      returnInlineTail(cx, lastExpr);
+      return -1;
     }
     let value = lowerExpr(cx, lastExpr, ctxVt);
     return if (isVoid) -1 else value;
@@ -385,8 +478,9 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
  */
 function lowerValueRegionRest(cx: LoweringContext, values: GrowableArray<i32>,
     plans: GrowableArray<DropPlan>, idx: i32, body: GrowableArray<Statement>, start: i32,
-    ctxVt: ValType | null): i32 {
-  if (ctxVt == null) {
+    ctxVt: ValType | null, tail: boolean = false): i32 {
+  // A tail that returns carries no value out of the region.
+  if (ctxVt == null && !tail) {
     bail(cx, 'value region result type');
   }
   let mirrored = new Array<SymbolId>();
@@ -395,14 +489,14 @@ function lowerValueRegionRest(cx: LoweringContext, values: GrowableArray<i32>,
   }
   let value = values[idx];
   let plan = plans[idx];
-  return lowerFinallyRegion(cx, mirrored, false, ctxVt,
+  return lowerFinallyRegion(cx, mirrored, tail, if (tail) null else ctxVt,
       (scope, resultVar, saved) => {
         let v = if (idx + 1 < values.length) {
-          lowerValueRegionRest(cx, values, plans, idx + 1, body, start, ctxVt)
+          lowerValueRegionRest(cx, values, plans, idx + 1, body, start, ctxVt, tail)
         } else {
-          lowerBlockValueFrom(cx, body, start, false, ctxVt)
+          lowerBlockValueFrom(cx, body, start, false, ctxVt, tail)
         };
-        finishProtectedArm(cx, scope, resultVar, v);
+        finishProtectedArm(cx, scope, resultVar, if (tail) -1 else v);
       },
       (fscope) => { emitDrop(cx, value, plan); });
 }
@@ -413,8 +507,9 @@ function lowerValueRegionRest(cx: LoweringContext, values: GrowableArray<i32>,
  * the exit (see lowerVarDropRegion).
  */
 function lowerValueRegionRestVar(cx: LoweringContext, plan: VarDropPlan,
-    body: GrowableArray<Statement>, start: i32, ctxVt: ValType | null): i32 {
-  if (ctxVt == null) {
+    body: GrowableArray<Statement>, start: i32, ctxVt: ValType | null,
+    tail: boolean = false): i32 {
+  if (ctxVt == null && !tail) {
     bail(cx, 'value region result type');
   }
   let mirrored = new Array<SymbolId>();
@@ -422,10 +517,10 @@ function lowerValueRegionRestVar(cx: LoweringContext, plan: VarDropPlan,
     cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
   }
   cx.openVarDrops.add(plan.symId as i32);
-  let result = lowerFinallyRegion(cx, mirrored, false, ctxVt,
+  let result = lowerFinallyRegion(cx, mirrored, tail, if (tail) null else ctxVt,
       (scope, resultVar, saved) => {
-        let v = lowerBlockValueFrom(cx, body, start, false, ctxVt);
-        finishProtectedArm(cx, scope, resultVar, v);
+        let v = lowerBlockValueFrom(cx, body, start, false, ctxVt, tail);
+        finishProtectedArm(cx, scope, resultVar, if (tail) -1 else v);
       },
       (fscope) => { emitVarDropRelease(cx, plan); });
   cx.openVarDrops.delete(plan.symId as i32);
@@ -514,12 +609,14 @@ function lowerInlineTupleArm(cx: LoweringContext, pat: TuplePattern,
 
 export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
   let armFields = cx.takeResultFields();
+  // A returned inline value: each arm returns its own (returnInlineTail).
+  let returnTail = cx.takeReturnTail();
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped match');
   }
   let isVoid = isVoidOrNeverType(nodeType);
-  let resultVt = if (!isVoid) {
+  let resultVt = if (!isVoid && !returnTail) {
     let vt = typeToValTypeWithSub(cx.wasm, nodeType, cx.func);
     cx.requireSupported(vt, 'match result type');
     vt
@@ -544,6 +641,7 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
   }
 
   let m = new MergeState(mergeSyms, isVoid, resultVt);
+  m.returnTail = returnTail;
   if (!isVoid) {
     m.fields = armFields;
   }
@@ -580,6 +678,11 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
       let cond = lowerExpr(cx, mc.guard as Expression, null);
       branchUnless(cx, cond, failB);
     }
+    if (lanes != null) {
+      // The arm consumed the source: the owners it took without a name
+      // are released here, and its bindings release the rest.
+      emitArmOwnerDrops(cx, lanes, mc.pattern);
+    }
     let fieldsMode = m.fields;
     if (fieldsMode != null) {
       let values = lowerArmFields(cx, mc.body, fieldsMode, resultVt);
@@ -589,7 +692,8 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
         cx.mergeArmFields(m, values);
       }
     } else {
-      let value = lowerBranchValue(cx, mc.pattern, mc.body, isVoid, resultVt);
+      let value = lowerBranchValue(cx, mc.pattern, mc.body, isVoid, resultVt,
+          m.returnTail);
       if (cx.reachable) {
         emitMatchArmDrops(cx, expr, i);
         cx.mergeArm(m, value, 'match arm type');
@@ -682,13 +786,16 @@ export function lowerIf(cx: LoweringContext, stmt: IfStatement): void {
     let thenB = cx.b.newBlock();
     let mergeB = cx.b.newBlock();
     let mergeParams = cx.addParams(mergeB, mergeSyms);
-    if (hasEdgeDrops(cx, stmt, false)) {
+    if (hasEdgeDrops(cx, stmt, false) || letBindsOwnSource(letBinds)) {
       // The false edge owes drops, and with no else there is no block
       // to hold them: route it through one.
       let falseB = cx.b.newBlock();
       cx.b.brIf(cond, thenB, noValues(), falseB, noValues());
       cx.b.switchTo(falseB);
       emitEdgeDrops(cx, stmt, false);
+      if (letBinds != null) {
+        emitNotTakenOwnerDrops(cx, letBinds);
+      }
       cx.b.br(mergeB, cx.envValues(mergeSyms));
     } else {
       cx.b.brIf(cond, thenB, noValues(), mergeB, cx.envValues(mergeSyms));
@@ -709,9 +816,11 @@ export function lowerIf(cx: LoweringContext, stmt: IfStatement): void {
         let resumeB = cx.b.newBlock();
         cx.b.br(resumeB, noValues());
         cx.b.switchTo(failB);
+        emitNotTakenOwnerDrops(cx, letBinds);
         cx.b.br(mergeB, cx.envValues(mergeSyms));
         cx.b.switchTo(resumeB);
       }
+      emitTakenOwnerDrops(cx, letBinds);
     }
     lowerBranchStmt(cx, letPatternOf(stmt.test), stmt.consequent);
     if (cx.reachable) {
@@ -739,6 +848,7 @@ export function lowerIf(cx: LoweringContext, stmt: IfStatement): void {
   cx.b.switchTo(thenB);
   if (letBinds != null) {
     applyLetBinds(cx, letBinds, elseB);
+    emitTakenOwnerDrops(cx, letBinds);
   }
   lowerBranchStmt(cx, letPatternOf(stmt.test), stmt.consequent);
   if (cx.reachable) {
@@ -749,6 +859,9 @@ export function lowerIf(cx: LoweringContext, stmt: IfStatement): void {
   cx.env = cx.copyOf(saved);
   cx.reachable = true;
   cx.b.switchTo(elseB);
+  if (letBinds != null) {
+    emitNotTakenOwnerDrops(cx, letBinds);
+  }
   lowerStmt(cx, alternate);
   if (cx.reachable) {
     emitEdgeDrops(cx, stmt, false);
@@ -766,12 +879,15 @@ export function lowerIf(cx: LoweringContext, stmt: IfStatement): void {
  */
 export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 {
   let armFields = cx.takeResultFields();
+  // A returned inline value: each arm returns its own (returnInlineTail),
+  // so there is no value to merge.
+  let returnTail = cx.takeReturnTail();
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped if expression');
   }
   let isVoid = baseType(nodeType) is VoidType;
-  let resultVt = if (!isVoid) cx.exprVt(expr) else null;
+  let resultVt = if (!isVoid && !returnTail) cx.exprVt(expr) else null;
   if (expr.alternate == null && !isVoid) {
     bail(cx, 'value if without else');
   }
@@ -800,6 +916,7 @@ export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 
   cx.b.brIf(cond, thenB, noValues(), elseB, noValues());
 
   let m = new MergeState(mergeSyms, isVoid, resultVt);
+  m.returnTail = returnTail;
   if (!isVoid) {
     m.fields = armFields;
   }
@@ -808,6 +925,7 @@ export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 
   cx.b.switchTo(thenB);
   if (letBinds != null) {
     applyLetBinds(cx, letBinds, elseB);
+    emitTakenOwnerDrops(cx, letBinds);
   }
   mergeBranchArm(cx, m, letPatternOf(expr.test), expr.consequent, isVoid, resultVt,
       'if arm type');
@@ -815,6 +933,9 @@ export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 
   cx.env = cx.copyOf(saved);
   cx.reachable = true;
   cx.b.switchTo(elseB);
+  if (letBinds != null) {
+    emitNotTakenOwnerDrops(cx, letBinds);
+  }
   if (expr.alternate != null) {
     mergeValueArm(cx, m, expr.alternate as Node, isVoid, resultVt, 'if arm type');
   } else {
@@ -905,20 +1026,20 @@ function lowerBranchStmtDrops(cx: LoweringContext, values: GrowableArray<i32>,
 
 /** A branch's value behind the release regions its pattern's owners need. */
 function lowerBranchValue(cx: LoweringContext, pattern: Node | null, body: Node,
-    isVoid: boolean, resultVt: ValType | null): i32 {
+    isVoid: boolean, resultVt: ValType | null, tail: boolean = false): i32 {
   let drops = patternBranchDrops(cx, pattern);
   if (drops.syms.length == 0) {
-    return lowerValueNode(cx, body, isVoid, resultVt);
+    return lowerValueNode(cx, body, isVoid, resultVt, tail);
   }
   return lowerBranchValueDrops(cx, cx.envValues(drops.syms), drops.plans, 0, body,
-      isVoid, resultVt);
+      isVoid, resultVt, tail);
 }
 
 function lowerBranchValueDrops(cx: LoweringContext, values: GrowableArray<i32>,
     plans: GrowableArray<DropPlan>, idx: i32, body: Node, isVoid: boolean,
-    resultVt: ValType | null): i32 {
+    resultVt: ValType | null, tail: boolean = false): i32 {
   if (idx >= values.length) {
-    return lowerValueNode(cx, body, isVoid, resultVt);
+    return lowerValueNode(cx, body, isVoid, resultVt, tail);
   }
   let value = values[idx];
   let plan = plans[idx];
@@ -926,7 +1047,8 @@ function lowerBranchValueDrops(cx: LoweringContext, values: GrowableArray<i32>,
   let v = lowerFinallyRegion(cx, cx.assignedEnvSyms(body), !carries,
       if (carries) resultVt else null,
       (scope, resultVar, saved) => {
-        let inner = lowerBranchValueDrops(cx, values, plans, idx + 1, body, isVoid, resultVt);
+        let inner = lowerBranchValueDrops(cx, values, plans, idx + 1, body, isVoid,
+            resultVt, tail);
         finishProtectedArm(cx, scope, resultVar, if (carries) inner else -1);
       },
       (fscope) => { emitDrop(cx, value, plan); });
@@ -960,7 +1082,7 @@ function mergeBranchArm(cx: LoweringContext, m: MergeState, pattern: Node | null
     }
     return;
   }
-  let value = lowerBranchValue(cx, pattern, node, isVoid, resultVt);
+  let value = lowerBranchValue(cx, pattern, node, isVoid, resultVt, m.returnTail);
   if (cx.reachable) {
     cx.mergeArm(m, value, armKind);
   }
@@ -976,7 +1098,7 @@ function mergeValueArm(cx: LoweringContext, m: MergeState, node: Node,
     }
     return;
   }
-  let value = lowerValueNode(cx, node, isVoid, resultVt);
+  let value = lowerValueNode(cx, node, isVoid, resultVt, m.returnTail);
   if (cx.reachable) {
     cx.mergeArm(m, value, armKind);
   }
@@ -2081,28 +2203,44 @@ function emitTupleDrop(cx: LoweringContext, value: i32, t: Type): void {
  * an inline result discarded as a statement.
  */
 export function emitSlotsDrop(cx: LoweringContext, source: MultiValues): void {
+  emitSlotsDropExcept(cx, source, null, null);
+}
+
+/**
+ * `emitSlotsDrop` for the members `allowed` keeps (every member when
+ * null), leaving out the owners at the paths `kept` holds or under them,
+ * which something else releases: the owners a pattern bound to names.
+ */
+export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
+    allowed: GrowableArray<boolean> | null, kept: HashSet<String> | null): void {
   let layout = source.layout;
   if (layout == null) {
     bail(cx, 'drop of a tuple with no slots');
   }
   let members = layout.members;
-  if (members.length == 1) {
-    emitTupleMemberDrop(cx, source, 0);
+  // The members the value can be, and those of them with an owner to
+  // release.
+  var reaching = 0;
+  let releasing = new Array<i32>();
+  for (var m = 0; m < members.length; m += 1) {
+    if (allowed != null && !allowed[m]) {
+      continue;
+    }
+    reaching += 1;
+    if (memberReleases(layout, m, kept)) {
+      releasing.push(m);
+    }
+  }
+  if (reaching == 1) {
+    if (releasing.length == 1) {
+      emitTupleMemberDrop(cx, source, releasing[0], kept);
+    }
     return;
   }
   let tag = source.values[layout.slotOf(0, 0)];
   let i32Vt = new ValTypeI32() as ValType;
   let join = cx.b.newBlock();
-  for (var m = 0; m < members.length; m += 1) {
-    var holds = false;
-    for (let el in members[m].elementTypes) {
-      if (elementHoldsOwner(el)) {
-        holds = true;
-      }
-    }
-    if (!holds) {
-      continue;
-    }
+  for (let m in releasing) {
     let cond = match (members[m].elementTypes[0]) {
       case BoolLiteralType {value}:
           if (value) tag else cx.b.emit(IrOp.i32_eqz, i32Vt, tag, -1)
@@ -2119,7 +2257,7 @@ export function emitSlotsDrop(cx: LoweringContext, source: MultiValues): void {
     let next = cx.b.newBlock();
     cx.b.brIf(cond, hit, noValues(), next, noValues());
     cx.b.switchTo(hit);
-    emitTupleMemberDrop(cx, source, m);
+    emitTupleMemberDrop(cx, source, m, kept);
     cx.b.br(join, noValues());
     cx.b.switchTo(next);
   }
@@ -2127,13 +2265,40 @@ export function emitSlotsDrop(cx: LoweringContext, source: MultiValues): void {
   cx.b.switchTo(join);
 }
 
-/** Releases the owner elements of member `m`, last first. */
-function emitTupleMemberDrop(cx: LoweringContext, source: MultiValues, m: i32): void {
+/** Whether member `m` has an owner outside `kept` to release. */
+function memberReleases(layout: InlineLayout, m: i32,
+    kept: HashSet<String> | null): boolean {
+  let elements = layout.members[m].elementTypes;
+  for (var p = 0; p < elements.length; p += 1) {
+    if (elementHoldsOwner(elements[p]) &&
+        !isKeptPath(kept, layout.memberPaths[m][p])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether `path` is in `kept` or under a path in it. */
+function isKeptPath(kept: HashSet<String> | null, path: String): boolean {
+  if (kept == null) {
+    return false;
+  }
+  for (let k in kept) {
+    if (path == k || path.startsWith(`${k}.`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Releases the owner elements of member `m`, last first, but those in `kept`. */
+function emitTupleMemberDrop(cx: LoweringContext, source: MultiValues, m: i32,
+    kept: HashSet<String> | null): void {
   let layout = source.layout as InlineLayout;
   let elements = layout.members[m].elementTypes;
   for (var p = elements.length - 1; p >= 0; p -= 1) {
     let el = elements[p];
-    if (!elementHoldsOwner(el)) {
+    if (!elementHoldsOwner(el) || isKeptPath(kept, layout.memberPaths[m][p])) {
       continue;
     }
     let slot = layout.slotOf(m, p);
@@ -2717,7 +2882,16 @@ export function lowerWhile(cx: LoweringContext, stmt: WhileStatement): void {
   // comparison condition (`i < n` exits on `i >= n`), so the loop
   // tests once instead of testing and negating.
   let exitTest = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
-  cx.b.brIf(exitTest, exitB, cx.envValues(carried), bodyB, noValues());
+  if (letBindsOwnSource(letBinds)) {
+    // The exit edge releases the source the pattern did not match.
+    let releaseB = cx.b.newBlock();
+    cx.b.brIf(exitTest, releaseB, noValues(), bodyB, noValues());
+    cx.b.switchTo(releaseB);
+    emitNotTakenOwnerDrops(cx, letBinds as LetCondBinds);
+    cx.b.br(exitB, cx.envValues(carried));
+  } else {
+    cx.b.brIf(exitTest, exitB, cx.envValues(carried), bodyB, noValues());
+  }
 
   cx.loops.push(new LoopCtx(header, exitB, carried));
   cx.b.switchTo(bodyB);
@@ -2734,9 +2908,11 @@ export function lowerWhile(cx: LoweringContext, stmt: WhileStatement): void {
       let resumeB = cx.b.newBlock();
       cx.b.br(resumeB, noValues());
       cx.b.switchTo(failB);
+      emitNotTakenOwnerDrops(cx, letBinds);
       cx.b.br(exitB, cx.envValues(carried));
       cx.b.switchTo(resumeB);
     }
+    emitTakenOwnerDrops(cx, letBinds);
   }
   lowerBranchStmt(cx, letPatternOf(stmt.test), stmt.body);
   if (cx.reachable) {

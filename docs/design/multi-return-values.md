@@ -214,7 +214,11 @@ A returned tuple literal writes each element into the slot its
 candidate members agree on, and fills the rest with defaults.
 `return f()` forwards the callee's slots unchanged when they fit, and
 otherwise moves each slot to the slot of the corresponding member in
-the wider union (`#convertInlineSlots`).
+the wider union (`#convertInlineSlots`). A returned `if` or `match`
+expression returns from each arm instead of merging the arms' values
+(`MergeState.returnTail`): each arm's value, or a block arm's tail, is
+written into the slots as a `return` of it would be (`returnInlineTail`),
+through any release region the arm opened (#773).
 
 #### Nested Inline Tuples
 

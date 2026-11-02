@@ -1,0 +1,107 @@
+// @mode: run
+// @result: 0
+// A pattern consumes the tuple it matches, so an owner in it is released
+// on every path out of the pattern (#772): by the branch that binds it to
+// a name, where the pattern takes it without one (`_`, `case _`), and on
+// the not-taken side of a pattern that does not match. Each file adds its
+// number to `released` when it is disposed, so the total shows every owner
+// was released exactly once.
+
+import { Own, Disposable } from 'zena:core';
+
+var released = 0;
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.#fd;
+  }
+}
+
+type Opened = (true, Own<File>) | (false, String);
+
+function open(ok: boolean, fd: i32): Opened {
+  if (ok) {
+    return (true, new File(fd));
+  }
+  return (false, 'no');
+}
+
+function openInline(fd: i32): inline (true, Own<File>) | (false, String) {
+  return (true, new File(fd));
+}
+
+// The pattern does not match: the not-taken side releases the source.
+function missed(): void {
+  if (let (false, why) = open(true, 1)) {}
+}
+
+function missedWithElse(): void {
+  if (let (false, why) = open(true, 2)) {
+  } else {
+  }
+}
+
+function missedInline(): void {
+  if (let (false, why) = openInline(4)) {}
+}
+
+function missedExpression(): i32 {
+  return if (let (false, why) = open(true, 8)) 1 else 0;
+}
+
+function missedWhile(): void {
+  while (let (false, why) = open(true, 16)) {}
+}
+
+// The pattern matches but takes the owner without a name.
+function wildcardPosition(): void {
+  if (let (true, _) = open(true, 32)) {}
+}
+
+function matchWildcardPosition(): void {
+  match (open(true, 64)) {
+    case (true, _): {}
+    case (false, _): {}
+  }
+}
+
+function matchWildcard(): void {
+  match (open(true, 128)) {
+    case (false, _): {}
+    case _: {}
+  }
+}
+
+// A guard that fails leaves the source to the next arm.
+function guardFails(): void {
+  let no = false;
+  match (open(true, 256)) {
+    case (true, _) if no: {}
+    case _: {}
+  }
+}
+
+// A bound owner is still released once, by its branch.
+function bound(): void {
+  if (let (true, f) = open(true, 512)) {}
+  match (open(true, 1024)) {
+    case (true, let f): {}
+    case (false, let why): {}
+  }
+}
+
+export let main = (): i32 => {
+  missed();
+  missedWithElse();
+  missedInline();
+  missedExpression();
+  missedWhile();
+  wildcardPosition();
+  matchWildcardPosition();
+  matchWildcard();
+  guardFails();
+  bound();
+  return released - (1 + 2 + 4 + 8 + 16 + 32 + 64 + 128 + 256 + 512 + 1024);
+};

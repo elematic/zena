@@ -7,7 +7,7 @@
  * closures rather than minting its own context (ir/intrinsics.zena
  * predates this and keeps its narrower IntrinsicCx).
  */
-import { Set, HashMap } from 'zena:collections';
+import { Set, HashMap, HashSet } from 'zena:collections';
 import {
   AssignmentExpression, BindingPattern, CallExpression, Expression, FunctionExpression, Identifier, IdentifierPattern, IndexExpression, MemberExpression, Node, Statement, VariableDeclaration,
 } from '../../ast.zena';
@@ -48,7 +48,7 @@ import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
 // Imported back across the module cycle: lowering.zena imports this
 // module (docs/design/import-cycles.md).
-import { FunctionLowerer, lowerExpr } from './lowering.zena';
+import { FunctionLowerer, lowerExpr, MultiValues } from './lowering.zena';
 import { growable } from 'zena:core';
 
 /**
@@ -129,6 +129,12 @@ export final class MergeState {
    */
   var fields: RecordDispatchInfo | null = null;
   var fieldParams: GrowableArray<i32> | null = null;
+  /**
+   * Set when the expression is a returned inline value: each arm
+   * returns its own value (`returnInlineTail`), so no arm reaches the
+   * merge with one.
+   */
+  var returnTail = false;
   new(this.syms, this.isVoid, this.resultVt);
 }
 
@@ -143,6 +149,15 @@ export final class LetCondBinds {
   /** Nested destructuring elements, tested/bound in the taken block. */
   patterns: GrowableArray<Node>;
   patternValues: GrowableArray<i32>;
+  /**
+   * The source when it holds an owner: the pattern consumes it, so the
+   * not-taken side releases it whole and the taken side releases the
+   * owners no name took (`ownerKept` holds the paths the pattern bound,
+   * for the members `ownerAllowed` keeps).
+   */
+  var ownerSource: MultiValues | null = null;
+  var ownerAllowed: GrowableArray<boolean> | null = null;
+  var ownerKept: HashSet<String> | null = null;
   new(this.cond, this.syms, this.values, this.vts, this.patterns,
       this.patternValues);
 }
@@ -1806,6 +1821,20 @@ export final class LoweringContext {
     let d = this.resultFields;
     this.resultFields = null;
     return d;
+  }
+
+  /**
+   * Set by a function returning an inline value just before it lowers
+   * the `if` or `match` whose value it returns, which takes it
+   * (takeReturnTail) and returns from each arm instead of merging the
+   * arms' values (MergeState.returnTail).
+   */
+  var returnTail = false;
+
+  takeReturnTail(): boolean {
+    let t = this.returnTail;
+    this.returnTail = false;
+    return t;
   }
 
   /**

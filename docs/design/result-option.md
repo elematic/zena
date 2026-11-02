@@ -93,26 +93,22 @@ if (let (true, v, _) = f(x)) {
 }
 ```
 
-### What the compilers actually do (verified 2026-08-05)
+### What the compilers actually do (verified 2026-11-02)
 
 - **if-let binds both arms** (each from its own call):
   `tests/language/execution/control-flow/if_let_result.zena` runs the full
   `inline (true, i32, _) | inline (false, _, String)` shape — numeric ok
   lane, reference error lane, crossed holes — through `(true, v, _)` and
   `(false, _, e)` patterns.
-- **match over an inline union does not narrow per arm** in the self-hosted
-  checker: `case (false, _, e):` binds `e` at the merged lane type
-  `_ | String`, so using it is a type error. Pinned by
-  `tests/language/semantics/control-flow/match/inline-union-arm-narrowing-unimplemented.zena`.
-  Codegen for a multi-value match scrutinee is untested beyond the checker.
-  Tracked as [#115](https://github.com/elematic/zena/issues/115).
+- **match over an inline union narrows per arm**: `case (false, _, let e):`
+  binds `e` as the `String` its member holds, and the arm reads that member's
+  slot (`tests/language/execution/tuples/inline_union_slots.zena`; #115).
 - **The crossed-reference-holes miscompile is fixed** (regression test
   `tests/language/execution/tuples/inline_union_crossed_ref_holes.zena`).
-- **The alias spelling is not yet legal.** `type Result<T, E> = inline …` is
-  rejected today — "Inline tuple types can only appear in function return
-  types" (pinned by `inline_tuple_restrictions.zena`) — so shipping the
-  stdlib alias is itself a deliberate language change, not just a stdlib
-  edit.
+- **`Result` is a plain value union**, `(true, T) | (false, E)` in
+  `zena:core`, storable as it is and returned unboxed as `inline Result<T, E>`
+  (#371). An inline type is still allowed only where a result is returned
+  (`inline_tuple_restrictions.zena`).
 
 ### Precedent
 

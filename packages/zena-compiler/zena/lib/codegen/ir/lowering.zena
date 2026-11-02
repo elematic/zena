@@ -3133,6 +3133,18 @@ export final class FunctionLowerer {
     if (layout != null && layout.slots.length != sig.returns.length) {
       this.#bail('multi-value return arity');
     }
+    if (arg is IfExpression || arg is MatchExpression) {
+      // Each arm returns its own value, written into the slots as a
+      // `return` of it would be (`returnInlineTail`): an arm has no
+      // single value to merge.
+      this.#cx().returnTail = true;
+      this.#lowerExpression(arg);
+      this.#cx().returnTail = false;
+      if (this.#cx().reachable) {
+        this.#bail('returned inline arm fell through');
+      }
+      return new Array<i32>();
+    }
     if (arg is CallExpression) {
       // Forwarding form: `return f(...)`. The callee's union can be a
       // narrower one than this function's (`Step<T>` into
@@ -4807,6 +4819,14 @@ export final class FunctionLowerer {
     return this.#boxInline(source);
   }
 
+  hostReturnInline(e: Expression): void {
+    let values = this.#lowerMultiReturnValues(e);
+    if (this.#cx().reachable && !returnMultiThroughFinally(this.#cx(), values)) {
+      this.b.retMulti(values);
+    }
+    this.#cx().reachable = false;
+  }
+
   hostBoxInlineAt(source: MultiValues, path: String, inner: InlineTupleType,
       allowed: GrowableArray<boolean> | null): i32 {
     let cx = this.#cx();
@@ -4833,8 +4853,13 @@ export final class FunctionLowerer {
       }
       let fieldVt = this.#fieldValType(st, name);
       let inner = if (k < shape.elementTypes.length) nestedInlineTuple(shape.elementTypes[k]) else null;
+      let element = if (k < shape.elementTypes.length) shape.elementTypes[k] else null;
       let v = if (inner != null) {
         this.#buildBoxedAt(inner, `${prefix}${k}.`, tuple.elementTypes[k] as TupleType, leaf)
+      } else if (element is HoleType) {
+        // A `_` holds nothing; its slot, if it has one, is a `nullref`
+        // shared with the other members.
+        this.#defaultValueOf(fieldVt)
       } else {
         let found = leaf(`${prefix}${k}`);
         if (found == NO_VALUE) this.#defaultValueOf(fieldVt) else found
@@ -10980,7 +11005,7 @@ export final class MultiValues {
 }
 
 /** The member a reader stands for: the first one `allowed` keeps. */
-function representativeMember(layout: InlineLayout,
+export function representativeMember(layout: InlineLayout,
     allowed: GrowableArray<boolean> | null): i32 {
   if (allowed != null) {
     for (var m = 0; m < allowed.length; m += 1) {
@@ -11086,6 +11111,15 @@ function tupleParts(node: Node | null): GrowableArray<Node | null> | null {
 /** An inline value boxed: the struct (or union) of its boxed form. */
 export function boxInline(cx: LoweringContext, source: MultiValues): i32 {
   return hostOf(cx).hostBoxInline(source);
+}
+
+/**
+ * Returns `e`, an arm of a returned `if` or `match` whose value is an
+ * inline value, from the arm: its values go to the function's results,
+ * through any pending finalizer.
+ */
+export function returnInlineTail(cx: LoweringContext, e: Expression): void {
+  hostOf(cx).hostReturnInline(e);
 }
 
 /**
