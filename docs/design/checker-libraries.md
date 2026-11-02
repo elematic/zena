@@ -365,14 +365,22 @@ what they save. What stood out:
 
 - The condition re-checks above: a member-path condition cost six
   expression checks; it costs none now.
-- `collectAssignedSymbolIds` walks a loop's whole body for every loop,
-  so nested loops cost depth times size.
+- `collectAssignedSymbolIds` walked a loop's whole body for every loop,
+  so nested loops cost depth times size: 27 ms over the 1,240 loops
+  of the portable-semantics fixture, measured with a temporary phase
+  timer. One walk from the outermost loop now collects every nested
+  loop's set, kept on the context by loop. The fixture's `check` after
+  it: 232 ms at a load average of 21 to 28, where the same build's
+  spread is wider than the 27 ms; the timer, not the table, is the
+  evidence.
 - `classifyOwnUses` walks a block's subtree at every block exit that
   has a drop candidate; `mentionsParamDerived` walks an initializer
-  per scoped `let`.
-- `checkFieldInitializer` compares every member key against every
+  per scoped `let`. Measured the same way, the classifier never ran on
+  the fixture: the compiler's source has almost no drop candidates.
+  Left as it is until a program shows the cost.
+- `checkFieldInitializer` compared every member key against every
   earlier field to decide what to hide, which is quadratic in the
-  field count.
+  field count: 3.7 ms over 521 fields. The prior fields are a set now.
 - `resolveMemberType`'s `_This` scan is linear in the number of mixin
   declarations per member access on a mixin's `this`.
 - `isAssignableTo` substitutes the implements list of every class on

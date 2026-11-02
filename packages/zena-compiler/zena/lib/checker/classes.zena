@@ -1986,32 +1986,24 @@ function checkFieldInitializer(
   ctx.enterNodeReferrer(fd.id as i32);
 
   // Hide the fields declared after this one and the ones inherited from a
-  // superclass while the initializer is checked, so it cannot read them.
+  // superclass while the initializer is checked, so it cannot read them:
+  // every field member whose key is not a prior field's.
+  let priorKeys = new Set<String>();
+  for (var fi = 0; fi <= fieldIndex; fi += 1) {
+    // A `var(#x) x` field's member key is its SETTER name; fieldOrder
+    // carries the declared one.
+    var declared = fieldOrder[fi];
+    if (fsn != null) {
+      if (let (true, mapped) = fsn.get(declared)) {
+        declared = mapped;
+      }
+    }
+    priorKeys.add(declared);
+  }
   let keysToHide = new Array<String>();
-
-  let allFieldKeys = members.keys();
-  for (let k in allFieldKeys) {
-    if (members[k] is FieldInfo) {
-      var isPriorLocal = false;
-      var fi = 0;
-      while (fi <= fieldIndex) {
-        // A `var(#x) x` field's member key is its SETTER name;
-        // fieldOrder carries the declared one.
-        var declared = fieldOrder[fi];
-        let fsnOrder = classType.fieldSetterNames;
-        if (fsnOrder != null) {
-          if (let (true, mapped) = fsnOrder.get(declared)) {
-            declared = mapped;
-          }
-        }
-        if (declared == k) {
-          isPriorLocal = true;
-        }
-        fi = fi + 1;
-      }
-      if (!isPriorLocal) {
-        keysToHide.push(k);
-      }
+  for (let k in members.keys()) {
+    if (members[k] is FieldInfo && !priorKeys.has(k)) {
+      keysToHide.push(k);
     }
   }
 

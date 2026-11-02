@@ -1,6 +1,6 @@
 import { HashMap, Set } from 'zena:collections';
 import { growable } from 'zena:core';
-import { walk, walkEnter } from '../visitor.zena';
+import { walk } from '../visitor.zena';
 import {
   AssignmentExpression, BinaryExpression, BlockStatement, BooleanLiteral,
   BreakStatement, CallExpression, ClassDeclaration, ContinueStatement,
@@ -514,6 +514,23 @@ export function applyFalseNarrowingFromCondition(ctx: CheckerContext, condition:
   ctx.pushFlowNarrowings(conditionNarrowings(ctx, condition).whenFalse);
 }
 
+/** The symbols assigned under one loop, collected by the walk below. */
+final class LoopAssignments {
+  ids = new Array<SymbolId>();
+  #seen = new Set<i32>();
+
+  add(id: SymbolId): void {
+    if (!this.#seen.has(id as i32)) {
+      this.#seen.add(id as i32);
+      this.ids.push(id);
+    }
+  }
+}
+
+function isLoopStatement(n: Node): boolean {
+  return n is WhileStatement || n is ForStatement || n is ForInStatement;
+}
+
 /**
  * Every symbol assigned anywhere under `node`, deduplicated. Loops
  * record these at the loop header as unknown-type flow assignments:
@@ -522,25 +539,43 @@ export function applyFalseNarrowingFromCondition(ctx: CheckerContext, condition:
  * previous iteration's stores, so the header must already carry them.
  * Descends into nested functions on purpose — a closure created in the
  * body can run on any iteration.
+ *
+ * One walk serves every loop under `node` as well: each loop open in
+ * the walk collects the assignments beneath it, and the sets are kept
+ * on the context by loop, so a nested loop's header finds its own
+ * without walking its body again. Nested loops used to cost depth
+ * times body size.
  */
 function collectAssignedSymbolIds(ctx: CheckerContext, node: Node): GrowableArray<SymbolId> {
-  let ids = new Array<SymbolId>();
-  let seen = new Set<i32>();
-  walkEnter(node, (n) => {
+  if (let (true, collected) = ctx.loopAssignments.get(node.id as i32)) {
+    return collected;
+  }
+  // The loops open at the walk's position, `node`'s own set first.
+  let open = growable<LoopAssignments>([new LoopAssignments()]);
+  walk(node, (n) => {
+    if (n.id != node.id && isLoopStatement(n)) {
+      open.push(new LoopAssignments());
+    }
     if (n is AssignmentExpression) {
       if (n.left is Identifier) {
         let info = ctx.model.resolve(n.left);
         if (info != null) {
-          let id = info.id;
-          if (!seen.has(id as i32)) {
-            seen.add(id as i32);
-            ids.push(id);
+          for (let loop in open) {
+            loop.add(info.id);
           }
         }
       }
     }
+    return true;
+  }, (n) => {
+    if (n.id != node.id && isLoopStatement(n)) {
+      let closed = open.pop();
+      ctx.loopAssignments[n.id as i32] = closed.ids;
+    }
   });
-  return ids;
+  let own = open.pop();
+  ctx.loopAssignments[node.id as i32] = own.ids;
+  return own.ids;
 }
 
 /**
