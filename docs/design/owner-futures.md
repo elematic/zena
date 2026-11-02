@@ -319,10 +319,9 @@ A `Completer<T>` holds no value; its future does. At a restricted `T`:
 
 - **The future is handed out once.** `c.future` read twice would give
   two handles to one restricted future. At a restricted `T` the field is
-  not readable; the pair is created together instead, by a static
-  `Completer.create<T>(): (Completer<T>, Future<T>)` whose result is a
-  restricted tuple. The completer half stays copyable, since several
-  writers racing to settle is a supported pattern.
+  not readable (the read would be a take of an immutable field); the
+  pair is created together instead, by a static
+  `Completer.create<T>(): inline (Completer<T>, Future<T>)`.
 - **The completer's reference is not an owner's.** The completer keeps
   the future it settles, and the caller holds that same future, so the
   pair needs two references to one affine object. `create` makes the
@@ -333,7 +332,17 @@ A `Completer<T>` holds no value; its future does. At a restricted `T`:
   new kind of type parameter for producer-side classes, one that takes
   `T` values but never holds one it could hand out, was the
   alternative; it is more checker for one pattern.
-- **A value that loses the race comes back** from `tryComplete`, above.
+- **The completer is affine at a restricted `T`,** as any `scoped T`
+  container of an owner is. So several writers racing to settle one
+  completer is a pattern for a first-class `T`; at an owner, the
+  completer moves to the one writer. Keeping it copyable there would
+  need the producer-side kind of parameter above.
+- **Dropping a completer that never settled fails its future,** with
+  an error that says so, rather than leaving its consumer waiting, as
+  dropping a Rust `oneshot::Sender` does. Its `[release]` does only
+  that; the future is its consumer's to release.
+- **A value that loses the race comes back** from `tryComplete`, which
+  returns `inline (true, _) | inline (false, T)`, as `Future`'s does.
   `complete(v)` on a settled future still throws while it holds `v`.
   That is a programming error, and it falls in the gap ownership.md
   already records for an exception raised while a must-consume value is
@@ -529,16 +538,18 @@ and with them:
    - Merged: #782 (a pattern that takes a `scoped T` instance apart
      moves it and releases what it bound), #788 (any `scoped T` class at
      an owner is released where it is dropped, through a `[release]`
-     synthesized from its `T` fields), and #789 (a generic function at
-     an owner is specialized at the owner's resource class, not as an
-     erasure).
-   - In review: #790 (`Some` takes `scoped T`; a union with a container
+     synthesized from its `T` fields), #789 (a generic function at an
+     owner is specialized at the owner's resource class, not as an
+     erasure), #790 (`Some` takes `scoped T`; a union with a container
      member is affine and released by its member), #791 (the static half
      of `isFirstClass<T>()`, and first-class-only fields), and #796
      (streams whose writes hand refused elements back,
      `StreamWriter.create`, and the `share_reference` intrinsic).
-   - Next: `Completer.create`, `FutureClaim`, and loop-variable release
-     for `for await`.
+   - In review: #804 (a call returning another function's inline result
+     at a zero-width instantiation) and #805 (`Completer.create`, a
+     `tryComplete` that hands its loser back, and a dropped completer
+     failing its future).
+   - Next: `FutureClaim` and loop-variable release for `for await`.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
    `zena:fetch` and the protobuf transports removed.
 
