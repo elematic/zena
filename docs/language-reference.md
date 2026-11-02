@@ -4823,12 +4823,45 @@ as in `inline (true, T) | inline (false, _)`, means the same thing. Parentheses
 group as usual, so `(inline A) | B` mixes an inline member with a boxed one,
 which is an error.
 
-An inline type may appear only in return position: a function's return type,
-the result of a function type, or a type alias used there. A type argument, a
-record field, a function parameter and an element of a boxed tuple are storage
-positions, and an inline type in one is an error. Because inline-ness is part
-of a function type, an arrow written where `() => inline Pair` is expected
-returns `inline Pair`.
+An inline type may appear as a function's result, as a parameter, and as a
+`let` in a function body. A type argument, a record field, a `var`, a
+module-level `let` and an element of a boxed tuple are storage positions, and
+an inline type in one is an error. Because inline-ness is part of a function
+type, an arrow written where `() => inline Pair` is expected returns
+`inline Pair`.
+
+An inline parameter is passed as its slots, as an inline result is returned,
+and an inline `let` holds them:
+
+```zena
+type Span = (i32, i32);
+
+function width(s: inline Span): i32 {
+  let (start, end) = s;
+  return end - start;
+}
+
+function clamp(s: inline Span, limit: i32): inline Span {
+  let (start, end) = s;
+  return (start, if (end > limit) limit else end);
+}
+
+let w = width(clamp((0, 50), 10)); // nothing is allocated
+```
+
+An inline parameter or `let` is never put in a heap object. It can be
+destructured, matched, indexed with a literal, passed for another inline
+parameter, held by another `let`, and returned as an inline result. Anything
+that would box it is an error at that use: storing it, passing it for a
+parameter that is not inline, capturing it in a closure, `==`, `is` and `as`.
+A boxed value may be passed for an inline parameter, which reads it without
+allocating.
+
+A function with an inline parameter is a top-level function or arrow, a
+method, or a constructor, and it is called rather than used as a value. An
+override keeps the inline-ness of each parameter it overrides. An inline
+parameter cannot be optional, and an exported, async or generator function
+cannot take one.
 
 `inline` is shallow. It unboxes the value it is written on, and nothing
 inside it: in `inline (i32, (i32, i32))` the second element is a boxed tuple.

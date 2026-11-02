@@ -23,7 +23,8 @@ import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown } from '../well-known.zena';
 import { Symbol } from '../scope/symbol.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
-import { boxedFormOf, resolveTypeAnnotation } from './annotations.zena';
+import { boxedFormOf, isInlineType, resolveTypeAnnotation } from './annotations.zena';
+import { isInlineBindingReference } from './inline.zena';
 import { checkClassBodies, registerClassDeclaration } from './classes.zena';
 import { CheckerContext, lookupBindingTypeInDeps } from './context.zena';
 import {
@@ -890,9 +891,14 @@ function checkVariableDeclaration(
   init: Expression,
   loc: SourceLocation | null
 ): void {
+  // A `let` in a function body may hold an inline value; a module-level
+  // one is a global, and a `var`'s slots would have to cross joins
+  // (docs/design/inline-parameters.md).
+  let inlineAllowed = kind == "let" && pattern is IdentifierPattern &&
+      ctx.body.returnType != null;
   // Infer the type of the initializer.
   let expectedType = if (typeAnnotation != null) {
-    resolveTypeAnnotation(ctx, typeAnnotation)
+    resolveTypeAnnotation(ctx, typeAnnotation, inlineAllowed)
   } else {
     null
   };
@@ -908,9 +914,16 @@ function checkVariableDeclaration(
     initType
   };
   // A name holds a stored value, so an inline initializer is boxed. A
-  // tuple pattern takes the inline value apart instead.
-  if (typeAnnotation == null && !(pattern is TuplePattern)) {
+  // tuple pattern takes the inline value apart instead, and a `let` of an
+  // inline binding is inline itself: boxing it is what the binding's
+  // `inline` rules out.
+  let keepsInline = inlineAllowed && isInlineBindingReference(ctx, init);
+  if (typeAnnotation == null && !(pattern is TuplePattern) && !keepsInline) {
     declType = boxedFormOf(declType);
+  }
+  if ((keepsInline && isInlineType(declType)) ||
+      (expectedType != null && isInlineType(expectedType))) {
+    ctx.body.declaresInline = true;
   }
 
   // If an explicit type annotation is present, validate assignability.

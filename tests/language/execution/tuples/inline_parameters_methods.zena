@@ -1,0 +1,57 @@
+// @mode: run
+// @result: 0
+// An inline parameter on methods and constructors: every way of calling
+// one passes the parameter's slots, so an override, an implementation and
+// a call through the base type or an interface agree on them.
+
+type Span = (i32, i32);
+
+class Ruler {
+  base: i32;
+  new(start: inline Span) : base = start[0] + start[1];
+
+  static width(s: inline Span): i32 {
+    let (a, b) = s;
+    return b - a;
+  }
+
+  measure(s: inline Span): i32 {
+    return this.base + Ruler.width(s);
+  }
+}
+
+class Doubled extends Ruler {
+  new(start: inline Span) : super(start);
+
+  measure(s: inline Span): i32 {
+    return super.measure(s) * 2;
+  }
+}
+
+interface Measure {
+  measure(s: inline Span): i32;
+}
+
+class Plain implements Measure {
+  measure(s: inline Span): i32 {
+    return s[1];
+  }
+}
+
+let through = (m: Measure): i32 => m.measure((1, 7));
+
+function generic<T>(s: inline Span, extra: T): i32 {
+  return Ruler.width(s);
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (Ruler.width((2, 9)) != 7) { failures += 1; }
+  let r = new Ruler((1, 2));
+  if (r.base != 3 || r.measure((0, 4)) != 7) { failures += 2; }
+  let base: Ruler = new Doubled((1, 1));
+  if (base.measure((0, 3)) != 10) { failures += 4; }
+  if (through(new Plain()) != 7) { failures += 8; }
+  if (generic<String>((3, 4), 'x') != 1) { failures += 16; }
+  return failures;
+};

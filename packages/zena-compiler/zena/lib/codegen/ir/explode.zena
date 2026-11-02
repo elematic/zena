@@ -57,7 +57,8 @@ import {
   ClassCodegenInfo, WasmModule, WasmFunction, RecordDispatchInfo, ExplosionSpec,
 } from '../wasm-module.zena';
 import {
-  recordWasmFields, sortedOptionalNames, substituteTypeParamsInFunctionContext,
+  inlineParamLayoutOf, recordWasmFields, sortedOptionalNames,
+  substituteTypeParamsInFunctionContext,
 } from '../type-mapping.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
@@ -1354,8 +1355,41 @@ function forwardKeepsFields(byKey: HashMap<String, Candidate>,
  * `f` as a candidate, with each record parameter's uses classified, or
  * null when `f` can take no core.
  */
+/**
+ * Whether `f` takes a parameter inline. Its signature already takes the
+ * parameter's slots, which every caller passes, so it has no boxed form to
+ * forward from (docs/design/inline-parameters.md).
+ */
+function takesInlineParameter(wasm: WasmModule, f: WasmFunction): boolean {
+  let fn = f.node;
+  let params = if (fn is FunctionExpression) {
+    fn.params
+  } else if (fn is MethodDefinition) {
+    fn.params
+  } else {
+    null
+  };
+  if (params == null) {
+    return false;
+  }
+  for (let p in params) {
+    let sym = f.model.resolve(p.name);
+    if (sym == null) {
+      continue;
+    }
+    let bt = f.model.getBindingType(sym);
+    if (bt != null && inlineParamLayoutOf(wasm, bt) != null) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function candidateFor(wasm: WasmModule, pass: ReachabilityAnalysis,
     f: WasmFunction): Candidate | null {
+  if (takesInlineParameter(wasm, f)) {
+    return null;
+  }
   if (f.classType != null) {
     let methodName = f.methodName;
     if (methodName != null && !(methodName as String).startsWith('<constructor>')) {

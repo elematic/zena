@@ -3,7 +3,8 @@ import { analyzeCaptures } from '../analysis/capture.zena';
 import { walkEnter } from '../visitor.zena';
 import {
   BlockStatement, Expression, ExpressionStatement, FunctionDeclaration,
-  FunctionExpression, Identifier, Node, TypeAnnotation, VariableDeclaration
+  FunctionExpression, Identifier, Node, SourceLocation, TypeAnnotation,
+  VariableDeclaration
 } from '../ast.zena';
 import {
   ClassType, ErrorType, FunctionDeclInfo, FunctionType, Type,
@@ -13,7 +14,8 @@ import {
 import { DiagnosticCode } from '../diagnostics.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { adaptToExpected } from './adaptation.zena';
-import { isInlineType, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
+import { checkInlineParameterType, isInlineType, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
+import { checkInlineBindingUses } from './inline.zena';
 import { BodyContext, CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
 
@@ -32,6 +34,34 @@ import {
 import { isAssignableTo } from './relations.zena';
 import { checkStatement } from './statements.zena';
 import { unwrapAliases } from './unions.zena';
+
+/**
+ * An inline parameter changes a function's wasm signature, so a function
+ * that takes one is called directly: one declared at the top level, and
+ * not one that runs in a frame of its own (docs/design/inline-parameters.md).
+ */
+function rejectInlineParameterHere(ctx: CheckerContext, fe: FunctionExpression,
+    isClosure: boolean, loc: SourceLocation | null) {
+  let parent = ctx.model.getParent(fe);
+  let exported = match (parent) {
+    case VariableDeclaration {exported}: exported
+    case FunctionDeclaration {exported}: exported
+    case _: false
+  };
+  let reason = if (isClosure) {
+    "a function value, which cannot be adapted to a boxed parameter yet (#543)"
+  } else if (fe.isAsync || fe.isGenerator) {
+    "an async or generator function, whose parameters move into its frame"
+  } else if (exported) {
+    "an exported function, whose arguments the host passes"
+  } else {
+    null
+  };
+  if (reason != null) {
+    ctx.error(`An inline parameter is not supported on ${reason}.`,
+        DiagnosticCode.TypeMismatch, loc);
+  }
+}
 
 export function checkFunctionExpression(
   ctx: CheckerContext,
@@ -105,7 +135,12 @@ export function checkFunctionExpression(
     var paramType: Type = new ErrorType();
     let {typeAnnotation} = param;
     if (typeAnnotation != null) {
-      paramType = resolveTypeAnnotation(ctx, typeAnnotation);
+      paramType = resolveTypeAnnotation(ctx, typeAnnotation, true);
+      checkInlineParameterType(ctx, paramType,
+          param.optional || param.defaultValue != null, typeAnnotation.loc);
+      if (isInlineType(paramType)) {
+        rejectInlineParameterHere(ctx, fe, isClosure, typeAnnotation.loc);
+      }
           } else if (contextualFn != null) {
       if (i < contextualFn.parameters.length) {
         paramType = contextualFn.parameters[i];
@@ -507,6 +542,9 @@ export function checkFunctionExpression(
   }
 
   checkBorrowDerivation(ctx, paramTypes, finalRetType, false, fe.loc);
+  if (bodyCtx.declaresInline || paramTypes.some((t) => isInlineType(t))) {
+    checkInlineBindingUses(ctx, body as Node, finalRetType);
+  }
 
   let fnType = new FunctionType(paramTypes, finalRetType,
       new FunctionDeclInfo(paramNames, paramSymbols,
@@ -545,6 +583,16 @@ export function checkFunctionExpression(
       // capturing a second-class value is exactly the escape the borrow
       // rules exist to stop. ownership.md §"The two axes".
       let decl = c.declaration;
+      let captured = ctx.model.getBindingType(c);
+      if (captured != null && isInlineType(captured) && !(captured is FunctionType)) {
+        // A closure is a heap object, and an inline value never is held
+        // in one (docs/design/inline-parameters.md).
+        ctx.error(
+          `'${c.name}' is inline, so it is only read or passed on: capturing it in a closure would box it.`,
+          DiagnosticCode.TypeMismatch,
+          fe.loc
+        );
+      }
       if (decl != null) {
         let declType = ctx.model.getNodeType(decl);
         if (declType != null && typeContainsSecondClass(declType)) {

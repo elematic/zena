@@ -478,10 +478,29 @@ export function resolveTypeAnnotation(ctx: CheckerContext, ann: TypeAnnotation, 
   let t = resolveTypeAnnotationInner(ctx, ann);
   if (!allowInlineTuple) {
     if (isInlineType(t)) {
-      ctx.error("Inline tuple types can only appear in function return types, not here.", DiagnosticCode.TypeMismatch, ann.loc);
+      ctx.error("An inline type can only be a function's result, a parameter or a 'let', not here.", DiagnosticCode.TypeMismatch, ann.loc);
     }
   }
   return t;
+}
+
+/**
+ * The rules an `inline` parameter's type follows beyond an inline
+ * result's (docs/design/inline-parameters.md). `inline? T` is decided
+ * per specialization, which no parameter list follows yet. An optional
+ * parameter is nullable, and an inline value has no absent form.
+ */
+export function checkInlineParameterType(ctx: CheckerContext, t: Type, optional: boolean,
+    loc: SourceLocation | null): void {
+  if (!isInlineType(t)) {
+    return;
+  }
+  if (t is InlineParamType) {
+    ctx.error("'inline?' on a parameter is not supported yet.", DiagnosticCode.TypeMismatch, loc);
+  } else if (optional) {
+    ctx.error("An inline parameter cannot be optional: an inline value has no absent form.",
+        DiagnosticCode.TypeMismatch, loc);
+  }
 }
 
 /**

@@ -173,30 +173,32 @@ unboxed, typically for zero-cost multi-value or result returns:
 ```zena
 type Result<T, E> = (true, T) | (false, E);
 
-export function checkedDivide(a: i32, b: i32): inline Result<i32, String> {
-  if (b == 0) {
-    return (false, 'division by zero');
+export function checkedSubtract(a: i32, b: i32): inline Result<i32, String> {
+  if (b > a) {
+    return (false, 'underflow');
   }
-  return (true, a / b);
+  return (true, a - b);
 }
 ```
 
-Because `inline` tuples are unboxed and flattened into multiple WebAssembly
-return registers, naming them with a type definition does not alter their
-position restrictions: a type targeting an `inline` tuple can only be used as a
-function return type. Using it on local variables, struct fields, or container
-type arguments is rejected:
+An inline type is unboxed into several WebAssembly values, so it can only be a
+function's result, a parameter, or a `let` in a function body. A struct field,
+a `var` or a container's type argument holds a value in memory, and an inline
+type there is rejected:
 
 ```zena
-// Compile error: Inline tuple types can only appear in function return types
-let bad: Result<i32, String> = checkedDivide(10, 2);
+class Holder {
+  // Compile error: an inline type can only be a function's result, a
+  // parameter or a `let`
+  last: inline Result<i32, String>;
+}
 ```
 
-To capture an inline tuple return value, use pattern destructuring:
+To take an inline result apart, use pattern destructuring:
 
 ```zena
-if (let (true, value, _) = checkedDivide(10, 2)) {
-  println(`Result: ${value}`);
+if (let (true, value) = checkedSubtract(10, 2)) {
+  console.log(`Result: ${value}`);
 }
 ```
 

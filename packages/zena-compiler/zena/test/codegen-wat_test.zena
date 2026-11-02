@@ -513,6 +513,35 @@ export let tests = suite('WatGenerator', () => {
         'a failed tag test should trap through a cast');
   });
 
+  // An inline parameter is passed as its slots and an inline `let` holds
+  // them (docs/design/inline-parameters.md), so neither a callee that
+  // reads one nor a caller that passes a literal, forwards one or passes
+  // an inline result allocates. Boxing would still run, so only the
+  // property says it regressed.
+  test('inline parameters and lets allocate nothing', (ctx) => {
+    let result = compileAndGenerateWat(`
+      type Span = (i32, i32);
+      function width(s: inline Span): i32 {
+        let (start, end) = s;
+        return end - start + s[0];
+      }
+      function clamp(s: inline Span, limit: i32): inline Span {
+        let (start, end) = s;
+        return (start, if (end > limit) limit else end);
+      }
+      function forward(s: inline Span): i32 {
+        let kept = s;
+        return width(kept) + width(clamp(s, 3));
+      }
+      export let main = (): i32 => forward((1, 9)) + width((2, 4));
+    `);
+    assertNoAllocation(result, '$width', 'an inline parameter is read from its slots');
+    assertNoAllocation(result, '$clamp', 'an inline parameter forwarded to an inline result');
+    assertNoAllocation(result, '$forward',
+        'an inline let and an inline result are passed on as slots');
+    assertNoAllocation(result, '$main', 'a literal argument is written into the slots');
+  });
+
   // The shaped vector types (`I32x4` and friends in `zena:simd`) are
   // extension classes over `v128`, and their whole value proposition is
   // that the shape is a compile-time view: no wrapper object, so no

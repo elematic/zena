@@ -15,6 +15,7 @@ import {
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown } from '../well-known.zena';
 import { isInlineType } from './annotations.zena';
+import { inlineParamsMatch } from './inline.zena';
 import { CheckerContext } from './context.zena';
 import { substituteTypeParams, tryInstantiateGenericFunction } from './generics.zena';
 import { isNullableType, subtractNullFromType, unwrapAliases } from './unions.zena';
@@ -1093,9 +1094,10 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
           if (finalSrcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
           // Covariant return type
           if (!isAssignableTo(ctx, finalSrcFunc.returnType, tgtFunc.returnType)) { return false; }
-          // An inline result changes the wasm signature, and nothing
-          // adapts one function to the other yet.
-          if (isInlineType(finalSrcFunc.returnType) != isInlineType(tgtFunc.returnType)) {
+          // An inline result or parameter changes the wasm signature, and
+          // nothing adapts one function to the other yet.
+          if (isInlineType(finalSrcFunc.returnType) != isInlineType(tgtFunc.returnType) ||
+              !inlineParamsMatch(finalSrcFunc, tgtFunc)) {
             return false;
           }
           for (var i = 0; i < finalSrcFunc.parameters.length; i += 1) {

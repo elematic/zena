@@ -43,7 +43,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, nestedInlineTuple, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -1510,6 +1510,13 @@ export final class FunctionLowerer {
     let paramSigIndex = new Array<i32>();
     var liveParamCount = 0;
     for (var pi = 0; pi < params.length; pi += 1) {
+      // An inline parameter spans its slots.
+      let inlineLayout = this.#inlineParamLayout(params[pi]);
+      if (inlineLayout != null) {
+        paramSigIndex.push(liveParamCount + paramOffset);
+        liveParamCount += inlineLayout.slots.length;
+        continue;
+      }
       if (this.#isZeroWidthParam(params[pi])) {
         paramSigIndex.push(-1);
       } else {
@@ -1572,6 +1579,25 @@ export final class FunctionLowerer {
         }
         if (p.pattern != null) {
           this.#bail('destructuring a zero-width parameter');
+        }
+        continue;
+      }
+      let inlineLayout = this.#inlineParamLayout(p);
+      if (inlineLayout != null) {
+        let slots = new Array<i32>();
+        for (var k = 0; k < inlineLayout.slots.length; k += 1) {
+          this.#requireSupported(sig.params[sigIndex + k], 'parameter type');
+          slots.push(this.b.blockParam(entry, sig.params[sigIndex + k]));
+        }
+        let source = new MultiValues(slots, inlineLayout);
+        let sym = this.func.model.resolveDeclaration(p.name);
+        if (sym != null) {
+          this.#cx().env[sym.id] = NO_VALUE;
+          this.#cx().symbols[sym.id] = sym;
+          this.#cx().inlineBindings[sym.id] = source;
+        }
+        if (p.pattern != null) {
+          this.#bail('destructuring an inline parameter');
         }
         continue;
       }
@@ -2602,7 +2628,8 @@ export final class FunctionLowerer {
         this.#bail('super constructor not found');
       }
       let superSig = superCtor.signature;
-      if (superSig.params.length != this.#liveArgCount(si.args)) {
+      let inlineParams = this.#inlineLayoutsOf(superCtor);
+      if (superSig.params.length != this.#liveArgWidth(si.args, inlineParams)) {
         this.#bail('super constructor arity');
       }
       // A super constructor whose record parameter explodes: a literal
@@ -2614,6 +2641,12 @@ export final class FunctionLowerer {
           superExplosion.forwarder === superCtor) superExplosion else null;
       var sIdx = 0;
       for (var i = 0; i < si.args.length; i += 1) {
+        let inlineLayout = this.#inlineArgLayout(inlineParams, i);
+        if (inlineLayout != null) {
+          this.#pushInlineArg(si.args[i], inlineLayout, superArgs);
+          sIdx += inlineLayout.slots.length;
+          continue;
+        }
         if (this.#dropZeroWidthArg(si.args[i])) {
           continue;
         }
@@ -3145,6 +3178,27 @@ export final class FunctionLowerer {
       }
       return new Array<i32>();
     }
+    return this.#lowerIntoSlots(arg, layout, sig.returns);
+  }
+
+  /**
+   * The values of `arg` in the slots `slotVts` of the inline layout
+   * `layout`: a function's results, or an inline parameter's slots
+   * (docs/design/inline-parameters.md). A call forwards its slots, an
+   * inline binding its own, a boxed tuple is read field by field, and a
+   * tuple literal writes each element into its slot. `layout` is null
+   * for a positional multi-value (no union, no nesting), whose slots
+   * are the elements in order.
+   */
+  #lowerIntoSlots(arg: Expression, layout: InlineLayout | null,
+      slotVts: GrowableArray<ValType>): GrowableArray<i32> {
+    let held = this.#heldInline(arg);
+    if (held != null) {
+      if (layout == null || this.#slotsForwardDirectly(held.values, slotVts)) {
+        return held.values;
+      }
+      return this.#convertInlineSlots(held.values, held.layout as InlineLayout, layout);
+    }
     if (arg is CallExpression) {
       // Forwarding form: `return f(...)`. The callee's union can be a
       // narrower one than this function's (`Step<T>` into
@@ -3157,7 +3211,7 @@ export final class FunctionLowerer {
       }
       var calleeLayout = this.#callResultLayout(arg);
       var flat = outs;
-      if (layout != null && outs.length == 1 && sig.returns.length != 1 &&
+      if (layout != null && outs.length == 1 && slotVts.length != 1 &&
           (calleeLayout == null || calleeLayout.slots.length != 1)) {
         // The callee returns the tuple boxed: read its fields into slots.
         // The call's type is the inline one it converts to, so the boxed
@@ -3176,24 +3230,24 @@ export final class FunctionLowerer {
         }
       }
       if (layout != null && calleeLayout != null &&
-          !this.#slotsForwardDirectly(flat, sig.returns)) {
+          !this.#slotsForwardDirectly(flat, slotVts)) {
         flat = this.#convertInlineSlots(flat, calleeLayout as InlineLayout, layout);
       }
-      if (flat.length != sig.returns.length) {
+      if (flat.length != slotVts.length) {
         this.#bail('multi-value return arity');
       }
       for (var i = 0; i < flat.length; i += 1) {
         let have = this.#valueType(flat[i]);
-        if (have is ValTypeNullRef && !isValSubtype(have, sig.returns[i])) {
+        if (have is ValTypeNullRef && !isValSubtype(have, slotVts[i])) {
           // The callee's slot is `_` in every member (`nullref`), and
           // this function's holds something — a wider union that fills
           // it in a member the callee never produces. There is no
           // value to forward, so the slot takes its default.
-          flat[i] = this.#defaultValueOf(sig.returns[i]);
+          flat[i] = this.#defaultValueOf(slotVts[i]);
           continue;
         }
-        if (!isValSubtype(have, sig.returns[i])) {
-          this.#failConformance(flat[i], sig.returns[i],
+        if (!isValSubtype(have, slotVts[i])) {
+          this.#failConformance(flat[i], slotVts[i],
               'multi-value return type');
         }
       }
@@ -3211,7 +3265,7 @@ export final class FunctionLowerer {
         this.#bail('multi-value return');
       }
       let mv = unboxed as MultiValues;
-      if (this.#slotsForwardDirectly(mv.values, sig.returns)) {
+      if (this.#slotsForwardDirectly(mv.values, slotVts)) {
         return mv.values;
       }
       return this.#convertInlineSlots(mv.values, mv.layout as InlineLayout,
@@ -3283,13 +3337,13 @@ export final class FunctionLowerer {
       }
       return values;
     }
-    if (arg.elements.length != sig.returns.length) {
+    if (arg.elements.length != slotVts.length) {
       this.#bail('multi-value return arity');
     }
     let values = new Array<i32>();
     for (var i = 0; i < arg.elements.length; i += 1) {
       let el = arg.elements[i];
-      let expected = sig.returns[i];
+      let expected = slotVts[i];
       let v = if (el is Identifier && el.name == '_') {
         this.#defaultValueOf(expected)
       } else {
@@ -3977,6 +4031,19 @@ export final class FunctionLowerer {
     }
     let subBinding = substituteTypeParamsInFunctionContext(
         this.wasm, this.func, bindingType);
+    // An inline `let` holds its initializer's slots
+    // (docs/design/inline-parameters.md).
+    let inlineLayout = inlineParamLayoutOf(this.wasm, subBinding);
+    if (inlineLayout != null) {
+      let values = this.#lowerIntoSlots(vd.init, inlineLayout, inlineLayout.slots);
+      if (this.#isCelled(sym.id)) {
+        this.#bail('inline let is celled');
+      }
+      this.#cx().env[sym.id] = NO_VALUE;
+      this.#cx().symbols[sym.id] = sym;
+      this.#cx().inlineBindings[sym.id] = new MultiValues(values, inlineLayout);
+      return;
+    }
     if (isVoidOrNeverType(subBinding)) {
       // A zero-width binding holds no value — per specialization, the
       // way arguments and returns already work: `let v = await f()` at
@@ -4265,6 +4332,10 @@ export final class FunctionLowerer {
   }
 
   #lowerMultiSourceValues(init: Expression): MultiValues {
+    let held = this.#heldInline(init);
+    if (held != null) {
+      return held;
+    }
     let out = new Array<i32>();
     // A literal with spreads is not one value per element; it lowers as
     // one tuple, which the destructuring site splits.
@@ -4564,7 +4635,8 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('method multi-value return');
     }
-    if (sig.params.length != this.#liveArgCount(call.args)) {
+    let inlineParams = this.#inlineLayoutsOf(target);
+    if (sig.params.length != this.#liveArgWidth(call.args, inlineParams)) {
       this.#bail('static call arity');
     }
     // A static method whose record parameters or result explode
@@ -4586,6 +4658,12 @@ export final class FunctionLowerer {
     let args = new Array<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
+      let inlineLayout = this.#inlineArgLayout(inlineParams, i);
+      if (inlineLayout != null) {
+        this.#pushInlineArg(call.args[i], inlineLayout, args);
+        sIdx += inlineLayout.slots.length;
+        continue;
+      }
       if (this.#dropZeroWidthArg(call.args[i])) {
         continue;
       }
@@ -4681,7 +4759,8 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('method multi-value return');
     }
-    if (sig.params.length != this.#liveArgCount(call.args)) {
+    let inlineParams = this.#inlineLayoutsOf(target);
+    if (sig.params.length != this.#liveArgWidth(call.args, inlineParams)) {
       this.#bail('specialized call arity');
     }
     let defaults = this.#defaultArgInfo(call);
@@ -4702,6 +4781,12 @@ export final class FunctionLowerer {
     let args = new Array<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
+      let inlineLayout = this.#inlineArgLayout(inlineParams, i);
+      if (inlineLayout != null) {
+        this.#pushInlineArg(call.args[i], inlineLayout, args);
+        sIdx += inlineLayout.slots.length;
+        continue;
+      }
       if (this.#dropZeroWidthArg(call.args[i])) {
         continue;
       }
@@ -6398,6 +6483,12 @@ export final class FunctionLowerer {
   }
 
   #lowerIdentifier(ident: Identifier): i32 {
+    // An inline binding is its slots; the checker leaves only the uses
+    // that read it whole as one value (`==`), which box it here.
+    let held = this.#heldInline(ident);
+    if (held != null) {
+      return this.#boxInline(held);
+    }
     // A use typed `void` or `never` may still have an ordinary slot
     // behind it, because narrowing can empty a use's type (see the
     // `never` note further down). So this is only a question; the slot
@@ -6859,7 +6950,8 @@ export final class FunctionLowerer {
       this.#bail(`constructor missing for ${cKey as String} ${ctorMethName}`);
     }
     let sig = ctor.signature;
-    if (sig.params.length != this.#liveArgCount(argExprs) ||
+    let inlineParams = this.#inlineLayoutsOf(ctor);
+    if (sig.params.length != this.#liveArgWidth(argExprs, inlineParams) ||
         sig.returns.length != 1) {
       this.#bail('constructor arity adaptation');
     }
@@ -6877,6 +6969,12 @@ export final class FunctionLowerer {
     let args = new Array<i32>();
     var sIdx = 0;
     for (var i = 0; i < argExprs.length; i += 1) {
+      let inlineLayout = this.#inlineArgLayout(inlineParams, i);
+      if (inlineLayout != null) {
+        this.#pushInlineArg(argExprs[i], inlineLayout, args);
+        sIdx += inlineLayout.slots.length;
+        continue;
+      }
       if (this.#dropZeroWidthArg(argExprs[i])) {
         continue;
       }
@@ -7635,7 +7733,8 @@ export final class FunctionLowerer {
     if (multiOut != null) {
       this.#bail('super call in multi-value position');
     }
-    if (sig.params.length != this.#liveArgCount(call.args) + 1) {
+    let inlineParams = this.#inlineLayoutsOf(method);
+    if (sig.params.length != this.#liveArgWidth(call.args, inlineParams) + 1) {
       this.#bail('super method arity');
     }
     let args = growable<i32>([
@@ -7643,6 +7742,12 @@ export final class FunctionLowerer {
     ]);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
+      let inlineLayout = this.#inlineArgLayout(inlineParams, i);
+      if (inlineLayout != null) {
+        this.#pushInlineArg(call.args[i], inlineLayout, args);
+        sIdx += inlineLayout.slots.length;
+        continue;
+      }
       if (this.#dropZeroWidthArg(call.args[i])) {
         continue;
       }
@@ -8329,7 +8434,8 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('method multi-value return');
     }
-    if (sig.params.length != this.#liveArgCount(call.args) + 1) {
+    let inlineParams = this.#inlineLayoutsOf(method);
+    if (sig.params.length != this.#liveArgWidth(call.args, inlineParams) + 1) {
       this.#bail('method arity adaptation');
     }
 
@@ -8379,6 +8485,12 @@ export final class FunctionLowerer {
     let args = growable<i32>([receiver]);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
+      let inlineLayout = this.#inlineArgLayout(inlineParams, i);
+      if (inlineLayout != null) {
+        this.#pushInlineArg(call.args[i], inlineLayout, args);
+        sIdx += inlineLayout.slots.length;
+        continue;
+      }
       if (this.#dropZeroWidthArg(call.args[i])) {
         continue;
       }
@@ -8688,8 +8800,17 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('interface member multi-value return');
     }
+    // The member's parameters, at this interface's type arguments: an
+    // inline one takes its slots.
+    let member = if (it.members.has(memberName)) it.members[memberName] else null;
+    let inlineParams = if (member != null && member.type is FunctionType) {
+      this.#inlineParamLayouts(substituteTypeParamsInCodegen(this.wasm,
+          getInterfaceTypeParameters(it), it.typeArguments, member.type))
+    } else {
+      null
+    };
     let argCount = if (argExprs == null) 0
-        else this.#liveArgCount(argExprs);
+        else this.#liveArgWidth(argExprs, inlineParams);
     if (sig.params.length != argCount + 1) {
       this.#bail('interface call arity adaptation');
     }
@@ -8708,6 +8829,12 @@ export final class FunctionLowerer {
     if (argExprs != null) {
       var sIdx = 1;
       for (var i = 0; i < argExprs.length; i += 1) {
+        let inlineLayout = this.#inlineArgLayout(inlineParams, i);
+        if (inlineLayout != null) {
+          this.#pushInlineArg(argExprs[i], inlineLayout, args);
+          sIdx += inlineLayout.slots.length;
+          continue;
+        }
         if (this.#dropZeroWidthArg(argExprs[i])) {
           continue;
         }
@@ -9924,7 +10051,8 @@ export final class FunctionLowerer {
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('callee multi-value return');
     }
-    if (sig.params.length != this.#liveArgCount(call.args)) {
+    let inlineParams = this.#inlineParamLayouts(this.#calleeTypeOf(call));
+    if (sig.params.length != this.#liveArgWidth(call.args, inlineParams)) {
       this.#bail('call arity adaptation');
     }
     for (var i = 0; i < sig.params.length; i += 1) {
@@ -9946,6 +10074,12 @@ export final class FunctionLowerer {
     let args = new Array<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
+      let inlineLayout = this.#inlineArgLayout(inlineParams, i);
+      if (inlineLayout != null) {
+        this.#pushInlineArg(call.args[i], inlineLayout, args);
+        sIdx += inlineLayout.slots.length;
+        continue;
+      }
       if (this.#dropZeroWidthArg(call.args[i])) {
         continue;
       }
@@ -10695,6 +10829,134 @@ export final class FunctionLowerer {
    * slot — the callee-side mirror of #isZeroWidthExpr, and the exact
    * condition mapParamTypeToWasmParams drops the slot on.
    */
+  /**
+   * The layout each parameter of `callee` takes when it is inline
+   * (docs/design/inline-parameters.md), or null when none is: then the
+   * call lowers one value per argument, as it always has.
+   */
+  #inlineParamLayouts(callee: Type | null): GrowableArray<InlineLayout | null> | null {
+    if (callee == null || !(callee is FunctionType)) {
+      return null;
+    }
+    var any = false;
+    let layouts = new Array<InlineLayout | null>();
+    for (let p in callee.parameters) {
+      let u = unwrapAliases(p);
+      let layout = if (u is InlineTupleType || u is UnionType) {
+        inlineParamLayoutOf(this.wasm,
+            substituteTypeParamsInFunctionContext(this.wasm, this.func, p))
+      } else {
+        null
+      };
+      if (layout != null) {
+        any = true;
+      }
+      layouts.push(layout);
+    }
+    return if (any) layouts else null;
+  }
+
+  /**
+   * `#inlineParamLayouts` for a function about to be called, from its own
+   * parameters at its own specialization.
+   */
+  #inlineLayoutsOf(f: WasmFunction): GrowableArray<InlineLayout | null> | null {
+    let fn = f.node;
+    let params = if (fn is FunctionExpression) {
+      fn.params
+    } else if (fn is MethodDefinition) {
+      fn.params
+    } else {
+      null
+    };
+    if (params == null) {
+      return null;
+    }
+    var any = false;
+    let layouts = new Array<InlineLayout | null>();
+    for (let p in params) {
+      let sym = f.model.resolve(p.name);
+      let bt = if (sym != null) f.model.getBindingType(sym) else null;
+      let u = if (bt != null) unwrapAliases(bt) else null;
+      let layout = if (bt != null && (u is InlineTupleType || u is UnionType)) {
+        inlineParamLayoutOf(this.wasm,
+            substituteTypeParamsInFunctionContext(this.wasm, f, bt))
+      } else {
+        null
+      };
+      if (layout != null) {
+        any = true;
+      }
+      layouts.push(layout);
+    }
+    return if (any) layouts else null;
+  }
+
+  /** The callee type a call's arguments are lowered against. */
+  #calleeTypeOf(call: CallExpression): Type | null {
+    return this.func.model.getResolvedOverload(call) ?? this.func.model.getNodeType(call.callee);
+  }
+
+  /** Parameter `i`'s inline layout, from `#inlineParamLayouts`. */
+  #inlineArgLayout(layouts: GrowableArray<InlineLayout | null> | null, i: i32): InlineLayout | null {
+    return if (layouts != null && i < layouts.length) layouts[i] else null;
+  }
+
+  /**
+   * How many wasm values these arguments take: `#liveArgCount`, with an
+   * argument for an inline parameter taking that parameter's slots.
+   */
+  #liveArgWidth(args: GrowableArray<Expression>,
+      layouts: GrowableArray<InlineLayout | null> | null): i32 {
+    if (layouts == null) {
+      return this.#liveArgCount(args);
+    }
+    var live = 0;
+    for (var i = 0; i < args.length; i += 1) {
+      let layout = this.#inlineArgLayout(layouts, i);
+      if (layout != null) {
+        live += layout.slots.length;
+      } else if (!this.#isZeroWidthExpr(args[i])) {
+        live += 1;
+      }
+    }
+    return live;
+  }
+
+  /** Lowers `arg` into an inline parameter's slots, onto `args`. */
+  #pushInlineArg(arg: Expression, layout: InlineLayout, args: GrowableArray<i32>): void {
+    for (let v in this.#lowerIntoSlots(arg, layout, layout.slots)) {
+      args.push(v);
+    }
+  }
+
+  /** The slots of the inline parameter or `let` `e` names, or null. */
+  #heldInline(e: Expression): MultiValues | null {
+    if (!(e is Identifier)) {
+      return null;
+    }
+    let sym = this.func.model.resolve(e);
+    if (sym == null) {
+      return null;
+    }
+    let id = sym.resolveTarget().id;
+    return if (let (true, source) = this.#cx().inlineBindings.get(id)) source else null;
+  }
+
+  /** The slots an inline parameter takes, or null for one value. */
+  #inlineParamLayout(p: Parameter): InlineLayout | null {
+    let sym = this.func.model.resolveDeclaration(p.name);
+    if (sym == null) {
+      return null;
+    }
+    let bt = this.func.model.getBindingType(sym);
+    if (bt == null) {
+      return null;
+    }
+    return inlineParamLayoutOf(this.wasm,
+        substituteTypeParamsInFunctionContext(this.wasm, this.func, bt));
+  }
+
   #isZeroWidthParam(p: Parameter): boolean {
     let sym = this.func.model.resolveDeclaration(p.name);
     if (sym == null) {

@@ -442,6 +442,16 @@ shallow: in `inline (i32, (i32, i32))` the inner tuple is still boxed, and
 `inline (i32, inline (i32, i32))` unboxes both, so
 `let (a, (b, c)) = f()` allocates nothing.
 
+A parameter or a `let` in a function body can be inline too. It is passed as
+its slots and can only be read or passed on to another inline position:
+
+```zena
+function width(s: inline (i32, i32)): i32 {
+  let (start, end) = s;
+  return end - start;
+}
+```
+
 #### Use Case: Iterators
 
 The `Iterator` interface uses multi-value returns for efficient iteration:

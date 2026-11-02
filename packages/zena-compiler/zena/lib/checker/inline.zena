@@ -1,0 +1,231 @@
+/**
+ * The rule for inline bindings (docs/design/inline-parameters.md): an
+ * `inline` parameter or `let` is never put in a heap object, so each use
+ * of one reads it or passes it on to another inline position. A use that
+ * would box it is an error at that use.
+ *
+ * Assignability converts between a tuple and its inline form without
+ * seeing the expression, so the rule is a walk of its own over a body,
+ * classifying each reference to an inline binding by its parent node.
+ */
+import {
+  ArrayLiteral, AsExpression, AssignmentExpression, BinaryExpression,
+  BlockStatement, CallExpression, Expression, PropertyAssignment, TupleLiteral,
+  ExpressionStatement, FunctionExpression, Identifier, IdentifierPattern, IfExpression,
+  IndexExpression, IsExpression, LetPatternCondition, MatchCase,
+  MatchExpression, MemberExpression, NewExpression, Node, ReturnStatement,
+  VariableDeclaration,
+} from '../ast.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { ClassType, FunctionType, Type } from '../types.zena';
+import { walk } from '../visitor.zena';
+import { isInlineType } from './annotations.zena';
+import { CheckerContext } from './context.zena';
+
+/** Whether `e` names an inline parameter or `let`. */
+export function isInlineBindingReference(ctx: CheckerContext, e: Expression): boolean {
+  if (!(e is Identifier)) {
+    return false;
+  }
+  let sym = ctx.model.resolve(e);
+  if (sym == null) {
+    return false;
+  }
+  let t = ctx.model.getBindingType(sym);
+  return t != null && isInlineType(t) && !(t is FunctionType);
+}
+
+/**
+ * A function with an inline parameter named anywhere but as a call's
+ * callee: a value of its type would need an adapter to a boxed parameter,
+ * which does not exist yet (#543).
+ */
+export function rejectInlineFunctionValue(ctx: CheckerContext, expr: Expression, t: FunctionType): void {
+  if (!hasInlineParameter(t)) {
+    return;
+  }
+  ctx.error(
+    "A function that takes a parameter inline is called directly, not used as a value: adapting it to a boxed parameter is not supported yet (#543).",
+    DiagnosticCode.TypeMismatch,
+    expr.loc
+  );
+}
+
+/** Whether a function type takes some parameter inline. */
+export function hasInlineParameter(ft: FunctionType): boolean {
+  for (let p in ft.parameters) {
+    if (isInlineType(p)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether two function types take the same parameters inline: inline-ness
+ * changes the wasm signature, so a function stands for another only when
+ * they agree at every position either has.
+ */
+export function inlineParamsMatch(a: FunctionType, b: FunctionType): boolean {
+  let n = if (a.parameters.length > b.parameters.length) a.parameters.length else b.parameters.length;
+  for (var i = 0; i < n; i += 1) {
+    let ai = i < a.parameters.length && isInlineType(a.parameters[i]);
+    let bi = i < b.parameters.length && isInlineType(b.parameters[i]);
+    if (ai != bi) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Reports each use of an inline binding in `body` that would box it.
+ * `result` is the result type of the function `body` belongs to, which
+ * decides whether returning the binding passes it on. Nested functions
+ * are skipped: a reference from one is a capture, which the closure check
+ * reports.
+ */
+export function checkInlineBindingUses(ctx: CheckerContext, body: Node, result: Type | null): void {
+  walk(body, (n) => {
+    if (n is FunctionExpression) {
+      return false;
+    }
+    if (n is Identifier) {
+      checkInlineReference(ctx, n, result);
+    }
+    return true;
+  }, (n) => {});
+}
+
+function checkInlineReference(ctx: CheckerContext, ref: Identifier, result: Type | null): void {
+  let sym = ctx.model.resolve(ref);
+  // A declaration names its binding; only a reference uses it.
+  if (sym == null || sym.declaration === ref) {
+    return;
+  }
+  let bindingType = ctx.model.getBindingType(sym);
+  if (bindingType == null || !isInlineType(bindingType) || bindingType is FunctionType) {
+    return;
+  }
+  let problem = boxingUse(ctx, ref, result);
+  if (problem != null) {
+    ctx.error(
+      `'${ref.name}' is inline, so it is only read or passed on: ${problem} would box it.`,
+      DiagnosticCode.TypeMismatch,
+      ref.loc
+    );
+  }
+}
+
+/**
+ * What the use of `node`, an inline value, does that would box it, or
+ * null when it reads the value or passes it on to an inline position.
+ */
+function boxingUse(ctx: CheckerContext, node: Node, result: Type | null): String | null {
+  let parent = ctx.model.getParent(node);
+  if (parent == null) {
+    return "this use";
+  }
+  return match (parent) {
+    case VariableDeclaration {kind, pattern, init}: {
+      if (init !== node) {
+        "this use"
+      } else if (kind == "var" && pattern is IdentifierPattern) {
+        "holding it in a 'var'"
+      } else {
+        null
+      }
+    }
+    case LetPatternCondition {init}: if (init === node) null else "this use"
+    case MatchExpression {discriminant}: if (discriminant === node) null else "this use"
+    case IndexExpression {object}: if (object === node) null else "indexing with it"
+    case MemberExpression {object}: if (object === node) null else "this use"
+    // Comparing slot by slot is not implemented yet, and boxing both
+    // sides is what the binding rules out.
+    case BinaryExpression {operator}:
+      if (operator == "==" || operator == "!=") "comparing it with '=='" else "this use"
+    case IsExpression {}: "testing it with 'is'"
+    case ExpressionStatement {}: statementUse(ctx, parent, result)
+    case ReturnStatement {}: returnedUse(result)
+    case FunctionExpression {}: returnedUse(result)
+    // An arm passes the value on wherever the `if` or `match` does.
+    case IfExpression {test}: if (test === node) "this use" else boxingUse(ctx, parent, result)
+    case MatchCase {body}: {
+      let matchExpr = ctx.model.getParent(parent);
+      if (body !== node || matchExpr == null) {
+        "this use"
+      } else {
+        boxingUse(ctx, matchExpr, result)
+      }
+    }
+    case CallExpression {args}: {
+      let callee = ctx.model.getResolvedOverload(parent) ?? ctx.model.getNodeType(parent.callee);
+      argumentUse(node, args, callee)
+    }
+    case NewExpression {args, constructorName}: {
+      argumentUse(node, args, constructorOf(ctx, parent, constructorName))
+    }
+    case AsExpression {}: "converting it with 'as'"
+    case ArrayLiteral {}: "putting it in an array"
+    case TupleLiteral {}: "putting it in a tuple"
+    case PropertyAssignment {}: "putting it in a record"
+    case AssignmentExpression {}: "assigning it"
+    case _: "this use"
+  };
+}
+
+/**
+ * An expression statement discards its value, unless it ends a block
+ * that is an arm of an `if` or `match`, where it is the arm's value.
+ */
+function statementUse(ctx: CheckerContext, statement: Node, result: Type | null): String | null {
+  let parent = ctx.model.getParent(statement);
+  if (parent is BlockStatement) {
+    let block = parent;
+    let {body} = block;
+    if (body.length > 0 && body[body.length - 1] === statement) {
+      let arm = ctx.model.getParent(block);
+      if (arm is IfExpression || arm is MatchCase) {
+        return boxingUse(ctx, block, result);
+      }
+    }
+  }
+  return null;
+}
+
+function returnedUse(result: Type | null): String | null {
+  return if (result != null && isInlineType(result)) null else "returning it as a boxed result";
+}
+
+function argumentUse(node: Node, args: GrowableArray<Expression>, callee: Type | null): String | null {
+  var index = -1;
+  for (var i = 0; i < args.length; i += 1) {
+    if (args[i] === node) {
+      index = i;
+    }
+  }
+  if (index < 0) {
+    return "this use";
+  }
+  if (let FunctionType {parameters} = callee) {
+    if (index < parameters.length && isInlineType(parameters[index])) {
+      return null;
+    }
+  }
+  return "passing it for a parameter that is not inline";
+}
+
+/** The constructor a `new` calls, or null when it has none. */
+function constructorOf(ctx: CheckerContext, expr: NewExpression,
+    constructorName: Node | null): FunctionType | null {
+  let created = ctx.model.getNodeType(expr);
+  if (created == null || !(created is ClassType)) {
+    return null;
+  }
+  let ct = created;
+  if (constructorName != null && constructorName is Identifier) {
+    let name = constructorName.name;
+    return if (ct.constructors.has(name)) ct.constructors[name] else null;
+  }
+  return ct.constructorType;
+}
