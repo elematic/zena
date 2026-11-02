@@ -107,7 +107,7 @@ export final class DirectoryBlobs implements BlobBytes {
 
   async read(name: String): Future<FixedArray<u8> | null> {
     let path = `${this.#root}/${name}`;
-    return if (existsSync(path)) readFileBytesSync(path) as FixedArray<u8> else null;
+    return if (existsSync(path)) readFileBytesSync(path) else null;
   }
 
   async write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void> {
@@ -155,7 +155,7 @@ export final class MemoryBlobs implements BlobBytes {
 }
 
 /** The tenant document all of `tenant`'s documents are under. */
-function tenantRoot(db: Firestore, tenant: String): DocumentReference {
+function tenantRoot(db: Firestore, tenant: String) {
   return db.collection('tenants').doc(tenant);
 }
 
@@ -198,13 +198,14 @@ export final class FirestoreStorage implements Storage {
   async putAccount(account: Account): Future<void> {
     let root = this.#root;
     let fields = await accountFields(account, this.#keys);
-    await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+    await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
       let ref = root.collection('accounts').doc(account.did);
       let handle = account.handle;
-      var claim: DocumentReference | null = null;
-      if (handle != null) {
-        claim = root.collection('handles').doc(handle);
-      }
+      let claim: DocumentReference | null = if (handle != null) {
+        root.collection('handles').doc(handle)
+      } else {
+        null
+      };
       let before = await tx.get(ref);
       let claimed = if (claim != null) await tx.get(claim) else null;
       if (claimed != null && claimed.exists) {
@@ -215,7 +216,7 @@ export final class FirestoreStorage implements Storage {
         }
       }
       if (let (true, previous) = before.getString('handle')) {
-        if (handle == null || previous != handle as String) {
+        if (handle == null || previous != handle) {
           tx.delete(root.collection('handles').doc(previous));
         }
       }
@@ -297,13 +298,13 @@ export final class FirestoreAccountStore implements AccountStore {
       .limit(limit);
     if (after != null) {
       query = query.where('rkey', if (descending) Operator.LessThan else Operator.GreaterThan,
-          stringValue(after as String));
+          stringValue(after));
     }
     let entries = new GrowableArray<RecordEntry>();
     for (let snapshot in await query.get()) {
       let entry = entryFrom(collection, snapshot);
       if (entry != null) {
-        entries.push(entry as RecordEntry);
+        entries.push(entry);
       }
     }
     return entries;
@@ -315,7 +316,7 @@ export final class FirestoreAccountStore implements AccountStore {
       for (let snapshot in await this.#collection(collection.id).collection('records').get()) {
         let entry = entryFrom(collection.id, snapshot);
         if (entry != null) {
-          entries.push(entry as RecordEntry);
+          entries.push(entry);
         }
       }
     }
@@ -339,7 +340,7 @@ export final class FirestoreAccountStore implements AccountStore {
         collections[change.collection] = this.#collection(change.collection);
       }
     }
-    return await db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+    return await db.runTransaction<boolean>(async (tx): Future<boolean> => {
       if (!sameHead(headFrom(await tx.get(headRef)), previous)) {
         return false;
       }
@@ -365,7 +366,7 @@ export final class FirestoreAccountStore implements AccountStore {
     if (let (true, mimeType) = snapshot.getString('mimeType')) {
       let bytes = await this.#blobs.read(`${this.#blobPrefix}/${cid.toString()}`);
       if (bytes != null) {
-        return new StoredBlob(mimeType, bytes as FixedArray<u8>);
+        return new StoredBlob(mimeType, bytes);
       }
     }
     return null;
@@ -416,7 +417,7 @@ export final class FirestoreHostStore implements HostStore {
     for (let snapshot in await this.#root.collection('scopes').get()) {
       let org = stringAt(snapshot, 'org');
       if (org != null) {
-        all.push(new ClaimedScope(snapshot.id, org as String));
+        all.push(new ClaimedScope(snapshot.id, org));
       }
     }
     return all;
@@ -429,7 +430,7 @@ export final class FirestoreHostStore implements HostStore {
       let name = stringAt(snapshot, 'name');
       let did = stringAt(snapshot, 'did');
       if (scope != null && name != null && did != null) {
-        all.push(new ClaimedName(scope as String, name as String, did as String));
+        all.push(new ClaimedName(scope, name, did));
       }
     }
     return all;
@@ -437,9 +438,9 @@ export final class FirestoreHostStore implements HostStore {
 
   async putSummary(summary: PackageSummary, rev: String): Future<void> {
     let ref = this.#root.collection('summaries').doc(summary.did);
-    await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+    await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
       let kept = stringAt(await tx.get(ref), 'rev');
-      if (kept != null && compareKeys(kept as String, rev) >= 0) {
+      if (kept != null && compareKeys(kept, rev) >= 0) {
         return false;
       }
       let fields = new Fields()
@@ -496,7 +497,7 @@ export final class FirestoreHostStore implements HostStore {
       if (handle == null || inScope == null || name == null) {
         continue;
       }
-      let summary = new PackageSummary(snapshot.id, handle as String, inScope as String, name as String);
+      let summary = new PackageSummary(snapshot.id, handle, inScope, name);
       summary.description = stringAt(snapshot, 'description');
       summary.license = stringAt(snapshot, 'license');
       summary.latest = stringAt(snapshot, 'latest');
@@ -513,7 +514,7 @@ export final class FirestoreHostStore implements HostStore {
     for (let snapshot in await this.#root.collection('entries').doc(account).collection('list').get()) {
       let bytes = bytesAt(snapshot, 'cbor');
       if (bytes != null) {
-        entries.push(MemberEntry.fromValue(decodeCbor(bytes as FixedArray<u8>)));
+        entries.push(MemberEntry.fromValue(decodeCbor(bytes)));
       }
     }
     return entries;
@@ -541,7 +542,7 @@ export final class FirestoreHostStore implements HostStore {
     for (let snapshot in await this.#held(pkg).get()) {
       let release = pendingAt(snapshot, null);
       if (release != null) {
-        held.push(release as PendingRelease);
+        held.push(release);
       }
     }
     return held;
@@ -580,7 +581,7 @@ export final class FirestoreHostStore implements HostStore {
     for (let snapshot in await this.#changes(account).get()) {
       let change = changeAt(snapshot);
       if (change != null) {
-        held.push(change as PendingChange);
+        held.push(change);
       }
     }
     return held;
@@ -614,7 +615,7 @@ export final class FirestoreCredentialStore implements CredentialStore {
     for (let snapshot in await this.#root.collection('accounts').doc(did).collection('appPasswords').get()) {
       let hash = stringAt(snapshot, 'hash');
       if (hash != null) {
-        passwords.push(new AppPassword(snapshot.id, hash as String, stringAt(snapshot, 'createdAt') ?? ''));
+        passwords.push(new AppPassword(snapshot.id, hash, stringAt(snapshot, 'createdAt') ?? ''));
       }
     }
     return passwords;
@@ -637,7 +638,7 @@ export final class FirestoreCredentialStore implements CredentialStore {
   async takeSession(jti: String): Future<RefreshSession | null> {
     let ref = this.#root.collection('sessions').doc(jti);
     var taken: RefreshSession | null = null;
-    await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+    await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
       taken = sessionFrom(jti, await tx.get(ref));
       if (taken != null) {
         tx.delete(ref);
@@ -659,7 +660,7 @@ function sessionFrom(jti: String, snapshot: DocumentSnapshot): RefreshSession | 
   if (let (true, value) = snapshot.getInteger('expiresAt')) {
     expiresAt = value;
   }
-  return new RefreshSession(jti, did as String, scope as String, expiresAt, stringAt(snapshot, 'appPassword') ?? '');
+  return new RefreshSession(jti, did, scope, expiresAt, stringAt(snapshot, 'appPassword') ?? '');
 }
 
 /** A staging PLC directory's operations in Firestore, for `tenant`. */
@@ -674,7 +675,7 @@ export final class FirestorePlcLog implements PlcLog {
     for (let snapshot in await this.#root.collection('plc').doc(did).collection('ops').get()) {
       let text = stringAt(snapshot, 'json');
       if (text != null) {
-        operations.push(PlcOperation.fromJson(parseJson(text as String)));
+        operations.push(PlcOperation.fromJson(parseJson(text)));
       }
     }
     return operations;
@@ -684,7 +685,7 @@ export final class FirestorePlcLog implements PlcLog {
     let head = this.#root.collection('plc').doc(did);
     let entry = head.collection('ops').doc(padIndex(index));
     let json = stringify(operation.toJson());
-    return await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+    return await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
       var length = 0 as i64;
       if (let (true, recorded) = (await tx.get(head)).getInteger('length')) {
         length = recorded;
@@ -710,7 +711,7 @@ function padIndex(index: i32): String {
 
 /** Creates `ref` with `fields` unless it exists. Returns whether it did. */
 async function claim(db: Firestore, ref: DocumentReference, fields: Fields): Future<boolean> {
-  return await db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+  return await db.runTransaction<boolean>(async (tx): Future<boolean> => {
     if ((await tx.get(ref)).exists) {
       return false;
     }
@@ -721,7 +722,7 @@ async function claim(db: Firestore, ref: DocumentReference, fields: Fields): Fut
 
 /** Deletes `ref` if its `field` is `value`. */
 async function release(db: Firestore, ref: DocumentReference, field: String, value: String): Future<void> {
-  await db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+  await db.runTransaction<boolean>(async (tx): Future<boolean> => {
     if (stringAt(await tx.get(ref), field) == value) {
       tx.delete(ref);
     }
@@ -763,7 +764,7 @@ function pendingAt(snapshot: DocumentSnapshot, version: String | null): PendingR
   }
   let id = snapshot.id;
   let key = version ?? (if (id.startsWith('%')) id.sliceBytes(1, id.length) else id);
-  return new PendingRelease(key, record as FixedArray<u8>, cid as Cid, publisher as String, heldAt);
+  return new PendingRelease(key, record, cid, publisher, heldAt);
 }
 
 /** The document ID of the held change to the record at `collection/rkey`. */
@@ -786,13 +787,13 @@ function changeAt(snapshot: DocumentSnapshot): PendingChange | null {
   if (let (true, micros) = snapshot.getInteger('heldAt')) {
     heldAt = micros;
   }
-  return new PendingChange(collection as String, rkey as String, record as FixedArray<u8>, cid as Cid,
-      if (base == null) null else Cid.parse(base as String), proposer as String, heldAt);
+  return new PendingChange(collection, rkey, record, cid,
+      if (base == null) null else Cid.parse(base), proposer, heldAt);
 }
 
 function cidAt(snapshot: DocumentSnapshot): Cid | null {
   let text = stringAt(snapshot, 'cid');
-  return if (text == null) null else Cid.parse(text as String);
+  return if (text == null) null else Cid.parse(text);
 }
 
 function headFrom(snapshot: DocumentSnapshot): Head | null {
@@ -801,7 +802,7 @@ function headFrom(snapshot: DocumentSnapshot): Head | null {
   if (cid == null || rev == null) {
     return null;
   }
-  return new Head(cid as Cid, rev as String);
+  return new Head(cid, rev);
 }
 
 function entryFrom(collection: String, snapshot: DocumentSnapshot): RecordEntry | null {
@@ -810,7 +811,7 @@ function entryFrom(collection: String, snapshot: DocumentSnapshot): RecordEntry 
   if (rkey == null || cid == null) {
     return null;
   }
-  return new RecordEntry(collection, rkey as String, cid as Cid);
+  return new RecordEntry(collection, rkey, cid);
 }
 
 /**
@@ -850,21 +851,21 @@ function accountFrom(did: String, snapshot: DocumentSnapshot, keys: KeyEncryptio
   if (kind == null || keyType == null) {
     return null;
   }
-  let type = keyTypeNamed(keyType as String);
+  let type = keyTypeNamed(keyType);
   let handle = stringAt(snapshot, 'handle');
   let ciphertext = bytesAt(snapshot, 'encryptedKey');
   if (ciphertext != null) {
     if (keys == null) {
       throw new Error(`${did}'s signing key is encrypted, and the server has no key encryption (PDS_KEY_ENCRYPTION_KMS_KEY) to decrypt it`);
     }
-    return new Account(did, handle, new EncryptedKey(type, ciphertext as FixedArray<u8>, keys as KeyEncryption),
-        kindNamed(kind as String));
+    return new Account(did, handle, new EncryptedKey(type, ciphertext, keys),
+        kindNamed(kind));
   }
   let privateKey = bytesAt(snapshot, 'privateKey');
   if (privateKey == null) {
     return null;
   }
-  return new Account(did, handle, new SigningKey(type, privateKey as FixedArray<u8>), kindNamed(kind as String));
+  return new Account(did, handle, new SigningKey(type, privateKey), kindNamed(kind));
 }
 
 function kindName(kind: AccountKind): String {

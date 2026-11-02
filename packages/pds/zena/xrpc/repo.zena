@@ -70,7 +70,7 @@ export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null):
       fail(res, 404, 'RecordNotFound', 'Record not found');
       return;
     }
-    let found = cid as Cid;
+    let found = cid;
     let bytes = await store.getBlock(found);
     let body = new JsonObject();
     body['uri'] = `at://${account.did}/${given[1]}/${given[2]}`;
@@ -114,7 +114,7 @@ export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null):
   });
 
   if (sessions != null) {
-    writeRoutes(router, pds, sessions as Sessions);
+    writeRoutes(router, pds, sessions);
   }
 }
 
@@ -146,8 +146,8 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions): void {
         fail(res, 400, 'InvalidSwap', `${collection}/${rkey} does not exist`);
         return null;
       }
-      let write = if (exists) new UpdateRecord(collection, rkey, record as MapValue, swap) as Write
-          else new CreateRecord(collection, rkey, record as MapValue) as Write;
+      let write = if (exists) new UpdateRecord(collection, rkey, record, swap) as Write
+          else new CreateRecord(collection, rkey, record) as Write;
       await pds.repositoryOf(account).applyWrites([write], nowMicros());
       let answer = new JsonObject();
       answer['uri'] = `at://${account.did}/${collection}/${rkey}`;
@@ -185,7 +185,7 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions): void {
  * an account writes its own repository only.
  */
 async function ownRepository(pds: Pds, caller: Account, repo: JsonValue): Future<Account> {
-  let named = if (repo is String) await pds.findAccount(repo as String) else null;
+  let named = if (repo is String) await pds.findAccount(repo) else null;
   if (named == null || named.did != caller.did) {
     throw new SessionError(403, 'Forbidden', `${caller.did} may write only its own repository`);
   }
@@ -198,9 +198,9 @@ function swapCidOf(input: JsonObject): Cid | null {
   if (!(swap is String)) {
     return null;
   }
-  let cid = parseCid(swap as String);
+  let cid = parseCid(swap);
   if (cid == null) {
-    throw new SessionError(400, 'InvalidRequest', `swapRecord '${swap as String}' is not a CID`);
+    throw new SessionError(400, 'InvalidRequest', `swapRecord '${swap}' is not a CID`);
   }
   return cid;
 }

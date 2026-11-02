@@ -248,8 +248,8 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       problems.push('PDS_STORAGE=firestore needs PDS_BLOB_BUCKET or PDS_BLOB_DIR');
     }
     if (tenant != null && (bucket == null) != (blobDir == null)) {
-      let blobs: BlobChoice = if (bucket != null) new InBucket(bucket as String) else new InDirectory(blobDir as String);
-      storage = new InFirestore(tenant as String, blobs, value('PDS_FIRESTORE_DATABASE'), keyEncryptionKey);
+      let blobs: BlobChoice = if (bucket != null) new InBucket(bucket) else new InDirectory(blobDir as String);
+      storage = new InFirestore(tenant, blobs, value('PDS_FIRESTORE_DATABASE'), keyEncryptionKey);
     }
   } else if (storageKind == 'memory') {
     if (bucket != null || blobDir != null || value('PDS_FIRESTORE_DATABASE') != null) {
@@ -272,7 +272,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       if (bytes == null) {
         problems.push('PDS_ROTATION_KEY is not 32 bytes of hex');
       } else {
-        rotationKey = new SigningKey(KeyType.Secp256k1, bytes as FixedArray<u8>);
+        rotationKey = new SigningKey(KeyType.Secp256k1, bytes);
       }
     }
     let kmsKey = value('PDS_ROTATION_KMS_KEY');
@@ -281,14 +281,14 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     } else if (keyText == null && kmsKey == null && storageKind == 'firestore') {
       problems.push('PDS_HOST_DOMAIN with PDS_STORAGE=firestore needs PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY');
     }
-    if (kmsKey != null && !(kmsKey as String).contains('/cryptoKeyVersions/')) {
-      problems.push(`PDS_ROTATION_KMS_KEY is a key version, projects/…/cryptoKeyVersions/<n>, not ${kmsKey as String}`);
+    if (kmsKey != null && !kmsKey.contains('/cryptoKeyVersions/')) {
+      problems.push(`PDS_ROTATION_KMS_KEY is a key version, projects/…/cryptoKeyVersions/<n>, not ${kmsKey}`);
     }
     var offlineKey: PublicKey | null = null;
     let offlineText = value('PDS_OFFLINE_ROTATION_KEY');
     if (offlineText != null) {
       try {
-        offlineKey = parseDidKey(offlineText as String);
+        offlineKey = parseDidKey(offlineText);
       } catch (e) {
         problems.push('PDS_OFFLINE_ROTATION_KEY is not a did:key');
       }
@@ -334,7 +334,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     }
     let privateReads = value('PDS_PRIVATE_READS');
     if (privateReads != null && privateReads != '1' && privateReads != '0') {
-      problems.push(`PDS_PRIVATE_READS is 1 or 0, not ${privateReads as String}`);
+      problems.push(`PDS_PRIVATE_READS is 1 or 0, not ${privateReads}`);
     }
     var records: RecordsChoice = new RecordsInMemory();
     let recordsKind = value('PDS_HANDLE_RECORDS');
@@ -344,7 +344,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       if (zone == null) {
         problems.push('PDS_HANDLE_RECORDS=cloud-dns needs PDS_DNS_ZONE');
       } else {
-        records = new InCloudDns(project, zone as String);
+        records = new InCloudDns(project, zone);
       }
     } else if (recordsKind == null || recordsKind == 'memory') {
       if (recordsKind == null && storageKind == 'firestore') {
@@ -356,7 +356,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     } else {
       problems.push(`PDS_HANDLE_RECORDS is cloud-dns or memory, not ${recordsKind}`);
     }
-    let settings = new HostSettings(domain as String, value('PDS_SERVICE_DID') ?? `did:web:${domain}`,
+    let settings = new HostSettings(domain, value('PDS_SERVICE_DID') ?? `did:web:${domain}`,
         value('PDS_PUBLIC_URL') ?? `https://${domain}`, rotationKey, reserved, maxBlobSize, records);
     settings.rotationKmsKey = kmsKey;
     settings.admins = admins;
@@ -472,7 +472,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     }
   }
   let kmsKey = settings.rotationKmsKey;
-  let rotationKey: RotationKey = if (kmsKey != null) await KmsRotationKey.connect(CloudKms.connect(kmsKey as String))
+  let rotationKey: RotationKey = if (kmsKey != null) await KmsRotationKey.connect(CloudKms.connect(kmsKey))
       else new LocalRotationKey(settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32)));
   let hostEndpoint = settings.publicUrl ?? endpoint;
   let serviceDid = settings.serviceDid ?? didWebOfOrigin(hostEndpoint);
@@ -514,7 +514,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   // A DID document is written by whoever controls the DID, so the PDS it
   // names is read only where the host may read (`PackageHost.mayRead`):
   // anywhere else, the document resolves with no PDS.
-  let readable = (url: String): boolean => host.mayRead(url);
+  let readable = (url: String) => host.mayRead(url);
   resolver.allowsPds = readable;
   dependencies.allowsPds = readable;
   return new Service(withAssets(withPlc(createApp(pds, host, sessions), plc), config.webDir), pds, host, records, plc,
@@ -622,6 +622,6 @@ function didWebOfOrigin(origin: String): String {
   if (url == null) {
     throw new Error(`the host's endpoint is not a URL: ${origin}`);
   }
-  let parsed = url as URL;
+  let parsed = url;
   return didWebFor(if (parsed.port == '') parsed.hostname else `${parsed.hostname}:${parsed.port}`);
 }

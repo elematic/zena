@@ -72,7 +72,7 @@ export function serverRoutes(router: Router, sessions: Sessions): void {
       let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
       let query = req.url.searchParams();
       let aud = query.get('aud');
-      if (aud == null || !isValidDid(aud as String)) {
+      if (aud == null || !isValidDid(aud)) {
         fail(res, 400, 'InvalidRequest', 'aud must be a DID');
         return null;
       }
@@ -82,7 +82,7 @@ export function serverRoutes(router: Router, sessions: Sessions): void {
       var exp = issued + (60 as i64);
       let expText = query.get('exp');
       if (expText != null && expText != '') {
-        if (let (true, parsed) = parseI32(expText as String)) {
+        if (let (true, parsed) = parseI32(expText)) {
           exp = parsed as i64;
         } else {
           fail(res, 400, 'BadExpiration', 'exp is not a number');
@@ -95,7 +95,7 @@ export function serverRoutes(router: Router, sessions: Sessions): void {
         return null;
       }
       let key = await caller.account.signingKey();
-      let claims = new ServiceAuthClaims(caller.account.did, aud as String, exp, issued, method,
+      let claims = new ServiceAuthClaims(caller.account.did, aud, exp, issued, method,
           hex.encode(randomBytes(16)));
       let answer = new JsonObject();
       answer['token'] = createServiceAuthToken(claims, key.type, key.privateKey);

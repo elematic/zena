@@ -80,11 +80,11 @@ export final class Repository {
     for (var attempt = 0; attempt < COMMIT_ATTEMPTS; attempt += 1) {
       let head = await this.#store.getHead();
       if (head != null) {
-        return head as Head;
+        return head;
       }
       let committed = await this.#commit(null, new BlockMap(), new GrowableArray<RecordChange>(), nowMicros);
       if (committed != null) {
-        return committed as Head;
+        return committed;
       }
     }
     throw new Error(`${this.#account.did}: the repository's head kept moving`);
@@ -104,9 +104,9 @@ export final class Repository {
       let head = await this.#commit(previous, blocks, changes, nowMicros);
       if (head != null) {
         for (let listener in this.#listeners) {
-          await listener(this.#account, head as Head, changes);
+          await listener(this.#account, head, changes);
         }
-        return head as Head;
+        return head;
       }
     }
     throw new Error(`${this.#account.did}: the repository's head kept moving`);
@@ -139,8 +139,8 @@ export final class Repository {
         exists = current != null;
       }
       let swap = swapOf(write);
-      if (swap != null && (current == null || !(current as Cid).equals(swap as Cid))) {
-        throw new RepositoryError('InvalidSwap', `${key} is not ${(swap as Cid).toString()}`);
+      if (swap != null && (current == null || !current.equals(swap))) {
+        throw new RepositoryError('InvalidSwap', `${key} is not ${swap.toString()}`);
       }
       match (write) {
         case CreateRecord {record}: {
@@ -185,12 +185,12 @@ export final class Repository {
     let key = `${collection}/${rkey}`;
     var next: Cid | null = decodeCommit(commitBytes).data;
     while (next != null) {
-      let nodeCid = next as Cid;
+      let nodeCid = next;
       let bytes = await this.#block(nodeCid);
       blocks.set(nodeCid, bytes);
       next = childToward(decodeNode(bytes), key);
     }
-    let recordCid = cid as Cid;
+    let recordCid = cid;
     blocks.set(recordCid, await this.#block(recordCid));
     return writeCar(new FixedArray<Cid>(1, head.cid), blocks);
   }
@@ -248,7 +248,7 @@ export final class Repository {
     let rev = this.#clock.next(micros);
     let key = await this.#account.signingKey();
     let commit = signCommit(this.#account.did, root, rev,
-        if (previous == null) null else (previous as Head).cid, (bytes) => key.sign(bytes));
+        previous?.cid, (bytes) => key.sign(bytes));
     blocks.set(commit.cid, commit.bytes);
     await this.#store.putBlocks(blocks);
     let head = new Head(commit.cid, rev);
@@ -263,7 +263,7 @@ export final class Repository {
     if (head == null) {
       throw new RepositoryError('RepoNotFound', `${this.#account.did} has no commit`);
     }
-    return head as Head;
+    return head;
   }
 
   async #block(cid: Cid): Future<FixedArray<u8>> {
@@ -271,7 +271,7 @@ export final class Repository {
     if (bytes == null) {
       throw new Error(`${this.#account.did} is missing block ${cid.toString()}`);
     }
-    return bytes as FixedArray<u8>;
+    return bytes;
   }
 }
 
@@ -324,7 +324,7 @@ function rkeyOf(write: Write): String {
 /** Stores `record` as a block and returns its CID, checking its `$type`. */
 function addRecord(blocks: BlockMap, collection: String, record: MapValue): Cid {
   let type = stringField(record, '$type');
-  if (type == null || type as String != collection) {
+  if (type == null || type != collection) {
     throw new RepositoryError('InvalidRecord', `a record in ${collection} must have $type ${collection}`);
   }
   return blocks.add(record);

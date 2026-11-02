@@ -49,13 +49,13 @@ final class Server {
   call(method: String, httpMethod: String, token: String | null, body: String | null, query: String = ''): Response {
     let headers = new HashMap<String, String>();
     if (token != null) {
-      headers['authorization'] = `Bearer ${token as String}`;
+      headers['authorization'] = `Bearer ${token}`;
     }
     var req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, httpMethod, headers);
     if (body != null) {
       headers['content-type'] = 'application/json';
       req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, httpMethod, headers,
-          bytesStream((body as String).toBytes()));
+          bytesStream(body.toBytes()));
     }
     let res = new Response();
     let app = this.app;
@@ -77,12 +77,12 @@ function ok(res: Response): JsonObject {
   return parseJson(res.body as String) as JsonObject;
 }
 
-function errorOf(res: Response): String {
+function errorOf(res: Response) {
   isTrue(res.statusCode >= 400, `${res.statusCode}: ${res.body as String}`);
   return (parseJson(res.body as String) as JsonObject)['error'] as String;
 }
 
-function attestationJson(): String {
+function attestationJson() {
   return `{"$type": "${ATTESTATION}", "subject": {"uri": "at://did:plc:routerrouterrouterrouter/dev.zena-lang.package.release/1.0.0", "cid": "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"}, "createdAt": "2026-10-27T00:00:00.000Z"}`;
 }
 
@@ -117,7 +117,7 @@ export let tests = suite('session routes', () => {
         `?aud=did:web:pkg.test&lxm=${method}`))['token'] as String;
     let key = new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8)).publicKey();
     let claims = runFuture(verifyServiceAuth(token, 'did:web:pkg.test', method, now().seconds,
-        async (did: String, fresh: boolean): Future<PublicKey | null> => if (did == ALICE) key else null));
+        async (did, fresh): Future<PublicKey | null> => if (did == ALICE) key else null));
     equal(claims.iss, ALICE);
     // An hour at most with a method, a minute without, and an audience that
     // is a DID.

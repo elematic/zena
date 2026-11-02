@@ -36,20 +36,21 @@ final class World {
                 new JsonObject())),
         async (url: String): Future<Fetched | null> => {
           if (url.contains('collection=app.bsky.actor.profile')) {
-            return new Fetched(400, '{}'.toBytes() as FixedArray<u8>, 'application/json');
+            return new Fetched(400, '{}'.toBytes(), 'application/json');
           }
           this.asked.push(url);
-          var subject: Cid | null = null;
-          if (url.contains(`repo=${ALICE}`)) {
-            subject = CID;
+          let subject: Cid | null = if (url.contains(`repo=${ALICE}`)) {
+            CID
           } else if (url.contains(`repo=${BOB}`)) {
-            subject = OTHER_CID;
-          }
+            OTHER_CID
+          } else {
+            null
+          };
           if (subject == null) {
-            return new Fetched(400, '{"error":"RecordNotFound"}'.toBytes() as FixedArray<u8>, 'application/json');
+            return new Fetched(400, '{"error":"RecordNotFound"}'.toBytes(), 'application/json');
           }
-          let value = toJson(new Attestation(URI, subject as Cid, '2026-10-29T00:00:00.000Z').toValue());
-          return new Fetched(200, `{"value":${stringify(value)}}`.toBytes() as FixedArray<u8>, 'application/json');
+          let value = toJson(new Attestation(URI, subject, '2026-10-29T00:00:00.000Z').toValue());
+          return new Fetched(200, `{"value":${stringify(value)}}`.toBytes(), 'application/json');
         }));
   }
 }

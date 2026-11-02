@@ -31,7 +31,7 @@ let ALICE = 'did:plc:alicealicealicealicealic';
 let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 let NOW = 1792800000000000 as i64;
 
-function key(type: KeyType = KeyType.P256): SigningKey {
+function key(type: KeyType = KeyType.P256) {
   return new SigningKey(type, hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
 }
 
@@ -48,7 +48,7 @@ export final class TestKeyEncryption implements KeyEncryption {
 
   async encrypt(did: String, privateKey: FixedArray<u8>): Future<FixedArray<u8>> {
     this.encrypted += 1;
-    let pad = sha256(did.toBytes() as FixedArray<u8>);
+    let pad = sha256(did.toBytes());
     let out = new FixedArray<u8>(4 + privateKey.length, 0 as u8);
     for (var i = 0; i < 4; i += 1) {
       out[i] = pad[i];
@@ -60,7 +60,7 @@ export final class TestKeyEncryption implements KeyEncryption {
   }
 
   async decrypt(did: String, ciphertext: FixedArray<u8>): Future<FixedArray<u8>> {
-    let pad = sha256(did.toBytes() as FixedArray<u8>);
+    let pad = sha256(did.toBytes());
     for (var i = 0; i < 4; i += 1) {
       if (ciphertext[i] != pad[i]) {
         throw new Error(`this key is not ${did}'s`);
@@ -75,18 +75,18 @@ export final class TestKeyEncryption implements KeyEncryption {
   }
 }
 
-function cidOf(text: String): Cid {
-  return Cid.forDagCbor(text.toBytes() as FixedArray<u8>);
+function cidOf(text: String) {
+  return Cid.forDagCbor(text.toBytes());
 }
 
-function record(collection: String, text: String): MapValue {
+function record(collection: String, text: String) {
   let value = newMap();
   value.entries['$type'] = new StringValue(collection);
   value.entries['text'] = new StringValue(text);
   return value;
 }
 
-function keysOf(entries: Array<RecordEntry>): String {
+function keysOf(entries: Array<RecordEntry>) {
   var out = '';
   for (let entry in entries) {
     out = if (out.length == 0) entry.key() else `${out} ${entry.key()}`;
@@ -140,17 +140,17 @@ export function storageConformance(make: () => Storage): void {
     let blocks = new BlockMap();
     // More than one batch's worth.
     for (var i = 0; i < 600; i += 1) {
-      let bytes = `block ${i}`.toBytes() as FixedArray<u8>;
+      let bytes = `block ${i}`.toBytes();
       blocks.set(Cid.forDagCbor(bytes), bytes);
     }
     runFuture(store.putBlocks(blocks));
-    let last = 'block 599'.toBytes() as FixedArray<u8>;
+    let last = 'block 599'.toBytes();
     isTrue(sameBytes(runFuture(store.getBlock(Cid.forDagCbor(last))) as FixedArray<u8>, last), 'block');
-    let first = 'block 0'.toBytes() as FixedArray<u8>;
+    let first = 'block 0'.toBytes();
     isTrue(runFuture(store.getBlock(Cid.forDagCbor(first))) != null, 'first block');
     isTrue(runFuture(store.getBlock(cidOf('never stored'))) == null, 'no block');
 
-    let bytes = 'a blob'.toBytes() as FixedArray<u8>;
+    let bytes = 'a blob'.toBytes();
     let cid = Cid.forBlob(bytes);
     isNull(runFuture(store.getBlob(cid)));
     runFuture(store.putBlob(cid, new StoredBlob('text/plain', bytes)));

@@ -33,7 +33,7 @@ export function packagePage(router: Router, host: PackageHost, people: People, a
       notFound(res, context, `No package here has the handle ${handle}.`);
       return;
     }
-    let found = detail as PackageDetail;
+    let found = detail;
     // The handles of the dependencies this host holds, to link to them.
     let handles = new HashMap<String, String>();
     for (let release in found.releases) {
@@ -46,7 +46,7 @@ export function packagePage(router: Router, host: PackageHost, people: People, a
     }
     res.type = 'text/html; charset=utf-8';
     let profile = found.profile;
-    let name = if (profile != null) profile.name else found.handle;
+    let name = profile?.name ?? found.handle;
     let entries = await visibleEntries(context, found.did, null);
     let named = new GrowableArray<String>();
     let record = found.maintainers;
@@ -80,9 +80,9 @@ export function packagePage(router: Router, host: PackageHost, people: People, a
       for (let maintainer in record.maintainers) {
         let org = maintainer.org;
         if (org != null) {
-          let account = await host.pds.storage.getAccount(org as String);
+          let account = await host.pds.storage.getAccount(org);
           if (account != null && account.handle != null) {
-            shown.scopes[org as String] = (account.handle as String).split('.')[0];
+            shown.scopes[org] = (account.handle as String).split('.')[0];
           }
         }
       }

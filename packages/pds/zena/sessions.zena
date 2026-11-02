@@ -35,16 +35,16 @@ export let SCOPE_APP_PASS = 'com.atproto.appPass';
 let SCOPE_REFRESH = 'com.atproto.refresh';
 
 /** How long an access token lasts, in seconds. */
-export let ACCESS_SECONDS: i64 = 7200 as i64;
+export let ACCESS_SECONDS = 7200 as i64;
 /** How long a refresh token lasts, in seconds. */
-export let REFRESH_SECONDS: i64 = (90 * 24 * 60 * 60) as i64;
+export let REFRESH_SECONDS = (90 * 24 * 60 * 60) as i64;
 
 /**
  * How long a web session lasts, in seconds. A token in a cookie cannot be
  * revoked, so it is short; the page renews it from the person's own OAuth
  * session, which their PDS can revoke.
  */
-export let WEB_SECONDS: i64 = (24 * 60 * 60) as i64;
+export let WEB_SECONDS = (24 * 60 * 60) as i64;
 
 /** A call refused, with the XRPC error and HTTP status to answer with. */
 export class SessionError extends Error {
@@ -152,7 +152,7 @@ export function generateAppPassword(random: (count: i32) => FixedArray<u8>): Str
 
 /** How the server keeps `password` of `did`. */
 export function hashAppPassword(did: String, password: String): String {
-  return hex.encode(hmacSha256(did.toBytes() as FixedArray<u8>, password.toBytes() as FixedArray<u8>));
+  return hex.encode(hmacSha256(did.toBytes(), password.toBytes()));
 }
 
 /** The account a request's access token is for, and the token's scope. */
@@ -224,11 +224,11 @@ export final class Sessions {
     if (account == null) {
       throw refused;
     }
-    let did = (account as Account).did;
+    let did = account.did;
     let hash = hex.decode(hashAppPassword(did, password));
     for (let held in await this.#credentials.appPasswords(did)) {
       if (constantTimeEquals(hex.decode(held.hash), hash)) {
-        return await this.#open(account as Account, SCOPE_APP_PASS, held.name, nowSeconds);
+        return await this.#open(account, SCOPE_APP_PASS, held.name, nowSeconds);
       }
     }
     throw refused;
@@ -244,12 +244,12 @@ export final class Sessions {
     if (session == null) {
       throw new SessionError(400, 'ExpiredToken', 'the refresh token was spent or ended');
     }
-    let found = session as RefreshSession;
+    let found = session;
     let account = await this.#storage.getAccount(found.did);
     if (account == null || found.expiresAt < nowSeconds) {
       throw new SessionError(400, 'ExpiredToken', 'the session has ended');
     }
-    return await this.#open(account as Account, found.scope, found.appPassword, nowSeconds);
+    return await this.#open(account, found.scope, found.appPassword, nowSeconds);
   }
 
   /** `deleteSession`: ends the session whose refresh token is in `authorization`. */
@@ -265,7 +265,7 @@ export final class Sessions {
     if (account == null) {
       throw new SessionError(401, 'InvalidToken', 'the account is gone');
     }
-    return new Caller(account as Account, stringClaim(claims, 'scope'));
+    return new Caller(account, stringClaim(claims, 'scope'));
   }
 
   async #open(account: Account, scope: String, appPassword: String, nowSeconds: i64): Future<Tokens> {
@@ -298,7 +298,7 @@ export final class Sessions {
     let claims = new JsonObject();
     claims['sub'] = did;
     if (handle != null) {
-      claims['handle'] = handle as String;
+      claims['handle'] = handle;
     }
     claims['iat'] = new Box<f64>(nowSeconds as f64);
     claims['exp'] = new Box<f64>((nowSeconds + WEB_SECONDS) as f64);
@@ -311,9 +311,9 @@ export final class Sessions {
       return null;
     }
     try {
-      let claims = this.#verify(token as String, 'web+jwt', nowSeconds);
+      let claims = this.#verify(token, 'web+jwt', nowSeconds);
       let handle = claims['handle'];
-      return new WebCaller(stringClaim(claims, 'sub'), if (handle is String) handle as String else null);
+      return new WebCaller(stringClaim(claims, 'sub'), if (handle is String) handle else null);
     } catch (e) {
       return null;
     }
@@ -325,7 +325,7 @@ export final class Sessions {
    * URLs this server wrote check (`checkUrlSignature`).
    */
   urlSignature(value: String): String {
-    let mac = hmacSha256(this.#secret, `url ${value}`.toBytes() as FixedArray<u8>);
+    let mac = hmacSha256(this.#secret, `url ${value}`.toBytes());
     let short = new FixedArray<u8>(16, 0 as u8);
     for (var i = 0; i < 16; i += 1) {
       short[i] = mac[i];
@@ -338,8 +338,8 @@ export final class Sessions {
     if (signature == null) {
       return false;
     }
-    return constantTimeEquals(this.urlSignature(value).toBytes() as FixedArray<u8>,
-        (signature as String).toBytes() as FixedArray<u8>);
+    return constantTimeEquals(this.urlSignature(value).toBytes(),
+        signature.toBytes());
   }
 
   #sign(type: String, payload: JsonObject): String {
@@ -347,7 +347,7 @@ export final class Sessions {
     header['typ'] = type;
     header['alg'] = 'HS256';
     let input = `${encodePart(stringify(header))}.${encodePart(stringify(payload))}`;
-    return `${input}.${base64Url.encode(hmacSha256(this.#secret, input.toBytes() as FixedArray<u8>), false)}`;
+    return `${input}.${base64Url.encode(hmacSha256(this.#secret, input.toBytes()), false)}`;
   }
 
   /** The claims of `token`, a JWT of type `type` this server signed, that has not expired. */
@@ -364,28 +364,28 @@ export final class Sessions {
     } catch (e) {
       throw invalid;
     }
-    if (!constantTimeEquals(hmacSha256(this.#secret, input.toBytes() as FixedArray<u8>), signature)) {
+    if (!constantTimeEquals(hmacSha256(this.#secret, input.toBytes()), signature)) {
       throw invalid;
     }
     let header = decodePart(parts[0]);
     let claims = decodePart(parts[1]);
-    if (header == null || claims == null || (header as JsonObject)['typ'] != type) {
+    if (header == null || claims == null || header['typ'] != type) {
       throw invalid;
     }
-    let exp = (claims as JsonObject)['exp'];
-    if (!(exp is Box<f64>) || ((exp as Box<f64>).value as i64) < nowSeconds) {
+    let exp = claims['exp'];
+    if (!(exp is Box<f64>) || (exp.value as i64) < nowSeconds) {
       throw new SessionError(400, 'ExpiredToken', 'the token has expired');
     }
-    return claims as JsonObject;
+    return claims;
   }
 }
 
 /** The token in a `Bearer` authorization header. */
 function bearer(authorization: String | null): String {
-  if (authorization == null || !(authorization as String).startsWith('Bearer ')) {
+  if (authorization == null || !authorization.startsWith('Bearer ')) {
     throw new SessionError(401, 'AuthenticationRequired', 'a Bearer token is required');
   }
-  let header = authorization as String;
+  let header = authorization;
   return header.sliceBytes(7, header.length);
 }
 
@@ -394,17 +394,17 @@ function stringClaim(claims: JsonObject, name: String): String {
   if (!(value is String)) {
     throw new SessionError(400, 'InvalidToken', `the token has no ${name}`);
   }
-  return value as String;
+  return value;
 }
 
 function encodePart(json: String): String {
-  return base64Url.encode(json.toBytes() as FixedArray<u8>, false);
+  return base64Url.encode(json.toBytes(), false);
 }
 
 function decodePart(part: String): JsonObject | null {
   try {
     let json = parseJson(String.fromBytes(base64Url.decode(part)));
-    return if (json is JsonObject) json as JsonObject else null;
+    return if (json is JsonObject) json else null;
   } catch (e) {
     return null;
   }

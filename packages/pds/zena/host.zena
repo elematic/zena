@@ -79,10 +79,10 @@ import {SYNC_GET_RECORD, xrpcPath} from 'atproto:methods';
 let MAX_RECOVERY_KEYS = 3;
 
 /** How long a release waits for approval before its version is free again: seven days. */
-export let PENDING_MICROS: i64 = ((7 * 24 * 60 * 60) as i64) * (1000000 as i64);
+export let PENDING_MICROS = ((7 * 24 * 60 * 60) as i64) * (1000000 as i64);
 
 /** How long reading one maintainer's attestation from their PDS may take. */
-let ATTESTATION_READ_MILLISECONDS: i64 = 5000 as i64;
+let ATTESTATION_READ_MILLISECONDS = 5000 as i64;
 
 /**
  * The record at `collection/rkey` in the repository of `did`, an account
@@ -274,7 +274,7 @@ export final class MemoryHostStore implements HostStore {
   async summaries(scope: String | null): Future<Array<PackageSummary>> {
     let out = new GrowableArray<PackageSummary>();
     this.#summaries.forEach((did, kept) => {
-      if (scope == null || kept.summary.scope == scope as String) {
+      if (scope == null || kept.summary.scope == scope) {
         out.push(kept.summary);
       }
     });
@@ -535,7 +535,7 @@ export final class PackageHost {
       submit: PlcSubmitter, random: RandomBytes, resolver: IdentityResolver)
       : pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
         #random = random, #resolver = resolver {
-    pds.onCommit(async (account: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> => {
+    pds.onCommit(async (account, head, changes): Future<void> => {
       await this.#indexCommit(account, head, changes);
     });
   }
@@ -626,7 +626,7 @@ export final class PackageHost {
     let summary = new PackageSummary(did, handle, scope, name);
     let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
     if (profile != null) {
-      let read = Profile.fromValue((profile as CurrentRecord).value);
+      let read = Profile.fromValue(profile.value);
       summary.description = read.description;
       summary.license = read.license;
     }
@@ -646,12 +646,12 @@ export final class PackageHost {
         continue;
       }
       let version = Version.parse(text);
-      if (latest == null || version.compareTo(latest as Version) > 0) {
+      if (latest == null || version.compareTo(latest) > 0) {
         latest = version;
       }
     }
     if (latest != null) {
-      summary.latest = (latest as Version).toString();
+      summary.latest = latest.toString();
     }
     return summary;
   }
@@ -683,7 +683,7 @@ export final class PackageHost {
         continue;
       }
       let summary = await this.#summarize(claimed.did, account.handle ?? '', claimed.scope, claimed.name);
-      await this.#store.putSummary(summary, (head as Head).rev);
+      await this.#store.putSummary(summary, head.rev);
       await this.#store.addMentions(claimed.did, await this.#subjectsOf(account));
       written += 1;
     }
@@ -696,10 +696,10 @@ export final class PackageHost {
    * method, not seen before. Throws `HostError`.
    */
   async authenticate(authorization: String | null, method: String, nowSeconds: i64): Future<String> {
-    if (authorization == null || !(authorization as String).startsWith('Bearer ')) {
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
       throw new HostError(401, 'AuthenticationRequired', 'a service-auth token is required');
     }
-    let header = authorization as String;
+    let header = authorization;
     let token = header.sliceBytes(7, header.length);
     try {
       let claims = await verifyServiceAuth(token, this.config.serviceDid, method, nowSeconds, this.#keys);
@@ -799,7 +799,7 @@ export final class PackageHost {
     let store = this.#store;
     let account = await this.#createAccount(prepared, AccountKind.Automation, nowMicros,
         async (): Future<void> => { await store.releaseName(scope, name, did); });
-    let password = await (sessions as Sessions).addAppPassword(account.did, 'ci',
+    let password = await sessions.addAppPassword(account.did, 'ci',
         formatTimestamp(nowMicros * (1000 as i64)));
     await this.#records.set(handle, account.did);
     return new Automation(account.did, handle, password);
@@ -898,7 +898,7 @@ export final class PackageHost {
     if (type == null) {
       throw new HostError(400, 'InvalidRequest', `'${contentType}' is not an artifact's type: ${join(ARTIFACT_MIME_TYPES, ', ')}`);
     }
-    let mimeType = type as String;
+    let mimeType = type;
     if ((bytes.length as i64) > this.config.maxBlobSize) {
       throw new HostError(400, 'TooLarge', `the blob is larger than ${this.config.maxBlobSize} bytes`);
     }
@@ -935,7 +935,7 @@ export final class PackageHost {
     // nothing the client checked.
     let source = release.artifact(SOURCE);
     let archive = if (source != null && source.blob != null) await store.getBlob((source.blob as BlobRef).cid) else null;
-    let problems = await validateRelease(release, pkg, if (archive != null) archive.bytes else new FixedArray<u8>(0, 0 as u8),
+    let problems = await validateRelease(release, pkg, archive?.bytes ?? new FixedArray<u8>(0, 0 as u8),
         // The host says why a dependency was not found only in outline, so
         // its answers map nothing of the network a DID document named.
         await this.#profileName(pkg), this.#resolver, false);
@@ -959,7 +959,7 @@ export final class PackageHost {
       // Another publish of the version holds it.
       held = await this.#held(pkg, version, nowMicros);
     }
-    if (held != null && (held as PendingRelease).cid.equals(cid)) {
+    if (held != null && held.cid.equals(cid)) {
       return created;
     }
     throw new HostError(400, 'VersionExists', `${pkg} has a release ${version} waiting for approval`);
@@ -979,11 +979,11 @@ export final class PackageHost {
     if (held == null) {
       if (written != null) {
         // Another call completed it.
-        return new Completion(uri, written as Cid, true, new Tally());
+        return new Completion(uri, written, true, new Tally());
       }
       throw new HostError(400, 'ReleaseNotFound', `${pkg} has no release ${version} waiting for approval`);
     }
-    let release = held as PendingRelease;
+    let release = held;
     let tally = await this.#tally(pkg, uri, release.cid);
     if (!tally.enough) {
       return new Completion(uri, release.cid, false, tally);
@@ -1022,7 +1022,7 @@ export final class PackageHost {
     if (held == null) {
       throw new HostError(400, 'ReleaseNotFound', `${pkg} has no release ${version} waiting for approval`);
     }
-    if ((held as PendingRelease).publisher != caller && (await this.#packageRole(pkg, caller)) != OWNER) {
+    if (held.publisher != caller && (await this.#packageRole(pkg, caller)) != OWNER) {
       throw new HostError(403, 'Forbidden', `${caller} neither published ${version} of ${pkg} nor owns it`);
     }
     await this.#store.dropRelease(pkg, version);
@@ -1036,7 +1036,7 @@ export final class PackageHost {
   /** The release of `pkg` held at `version`, unless there is none or it has expired. */
   async #held(pkg: String, version: String, nowMicros: i64): Future<PendingRelease | null> {
     let held = await this.#store.heldRelease(pkg, version);
-    if (held == null || await this.#expired(pkg, held as PendingRelease, nowMicros)) {
+    if (held == null || await this.#expired(pkg, held, nowMicros)) {
       return null;
     }
     return held;
@@ -1065,14 +1065,14 @@ export final class PackageHost {
     if (current == null) {
       return tally;
     }
-    let record = Maintainers.fromValue((current as CurrentRecord).value);
+    let record = Maintainers.fromValue(current.value);
     // The scope's policy can ask more of every release than the record does.
     var policy = new Policy();
     let held = await this.pds.storage.getAccount(pkg);
     if (held != null) {
-      let org = await this.#scopeOrganization(held as Account);
+      let org = await this.#scopeOrganization(held);
       if (org != null) {
-        policy = await this.#policy(org as String);
+        policy = await this.#policy(org);
       }
     }
     tally.threshold = if (policy.minimumThreshold > record.threshold) policy.minimumThreshold else record.threshold;
@@ -1117,7 +1117,7 @@ export final class PackageHost {
       var value: Value | null = null;
       if ((await this.pds.storage.getAccount(did)) != null) {
         let record = await this.#current(did, ATTESTATION_TYPE, rkey);
-        value = if (record != null) (record as CurrentRecord).value else null;
+        value = record?.value;
       } else {
         let reader = this.remoteRecords;
         value = if (reader != null) await reader(did, ATTESTATION_TYPE, rkey)
@@ -1127,7 +1127,7 @@ export final class PackageHost {
       if (value == null) {
         return false;
       }
-      let attestation = Attestation.fromValue(value as Value);
+      let attestation = Attestation.fromValue(value);
       return attestation.uri == uri && attestation.cid.equals(cid);
     } catch (e) {
       return false;
@@ -1139,16 +1139,16 @@ export final class PackageHost {
     let document = await this.#resolver.resolveDid(did);
     let pds = document.pds;
     let key = document.signingKey;
-    if (pds == null || key == null || !this.mayRead(pds as String)) {
+    if (pds == null || key == null || !this.mayRead(pds)) {
       return null;
     }
-    let response = await fetch(`${pds as String}${xrpcPath(SYNC_GET_RECORD)}?did=${did}&collection=${collection}&rkey=${rkey}`);
+    let response = await fetch(`${pds}${xrpcPath(SYNC_GET_RECORD)}?did=${did}&collection=${collection}&rkey=${rkey}`);
     if (response.status != 200) {
       return null;
     }
-    let signer = key as PublicKey;
+    let signer = key;
     let proof = verifyRecordProof(readCar(await response.bytes()), did, collection, rkey,
-        (signed: FixedArray<u8>, signature: FixedArray<u8>) => verifySignature(signer, signed, signature));
+        (signed, signature) => verifySignature(signer, signed, signature));
     return proof.record;
   }
 
@@ -1267,7 +1267,7 @@ export final class PackageHost {
       if (labels == null || labels.length != 2 || record == null) {
         continue;
       }
-      for (let maintainer in Maintainers.fromValue((record as CurrentRecord).value).maintainers) {
+      for (let maintainer in Maintainers.fromValue(record.value).maintainers) {
         if (maintainer.did == did) {
           roles.push(new Membership(mentioning, pkg.handle ?? '', labels[1], labels[0], maintainer.role));
         }
@@ -1291,7 +1291,7 @@ export final class PackageHost {
     if (record == null) {
       return dids;
     }
-    for (let attester in await this.#attesterList(pkg, Maintainers.fromValue((record as CurrentRecord).value))) {
+    for (let attester in await this.#attesterList(pkg, Maintainers.fromValue(record.value))) {
       dids.push(attester.did);
     }
     return dids;
@@ -1388,7 +1388,7 @@ export final class PackageHost {
       return held.handle;
     }
     let identity = await this.identityOf(did);
-    return if (identity != null) identity.handle else null;
+    return identity?.handle;
   }
 
   /**
@@ -1436,18 +1436,18 @@ export final class PackageHost {
     if (org == null) {
       return null;
     }
-    let account = await this.pds.storage.getAccount(org as String);
+    let account = await this.pds.storage.getAccount(org);
     if (account == null || account.kind != AccountKind.Organization) {
       return null;
     }
     let detail = new ScopeDetail(name, account.did, account.handle ?? '');
     let profile = await this.#current(account.did, SCOPE_PROFILE_TYPE, 'self');
     if (profile != null) {
-      detail.profile = ScopeProfile.fromValue((profile as CurrentRecord).value);
+      detail.profile = ScopeProfile.fromValue(profile.value);
     }
     let members = await this.#current(account.did, MEMBERS_TYPE, 'self');
     if (members != null) {
-      detail.members = Members.fromValue((members as CurrentRecord).value).members;
+      detail.members = Members.fromValue(members.value).members;
     }
     let store = this.pds.storage.store(account.did);
     for (let entry in await store.allRecords()) {
@@ -1476,11 +1476,11 @@ export final class PackageHost {
     let detail = new PackageDetail(did, handle, labels[labels.length - 1]);
     let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
     if (profile != null) {
-      detail.profile = Profile.fromValue((profile as CurrentRecord).value);
+      detail.profile = Profile.fromValue(profile.value);
     }
     let maintainers = await this.#current(did, MAINTAINERS_TYPE, 'self');
     if (maintainers != null) {
-      detail.maintainers = Maintainers.fromValue((maintainers as CurrentRecord).value);
+      detail.maintainers = Maintainers.fromValue(maintainers.value);
     }
     let store = this.pds.storage.store(did);
     for (let entry in await store.allRecords()) {
@@ -1546,7 +1546,7 @@ export final class PackageHost {
     }
     let offline = this.config.offlineRotationKey;
     if (offline != null) {
-      rotation.push(offline as PublicKey);
+      rotation.push(offline);
     }
     rotation.push(this.config.rotationKey.publicKey());
     let signing = new SigningKey(KeyType.Secp256k1, this.#random(32));
@@ -1577,7 +1577,7 @@ export final class PackageHost {
       await this.pds.repositoryOf(account).applyWrites([new CreateRecord(collection, rkey, record) as Write], nowMicros);
     } catch (e) {
       if (e is RepositoryError) {
-        throw new HostError(400, (e as RepositoryError).error, e.message);
+        throw new HostError(400, e.error, e.message);
       }
       throw e;
     }
@@ -1590,7 +1590,7 @@ export final class PackageHost {
     if (profile == null) {
       throw new HostError(400, 'InvalidRequest', `${pkg} has no profile`);
     }
-    return Profile.fromValue((profile as CurrentRecord).value).name;
+    return Profile.fromValue(profile.value).name;
   }
 
   /**
@@ -1723,7 +1723,7 @@ export final class PackageHost {
   /** `org`'s policy for the packages in its scope, as it is now, or the one that asks nothing more. */
   async #policy(org: String): Future<Policy> {
     let current = await this.#current(org, POLICY_TYPE, 'self');
-    return if (current != null) Policy.fromValue((current as CurrentRecord).value) else new Policy();
+    return if (current != null) Policy.fromValue(current.value) else new Policy();
   }
 
   /** Whether `caller` is on a team `policy` lets create packages in `org`'s scope. */
@@ -1817,17 +1817,17 @@ export final class PackageHost {
       // log can count it only together with a person.
       let did = if (commitment != null) entries.byCommitment[commitment.toString()].did else maintainer.did;
       if (did != null) {
-        let held = await this.pds.storage.getAccount(did as String);
+        let held = await this.pds.storage.getAccount(did);
         let marked = maintainer.automation &&
             (commitment == null || entries.byCommitment[commitment.toString()].automation);
         if (held != null && held.kind == AccountKind.Automation) {
           if (!marked) {
             throw new HostError(400, 'InvalidRequest',
-                `${did as String} is an automation account: mark it as one, with automation: true`);
+                `${did} is an automation account: mark it as one, with automation: true`);
           }
           // An owner chooses the maintainers, which no bot should.
           if (maintainer.role == OWNER) {
-            throw new HostError(400, 'InvalidRequest', `${did as String} is an automation account, which only publishes`);
+            throw new HostError(400, 'InvalidRequest', `${did} is an automation account, which only publishes`);
           }
         }
       }
@@ -1842,7 +1842,7 @@ export final class PackageHost {
     }
     let org = await this.#scopeOrganization(account);
     if (org != null) {
-      meetsPolicy(maintainers, await this.#policy(org as String), org as String);
+      meetsPolicy(maintainers, await this.#policy(org), org);
     }
     await this.#store.addEntries(pkg, entries.fresh);
     return await this.#propose(caller, account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue), swapRecord,
@@ -1860,7 +1860,7 @@ export final class PackageHost {
       swapRecord: String | null, nowMicros: i64): Future<Created> {
     let swap = swapCid(swapRecord);
     let current = await this.pds.storage.store(account.did).getRecord(collection, rkey);
-    if (swap != null && (current == null || !(current as Cid).equals(swap))) {
+    if (swap != null && (current == null || !current.equals(swap))) {
       throw new HostError(400, 'InvalidSwap', `${collection}/${rkey} is not ${swap.toString()}`);
     }
     let bytes = encodeCbor(record);
@@ -1887,12 +1887,12 @@ export final class PackageHost {
     let current = await this.pds.storage.store(did).getRecord(target.collection, target.rkey);
     let held = await this.#heldChange(target, nowMicros);
     if (held == null) {
-      if (cid != null && current != null && (current as Cid).equals(cid as Cid)) {
-        return new ChangeCompletion(uri, cid as Cid, true, new ChangeTally());
+      if (cid != null && current != null && current.equals(cid)) {
+        return new ChangeCompletion(uri, cid, true, new ChangeTally());
       }
       throw new HostError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
     }
-    let change = held as PendingChange;
+    let change = held;
     let base = change.base;
     if ((base == null) != (current == null) || (base != null && !base.equals(current as Cid))) {
       await this.#store.dropChange(did, target.collection, target.rkey, change.cid);
@@ -1922,7 +1922,7 @@ export final class PackageHost {
     if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
       throw new HostError(400, 'InvalidRequest', `${account} is not an organization or package on this host`);
     }
-    let found = held as Account;
+    let found = held;
     let waiting = new GrowableArray<WaitingChange>();
     var checked = false;
     for (let change in await this.#store.heldChanges(account)) {
@@ -1966,7 +1966,7 @@ export final class PackageHost {
     if (held == null) {
       throw new HostError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
     }
-    let change = held as PendingChange;
+    let change = held;
     if (change.proposer != caller && !(await this.#seesAll(caller, target.account,
         if (target.collection == TEAM_TYPE) target.rkey else null))) {
       throw new HostError(403, 'Forbidden', `${caller} neither asked for the change to ${uri} nor can approve it`);
@@ -2038,7 +2038,7 @@ export final class PackageHost {
     if (target.collection == MAINTAINERS_TYPE) {
       let current = await this.#current(did, MAINTAINERS_TYPE, 'self');
       if (current != null) {
-        let record = Maintainers.fromValue((current as CurrentRecord).value);
+        let record = Maintainers.fromValue(current.value);
         let owners = new GrowableArray<String>();
         let entries = await this.#committed(did, await this.#commitmentsOf(did, MAINTAINERS_TYPE, 'self'));
         for (let maintainer in record.maintainers) {
@@ -2067,7 +2067,7 @@ export final class PackageHost {
       }
     } else {
       let members = await this.#current(did, MEMBERS_TYPE, 'self');
-      let record = if (members != null) Members.fromValue((members as CurrentRecord).value) else null;
+      let record = if (members != null) Members.fromValue(members.value) else null;
       // TODO(#713): the annotation is only for the compiler.
       let entries: Array<MemberEntry> = if (record != null) await this.#committed(did, record.members) else [];
       // The members record's owners decide its members and the scope's policy.
@@ -2078,7 +2078,7 @@ export final class PackageHost {
       if (target.collection == TEAM_TYPE) {
         let team = await this.#current(did, TEAM_TYPE, target.rkey);
         if (team != null) {
-          let current = Team.fromValue((team as CurrentRecord).value);
+          let current = Team.fromValue(team.value);
           tally.requirements.push(await this.#requirement(MAINTAINER, current.threshold,
               await this.#peopleIn(await this.#committed(did, current.members), (role) => role == MAINTAINER),
               uri, change.cid, rkey));
@@ -2159,7 +2159,7 @@ export final class PackageHost {
       if (team == null) {
         commitments = await this.#commitmentsOf(account, MEMBERS_TYPE, 'self');
       } else {
-        let name = team as String;
+        let name = team;
         if ((await this.#current(account, TEAM_TYPE, name)) == null) {
           throw new HostError(400, 'TeamNotFound', `${account} has no team ${name}`);
         }
@@ -2168,7 +2168,7 @@ export final class PackageHost {
     } else {
       commitments = await this.#commitmentsOf(account, MAINTAINERS_TYPE, 'self');
     }
-    let seesAll = await this.#seesAll(caller, held as Account, team);
+    let seesAll = await this.#seesAll(caller, held, team);
     let visible = new GrowableArray<MemberEntry>();
     for (let entry in await this.#committed(account, commitments)) {
       if (seesAll || entry.did == caller) {
@@ -2195,13 +2195,13 @@ export final class PackageHost {
       if (isAdmin(await this.#orgRole(did, caller))) {
         return true;
       }
-      return team != null && (await this.#teamRole(did, team as String, caller)) == MAINTAINER;
+      return team != null && (await this.#teamRole(did, team, caller)) == MAINTAINER;
     }
     if ((await this.#packageRole(did, caller)) == OWNER) {
       return true;
     }
     let org = await this.#scopeOrganization(account);
-    return org != null && isAdmin(await this.#orgRole(org as String, caller));
+    return org != null && isAdmin(await this.#orgRole(org, caller));
   }
 
   /** The account `did`, which must be of `kind`, described as `what` when it is not. */
@@ -2210,7 +2210,7 @@ export final class PackageHost {
     if (account == null || account.kind != kind) {
       throw new HostError(400, 'InvalidRequest', `${did} is not ${what} on this host`);
     }
-    return account as Account;
+    return account;
   }
 
   /** The record at `collection/rkey` in `did`'s repository as it is now, or null. */
@@ -2220,8 +2220,8 @@ export final class PackageHost {
     if (cid == null) {
       return null;
     }
-    let bytes = (await store.getBlock(cid as Cid)) as FixedArray<u8>;
-    return new CurrentRecord(decodeCbor(bytes), cid as Cid);
+    let bytes = (await store.getBlock(cid)) as FixedArray<u8>;
+    return new CurrentRecord(decodeCbor(bytes), cid);
   }
 
   /** The commitments the members or team record at `collection/rkey` lists now; none without one. */
@@ -2230,7 +2230,7 @@ export final class PackageHost {
     if (record == null) {
       return [];
     }
-    return commitmentsIn(collection, (record as CurrentRecord).value);
+    return commitmentsIn(collection, record.value);
   }
 
   /** The entries `account` keeps that `commitments` commit to. */
@@ -2271,7 +2271,7 @@ export final class PackageHost {
     if (record == null) {
       return null;
     }
-    let maintainers = Maintainers.fromValue((record as CurrentRecord).value);
+    let maintainers = Maintainers.fromValue(record.value);
     let mine = new HashSet<String>();
     for (let entry in await this.#store.entries(pkg)) {
       if (entry.did == caller) {
@@ -2355,7 +2355,7 @@ export final class PackageHost {
       await this.pds.repositoryOf(account).applyWrites([write], nowMicros);
     } catch (e) {
       if (e is RepositoryError) {
-        throw new HostError(400, (e as RepositoryError).error, e.message);
+        throw new HostError(400, e.error, e.message);
       }
       throw e;
     }
@@ -2656,7 +2656,7 @@ function bestRole(entries: Array<MemberEntry>, caller: String): String | null {
   var found: String | null = null;
   for (let entry in entries) {
     if (entry.did == caller) {
-      if (found == null || entry.role == OWNER || (found as String != OWNER && (entry.role == ADMIN || entry.role == MAINTAINER))) {
+      if (found == null || entry.role == OWNER || (found != OWNER && (entry.role == ADMIN || entry.role == MAINTAINER))) {
         found = entry.role;
       }
     }
@@ -2675,9 +2675,9 @@ function swapCid(swapRecord: String | null): Cid | null {
     return null;
   }
   try {
-    return Cid.parse(swapRecord as String);
+    return Cid.parse(swapRecord);
   } catch (e) {
-    throw new HostError(400, 'InvalidRequest', `swapRecord '${swapRecord as String}' is not a CID`);
+    throw new HostError(400, 'InvalidRequest', `swapRecord '${swapRecord}' is not a CID`);
   }
 }
 
@@ -2690,7 +2690,7 @@ function asMap(value: Value): MapValue {
   if (!(value is MapValue)) {
     throw new HostError(400, 'InvalidRequest', 'a record is not an object');
   }
-  return value as MapValue;
+  return value;
 }
 
 /** Reads a record with `read`, answering `InvalidRequest` when it is not one. */
@@ -2709,15 +2709,15 @@ function blobsOf(blob: BlobRef | null, parts: FixedArray<BlobRef> | null, wit: B
     : GrowableArray<BlobRef> {
   let all = new GrowableArray<BlobRef>();
   if (blob != null) {
-    all.push(blob as BlobRef);
+    all.push(blob);
   }
   if (parts != null) {
-    for (let part in parts as FixedArray<BlobRef>) {
+    for (let part in parts) {
       all.push(part);
     }
   }
   if (wit != null) {
-    all.push(wit as BlobRef);
+    all.push(wit);
   }
   return all;
 }
