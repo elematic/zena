@@ -2648,9 +2648,10 @@ export final class CheckerContext {
   /**
    * Entering an `if (isFirstClass<T>())` branch: on its path `T` is
    * first-class, so every `T` value held at its entry counts as
-   * consumed there. The branch may copy them freely, since uses inside
-   * it are not move-checked (isScopedValueType is false for `T`), and
-   * after the branch they are dead on its path.
+   * consumed from there on (FlowMove.consumesOnly). The value is not
+   * dead: the branch may copy it, since uses inside it are not
+   * move-checked (isScopedValueType is false for `T`), and code after a
+   * branch that falls through may still use it.
    */
   consumeFirstClassValues(tp: TypeParameterType, loc: SourceLocation | null): void {
     let params = growable<TypeParameterType>([tp]);
@@ -2658,7 +2659,10 @@ export final class CheckerContext {
       for (let c in frame) {
         let bindingType = this.model.getBindingType(c.sym);
         if (bindingType != null && mentionsTypeParams(bindingType, params)) {
-          this.recordFlowMove(c.sym.id, c.sym.name, loc);
+          let node = new FlowMove(this.#currentFlow, c.sym.id, c.sym.name, loc);
+          node.id = this.newFlowId();
+          node.consumesOnly = true;
+          this.#currentFlow = node;
         }
       }
     }
@@ -2942,8 +2946,10 @@ export final class CheckerContext {
    */
   findLiveMove(id: SymbolId, from: FlowNode, stopAtId: i32): FlowMove | null {
     let found = this.#findBackward(from, stopAtId, (node) => match (node) {
+      // A first-class branch's mark consumes without killing.
       case FlowMove as mv: {
-        if ((mv.symbolId as i32) == (id as i32)) BackwardStep.Found else BackwardStep.Continue
+        if ((mv.symbolId as i32) == (id as i32) && !mv.consumesOnly) BackwardStep.Found
+        else BackwardStep.Continue
       }
       // An assignment to the binding revives it: this path is clean.
       case FlowAssign as assign: {

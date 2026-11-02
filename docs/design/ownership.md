@@ -1031,8 +1031,10 @@ What the checker enforces for that half:
   alternate of `if (!isFirstClass<T>())`, are checked with `T`
   first-class, so a `T` may be copied and kept in any container there.
   The `T` values held at the branch's entry count as consumed on its
-  path. (`TypeParameterType.firstClassDepth` marks the branch, and
-  `isRestrictedParam` reads it.)
+  path without being moved, so a branch that returns only sometimes
+  falls through to code that may still use them
+  (`FlowMove.consumesOnly`). `TypeParameterType.firstClassDepth` marks
+  the branch, and `isRestrictedParam` reads it.
 - **First-class-only fields.** A field that keeps `T` only in a
   container that copies it, such as a stream's `FixedArray<T> | null`
   bulk buffer, may be declared if it is nullable, so it starts empty,
