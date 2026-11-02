@@ -18,7 +18,17 @@
  * ```
  */
 
-import { Completer, AsyncStep, AsyncIterator, AsyncIterable } from 'zena:async';
+import { Completer, AsyncStep, AsyncIterator, AsyncIterable, release } from 'zena:async';
+import { Result, WithDefault, defaultValue, isFirstClass, unit } from 'zena:core';
+
+/**
+ * A second reference to a stream, which move checking does not track:
+ * a writer's, and an iterator's, view of the stream its reader owns
+ * (owner-futures.md §"Streams"). The stream's own state keeps the one
+ * reader and the one writer apart.
+ */
+@intrinsic('share_reference')
+declare function shareReference<scoped T>(value: T): T;
 
 /** The write capability's entry points, unexported so a `Stream`
  * reference cannot reach them (docs/design/classes.md §9.4). */
@@ -30,29 +40,46 @@ symbol nextStep;
 /**
  * The readable end.
  *
+ * `T` is `scoped` (owner-futures.md §"Streams"), so a stream may carry
+ * owners. A single write parks its element in the stream's one slot
+ * until a read takes it, and resolves `(true, _)`; if the reader stops
+ * first, the write hands the element back, `(false, value)`, as
+ * `tryComplete` hands back its loser. So the stream never releases or
+ * drops an element. The bulk operations, `read(buf)` and `writeAll`,
+ * copy through arrays and so need a first-class `T`; a bulk write parks
+ * a slice of its writer's buffer instead of one element.
+ *
  * Both operations are exclusive: one read and one write may be
- * pending at a time — the ends are affine in intent, and until move
- * checking enforces that, a concurrent operation throws. The read
+ * pending at a time, and a concurrent operation throws. The read
  * buffer belongs to the caller: a read overwrites a prefix and
  * reports the count, and only `[0, count)` is meaningful.
  */
-export class Stream<T> implements AsyncIterable<T> {
-  /** The one pending write: its slice, the cursor into it, and the
-   * future its writer awaits. The slice belongs to the stream until
-   * the write's future completes; reads drain from `#writeOffset`,
-   * and the write completes once the slice is fully consumed. */
-  var #writeBuf: FixedArray<T> | null;
+export class Stream<scoped T> implements AsyncIterable<T> {
+  /** The parked single write's element, while `#slotFull`. */
+  var #slot: WithDefault<T> = defaultValue<T>();
+  var #slotFull: boolean = false;
+  /** The parked single write's signal: `true` once a read took its
+   * element, `false` once the reader stopped and left it in the slot
+   * for the writer to take back. */
+  var #slotTaken: Completer<boolean> | null = null;
+  /** The one pending bulk write, at a first-class `T`: its slice, the
+   * cursor into it, and the future its writer awaits. The slice
+   * belongs to the stream until the write's future completes; reads
+   * drain from `#writeOffset`, and the write completes once the slice
+   * is fully consumed. */
+  var #writeBuf: FixedArray<T> | null = null;
   var #writeOffset: i32 = 0;
   var #writeEnd: i32 = 0;
-  var #writeDone: Completer<boolean> | null;
-  /** The one pending read: its completer and the caller's buffer, set
-   * together. A write rendezvouses with it immediately — latency of
-   * one element through the batch API. */
-  var #pendingRead: Completer<i32> | null;
-  /** The one pending `readOne`, exclusive with `#pendingRead`: a
-   * read of a single element with no buffer of the caller's. */
-  var #pendingOne: Completer<Option<T>> | null;
-  var #pendingBuf: FixedArray<T> | null;
+  var #writeDone: Completer<boolean> | null = null;
+  /** The one pending bulk read, at a first-class `T`: its completer
+   * and the caller's buffer, set together. A write rendezvouses with
+   * it immediately. */
+  var #pendingRead: Completer<i32> | null = null;
+  var #pendingBuf: FixedArray<T> | null = null;
+  /** The one pending `readOne` (or `for await` step), exclusive with
+   * `#pendingRead`: `true` once an element waits in the slot or the
+   * bulk slice, `false` at end-of-stream. */
+  var #pendingOne: Completer<boolean> | null = null;
   var #closed: boolean = false;
   var #stopped: boolean = false;
 
@@ -62,36 +89,41 @@ export class Stream<T> implements AsyncIterable<T> {
    * it still costs the queue hop, per the always-async rule.
    */
   read(buf: FixedArray<T>): Future<i32> {
-    if (this.#pendingRead != null || this.#pendingOne != null) {
-      throw new Error('zena:stream: one read may be pending at a time');
-    }
-    if (buf.length == 0) {
-      throw new Error('zena:stream: read buffer is empty');
-    }
-    if (this.#stopped) {
-      return Future.of(0);
-    }
-    let src = this.#writeBuf;
-    if (src != null) {
-      let from = src;
-      let remaining = this.#writeEnd - this.#writeOffset;
-      let n = if (remaining < buf.length) remaining else buf.length;
-      var i = 0;
-      while (i < n) {
-        buf[i] = from[this.#writeOffset + i];
-        i += 1;
+    if (isFirstClass<T>()) {
+      this.#checkReadable();
+      if (buf.length == 0) {
+        throw new Error('zena:stream: read buffer is empty');
       }
-      this.#writeOffset += n;
-      this.#completeIfDrained();
-      return Future.of(n);
+      if (this.#stopped) {
+        return Future.of(0);
+      }
+      if (this.#slotFull) {
+        buf[0] = this.#takeSlot();
+        return Future.of(1);
+      }
+      let src = this.#writeBuf;
+      if (src != null) {
+        let from = src;
+        let remaining = this.#writeEnd - this.#writeOffset;
+        let n = if (remaining < buf.length) remaining else buf.length;
+        var i = 0;
+        while (i < n) {
+          buf[i] = from[this.#writeOffset + i];
+          i += 1;
+        }
+        this.#writeOffset += n;
+        this.#completeIfDrained();
+        return Future.of(n);
+      }
+      if (this.#closed) {
+        return Future.of(0);
+      }
+      let c = new Completer<i32>();
+      this.#pendingRead = c;
+      this.#pendingBuf = buf;
+      return c.future;
     }
-    if (this.#closed) {
-      return Future.of(0);
-    }
-    let c = new Completer<i32>();
-    this.#pendingRead = c;
-    this.#pendingBuf = buf;
-    return c.future;
+    throw new Error('zena:stream: read(buf) copies elements, so it needs a first-class element type');
   }
 
   /**
@@ -102,103 +134,185 @@ export class Stream<T> implements AsyncIterable<T> {
    * `read`: one read of either kind may be pending.
    */
   readOne(): Future<Option<T>> {
-    if (this.#pendingRead != null || this.#pendingOne != null) {
-      throw new Error('zena:stream: one read may be pending at a time');
-    }
+    this.#checkReadable();
     if (this.#stopped) {
       return Future.of<Option<T>>(none);
     }
-    let src = this.#writeBuf;
-    if (src != null) {
-      let from = src;
-      let value = from[this.#writeOffset];
-      this.#writeOffset += 1;
-      this.#completeIfDrained();
-      return Future.of<Option<T>>(some(value));
+    if (this.#slotFull) {
+      return Future.of<Option<T>>(some(this.#takeSlot()));
+    }
+    if (this.#hasBulk()) {
+      return Future.of<Option<T>>(some(this.#drainOne()));
     }
     if (this.#closed) {
       return Future.of<Option<T>>(none);
     }
-    let c = new Completer<Option<T>>();
-    this.#pendingOne = c;
-    return c.future;
+    let arrived = new Completer<boolean>();
+    this.#pendingOne = arrived;
+    return this.#readParked(arrived);
   }
 
-  /** The pending write drained by reads: it completes `true` and the
-   * slot clears. */
+  /** A `readOne` that waited for a write: its element, or `none` at
+   * end-of-stream. */
+  async #readParked(arrived: Completer<boolean>): Future<Option<T>> {
+    if (await arrived.future) {
+      if (this.#slotFull) {
+        return some(this.#takeSlot());
+      }
+      if (this.#hasBulk()) {
+        return some(this.#drainOne());
+      }
+    }
+    return none;
+  }
+
+  /** The slot's element, for a read: its write resolves `(true, _)`. */
+  #takeSlot(): T {
+    let value = this.#slot as T;
+    this.#slotFull = false;
+    let taken = this.#slotTaken;
+    if (taken != null) {
+      this.#slotTaken = null;
+      taken.complete(true);
+    }
+    return value;
+  }
+
+  /** Whether a bulk write's slice is parked, which only a first-class
+   * `T` has. */
+  #hasBulk(): boolean {
+    if (isFirstClass<T>()) {
+      return this.#writeBuf != null;
+    }
+    return false;
+  }
+
+  /** The parked slice's next element, when `#hasBulk()`. */
+  #drainOne(): T {
+    if (isFirstClass<T>()) {
+      let from = this.#writeBuf as FixedArray<T>;
+      let value = from[this.#writeOffset];
+      this.#writeOffset += 1;
+      this.#completeIfDrained();
+      return value;
+    }
+    throw new Error('zena:stream: a bulk write needs a first-class element type');
+  }
+
+  /** The pending bulk write drained by reads: it completes `true` and
+   * the slice clears. */
   #completeIfDrained(): void {
-    if (this.#writeOffset >= this.#writeEnd) {
-      let done = this.#writeDone as Completer<boolean>;
-      this.#writeBuf = null;
-      this.#writeDone = null;
-      this.#writeOffset = 0;
-      this.#writeEnd = 0;
-      done.complete(true);
+    if (isFirstClass<T>()) {
+      if (this.#writeOffset >= this.#writeEnd) {
+        let done = this.#writeDone as Completer<boolean>;
+        this.#writeBuf = null;
+        this.#writeDone = null;
+        this.#writeOffset = 0;
+        this.#writeEnd = 0;
+        done.complete(true);
+      }
+    }
+  }
+
+  /** A read is a programming error while another read pends. */
+  #checkReadable(): void {
+    if (this.#pendingRead != null || this.#pendingOne != null) {
+      throw new Error('zena:stream: one read may be pending at a time');
     }
   }
 
   /**
-   * The reader disclaims the rest of the stream: the pending write
-   * and subsequent writes complete `false`, and subsequent reads
-   * complete 0. Under cancellation this is what releasing the read
-   * end performs; at a component boundary it is the readable-end
-   * drop.
+   * The reader disclaims the rest of the stream: a parked write gets
+   * its element back, later writes are refused the same way, a parked
+   * bulk write completes `false`, and later reads complete 0 or
+   * `none`. Under cancellation this is what releasing the read end
+   * performs; at a component boundary it is the readable-end drop.
    */
   stop(): void {
     if (this.#stopped) {
       return;
     }
     this.#stopped = true;
-    let done = this.#writeDone;
-    if (done != null) {
-      this.#writeBuf = null;
-      this.#writeDone = null;
-      this.#writeOffset = 0;
-      this.#writeEnd = 0;
-      done.complete(false);
+    // The element stays in the slot for its writer to take back.
+    let taken = this.#slotTaken;
+    if (taken != null) {
+      this.#slotTaken = null;
+      taken.complete(false);
     }
-    let pending = this.#pendingRead;
-    if (pending != null) {
-      this.#pendingRead = null;
-      this.#pendingBuf = null;
-      pending.complete(0);
+    if (isFirstClass<T>()) {
+      // A bulk writer still holds its buffer.
+      let done = this.#writeDone;
+      if (done != null) {
+        this.#writeBuf = null;
+        this.#writeDone = null;
+        this.#writeOffset = 0;
+        this.#writeEnd = 0;
+        done.complete(false);
+      }
+      let pending = this.#pendingRead;
+      if (pending != null) {
+        this.#pendingRead = null;
+        this.#pendingBuf = null;
+        pending.complete(0);
+      }
     }
-    let pendingOne = this.#pendingOne;
-    if (pendingOne != null) {
+    let one = this.#pendingOne;
+    if (one != null) {
       this.#pendingOne = null;
-      pendingOne.complete(none);
+      one.complete(false);
     }
   }
 
+  /** What dropping a stream of owners does: stop it, so a parked
+   * write gets its element back (owner-futures.md §"Streams"). */
+  [release](): void {
+    this.stop();
+  }
+
   /**
-   * The writer's one-element write: `writeAll` of a slice of one.
-   *
-   * The future completes with `true` once the element has been
-   * consumed by a read, and with `false` if the reader stopped before
-   * consuming it — delivery did not happen.
+   * The writer's one-element write. Its future resolves `(true, _)`
+   * once a read has taken the element, and `(false, value)`, handing
+   * the element back, if the reader stopped before taking it or had
+   * already stopped.
    */
-  [write](value: T): Future<boolean> {
+  [write](value: T): Future<Result<void, T>> {
     if (this.#stopped) {
-      return Future.of(false as boolean);
+      return Future.of<Result<void, T>>((false, value));
     }
     this.#checkWritable();
-    let pendingOne = this.#pendingOne;
-    if (pendingOne != null) {
+    if (isFirstClass<T>()) {
+      // A parked bulk read takes the element straight into its buffer.
+      let pending = this.#pendingRead;
+      if (pending != null) {
+        let buf = this.#pendingBuf as FixedArray<T>;
+        buf[0] = value;
+        this.#pendingRead = null;
+        this.#pendingBuf = null;
+        pending.complete(1);
+        return Future.of<Result<void, T>>((true, unit()));
+      }
+    }
+    this.#slot = value;
+    this.#slotFull = true;
+    let taken = new Completer<boolean>();
+    this.#slotTaken = taken;
+    let one = this.#pendingOne;
+    if (one != null) {
       this.#pendingOne = null;
-      pendingOne.complete(some(value));
-      return Future.of(true as boolean);
+      one.complete(true);
     }
-    let pending = this.#pendingRead;
-    if (pending != null) {
-      let buf = this.#pendingBuf as FixedArray<T>;
-      buf[0] = value;
-      this.#pendingRead = null;
-      this.#pendingBuf = null;
-      pending.complete(1);
-      return Future.of(true as boolean);
+    return this.#awaitTaken(taken);
+  }
+
+  /** A parked write's result: `(true, _)` once a read took the
+   * element, or the element itself once the reader stopped. */
+  async #awaitTaken(taken: Completer<boolean>): Future<Result<void, T>> {
+    if (await taken.future) {
+      return (true, unit());
     }
-    let single = new Array<T>.fixed(1, value);
-    return this.#park(single, 1);
+    let value = this.#slot as T;
+    this.#slotFull = false;
+    return (false, value);
   }
 
   /**
@@ -213,68 +327,68 @@ export class Stream<T> implements AsyncIterable<T> {
    * was".
    */
   [writeAll](buf: FixedArray<T>, count: i32 = buf.length): Future<boolean> {
-    if (count <= 0 || count > buf.length) {
-      throw new Error('zena:stream: writeAll count out of range');
-    }
-    if (this.#stopped) {
-      return Future.of(false as boolean);
-    }
-    this.#checkWritable();
-    let pendingOne = this.#pendingOne;
-    if (pendingOne != null) {
-      // Rendezvous with the blocked one-element reader; the rest parks.
-      this.#pendingOne = null;
-      pendingOne.complete(some(buf[0]));
-      if (count == 1) {
-        return Future.of(true as boolean);
+    if (isFirstClass<T>()) {
+      if (count <= 0 || count > buf.length) {
+        throw new Error('zena:stream: writeAll count out of range');
+      }
+      if (this.#stopped) {
+        return Future.of(false as boolean);
+      }
+      this.#checkWritable();
+      let pending = this.#pendingRead;
+      if (pending != null) {
+        // Rendezvous with the blocked reader first; the rest parks.
+        let dst = this.#pendingBuf as FixedArray<T>;
+        let n = if (count < dst.length) count else dst.length;
+        var i = 0;
+        while (i < n) {
+          dst[i] = buf[i];
+          i += 1;
+        }
+        this.#pendingRead = null;
+        this.#pendingBuf = null;
+        pending.complete(n);
+        if (n >= count) {
+          return Future.of(true as boolean);
+        }
+        let parked = this.#park(buf, count);
+        this.#writeOffset = n;
+        return parked;
       }
       let parked = this.#park(buf, count);
-      this.#writeOffset = 1;
+      // A blocked one-element reader drains the slice from here.
+      let one = this.#pendingOne;
+      if (one != null) {
+        this.#pendingOne = null;
+        one.complete(true);
+      }
       return parked;
     }
-    let pending = this.#pendingRead;
-    if (pending != null) {
-      // Rendezvous with the blocked reader first; the rest parks.
-      let dst = this.#pendingBuf as FixedArray<T>;
-      let n = if (count < dst.length) count else dst.length;
-      var i = 0;
-      while (i < n) {
-        dst[i] = buf[i];
-        i += 1;
-      }
-      this.#pendingRead = null;
-      this.#pendingBuf = null;
-      pending.complete(n);
-      if (n >= count) {
-        return Future.of(true as boolean);
-      }
-      let parked = this.#park(buf, count);
-      this.#writeOffset = n;
-      return parked;
-    }
-    return this.#park(buf, count);
+    throw new Error('zena:stream: writeAll copies elements, so it needs a first-class element type');
   }
 
   /** A write is a programming error after `close` (the writer's own
    * end) and while another write pends (the ends are exclusive); a
-   * STOPPED reader is not — callers check that first and complete
-   * `false`, because the reader's disclaim is data, not a bug. */
+   * STOPPED reader is not — callers check that first and refuse the
+   * write, because the reader's disclaim is data, not a bug. */
   #checkWritable(): void {
     if (this.#closed) {
       throw new Error('zena:stream: write after close');
     }
-    if (this.#writeDone != null) {
+    if (this.#slotFull || this.#writeDone != null) {
       throw new Error('zena:stream: one write may be pending at a time');
     }
   }
 
-  /** Installs `buf[0, count)` as the one pending write and returns
-   * the future its writer awaits; reads drain it from `#writeOffset`
-   * until `read` completes it. Callers have already handled the
-   * rendezvous-with-a-blocked-reader case. */
+  /** Installs `buf[0, count)` as the one pending bulk write and
+   * returns the future its writer awaits; reads drain it from
+   * `#writeOffset` until it completes. Callers have already handled
+   * the rendezvous-with-a-blocked-reader case. */
   #park(buf: FixedArray<T>, count: i32): Future<boolean> {
     let done = new Completer<boolean>();
-    this.#writeBuf = buf;
+    if (isFirstClass<T>()) {
+      this.#writeBuf = buf;
+    }
     this.#writeOffset = 0;
     this.#writeEnd = count;
     this.#writeDone = done;
@@ -285,21 +399,23 @@ export class Stream<T> implements AsyncIterable<T> {
    * still delivers; once it drains, reads complete 0. */
   [close](): void {
     this.#closed = true;
-    let pending = this.#pendingRead;
-    if (pending != null) {
-      this.#pendingRead = null;
-      this.#pendingBuf = null;
-      pending.complete(0);
+    if (isFirstClass<T>()) {
+      let pending = this.#pendingRead;
+      if (pending != null) {
+        this.#pendingRead = null;
+        this.#pendingBuf = null;
+        pending.complete(0);
+      }
     }
-    let pendingOne = this.#pendingOne;
-    if (pendingOne != null) {
+    let one = this.#pendingOne;
+    if (one != null) {
       this.#pendingOne = null;
-      pendingOne.complete(none);
+      one.complete(false);
     }
   }
 
   [AsyncIterable.asyncIterator](): AsyncIterator<T> {
-    return new StreamIterator<T>(this);
+    return new StreamIterator<T>(shareReference(this));
   }
 
   /**
@@ -310,19 +426,15 @@ export class Stream<T> implements AsyncIterable<T> {
    * next write.
    */
   [nextStep](): AsyncStep<T> {
-    if (this.#pendingRead != null || this.#pendingOne != null) {
-      throw new Error('zena:stream: one read may be pending at a time');
-    }
+    this.#checkReadable();
     if (this.#stopped) {
       return (0, _, _);
     }
-    let src = this.#writeBuf;
-    if (src != null) {
-      let from = src;
-      let value = from[this.#writeOffset];
-      this.#writeOffset += 1;
-      this.#completeIfDrained();
-      return (1, value, _);
+    if (this.#slotFull) {
+      return (1, this.#takeSlot(), _);
+    }
+    if (this.#hasBulk()) {
+      return (1, this.#drainOne(), _);
     }
     if (this.#closed) {
       return (0, _, _);
@@ -331,30 +443,49 @@ export class Stream<T> implements AsyncIterable<T> {
   }
 }
 
-final class StreamIterator<T> implements AsyncIterator<T> {
+/** A `for await` over a stream: it reads the stream its holder owns. */
+final class StreamIterator<scoped T> implements AsyncIterator<T> {
   #stream: Stream<T>;
   new(stream: Stream<T>) : #stream = stream;
 
   next(): AsyncStep<T> {
     return this.#stream.[nextStep]();
   }
+
+  /** The stream is its holder's to release, not the iterator's. */
+  [release](): void {}
 }
 
 /**
  * The write capability. Hand out `.stream`; keep this — and keep it
  * singular: fan-in from several producers is an explicit multiplexing
- * adapter over one writer, not shared use of this object.
+ * adapter over one writer, not shared use of this object. At a
+ * restricted `T` the stream has one reader, so `.stream` cannot be read
+ * off the writer; make the pair with `StreamWriter.create` instead.
  *
  * A write's future is the backpressure: it completes when its
- * elements are consumed into reads — or with `false` when the reader
+ * elements are consumed into reads — or refuses them when the reader
  * has stopped, which is data, not a failure.
  */
-export class StreamWriter<T> {
+export class StreamWriter<scoped T> {
   stream = new Stream<T>();
 
-  /** Delivers `value` to the reader: `true` once it is consumed,
-   * `false` if the reader stopped before consuming it. */
-  write(value: T): Future<boolean> {
+  /**
+   * A writer and its stream's readable end. At a restricted `T`, such
+   * as a stream of owners, this is how the pair is made: the stream
+   * belongs to its reader, and the writer keeps a reference that only
+   * puts into it.
+   */
+  static create<scoped A>(): inline (StreamWriter<A>, Stream<A>) {
+    let writer = new StreamWriter<A>();
+    let stream = shareReference(writer.stream);
+    return (writer, stream);
+  }
+
+  /** Delivers `value` to the reader: `(true, _)` once it is consumed,
+   * or `(false, value)`, handing it back, if the reader stopped before
+   * consuming it. */
+  write(value: T): Future<Result<void, T>> {
     return this.stream.[write](value);
   }
 
@@ -373,6 +504,12 @@ export class StreamWriter<T> {
    * complete 0. */
   close(): void {
     this.stream.[close]();
+  }
+
+  /** What dropping a writer of owners does: end the stream, as
+   * `close` does, and leave it to its reader. */
+  [release](): void {
+    this.close();
   }
 }
 
