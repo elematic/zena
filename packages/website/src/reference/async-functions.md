@@ -281,15 +281,25 @@ completer.complete('Success');
 // completer.fail(new Error('Operation failed'));
 ```
 
-For racing producers where multiple callers might attempt settlement, `tryComplete`
-and `tryFail` return `true` if the call won the race, or `false` if the future was
-already settled:
+For racing producers where multiple callers might attempt settlement,
+`tryComplete` hands the value back, `(false, value)`, if the future was already
+settled, and `tryFail` returns `false`:
 
 ```zena
-if (completer.tryComplete('First')) {
+if (let (true, _) = completer.tryComplete('First')) {
   println('Won settlement race');
 }
 ```
+
+A future of an owner, such as `Future<Own<File>>`, has one consumer, so
+`completer.future` cannot be read off its completer. Make the pair together:
+
+```zena
+let (completer, future) = Completer.create<Own<File>>();
+```
+
+Dropping such a completer before it settles fails the future, so its consumer is
+not left waiting.
 
 ### Future combinators
 

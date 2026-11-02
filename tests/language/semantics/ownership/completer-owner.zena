@@ -1,0 +1,32 @@
+// @mode: check
+// A future of an owner has one consumer, so `completer.future` cannot
+// be read off a completer of one (the read would copy the future); the
+// pair comes from `Completer.create`, and the future moves like the
+// owner it will hold.
+import {Own, Disposable} from 'zena:core';
+import {Completer} from 'zena:async';
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let readFuture = (): i32 => {
+  let c = new Completer<Own<Res>>();
+  let f = c.future; // @error: is not nullable
+  return 0;
+};
+
+let twoConsumers = (): i32 => {
+  let (completer, future) = Completer.create<Own<Res>>();
+  let a = future;
+  let b = future; // @error: 'future' may have been moved
+  return 0;
+};
+
+// At a first-class type the future is an ordinary field.
+let plain = (): i32 => {
+  let c = new Completer<i32>();
+  let a = c.future;
+  let b = c.future;
+  return 0;
+};

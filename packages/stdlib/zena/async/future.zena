@@ -45,6 +45,15 @@ declare function raiseCancellation(): never;
 declare function releaseOwned<scoped T>(value: T): void;
 
 /**
+ * A second reference to a future, which move checking does not track:
+ * a completer's view of the future its consumer owns
+ * (owner-futures.md §"Completer"). The future's own state keeps the one
+ * consumer and the single settle apart.
+ */
+@intrinsic('share_reference')
+declare function shareReference<scoped T>(value: T): T;
+
+/**
  * The type `await x` has when `x: T` (docs/design/type-operators.md):
  * `Future<U>` becomes `U`, a union's future arms unwrap, anything
  * else passes through — one level, matching what one `await` does.
@@ -674,9 +683,26 @@ export class AnyCompleter {
 /**
  * The boundary object: everything external — host I/O, timers, test
  * harnesses — completes futures through a Completer.
+ *
+ * `T` is `scoped` (owner-futures.md §"Completer"), so a completer may
+ * settle a future of an owner. Such a future has one consumer, so
+ * `completer.future` cannot be read off it; make the pair with
+ * `Completer.create` instead.
  */
-export class Completer<T> extends AnyCompleter {
+export class Completer<scoped T> extends AnyCompleter {
   future = new Future<T>();
+
+  /**
+   * A completer and its future. At a restricted `T`, such as a future
+   * of an owner, this is how the pair is made: the future belongs to
+   * its consumer, and the completer keeps a reference that only
+   * settles it.
+   */
+  static create<scoped A>(): inline (Completer<A>, Future<A>) {
+    let completer = new Completer<A>();
+    let future = shareReference(completer.future);
+    return (completer, future);
+  }
 
   complete(value: T): void {
     this.future.[complete](value);
@@ -686,19 +712,23 @@ export class Completer<T> extends AnyCompleter {
     this.future.[fail](error);
   }
 
-  /** Settles with a value, reporting whether it won. False means
+  /** Settles with a value, or hands it back, `(false, value)`, when
    * someone else settled first — not an error for a caller racing on
    * purpose. */
-  tryComplete(value: T): boolean {
-    if (let (true, _) = this.future.[tryComplete](value)) {
-      return true;
-    }
-    return false;
+  tryComplete(value: T): inline (true, _) | inline (false, T) {
+    return this.future.[tryComplete](value);
   }
 
   /** Settles with a failure, reporting whether it won. */
   tryFail(error: Error): boolean {
     return this.future.[tryFail](error);
+  }
+
+  /** What dropping a completer of an owner does: fail a future it
+   * never settled, so its consumer is not left waiting. The future
+   * itself belongs to the consumer. */
+  [release](): void {
+    this.future.[tryFail](new Error('the completer was dropped before settling its future'));
   }
 }
 
