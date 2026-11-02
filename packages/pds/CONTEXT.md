@@ -9,6 +9,9 @@ package host's protocol is in
 "Hosting, keys and maintainers" and "Abuse and moderation", and its
 lexicons are in `packages/package-manager/lexicons`.
 
+The package host's remaining work is listed in #684, the MVP section
+first. When a pull request closes an item there, tick its box.
+
 ## Porting
 
 - Each ported module's header comment names the pds.js file it comes from,

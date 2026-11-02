@@ -268,6 +268,8 @@ declare function __js_string_substring(s: externref, start: i32, end: i32): exte
 
 JavaScript engines that support `wasm:js-string` recognize these imports and bind them directly to native string primitives in the engine.
 
+Past the builtins, the standard library's `*-js.zena` files import a few of JavaScript's own functions through `zena:host:*` modules, which `@zena-lang/runtime` provides (`stringImports`, `urlImports` and the others in `packages/runtime/src/index.ts`). Each import is the JavaScript function itself or a one-line arrow over it, and the logic stays in Zena. The runtime's JavaScript ships with every program, so judge a delegation by the total size: the minified runtime plus the module built with `-O2 --target js`.
+
 ##### String literals and imported constants
 
 String literals do not emit UTF-8 data segments. The compiler emits imported string constants:

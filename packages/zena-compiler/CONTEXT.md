@@ -198,6 +198,50 @@ worth more than the keying work itself.
   calls via `functionMap` (lookup by symbol ID), and map cross-module calls via
   `exportMap` (lookup by the `ImportSpecifier`'s String name).
 
+## The AST
+
+- A node's `loc` is a byte range `[start, end)` (`SourceLocation` in
+  `zena/lib/ast.zena`). A binary operator's node (`BinaryExpression`,
+  `&&`, `||` and `??` included, and `PipelineExpression`), an
+  `AsExpression` and an `IsExpression` start at the operator: `a + b`
+  starts at `+`.
+- Parentheses are not nodes. `(a + b)` parses to the `BinaryExpression`
+  itself, so nothing in the tree records them.
+- A lint rule that needs a node's whole source text uses `RuleContext`'s
+  `extent`, `start` and `end` (`packages/zena-lint/zena/lib/context.zena`),
+  which span the node's descendants and widen over the parentheses
+  around them.
+
+## Debugging the compiler
+
+- Print from the compiler with `console.log`, rebuild the CLI module
+  (`npm run build -w @zena-lang/zena-cli`), and compile a probe with
+  `./target/release/zena-cli build <probe>.zena -o <probe>.wasm`, which
+  always compiles and prints the compiler's output. `zena run` reuses a
+  cached module unless given `--no-cache`.
+- To skip the CLI module rebuild, build stage A alone and compile with
+  it. The probe must be inside the repository, which is where the
+  compiler module reads source from:
+
+  ```bash
+  npm run build:cli -w @zena-lang/zena-compiler
+  ZENA_COMPILER_WASM=packages/zena-compiler/zena/out/cli.wasm \
+    ./target/release/zena-cli build <probe>.zena -o <probe>.wasm
+  ```
+
+- To compare two compilers (`origin/main` and your branch, say), build
+  stage A from each tree, keep both `cli.wasm` files, and compile the
+  same inputs with each through `ZENA_COMPILER_WASM`. With the variable set, `zena-cli` skips its
+  compile cache.
+- `typeToString` prints a class, interface or alias as its name and type
+  arguments only, so two types with the same name from different
+  libraries print alike. Print `declaringModuleOf(t)` (`zena/lib/types.zena`)
+  beside it to tell them apart.
+- Read an environment toggle once per compile, as `compile-file.zena`
+  does. Each `getEnv` call asks the host for the whole environment and
+  searches it, so a toggle read per function or per instruction repeats
+  that host call thousands of times.
+
 ## Build System (Wireit)
 
 - Test runners and execution pipelines rely on `npm` scripts wrapped around
@@ -252,6 +296,11 @@ test, which is where nearly all the cost was (a five-line test cost
 0.385s to compile against 0.027s for a cache hit). Only _running_ is
 isolated, one `zena-cli run` process per test, because that is where
 traps and hangs live.
+
+The runner also builds its own `BinaryGenerator` (`compileOne`), so an
+environment toggle that `compile-file.zena` reads does not reach it. A
+toggle the suite should honour is read in `compileOne` too and declared
+in the test script's wireit `env`, as `ZENA_PROPAGATE` is.
 
 **Sharing a compiler is worth a lot, and then worth nothing.** Compiling
 all 465 tests in one process, varying only how many entry points share

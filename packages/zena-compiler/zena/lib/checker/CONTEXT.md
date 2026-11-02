@@ -7,6 +7,12 @@ fewer than the callee's parameters gets the callee's default
 initializers spliced into its argument list (`splicedArgCountOf`
 records how many the caller wrote).
 
+An expression's type is recorded on the expression's node. A type
+annotation inside an expression gets a type of its own only where the
+checker writes one: `x is T` records `T` on the annotation, while
+`x as T` records it on the `AsExpression` alone, so
+`getNodeType(asExpr.typeAnnotation)` is null.
+
 `lib/checker.zena` is the public surface: `checkModule`, `beginModule`,
 `finishModule`, `ModuleCheck`, `CheckResult`, `SharedCheckerState`,
 `typesEqual`, `isNullableType`, `unwrapAliases`. Everything else lives
@@ -82,3 +88,17 @@ name. `ctx.tryResolveWellKnownType(WellKnown.X)` answers with the
 declaration the library owns (`well-known.zena`), and `isWellKnown`
 compares a type's name and declaring library. The remaining name-based
 sites are listed in elematic/zena#288.
+
+## Surveying a rule
+
+To see where a proposed rule would fire before it becomes an error,
+report each site with a temporary `ctx.warning(...)`, build stage A
+(`npm run build:cli -w @zena-lang/zena-compiler`), and compile the code
+to survey with it through `ZENA_COMPILER_WASM`
+(`packages/zena-compiler/CONTEXT.md`, "Debugging the compiler"), with
+`ZENA_WARN_UNNECESSARY_CASTS=1 ZENA_CHECK_ALL_BODIES=1` set. Despite
+its name, the first variable makes the compile print warnings of every
+kind; without it none are printed (`compile-file.zena`). The second
+checks every body of the standard library and the other dependencies
+and reports what it finds there; otherwise a dependency's bodies are
+checked only when reached, and its diagnostics are dropped.

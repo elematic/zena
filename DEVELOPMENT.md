@@ -89,6 +89,28 @@ sandbox — cargo compiles `zena-cli`, the bootstrap compiles the
 compiler, and the entire `npm test` suite runs offline — so it shows
 that a clean checkout bootstraps, which a cached run does not.
 
+### Known CI flakes
+
+Rerun the failed jobs (`gh run rerun <run> --failed`) when a failure
+matches one of these:
+
+- **Out of memory.** Scripts end `killed` and the job ends with
+  "The operation was canceled", with no failing test. The runner has
+  16 GB, and a change to the compiler reruns every script. The `mem`
+  lines the test step prints every 30 seconds show `available=` falling
+  below 1 GiB just before.
+- **The `http-service` component test** (`test:component` in
+  `packages/zena-compiler`) gets empty bodies for its four concurrent
+  requests under load (#449).
+- **A script's output missing after a cache restore.** A script fails
+  because a file another script declares as its output is not there,
+  although that script's result was restored from wireit's cache: for
+  example `zenafx:test` reporting `out/widgets.wasm is missing`. Rerun
+  when the change touches none of the missing file's inputs.
+
+`WARNING: recompiling … deserialization failed` is not a failure: a
+`.cwasm` built on another machine is compiled again in place.
+
 ## Where things live
 
 - `packages/zena-compiler` — the compiler (Zena). `zena/lib/codegen/`

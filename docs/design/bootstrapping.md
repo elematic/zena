@@ -54,6 +54,14 @@ itself, which is a blind spot for every other test, since the rest of the
 suite exercises the compiler's output on other programs rather than on
 itself.
 
+A change to what a construct means can also make B ≢ C while every other
+test passes, when the compiler's own source uses the construct. The
+bootstrap compiled A with the old meaning and A compiled B with the new
+one, so A and B behave differently wherever the compiler relies on the
+construct, and emit different bytes for the same input. The compiler
+source that relies on the old meaning has to be rewritten to mean the
+same thing under both.
+
 What each stage is for:
 
 - **A** is what everything in the repository compiles with. `zena-cli`'s
@@ -96,7 +104,19 @@ commit's source. There is no separate provenance file to keep in sync.
 The artifact is also self-certifying: the bootstrap is always a stage B,
 and because B ≡ C held when it was made, the bootstrap compiling its own
 source reproduces itself **byte-for-byte**. To audit a bootstrap, check out its re-baseline
-commit, run `build:cli`, and `cmp` the output against it.
+commit, build the `zena` command (`npm run build -w @zena-lang/zena-cli`),
+and compile the compiler with the bootstrap the way `test:fixpoint`
+builds stage C:
+
+```bash
+cd packages/zena-compiler
+ZENA_GC_RESERVE_MB=1536 ZENA_COMPILER_WASM=bootstrap/cli.wasm \
+  ../../target/release/zena-cli -g -O2 build zena/cli/main.zena -o zena/out/audit.wasm
+cmp zena/out/audit.wasm bootstrap/cli.wasm
+```
+
+`build:cli`'s output does not match: it is built without `-g`, so it has
+no name section.
 
 ## The invariant
 
@@ -129,6 +149,16 @@ so there is no cache path around it. The failure is loud and local: a
 compile error from `build:cli`, which is the signal to use the
 two-step landing below.
 
+That error can come from code generation. The bootstrap checks the new
+source with its own, older checker. Where that checker types an
+expression differently from the current one, after a change to type
+inference for example, the bootstrap's code generator can meet a value
+it cannot lower and fail with `zir unsupported: <reason> @<function>`
+in code the current checker accepts. Fix one site at a time, and after
+each rerun `build:cli`, which shows the bootstrap's view, then
+`build:self-hosted`, which shows stage A's and so the current checker's.
+Each run finds the next site.
+
 A language or stdlib change can make compiler source unbuildable by
 the existing bootstrap (for example, the compiler starts _using_ new
 syntax it just gained). Two options, in order of preference:
@@ -139,6 +169,24 @@ syntax it just gained). Two options, in order of preference:
 2. **Re-baseline in the same change**, when the two-step split is
    impractical: build the new bootstrap from the last commit the old
    bootstrap could build, then apply the source change on top.
+   `reseed` cannot build this bootstrap: it depends on the whole test
+   suite, which starts with `build:cli` on the tree being committed, and
+   that is the build that fails. Build the stages by hand with the
+   `build:cli` and `build:self-hosted` commands: A' is the old bootstrap
+   compiling the newest tree it can build, B' is A' compiling the
+   change, and C' is B' compiling it again. Commit C'
+   after checking that C' compiling the change emits C' again, byte for
+   byte. B' can differ from C', since A' was built from the older tree.
+
+A standard library file in the compiler's closure, such as `zena:fs`
+or, through the prelude, `zena:async`, is compiled by the bootstrap as
+part of the compiler. When a change to such a file needs a compiler
+change to compile, the compiler change lands first, handling both the
+old and the new form of the library, and is re-baselined; the library
+changes after. Before re-baselining, check the new form against the
+fixed compiler by editing the library file and compiling a probe with
+`./target/release/zena-cli`, whose compiler reads the standard library
+from disk.
 
 The same holds for what the compiler reads besides source. The
 repository's packages are a workspace of `zena-package.json` manifests
@@ -164,6 +212,12 @@ runs, run `npm test` once more: the changed bootstrap invalidates
 the new bootstrap_, which is exactly the "is the new bootstrap good?"
 check. Commit the new `bootstrap/cli.wasm` together with whatever
 change motivated the re-baseline.
+
+Reseed after the commit's last source change. The bootstrap a commit
+carries is built from that commit's own source (Provenance, above), and
+a pull request is squash-merged into one commit. So a pull request that
+re-baselines and then changes compiler or standard library source, to
+use what the new bootstrap can compile, re-baselines again at the end.
 
 `cli.cwasm` and `cli.lock` may appear next to the bootstrap — they are
 `zena-cli`'s machine-specific precompilation cache, gitignored, never
