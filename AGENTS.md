@@ -666,12 +666,13 @@ All prose — design docs, commit messages, comments — follows
   `[stdlib] Add String.repeat`, `[pds][zena-cli] ...`, `[docs] ...` for
   documentation alone. PRs are squash-merged, so the title becomes the
   commit on `main`.
-- **After pushing**, run `npm run watch-prs -- <numbers>` as a
-  background task. It exits when a PR is merged, its checks fail,
-  someone comments, or the PR a stacked PR is based on merges; passing
-  checks are printed and it keeps watching. Act on
-  what it prints (fix the failing check, answer the comment, rebase),
-  then start it again while any of the PRs are open.
+- **After pushing**, find out about merges, failing checks and comments
+  without being told: subscribe to the PR (`subscribe_pr_activity`) if
+  your harness has the tool, or else run `npm run watch-prs -- <numbers>`
+  as a background task, which exits when there is something to act on,
+  or after 110 minutes with nothing. Act on what it reports (fix the
+  failing check, answer the comment, rebase), then start it again while
+  any of the PRs are open.
 - **Stacked PRs.** When the PR below yours is squash-merged, its commits
   land on `main` as one new commit, so rebase only your own commits:
   `git rebase --onto origin/main <old tip of the base branch> <branch>`,
