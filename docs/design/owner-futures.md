@@ -2,7 +2,8 @@
 
 ## Status
 
-Draft, revised 2026-10-29 (sixth revision). Part of elematic/zena#284: switching
+Draft, revised 2026-11-02 (seventh revision: stream writes hand refused
+elements back). Part of elematic/zena#284: switching
 `wasi:http` and `zena-cli:host/http-server` to resource classes needs it,
 and so does the open "lifted `future<T>` ownership" item there.
 
@@ -293,11 +294,13 @@ behind it, since that work may have started other work or had other
 effects. Cancelling it is what a `FutureClaim` is for (below).
 
 A store into a `T` field that still holds a value would drop the old
-value inside the body. At an owner the glue releases it before the
-store, as a store into an owner field already does. At a must-consume
-`T` the old value can be neither released nor kept, so the store
-throws, a backstop like the second-waiter check. `Future` never stores
-over a full slot, since it settles once.
+value inside the body. The body cannot release it: an `Unmanaged<R>`
+instantiation shares the body of an owner one, and its old value is not
+the body's to release. So at a restricted specialization the store
+throws, a backstop like the second-waiter check. A body that replaces a
+value takes the old one first and hands it on, as `tryComplete` and a
+refused stream write do. `Future` never stores over a full slot, since
+it settles once.
 
 `DeferredFuture` handles the waiter differently:
 
@@ -331,21 +334,48 @@ A `Stream<T>` at a restricted `T` has one reader, and moving the stream
 moves that reader. Elements reach the reader in two ways:
 
 - `readOne()` returns a restricted `Future<Option<T>>`, consumed by its
-  await.
+  await. `Some` takes `scoped T` (#790), so the element comes out with
+  `if (let Some {value} = await stream.readOne())`.
 - `for await (let x in stream)` binds each element to `x`, consumed or
   released by the iteration's body as any binding is.
 
-`read(buf)`, the bulk copy into a caller's `FixedArray<T>`, needs an
-array of restricted values, which #379 rejects; it is not available at a
-restricted `T`.
+**A write hands a refused element back,** as `tryComplete` hands back
+its loser. A write is an offer the reader may refuse, and the refusal
+can come after the write has parked, so the element comes back through
+the write's future:
 
-The stream's body does not drop elements either. `stop()` at a restricted
-`T` returns the elements it has not delivered, as `tryComplete` returns
-its loser. Dropping a whole `Stream<Own<R>>` is use-site glue again: its
-drop plan releases the pending read through a releasing waiter and the
-undelivered elements one by one. A stream of must-consume values is
-must-consume itself, so it has to be read to the end. The typed WIT
-stream pump releases what it lifted but could not deliver, and drops the
+```zena
+write(value: T): Future<Result<void, T>>   // (true, _): delivered
+                                           // (false, value): refused
+```
+
+- A write to a stream that has stopped resolves `(false, value)` at once.
+- A parked write whose reader stops, or drops the stream, resolves
+  `(false, value)` then.
+- The writer's use site decides what a refused element costs. A
+  discarded result releases an owner through the existing release of a
+  discarded owner result, and a must-consume element has to be consumed.
+
+So the stream never releases or drops an element. That keeps the shared
+body safe: `Stream<Own<R>>` and `Stream<Unmanaged<R>>` share one body
+(§"Specialization"), which cannot tell an owner from a handle it does
+not own, while the writer's use site can. It also keeps `stop()`
+available at every `T`. Dropping a `Stream<Own<R>>` that nothing
+consumes calls its `[release]`, which is `stop()`: a pending read
+completes with `none`, and a parked write gets its element back.
+
+**The bulk path stays first-class.** `writeAll(buf, count)` and
+`read(buf)` copy through a caller's `FixedArray<T>`, which no caller at
+a restricted `T` can build (#379). `writeAll` keeps `Future<boolean>`,
+since its writer still holds the buffer. The stream keeps a parked bulk
+write in a `FixedArray<T>` field, which a `scoped T` class may declare
+but reads and writes only under `isFirstClass<T>()` (§"The class half of
+`scoped T`"). At a restricted `T` a write parks in one `WithDefault<T>`
+slot instead.
+
+**The typed WIT stream pump** lifts a chunk's elements one at a time
+and writes each. When a write is refused, the pump releases the element
+it gets back, lifts and releases the rest of the chunk, and drops the
 readable end so the host releases what it never sent.
 
 ## FutureClaim
@@ -371,18 +401,23 @@ branch:
 
 - **Fields:** `T` may be stored in fields, bare, nullable, or as another
   `scoped` class's argument. The instance carries its argument's
-  restriction (§"Restricted instantiations").
+  restriction (§"Restricted instantiations"). A field that puts `T` in
+  an unrestricted container, such as a stream's `FixedArray<T>` bulk
+  buffer, may be declared if it starts empty, and is read or written only
+  inside the first-class branch, so a restricted specialization never
+  fills it.
 - **The first-class branch:** where `isFirstClass<T>()` is known `true`,
-  `T` is unrestricted, so copies and repeated reads are fine. A
-  first-class instantiation's behavior, such as several awaits of one
-  `Future<i32>`, is written there.
+  `T` is unrestricted, so copies, repeated reads and unrestricted
+  containers are fine. A first-class instantiation's behavior, such as
+  several awaits of one `Future<i32>` or a stream's bulk copies, is
+  written there.
 - **Exactly once elsewhere:** outside that branch, the body is checked at
   ownership.md's strictest discipline. Each `T` value is consumed
   exactly once per path: stored in a field, returned, passed to an
   owning or `scoped` parameter, or moved into a binding. A second use is
   the use-after-move error, and a path that leaves a `T` unconsumed is
   the required-consumption error. A value with nowhere to go is handed
-  back to the caller, as `tryComplete` and `stop()` do.
+  back to the caller, as `tryComplete` and a refused stream write do.
 - **Moving a field's value out is a take.** Returning, binding or
   passing on the value of a field whose type holds `T` takes it: the
   field must be a `var` that is nullable at every restricted `T`, and
@@ -392,7 +427,9 @@ branch:
   qualifies, since every restricted type is a reference (§"The value
   slot"). This is the rule #563 gave owner fields, and it is why
   `valueOrThrow` casts with `as T`: the taken check in the runtime state
-  table is required by the types.
+  table is required by the types. A read through a receiver at a
+  first-class instantiation, such as `opt.value` on a `Some<String>`,
+  takes nothing and is an ordinary read (#790).
 
 One runtime check is not required by these rules: the second waiter in
 `[subscribe]`. Two subscriptions can only come from callers the checker
@@ -412,7 +449,7 @@ The synthesizer changes in three places:
 - **Lifted futures and streams** become restricted instantiations
   automatically, through the containment walk. The `readFuture` helper
   lifts the payload once and hands it to the one consumer. The stream
-  pump releases undelivered elements as above.
+  pump releases what its refused writes hand back, as above.
 - **Tuple members carry owners.** `inAggregate` renders an owned
   resource inside a tuple as `Unmanaged<R>`, from before tuples could
   hold owners (#495). Tuple members now render `Own<R>`, so `listen`
@@ -463,12 +500,21 @@ and with them:
 3. **Release glue.** #649 releases an unconsumed future of an owner
    wherever implicit drop already runs: locals, parameters, tuple
    elements and discarded results (fields of that type are still
-   rejected). `never` releases its resource. Streams follow with stage 4. Still to do: `DeferredFuture`'s readable-end drop moving into the
-   glue, once its `T` is `scoped`, and the release before a store into
-   a full `T` field.
-4. **`Completer.create`, streams (`stop()` returning what it has not
-   delivered), and `FutureClaim`** at restricted types, with
-   loop-variable release for `for await`.
+   rejected). `never` releases its resource. Still to do:
+   `DeferredFuture`'s readable-end drop moving into the glue, once its
+   `T` is `scoped`, and the throw on a store into a full `T` field at a
+   restricted specialization.
+4. **`Option`, streams, `Completer.create` and `FutureClaim`** at
+   restricted types, with loop-variable release for `for await`. Done so
+   far: #782 (a pattern that takes a `scoped T` instance apart moves it
+   and releases what it bound), #788 (any `scoped T` class at an owner
+   is released where it is dropped, through a `[release]` synthesized
+   from its `T` fields), #789 (a generic function at an owner is
+   specialized at the owner's resource class, not as an erasure), and
+   #790 (`Some` takes `scoped T`; a union with a container member is
+   affine and released by its member). Next: the static half of
+   `isFirstClass<T>()` with first-class-only fields, then streams with
+   writes that hand refused elements back.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
    `zena:fetch` and the protobuf transports removed.
 
