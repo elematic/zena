@@ -3,11 +3,12 @@ import { growable } from 'zena:core';
 import { walkEnter } from '../visitor.zena';
 import {
   AsExpression, AssignmentExpression, BinaryExpression, BindingPattern,
-  CallExpression, Expression, ExpressionStatement, Identifier,
-  IdentifierPattern, IndexExpression, IsExpression, MatchExpression,
-  MemberExpression, MethodDefinition, NamedTypeAnnotation, NewExpression,
-  Node, Parameter, SourceLocation, ThisExpression, ThisTypeAnnotation,
-  TuplePattern, TypeAnnotation, VariableDeclaration, getMemberPropertyName
+  BindingProperty, CallExpression, ClassPattern, Expression,
+  ExpressionStatement, Identifier, IdentifierPattern, IndexExpression,
+  IsExpression, MatchExpression, MemberExpression, MethodDefinition,
+  NamedTypeAnnotation, NewExpression, Node, Parameter, RecordPattern,
+  SourceLocation, ThisExpression, ThisTypeAnnotation, TuplePattern,
+  TypeAnnotation, VariableDeclaration, getMemberPropertyName
 } from '../ast.zena';
 import {
   ArrayType, ClassType, ErrorType, FieldInfo, InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType, ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, instantiateTypeAliasType, isAffineContainer, isOwnershipWrapper, isScopedClassParam, isScopedType, ownershipHandleInner, ownershipHandleName, releasableFuture, soleNonNullMember, typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped, typeContainsSecondClass, typeToString
@@ -129,13 +130,14 @@ export function borrowWrapFieldRead(ctx: CheckerContext, t: Type): Type {
 }
 
 /**
- * A pattern that takes apart a tuple holding an owner moves it: the
- * owners go to the pattern's bindings, so the tuple must not hold them
- * too (#495). The move is recorded before the branch, so the binding is
- * dead on the path where the pattern does not match as well.
+ * A pattern that takes apart a tuple holding an owner, or a `scoped T`
+ * instance at one, moves it: the owners go to the pattern's bindings,
+ * so the source must not hold them too (#495). The move is recorded
+ * before the branch, so the binding is dead on the path where the
+ * pattern does not match as well.
  */
-export function moveDestructuredTuple(ctx: CheckerContext, source: Expression, t: Type): void {
-  if (isAffineTuple(t)) {
+export function moveDestructured(ctx: CheckerContext, source: Expression, t: Type): void {
+  if (isAffineValue(t)) {
     recordArgumentMove(ctx, source, t);
   }
 }
@@ -1239,27 +1241,41 @@ export function releaseDiscardedOwner(ctx: CheckerContext, stmt: Node, expressio
 }
 
 /**
- * Register the owner bindings an `if let`, `while let` or `match` pattern
- * declares as drop candidates of the branch it guards, so they are
- * released at the branch's end unless it moves them (#495).
+ * Register the owner bindings a pattern declares as drop candidates, so
+ * they are released at the end of the block or branch they belong to
+ * unless something moves them (#495). The owners come out of a tuple or
+ * a `scoped T` instance the pattern moved (moveDestructured).
+ * `declNode` is the declaration of a destructuring `let`, where the
+ * release region starts; null for an `if let`, `while let` or `match`
+ * pattern, whose branch is the region.
  */
-export function registerPatternOwners(ctx: CheckerContext, pattern: Node): void {
+export function registerPatternOwners(ctx: CheckerContext, pattern: Node,
+    declNode: Node | null = null): void {
   match (pattern) {
-    case BindingPattern {pattern as inner}: registerPatternOwners(ctx, inner as Node)
+    case BindingPattern {pattern as inner}: registerPatternOwners(ctx, inner as Node, declNode)
     case TuplePattern {elements}: {
       for (let element in elements) {
         if (element != null) {
-          registerPatternOwners(ctx, element as Node);
+          registerPatternOwners(ctx, element, declNode);
         }
       }
     }
-    case Identifier {}: registerPatternOwner(ctx, pattern)
-    case IdentifierPattern {}: registerPatternOwner(ctx, pattern)
+    case RecordPattern {properties}: registerPropertyOwners(ctx, properties, declNode)
+    case ClassPattern {properties}: registerPropertyOwners(ctx, properties, declNode)
+    case Identifier {}: registerPatternOwner(ctx, pattern, declNode)
+    case IdentifierPattern {}: registerPatternOwner(ctx, pattern, declNode)
     case _: {}
   }
 }
 
-function registerPatternOwner(ctx: CheckerContext, node: Node): void {
+function registerPropertyOwners(ctx: CheckerContext, properties: GrowableArray<BindingProperty>,
+    declNode: Node | null): void {
+  for (let property in properties) {
+    registerPatternOwners(ctx, property.value, declNode);
+  }
+}
+
+function registerPatternOwner(ctx: CheckerContext, node: Node, declNode: Node | null): void {
   let symOpt = ctx.model.resolveDeclaration(node);
   if (symOpt == null) {
     return;
@@ -1270,37 +1286,7 @@ function registerPatternOwner(ctx: CheckerContext, node: Node): void {
   }
   let resources = ownedResourcesIn(bindingType);
   if (resources != null) {
-    ctx.registerOwnCandidate(symOpt, node, resources);
-  }
-}
-
-/** Register the owner bindings a tuple pattern declares as drop candidates. */
-export function registerDestructuredOwners(ctx: CheckerContext, pattern: TuplePattern,
-    declNode: Node | null): void {
-  for (let element in pattern.elements) {
-    if (element == null) {
-      continue;
-    }
-    let el = element as Node;
-    if (el is TuplePattern) {
-      registerDestructuredOwners(ctx, el, declNode);
-      continue;
-    }
-    if (!(el is IdentifierPattern)) {
-      continue;
-    }
-    let symOpt = ctx.model.resolveDeclaration(el);
-    if (symOpt == null) {
-      continue;
-    }
-    let bindingType = ctx.model.getBindingType(symOpt);
-    if (bindingType == null) {
-      continue;
-    }
-    let resources = ownedResourcesIn(bindingType);
-    if (resources != null) {
-      ctx.registerOwnCandidate(symOpt, el, resources, false, declNode);
-    }
+    ctx.registerOwnCandidate(symOpt, node, resources, false, declNode);
   }
 }
 

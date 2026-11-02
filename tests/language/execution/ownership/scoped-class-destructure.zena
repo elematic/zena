@@ -1,0 +1,55 @@
+// @mode: run
+// @result: 4
+// Destructuring a `scoped T` instance at an owner moves the owner out
+// of it, so the binding is released at its scope's exit, as a binding
+// taken out of a tuple is (ownership.md §"Scoped type arguments").
+import {Own, Disposable} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Holder<scoped T> {
+  value: T;
+  new(this.value);
+}
+
+function consume(r: Own<Res>): void {}
+
+function letPattern(): void {
+  let h = new Holder<Own<Res>>(new Res());
+  let {value} = h;
+}
+
+function ifLet(): void {
+  let h = new Holder<Own<Res>>(new Res());
+  if (let Holder {value} = h) {}
+}
+
+function matchPattern(): void {
+  let h = new Holder<Own<Res>>(new Res());
+  match (h) {
+    case Holder {value}: {}
+  }
+}
+
+function movedOn(): void {
+  let h = new Holder<Own<Res>>(new Res());
+  let {value: r} = h;
+  consume(r);
+}
+
+export function main(): i32 {
+  letPattern();
+  if (released != 1) { return 100 + released; }
+  ifLet();
+  if (released != 2) { return 200 + released; }
+  matchPattern();
+  if (released != 3) { return 300 + released; }
+  movedOn();
+  return released;
+}
