@@ -189,8 +189,8 @@ merging a layer rebases and retargets the rest on the server, including
 after squash merges, and `gh stack sync` does the same from the command
 line. CI runs for every layer. git-spice is a free alternative.
 
-**Here:** `watch-prs` tells the session when a base merges, and AGENTS.md
-gives the rebase. **Next:** `gh stack`, which removes the rebase.
+**Here:** `gh stack link` makes a chain of PRs a GitHub stack, and
+AGENTS.md gives the manual rebase for a chain that is not one.
 
 ## Phases of work
 

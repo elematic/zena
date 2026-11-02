@@ -673,13 +673,24 @@ All prose — design docs, commit messages, comments — follows
   or after 110 minutes with nothing. Act on what it reports (fix the
   failing check, answer the comment, rebase), then start it again while
   any of the PRs are open.
-- **Stacked PRs.** When the PR below yours is squash-merged, its commits
-  land on `main` as one new commit, so rebase only your own commits:
+- **Stacked PRs.** Open each PR with `--base` set to the branch below
+  it, then make the chain a GitHub stack with
+  `gh stack link <bottom PR> ... <top PR>` (the `gh-stack` extension;
+  install it with `gh extension install github/gh-stack` where it is
+  missing). When a PR in a stack merges, GitHub rebases the PRs above it
+  onto `main` and retargets them, squash merges included. Bring your
+  branches up to date with `git fetch` and
+  `git reset --hard origin/<branch>`, after checking that `git status`
+  and `git log origin/<branch>..` show nothing unpushed. Each layer runs
+  the full CI, so keep stacks short.
+
+  For a stack that is not linked, rebase by hand as soon as the PR below
+  is squash-merged, without waiting to be asked:
   `git rebase --onto origin/main <old tip of the base branch> <branch>`,
   check that `git diff <old tip of your branch> HEAD` shows nothing
-  unexpected, `gh pr edit <n> --base main`, and push with
-  `--force-with-lease`. Do it as soon as the base merges, without
-  waiting to be asked. Keep stacks one PR deep where you can.
+  unexpected, run `gh pr edit <n> --base main`, and push with
+  `--force-with-lease`.
+
 - Link the issue a PR fixes or advances (`Fixes #n`, `Part of #n`), and
   update the issue when the plan changes.
 
