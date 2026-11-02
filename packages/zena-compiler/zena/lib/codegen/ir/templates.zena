@@ -464,12 +464,11 @@ export function lowerTaggedTemplate(cx: LoweringContext,
   if (calleeType is FunctionType) {
     if (calleeType.parameters.length >= 2) {
       let vp = baseType(calleeType.parameters[1]);
-      // The receiver casts are checker-unnecessary but load-bearing: a
-      // nullable member null-tested on an is-narrowed binding fails ZIR
-      // lowering without them (elematic/zena#85).
-      if (vp is ClassType && (vp as ClassType).typeArguments != null &&
-          ((vp as ClassType).typeArguments as GrowableArray<Type>).length > 0) {
-        valueType = ((vp as ClassType).typeArguments as GrowableArray<Type>)[0];
+      if (vp is ClassType) {
+        let targs = vp.typeArguments;
+        if (targs != null && targs.length > 0) {
+          valueType = targs[0];
+        }
       } else if (vp is ArrayType) {
         valueType = vp.elementType;
       }
