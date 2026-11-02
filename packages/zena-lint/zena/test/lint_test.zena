@@ -259,6 +259,34 @@ let tests = suite('lint', () => {
     check(t, source, source, 'unnecessary-annotation');
   });
 
+  test('an annotation wider than a call result is kept', (t) => {
+    // The call's own type is the union, so it differs from the annotation
+    // without any help from the context.
+    let source = dedentRaw`
+      interface Shape {
+        area(): i32;
+      }
+      final class Square implements Shape {
+        area(): i32 {
+          return 4;
+        }
+      }
+      final class Circle implements Shape {
+        area(): i32 {
+          return 3;
+        }
+      }
+      function either(square: boolean): Square | Circle {
+        return if (square) new Square() else new Circle();
+      }
+      export function run(square: boolean): i32 {
+        let shape: Shape = either(square);
+        return shape.area();
+      }
+    `;
+    check(t, source, source, 'unnecessary-annotation');
+  });
+
   test('an annotation on an if whose branches have its type goes', (t) => {
     check(t, dedentRaw`
       export function run(flag: boolean): i32 {
