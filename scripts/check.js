@@ -20,8 +20,9 @@
  * Options:
  *   --fix          run prettier --write instead of --check
  *   --base <ref>   compare against <ref> instead of origin/main
- *   --text <file>  also check a PR title and description saved in <file>,
- *                  for private words and phrases
+ *   --text <file>  check only the text in <file> (a PR or issue title and
+ *                  description, a comment) for private words and phrases,
+ *                  not the branch; its exit status is about that text
  *
  * Run from the repository root:  npm run check [-- --fix]
  */
@@ -68,6 +69,52 @@ const lines = (text) => text.split('\n').filter((line) => line !== '');
 const errors = [];
 const warnings = [];
 const notes = [];
+
+const privateWordsFile = join(
+  git('rev-parse', '--git-common-dir').trim(),
+  'info',
+  'private-words',
+);
+const privateWords = existsSync(privateWordsFile)
+  ? lines(readFileSync(privateWordsFile, 'utf8'))
+      .map((word) => word.trim().toLowerCase())
+      .filter((word) => word !== '' && !word.startsWith('#'))
+  : [];
+
+/** Reports private words in `text`, and phrases when it is prose. */
+const scanText = (where, text, file) => {
+  const lower = text.toLowerCase();
+  for (const word of privateWords) {
+    if (lower.includes(word)) {
+      errors.push(`${where}: contains a word from ${privateWordsFile}`);
+    }
+  }
+  if (file === undefined || file.endsWith('.md')) {
+    for (const phrase of PHRASES) {
+      if (lower.includes(phrase)) {
+        warnings.push(
+          `${where}: "${phrase}" (see docs/writing-style.md, "Voice")`,
+        );
+      }
+    }
+  }
+};
+
+const report = (summary) => {
+  for (const note of notes) console.log(`note: ${note}`);
+  for (const warning of warnings) console.log(`warning: ${warning}`);
+  for (const error of errors) console.log(`error: ${error}`);
+  console.log(
+    `check: ${summary}: ${errors.length} errors, ${warnings.length} warnings`,
+  );
+  process.exit(errors.length > 0 ? 1 : 0);
+};
+
+const textFile = option('--text');
+if (textFile !== undefined) {
+  scanText(textFile, readFileSync(textFile, 'utf8'));
+  report(textFile);
+}
 
 const base = git(
   'merge-base',
@@ -193,51 +240,16 @@ for (const {sha, merge, subject} of messages) {
 }
 
 // private words and phrases
-const privateWordsFile = join(
-  git('rev-parse', '--git-common-dir').trim(),
-  'info',
-  'private-words',
-);
-const privateWords = existsSync(privateWordsFile)
-  ? lines(readFileSync(privateWordsFile, 'utf8'))
-      .map((word) => word.trim().toLowerCase())
-      .filter((word) => word !== '' && !word.startsWith('#'))
-  : [];
-
 const texts = [
   ...changed.flatMap((file) =>
     addedLines(file).map(([n, text]) => ({where: `${file}:${n}`, text, file})),
   ),
   ...messages.map(({sha, body}) => ({where: `commit ${sha}`, text: body})),
 ];
-const textFile = option('--text');
-if (textFile !== undefined) {
-  texts.push({where: textFile, text: readFileSync(textFile, 'utf8')});
-}
-
 for (const {where, text, file} of texts) {
-  const lower = text.toLowerCase();
-  for (const word of privateWords) {
-    if (lower.includes(word)) {
-      errors.push(`${where}: contains a word from ${privateWordsFile}`);
-    }
-  }
-  if (file === undefined || file.endsWith('.md')) {
-    for (const phrase of PHRASES) {
-      if (lower.includes(phrase)) {
-        warnings.push(
-          `${where}: "${phrase}" (see docs/writing-style.md, "Voice")`,
-        );
-      }
-    }
-  }
+  scanText(where, text, file);
 }
 
-for (const note of notes) console.log(`note: ${note}`);
-for (const warning of warnings) console.log(`warning: ${warning}`);
-for (const error of errors) console.log(`error: ${error}`);
-console.log(
-  `check: ${changed.length} changed files, ${messages.length} commits since ${base.slice(0, 10)}: ` +
-    `${errors.length} errors, ${warnings.length} warnings`,
+report(
+  `${changed.length} changed files, ${messages.length} commits since ${base.slice(0, 10)}`,
 );
-process.exit(errors.length > 0 ? 1 : 0);
