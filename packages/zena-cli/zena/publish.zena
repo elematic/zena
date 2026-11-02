@@ -107,7 +107,7 @@ export function publishCommand(args: ParsedArgs, options: Options): i32 {
     }
     let manifest = readManifest(manifestText);
     let scope = scopeOf(args, target);
-    let approveAs = if (scope != null) `@${scope as String}/${manifest.name as String}` else manifest.did as String;
+    let approveAs = if (scope != null) `@${scope}/${manifest.name as String}` else manifest.did as String;
     publish(session, host, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText),
         approveAs);
     saveIfRefreshed(session);
@@ -193,7 +193,7 @@ export function signedIn(): Session {
   if (session == null) {
     throw new PublishError('sign in first, with zena login');
   }
-  return session as Session;
+  return session;
 }
 
 export function saveIfRefreshed(session: Session): void {
@@ -228,7 +228,7 @@ function checkHostDid(origin: String, did: String): void {
   if (url == null) {
     throw new PublishError(`the package host ${origin} is not a URL`);
   }
-  let parsed = url as URL;
+  let parsed = url;
   let authority = if (parsed.port == '') parsed.hostname else `${parsed.hostname}:${parsed.port}`;
   if (did.startsWith('did:web:')) {
     let named = try {
@@ -243,7 +243,7 @@ function checkHostDid(origin: String, did: String): void {
   }
   if (did.startsWith('did:plc:')) {
     let endpoint = runFuture(packageResolver().resolveDid(did)).pds;
-    if (endpoint == null || trimSlash(endpoint as String) != trimSlash(`${parsed.protocol}//${authority}`)) {
+    if (endpoint == null || trimSlash(endpoint) != trimSlash(`${parsed.protocol}//${authority}`)) {
       throw new PublishError(`the package host ${origin} says it is ${did}, whose PDS is ${endpoint ?? 'none'}`);
     }
     return;
@@ -299,11 +299,11 @@ function checkScope(args: ParsedArgs, host: Host, target: WorkspacePackage): voi
     return;
   }
   let did = target.manifest.did as String;
-  let expected = `${target.manifest.name as String}.${scope as String}.${host.domain}`;
+  let expected = `${target.manifest.name as String}.${scope}.${host.domain}`;
   let handle = runFuture(packageResolver().resolveDid(did)).handle;
   if (handle != expected) {
     throw new PublishError(
-        `${did} is ${handle ?? 'a package with no handle'}, not ${expected}: ${target.manifestPath()} names the scope ${scope as String}`);
+        `${did} is ${handle ?? 'a package with no handle'}, not ${expected}: ${target.manifestPath()} names the scope ${scope}`);
   }
 }
 
@@ -319,7 +319,7 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
     throw new PublishError(
         `${name} has no DID yet; name the scope to create it in, with "scope" in ${target.manifestPath()} or --scope <name>`);
   }
-  let scope = found as String;
+  let scope = found;
   let org = scopeOrganization(`${scope}.${host.domain}`);
   if (org == null) {
     throw new PublishError(`${host.origin} has no scope ${scope}; create it with zena scope create ${scope}`);
@@ -332,11 +332,11 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
   let recoveryKeys = recoveryDidKeys();
 
   let input = new JsonObject();
-  input['organization'] = org as String;
+  input['organization'] = org;
   input['recoveryKeys'] = strings(recoveryKeys);
   // The profile says what the manifest says, for the index to show.
   input['profile'] = toJson(new Profile(name, target.manifest.description, target.manifest.license).toValue());
-  input['maintainers'] = toJson(initialMaintainers(session.did, org as String).toValue());
+  input['maintainers'] = toJson(initialMaintainers(session.did, org).toValue());
   let created = runFuture(hostClient(session, host, CREATE_PACKAGE)
     .procedure(CREATE_PACKAGE, input)) as JsonObject;
   let did = created['did'] as String;
@@ -379,7 +379,7 @@ export function scopePolicy(org: String): Policy {
     let answer = runFuture(new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params)) as JsonObject;
     return Policy.fromValue(fromJson(answer['value']));
   } catch (e) {
-    if (e is XrpcError && (e as XrpcError).error == 'RecordNotFound') {
+    if (e is XrpcError && e.error == 'RecordNotFound') {
       return new Policy();
     }
     throw e;
@@ -451,7 +451,7 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
     throw new PublishError(`${target.manifestPath()} has no version to publish`);
   }
   let files = sourceFiles(target.dir, manifest);
-  files['zena-package.json'] = manifestText.toBytes() as FixedArray<u8>;
+  files['zena-package.json'] = manifestText.toBytes();
   let archive = packSource(files);
   // The blob the host will store, named by its contents, so the release is
   // checked as the host and every fetch will check it before anything is

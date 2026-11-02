@@ -30,7 +30,7 @@ let ORDER = hex.decode('fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8c
 let SPKI_PREFIX = '3056301006072a8648ce3d020106052b8104000a034200';
 
 /** `a` then `b`. */
-function join(a: FixedArray<u8>, b: FixedArray<u8>): FixedArray<u8> {
+function join(a: FixedArray<u8>, b: FixedArray<u8>) {
   let out = new FixedArray<u8>(a.length + b.length, 0 as u8);
   for (var i = 0; i < a.length; i += 1) {
     out[i] = a[i];
@@ -42,7 +42,7 @@ function join(a: FixedArray<u8>, b: FixedArray<u8>): FixedArray<u8> {
 }
 
 /** `n - x` for 32-byte big-endian numbers. */
-function subtractFrom(n: FixedArray<u8>, x: FixedArray<u8>): FixedArray<u8> {
+function subtractFrom(n: FixedArray<u8>, x: FixedArray<u8>) {
   let out = new FixedArray<u8>(32, 0 as u8);
   var borrow = 0;
   for (var i = 31; i >= 0; i -= 1) {
@@ -57,7 +57,7 @@ function subtractFrom(n: FixedArray<u8>, x: FixedArray<u8>): FixedArray<u8> {
 }
 
 /** A DER INTEGER of a 32-byte number, with a leading zero byte always. */
-function derInteger(value: FixedArray<u8>): FixedArray<u8> {
+function derInteger(value: FixedArray<u8>) {
   let head = new FixedArray<u8>(3, 0 as u8);
   head[0] = 0x02 as u8;
   head[1] = 33 as u8;
@@ -65,7 +65,7 @@ function derInteger(value: FixedArray<u8>): FixedArray<u8> {
 }
 
 /** The fake signs as Cloud KMS may: in DER, with the high-S twin of its signature. */
-function highSDer(digest: FixedArray<u8>): FixedArray<u8> {
+function highSDer(digest: FixedArray<u8>) {
   let signature = secp256k1.signDigest(FAKE_KMS_PRIVATE_KEY, digest);
   let body = join(derInteger(signature[0..32]), derInteger(subtractFrom(ORDER, signature[32..64])));
   let head = new FixedArray<u8>(2, 0 as u8);
@@ -75,7 +75,7 @@ function highSDer(digest: FixedArray<u8>): FixedArray<u8> {
 }
 
 /** `bytes` XORed with the keystream for `additionalData`. */
-function keystreamed(bytes: FixedArray<u8>, additionalData: FixedArray<u8>): FixedArray<u8> {
+function keystreamed(bytes: FixedArray<u8>, additionalData: FixedArray<u8>) {
   let out = new FixedArray<u8>(bytes.length, 0 as u8);
   for (var block = 0; block * 32 < bytes.length; block += 1) {
     let counter = new FixedArray<u8>(1, block as u8);
@@ -88,13 +88,13 @@ function keystreamed(bytes: FixedArray<u8>, additionalData: FixedArray<u8>): Fix
 }
 
 /** The tag that binds `plaintext` to `additionalData`. */
-function tagOf(plaintext: FixedArray<u8>, additionalData: FixedArray<u8>): FixedArray<u8> {
+function tagOf(plaintext: FixedArray<u8>, additionalData: FixedArray<u8>) {
   let length = new FixedArray<u8>(1, additionalData.length as u8);
   return sha256(join(join(join(SYMMETRIC_SECRET, length), additionalData), plaintext));
 }
 
 /** The tag, then the keystreamed plaintext. */
-function fakeEncrypt(plaintext: FixedArray<u8>, additionalData: FixedArray<u8>): FixedArray<u8> {
+function fakeEncrypt(plaintext: FixedArray<u8>, additionalData: FixedArray<u8>) {
   return join(tagOf(plaintext, additionalData), keystreamed(plaintext, additionalData));
 }
 
@@ -108,9 +108,9 @@ function fakeDecrypt(ciphertext: FixedArray<u8>, additionalData: FixedArray<u8>)
 }
 
 /** The base64 member `name` of `body`, decoded; empty when it is missing. */
-function bytesMember(body: JsonObject, name: String): FixedArray<u8> {
+function bytesMember(body: JsonObject, name: String) {
   let value = body[name];
-  return if (value is String) base64.decode(value as String) else new FixedArray<u8>(0, 0 as u8);
+  return if (value is String) base64.decode(value) else new FixedArray<u8>(0, 0 as u8);
 }
 
 /** A started server for the keys; its origin is `http://127.0.0.1:<port>`. */

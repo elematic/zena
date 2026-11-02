@@ -86,7 +86,7 @@ export function checkSource(release: Release, did: String, source: FixedArray<u8
     return problems;
   }
   var text: String | null = null;
-  for (let file in files as FixedArray<SourceFile>) {
+  for (let file in files) {
     if (file.path == MANIFEST) {
       text = String.fromBytes(file.contents as ByteArray);
     }
@@ -131,7 +131,7 @@ export function checkSource(release: Release, did: String, source: FixedArray<u8
     // library it exports among them (package-manifest.md, "files").
     let published = PublishedFiles.of(manifest);
     let held = new HashSet<String>();
-    for (let file in files as FixedArray<SourceFile>) {
+    for (let file in files) {
       held.add(file.path);
       if (!published.includes(file.path)) {
         problems.push(`the archive holds ${file.path}, which its ${MANIFEST} does not publish`);
@@ -194,10 +194,10 @@ export async function checkDependencies(dependencies: Array<Dependency>, resolve
     let named = `${dependency.name} ${text} (${dependency.did})`;
     let found = await versionsOf(dependency, resolver, explain);
     if (found is String) {
-      problems.push(`${named} cannot be found: ${found as String}`);
-    } else if (!(found as Versions).has(dependency.version)) {
+      problems.push(`${named} cannot be found: ${found}`);
+    } else if (!found.has(dependency.version)) {
       problems.push(`${named} is not published: publish it first, or depend on a version that is`);
-    } else if ((found as Versions).retracted.has(text)) {
+    } else if (found.retracted.has(text)) {
       problems.push(`${named} is retracted: depend on another version`);
     }
   }
@@ -232,14 +232,14 @@ async function versionsOf(dependency: Dependency, resolver: IdentityResolver, ex
 export function checkMetadata(manifest: Manifest, where: String): GrowableArray<String> {
   let problems = new GrowableArray<String>();
   let description = manifest.description;
-  if (description == null || (description as String).trim() == '') {
+  if (description == null || description.trim() == '') {
     problems.push(`${where} has no description`);
   }
   let license = manifest.license;
   if (license == null) {
     problems.push(`${where} has no license: give an SPDX expression, such as "MIT"`);
-  } else if (!isValidLicenseExpression(license as String)) {
-    problems.push(`${where} license '${license as String}' is not an SPDX expression`);
+  } else if (!isValidLicenseExpression(license)) {
+    problems.push(`${where} license '${license}' is not an SPDX expression`);
   }
   return problems;
 }

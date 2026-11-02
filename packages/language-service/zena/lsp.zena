@@ -43,7 +43,9 @@ declare function __read_file(path: String, len: i32): String | null;
 
 
 /** Reads a file through the JS host's `read_file` import. */
-let readHostFile = (path: String): String | null => __read_file(path, path.length);
+function readHostFile(path: String) {
+  return __read_file(path, path.length);
+}
 
 // ============================================================================
 // WASM Exports — flat function API for the JS host
@@ -56,56 +58,57 @@ var __ls: LanguageService | null = null;
  * Initialize the language service with the path to the stdlib sources.
  * Must be called once before check().
  */
-export let init = (stdlibRoot: String): void => {
+export function init(stdlibRoot: String): void {
   // The workspace's packages, when the host can read its manifests from
   // the working directory, so that imports like `wit-parser:wit` resolve
   // the way they do for `zena build`. Without them a library of a
   // package in this repository reports every such import missing.
-  var packageMap: Map<String, PackageConfig> | null = null;
-  if (readHostFile("zena-package.json") != null) {
-    packageMap = loadWorkspace(new DocumentHost(stdlibRoot, readHostFile), ".");
-  }
+  let packageMap: Map<String, PackageConfig> | null = if (readHostFile("zena-package.json") != null) {
+    loadWorkspace(new DocumentHost(stdlibRoot, readHostFile), ".")
+  } else {
+    null
+  };
   __ls = createLanguageService(stdlibRoot, readHostFile, 'js', packageMap);
-};
+}
 
 /**
  * Check a source file. See LanguageService.check().
  */
-export let check = (path: String, source: String): Array<Diagnostic> => {
+export function check(path: String, source: String): Array<Diagnostic> {
   return (__ls as LanguageService).check(path, source);
-};
+}
 
 /**
  * Register or update an open document.
  */
-export let openDocument = (path: String, source: String): void => {
+export function openDocument(path: String, source: String): void {
   if (__ls != null) {
-    (__ls as LanguageService).openDocument(path, source);
+    __ls.openDocument(path, source);
   }
-};
+}
 
 /**
  * Close an open document and remove it from cache.
  */
-export let closeDocument = (path: String): void => {
+export function closeDocument(path: String): void {
   if (__ls != null) {
-    (__ls as LanguageService).closeDocument(path);
+    __ls.closeDocument(path);
   }
-};
+}
 
 /**
  * Format a Zena source string and return the formatted result.
  */
-export let format = (source: String): String => {
+export function format(source: String): String {
   return formatSource(source);
-};
+}
 
 /**
  * Find the definition at a byte offset. See LanguageService.getDefinition().
  */
-export let getDefinition = (path: String, offset: i32): SourceSpan | null => {
+export function getDefinition(path: String, offset: i32): SourceSpan | null {
   return (__ls as LanguageService).getDefinition(path, offset);
-};
+}
 
 // ============================================================================
 // Definition Getters
@@ -114,37 +117,37 @@ export let getDefinition = (path: String, offset: i32): SourceSpan | null => {
 /**
  * Get the file path of a definition result.
  */
-export let getDefinitionFile = (result: SourceSpan): String => {
+export function getDefinitionFile(result: SourceSpan): String {
   return result.file;
-};
+}
 
 /**
  * Get the 1-based line number of a definition result.
  */
-export let getDefinitionLine = (result: SourceSpan): i32 => {
+export function getDefinitionLine(result: SourceSpan): i32 {
   return result.line;
-};
+}
 
 /**
  * Get the 1-based column number of a definition result.
  */
-export let getDefinitionColumn = (result: SourceSpan): i32 => {
+export function getDefinitionColumn(result: SourceSpan): i32 {
   return result.column;
-};
+}
 
 /**
  * Get the 0-based start byte offset of a definition result.
  */
-export let getDefinitionStart = (result: SourceSpan): i32 => {
+export function getDefinitionStart(result: SourceSpan): i32 {
   return result.start;
-};
+}
 
 /**
  * Get the byte length of the definition span.
  */
-export let getDefinitionLength = (result: SourceSpan): i32 => {
+export function getDefinitionLength(result: SourceSpan): i32 {
   return result.length;
-};
+}
 
 // ============================================================================
 // Diagnostic Getters
@@ -153,89 +156,89 @@ export let getDefinitionLength = (result: SourceSpan): i32 => {
 /**
  * Get the number of diagnostics in a result.
  */
-export let getDiagnosticCount = (diagnostics: Array<Diagnostic>): i32 => {
+export function getDiagnosticCount(diagnostics: Array<Diagnostic>): i32 {
   return diagnostics.length;
-};
+}
 
 /**
  * Get the 1-based line number of the i-th diagnostic.
  * Returns 0 if the diagnostic has no location.
  */
-export let getDiagnosticLine = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+export function getDiagnosticLine(diagnostics: Array<Diagnostic>, index: i32): i32 {
   let diag = diagnostics[index];
   if (diag.location != null) {
     return (diag.location as SourceSpan).line;
   }
   return 0;
-};
+}
 
 /**
  * Get the 1-based column number of the i-th diagnostic.
  * Returns 0 if the diagnostic has no location.
  */
-export let getDiagnosticColumn = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+export function getDiagnosticColumn(diagnostics: Array<Diagnostic>, index: i32): i32 {
   let diag = diagnostics[index];
   if (diag.location != null) {
     return (diag.location as SourceSpan).column;
   }
   return 0;
-};
+}
 
 /**
  * Get the 0-based start byte offset of the i-th diagnostic.
  * Returns -1 if the diagnostic has no location.
  */
-export let getDiagnosticStart = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+export function getDiagnosticStart(diagnostics: Array<Diagnostic>, index: i32): i32 {
   let diag = diagnostics[index];
   if (diag.location != null) {
     return (diag.location as SourceSpan).start;
   }
   return -1;
-};
+}
 
 /**
  * Get the byte length of the span of the i-th diagnostic.
  * Returns 0 if the diagnostic has no location.
  */
-export let getDiagnosticLength = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+export function getDiagnosticLength(diagnostics: Array<Diagnostic>, index: i32): i32 {
   let diag = diagnostics[index];
   if (diag.location != null) {
     return (diag.location as SourceSpan).length;
   }
   return 0;
-};
+}
 
 /**
  * Get the severity of the i-th diagnostic as an i32.
  * 0 = Error, 1 = Warning, 2 = Information.
  */
-export let getDiagnosticSeverity = (diagnostics: Array<Diagnostic>, index: i32): i32 => {
+export function getDiagnosticSeverity(diagnostics: Array<Diagnostic>, index: i32): i32 {
   let diag = diagnostics[index];
   match (diag.severity) {
     case DiagnosticSeverity.Error: 0
     case DiagnosticSeverity.Warning: 1
     case DiagnosticSeverity.Information: 2
   }
-};
+}
 
 /**
  * Get the message of the i-th diagnostic.
  */
-export let getDiagnosticMessage = (diagnostics: Array<Diagnostic>, index: i32): String => {
+export function getDiagnosticMessage(diagnostics: Array<Diagnostic>, index: i32): String {
   return diagnostics[index].message;
-};
+}
 
 /**
  * Get the file path of the i-th diagnostic.
  * Returns an empty string if the diagnostic has no location.
  */
-export let getDiagnosticFile = (diagnostics: Array<Diagnostic>, index: i32): String => {
+export function getDiagnosticFile(diagnostics: Array<Diagnostic>, index: i32): String {
   let diag = diagnostics[index];
   if (diag.location != null) {
     return (diag.location as SourceSpan).file;
   }
   return "";
-};
+}
 
 // ============================================================================
 // Hover Exports
@@ -245,31 +248,31 @@ export let getDiagnosticFile = (diagnostics: Array<Diagnostic>, index: i32): Str
  * Get hover information at a byte offset.
  * Returns a HoverResult or null if no info is available.
  */
-export let getHover = (path: String, offset: i32): HoverResult | null => {
+export function getHover(path: String, offset: i32): HoverResult | null {
   return (__ls as LanguageService).getHover(path, offset);
-};
+}
 
 /**
  * Get the type string from a hover result (e.g., "i32", "(a: i32) => i32").
  */
-export let getHoverType = (result: HoverResult): String => {
+export function getHoverType(result: HoverResult): String {
   return result.typeStr;
-};
+}
 
 /**
  * Get the display label from a hover result (e.g., "let x: i32").
  */
-export let getHoverLabel = (result: HoverResult): String => {
+export function getHoverLabel(result: HoverResult): String {
   return result.label;
-};
+}
 
 /**
  * Get the doc comment from a hover result.
  * Returns an empty string if no doc comment is available.
  */
-export let getHoverDoc = (result: HoverResult): String => {
+export function getHoverDoc(result: HoverResult): String {
   return result.docComment;
-};
+}
 
 // ============================================================================
 // Document Symbols Exports
@@ -278,79 +281,79 @@ export let getHoverDoc = (result: HoverResult): String => {
 /**
  * Get document symbols for the outline view.
  */
-export let getDocumentSymbols = (path: String, source: String): Array<DocumentSymbol> => {
+export function getDocumentSymbols(path: String, source: String): Array<DocumentSymbol> {
   return (__ls as LanguageService).getDocumentSymbols(path, source);
-};
+}
 
 /**
  * Get the number of symbols in a result array.
  */
-export let getSymbolCount = (symbols: Array<DocumentSymbol>): i32 => {
+export function getSymbolCount(symbols: Array<DocumentSymbol>): i32 {
   return symbols.length;
-};
+}
 
 /**
  * Get the i-th symbol from a result array.
  */
-export let getSymbol = (symbols: Array<DocumentSymbol>, index: i32): DocumentSymbol => {
+export function getSymbol(symbols: Array<DocumentSymbol>, index: i32): DocumentSymbol {
   return symbols[index];
-};
+}
 
 /**
  * Get the name of a symbol.
  */
-export let getSymbolName = (sym: DocumentSymbol): String => {
+export function getSymbolName(sym: DocumentSymbol): String {
   return sym.name;
-};
+}
 
 /**
  * Get the kind of a symbol (VS Code SymbolKind value).
  */
-export let getSymbolKind = (sym: DocumentSymbol): i32 => {
+export function getSymbolKind(sym: DocumentSymbol): i32 {
   return sym.kind as i32;
-};
+}
 
 /**
  * Get the full range start byte offset of a symbol.
  */
-export let getSymbolStart = (sym: DocumentSymbol): i32 => {
+export function getSymbolStart(sym: DocumentSymbol): i32 {
   return sym.start;
-};
+}
 
 /**
  * Get the full range end byte offset of a symbol.
  */
-export let getSymbolEnd = (sym: DocumentSymbol): i32 => {
+export function getSymbolEnd(sym: DocumentSymbol): i32 {
   return sym.end;
-};
+}
 
 /**
  * Get the selection range start byte offset of a symbol.
  */
-export let getSymbolSelStart = (sym: DocumentSymbol): i32 => {
+export function getSymbolSelStart(sym: DocumentSymbol): i32 {
   return sym.selStart;
-};
+}
 
 /**
  * Get the selection range end byte offset of a symbol.
  */
-export let getSymbolSelEnd = (sym: DocumentSymbol): i32 => {
+export function getSymbolSelEnd(sym: DocumentSymbol): i32 {
   return sym.selEnd;
-};
+}
 
 /**
  * Get the number of children of a symbol.
  */
-export let getSymbolChildCount = (sym: DocumentSymbol): i32 => {
+export function getSymbolChildCount(sym: DocumentSymbol): i32 {
   return sym.children.length;
-};
+}
 
 /**
  * Get the i-th child of a symbol.
  */
-export let getSymbolChild = (sym: DocumentSymbol, index: i32): DocumentSymbol => {
+export function getSymbolChild(sym: DocumentSymbol, index: i32): DocumentSymbol {
   return sym.children[index];
-};
+}
 
 // ============================================================================
 // Lint Exports
@@ -360,97 +363,98 @@ export let getSymbolChild = (sym: DocumentSymbol, index: i32): DocumentSymbol =>
  * What the lint rules find in a document `check` has seen: each finding
  * is a byte range and the text that fixes it. See LanguageService.lint().
  */
-export let lint = (path: String): Array<Edit> => {
+export function lint(path: String): Array<Edit> {
   return (__ls as LanguageService).lint(path);
-};
+}
 
-export let getLintCount = (findings: Array<Edit>): i32 => {
+export function getLintCount(findings: Array<Edit>): i32 {
   return findings.length;
-};
+}
 
 /** The 0-based start byte offset of the i-th finding. */
-export let getLintStart = (findings: Array<Edit>, index: i32): i32 => {
+export function getLintStart(findings: Array<Edit>, index: i32): i32 {
   return findings[index].start;
-};
+}
 
 /** The byte offset just past the i-th finding. */
-export let getLintEnd = (findings: Array<Edit>, index: i32): i32 => {
+export function getLintEnd(findings: Array<Edit>, index: i32): i32 {
   return findings[index].end;
-};
+}
 
 /** The name of the rule behind the i-th finding. */
-export let getLintRule = (findings: Array<Edit>, index: i32): String => {
+export function getLintRule(findings: Array<Edit>, index: i32): String {
   return findings[index].rule;
-};
+}
 
 /** The one-line message of the i-th finding. */
-export let getLintMessage = (findings: Array<Edit>, index: i32): String => {
+export function getLintMessage(findings: Array<Edit>, index: i32): String {
   return (__ls as LanguageService).lintMessage(findings[index]);
-};
+}
 
 /** The text that replaces the i-th finding's range to fix it. */
-export let getLintReplacement = (findings: Array<Edit>, index: i32): String => {
+export function getLintReplacement(findings: Array<Edit>, index: i32): String {
   return findings[index].replacement;
-};
+}
 
 /**
  * Whether the i-th entry supports the fixes of its rule (an import they
  * need) rather than being a finding: shown as nothing, applied with any
  * fix of that rule.
  */
-export let getLintShared = (findings: Array<Edit>, index: i32): boolean => {
+export function getLintShared(findings: Array<Edit>, index: i32): boolean {
   return findings[index].shared;
-};
+}
 
 /**
  * Compile source to WebAssembly binary (ByteArray).
  */
-export let compileToWasm = (path: String, source: String): ByteArray | null =>
-  compileDocument(__ls as LanguageService, path, source);
+export function compileToWasm(path: String, source: String): ByteArray | null {
+  return compileDocument(__ls as LanguageService, path, source);
+}
 
 /**
  * Get the length of a ByteArray.
  */
-export let getByteArrayLength = (bytes: ByteArray): i32 => {
+export function getByteArrayLength(bytes: ByteArray): i32 {
   return bytes.length;
-};
+}
 
 /**
  * Get byte at index from ByteArray.
  */
-export let getByteArrayByte = (bytes: ByteArray, index: i32): i32 => {
+export function getByteArrayByte(bytes: ByteArray, index: i32): i32 {
   // A byte reads as `u8` now that ByteArray is `array<u8>`. The i32
   // return is the host boundary's shape, so widen explicitly.
   return bytes[index] as i32;
-};
+}
 
 /**
  * Get code completions at the specified offset.
  */
-export let getCompletions = (path: String, offset: i32): Array<CompletionItem> => {
+export function getCompletions(path: String, offset: i32): Array<CompletionItem> {
   return (__ls as LanguageService).getCompletions(path, offset);
-};
+}
 
-export let getCompletionCount = (items: Array<CompletionItem>): i32 => {
+export function getCompletionCount(items: Array<CompletionItem>): i32 {
   return items.length;
-};
+}
 
-export let getCompletionItem = (items: Array<CompletionItem>, index: i32): CompletionItem => {
+export function getCompletionItem(items: Array<CompletionItem>, index: i32): CompletionItem {
   return items[index];
-};
+}
 
-export let getCompletionLabel = (item: CompletionItem): String => {
+export function getCompletionLabel(item: CompletionItem): String {
   return item.label;
-};
+}
 
-export let getCompletionKind = (item: CompletionItem): i32 => {
+export function getCompletionKind(item: CompletionItem): i32 {
   return item.kind as i32;
-};
+}
 
-export let getCompletionDetail = (item: CompletionItem): String => {
+export function getCompletionDetail(item: CompletionItem): String {
   return item.detail;
-};
+}
 
-export let getCompletionDoc = (item: CompletionItem): String => {
+export function getCompletionDoc(item: CompletionItem): String {
   return item.docComment;
-};
+}

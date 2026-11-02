@@ -612,10 +612,11 @@ export final class Maintainers {
       if (role != PUBLISHER && role != OWNER) {
         throw new RecordError(`${what}: '${role}' is not a role`);
       }
-      var commitment: Cid | null = null;
-      if (commitmentText != null) {
-        commitment = readCid(commitmentText, what);
-      }
+      let commitment: Cid | null = if (commitmentText != null) {
+        readCid(commitmentText, what)
+      } else {
+        null
+      };
       let automation = field(entry, 'automation');
       maintainers[i] = new Maintainer(did, commitment, org, team, role,
           automation is BoolValue && automation.value);
@@ -624,10 +625,10 @@ export final class Maintainers {
         positive(map, 'ownerThreshold', what));
     let humans = field(map, 'humans');
     if (humans != null) {
-      if (!(humans is IntValue) || (humans as IntValue).value < (0 as i64)) {
+      if (!(humans is IntValue) || humans.value < (0 as i64)) {
         throw new RecordError(`${what}: 'humans' is not a count`);
       }
-      record.humans = (humans as IntValue).value;
+      record.humans = humans.value;
     }
     return record;
   }
@@ -922,9 +923,9 @@ export final class ScopeProfile {
     profile.description = boundedString(map, 'description', 2560, what);
     let website = boundedString(map, 'website', 512, what);
     if (website != null) {
-      let parsed = URL.parse(website as String);
+      let parsed = URL.parse(website);
       if (parsed == null || (parsed.protocol != 'https:' && parsed.protocol != 'http:')) {
-        throw new RecordError(`${what}: '${website as String}' is not an http: or https: URL`);
+        throw new RecordError(`${what}: '${website}' is not an http: or https: URL`);
       }
     }
     profile.website = website;
@@ -1099,10 +1100,10 @@ function webLink(map: MapValue, key: String, strict: boolean): String | null {
   if (value == null) {
     return null;
   }
-  let parsed = URL.parse(value as String);
+  let parsed = URL.parse(value);
   if (parsed == null || (parsed.protocol != 'https:' && parsed.protocol != 'http:')) {
     if (strict) {
-      throw new RecordError(`profile: '${key}' is not an http: or https: URL: '${value as String}'`);
+      throw new RecordError(`profile: '${key}' is not an http: or https: URL: '${value}'`);
     }
     return null;
   }

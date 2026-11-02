@@ -69,7 +69,7 @@ export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
       if (found == null) {
         throw new PublishError(`no scope has the handle ${handle}`);
       }
-      did = found as String;
+      did = found;
     }
     let document = runFuture(packageResolver().resolveDid(did));
     if (document.pds == null) {
@@ -83,11 +83,11 @@ export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
     } catch (e) {
       throw new PublishError(`${did} has no members record, so it is not a scope: ${e.message}`);
     }
-    let members = (record as JsonObject)['value'] as JsonObject;
+    let members = record['value'] as JsonObject;
     console.log(document.handle ?? '(no handle)');
     let profile = recordOf(did, SCOPE_PROFILE_TYPE);
     if (profile != null) {
-      printProfile(ScopeProfile.fromValue(fromJson((profile as JsonObject)['value'])));
+      printProfile(ScopeProfile.fromValue(fromJson(profile['value'])));
     }
     console.log(`  DID: ${did}`);
     console.log(`  Host: ${document.pds as String}`);
@@ -115,9 +115,9 @@ export function scopeProfileCommand(args: ParsedArgs, options: Options): i32 {
     if (org == null) {
       throw new PublishError(`${host.origin} has no scope ${scope}`);
     }
-    let held = recordOf(org as String, SCOPE_PROFILE_TYPE);
+    let held = recordOf(org, SCOPE_PROFILE_TYPE);
     let profile = if (held == null) new ScopeProfile()
-        else ScopeProfile.fromValue(fromJson((held as JsonObject)['value']));
+        else ScopeProfile.fromValue(fromJson(held['value']));
     var changed = false;
     if (let (true, given) = args.getOption('name')) {
       profile.displayName = if (given == '') null else given;
@@ -142,15 +142,15 @@ export function scopeProfileCommand(args: ParsedArgs, options: Options): i32 {
       ScopeProfile.fromValue(profile.toValue());
     } catch (e) {
       if (e is RecordError) {
-        throw new PublishError((e as RecordError).message);
+        throw new PublishError(e.message);
       }
       throw e;
     }
     let input = new JsonObject();
-    input['organization'] = org as String;
+    input['organization'] = org;
     input['profile'] = toJson(profile.toValue());
     if (held != null) {
-      input['swapRecord'] = (held as JsonObject)['cid'] as String;
+      input['swapRecord'] = held['cid'] as String;
     }
     runFuture(hostClient(session, host, PUT_SCOPE_PROFILE).procedure(PUT_SCOPE_PROFILE, input));
     console.log(`Changed the profile of ${scope}.`);
@@ -175,7 +175,7 @@ function recordOf(did: String, collection: String): JsonObject | null {
   try {
     return runFuture(new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params)) as JsonObject;
   } catch (e) {
-    if (e is XrpcError && (e as XrpcError).error == 'RecordNotFound') {
+    if (e is XrpcError && e.error == 'RecordNotFound') {
       return null;
     }
     throw e;
@@ -185,7 +185,7 @@ function recordOf(did: String, collection: String): JsonObject | null {
 /** A JSON number as a whole number, or `?` when it is not one. */
 function number(value: JsonValue): String {
   if (value is Box<f64>) {
-    return `${(value as Box<f64>).value as i64}`;
+    return `${value.value as i64}`;
   }
   return '?';
 }
