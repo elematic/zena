@@ -3499,8 +3499,20 @@ export final class FunctionLowerer {
   }
 
   /** The slot layout of the current function's declared (substituted)
-   * return type, when it is an inline tuple or a union of them. */
+   * return type, when it is an inline tuple or a union of them. Every
+   * `return` asks, so it is worked out once. */
   #functionReturnLayout(): InlineLayout | null {
+    if (!this.#returnLayoutKnown) {
+      this.#returnLayoutKnown = true;
+      this.#returnLayout = this.#computeReturnLayout();
+    }
+    return this.#returnLayout;
+  }
+
+  var #returnLayoutKnown: boolean = false;
+  var #returnLayout: InlineLayout | null = null;
+
+  #computeReturnLayout(): InlineLayout | null {
     let node = this.func.node;
     if (node == null) {
       return null;
@@ -3867,14 +3879,14 @@ export final class FunctionLowerer {
           this.#returnFields(argument);
         } else if (!this.presplitAsync &&
             (this.func.signature.returns.length > 1 ||
-             (argument is TupleLiteral &&
-              this.#functionReturnLayout() != null))) {
+             this.#functionReturnLayout() != null)) {
           // The second disjunct: an inline-tuple return whose
           // zero-width lanes leave one (or zero) wasm results —
           // `find` at `T = void` returns `inline (boolean, T)` as a
           // single i32. The lane-aware path runs dropped lanes for
-          // their effects; the value-position tuple lowering has no
-          // lanes to consult and bails.
+          // their effects; the value-position lowering has no lanes to
+          // consult and bails, for a tuple literal and for a call that
+          // returns another function's inline result alike.
           let values = this.#lowerMultiReturnValues(argument);
           if (this.#cx().reachable &&
               !returnMultiThroughFinally(this.#cx(), values)) {

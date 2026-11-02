@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 2
+// A generic function that returns another's inline-union result
+// unchanged, specialized at `void`: the `(false, T)` member carries no
+// value there. Lowering failed with "return requires conversion".
+function attempt<T>(value: T, win: boolean): inline (true, _) | inline (false, T) {
+  if (win) {
+    return (true, _);
+  }
+  return (false, value);
+}
+
+function forward<T>(value: T, win: boolean): inline (true, _) | inline (false, T) {
+  return attempt(value, win);
+}
+
+function nothing(): void {}
+
+export function main(): i32 {
+  var score = 0;
+  if (let (true, _) = forward<void>(nothing(), true)) {
+    score += 1;
+  }
+  if (let (false, _) = forward<void>(nothing(), false)) {
+    score += 1;
+  }
+  return score;
+}
