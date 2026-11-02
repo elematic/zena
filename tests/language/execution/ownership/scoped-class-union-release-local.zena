@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 2
+// The partner of scoped-class-union-release.zena: a union binding whose
+// container is built in the same function, and a container returned
+// from another one, are each released once.
+import {Own, Disposable} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Present<scoped T> {
+  value: T;
+  new(this.value);
+}
+
+class Absent {}
+
+function make(): Present<Own<Res>> {
+  return new Present<Own<Res>>(new Res());
+}
+
+export function main(): i32 {
+  if (true) {
+    let a: Present<Own<Res>> | Absent = new Present<Own<Res>>(new Res());
+    let b = make();
+  }
+  return released;
+}

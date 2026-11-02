@@ -130,6 +130,31 @@ enum by its backing type. So `C<Own<R>>`, `C<Borrow<R>>` and
 decision made per specialization has to follow from the representation,
 since the alias a use was reached through is not part of the key.
 
+An alias instance keeps its declaration's unsubstituted target, so
+"its target" means `instantiatedAliasTarget` (`codegen-utils.zena`):
+for `opaque type Own<T> = T` and the other handles, the argument. Read
+as the bare target, every handle was the erasure of `T`, and a generic
+function called at one was minted as an erasure (#789). `isConcrete`
+and `containsErasedType` read it the same way.
+
+## A Synthesized Member Is Replayed by Name
+
+A member reached on a generic class is recorded against the generic
+and replayed for each specialization that arrives later
+(`recordReachedClassMember`, `noteSpecialization`), keyed by its AST
+node. A member the checker synthesized has no node: a case class's
+`==` and `hashCode`, and a release member (`:dispose` of a resource
+with only owner fields, `[release]` of a `scoped T` class). A reached
+release is recorded by class (`#reachedSyntheticReleases`) and
+`noteSpecialization` replays it before its duplicate check, since
+discovery can list a specialization that is only instantiated later.
+
+Read the synthesized flag off the declaration, `synthesizedRelease(ct)`,
+never off an instantiation: an instantiation copies
+`hasSyntheticRelease` when it is made, and one made before its class
+finished registering (`Some<T>` while `zena:core` registers) holds a
+stale false.
+
 ## A Generic Method Exists Only Per Specialization
 
 A method's OWN type parameters are a separate axis from its class's.

@@ -2022,20 +2022,23 @@ function emitDispose(cx: LoweringContext, value: i32, ownerClass: ClassType) {
 
 /**
  * One release, dispatched on the dynamic class when the static owner
- * is a union: test each member in order and dispose as that member;
- * the last member needs no test — emitDispose's receiver conformance
- * cast enforces it. Relatives in the union stay correct in any order,
- * because emitDispose dispatches virtually when a subclass overrides
- * `:dispose`.
+ * is a union: test each member in order and dispose as that member.
+ * When `owners` is every member the value can be, the last needs no
+ * test — emitDispose's receiver conformance cast enforces it; when it
+ * is not (DropPlan.partial), the last is tested too and a value that
+ * is none of them releases nothing. Relatives in the union stay correct
+ * in any order, because emitDispose dispatches virtually when a
+ * subclass overrides `:dispose`.
  */
-function emitDisposeDispatch(cx: LoweringContext, value: i32, owners: GrowableArray<ClassType>) {
-  if (owners.length == 1) {
+function emitDisposeDispatch(cx: LoweringContext, value: i32, owners: GrowableArray<ClassType>,
+    exhaustive: boolean = true) {
+  if (owners.length == 1 && exhaustive) {
     emitDispose(cx, value, owners[0]);
     return;
   }
   let endB = cx.b.newBlock();
   for (var i = 0; i < owners.length; i += 1) {
-    if (i == owners.length - 1) {
+    if (exhaustive && i == owners.length - 1) {
       emitDispose(cx, value, owners[i]);
       cx.b.br(endB, noValues());
     } else {
@@ -2055,6 +2058,10 @@ function emitDisposeDispatch(cx: LoweringContext, value: i32, owners: GrowableAr
       cx.b.br(endB, noValues());
       cx.b.switchTo(nextB);
     }
+  }
+  if (!exhaustive) {
+    // None of them: nothing to release.
+    cx.b.br(endB, noValues());
   }
   cx.b.switchTo(endB);
 }
@@ -2098,6 +2105,13 @@ export final class DropPlan {
   owners: GrowableArray<ClassType> | null;
   /** The tuple type whose owner elements are released, for a tuple. */
   tuple: Type | null;
+  /**
+   * Whether the value may be none of `owners`: a union of a `scoped T`
+   * container and members that hold nothing, such as `Some<Own<R>> |
+   * None`. Every owner is then tested, and a value that is none of
+   * them releases nothing.
+   */
+  var partial: boolean = false;
 
   new(this.owners, this.tuple);
 }
@@ -2108,7 +2122,34 @@ export function dropPlanOf(cx: LoweringContext, t: Type): DropPlan {
   if (tupleHoldsOwner(core)) {
     return new DropPlan(null, t);
   }
+  let containers = releasingUnionMembers(core);
+  if (containers != null) {
+    let plan = new DropPlan(containers, null);
+    plan.partial = true;
+    return plan;
+  }
   return new DropPlan(disposeOwnerClasses(cx, t), null);
+}
+
+/**
+ * The members of a union that are `scoped T` containers of an owner,
+ * judged by representation as emitReleaseOwned judges them, when it has
+ * any; null for anything else.
+ */
+function releasingUnionMembers(t: Type): GrowableArray<ClassType> | null {
+  let resolved = unwrapAliases(t);
+  if (!(resolved is UnionType)) {
+    return null;
+  }
+  let found = new Array<ClassType>();
+  for (let member in resolved.types) {
+    let m = unwrapAliases(member);
+    if (m is ClassType && releaseMemberOf(m) == ":release" && hasReleaseMember(m) &&
+        representsRestricted(m)) {
+      found.push(m);
+    }
+  }
+  return if (found.length > 0) found else null;
 }
 
 /**
@@ -2146,7 +2187,12 @@ export function emitReleaseOwned(cx: LoweringContext, value: i32, t: Type): void
 export function emitDrop(cx: LoweringContext, value: i32, plan: DropPlan): void {
   let owners = plan.owners;
   if (owners != null) {
-    emitMaybeDispose(cx, value, owners);
+    if (plan.partial) {
+      // A null, or a member that holds nothing, fails every test.
+      emitDisposeDispatch(cx, value, owners, false);
+    } else {
+      emitMaybeDispose(cx, value, owners);
+    }
     return;
   }
   emitTupleDrop(cx, value, plan.tuple as Type);
@@ -2186,7 +2232,7 @@ function tupleHoldsOwner(t: Type): boolean {
 function elementHoldsOwner(t: Type): boolean {
   let core = soleNonNullMember(t) ?? t;
   return ownershipHandleName(core) == "Own" || tupleHoldsOwner(core) ||
-      releasableContainer(core) != null;
+      releasableContainer(core) != null || releasingUnionMembers(core) != null;
 }
 
 /**

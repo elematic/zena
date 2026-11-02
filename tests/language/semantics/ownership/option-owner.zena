@@ -1,0 +1,55 @@
+// @mode: check
+// An `Option` of an owner moves like the owner: a second use after a
+// move, or after a pattern took it apart, is a use after move. Reading
+// `value` off a `Some` would copy the owner, so the owner comes out by
+// destructuring.
+import {Own, Disposable} from 'zena:core';
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+function consume(r: Own<Res>): void {}
+
+let movedTwice = (): i32 => {
+  let o = some(new Res());
+  let p = o;
+  let q = o; // @error: 'o' may have been moved
+  return 0;
+};
+
+let takenThenUsed = (): i32 => {
+  let o = some(new Res());
+  if (let Some {value} = o) {
+    consume(value);
+  }
+  let p = o; // @error: 'o' may have been moved
+  return 0;
+};
+
+let fieldRead = (o: Some<Own<Res>>): i32 => {
+  consume(o.value); // @error: 'o.value' is not nullable
+  return 0;
+};
+
+// At a first-class instantiation, and at an unrestricted `T`, `value` is
+// read as any field is.
+let plainRead = (o: Some<String>): i32 => {
+  let v = o.value;
+  let w = o.value;
+  return v.length + w.length;
+};
+
+function valueOf<T>(o: Some<T>): T {
+  return o.value;
+}
+
+// At a first-class type nothing changes.
+let plain = (): i32 => {
+  let o = some('a');
+  let p = o;
+  if (let Some {value} = o) {
+    return value.length;
+  }
+  return 0;
+};

@@ -1,0 +1,62 @@
+// @mode: run
+// @result: 4
+// An `Option` of an owner holds the owner it was given: matching `Some`
+// moves the owner out, and an option nobody takes apart releases it
+// where it is dropped. `None` holds nothing.
+import {Own, Disposable} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+function maybe(present: boolean): Option<Own<Res>> {
+  if (present) {
+    return some(new Res());
+  }
+  return none;
+}
+
+function consume(r: Own<Res>): void {}
+
+function dropped(): void {
+  let o = maybe(true);
+}
+
+function absent(): void {
+  let o = maybe(false);
+}
+
+function taken(): void {
+  let o = maybe(true);
+  if (let Some {value} = o) {
+    consume(value);
+  }
+}
+
+function matched(): void {
+  match (maybe(true)) {
+    case Some {value}: {}
+    case None {}: {}
+  }
+}
+
+function discarded(): void {
+  maybe(true);
+}
+
+export function main(): i32 {
+  dropped();
+  if (released != 1) { return 100 + released; }
+  absent();
+  if (released != 1) { return 200 + released; }
+  taken();
+  if (released != 2) { return 300 + released; }
+  matched();
+  if (released != 3) { return 400 + released; }
+  discarded();
+  return released;
+}

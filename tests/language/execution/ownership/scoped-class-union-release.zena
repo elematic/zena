@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 2
+// A union with a `scoped T` container member at an owner is released
+// as whichever member the value is: the container releases what it
+// holds, and the other members hold nothing.
+import {Own, Disposable} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Present<scoped T> {
+  value: T;
+  new(this.value);
+}
+
+class Absent {}
+
+function pick(present: boolean): Present<Own<Res>> | Absent {
+  if (present) {
+    return new Present<Own<Res>>(new Res());
+  }
+  return new Absent();
+}
+
+export function main(): i32 {
+  if (true) {
+    let a = pick(true);
+    let b = pick(false);
+    let c = pick(true);
+  }
+  return released;
+}
