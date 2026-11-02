@@ -2,7 +2,7 @@ import {
   Referrer, ReachabilityContext, SpecializerInterface,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
-import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, FunctionDeclInfo, AnyRefType, RecordType, releaseMemberOf } from '../../types.zena';
+import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, FunctionDeclInfo, AnyRefType, RecordType, releaseMemberOf, synthesizedRelease } from '../../types.zena';
 import {
   Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, decoratorStringArg, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
 } from '../../ast.zena';
@@ -416,7 +416,7 @@ export final class Specializer implements SpecializerInterface {
         this.registerClassMethod(classType, classDecl, "<constructor>", null, false, false, null, model);
       }
 
-      if (classType.hasSyntheticRelease) {
+      if (synthesizedRelease(classType)) {
         // A class whose only release action is its fields: the checker
         // synthesized its release member (a resource's `:dispose`, a
         // `scoped T` class's `[release]`), and lowering emits the field
@@ -892,7 +892,7 @@ export final class Specializer implements SpecializerInterface {
       let hashFunc = this.registerClassMethod(ct, classDecl, "hashCode", null, false, false, null, sourceModel);
       hashFunc.isCaseClassHash = true;
     }
-    if (ct.hasSyntheticRelease) {
+    if (synthesizedRelease(ct)) {
       // A class whose only release action is its fields: the checker
       // synthesized its release member (a resource's `:dispose`, a
       // `scoped T` class's `[release]`), and lowering emits the field
@@ -2048,7 +2048,7 @@ export final class Specializer implements SpecializerInterface {
         let hashFunc = this.registerClassMethod(ct, cd, "hashCode", null, false, false, null, sourceModel);
         hashFunc.isCaseClassHash = true;
       }
-      if (ct.hasSyntheticRelease) {
+      if (synthesizedRelease(ct)) {
         let dFunc = this.registerClassMethod(ct, cd, releaseMemberOf(ct), null, false, false, null, sourceModel);
         dFunc.isSyntheticRelease = true;
       }

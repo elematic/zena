@@ -164,11 +164,29 @@ export function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocati
 /**
  * Whether a binding of type `t` is move-checked like an owner: a tuple
  * holding an owner (#495), or an instance of a container of one, such
- * as a `Future<Own<R>>`, which its `await` consumes.
+ * as a `Future<Own<R>>`, which its `await` consumes, or a union with
+ * such a member, such as an `Option<Own<R>>`.
  */
 export function isAffineValue(t: Type): boolean {
   if (isAffineTuple(t)) { return true; }
-  return isAffineContainer(soleNonNullMember(t) ?? t);
+  return affineContainerMembers(t).length > 0;
+}
+
+/**
+ * The members of `t` that are containers of an owner (isAffineContainer):
+ * `t` itself, or each such member of a union, nullable or not.
+ */
+function affineContainerMembers(t: Type): GrowableArray<ClassType> {
+  let found = new Array<ClassType>();
+  let resolved = unwrapAliases(soleNonNullMember(t) ?? t);
+  let members = if (let UnionT {types} = resolved) types else growable<Type>([resolved]);
+  for (let member in members) {
+    let core = unwrapAliases(member);
+    if (core is ClassType && isAffineContainer(core)) {
+      found.push(core);
+    }
+  }
+  return found;
 }
 
 /**
@@ -886,7 +904,9 @@ function ownerFieldInfo(ctx: CheckerContext, lm: MemberExpression): FieldInfo | 
  * counts: `this.#value`, another instance's `src.#value`, or a public
  * field read from outside on a `Slot<Own<R>>`, whose instantiated
  * member type no longer names `T`. Whether the take stores its null is
- * decided per specialization.
+ * decided per specialization. A receiver at a first-class instantiation
+ * (`Some<String>`) has nothing to take: its field is read as any field
+ * is.
  */
 export function scopedFieldInfo(ctx: CheckerContext, me: MemberExpression): FieldInfo | null {
   let objT = ctx.model.getNodeType(me.object);
@@ -894,6 +914,7 @@ export function scopedFieldInfo(ctx: CheckerContext, me: MemberExpression): Fiel
   let peeled = ownershipHandleInner(objT) ?? objT;
   let recvT = soleNonNullMember(peeled) ?? peeled;
   if (!(recvT is ClassType)) { return null; }
+  if (!mayBeRestrictedInstance(recvT)) { return null; }
   let declaring = (recvT as ClassType).genericSource ?? (recvT as ClassType);
   let scoped = scopedTypeParamsOf(declaring);
   if (scoped.length == 0) { return null; }
@@ -904,6 +925,25 @@ export function scopedFieldInfo(ctx: CheckerContext, me: MemberExpression): Fiel
   let fi = m as FieldInfo;
   if (!mentionsTypeParams(fi.type, scoped)) { return null; }
   return fi;
+}
+
+/**
+ * Whether `ct` may be a restricted instantiation of its class: one of
+ * its `scoped` arguments carries an owner or is second-class, which a
+ * `scoped` type parameter is (the class's own body sees its self type at
+ * its parameters). With no arguments it is the class itself, at its
+ * parameters too.
+ */
+function mayBeRestrictedInstance(ct: ClassType): boolean {
+  let args = ct.typeArguments;
+  if (args == null) { return true; }
+  for (var i = 0; i < args.length; i += 1) {
+    if (isScopedClassParam(ct, i) &&
+        (typeCarriesOwner(args[i]) || typeContainsSecondClass(args[i]))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -963,7 +1003,12 @@ function isWithDefaultType(t: Type): boolean {
 export function recordScopedFieldTake(ctx: CheckerContext, me: MemberExpression,
     fi: FieldInfo, loc: SourceLocation | null): void {
   let name = getMemberPropertyName(me.isSymbolAccess, me.property.name);
-  let display = "this." + name;
+  let receiver = match (me.object) {
+    case ThisExpression {}: "this"
+    case Identifier {name as objectName}: objectName
+    case _: null
+  };
+  let display = if (receiver != null) `${receiver}.${name}` else name;
   if (!isNullableType(fi.type) && !isWithDefaultType(fi.type)) {
     // A bare `T` empties into `WithDefault<T>`, since `T | null` has
     // no value at a primitive `T` (#614).
@@ -1192,6 +1237,13 @@ function collectOwnedResources(t: Type, result: GrowableArray<ClassType>): boole
     return true;
   }
   if (!isAffineTuple(handleType)) {
+    // A union with container members, such as an `Option<Own<R>>`: the
+    // drop releases whichever of them the value is.
+    for (let member in affineContainerMembers(handleType)) {
+      if (releasableContainer(member) != null) {
+        collectOwnedResources(member, result);
+      }
+    }
     return true;
   }
   let resolved = unwrapAliases(handleType);

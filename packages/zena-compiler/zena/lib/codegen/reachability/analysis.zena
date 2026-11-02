@@ -5,7 +5,7 @@ import {
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType, releaseMemberOf, hasReleaseMember,
+  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType, releaseMemberOf, hasReleaseMember, synthesizedRelease,
 } from '../../types.zena';
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
@@ -306,6 +306,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   specializedClassTypes = new Map<SymbolId, GrowableArray<ClassType>>();
   reachedClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
   reachedReachableClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
+  /** The generic classes whose synthesized release member was reached. */
+  #reachedSyntheticReleases = new Set<SymbolId>();
 
   var mixinToClasses = new Map<MixinKey, GrowableArray<ClassType>>();
   #preludeClassCache = new Map<i32, ClassType>();
@@ -507,6 +509,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let lookupId = (ct.genericSource ?? ct).symbolId;
     if (!this.specializedClassTypes.has(lookupId)) {
       this.specializedClassTypes[lookupId] = new Array<ClassType>();
+    }
+    // Before the duplicate check: discovery can list a specialization
+    // the release was reached for only once it is instantiated, which
+    // notes it again.
+    if (this.#reachedSyntheticReleases.has(lookupId)) {
+      this.notePendingMemberReach(getClassMethodKey(getClassKey(ct), releaseMemberOf(ct)));
     }
     let list = this.specializedClassTypes[lookupId];
     let ctKey = getClassKey(ct);
@@ -4833,6 +4841,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               this.recordReachedClassMember(classSymId, accNode.id as i32,
                   this.getNodeModel(accNode, targetModel), this.currentReachable);
             }
+            // A synthesized release has no node to record, so the
+            // generic records that it was reached, and noteSpecialization
+            // replays it for a specialization that arrives later.
+            let generic = targetClassType.genericSource ?? targetClassType;
+            if (this.currentReachable && synthesizedRelease(generic) &&
+                mName == releaseMemberOf(generic)) {
+              this.#reachedSyntheticReleases.add(classSymId);
+            }
             for (let subCt in list) {
               let subModel = this.getClassModel(subCt);
               let mds = cha.findImplementingMethods(subCt, mName);
@@ -4844,7 +4860,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 this.queueMember((acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable);
               }
               if (mName == "==" || mName == "hashCode" ||
-                  (subCt.hasSyntheticRelease && mName == releaseMemberOf(subCt))) {
+                  (synthesizedRelease(subCt) && mName == releaseMemberOf(subCt))) {
                 // A case class's synthesized ==/hashCode — and a
                 // synthesized release member — have no AST node to
                 // find; reach the registered function by key, deferred

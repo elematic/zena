@@ -6100,7 +6100,11 @@ first-class `T` the read is a copy and the field keeps its value. A
 dropped, as an owner is: the class's `[release]`, synthesized when it
 declares none, releases what its `T` fields own. A pattern that takes
 such an instance apart (`let {value} = holder`) moves it, and the
-owners go to the pattern's bindings.
+owners go to the pattern's bindings. The standard library's `Some` is
+such a class, so an `Option<Own<File>>` moves like the owner, the owner
+comes out with `if (let Some {value} = o)`, and an option nobody takes
+apart is released where it is dropped; at a first-class type,
+`o.value` is an ordinary read.
 
 ```zena
 class Slot<scoped T> {
