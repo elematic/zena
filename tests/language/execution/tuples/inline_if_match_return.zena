@@ -1,0 +1,95 @@
+// @mode: run
+// @result: 0
+// A function returning an inline value can return an `if` or `match`
+// expression whose arms are inline values (#773). Each arm returns its own
+// value: a literal, a forwarded call, a nested `if`, or the tail of a block,
+// whose owners are released on the way out.
+
+import { Own, Disposable } from 'zena:core';
+
+type Boxed = (0, _, _) | (1, i32, _);
+type Step = inline Boxed;
+
+let ifArms = (n: i32): Step => if (n == 0) (0, _, _) else (1, n, _);
+
+function returned(n: i32): Step {
+  return if (n == 0) (0, _, _) else (1, n * 2, _);
+}
+
+let matched = (n: i32): Step => match (n) {
+  case 0: (0, _, _)
+  case 1: (1, 100, _)
+  case _: (1, n, _)
+};
+
+// A nested `if`, and an arm that forwards a call.
+let nested = (n: i32): Step =>
+    if (n < 0) (0, _, _) else if (n == 0) ifArms(1) else returned(n);
+
+// A block arm: its statements run, then its tail is returned.
+let blockArm = (n: i32): Step => if (n == 0) {
+  (0, _, _)
+} else {
+  let doubled = n * 2;
+  (1, doubled + 1, _)
+};
+
+// A let-condition chooses the arm.
+let fromStep = (n: i32): Step => if (let (1, v, _) = matched(n)) (1, v + 1, _) else (0, _, _);
+
+// Arms of a union whose members put different types at a position.
+type Reply = inline (true, i32) | (false, String);
+
+let reply = (ok: boolean): Reply => if (ok) (true, 7) else (false, 'no');
+
+// Nested inline tuples.
+let pair = (n: i32): inline (i32, inline (i32, i32)) => if (n == 0) (0, (0, 0)) else (n, (n + 1, n + 2));
+
+// An owner a block arm holds is released when the arm returns.
+var released = 0;
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.#fd;
+  }
+}
+
+let withFile = (n: i32): Step => if (n == 0) (0, _, _) else {
+  let f = new File(n);
+  (1, n, _)
+};
+
+let valueOf = (s: Boxed): i32 => match (s) {
+  case (0, _, _): -1
+  case (1, let v, _): v
+};
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (valueOf(ifArms(0)) != -1 || valueOf(ifArms(5)) != 5) { failures += 1; }
+  if (valueOf(returned(0)) != -1 || valueOf(returned(3)) != 6) { failures += 2; }
+  if (valueOf(matched(0)) != -1 || valueOf(matched(1)) != 100 || valueOf(matched(9)) != 9) {
+    failures += 4;
+  }
+  if (valueOf(nested(-1)) != -1 || valueOf(nested(0)) != 1 || valueOf(nested(4)) != 8) {
+    failures += 8;
+  }
+  if (valueOf(blockArm(0)) != -1 || valueOf(blockArm(3)) != 7) { failures += 16; }
+  if (valueOf(fromStep(0)) != -1 || valueOf(fromStep(1)) != 101) { failures += 32; }
+  if (let (false, why) = reply(false)) {
+    if (why != 'no') { failures += 64; }
+  } else {
+    failures += 64;
+  }
+  if (let (true, n) = reply(true)) {
+    if (n != 7) { failures += 64; }
+  } else {
+    failures += 64;
+  }
+  let (a, (b, c)) = pair(1);
+  if (a + b + c != 6) { failures += 128; }
+  if (valueOf(withFile(4)) != 4 || released != 4) { failures += 256; }
+  return failures;
+};

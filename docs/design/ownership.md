@@ -1845,11 +1845,16 @@ result owns something, used as a statement, is released where it is
 discarded (`releaseDiscardedOwner`, then `emitDrop` or `emitSlotsDrop` in
 lowering).
 
-Not released yet: when an `if let` or `while let` pattern does not match,
-its source holds a member the pattern did not take, and if that member
-holds an owner (`(true, Own<A>) | (false, Own<B>)` on the `false` side), it
-leaks. The source's slots would have to reach the fail path of each
-lowering.
+The pattern consumes its source, so an owner no name takes is released
+where the pattern takes it (#772): the owners under `_`, or in a `case _`
+arm, at the start of the arm, after its tests and guard; and the whole
+source on the not-taken side of an `if let` or `while let`, which is
+where a pattern that does not match leaves it (`emitTakenOwnerDrops`,
+`emitNotTakenOwnerDrops`, `emitArmOwnerDrops`). Each reads the source's
+slots, which the let-condition keeps for the purpose
+(`LetCondBinds.ownerSource`), and releases through `emitSlotsDropExcept`,
+which leaves out the paths a pattern bound to a name and the members the
+pattern rules out.
 
 **Generic fields are the other half, and defer to `scoped T`.**
 `class Box<scoped T> { var value: T }` stays an ordinary class; the
