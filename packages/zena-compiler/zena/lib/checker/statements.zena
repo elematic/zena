@@ -90,14 +90,14 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
     }
     case FunctionDeclaration {name as namePat, func}: {
       let info = ctx.model.resolveDeclaration(namePat);
-      let pendingOvs = if (info != null) ctx.pendingFunctionOverloads((info as Symbol).id) else null;
-      if (info != null && pendingOvs != null && (pendingOvs as GrowableArray<Node>).length > 1 &&
-          ctx.model.getBindingTypeDirect(info as Symbol) == null) {
-        ctx.lazyResolveFunction(info as Symbol, func as Node);
+      let pendingOvs = if (info != null) ctx.pendingFunctionOverloads(info.id) else null;
+      if (info != null && pendingOvs != null && pendingOvs.length > 1 &&
+          ctx.model.getBindingTypeDirect(info) == null) {
+        ctx.lazyResolveFunction(info, func as Node);
       }
       let funcType = checkExpression(ctx, func as Expression, null);
-      if (info != null && pendingOvs != null && (pendingOvs as GrowableArray<Node>).length > 1) {
-        let sym = info as Symbol;
+      if (info != null && pendingOvs != null && pendingOvs.length > 1) {
+        let sym = info;
         let {declaration} = sym;
         if (declaration != null && declaration !== namePat &&
             !(ctx.model.getParent(declaration) is FunctionDeclaration)) {
@@ -110,7 +110,7 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
           funcType.functionSymbolId = sym.id;
           funcType.functionSymbolName = sym.name;
           ctx.setNodeType(namePat, funcType);
-          let ovNodes = pendingOvs as GrowableArray<Node>;
+          let ovNodes = pendingOvs;
           var ovIdx = -1;
           for (var oi = 0; oi < ovNodes.length; oi += 1) {
             if (ovNodes[oi] === (func as Node)) {
@@ -268,11 +268,11 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
       // would release what was just returned.
       // `return this.field` of a `scoped T` field hands its value to
       // the caller: a take, through a cast too (`this.#value as T`).
-      let returned = if (argument != null) castOperand(argument as Expression) else null;
+      let returned = if (argument != null) castOperand(argument) else null;
       if (returned != null && returned is MemberExpression) {
         let sfi = scopedFieldInfo(ctx, returned);
         if (sfi != null) {
-          recordScopedFieldTake(ctx, returned, sfi as FieldInfo, loc);
+          recordScopedFieldTake(ctx, returned, sfi, loc);
         }
       }
       if (argument != null && ctx.owningReceiver && argument is MemberExpression) {
@@ -589,7 +589,7 @@ case _: {
                   if (exp.isValue()) {
                     let resolvedValType = if (depModel != null) {
                       let t = depModel.getBindingType(exp);
-                      if (t != null) { t } else { lookupBindingTypeInDeps(ctx, exp) }
+                      t ?? lookupBindingTypeInDeps(ctx, exp)
                     } else {
                       lookupBindingTypeInDeps(ctx, exp)
                     };
@@ -676,7 +676,7 @@ case _: {
                   if (localValInfo != null) {
                     var resolvedValType = if (depModel != null) {
                       let t = depModel.getBindingType(valueExport);
-                      if (t != null) { t } else { lookupBindingTypeInDeps(ctx, valueExport) }
+                      t ?? lookupBindingTypeInDeps(ctx, valueExport)
                     } else {
                       lookupBindingTypeInDeps(ctx, valueExport)
                     };

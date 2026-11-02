@@ -52,7 +52,7 @@ export function getMatchedLiteralType(expr: Expression, expected: Type): Type | 
  * direct `is` tests — a `baseType`-based predicate would also capture a
  * `NumLiteralType` expectation, which must keep falling through to i32.
  */
-function isRangeCheckedIntType(t: Type): boolean {
+function isRangeCheckedIntType(t: Type) {
   return t is U8Type || t is U16Type || t is I8Type || t is I16Type ||
       t is U32Type || t is U64Type;
 }
@@ -92,7 +92,7 @@ export function checkIntegerLiteral(
     return expectedType;
   }
   if (let TypeParameterType {defaultType} = expectedType) {
-    if (defaultType != null && isNumericType(defaultType as Type)) {
+    if (defaultType != null && isNumericType(defaultType)) {
       return expectedType;
     }
   }
@@ -128,10 +128,10 @@ function signedLiteralType(
 ): Type {
   let castTarget = ctx.castLiteralTarget;
   if (castTarget != null) {
-    if (!literalFitsCastWidth(raw, negative, castTarget as Type)) {
+    if (!literalFitsCastWidth(raw, negative, castTarget)) {
       let sign = if (negative) "-" else "";
       ctx.errorOnceAt(
-        `Integer literal ${sign}${raw} is out of range for type '${typeToString(castTarget as Type)}'.`,
+        `Integer literal ${sign}${raw} is out of range for type '${typeToString(castTarget)}'.`,
         DiagnosticCode.TypeMismatch,
         loc
       );
@@ -213,7 +213,7 @@ export function isNumericOrNumericTypeParam(t: Type): boolean {
     return true;
   }
   if (let TypeParameterType {defaultType} = t) {
-    return defaultType != null && isNumericType(defaultType as Type);
+    return defaultType != null && isNumericType(defaultType);
   }
   return false;
 }
@@ -222,13 +222,13 @@ export function isIntLiteralExpr(e: Expression): boolean {
   return match (e) {
     case NumberLiteral {raw}: !raw.contains('.')
     case UnaryExpression {operator, argument}:
-      operator == "-" && argument is NumberLiteral && !(argument as NumberLiteral).raw.contains('.')
+      operator == "-" && argument is NumberLiteral && !argument.raw.contains('.')
     case _: false
   };
 }
 
 /** Whether `ct` is one of the standard library's range classes. */
-function isRangeClass(ct: ClassType): boolean {
+function isRangeClass(ct: ClassType) {
   let {name, sourcePath} = ct;
   return isWellKnown(WellKnown.RangeClass, name, sourcePath) ||
       isWellKnown(WellKnown.BoundedRangeClass, name, sourcePath) ||

@@ -81,7 +81,7 @@ export function isRefutableDeclarationPattern(pattern: Pattern): boolean {
       for (let element in elements) {
         if (element != null) {
           if (element is RestPattern) {
-            if (isRefutableDeclarationPattern((element as RestPattern).pattern as Pattern)) {
+            if (isRefutableDeclarationPattern(element.pattern as Pattern)) {
               return true;
             }
           } else if (isRefutableDeclarationPattern((element) as Pattern)) {
@@ -145,7 +145,7 @@ function getArrayPatternRestType(ctx: CheckerContext, t: Type, elemType: Type): 
   let faType = fixedArrayType(ctx);
   if (faType is ClassType) {
     let args = growable<Type>([elemType]);
-    return instantiateClassType(faType as ClassType, args);
+    return instantiateClassType(faType, args);
   }
   return new ArrayType(elemType, true);
 }
@@ -314,7 +314,7 @@ export function getTuplePatternElementTypes(t: Type): Array<Type> | null {
  * not a type.
  */
 function checkInlinePositionReads(ctx: CheckerContext, t: Type,
-    elements: GrowableArray<Node | null>): void {
+    elements: GrowableArray<Node | null>) {
   if (!(t is UnionT)) {
     return;
   }
@@ -461,7 +461,7 @@ function patternCanMatchType(ctx: CheckerContext, pattern: Node, t: Type): boole
               let elem = elements[i];
               if (i == restIndex || elem == null) { continue; }
               let at = if (i < restIndex) i else elementTypes.length - after + (i - restIndex - 1);
-              if (!patternCanMatchType(ctx, elem as Node, elementTypes[at])) {
+              if (!patternCanMatchType(ctx, elem, elementTypes[at])) {
                 return false;
               }
             }
@@ -506,7 +506,7 @@ function patternCanMatchType(ctx: CheckerContext, pattern: Node, t: Type): boole
       for (let elem in elements) {
         if (elem != null) {
           if (elem is RestPattern) {
-            if (!patternCanMatchType(ctx, (elem as RestPattern).pattern, restType)) {
+            if (!patternCanMatchType(ctx, elem.pattern, restType)) {
               return false;
             }
           } else if (!patternCanMatchType(ctx, elem, elemType)) {
@@ -539,7 +539,7 @@ function patternCanMatchType(ctx: CheckerContext, pattern: Node, t: Type): boole
  * existing lane merge to handle.
  */
 function narrowTupleUnionByPattern(ctx: CheckerContext, t: Type,
-    tuplePat: TuplePattern): Type {
+    tuplePat: TuplePattern) {
   // Resolve through type aliases (e.g. a named `Step<V>`) so an aliased
   // union narrows like one written inline.
   var resolved = t;
@@ -715,7 +715,7 @@ export function bindPattern(ctx: CheckerContext, pattern: Pattern, t: Type): voi
         if (element != null) {
           if (i < elementTypes.length) {
             bindPattern(ctx, element as Pattern,
-                tupleElementPatternType(element as Node, elementTypes[i]));
+                tupleElementPatternType(element, elementTypes[i]));
           } else {
             bindPattern(ctx, element as Pattern, new ErrorType());
           }
@@ -736,7 +736,7 @@ export function bindPattern(ctx: CheckerContext, pattern: Pattern, t: Type): voi
         for (let element in elements) {
           if (element != null) {
             if (element is RestPattern) {
-              bindPattern(ctx, (element as RestPattern).pattern as Pattern, new ErrorType());
+              bindPattern(ctx, element.pattern as Pattern, new ErrorType());
             } else {
               bindPattern(ctx, element as Pattern, new ErrorType());
             }
@@ -748,7 +748,7 @@ export function bindPattern(ctx: CheckerContext, pattern: Pattern, t: Type): voi
       for (let element in elements) {
         if (element != null) {
           if (element is RestPattern) {
-            bindPattern(ctx, (element as RestPattern).pattern as Pattern, restType);
+            bindPattern(ctx, element.pattern as Pattern, restType);
           } else {
             bindPattern(ctx, element as Pattern, elemType);
           }
@@ -872,7 +872,7 @@ function resolveClassFieldType(
  * failed to resolve. Byte-wise, which is exact for the ASCII identifiers this
  * is called with.
  */
-function editDistance(a: String, b: String): i32 {
+function editDistance(a: String, b: String) {
   let n = a.length;
   let m = b.length;
   if (n == 0) { return m; }
@@ -948,7 +948,7 @@ function unresolvedPatternNameMessage(
   name: String,
   expectedType: Type,
   namesNonClassType: boolean
-): String {
+) {
   if (namesNonClassType) {
     return "'" + name + "' names a type, but only classes can be matched by name. " +
       "Write 'let " + name + "' to bind the matched value to a new variable.";
@@ -1045,7 +1045,7 @@ function specializePatternTypeFromExpected(
             for (let m in types) {
               let um = unwrapAliases(m);
               if (um is InterfaceType) {
-                let mit = um as InterfaceType;
+                let mit = um;
                 if ((mit.genericSource ?? mit).id == targetId && mit.typeArguments != null) {
                   return mit;
                 }
@@ -1319,7 +1319,7 @@ export function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: T
         let elem = elements[i];
         if (elem != null) {
           if (i < elementTypes.length) {
-            checkPattern(ctx, elem, tupleElementPatternType(elem as Node, elementTypes[i]));
+            checkPattern(ctx, elem, tupleElementPatternType(elem, elementTypes[i]));
           } else {
             checkPattern(ctx, elem, new ErrorType());
           }
@@ -1341,7 +1341,7 @@ export function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: T
         for (let element in elements) {
           if (element != null) {
             if (element is RestPattern) {
-              checkPattern(ctx, (element as RestPattern).pattern, new ErrorType());
+              checkPattern(ctx, element.pattern, new ErrorType());
             } else {
               checkPattern(ctx, element, new ErrorType());
             }
@@ -1353,7 +1353,7 @@ export function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: T
       for (let element in elements) {
         if (element != null) {
           if (element is RestPattern) {
-            checkPattern(ctx, (element as RestPattern).pattern, restType);
+            checkPattern(ctx, element.pattern, restType);
           } else {
             checkPattern(ctx, element, elemType);
           }

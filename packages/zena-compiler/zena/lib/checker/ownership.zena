@@ -248,7 +248,7 @@ export function mentionsParamDerived(ctx: CheckerContext, e: Node): boolean {
  */
 export function scopedElementsExpected(expected: Type | null): boolean {
   if (expected == null) { return false; }
-  let e = expected as Type;
+  let e = expected;
   match (e) {
     case ArrayType {elementType}: { return typeContainsSecondClass(elementType); }
     case ClassType {typeArguments}: {
@@ -971,7 +971,7 @@ export final class ScopedConsumeCandidate {
  */
 export function affineOwnerFieldType(ctx: CheckerContext, lm: MemberExpression): Type | null {
   let fi = ownerFieldInfo(ctx, lm);
-  return if (fi == null) null else fi.type;
+  return fi?.type;
 }
 
 /** The owner field `lm` names on a resource class, or null. */
@@ -990,13 +990,13 @@ function ownerFieldInfo(ctx: CheckerContext, lm: MemberExpression): FieldInfo | 
   peeled = ownershipHandleInner(recvT);
   if (peeled != null) { recvT = peeled; }
   if (!(recvT is ClassType)) { return null; }
-  let ct = recvT as ClassType;
+  let ct = recvT;
   if (!ct.isResource) { return null; }
   let propName = getMemberPropertyName(lm.isSymbolAccess, lm.property.name);
   if (!ct.members.has(propName)) { return null; }
   let m = ct.members[propName];
   if (!(m is FieldInfo)) { return null; }
-  let fi = m as FieldInfo;
+  let fi = m;
   if (!typeCarriesOwner(fi.type)) { return null; }
   return fi;
 }
@@ -1018,14 +1018,14 @@ export function scopedFieldInfo(ctx: CheckerContext, me: MemberExpression): Fiel
   let recvT = soleNonNullMember(peeled) ?? peeled;
   if (!(recvT is ClassType)) { return null; }
   if (!mayBeRestrictedInstance(recvT)) { return null; }
-  let declaring = (recvT as ClassType).genericSource ?? (recvT as ClassType);
+  let declaring = recvT.genericSource ?? recvT;
   let scoped = scopedTypeParamsOf(declaring);
   if (scoped.length == 0) { return null; }
   let propName = getMemberPropertyName(me.isSymbolAccess, me.property.name);
   if (!declaring.members.has(propName)) { return null; }
   let m = declaring.members[propName];
   if (!(m is FieldInfo)) { return null; }
-  let fi = m as FieldInfo;
+  let fi = m;
   if (!mentionsTypeParams(fi.type, scoped)) { return null; }
   return fi;
 }
@@ -1064,7 +1064,7 @@ function recordScopedFieldSinkMove(ctx: CheckerContext, me: MemberExpression,
   // `Slot<Own<R>>`, it is the owner itself.
   if (sinkHandle != "Borrow" && sinkHandle != "Unmanaged" &&
       (typeContainsSecondClass(sinkCore) || typeCarriesOwner(sinkCore))) {
-    recordScopedFieldTake(ctx, me, sfi as FieldInfo, me.loc);
+    recordScopedFieldTake(ctx, me, sfi, me.loc);
   }
   return true;
 }

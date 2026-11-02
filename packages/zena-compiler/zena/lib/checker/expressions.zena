@@ -358,7 +358,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
             if (!elementsMutable) {
               ctx.error(
                 "Cannot assign to an element of 'array<" +
-                    typeToString((objectType as ArrayType).elementType) +
+                    typeToString(objectType.elementType) +
                     ">'; its elements are immutable. Use 'array<var T>' " +
                     "or a FixedArray for mutable elements.",
                 DiagnosticCode.InvalidAssignment,
@@ -528,7 +528,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     } else {
       null
     };
-    var leftType: Type = indexWrite ?? checkExpression(ctx, left, null);
+    var leftType = indexWrite ?? checkExpression(ctx, left, null);
     ctx.setMoveCheckSuppressedNode(-1);
     match (left) {
       case Identifier: {
@@ -747,7 +747,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         ctx.enterOwnScope();
         registerPatternOwners(ctx, lpc.pattern as Node);
         let consType = checkIfBranchNode(ctx, consequent, expectedType);
-        ctx.exitOwnScope(consequent as Node);
+        ctx.exitOwnScope(consequent);
         ctx.exitScope();
         let trueEnd = ctx.currentFlow;
         ctx.setFlow(preBranchFlow);
@@ -768,7 +768,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         let consNode = armValueNode(consequent);
         if (consNode != null) { adaptJoinedArm(ctx, consNode, consType, joined); }
         if (alternate != null) {
-          let altNode = armValueNode(alternate as Node);
+          let altNode = armValueNode(alternate);
           if (altNode != null) { adaptJoinedArm(ctx, altNode, altType, joined); }
         }
         joined
@@ -804,7 +804,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         let consNode = armValueNode(consequent);
         if (consNode != null) { adaptJoinedArm(ctx, consNode, consType, joined); }
         if (alternate != null) {
-          let altNode = armValueNode(alternate as Node);
+          let altNode = armValueNode(alternate);
           if (altNode != null) { adaptJoinedArm(ctx, altNode, altType, joined); }
         }
         joined
@@ -1051,11 +1051,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
             break;
           }
         }
-        inferredElementType = if (common != null) {
-          common
-        } else {
-          createUnionType(widened, ctx, loc)
-        };
+        inferredElementType = common ?? createUnionType(widened, ctx, loc);
       }
     }
 
@@ -1122,7 +1118,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       new ErrorType()
     } else {
       let typeArgs = growable<Type>([inferredElementType]);
-      instantiateClassType(faType as ClassType, typeArgs) as Type
+      instantiateClassType(faType, typeArgs) as Type
     }
   }
   case RecordLiteral {properties, loc}: {
@@ -1361,7 +1357,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     var expectedKeyType: Type | null = null;
     var expectedValType: Type | null = null;
     if (expectedType != null) {
-      let nonNullExpected = baseType(subtractNullFromType(expectedType as Type));
+      let nonNullExpected = baseType(subtractNullFromType(expectedType));
       match (nonNullExpected) {
         case ClassType as ct: {
           if (ct.typeArguments != null) {
@@ -1386,7 +1382,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
     if (entries.length == 0) {
       if (expectedKeyType != null && expectedValType != null) {
-        mapLiteralType(ctx, expectedKeyType as Type, expectedValType as Type, loc)
+        mapLiteralType(ctx, expectedKeyType, expectedValType, loc)
       } else {
         ctx.error("Empty map literal requires type annotation. Use 'new HashMap<K, V>()' instead.", DiagnosticCode.TypeMismatch, loc);
         new ErrorType()
@@ -1395,8 +1391,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       // Check all entries and unify key/value types.
       let firstKeyType = checkExpression(ctx, entries[0].key, expectedKeyType);
       let firstValType = checkExpression(ctx, entries[0].value, expectedValType);
-      let targetKeyType = if (expectedKeyType != null) expectedKeyType as Type else firstKeyType;
-      let targetValType = if (expectedValType != null) expectedValType as Type else firstValType;
+      let targetKeyType = expectedKeyType ?? firstKeyType;
+      let targetValType = expectedValType ?? firstValType;
       if (expectedKeyType != null) {
         checkAndRegisterInterfaceAdaptation(ctx, entries[0].key, firstKeyType, targetKeyType);
       }
@@ -1451,7 +1447,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     let tagType = checkExpression(ctx, tag, null);
     var valueType: Type | null = null;
     if (tagType is FunctionType) {
-      let ft = tagType as FunctionType;
+      let ft = tagType;
       if (ft.parameters.length >= 2) {
         let elem = expectedArrayElementType(ctx, ft.parameters[1]);
         if (elem != null && !typeContainsTypeParameter(elem)) {
@@ -1570,7 +1566,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
           // The catch parameter binds the stdlib `Error`; see the note on
           // `throw` above.
           let errorType = ctx.tryResolveWellKnownType(WellKnown.ErrorClass);
-          ctx.declareBinding(info, if (errorType != null) errorType else new ErrorType());
+          ctx.declareBinding(info, errorType ?? new ErrorType());
         }
       }
       catchType = checkMatchCaseBody(ctx, handler.body as Node, expectedType);
@@ -1651,7 +1647,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     let stringIndexType = ctx.tryResolveWellKnownType(WellKnown.StringIndexAlias);
     let contextualBoundType = extractContextualRangeBoundType(expectedType);
     let numericContextualBound: Type | null = if (contextualBoundType != null &&
-        isNumericType(contextualBoundType as Type)) {
+        isNumericType(contextualBoundType)) {
       contextualBoundType
     } else {
       null
@@ -1661,8 +1657,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     var startType: Type | null = null;
     var endType: Type | null = null;
     if (start != null && end != null) {
-      let sExpr = start as Expression;
-      let eExpr = end as Expression;
+      let sExpr = start;
+      let eExpr = end;
       if ((isContextTypedNumber(sExpr) && !isContextTypedNumber(eExpr)) ||
           (isIntLiteralExpr(sExpr) && !isIntLiteralExpr(eExpr))) {
         let et = checkExpression(ctx, eExpr, numericContextualBound);
@@ -1684,7 +1680,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
 
     if (startType != null) {
-      let st = startType as Type;
+      let st = startType;
       if (stringIndexType != null && isAssignableTo(ctx, st, stringIndexType)) {
         startIsStringIndex = true;
       } else if (!isNumericType(st) && !(st is ErrorType)) {
@@ -1695,7 +1691,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       }
     }
     if (endType != null) {
-      let et = endType as Type;
+      let et = endType;
       if (stringIndexType != null && isAssignableTo(ctx, et, stringIndexType)) {
         endIsStringIndex = true;
       } else if (!isNumericType(et) && !(et is ErrorType)) {
@@ -1721,17 +1717,17 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
     // Determine the bound type and range variant to return.
     let boundType: Type = if (startIsStringIndex && stringIndexType != null) {
-      stringIndexType as Type
+      stringIndexType
     } else if (endIsStringIndex && stringIndexType != null) {
-      stringIndexType as Type
-    } else if (startType != null && isNumericType(startType as Type)) {
-      baseType(startType as Type)
-    } else if (endType != null && isNumericType(endType as Type)) {
-      baseType(endType as Type)
+      stringIndexType
+    } else if (startType != null && isNumericType(startType)) {
+      baseType(startType)
+    } else if (endType != null && isNumericType(endType)) {
+      baseType(endType)
     } else if (contextualBoundType != null &&
-               (isNumericType(contextualBoundType as Type) ||
-                (stringIndexType != null && isAssignableTo(ctx, contextualBoundType as Type, stringIndexType)))) {
-      contextualBoundType as Type
+               (isNumericType(contextualBoundType) ||
+                (stringIndexType != null && isAssignableTo(ctx, contextualBoundType, stringIndexType)))) {
+      contextualBoundType
     } else {
       new I32Type()
     };
@@ -1745,7 +1741,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     // and its diagnostics with it; the second one finds them.
     let rangeType = ctx.tryResolveWellKnownType(rangeClass);
     if (rangeType is ClassType) {
-      let ct = rangeType as ClassType;
+      let ct = rangeType;
       let tparams = ct.typeParameters;
       if (tparams != null && tparams.length == 1) {
         instantiateClassType(ct, [boundType])
@@ -2248,8 +2244,7 @@ function checkBinaryExpression(
     }
 
     let promoted = promoteNumeric(leftType, rightType);
-    if (promoted != null) { return promoted; }
-    return leftType;
+    return promoted ?? leftType;
   }
 
   // Null coalescing operator: ??
@@ -2286,7 +2281,7 @@ function checkBinaryExpression(
     // Optional record field read (member check returned the field type
     // under the sanction): present value, else the default.
     if (left is MemberExpression) {
-      let member = left as MemberExpression;
+      let member = left;
       let objType = ctx.model.getNodeType(member.object);
       if (objType != null) {
         let objBase = baseType(subtractNullFromType(objType));
@@ -2308,7 +2303,7 @@ function checkBinaryExpression(
     let payloadOpt = protocolPayloadType(leftType);
     if (payloadOpt != null) {
       let arms = growable<Type>([
-        adaptCoalescedArm(ctx, node, payloadOpt as Type, expectedType),
+        adaptCoalescedArm(ctx, node, payloadOpt, expectedType),
         rightType,
       ]);
       let joinedPayload = createUnionType(arms, ctx, loc);

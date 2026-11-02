@@ -52,12 +52,9 @@ import { createUnionType, stripNull, subtractNullFromType, unwrapAliases } from 
  * instead (see `SymbolType.protocolKey`). No id-keyed symbol can collide
  * with one, because every id-keyed key ends in `_<digits>`.
  */
-function symbolMemberKey(sym: SymbolType): String {
+function symbolMemberKey(sym: SymbolType) {
   let fixed = sym.protocolKey;
-  if (fixed != null) {
-    return fixed as String;
-  }
-  return `:${sym.name}_${i32ToString(sym.id as i32)}`;
+  return fixed ?? `:${sym.name}_${i32ToString(sym.id as i32)}`;
 }
 
 /**
@@ -109,13 +106,13 @@ export function getMemberName(ctx: CheckerContext, node: Node): String {
   }
   let recorded = ctx.model.memberKey(node);
   if (recorded != null) {
-    return recorded as String;
+    return recorded;
   }
-  let sym = lookupSymbolPath(ctx, (node as SymbolPropertyName).symbolRef);
+  let sym = lookupSymbolPath(ctx, node.symbolRef);
   if (sym == null) {
     return syntacticMemberName(node);
   }
-  let key = symbolMemberKey(sym as SymbolType);
+  let key = symbolMemberKey(sym);
   ctx.model.setMemberKey(node, key);
   return key;
 }
@@ -141,16 +138,16 @@ export function accessMemberKey(
   }
   let recorded = ctx.model.memberKey(expr);
   if (recorded != null) {
-    return recorded as String;
+    return recorded;
   }
   if (symbolPath == null) {
     return ":" + property.name;
   }
-  let sym = lookupSymbolPath(ctx, symbolPath as Expression);
+  let sym = lookupSymbolPath(ctx, symbolPath);
   if (sym == null) {
     return ":" + property.name;
   }
-  let key = symbolMemberKey(sym as SymbolType);
+  let key = symbolMemberKey(sym);
   ctx.model.setMemberKey(expr, key);
   return key;
 }
@@ -177,7 +174,7 @@ function staticSymbolsOf(t: Type): OrderedHashMap<String, Type> | null {
  */
 function declaresStaticMember(t: Type, name: String): boolean {
   let symbols = staticSymbolsOf(t);
-  if (symbols != null && (symbols as OrderedHashMap<String, Type>).has(name)) {
+  if (symbols != null && symbols.has(name)) {
     return true;
   }
   let members: MemberTable | null = match (t) {
@@ -190,7 +187,7 @@ function declaresStaticMember(t: Type, name: String): boolean {
     return false;
   }
   for (let key in [name, "get#" + name]) {
-    if (let (true, info) = (members as MemberTable).get(key)) {
+    if (let (true, info) = members.get(key)) {
       if (info.isStatic) { return true; }
     }
   }
@@ -198,7 +195,7 @@ function declaresStaticMember(t: Type, name: String): boolean {
 }
 
 /** The declared name of a class, interface or mixin; "" for anything else. */
-function declaredTypeName(t: Type): String {
+function declaredTypeName(t: Type) {
   return match (t) {
     case ClassType as ct: ct.name
     case InterfaceType as it: it.name
@@ -248,7 +245,7 @@ function lookupSymbolPath(ctx: CheckerContext, path: Expression): SymbolType | n
     case Identifier as ident: {
       let t = ctx.resolveIdentifier(ident as Node);
       if (t != null && t is SymbolType) {
-        return t as SymbolType;
+        return t;
       }
       return null;
     }
@@ -256,7 +253,7 @@ function lookupSymbolPath(ctx: CheckerContext, path: Expression): SymbolType | n
       if (!(object is Identifier)) {
         return null;
       }
-      let ownerName = (object as Identifier).name;
+      let ownerName = object.name;
       var ownerType = ctx.resolveTypeReference(object as Node, ownerName);
       if (ownerType == null) {
         ownerType = ctx.resolveIdentifier(object as Node);
@@ -264,13 +261,13 @@ function lookupSymbolPath(ctx: CheckerContext, path: Expression): SymbolType | n
       if (ownerType == null) {
         return null;
       }
-      let symbols = staticSymbolsOf(baseType(ownerType as Type));
+      let symbols = staticSymbolsOf(baseType(ownerType));
       if (symbols == null) {
         return null;
       }
-      if (let (true, sym) = (symbols as OrderedHashMap<String, Type>).get(property.name)) {
+      if (let (true, sym) = symbols.get(property.name)) {
         if (sym is SymbolType) {
-          return sym as SymbolType;
+          return sym;
         }
       }
       return null;
@@ -294,7 +291,7 @@ function lookupSymbolPath(ctx: CheckerContext, path: Expression): SymbolType | n
 function checkSymbolPath(ctx: CheckerContext, path: Expression): SymbolType | null {
   let t = checkExpression(ctx, path, null);
   if (t is SymbolType) {
-    return t as SymbolType;
+    return t;
   }
   if (!(t is ErrorType)) {
     ctx.error(
@@ -330,10 +327,10 @@ function symbolRefOfMemberName(nameNode: Node): Expression | null {
 /** The name node a declaration body member is declared under. */
 function memberNameNodeOf(member: Node): Node | null {
   return match (member) {
-    case FieldDefinition as fd: fd.name as Node
-    case MethodDefinition as md: md.name as Node
-    case AccessorDeclaration as ad: ad.name as Node
-    case MethodSignature as ms: ms.name as Node
+    case FieldDefinition as fd: fd.name
+    case MethodDefinition as md: md.name
+    case AccessorDeclaration as ad: ad.name
+    case MethodSignature as ms: ms.name
     case AccessorSignature as asig: asig.name as Node
     case PropertySignature as ps: ps.name as Node
     case _: null
@@ -366,7 +363,7 @@ export function registerStaticSymbols(
       }
       case FieldDefinition as fd: {
         if (isSymbolFieldDeclaration(fd)) {
-          symName = syntacticMemberName(fd.name as Node);
+          symName = syntacticMemberName(fd.name);
           node = fd as Node;
         }
       }
@@ -374,7 +371,7 @@ export function registerStaticSymbols(
     }
     if (node == null || symName == "") { continue; }
     let sym = ctx.canonicalSymbolType(
-        node as Node, `${ownerName}.${symName}`, symName,
+        node, `${ownerName}.${symName}`, symName,
         protocolSymbolKey(ownerName, symName, ctx.filePath));
     if (let (true, existing) = symbols.get(symName)) {
       // A declaration is registered again whenever its module is
@@ -385,7 +382,7 @@ export function registerStaticSymbols(
         ctx.error(
           `'${ownerName}' already declares a static symbol '${symName}'.`,
           DiagnosticCode.DuplicateDeclaration,
-          (node as Node).loc
+          node.loc
         );
       }
       continue;
@@ -412,7 +409,7 @@ export function recordSymbolKeyedMemberIdentities(
   for (let member in body) {
     let nameNode = memberNameNodeOf(member);
     if (nameNode == null) { continue; }
-    let ref = symbolRefOfMemberName(nameNode as Node);
+    let ref = symbolRefOfMemberName(nameNode);
     if (ref == null) { continue; }
     let isStaticMember = match (member) {
       case FieldDefinition as fd: fd.isStatic
@@ -425,7 +422,7 @@ export function recordSymbolKeyedMemberIdentities(
       case MixinType as mt: mt.memberTable(isStaticMember)
       case _: members
     };
-    let key = getMemberName(ctx, nameNode as Node);
+    let key = getMemberName(ctx, nameNode);
     // A body is walked once per registration pass, and a module in an
     // import cycle is registered more than once. Stamping is idempotent;
     // reporting is not, so a member that already carries its identity is
@@ -437,7 +434,7 @@ export function recordSymbolKeyedMemberIdentities(
     }
     if (settled) { continue; }
     ctx.pushDeclaringType(owner);
-    let sym = checkSymbolPath(ctx, ref as Expression);
+    let sym = checkSymbolPath(ctx, ref);
     ctx.popDeclaringType();
     if (sym == null) { continue; }
     let id = sym.id as i32;
@@ -465,7 +462,7 @@ export function recordSymbolKeyedMemberIdentities(
  * Returns false when the path names nothing, having reported why, so the
  * member lookup does not report the same mistake a second time.
  */
-function checkSymbolKeyAccess(ctx: CheckerContext, path: Expression): boolean {
+function checkSymbolKeyAccess(ctx: CheckerContext, path: Expression) {
   return checkSymbolPath(ctx, path) != null;
 }
 
@@ -492,7 +489,7 @@ export function isStaticReceiver(ctx: CheckerContext, object: Expression): boole
 /** Whether `object` names a type whose static symbols a member read
  * can reach: `isStaticReceiver`'s answer, under the name its callers
  * ask the question by. */
-function namesDeclaredType(ctx: CheckerContext, object: Expression): boolean {
+function namesDeclaredType(ctx: CheckerContext, object: Expression) {
   return isStaticReceiver(ctx, object);
 }
 
@@ -523,7 +520,7 @@ export function checkMemberExpression(
   if (!isSymbolAccess && namesDeclaredType(ctx, object)) {
     let symbols = staticSymbolsOf(baseType(objectTypeRaw));
     if (symbols != null) {
-      if (let (true, sym) = (symbols as OrderedHashMap<String, Type>).get(property.name)) {
+      if (let (true, sym) = symbols.get(property.name)) {
         return sym;
       }
     }
@@ -756,10 +753,10 @@ function recordUnionPatternShape(
       let memberFieldType = rec.properties[propName];
       if (fieldType == null) {
         fieldType = memberFieldType;
-      } else if (!typesEqual(fieldType as Type, memberFieldType)) {
+      } else if (!typesEqual(fieldType, memberFieldType)) {
         ctx.error(
           "Field '" + displayMemberName(propName) + "' is '" +
-              typeToString(fieldType as Type) + "' in one member of the " +
+              typeToString(fieldType) + "' in one member of the " +
               "union and '" + typeToString(memberFieldType) +
               "' in another, so one pattern cannot bind it.",
           DiagnosticCode.TypeMismatch,
@@ -777,7 +774,7 @@ function recordUnionPatternShape(
       );
       return new ErrorType();
     }
-    props[propName] = fieldType as Type;
+    props[propName] = fieldType;
     if (anyAbsent) { optionals.add(propName); }
   }
   if (props.size == 0) { return null; }
@@ -893,10 +890,10 @@ function resolveRecordUnionMemberType(
     let fieldType = rec.properties[propName];
     if (shared == null) {
       shared = fieldType;
-    } else if (!typesEqual(shared as Type, fieldType)) {
+    } else if (!typesEqual(shared, fieldType)) {
       ctx.error(
         "Property '" + displayMemberName(propName) + "' is '" +
-            typeToString(shared as Type) + "' in one member of '" +
+            typeToString(shared) + "' in one member of '" +
             typeToString(ut) + "' and '" + typeToString(fieldType) +
             "' in another, so the read has no one type.",
         DiagnosticCode.PropertyNotFound,
@@ -914,7 +911,7 @@ function resolveRecordUnionMemberType(
  * reads a field's type, so a class from another member of an import
  * cycle answers before its own bodies are checked.
  */
-function settleFieldType(fi: FieldInfo): void {
+function settleFieldType(fi: FieldInfo) {
   let pending = fi.pendingInit;
   if (pending != null) {
     fi.pendingInit = null;
@@ -1266,7 +1263,7 @@ function describeIndexParameters(
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
   at: i32 = 0
-): String {
+) {
   let described = new StringBuilder();
   var first = true;
   for (let candidate in candidates) {
@@ -1305,7 +1302,7 @@ export function checkIndexWrite(
   // A type parameter writes through its bound, as a read does.
   var receiver = unwrapAliases(objectType);
   while (receiver is TypeParameterType) {
-    let bound = (receiver as TypeParameterType).constraint;
+    let bound = receiver.constraint;
     if (bound == null) {
       break;
     }
@@ -1337,7 +1334,7 @@ export function checkIndexWrite(
   if (setter == null) {
     return null;
   }
-  let setterFt = setter as FunctionType;
+  let setterFt = setter;
   let candidates = overloadCandidates(setterFt);
   let indexType = checkExpression(ctx, target.index, null);
   // The index alone narrows the candidates. When one is left, its value
@@ -1419,13 +1416,13 @@ export function resolveArrayBackingClass(
   // proceed without one say so themselves.
   let resolved = ctx.tryResolveWellKnownType(w);
   if (resolved is ClassType) {
-    return resolved as ClassType;
+    return resolved;
   }
   return null;
 }
 
 /** An index expression as a message shows it: a literal's digits. */
-function indexText(index: Expression): String {
+function indexText(index: Expression) {
   return if (let NumberLiteral {raw} = index) raw else "expression";
 }
 

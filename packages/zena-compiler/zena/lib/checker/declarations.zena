@@ -88,7 +88,7 @@ export function registerTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasD
     case TypeAliasType as a: { aliasType = a; }
     case _: { return; }
   }
-  let alias = aliasType as TypeAliasType;
+  let alias = aliasType;
   ctx.enterScope();
   let typeParams = resolveTypeParameters(ctx, ta.typeParameters);
   alias.typeParameters = typeParams;
@@ -256,14 +256,14 @@ export function checkEnumDeclaration(ctx: CheckerContext, ed: EnumDeclaration): 
     }
   }
 
-  let strType = if (stringType != null) { stringType } else { new ErrorType() as Type };
+  let strType = stringType ?? new ErrorType() as Type;
   let backingType = if (isStringEnum) { strType } else { i32Type as Type };
   // The enum's canonical type, which an importer across an import cycle
   // may already hold: fill in the backing type.
   let info = ctx.model.resolveDeclaration(ed);
   let declared = if (info != null) { ctx.declaredType(info) } else { null };
   let enumType = if (declared is EnumType) {
-    declared as EnumType
+    declared
   } else {
     newEnumType(noSymbolId, ctx.filePath, ed)
   };
@@ -372,15 +372,16 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
   // application: codegen substitutes `T` per application and
   // materializes the record from the field's name and accessors
   // (docs/design/decorators.md, "The decorated field's context").
-  if (decoratorSubject != null && (decoratorSubject as FieldDefinition).name is Identifier) {
-    let contextSym = ctx.model.resolveDeclaration((decoratorSubject as FieldDefinition).name);
+  if (decoratorSubject != null && decoratorSubject.name is Identifier) {
+    let contextSym = ctx.model.resolveDeclaration(decoratorSubject.name);
     if (contextSym != null && contextSym.isDecoratorContext) {
       let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
       let hostType: Type = mixinType.onType ?? new AnyRefType();
       let subjectT: Type = mixinType.decoratorSubjectType ?? new ErrorType();
-      let props = new Map<String, Type>();
-      props["name"] = stringType ?? new ErrorType();
-      props["get"] = new FunctionType(growable<Type>([hostType]), subjectT);
+      let props: HashMap<String, Type> = {
+        "name" => stringType ?? new ErrorType(),
+        "get" => new FunctionType(growable<Type>([hostType]), subjectT),
+      };
       if (mixinType.decoratorSubjectMutable) {
         props["set"] = new FunctionType(growable<Type>([hostType, subjectT]), new VoidType());
       }
@@ -468,7 +469,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
           b_idx = b_idx + 1;
           continue;
         }
-        let fieldName = getMemberName(ctx, fd.name as Node);
+        let fieldName = getMemberName(ctx, fd.name);
         let fieldType = if (fd.typeAnnotation != null) {
           resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
         } else {
@@ -516,7 +517,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
         }
       }
       case MethodDefinition as methDef: {
-        let methodName = getMemberName(ctx, methDef.name as Node);
+        let methodName = getMemberName(ctx, methDef.name);
 
         // Reject constructors in mixins.
         if (methDef.isConstructor || methodName == "<constructor>") {
@@ -564,7 +565,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
       }
       case AccessorDeclaration as acc: {
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-        let accName = getMemberName(ctx, acc.name as Node);
+        let accName = getMemberName(ctx, acc.name);
         let isPrivate = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
         let members = mixinType.memberTable(acc.isStatic);
         if (isPrivate) {
@@ -636,7 +637,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
   for (let member in md.body) {
     match (member) {
       case MethodDefinition as methDef: {
-        let methodName = getMemberName(ctx, methDef.name as Node);
+        let methodName = getMemberName(ctx, methDef.name);
         let members = mixinType.memberTable(methDef.isStatic);
         if (!methDef.isConstructor && methodName != "<constructor>" && methDef.body != null && members.has(methodName)) {
           if (let (true, methodTypeInfo) = members.get(methodName)) {
@@ -674,7 +675,7 @@ export function validateFunctionDecorators(ctx: CheckerContext, decorators: Grow
         if (dec.args.length != 1 || intrinsicName == null) {
           ctx.error("Intrinsic decorator must have exactly one argument (the intrinsic name).", DiagnosticCode.TypeMismatch, dec.loc);
         } else {
-          let name = intrinsicName as String;
+          let name = intrinsicName;
           if (!isValidIntrinsic(name)) {
             ctx.error(`Unknown intrinsic '${name}'.`, DiagnosticCode.TypeMismatch, dec.loc);
           }
@@ -862,7 +863,7 @@ export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDecl
         if (returnType != null) {
           retType = resolveResultAnnotation(ctx, returnType);
         }
-        let methodName = getMemberName(ctx, ms.name as Node);
+        let methodName = getMemberName(ctx, ms.name);
         let ft = new FunctionType(paramTypes, retType, null, typeParams);
         // A second signature with the same name is an overload, collected
         // the way a class's are. The first one in this pass replaces any
@@ -900,7 +901,7 @@ export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDecl
       case FieldDefinition as fd: {
         // See the class body: a static symbol declaration is not storage.
         if (isSymbolFieldDeclaration(fd)) { continue; }
-        let fieldName = getMemberName(ctx, fd.name as Node);
+        let fieldName = getMemberName(ctx, fd.name);
         let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
         let isMutable = fd.mutability != null && fd.mutability == "var";
         let isPrivate = fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#";
@@ -1021,7 +1022,7 @@ function registerInterfaceConstructor(
   if (md.typeParameters != null) {
     let restated = md.typeParameters as GrowableArray<TypeParameter>;
     let ifaceParams = ifaceType.typeParameters;
-    var matches = ifaceParams != null && restated.length == (ifaceParams as Array<TypeParameterType>).length;
+    var matches = ifaceParams != null && restated.length == ifaceParams.length;
     if (matches) {
       let ips = ifaceParams as Array<TypeParameterType>;
       var i = 0;
@@ -1036,7 +1037,7 @@ function registerInterfaceConstructor(
       var expected = "";
       if (ifaceParams != null) {
         var first = true;
-        for (let tp in ifaceParams as Array<TypeParameterType>) {
+        for (let tp in ifaceParams) {
           if (!first) { expected = expected + ", "; }
           first = false;
           expected = expected + tp.name;
@@ -1058,7 +1059,7 @@ function registerInterfaceConstructor(
         resultSet = true;
         let own = ctorType.typeParameters;
         let args = new Array<Type>();
-        for (let ip in ifaceParams as Array<TypeParameterType>) {
+        for (let ip in ifaceParams) {
           var stands: Type = ip;
           if (own != null) {
             for (let tp in own) {

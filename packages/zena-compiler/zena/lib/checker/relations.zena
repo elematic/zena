@@ -140,7 +140,7 @@ export function isValuePrimitive(type: Type): boolean {
  * what it extends. */
 export function isReferenceType(type: Type): boolean {
   if (type is ClassType) {
-    let ct = type as ClassType;
+    let ct = type;
     let onType = ct.onType;
     if (ct.isExtension && onType != null) {
       return !isValuePrimitive(onType);
@@ -155,12 +155,12 @@ export function isReferenceType(type: Type): boolean {
 }
 
 /** Whether `t` is a number or a numeric literal's type. */
-function isNumericRepresentation(t: Type): boolean {
+function isNumericRepresentation(t: Type) {
   return representationKind(t) == Representation.Numeric;
 }
 
 /** Whether `t` is `boolean` or a boolean literal's type. */
-function isBooleanRepresentation(t: Type): boolean {
+function isBooleanRepresentation(t: Type) {
   return representationKind(t) == Representation.Boolean;
 }
 
@@ -179,7 +179,7 @@ export function representationOf(t: Type): Type {
   while (depth < 8) {
     let step = current;
     if (step is EnumType) {
-      return (step as EnumType).backingType;
+      return step.backingType;
     }
     if (!(step is TypeAliasType) || step.resolving) {
       return step;
@@ -555,12 +555,12 @@ function typesOverlap(ctx: CheckerContext, a: Type, b: Type): boolean {
  * them constantly.
  */
 function castTypeArguments(t: Type): Array<Type> | null {
-  if (t is ClassType) { return (t as ClassType).typeArguments; }
-  if (t is InterfaceType) { return (t as InterfaceType).typeArguments; }
-  if (t is MixinType) { return (t as MixinType).typeArguments; }
-  if (t is TypeAliasType) { return (t as TypeAliasType).typeArguments; }
+  if (t is ClassType) { return t.typeArguments; }
+  if (t is InterfaceType) { return t.typeArguments; }
+  if (t is MixinType) { return t.typeArguments; }
+  if (t is TypeAliasType) { return t.typeArguments; }
   if (t is ArrayType) {
-    let one = growable<Type>([(t as ArrayType).elementType]);
+    let one = growable<Type>([t.elementType]);
     return one;
   }
   return null;
@@ -580,8 +580,8 @@ function immutableElementWidens(ctx: CheckerContext, a: Type, b: Type): boolean 
   if (typesEqual(a, b)) { return true; }
   if (b is AnyRefType) { return isReferenceType(a); }
   if (a is ClassType && b is ClassType) {
-    let src = a as ClassType;
-    let tgt = b as ClassType;
+    let src = a;
+    let tgt = b;
     if (src.isExtension || tgt.isExtension) { return false; }
     var current = src.superType;
     while (current != null) {
@@ -596,13 +596,13 @@ function immutableElementWidens(ctx: CheckerContext, a: Type, b: Type): boolean 
 /** Same nominal head, ignoring type arguments? */
 function sameGenericHead(a: Type, b: Type): boolean {
   if (a is ClassType && b is ClassType) {
-    let ca = a as ClassType;
-    let cb = b as ClassType;
+    let ca = a;
+    let cb = b;
     return (ca.genericSource ?? ca).symbolId == (cb.genericSource ?? cb).symbolId;
   }
   if (a is InterfaceType && b is InterfaceType) {
-    let ia = a as InterfaceType;
-    let ib = b as InterfaceType;
+    let ia = a;
+    let ib = b;
     return (ia.genericSource ?? ia).symbolId == (ib.genericSource ?? ib).symbolId;
   }
   return false;
@@ -791,7 +791,7 @@ function isAnyRefSource(t: Type): boolean {
     return true;
   }
   if (t is EnumType) {
-    return isAnyRefSource((t as EnumType).backingType);
+    return isAnyRefSource(t.backingType);
   }
   if (t is TypeAliasType) {
     if (t.resolving) { return true; }
@@ -823,14 +823,14 @@ export function unconstrainedTypeParamOf(t: Type): TypeParameterType | null {
     return if (isGuaranteedReference(t)) null else t;
   }
   if (!(t is TypeAliasType)) { return null; }
-  let alias = t as TypeAliasType;
+  let alias = t;
   if (isOwnershipWrapper(alias)) {
     let inner = ownershipHandleInner(alias);
-    return if (inner == null) null else unconstrainedTypeParamOf(inner as Type);
+    return if (inner == null) null else unconstrainedTypeParamOf(inner);
   }
   if (isScopedType(alias)) {
     let inner = scopedInner(alias);
-    return if (inner == null) null else unconstrainedTypeParamOf(inner as Type);
+    return if (inner == null) null else unconstrainedTypeParamOf(inner);
   }
   if (alias.intrinsicName != null) {
     // `ScopedFrom<T, R>` is represented as `R`; the other operators as
@@ -1432,7 +1432,7 @@ function typeArgumentsEqual(argsA: Array<Type> | null, argsB: Array<Type> | null
 export function typesEqual(a: Type, b: Type): boolean {
   if (a === b) { return true; }
   if (a is TypeAliasType && !(b is TypeAliasType)) {
-    let ta = a as TypeAliasType;
+    let ta = a;
     if (isTransparentAlias(ta) && !ta.resolving) {
       ta.resolving = true;
       let eq = typesEqual(ta.target, b);
@@ -1441,7 +1441,7 @@ export function typesEqual(a: Type, b: Type): boolean {
     }
   }
   if (b is TypeAliasType && !(a is TypeAliasType)) {
-    let tb = b as TypeAliasType;
+    let tb = b;
     if (isTransparentAlias(tb) && !tb.resolving) {
       tb.resolving = true;
       let eq = typesEqual(a, tb.target);

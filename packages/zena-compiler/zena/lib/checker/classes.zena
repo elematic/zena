@@ -57,7 +57,7 @@ import { isNullableType, widenType } from './unions.zena';
  * and sealed variant types. Does NOT check method bodies, field
  * initializers, or accessor bodies — that happens in checkClassBodies.
  */
-function addImplicitInterface(ctx: CheckerContext, ct: ClassType, which: WellKnown): void {
+function addImplicitInterface(ctx: CheckerContext, ct: ClassType, which: WellKnown) {
   let iface = ctx.tryResolveWellKnownType(which);
   if (!(iface is InterfaceType)) {
     return;
@@ -100,7 +100,7 @@ function equalityOverrideTarget(ctx: CheckerContext, inherited: FunctionType,
 function inheritsDeclaredEquality(ct: ClassType): boolean {
   var curr = ct.superType;
   while (curr != null) {
-    let anc = curr as ClassType;
+    let anc = curr;
     if (anc.members.has("==") || anc.members.has("hashCode")) {
       return true;
     }
@@ -121,14 +121,14 @@ function synthesizeCaseClassMembers(
   ctx: CheckerContext,
   ct: ClassType,
   body: GrowableArray<Node> | null
-): void {
+) {
   if (inheritsDeclaredEquality(ct)) {
     return;
   }
   var ownEq: MethodDefinition | null = null;
   var ownHash: MethodDefinition | null = null;
   if (body != null) {
-    for (let member in body as GrowableArray<Node>) {
+    for (let member in body) {
       if (member is MethodDefinition && !member.isStatic) {
         let name = syntacticMemberName(member.name);
         if (name == "==") {
@@ -147,7 +147,7 @@ function synthesizeCaseClassMembers(
     } else if (ownEq == null) {
       ctx.error("Case class '" + ct.name +
           "' declares 'hashCode()' without 'operator =='; declare both, or neither.",
-          DiagnosticCode.AbstractMethodNotImplemented, (ownHash as MethodDefinition).loc);
+          DiagnosticCode.AbstractMethodNotImplemented, ownHash.loc);
     } else {
       // Still a hash key without an implements clause, through its own pair.
       addImplicitInterface(ctx, ct, WellKnown.HashableInterface);
@@ -200,7 +200,7 @@ function applyFieldDecorators(
       ctx.error(`Unknown decorator '@${dec.name}'.`, DiagnosticCode.SymbolNotFound, dec.loc);
       continue;
     }
-    if (!(resolved is MixinType) || !(resolved as MixinType).isDecorator()) {
+    if (!(resolved is MixinType) || !resolved.isDecorator()) {
       ctx.error(`'${dec.name}' is not a decorator.`, DiagnosticCode.TypeMismatch, dec.loc);
       continue;
     }
@@ -232,7 +232,7 @@ function applyFieldDecorators(
       return true;
     }
     applied = true;
-    applyFieldDecorator(ctx, classType, fd, fieldName, fieldType, resolved as MixinType, dec);
+    applyFieldDecorator(ctx, classType, fd, fieldName, fieldType, resolved, dec);
   }
   return applied;
 }
@@ -373,7 +373,7 @@ function applyFieldDecorator(
     classType.decoratedFields = created;
     decorated = created;
   }
-  (decorated as HashMap<String, DecoratedField>)[fieldName] = new DecoratedField(
+  decorated[fieldName] = new DecoratedField(
       fieldName, scope, `${scope}::#${subject}`, mt, fd, fieldType);
 }
 
@@ -399,7 +399,7 @@ function checkDecoratedFieldInitializer(
   ctx: CheckerContext,
   fd: FieldDefinition,
   df: DecoratedField,
-): void {
+) {
   let {value} = fd;
   if (value == null) { return; }
   ctx.enterNodeReferrer(fd.id as i32);
@@ -431,7 +431,7 @@ function validateSharedMember(
   name: String,
   subject: String,
   loc: SourceLocation | null,
-): void {
+) {
   if (!name.startsWith("#")) {
     return;
   }
@@ -466,7 +466,7 @@ export function validateDecoratorBody(ctx: CheckerContext, md: MixinDeclaration,
   for (let member in md.body) {
     match (member) {
       case AccessorDeclaration as acc: {
-        let name = getMemberName(ctx, acc.name as Node);
+        let name = getMemberName(ctx, acc.name);
         if (name == subject) {
           sawSubject = true;
           if (acc.isStatic) {
@@ -497,7 +497,7 @@ export function validateDecoratorBody(ctx: CheckerContext, md: MixinDeclaration,
       }
       case FieldDefinition as fd: {
         if (isSymbolFieldDeclaration(fd)) { continue; }
-        let name = getMemberName(ctx, fd.name as Node);
+        let name = getMemberName(ctx, fd.name);
         if (fd.isShared) {
           validateSharedMember(ctx, mt, name, subject, fd.loc);
         }
@@ -518,7 +518,7 @@ export function validateDecoratorBody(ctx: CheckerContext, md: MixinDeclaration,
         }
       }
       case MethodDefinition as m: {
-        let name = getMemberName(ctx, m.name as Node);
+        let name = getMemberName(ctx, m.name);
         if (!m.isConstructor && !name.startsWith("#")) {
           ctx.error(
             "A decorator's only public member is the accessor for '" + subject +
@@ -550,7 +550,7 @@ function getOrCreateMixinApplication(
   superClass: ClassType | null,
   mixinAnn: TypeAnnotation,
   mt: MixinType,
-): ClassType {
+) {
   let baseKey = if (superClass != null) {
     `${superClass.sourcePath}#${superClass.name}`
   } else {
@@ -608,7 +608,7 @@ function getOrCreateMixinApplication(
 
   let {typeArguments} = mt;
   if (typeArguments != null && typeArguments.length > 0) {
-    return instantiateClassType(template, typeArguments as Array<Type>);
+    return instantiateClassType(template, typeArguments);
   } else {
     return template;
   }
@@ -779,12 +779,12 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
                 // No `on` clause: the underlying type comes from the
                 // superclass.
                 classType.onType = superOn;
-              } else if (!typesEqual(ownOn as Type, superOn as Type)) {
+              } else if (!typesEqual(ownOn, superOn)) {
                 ctx.error(
                   "The extension class '" + className + "' extends '" +
                   st.name + "', so it must be an extension on '" +
-                  typeToString(superOn as Type) + "' too, and it is declared " +
-                  "on '" + typeToString(ownOn as Type) + "'. Both erase to " +
+                  typeToString(superOn) + "' too, and it is declared " +
+                  "on '" + typeToString(ownOn) + "'. Both erase to " +
                   "their underlying value, and a subtype relation between " +
                   "them holds only when that value is the same.",
                   DiagnosticCode.IncompatibleTypes,
@@ -889,10 +889,10 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
       var resolvedMixin = resolveTypeAnnotation(ctx, mixinAnn);
       // A decorator is a mixin applied one field at a time; `with` is
       // the whole-class application and does not fit it.
-      if (resolvedMixin is MixinType && (resolvedMixin as MixinType).isDecorator()) {
+      if (resolvedMixin is MixinType && resolvedMixin.isDecorator()) {
         ctx.error(
-          "'" + (resolvedMixin as MixinType).name + "' is a decorator; apply it to a field with '@" +
-          (resolvedMixin as MixinType).name + "' instead of 'with'.",
+          "'" + resolvedMixin.name + "' is a decorator; apply it to a field with '@" +
+          resolvedMixin.name + "' instead of 'with'.",
           DiagnosticCode.TypeMismatch,
           mixinAnn.loc
         );
@@ -967,7 +967,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
     while (cpi < caseParams.length) {
       let cp = caseParams[cpi];
       let fieldName = cp.name.name;
-      var fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
+      let fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
       rejectFieldStorage(ctx, fieldType, cp.typeAnnotation.loc);
 
       if (cp.defaultValue != null) {
@@ -1064,7 +1064,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           ctx.error("'shared' applies only to a decorator's private members.",
               DiagnosticCode.TypeMismatch, fd.loc);
         }
-        let fieldName = getMemberName(ctx, fd.name as Node);
+        let fieldName = getMemberName(ctx, fd.name);
         let fieldType = if (fd.typeAnnotation != null) {
           let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
           rejectFieldStorage(ctx, resolved, fd.loc);
@@ -1278,7 +1278,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           }
         }      }
       case MethodDefinition as md: {
-        let methodName = getMemberName(ctx, md.name as Node);
+        let methodName = getMemberName(ctx, md.name);
         if (md.isShared) {
           ctx.error("'shared' applies only to a decorator's private members.",
               DiagnosticCode.TypeMismatch, md.loc);
@@ -1318,13 +1318,13 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
             }
             if (classType.staticMembers.has(methodName)) {
               let existing = classType.staticMembers[methodName];
-              if (existing is MethodInfo && (existing as MethodInfo).isStatic) {
+              if (existing is MethodInfo && existing.isStatic) {
                 ctx.error(
                   `Constructor '${displayMemberName(methodName)}' conflicts with static method '${displayMemberName(methodName)}'.`,
                   DiagnosticCode.DuplicateDeclaration,
                   md.loc
                 );
-              } else if (existing is FieldInfo && (existing as FieldInfo).isStatic) {
+              } else if (existing is FieldInfo && existing.isStatic) {
                 ctx.error(
                   `Constructor '${displayMemberName(methodName)}' conflicts with static field '${displayMemberName(methodName)}'.`,
                   DiagnosticCode.DuplicateDeclaration,
@@ -1567,7 +1567,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
         }
       }
       case AccessorDeclaration as acc: {
-        let accName = getMemberName(ctx, acc.name as Node);
+        let accName = getMemberName(ctx, acc.name);
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
         let members = classType.memberTable(acc.isStatic);
 
@@ -1776,7 +1776,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
         var vpi = 0;
         while (vpi < vParams.length) {
           let vp = vParams[vpi];
-          var vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
+          let vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
 
           if (vp.defaultValue != null) {
             hasVCtorInitializers = true;
@@ -1939,7 +1939,7 @@ function synthesizeScopedRelease(ctx: CheckerContext, cd: ClassDeclaration,
  */
 /** The name a field is declared under (a symbol-keyed one as `:name`). */
 function fieldDeclaredName(ctx: CheckerContext, fd: FieldDefinition): String {
-  return getMemberName(ctx, fd.name as Node);
+  return getMemberName(ctx, fd.name);
 }
 
 /**
@@ -2043,7 +2043,7 @@ function checkFieldInitializer(
  * declaration, or a fresh empty one when the declaration materialized
  * as something else.
  */
-function classTypeOfDeclaration(ctx: CheckerContext, cd: ClassDeclaration): ClassType {
+function classTypeOfDeclaration(ctx: CheckerContext, cd: ClassDeclaration) {
   let className = cd.name.name;
   let resolved = ctx.declaredTypeOf(cd);
   if (resolved != null) {
@@ -2061,7 +2061,7 @@ function classTypeOfDeclaration(ctx: CheckerContext, cd: ClassDeclaration): Clas
  * `this`. Paired with exitClassBodyScope, which restores what the
  * previous `this` was.
  */
-function enterClassBodyScope(ctx: CheckerContext, classType: ClassType): Type | null {
+function enterClassBodyScope(ctx: CheckerContext, classType: ClassType) {
   ctx.enterScope();
   let {typeParameters} = classType;
   if (typeParameters != null) {
@@ -2080,7 +2080,7 @@ function enterClassBodyScope(ctx: CheckerContext, classType: ClassType): Type | 
   return prevBodyThis;
 }
 
-function exitClassBodyScope(ctx: CheckerContext, prevBodyThis: Type | null): void {
+function exitClassBodyScope(ctx: CheckerContext, prevBodyThis: Type | null) {
   ctx.setBodyThisType(prevBodyThis);
   ctx.exitClass();
   ctx.exitScope();
@@ -2096,12 +2096,12 @@ function exitClassBodyScope(ctx: CheckerContext, prevBodyThis: Type | null): voi
 function checkClassMemberBody(
     ctx: CheckerContext,
     classType: ClassType,
-    member: Node): void {
+    member: Node) {
   match (member) {
     case MethodDefinition as md: {
       if (md.body == null) { return; }
       ctx.enterNodeReferrer(md.id as i32);
-      let methodName = getMemberName(ctx, md.name as Node);
+      let methodName = getMemberName(ctx, md.name);
       if (md.isConstructor) {
         let ctorType = if (classType.constructors.has(methodName)) {
           classType.constructors[methodName]
@@ -2245,7 +2245,7 @@ export function checkClassBodies(
   for (let bodyMember in cd.body) {
     match (bodyMember) {
       case FieldDefinition as fd: {
-        let fn = getMemberName(ctx, fd.name as Node);
+        let fn = getMemberName(ctx, fd.name);
         if (fd.isStatic) {
           staticFieldOrder.push(fn);
         } else {
@@ -2399,7 +2399,7 @@ export function checkClassBodies(
   var sawOwnDispose = false;
   for (let member in cd.body) {
     if (member is MethodDefinition) {
-      let mName = getMemberName(ctx, member.name as Node);
+      let mName = getMemberName(ctx, member.name);
       if (mName == ":dispose") { sawOwnDispose = true; }
     }
     if (member is FieldDefinition && !member.isStatic && !member.isAbstract &&
@@ -2555,14 +2555,14 @@ export function checkClassBodies(
     if (!cd.isExtension && !classType.isCaseClass) {
       var hasOwnConstructor = false;
       for (let member in cd.body) {
-        if (member is MethodDefinition && (member as MethodDefinition).isConstructor) {
+        if (member is MethodDefinition && member.isConstructor) {
           hasOwnConstructor = true;
         }
       }
       if (!hasOwnConstructor) {
         for (let member in cd.body) {
           if (member is FieldDefinition) {
-            let fd = member as FieldDefinition;
+            let fd = member;
             if (fd.isStatic || fd.isAbstract || fd.isDeclare || fd.value != null ||
                 isSymbolFieldDeclaration(fd)) {
               continue;
@@ -2580,7 +2580,7 @@ export function checkClassBodies(
               (classType.members[lookupField] as FieldInfo).type
             } else {
               let dec = decoratedFieldOf(classType, declared);
-              if (dec != null) dec.fieldType else (new ErrorType() as Type)
+              dec?.fieldType ?? new ErrorType() as Type
             };
             if (isNullableType(fType)) {
               continue;
@@ -2609,7 +2609,7 @@ export function checkClassBodies(
  */
 function inheritedMethodReturnType(ctx: CheckerContext, classType: ClassType,
     md: MethodDefinition): Type | null {
-  let methodName = getMemberName(ctx, md.name as Node);
+  let methodName = getMemberName(ctx, md.name);
   if (methodName.length == 0 || methodName.startsWith("#")) {
     return null;
   }
@@ -2657,7 +2657,7 @@ export function checkMethodSignature(
       }
     }
     let decoratedParamField = if (param.isThisParam && classType != null) {
-      decoratedFieldOf(classType as ClassType, paramName)
+      decoratedFieldOf(classType, paramName)
     } else {
       null
     };
@@ -2873,7 +2873,7 @@ function checkSuperInitArgs(
   ctx: CheckerContext,
   classType: ClassType,
   superInit: SuperInitializer
-): void {
+) {
   let args = superInit.args;
   let loc = superInit.loc;
   var superWithCtor = classType.superType;
@@ -3132,9 +3132,7 @@ export function checkMethodBody(
           };
           fieldsInInitializerList.add(actualFieldName);
           let decoratedInit = decoratedFieldOf(classType, fieldName);
-          let fieldType: Type | null = if (decoratedInit != null) {
-            decoratedInit.fieldType
-          } else if (classType.members.has(actualFieldName)) {
+          let fieldType: Type | null = decoratedInit?.fieldType ?? if (classType.members.has(actualFieldName)) {
             classType.members[actualFieldName].type
           } else {
             null
