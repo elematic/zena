@@ -716,6 +716,27 @@ export function checkTypeParameterCast(
 }
 
 /**
+ * Whether `ct` is one of the standard library's array classes:
+ * `FixedArray`, `ImmutableArray` or `GrowableArray`, the classes an
+ * array literal can build and a bare array satisfies.
+ */
+export function isArrayClass(ctx: CheckerContext, ct: ClassType): boolean {
+  return isWellKnownClassType(ctx, ct, WellKnown.FixedArrayClass) ||
+      isWellKnownClassType(ctx, ct, WellKnown.ImmutableArrayClass) ||
+      isWellKnownClassType(ctx, ct, WellKnown.GrowableArrayClass);
+}
+
+/**
+ * Whether `it` is one of the standard library's array interfaces,
+ * `Array` or `MutableArray`. `Iterable`, which they extend, is asked
+ * for separately where it counts.
+ */
+export function isArrayInterface(ctx: CheckerContext, it: InterfaceType): boolean {
+  return isWellKnownInterfaceType(ctx, it, WellKnown.ArrayInterface) ||
+      isWellKnownInterfaceType(ctx, it, WellKnown.MutableArrayInterface);
+}
+
+/**
  * The element type an array literal's context asks for: the `T` of an
  * expected `Array<T>`, `FixedArray<T>`, `GrowableArray<T>`,
  * `ImmutableArray<T>`, `MutableArray<T>`, `Iterable<T>` or `array<T>`,
@@ -734,16 +755,12 @@ export function expectedArrayElementType(ctx: CheckerContext, expectedType: Type
       }
     }
     case ClassType as ct: {
-      if (isWellKnownClassType(ctx, ct, WellKnown.GrowableArrayClass) ||
-          isWellKnownClassType(ctx, ct, WellKnown.ArrayInterface) ||
-          isWellKnownClassType(ctx, ct, WellKnown.FixedArrayClass) ||
-          isWellKnownClassType(ctx, ct, WellKnown.ImmutableArrayClass)) {
+      if (isArrayClass(ctx, ct)) {
         typeArgs = ct.typeArguments;
       }
     }
     case InterfaceType as it: {
-      if (isWellKnownInterfaceType(ctx, it, WellKnown.ArrayInterface) ||
-          isWellKnownInterfaceType(ctx, it, WellKnown.MutableArrayInterface) ||
+      if (isArrayInterface(ctx, it) ||
           isWellKnownInterfaceType(ctx, it, WellKnown.IterableInterface)) {
         typeArgs = it.typeArguments;
       }
@@ -1226,7 +1243,8 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
           // representation: mutable elements match the mutable-backed
           // classes, immutable elements match ImmutableArray.
           let isArrayLike = if (elementsMutable) {
-            isWellKnownClassType(ctx, tgtClass, WellKnown.GrowableArrayClass) || isWellKnownClassType(ctx, tgtClass, WellKnown.ArrayInterface) || isWellKnownClassType(ctx, tgtClass, WellKnown.FixedArrayClass)
+            isWellKnownClassType(ctx, tgtClass, WellKnown.GrowableArrayClass) ||
+                isWellKnownClassType(ctx, tgtClass, WellKnown.FixedArrayClass)
           } else {
             isWellKnownClassType(ctx, tgtClass, WellKnown.ImmutableArrayClass)
           };
@@ -1247,7 +1265,9 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
         case InterfaceType as tgtIface: {
           // Both backing classes implement Array and Iterable; only the
           // mutable one implements MutableArray.
-          let isIfaceLike = isWellKnownInterfaceType(ctx, tgtIface, WellKnown.ArrayInterface) || isWellKnownInterfaceType(ctx, tgtIface, WellKnown.IterableInterface) || (elementsMutable && isWellKnownInterfaceType(ctx, tgtIface, WellKnown.MutableArrayInterface));
+          let isIfaceLike = isWellKnownInterfaceType(ctx, tgtIface, WellKnown.ArrayInterface) ||
+              isWellKnownInterfaceType(ctx, tgtIface, WellKnown.IterableInterface) ||
+              (elementsMutable && isWellKnownInterfaceType(ctx, tgtIface, WellKnown.MutableArrayInterface));
           if (isIfaceLike && tgtIface.typeArguments != null) {
             let tgtArgs = tgtIface.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {

@@ -137,15 +137,18 @@ section banners).
   by the `_This` suffix of the class name and then scans every mixin
   and class declaration in the model by name. The class already
   carries `mixinSelf`, whose `symbolId` is the answer.
-- `getIterationProtocol` and `getArrayPatternElementType` each walk
+- `getIterationProtocol` and `getArrayPatternElementType` each walked
   the implements list and superclass chain for an `Iterable`; the
-  `for`-in arm of `checkStatement` then walks it again by name
-  (`findImplementedInterfaceTransitiveInChecker` with `"Iterable"`)
-  to register the adaptation.
-- `expectedArrayElementType`, `resolveArrayBackingClass`,
-  `fixedArrayType`, the array-literal arm and
-  `getArrayPatternElementType` each enumerate the array classes and
-  interfaces their own way.
+  array pattern now asks `syncElementType`, the `for`-in's walk. The
+  `for`-in arm of `checkStatement` still walks once more, by identity
+  now, to register the adaptation.
+- `expectedArrayElementType`, the bare-array arms of `isAssignableTo`
+  and `getArrayPatternElementType` each enumerated the array classes
+  and interfaces their own way, two of them asking
+  `isWellKnownClassType` about `Array`, an interface, in arms that
+  could never match. `isArrayClass` and `isArrayInterface` are the two
+  sets. `resolveArrayBackingClass` and `fixedArrayType` match the
+  class being checked by name on purpose, as their comments say.
 - `isValuePrimitive`, `isReferenceType`, `isAnyRefSource`,
   `isGuaranteedReference`, `isBoxablePrimitive`, `representationOf`
   and the inline "is this numeric" matches in `isValidCast` (six of

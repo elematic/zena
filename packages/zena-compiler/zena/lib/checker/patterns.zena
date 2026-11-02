@@ -25,7 +25,7 @@ import {
 } from './generics.zena';
 import { displayMemberName, recordPatternMatchedType, recordRestType } from './members.zena';
 import { rejectConcreteSecondClassStorage } from './ownership.zena';
-import { findIterableInterface } from './protocols.zena';
+import { syncElementType } from './protocols.zena';
 import { fixedArrayType, isAssignableTo } from './relations.zena';
 import { createUnionType, unwrapAliases } from './unions.zena';
 
@@ -98,9 +98,11 @@ export function isRefutableDeclarationPattern(pattern: Pattern): boolean {
 }
 
 /**
- * Extract element type for array-pattern binding/checking.
- * Supports ArrayType, FixedArray, GrowableArray, ImmutableArray,
- * Array, MutableArray, Iterable, Iterator, and unions thereof.
+ * The element type an array pattern binds over: a bare array's, or
+ * the one the synchronous iteration protocol yields — an array class
+ * or interface, `Iterable<T>` and `Iterator<T>` included — through
+ * `syncElementType`, as a `for`-in finds it; a union's when every
+ * member has one.
  */
 function getArrayPatternElementType(ctx: CheckerContext, t: Type): Type | null {
   let unwrapped = unwrapAliases(t);
@@ -108,37 +110,11 @@ function getArrayPatternElementType(ctx: CheckerContext, t: Type): Type | null {
     case ArrayType {elementType}: {
       return elementType;
     }
-    case ClassType as ct: {
-      let iteratorPrelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
-      if (iteratorPrelude is InterfaceType && ct.id == (iteratorPrelude as InterfaceType).id) {
-        let {typeArguments} = ct;
-        if (typeArguments != null && typeArguments.length > 0) {
-          return typeArguments[0];
-        }
-      }
-      for (let iface in ct.implementsList) {
-        let elemType = findIterableInterface(ctx, iface);
-        if (elemType != null) {
-          return substituteTypeParams(ct.typeParameters, ct.typeArguments, elemType);
-        }
-      }
-      if (ct.superType != null) {
-        return getArrayPatternElementType(ctx, ct.superType as Type);
-      }
-      return null;
+    case ClassType: {
+      return syncElementType(ctx, unwrapped);
     }
-    case InterfaceType as it: {
-      if (isWellKnown(WellKnown.IteratorInterface, it.name, it.sourcePath) ||
-          isWellKnown(WellKnown.IterableInterface, it.name, it.sourcePath) ||
-          isWellKnown(WellKnown.ArrayInterface, it.name, it.sourcePath) ||
-          isWellKnown(WellKnown.MutableArrayInterface, it.name,
-              it.sourcePath)) {
-        let {typeArguments} = it;
-        if (typeArguments != null && typeArguments.length > 0) {
-          return typeArguments[0];
-        }
-      }
-      return findIterableInterface(ctx, it);
+    case InterfaceType: {
+      return syncElementType(ctx, unwrapped);
     }
     case UnionT {types}: {
       if (types.length == 0) { return null; }
