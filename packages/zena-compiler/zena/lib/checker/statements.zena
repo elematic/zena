@@ -40,9 +40,9 @@ import {
 } from './narrowing.zena';
 import {
   castOperand, isScopedValueType, mentionsParamDerived,
-  moveDestructuredTuple, ownedResourcesIn, recordArgumentMove,
-  recordOwnerFieldMove, recordScopedFieldTake, registerDestructuredOwners,
-  registerPatternOwners, releaseDiscardedOwner, requireDisposable,
+  moveDestructured, ownedResourcesIn, recordArgumentMove,
+  recordOwnerFieldMove, recordScopedFieldTake, registerPatternOwners,
+  releaseDiscardedOwner, requireDisposable,
   scopedFieldInfo
 } from './ownership.zena';
 import {
@@ -350,7 +350,7 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
       match (test) {
         case LetPatternCondition as lpc: {
           let initType = checkExpression(ctx, lpc.init, null);
-          moveDestructuredTuple(ctx, lpc.init, initType);
+          moveDestructured(ctx, lpc.init, initType);
           let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
           let preBranchFlow = ctx.currentFlow;
           ctx.enterScope();
@@ -414,7 +414,7 @@ case _: {
           ctx.enterFlowLoop();
           recordLoopAssignments(ctx, stmt);
           let initType = checkExpression(ctx, lpc.init, null);
-          moveDestructuredTuple(ctx, lpc.init, initType);
+          moveDestructured(ctx, lpc.init, initType);
           let afterTest = ctx.currentFlow;
           let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
           ctx.enterLoop();
@@ -999,11 +999,11 @@ function checkVariableDeclaration(
       }
     }
   }
-  // Destructuring moves the owners out of a tuple into its bindings,
-  // and each binding is released at the block's exit unless something
-  // moves it.
-  if (kind == "let" && pattern is TuplePattern) {
-    registerDestructuredOwners(ctx, pattern, ctx.model.getParent(pattern as Node));
+  // Destructuring moves the owners out of a tuple or a `scoped T`
+  // instance into its bindings, and each binding is released at the
+  // block's exit unless something moves it.
+  if (kind == "let" && !(pattern is IdentifierPattern)) {
+    registerPatternOwners(ctx, pattern as Node, ctx.model.getParent(pattern as Node));
   }
 
   // An initializer of type `never` cannot complete.

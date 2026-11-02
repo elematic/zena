@@ -1,0 +1,45 @@
+// @mode: check
+// A pattern that takes apart a `scoped T` instance at an owner moves
+// the instance, as one that takes apart a tuple of owners does: the
+// owner now belongs to the pattern's binding.
+import {Own, Disposable} from 'zena:core';
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+class Holder<scoped T> {
+  value: T;
+  new(this.value);
+}
+
+let letTwice = (): i32 => {
+  let h = new Holder<Own<Res>>(new Res());
+  let {value} = h;
+  let {value: again} = h; // @error: 'h' may have been moved
+  return 0;
+};
+
+let ifLetThenUse = (): i32 => {
+  let h = new Holder<Own<Res>>(new Res());
+  if (let Holder {value} = h) {}
+  let {value: again} = h; // @error: 'h' may have been moved
+  return 0;
+};
+
+let matchThenUse = (): i32 => {
+  let h = new Holder<Own<Res>>(new Res());
+  match (h) {
+    case Holder {value}: {}
+  }
+  let {value: again} = h; // @error: 'h' may have been moved
+  return 0;
+};
+
+// At a first-class type nothing moves.
+let plain = (): i32 => {
+  let h = new Holder<String>('a');
+  if (let Holder {value} = h) {}
+  let {value: again} = h;
+  return again.length;
+};
