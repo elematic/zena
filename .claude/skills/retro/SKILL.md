@@ -30,7 +30,10 @@ wording. Also read:
   (`ls -t ~/.claude/projects/*/memory/`), each a candidate to move into
   the repository or delete;
 - open issues labelled `cleanup` (`gh issue list --label cleanup`);
-- `docs/agents/ledger/` entries whose Review date has passed.
+- `docs/agents/ledger/` entries whose Review date has passed;
+- `npm run worktrees`: include the "merged, idle" list in the proposals,
+  so the person can approve `npm run worktrees -- --remove`, and mention
+  any "unmerged work" worktree that has not been used in a week.
 
 ## 3. Check the ledger
 
