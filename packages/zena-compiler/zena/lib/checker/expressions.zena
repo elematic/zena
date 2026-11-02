@@ -34,6 +34,7 @@ import { noteFieldsBesideRow, reportTwoRows, resolveTypeAnnotation } from './ann
 import { checkCallExpression, checkNewExpression } from './calls.zena';
 import { CheckerContext } from './context.zena';
 import { checkFunctionExpression } from './functions.zena';
+import { rejectInlineFunctionValue } from './inline.zena';
 import { selfTypeOfClass } from './generics.zena';
 import {
   checkIntegerLiteral, checkLiteralBeside, extractContextualRangeBoundType,
@@ -115,9 +116,15 @@ function checkIfBranchNode(ctx: CheckerContext, node: Node, expectedType: Type |
 }
 
 export function checkExpression(ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type {
+  // The callee marker belongs to this expression, not to its operands.
+  let callee = ctx.directCallee;
+  ctx.directCallee = null;
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
   ctx.setNodeType(expr, t);
+  if (t is FunctionType && callee !== expr && (expr is Identifier || expr is MemberExpression)) {
+    rejectInlineFunctionValue(ctx, expr, t);
+  }
   return t;
 }
 

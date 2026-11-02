@@ -1,0 +1,60 @@
+// @mode: run
+// @result: 0
+// An `inline` parameter is passed as its slots, the ones an inline result
+// of its type returns (docs/design/inline-parameters.md), and an inline
+// `let` holds them. Each kind of argument writes into them: a literal, a
+// forwarded parameter or `let`, an inline result, and a boxed tuple read
+// field by field.
+
+type Span = (i32, i32);
+
+function width(s: inline Span): i32 {
+  let (start, end) = s;
+  return end - start;
+}
+
+function first(s: inline Span): i32 {
+  return s[0];
+}
+
+function clamp(s: inline Span, limit: i32): inline Span {
+  let (start, end) = s;
+  return (start, if (end > limit) limit else end);
+}
+
+// Forwarded: to another inline parameter, through an inline `let`, and
+// back out as an inline result.
+function forward(s: inline Span): i32 {
+  let kept = s;
+  return width(kept) + first(s);
+}
+
+function same(s: inline Span): inline Span {
+  return s;
+}
+
+// A union: each member puts its payload in its own slots.
+type Reply = (true, i32) | (false, String);
+
+function describe(r: inline Reply): i32 {
+  return match (r) {
+    case (true, let n): n
+    case (false, let why): why.length
+  };
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (width((3, 9)) != 6) { failures += 1; }
+  if (width(clamp((0, 50), 10)) != 10) { failures += 2; }
+  if (forward((2, 5)) != 5) { failures += 4; }
+  if (width(same((1, 4))) != 3) { failures += 8; }
+  let boxed: Span = (10, 15);
+  if (width(boxed) != 5) { failures += 16; }
+  let annotated: inline Span = (7, 8);
+  if (width(annotated) != 1) { failures += 32; }
+  if (describe((true, 42)) != 42 || describe((false, 'nope')) != 4) { failures += 64; }
+  let stored: Reply = (false, 'ab');
+  if (describe(stored) != 2) { failures += 128; }
+  return failures;
+};

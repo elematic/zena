@@ -18,7 +18,8 @@ import { DiagnosticCode } from '../diagnostics.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
-import { resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
+import { checkInlineParameterType, isInlineType, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
+import { checkInlineBindingUses, inlineParamsMatch } from './inline.zena';
 import { spliceDefaultArguments } from './calls.zena';
 import { BodyContext, CheckerContext } from './context.zena';
 import { validateFunctionDecorators } from './declarations.zena';
@@ -1419,6 +1420,23 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
 
           let methodType = checkMethodSignature(ctx, classType, md);
 
+          // Inline-ness is part of the signature: a call through the base
+          // passes a parameter the way the base declares it.
+          let overriddenBase = classType.superType;
+          if (overriddenBase != null) {
+            let inherited = overriddenBase.memberTable(md.isStatic);
+            if (inherited.has(methodName)) {
+              let overridden = inherited[methodName].type;
+              if (overridden is FunctionType && !inlineParamsMatch(methodType, overridden)) {
+                ctx.error(
+                  `'${displayMemberName(methodName)}' takes a parameter inline where the method it overrides in '${overriddenBase.name}' does not, or the other way around: inline-ness is part of the signature.`,
+                  DiagnosticCode.IncompatibleTypes,
+                  md.loc
+                );
+              }
+            }
+          }
+
           if (md.isStatic) {
             rejectClassTypeParamsInStatic(
                 ctx, classType, methodType, "method", methodName, md.loc);
@@ -1664,7 +1682,8 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
               } else if (param.isThisParam && classType.members.has(lookupName)) {
                 paramType = classType.members[lookupName].type;
               } else if (param.typeAnnotation != null) {
-                paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+                // Reported once, by checkMethodSignature.
+                paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation, true);
               }
               paramTypes.push(paramType);
               paramNames.push(paramName);
@@ -2656,7 +2675,13 @@ export function checkMethodSignature(
       // this.-style param inherits type from the class field.
       paramType = classType.members[lookupName].type;
     } else if (param.typeAnnotation != null) {
-      paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+      paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation, true);
+      checkInlineParameterType(ctx, paramType, param.optional || param.defaultValue != null,
+          (param.typeAnnotation as TypeAnnotation).loc);
+      if (isInlineType(paramType) && (md.isAsync || md.isGenerator)) {
+        ctx.error("An inline parameter is not supported on an async or generator method, whose parameters move into its frame.",
+            DiagnosticCode.TypeMismatch, (param.typeAnnotation as TypeAnnotation).loc);
+      }
           }
 
     // Track optional parameters and widen to T | null.
@@ -3289,6 +3314,12 @@ export function checkMethodBody(
   let movedOut = ctx.finishBodyPathMoves(!(ctx.currentFlow is FlowUnreachable));
   if (movedOut.length > 0) {
     ctx.model.setMovedOutFields(md as Node, movedOut);
+  }
+
+  let methodBody = md.body;
+  if (methodBody != null &&
+      (body.declaresInline || methodType.parameters.some((t) => isInlineType(t)))) {
+    checkInlineBindingUses(ctx, methodBody, effectiveReturnType);
   }
 
   ctx.exitBody(prevBody);

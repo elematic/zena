@@ -1,0 +1,108 @@
+// @mode: check
+// An `inline` parameter or `let` is never put in a heap object
+// (docs/design/inline-parameters.md): each use of one reads it or passes
+// it on to another inline position, and a use that would box it is an
+// error there.
+
+type Span = (i32, i32);
+
+class Box<T> {
+  value: T;
+  new(this.value);
+}
+
+function width(s: inline Span): i32 {
+  let (start, end) = s;
+  return end - start;
+}
+
+function boxed(s: Span): i32 {
+  return s[0];
+}
+
+// Reads.
+function reads(s: inline Span, t: inline Span): i32 {
+  let (a, b) = s;
+  var first = s[0];
+  if (let (x, y) = t) {
+    first += x + y;
+  }
+  return a + b + first;
+}
+
+// Forwards: to an inline parameter, an inline `let`, an inline result.
+function forwards(s: inline Span): inline Span {
+  let w = width(s);
+  let kept = s;
+  let annotated: inline Span = (w, w);
+  width(annotated);
+  return kept;
+}
+
+let pick = (c: boolean, s: inline Span, t: inline Span): inline Span => if (c) s else t;
+
+// A boxed value is read into slots, without allocating.
+let fromBoxed = (s: Span): i32 => width(s);
+
+// Each of these would box it.
+function escapes(s: inline Span): Span {
+  let same = s == (1, 2); // @error: 's' is inline, so it is only read or passed on: comparing it with '==' would box it.
+  let tested = s is (i32, i32); // @error: 's' is inline, so it is only read or passed on: testing it with 'is' would box it.
+  boxed(s); // @error: 's' is inline, so it is only read or passed on: passing it for a parameter that is not inline would box it.
+  let b = new Box<Span>(s); // @error: 's' is inline, so it is only read or passed on: passing it for a parameter that is not inline would box it.
+  let all = [s]; // @error: 's' is inline, so it is only read or passed on: putting it in an array would box it.
+  var held = s; // @error: 's' is inline, so it is only read or passed on: holding it in a 'var' would box it.
+  let f = () => s[0]; // @error: 's' is inline, so it is only read or passed on: capturing it in a closure would box it.
+  return s; // @error: 's' is inline, so it is only read or passed on: returning it as a boxed result would box it.
+}
+
+// Where an inline parameter may not appear yet.
+let closureHost = (): i32 => {
+  let local = (s: inline Span): i32 => s[0]; // @error: An inline parameter is not supported on a function value, which cannot be adapted to a boxed parameter yet (#543).
+  return 0;
+};
+
+async function later(s: inline Span): Future<i32> { // @error: An inline parameter is not supported on an async or generator function, whose parameters move into its frame.
+  return 0;
+}
+
+export function exported(s: inline Span): i32 { // @error: An inline parameter is not supported on an exported function, whose arguments the host passes.
+  return 0;
+}
+
+function defaulted(s: inline Span = (0, 0)): i32 { // @error: An inline parameter cannot be optional: an inline value has no absent form.
+  return 0;
+}
+
+// A function that takes one is called, not used as a value.
+let asValue = width; // @error: A function that takes a parameter inline is called directly, not used as a value: adapting it to a boxed parameter is not supported yet (#543).
+
+// A `var` or a module-level `let` cannot be inline.
+let global: inline Span = (1, 2); // @error: An inline type can only be a function's result, a parameter or a 'let', not here.
+function locals(): void {
+  var v: inline Span = (1, 2); // @error: An inline type can only be a function's result, a parameter or a 'let', not here.
+}
+
+// Inline-ness is part of a method's signature.
+class Base {
+  measure(s: inline Span): i32 {
+    return width(s);
+  }
+}
+
+class Derived extends Base {
+  // @error: Overload of 'measure' overlaps an inherited signature; declare overlapping overloads in the base class and override per-signature.
+  measure(s: Span): i32 { // @error: 'measure' takes a parameter inline where the method it overrides in 'Base' does not, or the other way around: inline-ness is part of the signature.
+    return s[0];
+  }
+}
+
+interface Measure {
+  measure(s: inline Span): i32;
+}
+
+class Measures implements Measure { // @error: Class 'Measures' incorrectly implements interface 'Measure': Method 'measure' is type '(s: [i32, i32]) => i32' but expected '((i32, i32)) => i32'.
+  measure(s: Span): i32 {
+    return s[1];
+  }
+}

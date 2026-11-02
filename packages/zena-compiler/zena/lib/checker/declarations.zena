@@ -20,7 +20,7 @@ import { DiagnosticCode } from '../diagnostics.zena';
 import { noSymbolId } from '../scope/symbol.zena';
 import { WellKnown, protocolSymbolKey } from '../well-known.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
-import { resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
+import { checkInlineParameterType, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
 import {
   checkAccessorBodies, checkMethodBody, checkMethodSignature, validateDecoratorBody
 } from './classes.zena';
@@ -851,7 +851,9 @@ export function checkInterfaceDeclaration(ctx: CheckerContext, id: InterfaceDecl
           var paramType: Type = new ErrorType();
           let {typeAnnotation} = param;
           if (typeAnnotation != null) {
-            paramType = resolveTypeAnnotation(ctx, typeAnnotation);
+            paramType = resolveTypeAnnotation(ctx, typeAnnotation, true);
+            checkInlineParameterType(ctx, paramType,
+                param.optional || param.defaultValue != null, typeAnnotation.loc);
                       }
           paramTypes.push(paramType);
         }

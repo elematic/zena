@@ -2380,11 +2380,33 @@ function mapUnionOfInlineTuplesToWasmResults(wasm: WasmModule, unionType: UnionT
  * arguments (isZeroWidthValType), or the arity gates in lowering fire.
  */
 export function mapParamTypeToWasmParams(wasm: WasmModule, type: Type, params: GrowableArray<ValType>): void {
+  // An inline parameter is its slots, the ones an inline result of its
+  // type returns (docs/design/inline-parameters.md).
+  let layout = inlineParamLayoutOf(wasm, type);
+  if (layout != null) {
+    for (let slot in layout.slots) {
+      params.push(slot);
+    }
+    return;
+  }
   let vt = typeToValType(wasm, type);
   if (vt is ValTypeVoid) {
     return;
   }
   params.push(vt);
+}
+
+/**
+ * The slots an inline parameter of type `type` takes, or null when the
+ * parameter is one value: `type` is an inline tuple or a union of them,
+ * through aliases.
+ */
+export function inlineParamLayoutOf(wasm: WasmModule, type: Type): InlineLayout | null {
+  let u = unwrapAliases(type);
+  if (!(u is InlineTupleType) && !(u is UnionType)) {
+    return null;
+  }
+  return inlineLayoutOf(wasm, u);
 }
 
 /** Whether a lowered value of this type occupies a wasm slot. */

@@ -1,0 +1,118 @@
+# Inline Parameters and Locals
+
+Stages 3 and 4 of #371. `inline` on a function result already means the
+value is returned unboxed: an inline tuple as one wasm result per slot
+(multi-return-values.md). This extends the modifier to parameters and to
+`let` locals, with the same meaning. A value of an inline type is never
+put in a heap object.
+
+```zena
+type Span = (i32, i32);
+
+function width(s: inline Span): i32 {
+  let (start, end) = s;
+  return end - start;
+}
+
+function clamp(s: inline Span, limit: i32): inline Span {
+  let (start, end) = s;
+  return (start, if (end > limit) limit else end);
+}
+
+let w = width((3, 9));          // passed as two i32s
+let c = width(clamp((0, 50), 10)); // forwarded as slots, nothing boxed
+```
+
+## What may be inline
+
+An `inline` parameter or local has one of these types, as an inline
+result does:
+
+- a tuple, or an alias of one;
+- a union of tuples with a discriminant (the rule from #481);
+- a closed record, or an alias of one (the second half of this round).
+
+Allowed positions in this round:
+
+- a parameter of a function declaration, of an arrow bound by a
+  top-level `let`, of a method, of a constructor, and of an interface
+  method signature;
+- a `let` local, written `let q: inline Span = ...`, or initialized from
+  another inline binding (`let q = s` keeps `q` inline).
+
+Not in this round, each an error that says so:
+
+- a `var` local, which would need its slots carried through joins;
+- `inline? T` on a parameter;
+- a function type with an inline parameter, a closure with one, and
+  using a function that has one as a value. Converting between
+  `(s: inline Span) => R` and `(s: Span) => R` needs an adapter, and
+  adapters across a change of representation are #543;
+- an exported function, whose parameters the host passes;
+- an `async` or generator function, whose parameters move into a frame.
+
+## The rule
+
+An inline binding is only read or passed on. Each use of one is one of:
+
+- **a read:** destructuring (`let (a, b) = s`), a pattern (`if let`,
+  `match`), an index with a literal (`s[0]`), a field read (`r.x`);
+- **a forward:** an argument for an `inline` parameter, the initializer
+  of a `let`, which is then inline too, a returned value when the
+  function's result is inline, or an arm of an `if` or `match` in one of
+  these positions;
+- **a discard:** an expression statement.
+
+Anything else would box the value, and is an error at that use: storing
+it in a field or an array element, passing it for a parameter that is
+not inline, capturing it in a nested function, converting it with `as`,
+returning it from a function whose result is boxed. `==`, `!=` and `is`
+are errors too in this round: each lowers by reading the value whole,
+which would box it, and comparing or testing slot by slot is not
+implemented. A pattern tests an inline union's members without boxing. A boxed value may
+still be passed for an inline parameter, which reads it into slots
+without allocating.
+
+The checker enforces this with one walk over each body that declares an
+inline binding (`checkInlineBindingUses`), after the body is checked.
+The walk classifies each reference to an inline binding by its parent
+node, and reports a reference inside a nested function as a capture.
+Assignability is not the place for it: `isAssignableTo` converts
+between a tuple and its inline form without seeing the expression, and
+a call's inline result may still be boxed where it is stored.
+
+Inline-ness is part of a method's signature. An override, and a class
+method that implements an interface's, keeps the inline-ness of each
+parameter it overrides.
+
+## Lowering tuples and unions
+
+An inline tuple parameter is its `InlineLayout` slots, as wasm
+parameters, the same slots an inline result of that type returns.
+
+- **Signatures:** `mapParamTypeToWasmParams` expands an inline parameter
+  to its slots. Every parameter list goes through it.
+- **The body** binds the parameter's symbol to the `MultiValues` of its
+  slot parameters (`LoweringContext.inlineBindings`). Every reader that
+  takes a multi-value source (patterns, destructuring, literal index
+  reads, returns, arguments for inline parameters) takes it from
+  there, so nothing is boxed. An inline `let` binds its symbol to its
+  initializer's `MultiValues` the same way.
+- **Calls:** each argument loop asks the callee's parameter type how
+  wide its argument is. An argument for an inline parameter is lowered
+  as a multi-value source and converted to the parameter's layout
+  (`#convertInlineSlots`): a tuple literal writes its slots, an inline
+  result or binding forwards its own, and a boxed tuple is read field by
+  field. The arity gates count wasm values, not arguments.
+
+## Lowering records
+
+The second PR of this round. An inline record parameter is its fields
+in `dispatch.fields` order, the order argument explosion uses
+(argument-explosion.md). Explosion adds a core beside a function and
+keeps the function as a forwarder, because it has to serve callers that
+hold the record boxed. An inline parameter needs no forwarder: every
+caller passes the fields, so the function's own signature takes them.
+The body binds the parameter as explosion's core does, to a record
+rebuilt from its fields and recorded in `explodedRecords`, which dead
+code elimination deletes once every read has gone to the fields.
