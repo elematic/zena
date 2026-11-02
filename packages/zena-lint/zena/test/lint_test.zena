@@ -235,6 +235,44 @@ let tests = suite('lint', () => {
     `, 'unnecessary-annotation');
   });
 
+  test('an annotation that an if of two classes joins to is kept', (t) => {
+    // Without it, `shape` is a `Square | Circle`, not a `Shape`.
+    let source = dedentRaw`
+      interface Shape {
+        area(): i32;
+      }
+      final class Square implements Shape {
+        area(): i32 {
+          return 4;
+        }
+      }
+      final class Circle implements Shape {
+        area(): i32 {
+          return 3;
+        }
+      }
+      export function run(square: boolean): i32 {
+        let shape: Shape = if (square) new Square() else new Circle();
+        return shape.area();
+      }
+    `;
+    check(t, source, source, 'unnecessary-annotation');
+  });
+
+  test('an annotation on an if whose branches have its type goes', (t) => {
+    check(t, dedentRaw`
+      export function run(flag: boolean): i32 {
+        let n: i32 = if (flag) run(false) else run(true);
+        return n;
+      }
+    `, dedentRaw`
+      export function run(flag: boolean): i32 {
+        let n = if (flag) run(false) else run(true);
+        return n;
+      }
+    `, 'unnecessary-annotation');
+  });
+
   test('callback parameters typed by the callee lose their annotations', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
