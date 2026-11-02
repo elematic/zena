@@ -139,9 +139,12 @@ let EXIT = 0;
 /** Wake me when something in this waitable set fires. */
 let WAIT = 2;
 
-let exitCode = () => EXIT as CallbackCode;
-let waitOn = (set: WaitableSet) =>
-    (WAIT | ((set as i32) << 4)) as CallbackCode;
+function exitCode() {
+  return EXIT as CallbackCode;
+}
+function waitOn(set: WaitableSet) {
+  return (WAIT | ((set as i32) << 4)) as CallbackCode;
+}
 
 /**
  * An async-lowered import returns `(subtask << 4) | state`: the
@@ -257,10 +260,10 @@ final class Wait {
 let waits = new Array<Wait | null>();
 
 /** The wait recorded for `waitable`, or null. */
-let waitFor = (waitable: Waitable): Wait | null => {
+function waitFor(waitable: Waitable): Wait | null {
   let i = waitable as i32;
   return if (i < waits.length) waits[i] else null;
-};
+}
 
 /**
  * Start a task. Called by the synthesized adapter at the top of every
@@ -322,18 +325,18 @@ var blockingParkerInstalled = false;
  * command's host setup. A program that reaches neither links no
  * blocking wait.
  */
-export let installBlockingParker = (): void => {
+export function installBlockingParker(): void {
   if (!blockingParkerInstalled) {
     blockingParkerInstalled = true;
     setBlockingParker(new DriverParker());
   }
-};
+}
 
 /** The running task, created lazily when nothing began one: code
  * that waits before any adapter ran, which is the synchronous
  * console's blocking path. (`??=` would say this in one line, but it
  * does not lower on a module-level `var` yet — #572.) */
-let currentContext = (): TaskContext => {
+function currentContext(): TaskContext {
   let existing = currentTask;
   if (existing != null) {
     return existing;
@@ -341,25 +344,25 @@ let currentContext = (): TaskContext => {
   let fresh = new TaskContext();
   currentTask = fresh;
   return fresh;
-};
+}
 
 /** Create the task's waitable set if it has none yet. */
-let ensureSet = (ctx: TaskContext): WaitableSet => {
+function ensureSet(ctx: TaskContext): WaitableSet {
   if ((ctx.waitableSet as i32) == 0) {
     ctx.waitableSet = waitableSetNew();
   }
   return ctx.waitableSet;
-};
+}
 
 /** Join `waitable` to `ctx`'s set and record what it is owed — from
  * whichever task is running: a set is the instance's, and any task may
  * put a waitable into any set. */
-let registerFor = (
+function registerFor(
   ctx: TaskContext,
   waitable: Waitable,
   subtask: Completer<void> | null,
   copy: ((payload: i32) => void) | null
-) => {
+) {
   waitableJoin(waitable, ensureSet(ctx));
   let i = waitable as i32;
   while (waits.length <= i) {
@@ -367,18 +370,18 @@ let registerFor = (
   }
   waits[i] = new Wait(ctx, subtask, copy);
   ctx.pendingWaitables += 1;
-};
+}
 
 /** Forget the wait recorded for `waitable` and count it off the task
  * that was waiting. Null if nothing was. */
-let release = (waitable: Waitable) => {
+function release(waitable: Waitable) {
   let wait = waitFor(waitable);
   if (wait != null) {
     waits[waitable as i32] = null;
     wait.owner.pendingWaitables -= 1;
   }
   return wait;
-};
+}
 
 /**
  * An async-lowered import's packed result, as a future. `packed` is
@@ -430,7 +433,7 @@ export function awaitWaitable(end: i32): Future<i32> {
  * settles there; either way the ends are the instance's, and joining
  * from any task works.
  */
-let armWake = (ctx: TaskContext) => {
+function armWake(ctx: TaskContext) {
   let pair = wakeFutureNew();
   let readable = pair as i32;
   ctx.wakeReadable = readable;
@@ -443,7 +446,7 @@ let armWake = (ctx: TaskContext) => {
   // No completer: nothing awaits the wake future's value. The event
   // re-enters `ctx`, whose `nextCode` then runs the parked return.
   registerFor(ctx, readable as Waitable, null, null);
-};
+}
 
 /**
  * Re-enter `ctx` to run its return, once its value has settled. The
@@ -460,7 +463,7 @@ let armWake = (ctx: TaskContext) => {
  * own entry needs none of this: that entry's `nextCode` runs the
  * return.
  */
-let wake = (ctx: TaskContext) => {
+function wake(ctx: TaskContext) {
   if (ctx.wakeWritable == 0) {
     if (currentTask == ctx) {
       // Settled in its own entry: the entry's `nextCode` runs the
@@ -479,7 +482,7 @@ let wake = (ctx: TaskContext) => {
     throw new Error("a wake future's write blocked with its read pending");
   }
   wakeFutureDropWritable(writable);
-};
+}
 
 /**
  * Hand the running task's result to the host once `result` settles:
@@ -559,7 +562,7 @@ export function markReturned(): void {
  * never comes leaves the task waiting forever, which is what the
  * deadlock is; nothing here can tell it apart from a slow one.
  */
-let nextCode = (ctx: TaskContext) => {
+function nextCode(ctx: TaskContext) {
   let failure = ctx.failure;
   if (failure != null) {
     throw failure;
@@ -597,7 +600,7 @@ let nextCode = (ctx: TaskContext) => {
     return exitCode();
   }
   return waitOn(ctx.waitableSet);
-};
+}
 
 /**
  * Called by the synthesized entry after `main` returns: run the
@@ -654,7 +657,7 @@ export function componentResume(
  * which becomes the running task. The callback's second half, and
  * the whole of a `blockOn` turn.
  */
-let dispatchEvent = (event: i32, waitable: Waitable, code: i32): TaskContext => {
+function dispatchEvent(event: i32, waitable: Waitable, code: i32): TaskContext {
   let wait = release(waitable);
   let ctx = wait?.owner ?? currentContext();
   currentTask = ctx;
@@ -677,5 +680,5 @@ let dispatchEvent = (event: i32, waitable: Waitable, code: i32): TaskContext => 
   }
   drainMicrotasks();
   return ctx;
-};
+}
 

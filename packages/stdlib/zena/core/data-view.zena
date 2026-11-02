@@ -26,68 +26,76 @@ let LOW32: i64 = 0xFFFFFFFF;
 let ALL_ONES: i64 = -1;
 
 /** The byte at `offset`, from 0 to 255. */
-export let readU8 = (bytes: ByteArray, offset: i32): i32 => bytes[offset] as i32;
+export function readU8(bytes: ByteArray, offset: i32): i32 {
+  return bytes[offset] as i32;
+}
 
 /** The two bytes at `offset`, little-endian, from 0 to 65535. */
-export let readU16 = (bytes: ByteArray, offset: i32): i32 =>
-  (bytes[offset] as i32) | ((bytes[offset + 1] as i32) << 8);
+export function readU16(bytes: ByteArray, offset: i32): i32 {
+  return (bytes[offset] as i32) | ((bytes[offset + 1] as i32) << 8);
+}
 
 /** The four bytes at `offset`, little-endian. Read `as u32` for the unsigned value. */
-export let readU32 = (bytes: ByteArray, offset: i32): i32 =>
-  (bytes[offset] as i32) | ((bytes[offset + 1] as i32) << 8) |
+export function readU32(bytes: ByteArray, offset: i32): i32 {
+  return (bytes[offset] as i32) | ((bytes[offset + 1] as i32) << 8) |
     ((bytes[offset + 2] as i32) << 16) | ((bytes[offset + 3] as i32) << 24);
+}
 
 /** The eight bytes at `offset`, little-endian. Read `as u64` for the unsigned value. */
-export let readU64 = (bytes: ByteArray, offset: i32): i64 => {
+export function readU64(bytes: ByteArray, offset: i32): i64 {
   let low = readU32(bytes, offset) as i64;
   let high = readU32(bytes, offset + 4) as i64;
   // `low` was sign-extended from an i32; keep only its 32 bits.
   return (low & LOW32) | (high << 32);
-};
+}
 
 /** The `f32` whose bits are the four bytes at `offset`, little-endian. */
-export let readF32 = (bytes: ByteArray, offset: i32): f32 =>
-  f32_reinterpret_i32(readU32(bytes, offset));
+export function readF32(bytes: ByteArray, offset: i32): f32 {
+  return f32_reinterpret_i32(readU32(bytes, offset));
+}
 
 /** The `f64` whose bits are the eight bytes at `offset`, little-endian. */
-export let readF64 = (bytes: ByteArray, offset: i32): f64 =>
-  f64_reinterpret_i64(readU64(bytes, offset));
+export function readF64(bytes: ByteArray, offset: i32): f64 {
+  return f64_reinterpret_i64(readU64(bytes, offset));
+}
 
 /**
  * The unsigned LEB128 value at `offset`, of at most 5 bytes, and the offset
  * after it; that offset is -1 when the value does not end before `end`.
  * Bits past the 32nd are dropped.
  */
-export let readULEB128 = (bytes: ByteArray, offset: i32, end: i32): inline (i32, i32) => {
+export function readULEB128(bytes: ByteArray, offset: i32, end: i32): inline (i32, i32) {
   let (value, next) = readULEB128_64Within(bytes, offset, end, 5);
   return (value as i32, next);
-};
+}
 
 /**
  * The unsigned LEB128 value at `offset`, of at most 10 bytes, and the
  * offset after it; that offset is -1 when the value does not end before
  * `end`. Read `as u64` for values of 2^63 and above.
  */
-export let readULEB128_64 = (bytes: ByteArray, offset: i32, end: i32): inline (i64, i32) =>
-  readULEB128_64Within(bytes, offset, end, 10);
+export function readULEB128_64(bytes: ByteArray, offset: i32, end: i32): inline (i64, i32) {
+  return readULEB128_64Within(bytes, offset, end, 10);
+}
 
 /**
  * The signed LEB128 value at `offset`, of at most 5 bytes, and the offset
  * after it, or -1 as for `readULEB128`.
  */
-export let readSLEB128 = (bytes: ByteArray, offset: i32, end: i32): inline (i32, i32) => {
+export function readSLEB128(bytes: ByteArray, offset: i32, end: i32): inline (i32, i32) {
   let (value, next) = readSLEB128_64Within(bytes, offset, end, 5);
   return (value as i32, next);
-};
+}
 
 /**
  * The signed LEB128 value at `offset`, of at most 10 bytes, and the offset
  * after it, or -1 as for `readULEB128_64`.
  */
-export let readSLEB128_64 = (bytes: ByteArray, offset: i32, end: i32): inline (i64, i32) =>
-  readSLEB128_64Within(bytes, offset, end, 10);
+export function readSLEB128_64(bytes: ByteArray, offset: i32, end: i32): inline (i64, i32) {
+  return readSLEB128_64Within(bytes, offset, end, 10);
+}
 
-let readULEB128_64Within = (bytes: ByteArray, offset: i32, end: i32, maxBytes: i32): inline (i64, i32) => {
+function readULEB128_64Within(bytes: ByteArray, offset: i32, end: i32, maxBytes: i32): inline (i64, i32) {
   var result: i64 = 0;
   var shift: i64 = 0;
   var pos = offset;
@@ -102,9 +110,9 @@ let readULEB128_64Within = (bytes: ByteArray, offset: i32, end: i32, maxBytes: i
     shift += 7;
   }
   return (0, -1);
-};
+}
 
-let readSLEB128_64Within = (bytes: ByteArray, offset: i32, end: i32, maxBytes: i32): inline (i64, i32) => {
+function readSLEB128_64Within(bytes: ByteArray, offset: i32, end: i32, maxBytes: i32): inline (i64, i32) {
   var result: i64 = 0;
   var shift: i64 = 0;
   var pos = offset;
@@ -122,7 +130,7 @@ let readSLEB128_64Within = (bytes: ByteArray, offset: i32, end: i32, maxBytes: i
     }
   }
   return (0, -1);
-};
+}
 
 /**
  * Typed reads from a range of a `ByteArray`. Offsets are relative to the

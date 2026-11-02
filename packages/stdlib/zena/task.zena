@@ -30,11 +30,11 @@ import { div } from 'zena:math';
 export type Op<T> = () => Future<T>;
 
 /** `d` as whole milliseconds, for error messages. */
-let wholeMs = (d: Duration) => {
+function wholeMs(d: Duration) {
   let ns = d as i64;
   let perMs: i64 = 1000000;
   return div(ns, perMs);
-};
+}
 
 /** How `timeout` and `deadline` report an attempt that ran out of
  * budget. Carries the budget so a retry layer's log can say which. */
@@ -50,14 +50,14 @@ export class TimeoutError extends Error {
  * the budget fails with `TimeoutError` — a failure like any other, so
  * an outer `retry` treats a timeout as retryable.
  */
-export let timeout = <T>(budget: Duration, op: Op<T>): Op<T> => {
+export function timeout<T>(budget: Duration, op: Op<T>): Op<T> {
   // The budget arm's annotation is load-bearing: its body only
   // throws, which infers `Future<void>` rather than the race's `T`.
   return () => TaskGroup.race([op, async (): Future<T> => {
     await sleep(budget);
     throw new TimeoutError(budget);
   }]);
-};
+}
 
 /**
  * Bounds each attempt to finish before an absolute point on the
@@ -66,20 +66,22 @@ export let timeout = <T>(budget: Duration, op: Op<T>): Op<T> => {
  * spends one budget across all of them. An attempt starting past the
  * deadline fails immediately, without running the operation.
  */
-export let deadline = <T>(at: Instant, op: Op<T>): Op<T> => () => {
+export function deadline<T>(at: Instant, op: Op<T>): Op<T> {
+  return () => {
   let remaining = at - monotonic();
   if (!remaining.isPositive()) {
     return Future.failed<T>(new TimeoutError(milliseconds(0)));
   }
   return timeout(remaining, op)();
 };
+}
 
 /** `retry`'s body. A top-level function rather than an async closure
  * because an `await` inside a `try` inside a loop crashes emission in
  * closure position (issue #453); fold it into `retry` when that is
  * fixed. */
-let retryImpl = async <T>(
-    attempts: i32, firstDelay: Duration, op: Op<T>): Future<T> => {
+async function retryImpl<T>(
+    attempts: i32, firstDelay: Duration, op: Op<T>): Future<T> {
   var delay = firstDelay;
   var failed = 0;
   while (failed < attempts - 1) {
@@ -97,7 +99,7 @@ let retryImpl = async <T>(
   // The last attempt runs outside the loop so its failure propagates
   // as the result.
   return await op();
-};
+}
 
 /**
  * Runs up to `attempts` attempts, handing back the first value; the
@@ -107,14 +109,14 @@ let retryImpl = async <T>(
  * Retrying is the reason `Op` is a function: each attempt is a fresh
  * call. Cancellation is not retried — see the module comment.
  */
-export let retry = <T>(
+export function retry<T>(
     attempts: i32, op: Op<T>,
-    firstDelay: Duration = milliseconds(0)): Op<T> => {
+    firstDelay: Duration = milliseconds(0)): Op<T> {
   if (attempts < 1) {
     throw new Error('retry: needs at least one attempt');
   }
   return () => retryImpl(attempts, firstDelay, op);
-};
+}
 
 /**
  * Tries `op`; on failure, answers with `alt` instead. The failure
@@ -123,13 +125,15 @@ export let retry = <T>(
  * completes cancelled, the unwind passes through and `alt` never
  * runs.
  */
-export let fallback = <T>(op: Op<T>, alt: Op<T>): Op<T> => async () => {
+export function fallback<T>(op: Op<T>, alt: Op<T>): Op<T> {
+  return async () => {
   try {
     return await op();
   } catch (e) {
     return await alt();
   }
 };
+}
 
 /**
  * Starts a second attempt if the first has not settled within
@@ -138,10 +142,12 @@ export let fallback = <T>(op: Op<T>, alt: Op<T>): Op<T> => async () => {
  * occasionally very slow. The loser is cancelled. A hedge trims
  * slowness and does not mask errors; layer `retry` on top for that.
  */
-export let hedge = <T>(delay: Duration, op: Op<T>): Op<T> => () => TaskGroup.race([op, async () => {
+export function hedge<T>(delay: Duration, op: Op<T>): Op<T> {
+  return () => TaskGroup.race([op, async () => {
   await sleep(delay);
   return await op();
 }]);
+}
 
 // ---------------------------------------------------------------------------
 // Task<T>: an operation's observable lifecycle (docs/design/task.md)
@@ -352,7 +358,7 @@ export class Task<T> {
  * position (`new Complete<T>(await f)`) and the settled future is
  * re-awaited where needed — one queue hop to the same value.
  */
-let monitorRun = async <T>(t: Task<T>, id: i32, op: Op<T>): Future<T> => {
+async function monitorRun<T>(t: Task<T>, id: i32, op: Op<T>): Future<T> {
   t.[reportPending](id);
   let f = op();
   try {
@@ -373,4 +379,4 @@ let monitorRun = async <T>(t: Task<T>, id: i32, op: Op<T>): Future<T> => {
   }
   t.[reportSettled](id, new Complete<T>(await f));
   return await f;
-};
+}

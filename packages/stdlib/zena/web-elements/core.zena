@@ -127,24 +127,26 @@ export final class CSSResult {
 export type CSSValue = CSSResult | Box<i32> | Box<f64>;
 
 /** The `css` tag: a stylesheet, with `css` results and numbers interpolated. */
-export let css = (strings: TemplateStringsArray, values: FixedArray<CSSValue>): CSSResult => {
+export function css(strings: TemplateStringsArray, values: FixedArray<CSSValue>): CSSResult {
   var text = strings[0];
   for (var i = 0; i < values.length; i += 1) {
     let value = values[i];
     let part = if (value is CSSResult) {
-      (value as CSSResult).cssText
+      value.cssText
     } else if (value is Box<i32>) {
-      `${(value as Box<i32>).value}`
+      `${value.value}`
     } else {
-      `${(value as Box<f64>).value}`
+      `${value.value}`
     };
     text = text + part + strings[i + 1];
   }
   return new CSSResult(text);
-};
+}
 
 /** A stylesheet from text the author vouches for, as Lit's `unsafeCSS`. */
-export let unsafeCSS = (text: String): CSSResult => new CSSResult(text);
+export function unsafeCSS(text: String): CSSResult {
+  return new CSSResult(text);
+}
 
 /** The protocol's property kinds; the values are its value kinds. */
 export enum PropertyKind {
@@ -188,18 +190,18 @@ var probing: ElementDefinition | null = null;
  * Called by `@property` and `@state` through the decorator's `context`.
  * Returns 0, so it can initialize a field.
  */
-export let registerProperty = <T>(name: String, get: (element: ZenaElement) => T,
-    set: (element: ZenaElement, value: T) => void, attribute: boolean): i32 => {
+export function registerProperty<T>(name: String, get: (element: ZenaElement) => T,
+    set: (element: ZenaElement, value: T) => void, attribute: boolean): i32 {
   let definition = probing;
   if (definition == null) {
     return 0;
   }
   let attributeName = if (attribute) asciiLower(name) else '';
-  (definition as ElementDefinition).addProperty(new PropertyDef(name, attributeName,
+  definition.addProperty(new PropertyDef(name, attributeName,
       (element: ZenaElement): anyref => new Box<T>(get(element)),
-      (element: ZenaElement, value: anyref): void => { set(element, (value as Box<T>).value); }));
+      (element: ZenaElement, value: anyref) => { set(element, (value as Box<T>).value); }));
   return 0;
-};
+}
 
 /**
  * ASCII lowercase over the bytes, written out rather than through
@@ -208,7 +210,7 @@ export let registerProperty = <T>(name: String, get: (element: ZenaElement) => T
  * default attribute name. An element module's import list should be the
  * protocol's and nothing else.
  */
-let asciiLower = (name: String): String => {
+function asciiLower(name: String): String {
   let out = new StringBuilder();
   let len = name.length;
   for (var i = 0; i < len; i += 1) {
@@ -216,7 +218,7 @@ let asciiLower = (name: String): String => {
     out.appendByte(if (b >= 0x41 && b <= 0x5A) b + 0x20 else b);
   }
   return out.toString();
-};
+}
 
 /** A registered element: what `defineElement` records and the host reads. */
 export final class ElementDefinition {
@@ -255,7 +257,7 @@ export let definitions = new GrowableArray<ElementDefinition>();
  * runs the decorators' registrations, and its values decide each
  * property's kind.
  */
-export let defineElement = (tag: String, create: () => ZenaElement): ElementDefinition => {
+export function defineElement(tag: String, create: () => ZenaElement): ElementDefinition {
   let definition = new ElementDefinition(tag, create);
   probing = definition;
   let probe = create();
@@ -264,7 +266,7 @@ export let defineElement = (tag: String, create: () => ZenaElement): ElementDefi
   definition.probe = probe;
   definitions.push(definition);
   return definition;
-};
+}
 
 /**
  * Registers an element definition with no tag name. The host builds the
@@ -272,28 +274,29 @@ export let defineElement = (tag: String, create: () => ZenaElement): ElementDefi
  * page (`elementDefinitions` in `@zena-lang/wasm-web-ui/elements`),
  * which is how one module serves pages that disagree about tag names.
  */
-export let declareElement = (create: () => ZenaElement): ElementDefinition =>
-  defineElement('', create);
+export function declareElement(create: () => ZenaElement): ElementDefinition {
+  return defineElement('', create);
+}
 
 /** The definition registered under `tag`, or null. */
-export let definitionFor = (tag: String): ElementDefinition | null => {
+export function definitionFor(tag: String): ElementDefinition | null {
   for (let definition in definitions) {
     if (definition.tag == tag) {
       return definition;
     }
   }
   return null;
-};
+}
 
 /** A new instance of `definition`, bound to it. */
-export let createElement = (definition: ElementDefinition): ZenaElement => {
+export function createElement(definition: ElementDefinition): ZenaElement {
   let element = definition.create();
   element.definition = definition;
   return element;
-};
+}
 
 /** The kind of a boxed value, from the box's instantiation. */
-let kindOfBox = (boxed: anyref): PropertyKind => {
+function kindOfBox(boxed: anyref) {
   if (boxed is Box<String>) {
     return PropertyKind.Text;
   }
@@ -307,31 +310,31 @@ let kindOfBox = (boxed: anyref): PropertyKind => {
     return PropertyKind.Host;
   }
   return PropertyKind.Unknown;
-};
+}
 
 /** A property's kind, decided from its definition's probe instance once. */
-export let propertyKind = (property: PropertyDef): PropertyKind => {
+export function propertyKind(property: PropertyDef): PropertyKind {
   if (property.kind == PropertyKind.Unknown) {
     let definition = property.definition;
-    let probe = if (definition == null) null else (definition as ElementDefinition).probe;
+    let probe = definition?.probe;
     if (probe != null) {
-      property.kind = kindOfBox(property.read(probe as ZenaElement));
+      property.kind = kindOfBox(property.read(probe));
     }
   }
   return property.kind;
-};
+}
 
 /** The definition's styles, from its probe instance; null for none. */
-export let stylesOf = (definition: ElementDefinition): CSSResult | null => {
+export function stylesOf(definition: ElementDefinition): CSSResult | null {
   let probe = definition.probe;
   if (probe == null) {
     return null;
   }
-  return (probe as ZenaElement).styles();
-};
+  return probe.styles();
+}
 
 /** The box a number becomes for `property`, matching the field's instantiation. */
-let boxNumber = (property: PropertyDef, value: f64): anyref | null => {
+function boxNumber(property: PropertyDef, value: f64): anyref | null {
   let kind = propertyKind(property);
   if (kind == PropertyKind.Boolean) {
     return new Box<boolean>(value != 0.0);
@@ -340,38 +343,39 @@ let boxNumber = (property: PropertyDef, value: f64): anyref | null => {
     return null;
   }
   let definition = property.definition;
-  let probe = if (definition == null) null else (definition as ElementDefinition).probe;
-  if (probe != null && property.read(probe as ZenaElement) is Box<f64>) {
+  let probe = definition?.probe;
+  if (probe != null && property.read(probe) is Box<f64>) {
     return new Box<f64>(value);
   }
   return new Box<i32>(value as i32);
-};
+}
 
 /** The boxed value of `property` on `element`, as the field's box. */
-export let readProperty = (element: ZenaElement, property: PropertyDef): anyref =>
-  property.read(element);
+export function readProperty(element: ZenaElement, property: PropertyDef): anyref {
+  return property.read(element);
+}
 
 /** Sets a text property from `text`; nothing for a property of another kind. */
-export let setTextProperty = (element: ZenaElement, property: PropertyDef, text: String): void => {
+export function setTextProperty(element: ZenaElement, property: PropertyDef, text: String): void {
   if (propertyKind(property) == PropertyKind.Text) {
     property.write(element, new Box<String>(text));
   }
-};
+}
 
 /** Sets a host-value property from the host's reference. */
-export let setHostProperty = (element: ZenaElement, property: PropertyDef, value: externref): void => {
+export function setHostProperty(element: ZenaElement, property: PropertyDef, value: externref): void {
   if (propertyKind(property) == PropertyKind.Host) {
     property.write(element, new Box<HostValue | null>(new HostValue(value)));
   }
-};
+}
 
 /** Sets a number or boolean property from a number; nothing for another kind. */
-export let setNumberProperty = (element: ZenaElement, property: PropertyDef, value: f64): void => {
+export function setNumberProperty(element: ZenaElement, property: PropertyDef, value: f64): void {
   let boxed = boxNumber(property, value);
   if (boxed != null) {
     property.write(element, boxed as anyref);
   }
-};
+}
 
 /**
  * An observed attribute was set. The attribute's text is converted by
@@ -379,7 +383,7 @@ export let setNumberProperty = (element: ZenaElement, property: PropertyDef, val
  * parsed, a boolean attribute is true when present, text is taken as it
  * is. A host-value property takes nothing from an attribute.
  */
-export let applyAttribute = (element: ZenaElement, property: PropertyDef, text: String): void => {
+export function applyAttribute(element: ZenaElement, property: PropertyDef, text: String): void {
   let kind = propertyKind(property);
   if (kind == PropertyKind.Number) {
     setNumberProperty(element, property, parseF64(text));
@@ -389,10 +393,10 @@ export let applyAttribute = (element: ZenaElement, property: PropertyDef, text: 
     property.write(element, new Box<String>(text));
   }
   element.attributeChanged(property.attribute, text);
-};
+}
 
 /** An observed attribute was removed: a boolean goes false, text goes empty. */
-export let removeAttribute = (element: ZenaElement, property: PropertyDef): void => {
+export function removeAttribute(element: ZenaElement, property: PropertyDef): void {
   let kind = propertyKind(property);
   if (kind == PropertyKind.Boolean) {
     property.write(element, new Box<boolean>(false));
@@ -400,10 +404,10 @@ export let removeAttribute = (element: ZenaElement, property: PropertyDef): void
     property.write(element, new Box<String>(''));
   }
   element.attributeChanged(property.attribute, null);
-};
+}
 
 /** The property whose attribute is `name`, or null. */
-export let propertyForAttribute = (definition: ElementDefinition, name: String): PropertyDef | null => {
+export function propertyForAttribute(definition: ElementDefinition, name: String): PropertyDef | null {
   for (let property in definition.properties) {
     let attribute = property.attribute;
     if (attribute.length > 0 && attribute == name) {
@@ -411,4 +415,4 @@ export let propertyForAttribute = (definition: ElementDefinition, name: String):
     }
   }
   return null;
-};
+}

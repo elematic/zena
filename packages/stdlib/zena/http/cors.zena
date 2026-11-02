@@ -82,8 +82,9 @@ export type CorsOptions = {
   credentialsFor?: CredentialsFn,
 };
 
-let normalizeHeaderList = (value: String | Iterable<String>): String =>
-  if (value is String) value as String else join(value as Iterable<String>, ',');
+function normalizeHeaderList(value: String | Iterable<String>) {
+  return if (value is String) value else join(value, ',');
+}
 
 /**
  * Middleware that sets Cross-Origin Resource Sharing (CORS) headers on
@@ -101,7 +102,7 @@ export function cors(options: CorsOptions = {}): Middleware {
 
   let allowMethods: String | null = if (let {allowMethods} = options) {
     if (allowMethods == null) null
-    else normalizeHeaderList(allowMethods as (String | Iterable<String>))
+    else normalizeHeaderList(allowMethods)
   } else {
     DEFAULT_ALLOW_METHODS
   };
@@ -132,7 +133,7 @@ export function cors(options: CorsOptions = {}): Middleware {
     let origin: String | null = if (originOpt == null) {
       null
     } else if (originOpt is String) {
-      originOpt as String
+      originOpt
     } else {
       let fn = originOpt as OriginFn;
       await fn(req)
@@ -157,25 +158,25 @@ export function cors(options: CorsOptions = {}): Middleware {
         return;
       }
 
-      if (origin != null && (origin as String) == '*') {
+      if (origin != null && (origin) == '*') {
         res.setHeader('Access-Control-Allow-Origin', '*');
         await next();
         return;
       }
     }
 
-    if (credentials && origin != null && (origin as String) == '*') {
+    if (credentials && origin != null && (origin) == '*') {
       // Disallow wildcard origin with credentials.
       await next();
       return;
     }
 
-    if (origin == null || (origin as String).length == 0) {
+    if (origin == null || origin.length == 0) {
       await next();
       return;
     }
 
-    let resolvedOrigin = origin as String;
+    let resolvedOrigin = origin;
 
     if (req.method == 'OPTIONS') {
       // Preflight request: requires Access-Control-Request-Method.
@@ -187,8 +188,8 @@ export function cors(options: CorsOptions = {}): Middleware {
       res.setHeader('Access-Control-Allow-Origin', resolvedOrigin);
       res.statusCode = 204;
 
-      if (allowMethods != null && (allowMethods as String).length > 0) {
-        res.setHeader('Access-Control-Allow-Methods', allowMethods as String);
+      if (allowMethods != null && allowMethods.length > 0) {
+        res.setHeader('Access-Control-Allow-Methods', allowMethods);
       }
 
       if (credentials) {
@@ -201,21 +202,21 @@ export function cors(options: CorsOptions = {}): Middleware {
       }
 
       if (maxAge != null) {
-        res.setHeader('Access-Control-Max-Age', maxAge as String);
+        res.setHeader('Access-Control-Max-Age', maxAge);
       }
 
       let effectiveAllowHeaders =
         allowHeaders ?? req.getHeader('Access-Control-Request-Headers');
-      if (effectiveAllowHeaders != null && (effectiveAllowHeaders as String).length > 0) {
-        res.setHeader('Access-Control-Allow-Headers', effectiveAllowHeaders as String);
+      if (effectiveAllowHeaders != null && effectiveAllowHeaders.length > 0) {
+        res.setHeader('Access-Control-Allow-Headers', effectiveAllowHeaders);
       }
       return;
     }
 
     res.setHeader('Access-Control-Allow-Origin', resolvedOrigin);
 
-    if (exposeHeaders != null && (exposeHeaders as String).length > 0) {
-      res.setHeader('Access-Control-Expose-Headers', exposeHeaders as String);
+    if (exposeHeaders != null && exposeHeaders.length > 0) {
+      res.setHeader('Access-Control-Expose-Headers', exposeHeaders);
     }
 
     if (credentials) {

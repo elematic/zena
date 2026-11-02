@@ -96,16 +96,16 @@ class BenchVariant {
   }
 }
 
-let numberOf = (v: JsonValue, fallback: f64) => {
+function numberOf(v: JsonValue, fallback: f64) {
   return if (v is Box<f64>) { v.value } else { fallback };
-};
+}
 
-let stringOf = (v: JsonValue, fallback: String) => {
+function stringOf(v: JsonValue, fallback: String) {
   return if (v is String) { v } else { fallback };
-};
+}
 
 /** Directory part of a path ('.' when there is no '/'). */
-let dirName = (path: String) => {
+function dirName(path: String) {
   var i = path.length - 1;
   while (i >= 0) {
     if (path.getByteAt(i) == 47) {
@@ -114,19 +114,19 @@ let dirName = (path: String) => {
     i -= 1;
   }
   return '.';
-};
+}
 
 /**
  * `rel` against `dir`, with `..` segments resolved: `zena:wasm` refuses
  * a path that has one, and configs reach shared build output with them
  * (`../../out/minimal/zena.wasm`).
  */
-let joinPath = (dir: String, rel: String) => {
+function joinPath(dir: String, rel: String) {
   return normalize(if (rel.startsWith('/')) { rel } else { `${dir}/${rel}` });
-};
+}
 
 /** Drops ANSI SGR escape sequences (ESC '[' … final-letter). */
-let stripAnsi = (s: String) => {
+function stripAnsi(s: String) {
   let out = new StringBuilder();
   var i = 0;
   while (i < s.length) {
@@ -146,11 +146,13 @@ let stripAnsi = (s: String) => {
     }
   }
   return out.toString();
-};
+}
 
-let isWhitespaceByte = (b: i32) => b == 32 || b == 9 || b == 13 || b == 10;
+function isWhitespaceByte(b: i32) {
+  return b == 32 || b == 9 || b == 13 || b == 10;
+}
 
-let trim = (s: String) => {
+function trim(s: String) {
   var start = 0;
   var end = s.length;
   while (start < end && isWhitespaceByte(s.getByteAt(start))) {
@@ -160,13 +162,13 @@ let trim = (s: String) => {
     end -= 1;
   }
   return s.sliceBytes(start, end);
-};
+}
 
 /**
  * Strict float check (parseF64 itself is lenient and prefix-parses):
  * optional sign, digits with at most one dot, optional exponent.
  */
-let looksLikeFloat = (s: String): boolean => {
+function looksLikeFloat(s: String): boolean {
   if (s.length == 0) {
     return false;
   }
@@ -208,10 +210,10 @@ let looksLikeFloat = (s: String): boolean => {
     i += 1;
   }
   return digits > 0;
-};
+}
 
 /** The last non-empty stdout line as milliseconds, or (false, 0). */
-let parseReportedMs = (stdout: String): (boolean, f64) => {
+function parseReportedMs(stdout: String): (boolean, f64) {
   let lines = stdout.split('\n');
   var i = lines.length - 1;
   while (i >= 0) {
@@ -222,10 +224,10 @@ let parseReportedMs = (stdout: String): (boolean, f64) => {
     i -= 1;
   }
   return (false, 0.0);
-};
+}
 
 /** Takes one sample of a variant, in milliseconds. */
-let sampleVariant = (v: BenchVariant, debug: boolean) => {
+function sampleVariant(v: BenchVariant, debug: boolean) {
   if (!v.isCommand) {
     // Measured variants are workloads, not tools: no grant, and their
     // output is captured and dropped.
@@ -253,10 +255,10 @@ let sampleVariant = (v: BenchVariant, debug: boolean) => {
   }
   v.wallClockFallback = true;
   return (res.wallNanos as f64) / 1000000.0;
-};
+}
 
 /** The config's `options`, over the defaults. */
-let readOptions = (config: JsonObject) => {
+function readOptions(config: JsonObject) {
   let options = new BenchOptions();
   let optionsVal = config['options'];
   if (optionsVal is JsonObject) {
@@ -278,15 +280,15 @@ let readOptions = (config: JsonObject) => {
     }
   }
   return options;
-};
+}
 
 /** One variant from the config, compiling a `zena` variant's source. */
-let readVariant = (
+function readVariant(
   spec: JsonObject,
   name: String,
   configDir: String,
   options: SuiteOptions,
-) => {
+) {
   let commandVal = spec['command'];
   if (commandVal is JsonArray) {
     let argv = new GrowableArray<String>();
@@ -337,23 +339,23 @@ let readVariant = (
     module,
     stringOf(spec['invoke'], 'main'),
   );
-};
+}
 
 /**
  * Runs the suite `configPath` describes, prints its report, and writes
  * the report JSON. Returns 0, or 1 after printing why the suite could
  * not run.
  */
-export let runSuite = (configPath: String, options: SuiteOptions = {}): i32 => {
+export function runSuite(configPath: String, options: SuiteOptions = {}): i32 {
   try {
     return runSuiteOrThrow(configPath, options);
   } catch (e) {
     console.error(`bench: ${e.message}`);
     return 1;
   }
-};
+}
 
-let runSuiteOrThrow = (configPath: String, suiteOptions: SuiteOptions): i32 => {
+function runSuiteOrThrow(configPath: String, suiteOptions: SuiteOptions): i32 {
   let {debug = false} = suiteOptions;
   let configDir = dirName(configPath);
   let parsed = parseJson(readFileSync(configPath));
@@ -450,4 +452,4 @@ let runSuiteOrThrow = (configPath: String, suiteOptions: SuiteOptions): i32 => {
   writeFileSync(outPath, reportToJson(report));
   console.log(`results written to ${outPath}`);
   return 0;
-};
+}

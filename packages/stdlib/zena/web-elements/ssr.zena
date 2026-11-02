@@ -52,8 +52,8 @@ import {
  * definition declared without one, or renames a tagged one, as the page
  * does when it registers the class itself.
  */
-export let renderElement = (definition: ElementDefinition,
-    attributes: Map<String, String>, tag: String = ''): String => {
+export function renderElement(definition: ElementDefinition,
+    attributes: Map<String, String>, tag: String = ''): String {
   let name = if (tag.length > 0) tag else definition.tag;
   if (name.length == 0) {
     throw new Error('renderElement: the definition has no tag; pass one');
@@ -61,14 +61,14 @@ export let renderElement = (definition: ElementDefinition,
   let renderer = new Renderer();
   renderer.element(definition, name, attributes, false);
   return renderer.text();
-};
+}
 
 /** Renders a template result with hydration markers. */
-export let renderResult = (result: TemplateResult): String => {
+export function renderResult(result: TemplateResult): String {
   let renderer = new Renderer();
   renderer.value(result);
   return renderer.text();
-};
+}
 
 /**
  * Lit's digest of a template's strings, which hydration compares against
@@ -76,7 +76,7 @@ export let renderResult = (result: TemplateResult): String => {
  * each string's UTF-16 code units, alternating per unit, as 8 bytes in
  * base64.
  */
-export let templateDigest = (strings: TemplateStringsArray): String => {
+export function templateDigest(strings: TemplateStringsArray): String {
   var h0 = 5381;
   var h1 = 5381;
   for (var si = 0; si < strings.length; si += 1) {
@@ -117,18 +117,18 @@ export let templateDigest = (strings: TemplateStringsArray): String => {
     }
   }
   return base64Of8(h0, h1);
-};
+}
 
 let base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 /** Byte `index` (0..7) of the two hashes laid out little-endian. */
-let hashByte = (h0: i32, h1: i32, index: i32): i32 => {
+function hashByte(h0: i32, h1: i32, index: i32) {
   let h = if (index < 4) h0 else h1;
   return (h >> ((index & 3) * 8)) & 0xFF;
-};
+}
 
 /** The eight bytes of two little-endian 32-bit hashes in base64, as `btoa` writes them. */
-let base64Of8 = (h0: i32, h1: i32): String => {
+function base64Of8(h0: i32, h1: i32): String {
   let out = new StringBuilder();
   var i = 0;
   while (i < 8) {
@@ -150,10 +150,10 @@ let base64Of8 = (h0: i32, h1: i32): String => {
     i += 3;
   }
   return out.toString();
-};
+}
 
 /** Appends `s` with `&<>"'` escaped as Lit's renderer escapes them. */
-let appendEscaped = (out: StringBuilder, s: String): void => {
+function appendEscaped(out: StringBuilder, s: String) {
   let len = s.length;
   var start = 0;
   for (var i = 0; i < len; i += 1) {
@@ -171,66 +171,66 @@ let appendEscaped = (out: StringBuilder, s: String): void => {
     }
   }
   out.appendSlice(s, start, len);
-};
+}
 
 /** Past this magnitude JavaScript writes a number in exponent form. */
 let exponentFrom = 1000000000000000000000.0;
 
 /** A number as JavaScript's `String(n)` writes it, for the common cases. */
-let numberText = (value: f64): String => {
+function numberText(value: f64) {
   let whole = value as i64;
   if ((whole as f64) == value && value < exponentFrom && value > -exponentFrom) {
     return i64ToString(whole);
   }
   return f64ToString(value);
-};
+}
 
 /** The text of a value in an attribute or a child, as Lit's `String(v)`. */
-let valueText = (value: TemplateValue): String => {
+function valueText(value: TemplateValue) {
   if (value == null) {
     return '';
   }
   if (value is String) {
-    return value as String;
+    return value;
   }
   if (value is Box<i32>) {
-    return i32ToString((value as Box<i32>).value);
+    return i32ToString(value.value);
   }
   if (value is Box<f64>) {
-    return numberText((value as Box<f64>).value);
+    return numberText(value.value);
   }
   if (value is Box<boolean>) {
-    return if ((value as Box<boolean>).value) 'true' else 'false';
+    return if (value.value) 'true' else 'false';
   }
   return '';
-};
+}
 
 /** Lit's truthiness of a value in a boolean attribute. */
-let truthy = (value: TemplateValue): boolean => {
+function truthy(value: TemplateValue): boolean {
   if (value == null) {
     return false;
   }
   if (value is Box<boolean>) {
-    return (value as Box<boolean>).value;
+    return value.value;
   }
   if (value is Box<i32>) {
-    return (value as Box<i32>).value != 0;
+    return value.value != 0;
   }
   if (value is Box<f64>) {
-    return (value as Box<f64>).value != 0.0;
+    return value.value != 0.0;
   }
   if (value is String) {
-    return (value as String).length > 0;
+    return value.length > 0;
   }
   return true;
-};
+}
 
 /**
  * The attribute a bound property reflects to on an element, as Lit's
  * renderer serializes it, or '' for a property that does not reflect.
  * The common entries of Lit's table; `*` entries apply to every element.
  */
-let reflectedAttribute = (tag: String, property: String): String => {
+function reflectedAttribute(tag: String, property: String) {
   if (property == 'className') { return 'class'; }
   if (property == 'id' || property == 'title' || property == 'lang' || property == 'dir' ||
       property == 'slot' || property == 'style' || property == 'hidden' || property == 'draggable') {
@@ -259,15 +259,19 @@ let reflectedAttribute = (tag: String, property: String): String => {
   }
   if (tag == 'label' && property == 'htmlFor') { return 'for'; }
   return '';
-};
+}
 
-let isRawTextTag = (name: String): boolean =>
-  name == 'style' || name == 'script' || name == 'textarea' || name == 'title';
+function isRawTextTag(name: String) {
+  return name == 'style' || name == 'script' || name == 'textarea' || name == 'title';
+}
 
-let isSpace = (b: i32): boolean => b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D || b == 0x0C;
+function isSpace(b: i32) {
+  return b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D || b == 0x0C;
+}
 
-let isNameChar = (b: i32): boolean =>
-  !isSpace(b) && b != 0x3E && b != 0x2F && b != 0x3D && b != 0x22 && b != 0x27;
+function isNameChar(b: i32) {
+  return !isSpace(b) && b != 0x3E && b != 0x2F && b != 0x3D && b != 0x22 && b != 0x27;
+}
 
 /** Where the scanner is in a template's text. */
 enum Scan {
@@ -299,7 +303,7 @@ final class Renderer {
   /** `renderValue`: a child part, with the markers hydration reads. */
   value(value: TemplateValue): void {
     if (value is TemplateResult) {
-      let result = value as TemplateResult;
+      let result = value;
       this.out.append('<!--lit-part ').append(templateDigest(result.strings)).append('-->');
       this.template(result);
       this.out.append('<!--/lit-part-->');
@@ -369,7 +373,7 @@ final class Renderer {
     for (let entry in attributes) {
       let property = propertyForAttribute(definition, entry.key);
       if (property != null) {
-        applyAttribute(instance, property as PropertyDef, entry.value);
+        applyAttribute(instance, property, entry.value);
       }
     }
     instance.connected();
@@ -414,7 +418,7 @@ final class Renderer {
     let boundStatics = new GrowableArray<String>();
     var boundFirst = 0;
 
-    let finishStaticAttribute = (): void => {
+    let finishStaticAttribute = () => {
       // A complete attribute without a binding: text as written.
       tag.append(attr.toString());
       tagAttributes[attrName] = attrValue.toString();
@@ -423,7 +427,7 @@ final class Renderer {
       tagScan = TagScan.Between;
     };
 
-    let writeBoundAttribute = (name: String, statics: GrowableArray<String>, first: i32): void => {
+    let writeBoundAttribute = (name: String, statics: GrowableArray<String>, first: i32) => {
       let prefix = name.getByteAt(0);
       let realName = if (prefix == 0x2E || prefix == 0x3F || prefix == 0x40) {
         name.sliceBytes(1, name.length)
@@ -458,7 +462,7 @@ final class Renderer {
           return;
         }
         if (value is Box<boolean>) {
-          if ((value as Box<boolean>).value) {
+          if (value.value) {
             tag.append(reflected);
             tagAttributes[reflected] = '';
           }
@@ -489,7 +493,7 @@ final class Renderer {
       tagAttributes[realName] = joined;
     };
 
-    let openTag = (name: String): void => {
+    let openTag = (name: String) => {
       tagName = name;
       tagNodeIndex = nodeIndex;
       nodeIndex += 1;
@@ -502,7 +506,7 @@ final class Renderer {
       scan = Scan.Tag;
     };
 
-    let closeTag = (): void => {
+    let closeTag = () => {
       // The start tag is complete: the marker, the tag, and for one of
       // this module's own elements, its shadow root.
       let definition = tagDefinition;
@@ -515,7 +519,7 @@ final class Renderer {
       }
       out.append('>');
       if (definition != null) {
-        this.shadow(definition as ElementDefinition, tagAttributes);
+        this.shadow(definition, tagAttributes);
       }
       if (isRawTextTag(tagName)) {
         rawTag = tagName;

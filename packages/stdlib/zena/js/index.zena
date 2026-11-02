@@ -60,16 +60,18 @@ var nextHandle = 1;
  * with this handle. Until then it is pending, and a drain that runs out
  * of work with it still outstanding reports a deadlock.
  */
-export let pending = <T>(): Pending<T> => {
+export function pending<T>(): Pending<T> {
   let completer = new Completer<T>();
   let handle = nextHandle;
   nextHandle += 1;
   slots[handle] = completer;
   return new Pending<T>(handle, completer.future);
-};
+}
 
 /** True while any registered operation is still outstanding. */
-export let hasPending = (): boolean => slots.size > 0;
+export function hasPending(): boolean {
+  return slots.size > 0;
+}
 
 /**
  * The completer for `handle`, removed from the registry.
@@ -78,65 +80,67 @@ export let hasPending = (): boolean => slots.size > 0;
  * completion for the same handle finds nothing and says so, rather than
  * settling a future twice or quietly doing nothing.
  */
-let take = (handle: i32): AnyCompleter => {
+function take(handle: i32): AnyCompleter {
   if (let (true, completer) = slots.get(handle)) {
     slots.delete(handle);
     return completer;
   }
   throw new Error('No host operation is pending for handle ' +
       i32ToString(handle) + ' (already completed, or never registered)');
-};
+}
 
 /** The error for a completion whose payload was the wrong type. */
-let wrongType = (handle: i32, delivered: String) => new Error('Host completed handle ' + i32ToString(handle) +
+function wrongType(handle: i32, delivered: String) {
+  return new Error('Host completed handle ' + i32ToString(handle) +
     ' with ' + delivered + ', which is not the type it was registered ' +
     'for. The Zena binding and its host function disagree.');
+}
 
 /** Settles a handle registered as `pending<void>()`. */
-export let completeVoid = (handle: i32): void => {
+export function completeVoid(handle: i32): void {
   let slot = take(handle);
   if (!(slot is Completer<void>)) {
     throw wrongType(handle, 'no value');
   }
   slot.complete();
-};
+}
 
 /** Settles a handle registered as `pending<i32>()`. */
-export let completeI32 = (handle: i32, value: i32): void => {
+export function completeI32(handle: i32, value: i32): void {
   let slot = take(handle);
   if (!(slot is Completer<i32>)) {
     throw wrongType(handle, 'an i32');
   }
   slot.complete(value);
-};
+}
 
 /** Settles a handle registered as `pending<f64>()`. */
-export let completeF64 = (handle: i32, value: f64): void => {
+export function completeF64(handle: i32, value: f64): void {
   let slot = take(handle);
   if (!(slot is Completer<f64>)) {
     throw wrongType(handle, 'an f64');
   }
   slot.complete(value);
-};
+}
 
 /** Settles a handle registered as `pending<String>()`. */
-export let completeString = (handle: i32, value: String): void => {
+export function completeString(handle: i32, value: String): void {
   let slot = take(handle);
   if (!(slot is Completer<String>)) {
     throw wrongType(handle, 'a String');
   }
   slot.complete(value);
-};
+}
 
 /** Settles a handle registered as `pending<anyref>()` with a reference
  * to a host object. */
-export let completeExtern = (handle: i32, value: anyref): void => {
+export function completeExtern(handle: i32, value: anyref): void {
   let slot = take(handle);
   if (!(slot is Completer<anyref>)) {
     throw wrongType(handle, 'a host reference');
   }
   slot.complete(value);
-};
+}
 
 /**
  * Fails a pending handle, whatever payload it was registered for.
@@ -145,6 +149,6 @@ export let completeExtern = (handle: i32, value: anyref): void => {
  * payload — `fail` is declared on the erased `AnyCompleter`, so this
  * never has to know what the successful value would have been.
  */
-export let completeError = (handle: i32, message: String): void => {
+export function completeError(handle: i32, message: String): void {
   take(handle).fail(new Error(message));
-};
+}

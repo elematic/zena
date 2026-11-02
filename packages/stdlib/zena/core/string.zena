@@ -14,32 +14,36 @@ export { Encoding } from './encoding.zena';
  * Returns the ASCII lowercase of `b`, leaving every other byte or code point
  * unchanged.
  */
-export let asciiLowerByte = (b: i32): i32 =>
-  if (b >= 0x41 && b <= 0x5A) b + 0x20 else b;
+export function asciiLowerByte(b: i32): i32 {
+  return if (b >= 0x41 && b <= 0x5A) b + 0x20 else b;
+}
 
 /** Returns the ASCII uppercase of `b`. */
-export let asciiUpperByte = (b: i32): i32 =>
-  if (b >= 0x61 && b <= 0x7A) b - 0x20 else b;
+export function asciiUpperByte(b: i32): i32 {
+  return if (b >= 0x61 && b <= 0x7A) b - 0x20 else b;
+}
 
 /**
  * Whether `b` is ASCII whitespace: a space, tab, line feed, form feed or
  * carriage return.
  */
-let isAsciiSpace = (b: i32) =>
-  b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0C || b == 0x0D;
+function isAsciiSpace(b: i32) {
+  return b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0C || b == 0x0D;
+}
 
 /**
  * Whether `cp` is a C0/C1 control character, CR, or LF (UAX #29 Control / CR / LF).
  */
-let isGraphemeControl = (cp: i32): boolean =>
-  cp < 0x20 || (cp >= 0x7F && cp <= 0x9F);
+function isGraphemeControl(cp: i32) {
+  return cp < 0x20 || (cp >= 0x7F && cp <= 0x9F);
+}
 
 /**
  * Whether `cp` extends the preceding grapheme cluster (combining marks,
  * enclosing marks, variation selectors, ZWJ/ZWNJ, emoji skin-tone modifiers,
  * and subdivision flag tags).
  */
-let isGraphemeExtend = (cp: i32): boolean => {
+function isGraphemeExtend(cp: i32): boolean {
   if (cp < 0x0300) {
     return false;
   }
@@ -94,19 +98,20 @@ let isGraphemeExtend = (cp: i32): boolean => {
     return true; // Variation Selectors Supplement
   }
   return false;
-};
+}
 
 /**
  * Whether `cp` is a Regional Indicator symbol (`U+1F1E6..U+1F1FF`).
  */
-let isRegionalIndicator = (cp: i32): boolean =>
-  cp >= 0x1F1E6 && cp <= 0x1F1FF;
+function isRegionalIndicator(cp: i32) {
+  return cp >= 0x1F1E6 && cp <= 0x1F1FF;
+}
 
 /**
  * Returns the Hangul syllable category for `cp`:
  * 0 = Not Hangul, 1 = L, 2 = V, 3 = T, 4 = LV, 5 = LVT.
  */
-let hangulSyllableType = (cp: i32): i32 => {
+function hangulSyllableType(cp: i32): i32 {
   if ((cp >= 0x1100 && cp <= 0x115F) || (cp >= 0xA960 && cp <= 0xA97C)) {
     return 1; // L
   }
@@ -122,7 +127,7 @@ let hangulSyllableType = (cp: i32): i32 => {
     return if (rem == 0) 4 else 5; // LV or LVT
   }
   return 0;
-};
+}
 
 /**
  * A position within a `String` that has been validated to lie on a
@@ -524,10 +529,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
       let base = this.#start + offset;
       let prev = __byte_array_get(this.#data, base - 2) | (__byte_array_get(this.#data, base - 1) << 8);
       let curr = __byte_array_get(this.#data, base) | (__byte_array_get(this.#data, base + 1) << 8);
-      if (prev >= 0xD800 && prev <= 0xDBFF && curr >= 0xDC00 && curr <= 0xDFFF) {
-        return false;
-      }
-      return true;
+      return !(prev >= 0xD800 && prev <= 0xDBFF && curr >= 0xDC00 && curr <= 0xDFFF);
     }
     let b = __byte_array_get(this.#data, this.#start + offset);
     return (b & 0xC0) != 0x80;

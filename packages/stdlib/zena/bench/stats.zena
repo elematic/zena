@@ -44,7 +44,7 @@ export class SummaryStats {
  * Returns a sorted copy of the samples. Insertion sort: sample arrays are at
  * most a few thousand entries and typically nearly sorted regions dominate.
  */
-export let sortedCopy = (samples: Array<f64>): GrowableArray<f64> => {
+export function sortedCopy(samples: Array<f64>): GrowableArray<f64> {
   let out = new Array<f64>();
   for (let s in samples) {
     out.push(s);
@@ -61,7 +61,7 @@ export let sortedCopy = (samples: Array<f64>): GrowableArray<f64> => {
     i += 1;
   }
   return out;
-};
+}
 
 // Two-sided 95% critical values of Student's t distribution for degrees of
 // freedom 1..30. Beyond 30 we interpolate in 1/df toward the normal 1.960.
@@ -77,7 +77,7 @@ let T95 = [
  * Two-sided 95% critical value of Student's t distribution for the given
  * (possibly fractional, from Welch–Satterthwaite) degrees of freedom.
  */
-export let tCritical95 = (df: f64): f64 => {
+export function tCritical95(df: f64): f64 {
   if (df <= 1.0) {
     return T95[0];
   }
@@ -93,13 +93,13 @@ export let tCritical95 = (df: f64): f64 => {
   let z = 1.960;
   let w = (1.0 / df) * 30.0;
   return z + (t30 - z) * w;
-};
+}
 
 /**
  * Summarizes a sample distribution. With fewer than two samples the spread
  * statistics are zero and the CI collapses to the mean.
  */
-export let summarize = (samples: Array<f64>): SummaryStats => {
+export function summarize(samples: Array<f64>): SummaryStats {
   let n = samples.length;
   if (n == 0) {
     return new SummaryStats(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
@@ -142,7 +142,7 @@ export let summarize = (samples: Array<f64>): SummaryStats => {
     ciHigh = mean + t * se;
   }
   return new SummaryStats(n, mean, variance, stdDev, minV, maxV, median, ciLow, ciHigh);
-};
+}
 
 /**
  * 95% confidence interval of (a.mean - b.mean), Welch's construction.
@@ -164,7 +164,7 @@ export class Difference {
   }
 }
 
-export let differenceOfMeans = (a: SummaryStats, b: SummaryStats): Difference => {
+export function differenceOfMeans(a: SummaryStats, b: SummaryStats): Difference {
   let meanDiff = a.mean - b.mean;
   var se = 0.0;
   var df = 1.0;
@@ -188,7 +188,7 @@ export let differenceOfMeans = (a: SummaryStats, b: SummaryStats): Difference =>
     pctHigh = absHigh / b.mean * 100.0;
   }
   return new Difference(absLow, absHigh, pctLow, pctHigh);
-};
+}
 
 /**
  * Resolution thresholds, as in Tachometer: a pairwise difference is resolved
@@ -209,7 +209,7 @@ export class Horizons {
  * "0.5ms" / "2" (absolute milliseconds). Values are symmetric: "1%" tests
  * both +1% and -1%.
  */
-export let parseHorizons = (specs: FixedArray<String>): Horizons => {
+export function parseHorizons(specs: FixedArray<String>): Horizons {
   let h = new Horizons();
   for (let spec in specs) {
     if (spec.endsWith('%')) {
@@ -221,15 +221,17 @@ export let parseHorizons = (specs: FixedArray<String>): Horizons => {
     }
   }
   return h;
-};
+}
 
-let straddles = (low: f64, high: f64, x: f64) => low < x && x < high;
+function straddles(low: f64, high: f64, x: f64) {
+  return low < x && x < high;
+}
 
 /**
  * True when the difference CI straddles no horizon boundary, i.e. more
  * sampling is not expected to change the conclusion.
  */
-export let isResolved = (d: Difference, horizons: Horizons): boolean => {
+export function isResolved(d: Difference, horizons: Horizons): boolean {
   for (let p in horizons.percents) {
     if (straddles(d.pctLow, d.pctHigh, p) || straddles(d.pctLow, d.pctHigh, 0.0 - p)) {
       return false;
@@ -241,4 +243,4 @@ export let isResolved = (d: Difference, horizons: Horizons): boolean => {
     }
   }
   return true;
-};
+}

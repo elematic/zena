@@ -134,21 +134,25 @@ export final class Extension implements Disposable {
 }
 
 /** `name`, served by the host: a WASI or `zena-cli:host` interface. */
-export let fromHost = (name: String): Binding => new Binding(name, new SourceHost());
+export function fromHost(name: String): Binding {
+  return new Binding(name, new SourceHost());
+}
 
 /**
  * `name`, served by this program's export `exported`, which is `name`
  * when absent: a resource whose methods are the extension's functions,
  * vended by the plugin object the load names.
  */
-export let fromProgram = (name: String, exported: String | null = null): Binding =>
-  new Binding(name, new SourceProgram(exported ?? name));
+export function fromProgram(name: String, exported: String | null = null): Binding {
+  return new Binding(name, new SourceProgram(exported ?? name));
+}
 
 /** `name`, served by `extension`'s export of the same name. */
-export let fromExtension = (name: String, ext: Extension): Binding =>
-  new Binding(name, new SourceExtension(ext.handle));
+export function fromExtension(name: String, ext: Extension): Binding {
+  return new Binding(name, new SourceExtension(ext.handle));
+}
 
-let configure = (options: LoadOptions) => {
+function configure(options: LoadOptions) {
   let {memoryLimit = 0 as i64, debug = false} = options;
   var timeoutNanos = 0 as i64;
   if (let {callTimeout} = options) {
@@ -158,7 +162,7 @@ let configure = (options: LoadOptions) => {
   }
   let limit = if (memoryLimit > (0 as i64)) memoryLimit as u64 else 0 as u64;
   return new HostLoadOptions(limit, timeoutNanos, debug);
-};
+}
 
 /**
  * The plugin objects of loads in flight, by token, until the host asks
@@ -182,7 +186,7 @@ export function claimPlugin(token: u32): Disposable | null {
   return object;
 }
 
-let pluginOf = (options: LoadOptions): Option<PluginRef> => {
+function pluginOf(options: LoadOptions): Option<PluginRef> {
   if (let {plugin} = options) {
     if (let {kind} = options) {
       let token = nextToken;
@@ -197,14 +201,14 @@ let pluginOf = (options: LoadOptions): Option<PluginRef> => {
     throw new Error(`zena:extensions: plugin kind ${kind} without a plugin object`);
   }
   return none;
-};
+}
 
-let extensionOf = (loaded: Result<u32, String>): Result<Extension, String> => {
+function extensionOf(loaded: Result<u32, String>): Result<Extension, String> {
   if (loaded is (true, u32)) {
     return (true, new Extension(loaded[1]));
   }
   return (false, (loaded as (false, String))[1]);
-};
+}
 
 /**
  * Loads the component at `path`, in this program's view of the file
@@ -266,15 +270,15 @@ export async function loadTrustedExtension(
  * `wit/` under `$ZENA_STDLIB_DIR`, or under `/stdlib`, where the `zena`
  * command's hosts preopen it.
  */
-export let checkExtension = (
+export function checkExtension(
   path: String,
   witPath: String,
   world: String,
   deps: Array<String> | null = null,
-): Array<String> => {
+): Array<String> {
   let list = new Array<String>();
   if (deps != null) {
-    for (let dep in deps as Array<String>) {
+    for (let dep in deps) {
       list.push(dep);
     }
   } else {
@@ -288,4 +292,4 @@ export let checkExtension = (
       return why.split('\n');
     }
   }
-};
+}

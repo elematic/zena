@@ -88,7 +88,7 @@ declare function raiseCancellation(): never;
  */
 var current: CancelScope | null = null;
 var rootScope: CancelScope | null = null;
-let getRootScope = () => {
+function getRootScope() {
   let s = rootScope;
   if (s != null) {
     return s;
@@ -96,7 +96,7 @@ let getRootScope = () => {
   let newScope = new CancelScope.[detachedScope]();
   rootScope = newScope;
   return newScope;
-};
+}
 
 /**
  * A cancellation scope: a level-triggered cancelled flag and a parent
@@ -228,10 +228,10 @@ export class CancelScope {
 
 /** The scope new async work would bind to; sync code polls this to
  * stop early without any signature change. */
-export let currentScope = (): CancelScope => {
+export function currentScope(): CancelScope {
   let s = current;
   return s ?? getRootScope();
-};
+}
 
 /**
  * The opt-in checkpoint for CPU-bound work with no natural suspension
@@ -246,11 +246,11 @@ export let currentScope = (): CancelScope => {
  * whole-program cancellation gate, and under a closed gate the check
  * is a branch never taken.
  */
-export let checkCancellation = (): void => {
+export function checkCancellation(): void {
   if (currentScope().isCancelled) {
     raiseCancellation();
   }
-};
+}
 
 // ---------------------------------------------------------------------------
 // TaskGroup: the structured half (docs/design/cancellation.md)

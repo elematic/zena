@@ -50,13 +50,13 @@ export enum RunOutcome {
   Failed,
 }
 
-let outcomeOf = (outcome: Outcome) => {
+function outcomeOf(outcome: Outcome) {
   if (outcome == Outcome.Returned) { return RunOutcome.Returned; }
   if (outcome == Outcome.Trapped) { return RunOutcome.Trapped; }
   if (outcome == Outcome.TimedOut) { return RunOutcome.TimedOut; }
   if (outcome == Outcome.Exited) { return RunOutcome.Exited; }
   return RunOutcome.Failed;
-};
+}
 
 /** What a run produced. */
 export class RunResult {
@@ -102,7 +102,8 @@ export class RunResult {
   }
 }
 
-let resultOf = (r: HostRunResult) => new RunResult(
+function resultOf(r: HostRunResult) {
+  return new RunResult(
     outcomeOf(r.outcome),
     r.exitCode,
     r.resultText,
@@ -110,6 +111,7 @@ let resultOf = (r: HostRunResult) => new RunResult(
     String.fromBytes(r.stdout),
     String.fromBytes(r.stderr),
     r.callNanos as Duration);
+}
 
 /** A directory of this program's, `from`, preopened for the run as `to`. */
 export type DirMapping = {from: String, to: String};
@@ -165,7 +167,7 @@ export type RunOptions = {
   timeout?: Duration,
 };
 
-let configure = (options: RunOptions) => {
+function configure(options: RunOptions) {
   let argList = new Array<String>();
   if (let {args} = options) {
     for (let arg in args) {
@@ -196,7 +198,7 @@ let configure = (options: RunOptions) => {
   }
   return new HostRunOptions(argList, envList, inheritEnv, dirList, invoke,
       inheritStdio, grant, grantExtensions, debug, timeoutNanos);
-};
+}
 
 /**
  * A run in progress: a resource over the host's handle, held as
@@ -221,16 +223,19 @@ export resource class Run {
 }
 
 /** Start a component and return at once. */
-export let startModule = (path: String, options: RunOptions = {}): Own<Run> =>
-  new Run(HostRun.create(path, configure(options)));
+export function startModule(path: String, options: RunOptions = {}): Own<Run> {
+  return new Run(HostRun.create(path, configure(options)));
+}
 
 /** Run a component to its end. */
-export let runModule = (path: String, options: RunOptions = {}): RunResult =>
-  startModule(path, options).wait();
+export function runModule(path: String, options: RunOptions = {}): RunResult {
+  return startModule(path, options).wait();
+}
 
 /**
  * Write a component's ahead-of-time compiled form beside it, so its
  * first run skips compilation. Returns '' or why it could not.
  */
-export let precompileModule = (path: String, debug: boolean = false): String =>
-  precompile(path, debug);
+export function precompileModule(path: String, debug: boolean = false): String {
+  return precompile(path, debug);
+}
