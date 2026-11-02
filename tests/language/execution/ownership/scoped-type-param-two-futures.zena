@@ -1,0 +1,35 @@
+// @mode: run
+// @result: 25
+// One `scoped T` function at two scoped futures of different types. A
+// `Scoped<F>` argument specializes as its future `F`, as
+// eraseTypeParameters lowers it, so the two calls get two
+// specializations. (Read through the handle's unsubstituted target,
+// both were the erasure of `T` and shared one, which a body that only
+// passes `x` through survives.)
+import {Own, Borrow, Scoped, Disposable} from 'zena:core';
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  size(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+async function count(r: Borrow<Res>): Scoped<Future<i32>> {
+  return r.size();
+}
+
+async function name(r: Borrow<Res>): Scoped<Future<String>> {
+  return `res${r.size()}`;
+}
+
+function keep<scoped T>(x: T): T {
+  return x;
+}
+
+export async function main(): Future<i32> {
+  let owner = new Res(20);
+  let n = await keep(count(owner));
+  let s = await keep(name(owner));
+  return n + s.length;
+}
