@@ -4,7 +4,7 @@ import {
   U8Type, U16Type, I8Type, I16Type, V128Type,
   UnknownType, ErrorType, AnyRefType, EqRefType, ExternRefType, NeverType, HoleType,
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
-  UnionType, InlineTupleType, InlineParamType, inlineOf, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
+  UnionType, InlineTupleType, InlineParamType, InlineRecordType, inlineOf, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
   countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow, mergeTupleRow,
   scopedFieldNames } from '../types.zena';
@@ -147,6 +147,10 @@ function substituteTypeParamsInCodegenInner(
     case InlineParamType {param}: {
       let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, param);
       if (sub === param) t else inlineOf(sub)
+    }
+    case InlineRecordType {record}: {
+      let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, record);
+      if (sub === record || !(sub is RecordType)) t else new InlineRecordType(sub)
     }
     case UnionType {types}: {
       let newTypes = new Array<Type>(types.length);
@@ -1407,6 +1411,10 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
     }
     // An erased element is a reference, never a tuple.
     case InlineParamType {param}: eraseTypeParameters(wasm, param)
+    case InlineRecordType {record}: {
+      let erased = eraseTypeParameters(wasm, record);
+      if (erased === record || !(erased is RecordType)) t else new InlineRecordType(erased)
+    }
     case RecordType as rec: {
       let newProps = new Map<String, Type>();
       var changed = false;
@@ -2389,6 +2397,14 @@ export function mapParamTypeToWasmParams(wasm: WasmModule, type: Type, params: G
     }
     return;
   }
+  // An inline record is its fields, in its dispatch's order.
+  let record = inlineRecordParamOf(type);
+  if (record != null) {
+    for (let field in recordWasmFields(wasm, record, null)) {
+      params.push(field.type);
+    }
+    return;
+  }
   let vt = typeToValType(wasm, type);
   if (vt is ValTypeVoid) {
     return;
@@ -2407,6 +2423,15 @@ export function inlineParamLayoutOf(wasm: WasmModule, type: Type): InlineLayout 
     return null;
   }
   return inlineLayoutOf(wasm, u);
+}
+
+/** The record an inline record parameter of type `type` is, through aliases, or null. */
+export function inlineRecordParamOf(type: Type): RecordType | null {
+  var curr = type;
+  while (curr is TypeAliasType) {
+    curr = curr.target;
+  }
+  return if (let InlineRecordType {record} = curr) record else null;
 }
 
 /** Whether a lowered value of this type occupies a wasm slot. */
@@ -2587,6 +2612,7 @@ export function containsMixinThis(type: Type): boolean {
     found
   }
   case InlineParamType: false
+  case InlineRecordType {record}: containsMixinThis(record)
   case InlineTupleType {elementTypes}: {
     var found = false;
     for (let el in elementTypes) {
@@ -2701,6 +2727,10 @@ export function mapMixinThisInType(ct: ClassType, type: Type): Type {
       new TupleType(newElems, row, rowIndex) as Type
     }
     case InlineParamType: type
+    case InlineRecordType {record}: {
+      let mapped = mapMixinThisInType(ct, record);
+      if (mapped is RecordType) new InlineRecordType(mapped) as Type else type
+    }
     case InlineTupleType {elementTypes}: {
       let newElems = new Array<Type>();
       for (let el in elementTypes) {

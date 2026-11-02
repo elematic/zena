@@ -3,7 +3,7 @@ import { growable } from 'zena:core';
 import { BooleanLiteral, Expression, NumberLiteral, SourceLocation } from '../ast.zena';
 import {
   BoolLiteralType, BooleanType, ClassType, ErrorType, F64Type, HoleType,
-  I32Type, InlineTupleType as InlineTupleT, InterfaceType, NeverType,
+  I32Type, InlineRecordType, InlineTupleType as InlineTupleT, InterfaceType, NeverType,
   NullType, NumLiteralType, StringLiteralType, TupleType as TupleT, Type,
   TypeAliasType, UnionType as UnionT, UnknownType, VoidType, baseType,
   integerLiteralMagnitude, isIntegerType, isNumericType, isOwnershipWrapper,
@@ -648,6 +648,11 @@ export function unwrapAliases(t: Type): Type {
     if (ta.isDistinct || ta.intrinsicName != null || ta.resolving) { break; }
     curr = ta.target;
     hops += 1;
+  }
+  // An inline record has its record's structure; only where a value is
+  // held does it differ (docs/design/inline-parameters.md).
+  if (let InlineRecordType {record} = curr) {
+    return record;
   }
   return curr;
 }

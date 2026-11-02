@@ -312,6 +312,11 @@ export sealed class Type implements Hashable {
   // argument as it is otherwise, decided per substitution (`inlineOf`).
   // Until then it stands for `T`.
   case InlineParamType(param: TypeParameterType)
+  // `inline {x: i32, y: i32}`: a closed record passed as its fields, as a
+  // parameter or `let` (docs/design/inline-parameters.md). Its structure
+  // is the record's, so `unwrapAliases` reads through it; only where a
+  // value is held does it differ.
+  case InlineRecordType(record: RecordType)
   case UnionType(types: Array<Type>)
   case RecordType, FunctionType, ClassType, InterfaceType
   case MixinType, TypeParameterType, TypeAliasType, EnumType
@@ -2003,6 +2008,10 @@ function substituteInType(
     }
     case InlineParamType {param}:
       inlineOf(substituteInType(param, typeParameters, typeArguments) ?? param)
+    case InlineRecordType {record}: {
+      let sub = substituteInType(record, typeParameters, typeArguments);
+      if (sub is RecordType) new InlineRecordType(sub) as Type else t
+    }
     case UnionType {types}: {
       let newTypes = new Array<Type>();
       for (let ut in types) {
@@ -2452,6 +2461,7 @@ function instantiationKeyOf(t: Type): String {
   return match (t) {
   case TypeParameterType as tp: `${tp.name}#${i32ToString(tp.uid)}`
   case InlineParamType {param}: `inline ${instantiationKeyOf(param)}`
+  case InlineRecordType {record}: `inline ${instantiationKeyOf(record)}`
   case ArrayType {elementType, elementsMutable}:
     `${if (elementsMutable) "Array<" else "Array<imm "}${instantiationKeyOf(elementType)}>`
   case TupleType {elementTypes, row, rowIndex}: {
@@ -3283,6 +3293,7 @@ export function typeContainsTypeParameter(t: Type): boolean {
       false
     }
     case InlineParamType: true
+    case InlineRecordType {record}: typeContainsTypeParameter(record)
     case RecordType as rec: {
       if (rec.row != null) { return true; }
       for (let pair in rec.properties) {
@@ -4219,6 +4230,7 @@ export function typeToString(t: Type): String {
   }
   case TypeParameterType as tp: tp.name
   case InlineParamType {param}: `inline? ${param.name}`
+  case InlineRecordType {record}: `inline ${typeToString(record)}`
   case EnumType as et: et.name
   case TypeAliasType as ta: {
     let {typeArguments} = ta;

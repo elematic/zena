@@ -435,7 +435,7 @@ let find = (): inline (true, i32) | (false, _) => (false, _);
 ```
 
 It is an error on anything that cannot be unboxed: a primitive, a class,
-`null`, a record (inline records are planned), or a type parameter. `inline?
+`null`, an existential record, or a type parameter. `inline?
 T` is the type parameter form: unboxed when `T` is a tuple, and `T` otherwise.
 `inline` is
 shallow: in `inline (i32, (i32, i32))` the inner tuple is still boxed, and
@@ -451,6 +451,9 @@ function width(s: inline (i32, i32)): i32 {
   return end - start;
 }
 ```
+
+A record parameter or `let` can be inline the same way, passed as its fields
+(`p: inline {x: i32, y: i32}`); an inline record result is not supported yet.
 
 #### Use Case: Iterators
 

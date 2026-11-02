@@ -4,7 +4,7 @@ import { Expression, Node, SourceLocation, TypeAnnotation } from '../ast.zena';
 import {
   ArrayType, BoolLiteralType, BooleanType, ClassType, EnumType, ErrorType,
   F32Type, F64Type, FunctionType, I16Type, I32Type, I64Type, I8Type,
-  InlineParamType, InlineTupleType as InlineTupleT, InterfaceType, MixinType,
+  InlineParamType, InlineRecordType, InlineTupleType as InlineTupleT, InterfaceType, MixinType,
   NumLiteralType, RecordType as RecordT, StringLiteralType, ThisType,
   TupleType as TupleT, Type, TypeAliasType, TypeId, TypeParameterType, U16Type,
   U32Type, U64Type, U8Type, UnionType as UnionT, applyTypeIntrinsic,
@@ -85,6 +85,10 @@ export function substituteTypeParams(
     }
     case InlineParamType {param}: {
       return inlineOf(substituteTypeParams(typeParams, typeArgs, param));
+    }
+    case InlineRecordType {record}: {
+      let sub = substituteTypeParams(typeParams, typeArgs, record);
+      return if (sub is RecordT) new InlineRecordType(sub) else t;
     }
     case RecordT {properties, optionalProperties, row, isExistential}: {
       let subProps = new Map<String, Type>();

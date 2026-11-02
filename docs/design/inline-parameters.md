@@ -30,7 +30,10 @@ result does:
 
 - a tuple, or an alias of one;
 - a union of tuples with a discriminant (the rule from #481);
-- a closed record, or an alias of one (the second half of this round).
+- a closed record, or an alias of one, as a parameter or a `let`. An
+  inline record result, and an inline record as an element of an
+  inline tuple, are not supported yet. A record whose fields are not
+  known (existential, or spreading a row parameter) cannot be inline.
 
 Allowed positions in this round:
 
@@ -107,12 +110,31 @@ parameters, the same slots an inline result of that type returns.
 
 ## Lowering records
 
-The second PR of this round. An inline record parameter is its fields
-in `dispatch.fields` order, the order argument explosion uses
-(argument-explosion.md). Explosion adds a core beside a function and
-keeps the function as a forwarder, because it has to serve callers that
-hold the record boxed. An inline parameter needs no forwarder: every
-caller passes the fields, so the function's own signature takes them.
-The body binds the parameter as explosion's core does, to a record
-rebuilt from its fields and recorded in `explodedRecords`, which dead
-code elimination deletes once every read has gone to the fields.
+An inline record parameter is its fields in `dispatch.fields` order,
+the order argument explosion uses (argument-explosion.md), with a
+presence word for each optional field. Explosion adds a core beside a
+function and keeps the function as a forwarder, because it has to serve
+callers that hold the record boxed. An inline parameter needs no
+forwarder: every caller passes the fields, so the function's own
+signature takes them, and explosion skips the function.
+
+- **The type:** `InlineRecordType` wraps the record, as
+  `InlineTupleType` wraps a tuple. Assignability converts between the
+  two forms, and an expression that names an inline record binding has
+  the record's type, so member reads, patterns and overloads see a
+  record. Only the binding's declared type keeps the wrapper, which is
+  what `inlineBindingTypeOf` reads for `let q = p`.
+- **The body** binds the parameter as explosion's core does, to a
+  record rebuilt from its fields and recorded in `explodedRecords`.
+  Every read answers from the fields, so dead code elimination deletes
+  the record. An inline record `let` binds its initializer's fields
+  the same way.
+- **Calls:** an argument for an inline record parameter is lowered as
+  fields (`#recordArgFields`): a record literal writes them, a record
+  held as fields (an inline binding, or an exploded one) passes its
+  own, and a boxed record is read through its dispatch.
+
+An inline record result would return the fields as wasm results, as
+explosion's field-returning core does. It needs the return-path
+machinery inline tuples have (`#lowerMultiReturnValues`), and is left
+for a later round, as is an inline record inside an inline tuple.

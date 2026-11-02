@@ -542,6 +542,29 @@ export let tests = suite('WatGenerator', () => {
     assertNoAllocation(result, '$main', 'a literal argument is written into the slots');
   });
 
+  // An inline record parameter is passed as its fields, and the record
+  // its body binds is rebuilt from them only for reads to answer from, so
+  // dead code elimination deletes it.
+  test('inline record parameters and lets allocate nothing', (ctx) => {
+    let result = compileAndGenerateWat(`
+      type Point = {x: i32, y: i32};
+      function sum(p: inline Point): i32 {
+        let {x, y} = p;
+        return x + y + p.x;
+      }
+      function forward(p: inline Point): i32 {
+        let kept = p;
+        let swapped: inline Point = {x: p.y, y: p.x};
+        return sum(kept) + sum(swapped);
+      }
+      export let main = (): i32 => forward({x: 1, y: 9}) + sum({x: 2, y: 4});
+    `);
+    assertNoAllocation(result, '$sum', 'an inline record parameter is read from its fields');
+    assertNoAllocation(result, '$forward',
+        'an inline record let and parameter are passed on as fields');
+    assertNoAllocation(result, '$main', 'a record literal argument is written as fields');
+  });
+
   // The shaped vector types (`I32x4` and friends in `zena:simd`) are
   // extension classes over `v128`, and their whole value proposition is
   // that the shape is a compile-time view: no wrapper object, so no

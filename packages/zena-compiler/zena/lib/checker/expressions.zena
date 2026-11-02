@@ -15,7 +15,7 @@ import {
 } from '../ast.zena';
 import {
   ArrayType, BoolLiteralType, BooleanType, ClassType, ErrorType, F32Type,
-  F64Type, FieldInfo, FunctionType, HoleType, I32Type, I64Type,
+  F64Type, FieldInfo, FunctionType, HoleType, I32Type, I64Type, InlineRecordType,
   InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NeverType,
   NullType, RecordType as RecordT, TupleType as TupleT, Type, TypeAliasType,
   TypeParameterType, U64Type, UnionType as UnionT, UnknownType, VoidType,
@@ -119,7 +119,12 @@ export function checkExpression(ctx: CheckerContext, expr: Expression, expectedT
   // The callee marker belongs to this expression, not to its operands.
   let callee = ctx.directCallee;
   ctx.directCallee = null;
-  let t = checkExpressionInner(ctx, expr, expectedType);
+  var t = checkExpressionInner(ctx, expr, expectedType);
+  // Inline-ness is the binding's, not the value's: a reference to an
+  // inline record reads as the record (docs/design/inline-parameters.md).
+  if (let InlineRecordType {record} = t) {
+    t = record;
+  }
   // Record the inferred type in the semantic model.
   ctx.setNodeType(expr, t);
   if (t is FunctionType && callee !== expr && (expr is Identifier || expr is MemberExpression)) {

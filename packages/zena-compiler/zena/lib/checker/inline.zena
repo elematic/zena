@@ -24,15 +24,20 @@ import { CheckerContext } from './context.zena';
 
 /** Whether `e` names an inline parameter or `let`. */
 export function isInlineBindingReference(ctx: CheckerContext, e: Expression): boolean {
+  return inlineBindingTypeOf(ctx, e) != null;
+}
+
+/** The inline type of the parameter or `let` `e` names, or null. */
+export function inlineBindingTypeOf(ctx: CheckerContext, e: Expression): Type | null {
   if (!(e is Identifier)) {
-    return false;
+    return null;
   }
   let sym = ctx.model.resolve(e);
   if (sym == null) {
-    return false;
+    return null;
   }
   let t = ctx.model.getBindingType(sym);
-  return t != null && isInlineType(t) && !(t is FunctionType);
+  return if (t != null && isInlineType(t) && !(t is FunctionType)) t else null;
 }
 
 /**

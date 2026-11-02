@@ -25,7 +25,7 @@ import { WellKnown } from '../well-known.zena';
 import { Symbol } from '../scope/symbol.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
 import { boxedFormOf, isInlineType, resolveTypeAnnotation } from './annotations.zena';
-import { isInlineBindingReference } from './inline.zena';
+import { inlineBindingTypeOf, isInlineBindingReference } from './inline.zena';
 import { checkClassBodies, registerClassDeclaration } from './classes.zena';
 import { CheckerContext, lookupBindingTypeInDeps } from './context.zena';
 import {
@@ -927,6 +927,14 @@ function checkVariableDeclaration(
   let keepsInline = inlineAllowed && isInlineBindingReference(ctx, init);
   if (typeAnnotation == null && !(pattern is TuplePattern) && !keepsInline) {
     declType = boxedFormOf(declType);
+  }
+  if (keepsInline && typeAnnotation == null) {
+    // The binding's own type: a reference to an inline record reads as
+    // the record.
+    let initBinding = inlineBindingTypeOf(ctx, init);
+    if (initBinding != null) {
+      declType = initBinding;
+    }
   }
   if ((keepsInline && isInlineType(declType)) ||
       (expectedType != null && isInlineType(expectedType))) {
