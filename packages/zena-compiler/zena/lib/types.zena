@@ -1302,12 +1302,14 @@ export final class ClassType extends Type {
   var isResource: boolean = false;
 
   /**
-   * Whether the checker synthesized this resource class's `:dispose` —
-   * the class holds owner fields and wrote no release action of its
-   * own, so the implicit dispose is just the fields' release glue.
-   * RTA registers the node-less method from this flag.
+   * Whether the checker synthesized this class's release member
+   * (releaseMemberOf): the `:dispose` of a resource class that holds
+   * owner fields and wrote no release action of its own, or the
+   * `[release]` of a `scoped T` class that holds `T` in fields and
+   * declared none. Either body is just the fields' release glue. RTA
+   * registers the node-less method from this flag.
    */
-  var hasSyntheticDispose: boolean = false;
+  var hasSyntheticRelease: boolean = false;
   /**
    * The members of the class (fields, methods, and accessors): its own,
    * written by the checker during registration, and the ones it inherits,
@@ -1810,7 +1812,7 @@ export function classShapeStamp(ct: ClassType): i32 {
   if (ct.isFinal) { flags = flags | 1; }
   if (ct.isCaseClass) { flags = flags | 2; }
   if (ct.isResource) { flags = flags | 4; }
-  if (ct.hasSyntheticDispose) { flags = flags | 8; }
+  if (ct.hasSyntheticRelease) { flags = flags | 8; }
   if (ct.isAbstract) { flags = flags | 16; }
   if (ct.isExtension) { flags = flags | 32; }
   if (ct.isSealed) { flags = flags | 64; }
@@ -2189,7 +2191,7 @@ function substituteInType(
         // off this flag, and an instantiation that dropped it would get
         // no field and silently skip disown/adopt's state check.
         inst.isResource = template.isResource;
-        inst.hasSyntheticDispose = template.hasSyntheticDispose;
+        inst.hasSyntheticRelease = template.hasSyntheticRelease;
         inst.isAbstract = template.isAbstract;
         inst.isExtension = template.isExtension;
         inst.isSealed = template.isSealed;
@@ -2696,7 +2698,7 @@ export function instantiateClassType(
   // See the matching copy in instantiateClassType: resource-ness is
   // declared at the class and survives instantiation.
   result.isResource = source.isResource;
-  result.hasSyntheticDispose = source.hasSyntheticDispose;
+  result.hasSyntheticRelease = source.hasSyntheticRelease;
   result.isAbstract = source.isAbstract;
   result.isExtension = source.isExtension;
   // An extension's receiver type, or a mixin intermediate's `on` type:
@@ -4413,27 +4415,39 @@ export function isAffineContainer(t: Type): boolean {
 
 /**
  * The member an implicit drop calls on `owner`: `:dispose` on a
- * resource class, and `[release]` on a `Future` or a subclass of one,
- * which releases the owner the future's value holds when it lands
- * (owner-futures.md, "Releasing what nobody took").
+ * resource class, and `[release]` on a `scoped T` class or a subclass
+ * of one, which releases the owners its `T` values hold: a `Future`'s
+ * when its value lands (owner-futures.md, "Releasing what nobody
+ * took"), or a synthesized one's field by field.
  */
 export function releaseMemberOf(owner: ClassType): String {
+  if (owner.isResource) { return ":dispose"; }
   var c: ClassType | null = owner;
   while (c != null) {
     let cls = c as ClassType;
-    if (isFutureClassType(cls.genericSource ?? cls)) { return ":release"; }
+    if (scopedTypeParamsOf(cls).length > 0) { return ":release"; }
     c = cls.superType;
   }
   return ":dispose";
 }
 
 /**
- * `t` as a future whose value carries an owner and that an implicit
- * drop releases, or null: a `Future` (or a subclass) at an owner, when
- * `Future` declares `[release]`. The checker roots the call and
+ * Whether `ct` has a `[release]`, declared or synthesized (a `scoped T`
+ * class with `T` in its fields gets one): what an implicit drop of it
+ * at an owner calls. One with nothing that could hold an owner has none.
+ */
+export function hasReleaseMember(ct: ClassType): boolean {
+  return (ct.genericSource ?? ct).members.has(":release");
+}
+
+/**
+ * `t` as a container whose `T` carries an owner and that an implicit
+ * drop releases, or null: an instance of a `scoped T` class at an
+ * owner, such as a `Future<Own<R>>` or a `Slot<Own<R>>`, when it has a
+ * `[release]` (hasReleaseMember). The checker roots the call and
  * lowering emits it from the same test.
  */
-export function releasableFuture(t: Type): ClassType | null {
+export function releasableContainer(t: Type): ClassType | null {
   if (t is TypeAliasType) {
     let alias = t as TypeAliasType;
     if (alias.isDistinct || alias.intrinsicName != null || alias.resolving ||
@@ -4441,29 +4455,104 @@ export function releasableFuture(t: Type): ClassType | null {
       return null;
     }
     alias.resolving = true;
-    let res = releasableFuture(alias.target);
+    let res = releasableContainer(alias.target);
     alias.resolving = false;
     return res;
   }
   if (!(t is ClassType)) { return null; }
   let ct = t as ClassType;
-  if (!isAffineContainer(ct)) { return null; }
-  var c: ClassType | null = ct;
-  while (c != null) {
-    let cls = c as ClassType;
-    let declaring = cls.genericSource ?? cls;
-    if (isFutureClassType(declaring)) {
-      return if (declaring.members.has(":release")) ct else null;
-    }
-    c = cls.superType;
-  }
-  return null;
+  if (!isAffineContainer(ct) || !hasReleaseMember(ct)) { return null; }
+  return ct;
 }
 
 /** Whether `cls`'s declaration marks its type parameter `i` `scoped`. */
 export function isScopedClassParam(cls: ClassType, i: i32): boolean {
   let params = (cls.genericSource ?? cls).typeParameters;
   return params != null && i < params.length && params[i].isScoped;
+}
+
+/**
+ * Does `t` name any of `params` (by identity)? Asked of a static
+ * member's signature, this is what separates the two kinds of static a
+ * generic class can declare: one that cannot see the class's type
+ * parameters lives on the class itself, one that names them needs them
+ * bound at every call. Asked of a `scoped T` class's field, it is
+ * whether the field holds `T`.
+ */
+export function mentionsTypeParams(t: Type, params: Array<TypeParameterType>): boolean {
+  let anyOf = (types: Array<Type>): boolean => {
+    for (let each in types) {
+      if (mentionsTypeParams(each, params)) { return true; }
+    }
+    return false;
+  };
+  return match (t) {
+    case TypeParameterType as tp: {
+      for (let p in params) {
+        if (p === tp) { return true; }
+      }
+      false
+    }
+    case UnionType {types}: anyOf(types)
+    case ArrayType {elementType}: mentionsTypeParams(elementType, params)
+    case TupleType {elementTypes, row}: (row != null && mentionsTypeParams(row, params)) || anyOf(elementTypes)
+    case InlineTupleType {elementTypes}: anyOf(elementTypes)
+    case RecordType {properties, row}: {
+      if (row != null && mentionsTypeParams(row, params)) { return true; }
+      for (let {key} in properties) {
+        if (mentionsTypeParams(properties[key], params)) { return true; }
+      }
+      false
+    }
+    case FunctionType as ft: {
+      if (mentionsTypeParams(ft.returnType, params)) { return true; }
+      anyOf(ft.parameters)
+    }
+    case ClassType as ct: {
+      if (ct.typeArguments == null) false else anyOf(ct.typeArguments as Array<Type>)
+    }
+    case InterfaceType as it: {
+      if (it.typeArguments == null) false else anyOf(it.typeArguments as Array<Type>)
+    }
+    case MixinType as mt: {
+      if (mt.typeArguments == null) false else anyOf(mt.typeArguments as Array<Type>)
+    }
+    case TypeAliasType as ta: {
+      if (ta.typeArguments == null) false else anyOf(ta.typeArguments as Array<Type>)
+    }
+    case _: false
+  };
+}
+
+/** The type parameters `ct`'s declaration marks `scoped`. */
+export function scopedTypeParamsOf(ct: ClassType): Array<TypeParameterType> {
+  let scoped = new GrowableArray<TypeParameterType>();
+  let params = (ct.genericSource ?? ct).typeParameters;
+  if (params != null) {
+    for (let p in params) {
+      if (p.isScoped) { scoped.push(p); }
+    }
+  }
+  return scoped;
+}
+
+/**
+ * The names of the instance fields `ct`'s own declaration gives a type
+ * holding one of its `scoped` type parameters, in declaration order:
+ * what a synthesized `[release]` releases.
+ */
+export function scopedFieldNames(ct: ClassType): GrowableArray<String> {
+  let names = new GrowableArray<String>();
+  let declaring = ct.genericSource ?? ct;
+  let scoped = scopedTypeParamsOf(declaring);
+  if (scoped.length == 0) { return names; }
+  for (let entry in declaring.members.own) {
+    let member = entry.value;
+    if (member is FieldInfo && !member.isStatic && mentionsTypeParams(member.type, scoped)) {
+      names.push(entry.key);
+    }
+  }
+  return names;
 }
 
 /**

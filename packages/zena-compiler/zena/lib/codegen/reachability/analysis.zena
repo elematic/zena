@@ -5,7 +5,7 @@ import {
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType, releaseMemberOf,
+  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType, releaseMemberOf, hasReleaseMember,
 } from '../../types.zena';
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
@@ -18,7 +18,7 @@ import {
   getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey, getMemberRootClass,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, getClosureStruct, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots, interfaceSlotOverload, interfaceOverloadSignature, InterfaceSlotOverload, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen, getNonNullableType,
+  typeToValType, getClosureStruct, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots, interfaceSlotOverload, interfaceOverloadSignature, InterfaceSlotOverload, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, scopedFieldTypesAt, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen, getNonNullableType,
 } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
@@ -699,10 +699,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             this.noteReleaseTargets(ta, func.model);
           }
         }
-        // A synthesized :dispose releases each resource field the same way.
-        let disposeOwner = func.classType;
-        if (func.isSyntheticDispose && disposeOwner != null) {
-          this.#noteFieldStaticTargets(disposeOwner as ClassType, ":dispose");
+        // A synthesized :dispose releases each resource field the same
+        // way, and a synthesized [release] what each `T` field owns.
+        let releaseOwner = func.classType;
+        if (func.isSyntheticRelease && releaseOwner != null) {
+          if (releaseOwner.isResource) {
+            this.#noteFieldStaticTargets(releaseOwner, ":dispose");
+          } else {
+            for (let fieldType in scopedFieldTypesAt(this.wasm, releaseOwner)) {
+              this.noteReleaseTargets(fieldType, func.model);
+            }
+          }
         }
         if (!func.isImport) {
           this.wasm.addFunction(func);
@@ -2296,6 +2303,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     for (let ct in classes) {
       let member = releaseMemberOf(ct);
       if (member == ":dispose" && !ct.isResource) {
+        continue;
+      }
+      if (member == ":release" && !hasReleaseMember(ct)) {
         continue;
       }
       let symId = (ct.genericSource ?? ct).symbolId;
@@ -4834,11 +4844,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 this.queueMember((acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable);
               }
               if (mName == "==" || mName == "hashCode" ||
-                  (mName == ":dispose" && subCt.hasSyntheticDispose)) {
+                  (subCt.hasSyntheticRelease && mName == releaseMemberOf(subCt))) {
                 // A case class's synthesized ==/hashCode — and a
-                // resource's synthesized :dispose — have no AST node
-                // to find; reach the registered function by key,
-                // deferred past its registration.
+                // synthesized release member — have no AST node to
+                // find; reach the registered function by key, deferred
+                // past its registration.
                 if (this.currentReachable && mds.length == 0 && accs.length == 0) {
                   this.notePendingMemberReach(getClassMethodKey(getClassKey(subCt), mName));
                 }

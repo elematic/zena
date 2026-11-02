@@ -1,0 +1,19 @@
+// @mode: check
+// A `scoped T` class with `T` in its fields gets a synthesized
+// `[release]`, which releases only the fields its own declaration
+// holds `T` in. A subclass that adds such fields under an inherited
+// `[release]` would leave them unreleased, so it is rejected.
+import {WithDefault, defaultValue} from 'zena:core';
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+}
+
+class MoreSlot<scoped T> extends Slot<T> { // @error: A subclass cannot add such fields yet
+  var #extra: WithDefault<T> = defaultValue<T>();
+}
+
+// A subclass that adds no `T` field inherits the release.
+class SameSlot<scoped T> extends Slot<T> {
+  count: i32 = 0;
+}

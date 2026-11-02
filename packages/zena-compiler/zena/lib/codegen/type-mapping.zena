@@ -6,7 +6,8 @@ import {
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, InlineParamType, inlineOf, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
-  countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow, mergeTupleRow } from '../types.zena';
+  countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow, mergeTupleRow,
+  scopedFieldNames } from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -29,6 +30,20 @@ export function getClassTypeParameters(ct: ClassType): Array<TypeParameterType> 
 
 export function getInterfaceTypeParameters(it: InterfaceType): Array<TypeParameterType> | null {
   return (it.genericSource ?? it).typeParameters;
+}
+
+/**
+ * The types of the fields a synthesized `[release]` of `ct` releases
+ * (scopedFieldNames), at `ct`'s type arguments.
+ */
+export function scopedFieldTypesAt(wasm: WasmModule, ct: ClassType): GrowableArray<Type> {
+  let declaring = ct.genericSource ?? ct;
+  let types = new GrowableArray<Type>();
+  for (let name in scopedFieldNames(ct)) {
+    types.push(substituteTypeParamsInCodegen(wasm, getClassTypeParameters(ct),
+        ct.typeArguments, declaring.members[name].type));
+  }
+  return types;
 }
 
 /**

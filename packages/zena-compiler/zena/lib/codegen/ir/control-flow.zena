@@ -9,7 +9,7 @@
  * and seams. Bodies are streaming's shapes.
  */
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases,
+  ClassKey, getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases,
   pendingSomeClass, parseI64OrU64Literal,
 } from '../codegen-utils.zena';
 import {
@@ -20,8 +20,8 @@ import {
   NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
   isOwnershipWrapper, ownershipHandleInner, ownershipHandleName,
-  soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, releasableFuture,
-  representsRestricted,
+  soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, releasableContainer,
+  representsRestricted, hasReleaseMember, scopedFieldNames,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -36,7 +36,7 @@ import {
   eraseTypeParameters, findExtendedWellKnownInterface,
   findImplementedWellKnownInterface, getNonNullableType,
   typeToValTypeWithSub, InlineLayout, inlineLayoutOf, iteratorInterfaceOf,
-  stepInlineValue,
+  stepInlineValue, scopedFieldTypesAt,
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
@@ -2117,8 +2117,9 @@ export function dropPlanOf(cx: LoweringContext, t: Type): DropPlan {
  * only its use site knew to release (`Future`'s `[release]`). It is
  * lowered in every specialization of that body, first-class ones
  * included, and a handle is its resource class there, so ownership is
- * read off the representation: a resource class, a future of one, or
- * a tuple holding an owner. Anything else releases nothing.
+ * read off the representation: a resource class, a `scoped T`
+ * container of one, or a tuple holding an owner. Anything else
+ * releases nothing.
  */
 export function emitReleaseOwned(cx: LoweringContext, value: i32, t: Type): void {
   let core = soleNonNullMember(t) ?? t;
@@ -2135,8 +2136,9 @@ export function emitReleaseOwned(cx: LoweringContext, value: i32, t: Type): void
   let base = unwrapAliases(target);
   if (!(base is ClassType)) { return; }
   let ct = base as ClassType;
-  let isFuture = releaseMemberOf(ct) == ":release" && representsRestricted(ct);
-  if (!ct.isResource && !isFuture) { return; }
+  let isContainer = releaseMemberOf(ct) == ":release" && hasReleaseMember(ct) &&
+      representsRestricted(ct);
+  if (!ct.isResource && !isContainer) { return; }
   emitDrop(cx, value, new DropPlan(growable<ClassType>([ct]), null));
 }
 
@@ -2177,11 +2179,14 @@ function tupleHoldsOwner(t: Type): boolean {
   return false;
 }
 
-/** Whether a tuple element is an owner, or a tuple holding one. */
+/**
+ * Whether a tuple element is an owner, a tuple holding one, or a
+ * `scoped T` container of one.
+ */
 function elementHoldsOwner(t: Type): boolean {
   let core = soleNonNullMember(t) ?? t;
   return ownershipHandleName(core) == "Own" || tupleHoldsOwner(core) ||
-      releasableFuture(core) != null;
+      releasableContainer(core) != null;
 }
 
 /**
@@ -2619,6 +2624,82 @@ export function emitMarkDropped(cx: LoweringContext): void {
 }
 
 /**
+ * A release member the checker synthesized (ClassType.hasSyntheticRelease):
+ * a resource class's `:dispose`, or a `scoped T` class's `[release]`.
+ */
+export function lowerSyntheticRelease(cx: LoweringContext): IrBody {
+  let ctOpt = cx.func.classType;
+  if (ctOpt == null) {
+    bail(cx, 'synthetic release without class');
+  }
+  if (ctOpt.isResource) {
+    return lowerSyntheticDispose(cx);
+  }
+  return lowerScopedRelease(cx, ctOpt);
+}
+
+/**
+ * The synthesized `[release]` of a `scoped T` class: what each field
+ * holding `T` owns is released as `releaseOwned` would release it
+ * (emitReleaseOwned), last field first. Only the drop of an instance
+ * at an owner calls it, so the body an `Unmanaged<R>` instantiation
+ * shares is never asked to release.
+ */
+function lowerScopedRelease(cx: LoweringContext, ct: ClassType): IrBody {
+  let sig = cx.func.signature;
+  if (sig.params.length != 1) {
+    bail(cx, 'synthetic release shape');
+  }
+  let entry = cx.b.newBlock();
+  let thisParam = cx.b.blockParam(entry, sig.params[0]);
+  cx.b.switchTo(entry);
+  cx.thisValue = thisParam;
+
+  let cKey = getClassKey(ct);
+  let info = if (let (true, ci) = cx.wasm.classInfos.get(cKey)) ci else null;
+  if (info == null) {
+    bail(cx, 'synthetic release class not discovered');
+  }
+  let st = info.structType;
+  let names = scopedFieldNames(ct);
+  let types = scopedFieldTypesAt(cx.wasm, ct);
+  for (var i = names.length - 1; i >= 0; i -= 1) {
+    // A `void` field has no slot, and holds nothing.
+    if (isVoidOrNeverType(types[i])) {
+      continue;
+    }
+    let slot = fieldSlotName(ct, cKey, names[i]);
+    let fieldIdx = st.fieldIndexByName(slot);
+    if (fieldIdx < 0) {
+      bail(cx, 'synthetic release field missing');
+    }
+    let fieldRef = cx.b.addRef(new IrRefField(st, slot));
+    let value = cx.b.emit(IrOp.struct_get, st.fields[fieldIdx].type, cx.thisValue, fieldRef);
+    emitReleaseOwned(cx, value, types[i]);
+  }
+  cx.b.retVoid();
+  return cx.b.finish();
+}
+
+/**
+ * The struct slot of `ct`'s field `name`: through a renamed setter's
+ * backing field, and keyed by the class when it is private.
+ */
+function fieldSlotName(ct: ClassType, cKey: ClassKey, name: String): String {
+  var slot = name;
+  if (ct.fieldSetterNames != null) {
+    let mapping = ct.fieldSetterNames as HashMap<String, String>;
+    if (let (true, mapped) = mapping.get(slot)) {
+      slot = mapped;
+    }
+  }
+  if (slot.length > 0 && slot.sliceBytes(0, 1) == "#") {
+    slot = getClassPrivateFieldKey(cKey, slot);
+  }
+  return slot;
+}
+
+/**
  * The synthesized `:dispose` of a resource class whose only release
  * action is its owner fields: no written body, just the field release
  * regions around nothing (ownership.md §Affine fields). The signature
@@ -2678,16 +2759,7 @@ export function lowerFieldDropRegions(cx: LoweringContext,
     bail(cx, 'field drop class not discovered');
   }
   let st = info.structType;
-  var lookupName = names[idx];
-  if (ct.fieldSetterNames != null) {
-    let mapping = ct.fieldSetterNames as HashMap<String, String>;
-    if (let (true, mapped) = mapping.get(lookupName)) {
-      lookupName = mapped;
-    }
-  }
-  if (lookupName.length > 0 && lookupName.sliceBytes(0, 1) == "#") {
-    lookupName = getClassPrivateFieldKey(cKey, lookupName);
-  }
+  let lookupName = fieldSlotName(ct, cKey, names[idx]);
   let fieldIdx = st.fieldIndexByName(lookupName);
   if (fieldIdx < 0) {
     bail(cx, 'field drop slot missing');
