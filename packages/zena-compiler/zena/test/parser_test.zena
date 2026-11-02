@@ -1,5 +1,5 @@
 import { suite, test, TestContext } from 'zena:test';
-import { equal, isTrue, isFalse, throws, greater } from 'zena:assert';
+import { equal, equalText, isTrue, isFalse, throws, greater } from 'zena:assert';
 // `parseAllowingStatements` is for the cases below whose whole source is
 // one expression or statement: the node they assert on is what the
 // parser built, and the module-body rule is not what they are testing.
@@ -531,6 +531,41 @@ export let tests = suite('Parser', () => {
       throws(() => {
         parseRecovering("import {Map from 'zena:map';", 'test.zena');
       });
+    });
+  });
+
+  // ==========================================================================
+  // Locations
+  // ==========================================================================
+
+  suite('Locations', () => {
+    /** The [start, end) of a declaration's annotation and of its last type argument, `depth` levels down. */
+    let annotationSpans = (source: String, depth: i32) => {
+      let decl = parse(source, 'test.zena').body[0] as VariableDeclaration;
+      var spans = '';
+      var annotation = decl.typeAnnotation as NamedTypeAnnotation;
+      var level = 0;
+      while (level <= depth) {
+        let loc = annotation.loc as SourceLocation;
+        let span = `${loc.start}-${loc.end}`;
+        spans = if (level == 0) span else `${spans} ${span}`;
+        if (level < depth) {
+          let args = annotation.typeArguments as Array<TypeAnnotation>;
+          annotation = args[args.length - 1] as NamedTypeAnnotation;
+        }
+        level += 1;
+      }
+      return spans;
+    };
+
+    test('should end a type argument at its own > when >> closes two lists', (ctx) => {
+      // `Array<i32>` is [19, 29); the `>>` token is [28, 30).
+      equalText(annotationSpans('let m: Map<String, Array<i32>> = x;', 1), '7-30 19-29');
+    });
+
+    test('should end each type argument at its own > when >>> closes three', (ctx) => {
+      equalText(annotationSpans('let m: Map<String, Map<String, Array<i32>>> = x;', 2),
+          '7-43 19-42 31-41');
     });
   });
 });

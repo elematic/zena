@@ -298,6 +298,23 @@ let tests = suite('lint', () => {
     `, 'collection-literal');
   });
 
+  test('a map whose value type closes with >> keeps one > per list', (t) => {
+    // The `>>` closing both type argument lists is one token, so the value
+    // type's source text has to end at its first half.
+    check(t, dedentRaw`
+      export function run(): i32 {
+        let m = new Map<String, Array<i32>>();
+        m['a'] = new Array<i32>();
+        return m.size;
+      }
+    `, dedentRaw`
+      export function run(): i32 {
+        let m: HashMap<String, Array<i32>> = {'a' => new Array<i32>()};
+        return m.size;
+      }
+    `, 'collection-literal');
+  });
+
   test('a long run of elements is laid out one per line', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
