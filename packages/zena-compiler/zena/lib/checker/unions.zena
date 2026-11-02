@@ -533,9 +533,9 @@ export function isNullableType(t: Type): boolean {
  * is one member and takes `narrow`'s answer for itself. Every
  * subtraction a narrowing or a match arm performs is one of these.
  *
- * A callback annotates its return type: one that returns `never` on
- * one path and its member on another is otherwise typed by its first
- * return alone (elematic/zena#794).
+ * A rule is a named function the callback calls, not a block: a
+ * closure that returns `never` on one path and its member on another
+ * is typed by its first return alone (elematic/zena#794).
  */
 export function narrowUnion(t: Type, narrow: (member: Type) => Type): Type {
   if (let UnionT {types} = unwrapAliases(t)) {
@@ -555,10 +555,13 @@ export function narrowUnion(t: Type, narrow: (member: Type) => Type): Type {
 
 /** `t` without `null`: `never` for `null` itself. */
 export function subtractNullFromType(t: Type): Type {
-  return narrowUnion(t, (member: Type): Type => {
-    if (unwrapAliases(member) is NullType) { return new NeverType(); }
-    return member;
-  });
+  return narrowUnion(t, (member) => dropNull(member));
+}
+
+/** `member`, or `never` when it is `null`. */
+function dropNull(member: Type): Type {
+  if (unwrapAliases(member) is NullType) { return new NeverType(); }
+  return member;
 }
 
 /**
@@ -567,10 +570,13 @@ export function subtractNullFromType(t: Type): Type {
  * equal to `toRemove` is `never`.
  */
 export function subtractTypeFromUnion(original: Type, toRemove: Type): Type {
-  return narrowUnion(original, (member: Type): Type => {
-    if (typesEqual(member, toRemove)) { return new NeverType(); }
-    return member;
-  });
+  return narrowUnion(original, (member) => dropEqual(member, toRemove));
+}
+
+/** `member`, or `never` when it equals `toRemove`. */
+function dropEqual(member: Type, toRemove: Type): Type {
+  if (typesEqual(member, toRemove)) { return new NeverType(); }
+  return member;
 }
 
 export function unwrapNullableForMemberLookup(t: Type): Type | null {
