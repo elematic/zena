@@ -116,20 +116,27 @@ nothing on it writes.
 
 ```zena
 let w = new StreamWriter<String>();
-consume(w.stream);          // reader side
-let ok = await w.write('a'); // false once the reader has stopped
-w.close();                   // end-of-stream: reads complete with 0
+consume(w.stream);             // reader side
+let sent = await w.write('a'); // (false, 'a') once the reader has stopped
+w.close();                     // end-of-stream: reads complete with 0
 ```
 
-- `write(value): Future<boolean>` — the future completes when the
-  value is consumed into a read (the rendezvous; awaiting it is the
-  backpressure) or immediately with `false` when the reader has
-  stopped. A stopped reader is data to the writer, not a failure —
-  the WIT `DROPPED` status, `Result`-shaped.
+- `write(value): Future<Result<void, T>>` — the future completes
+  `(true, _)` when the value is taken by a read (the rendezvous;
+  awaiting it is the backpressure), or `(false, value)`, handing the
+  value back, when the reader has stopped, before or after the write
+  parked. A stopped reader is data to the writer, not a failure — the
+  WIT `DROPPED` status, `Result`-shaped. Handing the value back is
+  what lets a stream carry owners (owner-futures.md §"Streams"): the
+  stream never releases an element, so the writer's use site decides.
+- `writeAll(buf, count): Future<boolean>` — the batch write, at a
+  first-class `T`. It completes `false` when the reader stops, and the
+  writer still holds its buffer.
 - `close()` ends the stream; pending and subsequent reads complete
   with `0`.
-- `stop()` on the stream is the reader disclaiming: parked writes and
-  subsequent `write`s complete `false`. Under
+- `stop()` on the stream is the reader disclaiming: a parked `write`
+  and later ones hand their values back, and a parked `writeAll`
+  completes `false`. Under
   [cancellation.md](cancellation.md), a cancelled consumer reaches
   the same state through cleanup — the pending read raises at its
   checkpoint, and `using`/ownership releasing the read end performs

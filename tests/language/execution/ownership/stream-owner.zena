@@ -1,0 +1,94 @@
+// @mode: run
+// @result: 4321
+// A stream of owners (owner-futures.md §"Streams"). A write parks its
+// element until a read takes it. A reader that stops hands a parked
+// element back to its writer, `(false, value)`, as `tryComplete` hands
+// back its loser, and so does a write after the stop. The stream never
+// releases an element itself: whoever ends up holding one does.
+import {Own, Disposable} from 'zena:core';
+import {Stream, StreamWriter} from 'zena:stream';
+
+var released = 0;
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  n(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+/** A write a read takes: the reader holds the element, then releases it. */
+async function delivered(): Future<i32> {
+  let (writer, stream) = StreamWriter.create<Own<Res>>();
+  let write = writer.write(new Res(1));
+  var got = 0;
+  if (let Some {value} = await stream.readOne()) {
+    got = value.n();
+  }
+  if (let (true, _) = await write) {
+    got += 10;
+  }
+  return got;
+}
+
+/** A parked write whose reader stops: the element comes back. */
+async function refused(): Future<i32> {
+  let (writer, stream) = StreamWriter.create<Own<Res>>();
+  let write = writer.write(new Res(2));
+  stream.stop();
+  if (let (false, back) = await write) {
+    return back.n();
+  }
+  return 0;
+}
+
+/** A write after the reader stopped comes back at once. */
+async function afterStop(): Future<i32> {
+  let (writer, stream) = StreamWriter.create<Own<Res>>();
+  stream.stop();
+  if (let (false, back) = await writer.write(new Res(3))) {
+    return back.n();
+  }
+  return 0;
+}
+
+function dropStream(stream: Stream<Own<Res>>): void {}
+
+function dropWriter(writer: StreamWriter<Own<Res>>): void {}
+
+/** Dropping the reader stops the stream: the parked element comes back. */
+async function droppedReader(): Future<i32> {
+  let (writer, stream) = StreamWriter.create<Own<Res>>();
+  let write = writer.write(new Res(4));
+  dropStream(stream);
+  if (let (false, back) = await write) {
+    return back.n();
+  }
+  return 0;
+}
+
+/** Dropping the writer ends the stream, as `close` does. */
+async function droppedWriter(): Future<i32> {
+  let (writer, stream) = StreamWriter.create<Own<Res>>();
+  dropWriter(writer);
+  if (let Some {value} = await stream.readOne()) {
+    return 0;
+  }
+  return 5;
+}
+
+export async function main(): Future<i32> {
+  let a = await delivered();
+  if (a != 11 || released != 1) { return 100 + released; }
+  let b = await refused();
+  if (b != 2 || released != 2) { return 200 + released; }
+  let c = await afterStop();
+  if (c != 3 || released != 3) { return 300 + released; }
+  let d = await droppedReader();
+  if (d != 4 || released != 4) { return 400 + released; }
+  let e = await droppedWriter();
+  if (e != 5 || released != 4) { return 500 + released; }
+  return released * 1000 + c * 100 + b * 10 + 1;
+}

@@ -1,0 +1,32 @@
+// @mode: check
+// A stream of owners has one reader: `writer.stream` cannot be read
+// off the writer (the field would be copied), so the pair comes from
+// `StreamWriter.create`, and the stream moves like the owners it
+// carries.
+import {Own, Disposable} from 'zena:core';
+import {StreamWriter} from 'zena:stream';
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let readEnd = (): i32 => {
+  let w = new StreamWriter<Own<Res>>();
+  let s = w.stream; // @error: is not nullable
+  return 0;
+};
+
+let twoReaders = (): i32 => {
+  let (writer, stream) = StreamWriter.create<Own<Res>>();
+  let a = stream;
+  let b = stream; // @error: 'stream' may have been moved
+  return 0;
+};
+
+// At a first-class type the stream is an ordinary value.
+let plain = (): i32 => {
+  let w = new StreamWriter<i32>();
+  let a = w.stream;
+  let b = w.stream;
+  return 0;
+};

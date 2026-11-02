@@ -74,10 +74,15 @@ A producer delivers data to the stream through `write()` or `writeAll()`:
 
 - **Single element (`write`)**:
   ```zena
-  let delivered = await writer.write('item');
+  if (let (false, item) = await writer.write('item')) {
+    // The reader stopped: `item` is back with the writer.
+  }
   ```
-  Returns a `Future<boolean>` that resolves to `true` once a reader has consumed
-  the item.
+  Returns a `Future<Result<void, T>>` that resolves to `(true, _)` once a
+  reader has taken the item, or to `(false, item)` if the reader stopped
+  first, handing the item back. That is what lets a stream carry owners: at a
+  restricted element type, such as `Own<File>`, make the pair with
+  `StreamWriter.create<Own<File>>()`, since the stream has one reader.
 - **Batch write (`writeAll`)**:
 
   ```zena
@@ -94,9 +99,11 @@ A producer delivers data to the stream through `write()` or `writeAll()`:
 
 ### Handling reader termination and close
 
-- **Reader disclaim (`false`)**: If the reader calls `stream.stop()`, in-flight
-  and subsequent write futures complete with `false`. This signals to the producer
-  that the reader has ceased reading, without throwing an exception.
+- **Reader disclaim**: If the reader calls `stream.stop()`, or drops a stream of
+  owners, in-flight and subsequent `write` futures hand each value back as
+  `(false, value)`, and `writeAll` futures complete with `false`. This signals to
+  the producer that the reader has ceased reading, without throwing an
+  exception. Dropping a writer of owners closes its stream.
 - **Closing the stream (`close`)**:
   ```zena
   writer.close();
