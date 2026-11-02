@@ -473,8 +473,10 @@ relying on `null`:
 ```zena
 let map = {"a" => 42, "b" => 100};
 
-let (value, found) = map.get('a');  // (42, true)
-let (_, found2) = map.get('c');     // (_, false)
+if (let (true, value) = map.get('a')) {
+  console.log(value);  // 42
+}
+console.log(map.has('c'));  // false
 ```
 
 This is especially important for primitive value types like `i32` where `null`
@@ -2207,11 +2209,11 @@ map.set('one', 1);
 map['two'] = 2;
 ```
 
-Use `get()` for safe lookups—it returns `(value, found)`:
+Use `get()` for safe lookups. It returns `(true, value)` when the key is
+present and `(false, _)` when it is not:
 
 ```zena
-let(val, found) = map.get('one');
-if (found) {
+if (let (true, val) = map.get('one')) {
   // use val
 }
 ```
@@ -2410,8 +2412,9 @@ class Data {
 
 The `as` operator performs type casts. Numeric conversions compile to WASM
 conversion instructions. Reference type casts are checked at runtime and throw
-if invalid. Unnecessary casts (casting a value to its exact type) can be warned
-against by enabling the CLI flag `--warn-unnecessary-casts`.
+if invalid. Unnecessary casts (casting a value to its exact type) are reported
+by `zena lint`, and as compiler warnings when the `ZENA_WARN_UNNECESSARY_CASTS`
+environment variable is set.
 
 ```zena
 // Numeric conversions

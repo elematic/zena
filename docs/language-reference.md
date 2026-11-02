@@ -397,7 +397,8 @@ type), the cast is **elided** at runtime. In these cases, the cast serves purely
 as a compile-time assertion and incurs no runtime overhead.
 
 The compiler can optionally warn you about unnecessary casts (casting an expression
-to a type it already has) by enabling the `--warn-unnecessary-casts` CLI flag.
+to a type it already has) when the `ZENA_WARN_UNNECESSARY_CASTS` environment
+variable is set; `zena lint` reports them too (its `unnecessary-cast` rule).
 
 ```zena
 distinct type ID = i32;
@@ -1763,6 +1764,7 @@ Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`, `f64`, `i
 - `-` (Subtraction)
 - `*` (Multiplication)
 - `/` (Division) - Always returns a floating-point value (`f32` or `f64`).
+  Integer division is `div(a, b)` from `zena:math`.
 - `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
 - `**` (Exponentiation) - Right-associative (`2 ** 3 ** 2` is `2 ** (3 ** 2) = 512`), with higher precedence than multiplication.
 
@@ -2226,9 +2228,6 @@ use tuple indexing to access elements:
 ```zena
 // getNames() returns (String, String)
 person.getNames() |> formatFullName($[0], $[1])
-
-// map.get() returns (V, bool)
-scores.get(name) |> if ($[1]) processScore($[0]) else 0
 ```
 
 #### Precedence
@@ -3150,11 +3149,10 @@ class Point {
   let y: i32;
   new(x: i32, y: i32) : x = x, y = y;
 }
-
-class Empty {
-  new();
-}
 ```
+
+A class whose fields all have initializers, or that has no fields, gets a
+constructor with no parameters; don't write an empty one.
 
 #### `this.` Constructor Parameters
 
@@ -5642,15 +5640,17 @@ map["two"] = 2;  // operator []= syntax
 
 #### Accessing Values
 
-`Map.get(key)` returns an inline tuple `(V, boolean)` indicating the value and
-whether the key was found:
+`Map.get(key)` returns `inline (true, V) | inline (false, _)`: `true` and the
+value when the key is present, `false` when it is not. Match it with
+`if (let ...)`:
 
 ```zena
-let (value, found) = map.get("one");
-if (found) {
+if (let (true, value) = map.get("one")) {
   console.log(value);
 }
 ```
+
+`getOr(key, default)` returns the value, or `default` when the key is absent.
 
 The index operator `map[key]` throws `KeyNotFoundError` if the key doesn't exist.
 

@@ -335,9 +335,9 @@ The compiler rejects unsafe or meaningless casts at compile time:
 
    A cast must name a concrete, single type.
 
-3. **Unnecessary Cast Warnings**: When the `--warn-unnecessary-casts` compiler
-   flag is enabled, casting an expression to a type it already possesses emits a
-   compiler warning:
+3. **Unnecessary Cast Warnings**: When the `ZENA_WARN_UNNECESSARY_CASTS`
+   environment variable is set, casting an expression to a type it already
+   possesses emits a compiler warning (`zena lint` reports these too):
    ```zena
    let x: i32 = 10;
    let y = x as i32; // Warning: Unnecessary cast: expression is already of type 'i32'.
@@ -744,7 +744,6 @@ between the check and its usage:
 ```zena
 class MutableContainer {
   var inner: Node? = null;
-  new();
 }
 
 function process(c: MutableContainer): i32 {
