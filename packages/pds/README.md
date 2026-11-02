@@ -115,11 +115,6 @@ maintainers. `sync-indexes` writes both again from the repositories and
 exits: for accounts made before the host kept them, and for a commit
 whose indexes could not be written, which the server logs.
 
-With `encrypt-keys`, it encrypts every account's signing key that
-Firestore keeps in the clear with `PDS_KEY_ENCRYPTION_KMS_KEY`, and
-exits. Keys are encrypted as they are written once the server has that
-key, so this is for the ones written before it had one.
-
 With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`, it
 creates a scope owned by that DID and exits. This is how the operator
 takes a name the host reserves (`www`, `api`, `admin`, `zena`, `pkg`,
@@ -230,18 +225,9 @@ The server decrypts a key the first time it signs with it, and keeps it in
 memory. The service account may encrypt and decrypt with that key, and
 the key never leaves Cloud KMS: destroying it loses every signing key it
 encrypted. Without the variable, keys are kept in the clear, as in tests
-and on the emulator.
-
-Keys written before the server had the variable stay in the clear until
-`encrypt-keys` encrypts them. After the first deploy with it, run it once
-with the deployment's configuration, as a user who may use the key:
-
-```sh
-GOOGLE_CLOUD_PROJECT=<project> PDS_STORAGE=firestore PDS_FIRESTORE_DATABASE=zena-pkg-staging PDS_TENANT=pkg \
-PDS_BLOB_BUCKET=<bucket> PDS_JWT_SECRET=<hex> \
-PDS_KEY_ENCRYPTION_KMS_KEY=projects/<project>/locations/<region>/keyRings/zena-pkg-staging/cryptoKeys/signing-keys \
-  zena-cli run packages/pds/zena/main.zena -- encrypt-keys
-```
+and on the emulator. Run `deploy:setup` before the first `deploy` that
+sets it: until the service account may use the key, creating an account
+fails.
 
 ## Layout
 
