@@ -5,12 +5,12 @@ import {
   EqRefType, ErasedType, ErrorType, ExternRefType, F32Type, F64Type,
   FunctionType, HoleType, I16Type, I32Type, I64Type, I8Type, InlineParamType, InlineRecordType,
   InlineTupleType as InlineTupleT, InterfaceType, MixinType, NeverType,
-  NullType, NumLiteralType, RecordType as RecordT, StringLiteralType,
+  NullType, NumLiteralType, OwnershipHandle, RecordType as RecordT, StringLiteralType,
   SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType,
   TypeParameterType, U16Type, U32Type, U64Type, U8Type, UnionType as UnionT,
   UnknownType, V128Type, VoidType, baseType, isFloatType, isFutureClassType,
   isNumericType, isOwnershipWrapper, isScopedType, ownershipHandleInner,
-  ownershipHandleName, scopedInner, typeContainsTypeParameter, typeToString
+  ownershipHandleOf, scopedInner, typeContainsTypeParameter, typeToString, isNullableType, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown } from '../well-known.zena';
@@ -18,7 +18,7 @@ import { isInlineType } from './annotations.zena';
 import { inlineParamsMatch } from './inline.zena';
 import { CheckerContext } from './context.zena';
 import { sameInterfaceDeclaration, substituteTypeParams, tryInstantiateGenericFunction } from './generics.zena';
-import { isNullableType, subtractNullFromType, unwrapAliases } from './unions.zena';
+import { subtractNullFromType } from './unions.zena';
 
 /**
  * Check if `source` is assignable to `target`.
@@ -943,7 +943,7 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
   // not true — a borrow is not an owner — and `Unmanaged<R>` is reached only
   // through an explicit `disown`. See docs/design/ownership.md §Borrowing.
   if (isOwnershipWrapper(source) && isOwnershipWrapper(target)) {
-    if (ownershipHandleName(source) == "Own" && ownershipHandleName(target) == "Borrow") {
+    if (ownershipHandleOf(source) == OwnershipHandle.Own && ownershipHandleOf(target) == OwnershipHandle.Borrow) {
       let si = ownershipHandleInner(source);
       let ti = ownershipHandleInner(target);
       if (si != null && ti != null && typesEqual(si, ti)) {

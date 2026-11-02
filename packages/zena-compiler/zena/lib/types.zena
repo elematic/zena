@@ -3244,10 +3244,120 @@ export function scopedInner(t: Type): Type | null {
   return args[0];
 }
 
-/** The name of the handle `t` is, or "" if it is not one. */
-export function ownershipHandleName(t: Type): String {
-  if (!isOwnershipWrapper(t)) { return ""; }
-  return (t as TypeAliasType).name;
+/** Which of the three ownership handles a type is, or none. */
+export enum OwnershipHandle { None, Own, Borrow, Unmanaged }
+
+/** The handle `t` is: `None` when it is not one. */
+export function ownershipHandleOf(t: Type): OwnershipHandle {
+  if (!isOwnershipWrapper(t)) { return OwnershipHandle.None; }
+  let alias = t as TypeAliasType;
+  if (isWellKnown(WellKnown.OwnAlias, alias.name, alias.declaringModule)) {
+    return OwnershipHandle.Own;
+  }
+  if (isWellKnown(WellKnown.BorrowAlias, alias.name, alias.declaringModule)) {
+    return OwnershipHandle.Borrow;
+  }
+  return OwnershipHandle.Unmanaged;
+}
+
+/**
+ * `t` with its transparent aliases peeled: a `distinct` alias, a type
+ * operator and an alias still being resolved stop the walk, since a
+ * distinct alias is a nominal type of its own, an operator's target is
+ * a placeholder, and a self-referential alias would spin.
+ */
+export function unwrapAliases(t: Type): Type {
+  var curr = t;
+  var hops = 0;
+  while (curr is TypeAliasType && hops < 32) {
+    let ta = curr;
+    if (ta.isDistinct || ta.intrinsicName != null || ta.resolving) { break; }
+    curr = ta.target;
+    hops += 1;
+  }
+  // An inline record has its record's structure; only where a value is
+  // held does it differ (docs/design/inline-parameters.md).
+  if (let InlineRecordType {record} = curr) {
+    return record;
+  }
+  return curr;
+}
+
+/** Whether `t` is `null` or a union with a `null` member. */
+export function isNullableType(t: Type): boolean {
+  return match (t) {
+    case NullType: true
+    case UnionType {types}: {
+      for (let member in types) {
+        if (member is NullType) { return true; }
+      }
+      false
+    }
+    case _: false
+  };
+}
+
+/**
+ * A type whose values follow the scoped consumption rules — the
+ * `Scoped` wrapper itself, or a `scoped T` parameter's values, which
+ * the body checks at the same discipline outside an
+ * `isFirstClass<T>()` branch.
+ */
+export function isScopedValueType(t: Type): boolean {
+  if (isScopedType(t)) { return true; }
+  return isRestrictedParam(t);
+}
+
+/** Whether `t` is an instance of the `WithDefault<T>` operator. */
+export function isWithDefaultType(t: Type): boolean {
+  return t is TypeAliasType && t.intrinsicName == 'type.withDefault';
+}
+
+/**
+ * Whether `t` is a tuple, boxed or inline, or a union of them, that holds
+ * an owner. Such a tuple is affine itself (#495): building it moves the
+ * owner in, a binding of it moves like an `Own<R>`, and destructuring it
+ * moves the owners out.
+ */
+export function isAffineTuple(t: Type): boolean {
+  let resolved = unwrapAliases(t);
+  if (resolved is TupleType || resolved is InlineTupleType) {
+    return typeCarriesOwner(resolved);
+  }
+  if (let UnionType {types} = resolved) {
+    for (let member in types) {
+      if (isAffineTuple(member)) { return true; }
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a binding of type `t` is move-checked like an owner: a tuple
+ * holding an owner (#495), or an instance of a container of one, such
+ * as a `Future<Own<R>>`, which its `await` consumes, or a union with
+ * such a member, such as an `Option<Own<R>>`.
+ */
+export function isAffineValue(t: Type): boolean {
+  if (isAffineTuple(t)) { return true; }
+  return affineContainerMembers(t).length > 0;
+}
+
+/**
+ * The members of `t` that are containers of an owner (isAffineContainer):
+ * `t` itself, or each such member of a union, nullable or not.
+ */
+export function affineContainerMembers(t: Type): GrowableArray<ClassType> {
+  let found = new Array<ClassType>();
+  let resolved = unwrapAliases(soleNonNullMember(t) ?? t);
+  let members = if (let UnionType {types} = resolved) types else growable<Type>([resolved]);
+  for (let member in members) {
+    let core = unwrapAliases(member);
+    if (core is ClassType && isAffineContainer(core)) {
+      found.push(core);
+    }
+  }
+  return found;
 }
 
 /**
@@ -4299,7 +4409,7 @@ export function isSecondClass(t: Type): boolean {
   // A `scoped T` parameter's values are checked at the same
   // discipline — the worst case the parameter admits.
   if (isRestrictedParam(t)) { return true; }
-  if (ownershipHandleName(t) != "Borrow") { return false; }
+  if (ownershipHandleOf(t) != OwnershipHandle.Borrow) { return false; }
   let inner = ownershipHandleInner(t);
   if (inner == null) { return false; }
   return borrowInnerRestricts(inner);
@@ -4377,7 +4487,7 @@ export function typeContainsSecondClassAtDepth(t: Type, depth: i32): boolean {
  * form, and a class holding an owner is forced to be a resource.
  */
 export function typeCarriesOwner(t: Type): boolean {
-  if (ownershipHandleName(t) == "Own") { return true; }
+  if (ownershipHandleOf(t) == OwnershipHandle.Own) { return true; }
   // An instance of a container of an owner carries it too
   // (owner-futures.md §"Restricted instantiations").
   if (isAffineContainer(t)) { return true; }

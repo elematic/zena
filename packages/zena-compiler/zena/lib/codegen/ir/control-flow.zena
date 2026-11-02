@@ -16,12 +16,7 @@ import {
   BindingPattern, BindingProperty, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, ClassPattern, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, RecordPattern, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression, RangeExpression,
 } from '../../ast.zena';
 import {
-  ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType, TupleType,
-  NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType,
-  isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
-  isOwnershipWrapper, ownershipHandleInner, ownershipHandleName,
-  soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, releasableContainer,
-  representsRestricted, hasReleaseMember, scopedFieldNames,
+  ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType, TupleType, NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType, isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType, isOwnershipWrapper, ownershipHandleInner, ownershipHandleOf, soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, releasableContainer, representsRestricted, hasReleaseMember, scopedFieldNames, OwnershipHandle
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -2231,7 +2226,7 @@ function tupleHoldsOwner(t: Type): boolean {
  */
 function elementHoldsOwner(t: Type): boolean {
   let core = soleNonNullMember(t) ?? t;
-  return ownershipHandleName(core) == "Own" || tupleHoldsOwner(core) ||
+  return ownershipHandleOf(core) == OwnershipHandle.Own || tupleHoldsOwner(core) ||
       releasableContainer(core) != null || releasingUnionMembers(core) != null;
 }
 
@@ -2619,7 +2614,7 @@ export function collectAffineDropFields(cx: LoweringContext,
     if (!ct.members.has(fName)) { continue; }
     let fType = ct.members[fName].type;
     let core = soleNonNullMember(fType) ?? fType;
-    if (ownershipHandleName(core) != "Own") { continue; }
+    if (ownershipHandleOf(core) != OwnershipHandle.Own) { continue; }
     if (movedOut != null) {
       var skipped = false;
       for (let m in movedOut) {
