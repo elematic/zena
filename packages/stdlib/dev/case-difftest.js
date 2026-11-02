@@ -4,8 +4,11 @@
 // The corpus is every code point on its own, and strings that put a capital
 // sigma among letters, case-ignorable characters and neither, which is
 // where Final_Sigma decides between σ and ς. A Zena program on the default
-// (byte) target maps each line both ways, and the output is compared with
-// JavaScript's, line by line.
+// (byte) target maps each line both ways, and the output is compared, line
+// by line, with JavaScript's, except where a sigma is decided by the
+// byte targets' own rule (#750, `String.#isFinalSigma`), which `lower`
+// below models. The run reports how many strings that rule lowercases
+// differently from JavaScript.
 //
 //   npm run build -w @zena-lang/zena-cli
 //   node packages/stdlib/dev/case-difftest.js [sigmaCaseCount]
@@ -46,6 +49,8 @@ const around = [
   'ʰ',
   'ᵃ',
   'ͅ',
+  'ª',
+  'ℂ',
   '.',
   "'",
   '·',
@@ -103,23 +108,49 @@ const actual = readFileSync(`${root}/scratch/case-actual.txt`, 'utf8').split(
   '\n',
 );
 
+// The byte targets' rule: a sigma ends a word when it follows a code point
+// with a one-to-one case mapping, skipping combining diacritical marks
+// (U+0300..U+036F), and no such code point follows it the same way.
+const one = (m, c) => [...m].length === 1 && m !== c;
+const hasMapping = (c) => one(c.toLowerCase(), c) || one(c.toUpperCase(), c);
+const isDiacritic = (c) =>
+  c.codePointAt(0) >= 0x300 && c.codePointAt(0) <= 0x36f;
+const lower = (s) => {
+  const cps = [...s];
+  return cps
+    .map((c, i) => {
+      if (c !== 'Σ') return c.toLowerCase();
+      let b = i - 1;
+      while (b >= 0 && isDiacritic(cps[b])) b--;
+      let a = i + 1;
+      while (a < cps.length && isDiacritic(cps[a])) a++;
+      const final =
+        b >= 0 && hasMapping(cps[b]) && !(a < cps.length && hasMapping(cps[a]));
+      return final ? 'ς' : 'σ';
+    })
+    .join('');
+};
+
 const codePoints = (s) =>
   [...s]
     .map((c) => `U+${c.codePointAt(0).toString(16).toUpperCase()}`)
     .join(' ');
 let failures = 0;
+let differFromJavaScript = 0;
 lines.forEach((s, i) => {
-  const want = `${s.toLowerCase()}\t${s.toUpperCase()}`;
+  const want = `${lower(s)}\t${s.toUpperCase()}`;
+  if (lower(s) !== s.toLowerCase()) differFromJavaScript++;
   if (actual[i] === want) return;
   if (++failures <= 25) {
     console.log(
-      `  FAIL ${codePoints(s)}: zena ${JSON.stringify(actual[i])}, JavaScript ${JSON.stringify(want)}`,
+      `  FAIL ${codePoints(s)}: zena ${JSON.stringify(actual[i])}, expected ${JSON.stringify(want)}`,
     );
   }
 });
 console.log(
   failures === 0
-    ? `\nALL ${lines.length} STRINGS MATCH JAVASCRIPT (Unicode ${process.versions.unicode})`
+    ? `\nALL ${lines.length} STRINGS MATCH (Unicode ${process.versions.unicode}); ` +
+        `${differFromJavaScript} lowercase differently from JavaScript, by the sigma rule`
     : `\n${failures}/${lines.length} FAILURES`,
 );
 process.exit(failures === 0 ? 0 : 1);

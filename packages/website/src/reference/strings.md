@@ -344,7 +344,10 @@ asciiUpperCase(): String;
 do: one character can become several (`ß` → `SS`, `İ` → `i̇`), a capital
 sigma at the end of a word lowercases to `ς`, and language-specific mappings
 are not applied. On the js target they call the host; on the other targets
-they read case tables compiled into the module, about 5 KB per method.
+they read case tables compiled into the module, 4 to 5 KB per method, and
+decide a final sigma by a cheaper rule that can differ from JavaScript's
+beside unusual characters
+([details](/development/design/strings/#final-sigma)).
 
 `asciiLowerCase` and `asciiUpperCase` change only the bytes `0x41..0x5A` and
 `0x61..0x7A`, and need no tables. All four return `this` without allocating

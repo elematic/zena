@@ -44,12 +44,34 @@ export let tests = suite('Unicode case mapping', () => {
     equal('ΑΣ'.toLowerCase(), 'ας');
     equal('ΑΣ Β'.toLowerCase(), 'ας β');
     equal('ΑΣ.'.toLowerCase(), 'ας.');
-    // A full stop is case-ignorable, so the sigma still follows a letter.
-    equal('Α.Σ'.toLowerCase(), 'α.ς');
     // Not at the end of a word, or not after a letter.
     equal('ΑΣΑ'.toLowerCase(), 'ασα');
     equal('Σ'.toLowerCase(), 'σ');
     equal(' Σ'.toLowerCase(), ' σ');
+    // Decomposed Greek: the accent is a combining mark between the vowel
+    // and the sigma, and the sigma still ends the word (καφές, Οδυσσεύς).
+    let coffee = String.fromCodePoints([0x039A, 0x0391, 0x03A6, 0x0395, 0x0301, 0x03A3]);
+    equal(coffee.toLowerCase(),
+        String.fromCodePoints([0x03BA, 0x03B1, 0x03C6, 0x03B5, 0x0301, 0x03C2]));
+    let odysseus = String.fromCodePoints(
+        [0x039F, 0x0394, 0x03A5, 0x03A3, 0x03A3, 0x0395, 0x03A5, 0x0301, 0x03A3]);
+    equal(odysseus.toLowerCase(), String.fromCodePoints(
+        [0x03BF, 0x03B4, 0x03C5, 0x03C3, 0x03C3, 0x03B5, 0x03C5, 0x0301, 0x03C2]));
+  });
+
+  test('decides a final sigma where JavaScript does not', (ctx) => {
+    // The byte targets approximate Final_Sigma with no tables of their own
+    // (#750): a letter is one with a one-to-one case mapping, and only the
+    // Combining Diacritical Marks are skipped. JavaScript, and so the js
+    // target, gives the second answer in each comment.
+    // `ª` is Cased with no case mapping: 'ªς'.
+    equal('ªΣ'.toLowerCase(), 'ªσ');
+    // ... and after the sigma: 'ασª'.
+    equal('ΑΣª'.toLowerCase(), 'αςª');
+    // A full stop is Case_Ignorable, so JavaScript looks past it: 'α.ς'.
+    equal('Α.Σ'.toLowerCase(), 'α.σ');
+    // ... and past an apostrophe to the letter after it: 'ασ\'α'.
+    equal('ΑΣ\'Α'.toLowerCase(), 'ας\'α');
   });
 
   test('returns the same string when nothing changes', (ctx) => {

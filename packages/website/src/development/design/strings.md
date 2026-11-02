@@ -368,10 +368,11 @@ default locale, so it applies the Turkish rules on a Turkish system.)
 
 ### What Zena provides
 
-- `toLowerCase()` and `toUpperCase()` apply the default case conversion, with
-  the same result as JavaScript. On the js target they call the host's methods,
-  since the host already carries the data. On the other targets they read
-  tables compiled into the module.
+- `toLowerCase()` and `toUpperCase()` apply the default case conversion. On
+  the js target they call the host's methods, since the host already carries
+  the data. On the other targets they read tables compiled into the module,
+  and give JavaScript's result except in rare contexts around a final sigma
+  ([Final sigma](#final-sigma) below).
 - `asciiLowerCase()` and `asciiUpperCase()` change only `A`–`Z` and `a`–`z`.
   They are for text that is ASCII by definition — header names, URL schemes,
   hexadecimal digits — where Unicode mapping would be wrong as well as
@@ -384,18 +385,17 @@ There are no locale-sensitive or titlecase variants.
 ### The tables
 
 A generator, `packages/stdlib/scripts/generate-case-tables.js`, reads
-`UnicodeData.txt`, `SpecialCasing.txt` and `DerivedCoreProperties.txt` and
-writes five tables into `core/case-tables.zena`, a file of its own whose
-header describes the encoding. Before writing, it checks every
+`UnicodeData.txt` and `SpecialCasing.txt` and writes three tables into
+`core/case-tables.zena`, a file of its own whose header describes the
+encoding. Before writing, it checks every
 code point's mapping against Node's ICU when the Unicode versions match. For
 Unicode 17.0:
 
-| Table                     | Contents                                        | Entries | Bytes |
-| ------------------------- | ----------------------------------------------- | ------- | ----- |
-| `CASE_RANGES`             | One-to-one mappings, as ranges sharing a delta  | 329     | 1,735 |
-| `UPPER_SPECIALS`          | Uppercase mappings to several code points       | 102     | 835   |
-| `LOWER_SPECIALS`          | Lowercase mappings to several code points (`İ`) | 1       | 8     |
-| `CASED`, `CASE_IGNORABLE` | The two properties Final_Sigma reads            | 622     | 1,585 |
+| Table            | Contents                                        | Entries | Bytes |
+| ---------------- | ----------------------------------------------- | ------- | ----- |
+| `CASE_RANGES`    | One-to-one mappings, as ranges sharing a delta  | 329     | 1,735 |
+| `UPPER_SPECIALS` | Uppercase mappings to several code points       | 102     | 835   |
+| `LOWER_SPECIALS` | Lowercase mappings to several code points (`İ`) | 1       | 8     |
 
 A range covers either a run of code points with the same upper and lower
 deltas (`а`–`я` are all 32 below `А`–`Я`) or a run of alternating
@@ -406,11 +406,12 @@ Each table is a string literal of printable ASCII: a stream of variable-length
 integers with five payload bits per byte, as the IDNA table in `zena:url` is.
 A string literal is the cheapest constant data a module can hold — it sits
 in a data segment, with no code to construct it — and the streams are under a
-quarter of the size of the decoded tables, 4,163 bytes against 18,512. On the
+third of the size of the decoded tables, 2,578 bytes against 8,560. On the
 first call, a table is decoded into a sorted `FixedArray<i32>` that lookups
 binary-search.
 `packages/stdlib/dev/case-difftest.js` compares both methods with JavaScript
-over every code point and over 20,000 strings built to exercise Final_Sigma.
+over every code point, and with a model of the final sigma rule over 20,000
+strings built to exercise it.
 
 The lookups are in `core/case-mapping.zena`, which `core/string.zena`
 imports for the two methods. The tables can be string literals in a library
@@ -429,15 +430,44 @@ the tables of the methods it calls. Over an empty freestanding module at
 | ---------------- | ------ |
 | `asciiLowerCase` | 0.6 KB |
 | `toUpperCase`    | 4.6 KB |
-| `toLowerCase`    | 5.8 KB |
+| `toLowerCase`    | 4.0 KB |
 
-About 1.7 KB of `toLowerCase` is Final_Sigma: the `CASED` and
-`CASE_IGNORABLE` tables, which nothing else reads, and the scan around each
-`Σ`. A rule that approximates both properties with the mapping tables would
-save it and differ from JavaScript in rare contexts;
-[#750](https://github.com/elematic/zena/issues/750) measures where. For now
-the methods match JavaScript exactly, so a program gives the same answer on
-every target.
+### Final sigma
+
+Unicode's Final_Sigma condition lowercases `Σ` to `ς` when it follows a
+`Cased` character, with only `Case_Ignorable` characters between, and no
+`Cased` character follows it the same way. Applying it exactly takes both
+properties as tables, 1,585 bytes that nothing else reads; with the code
+around them, they were 30% of `toLowerCase`, 1.7 KB.
+
+The byte targets approximate both properties instead
+([#750](https://github.com/elematic/zena/issues/750)). A letter is a code point
+with a one-to-one case mapping, which the mapping table already answers, and
+the only characters skipped are the Combining Diacritical Marks (U+0300 to
+U+036F), a range test. That block holds every mark decomposed Greek uses, so
+the rule gives JavaScript's answer for Greek text, precomposed or decomposed
+(`καφές`, `Οδυσσεύς`). Skipping nothing at all would not: a decomposed accent
+before the sigma hides the vowel, and `ΚΑΦΕ◌́Σ` would become `καφέσ`.
+
+Where it gives a different answer from JavaScript, and so from the js target:
+
+- Beside a `Cased` code point with no one-to-one mapping, 1,404 of which
+  change the answer: `ª` and `º`, letters with no case partner (`ĸ`), letters
+  whose only mapping is to several code points (`ß`), the letterlike symbols
+  (`ℂ`), the squared Latin letters. `"ªΣ"` lowercases to `"ªσ"`, where
+  JavaScript gives `"ªς"`.
+- Where another `Case_Ignorable` character stands between the sigma and a
+  letter: a full stop, an apostrophe, a middle dot, a soft hyphen, a ZWJ, a
+  modifier letter, another script's combining mark. `"Α.Σ"` lowercases to
+  `"α.σ"` and `"ΑΣ'Α"` to `"ας'α"`, where JavaScript gives `"α.ς"` and
+  `"ασ'α"`. Such a character before a space or the end of the string changes
+  nothing (`"ΑΣ."` is `"ας."` either way).
+
+None of these occurs in ordinary Greek prose, and the saving is in every
+program that lowercases text. Skipping a few more characters by value (the
+apostrophes, the soft hyphen, ZWJ) would bring 8 of the 4,086 differing code
+points into line, so the rule stops at the one range. The string tests pin
+each difference, so a change to the rule is deliberate.
 
 ### Case-insensitive comparison
 
@@ -456,9 +486,9 @@ Final_Sigma, gives exactly the equivalence of full case folding on every
 string, with two exceptions to patch: `ẞ` (U+1E9E) must become `ss` rather
 than `ß`, and `ı` must stay `ı`. (Checked by testing, for every code point,
 that each form is a function of the other.) So a comparison needs no tables
-beyond the conversion tables: it reads the three mapping tables, but not
-Final_Sigma's two, and can fold both strings one code point at a time as it
-compares them, without allocating either folded form.
+beyond the conversion tables: it reads the three mapping tables, and can fold
+both strings one code point at a time as it compares them, without allocating
+either folded form.
 
 ## Host interop
 
