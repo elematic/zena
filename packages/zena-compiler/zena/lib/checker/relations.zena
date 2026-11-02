@@ -17,7 +17,7 @@ import { WellKnown } from '../well-known.zena';
 import { isInlineType } from './annotations.zena';
 import { inlineParamsMatch } from './inline.zena';
 import { CheckerContext } from './context.zena';
-import { substituteTypeParams, tryInstantiateGenericFunction } from './generics.zena';
+import { sameInterfaceDeclaration, substituteTypeParams, tryInstantiateGenericFunction } from './generics.zena';
 import { isNullableType, subtractNullFromType, unwrapAliases } from './unions.zena';
 
 /**
@@ -888,21 +888,11 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
   // a future, which is a type error deferred to whichever
   // specialization flattens (issue #522). Operators compare
   // nominally, in typesEqual above.
-  match (source) {
-    case TypeAliasType as ta: {
-      if (!ta.isDistinct && ta.intrinsicName == null) {
-        return isAssignableTo(ctx, ta.target, target);
-      }
-    }
-    case _: {}
+  if (source is TypeAliasType && isTransparentAlias(source)) {
+    return isAssignableTo(ctx, source.target, target);
   }
-  match (target) {
-    case TypeAliasType as tb: {
-      if (!tb.isDistinct && tb.intrinsicName == null) {
-        return isAssignableTo(ctx, source, tb.target);
-      }
-    }
-    case _: {}
+  if (target is TypeAliasType && isTransparentAlias(target)) {
+    return isAssignableTo(ctx, source, target.target);
   }
   // `inline? T` stands for `T` until a substitution decides: a value of
   // `T` is unboxed there or not, and converts either way.
@@ -1141,38 +1131,13 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
           }
         }
         case InterfaceType as tgtIface: {
-          var implList = srcClass.implementsList;
-          if (implList.length == 0 && srcClass.genericSource != null) {
-            let srcGen = srcClass.genericSource as ClassType;
-            if (srcGen.implementsList.length > 0 && srcClass.typeArguments != null) {
-              implList = srcGen.implementsList;
-            }
-          }
-          for (let impl in implList) {
-            var substitutedImpl = impl as Type;
-            let typeParamsList = (srcClass.genericSource ?? srcClass).typeParameters;
-            if (typeParamsList != null && srcClass.typeArguments != null) {
-              substitutedImpl = substituteTypeParams(typeParamsList, srcClass.typeArguments, substitutedImpl);
-            }
-            if (typesEqual(substitutedImpl, tgtIface) || isAssignableTo(ctx, substitutedImpl, target)) { return true; }
-          }
-          var current = srcClass.superType;
+          // The class and each superclass in turn: one of the
+          // interfaces it implements is the target, or extends it.
+          var current: ClassType | null = srcClass;
           while (current != null) {
             let cur = current;
-            var curImplList = cur.implementsList;
-            if (curImplList.length == 0 && cur.genericSource != null) {
-              let curGen = cur.genericSource as ClassType;
-              if (curGen.implementsList.length > 0 && cur.typeArguments != null) {
-                curImplList = curGen.implementsList;
-              }
-            }
-            for (let impl in curImplList) {
-              var substitutedImpl = impl as Type;
-              let typeParamsList = (cur.genericSource ?? cur).typeParameters;
-              if (typeParamsList != null && cur.typeArguments != null) {
-                substitutedImpl = substituteTypeParams(typeParamsList, cur.typeArguments, substitutedImpl);
-              }
-              if (typesEqual(substitutedImpl, tgtIface) || isAssignableTo(ctx, substitutedImpl, target)) { return true; }
+            for (let impl in implementedInterfaces(cur)) {
+              if (typesEqual(impl, tgtIface) || isAssignableTo(ctx, impl, target)) { return true; }
             }
             current = cur.superType;
           }
@@ -1390,11 +1355,57 @@ export function sameAliasDeclaration(a: TypeAliasType, b: TypeAliasType): boolea
   return a.name == b.name && a.declaringModule == b.declaringModule;
 }
 
+/**
+ * Whether `ta` stands for its target: not `distinct`, which names a
+ * nominal type of its own, and not a type operator (`Awaited<T>`),
+ * whose placeholder target is its operand and which compares
+ * nominally (issue #522).
+ */
+export function isTransparentAlias(ta: TypeAliasType): boolean {
+  return !ta.isDistinct && ta.intrinsicName == null;
+}
+
+/**
+ * The interfaces `ct` implements, at its type arguments. An
+ * instantiation built before its source registered an implements list
+ * has an empty copy of it; the source's is read then, and substituted.
+ */
+function implementedInterfaces(ct: ClassType): GrowableArray<InterfaceType> {
+  var list = ct.implementsList;
+  let source = ct.genericSource;
+  if (list.length == 0 && source != null && source.implementsList.length > 0 &&
+      ct.typeArguments != null) {
+    list = source.implementsList;
+  }
+  let typeParams = (ct.genericSource ?? ct).typeParameters;
+  if (typeParams == null || ct.typeArguments == null) {
+    return list;
+  }
+  let substituted = new Array<InterfaceType>();
+  for (let impl in list) {
+    let sub = substituteTypeParams(typeParams, ct.typeArguments, impl as Type);
+    substituted.push(if (sub is InterfaceType) sub else impl);
+  }
+  return substituted;
+}
+
+/** Whether two argument lists are equal member by member; two absent
+ * lists are, and an absent one and a present one are not. */
+function typeArgumentsEqual(argsA: Array<Type> | null, argsB: Array<Type> | null): boolean {
+  if (argsA == null && argsB == null) { return true; }
+  if (argsA == null || argsB == null) { return false; }
+  if (argsA.length != argsB.length) { return false; }
+  for (var i = 0; i < argsA.length; i += 1) {
+    if (!typesEqual(argsA[i], argsB[i])) { return false; }
+  }
+  return true;
+}
+
 export function typesEqual(a: Type, b: Type): boolean {
   if (a === b) { return true; }
   if (a is TypeAliasType && !(b is TypeAliasType)) {
     let ta = a as TypeAliasType;
-    if (!ta.isDistinct && ta.intrinsicName == null && !ta.resolving) {
+    if (isTransparentAlias(ta) && !ta.resolving) {
       ta.resolving = true;
       let eq = typesEqual(ta.target, b);
       ta.resolving = false;
@@ -1403,7 +1414,7 @@ export function typesEqual(a: Type, b: Type): boolean {
   }
   if (b is TypeAliasType && !(a is TypeAliasType)) {
     let tb = b as TypeAliasType;
-    if (!tb.isDistinct && tb.intrinsicName == null && !tb.resolving) {
+    if (isTransparentAlias(tb) && !tb.resolving) {
       tb.resolving = true;
       let eq = typesEqual(a, tb.target);
       tb.resolving = false;
@@ -1446,23 +1457,13 @@ export function typesEqual(a: Type, b: Type): boolean {
     case NumLiteralType {raw as va}: {
       if (let NumLiteralType {raw as vb} = b) va == vb else false
     }
+    // A nominal type is equal to another instantiation of its own
+    // declaration at equal arguments.
     case ClassType as ca: {
       match (b) {
         case ClassType as cb: {
-          // Compare canonical base type (follow genericSource chain)
-          let baseA = if (ca.genericSource != null) (ca.genericSource as ClassType).id else ca.id;
-          let baseB = if (cb.genericSource != null) (cb.genericSource as ClassType).id else cb.id;
-          if (baseA != baseB) { return false; }
-          // Compare type arguments for generic instantiations
-          if (ca.typeArguments == null && cb.typeArguments == null) { return true; }
-          if (ca.typeArguments == null || cb.typeArguments == null) { return false; }
-          let argsA = ca.typeArguments as Array<Type>;
-          let argsB = cb.typeArguments as Array<Type>;
-          if (argsA.length != argsB.length) { return false; }
-          for (var i = 0; i < argsA.length; i += 1) {
-            if (!typesEqual(argsA[i], argsB[i])) { return false; }
-          }
-          true
+          (ca.genericSource ?? ca).id == (cb.genericSource ?? cb).id &&
+              typeArgumentsEqual(ca.typeArguments, cb.typeArguments)
         }
         case _: false
       }
@@ -1470,20 +1471,8 @@ export function typesEqual(a: Type, b: Type): boolean {
     case InterfaceType as ia: {
       match (b) {
         case InterfaceType as ib: {
-          // Compare canonical base type (follow genericSource chain)
-          let baseA = if (ia.genericSource != null) (ia.genericSource as InterfaceType).id else ia.id;
-          let baseB = if (ib.genericSource != null) (ib.genericSource as InterfaceType).id else ib.id;
-          if (baseA != baseB) { return false; }
-          // Compare type arguments for generic instantiations
-          if (ia.typeArguments == null && ib.typeArguments == null) { return true; }
-          if (ia.typeArguments == null || ib.typeArguments == null) { return false; }
-          let argsA = ia.typeArguments as Array<Type>;
-          let argsB = ib.typeArguments as Array<Type>;
-          if (argsA.length != argsB.length) { return false; }
-          for (var i = 0; i < argsA.length; i += 1) {
-            if (!typesEqual(argsA[i], argsB[i])) { return false; }
-          }
-          true
+          sameInterfaceDeclaration(ia, ib) &&
+              typeArgumentsEqual(ia.typeArguments, ib.typeArguments)
         }
         case _: false
       }
@@ -1561,16 +1550,8 @@ export function typesEqual(a: Type, b: Type): boolean {
     case MixinType as ma: {
       match (b) {
         case MixinType as mb: {
-          if ((ma.genericSource ?? ma) !== (mb.genericSource ?? mb)) { return false; }
-          if (ma.typeArguments == null && mb.typeArguments == null) { return true; }
-          if (ma.typeArguments == null || mb.typeArguments == null) { return false; }
-          let argsA = ma.typeArguments as Array<Type>;
-          let argsB = mb.typeArguments as Array<Type>;
-          if (argsA.length != argsB.length) { return false; }
-          for (var i = 0; i < argsA.length; i += 1) {
-            if (!typesEqual(argsA[i], argsB[i])) { return false; }
-          }
-          true
+          (ma.genericSource ?? ma) === (mb.genericSource ?? mb) &&
+              typeArgumentsEqual(ma.typeArguments, mb.typeArguments)
         }
         case _: false
       }
@@ -1588,26 +1569,8 @@ export function typesEqual(a: Type, b: Type): boolean {
       // modules' `Id` aliases are two aliases.
       match (b) {
         case TypeAliasType as tb: {
-          if (!sameAliasDeclaration(ta, tb)) {
-            return false;
-          }
-          if (ta.typeArguments == null && tb.typeArguments == null) {
-            return true;
-          }
-          let argsA = ta.typeArguments;
-          if (argsA == null || tb.typeArguments == null) {
-            return false;
-          }
-          let argsB = tb.typeArguments as Array<Type>;
-          if (argsA.length != argsB.length) {
-            return false;
-          }
-          for (var i = 0; i < argsA.length; i += 1) {
-            if (!typesEqual(argsA[i], argsB[i])) {
-              return false;
-            }
-          }
-          true
+          sameAliasDeclaration(ta, tb) &&
+              typeArgumentsEqual(ta.typeArguments, tb.typeArguments)
         }
         case _: false
       }

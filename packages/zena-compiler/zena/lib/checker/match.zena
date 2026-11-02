@@ -15,7 +15,7 @@ import { DiagnosticCode } from '../diagnostics.zena';
 import { adaptArmToContext, adaptJoinedArm, armValueNode } from './adaptation.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
-import { sameTypeArguments } from './generics.zena';
+import { sameInterfaceDeclaration, sameTypeArguments } from './generics.zena';
 import { prescanPendingFunctions } from './module.zena';
 import {
   applyTrueNarrowingFromCondition, branchDefinitelyExits, getMemberPathKey, isImmutableMemberPath
@@ -25,7 +25,7 @@ import { checkPattern, collectPatternInstantiations } from './patterns.zena';
 import { isAssignableTo } from './relations.zena';
 import { checkStatement } from './statements.zena';
 import {
-  combineArmTypes, subtractNullFromType, subtractTypeFromUnion,
+  combineArmTypes, narrowUnion, subtractNullFromType, subtractTypeFromUnion,
   unwrapAliases
 } from './unions.zena';
 
@@ -123,26 +123,12 @@ function enumsIn(t: Type): GrowableArray<EnumCoverage> {
  * is all-or-nothing: the caller runs it once the arms have named them all.
  */
 function subtractEnumFromType(t: Type, ed: EnumDeclaration): Type {
-  match (t) {
-    case EnumType as et: {
-      if (et.declaration.id == ed.id) {
-        return new NeverType();
-      }
-      return t;
+  return narrowUnion(t, (member: Type): Type => {
+    if (member is EnumType && member.declaration.id == ed.id) {
+      return new NeverType();
     }
-    case UnionT {types}: {
-      let remaining = new Array<Type>();
-      for (let member in types) {
-        if (!(subtractEnumFromType(member, ed) is NeverType)) {
-          remaining.push(member);
-        }
-      }
-      if (remaining.length == 0) { return new NeverType(); }
-      if (remaining.length == 1) { return remaining[0]; }
-      return new UnionT(remaining);
-    }
-    case _: { return t; }
-  }
+    return member;
+  });
 }
 
 /**
@@ -312,19 +298,12 @@ function subtractPatternFromType(ctx: CheckerContext, t: Type, pattern: Node): T
  * Handles sealed class variant tracking and transitive hierarchies.
  */
 function subtractClassFromType(ctx: CheckerContext, t: Type, patClass: ClassType): Type {
+  return narrowUnion(t, (member: Type): Type => subtractClassFromMember(ctx, member, patClass));
+}
+
+/** `subtractClassFromType` for one member of the scrutinee's type. */
+function subtractClassFromMember(ctx: CheckerContext, t: Type, patClass: ClassType): Type {
   match (unwrapAliases(t)) {
-    case UnionT {types}: {
-      let remaining = new Array<Type>();
-      for (let member in types) {
-        let sub = subtractClassFromType(ctx, member, patClass);
-        if (!(sub is NeverType)) {
-          remaining.push(sub);
-        }
-      }
-      if (remaining.length == 0) { return new NeverType(); }
-      if (remaining.length == 1) { return remaining[0]; }
-      return new UnionT(remaining);
-    }
     case ClassType as scrutClass: {
       // If the pattern class IS the scrutinee class (or a supertype), covers it.
       if ((scrutClass.genericSource ?? scrutClass).id == (patClass.genericSource ?? patClass).id) {
@@ -438,27 +417,15 @@ function variantInstantiation(v: ClassType, scrut: ClassType): ClassType {
 }
 
 function subtractInterfaceFromType(ctx: CheckerContext, t: Type, patIface: InterfaceType): Type {
-  match (unwrapAliases(t)) {
-    case UnionT {types}: {
-      let remaining = new Array<Type>();
-      for (let member in types) {
-        let sub = subtractInterfaceFromType(ctx, member, patIface);
-        if (!(sub is NeverType)) {
-          remaining.push(sub);
-        }
-      }
-      if (remaining.length == 0) { return new NeverType(); }
-      if (remaining.length == 1) { return remaining[0]; }
-      return new UnionT(remaining);
-    }
-    case InterfaceType as scrutIface: {
-      if ((scrutIface.genericSource ?? scrutIface).id == (patIface.genericSource ?? patIface).id) {
+  return narrowUnion(t, (member: Type): Type => {
+    let scrut = unwrapAliases(member);
+    if (scrut is InterfaceType) {
+      if (sameInterfaceDeclaration(scrut, patIface)) {
         return new NeverType();
       }
     }
-    case _: {}
-  }
-  return t;
+    return member;
+  });
 }
 
 function getNarrowedTypeFromPattern(ctx: CheckerContext, pattern: Node): Type | null {

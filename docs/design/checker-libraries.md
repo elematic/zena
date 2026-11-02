@@ -156,14 +156,19 @@ section banners).
   `anyref` is handed; `externref` neither), and the predicates are
   one-line readings of it. `representationOf`, which peels aliases
   and enums, stays: it answers a different question.
-- `isAssignableTo`'s class-to-interface case walks the class and then
-  each superclass with the same loop body written twice; and it
-  unwraps transparent aliases in two places with slightly different
-  conditions.
-- `typesEqual`'s `ClassType` and `InterfaceType` arms are the same
-  code; `subtractNullFromType`, `subtractTypeFromUnion`,
+- `isAssignableTo`'s class-to-interface case walked the class and then
+  each superclass with the same loop body written twice, and unwrapped
+  transparent aliases in two places with slightly different
+  conditions: now one loop over `implementedInterfaces`, and
+  `isTransparentAlias`.
+- `typesEqual`'s `ClassType` and `InterfaceType` arms were the same
+  code (`typeArgumentsEqual`, `sameInterfaceDeclaration`);
+  `subtractNullFromType`, `subtractTypeFromUnion`,
   `subtractEnumFromType`, `subtractClassFromType` and
-  `subtractInterfaceFromType` each rebuild a union minus some members.
+  `subtractInterfaceFromType` each rebuilt a union minus some members,
+  and are each now a rule given to `narrowUnion`. Writing those rules
+  as closures found elematic/zena#794: a closure's return type is its
+  first return's.
 - The `ThrowExpression` arm asks `isAssignableTo` against the
   well-known `Error` and then walks the superclass chain with
   `isWellKnown` as a second attempt.
