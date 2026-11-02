@@ -223,8 +223,11 @@ sigma lowercases to `ς` at the end of a word and to `σ` elsewhere. The
 language-specific mappings, such as Turkish dotless `ı`, are not applied.
 
 On the js target these call the host's methods. On the other targets the
-case tables are compiled into the module, which adds about 5 KB for each of
-the two methods a program uses. When the text is known to be ASCII, such as
+case tables are compiled into the module, which adds 4 to 5 KB for each of
+the two methods a program uses, and the end of a word is found by a cheaper
+rule than JavaScript's, which can lowercase a `Σ` differently beside an
+unusual character such as `ª` or between a full stop and a letter (see
+[the design notes](/development/design/strings/#final-sigma)). When the text is known to be ASCII, such as
 a header name or a hexadecimal digit, `asciiLowerCase()` and
 `asciiUpperCase()` change only `A`–`Z` and `a`–`z` and need no tables:
 

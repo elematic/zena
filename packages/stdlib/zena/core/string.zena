@@ -3,8 +3,8 @@ import { FilteredIterable } from './iterable-utils.zena';
 
 import { Encoding } from './encoding.zena';
 import {
-  simpleCaseOf, upperSpecialAt, lowerSpecialAt, isCasedCodePoint,
-  isCaseIgnorableCodePoint, writeCaseUtf8, withCaseRoom, writeUpperSpecial,
+  simpleCaseOf, upperSpecialAt, lowerSpecialAt, hasSimpleCaseMapping,
+  isCombiningDiacritic, writeCaseUtf8, withCaseRoom, writeUpperSpecial,
   writeLowerSpecial,
 } from './case-mapping.zena';
 export { Encoding } from './encoding.zena';
@@ -1369,6 +1369,10 @@ export final class String implements Hashable, Stringable, Iterable<String> {
    * Language-specific mappings, such as the Turkish dotless `ı`, are not
    * applied. Returns `this` when nothing changes. For ASCII letters only,
    * use `asciiLowerCase`.
+   *
+   * Whether a `Σ` ends a word is decided more cheaply than JavaScript
+   * decides it, so the two can differ beside an uncommon character
+   * (`#isFinalSigma`).
    */
   toLowerCase(): String {
     let len = this.#end - this.#start;
@@ -1473,9 +1477,19 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   /**
-   * Whether the `Σ` at `[pos, next)` ends a word, by Unicode's Final_Sigma
-   * condition: it follows a cased letter, with only case-ignorable
-   * characters between, and no cased letter follows it the same way.
+   * Whether the `Σ` at `[pos, next)` ends a word: it follows a letter, with
+   * only combining diacritical marks between, and no letter follows it the
+   * same way. A letter is a code point with a one-to-one case mapping.
+   *
+   * This is Unicode's Final_Sigma condition, which JavaScript implements,
+   * with its two properties approximated so that `toLowerCase` carries no
+   * tables for them, 1.7 KB in all (#750). It gives JavaScript's answer for
+   * Greek text, precomposed or decomposed. It differs beside a Cased code
+   * point with no one-to-one mapping (`'ªΣ'`, where JavaScript gives `ς`),
+   * and where a Case_Ignorable character other than a combining
+   * diacritical mark, such as `.`, `'` or a soft hyphen, stands between
+   * the `Σ` and a letter (`'Α.Σ'`, which JavaScript lowercases to
+   * `'α.ς'`).
    */
   #isFinalSigma(pos: i32, next: i32): boolean {
     var before = pos;
@@ -1487,8 +1501,8 @@ export final class String implements Hashable, Stringable, Iterable<String> {
         lead -= 1;
       }
       let (cp, _) = this.#caseScalarAt(lead);
-      if (!isCaseIgnorableCodePoint(cp)) {
-        precededByCased = isCasedCodePoint(cp);
+      if (!isCombiningDiacritic(cp)) {
+        precededByCased = hasSimpleCaseMapping(cp);
         break;
       }
       before = lead;
@@ -1500,8 +1514,8 @@ export final class String implements Hashable, Stringable, Iterable<String> {
     var after = next;
     while (after < len) {
       let (cp, following) = this.#caseScalarAt(after);
-      if (!isCaseIgnorableCodePoint(cp)) {
-        return !isCasedCodePoint(cp);
+      if (!isCombiningDiacritic(cp)) {
+        return !hasSimpleCaseMapping(cp);
       }
       after = following;
     }

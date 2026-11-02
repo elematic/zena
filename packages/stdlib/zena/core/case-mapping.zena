@@ -10,9 +10,7 @@
  * first use and binary-searched.
  */
 
-import {
-  CASE_RANGES, UPPER_SPECIALS, LOWER_SPECIALS, CASED, CASE_IGNORABLE,
-} from './case-tables.zena';
+import { CASE_RANGES, UPPER_SPECIALS, LOWER_SPECIALS } from './case-tables.zena';
 
 /** A generated table's integer at `pos`, as (value, position after it). */
 function readCaseVarint(table: String, pos: i32): inline (i32, i32) {
@@ -35,30 +33,24 @@ function unzigzagCase(n: i32) {
 }
 
 /**
- * The decoded tables, built on first use. A range table has four slots to
- * an entry: the first code point, the number of code points after it in
- * the range, then the entry's data. A case range's data is its zigzag
- * upper and lower distances, as the table stores them; a property range
- * has none. A special mapping has eight: its code point, 0, the number of
- * code points it maps to, and then those code points.
+ * The decoded tables, built on first use. A case range has four slots: its
+ * first code point, the number of code points after it in the range, and
+ * its zigzag upper and lower distances, as the table stores them. A
+ * special mapping has eight: its code point, 0, the number of code points
+ * it maps to, and then those code points.
  */
 var caseRanges: FixedArray<i32> | null = null;
 var upperSpecials: FixedArray<i32> | null = null;
 var lowerSpecials: FixedArray<i32> | null = null;
-var cased: FixedArray<i32> | null = null;
-var caseIgnorable: FixedArray<i32> | null = null;
 
-/**
- * A table of ranges, each `fields` integers: the start, from the previous
- * start, then the rest as written.
- */
-function decodeCaseRanges(table: String, fields: i32) {
+/** CASE_RANGES: four integers a range, the first from the previous start. */
+function decodeCaseRanges(table: String) {
   let (count, first) = readCaseVarint(table, 0);
   let out = new FixedArray<i32>(count * 4, 0);
   var pos = first;
   var start = 0;
   for (var i = 0; i < count; i += 1) {
-    for (var f = 0; f < fields; f += 1) {
+    for (var f = 0; f < 4; f += 1) {
       let (value, next) = readCaseVarint(table, pos);
       pos = next;
       if (f == 0) {
@@ -98,7 +90,7 @@ function caseRangeTable() {
   if (existing != null) {
     return existing;
   }
-  let built = decodeCaseRanges(CASE_RANGES, 4);
+  let built = decodeCaseRanges(CASE_RANGES);
   caseRanges = built;
   return built;
 }
@@ -120,26 +112,6 @@ function lowerSpecialTable() {
   }
   let built = decodeCaseSpecials(LOWER_SPECIALS);
   lowerSpecials = built;
-  return built;
-}
-
-function casedTable() {
-  let existing = cased;
-  if (existing != null) {
-    return existing;
-  }
-  let built = decodeCaseRanges(CASED, 2);
-  cased = built;
-  return built;
-}
-
-function caseIgnorableTable() {
-  let existing = caseIgnorable;
-  if (existing != null) {
-    return existing;
-  }
-  let built = decodeCaseRanges(CASE_IGNORABLE, 2);
-  caseIgnorable = built;
   return built;
 }
 
@@ -196,12 +168,23 @@ export function lowerSpecialAt(cp: i32): i32 {
   return findCaseEntry(lowerSpecialTable(), 3, cp);
 }
 
-export function isCasedCodePoint(cp: i32): boolean {
-  return findCaseEntry(casedTable(), 2, cp) >= 0;
+/**
+ * Whether `cp` has a one-to-one uppercase or lowercase mapping: what
+ * `toLowerCase`'s final sigma rule takes for Unicode's Cased property,
+ * from the table the mappings already need. It misses the Cased code
+ * points with no such mapping, such as `ª`, `ℂ` and `ß` (#750).
+ */
+export function hasSimpleCaseMapping(cp: i32): boolean {
+  return findCaseEntry(caseRangeTable(), 2, cp) >= 0;
 }
 
-export function isCaseIgnorableCodePoint(cp: i32): boolean {
-  return findCaseEntry(caseIgnorableTable(), 2, cp) >= 0;
+/**
+ * Whether `cp` is in the Combining Diacritical Marks block, U+0300 to
+ * U+036F: what the final sigma rule skips in place of Unicode's
+ * Case_Ignorable property. It holds every mark decomposed Greek uses.
+ */
+export function isCombiningDiacritic(cp: i32): boolean {
+  return cp >= 0x0300 && cp <= 0x036F;
 }
 
 /**
