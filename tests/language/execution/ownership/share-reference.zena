@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 1
+// The `share_reference` intrinsic gives a producer a second reference
+// to a container its consumer owns (owner-futures.md §"Streams"): the
+// feeder puts into the box, the box is the one the caller keeps, and
+// the resource is released once, by the box. The feeder declares its
+// own `[release]`, so dropping it releases nothing it only shares.
+import {Own, Disposable, WithDefault, defaultValue} from 'zena:core';
+import {release} from 'zena:async';
+
+@intrinsic('share_reference')
+declare function shareReference<scoped T>(value: T): T;
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Holder<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+}
+
+class Feeder<scoped T> {
+  #holder: Holder<T>;
+  new(holder: Holder<T>) : #holder = holder;
+  feed(value: T): void {
+    this.#holder.put(value);
+  }
+  [release](): void {}
+}
+
+function pair(): (Feeder<Own<Res>>, Holder<Own<Res>>) {
+  let holder = new Holder<Own<Res>>();
+  let feeder = new Feeder<Own<Res>>(shareReference(holder));
+  return (feeder, holder);
+}
+
+export function main(): i32 {
+  if (true) {
+    let (feeder, holder) = pair();
+    feeder.feed(new Res());
+  }
+  return released;
+}

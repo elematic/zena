@@ -23,7 +23,7 @@ import { isContextTypedNumber } from './literals.zena';
 import { getMemberName } from './members.zena';
 import { overloadCandidates, collectApplicableOverloads, selectMostSpecificIndex } from './overloads.zena';
 import {
-  recordArgumentMove, rejectSecondClassFunctionTypeArgs,
+  recordArgumentMove, rejectSecondClassFunctionTypeArgs, sharesArgument,
   scopedElementsExpected
 } from './ownership.zena';
 import { isAssignableTo, isBoxablePrimitive } from './relations.zena';
@@ -470,6 +470,8 @@ function checkCallExpressionInner(
   let {args} = call;
   let {typeArguments} = call;
   let loc = call.loc;
+  // `shareReference(x)` leaves `x` where it is (sharesArgument).
+  let moves = !sharesArgument(ctx, call);
   match (calleeType) {
     case UnionT {types}: {
       var matchedFt: FunctionType | null = null;
@@ -534,7 +536,9 @@ function checkCallExpressionInner(
         } else {
           adaptToExpected(ctx, args[j], argType, expectedParamType);
         }
-        recordArgumentMove(ctx, args[j], expectedParamType);
+        if (moves) {
+          recordArgumentMove(ctx, args[j], expectedParamType);
+        }
         j = j + 1;
       }
 
@@ -850,7 +854,9 @@ function checkCallExpressionInner(
         } else {
           adaptToExpected(ctx, args[j], argType, expectedParamType);
         }
-        recordArgumentMove(ctx, args[j], expectedParamType);
+        if (moves) {
+          recordArgumentMove(ctx, args[j], expectedParamType);
+        }
         j = j + 1;
       }
 

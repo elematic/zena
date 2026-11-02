@@ -1,0 +1,35 @@
+// @mode: check
+// A pair whose producer half keeps a reference to what its consumer
+// half owns needs `share_reference`: handing the container to both is a
+// use after move.
+import {Own, Disposable, WithDefault, defaultValue} from 'zena:core';
+import {release} from 'zena:async';
+
+@intrinsic('share_reference')
+declare function shareReference<scoped T>(value: T): T;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+class Holder<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+}
+
+class Feeder<scoped T> {
+  #holder: Holder<T>;
+  new(holder: Holder<T>) : #holder = holder;
+  [release](): void {}
+}
+
+function unshared(): (Feeder<Own<Res>>, Holder<Own<Res>>) {
+  let holder = new Holder<Own<Res>>();
+  let feeder = new Feeder<Own<Res>>(holder);
+  return (feeder, holder); // @error: 'holder' may have been moved
+}
+
+function shared(): (Feeder<Own<Res>>, Holder<Own<Res>>) {
+  let holder = new Holder<Own<Res>>();
+  let feeder = new Feeder<Own<Res>>(shareReference(holder));
+  return (feeder, holder);
+}
