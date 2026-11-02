@@ -1,0 +1,71 @@
+// @mode: run
+// @result: 0
+// An inline record parameter is passed as its record's fields, in the
+// order argument explosion uses (docs/design/inline-parameters.md). A
+// record literal writes them, another inline binding passes its own, and
+// a boxed record is read through its getters. The function's body reads
+// the fields directly.
+
+type Point = {x: i32, y: i32};
+
+function norm1(p: inline Point): i32 {
+  return (if (p.x < 0) -p.x else p.x) + (if (p.y < 0) -p.y else p.y);
+}
+
+function sum(p: inline Point): i32 {
+  let {x, y} = p;
+  return x + y;
+}
+
+// Forwarded: to another inline parameter, through an inline `let`.
+function forward(p: inline Point): i32 {
+  let kept = p;
+  return norm1(kept) + sum(p);
+}
+
+// An optional field takes a presence word among the fields.
+type Opts = {size: i32, scale?: i32};
+
+function scaled(o: inline Opts): i32 {
+  return o.size * (o.scale ?? 1);
+}
+
+interface Indexer {
+  index(p: inline Point): i32;
+}
+
+class Grid implements Indexer {
+  cols: i32;
+  new(this.cols);
+  index(p: inline Point): i32 {
+    return p.y * this.cols + p.x;
+  }
+}
+
+class Transposed extends Grid {
+  new(cols: i32) : super(cols);
+  index(p: inline Point): i32 {
+    return super.index({x: p.y, y: p.x});
+  }
+}
+
+let through = (i: Indexer): i32 => i.index({x: 1, y: 2});
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (norm1({x: -3, y: 4}) != 7) { failures += 1; }
+  if (sum({x: 2, y: 5}) != 7) { failures += 2; }
+  if (forward({x: 1, y: -1}) != 2) { failures += 4; }
+  let stored: Point = {x: 10, y: 20};
+  if (sum(stored) != 30) { failures += 8; }
+  if (scaled({size: 3}) != 3 || scaled({size: 3, scale: 4}) != 12) { failures += 16; }
+  let annotated: inline Point = {x: 6, y: 7};
+  if (sum(annotated) != 13) { failures += 32; }
+  let grid = new Grid(10);
+  if (grid.index({x: 3, y: 2}) != 23) { failures += 64; }
+  let base: Grid = new Transposed(10);
+  if (base.index({x: 3, y: 2}) != 32) { failures += 128; }
+  // Packed as the subclass: packed from a `Grid`, it runs `Grid.index` (#797).
+  if (through(grid) != 21 || through(new Transposed(10)) != 12) { failures += 256; }
+  return failures;
+};

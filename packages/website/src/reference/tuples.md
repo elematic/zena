@@ -430,8 +430,8 @@ let pair = (): inline Pair => (1, 2);
 ```
 
 `inline` on a type that cannot be unboxed is an error: a primitive, a class, a
-type parameter, `null`, an existential record, or a record (inline records are
-planned). It is shallow: in `inline (i32, (i32, i32))` the inner tuple is still
+type parameter, `null`, or an existential record. A record can be an inline
+parameter or `let`, but not an inline result yet. It is shallow: in `inline (i32, (i32, i32))` the inner tuple is still
 boxed.
 
 ## Multi-value returns

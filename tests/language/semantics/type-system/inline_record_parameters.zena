@@ -1,0 +1,60 @@
+// @mode: check
+// An `inline` record parameter or `let` follows the rule an inline tuple
+// does (docs/design/inline-parameters.md): it is read through its fields
+// or passed on to another inline position, and a use that would box it is
+// an error there.
+
+type Point = {x: i32, y: i32};
+
+function sum(p: inline Point): i32 {
+  let {x, y} = p;
+  return x + y;
+}
+
+function boxed(p: Point): i32 {
+  return p.x;
+}
+
+// Reads and forwards.
+function reads(p: inline Point): i32 {
+  let kept = p;
+  let annotated: inline Point = {x: p.y, y: p.x};
+  if (let {x} = kept) {
+    return x + sum(annotated);
+  }
+  return sum(kept);
+}
+
+// A boxed record, and a record literal, are passed as their fields.
+let fromBoxed = (p: Point): i32 => sum(p) + sum({x: 1, y: 2});
+
+// Each of these would box it.
+function escapes(p: inline Point): Point {
+  boxed(p); // @error: 'p' is inline, so it is only read or passed on: passing it for a parameter that is not inline would box it.
+  let all = [p]; // @error: 'p' is inline, so it is only read or passed on: putting it in an array would box it.
+  let f = () => p.x; // @error: 'p' is inline, so it is only read or passed on: capturing it in a closure would box it.
+  return p; // @error: 'p' is inline, so it is only read or passed on: returning it as a boxed result would box it.
+}
+
+// A boxed record is an inline tuple's slot like any reference.
+function holds(t: inline (Point, i32)): i32 {
+  return t[0].x + t[1];
+}
+
+// Not yet: an inline record result, an inline record inside an inline
+// tuple, and a record whose fields are not known.
+function result(): inline Point { // @error: An inline record result is not supported yet: return the record, or its fields as an inline tuple.
+  return {x: 1, y: 2};
+}
+
+function nested(t: inline (inline Point, i32)): i32 { // @error: An inline record inside an inline tuple is not supported yet.
+  return t[1];
+}
+
+function existential(p: inline {x: i32, ...}): i32 { // @error: 'inline' cannot apply to an existential record type.
+  return p.x;
+}
+
+function rowed<R extends record>(p: inline {x: i32, ...R}): i32 { // @error: 'inline' cannot apply to a record with a row: its fields are not known.
+  return p.x;
+}

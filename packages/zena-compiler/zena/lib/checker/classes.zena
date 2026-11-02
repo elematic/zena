@@ -18,7 +18,7 @@ import { DiagnosticCode } from '../diagnostics.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
-import { checkInlineParameterType, isInlineType, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
+import { checkInlineParameterType, isInlineType, resolveResultAnnotation, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
 import { checkInlineBindingUses, inlineParamsMatch } from './inline.zena';
 import { spliceDefaultArguments } from './calls.zena';
 import { BodyContext, CheckerContext } from './context.zena';
@@ -1708,7 +1708,7 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           var retType: Type = new VoidType();
           let {returnType} = ms;
           if (returnType != null) {
-            retType = resolveTypeAnnotation(ctx, returnType, true);
+            retType = resolveResultAnnotation(ctx, returnType);
           }
           let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
           classType.members[methodName] = new MethodInfo(
@@ -2733,7 +2733,7 @@ export function checkMethodSignature(
   var retType: Type = new VoidType();
   let {returnType} = md;
   if (returnType != null) {
-    retType = resolveTypeAnnotation(ctx, returnType, true);
+    retType = resolveResultAnnotation(ctx, returnType);
   } else if (classType != null && !md.isStatic && !md.isGenerator && !md.isAsync) {
     // Methods do not infer return types from their bodies, so an
     // unannotated method is `void` — except an override, which means the

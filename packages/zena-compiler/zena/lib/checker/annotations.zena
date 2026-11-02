@@ -10,7 +10,7 @@ import {
 } from '../ast.zena';
 import {
   ArrayType, BoolLiteralType, BooleanType, ClassType, ErrorType,
-  FunctionType, InlineParamType, InlineTupleType as InlineTupleT,
+  FunctionType, InlineParamType, InlineRecordType, InlineTupleType as InlineTupleT,
   InterfaceType, MixinType, NullType, NumLiteralType, RecordType as RecordT,
   StringLiteralType, ThisType, TupleType as TupleT, Type, TypeAliasType,
   TypeParameterType, UnionType as UnionT, applyTypeIntrinsic, baseType,
@@ -53,6 +53,7 @@ export function isInlineType(t: Type, aliasHops: i32 = 0): boolean {
     case InlineTupleT {}: true
     // It may be, so it follows the same placement rules.
     case InlineParamType {}: true
+    case InlineRecordType {}: true
     // Aliases are transparent here — `type Pair = inline (i32, i32)` is
     // legal to declare, so the restriction has to be enforced through the
     // name at each use. `resolving` means we are inside this alias's own
@@ -103,6 +104,10 @@ export function tupleElementPatternType(element: Node, t: Type): Type {
  * inline comes back unchanged.
  */
 export function boxedFormOf(t: Type): Type {
+  // `unwrapAliases` reads through an inline record to its record.
+  if (let InlineRecordType {record} = t) {
+    return record;
+  }
   return match (unwrapAliases(t)) {
     case InlineTupleT {elementTypes}: {
       // A nested inline tuple is boxed too: a stored value holds no
@@ -154,7 +159,13 @@ function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
           // union cannot be spliced into one list of positions, so a
           // nested inline union is not supported yet.
           let unwrapped = unwrapAliases(elType);
-          if (isInlineType(elType) && !(unwrapped is InlineTupleT) &&
+          if (isInlineRecordType(elType)) {
+            ctx.error(
+              "An inline record inside an inline tuple is not supported yet.",
+              DiagnosticCode.TypeMismatch,
+              element.loc,
+            );
+          } else if (isInlineType(elType) && !(unwrapped is InlineTupleT) &&
               !(unwrapped is InlineParamType)) {
             ctx.error(
               "An inline union inside an inline tuple is not supported yet.",
@@ -281,17 +292,23 @@ function inlineFormOf(ctx: CheckerContext, t: Type, loc: SourceLocation | null, 
     }
     case InlineParamType {}: t
     case RecordT as record: {
-      ctx.error(
-        if (record.isExistential) {
-          "'inline' cannot apply to an existential record type."
-        } else {
-          "Inline record types are not supported yet."
-        },
-        DiagnosticCode.TypeMismatch,
-        loc,
-      );
-      new ErrorType() as Type
+      if (record.isExistential || record.row != null) {
+        ctx.error(
+          if (record.isExistential) {
+            "'inline' cannot apply to an existential record type."
+          } else {
+            "'inline' cannot apply to a record with a row: its fields are not known."
+          },
+          DiagnosticCode.TypeMismatch,
+          loc,
+        );
+        new ErrorType() as Type
+      } else {
+        // Passed as its fields (docs/design/inline-parameters.md).
+        new InlineRecordType(record)
+      }
     }
+    case InlineRecordType {}: t
     case _: {
       ctx.error(
         `'inline' applies to tuple types and unions of them, not '${typeToString(t)}'.`,
@@ -482,6 +499,31 @@ export function resolveTypeAnnotation(ctx: CheckerContext, ann: TypeAnnotation, 
     }
   }
   return t;
+}
+
+/**
+ * A function's result type annotation: it may be inline, but an inline
+ * record result is not supported yet (#371, stage 5); a record result is
+ * returned boxed, or its fields as an inline tuple.
+ */
+export function resolveResultAnnotation(ctx: CheckerContext, ann: TypeAnnotation): Type {
+  let t = resolveTypeAnnotation(ctx, ann, true);
+  if (isInlineRecordType(t)) {
+    ctx.error("An inline record result is not supported yet: return the record, or its fields as an inline tuple.",
+        DiagnosticCode.TypeMismatch, ann.loc);
+  }
+  return t;
+}
+
+/** Whether `t` is an inline record, through aliases. */
+export function isInlineRecordType(t: Type): boolean {
+  var curr = t;
+  var hops = 0;
+  while (curr is TypeAliasType && hops < maxAliasHops) {
+    curr = curr.target;
+    hops += 1;
+  }
+  return curr is InlineRecordType;
 }
 
 /**
@@ -769,7 +811,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
             paramTypes.push(paramType);
       i += 1;
     }
-    let retType = resolveTypeAnnotation(ctx, returnType, true);
+    let retType = resolveResultAnnotation(ctx, returnType);
     new FunctionType(paramTypes, retType)
   }
   case LiteralTypeAnnotation {value}: {

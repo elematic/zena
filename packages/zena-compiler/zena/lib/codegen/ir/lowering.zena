@@ -17,7 +17,7 @@ import {
   Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, ArrayPattern, RestPattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression, SymbolPropertyName,
 } from '../../ast.zena';
 import {
-  Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
+  Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, InlineRecordType, TypeAliasType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
   ownershipHandleName, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType, isIntegerType,
   typeContainsTypeParameter, representsRestricted,
 } from '../../types.zena';
@@ -43,7 +43,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -1510,11 +1510,11 @@ export final class FunctionLowerer {
     let paramSigIndex = new Array<i32>();
     var liveParamCount = 0;
     for (var pi = 0; pi < params.length; pi += 1) {
-      // An inline parameter spans its slots.
-      let inlineLayout = this.#inlineParamLayout(params[pi]);
-      if (inlineLayout != null) {
+      // An inline parameter spans its slots or fields.
+      let inlineParam = this.#inlineParamFor(params[pi]);
+      if (inlineParam != null) {
         paramSigIndex.push(liveParamCount + paramOffset);
-        liveParamCount += inlineLayout.slots.length;
+        liveParamCount += inlineParam.width();
         continue;
       }
       if (this.#isZeroWidthParam(params[pi])) {
@@ -1558,6 +1558,9 @@ export final class FunctionLowerer {
     let patternValues = new Array<i32>();
     let explodedIndexes = new Array<i32>();
     let explodedValues = new Array<GrowableArray<i32>>();
+    // For an inline record parameter among them, its dispatch; an
+    // exploded one's is the core's ExplosionSpec's.
+    let inlineRecordDispatches = new Array<RecordDispatchInfo>();
     for (var i = 0; i < params.length; i += 1) {
       let p = params[i];
       // this-params bind like plain params — the parser already
@@ -1582,22 +1585,30 @@ export final class FunctionLowerer {
         }
         continue;
       }
-      let inlineLayout = this.#inlineParamLayout(p);
-      if (inlineLayout != null) {
+      let inlineParam = this.#inlineParamFor(p);
+      if (inlineParam != null) {
         let slots = new Array<i32>();
-        for (var k = 0; k < inlineLayout.slots.length; k += 1) {
+        for (var k = 0; k < inlineParam.width(); k += 1) {
           this.#requireSupported(sig.params[sigIndex + k], 'parameter type');
           slots.push(this.b.blockParam(entry, sig.params[sigIndex + k]));
         }
-        let source = new MultiValues(slots, inlineLayout);
+        if (p.pattern != null) {
+          this.#bail('destructuring an inline parameter');
+        }
+        let inlineLayout = inlineParam.layout;
+        if (inlineLayout == null) {
+          // A record's fields: its record is rebuilt from them once
+          // instructions can emit, as an exploded parameter's is.
+          explodedIndexes.push(i);
+          explodedValues.push(slots);
+          inlineRecordDispatches.push(inlineParam.dispatch as RecordDispatchInfo);
+          continue;
+        }
         let sym = this.func.model.resolveDeclaration(p.name);
         if (sym != null) {
           this.#cx().env[sym.id] = NO_VALUE;
           this.#cx().symbols[sym.id] = sym;
-          this.#cx().inlineBindings[sym.id] = source;
-        }
-        if (p.pattern != null) {
-          this.#bail('destructuring an inline parameter');
+          this.#cx().inlineBindings[sym.id] = new MultiValues(slots, inlineLayout);
         }
         continue;
       }
@@ -1646,10 +1657,16 @@ export final class FunctionLowerer {
     // An exploded parameter binds to a record rebuilt from its fields.
     // Every read of it answers from the fields (`explodedRecords`), so
     // the record itself is dead unless some use needs it whole.
+    var inlineRecordIndex = 0;
     for (var e = 0; e < explodedIndexes.length; e += 1) {
       let p = params[explodedIndexes[e]];
-      let d = (exploded as GrowableArray<RecordDispatchInfo | null>)[explodedIndexes[e]]
-          as RecordDispatchInfo;
+      let explodedD = exploded?[explodedIndexes[e]];
+      let d = if (explodedD != null) {
+        explodedD
+      } else {
+        inlineRecordIndex += 1;
+        inlineRecordDispatches[inlineRecordIndex - 1]
+      };
       let values = explodedValues[e];
       let record = this.#packRecord(d, values);
       this.#cx().explodedRecords[record] = new ExplodedRecord(d, values);
@@ -2644,7 +2661,7 @@ export final class FunctionLowerer {
         let inlineLayout = this.#inlineArgLayout(inlineParams, i);
         if (inlineLayout != null) {
           this.#pushInlineArg(si.args[i], inlineLayout, superArgs);
-          sIdx += inlineLayout.slots.length;
+          sIdx += inlineLayout.width();
           continue;
         }
         if (this.#dropZeroWidthArg(si.args[i])) {
@@ -4044,6 +4061,22 @@ export final class FunctionLowerer {
       this.#cx().inlineBindings[sym.id] = new MultiValues(values, inlineLayout);
       return;
     }
+    // An inline record `let` holds its initializer's fields, bound as an
+    // inline record parameter is: to a record rebuilt from them.
+    let inlineRecord = inlineRecordParamOf(subBinding);
+    if (inlineRecord != null) {
+      let param = this.#inlineParamOf(bindingType, this.func) as InlineParam;
+      let d = param.dispatch as RecordDispatchInfo;
+      let fields = this.#recordArgFields(vd.init, d, inlineRecord);
+      if (this.#isCelled(sym.id)) {
+        this.#bail('inline let is celled');
+      }
+      let record = this.#packRecord(d, fields);
+      this.#cx().explodedRecords[record] = new ExplodedRecord(d, fields);
+      this.#cx().env[sym.id] = record;
+      this.#cx().symbols[sym.id] = sym;
+      return;
+    }
     if (isVoidOrNeverType(subBinding)) {
       // A zero-width binding holds no value — per specialization, the
       // way arguments and returns already work: `let v = await f()` at
@@ -4661,7 +4694,7 @@ export final class FunctionLowerer {
       let inlineLayout = this.#inlineArgLayout(inlineParams, i);
       if (inlineLayout != null) {
         this.#pushInlineArg(call.args[i], inlineLayout, args);
-        sIdx += inlineLayout.slots.length;
+        sIdx += inlineLayout.width();
         continue;
       }
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -4784,7 +4817,7 @@ export final class FunctionLowerer {
       let inlineLayout = this.#inlineArgLayout(inlineParams, i);
       if (inlineLayout != null) {
         this.#pushInlineArg(call.args[i], inlineLayout, args);
-        sIdx += inlineLayout.slots.length;
+        sIdx += inlineLayout.width();
         continue;
       }
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -6972,7 +7005,7 @@ export final class FunctionLowerer {
       let inlineLayout = this.#inlineArgLayout(inlineParams, i);
       if (inlineLayout != null) {
         this.#pushInlineArg(argExprs[i], inlineLayout, args);
-        sIdx += inlineLayout.slots.length;
+        sIdx += inlineLayout.width();
         continue;
       }
       if (this.#dropZeroWidthArg(argExprs[i])) {
@@ -7745,7 +7778,7 @@ export final class FunctionLowerer {
       let inlineLayout = this.#inlineArgLayout(inlineParams, i);
       if (inlineLayout != null) {
         this.#pushInlineArg(call.args[i], inlineLayout, args);
-        sIdx += inlineLayout.slots.length;
+        sIdx += inlineLayout.width();
         continue;
       }
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -8488,7 +8521,7 @@ export final class FunctionLowerer {
       let inlineLayout = this.#inlineArgLayout(inlineParams, i);
       if (inlineLayout != null) {
         this.#pushInlineArg(call.args[i], inlineLayout, args);
-        sIdx += inlineLayout.slots.length;
+        sIdx += inlineLayout.width();
         continue;
       }
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -8832,7 +8865,7 @@ export final class FunctionLowerer {
         let inlineLayout = this.#inlineArgLayout(inlineParams, i);
         if (inlineLayout != null) {
           this.#pushInlineArg(argExprs[i], inlineLayout, args);
-          sIdx += inlineLayout.slots.length;
+          sIdx += inlineLayout.width();
           continue;
         }
         if (this.#dropZeroWidthArg(argExprs[i])) {
@@ -10077,7 +10110,7 @@ export final class FunctionLowerer {
       let inlineLayout = this.#inlineArgLayout(inlineParams, i);
       if (inlineLayout != null) {
         this.#pushInlineArg(call.args[i], inlineLayout, args);
-        sIdx += inlineLayout.slots.length;
+        sIdx += inlineLayout.width();
         continue;
       }
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -10830,66 +10863,87 @@ export final class FunctionLowerer {
    * condition mapParamTypeToWasmParams drops the slot on.
    */
   /**
-   * The layout each parameter of `callee` takes when it is inline
+   * How each parameter of `callee` is passed when it is inline
    * (docs/design/inline-parameters.md), or null when none is: then the
    * call lowers one value per argument, as it always has.
    */
-  #inlineParamLayouts(callee: Type | null): GrowableArray<InlineLayout | null> | null {
+  #inlineParamLayouts(callee: Type | null): GrowableArray<InlineParam | null> | null {
     if (callee == null || !(callee is FunctionType)) {
       return null;
     }
     var any = false;
-    let layouts = new Array<InlineLayout | null>();
+    let params = new Array<InlineParam | null>();
     for (let p in callee.parameters) {
-      let u = unwrapAliases(p);
-      let layout = if (u is InlineTupleType || u is UnionType) {
-        inlineParamLayoutOf(this.wasm,
-            substituteTypeParamsInFunctionContext(this.wasm, this.func, p))
-      } else {
-        null
-      };
-      if (layout != null) {
+      let param = this.#inlineParamOf(p, this.func);
+      if (param != null) {
         any = true;
       }
-      layouts.push(layout);
+      params.push(param);
     }
-    return if (any) layouts else null;
+    return if (any) params else null;
   }
 
   /**
    * `#inlineParamLayouts` for a function about to be called, from its own
    * parameters at its own specialization.
    */
-  #inlineLayoutsOf(f: WasmFunction): GrowableArray<InlineLayout | null> | null {
+  #inlineLayoutsOf(f: WasmFunction): GrowableArray<InlineParam | null> | null {
     let fn = f.node;
-    let params = if (fn is FunctionExpression) {
+    let declared = if (fn is FunctionExpression) {
       fn.params
     } else if (fn is MethodDefinition) {
       fn.params
     } else {
       null
     };
-    if (params == null) {
+    if (declared == null) {
       return null;
     }
     var any = false;
-    let layouts = new Array<InlineLayout | null>();
-    for (let p in params) {
+    let params = new Array<InlineParam | null>();
+    for (let p in declared) {
       let sym = f.model.resolve(p.name);
       let bt = if (sym != null) f.model.getBindingType(sym) else null;
-      let u = if (bt != null) unwrapAliases(bt) else null;
-      let layout = if (bt != null && (u is InlineTupleType || u is UnionType)) {
-        inlineParamLayoutOf(this.wasm,
-            substituteTypeParamsInFunctionContext(this.wasm, f, bt))
-      } else {
-        null
-      };
-      if (layout != null) {
+      let param = if (bt != null) this.#inlineParamOf(bt, f) else null;
+      if (param != null) {
         any = true;
       }
-      layouts.push(layout);
+      params.push(param);
     }
-    return if (any) layouts else null;
+    return if (any) params else null;
+  }
+
+  /**
+   * How a parameter of type `t`, in `f`'s context, is passed when it is
+   * inline: a tuple's slots, or a record's fields. Null for one value.
+   */
+  #inlineParamOf(t: Type, f: WasmFunction): InlineParam | null {
+    var curr = t;
+    while (curr is TypeAliasType) {
+      curr = curr.target;
+    }
+    if (!(curr is InlineTupleType) && !(curr is UnionType) && !(curr is InlineRecordType)) {
+      return null;
+    }
+    let sub = substituteTypeParamsInFunctionContext(this.wasm, f, t);
+    let layout = inlineParamLayoutOf(this.wasm, sub);
+    if (layout != null) {
+      return new InlineParam(layout, null, null);
+    }
+    let record = inlineRecordParamOf(sub);
+    if (record == null) {
+      return null;
+    }
+    let d = this.wasm.findRecordDispatch(recordWasmFields(this.wasm, record, f),
+        sortedOptionalNames(record));
+    if (d == null) {
+      return this.#bailInline('inline record parameter without a dispatch');
+    }
+    return new InlineParam(null, d, record);
+  }
+
+  #bailInline(reason: String): InlineParam | null {
+    this.#bail(reason);
   }
 
   /** The callee type a call's arguments are lowered against. */
@@ -10897,25 +10951,26 @@ export final class FunctionLowerer {
     return this.func.model.getResolvedOverload(call) ?? this.func.model.getNodeType(call.callee);
   }
 
-  /** Parameter `i`'s inline layout, from `#inlineParamLayouts`. */
-  #inlineArgLayout(layouts: GrowableArray<InlineLayout | null> | null, i: i32): InlineLayout | null {
-    return if (layouts != null && i < layouts.length) layouts[i] else null;
+  /** Parameter `i`'s inline form, from `#inlineParamLayouts`. */
+  #inlineArgLayout(params: GrowableArray<InlineParam | null> | null, i: i32): InlineParam | null {
+    return if (params != null && i < params.length) params[i] else null;
   }
 
   /**
    * How many wasm values these arguments take: `#liveArgCount`, with an
-   * argument for an inline parameter taking that parameter's slots.
+   * argument for an inline parameter taking that parameter's slots or
+   * fields.
    */
   #liveArgWidth(args: GrowableArray<Expression>,
-      layouts: GrowableArray<InlineLayout | null> | null): i32 {
-    if (layouts == null) {
+      params: GrowableArray<InlineParam | null> | null): i32 {
+    if (params == null) {
       return this.#liveArgCount(args);
     }
     var live = 0;
     for (var i = 0; i < args.length; i += 1) {
-      let layout = this.#inlineArgLayout(layouts, i);
-      if (layout != null) {
-        live += layout.slots.length;
+      let param = this.#inlineArgLayout(params, i);
+      if (param != null) {
+        live += param.width();
       } else if (!this.#isZeroWidthExpr(args[i])) {
         live += 1;
       }
@@ -10923,11 +10978,49 @@ export final class FunctionLowerer {
     return live;
   }
 
-  /** Lowers `arg` into an inline parameter's slots, onto `args`. */
-  #pushInlineArg(arg: Expression, layout: InlineLayout, args: GrowableArray<i32>): void {
-    for (let v in this.#lowerIntoSlots(arg, layout, layout.slots)) {
+  /**
+   * Lowers `arg` for an inline parameter, onto `args`: a tuple into its
+   * slots, a record as its fields. A record literal writes them, a held
+   * record passes its own, and a boxed record is read through its
+   * getters, as an argument for an exploded parameter is.
+   */
+  #pushInlineArg(arg: Expression, param: InlineParam, args: GrowableArray<i32>): void {
+    let layout = param.layout;
+    if (layout != null) {
+      for (let v in this.#lowerIntoSlots(arg, layout, layout.slots)) {
+        args.push(v);
+      }
+      return;
+    }
+    let d = param.dispatch as RecordDispatchInfo;
+    for (let v in this.#recordArgFields(arg, d, param.record as RecordType)) {
       args.push(v);
     }
+  }
+
+  /** The fields of `arg`, a record of `d`'s shape, in `d.fields` order. */
+  #recordArgFields(arg: Expression, d: RecordDispatchInfo, record: RecordType): GrowableArray<i32> {
+    if (this.#isExactRecordLiteral(arg, d)) {
+      return this.#lowerRecordLiteralFields(arg as RecordLiteral, d);
+    }
+    let exploded = this.#explodedRecordOf(arg, d);
+    if (exploded != null) {
+      return exploded.values;
+    }
+    let boxedVt = typeToValTypeWithSub(this.wasm, record, this.func);
+    let lowered = this.#lowerExpressionCtx(arg, boxedVt);
+    if (let (true, held) = this.#cx().explodedRecords.get(lowered)) {
+      if (held.dispatch === d) {
+        return held.values;
+      }
+    }
+    let value = this.#conformToSlot(lowered, boxedVt, 'inline record argument type');
+    let fields = new Array<i32>();
+    for (let field in d.fields) {
+      let read = this.#cx().recordDispatchRead(d, field.name as String, value);
+      fields.push(this.#conformToSlot(read, field.type, 'inline record field type'));
+    }
+    return fields;
   }
 
   /** The slots of the inline parameter or `let` `e` names, or null. */
@@ -10943,8 +11036,8 @@ export final class FunctionLowerer {
     return if (let (true, source) = this.#cx().inlineBindings.get(id)) source else null;
   }
 
-  /** The slots an inline parameter takes, or null for one value. */
-  #inlineParamLayout(p: Parameter): InlineLayout | null {
+  /** How a parameter of this function is passed when it is inline, or null. */
+  #inlineParamFor(p: Parameter): InlineParam | null {
     let sym = this.func.model.resolveDeclaration(p.name);
     if (sym == null) {
       return null;
@@ -10953,8 +11046,7 @@ export final class FunctionLowerer {
     if (bt == null) {
       return null;
     }
-    return inlineParamLayoutOf(this.wasm,
-        substituteTypeParamsInFunctionContext(this.wasm, this.func, bt));
+    return this.#inlineParamOf(bt, this.func);
   }
 
   #isZeroWidthParam(p: Parameter): boolean {
@@ -11300,6 +11392,28 @@ export final class MultiValues {
       });
     }
     return out;
+  }
+}
+
+/**
+ * How an inline parameter is passed (docs/design/inline-parameters.md):
+ * a tuple or tuple union as the slots of `layout`, or a record as the
+ * fields of `dispatch`, in `dispatch.fields` order.
+ */
+export final class InlineParam {
+  layout: InlineLayout | null;
+  dispatch: RecordDispatchInfo | null;
+  record: RecordType | null;
+
+  new(this.layout, this.dispatch, this.record);
+
+  /** How many wasm values it takes. */
+  width(): i32 {
+    let layout = this.layout;
+    if (layout != null) {
+      return layout.slots.length;
+    }
+    return (this.dispatch as RecordDispatchInfo).fields.length;
   }
 }
 

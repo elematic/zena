@@ -4857,6 +4857,24 @@ parameter that is not inline, capturing it in a closure, `==`, `is` and `as`.
 A boxed value may be passed for an inline parameter, which reads it without
 allocating.
 
+A record can be an inline parameter or `let` too. It is passed as its
+fields, one WebAssembly value each, and read through them:
+
+```zena
+type Point = {x: i32, y: i32};
+
+function sum(p: inline Point): i32 {
+  return p.x + p.y;
+}
+
+let s = sum({x: 1, y: 2}); // passed as two i32s
+```
+
+The rule is the same as for a tuple, with a field read where a tuple has an
+index. An inline record cannot be a function's result or an element of an
+inline tuple yet, and the record's fields must be known, so it cannot be
+existential or spread a row parameter.
+
 A function with an inline parameter is a top-level function or arrow, a
 method, or a constructor, and it is called rather than used as a value. An
 override keeps the inline-ness of each parameter it overrides. An inline
@@ -4901,9 +4919,8 @@ reads the `String`.
   unboxed or are references by definition;
 - `null`, including `inline (i32, i32)?`, because an inline value has no
   absent form;
-- an existential record type (`inline {x: i32, ...}`), whose shape is not
-  known;
-- a record type, until inline records are implemented;
+- an existential record type (`inline {x: i32, ...}`) or a record that
+  spreads a row parameter, whose fields are not known;
 - a type parameter (`inline T`), whose argument may not be inlinable. `inline`
   always means the unboxed form is required; on a type parameter, that will be
   a constraint on its argument once types other than tuples can be inline.

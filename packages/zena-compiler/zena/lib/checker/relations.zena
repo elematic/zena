@@ -3,7 +3,7 @@ import { Expression, Identifier, SourceLocation } from '../ast.zena';
 import {
   AnyRefType, ArrayType, BoolLiteralType, BooleanType, ClassType, EnumType,
   EqRefType, ErasedType, ErrorType, ExternRefType, F32Type, F64Type,
-  FunctionType, HoleType, I16Type, I32Type, I64Type, I8Type, InlineParamType,
+  FunctionType, HoleType, I16Type, I32Type, I64Type, I8Type, InlineParamType, InlineRecordType,
   InlineTupleType as InlineTupleT, InterfaceType, MixinType, NeverType,
   NullType, NumLiteralType, RecordType as RecordT, StringLiteralType,
   SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType,
@@ -912,6 +912,14 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
   if (let InlineParamType {param} = target) {
     return isAssignableTo(ctx, source, param);
   }
+  // A record converts to and from its inline form: its identity cannot be
+  // observed, so passing its fields loses nothing.
+  if (let InlineRecordType {record} = source) {
+    return isAssignableTo(ctx, record, target);
+  }
+  if (let InlineRecordType {record} = target) {
+    return isAssignableTo(ctx, source, record);
+  }
   // A `T` fills a `WithDefault<T>` slot, which is `T` itself at a
   // primitive and `T | null` at a reference. Null does not, while `T`
   // is open: at a primitive the slot has none (type-operators.md
@@ -1516,6 +1524,9 @@ export function typesEqual(a: Type, b: Type): boolean {
     }
     case InlineParamType {param as pa}: {
       if (let InlineParamType {param as pb} = b) typesEqual(pa, pb) else false
+    }
+    case InlineRecordType {record as ra}: {
+      if (let InlineRecordType {record as rb} = b) typesEqual(ra, rb) else false
     }
     case FunctionType as fa: {
       match (b) {
