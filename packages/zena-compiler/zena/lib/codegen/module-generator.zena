@@ -24,7 +24,7 @@ import { ClassType, TypeInterner, markTypes } from '../types.zena';
 import { Program } from '../program.zena';
 import {
   NumberLiteral, StringLiteral, BooleanLiteral, EnumDeclaration, ImportDeclaration, Module,
-  VariableDeclaration, IdentifierPattern,
+  VariableDeclaration, IdentifierPattern, FunctionDeclaration,
 } from '../ast.zena';
 import { isWebUiProtocolLibrary } from '../stdlib-manifest.zena';
 import { Symbol } from '../scope/symbol.zena';
@@ -292,14 +292,18 @@ export final class ModuleGenerator {
         continue;
       }
       for (let stmt in unit.ast.body) {
-        if (!(stmt is VariableDeclaration)) {
-          continue;
+        // An exported `function` or an exported `let` of an arrow:
+        // reachability roots both (`webui_*` in analysis.zena).
+        var name = '';
+        if (stmt is FunctionDeclaration) {
+          if (stmt.exported) {
+            name = stmt.name.name;
+          }
+        } else if (stmt is VariableDeclaration) {
+          if (stmt.exported && stmt.pattern is IdentifierPattern) {
+            name = (stmt.pattern as IdentifierPattern).name;
+          }
         }
-        let decl = stmt as VariableDeclaration;
-        if (!decl.exported || !(decl.pattern is IdentifierPattern)) {
-          continue;
-        }
-        let name = (decl.pattern as IdentifierPattern).name;
         if (!name.startsWith('webui_')) {
           continue;
         }
