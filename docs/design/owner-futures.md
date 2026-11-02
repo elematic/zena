@@ -2,10 +2,11 @@
 
 ## Status
 
-Draft, revised 2026-11-02 (seventh revision: stream writes hand refused
-elements back). Part of elematic/zena#284: switching
-`wasi:http` and `zena-cli:host/http-server` to resource classes needs it,
-and so does the open "lifted `future<T>` ownership" item there.
+Accepted 2026-11-02, after seven revisions. Stages 1–3 are implemented,
+and stage 4 is in progress (§"Staging"). Part of elematic/zena#284:
+switching `wasi:http` and `zena-cli:host/http-server` to resource
+classes needs it, and so does the open "lifted `future<T>` ownership"
+item there.
 
 ## Overview
 
@@ -50,10 +51,10 @@ stream of owners. Today the HTTP code releases them by hand
 (`disposeDeferred`, `drainFuture`, explicit `[Disposable.dispose]()`
 calls in `zena:http`, `zena:fetch` and the protobuf transports).
 
-## How the containers behave today
+## How the containers behaved before this design
 
 From a survey of `zena:async`, `zena:stream` and the synthesizer
-(2026-10-25):
+(2026-10-25), before any of the stages below landed:
 
 - `Future<T>` keeps a settled value in `#value: Box<T> | null` and
   never clears it. Every read hands out the same value: each `await`
@@ -524,18 +525,20 @@ and with them:
    `T` is `scoped`, and the throw on a store into a full `T` field at a
    restricted specialization.
 4. **`Option`, streams, `Completer.create` and `FutureClaim`** at
-   restricted types, with loop-variable release for `for await`. Done so
-   far: #782 (a pattern that takes a `scoped T` instance apart moves it
-   and releases what it bound), #788 (any `scoped T` class at an owner
-   is released where it is dropped, through a `[release]` synthesized
-   from its `T` fields), #789 (a generic function at an owner is
-   specialized at the owner's resource class, not as an erasure), and
-   #790 (`Some` takes `scoped T`; a union with a container member is
-   affine and released by its member), #791 (the static half of
-   `isFirstClass<T>()`, and first-class-only fields), and #796 (streams
-   whose writes hand refused elements back, `StreamWriter.create`, and
-   the `share_reference` intrinsic). Next: `Completer.create`,
-   `FutureClaim`, and loop-variable release for `for await`.
+   restricted types, with loop-variable release for `for await`.
+   - Merged: #782 (a pattern that takes a `scoped T` instance apart
+     moves it and releases what it bound), #788 (any `scoped T` class at
+     an owner is released where it is dropped, through a `[release]`
+     synthesized from its `T` fields), and #789 (a generic function at
+     an owner is specialized at the owner's resource class, not as an
+     erasure).
+   - In review: #790 (`Some` takes `scoped T`; a union with a container
+     member is affine and released by its member), #791 (the static half
+     of `isFirstClass<T>()`, and first-class-only fields), and #796
+     (streams whose writes hand refused elements back,
+     `StreamWriter.create`, and the `share_reference` intrinsic).
+   - Next: `Completer.create`, `FutureClaim`, and loop-variable release
+     for `for await`.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
    `zena:fetch` and the protobuf transports removed.
 
