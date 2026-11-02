@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 1
+// A `scoped T` function called at an owner is specialized at the owner's
+// resource class, as a class instantiated at one is. Keyed by the
+// handle alias's unsubstituted target, `Own<Res>` was the erasure of
+// `T`, and the specialization lowered as an erasure: "constructor
+// missing" for the class it builds.
+import {Own, Disposable} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Holder<scoped T> {
+  value: T;
+  new(this.value);
+}
+
+function wrap<scoped T>(v: T): Holder<T> {
+  return new Holder<T>(v);
+}
+
+export function main(): i32 {
+  if (true) {
+    let h = wrap(new Res());
+    let {value} = h;
+  }
+  return released;
+}

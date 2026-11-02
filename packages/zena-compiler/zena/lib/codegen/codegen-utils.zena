@@ -230,6 +230,30 @@ export final class SpecializedFunctionKey implements Hashable {
 // Type, and the checker needs it too). Re-exported here for existing callers.
 export { typeContainsTypeParameter } from '../types.zena';
 
+/**
+ * An alias instance's target as this instance means it. An instance
+ * keeps its declaration's unsubstituted target and carries the
+ * arguments alongside (instantiateTypeAliasType), so for an alias whose
+ * target is one of its own parameters, `opaque type Own<T> = T` and the
+ * other handles, the target is that parameter's argument: `Own<Res>` is
+ * `Res`, as eraseTypeParameters lowers it. Read through the bare target,
+ * every such instance was the erasure of `T`. Any other alias returns
+ * its target.
+ */
+export function instantiatedAliasTarget(ta: TypeAliasType): Type {
+  let params = ta.typeParameters;
+  let args = ta.typeArguments;
+  let target = ta.target;
+  if (params != null && args != null && target is TypeParameterType) {
+    for (var i = 0; i < params.length && i < args.length; i += 1) {
+      if (params[i] === target) {
+        return args[i];
+      }
+    }
+  }
+  return target;
+}
+
 export function isConcrete(t: Type): boolean {
   return match (t) {
     case TypeParameterType: false
@@ -330,7 +354,7 @@ export function isConcrete(t: Type): boolean {
       }
       if (concrete && !ta.resolving) {
         ta.resolving = true;
-        if (!isConcrete(ta.target)) { concrete = false; }
+        if (!isConcrete(instantiatedAliasTarget(ta))) { concrete = false; }
         ta.resolving = false;
       }
       concrete
@@ -496,7 +520,7 @@ function getTypeKeyForSpecializationRaw(type: Type): String {
       parts[2 + 2 * ft.parameters.length] = getTypeKeyForSpecialization(ft.returnType);
       String.fromParts(parts)
     }
-    case TypeAliasType as ta: getTypeKeyForSpecialization(ta.target)
+    case TypeAliasType as ta: getTypeKeyForSpecialization(instantiatedAliasTarget(ta))
     case EnumType as et: getTypeKeyForSpecialization(et.backingType)
     case NeverType: "never"
     case HoleType: "hole"
@@ -570,7 +594,7 @@ export function containsErasedType(t: Type): boolean {
       }
       if (ta.resolving) { return false; }
       ta.resolving = true;
-      let res = containsErasedType(ta.target);
+      let res = containsErasedType(instantiatedAliasTarget(ta));
       ta.resolving = false;
       res
     }
