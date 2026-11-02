@@ -122,15 +122,16 @@ export function dnsOverHttpsApp(records: MemoryHandleRecords, upstream: DnsUpstr
     }
     let type = query.get('type') ?? 'A';
     let prefix = '_atproto.';
-    var did: String | null = null;
-    if (name.asciiLowerCase().startsWith(prefix)) {
-      did = records.lookup(name.sliceBytes(prefix.length, name.length));
-    }
+    let did: String | null = if (name.asciiLowerCase().startsWith(prefix)) {
+      records.lookup(name.sliceBytes(prefix.length, name.length))
+    } else {
+      null
+    };
     res.type = 'application/dns-json';
     if (did == null && upstream != null) {
       let answer = await upstream(name, type);
       if (answer != null) {
-        res.body = answer as String;
+        res.body = answer;
         return;
       }
     }

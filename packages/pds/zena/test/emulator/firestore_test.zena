@@ -50,7 +50,7 @@ function throws(call: () => void): boolean {
 }
 
 /** A database in a new project on the emulator. */
-function freshDatabase(): Firestore {
+function freshDatabase() {
   let host = getEnv('FIRESTORE_EMULATOR_HOST');
   if (host == null || host.length == 0) {
     throw new Error('FIRESTORE_EMULATOR_HOST is not set; run npm run test:emulator -w @zena-lang/pds');
@@ -78,12 +78,12 @@ export let tests = suite('Firestore storage', () => {
     runFuture(one.putAccount(new Account(did, 'alice.test', new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8)))));
     isTrue(runFuture(two.getAccount(did)) == null, 'no account in the other tenant');
     isTrue(runFuture(two.accountByHandle('alice.test')) == null, 'no handle in the other tenant');
-    let cid = Cid.forBlob('x'.toBytes() as FixedArray<u8>);
+    let cid = Cid.forBlob('x'.toBytes());
     isTrue(runFuture(one.store(did).commit(null, new Head(cid, '3l3qo2vutsw2a'),
         [new RecordChange('com.example.post', 'a', cid)])), 'committed');
     isTrue(runFuture(two.store(did).getHead()) == null, 'no head in the other tenant');
     isTrue(runFuture(two.store(did).getRecord('com.example.post', 'a')) == null, 'no record in the other tenant');
-    runFuture(one.store(did).putBlob(cid, new StoredBlob('text/plain', 'x'.toBytes() as FixedArray<u8>)));
+    runFuture(one.store(did).putBlob(cid, new StoredBlob('text/plain', 'x'.toBytes())));
     isTrue(runFuture(two.store(did).getBlob(cid)) == null, 'no blob in the other tenant');
     let hostOne = new FirestoreHostStore(db, 'one');
     isTrue(runFuture(hostOne.claimScope('acme', did)), 'claimed');
@@ -120,13 +120,14 @@ export let tests = suite('Firestore storage', () => {
   });
 
   test('serves a PDS on Firestore, as PDS_STORAGE=firestore configures it', (ctx) => {
-    let env = new HashMap<String, String>();
-    env['PDS_STORAGE'] = 'firestore';
-    env['PDS_TENANT'] = `service-${getRandomU64() % (1000000000 as u64)}`;
-    env['PDS_BLOB_DIR'] = '/tmp/pds-service-blobs';
-    env['PDS_JWT_SECRET'] = '0101010101010101010101010101010101010101010101010101010101010101';
+    let env: HashMap<String, String> = {
+      'PDS_STORAGE' => 'firestore',
+      'PDS_TENANT' => `service-${getRandomU64() % (1000000000 as u64)}`,
+      'PDS_BLOB_DIR' => '/tmp/pds-service-blobs',
+      'PDS_JWT_SECRET' => '0101010101010101010101010101010101010101010101010101010101010101',
+    };
     // TODO(#520): the return type is only for the compiler.
-    let config = configFromEnv((name: String): String | null => {
+    let config = configFromEnv((name): String | null => {
       if (let (true, value) = env.get(name)) {
         return value;
       }

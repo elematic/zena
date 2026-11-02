@@ -21,7 +21,7 @@ let POST = 'com.example.post';
 let KEY = new SigningKey(KeyType.P256,
     hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
 
-function post(text: String): MapValue {
+function post(text: String) {
   let value = newMap();
   value.entries['$type'] = new StringValue(POST);
   value.entries['text'] = new StringValue(text);
@@ -29,7 +29,7 @@ function post(text: String): MapValue {
 }
 
 /** A server holding Alice's account: five posts, a profile and a blob. */
-function aliceApp(): App {
+function aliceApp() {
   let pds = new Pds(new MemoryStorage());
   let account = runFuture(pds.createAccount(DID, 'alice.test', KEY, NOW));
   let writes = new GrowableArray<Write>();
@@ -45,7 +45,7 @@ function aliceApp(): App {
   return createApp(pds);
 }
 
-function getFrom(app: App, path: String): Response {
+function getFrom(app: App, path: String) {
   let res = new Response();
   runFuture((async () => {
     let req = new Request.fromUrl(`http://localhost${path}`, 'GET', new Map<String, String>());
@@ -54,14 +54,16 @@ function getFrom(app: App, path: String): Response {
   return res;
 }
 
-let get = (path: String): Response => getFrom(createApp(new Pds(new MemoryStorage())), path);
+function get(path: String) {
+  return getFrom(createApp(new Pds(new MemoryStorage())), path);
+}
 
-function jsonOf(res: Response): JsonObject {
+function jsonOf(res: Response) {
   return parseJson(res.body as String) as JsonObject;
 }
 
 /** The XRPC error name of `res`, which must not be a success. */
-function errorOf(res: Response): String {
+function errorOf(res: Response) {
   isTrue(res.statusCode >= 400, `status ${res.statusCode}`);
   return jsonOf(res)['error'] as String;
 }

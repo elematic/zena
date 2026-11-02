@@ -40,7 +40,7 @@ function envOf(pairs: Array<(String, String)>): (name: String) => String | null 
 }
 
 /** The message `configFromEnv` refuses `pairs` with, or '' when it accepts them. */
-function refusal(pairs: Array<(String, String)>): String {
+function refusal(pairs: Array<(String, String)>) {
   try {
     configFromEnv(envOf(pairs));
   } catch (e) {
@@ -49,7 +49,7 @@ function refusal(pairs: Array<(String, String)>): String {
   return '';
 }
 
-function get(app: App, path: String): Response {
+function get(app: App, path: String) {
   let res = new Response();
   runFuture((async () => {
     await app.handleRequest(new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>()), res);
@@ -114,16 +114,13 @@ export let tests = suite('pds:service', () => {
     equal(config.port as i32, 8080);
     equal(config.clockId, 7);
     equal(config.plcDirectory, 'http://plc.test');
-    match (config.storage) {
-      case InFirestore {tenant, blobs, database, keyEncryptionKey}: {
-        equal(tenant, 'pkg');
+    if (let InFirestore {tenant, blobs, database, keyEncryptionKey} = config.storage) {
+      equal(tenant, 'pkg');
         equal(database as String, 'pkg');
         equal(keyEncryptionKey as String, 'projects/p/locations/l/keyRings/r/cryptoKeys/signing-keys');
-        isTrue(blobs is InBucket && (blobs as InBucket).bucket == 'zena-blobs', 'the bucket');
-      }
-      case InMemory {}: {
-        isTrue(false, 'not in memory');
-      }
+        isTrue(blobs is InBucket && blobs.bucket == 'zena-blobs', 'the bucket');
+    } else {
+      isTrue(false, 'not in memory');
     }
     let host = config.host;
     if (host == null) {
@@ -140,14 +137,11 @@ export let tests = suite('pds:service', () => {
     equal(host.admins[3], 'did:plc:dddd');
     equal(host.reservedScopes.length, 2);
     equal(host.reservedScopes[1], 'core');
-    match (host.records) {
-      case InCloudDns {project, zone}: {
-        equal(project as String, 'dns-project');
+    if (let InCloudDns {project, zone} = host.records) {
+      equal(project as String, 'dns-project');
         equal(zone, 'pkg-zone');
-      }
-      case RecordsInMemory {}: {
-        isTrue(false, 'in Cloud DNS');
-      }
+    } else {
+      isTrue(false, 'in Cloud DNS');
     }
 
     let local = configFromEnv(envOf([
@@ -162,7 +156,7 @@ export let tests = suite('pds:service', () => {
       ('PDS_HANDLE_RECORDS', 'memory'),
     ]));
     if (let InFirestore {blobs} = local.storage) {
-      isTrue(blobs is InDirectory && (blobs as InDirectory).path == '/var/pds/blobs', 'the directory');
+      isTrue(blobs is InDirectory && blobs.path == '/var/pds/blobs', 'the directory');
     }
     let localHost = local.host;
     isTrue(localHost != null && localHost.serviceDid == 'did:web:other.test' &&

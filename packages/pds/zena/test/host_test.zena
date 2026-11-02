@@ -97,9 +97,10 @@ final class Fixture {
       : pds = new Pds(storage), app = new App() {
     let rotation = new SigningKey(KeyType.Secp256k1, filled(200));
     let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', new LocalRotationKey(rotation));
-    let callers = new HashMap<String, PublicKey>();
-    callers[ALICE] = new SigningKey(KeyType.P256, ALICE_KEY).publicKey();
-    callers[BOB] = new SigningKey(KeyType.P256, BOB_KEY).publicKey();
+    let callers: HashMap<String, PublicKey> = {
+      ALICE => new SigningKey(KeyType.P256, ALICE_KEY).publicKey(),
+      BOB => new SigningKey(KeyType.P256, BOB_KEY).publicKey(),
+    };
     let submitted = this.submitted;
     let pds = this.pds;
     let host = new PackageHost(this.pds, config, store, this.records,
@@ -158,18 +159,17 @@ final class Fixture {
   call(caller: String | null, name: String, body: String | FixedArray<u8>, query: String = '',
       contentType: String = 'application/json', authorization: String | null = null): Response {
     let method = `dev.zena-lang.host.${name}`;
-    let headers = new HashMap<String, String>();
-    headers['content-type'] = contentType;
+    let headers: HashMap<String, String> = {'content-type' => contentType};
     if (authorization != null) {
-      headers['authorization'] = authorization as String;
+      headers['authorization'] = authorization;
     } else if (caller != null) {
-      headers['authorization'] = `Bearer ${this.token(caller as String, method)}`;
+      headers['authorization'] = `Bearer ${this.token(caller, method)}`;
     }
     let res = new Response();
     let app = this.app;
     runFuture((async () => {
       let req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, 'POST', headers,
-          bytesStream(if (body is String) body.toBytes() else body as FixedArray<u8>));
+          bytesStream(if (body is String) body.toBytes() else body));
       await app.handleRequest(req, res);
     })());
     return res;
@@ -178,8 +178,9 @@ final class Fixture {
   /** Calls the host query `name` as `caller`, with `query` after the method. */
   query(caller: String, name: String, query: String): Response {
     let method = `dev.zena-lang.host.${name}`;
-    let headers = new HashMap<String, String>();
-    headers['authorization'] = `Bearer ${this.token(caller, method)}`;
+    let headers: HashMap<String, String> = {
+      'authorization' => `Bearer ${this.token(caller, method)}`,
+    };
     let res = new Response();
     let app = this.app;
     runFuture((async () => {
@@ -191,10 +192,11 @@ final class Fixture {
 
   /** POSTs JSON to `path`, with `token` as a Bearer token when there is one. */
   post(path: String, body: String, token: String | null): Response {
-    let headers = new HashMap<String, String>();
-    headers['content-type'] = 'application/json';
+    let headers: HashMap<String, String> = {
+      'content-type' => 'application/json',
+    };
     if (token != null) {
-      headers['authorization'] = `Bearer ${token as String}`;
+      headers['authorization'] = `Bearer ${token}`;
     }
     let res = new Response();
     let app = this.app;
@@ -207,8 +209,9 @@ final class Fixture {
 
   /** GETs `path` with `token` as a Bearer token. */
   getWith(path: String, token: String): Response {
-    let headers = new HashMap<String, String>();
-    headers['authorization'] = `Bearer ${token}`;
+    let headers: HashMap<String, String> = {
+      'authorization' => `Bearer ${token}`,
+    };
     let res = new Response();
     let app = this.app;
     runFuture((async () => {
@@ -230,7 +233,7 @@ final class Fixture {
   #send(method: String, path: String, cookie: String | null): Response {
     let headers = new HashMap<String, String>();
     if (cookie != null) {
-      headers['cookie'] = cookie as String;
+      headers['cookie'] = cookie;
     }
     let res = new Response();
     let app = this.app;
@@ -293,27 +296,27 @@ function filled(value: i32): FixedArray<u8> {
   return new FixedArray<u8>(32, value as u8);
 }
 
-function json(res: Response): JsonObject {
+function json(res: Response) {
   return parseJson(res.body as String) as JsonObject;
 }
 
-function ok(res: Response): JsonObject {
+function ok(res: Response) {
   isTrue(res.statusCode == 200, `${res.statusCode}: ${res.body as String}`);
   return json(res);
 }
 
-function errorOf(res: Response): String {
+function errorOf(res: Response) {
   isTrue(res.statusCode >= 400, `${res.statusCode}`);
   return json(res)['error'] as String;
 }
 
 let RECOVERY = formatDidKey(new SigningKey(KeyType.P256, ALICE_KEY).publicKey());
 
-function createOrganization(fixture: Fixture, caller: String, name: String): Response {
+function createOrganization(fixture: Fixture, caller: String, name: String) {
   return fixture.call(caller, 'createOrganization', `{"name": "${name}", "recoveryKeys": ["${RECOVERY}"]}`);
 }
 
-function createPackage(fixture: Fixture, caller: String, org: String, name: String): Response {
+function createPackage(fixture: Fixture, caller: String, org: String, name: String) {
   let profile = stringify(toJson(new Profile(name).toValue()));
   let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
   return fixture.call(caller, 'createPackage',
@@ -323,7 +326,7 @@ function createPackage(fixture: Fixture, caller: String, org: String, name: Stri
 /** `caller`'s view of the entries behind `account`'s members, team or maintainers. */
 function entriesSeen(fixture: Fixture, caller: String, account: String, team: String | null = null)
     : Array<MemberEntry> {
-  let query = if (team == null) `?account=${account}` else `?account=${account}&team=${team as String}`;
+  let query = if (team == null) `?account=${account}` else `?account=${account}&team=${team}`;
   let list = ok(fixture.query(caller, 'getEntries', query))['entries'] as JsonArray;
   let entries = new GrowableArray<MemberEntry>();
   for (var i = 0; i < list.length; i += 1) {
@@ -337,7 +340,7 @@ function entriesSeen(fixture: Fixture, caller: String, account: String, team: St
  * retracted, parser, unreleased, and the automation account ci. Returns
  * router's DID.
  */
-function seedBrowsable(fixture: Fixture): String {
+function seedBrowsable(fixture: Fixture) {
   let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
   ok(createOrganization(fixture, BOB, 'zeta'));
   let profile = stringify(toJson(new Profile('router', 'Routes requests', 'MIT').toValue()));
@@ -354,20 +357,20 @@ function seedBrowsable(fixture: Fixture): String {
 }
 
 /** The cookie of a web session for `caller`, from `createWebSession`. */
-function webCookie(fixture: Fixture, caller: String): String {
+function webCookie(fixture: Fixture, caller: String) {
   let res = fixture.call(caller, 'createWebSession', '');
   ok(res);
   return (res.getHeader('set-cookie') ?? '').split(';')[0];
 }
 
 /** The HTML of a page `res` answered with. */
-function pageOf(res: Response): String {
+function pageOf(res: Response) {
   isTrue((res.type ?? '').contains('text/html'), res.type ?? 'no type');
   return (res.body as HTMLPartial).toString();
 }
 
 /** The JSON of `entries`, as a list. */
-function entriesJson(entries: Array<MemberEntry>): String {
+function entriesJson(entries: Array<MemberEntry>) {
   let list = new JsonArray();
   for (let entry in entries) {
     list.push(toJson(entry.toValue()));
@@ -375,7 +378,7 @@ function entriesJson(entries: Array<MemberEntry>): String {
   return stringify(list);
 }
 
-function commitmentsOf(entries: Array<MemberEntry>): FixedArray<Cid> {
+function commitmentsOf(entries: Array<MemberEntry>) {
   let out = new FixedArray<Cid>(entries.length, Cid.forBlob(new FixedArray<u8>(0, 0 as u8)));
   for (var i = 0; i < entries.length; i += 1) {
     out[i] = entries[i].commitment();
@@ -384,13 +387,13 @@ function commitmentsOf(entries: Array<MemberEntry>): FixedArray<Cid> {
 }
 
 /** The `swapRecord` member of a call's body, or nothing. */
-function swapJson(swap: String | null): String {
-  return if (swap == null) '' else `, "swapRecord": "${swap as String}"`;
+function swapJson(swap: String | null) {
+  return if (swap == null) '' else `, "swapRecord": "${swap}"`;
 }
 
 /** `putMembers` as `caller`: a members record committing to `members`, sending `sent`, then `approved`. */
 function putMembers(fixture: Fixture, caller: String, org: String, members: Array<MemberEntry>,
-    sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64): Response {
+    sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64) {
   return approved(fixture, caller, proposeMembers(fixture, caller, org, members, sent, swap, ownerThreshold));
 }
 
@@ -404,7 +407,7 @@ function proposeMembers(fixture: Fixture, caller: String, org: String, members: 
 
 /** `putTeam` as `caller`: `org`'s team `name`, committing to `members`, sending them all, then `approved`. */
 function putTeam(fixture: Fixture, caller: String, org: String, name: String, members: Array<MemberEntry>,
-    swap: String | null, threshold: i64 = 1 as i64): Response {
+    swap: String | null, threshold: i64 = 1 as i64) {
   return approved(fixture, caller, proposeTeam(fixture, caller, org, name, members, swap, threshold));
 }
 
@@ -418,7 +421,7 @@ function proposeTeam(fixture: Fixture, caller: String, org: String, name: String
 
 /** `putMaintainers` as `caller`, sending `sent`, then `approved`. */
 function putMaintainers(fixture: Fixture, caller: String, pkg: String, maintainers: Maintainers,
-    sent: Array<MemberEntry>, swap: String | null): Response {
+    sent: Array<MemberEntry>, swap: String | null) {
   return approved(fixture, caller, proposeMaintainers(fixture, caller, pkg, maintainers, sent, swap));
 }
 
@@ -468,10 +471,11 @@ function unreachableResolver(): IdentityResolver {
 
 /** A source archive of `router` `version`, the package `did`, as `zena publish` packs one. */
 function archiveOf(did: String, version: String, manifest: String | null = null): FixedArray<u8> {
-  let files = new HashMap<String, FixedArray<u8>>();
-  files['zena-package.json'] = (manifest ?? `{"name": "router", "did": "${did}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`)
-    .toBytes() as FixedArray<u8>;
-  files['router.zena'] = 'export let route = 1;\n'.toBytes() as FixedArray<u8>;
+  let files: HashMap<String, FixedArray<u8>> = {
+    'zena-package.json' => (manifest ?? `{"name": "router", "did": "${did}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`)
+      .toBytes(),
+    'router.zena' => 'export let route = 1;\n'.toBytes(),
+  };
   return packSource(files);
 }
 
@@ -499,7 +503,7 @@ function complete(fixture: Fixture, caller: String, pkg: String, version: String
 }
 
 /** The DIDs `answer`'s `approvedBy` lists. */
-function approvedBy(answer: JsonObject): String {
+function approvedBy(answer: JsonObject) {
   let list = answer['approvedBy'] as JsonArray;
   let dids = new GrowableArray<String>();
   for (var i = 0; i < list.length; i += 1) {
@@ -566,7 +570,7 @@ export let tests = suite('pds:host', () => {
       runFuture(fixture.pds.repositoryOf(account).applyWrites([new CreateRecord('app.bsky.feed.post', 'x',
           new Profile('x').toValue()) as Write], 0 as i64));
     } catch (e) {
-      refused = if (e is RepositoryError) (e as RepositoryError).error else e.message;
+      refused = if (e is RepositoryError) e.error else e.message;
     }
     equal(refused, 'InvalidRequest');
   });
@@ -688,12 +692,12 @@ export let tests = suite('pds:host', () => {
     ok(putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
         Maintainer.ofDid(BOB, PUBLISHER)]), [], (pkg['maintainers'] as JsonObject)['cid'] as String));
     let blob = upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
-    let publish = (caller: String, created: String): Response => {
+    let publish = (caller: String, created: String) => {
       let release = new Release(Version.parse('1.0.0'), created, new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
           new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
       return fixture.call(caller, 'publish', `{"package": "${pkgDid}", "release": ${stringify(toJson(release.toValue()))}}`);
     };
-    let withdraw = (caller: String): Response =>
+    let withdraw = (caller: String) =>
         fixture.call(caller, 'withdrawRelease', `{"package": "${pkgDid}", "version": "1.0.0"}`);
 
     // Alice's release: Bob, a publisher, may not withdraw it; Alice may.
@@ -718,7 +722,7 @@ export let tests = suite('pds:host', () => {
     try {
       runFuture(host.completeRelease(ALICE, pkgDid, '1.0.0', later));
     } catch (e) {
-      missing = if (e is HostError) (e as HostError).error else e.message;
+      missing = if (e is HostError) e.error else e.message;
     }
     equal(missing, 'ReleaseNotFound');
     ok(publish(ALICE, '2026-10-27T00:00:00.000Z'));
@@ -775,7 +779,7 @@ export let tests = suite('pds:host', () => {
     try {
       runFuture(host.createScopeAsOperator(BOB, 'zena', [], 0 as i64));
     } catch (e) {
-      taken = if (e is HostError) (e as HostError).error else e.message;
+      taken = if (e is HostError) e.error else e.message;
     }
     equal(taken, 'NameTaken');
   });
@@ -896,7 +900,7 @@ export let tests = suite('pds:host', () => {
     let bob = new MemberEntry(BOB, OWNER, filled(190));
     // Alice alone owns acme, so her attestation makes Bob an owner, and the
     // new record asks for two owners from then on.
-    var swap = ok(putMembers(fixture, ALICE, orgDid, [alice, bob], [bob],
+    let swap = ok(putMembers(fixture, ALICE, orgDid, [alice, bob], [bob],
         (org['members'] as JsonObject)['cid'] as String, 2 as i64))['cid'] as String;
 
     // Alice removes Bob: the change waits, and Bob is an owner until it is written.
@@ -1002,7 +1006,7 @@ export let tests = suite('pds:host', () => {
     let robot = 'did:plc:robotrobotrobotrobotrobo';
     let two = new Maintainers([Maintainer.ofDid(ALICE, OWNER), Maintainer.ofDid(BOB, OWNER),
         new Maintainer(robot, null, null, null, PUBLISHER, true)], 1 as i64, 2 as i64);
-    var swap = ok(putMaintainers(fixture, ALICE, pkgDid, two, [], (pkg['maintainers'] as JsonObject)['cid'] as String))
+    let swap = ok(putMaintainers(fixture, ALICE, pkgDid, two, [], (pkg['maintainers'] as JsonObject)['cid'] as String))
         ['cid'] as String;
 
     // Alice drops Bob: he stays an owner until he attests it too.
@@ -1043,7 +1047,7 @@ export let tests = suite('pds:host', () => {
     let bob = new MemberEntry(BOB, MEMBER, filled(211));
     ok(putTeam(fixture, ALICE, orgDid, 'core', [bob], null));
     let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
-    let policyCall = (caller: String, policy: Policy): Response => approved(fixture, caller,
+    let policyCall = (caller: String, policy: Policy) => approved(fixture, caller,
         fixture.call(caller, 'putPolicy', `{"organization": "${orgDid}", "policy": ${stringify(toJson(policy.toValue()))}}`));
 
     // Only an owner sets it; its teams must exist, and its defaults meet its minimums.
@@ -1114,7 +1118,7 @@ export let tests = suite('pds:host', () => {
     let session = ok(fixture.post('/xrpc/com.atproto.server.createSession',
         `{"identifier": "ci.acme.pkg.test", "password": "${bot['appPassword'] as String}"}`, null));
     let access = session['accessJwt'] as String;
-    let serviceAuth = (method: String): String => ok(fixture.getWith(
+    let serviceAuth = (method: String) => ok(fixture.getWith(
         `/xrpc/com.atproto.server.getServiceAuth?aud=${HOST}&lxm=${method}`, access))['token'] as String;
     let upload = 'dev.zena-lang.host.uploadArtifact';
     equal(errorOf(fixture.call(null, 'uploadArtifact', new FixedArray<u8>(4, 1 as u8), `?package=${pkgDid}`,
@@ -1123,7 +1127,7 @@ export let tests = suite('pds:host', () => {
     // A package's owners add it as a publisher, marked as automation.
     let entry = new MemberEntry(botDid, PUBLISHER, filled(180), true);
     let unmarked = new MemberEntry(botDid, PUBLISHER, filled(181));
-    let asBot = (role: String, marked: boolean, behind: MemberEntry): Maintainers => new Maintainers([
+    let asBot = (role: String, marked: boolean, behind: MemberEntry) => new Maintainers([
         Maintainer.ofDid(ALICE, OWNER), new Maintainer(null, behind.commitment(), null, null, role, marked)]);
     equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, asBot(PUBLISHER, false, unmarked), [unmarked], swap)),
         'InvalidRequest');
@@ -1220,7 +1224,7 @@ export let tests = suite('pds:host', () => {
     let alice = entriesSeen(fixture, ALICE, orgDid)[0];
     let bob = new MemberEntry(BOB, MEMBER, filled(220));
     ok(putMembers(fixture, ALICE, orgDid, [alice, bob], [bob], (org['members'] as JsonObject)['cid'] as String));
-    let put = (caller: String, profile: String): Response => fixture.call(caller, 'putScopeProfile',
+    let put = (caller: String, profile: String) => fixture.call(caller, 'putScopeProfile',
         `{"organization": "${orgDid}", "profile": {"$type": "dev.zena-lang.org.profile", ${profile}}}`);
     let wanted = '"displayName": "Acme Corp", "description": "Routers & more", "website": "https://acme.example/"';
     // Bob, a member, is no admin; a website must be a web address.
@@ -1709,9 +1713,9 @@ export let tests = suite('pds:host', () => {
     let fixture = new Fixture();
     let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
     let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
-    let publish = (version: String, blob: BlobRef): Response => fixture.call(ALICE, 'publish',
+    let publish = (version: String, blob: BlobRef) => fixture.call(ALICE, 'publish',
         `{"package": "${pkgDid}", "release": ${releaseJson(version, blob)}}`);
-    let refusal = (res: Response): String => {
+    let refusal = (res: Response) => {
       isTrue(res.statusCode == 400, `${res.statusCode}: ${res.body as String}`);
       let body = json(res);
       equal(body['error'] as String, 'InvalidRelease');

@@ -21,12 +21,12 @@ let DID = 'did:plc:alicealicealicealicealic';
 let NOW = 1792800000000000 as i64;
 let POST = 'com.example.post';
 
-function key(): SigningKey {
+function key() {
   return new SigningKey(KeyType.P256,
       hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
 }
 
-function record(collection: String, text: String): MapValue {
+function record(collection: String, text: String) {
   let value = newMap();
   value.entries['$type'] = new StringValue(collection);
   value.entries['text'] = new StringValue(text);
@@ -46,11 +46,11 @@ function verifyWith(signing: SigningKey) {
 }
 
 /** The error name `write` fails with, or '' when it succeeds. */
-function refusal(repository: Repository, writes: Array<Write>): String {
+function refusal(repository: Repository, writes: Array<Write>) {
   try {
     runFuture(repository.applyWrites(writes, NOW));
   } catch (e) {
-    return if (e is RepositoryError) (e as RepositoryError).error else `another error: ${e.message}`;
+    return if (e is RepositoryError) e.error else `another error: ${e.message}`;
   }
   return '';
 }
@@ -107,7 +107,7 @@ export let tests = suite('pds:repository', () => {
   test("tells the PDS's commit listeners what each commit changed", (ctx) => {
     let (pds, account, repository) = setUp();
     var seen = '';
-    pds.onCommit(async (committed: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> => {
+    pds.onCommit(async (committed, head, changes): Future<void> => {
       var line = `${committed.did} ${head.rev}`;
       for (let change in changes) {
         line = `${line} ${change.collection}/${change.rkey}`;

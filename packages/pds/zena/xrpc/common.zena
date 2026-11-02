@@ -21,7 +21,7 @@ import {Account} from '../storage.zena';
  * takes more (`uploadArtifact`) raises its own: a session or a record is
  * far smaller, and a body read before authentication must not fill memory.
  */
-export let REQUEST_BODY_LIMIT: i64 = (1024 * 1024) as i64;
+export let REQUEST_BODY_LIMIT = (1024 * 1024) as i64;
 
 /** Answers `res` with the XRPC error `error`. */
 export function fail(res: Response, status: i32, error: String, message: String): void {
@@ -52,7 +52,7 @@ export function required(req: Request, res: Response, names: Array<String>): Gro
       fail(res, 400, 'InvalidRequest', `Missing required parameter: ${name}`);
       return null;
     }
-    values.push(value as String);
+    values.push(value);
   }
   return values;
 }
@@ -91,7 +91,7 @@ export async function jsonBody(req: Request, res: Response): Future<JsonObject |
   let text = try {
     await req.text()
   } catch (e) {
-    if (e is HttpError && (e as HttpError).status == 413) {
+    if (e is HttpError && e.status == 413) {
       fail(res, 413, 'PayloadTooLarge', `the body is larger than the ${req.bodyLimit} bytes this method takes`);
       return null;
     }
@@ -107,7 +107,7 @@ export async function jsonBody(req: Request, res: Response): Future<JsonObject |
 function parseBody(text: String): JsonObject | null {
   try {
     let json = parseJson(text);
-    return if (json is JsonObject) json as JsonObject else null;
+    return if (json is JsonObject) json else null;
   } catch (e) {
     return null;
   }
@@ -119,7 +119,7 @@ export function strings(json: JsonObject, name: String): GrowableArray<String> |
   if (!(value is JsonArray)) {
     return null;
   }
-  let list = value as JsonArray;
+  let list = value;
   let out = new GrowableArray<String>();
   for (var i = 0; i < list.length; i += 1) {
     if (!(list[i] is String)) {
@@ -135,16 +135,16 @@ export async function sessionCall(res: Response, call: () => Future<JsonObject |
   try {
     let answer = await call();
     if (answer != null) {
-      json(res, answer as JsonObject);
+      json(res, answer);
     }
   } catch (e) {
     if (e is SessionError) {
-      let error = e as SessionError;
+      let error = e;
       fail(res, error.status, error.error, error.message);
       return;
     }
     if (e is RepositoryError) {
-      fail(res, 400, (e as RepositoryError).error, e.message);
+      fail(res, 400, e.error, e.message);
       return;
     }
     throw e;
