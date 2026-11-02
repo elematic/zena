@@ -377,48 +377,45 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         }
         // Check for read-only property assignment
         let objectType = checkExpression(ctx, object, null);
-        match (objectType) {
-          case ClassType as ct: {
-            let isStatic = isStaticReceiver(ctx, object);
-            let members = ct.memberTable(isStatic);
-            let otherMembers = ct.memberTable(!isStatic);
-            let setterName = "set#" + propName;
-            let getterName = "get#" + propName;
-            let deps = ctx.currentDependencies();
-            if (deps != null && members.has(setterName)) {
-              let classSymId = (ct.genericSource ?? ct).symbolId;
-              deps.referencedSymbols.add(classSymId);
-              deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${setterName}`);
+        if (objectType is ClassType) {
+          let isStatic = isStaticReceiver(ctx, object);
+          let members = objectType.memberTable(isStatic);
+          let otherMembers = objectType.memberTable(!isStatic);
+          let setterName = "set#" + propName;
+          let getterName = "get#" + propName;
+          let deps = ctx.currentDependencies();
+          if (deps != null && members.has(setterName)) {
+            let classSymId = (objectType.genericSource ?? objectType).symbolId;
+            deps.referencedSymbols.add(classSymId);
+            deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${setterName}`);
+          }
+          if (members.has(propName) && members[propName] is FieldInfo) {
+            let fi = members[propName] as FieldInfo;
+            if (!fi.isMutable) {
+              ctx.error(
+                `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
+                DiagnosticCode.InvalidAssignment,
+                loc
+              );
+              return new ErrorType();
             }
-            if (members.has(propName) && members[propName] is FieldInfo) {
-              let fi = members[propName] as FieldInfo;
-              if (!fi.isMutable) {
-                ctx.error(
-                  `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
-                  DiagnosticCode.InvalidAssignment,
-                  loc
-                );
-                return new ErrorType();
-              }
-            } else if (!members.has(setterName)) {
-              if (members.has(getterName)) {
-                ctx.error(
-                  `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
-                  DiagnosticCode.InvalidAssignment,
-                  loc
-                );
-                return new ErrorType();
-              }
-              if ((otherMembers.has(propName) && otherMembers[propName] is FieldInfo) ||
-                  otherMembers.has(setterName) ||
-                  otherMembers.has(getterName)) {
-                staticAccessMismatch(ctx, isStatic, propName, ct.name,
-                    DiagnosticCode.InvalidAssignment, loc);
-                return new ErrorType();
-              }
+          } else if (!members.has(setterName)) {
+            if (members.has(getterName)) {
+              ctx.error(
+                `Cannot assign to read-only property '${displayMemberName(propName)}'.`,
+                DiagnosticCode.InvalidAssignment,
+                loc
+              );
+              return new ErrorType();
+            }
+            if ((otherMembers.has(propName) && otherMembers[propName] is FieldInfo) ||
+                otherMembers.has(setterName) ||
+                otherMembers.has(getterName)) {
+              staticAccessMismatch(ctx, isStatic, propName, objectType.name,
+                  DiagnosticCode.InvalidAssignment, loc);
+              return new ErrorType();
             }
           }
-          case _: {}
         }
       }
       case _: {}
@@ -1502,18 +1499,15 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       let isError = isAssignableTo(ctx, argType, errorType);
       var isActuallyError = isError;
       if (!isError) {
-        match (argType) {
-          case ClassType as cType: {
-            var cur: ClassType | null = cType;
-            while (cur != null) {
-              let c = cur;
-              if (isWellKnown(WellKnown.ErrorClass, c.name, c.sourcePath)) {
-                isActuallyError = true;
-              }
-              cur = c.superType;
+        if (argType is ClassType) {
+          var cur: ClassType | null = argType;
+          while (cur != null) {
+            let c = cur;
+            if (isWellKnown(WellKnown.ErrorClass, c.name, c.sourcePath)) {
+              isActuallyError = true;
             }
+            cur = c.superType;
           }
-          case _: {}
         }
       }
 
@@ -1975,33 +1969,30 @@ function checkBinaryExpression(
 
     if (!isNumericType(leftType)) {
       // Check for operator overloading on class types (e.g., String.+).
-      match (leftType) {
-        case ClassType as ct: {
-          if (ct.members.has(operator)) {
-            ctx.referenceClassMethod(ct, operator);
-            let methodInfo = ct.members[operator];
-            let method = methodInfo.type as FunctionType;
-            if (method.parameters.length != 1) {
-              ctx.error(
-                `Operator '${operator}' must take exactly one argument.`,
-                DiagnosticCode.ArgumentCountMismatch,
-                loc
-              );
-              return new ErrorType();
-            }
-            if (!isAssignableTo(ctx, rightType, method.parameters[0])) {
-              ctx.error(
-                "Type mismatch in operator '" + operator + "': expected '" +
-                typeToString(method.parameters[0]) + "', got '" + typeToString(rightType) + "'.",
-                DiagnosticCode.TypeMismatch,
-                loc
-              );
-              return new ErrorType();
-            }
-            return method.returnType;
+      if (leftType is ClassType) {
+        if (leftType.members.has(operator)) {
+          ctx.referenceClassMethod(leftType, operator);
+          let methodInfo = leftType.members[operator];
+          let method = methodInfo.type as FunctionType;
+          if (method.parameters.length != 1) {
+            ctx.error(
+              `Operator '${operator}' must take exactly one argument.`,
+              DiagnosticCode.ArgumentCountMismatch,
+              loc
+            );
+            return new ErrorType();
           }
+          if (!isAssignableTo(ctx, rightType, method.parameters[0])) {
+            ctx.error(
+              "Type mismatch in operator '" + operator + "': expected '" +
+              typeToString(method.parameters[0]) + "', got '" + typeToString(rightType) + "'.",
+              DiagnosticCode.TypeMismatch,
+              loc
+            );
+            return new ErrorType();
+          }
+          return method.returnType;
         }
-        case _: {}
       }
       ctx.error(
         "Type mismatch: cannot apply operator '" + operator + "' to " +

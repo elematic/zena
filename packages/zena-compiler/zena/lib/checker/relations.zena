@@ -992,59 +992,47 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
   }
 
   // Handle distinct types explicitly
-  match (source) {
-    case TypeAliasType as srcAlias: {
-      if (srcAlias.isDistinct) {
-        match (target) {
-          case UnionT {types}: {
-            for (let t in types) {
-              if (isAssignableTo(ctx, source, t)) { return true; }
-            }
-            return false;
+  if (source is TypeAliasType) {
+    if (source.isDistinct) {
+      match (target) {
+        case UnionT {types}: {
+          for (let t in types) {
+            if (isAssignableTo(ctx, source, t)) { return true; }
           }
-          case TypeAliasType as tgtAlias: {
-            if (tgtAlias.isDistinct) {
-              return sameAliasDeclaration(srcAlias, tgtAlias) && isAssignableTo(ctx, srcAlias.target, tgtAlias.target);
-            }
-          }
-          case _: {}
+          return false;
         }
-        return false;
+        case TypeAliasType as tgtAlias: {
+          if (tgtAlias.isDistinct) {
+            return sameAliasDeclaration(source, tgtAlias) && isAssignableTo(ctx, source.target, tgtAlias.target);
+          }
+        }
+        case _: {}
       }
+      return false;
     }
-    case _: {}
   }
 
-  match (target) {
-    case TypeAliasType as tgtAlias: {
-      if (tgtAlias.isDistinct) {
-        return false;
-      }
+  if (target is TypeAliasType) {
+    if (target.isDistinct) {
+      return false;
     }
-    case _: {}
   }
 
   // Automatically unwrap non-distinct type aliases. Intrinsic
   // aliases (type operators) never unwrap: typesEqual above already
   // matched same-operator-same-arguments, and anything else is not
   // assignable (issue #522).
-  match (source) {
-    case TypeAliasType as ta: {
-      if (ta.intrinsicName != null) {
-        return false;
-      }
-      return isAssignableTo(ctx, ta.target, target);
+  if (source is TypeAliasType) {
+    if (source.intrinsicName != null) {
+      return false;
     }
-    case _: {}
+    return isAssignableTo(ctx, source.target, target);
   }
-  match (target) {
-    case TypeAliasType as tb: {
-      if (tb.intrinsicName != null) {
-        return false;
-      }
-      return isAssignableTo(ctx, source, tb.target);
+  if (target is TypeAliasType) {
+    if (target.intrinsicName != null) {
+      return false;
     }
-    case _: {}
+    return isAssignableTo(ctx, source, target.target);
   }
 
   // `anyref` is the top type for references: anything with a heap
@@ -1099,32 +1087,29 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
   // For now, require exact numeric type match (strict).
   // This matches Zena's no-coercion design.
 
-  match (source) {
-    case FunctionType as srcFunc: {
-      match (target) {
-        case FunctionType as tgtFunc: {
-          let finalSrcFunc = tryInstantiateGenericFunction(ctx, srcFunc, tgtFunc) as FunctionType;
+  if (source is FunctionType) {
+    match (target) {
+      case FunctionType as tgtFunc: {
+        let finalSrcFunc = tryInstantiateGenericFunction(ctx, source, tgtFunc) as FunctionType;
 
-          // Allow argument adaptation: source can have fewer parameters.
-          if (finalSrcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
-          // Covariant return type
-          if (!isAssignableTo(ctx, finalSrcFunc.returnType, tgtFunc.returnType)) { return false; }
-          // An inline result or parameter changes the wasm signature, and
-          // nothing adapts one function to the other yet.
-          if (isInlineType(finalSrcFunc.returnType) != isInlineType(tgtFunc.returnType) ||
-              !inlineParamsMatch(finalSrcFunc, tgtFunc)) {
-            return false;
-          }
-          for (var i = 0; i < finalSrcFunc.parameters.length; i += 1) {
-            // Contravariant parameter types
-            if (!isAssignableTo(ctx, tgtFunc.parameters[i], finalSrcFunc.parameters[i])) { return false; }
-          }
-          return true;
+        // Allow argument adaptation: source can have fewer parameters.
+        if (finalSrcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
+        // Covariant return type
+        if (!isAssignableTo(ctx, finalSrcFunc.returnType, tgtFunc.returnType)) { return false; }
+        // An inline result or parameter changes the wasm signature, and
+        // nothing adapts one function to the other yet.
+        if (isInlineType(finalSrcFunc.returnType) != isInlineType(tgtFunc.returnType) ||
+            !inlineParamsMatch(finalSrcFunc, tgtFunc)) {
+          return false;
         }
-        case _: {}
+        for (var i = 0; i < finalSrcFunc.parameters.length; i += 1) {
+          // Contravariant parameter types
+          if (!isAssignableTo(ctx, tgtFunc.parameters[i], finalSrcFunc.parameters[i])) { return false; }
+        }
+        return true;
       }
+      case _: {}
     }
-    case _: {}
   }
 
   // Class subtyping: a subclass is assignable to its superclass chain.
@@ -1171,18 +1156,15 @@ export function isAssignableTo(ctx: CheckerContext, source: Type, target: Type):
       }
     }
     case InterfaceType as srcIface: {
-      match (target) {
-        case InterfaceType as tgtIface: {
-          for (let p in srcIface.extendsList) {
-            var substitutedP = p as Type;
-            let typeParamsList = (srcIface.genericSource ?? srcIface).typeParameters;
-            if (typeParamsList != null && srcIface.typeArguments != null) {
-              substitutedP = substituteTypeParams(typeParamsList, srcIface.typeArguments, substitutedP);
-            }
-            if (typesEqual(substitutedP, tgtIface) || isAssignableTo(ctx, substitutedP, target)) { return true; }
+      if (target is InterfaceType) {
+        for (let p in srcIface.extendsList) {
+          var substitutedP = p as Type;
+          let typeParamsList = (srcIface.genericSource ?? srcIface).typeParameters;
+          if (typeParamsList != null && srcIface.typeArguments != null) {
+            substitutedP = substituteTypeParams(typeParamsList, srcIface.typeArguments, substitutedP);
           }
+          if (typesEqual(substitutedP, target) || isAssignableTo(ctx, substitutedP, target)) { return true; }
         }
-        case _: {}
       }
     }
     case _: {}

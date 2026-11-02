@@ -1026,13 +1026,10 @@ function resolveMemberType(
       // Check for getter method (get#propName)
       if (members.has(getterName)) {
         let getterMember = members[getterName];
-        match (getterMember) {
-          case MethodInfo as getterInfo: {
-            // Return the return type of the getter
-            let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
-            return substituteThisType(ct as Type, subGetter);
-          }
-          case _: {}
+        if (getterMember is MethodInfo) {
+          // Return the return type of the getter
+          let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterMember.type as FunctionType).returnType);
+          return substituteThisType(ct as Type, subGetter);
         }
       }
       // If not found in the receiver's namespace, check the other namespace to report a static/instance mismatch.
@@ -1129,38 +1126,36 @@ function resolveMemberType(
       // mutable elements, ImmutableArray<T> for immutable ones.
       let faType = resolveArrayBackingClass(ctx, elementsMutable);
       if (faType != null) {
-        match (faType as Type) {
-          case ClassType as faCt: {
-            let classSymId = (faCt.genericSource ?? faCt).symbolId;
-            let deps = ctx.currentDependencies();
-            if (deps != null) {
-              deps.referencedSymbols.add(classSymId);
-              if (faCt.members.has(propName) && faCt.members[propName] is MethodInfo) {
-                deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${propName}`);
-              } else if (faCt.members.has(propName) && faCt.members[propName] is FieldInfo) {
-                let fi = faCt.members[propName] as FieldInfo;
-                if (faCt.isExtension || fi.isAbstract) {
-                  deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
-                }
-              } else if (faCt.members.has("get#" + propName)) {
+        let faCt = faType as Type;
+        if (faCt is ClassType) {
+          let classSymId = (faCt.genericSource ?? faCt).symbolId;
+          let deps = ctx.currentDependencies();
+          if (deps != null) {
+            deps.referencedSymbols.add(classSymId);
+            if (faCt.members.has(propName) && faCt.members[propName] is MethodInfo) {
+              deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.${propName}`);
+            } else if (faCt.members.has(propName) && faCt.members[propName] is FieldInfo) {
+              let fi = faCt.members[propName] as FieldInfo;
+              if (faCt.isExtension || fi.isAbstract) {
                 deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
               }
-            }
-
-            // Build type arguments [elementType] for substitution.
-            let typeArgs = growable<Type>([elementType]);
-            // Check getter first.
-            let getterName = "get#" + propName;
-            if (faCt.members.has(getterName)) {
-              let getterInfo = faCt.members[getterName];
-              return substituteTypeParams(faCt.typeParameters, typeArgs, (getterInfo.type as FunctionType).returnType);
-            }
-            if (faCt.members.has(propName)) {
-              let memberInfo = faCt.members[propName];
-              return substituteTypeParams(faCt.typeParameters, typeArgs, memberInfo.type);
+            } else if (faCt.members.has("get#" + propName)) {
+              deps.referencedClassMethods.add(`${i32ToString(classSymId as i32)}.get#${propName}`);
             }
           }
-          case _: {}
+
+          // Build type arguments [elementType] for substitution.
+          let typeArgs = growable<Type>([elementType]);
+          // Check getter first.
+          let getterName = "get#" + propName;
+          if (faCt.members.has(getterName)) {
+            let getterInfo = faCt.members[getterName];
+            return substituteTypeParams(faCt.typeParameters, typeArgs, (getterInfo.type as FunctionType).returnType);
+          }
+          if (faCt.members.has(propName)) {
+            let memberInfo = faCt.members[propName];
+            return substituteTypeParams(faCt.typeParameters, typeArgs, memberInfo.type);
+          }
         }
       }
       ctx.error(

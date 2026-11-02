@@ -914,11 +914,8 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<T
     }
     case ArrayType {elementType}: {
       // Array<T> against Array<i32> → infer T = i32.
-      match (argType) {
-        case ArrayType as argArr: {
-          inferTypeArg(elementType, argArr.elementType, inferred);
-        }
-        case _: {}
+      if (argType is ArrayType) {
+        inferTypeArg(elementType, argType.elementType, inferred);
       }
     }
     case InterfaceType as pt: {
@@ -948,19 +945,16 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<T
     }
     case ClassType as pt: {
       // Box<T> against Box<i32> → infer T = i32.
-      match (argType) {
-        case ClassType as at: {
-          if (pt.id == at.id && pt.typeArguments != null && at.typeArguments != null) {
-            let ptArgs = pt.typeArguments as Array<Type>;
-            let atArgs = at.typeArguments as Array<Type>;
-            var i = 0;
-            while (i < ptArgs.length && i < atArgs.length) {
-              inferTypeArg(ptArgs[i], atArgs[i], inferred);
-              i += 1;
-            }
+      if (argType is ClassType) {
+        if (pt.id == argType.id && pt.typeArguments != null && argType.typeArguments != null) {
+          let ptArgs = pt.typeArguments as Array<Type>;
+          let atArgs = argType.typeArguments as Array<Type>;
+          var i = 0;
+          while (i < ptArgs.length && i < atArgs.length) {
+            inferTypeArg(ptArgs[i], atArgs[i], inferred);
+            i += 1;
           }
         }
-        case _: {}
       }
     }
     case RecordT as pt: {
@@ -1080,16 +1074,13 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<T
     }
     case FunctionType as pt: {
       // (T) => U against (i32) => String → infer T = i32, U = String.
-      match (argType) {
-        case FunctionType as at: {
-          var i = 0;
-          while (i < pt.parameters.length && i < at.parameters.length) {
-            inferTypeArg(pt.parameters[i], at.parameters[i], inferred);
-            i += 1;
-          }
-          inferTypeArg(pt.returnType, at.returnType, inferred);
+      if (argType is FunctionType) {
+        var i = 0;
+        while (i < pt.parameters.length && i < argType.parameters.length) {
+          inferTypeArg(pt.parameters[i], argType.parameters[i], inferred);
+          i += 1;
         }
-        case _: {}
+        inferTypeArg(pt.returnType, argType.returnType, inferred);
       }
     }
     case TypeAliasType as pt: {
@@ -1100,30 +1091,27 @@ export function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<T
       // Without this case nothing bound, and the call was then rejected as
       // "argument 'Own<Descriptor>' is not assignable to parameter 'Own<T>'",
       // which made a generic alias unusable as a parameter type.
-      match (argType) {
-        case TypeAliasType as at: {
-          // Borrowing at a call site is implicit — an `Own<R>` is accepted
-          // where a `Borrow<R>` is expected — so inference has to see through
-          // that coercion too, or a generic `Borrow<T>` parameter would bind
-          // nothing when handed the owner. See isAssignableTo.
-          let borrowsFromOwn =
-            isWellKnown(WellKnown.BorrowAlias, pt.name, pt.declaringModule) &&
-            isWellKnown(WellKnown.OwnAlias, at.name, at.declaringModule) &&
-            isOwnershipWrapper(pt) && isOwnershipWrapper(at);
-          if (pt.name == at.name || borrowsFromOwn) {
-            let {typeArguments} = pt;
-            if (typeArguments != null && at.typeArguments != null) {
-              let ptArgs = typeArguments;
-              let atArgs = at.typeArguments as Array<Type>;
-              var i = 0;
-              while (i < ptArgs.length && i < atArgs.length) {
-                inferTypeArg(ptArgs[i], atArgs[i], inferred);
-                i += 1;
-              }
+      if (argType is TypeAliasType) {
+        // Borrowing argType a call site is implicit — an `Own<R>` is accepted
+        // where a `Borrow<R>` is expected — so inference has to see through
+        // that coercion too, or a generic `Borrow<T>` parameter would bind
+        // nothing when handed the owner. See isAssignableTo.
+        let borrowsFromOwn =
+          isWellKnown(WellKnown.BorrowAlias, pt.name, pt.declaringModule) &&
+          isWellKnown(WellKnown.OwnAlias, argType.name, argType.declaringModule) &&
+          isOwnershipWrapper(pt) && isOwnershipWrapper(argType);
+        if (pt.name == argType.name || borrowsFromOwn) {
+          let {typeArguments} = pt;
+          if (typeArguments != null && argType.typeArguments != null) {
+            let ptArgs = typeArguments;
+            let atArgs = argType.typeArguments as Array<Type>;
+            var i = 0;
+            while (i < ptArgs.length && i < atArgs.length) {
+              inferTypeArg(ptArgs[i], atArgs[i], inferred);
+              i += 1;
             }
           }
         }
-        case _: {}
       }
     }
     case _: {}

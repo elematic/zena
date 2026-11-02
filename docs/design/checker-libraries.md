@@ -408,17 +408,26 @@ memo and step budget, and `findLiveMove` keeps a visited set.
   `setBodyThisType`, `setCastLiteralTarget`, which stays per
   expression on the context).
 - `while (i < xs.length) { ...; i += 1; }` where `for (let x in xs)`
-  would do: 58 loops.
-- `match (x) { case T as t: {...} case _: {} }` with one arm: 107
-  `case _: {}` arms, most of them in one-arm matches.
+  would do: the 21 that read nothing but the element are `for`-in
+  loops now; the ones that index a parallel array, hand their index
+  on, or compare it with the last position stay.
+- `match (x) { case T as t: {...} case _: {} }` with one arm: 37 such
+  matches are `if (x is T)` now, with a `let` for a subject that is
+  not a binding.
 - `ownershipHandleName(t) == "Own"` and its siblings: 16 string
-  comparisons on an answer that could be an enum.
+  comparisons on an answer that is now the `OwnershipHandle` enum,
+  from `ownershipHandleOf`.
 - Casts after an `is` test the checker already narrows (`(t as
 ClassType)` under `if (t is ClassType)`), and `as Type` upcasts in
-  `if`/`else` arms.
-- Pure type predicates that belong in `types.zena` next to the ones
-  already there: `isAffineValue`, `isAffineTuple`,
-  `isScopedValueType`, `isWithDefaultType`, `isNullableType`.
+  `if`/`else` arms: `zena lint --fix` removed 178 of them, with 46
+  annotations the checker infers, 15 spelled-out `??`/`?.` and 3
+  `var`s never reassigned, each fix type-checked by the tool. Many of
+  the casts were the ones issue #85 made necessary until the one-pass
+  narrowing reached the bootstrap.
+- Pure type predicates that belonged in `types.zena` next to the ones
+  already there — `isAffineValue`, `isAffineTuple`,
+  `isScopedValueType`, `isWithDefaultType`, `isNullableType` — are
+  there, with `unwrapAliases`, which the affine ones peel with.
 
 ## Baseline
 
