@@ -21,7 +21,7 @@ import {
 } from '../../types.zena';
 import {
   ValType, ValTypeAnyRef, ValTypeExternRef, ValTypeF32, ValTypeF64, ValTypeI32,
-  ValTypeI64, ValTypeRefExtern, ValTypeRefNull, ValTypeV128, isExternValType,
+  ValTypeI64, ValTypeNullRef, ValTypeRefExtern, ValTypeRefNull, ValTypeV128, isExternValType,
   isRefValType, valTypeEquals,
 } from '../wasm.zena';
 import { eraseTypeParameters, getNonNullableType, typeToValTypeWithSub } from '../type-mapping.zena';
@@ -876,8 +876,9 @@ function impossibleRefCast(cx: LoweringContext, dstVt: ValType) {
 /**
  * `x as (1, Size)` on a union of tuples: the members can share a struct,
  * so the cast below would pass a `(0, Color)`. The literal in field 0
- * has to match too, and a value whose literal does not traps, as a
- * failed `ref.cast` does.
+ * has to match too, and a value whose literal does not traps as a failed
+ * cast: a `ref.cast` to `nullref` fails for every value but null, so the
+ * trap reads as a cast failure rather than a bare `unreachable` (#600).
  */
 function checkTupleTag(cx: LoweringContext, expr: AsExpression, value: i32): void {
   let srcOpt = cx.substitutedNodeType(expr.expression);
@@ -897,6 +898,9 @@ function checkTupleTag(cx: LoweringContext, expr: AsExpression, value: i32): voi
   let fail = cx.b.newBlock();
   cx.b.brIf(ok, pass, noValues(), fail, noValues());
   cx.b.switchTo(fail);
+  let nullref = new ValTypeNullRef() as ValType;
+  cx.b.emit(IrOp.ref_cast, nullref, value, cx.b.internType(nullref));
+  // A null source passes that cast; the cast below would trap on it.
   cx.b.unreachable();
   cx.b.switchTo(pass);
 }

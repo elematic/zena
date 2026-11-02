@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 0
+// An inline result can be indexed with a literal, as a boxed tuple can
+// (#155): the read takes the one slot that position is in, and nothing is
+// boxed. A position that is itself an inline tuple is boxed for the read.
+
+function minMax(a: i32, b: i32): inline (i32, i32) {
+  if (a < b) {
+    return (a, b);
+  }
+  return (b, a);
+}
+
+function named(n: i32): inline (String, i32) {
+  return (`n${n}`, n);
+}
+
+function nested(n: i32): inline (i32, inline (i32, i32)) {
+  return (n, (n + 1, n + 2));
+}
+
+let calls = new Array<i32>();
+
+function counted(n: i32): inline (i32, i32) {
+  calls.push(n);
+  return (n, n * 2);
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (minMax(20, 10)[0] != 10 || minMax(20, 10)[1] != 20) { failures += 1; }
+  if (named(4)[0] != 'n4' || named(4)[1] != 4) { failures += 2; }
+  let inner = nested(5)[1];
+  if (nested(5)[0] != 5 || inner[0] != 6 || inner[1] != 7) { failures += 4; }
+  // The call runs once per read, for its effects too.
+  if (counted(3)[1] != 6 || calls.length != 1) { failures += 8; }
+  return failures;
+};

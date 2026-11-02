@@ -1,0 +1,29 @@
+// @mode: check
+// An inline result is indexed with a literal (#155). Its positions are
+// slots, not fields of a struct, so a computed index has nothing to read.
+// A result that holds an owner is destructured instead: reading one of its
+// elements would leave the others unreleased.
+
+import { Own, Disposable } from 'zena:core';
+
+resource class File {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+function opened(): inline (i32, Own<File>) {
+  return (1, new File());
+}
+
+function pair(): inline (i32, String) {
+  return (1, 'a');
+}
+
+let first: i32 = pair()[0];
+let second: String = pair()[1];
+
+let bad = pair()[2]; // @error: Tuple index out of bounds: 2 (tuple has 2 elements).
+
+let i = 0;
+let dynamic = pair()[i]; // @error: An inline tuple is indexed with a literal: its positions are separate values.
+
+let fromOwner = opened()[0]; // @error: holds an owner, so it is destructured rather than indexed.

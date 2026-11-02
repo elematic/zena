@@ -4786,10 +4786,15 @@ type Pair = (i32, i32);
 let make = (): inline Pair => (1, 2);
 
 let (a, b) = make();             // destructured: no allocation
+let first = make()[0];           // indexed with a literal: no allocation
 let stored = make();             // a name holds the boxed (i32, i32)
 let all: Array<Pair> = [make()]; // so do arrays, fields and arguments
 let back = (): inline Pair => stored; // and back again
 ```
+
+An inline result's index must be a literal, since its positions are separate
+values rather than fields of one, and a result that holds an owner is
+destructured rather than indexed, so its other owners are not left behind.
 
 A function value is the exception: `() => inline Pair` and `() => Pair` have
 different signatures, and neither is assignable to the other.
