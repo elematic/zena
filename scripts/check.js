@@ -106,12 +106,17 @@ const addedLines = (file) => {
   return added;
 };
 
-const messages = git('log', '--format=%H%x00%s%x00%B%x00', `${base}..HEAD`)
+const messages = git(
+  'log',
+  '--format=%H%x00%P%x00%s%x00%B%x00',
+  `${base}..HEAD`,
+)
   .split('\0\n')
   .filter((entry) => entry.trim() !== '')
   .map((entry) => {
-    const [sha, subject, body] = entry.replace(/^\n/, '').split('\0');
-    return {sha: sha.slice(0, 10), subject, body};
+    const [sha, parents, subject, body] = entry.replace(/^\n/, '').split('\0');
+    const merge = parents.trim().includes(' ');
+    return {sha: sha.slice(0, 10), merge, subject, body};
   });
 
 // prettier
@@ -176,9 +181,11 @@ if (linted.length > 0) {
   }
 }
 
-// commit subjects
-for (const {sha, subject} of messages) {
-  if (!SUBJECT.test(subject)) {
+// commit subjects. A merge that brings `main` into a branch never becomes
+// a commit on `main`: a squash merge takes the PR's title, and a rebase
+// merge drops it.
+for (const {sha, merge, subject} of messages) {
+  if (!merge && !SUBJECT.test(subject)) {
     errors.push(
       `${sha}: subject needs package tags, like "[stdlib] Add ..." or "[pds][zena-cli] Fix ...": ${subject}`,
     );
