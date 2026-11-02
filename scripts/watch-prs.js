@@ -139,9 +139,17 @@ const changes = (before, after) => {
 
 const watched = new Map(numbers.map((n) => [n, snapshot(n)]));
 const bases = new Map();
+/**
+ * The PRs stacked on each base, as they were when the watch started: once
+ * the base merges, GitHub may already have retargeted them to main.
+ */
+const stackedOn = new Map();
 for (const pr of watched.values()) {
   const base = basePr(pr.base);
   if (base !== undefined && !watched.has(base)) bases.set(base, snapshot(base));
+  if (base !== undefined) {
+    stackedOn.set(base, [...(stackedOn.get(base) ?? []), pr.number]);
+  }
   console.log(describe(pr));
 }
 if (once) process.exit(0);
@@ -161,12 +169,14 @@ for (;;) {
   for (const [n, before] of bases) {
     const after = snapshot(n);
     if (after.state === 'MERGED' && before.state !== 'MERGED') {
-      const stacked = [...watched.values()].filter(
-        (pr) => basePr(pr.base) === n,
-      );
-      events.push(
-        `base #${n} is merged; rebase ${stacked.map((pr) => `#${pr.number}`).join(', ')} onto main (AGENTS.md, "Pull Requests")`,
-      );
+      for (const number of stackedOn.get(n) ?? []) {
+        const pr = snapshot(number);
+        events.push(
+          pr.base === 'main'
+            ? `base #${n} is merged and GitHub moved #${number} onto main; update the local branch (AGENTS.md, "Stacked PRs")`
+            : `base #${n} is merged; rebase #${number} onto main (AGENTS.md, "Stacked PRs")`,
+        );
+      }
     }
     bases.set(n, after);
   }
