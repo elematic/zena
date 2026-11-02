@@ -1,0 +1,58 @@
+// @mode: check
+// Inside `if (isFirstClass<T>())`, a `scoped T` is first-class: its
+// values may be copied and kept in any container (owner-futures.md
+// §"The class half of `scoped T`"). A field that keeps `T` in a
+// container that copies it is usable only there, and starts empty.
+import {WithDefault, defaultValue, isFirstClass} from 'zena:core';
+
+class Pipe<scoped T> {
+  var #slot: WithDefault<T> = defaultValue<T>();
+  var #buf: FixedArray<T> | null = null;
+
+  put(value: T): void {
+    if (isFirstClass<T>()) {
+      let copy = value;
+      this.#buf = new Array<T>.fixed(2, value);
+      this.#slot = copy;
+    } else {
+      this.#slot = value;
+    }
+  }
+
+  // The negated test makes the alternate the first-class branch.
+  set(value: T): void {
+    if (!isFirstClass<T>()) {
+      this.#slot = value;
+    } else {
+      this.#buf = new Array<T>.fixed(1, value);
+    }
+  }
+
+  size(): i32 {
+    if (isFirstClass<T>()) {
+      let b = this.#buf;
+      return if (b != null) b.length else 0;
+    }
+    return 0;
+  }
+
+  empty(): boolean {
+    return this.#buf == null; // @error: may be used only inside 'if (isFirstClass<T>())'
+  }
+
+  // Outside the branch a `T` is restricted as ever.
+  keep(value: T): void {
+    if (isFirstClass<T>()) {
+      return;
+    }
+    this.#slot = value;
+    let xs = new Array<T>(); // @error: may not be stored in a container
+  }
+}
+
+// At a first-class instantiation the field is an ordinary field.
+class Reader {
+  read(p: Pipe<i32>): i32 {
+    return p.size();
+  }
+}

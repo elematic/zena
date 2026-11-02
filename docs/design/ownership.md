@@ -1026,9 +1026,19 @@ What the checker enforces for that half:
   elsewhere, so a body branches on what only one kind of instantiation
   needs and the other branch folds away. Both answers come from the same
   representation test, so they always agree, whichever instantiation of
-  a shared body the compiler recorded. The static half owner-futures.md
-  describes, `T` unrestricted where the call is known true, is not
-  implemented: no body needs it yet.
+  a shared body the compiler recorded. The checker reads the same test
+  statically: the consequent of `if (isFirstClass<T>())`, and the
+  alternate of `if (!isFirstClass<T>())`, are checked with `T`
+  first-class, so a `T` may be copied and kept in any container there.
+  The `T` values held at the branch's entry count as consumed on its
+  path. (`TypeParameterType.firstClassDepth` marks the branch, and
+  `isRestrictedParam` reads it.)
+- **First-class-only fields.** A field that keeps `T` only in a
+  container that copies it, such as a stream's `FixedArray<T> | null`
+  bulk buffer, may be declared if it is nullable, so it starts empty,
+  and is read or written only inside such a branch. A restricted
+  specialization therefore never fills it. At a first-class
+  instantiation (`Stream<u8>`) it is an ordinary field.
 
 - **Release.** An instance at an owner that nothing consumes is released
   where it is dropped, as an owner is, through the class's `[release]`.

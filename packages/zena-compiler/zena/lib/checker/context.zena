@@ -17,7 +17,7 @@ import {
   I8Type, InterfaceType, MixinType, NeverType, NullType, SymbolType, Type,
   TypeAliasType, TypeId, TypeInterner, TypeParameterType, U16Type, U32Type,
   U64Type, U8Type, UnionType as UnionT, V128Type, VoidType,
-  declaringModuleOf, makeTypeIdGenerator, releaseMemberOf
+  declaringModuleOf, makeTypeIdGenerator, mentionsTypeParams, releaseMemberOf
 } from '../types.zena';
 import {
   ClosureDependency, EdgeDrop, ModelIndex, SemanticModel, SymbolDependencies
@@ -2643,6 +2643,25 @@ export final class CheckerContext {
     if (this.#scopedScopeStack.length == 0) { return; }
     this.#scopedScopeStack[this.#scopedScopeStack.length - 1]
       .push(new ScopedConsumeCandidate(sym, patternNode));
+  }
+
+  /**
+   * Entering an `if (isFirstClass<T>())` branch: on its path `T` is
+   * first-class, so every `T` value held at its entry counts as
+   * consumed there. The branch may copy them freely, since uses inside
+   * it are not move-checked (isScopedValueType is false for `T`), and
+   * after the branch they are dead on its path.
+   */
+  consumeFirstClassValues(tp: TypeParameterType, loc: SourceLocation | null): void {
+    let params = growable<TypeParameterType>([tp]);
+    for (let frame in this.#scopedScopeStack) {
+      for (let c in frame) {
+        let bindingType = this.model.getBindingType(c.sym);
+        if (bindingType != null && mentionsTypeParams(bindingType, params)) {
+          this.recordFlowMove(c.sym.id, c.sym.name, loc);
+        }
+      }
+    }
   }
 
   /**

@@ -9,14 +9,15 @@ import {
   MemberExpression, MixinDeclaration, Node, NullLiteral, Pattern,
   ReturnStatement, ShieldedStatement, SourceLocation, Statement,
   SymbolDeclaration, ThisExpression, TuplePattern, TypeAliasDeclaration,
-  TypeAnnotation, UsingStatement, VariableDeclaration, WhileStatement,
-  YieldStatement
+  TypeAnnotation, UnaryExpression, UsingStatement, VariableDeclaration,
+  WhileStatement, YieldStatement
 } from '../ast.zena';
 import {
   ArrayType, ClassType, ErrorType, FieldInfo, FunctionType,
   InlineTupleType as InlineTupleT, InterfaceType, NeverType, NullType,
-  RecordType as RecordT, Type, VoidType, isScopedType, isSecondClass,
-  scopedInner, typeCarriesOwner, typeToString, forInLowersToIndexLoop
+  RecordType as RecordT, Type, TypeParameterType, VoidType, isScopedType,
+  isSecondClass, scopedInner, typeCarriesOwner, typeToString,
+  forInLowersToIndexLoop
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
@@ -39,7 +40,7 @@ import {
   recordLoopAssignments
 } from './narrowing.zena';
 import {
-  castOperand, isScopedValueType, mentionsParamDerived,
+  castOperand, firstClassTestParam, isScopedValueType, mentionsParamDerived,
   moveDestructured, ownedResourcesIn, recordArgumentMove,
   recordOwnerFieldMove, recordScopedFieldTake, registerPatternOwners,
   releaseDiscardedOwner, requireDisposable,
@@ -376,11 +377,17 @@ case _: {
 
           let preBranchFlow = ctx.currentFlow;
           let branches = conditionNarrowings(ctx, testExpr);
+          // `if (isFirstClass<T>())` checks its consequent with `T`
+          // first-class, and `if (!isFirstClass<T>())` its alternate.
+          let firstClassThen = firstClassTestParam(ctx, testExpr);
+          let firstClassElse = if (let UnaryExpression {operator, argument} = testExpr)
+            (if (operator == "!") firstClassTestParam(ctx, argument) else null)
+          else null;
 
           // Consequent body with TRUE narrowings on its flow path.
           ctx.enterScope();
           ctx.pushFlowNarrowings(branches.whenTrue);
-          checkStatement(ctx, consequent);
+          checkFirstClassBranch(ctx, consequent, firstClassThen);
           ctx.exitScope();
           let trueEnd = ctx.currentFlow;
 
@@ -395,7 +402,7 @@ case _: {
           ctx.pushFlowNarrowings(branches.whenFalse);
           if (alternate != null) {
             ctx.enterScope();
-            checkStatement(ctx, alternate);
+            checkFirstClassBranch(ctx, alternate, firstClassElse);
             ctx.exitScope();
           }
           // Held for the branch-join drop decision when the enclosing
@@ -1026,6 +1033,25 @@ function checkVariableDeclaration(
  * A `Borrow<R>` is rejected: a borrow never releases what it points at, so
  * disposing through one would release a resource someone else still owns.
  */
+/**
+ * A branch of an `if` that `isFirstClass<T>()` decides, checked with `T`
+ * first-class when `tp` is set (owner-futures.md §"The class half of
+ * `scoped T`"): the `T` values held at its entry count as consumed on
+ * its path, and inside it a `T` may be copied and stored in any
+ * container.
+ */
+function checkFirstClassBranch(ctx: CheckerContext, branch: Statement,
+    tp: TypeParameterType | null): void {
+  if (tp == null) {
+    checkStatement(ctx, branch);
+    return;
+  }
+  ctx.consumeFirstClassValues(tp, branch.loc);
+  tp.firstClassDepth += 1;
+  checkStatement(ctx, branch);
+  tp.firstClassDepth -= 1;
+}
+
 /**
  * The context rules for `tail return` (tail-calls.md §3): the frame has
  * to be genuinely dead at the call, and the operand has to be one call.

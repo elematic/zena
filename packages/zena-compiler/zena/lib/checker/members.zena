@@ -27,7 +27,7 @@ import { getMemberPathKeyFromAccess } from './narrowing.zena';
 import { overloadCandidates, collectApplicableOperatorOverloads, selectMostSpecificIndex } from './overloads.zena';
 import {
   borrowWrapFieldRead, fieldReadsAsTake, isAffineValue, memberConsumesReceiver,
-  rejectConsumingThroughNonOwner, tupleElementRead
+  rejectConsumingThroughNonOwner, rejectFirstClassOnlyAccess, tupleElementRead
 } from './ownership.zena';
 import { argumentAdaptsToParameter } from './literals.zena';
 import { isAssignableTo, isBoxablePrimitive, typesEqual } from './relations.zena';
@@ -531,6 +531,7 @@ export function checkMemberExpression(
 
   let propName = accessMemberKey(
       ctx, expr as Node, isSymbolAccess, property, expr.symbolPath);
+  rejectFirstClassOnlyAccess(ctx, objectType, propName, loc);
 
   // `then` hands a future's value to a callback while the future keeps
   // it, so on a future of an owner it would mint a second owner; such a

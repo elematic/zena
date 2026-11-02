@@ -2975,6 +2975,14 @@ export final class TypeParameterType extends Type {
    */
   var isScoped: boolean = false;
   /**
+   * How many `if (isFirstClass<T>())` branches for this parameter the
+   * checker is inside. In one, `T` is first-class: a `scoped T` is
+   * restricted only while this is 0 (isRestrictedParam). Each body
+   * declares its own parameter objects, so a branch in one body never
+   * relaxes another's.
+   */
+  var firstClassDepth: i32 = 0;
+  /**
    * Declared `R extends record`: the parameter ranges over record rows
    * and can be spread into a record type (docs/design/row-types.md
    * §3.1). `constraint` is null for one.
@@ -4248,6 +4256,15 @@ export function typeToString(t: Type): String {
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether `t` is a `scoped` type parameter whose values are restricted
+ * where it is being checked: everywhere but inside an
+ * `if (isFirstClass<T>())` branch for it (firstClassDepth).
+ */
+export function isRestrictedParam(t: Type): boolean {
+  return t is TypeParameterType && t.isScoped && t.firstClassDepth == 0;
+}
+
+/**
  * Whether `t` is **second-class**: a value of it may not outlive the extent
  * it was borrowed from, so it may not be stored in the heap or returned
  * except to the caller that supplied the borrow it derives from.
@@ -4271,7 +4288,7 @@ export function isSecondClass(t: Type): boolean {
   if (isScopedType(t)) { return true; }
   // A `scoped T` parameter's values are checked at the same
   // discipline — the worst case the parameter admits.
-  if (t is TypeParameterType && t.isScoped) { return true; }
+  if (isRestrictedParam(t)) { return true; }
   if (ownershipHandleName(t) != "Borrow") { return false; }
   let inner = ownershipHandleInner(t);
   if (inner == null) { return false; }
