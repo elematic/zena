@@ -53,11 +53,18 @@ use.
 | Writing each handle's `_atproto` TXT record to a DNS zone, and rewriting them all (`sync-handles`)                                   | `pds:handles`, `PackageHost.syncHandles`, `main.zena`                                     | no: any PDS that gives out handles under its own domain needs it                                  |
 | A PLC directory of its own for staging, reading other DIDs from the public one                                                       | `pds:plc-directory`, mounted in `pds:service`                                             | no                                                                                                |
 | Configuration: the domain, service DID, public URL, rotation key, reserved scopes, largest artifact, handle records                  | `pds:service` (`configFromEnv`)                                                           | partly                                                                                            |
+| Telling listeners, after each commit, which records it changed                                                                       | `Pds.onCommit`, called from `Repository.applyWrites`                                      | no: the firehose (#680) sends the same changes                                                    |
+| A catalog of the host's packages, and which accounts mention each person and team, written with each commit and by `sync-indexes`    | `PackageHost.#indexCommit`, `HostStore.putSummary` and `addMentions`, `main.zena`         | yes                                                                                               |
 
 Several rows are not specific to packages. Handle records, the staging
-PLC directory, the host's DID document, `describeServer` and service-auth
-checking are things a general PDS can use. They move into the core, and
-the package extension uses them.
+PLC directory, the host's DID document, `describeServer`, service-auth
+checking and commit events are things a general PDS can use. They move
+into the core, and the package extension uses them.
+
+The package host's catalog and mentions cover only the accounts it
+holds. Packages on other hosts, search and dependents belong to the
+index, an AppView that is a service of its own, outside the PDS
+([package-manager.md](./package-manager.md#the-index)).
 
 ## The core
 
@@ -66,6 +73,7 @@ plus the general pieces from the table above:
 
 - accounts, their repositories and commits, blobs, and `com.atproto.sync`
   and `com.atproto.repo` reads;
+- telling extensions, and later the firehose, what each commit changed;
 - storage (`pds:storage`, `pds:firestore`);
 - identity: resolving DIDs and handles, creating `did:plc`s and sending
   their operations, and the staging PLC directory;
@@ -146,6 +154,19 @@ collection and key, and its blobs by CID, through an interface the core
 provides. It cannot write through that interface; writes go through the
 core's commit, so every write passes every policy that applies to it.
 
+### Commit events
+
+After a commit, the core tells each installation that registered for
+commit events, and that can see the account, what the commit changed:
+the account, the commit's revision, and each record it created, updated
+or deleted. These are the changes the firehose (#680) sends. The commit
+is already made when an extension hears of it, so an extension that fails
+to handle an event logs the failure, and a job (below) redoes the work.
+
+The package host keeps its catalog and mentions with these events
+([package-manager.md](./package-manager.md#the-hosts-indexes)). Today
+`Pds.onCommit` calls `PackageHost.#indexCommit` in the same process.
+
 ### Accounts and identity
 
 Host extensions only. The core creates accounts. An extension asks it to
@@ -171,16 +192,18 @@ it on each of its storages: in memory, and in Firestore under the
 deployment's `tenants/{tenant}/` with one collection per installation.
 Account extensions have a quota.
 
-The package host keeps its scope and name claims, its membership entries
-and its account kinds there. Today these are `pds:host`'s `HostStore` and
-its Firestore implementation, which this storage replaces.
+The package host keeps its scope and name claims, its membership entries,
+its catalog and mentions, and its account kinds there. Today these are
+`pds:host`'s `HostStore` and its Firestore implementation, which this
+storage replaces.
 
 ### Jobs
 
 A host extension can export named jobs that the operator runs: from the
 command line with the server's configuration, from the admin page, or on
-a schedule. The package host has none of its own once handle records are
-in the core: `sync-handles` becomes a core job.
+a schedule. The package host's is `sync-indexes`, which writes its
+catalog and mentions again from the repositories. `sync-handles` becomes
+a core job once handle records are in the core.
 
 ## Loading extensions
 
@@ -269,8 +292,8 @@ breaks hurts only the accounts that installed it.
    staging PLC directory, `describeServer` and the host's DID document
    from configuration, and service-auth checking for routes. Then put the
    package host behind Zena interfaces shaped like the extension points:
-   routes, write policy, account requests, extension storage. No Wasm is
-   involved, and the existing tests keep passing.
+   routes, write policy, commit events, account requests, extension
+   storage. No Wasm is involved, and the existing tests keep passing.
 2. **Write the WIT.** Turn those Zena interfaces into a WIT package for
    the extension points, and check that each type crosses a component
    boundary with the compiler of the day.
