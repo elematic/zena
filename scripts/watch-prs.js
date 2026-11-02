@@ -17,22 +17,31 @@
  * reaches the session without anyone relaying it, and start it again after
  * acting on what it printed. It prints the current state first, then polls.
  *
- *   npm run watch-prs -- [--interval <seconds>] [--once] <pr>...
+ *   npm run watch-prs -- [--interval <seconds>] [--minutes <n>] [--once] <pr>...
  *
- * `--once` prints the current state and exits. Comments by `elematic-bot`
- * and by accounts whose login ends in `[bot]` are not reported.
+ * After `--minutes` (default 110) with nothing to act on, it says so and
+ * exits, to be started again: Claude Code stops a background task after two
+ * hours without telling the session what it was waiting for, and a review
+ * can take days. `--once` prints the current state and exits. Comments by
+ * `elematic-bot` and by accounts whose login ends in `[bot]` are not
+ * reported.
  */
 
 import {execFileSync} from 'node:child_process';
 
 const args = process.argv.slice(2);
-const intervalIndex = args.indexOf('--interval');
-const interval =
-  intervalIndex >= 0 ? Number(args.splice(intervalIndex, 2)[1]) : 90;
+const option = (name, fallback) => {
+  const i = args.indexOf(name);
+  return i >= 0 ? Number(args.splice(i, 2)[1]) : fallback;
+};
+const interval = option('--interval', 90);
+const minutes = option('--minutes', 110);
 const once = args.includes('--once');
 const numbers = args.filter((arg) => /^\d+$/.test(arg)).map(Number);
 if (numbers.length === 0) {
-  console.error('usage: npm run watch-prs -- [--interval s] [--once] <pr>...');
+  console.error(
+    'usage: npm run watch-prs -- [--interval s] [--minutes n] [--once] <pr>...',
+  );
   process.exit(2);
 }
 
@@ -140,6 +149,7 @@ if (once) process.exit(0);
 const sleep = (seconds) =>
   new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 
+const deadline = Date.now() + minutes * 60_000;
 for (;;) {
   await sleep(interval);
   const events = [];
@@ -165,4 +175,15 @@ for (;;) {
     process.exit(0);
   }
   if ([...watched.values()].every((pr) => pr.state !== 'OPEN')) process.exit(0);
+  if (Date.now() > deadline) {
+    for (const pr of watched.values()) console.log(describe(pr));
+    console.log(
+      `nothing to act on in ${minutes} minutes; start watch-prs again for ` +
+        [...watched.values()]
+          .filter((pr) => pr.state === 'OPEN')
+          .map((pr) => pr.number)
+          .join(' '),
+    );
+    process.exit(0);
+  }
 }

@@ -69,13 +69,21 @@ and the root is not the session's own project directory.
 
 ## After pushing
 
-`npm run watch-prs -- <numbers>`, run as a background task, exits when one
-of the PRs is merged or closed, when its checks fail, when someone other
-than the agent account comments, or when the PR a stacked PR is based on
-merges; passing checks are printed and the watch goes on. The agent acts on
-what it printed and starts it again. In October
-2026 about a third of the messages people sent to agents only passed on
-this kind of GitHub state ("#n is merged, #m needs a rebase").
+In October 2026 about a third of the messages people sent to agents only
+passed on GitHub state ("#n is merged, #m needs a rebase"). Two ways for a
+session to find out for itself:
+
+- A Claude Code session that has the `subscribe_pr_activity` tool (remote
+  and Remote Control sessions) subscribes to each PR it opens, and GitHub
+  then delivers the PR's comments, reviews and CI results to the session.
+  Nothing has to keep running, so it covers reviews that take days.
+- Elsewhere, `npm run watch-prs -- <numbers>`, run as a background task,
+  exits when one of the PRs is merged or closed, when its checks fail, when
+  someone other than the agent account comments, or when the PR a stacked
+  PR is based on merges; passing checks are printed and the watch goes on.
+  Claude Code stops background tasks after two hours, so after 110 minutes
+  with nothing to act on it exits and says to start it again. The agent
+  acts on what it printed and starts it again.
 
 ## The improvement loop
 

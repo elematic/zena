@@ -13,4 +13,7 @@
 - Review: 2026-11-14
 - Outcome: the first use exited when #753's checks passed, the session did
   not start it again, and the merge was relayed by hand. `watch-prs` now
-  keeps watching through passing checks.
+  keeps watching through passing checks. The second use (#754) was
+  stopped by Claude Code's two-hour limit on background tasks before the
+  merge, which was relayed again. Sessions that can subscribe to a PR's
+  events now do, and `watch-prs` exits at 110 minutes to be restarted.
