@@ -2707,6 +2707,12 @@ function lowerScopedRelease(cx: LoweringContext, ct: ClassType): IrBody {
     bail(cx, 'synthetic release class not discovered');
   }
   let st = info.structType;
+  // A release reached through a vtable slot takes the receiver at the
+  // slot's erased type, as an override does, so it is cast here.
+  if (!(sig.params[0] is ValTypeRef)) {
+    let castVt = new ValTypeRef(st) as ValType;
+    cx.thisValue = cx.b.emit(IrOp.ref_cast, castVt, thisParam, cx.b.internType(castVt));
+  }
   let names = scopedFieldNames(ct);
   let types = scopedFieldTypesAt(cx.wasm, ct);
   for (var i = names.length - 1; i >= 0; i -= 1) {

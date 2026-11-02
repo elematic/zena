@@ -3,15 +3,16 @@ import { growable } from 'zena:core';
 import { walkEnter } from '../visitor.zena';
 import {
   AsExpression, AssignmentExpression, BinaryExpression, BindingPattern,
-  BindingProperty, CallExpression, ClassPattern, Expression,
-  ExpressionStatement, Identifier, IdentifierPattern, IndexExpression,
-  IsExpression, MatchExpression, MemberExpression, MethodDefinition,
-  NamedTypeAnnotation, NewExpression, Node, Parameter, RecordPattern,
-  SourceLocation, ThisExpression, ThisTypeAnnotation, TuplePattern,
-  TypeAnnotation, VariableDeclaration, getMemberPropertyName
+  BindingProperty, CallExpression, ClassPattern, DeclareFunction,
+  Expression, ExpressionStatement, Identifier, IdentifierPattern,
+  IndexExpression, IsExpression, MatchExpression, MemberExpression,
+  MethodDefinition, NamedTypeAnnotation, NewExpression, Node, Parameter,
+  RecordPattern, SourceLocation, ThisExpression, ThisTypeAnnotation,
+  TuplePattern, TypeAnnotation, VariableDeclaration, decoratorStringArg,
+  getMemberPropertyName
 } from '../ast.zena';
 import {
-  ArrayType, ClassType, ErrorType, FieldInfo, InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType, ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, instantiateTypeAliasType, isAffineContainer, isOwnershipWrapper, isScopedClassParam, isScopedType, mentionsTypeParams, ownershipHandleInner, ownershipHandleName, releasableContainer, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped, typeContainsSecondClass, typeToString
+  ArrayType, ClassType, ErrorType, FieldInfo, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType, ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, instantiateTypeAliasType, isAffineContainer, isOwnershipWrapper, isRestrictedParam, isScopedClassParam, isScopedType, mentionsTypeParams, ownershipHandleInner, ownershipHandleName, releasableContainer, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped, typeContainsSecondClass, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
@@ -211,11 +212,12 @@ function isAffineTuple(t: Type): boolean {
 /**
  * A type whose values follow the scoped consumption rules — the
  * `Scoped` wrapper itself, or a `scoped T` parameter's values, which
- * the body checks at the same discipline.
+ * the body checks at the same discipline outside an
+ * `isFirstClass<T>()` branch.
  */
 export function isScopedValueType(t: Type): boolean {
   if (isScopedType(t)) { return true; }
-  return t is TypeParameterType && t.isScoped;
+  return isRestrictedParam(t);
 }
 
 /**
@@ -366,7 +368,89 @@ export function rejectFieldStorage(ctx: CheckerContext, t: Type, loc: SourceLoca
     rejectConcreteSecondClassStorage(ctx, t, "a field", loc);
     return;
   }
+  // A first-class-only field (a stream's `FixedArray<T>` bulk buffer):
+  // its accesses are confined to `isFirstClass<T>()` branches
+  // (rejectFirstClassOnlyAccess), so a restricted specialization never
+  // fills it. It starts empty, so it must be able to be.
+  if (isFirstClassOnlyFieldType(t)) {
+    if (!isNullableType(t)) {
+      ctx.error(
+        `A '${typeToString(t)}' field holds a 'scoped' type parameter in a container that copies it, so only an 'isFirstClass' branch may fill it, and it has to start empty. Declare it '${typeToString(t)} | null'.`,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
+    return;
+  }
   rejectSecondClassStorage(ctx, t, "a field", loc);
+}
+
+/**
+ * Whether a field of declared type `t` is first-class-only: it holds a
+ * `scoped` type parameter only inside containers that copy it, such as
+ * `FixedArray<T> | null`, and nothing concrete that is second-class.
+ * Such a field is usable only where the parameter is first-class.
+ */
+function isFirstClassOnlyFieldType(t: Type): boolean {
+  return typeContainsSecondClass(t) && !typeContainsConcreteSecondClass(t) &&
+      !scopedParamsFieldHeld(t);
+}
+
+/**
+ * An access of a first-class-only field (isFirstClassOnlyFieldType)
+ * outside an `if (isFirstClass<T>())` branch: an error, since at a
+ * restricted `T` the field's container would copy a value that must
+ * not be copied. A receiver at a first-class instantiation
+ * (`Stream<u8>`) may use it anywhere.
+ */
+export function rejectFirstClassOnlyAccess(ctx: CheckerContext, objectType: Type,
+    propName: String, loc: SourceLocation | null): void {
+  let peeled = ownershipHandleInner(objectType) ?? objectType;
+  let recv = soleNonNullMember(peeled) ?? peeled;
+  if (!(recv is ClassType) || !mayBeRestrictedInstance(recv)) { return; }
+  let declaring = recv.genericSource ?? recv;
+  if (scopedTypeParamsOf(declaring).length == 0 || !declaring.members.has(propName)) {
+    return;
+  }
+  let member = declaring.members[propName];
+  if (!(member is FieldInfo)) { return; }
+  // Inside the branch the parameter is first-class, so the type no
+  // longer holds anything second-class and the test is false.
+  if (!isFirstClassOnlyFieldType(member.type)) { return; }
+  ctx.error(
+    `'${displayMemberName(propName)}' holds a 'scoped' type parameter in a container that copies it, so it may be used only inside 'if (isFirstClass<T>())'.`,
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+}
+
+/**
+ * The `scoped` type parameter an `isFirstClass<T>()` call asks about,
+ * when `test` is one: a call of the `is_first_class` intrinsic, found by
+ * its declaration's decorator. Null for anything else.
+ */
+export function firstClassTestParam(ctx: CheckerContext, test: Expression): TypeParameterType | null {
+  if (!(test is CallExpression)) { return null; }
+  let callee = test.callee;
+  if (!(callee is Identifier)) { return null; }
+  let sym = ctx.model.resolve(callee);
+  if (sym == null) { return null; }
+  let decl = sym.resolveTarget().declaration;
+  if (decl == null || !(decl is DeclareFunction)) { return null; }
+  var isIntrinsic = false;
+  for (let dec in decl.decorators) {
+    if (dec.name == "intrinsic" && dec.args.length == 1 &&
+        (decoratorStringArg(dec, 0) ?? "") == "is_first_class") {
+      isIntrinsic = true;
+    }
+  }
+  if (!isIntrinsic) { return null; }
+  let calleeType = ctx.model.getNodeType(callee);
+  if (!(calleeType is FunctionType)) { return null; }
+  let args = calleeType.typeArguments;
+  if (args == null || args.length != 1) { return null; }
+  let arg = args[0];
+  return if (arg is TypeParameterType && arg.isScoped) arg else null;
 }
 
 /**

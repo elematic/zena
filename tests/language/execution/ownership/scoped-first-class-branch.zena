@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 21
+// One `scoped T` body serving a first-class and a restricted argument
+// through `isFirstClass<T>()`: at `i32` the value is copied into a
+// first-class-only buffer, at an owner it moves into its slot, and the
+// owner is released once when the pipe is dropped.
+import {Own, Disposable, WithDefault, defaultValue, isFirstClass} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Pipe<scoped T> {
+  var #slot: WithDefault<T> = defaultValue<T>();
+  var #buf: FixedArray<T> | null = null;
+
+  put(value: T): void {
+    if (isFirstClass<T>()) {
+      this.#buf = new Array<T>.fixed(2, value);
+      this.#slot = value;
+    } else {
+      this.#slot = value;
+    }
+  }
+
+  size(): i32 {
+    if (isFirstClass<T>()) {
+      let b = this.#buf;
+      return if (b != null) b.length else 0;
+    }
+    return 0;
+  }
+}
+
+export function main(): i32 {
+  let p = new Pipe<i32>();
+  p.put(5);
+  if (true) {
+    let q = new Pipe<Own<Res>>();
+    q.put(new Res());
+    if (q.size() != 0) { return 100; }
+  }
+  return p.size() * 10 + released;
+}
