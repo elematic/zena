@@ -430,27 +430,46 @@ export function rejectFirstClassOnlyAccess(ctx: CheckerContext, objectType: Type
  * its declaration's decorator. Null for anything else.
  */
 export function firstClassTestParam(ctx: CheckerContext, test: Expression): TypeParameterType | null {
-  if (!(test is CallExpression)) { return null; }
-  let callee = test.callee;
-  if (!(callee is Identifier)) { return null; }
-  let sym = ctx.model.resolve(callee);
-  if (sym == null) { return null; }
-  let decl = sym.resolveTarget().declaration;
-  if (decl == null || !(decl is DeclareFunction)) { return null; }
-  var isIntrinsic = false;
-  for (let dec in decl.decorators) {
-    if (dec.name == "intrinsic" && dec.args.length == 1 &&
-        (decoratorStringArg(dec, 0) ?? "") == "is_first_class") {
-      isIntrinsic = true;
-    }
+  if (!(test is CallExpression) || intrinsicCalleeName(ctx, test) != "is_first_class") {
+    return null;
   }
-  if (!isIntrinsic) { return null; }
-  let calleeType = ctx.model.getNodeType(callee);
+  let calleeType = ctx.model.getNodeType(test.callee);
   if (!(calleeType is FunctionType)) { return null; }
   let args = calleeType.typeArguments;
   if (args == null || args.length != 1) { return null; }
   let arg = args[0];
   return if (arg is TypeParameterType && arg.isScoped) arg else null;
+}
+
+/**
+ * The intrinsic a call's callee is declared with
+ * (`@intrinsic('is_first_class')` on a `declare function`), found on the
+ * declaration rather than by name; null for any other call.
+ */
+export function intrinsicCalleeName(ctx: CheckerContext, call: CallExpression): String | null {
+  let callee = call.callee;
+  if (!(callee is Identifier)) { return null; }
+  let sym = ctx.model.resolve(callee);
+  if (sym == null) { return null; }
+  let decl = sym.resolveTarget().declaration;
+  if (decl == null || !(decl is DeclareFunction)) { return null; }
+  for (let dec in decl.decorators) {
+    if (dec.name == "intrinsic" && dec.args.length == 1) {
+      return decoratorStringArg(dec, 0);
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether `call` is of the `share_reference` intrinsic, which returns
+ * a second reference to its argument without moving it: the producer's
+ * half of a pair, such as a stream writer's view of its stream
+ * (owner-futures.md §"Streams"). Private to the standard library
+ * containers, whose runtime state guards what the types no longer see.
+ */
+export function sharesArgument(ctx: CheckerContext, call: CallExpression): boolean {
+  return intrinsicCalleeName(ctx, call) == "share_reference";
 }
 
 /**
