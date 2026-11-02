@@ -138,13 +138,10 @@ export function cors(options: CorsOptions = {}): Middleware {
       await fn(req)
     };
 
-    let credentials = if (credentialsFor != null) {
-      let fn = credentialsFor as CredentialsFn;
-      if (fn is SyncCredentialsFn) {
-        (fn as SyncCredentialsFn)(req)
-      } else {
-        await (fn as AsyncCredentialsFn)(req)
-      }
+    let credentials = if (credentialsFor is SyncCredentialsFn) {
+      credentialsFor(req)
+    } else if (credentialsFor is AsyncCredentialsFn) {
+      await credentialsFor(req)
     } else {
       staticCredentials
     };
