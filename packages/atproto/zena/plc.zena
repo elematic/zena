@@ -83,7 +83,7 @@ export final class PlcOperation {
     let map = this.#unsigned();
     let sig = this.sig;
     if (sig != null) {
-      map.entries['sig'] = new StringValue(sig as String);
+      map.entries['sig'] = new StringValue(sig);
     }
     return map;
   }
@@ -116,7 +116,7 @@ export final class PlcOperation {
     }
     var signature = new FixedArray<u8>(0, 0 as u8);
     try {
-      signature = base64Url.decode(sig as String);
+      signature = base64Url.decode(sig);
     } catch (e) {
       return false;
     }
@@ -159,7 +159,7 @@ export final class PlcOperation {
     if (!(json is JsonObject)) {
       throw new PlcError('an operation is not a JSON object');
     }
-    let object = json as JsonObject;
+    let object = json;
     if (object['type'] != 'plc_operation') {
       throw new PlcError('the operation is not a plc_operation');
     }
@@ -172,7 +172,7 @@ export final class PlcOperation {
       if (!(value is JsonObject)) {
         throw new PlcError(`service ${name} is not an object`);
       }
-      let entry = value as JsonObject;
+      let entry = value;
       services[name] = new PlcService(stringOf(entry['type'], 'a service type'),
           stringOf(entry['endpoint'], 'a service endpoint'));
     });
@@ -203,7 +203,7 @@ export final class PlcOperation {
     });
     map.entries['services'] = services;
     let prev = this.prev;
-    map.entries['prev'] = if (prev == null) new NullValue() else new StringValue(prev as String);
+    map.entries['prev'] = if (prev == null) new NullValue() else new StringValue(prev);
     return map;
   }
 }
@@ -317,7 +317,7 @@ export function checkNextOperation(did: String, log: Array<PlcOperation>, operat
   let last = log[log.length - 1];
   let prev = operation.prev;
   let lastCid = last.cid().toString();
-  if (prev == null || prev as String != lastCid) {
+  if (prev == null || prev != lastCid) {
     throw new PlcError(`the operation must follow ${lastCid}`);
   }
   for (let key in last.rotationKeys) {
@@ -396,7 +396,7 @@ function membersOf(object: JsonObject, name: String): JsonObject {
   if (!(value is JsonObject)) {
     throw new PlcError(`the operation's ${name} is not an object`);
   }
-  return value as JsonObject;
+  return value;
 }
 
 function stringsOf(object: JsonObject, name: String): GrowableArray<String> {
@@ -404,7 +404,7 @@ function stringsOf(object: JsonObject, name: String): GrowableArray<String> {
   if (!(value is JsonArray)) {
     throw new PlcError(`the operation's ${name} is not a list`);
   }
-  let list = value as JsonArray;
+  let list = value;
   let strings = new GrowableArray<String>();
   for (var i = 0; i < list.length; i += 1) {
     strings.push(stringOf(list[i], name));
@@ -416,5 +416,5 @@ function stringOf(value: JsonValue, what: String): String {
   if (!(value is String)) {
     throw new PlcError(`${what} is not a string`);
   }
-  return value as String;
+  return value;
 }

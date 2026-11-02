@@ -88,7 +88,7 @@ function approveRelease(args: ParsedArgs, session: Session, host: Host, given: S
   if (waiting == null) {
     throw new PublishError(`no release ${version} of ${label} is waiting for approval`);
   }
-  let entry = waiting as JsonObject;
+  let entry = waiting;
   describeRelease(entry, label);
   let mine = listed(entry['approvedBy'] as JsonArray, session.did);
   if (!args.getFlag('yes')) {
@@ -200,7 +200,7 @@ function describeChange(session: Session, host: Host, account: String, given: St
   }
   let record = fromJson(change['record']);
   if (collection == POLICY_TYPE) {
-    let was = if (held == null) new Policy() else Policy.fromValue(fromJson((held as Held).value));
+    let was = if (held == null) new Policy() else Policy.fromValue(fromJson(held.value));
     console.log(indent(`was: ${describePolicy(given, was)}`));
     console.log(indent(`now: ${describePolicy(given, Policy.fromValue(record))}`));
   } else if (collection == MAINTAINERS_TYPE) {
@@ -212,8 +212,8 @@ function describeChange(session: Session, host: Host, account: String, given: St
       known.push(entry);
     }
     let next = Maintainers.fromValue(record);
-    let previous = if (held == null) null else Maintainers.fromValue(fromJson((held as Held).value));
-    let was = maintainerLines(if (previous == null) [] else previous.maintainers, known);
+    let previous = if (held == null) null else Maintainers.fromValue(fromJson(held.value));
+    let was = maintainerLines(previous?.maintainers ?? [], known);
     let now = maintainerLines(next.maintainers, known);
     printDifference(was, now);
     if (previous != null) {
@@ -224,13 +224,13 @@ function describeChange(session: Session, host: Host, account: String, given: St
   } else {
     printDifference(entryLines(before), entryLines(after));
     if (held != null && collection == MEMBERS_TYPE) {
-      let previous = Members.fromValue(fromJson((held as Held).value));
+      let previous = Members.fromValue(fromJson(held.value));
       let next = Members.fromValue(record);
       printThreshold('ownerThreshold', previous.ownerThreshold, next.ownerThreshold);
       printThreshold('adminThreshold', previous.adminThreshold, next.adminThreshold);
     }
     if (held != null && collection == TEAM_TYPE) {
-      printThreshold('threshold', Team.fromValue(fromJson((held as Held).value)).threshold,
+      printThreshold('threshold', Team.fromValue(fromJson(held.value)).threshold,
           Team.fromValue(record).threshold);
     }
   }

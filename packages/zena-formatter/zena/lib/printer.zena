@@ -23,7 +23,7 @@ import { printDocToString, PrintOptions } from './doc-printer.zena';
 import { CommentMap, attachComments } from 'zena-compiler:comment-attachment';
 
 var currentCommentMap = new CommentMap();
-var currentSource: String = '';
+var currentSource = '';
 
 // ============================================================================
 // Blank-line and source-span helpers
@@ -65,21 +65,15 @@ function hasBlankLineBetween(source: String, from: i32, to: i32): boolean {
 
 function getNodeStart(node: Node): i32 {
   let loc = node.loc;
-  if (loc != null) {
-    return loc.start;
-  }
-  return 0 - 1;
+  return loc?.start ?? 0 - 1;
 }
 
 function getNodeEnd(node: Node): i32 {
   let loc = node.loc;
-  if (loc != null) {
-    return loc.end;
-  }
-  return 0 - 1;
+  return loc?.end ?? 0 - 1;
 }
 
-function getEffectiveNodeStart(node: Node): i32 {
+function getEffectiveNodeStart(node: Node) {
   let leading = currentCommentMap.getLeading(node);
   if (leading != null && leading.length > 0) {
     return leading[0].start;
@@ -87,7 +81,7 @@ function getEffectiveNodeStart(node: Node): i32 {
   return getNodeStart(node);
 }
 
-function getEffectiveNodeEnd(node: Node): i32 {
+function getEffectiveNodeEnd(node: Node) {
   let trailing = currentCommentMap.getTrailing(node);
   if (trailing != null && trailing.length > 0) {
     return trailing[trailing.length - 1].end;
@@ -262,9 +256,7 @@ function withComments(node: Node, doc: Doc) {
   // last node in a block or module) start on a new line.
   if (trailing != null) {
     var prevEnd = getNodeEnd(node);
-    var j = 0;
-    while (j < trailing.length) {
-      let c = trailing[j];
+    for (let c in trailing) {
       if (prevEnd >= 0 && hasNewlineBetween(currentSource, prevEnd, c.start)) {
         parts.push(hardline);
         if (hasBlankLineBetween(currentSource, prevEnd, c.start)) {
@@ -275,7 +267,6 @@ function withComments(node: Node, doc: Doc) {
         parts.push(lineSuffix(concat(docs2(text(' '), printComment(c)))));
       }
       prevEnd = c.end;
-      j += 1;
     }
   }
 

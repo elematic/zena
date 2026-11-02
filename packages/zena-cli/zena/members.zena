@@ -166,7 +166,7 @@ export function scopePolicyCommand(args: ParsedArgs, options: Options): i32 {
     let host = findHost(args);
     let org = scopeDid(host, scope);
     let held = current(org, POLICY_TYPE, 'self');
-    let policy = if (held == null) new Policy() else Policy.fromValue(fromJson((held as Held).value));
+    let policy = if (held == null) new Policy() else Policy.fromValue(fromJson(held.value));
     let minimum = countOption(args, 'minimum-threshold', 1);
     let minimumHumans = countOption(args, 'minimum-humans', 0);
     let threshold = countOption(args, 'default-threshold', 1);
@@ -205,7 +205,7 @@ export function scopePolicyCommand(args: ParsedArgs, options: Options): i32 {
     input['organization'] = org;
     input['policy'] = toJson(policy.toValue());
     if (held != null) {
-      input['swapRecord'] = (held as Held).cid;
+      input['swapRecord'] = held.cid;
     }
     if (write(session, host, PUT_POLICY, input, `${scope}'s policy`, `@${scope}`)) {
       console.log(describePolicy(scope, policy));
@@ -296,7 +296,7 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
       if (held == null) {
         throw new PublishError(`${scope} has no team ${name}`);
       }
-      let found = held as Held;
+      let found = held;
       let team = Team.fromValue(fromJson(found.value));
       if (sub == 'delete') {
         let input = new JsonObject();
@@ -324,7 +324,7 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
         let did = personDid(person);
         let before = allEntries(session, host, org, name, team.members, `${scope}/${name}`);
         let entries = withoutPerson(before, did);
-        var fresh = new GrowableArray<MemberEntry>();
+        let fresh = new GrowableArray<MemberEntry>();
         if (sub == 'add') {
           let added = newEntry(did, roleOf(args, MEMBER, [MEMBER, MAINTAINER]));
           entries.push(added);
@@ -365,7 +365,7 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
     if (held == null) {
       throw new PublishError(`${pkg} has no maintainers record`);
     }
-    let found = held as Held;
+    let found = held;
     let record = Maintainers.fromValue(fromJson(found.value));
     let commitments = new GrowableArray<Cid>();
     for (let maintainer in record.maintainers) {
@@ -536,7 +536,7 @@ function putTeam(session: Session, host: Host, scope: String, org: String, name:
   input['team'] = toJson(team.toValue());
   input['entries'] = entriesJson(fresh);
   if (swap != null) {
-    input['swapRecord'] = swap as String;
+    input['swapRecord'] = swap;
   }
   return write(session, host, PUT_TEAM, input, `the team ${scope}/${name}`, `@${scope}`);
 }
@@ -562,7 +562,7 @@ function approveAsOf(args: ParsedArgs, pkg: String): String {
   let manifest = workspace.packageAt(userCwd().value).manifest;
   let scope = manifest.scope ?? workspace.root.manifest.scope;
   if (manifest.did == pkg && scope != null && manifest.name != null) {
-    return `@${scope as String}/${manifest.name as String}`;
+    return `@${scope}/${manifest.name as String}`;
   }
   return pkg;
 }
@@ -632,7 +632,7 @@ export function scopeDid(host: Host, scope: String): String {
   if (org == null) {
     throw new PublishError(`${host.origin} has no scope ${scope}`);
   }
-  return org as String;
+  return org;
 }
 
 /** A person's DID, from a DID or a handle. */
@@ -644,7 +644,7 @@ function personDid(person: String): String {
   if (did == null) {
     throw new PublishError(`${person} does not resolve to a DID`);
   }
-  return did as String;
+  return did;
 }
 
 /**
@@ -672,7 +672,7 @@ export function namedPackage(host: Host, given: String): String {
   if (did == null) {
     throw new PublishError(`${given} does not resolve to a package`);
   }
-  return did as String;
+  return did;
 }
 
 /** The DID of the package in the current directory, from its manifest. */
@@ -706,7 +706,7 @@ function required(held: Held | null, missing: String): Held {
   if (held == null) {
     throw new PublishError(missing);
   }
-  return held as Held;
+  return held;
 }
 
 /**
@@ -727,10 +727,11 @@ function allEntries(session: Session, host: Host, account: String, team: String 
 /** The entries behind the record's commitments that the caller may see, from the host. */
 export function visibleEntries(session: Session, host: Host, account: String, team: String | null)
     : GrowableArray<MemberEntry> {
-  var params: Array<(String, String)> = [('account', account)];
-  if (team != null) {
-    params = [('account', account), ('team', team as String)];
-  }
+  let params: Array<(String, String)> = if (team != null) {
+    [('account', account), ('team', team)]
+  } else {
+    [('account', account)]
+  };
   let answer = runFuture(hostClient(session, host, GET_ENTRIES)
     .query(GET_ENTRIES, params)) as JsonObject;
   let list = answer['entries'] as JsonArray;

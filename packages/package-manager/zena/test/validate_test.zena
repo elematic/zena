@@ -19,16 +19,16 @@ let PACKAGE = 'did:plc:routerrouterrouterrouter';
 let JSON_DID = 'did:plc:jsonjsonjsonjsonjsonjson';
 
 /** An archive of `manifest` and one source file. */
-function archiveOf(manifest: String): FixedArray<u8> {
+function archiveOf(manifest: String) {
   let files = new HashMap<String, FixedArray<u8>>();
-  files['zena-package.json'] = manifest.toBytes() as FixedArray<u8>;
-  files['router.zena'] = 'export let x = 1;\n'.toBytes() as FixedArray<u8>;
+  files['zena-package.json'] = manifest.toBytes();
+  files['router.zena'] = 'export let x = 1;\n'.toBytes();
   return packSource(files);
 }
 
 /** A release of `version` whose source artifact is `source`. */
 function releaseOf(version: String, source: FixedArray<u8>, dependencies: Array<Dependency>,
-    mimeType: String = SOURCE_MIME_TYPE): Release {
+    mimeType: String = SOURCE_MIME_TYPE) {
   let blob = new BlobRef(Cid.forBlob(source), mimeType, source.length as i64);
   let deps = new FixedArray<Dependency>(dependencies.length, new Dependency('', Version.parse('0.0.0'), ''));
   for (var i = 0; i < dependencies.length; i += 1) {
@@ -47,7 +47,7 @@ function json(version: String) {
 let GOOD = `{"name": "router", "did": "${PACKAGE}", "version": "1.4.2", "dependencies": {"json": {"did": "${JSON_DID}", "version": "2.0.0"}}}`;
 
 /** The problems as one line each, for a failure message. */
-function lines(problems: Array<String>): String {
+function lines(problems: Array<String>) {
   var text = '';
   for (let problem in problems) {
     text = `${text}\n${problem}`;
@@ -91,11 +91,11 @@ export let tests = suite('package-manager:validate', () => {
 
   test('publishes only the files the manifest publishes, and every file its exports name', (ctx) => {
     let manifest = (extra: String) => `{"name": "router", "version": "1.4.2", "description": "Routes requests", "license": "MIT", ${extra}"dependencies": {"json": {"did": "${JSON_DID}", "version": "2.0.0"}}}`;
-    let archive = (manifestText: String, paths: Array<String>): FixedArray<u8> => {
+    let archive = (manifestText: String, paths: Array<String>) => {
       let files = new HashMap<String, FixedArray<u8>>();
-      files['zena-package.json'] = manifestText.toBytes() as FixedArray<u8>;
+      files['zena-package.json'] = manifestText.toBytes();
       for (let path in paths) {
-        files[path] = 'export let x = 1;\n'.toBytes() as FixedArray<u8>;
+        files[path] = 'export let x = 1;\n'.toBytes();
       }
       return packSource(files);
     };
@@ -141,11 +141,11 @@ export let tests = suite('package-manager:validate', () => {
         'cannot be read'));
 
     let files = new HashMap<String, FixedArray<u8>>();
-    files['router.zena'] = 'export let x = 1;\n'.toBytes() as FixedArray<u8>;
+    files['router.zena'] = 'export let x = 1;\n'.toBytes();
     let bare = packSource(files);
     isTrue(has(checkSource(releaseOf('1.4.2', bare, new GrowableArray<Dependency>()), PACKAGE, bare),
         'has no zena-package.json'));
-    let junk = 'not a CAR file'.toBytes() as FixedArray<u8>;
+    let junk = 'not a CAR file'.toBytes();
     isTrue(has(checkSource(releaseOf('1.4.2', junk, new GrowableArray<Dependency>()), PACKAGE, junk), 'does not unpack'));
   });
 

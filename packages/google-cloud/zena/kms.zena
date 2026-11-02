@@ -86,7 +86,7 @@ export final class CloudKms {
     if (!(signature is String)) {
       throw new KmsError(0, 'Cloud KMS answered asymmetricSign without a signature');
     }
-    return base64.decode(signature as String);
+    return base64.decode(signature);
   }
 
   /**
@@ -104,7 +104,7 @@ export final class CloudKms {
     if (!(ciphertext is String)) {
       throw new KmsError(0, 'Cloud KMS answered encrypt without a ciphertext');
     }
-    return base64.decode(ciphertext as String);
+    return base64.decode(ciphertext);
   }
 
   /**
@@ -120,7 +120,7 @@ export final class CloudKms {
     let answer = jsonObject(await checked(response, 'decrypting'));
     let plaintext = answer['plaintext'];
     // An empty plaintext comes back without the member.
-    return if (plaintext is String) base64.decode(plaintext as String) else new FixedArray<u8>(0, 0 as u8);
+    return if (plaintext is String) base64.decode(plaintext) else new FixedArray<u8>(0, 0 as u8);
   }
 
   /** The key version's public key. */
@@ -132,7 +132,7 @@ export final class CloudKms {
     if (!(algorithm is String) || !(pem is String)) {
       throw new KmsError(0, 'Cloud KMS answered getPublicKey without an algorithm and a PEM');
     }
-    return new KmsPublicKey(algorithm as String, pem as String);
+    return new KmsPublicKey(algorithm, pem);
   }
 
   async #call(method: String, path: String, body: String | null): Future<Response> {
@@ -187,7 +187,7 @@ export function ecPointFromPem(pem: String): FixedArray<u8> {
 }
 
 function jsonObject(text: String): JsonObject {
-  let json: JsonValue = try {
+  let json = try {
     parseJson(text)
   } catch (e) {
     null
@@ -195,7 +195,7 @@ function jsonObject(text: String): JsonObject {
   if (!(json is JsonObject)) {
     throw new KmsError(0, 'Cloud KMS answered with something other than a JSON object');
   }
-  return json as JsonObject;
+  return json;
 }
 
 /** Returns `response`'s body text when it is a success, or throws `KmsError` naming what `doing` was. */
@@ -205,17 +205,17 @@ async function checked(response: Response, doing: String): Future<String> {
     return text;
   }
   var message = text;
-  let json: JsonValue = try {
+  let json = try {
     parseJson(text)
   } catch (e) {
     null
   };
   if (json is JsonObject) {
-    let error = (json as JsonObject)['error'];
+    let error = json['error'];
     if (error is JsonObject) {
-      let detail = (error as JsonObject)['message'];
+      let detail = error['message'];
       if (detail is String) {
-        message = detail as String;
+        message = detail;
       }
     }
   }
