@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 1
+// @skip: a closure that returns a case class on one path and its parameter on another traps with "cast failure" when its return type is inferred (elematic/zena#794)
+//
+// The closure's return type is inferred from its returns. Returning
+// `new Circle(1)` on one path and the `Shape` parameter on another
+// must infer `Shape`, and the contextual `(m: Shape) => Shape` says
+// so too; an annotation `: Shape` on the closure is the workaround.
+
+sealed class Shape {
+  case Circle(r: i32)
+  case Square(s: i32)
+}
+
+function pick(s: Shape, f: (m: Shape) => Shape): Shape {
+  return f(s);
+}
+
+export function main(): i32 {
+  let r = pick(new Square(2), (m) => {
+    if (m is Circle) {
+      return new Circle(1);
+    }
+    return m;
+  });
+  return if (r is Square) 1 else 0;
+}

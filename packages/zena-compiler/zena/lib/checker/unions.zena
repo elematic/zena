@@ -526,54 +526,51 @@ export function isNullableType(t: Type): boolean {
 }
 
 /**
- * Remove null from a type. For unions, filters out NullType members.
- * Returns the narrowed type.
+ * `t` with each of its members passed through `narrow`, which answers
+ * what the member can still be: itself, something narrower, or `never`
+ * to drop it. A union (through aliases) is rebuilt from what is left —
+ * `never` when nothing is, the one member when one is; anything else
+ * is one member and takes `narrow`'s answer for itself. Every
+ * subtraction a narrowing or a match arm performs is one of these.
+ *
+ * A callback annotates its return type: one that returns `never` on
+ * one path and its member on another is otherwise typed by its first
+ * return alone (elematic/zena#794).
  */
-export function subtractNullFromType(t: Type): Type {
-  match (unwrapAliases(t)) {
-    case UnionT as u: {
-      let remaining = new Array<Type>();
-      let {types} = u;
-      var i = 0;
-      while (i < types.length) {
-        if (types[i] is NullType) {  } else { remaining.push(types[i]); }
-        i = i + 1;
+export function narrowUnion(t: Type, narrow: (member: Type) => Type): Type {
+  if (let UnionT {types} = unwrapAliases(t)) {
+    let remaining = new Array<Type>();
+    for (let member in types) {
+      let kept = narrow(member);
+      if (!(kept is NeverType)) {
+        remaining.push(kept);
       }
-      if (remaining.length == 0) { return new NeverType(); }
-      if (remaining.length == 1) { return remaining[0]; }
-      return new UnionT(remaining);
     }
-    case NullType: { return new NeverType(); }
-    case _: { return t; }
+    if (remaining.length == 0) { return new NeverType(); }
+    if (remaining.length == 1) { return remaining[0]; }
+    return new UnionT(remaining);
   }
+  return narrow(t);
+}
+
+/** `t` without `null`: `never` for `null` itself. */
+export function subtractNullFromType(t: Type): Type {
+  return narrowUnion(t, (member: Type): Type => {
+    if (unwrapAliases(member) is NullType) { return new NeverType(); }
+    return member;
+  });
 }
 
 /**
- * Subtract a specific type from a union type.
- * For example, subtractTypeFromUnion(Cat | Fish, Cat) => Fish.
- * For non-union types, returns never if equal, or the original type unchanged.
+ * `original` without the member equal to `toRemove`:
+ * `subtractTypeFromUnion(Cat | Fish, Cat)` is `Fish`, and a non-union
+ * equal to `toRemove` is `never`.
  */
 export function subtractTypeFromUnion(original: Type, toRemove: Type): Type {
-  match (unwrapAliases(original)) {
-    case UnionT as u: {
-      let remaining = new Array<Type>();
-      let {types} = u;
-      var i = 0;
-      while (i < types.length) {
-        if (!typesEqual(types[i], toRemove)) {
-          remaining.push(types[i]);
-        }
-        i = i + 1;
-      }
-      if (remaining.length == 0) { return new NeverType(); }
-      if (remaining.length == 1) { return remaining[0]; }
-      return new UnionT(remaining);
-    }
-    case _: {
-      if (typesEqual(original, toRemove)) { return new NeverType(); }
-      return original;
-    }
-  }
+  return narrowUnion(original, (member: Type): Type => {
+    if (typesEqual(member, toRemove)) { return new NeverType(); }
+    return member;
+  });
 }
 
 export function unwrapNullableForMemberLookup(t: Type): Type | null {
