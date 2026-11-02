@@ -194,9 +194,11 @@ parameter.
 
 ## Verification workflow
 
-Run from `packages/zena-compiler/`. When editing anything under
-`zena/`, wireit's staleness tracking and zena-cli's compile cache can
-both serve stale results: `rm -rf .wireit ../../.zena/cache` first.
+Run from `packages/zena-compiler/`. Wireit reruns what an edit under
+`zena/` affects; if it serves a stale result, a script is missing an
+input, so fix its config (AGENTS.md, "Build System") rather than deleting
+`.wireit`. To compile a probe without zena-cli's compile cache, use
+`zena-cli run --no-cache`.
 
 ```bash
 npm test                       # unit + syntax + semantics + execution + interop + fixpoint

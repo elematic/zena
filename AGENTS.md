@@ -92,6 +92,8 @@ Key things that differ from TypeScript:
 - for/in loops iterate on iterables and iterators: `for (let item in items)`.
   They are like for/of loops in TypeScript.
 - **No `++`/`--`** — use `+= 1` instead.
+- **`/` always gives a float**, even on two `i32`s. Integer division is
+  `div(a, b)` from `zena:math` (overloads for `i32`, `i64`, `u32`, `u64`).
 - **Sound type system** — there is no `any`, and no escape hatch from checking.
   `anyref` is the top type for REFERENCES only; primitives are never boxed
   implicitly, so putting one behind a reference means writing `new Box<T>(x)`.
@@ -175,6 +177,10 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - [packages/workspace-hack/CONTEXT.md](packages/workspace-hack/CONTEXT.md) — the generated crate that gives the Rust crates one set of dependency features
 
 ### Packages & Directories
+
+A new directory under `packages/` gets a `README.md`, a `CONTEXT.md`, a
+`CLAUDE.md` containing `@./CONTEXT.md`, and entries in both lists here and
+in the root `CLAUDE.md`.
 
 - **`packages/zena-compiler`**: The self-hosted compiler (`@zena-lang/zena-compiler`). The checked-in bootstrap lives in `bootstrap/`.
 - **`packages/stdlib`**: Standard library (`@zena-lang/stdlib`).
@@ -297,9 +303,11 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
 - **`run <file.zena|file.wasm> [-- args...]`**: Compile (through the `.zena`
   compile cache) and run a source file, or run a compiled `.wasm` module.
   Supports `--dir HOST[::GUEST]`, `--allow-spawn`, `--allow-extensions`,
-  `--invoke <fn>`, `--no-cache`, and `--time`.
+  `--invoke <fn>`, `--no-cache`, and `--time`. These go before the file:
+  everything after it is passed to the program.
 - **`test [paths/globs...]`**: Discover and run `*_test.zena` files in parallel.
-  Supports `-f` / `--filter <substring>`, `--exclude <glob>`, and `--single`.
+  Supports `-f` / `--filter <substring>` (a substring of the test file's
+  path, not a test's name), `--exclude <glob>`, and `--single`.
 - **`fmt [--write|-w | --check] <files...>`**: Format `.zena` files.
 - **`lint [--fix] [--only rules] [--skip rules] <paths...>`**: Report what
   the lint rules (`packages/zena-lint`) find in `.zena` files, as
@@ -400,9 +408,11 @@ with `-o main.wat`) to inspect specific bytecodes or instructions.
 The name section is **opt-in**: it is debug metadata, and for a small module
 the largest thing in it (9.9KB of a 34KB hello-world), so a plain `build`
 leaves it out. `-g` sets `CompileFileOptions.debugNames` (or `ZENA_DEBUG_NAMES=1`
-in the environment). The compiler's own builds, the test wasms, and the
-portable-execution runner all keep names, so their stack traces are always
-readable. See `docs/design/binary-size.md`.
+in the environment). The test wasms, the portable-execution runner and the
+compiler stages built with `-g` keep names, so their stack traces are
+readable. Stage A (`build:cli`, built by the bootstrap) has none; for a
+readable trap in it, rerun the `build:cli` command with `ZENA_DEBUG_NAMES=1`
+and another `-o`. See `docs/design/binary-size.md`.
 
 ## ⚠️ CRITICAL: Build System (Wireit)
 
@@ -431,6 +441,18 @@ already succeeded for the current inputs. **The cached result is correct.**
    configuration issue (missing input, output, or dependency in `package.json`).
    Check the `wireit` config before assuming the cache is stale.
 
+4. **Don't edit or add input files while a Wireit run is going** in the
+   same checkout, comments and `tests/language/` files included. A script's
+   fingerprint is taken when it starts, so the run can cache output built
+   from a mix of old and new files; the compiler also names some functions
+   by source offset, so a comment reflow changes its output. Stop the run
+   and start it again.
+
+5. **`./target/release/zena-cli` runs `packages/zena-cli/out/zena.wasm`**,
+   which only Wireit rebuilds. After switching branches or rebasing, run
+   `npm run build -w @zena-lang/zena-cli` (a no-op when it is fresh) before
+   treating a failure of the direct command as a compiler bug.
+
 ### Declaring inputs
 
 An input wider than what a script reads makes every edit to it rerun that
@@ -453,6 +475,10 @@ script and everything after it, so keep inputs to what the script reads:
 - **Generated files.** A file a script writes belongs in its `output`, and
   out of every other script's inputs. Otherwise the run after the one
   that wrote it sees a new input and rebuilds.
+- **TypeScript tests.** A package's `tsc` script compiles its tests too, so
+  its `build` depends on the builds of every package the tests import, not
+  only the ones its sources import. A missing one passes locally, where
+  the other package happens to be built, and fails in CI.
 
 ### `ERR_MODULE_NOT_FOUND` on a file whose source exists
 
@@ -540,7 +566,9 @@ npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
   It needs the `zena` command built: `npm run build -w @zena-lang/zena-cli`.
 
 - If test output is large and written to a file by the harness, use your
-  file-reading tool with line-range parameters to inspect it.
+  file-reading tool with line-range parameters to inspect it. Don't pipe
+  `npm test` into `tail`: the pipeline's exit status is `tail`'s, so a
+  failure reads as a pass. Redirect to a file and check the exit status.
 - We use the Wireit quiet logger by default, which only logs test errors.
   If you need to see full test output, use `WIREIT_LOGGER=simple`.
 
@@ -628,6 +656,8 @@ more than once:
 - Document classes with their own JSDoc comment; do not use a big comment
   section divider above each class.
 - Use template literals when concatenating more than two strings
+- Omit an empty constructor (`new();`, `new() {}`): a class whose fields
+  all have initializers gets one
 
 ### Testing
 
