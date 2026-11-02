@@ -8442,6 +8442,10 @@ export final class FunctionLowerer {
     if (objectType == null) {
       this.#bail('untyped index receiver');
     }
+    let inlineObject = nestedInlineTuple(objectType);
+    if (inlineObject != null) {
+      return this.#lowerInlineIndexRead(idx, inlineObject);
+    }
     let selfResolved = this.#resolveSelfType(objectType);
 
     if (selfResolved is InterfaceType) {
@@ -8455,6 +8459,39 @@ export final class FunctionLowerer {
 
     let receiver = this.#lowerExpression(idx.object);
     return this.#lowerIndexReadOn(idx, selfResolved, receiver);
+  }
+
+  /**
+   * `f()[k]` on an inline result (#155): the value in position `k`'s
+   * slot, or that position boxed when it is itself an inline tuple. The
+   * other positions are lowered and dropped, so nothing is boxed.
+   */
+  #lowerInlineIndexRead(idx: IndexExpression, shape: InlineTupleType): i32 {
+    let source = this.#lowerMultiSource(idx.object);
+    if (!(idx.index is NumberLiteral)) {
+      return this.#bailValue('dynamic inline tuple index');
+    }
+    let k = if (let (true, n) = parseI32((idx.index as NumberLiteral).raw)) n else -1;
+    if (k < 0 || k >= shape.elementTypes.length) {
+      return this.#bailValue('inline tuple index literal');
+    }
+    let path = i32ToString(k);
+    let inner = nestedInlineTuple(shape.elementTypes[k]);
+    if (inner != null) {
+      return boxInlineAt(this.#cx(), source, path, inner, null);
+    }
+    let value = if (source.layout != null) {
+      source.valueAt(this.#cx(), path, null)
+    } else if (k < source.values.length) {
+      source.values[k]
+    } else {
+      NO_VALUE
+    };
+    if (value == NO_VALUE) {
+      // A zero-width element has no slot, and no value.
+      return NO_VALUE;
+    }
+    return this.#reassertNonNull(value, this.#exprValType(idx));
   }
 
   /**

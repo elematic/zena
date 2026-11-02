@@ -489,6 +489,30 @@ export let tests = suite('WatGenerator', () => {
         'the WAT emitter should spell each SIMD shape the way wasm text does');
   });
 
+  // `x as (false, i32)` on a union of tuples tests the literal in field 0,
+  // since the members share a struct: both are two `i32`s. A value whose
+  // literal does not match traps through a cast to `nullref`, which fails
+  // for any value but null, so the trap reads as a cast failure (#600)
+  // rather than the bare `unreachable` it was. Both trap; only the
+  // property says which.
+  test('a failed cast to a tuple union member traps as a cast', (ctx) => {
+    let result = compileAndGenerateWat(`
+      type R = (true, i32) | (false, i32);
+      function pick(ok: boolean): R {
+        if (ok) {
+          return (true, 1);
+        }
+        return (false, 2);
+      }
+      export let main = (): i32 => {
+        let y = pick(true) as (false, i32);
+        return y[1];
+      };
+    `);
+    assertFunctionUses(result, '$main', growable<String>(['ref.cast (ref null none)']),
+        'a failed tag test should trap through a cast');
+  });
+
   // The shaped vector types (`I32x4` and friends in `zena:simd`) are
   // extension classes over `v128`, and their whole value proposition is
   // that the shape is a compile-time view: no wrapper object, so no
