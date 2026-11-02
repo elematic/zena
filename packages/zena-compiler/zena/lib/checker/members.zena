@@ -9,12 +9,7 @@ import {
   isSymbolFieldDeclaration, syntacticMemberName
 } from '../ast.zena';
 import {
-  ArrayType, ClassType, EnumType, ErrorType, FieldInfo, FunctionType,
-  InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType,
-  RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, InlineTupleType as InlineTupleT, Type,
-  TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType,
-  baseType, instantiateClassType, isIntegerType, ownershipHandleInner,
-  ownershipHandleName, typeCarriesOwner, typeToString
+  ArrayType, ClassType, EnumType, ErrorType, FieldInfo, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType, OwnershipHandle, RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, isAffineValue, isIntegerType, ownershipHandleInner, ownershipHandleOf, typeCarriesOwner, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { noSymbolId } from '../scope/symbol.zena';
@@ -26,12 +21,12 @@ import { substituteThisType, substituteTypeParams } from './generics.zena';
 import { getMemberPathKeyFromAccess } from './narrowing.zena';
 import { overloadCandidates, collectApplicableOperatorOverloads, selectMostSpecificIndex } from './overloads.zena';
 import {
-  borrowWrapFieldRead, fieldReadsAsTake, isAffineValue, memberConsumesReceiver,
+  borrowWrapFieldRead, fieldReadsAsTake, memberConsumesReceiver,
   rejectConsumingThroughNonOwner, rejectFirstClassOnlyAccess, tupleElementRead
 } from './ownership.zena';
 import { argumentAdaptsToParameter } from './literals.zena';
 import { isAssignableTo, isBoxablePrimitive, typesEqual } from './relations.zena';
-import { createUnionType, stripNull, subtractNullFromType, unwrapAliases } from './unions.zena';
+import { createUnionType, stripNull, subtractNullFromType } from './unions.zena';
 
 /**
  * A parent's member re-typed for the subtype that inherits it.
@@ -547,7 +542,7 @@ export function checkMemberExpression(
   // the binding: the call ends the receiver's life on this path. The
   // move is recorded at the access — the caller-side counterpart of
   // rejectConsumingThroughNonOwner's callee-side gate.
-  if (object is Identifier && ownershipHandleName(objectType) == "Own" &&
+  if (object is Identifier && ownershipHandleOf(objectType) == OwnershipHandle.Own &&
       memberConsumesReceiver(objectType, propName)) {
     let recvSym = ctx.model.resolve(object);
     if (recvSym != null) {
@@ -556,7 +551,7 @@ export function checkMemberExpression(
   }
   // The same through a consuming method's own `this`: calling another
   // consuming method on it, its dispose included, ends its life here.
-  if (object is ThisExpression && ownershipHandleName(objectType) == "Own" &&
+  if (object is ThisExpression && ownershipHandleOf(objectType) == OwnershipHandle.Own &&
       memberConsumesReceiver(objectType, propName)) {
     let rs = ctx.receiverSymbol;
     if (rs != null) {

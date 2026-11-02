@@ -6,13 +6,7 @@ import {
   AccessorDeclaration, BlockStatement, CaseClassParam, ClassDeclaration, Decorator, Expression, FieldDefinition, FieldInitializer, Identifier, MethodDefinition, MethodSignature, MixinDeclaration, Node, SealedVariant, SetterInfo, SourceLocation, SuperInitializer, TypeAnnotation, isBuiltinDecoratorName, isSymbolFieldDeclaration, syntacticMemberName
 } from '../ast.zena';
 import {
-  BooleanType, ClassType, DecoratedField, ErrorType, FieldInfo,
-  FunctionDeclInfo, FunctionType, I32Type, InterfaceType, MethodInfo,
-  MixinType, ReceiverKind, Type, TypeParameterType, VoidType,
-  instantiateClassType, isScopedType, ownershipHandleInner,
-  ownershipHandleName, requiredParameterCount, scopedInner,
-  mentionsTypeParams, scopedFieldNames, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner,
-  typeToString
+  BooleanType, ClassType, DecoratedField, ErrorType, FieldInfo, FunctionDeclInfo, FunctionType, I32Type, InterfaceType, MethodInfo, MixinType, OwnershipHandle, ReceiverKind, Type, TypeParameterType, VoidType, instantiateClassType, isNullableType, isScopedType, mentionsTypeParams, ownershipHandleInner, ownershipHandleOf, requiredParameterCount, scopedFieldNames, scopedInner, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
@@ -49,7 +43,7 @@ import {
 } from './protocols.zena';
 import { isAssignableTo, typesEqual } from './relations.zena';
 import { checkStatement } from './statements.zena';
-import { isNullableType, widenType } from './unions.zena';
+import { widenType } from './unions.zena';
 
 /**
  * Register a class declaration's type identity, flags, superclass,
@@ -1157,8 +1151,6 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
           if (members.has(fieldName) && members[fieldName].isAbstract) {
             // It replaces the abstract field.
           }
-
-
 
           var actualFieldName = fieldName;
           var hasPrivateSetter = false;
@@ -2422,7 +2414,7 @@ export function checkClassBodies(
         continue;
       }
       let fCore = soleNonNullMember(fType) ?? fType;
-      if (ownershipHandleName(fCore) != "Own") {
+      if (ownershipHandleOf(fCore) != OwnershipHandle.Own) {
         ctx.error(
           "Field '" + fName + "' carries an owner in a shape the field " +
           "rules do not support yet. Declare it as 'Own<R>' or " +
@@ -2502,7 +2494,6 @@ export function checkClassBodies(
       }
     }
   }
-
 
   // Check for unimplemented abstract fields in non-abstract classes.
   if (!cd.isAbstract && !cd.isSealed) {

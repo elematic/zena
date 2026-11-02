@@ -12,7 +12,7 @@ import {
   getMemberPropertyName
 } from '../ast.zena';
 import {
-  ArrayType, ClassType, ErrorType, FieldInfo, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType, ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, instantiateTypeAliasType, isAffineContainer, isOwnershipWrapper, isRestrictedParam, isScopedClassParam, isScopedType, mentionsTypeParams, ownershipHandleInner, ownershipHandleName, releasableContainer, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped, typeContainsSecondClass, typeToString
+  ArrayType, ClassType, ErrorType, FieldInfo, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MethodInfo, NullType, OwnershipHandle, ReceiverKind, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, affineContainerMembers, instantiateTypeAliasType, isAffineTuple, isAffineValue, isNullableType, isOwnershipWrapper, isRestrictedParam, isScopedClassParam, isScopedType, isScopedValueType, isWithDefaultType, mentionsTypeParams, ownershipHandleInner, ownershipHandleOf, releasableContainer, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner, typeContainsConcreteSecondClass, typeContainsScoped, typeContainsSecondClass, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
@@ -21,10 +21,7 @@ import { CheckerContext } from './context.zena';
 import { selfTypeOfClass } from './generics.zena';
 import { displayMemberName } from './members.zena';
 import { getMemberPathKey } from './narrowing.zena';
-import {
-  createUnionType, isNullableType, unwrapAliases,
-  unwrapNullableForMemberLookup
-} from './unions.zena';
+import { createUnionType, unwrapNullableForMemberLookup } from './unions.zena';
 
 /**
  * Resolve a type annotation AST node to a Type.
@@ -117,7 +114,7 @@ export function fieldReadsAsTake(declared: Type): boolean {
 export function borrowWrapFieldRead(ctx: CheckerContext, t: Type): Type {
   let nonNull = soleNonNullMember(t);
   let core = nonNull ?? t;
-  if (ownershipHandleName(core) != "Own") { return t; }
+  if (ownershipHandleOf(core) != OwnershipHandle.Own) { return t; }
   let inner = ownershipHandleInner(core);
   if (inner == null) { return t; }
   let borrow = ctx.tryResolveWellKnownType(WellKnown.BorrowAlias);
@@ -160,64 +157,6 @@ export function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocati
     return new ErrorType();
   }
   return borrowWrapFieldRead(ctx, t);
-}
-
-/**
- * Whether a binding of type `t` is move-checked like an owner: a tuple
- * holding an owner (#495), or an instance of a container of one, such
- * as a `Future<Own<R>>`, which its `await` consumes, or a union with
- * such a member, such as an `Option<Own<R>>`.
- */
-export function isAffineValue(t: Type): boolean {
-  if (isAffineTuple(t)) { return true; }
-  return affineContainerMembers(t).length > 0;
-}
-
-/**
- * The members of `t` that are containers of an owner (isAffineContainer):
- * `t` itself, or each such member of a union, nullable or not.
- */
-function affineContainerMembers(t: Type): GrowableArray<ClassType> {
-  let found = new Array<ClassType>();
-  let resolved = unwrapAliases(soleNonNullMember(t) ?? t);
-  let members = if (let UnionT {types} = resolved) types else growable<Type>([resolved]);
-  for (let member in members) {
-    let core = unwrapAliases(member);
-    if (core is ClassType && isAffineContainer(core)) {
-      found.push(core);
-    }
-  }
-  return found;
-}
-
-/**
- * Whether `t` is a tuple, boxed or inline, or a union of them, that holds
- * an owner. Such a tuple is affine itself (#495): building it moves the
- * owner in, a binding of it moves like an `Own<R>`, and destructuring it
- * moves the owners out.
- */
-function isAffineTuple(t: Type): boolean {
-  let resolved = unwrapAliases(t);
-  if (resolved is TupleT || resolved is InlineTupleT) {
-    return typeCarriesOwner(resolved);
-  }
-  if (let UnionT {types} = resolved) {
-    for (let member in types) {
-      if (isAffineTuple(member)) { return true; }
-    }
-  }
-  return false;
-}
-
-/**
- * A type whose values follow the scoped consumption rules — the
- * `Scoped` wrapper itself, or a `scoped T` parameter's values, which
- * the body checks at the same discipline outside an
- * `isFirstClass<T>()` branch.
- */
-export function isScopedValueType(t: Type): boolean {
-  if (isScopedType(t)) { return true; }
-  return isRestrictedParam(t);
 }
 
 /**
@@ -762,7 +701,7 @@ export function rejectConsumingThroughNonOwner(
   propName: String,
   loc: SourceLocation | null
 ): void {
-  if (ownershipHandleName(handle) == "Own") { return; }
+  if (ownershipHandleOf(handle) == OwnershipHandle.Own) { return; }
   if (!(inner is ClassType)) { return; }
   if (!inner.members.has(propName)) { return; }
   let member = inner.members[propName];
@@ -790,9 +729,9 @@ export function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramTy
     let rs = ctx.receiverSymbol;
     if (rs == null) { return; }
     let sinkCore = moveSinkCore(paramType);
-    if (ownershipHandleName(sinkCore) == "Own" || isAffineValue(sinkCore)) {
+    if (ownershipHandleOf(sinkCore) == OwnershipHandle.Own || isAffineValue(sinkCore)) {
       ctx.recordFlowMove(rs.id, "this", arg.loc);
-    } else if (ownershipHandleName(sinkCore) == "") {
+    } else if (ownershipHandleOf(sinkCore) == OwnershipHandle.None) {
       // An adaptation or an erased slot keeps the owner without a
       // recorded move, so the exit must not release it.
       ctx.markUndroppable(rs.id);
@@ -816,8 +755,8 @@ export function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramTy
     let me = arg;
     if (recordScopedFieldSinkMove(ctx, me, paramType)) { return; }
     if (me.object is ThisExpression && ctx.owningReceiver) {
-      let sink = ownershipHandleName(soleNonNullMember(paramType) ?? paramType);
-      if (sink == "Own") {
+      let sink = ownershipHandleOf(soleNonNullMember(paramType) ?? paramType);
+      if (sink == OwnershipHandle.Own) {
         let at = ctx.model.getNodeType(arg);
         if (at != null && typeCarriesOwner(at)) {
           recordOwnerFieldMove(ctx, me, arg.loc);
@@ -832,8 +771,8 @@ export function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramTy
   // An `Own<R> | null` sink takes ownership the same way `Own<R>` does;
   // null just means there may be nothing to own.
   let sinkType = moveSinkCore(paramType);
-  let handle = ownershipHandleName(sinkType);
-  if (handle == "Own" || isAffineValue(sinkType)) {
+  let handle = ownershipHandleOf(sinkType);
+  if (handle == OwnershipHandle.Own || isAffineValue(sinkType)) {
     ctx.recordFlowMove(info.id, info.name, arg.loc);
     return;
   }
@@ -847,12 +786,12 @@ export function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramTy
     }
     return;
   }
-  if (handle == "") {
+  if (handle == OwnershipHandle.None) {
     // Not a handle-typed sink. An owned argument that lands in one — an
     // interface adaptation, an erased generic slot — escapes without a
     // recorded move, so implicit drop must leave the binding alone.
     let at = ctx.model.getNodeType(arg);
-    if (at != null && (ownershipHandleName(at) == "Own" || isAffineValue(at))) {
+    if (at != null && (ownershipHandleOf(at) == OwnershipHandle.Own || isAffineValue(at))) {
       ctx.markUndroppable(info.id);
     }
   }
@@ -1059,10 +998,10 @@ function recordScopedFieldSinkMove(ctx: CheckerContext, me: MemberExpression,
   let sfi = scopedFieldInfo(ctx, me);
   if (sfi == null) { return false; }
   let sinkCore = moveSinkCore(paramType);
-  let sinkHandle = ownershipHandleName(sinkCore);
+  let sinkHandle = ownershipHandleOf(sinkCore);
   // Inside the class the sink is the open `T`; outside it, on a
   // `Slot<Own<R>>`, it is the owner itself.
-  if (sinkHandle != "Borrow" && sinkHandle != "Unmanaged" &&
+  if (sinkHandle != OwnershipHandle.Borrow && sinkHandle != OwnershipHandle.Unmanaged &&
       (typeContainsSecondClass(sinkCore) || typeCarriesOwner(sinkCore))) {
     recordScopedFieldTake(ctx, me, sfi, me.loc);
   }
@@ -1089,11 +1028,6 @@ function moveSinkCore(paramType: Type): Type {
     if (args != null && args.length == 1) { return args[0]; }
   }
   return soleNonNullMember(paramType) ?? paramType;
-}
-
-/** Whether `t` is an instance of the `WithDefault<T>` operator. */
-function isWithDefaultType(t: Type): boolean {
-  return t is TypeAliasType && t.intrinsicName == 'type.withDefault';
 }
 
 /**
@@ -1306,7 +1240,7 @@ export function ownedResourcesIn(t: Type): GrowableArray<ClassType> | null {
  */
 function collectOwnedResources(t: Type, result: GrowableArray<ClassType>): boolean {
   let handleType = soleNonNullMember(t) ?? t;
-  if (ownershipHandleName(handleType) == "Own") {
+  if (ownershipHandleOf(handleType) == OwnershipHandle.Own) {
     let innerOpt = ownershipHandleInner(handleType);
     if (innerOpt == null) { return false; }
     let found = ownedResourceClasses(innerOpt);
@@ -1527,7 +1461,7 @@ export function requireDisposable(ctx: CheckerContext, t: Type, loc: SourceLocat
     return;
   }
 
-  if (ownershipHandleName(t) == "Borrow") {
+  if (ownershipHandleOf(t) == OwnershipHandle.Borrow) {
     ctx.error(
       "'using' cannot release a 'Borrow<" + typeToString(ownershipHandleInner(t) ?? t) +
       "'>: a borrow is temporary access to something another party owns, and " +

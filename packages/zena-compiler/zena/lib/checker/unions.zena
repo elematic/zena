@@ -7,7 +7,7 @@ import {
   NullType, NumLiteralType, StringLiteralType, TupleType as TupleT, Type,
   TypeAliasType, UnionType as UnionT, UnknownType, VoidType, baseType,
   integerLiteralMagnitude, isIntegerType, isNumericType, isOwnershipWrapper,
-  ownershipHandleInner, typeToString
+  ownershipHandleInner, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown } from '../well-known.zena';
@@ -509,22 +509,6 @@ function tupleTagOf(t: Type): {type: String, value: String} | null {
   return discriminantTag(elements[0]);
 }
 
-export function isNullableType(t: Type): boolean {
-  return match (t) {
-  case NullType: true
-  case UnionT as u: {
-    var hasNull = false;
-    for (let member in u.types) {
-      if (member is NullType) {
-        hasNull = true;
-      }
-    }
-    hasNull
-  }
-  case _: false
-};
-}
-
 /**
  * `t` with each of its members passed through `narrow`, which answers
  * what the member can still be: itself, something narrower, or `never`
@@ -635,26 +619,6 @@ export function stripNull(ctx: CheckerContext, t: Type): inline (Type, boolean) 
     return (t, hasNull);
   }
   return (t, false);
-}
-
-export function unwrapAliases(t: Type): Type {
-  var curr = t;
-  var hops = 0;
-  while (curr is TypeAliasType && hops < 32) {
-    let ta = curr;
-    // Intrinsic aliases stop like distinct ones: their target is a
-    // placeholder, and an instance only survives here while its
-    // argument is still open — nothing to unwrap to yet.
-    if (ta.isDistinct || ta.intrinsicName != null || ta.resolving) { break; }
-    curr = ta.target;
-    hops += 1;
-  }
-  // An inline record has its record's structure; only where a value is
-  // held does it differ (docs/design/inline-parameters.md).
-  if (let InlineRecordType {record} = curr) {
-    return record;
-  }
-  return curr;
 }
 
 /**
