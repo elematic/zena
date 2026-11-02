@@ -9,12 +9,12 @@ which of it the loop uses now, next, or later.
 
 ## Checks
 
-| When                          | What runs                                                                        | Defined in                                              |
-| ----------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| After each edit (Claude Code) | prettier on the edited file                                                      | `.claude/hooks/post-edit`, `.claude/settings.json`      |
-| Before each push              | `npm run check`                                                                  | `scripts/check.js`, run by `scripts/git-hooks/pre-push` |
-| While iterating               | `npm run test:quick -- <path>`, `npm run test:smoke`                             | AGENTS.md, "Running Tests"                              |
-| On every pull request         | Format: `npm run format:check` and the Nix npm dependency hash; Test: `npm test` | `.github/workflows/test.yml`                            |
+| When                  | What runs                                                                        | Defined in                                                        |
+| --------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Each commit           | prettier on the staged files CI checks, staging the result                       | `scripts/format-staged.js`, run by `scripts/git-hooks/pre-commit` |
+| Before each push      | `npm run check`                                                                  | `scripts/check.js`, run by `scripts/git-hooks/pre-push`           |
+| While iterating       | `npm run test:quick -- <path>`, `npm run test:smoke`                             | AGENTS.md, "Running Tests"                                        |
+| On every pull request | Format: `npm run format:check` and the Nix npm dependency hash; Test: `npm test` | `.github/workflows/test.yml`                                      |
 
 `npm run check` looks only at what the branch changed since it left
 `origin/main`, and takes seconds:
@@ -33,39 +33,31 @@ which of it the loop uses now, next, or later.
   the repository, so the list itself stays private.
 
 Phrases that `docs/writing-style.md` asks prose to avoid are reported as
-warnings. `npm ci` installs the pre-push hook by pointing `core.hooksPath`
-at `scripts/git-hooks`; `git push --no-verify` skips it once.
+warnings. `npm ci` installs both hooks by pointing `core.hooksPath` at
+`scripts/git-hooks`; `--no-verify` skips one once. They are git hooks so
+that every agent and editor runs them, whatever harness it works in.
 
 When CI gains a check that takes seconds, add it to `scripts/check.js` too,
 limited to the changed files, so an agent finds out before pushing rather
 than twenty minutes after.
 
-### Hooks in sessions started outside the repository
+## Worktrees
 
-Claude Code reads `.claude/settings.json` only from the directory a session
-starts in. On a machine where sessions start in a directory that holds
-several worktrees, a user-level hook can find the repository of the file a
-tool edited and run that repository's hook:
+Each agent session works in its own worktree, and each zena worktree holds
+gigabytes of build output, so finished ones have to go.
+`npm run worktrees` lists them by whether removing one could lose work:
 
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {"type": "command", "command": "~/.claude/hooks/repo-hook post-edit"}
-        ]
-      }
-    ]
-  }
-}
-```
+- unmerged work: uncommitted or untracked files (listed), an open PR,
+  commits no remote branch has, or commits in no merged PR;
+- merged, recent: everything is in a merged PR or on `main`, but it was
+  used in the last 48 hours or a process is running in it;
+- merged, idle: removable. `npm run worktrees -- --remove` removes these
+  and nothing else.
 
-where `~/.claude/hooks/repo-hook` reads the hook input, takes
-`git rev-parse --show-toplevel` of the edited file's directory, and pipes
-the input to `<root>/.claude/hooks/post-edit` when that file is executable
-and the root is not the session's own project directory.
+Branches are kept, so a session that comes back to a removed worktree can
+recreate it with `git worktree add <path> <branch>`; a removed worktree had
+nothing that is not on GitHub. The weekly retro runs the list and asks the
+person before removing.
 
 ## After pushing
 

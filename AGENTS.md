@@ -655,8 +655,9 @@ All prose — design docs, commit messages, comments — follows
 
 ## Pull Requests
 
-- **Before pushing**, `npm run check` (the pre-push hook that `npm ci`
-  installs runs it): prettier on the changed files CI checks, `zena lint`
+- **Committing** formats the staged files with prettier (the pre-commit
+  hook that `npm ci` installs).
+- **Before pushing**, `npm run check` (the pre-push hook runs it): prettier on the changed files CI checks, `zena lint`
   on the changed lines of `.zena` files, type errors in changed libraries
   that their tests would not report (#510), commit subject tags, and words
   that must stay out of this public repository. `npm run check -- --fix`
@@ -681,6 +682,10 @@ All prose — design docs, commit messages, comments — follows
   waiting to be asked. Keep stacks one PR deep where you can.
 - Link the issue a PR fixes or advances (`Fixes #n`, `Part of #n`), and
   update the issue when the plan changes.
+
+- `npm run worktrees` lists this repository's worktrees by whether
+  removing one could lose work; `-- --remove` removes only merged, idle
+  ones, and only when the person asks.
 
 How these checks are maintained, and how a repeated mistake becomes a
 new check: `docs/agents/README.md`.

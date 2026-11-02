@@ -217,6 +217,7 @@ lack of a plan; `/goal` for bug-fixing runs that a test can end.
 - Of the 34 PRs whose first CI run failed from September to October 2026,
   20 failed on prettier.
 
-**Here:** the edit hook and `npm run check`. **Later:** map changed paths
+**Here:** git hooks, so every agent runs them: pre-commit formats, and
+pre-push runs `npm run check`. **Later:** map changed paths
 to the tests worth running locally (`test:quick` paths per package), in
 the check's output.

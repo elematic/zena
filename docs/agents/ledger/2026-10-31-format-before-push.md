@@ -5,8 +5,10 @@
   "Format" fix-up commits reached `main` after the Format job was split
   out. An agent memory note about it (2026-10-23) did not stop it
   recurring the next day.
-- Fix: level 2, a Claude Code hook that formats each edited file and a
-  pre-push check (`npm run check`).
+- Fix: level 2, a pre-push check (`npm run check`), and a pre-commit hook
+  that formats staged files (it replaced a Claude Code edit hook on
+  2026-11-02: other agents work here too, and sessions started in
+  `/home/dev/work` never loaded that hook).
 - Watch: Format failures on PRs' first CI runs; 4 in the week of
   2026-10-24.
 - Review: 2026-11-14
