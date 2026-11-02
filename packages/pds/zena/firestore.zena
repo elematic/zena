@@ -179,42 +179,6 @@ export final class FirestoreStorage implements Storage {
     return accountFrom(did, await this.#root.collection('accounts').doc(did).get(), this.#keys);
   }
 
-  /**
-   * Encrypts each signing key the tenant keeps in the clear, written
-   * before the store had `keys`, and returns how many it encrypted.
-   * Throws without `keys`.
-   */
-  async encryptKeys(): Future<i32> {
-    let keys = this.#keys;
-    if (keys == null) {
-      throw new Error('there is no key encryption to encrypt signing keys with');
-    }
-    var encrypted = 0;
-    let accounts = this.#root.collection('accounts');
-    for (let listed in await accounts.get()) {
-      if (bytesAt(listed, 'privateKey') == null) {
-        continue;
-      }
-      let did = listed.id;
-      let ref = listed.ref;
-      // Read again in the transaction, so that a key another run or server
-      // encrypted first is left as it is.
-      let changed = await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
-        let privateKey = bytesAt(await tx.get(ref), 'privateKey');
-        if (privateKey == null) {
-          return false;
-        }
-        let ciphertext = await keys.encrypt(did, privateKey as FixedArray<u8>);
-        tx.update(ref, new Fields().set('encryptedKey', bytesValue(ciphertext as ByteArray)).deleteField('privateKey'));
-        return true;
-      });
-      if (changed) {
-        encrypted += 1;
-      }
-    }
-    return encrypted;
-  }
-
   async accountByHandle(handle: String): Future<Account | null> {
     let snapshot = await this.#root.collection('handles').doc(handle).get();
     if (let (true, did) = snapshot.getString('did')) {

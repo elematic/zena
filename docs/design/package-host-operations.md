@@ -182,5 +182,4 @@ The three ways to remove a release differ in who does it and what stays:
 | Create a scope for an organization         | `main.zena create-scope`             |
 | Rewrite every handle's DNS records         | `main.zena sync-handles`             |
 | Rewrite the summaries and mentions indexes | `main.zena sync-indexes`             |
-| Encrypt signing keys kept in the clear     | `main.zena encrypt-keys`             |
 | Name the host's admins                     | `PDS_ADMIN_DIDS`                     |
