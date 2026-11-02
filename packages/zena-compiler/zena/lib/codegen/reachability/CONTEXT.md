@@ -39,6 +39,20 @@ graph TD
 
 - **`ReachabilityVisitor`**: Traverses reached function and method bodies, discovering global dependencies, closures, and interface usage, and queues any newly referenced virtual members.
 - **`TypeLowerer`**: Resolves structural types (`RecordType`, `TupleType`, etc.), array classes, and class/interface types to concrete WebAssembly types.
+- **A reached body is walked one of two ways.** A body the checker
+  recorded dependencies for gets `registerLiterals` and
+  `registerInstantiations`, with the records standing in for the rest;
+  any other body gets the full `discoverNodeTypes` walk. The records
+  name symbols only: they hold no instantiations, string literals or
+  interface members. So a new fact RTA collects from nodes has to be
+  collected in both walks, as `noteInterfaceDispatch` is.
+- **Look a member access up by `accessKeyOf(model, expr)`**
+  (`semantic-model.zena`). A member declared with a symbol is keyed by
+  that symbol's identity (`:act_368`), which only the checker can
+  resolve and which it records on the access node. A key built as
+  `":" + property.name` matches only the symbols the compiler invokes
+  itself (`:dispose`, `:iterator`), whose keys are fixed
+  (`SymbolType.protocolKey`).
 
 ### 3. Monomorphizer: `Specializer` (`specialization.zena`)
 
@@ -107,6 +121,14 @@ A trap when measuring this: `getTypeKeyForSpecialization` maps a bare
 `Array<T>` and `Array<erased>` are likewise one class,
 `Array_s777_erased` — which is why `containsErasedType` answers true for
 a bare type parameter too.
+
+## A Specialization Is Keyed by Representation
+
+`getTypeKeyForSpecialization` keys a type alias by its target and an
+enum by its backing type. So `C<Own<R>>`, `C<Borrow<R>>` and
+`C<Unmanaged<R>>` are one specialization of `C`, with one body. A
+decision made per specialization has to follow from the representation,
+since the alias a use was reached through is not part of the key.
 
 ## A Generic Method Exists Only Per Specialization
 

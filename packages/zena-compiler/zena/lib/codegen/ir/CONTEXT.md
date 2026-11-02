@@ -183,6 +183,11 @@ parameter.
     restarts it per module; `multi-entrypoint-codegen_test.zena` guards
     it. Any new process-global in codegen needs the same treatment, and
     a `^var ` at module scope under `codegen/` is the smell.
+- **`isValSubtype` ignores nullability.** It answers true for
+  `ref null X` against `ref X` (`wasm-module.zena`), so
+  `if (!isValSubtype(have, want)) { ref_cast }` skips the non-null
+  re-assert and emits invalid wasm. Conform a value with
+  `cx.conformToSlot` or `cx.reassertNonNull`, which handle it.
 - **Every operand load in emit goes through `#pushValue`** (except the
   copy-semantics `#copyArgs`). It enforces the stack schedule and
   throws on violations — those asserts catch real bugs; don't bypass
@@ -208,7 +213,11 @@ UPDATE_SNAPSHOTS=1 npm run test:unit         # regenerate zir WAT snapshots
 ```
 
 Snapshot tests fail on _any_ emission change — regenerate and eyeball
-the diff rather than fighting them.
+the diff rather than fighting them. A change to how symbols are
+allocated renames the `_s<id>` functions in
+`test-files/snapshots/console_target_js.snap` (the id is the class or
+interface declaration's symbol id); check that the regenerated diff
+changes only those ids.
 
 **That is exactly why a snapshot alone cannot guard a property.** The
 regression and the innocent reformat produce the same failure, and
@@ -259,6 +268,13 @@ fixed input program instead.
   fast trap probe — they exercise imports.
 - `ZENA_TEST_PARALLELISM=N` caps execution-test wasmtime fan-out (the
   default can exhaust machine memory).
+- A `zir unsupported` bail in a standard library or package function,
+  especially one naming `<error>` (`typeToString` of an error type), is
+  usually a type error the compile did not report: a dependency's
+  errors are dropped and its code generated anyway (#510).
+  `zena lint <file>` checks the library on its own and prints
+  `does not check (<first error>)`; `zena-cli build <file> -o <out>.wasm`
+  prints every error.
 
 ## Zena-authoring gotchas (recur constantly in this directory)
 

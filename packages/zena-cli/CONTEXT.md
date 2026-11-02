@@ -99,6 +99,13 @@ the `zena` command. The design is in
    - `run`, `test` and `bench` compile through a cache (`compileCached`): a
      module plus a `.deps` file listing every file the compile read, with
      modification time and size. `build` always compiles.
+   - `build:module` deletes `out/zena.wasm` before it runs (wireit's
+     default `clean`), so a build that fails leaves no CLI module, and
+     `zena-cli` cannot run until one succeeds.
+   - `ZENA_CLI_MODULE=<path>` makes the binary run another CLI module
+     (`cli_module` in `src/main.rs`). To measure a change to the module,
+     keep both builds and alternate runs between them, since machine load
+     moves wall time from one run to the next.
 
 4. **Tests**
    - `zena test` finds files with `zena:fs`'s `glob`, then starts one copy
@@ -106,7 +113,17 @@ the `zena` command. The design is in
      `zena:wasm`, at most `ZENA_TEST_PARALLELISM` (default: CPUs, up to 8)
      at a time. Each copy compiles its file in test mode and runs it with
      `zena:wasm`, with the repository as `.`, the stdlib as `/stdlib` and a
-     temporary directory as `/tmp`.
+     temporary directory as `/tmp`. Under `ZENA_PROJECT_CACHE` (which the
+     repository's `.envrc` sets) or `ZENA_LOCAL_CACHE`, that directory is
+     the repository's `.zena/tmp` (`hostDir` in `zena/run.zena`).
+   - Test mode appends a `main` that runs the file's tests unless the
+     file's text contains `export function main(`, `export let main ` or
+     `export let main=` anywhere, string literals included
+     (`compile-file.zena` in the compiler). Some of the compiler's own test
+     files hold such text in fixtures (`codegen-wat_test.zena`,
+     `zir-backend_test.zena` and a dozen more), so `zena test` and
+     `test:quick` fail on them for want of a `main` export; they run under
+     `npm run test:unit -w @zena-lang/zena-compiler`.
    - When more files are stale in the compile cache than copies run at
      once, they are compiled first, in that many copies
      (`zena test --compile <files...>`), each compiling its share in file
@@ -136,6 +153,13 @@ the `zena` command. The design is in
      only when it, its imports or the compiler change; the commands a test
      runs get caches of their own in its scratch directory. `cargo test` (`test:cargo`) covers the Rust
      crates' own unit tests.
+   - A spawn whose `cwd` does not exist fails with
+     `could not start <program>: … No such file or directory`, and the
+     missing file is the directory. `zenaIn` does not create its
+     workspace directory, so `ensureDir` it first. A spawn's `cwd` is
+     translated through the test's preopens, so a host path under `/tmp`
+     (one `mktemp` printed, say) names a directory under `.zena/tmp`
+     that does not exist.
    - `test:pds-js`, which `test` does not run because it needs the
      network, signs in to pds.js, a PDS someone else wrote, with a real
      app password (`tests/pds-js/`). `setup.mjs` fetches pds.js at the

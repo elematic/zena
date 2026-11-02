@@ -67,6 +67,13 @@ written to preserve meaning on its own, and the tests of the package being
 cleaned are the final word. `ZENA_LINT_DEBUG=1` makes some rules say
 why they declined a site.
 
+The compiler's source, and the standard library files it imports, are
+also compiled by the bootstrap (`docs/design/bootstrapping.md`), whose
+checker is older than the one lint checks with, so a rewrite lint keeps
+can still fail `build:cli`. Clean them one rule at a time
+(`--only <rule>`), running `npm run build:cli -w @zena-lang/zena-compiler`
+after each rule and `npm test` at the end.
+
 ## Adding a rule
 
 A rule is a function `(ctx: RuleContext) => void` in `zena/lib/rules/`,

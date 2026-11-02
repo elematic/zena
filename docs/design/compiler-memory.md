@@ -23,6 +23,12 @@ field type only helps in the same way. Deleting whole objects always
 pays: a two-field object that exists once per AST node is 32 bytes per
 node.
 
+An array is the header, a 4-byte length, and its elements from byte 20,
+or from byte 24 for 8-byte elements (`common_array_layout`), rounded up
+the same way: `ceil16(20 + 4n)` bytes for `n` 4-byte elements. So a
+`GrowableArray`'s default 8 slots take 64 bytes, a `HashMap`'s 16
+buckets 96, and a 6-byte string's bytes 32.
+
 A `Map` entry is a 32-byte `MapEntry` plus its share of the bucket
 array, about 37 bytes per entry; an ordered map's entry is 48 plus the
 share. A side table with an entry per node of a large program is tens
