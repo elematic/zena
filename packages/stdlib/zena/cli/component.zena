@@ -39,7 +39,7 @@ var __stdin: Stream<u8> | null = null;
  * the first call and the same stream is returned after that: standard
  * input can be read only once.
  */
-export let stdin = (): Stream<u8> => {
+export function stdin(): Stream<u8> {
   let open = __stdin;
   if (open != null) {
     return open;
@@ -47,7 +47,7 @@ export let stdin = (): Stream<u8> => {
   let (stream, done) = readViaStream();
   __stdin = stream;
   return stream;
-};
+}
 
 /**
  * Waits for standard input to have something, and returns up to `max`
@@ -72,7 +72,9 @@ export async function readStdin(max: i32 = 4096): Future<String> {
  * `main`, where the host allows a blocking wait. See
  * docs/design/async-fs-cli.md for where it does not.
  */
-export let readStdinSync = (max: i32 = 4096): String => blockOn(readStdin(max));
+export function readStdinSync(max: i32 = 4096): String {
+  return blockOn(readStdin(max));
+}
 
 // ============================================================================
 // Exit Codes
@@ -105,61 +107,63 @@ export type EnvVar = {
 };
 
 /** Every environment variable, as name and value pairs. */
-export let getEnvironment = (): Array<EnvVar> => {
+export function getEnvironment(): Array<EnvVar> {
   let result = new Array<EnvVar>();
   for (let (name, value) in witGetEnvironment()) {
     result.push({ name: name, value: value });
   }
   return result;
-};
+}
 
 /** The value of an environment variable, or null when it is unset. */
-export let getEnv = (name: String): String | null => {
+export function getEnv(name: String): String | null {
   for (let (envName, value) in witGetEnvironment()) {
     if (envName == name) {
       return value;
     }
   }
   return null;
-};
+}
 
 /** The command-line arguments, the program's name first. */
-export let getArguments = (): Array<String> => witGetArguments();
+export function getArguments(): Array<String> {
+  return witGetArguments();
+}
 
 /** The program's name: the first argument, or '' without one. */
-export let getProgramName = (): String => {
+export function getProgramName(): String {
   let args = getArguments();
   if (args.length > 0) {
     return args[0];
   }
   return '';
-};
+}
 
 /** The directory the program was started in, when the host says. */
-export let initialCwd = (): String | null => {
+export function initialCwd(): String | null {
   let cwd = getInitialCwd();
   if (cwd is Some<String>) {
     return cwd.value;
   }
   return null;
-};
+}
 
 // ============================================================================
 // Process Exit
 // ============================================================================
 
 /** End the program with an exit status. Does not return. */
-export let exit = (code: i32): void => {
+export function exit(code: i32): void {
   exitWithCode(code as u8);
-};
+}
 
 /** End the program successfully. */
-export let exitSuccess = (): void => {
+export function exitSuccess(): void {
   exitWithCode(0 as u8);
-};
+}
 
 /** End the program with the generic failure status. */
-export let exitFailure = (): void => {
+export function exitFailure(): void {
   exitWithCode(1 as u8);
-};
+}
 

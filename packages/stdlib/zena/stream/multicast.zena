@@ -42,12 +42,12 @@ export let conflate: Policy = new Conflate();
  * read, which holds the producer to the slowest such subscriber. */
 export let waits: Policy = new Waits();
 /** Lossless up to `n` queued elements, then the pump waits. */
-export let buffered = (n: i32): Policy => {
+export function buffered(n: i32): Policy {
   if (n < 1) {
     throw new Error('multicast: buffered needs capacity of at least 1');
   }
   return new Buffered(n);
-};
+}
 
 /**
  * One subscriber's delivery state, shared between the pump and that
@@ -311,9 +311,9 @@ export class Multicast<T> {
   }
 }
 
-let spaceOf = <T>(sub: SubState<T>): Future<void> => {
+function spaceOf<T>(sub: SubState<T>): Future<void> {
   return (sub.space ??= new Completer<void>()).future;
-};
+}
 
 /**
  * One subscriber's delivery loop: writes ring elements from its
@@ -326,7 +326,7 @@ let spaceOf = <T>(sub: SubState<T>): Future<void> => {
  * Elements are never bound to locals: at `T = void` a binding has no
  * wasm type (issue #435), so reads ride argument position.
  */
-let drainSub = async <T>(m: Multicast<T>, sub: SubState<T>): Future<void> => {
+async function drainSub<T>(m: Multicast<T>, sub: SubState<T>): Future<void> {
   while (true) {
     let tail = m.[tailIndex]();
     if (sub.cursor >= tail) {
@@ -361,4 +361,4 @@ let drainSub = async <T>(m: Multicast<T>, sub: SubState<T>): Future<void> => {
       }
     }
   }
-};
+}

@@ -48,13 +48,15 @@ export { SuiteOptions, runSuite } from './suite.zena';
 // ============================================================================
 
 /** Monotonic time in milliseconds: what a measurement takes. */
-export let nowMs = (): f64 => ((monotonic() as i64) as f64) / 1000000.0;
+export function nowMs(): f64 {
+  return ((monotonic() as i64) as f64) / 1000000.0;
+}
 
 /** Wall-clock milliseconds since the Unix epoch, for stamping results. */
-export let realtimeMs = (): f64 => {
+export function realtimeMs(): f64 {
   let at = wallClockNow();
   return (at.seconds as f64) * 1000.0 + (at.nanoseconds as f64) / 1000000.0;
-};
+}
 
 // ============================================================================
 // Benchmark registration and measurement
@@ -290,13 +292,15 @@ export class MachineInfo {
 
 }
 
-let tryReadFile = (path: String) => try {
+function tryReadFile(path: String) {
+  return try {
   if (isFileSync(path)) { readFileSync(path) } else { null }
 } catch (e) {
   null
 };
+}
 
-let trim = (s: String) => {
+function trim(s: String) {
   var start = 0;
   var end = s.length;
   while (start < end) {
@@ -310,17 +314,17 @@ let trim = (s: String) => {
     end -= 1;
   }
   return s.sliceBytes(start, end);
-};
+}
 
-let lineValue = (line: String) => {
+function lineValue(line: String) {
   let parts = line.split(':');
   if (parts.length < 2) {
     return '';
   }
   return trim(parts[1]);
-};
+}
 
-export let collectMachineInfo = (): MachineInfo => {
+export function collectMachineInfo(): MachineInfo {
   let info = new MachineInfo();
 
   let cpuinfo = tryReadFile('/proc/cpuinfo');
@@ -373,7 +377,7 @@ export let collectMachineInfo = (): MachineInfo => {
   }
 
   return info;
-};
+}
 
 /**
  * A variant's name and collected samples (milliseconds), for analyzing
@@ -387,7 +391,7 @@ export class NamedSamples {
   new(this.name, this.samples);
 }
 
-let computeResults = (cases: Array<NamedSamples>, horizons: Horizons): RoundResults => {
+function computeResults(cases: Array<NamedSamples>, horizons: Horizons): RoundResults {
   let results = new Array<BenchResult>();
   for (let c in cases) {
     results.push(new BenchResult(c.name, c.samples, summarize(c.samples)));
@@ -411,7 +415,7 @@ let computeResults = (cases: Array<NamedSamples>, horizons: Horizons): RoundResu
     i += 1;
   }
   return new RoundResults(results, allResolved);
-};
+}
 
 /**
  * Builds a full BenchReport from externally collected samples: the same
@@ -419,12 +423,12 @@ let computeResults = (cases: Array<NamedSamples>, horizons: Horizons): RoundResu
  * BenchRunner.run(), minus the sampling loop. durationMs is the caller's
  * total sampling time (0.0 if unknown).
  */
-export let analyze = (
+export function analyze(
   suiteName: String,
   cases: Array<NamedSamples>,
   options: BenchOptions,
   durationMs: f64,
-): BenchReport => {
+): BenchReport {
   let round = computeResults(cases, parseHorizons(options.horizons));
   return new BenchReport(
     suiteName,
@@ -434,14 +438,14 @@ export let analyze = (
     durationMs,
     round.allResolved,
     options);
-};
+}
 
 // ============================================================================
 // Formatting
 // ============================================================================
 
 /** Formats a non-huge f64 with a fixed number of decimals (no exponent). */
-export let formatFixed = (value: f64, decimals: i32): String => {
+export function formatFixed(value: f64, decimals: i32): String {
   var scale = 1.0;
   var d = 0;
   while (d < decimals) {
@@ -469,9 +473,9 @@ export let formatFixed = (value: f64, decimals: i32): String => {
     sb.append(fracStr);
   }
   return sb.toString();
-};
+}
 
-let padRight = (s: String, width: i32) => {
+function padRight(s: String, width: i32) {
   if (s.length >= width) {
     return s;
   }
@@ -483,13 +487,13 @@ let padRight = (s: String, width: i32) => {
     i += 1;
   }
   return sb.toString();
-};
+}
 
-let signedPct = (v: f64) => {
+function signedPct(v: f64) {
   return if (v >= 0.0) { `+${formatFixed(v, 1)}%` } else { formatFixed(v, 1) + '%' };
-};
+}
 
-let describeDifference = (p: PairwiseDifference) => {
+function describeDifference(p: PairwiseDifference) {
   let d = p.diff;
   if (d.absHigh < 0.0) {
     // This variant's mean CI is entirely below the other's: faster.
@@ -500,10 +504,10 @@ let describeDifference = (p: PairwiseDifference) => {
   }
   let qualifier = if (p.resolved) { 'indistinguishable from' } else { 'unsure vs' };
   return `${qualifier} ${p.vs}: ${signedPct(d.pctLow)} – ${signedPct(d.pctHigh)}`;
-};
+}
 
 /** Renders the Tachometer-style terminal report. */
-export let reportToString = (report: BenchReport): String => {
+export function reportToString(report: BenchReport): String {
   let sb = new StringBuilder();
   sb.append(`zena:bench — ${report.suiteName}\n`);
 
@@ -553,7 +557,7 @@ export let reportToString = (report: BenchReport): String => {
     }
   }
   return sb.toString();
-};
+}
 
 // ============================================================================
 // JSON results
@@ -563,7 +567,7 @@ export let reportToString = (report: BenchReport): String => {
  * Serializes a report for recording and later cross-run comparison. The
  * schema is versioned; consumers must reject versions they don't know.
  */
-export let reportToJson = (report: BenchReport): String => {
+export function reportToJson(report: BenchReport): String {
   let b = new JsonBuilder();
   b.beginObject();
   b.key('schemaVersion').i32(1);
@@ -643,7 +647,7 @@ export let reportToJson = (report: BenchReport): String => {
 
   b.endObject();
   return b.toString();
-};
+}
 
 /**
  * Times `testFunc` once and prints the elapsed milliseconds, after one
@@ -654,7 +658,7 @@ export let reportToJson = (report: BenchReport): String => {
  * reports a distribution. Use this when a single number read off stdout is
  * the whole point, as the benchmark programs under test-files/ do.
  */
-export let runTest = (name: String, testFunc: () => void, filter: String): void => {
+export function runTest(name: String, testFunc: () => void, filter: String): void {
   if (filter.length > 0 && !name.contains(filter)) {
     return;
   }
@@ -665,4 +669,4 @@ export let runTest = (name: String, testFunc: () => void, filter: String): void 
   testFunc();
   let end = nowMs();
   console.log(`${name}: ${formatFixed(end - start, 2)} ms`);
-};
+}

@@ -26,30 +26,35 @@ export enum EncodeSet {
   FormUrlencoded
 }
 
-let inQuerySet = (b: i32) =>
-  b == 0x20 || b == 0x22 || b == 0x23 || b == 0x3C || b == 0x3E;
+function inQuerySet(b: i32) {
+  return b == 0x20 || b == 0x22 || b == 0x23 || b == 0x3C || b == 0x3E;
+}
 
-let inPathSet = (b: i32) =>
-  inQuerySet(b) || b == 0x3F || b == 0x5E || b == 0x60 || b == 0x7B || b == 0x7D;
+function inPathSet(b: i32) {
+  return inQuerySet(b) || b == 0x3F || b == 0x5E || b == 0x60 || b == 0x7B || b == 0x7D;
+}
 
-let inUserinfoSet = (b: i32) =>
-  inPathSet(b) || b == 0x2F || b == 0x3A || b == 0x3B || b == 0x3D ||
+function inUserinfoSet(b: i32) {
+  return inPathSet(b) || b == 0x2F || b == 0x3A || b == 0x3B || b == 0x3D ||
   b == 0x40 || (b >= 0x5B && b <= 0x5E) || b == 0x7C;
+}
 
-let inComponentSet = (b: i32) =>
-  inUserinfoSet(b) || b == 0x24 || b == 0x25 || b == 0x26 || b == 0x2B ||
+function inComponentSet(b: i32) {
+  return inUserinfoSet(b) || b == 0x24 || b == 0x25 || b == 0x26 || b == 0x2B ||
   b == 0x2C;
+}
 
-let inFormUrlencodedSet = (b: i32) =>
-  inComponentSet(b) || b == 0x21 || b == 0x27 || b == 0x28 || b == 0x29 ||
+function inFormUrlencodedSet(b: i32) {
+  return inComponentSet(b) || b == 0x21 || b == 0x27 || b == 0x28 || b == 0x29 ||
   b == 0x7E;
+}
 
 /**
  * True when byte `b` must be percent-encoded for `set`. Bytes outside
  * 0x20..0x7E (C0 controls, DEL, and all non-ASCII bytes) are encoded in every
  * set.
  */
-export let byteNeedsPercentEncoding = (b: i32, set: EncodeSet): boolean => {
+export function byteNeedsPercentEncoding(b: i32, set: EncodeSet): boolean {
   if (b < 0x20 || b > 0x7E) {
     return true;
   }
@@ -75,43 +80,43 @@ export let byteNeedsPercentEncoding = (b: i32, set: EncodeSet): boolean => {
     return inComponentSet(b);
   }
   return inFormUrlencodedSet(b);
-};
+}
 
-let hexDigitUpper = (n: i32) => {
+function hexDigitUpper(n: i32) {
   if (n < 10) {
     return 0x30 + n;        // '0'..'9'
   }
   return 0x41 + (n - 10);   // 'A'..'F'
-};
+}
 
 /** Appends `b` as `%XX`, two uppercase hex digits. */
-export let appendPercentEncodedByte = (sb: StringBuilder, b: i32): void => {
+export function appendPercentEncodedByte(sb: StringBuilder, b: i32): void {
   sb.appendByte(0x25); // '%'
   sb.appendByte(hexDigitUpper((b >> 4) & 0xF));
   sb.appendByte(hexDigitUpper(b & 0xF));
-};
+}
 
 /**
  * Appends `b` to `sb`, percent-encoded if `set` requires it. This is the
  * byte-at-a-time form the URL parser builds components with.
  */
-export let encodeByteInto = (sb: StringBuilder, b: i32, set: EncodeSet): void => {
+export function encodeByteInto(sb: StringBuilder, b: i32, set: EncodeSet): void {
   if (byteNeedsPercentEncoding(b, set)) {
     appendPercentEncodedByte(sb, b);
   } else {
     sb.appendByte(b);
   }
-};
+}
 
 /**
  * Percent-encodes `input` for the given encode set. `spaceAsPlus` implements
  * the form-urlencoded serializer's special case (0x20 → '+').
  */
-export let percentEncode = (
+export function percentEncode(
   input: String,
   set: EncodeSet,
   spaceAsPlus: boolean = false
-): String => {
+): String {
   let bytes = input.utf8;
   let sb = new StringBuilder(bytes.length + 8);
   for (var i = 0; i < bytes.length; i += 1) {
@@ -125,9 +130,9 @@ export let percentEncode = (
     }
   }
   return sb.toString();
-};
+}
 
-let hexValue = (b: i32): i32 => {
+function hexValue(b: i32): i32 {
   if (b >= 0x30 && b <= 0x39) {
     return b - 0x30;
   }
@@ -138,17 +143,17 @@ let hexValue = (b: i32): i32 => {
     return b - 0x61 + 10;
   }
   return -1;
-};
+}
 
 /**
  * Percent-decodes `input` (https://url.spec.whatwg.org/#percent-decode).
  * A '%' not followed by two hex digits is passed through unchanged, per spec.
  * `plusAsSpace` implements the form-urlencoded parser's '+' → 0x20 rule.
  */
-export let percentDecode = (
+export function percentDecode(
   input: String,
   plusAsSpace: boolean = false
-): String => {
+): String {
   let bytes = input.utf8;
   let len = bytes.length;
   // Decoding only shortens: every %XX is one byte.
@@ -172,7 +177,7 @@ export let percentDecode = (
     n += 1;
   }
   return String.fromByteArray(out, 0, n, Encoding.WTF8);
-};
+}
 
 /**
  * Parses an application/x-www-form-urlencoded string into ordered
@@ -180,7 +185,7 @@ export let percentDecode = (
  * A leading '?' is NOT stripped here — callers strip it (the URL API layer
  * does, matching URLSearchParams).
  */
-export let parseFormUrlencoded = (input: String): Array<(String, String)> => {
+export function parseFormUrlencoded(input: String): Array<(String, String)> {
   let pairs = new Array<(String, String)>();
   for (let piece in input.split("&")) {
     if (piece.isEmpty) {
@@ -195,15 +200,15 @@ export let parseFormUrlencoded = (input: String): Array<(String, String)> => {
     pairs.push((percentDecode(name, true), percentDecode(value, true)));
   }
   return pairs;
-};
+}
 
 /**
  * Serializes ordered (name, value) pairs to application/x-www-form-urlencoded
  * (https://url.spec.whatwg.org/#concept-urlencoded-serializer).
  */
-export let serializeFormUrlencoded = (
+export function serializeFormUrlencoded(
   pairs: Array<(String, String)>
-): String => {
+): String {
   let sb = new StringBuilder();
   var first = true;
   for (let pair in pairs) {
@@ -217,4 +222,4 @@ export let serializeFormUrlencoded = (
     sb.append(percentEncode(value, EncodeSet.FormUrlencoded, true));
   }
   return sb.toString();
-};
+}

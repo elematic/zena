@@ -73,7 +73,7 @@ final class DecodedTable {
 
 var cached: DecodedTable | null = null;
 
-let decodeTable = () => {
+function decodeTable() {
   let existing = cached;
   if (existing != null) return existing;
 
@@ -101,7 +101,7 @@ let decodeTable = () => {
   let built = new DecodedTable(starts, tags, payloads);
   cached = built;
   return built;
-};
+}
 
 /**
  * Index of the range containing `cp`.
@@ -109,7 +109,7 @@ let decodeTable = () => {
  * The table covers every code point with no gaps — the generator fails if it
  * does not — so this always finds one.
  */
-let rangeOf = (table: DecodedTable, cp: i32) => {
+function rangeOf(table: DecodedTable, cp: i32) {
   var lo = 0;
   var hi = table.starts.length - 1;
   while (lo < hi) {
@@ -122,16 +122,18 @@ let rangeOf = (table: DecodedTable, cp: i32) => {
     }
   }
   return lo;
-};
+}
 
 /** Zigzag decode, matching the generator's encoding of signed deltas. */
-let unzigzag = (n: i32) => (n >> 1) ^ (0 - (n & 1));
+function unzigzag(n: i32) {
+  return (n >> 1) ^ (0 - (n & 1));
+}
 
 /**
  * Applies UTS 46's mapping step to one code point, appending the result to
  * `out`. Returns false if the code point is disallowed.
  */
-let mapCodePoint = (table: DecodedTable, cp: i32, out: StringBuilder): boolean => {
+function mapCodePoint(table: DecodedTable, cp: i32, out: StringBuilder): boolean {
   let idx = rangeOf(table, cp);
   let tag = table.tags[idx];
   if (tag == STATUS_VALID) {
@@ -154,20 +156,21 @@ let mapCodePoint = (table: DecodedTable, cp: i32, out: StringBuilder): boolean =
     i += 1;
   }
   return true;
-};
+}
 
 /** True if `s` holds a byte >= 0x80, i.e. anything outside ASCII. */
-let hasNonAscii = (s: String): boolean => {
+function hasNonAscii(s: String): boolean {
   for (var i = 0; i < s.length; i += 1) {
     if (s.getByteAt(i) >= 0x80) return true;
   }
   return false;
-};
+}
 
 /** True if `label` starts with the ACE prefix, which by here is lowercase. */
-let hasAcePrefix = (label: String) =>
-  label.length >= 4 && label.getByteAt(0) == 0x78 && label.getByteAt(1) == 0x6E &&
+function hasAcePrefix(label: String) {
+  return label.length >= 4 && label.getByteAt(0) == 0x78 && label.getByteAt(1) == 0x6E &&
   label.getByteAt(2) == 0x2D && label.getByteAt(3) == 0x2D;
+}
 
 /**
  * https://url.spec.whatwg.org/#concept-domain-to-ascii
@@ -180,7 +183,7 @@ let hasAcePrefix = (label: String) =>
  * domain with an empty label rather than an error. An entirely empty domain
  * is still a failure.
  */
-export let domainToASCII = (domain: String): String | null => {
+export function domainToASCII(domain: String): String | null {
   if (domain.length == 0) return null;
 
   let table = decodeTable();
@@ -232,4 +235,4 @@ export let domainToASCII = (domain: String): String | null => {
   let result = out.toString();
   if (result.length == 0) return null;
   return result;
-};
+}

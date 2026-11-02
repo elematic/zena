@@ -83,7 +83,8 @@ export enum FsErrorCode {
   NotPermitted,     // Operation not permitted (63)
 }
 
-let errnoToCode = (errno: i32) => match (errno) {
+function errnoToCode(errno: i32) {
+  return match (errno) {
   case 0: FsErrorCode.Success
   case 2: FsErrorCode.Access
   case 8: FsErrorCode.BadDescriptor
@@ -102,9 +103,10 @@ let errnoToCode = (errno: i32) => match (errno) {
   case 63: FsErrorCode.NotPermitted
   case _: FsErrorCode.Io
 };
+}
 
 /** The errno a 0.3 `error-code` stands for; anything unlisted is I/O. */
-let errnoOf = (code: ErrorCode): i32 => {
+function errnoOf(code: ErrorCode): i32 {
   if (code is ErrorCodeAccess) { return 2; }
   if (code is ErrorCodeBadDescriptor) { return 8; }
   if (code is ErrorCodeExist) { return 20; }
@@ -120,9 +122,10 @@ let errnoOf = (code: ErrorCode): i32 => {
   if (code is ErrorCodeInsufficientSpace) { return 51; }
   if (code is ErrorCodeNotPermitted) { return 63; }
   return 29;
-};
+}
 
-let describe = (code: ErrorCode) => match (errnoOf(code)) {
+function describe(code: ErrorCode) {
+  return match (errnoOf(code)) {
   case 2: 'permission denied'
   case 8: 'bad descriptor'
   case 20: 'already exists'
@@ -139,6 +142,7 @@ let describe = (code: ErrorCode) => match (errnoOf(code)) {
   case 63: 'operation not permitted'
   case _: 'I/O error'
 };
+}
 
 /** A failed file operation: its code, and what was being done. */
 export class FsError extends Error {
@@ -148,16 +152,16 @@ export class FsError extends Error {
     : errno = errno, code = errnoToCode(errno), super(message);
 }
 
-let fail = (code: ErrorCode, what: String): never => {
+function fail(code: ErrorCode, what: String): never {
   throw new FsError(errnoOf(code), `${what}: ${describe(code)}`);
-};
+}
 
 /** Throw for a failed `result<_, error-code>`. */
-let check = (outcome: Result<void, ErrorCode>, what: String) => {
+function check(outcome: Result<void, ErrorCode>, what: String) {
   if (outcome is (false, ErrorCode)) {
     fail(outcome[1], what);
   }
-};
+}
 
 // ============================================================================
 // File Types
@@ -174,7 +178,7 @@ export enum FileType {
   Socket,
 }
 
-let fileTypeOf = (t: DescriptorType) => {
+function fileTypeOf(t: DescriptorType) {
   if (t is DescriptorTypeRegularFile) { return FileType.RegularFile; }
   if (t is DescriptorTypeDirectory) { return FileType.Directory; }
   if (t is DescriptorTypeSymbolicLink) { return FileType.SymbolicLink; }
@@ -182,7 +186,7 @@ let fileTypeOf = (t: DescriptorType) => {
   if (t is DescriptorTypeCharacterDevice) { return FileType.CharacterDevice; }
   if (t is DescriptorTypeSocket) { return FileType.Socket; }
   return FileType.Unknown;
-};
+}
 
 /** File metadata. */
 export type FileStat = {
@@ -206,7 +210,7 @@ export enum DescriptorFlags {
   MutateDirectory,
 }
 
-let statOf = (s: DescriptorStat): FileStat => {
+function statOf(s: DescriptorStat): FileStat {
   var modified = 0 as i64;
   let stamp = s.dataModificationTimestamp;
   if (stamp is Some<Instant>) {
@@ -218,7 +222,7 @@ let statOf = (s: DescriptorStat): FileStat => {
     size: s.size as i64,
     modified: modified,
   };
-};
+}
 
 // ============================================================================
 // Descriptors
@@ -226,7 +230,8 @@ let statOf = (s: DescriptorStat): FileStat => {
 
 let noOpenFlags = (0 as u32) as WitOpenFlags;
 
-let witDescriptorFlags = (flags: DescriptorFlags) => match (flags) {
+function witDescriptorFlags(flags: DescriptorFlags) {
+  return match (flags) {
   case DescriptorFlags.Read: descriptorFlagsRead
   case DescriptorFlags.Write: descriptorFlagsWrite
   case DescriptorFlags.ReadWrite: {
@@ -236,6 +241,7 @@ let witDescriptorFlags = (flags: DescriptorFlags) => match (flags) {
     ((descriptorFlagsRead as u32) | (descriptorFlagsMutateDirectory as u32)) as WitDescriptorFlags
   }
 };
+}
 
 /** Every entry of a directory stream. */
 async function collectEntries(stream: Stream<DirectoryEntry>): Future<Array<DirEntry>> {
@@ -258,15 +264,15 @@ async function collectEntries(stream: Stream<DirectoryEntry>): Future<Array<DirE
  * type that names `Own` is rejected outside `zena:ownership`, and the
  * pattern moves the owner out of the `Ok` arm.
  */
-let opened = (
+function opened(
   outcome: Result<Own<WitDescriptor>, ErrorCode>,
   what: String
-): Own<WitDescriptor> => {
+) {
   return match (outcome) {
     case (true, let value): value
     case (false, let error): fail(error, what)
   };
-};
+}
 
 /**
  * Release a descriptor once the host has finished reading its contents
@@ -438,7 +444,7 @@ var preopensCache: Array<(Unmanaged<Descriptor>, String)> | null = null;
  * The descriptors are unmanaged: they are the program's for its whole
  * run, and nothing releases them.
  */
-export let getPreopens = (): Array<(Unmanaged<Descriptor>, String)> => {
+export function getPreopens(): Array<(Unmanaged<Descriptor>, String)> {
   let cached = preopensCache;
   if (cached != null) {
     return cached;
@@ -451,16 +457,16 @@ export let getPreopens = (): Array<(Unmanaged<Descriptor>, String)> => {
   }
   preopensCache = result;
   return result;
-};
+}
 
 /** The first preopened directory. */
-export let getRootDir = (): Unmanaged<Descriptor> => {
+export function getRootDir(): Unmanaged<Descriptor> {
   let preopens = getPreopens();
   if (preopens.length == 0) {
     throw new FsError(44, 'No preopened directories available');
   }
   return preopens[0][0];
-};
+}
 
 let SLASH = 0x2F;
 
@@ -469,7 +475,7 @@ let SLASH = 0x2F;
  * left: a path operation rejects an empty path, so a path that names a
  * preopen exactly names the preopen's own directory.
  */
-let normalizeRelative = (path: String) => {
+function normalizeRelative(path: String) {
   let kept = new GrowableArray<String>(4);
   for (let segment in path.split('/')) {
     if (segment != '' && segment != '.') {
@@ -484,7 +490,7 @@ let normalizeRelative = (path: String) => {
     joined = `${joined}/${kept[i]}`;
   }
   return joined;
-};
+}
 
 /**
  * The preopen a path falls under, and the path relative to it. A
@@ -492,7 +498,7 @@ let normalizeRelative = (path: String) => {
  * absolute path is under the preopen whose name is its longest prefix
  * at a segment boundary, so `/tmpfiles` is not under `/tmp`.
  */
-export let resolvePreopen = (path: String): (Unmanaged<Descriptor>, String) => {
+export function resolvePreopen(path: String): (Unmanaged<Descriptor>, String) {
   let preopens = getPreopens();
   if (preopens.length == 0) {
     throw new FsError(44, 'No preopened directories available');
@@ -521,7 +527,7 @@ export let resolvePreopen = (path: String): (Unmanaged<Descriptor>, String) => {
     throw new FsError(44, `no preopened directory holds '${path}'`);
   }
   return (best, normalizeRelative(relative));
-};
+}
 
 // ============================================================================
 // High-Level Convenience Functions
@@ -633,7 +639,7 @@ export class GlobOptions {
 }
 
 /** Insertion sort, in place: directory listings are nearly sorted. */
-let sortStrings = (arr: GrowableArray<String>) => {
+function sortStrings(arr: GrowableArray<String>) {
   for (var i = 1; i < arr.length; i += 1) {
     let cur = arr[i];
     var j = i - 1;
@@ -642,10 +648,10 @@ let sortStrings = (arr: GrowableArray<String>) => {
     }
     arr[j + 1] = cur;
   }
-};
+}
 
 /** The directory prefix of a pattern before its first wildcard. */
-let baseDirOf = (pattern: String) => {
+function baseDirOf(pattern: String) {
   var lastSlash = 0 - 1;
   for (var i = 0; i < pattern.length; i += 1) {
     let b = pattern.getByteAt(i);
@@ -663,7 +669,7 @@ let baseDirOf = (pattern: String) => {
     return '/';
   }
   return pattern.sliceBytes(0, lastSlash);
-};
+}
 
 /** The entries of a directory, or null when it cannot be listed. */
 async function entriesOrNull(path: String): Future<Array<DirEntry> | null> {
@@ -778,30 +784,45 @@ export async function glob(
 // Each waits for the asynchronous function above it in `blockOn`. See
 // the library header for where that is allowed.
 
-export let readFileSync = (path: String): String => blockOn(readFile(path));
-export let readFileBytesSync = (path: String): FixedArray<u8> => blockOn(readFileBytes(path));
-export let writeFileSync = (path: String, content: String): void => {
+export function readFileSync(path: String): String {
+  return blockOn(readFile(path));
+}
+export function readFileBytesSync(path: String): FixedArray<u8> {
+  return blockOn(readFileBytes(path));
+}
+export function writeFileSync(path: String, content: String): void {
   blockOn(writeFile(path, content));
-};
-export let writeFileBytesSync = (path: String, content: FixedArray<u8>): void => {
+}
+export function writeFileBytesSync(path: String, content: FixedArray<u8>): void {
   blockOn(writeFileBytes(path, content));
-};
-export let listDirSync = (path: String): Array<DirEntry> => blockOn(listDir(path));
-export let existsSync = (path: String): boolean => blockOn(exists(path));
-export let isFileSync = (path: String): boolean => blockOn(isFile(path));
-export let isDirectorySync = (path: String): boolean => blockOn(isDirectory(path));
-export let mkdirSync = (path: String): void => {
+}
+export function listDirSync(path: String): Array<DirEntry> {
+  return blockOn(listDir(path));
+}
+export function existsSync(path: String): boolean {
+  return blockOn(exists(path));
+}
+export function isFileSync(path: String): boolean {
+  return blockOn(isFile(path));
+}
+export function isDirectorySync(path: String): boolean {
+  return blockOn(isDirectory(path));
+}
+export function mkdirSync(path: String): void {
   blockOn(mkdir(path));
-};
-export let unlinkSync = (path: String): void => {
+}
+export function unlinkSync(path: String): void {
   blockOn(unlink(path));
-};
-export let renameSync = (from: String, to: String): void => {
+}
+export function renameSync(from: String, to: String): void {
   blockOn(rename(from, to));
-};
-export let statSync = (path: String): FileStat => blockOn(stat(path));
-export let rmdirSync = (path: String): void => {
+}
+export function statSync(path: String): FileStat {
+  return blockOn(stat(path));
+}
+export function rmdirSync(path: String): void {
   blockOn(rmdir(path));
-};
-export let globSync = (pattern: String, options: GlobOptions | null = null): Array<String> =>
-    blockOn(glob(pattern, options));
+}
+export function globSync(pattern: String, options: GlobOptions | null = null): Array<String> {
+  return blockOn(glob(pattern, options));
+}

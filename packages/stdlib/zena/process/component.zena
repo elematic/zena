@@ -40,12 +40,14 @@ export class ProcessResult {
   }
 }
 
-let resultOf = (finished: Finished) => new ProcessResult(
+function resultOf(finished: Finished) {
+  return new ProcessResult(
     finished.exitCode,
     String.fromBytes(finished.stdout),
     String.fromBytes(finished.stderr),
     finished.wallNanos,
     finished.timedOut);
+}
 
 /**
  * A running process: a resource over the host's handle, held as
@@ -114,7 +116,7 @@ export type SpawnOptions = {
  * let sorted = runWith(['sort'], {input: 'b\na\n'});
  * ```
  */
-export let spawnWith = (argv: Array<String>, options: SpawnOptions): Own<Process> => {
+export function spawnWith(argv: Array<String>, options: SpawnOptions): Own<Process> {
   let cmd = Command.create(argv);
   if (let {cwd} = options) {
     cmd.cwd(cwd);
@@ -142,11 +144,12 @@ export let spawnWith = (argv: Array<String>, options: SpawnOptions): Own<Process
       throw new Error(`could not start ${argv[0]}: ${why}`);
     }
   }
-};
+}
 
 /** Runs a process to completion; see `spawnWith`. */
-export let runWith = (argv: Array<String>, options: SpawnOptions): ProcessResult =>
-  spawnWith(argv, options).wait();
+export function runWith(argv: Array<String>, options: SpawnOptions): ProcessResult {
+  return spawnWith(argv, options).wait();
+}
 
 /**
  * Start a process from an argument vector, the program first, in the
@@ -154,30 +157,37 @@ export let runWith = (argv: Array<String>, options: SpawnOptions): ProcessResult
  * the process writes to this program's own streams instead of having
  * its output captured.
  */
-export let spawnIn = (
+export function spawnIn(
   argv: Array<String>,
   cwd: String | null,
   inheritStdio: boolean = false,
-): Own<Process> => {
+): Own<Process> {
   if (cwd != null) {
     return spawnWith(argv, {cwd: cwd, inheritStdio: inheritStdio});
   }
   return spawnWith(argv, {inheritStdio: inheritStdio});
-};
+}
 
-export let spawn = (argv: Array<String>): Own<Process> => spawnIn(argv, null);
+export function spawn(argv: Array<String>): Own<Process> {
+  return spawnIn(argv, null);
+}
 
-export let runIn = (argv: Array<String>, cwd: String | null): ProcessResult =>
-  spawnIn(argv, cwd).wait();
+export function runIn(argv: Array<String>, cwd: String | null): ProcessResult {
+  return spawnIn(argv, cwd).wait();
+}
 
-export let run = (argv: Array<String>): ProcessResult => spawnIn(argv, null).wait();
+export function run(argv: Array<String>): ProcessResult {
+  return spawnIn(argv, null).wait();
+}
 
 /**
  * Run a process connected to this program's own stdio, so its output
  * appears as it is written; the result's `stdout` and `stderr` are
  * empty.
  */
-export let runInheriting = (
+export function runInheriting(
   argv: Array<String>,
   cwd: String | null = null,
-): ProcessResult => spawnIn(argv, cwd, true).wait();
+): ProcessResult {
+  return spawnIn(argv, cwd, true).wait();
+}

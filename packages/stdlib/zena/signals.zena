@@ -1238,19 +1238,21 @@ export final class Tracker extends ReactiveNode {
  * Creates an effect that runs `fn` now and again whenever a signal it
  * read changes. Shorthand for `new Effect(fn)`.
  */
-export let effect = (fn: () => void): Effect => new Effect(fn);
+export function effect(fn: () => void): Effect {
+  return new Effect(fn);
+}
 
 /**
  * Registers `fn` to be called before the running effect runs again, and
  * when it is disposed. Throws if no effect is running.
  */
-export let onCleanup = (fn: () => void): void => {
+export function onCleanup(fn: () => void): void {
   let owner = currentOwner;
   if (owner == null) {
     throw new Error('onCleanup: no effect is running');
   }
   owner.[addCleanup](fn);
-};
+}
 
 /**
  * Runs `fn`, and runs the effects it caused once it returns, so an effect
@@ -1258,7 +1260,7 @@ export let onCleanup = (fn: () => void): void => {
  * notified inside each `set`. Batches nest; effects wait for the
  * outermost.
  */
-export let batch = <R>(fn: () => R): R => {
+export function batch<R>(fn: () => R): R {
   batchDepth += 1;
   try {
     return fn();
@@ -1266,14 +1268,14 @@ export let batch = <R>(fn: () => R): R => {
     batchDepth -= 1;
     settle();
   }
-};
+}
 
 /**
  * Runs `fn` without recording what it reads against the running computed
  * or effect. Unsafe in the TC39 sense: a computed that reads a signal
  * this way is not updated when that signal changes.
  */
-export let untrack = <R>(fn: () => R): R => {
+export function untrack<R>(fn: () => R): R {
   let prev = activeConsumer;
   activeConsumer = null;
   try {
@@ -1281,20 +1283,24 @@ export let untrack = <R>(fn: () => R): R => {
   } finally {
     activeConsumer = prev;
   }
-};
+}
 
 /** Whether a computed or effect is running and recording what it reads. */
-export let isTracking = (): boolean => activeConsumer != null;
+export function isTracking(): boolean {
+  return activeConsumer != null;
+}
 
 /** The computed or effect that is recording reads, if any. */
-export let currentComputed = (): ReactiveNode | null => activeConsumer;
+export function currentComputed(): ReactiveNode | null {
+  return activeConsumer;
+}
 
 /**
  * The signals `node` read on its last run, in the order it first read
  * them, or the signals a watcher watches. Empty for a `State` or
  * `Tracker`.
  */
-export let introspectSources = (node: ReactiveNode): GrowableArray<ReactiveNode> => {
+export function introspectSources(node: ReactiveNode): GrowableArray<ReactiveNode> {
   let result = new GrowableArray<ReactiveNode>();
   if ((node.[flags] & (IS_COMPUTED | IS_EFFECT | IS_WATCHER)) == 0) {
     return result;
@@ -1306,14 +1312,14 @@ export let introspectSources = (node: ReactiveNode): GrowableArray<ReactiveNode>
     each = link.nextDep;
   }
   return result;
-};
+}
 
 /**
  * The live consumers that read `node`: watchers watching it, effects that
  * read it, and computeds that read it and are themselves live. A computed
  * that nothing live reads does not appear.
  */
-export let introspectSinks = (node: ReactiveNode): GrowableArray<ReactiveNode> => {
+export function introspectSinks(node: ReactiveNode): GrowableArray<ReactiveNode> {
   let result = new GrowableArray<ReactiveNode>();
   var each = node.[subs];
   while (each != null) {
@@ -1322,15 +1328,17 @@ export let introspectSinks = (node: ReactiveNode): GrowableArray<ReactiveNode> =
     each = link.nextSub;
   }
   return result;
-};
+}
 
 /** Whether `node` has a live consumer. */
-export let hasSinks = (node: ReactiveNode): boolean => node.[subs] != null;
+export function hasSinks(node: ReactiveNode): boolean {
+  return node.[subs] != null;
+}
 
 /** Whether `node` read any signal on its last run, or watches any. */
-export let hasSources = (node: ReactiveNode): boolean => {
+export function hasSources(node: ReactiveNode): boolean {
   if ((node.[flags] & (IS_COMPUTED | IS_EFFECT | IS_WATCHER)) == 0) {
     return false;
   }
   return (node as Consumer).[deps] != null;
-};
+}

@@ -81,47 +81,53 @@ export final class URLPatternInit {
 // one do it a byte at a time.
 // ---------------------------------------------------------------------------
 
-let maybeStripPrefix = (value: String, prefix: i32) =>
-  if (value.length > 0 && value.getByteAt(0) == prefix)
+function maybeStripPrefix(value: String, prefix: i32) {
+  return if (value.length > 0 && value.getByteAt(0) == prefix)
     value.sliceBytes(1, value.length)
   else value;
+}
 
-let maybeStripSuffix = (value: String, suffix: i32) =>
-  if (value.length > 0 && value.getByteAt(value.length - 1) == suffix)
+function maybeStripSuffix(value: String, suffix: i32) {
+  return if (value.length > 0 && value.getByteAt(value.length - 1) == suffix)
     value.sliceBytes(0, value.length - 1)
   else value;
+}
 
 /** The index of the last `byte` in `s`, or -1. */
-let lastIndexOfByte = (s: String, byte: i32): i32 => {
+function lastIndexOfByte(s: String, byte: i32): i32 {
   var i = s.length - 1;
   while (i >= 0) {
     if (s.getByteAt(i) == byte) return i;
     i -= 1;
   }
   return -1;
-};
+}
 
 /** `$`, `_`, an ASCII letter, or an ASCII digit. */
-let isIdentifierPartByte = (b: i32) =>
-  b == 0x24 || b == 0x5F ||
+function isIdentifierPartByte(b: i32) {
+  return b == 0x24 || b == 0x5F ||
   (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A) ||
   (b >= 0x30 && b <= 0x39);
+}
 
 /** Parses `input`, or reports it as uncanonicalizable. */
-let mustParse = (input: String, base: String | null) => {
+function mustParse(input: String, base: String | null) {
   let u = URL.parse(input, base);
   if (u == null) {
     throw new PatternSyntaxError(`Cannot canonicalize '${input}'.`);
   }
   return u;
-};
+}
 
 /** A throwaway URL to run a single component setter against. */
-let scratchUrl = () => mustParse('https://example.com', null);
+function scratchUrl() {
+  return mustParse('https://example.com', null);
+}
 
-let isSpecialSchemeName = (s: String) =>
-  s == 'ftp' || s == 'file' || s == 'http' || s == 'https' ||
+function isSpecialSchemeName(s: String) {
+  return s == 'ftp' || s == 'file' || s == 'http' || s == 'https' ||
   s == 'ws' || s == 'wss';
+}
 
 /**
  * The port a scheme omits when it is the default one.
@@ -130,34 +136,34 @@ let isSpecialSchemeName = (s: String) =>
  * there and keeps a redundant `:443`. This follows the spec instead; no test
  * case reaches the difference either way.
  */
-let defaultPortForProtocol = (protocol: String | null) => {
+function defaultPortForProtocol(protocol: String | null) {
   if (protocol == null) return '';
   let p = protocol;
   if (p == 'http' || p == 'ws') return '80';
   if (p == 'https' || p == 'wss') return '443';
   if (p == 'ftp') return '21';
   return '';
-};
+}
 
 /**
  * Whether a hostname pattern is an IPv6 literal, which is canonicalized
  * differently because `:` is structure there rather than a delimiter.
  */
-let treatAsIPv6Hostname = (value: String | null): boolean => {
+function treatAsIPv6Hostname(value: String | null): boolean {
   if (value == null) return false;
   let v = value;
   if (v.length < 2) return false;
   if (v.getByteAt(0) == 0x5B) return true;           // '['
   return (v.getByteAt(0) == 0x5C || v.getByteAt(0) == 0x7B) &&
          v.getByteAt(1) == 0x5B;                     // '\[' or '{['
-};
+}
 
 // ---------------------------------------------------------------------------
 // Escaping
 // ---------------------------------------------------------------------------
 
 /** Escapes the pattern syntax's own punctuation: `+ * ? : { } ( ) \`. */
-let escapePatternString = (value: String) => {
+function escapePatternString(value: String) {
   let out = new StringBuilder(value.length + 8);
   var i = 0;
   while (i < value.length) {
@@ -170,10 +176,10 @@ let escapePatternString = (value: String) => {
     i += 1;
   }
   return out.toString();
-};
+}
 
 /** Escapes regex metacharacters: `. + * ? ^ $ { } ( ) [ ] | / \`. */
-let escapeRegexpString = (value: String) => {
+function escapeRegexpString(value: String) {
   let out = new StringBuilder(value.length + 8);
   var i = 0;
   while (i < value.length) {
@@ -187,7 +193,7 @@ let escapeRegexpString = (value: String) => {
     i += 1;
   }
   return out.toString();
-};
+}
 
 // ---------------------------------------------------------------------------
 // Per-component encoding
@@ -198,7 +204,7 @@ let escapeRegexpString = (value: String) => {
 // needs no encoder written specially for this.
 // ---------------------------------------------------------------------------
 
-let protocolEncodeCallback = (input: String) => {
+function protocolEncodeCallback(input: String) {
   if (input.length == 0) return input;
   var i = 0;
   while (i < input.length) {
@@ -211,19 +217,19 @@ let protocolEncodeCallback = (input: String) => {
     i += 1;
   }
   return input.asciiLowerCase();
-};
+}
 
-let usernameEncodeCallback = (input: String) => {
+function usernameEncodeCallback(input: String) {
   if (input.length == 0) return input;
   return scratchUrl().withUsername(input).username;
-};
+}
 
-let passwordEncodeCallback = (input: String) => {
+function passwordEncodeCallback(input: String) {
   if (input.length == 0) return input;
   return scratchUrl().withPassword(input).password;
-};
+}
 
-let hostnameEncodeCallback = (input: String) => {
+function hostnameEncodeCallback(input: String) {
   if (input.length == 0) return input;
   var i = 0;
   while (i < input.length) {
@@ -251,9 +257,9 @@ let hostnameEncodeCallback = (input: String) => {
     i += 1;
   }
   return scratchUrl().withHostname(input).hostname;
-};
+}
 
-let ipv6HostnameEncodeCallback = (input: String) => {
+function ipv6HostnameEncodeCallback(input: String) {
   if (input.length == 0) return input;
   var i = 0;
   while (i < input.length) {
@@ -266,9 +272,9 @@ let ipv6HostnameEncodeCallback = (input: String) => {
     i += 1;
   }
   return input.asciiLowerCase();
-};
+}
 
-let portEncodeCallback = (input: String) => {
+function portEncodeCallback(input: String) {
   if (input.length == 0) return input;
   // Leading and trailing C0 controls and spaces are stripped before a URL is
   // parsed, so a port of "80 " is the port 80 rather than a malformed one.
@@ -298,7 +304,7 @@ let portEncodeCallback = (input: String) => {
     throw new PatternSyntaxError(`Invalid port '${input}'.`);
   }
   return trimmed;
-};
+}
 
 /**
  * A pathname on a special scheme, where `/` is structure.
@@ -306,29 +312,29 @@ let portEncodeCallback = (input: String) => {
  * Text that does not start with `/` is given a throwaway `/-` prefix so the
  * parser treats it as a path at all, then has it removed again.
  */
-let standardURLPathnameEncodeCallback = (input: String) => {
+function standardURLPathnameEncodeCallback(input: String) {
   if (input.length == 0) return input;
   let leadingSlash = input.getByteAt(0) == SLASH;
   let value = if (leadingSlash) input else '/-' + input;
   let path = scratchUrl().withPathname(value).pathname;
   return if (leadingSlash) path else path.sliceBytes(2, path.length);
-};
+}
 
 /** A pathname on a non-special scheme, which is opaque. */
-let pathURLPathnameEncodeCallback = (input: String) => {
+function pathURLPathnameEncodeCallback(input: String) {
   if (input.length == 0) return input;
   return mustParse('data:' + input, null).pathname;
-};
+}
 
-let searchEncodeCallback = (input: String) => {
+function searchEncodeCallback(input: String) {
   if (input.length == 0) return input;
   return maybeStripPrefix(scratchUrl().withSearch(input).search, QUESTION_MARK);
-};
+}
 
-let hashEncodeCallback = (input: String) => {
+function hashEncodeCallback(input: String) {
   if (input.length == 0) return input;
   return maybeStripPrefix(scratchUrl().withHash(input).hash, HASH);
-};
+}
 
 // ---------------------------------------------------------------------------
 // Whole-component canonicalization
@@ -340,43 +346,45 @@ let hashEncodeCallback = (input: String) => {
 // for a pattern's separators and default port, which are not syntax.
 // ---------------------------------------------------------------------------
 
-let canonicalizeProtocol = (protocol: String, isPattern: boolean) => {
+function canonicalizeProtocol(protocol: String, isPattern: boolean) {
   let stripped = maybeStripSuffix(protocol, COLON);
   if (isPattern || stripped.length == 0) return stripped;
   return protocolEncodeCallback(stripped);
-};
+}
 
-let canonicalizeHash = (hash: String, isPattern: boolean) => {
+function canonicalizeHash(hash: String, isPattern: boolean) {
   let stripped = maybeStripPrefix(hash, HASH);
   if (isPattern || stripped.length == 0) return stripped;
   return hashEncodeCallback(stripped);
-};
+}
 
-let canonicalizeSearch = (search: String, isPattern: boolean) => {
+function canonicalizeSearch(search: String, isPattern: boolean) {
   let stripped = maybeStripPrefix(search, QUESTION_MARK);
   if (isPattern || stripped.length == 0) return stripped;
   return searchEncodeCallback(stripped);
-};
+}
 
-let canonicalizeHostname = (hostname: String, isPattern: boolean) => {
+function canonicalizeHostname(hostname: String, isPattern: boolean) {
   if (isPattern || hostname.length == 0) return hostname;
   if (treatAsIPv6Hostname(hostname)) return ipv6HostnameEncodeCallback(hostname);
   return hostnameEncodeCallback(hostname);
-};
+}
 
-let canonicalizeUsername = (username: String, isPattern: boolean) =>
-  if (isPattern || username.length == 0) username
+function canonicalizeUsername(username: String, isPattern: boolean) {
+  return if (isPattern || username.length == 0) username
   else usernameEncodeCallback(username);
+}
 
-let canonicalizePassword = (password: String, isPattern: boolean) =>
-  if (isPattern || password.length == 0) password
+function canonicalizePassword(password: String, isPattern: boolean) {
+  return if (isPattern || password.length == 0) password
   else passwordEncodeCallback(password);
+}
 
-let canonicalizePathname = (
+function canonicalizePathname(
   pathname: String,
   protocol: String | null,
   isPattern: boolean
-) => {
+) {
   if (isPattern || pathname.length == 0) return pathname;
 
   if (protocol != null && !isSpecialSchemeName(protocol)) {
@@ -387,24 +395,25 @@ let canonicalizePathname = (
   let value = if (leadingSlash) pathname else '/-' + pathname;
   let path = mustParse(value, 'https://example.com').pathname;
   return if (leadingSlash) path else path.sliceBytes(2, path.length);
-};
+}
 
-let canonicalizePort = (
+function canonicalizePort(
   port: String,
   protocol: String | null,
   isPattern: boolean
-) => {
+) {
   let value = if (defaultPortForProtocol(protocol) == port) '' else port;
   if (isPattern || value.length == 0) return value;
   return portEncodeCallback(value);
-};
+}
 
 /**
  * A component taken from a base URL is a literal, so any pattern punctuation
  * in it has to be escaped before it joins a pattern.
  */
-let processBaseURLString = (input: String, isPattern: boolean) =>
-  if (isPattern) escapePatternString(input) else input;
+function processBaseURLString(input: String, isPattern: boolean) {
+  return if (isPattern) escapePatternString(input) else input;
+}
 
 /**
  * Whether a pathname counts as absolute.
@@ -413,14 +422,14 @@ let processBaseURLString = (input: String, isPattern: boolean) =>
  * `\/foo` or `{/foo}`, and both still count. A slash inside a custom regex
  * does not — detecting that would mean parsing the pattern here.
  */
-let isAbsolutePathname = (pathname: String, isPattern: boolean): boolean => {
+function isAbsolutePathname(pathname: String, isPattern: boolean): boolean {
   if (pathname.length == 0) return false;
   if (pathname.getByteAt(0) == SLASH) return true;
   if (!isPattern) return false;
   if (pathname.length < 2) return false;
   let first = pathname.getByteAt(0);
   return (first == 0x5C || first == 0x7B) && pathname.getByteAt(1) == SLASH;
-};
+}
 
 // ---------------------------------------------------------------------------
 // applyInit
@@ -435,11 +444,11 @@ let isAbsolutePathname = (pathname: String, isPattern: boolean): boolean => {
  * inherit, because you have moved to a different site. Credentials are never
  * inherited at all.
  */
-let applyInit = (
+function applyInit(
   o: URLPatternInit,
   init: URLPatternInit,
   isPattern: boolean
-) => {
+) {
   var baseURL: URL | null = null;
 
   if (init.baseURL != null) {
@@ -523,26 +532,28 @@ let applyInit = (
   }
 
   return o;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Parts back to text
 // ---------------------------------------------------------------------------
 
-let modifierToString = (m: Modifier) => match (m) {
+function modifierToString(m: Modifier) {
+  return match (m) {
   case Modifier.None: ''
   case Modifier.Optional: '?'
   case Modifier.ZeroOrMore: '*'
   case Modifier.OneOrMore: '+'
 };
+}
 
 /** The name of a capturing part; empty for fixed text, which captures none. */
-let partName = (p: Part) => {
+function partName(p: Part) {
   if (p is SegmentWildcardPart) return p.name;
   if (p is FullWildcardPart) return p.name;
   if (p is RegexPart) return p.name;
   return '';
-};
+}
 
 /**
  * What `:name` means without an explicit regex: everything up to the next
@@ -553,9 +564,10 @@ let partName = (p: Part) => {
  * when the class is otherwise empty — so this uses `[\s\S]`, which is the
  * same set and is portable.
  */
-let segmentWildcardRegexFor = (delimiter: String) =>
-  if (delimiter.length == 0) '[\\s\\S]+?'
+function segmentWildcardRegexFor(delimiter: String) {
+  return if (delimiter.length == 0) '[\\s\\S]+?'
   else `[^${escapeRegexpString(delimiter)}]+?`;
+}
 
 /**
  * Serializes parts back into a pattern string.
@@ -569,11 +581,11 @@ let segmentWildcardRegexFor = (delimiter: String) =>
  * a suffix, an unusual prefix, or a following part whose text could be read
  * as a continuation of this one's name.
  */
-let partsToPattern = (
+function partsToPattern(
   parts: Array<Part>,
   prefixes: String,
   delimiter: String
-) => {
+) {
   let segmentWildcardRegex = segmentWildcardRegexFor(delimiter);
   let out = new StringBuilder(32);
 
@@ -676,7 +688,7 @@ let partsToPattern = (
   }
 
   return out.toString();
-};
+}
 
 /**
  * Compiles parts into a regex source, appending each capturing part's name to
@@ -690,11 +702,11 @@ let partsToPattern = (
  * `endsWith` characters, which is what lets this avoid the lookahead the
  * original emits in its other modes — zena:regex has none.
  */
-let partsToRegexp = (
+function partsToRegexp(
   parts: Array<Part>,
   names: GrowableArray<String>,
   delimiter: String
-) => {
+) {
   let segmentWildcardRegex = segmentWildcardRegexFor(delimiter);
   let out = new StringBuilder(32);
   out.append('^');
@@ -755,7 +767,7 @@ let partsToRegexp = (
 
   out.append('$');
   return out.toString();
-};
+}
 
 /**
  * Whether a compiled protocol pattern admits any special scheme.
@@ -765,12 +777,12 @@ let partsToRegexp = (
  * so. A pattern with no protocol component matches everything, so it counts
  * as special.
  */
-let isSpecialSchemePattern = (protocolRegex: Regex | null): boolean => {
+function isSpecialSchemePattern(protocolRegex: Regex | null): boolean {
   if (protocolRegex == null) return true;
   let re = protocolRegex;
   return re.test('ftp') || re.test('file') || re.test('http') ||
          re.test('https') || re.test('ws') || re.test('wss');
-};
+}
 
 // ---------------------------------------------------------------------------
 // URLPattern

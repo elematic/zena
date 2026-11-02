@@ -388,7 +388,7 @@ final class StaticFiles {
  * `.` and empty segments dropped, `..` resolved. A path that climbs
  * above the root, or holds a NUL byte, throws 403. `.` names the root.
  */
-let confine = (path: String): String => {
+function confine(path: String): String {
   if (path.contains('\u{0}')) {
     throw new HttpError(403, 'Forbidden', `malicious path: ${path}`);
   }
@@ -411,10 +411,10 @@ let confine = (path: String): String => {
     joined = `${joined}/${kept[i]}`;
   }
   return joined;
-};
+}
 
 /** Whether any segment of a confined path starts with a dot. */
-let hasHiddenSegment = (path: String): boolean => {
+function hasHiddenSegment(path: String): boolean {
   if (path == '.') {
     return false;
   }
@@ -424,7 +424,7 @@ let hasHiddenSegment = (path: String): boolean => {
     }
   }
   return false;
-};
+}
 
 /** The stat of a path under `base`, or the HttpError its failure maps to. */
 async function statOf(base: Unmanaged<Descriptor>, path: String): Future<FileStat> {
@@ -447,7 +447,7 @@ async function openFile(base: Unmanaged<Descriptor>, path: String): Future<Own<D
 
 /** 404 for a path that does not name a file, 500 for anything else;
  * an error that is not the file system's passes through. */
-let httpErrorOf = (e: Error): Error => {
+function httpErrorOf(e: Error): Error {
   if (!(e is FsError)) {
     return e;
   }
@@ -457,10 +457,10 @@ let httpErrorOf = (e: Error): Error => {
     return new HttpError(404);
   }
   return new HttpError(500);
-};
+}
 
 /** Every `Accept-Encoding` value of a request, as one list. */
-let acceptEncodingOf = (req: Request): String => {
+function acceptEncodingOf(req: Request): String {
   let values = req.getHeaders('accept-encoding');
   if (values.length == 0) {
     return '';
@@ -470,7 +470,7 @@ let acceptEncodingOf = (req: Request): String => {
     joined = `${joined},${values[i]}`;
   }
   return joined;
-};
+}
 
 /**
  * Whether an `Accept-Encoding` list takes `coding` at least as
@@ -478,13 +478,13 @@ let acceptEncodingOf = (req: Request): String => {
  * below identity's. A coding not listed takes the `*` entry's q-value,
  * and identity is acceptable at 1 unless the list says otherwise.
  */
-let acceptsEncoding = (header: String, coding: String): boolean => {
+function acceptsEncoding(header: String, coding: String): boolean {
   let wanted = qualityOf(header, coding, 0);
   return wanted > 0 && wanted >= qualityOf(header, 'identity', 1000);
-};
+}
 
 /** A coding's q-value in thousandths, or `fallback` when unlisted. */
-let qualityOf = (header: String, coding: String, fallback: i32): i32 => {
+function qualityOf(header: String, coding: String, fallback: i32): i32 {
   var star = -1;
   for (let item in header.split(',')) {
     let parts = item.split(';');
@@ -507,10 +507,10 @@ let qualityOf = (header: String, coding: String, fallback: i32): i32 => {
     }
   }
   return if (star >= 0) star else fallback;
-};
+}
 
 /** A q-value (`0`, `0.5`, `1.000`) in thousandths; 0 if malformed. */
-let parseQuality = (text: String): i32 => {
+function parseQuality(text: String): i32 {
   if (text.length == 0) {
     return 0;
   }
@@ -532,13 +532,13 @@ let parseQuality = (text: String): i32 => {
     scale = div(scale, 10);
   }
   return q;
-};
+}
 
 /**
  * Whether an `If-None-Match` header matches an entity tag, by weak
  * comparison: `W/` prefixes are ignored.
  */
-let matchesEtag = (header: String | null, etag: String): boolean => {
+function matchesEtag(header: String | null, etag: String): boolean {
   if (header == null) {
     return false;
   }
@@ -550,10 +550,11 @@ let matchesEtag = (header: String | null, etag: String): boolean => {
     }
   }
   return false;
-};
+}
 
-let stripWeak = (tag: String): String =>
-    if (tag.startsWith('W/')) tag.sliceBytes(2, tag.length) else tag;
+function stripWeak(tag: String): String {
+  return if (tag.startsWith('W/')) tag.sliceBytes(2, tag.length) else tag;
+}
 
 let DAY_NAMES = ['Thu', 'Fri', 'Sat', 'Sun', 'Mon', 'Tue', 'Wed'];
 let MONTH_NAMES = [
@@ -562,14 +563,16 @@ let MONTH_NAMES = [
 ];
 
 /** Two digits, zero-padded. */
-let pad2 = (n: i32) => if (n < 10) `0${n}` else `${n}`;
+function pad2(n: i32) {
+  return if (n < 10) `0${n}` else `${n}`;
+}
 
 /**
  * An HTTP date (RFC 9110 IMF-fixdate) for seconds since the Unix
  * epoch: `Tue, 13 Oct 2026 15:16:23 GMT`. Times before the epoch are
  * given as the epoch.
  */
-export let httpDate = (epochSeconds: i64): String => {
+export function httpDate(epochSeconds: i64): String {
   let seconds = if (epochSeconds < (0 as i64)) 0 as i64 else epochSeconds;
   let days = div(seconds, 86400 as i64) as i32;
   let inDay = (seconds - (days as i64) * (86400 as i64)) as i32;
@@ -589,4 +592,4 @@ export let httpDate = (epochSeconds: i64): String => {
   let mm = pad2(div(inDay % 3600, 60));
   let ss = pad2(inDay % 60);
   return `${weekday}, ${pad2(day)} ${MONTH_NAMES[month - 1]} ${year} ${hh}:${mm}:${ss} GMT`;
-};
+}

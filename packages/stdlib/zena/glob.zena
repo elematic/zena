@@ -36,7 +36,7 @@ import { StringBuilder } from 'zena:core';
 /**
  * Returns true if `pattern` contains any glob syntax ('*', '?', '[', '{').
  */
-export let hasMagic = (pattern: String): boolean => {
+export function hasMagic(pattern: String): boolean {
   for (var i = 0; i < pattern.length; i += 1) {
     let b = pattern.getByteAt(i);
     if (b == 42 || b == 63 || b == 91 || b == 123) { // '*', '?', '[', '{'
@@ -44,27 +44,27 @@ export let hasMagic = (pattern: String): boolean => {
     }
   }
   return false;
-};
+}
 
 /**
  * Translates a glob pattern to an anchored regular expression string.
  *
  * @throws Error if a `{` has no matching `}`.
  */
-export let globToRegex = (pattern: String): String => {
+export function globToRegex(pattern: String): String {
   let sb = new StringBuilder();
   sb.appendByte(94); // '^'
   translateRange(pattern, 0, pattern.length, sb);
   sb.appendByte(36); // '$'
   return sb.toString();
-};
+}
 
 /**
  * The index one past a `[...]` class starting at `start`, or `end` if it
  * runs off the range. Brace scanning skips classes whole, so a `{` or
  * `,` inside one stays a class member.
  */
-let skipClass = (pattern: String, start: i32, end: i32) => {
+function skipClass(pattern: String, start: i32, end: i32) {
   var i = start + 1;
   if (i < end && pattern.getByteAt(i) == 33) { // '[!'
     i += 1;
@@ -76,19 +76,19 @@ let skipClass = (pattern: String, start: i32, end: i32) => {
     i += 1;
   }
   return if (i < end) i + 1 else end;
-};
+}
 
 /**
  * Translates `pattern[start..end)` into `sb`. A `{a,b}` becomes the
  * alternation `(?:a|b)`, each alternative translated the same way, so
  * alternatives nest and carry wildcards of their own.
  */
-let translateRange = (
+function translateRange(
   pattern: String,
   start: i32,
   end: i32,
   sb: StringBuilder,
-): void => {
+): void {
   var i = start;
 
   while (i < end) {
@@ -147,19 +147,19 @@ let translateRange = (
       i += 1;
     }
   }
-};
+}
 
 /**
  * Translates the `{...}` group opening at `open` and returns the index
  * after its closing `}`. Commas split alternatives only at the group's
  * own depth; nested groups are translated when their alternative is.
  */
-let translateBraces = (
+function translateBraces(
   pattern: String,
   open: i32,
   end: i32,
   sb: StringBuilder,
-): i32 => {
+): i32 {
   var depth = 0;
   var altStart = open + 1;
   var i = open;
@@ -187,7 +187,7 @@ let translateBraces = (
     i += 1;
   }
   throw new Error(`Unclosed brace in glob pattern: ${pattern}`);
-};
+}
 
 // ============================================================================
 // GlobPattern Class
@@ -215,10 +215,10 @@ export class GlobPattern {
 /**
  * Tests if `path` matches `pattern`.
  */
-export let matchGlob = (pattern: String, path: String): boolean => {
+export function matchGlob(pattern: String, path: String): boolean {
   let gp = new GlobPattern(pattern);
   return gp.matches(path);
-};
+}
 
 /**
  * An ordered list of patterns in which a `!` prefix excludes, read the

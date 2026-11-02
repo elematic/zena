@@ -249,15 +249,15 @@ export class JsonArray {
 
 // === JSON Stringify Helpers ===
 
-let hexDigit = (n: i32) => {
+function hexDigit(n: i32) {
   if (n < 10) {
     return 48 + n;  // '0' = 48
   } else {
     return 97 + n - 10;  // 'a' = 97
   }
-};
+}
 
-let escapeJsonString = (sb: StringBuilder, s: String) => {
+function escapeJsonString(sb: StringBuilder, s: String) {
   sb.appendByte(34);
   var i = 0;
   var spanStart = 0;
@@ -300,13 +300,13 @@ let escapeJsonString = (sb: StringBuilder, s: String) => {
     sb.appendSlice(s, spanStart, i);
   }
   sb.appendByte(34);
-};
+}
 
-let stringifyI32 = (sb: StringBuilder, n: i32) => {
+function stringifyI32(sb: StringBuilder, n: i32) {
   sb.appendI32(n);
-};
+}
 
-let stringifyF64 = (sb: StringBuilder, n: f64) => {
+function stringifyF64(sb: StringBuilder, n: f64) {
   // Handle NaN - JSON doesn't support NaN, write null
   if (n != n) {
     sb.append("null");
@@ -325,9 +325,9 @@ let stringifyF64 = (sb: StringBuilder, n: f64) => {
   
   // Use standard f64 formatting
   sb.appendF64(n);
-};
+}
 
-let stringifyValue = (sb: StringBuilder, value: JsonValue, indent: String | null, depth: i32) => {
+function stringifyValue(sb: StringBuilder, value: JsonValue, indent: String | null, depth: i32) {
   if (value == null) {
     sb.append("null");
   } else if (value is JsonObject) {
@@ -351,17 +351,17 @@ let stringifyValue = (sb: StringBuilder, value: JsonValue, indent: String | null
     // Fallback for unknown types
     sb.append("null");
   }
-};
+}
 
-let writeIndent = (sb: StringBuilder, indent: String, depth: i32) => {
+function writeIndent(sb: StringBuilder, indent: String, depth: i32) {
   var i = 0;
   while (i < depth) {
     sb.append(indent);
     i += 1;
   }
-};
+}
 
-let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: String | null, depth: i32): void => {
+function stringifyObject(sb: StringBuilder, obj: JsonObject, indent: String | null, depth: i32): void {
   if (indent != null) {
     // Pretty-print mode
     if (obj.size == 0) {
@@ -398,9 +398,9 @@ let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: String | null
     });
     sb.appendByte(125);
   }
-};
+}
 
-let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: String | null, depth: i32): void => {
+function stringifyArray(sb: StringBuilder, arr: JsonArray, indent: String | null, depth: i32): void {
   let len = arr.length;
   if (indent != null) {
     // Pretty-print mode
@@ -434,21 +434,21 @@ let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: String | null, 
     }
     sb.appendByte(93);
   }
-};
+}
 
 /**
  * Serialize any JSON value to a string.
  * @param value The JSON value to serialize
  * @param indent Optional indentation string for pretty-printing (e.g., "  " or "\t")
  */
-export let stringify = (value: JsonValue, indent: String | null = null): String => {
+export function stringify(value: JsonValue, indent: String | null = null): String {
   let sb = new StringBuilder(64);
   stringifyValue(sb, value, indent, 0);
   if (indent != null) {
     sb.appendByte(10);
   }
   return sb.toString();
-};
+}
 
 // === Parse Options ===
 
@@ -480,7 +480,7 @@ export class JsonParseError extends Error {
 // === Parser ===
 
 /** Writes the code point `code` as UTF-8. */
-let appendUtf8 = (out: StringBuilder, code: i32) => {
+function appendUtf8(out: StringBuilder, code: i32) {
   if (code < 0x80) {
     out.appendByte(code);
   } else if (code < 0x800) {
@@ -496,7 +496,7 @@ let appendUtf8 = (out: StringBuilder, code: i32) => {
     out.appendByte(0x80 | ((code >> 6) & 0x3F));
     out.appendByte(0x80 | (code & 0x3F));
   }
-};
+}
 
 class JsonParser {
   #input: String;
@@ -1016,15 +1016,15 @@ class JsonParser {
 
 // === Public API ===
 
-export let parseJson = (input: String, options: JsonOptions | null = null): JsonValue => {
+export function parseJson(input: String, options: JsonOptions | null = null): JsonValue {
   let parser = new JsonParser(input, options);
   return parser.parse();
-};
+}
 
 // === jq-Style Query Functions ===
 
 // Get a value by path (e.g., ".foo.bar[0].baz")
-export let jsonGet = (value: JsonValue, path: String): JsonValue => {
+export function jsonGet(value: JsonValue, path: String): JsonValue {
   let reader = new StringReader(path);
   var current = value;
   
@@ -1087,7 +1087,7 @@ export let jsonGet = (value: JsonValue, path: String): JsonValue => {
   }
   
   return current;
-};
+}
 
 // ============================================================================
 // JsonBuilder - Streaming JSON construction

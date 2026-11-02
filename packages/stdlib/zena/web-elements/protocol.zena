@@ -24,111 +24,126 @@ import { stringHandle, stringFromHandle } from './host.zena';
 
 // The definitions: a list, then each one's record.
 
-export let webui_element_count = (): i32 => definitions.length;
+export function webui_element_count(): i32 {
+  return definitions.length;
+}
 
-export let webui_element_at = (index: i32): ElementDefinition => definitions[index];
+export function webui_element_at(index: i32): ElementDefinition {
+  return definitions[index];
+}
 
-export let webui_definition_tag = (definition: ElementDefinition): externref =>
-  stringHandle(definition.tag);
+export function webui_definition_tag(definition: ElementDefinition): externref {
+  return stringHandle(definition.tag);
+}
 
 /** The definition's stylesheet text, or null for none. */
-export let webui_definition_styles = (definition: ElementDefinition): externref | null => {
+export function webui_definition_styles(definition: ElementDefinition): externref | null {
   let result = stylesOf(definition);
   if (result == null) {
     return null;
   }
   return stringHandle(result.cssText);
-};
+}
 
-export let webui_definition_property_count = (definition: ElementDefinition): i32 =>
-  definition.properties.length;
+export function webui_definition_property_count(definition: ElementDefinition): i32 {
+  return definition.properties.length;
+}
 
-export let webui_definition_property = (definition: ElementDefinition, index: i32): PropertyDef =>
-  definition.properties[index];
+export function webui_definition_property(definition: ElementDefinition, index: i32): PropertyDef {
+  return definition.properties[index];
+}
 
 /** The constructor: a new instance of the definition. */
-export let webui_definition_create = (definition: ElementDefinition): ZenaElement =>
-  createElement(definition);
+export function webui_definition_create(definition: ElementDefinition): ZenaElement {
+  return createElement(definition);
+}
 
 // A property's record.
 
-export let webui_property_name = (property: PropertyDef): externref => stringHandle(property.name);
+export function webui_property_name(property: PropertyDef): externref {
+  return stringHandle(property.name);
+}
 
-export let webui_property_attribute = (property: PropertyDef): externref =>
-  stringHandle(property.attribute);
+export function webui_property_attribute(property: PropertyDef): externref {
+  return stringHandle(property.attribute);
+}
 
-export let webui_property_kind = (property: PropertyDef): i32 => propertyKind(property) as i32;
+export function webui_property_kind(property: PropertyDef): i32 {
+  return propertyKind(property) as i32;
+}
 
 // An instance's lifecycle and properties.
 
-export let webui_element_connected = (element: ZenaElement): void => {
+export function webui_element_connected(element: ZenaElement): void {
   element.connected();
-};
+}
 
-export let webui_element_disconnected = (element: ZenaElement): void => {
+export function webui_element_disconnected(element: ZenaElement): void {
   element.disconnected();
-};
+}
 
 /** The property's observed attribute was set; `value` is the attribute's text. */
-export let webui_element_attribute_changed = (element: ZenaElement, property: PropertyDef,
-    value: externref): void => {
+export function webui_element_attribute_changed(element: ZenaElement, property: PropertyDef,
+    value: externref): void {
   if (propertyKind(property) == PropertyKind.Host) {
     setHostProperty(element, property, value);
     element.attributeChanged(property.attribute, stringFromHandle(value));
     return;
   }
   applyAttribute(element, property, stringFromHandle(value));
-};
+}
 
-export let webui_element_attribute_removed = (element: ZenaElement, property: PropertyDef): void => {
+export function webui_element_attribute_removed(element: ZenaElement, property: PropertyDef): void {
   removeAttribute(element, property);
-};
+}
 
-export let webui_element_get_extern = (element: ZenaElement, property: PropertyDef): externref | null => {
+export function webui_element_get_extern(element: ZenaElement, property: PropertyDef): externref | null {
   let boxed = readProperty(element, property);
   if (boxed is Box<String>) {
-    return stringHandle((boxed as Box<String>).value);
+    return stringHandle(boxed.value);
   }
   if (boxed is Box<HostValue | null>) {
-    let host = (boxed as Box<HostValue | null>).value;
-    return if (host == null) null else (host as HostValue).handle;
+    let host = boxed.value;
+    return host?.handle;
   }
   if (boxed is Box<HostValue>) {
-    return (boxed as Box<HostValue>).value.handle;
+    return boxed.value.handle;
   }
   return null;
-};
+}
 
-export let webui_element_get_number = (element: ZenaElement, property: PropertyDef): f64 => {
+export function webui_element_get_number(element: ZenaElement, property: PropertyDef): f64 {
   let boxed = readProperty(element, property);
   if (boxed is Box<i32>) {
-    return (boxed as Box<i32>).value as f64;
+    return boxed.value as f64;
   }
   if (boxed is Box<f64>) {
-    return (boxed as Box<f64>).value;
+    return boxed.value;
   }
   if (boxed is Box<boolean>) {
-    return if ((boxed as Box<boolean>).value) 1.0 else 0.0;
+    return if (boxed.value) 1.0 else 0.0;
   }
   return 0.0;
-};
+}
 
-export let webui_element_set_extern = (element: ZenaElement, property: PropertyDef,
-    value: externref): void => {
+export function webui_element_set_extern(element: ZenaElement, property: PropertyDef,
+    value: externref): void {
   if (propertyKind(property) == PropertyKind.Host) {
     setHostProperty(element, property, value);
   } else {
     setTextProperty(element, property, stringFromHandle(value));
   }
-};
+}
 
-export let webui_element_set_number = (element: ZenaElement, property: PropertyDef,
-    value: f64): void => {
+export function webui_element_set_number(element: ZenaElement, property: PropertyDef,
+    value: f64): void {
   setNumberProperty(element, property, value);
-};
+}
 
-export let webui_element_render = (element: ZenaElement): TemplateResult => element.render();
+export function webui_element_render(element: ZenaElement): TemplateResult {
+  return element.render();
+}
 
-export let webui_element_updated = (element: ZenaElement, first: i32): void => {
+export function webui_element_updated(element: ZenaElement, first: i32): void {
   element.updated(first != 0);
-};
+}

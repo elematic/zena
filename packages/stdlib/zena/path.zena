@@ -100,9 +100,9 @@ export let delimiter = ':';
 /**
  * Returns true if `path` is an absolute path (starts with '/').
  */
-export let isAbsolute = (path: String): boolean => {
+export function isAbsolute(path: String): boolean {
   return path.length > 0 && path.getByteAt(0) == 47;
-};
+}
 
 /**
  * Splits `path` by the separator into non-empty segments using a two-pass
@@ -114,7 +114,7 @@ export let isAbsolute = (path: String): boolean => {
  * split('a//b')         // ['a', 'b']
  * ```
  */
-export let split = (path: String): FixedArray<PathSegment> => {
+export function split(path: String): FixedArray<PathSegment> {
   if (path.length == 0) {
     return new FixedArray<PathSegment>(0, new PathSegment.unchecked(''));
   }
@@ -161,7 +161,7 @@ export let split = (path: String): FixedArray<PathSegment> => {
   }
 
   return parts;
-};
+}
 
 /**
  * Normalizes `path`, resolving '.' and '..' segments and collapsing
@@ -177,7 +177,7 @@ export let split = (path: String): FixedArray<PathSegment> => {
  * normalize('')              // '.'
  * ```
  */
-export let normalize = (path: String): String => {
+export function normalize(path: String): String {
   if (path.length == 0) {
     return '.';
   }
@@ -234,7 +234,7 @@ export let normalize = (path: String): String => {
     sb.append(segments[j]);
   }
   return sb.toString();
-};
+}
 
 /**
  * Returns the directory name of `path`, similar to POSIX dirname.
@@ -249,7 +249,7 @@ export let normalize = (path: String): String => {
  * dirname('/')      // '/'
  * ```
  */
-export let dirname = (path: String): String => {
+export function dirname(path: String): String {
   if (path.length == 0) {
     return '.';
   }
@@ -271,7 +271,7 @@ export let dirname = (path: String): String => {
   // Strip redundant slashes before the separator
   for (; i > 0 && path.getByteAt(i - 1) == 47; i -= 1) {}
   return if (i == 0) '/' else path.sliceBytes(0, i);
-};
+}
 
 /**
  * Returns the last component of `path`, similar to POSIX basename.
@@ -286,7 +286,7 @@ export let dirname = (path: String): String => {
  * basename('/')                    // '/'
  * ```
  */
-export let basename = (path: String, suffix: String = ''): String => {
+export function basename(path: String, suffix: String = ''): String {
   if (path.length == 0) {
     return '';
   }
@@ -304,7 +304,7 @@ export let basename = (path: String, suffix: String = ''): String => {
     return base.sliceBytes(0, base.length - suffix.length);
   }
   return base;
-};
+}
 
 /**
  * Returns the extension of `path` from the last '.' to the end of the
@@ -320,7 +320,7 @@ export let basename = (path: String, suffix: String = ''): String => {
  * extname('foo.')         // '.'
  * ```
  */
-export let extname = (path: String): String => {
+export function extname(path: String): String {
   let base = basename(path);
   if (base.length == 0 || base == '.' || base == '..') {
     return '';
@@ -338,7 +338,7 @@ export let extname = (path: String): String => {
     return '';
   }
   return base.sliceBytes(dotIndex, base.length);
-};
+}
 
 /**
  * Replaces or appends the extension of `path`.
@@ -353,7 +353,7 @@ export let extname = (path: String): String => {
  * withExtension('main', '.wasm')       // 'main.wasm'
  * ```
  */
-export let withExtension = (path: String, newExt: String): String => {
+export function withExtension(path: String, newExt: String): String {
   let ext = extname(path);
   let prefix = if (ext.length > 0) {
     path.sliceBytes(0, path.length - ext.length)
@@ -366,13 +366,13 @@ export let withExtension = (path: String, newExt: String): String => {
     newExt
   };
   return `${prefix}${extToAdd}`;
-};
+}
 
 /**
  * Joins two path segments and normalizes the result.
  * If `b` is an absolute path, it replaces `a`.
  */
-export let join2 = (a: String, b: String): String => {
+export function join2(a: String, b: String): String {
   if (a.length == 0) {
     return normalize(b);
   }
@@ -383,13 +383,13 @@ export let join2 = (a: String, b: String): String => {
     return normalize(b);
   }
   return normalize(`${a}/${b}`);
-};
+}
 
 /**
  * Joins all given path segments together and normalizes the resulting path.
  * If any segment is absolute, preceding segments are ignored.
  */
-export let join = (parts: Array<String>): String => {
+export function join(parts: Array<String>): String {
   let sb = new StringBuilder();
   for (let part in parts) {
     if (part.length > 0) {
@@ -405,7 +405,7 @@ export let join = (parts: Array<String>): String => {
     }
   }
   return normalize(sb.toString());
-};
+}
 
 /**
  * Strips `prefix` from `path` if `path` begins with `prefix` at a directory boundary.
@@ -419,7 +419,7 @@ export let join = (parts: Array<String>): String => {
  * stripPrefix('/a/b', '/a/b')    // ''
  * ```
  */
-export let stripPrefix = (path: String, prefix: String): String | null => {
+export function stripPrefix(path: String, prefix: String): String | null {
   let pNorm = normalize(path);
   let prefNorm = normalize(prefix);
   if (pNorm == prefNorm) {
@@ -430,7 +430,7 @@ export let stripPrefix = (path: String, prefix: String): String | null => {
     return pNorm.sliceBytes(prefWithSlash.length, pNorm.length);
   }
   return null;
-};
+}
 
 /**
  * Computes the relative path from `from` to `to`.
@@ -443,7 +443,7 @@ export let stripPrefix = (path: String, prefix: String): String | null => {
  * relative('/a/b/c', '/a/d/e')  // '../../d/e'
  * ```
  */
-export let relative = (from: String, to: String): String => {
+export function relative(from: String, to: String): String {
   let fromNorm = normalize(from);
   let toNorm = normalize(to);
 
@@ -490,7 +490,7 @@ export let relative = (from: String, to: String): String => {
   }
 
   return sb.toString();
-};
+}
 
 /**
  * A strongly-typed representation of a filesystem path.

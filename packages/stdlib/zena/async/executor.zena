@@ -60,7 +60,7 @@ class TaskQueue {
 }
 
 var queue: TaskQueue | null = null;
-let getQueue = () => {
+function getQueue() {
   let q = queue;
   if (q != null) {
     return q;
@@ -68,7 +68,7 @@ let getQueue = () => {
   let newQueue = new TaskQueue();
   queue = newQueue;
   return newQueue;
-};
+}
 
 /**
  * A source of completions that arrive from outside the queue, and that
@@ -108,9 +108,9 @@ export interface Parker {
 var parker: Parker | null = null;
 
 /** Register the drain loop's park source, replacing any previous one. */
-export let setParker = (p: Parker): void => {
+export function setParker(p: Parker): void {
   parker = p;
-};
+}
 
 /**
  * The park source a *synchronous* wait falls back to: `runFuture`, once
@@ -128,30 +128,30 @@ export let setParker = (p: Parker): void => {
 var blockingParker: Parker | null = null;
 
 /** Register the synchronous wait's park source. */
-export let setBlockingParker = (p: Parker): void => {
+export function setBlockingParker(p: Parker): void {
   blockingParker = p;
-};
+}
 
 /** One blocking turn of the synchronous wait's park source: true when
  * it delivered something, false when there is nothing to wait on or no
  * source is registered. */
-export let parkBlocking = (): boolean => {
+export function parkBlocking(): boolean {
   let p = blockingParker;
   if (p == null) {
     return false;
   }
   return p.park();
-};
+}
 
 /** Enqueue a task on the microtask queue. */
-export let scheduleTask = (task: Waiter): void => {
+export function scheduleTask(task: Waiter): void {
   getQueue().schedule(task);
-};
+}
 
 /** Enqueue a callback on the microtask queue. */
-export let scheduleMicrotask = (cb: () => void): void => {
+export function scheduleMicrotask(cb: () => void): void {
   getQueue().schedule(new ClosureWaiter(cb));
-};
+}
 
 /**
  * Run microtasks until the queue is empty and nothing external is left
@@ -162,7 +162,7 @@ export let scheduleMicrotask = (cb: () => void): void => {
  * that delivers is drained in turn, until the parker reports nothing
  * outstanding.
  */
-export let drainMicrotasks = (): void => {
+export function drainMicrotasks(): void {
   let q = getQueue();
   q.drain();
   let p = parker;
@@ -172,4 +172,4 @@ export let drainMicrotasks = (): void => {
       q.drain();
     }
   }
-};
+}

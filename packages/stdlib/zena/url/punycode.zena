@@ -42,10 +42,12 @@ let ADAPT_LIMIT = 455;
  * is far smaller than the distance from a non-integral quotient to the
  * nearest integer, so truncating never lands on the wrong side.
  */
-let divide = (a: i32, b: i32) => ((a as f64) / (b as f64)) as i32;
+function divide(a: i32, b: i32) {
+  return ((a as f64) / (b as f64)) as i32;
+}
 
 /** RFC 3492 section 6.1: the bias adaptation function. */
-let adapt = (rawDelta: i32, numPoints: i32, firstTime: boolean) => {
+function adapt(rawDelta: i32, numPoints: i32, firstTime: boolean) {
   var delta = if (firstTime) divide(rawDelta, DAMP) else divide(rawDelta, 2);
   delta += divide(delta, numPoints);
   var k = 0;
@@ -54,26 +56,28 @@ let adapt = (rawDelta: i32, numPoints: i32, firstTime: boolean) => {
     k += BASE;
   }
   return k + divide((BASE - TMIN + 1) * delta, delta + SKEW);
-};
+}
 
 /** The threshold for digit position `k`, clamped to [TMIN, TMAX]. */
-let threshold = (k: i32, bias: i32) => {
+function threshold(k: i32, bias: i32) {
   if (k <= bias + TMIN) return TMIN;
   if (k >= bias + TMAX) return TMAX;
   return k - bias;
-};
+}
 
 /** Digit value (0..35) to its ASCII character: 0-25 to 'a'-'z', 26-35 to '0'-'9'. */
-let digitToChar = (d: i32) => if (d < 26) 0x61 + d else 0x30 + (d - 26);
+function digitToChar(d: i32) {
+  return if (d < 26) 0x61 + d else 0x30 + (d - 26);
+}
 
 /** The inverse, returning BASE for anything that is not a Punycode digit. */
-let charToDigit = (c: i32) => {
+function charToDigit(c: i32) {
   if (c >= 0x30 && c <= 0x39) return c - 0x30 + 26;
   if (c >= 0x61 && c <= 0x7A) return c - 0x61;
   // The decoder accepts uppercase; the encoder never produces it.
   if (c >= 0x41 && c <= 0x5A) return c - 0x41;
   return BASE;
-};
+}
 
 /**
  * Decodes UTF-8 bytes to code points, or null if the bytes are malformed.
@@ -81,7 +85,7 @@ let charToDigit = (c: i32) => {
  * Exported for idna.zena, which walks the same code points; it is not part of
  * the library's public surface, which index.zena defines.
  */
-export let toCodePoints = (s: String): Array<i32> | null => {
+export function toCodePoints(s: String): Array<i32> | null {
   let out = new Array<i32>();
   var i = 0;
   while (i < s.length) {
@@ -108,10 +112,10 @@ export let toCodePoints = (s: String): Array<i32> | null => {
     }
   }
   return out;
-};
+}
 
 /** Appends one code point to `sb` as UTF-8. Exported alongside `toCodePoints`. */
-export let appendCodePoint = (sb: StringBuilder, cp: i32): void => {
+export function appendCodePoint(sb: StringBuilder, cp: i32): void {
   if (cp < 0x80) {
     sb.appendByte(cp);
   } else if (cp < 0x800) {
@@ -127,10 +131,10 @@ export let appendCodePoint = (sb: StringBuilder, cp: i32): void => {
     sb.appendByte(0x80 | ((cp >> 6) & 0x3F));
     sb.appendByte(0x80 | (cp & 0x3F));
   }
-};
+}
 
 /** Shifts everything from `at` right by one and writes `value` into the gap. */
-let insertAt = (a: GrowableArray<i32>, at: i32, value: i32) => {
+function insertAt(a: GrowableArray<i32>, at: i32, value: i32) {
   a.push(value);
   var i = a.length - 1;
   while (i > at) {
@@ -138,7 +142,7 @@ let insertAt = (a: GrowableArray<i32>, at: i32, value: i32) => {
     i -= 1;
   }
   a[at] = value;
-};
+}
 
 /**
  * Encodes one label, per RFC 3492 section 6.3.
@@ -150,7 +154,7 @@ let insertAt = (a: GrowableArray<i32>, at: i32, value: i32) => {
  * Returns null if the input is not well-formed UTF-8, or if the label is so
  * pathological that the encoder's arithmetic would overflow.
  */
-export let punycodeEncode = (label: String): String | null => {
+export function punycodeEncode(label: String): String | null {
   let decoded = toCodePoints(label);
   if (decoded == null) return null;
   let cps = decoded;
@@ -205,7 +209,7 @@ export let punycodeEncode = (label: String): String | null => {
     n += 1;
   }
   return sb.toString();
-};
+}
 
 /**
  * Decodes one label, per RFC 3492 section 6.2.
@@ -215,7 +219,7 @@ export let punycodeEncode = (label: String): String | null => {
  * non-ASCII byte in the literal portion, or a result outside the Unicode
  * scalar range.
  */
-export let punycodeDecode = (label: String): String | null => {
+export function punycodeDecode(label: String): String | null {
   // Everything before the LAST delimiter is literal, so a label may contain
   // delimiters of its own.
   var lastDelimiter = 0 - 1;
@@ -281,4 +285,4 @@ export let punycodeDecode = (label: String): String | null => {
     appendCodePoint(sb, cp);
   }
   return sb.toString();
-};
+}
