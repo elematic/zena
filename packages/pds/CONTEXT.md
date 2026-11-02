@@ -56,7 +56,10 @@ lexicons are in `packages/package-manager/lexicons`.
 - The package listings read `HostStore.summaries`, and memberships and
   public roles start from `HostStore.mentionsOf`, which the host writes
   from `Pds.onCommit` after each commit (`PackageHost.#indexCommit`). A
-  method a page calls must not read every account or repository.
+  method a page calls must not read every account or repository. These
+  indexes cover only this host's accounts: packages on other hosts,
+  search and dependents belong to the index, an AppView outside the PDS
+  (package-manager.md, "The index" and "The host's indexes").
 - Several servers may share a store. Write through `AccountStore.commit`,
   which checks the head, and take names with `HostStore.claimScope` and
   `claimName`, never with a read and then a write.

@@ -1416,8 +1416,9 @@ not planned.
 
 People sign in as themselves, never as an organization or a package:
 those have no passwords, and are managed through someone's role in them.
-The management interface is pages on the index's site, rendered on the
-server, and has no privileges of its own:
+The management interface is pages rendered on the server: on the package
+host's site, and on the index's once there is one
+([The index](#the-index)). It has no privileges of its own:
 
 - **Signing in.** The page signs in with atproto OAuth, as a browser
   client, and the OAuth session stays in the browser. The session's DPoP
@@ -1427,19 +1428,23 @@ server, and has no privileges of its own:
   `dev.zena-lang.host.createWebSession` and trades it for an HttpOnly
   cookie, which stands for the person to the site's pages and to nothing
   else. It lasts a day, and the page renews it from the OAuth session.
-- **Reading.** It reads public data from the index: packages, their
-  maintainers records, releases waiting for approvals, pending recovery
-  resets and PLC operations. It asks each host the person uses for the
-  memberships the index cannot see: the person's own, and for an
-  organization's owners and admins, the whole list.
+- **Reading.** It reads public data from the index, or from the host
+  until there is one: packages, their maintainers records, releases
+  waiting for approvals, pending recovery resets and PLC operations. It
+  asks each host the person uses for the memberships the index cannot
+  see: the person's own, and for an organization's owners and admins, the
+  whole list.
 - **Writing.** It writes attestations to the person's own repository.
   Everything else goes to the package's or organization's host, through
   the person's PDS, which proxies the call with a service-auth token
   (`atproto-proxy`, which the `rpc` permission covers).
 
-Neither the index nor the site's server holds anything that can publish,
-attest or change a record, so a compromised index can show wrong data,
-and do no more.
+The pages hold nothing that can publish, attest or change a record:
+every write goes through the person's PDS. On the package host's site,
+the host's server renders them, and it holds its packages' signing keys
+as their custodian ([Keys](#keys)), so a compromise of that server is a
+compromise of the host. The index's server holds no keys, so a
+compromised index can show wrong data, and do no more.
 
 The interface lists a person's packages, organizations and teams with
 their roles, the releases waiting for their approval, with the changes to
@@ -1614,26 +1619,70 @@ testing should use `did:web`.
 ### The index
 
 The index is an AppView that collects package records across PDSes. It
-lists the packages with `com.atproto.sync.listReposByCollection` on a
-relay, which returns every DID that has records of a collection (relays
-pass this request to a separate directory service). It reads the
-packages' profiles and releases from their PDSes. Later it follows the
-relay's stream of changes. It serves search, version lists, reverse
-dependencies and a web interface, and it feeds the checksum log. It runs
-no relay of its own: Bluesky's relays crawl PDSes, the package host's
-among them.
+serves search, version lists, reverse dependencies and a web interface,
+and it feeds the checksum log. It runs no relay of its own: Bluesky's
+relays crawl PDSes, the package host's among them once the host serves
+its firehose (`com.atproto.sync.subscribeRepos`).
 
-It starts in the package host's server, at the host's domain, which runs
-three parts kept apart in code: the PDS and the host's methods, the index,
-and the web pages, rendered on the server. The index keeps a store of its
-own, filled through one ingest interface from three sources in turn: the
-host's own commits, in the same process; other PDSes, found with
-`listReposByCollection` and read over HTTP; and the relay's stream, once
-Zena servers can follow a WebSocket. Public pages read only the index,
-even for packages hosted beside it, and show a package the same wherever
-it is hosted; pages about a person's memberships read the host. So search
-covers the host's packages first and grows with the sources, and the
-index can move to a server of its own without changing the pages.
+The index is a separate service, built when there is a second package
+host, or a need for search or for a package's dependents. Until then the
+package host is the only place packages are published, and its pages
+read the host's own indexes ([The host's indexes](#the-hosts-indexes)).
+
+The index keeps a store of its own, filled through one ingest interface
+from events in the firehose's form: the records a commit created,
+updated or deleted, and changes of handle. Two kinds of source feed it:
+
+- **A stream of changes**: the relay's stream, filtered to the
+  `dev.zena-lang.*` collections, from a relay or from a service that
+  filters it. Jetstream, Bluesky's JSON form of the stream, sends the
+  changed records without their commits' signatures, so the index reads
+  each such record again from its PDS, with its proof. Tap, Bluesky's
+  tool that verifies a filtered stream, can send each event to the index
+  as an HTTP request, so the index needs no WebSocket client.
+- **Backfill**: `com.atproto.sync.listReposByCollection` on a relay
+  returns every DID that has records of a collection (relays pass this
+  request to a separate directory service), and the index reads each of
+  those repositories from its PDS, as the same events.
+
+### The host's indexes
+
+The package host keeps two indexes of the accounts it holds, which its
+pages read:
+
+- **A catalog** of its packages: each one's name and scope, its profile's
+  description and license, its latest release that is not retracted, and
+  how many releases it has. The home and scope pages, and
+  `dev.zena-lang.host.listPackages` and `listScopes`, read it.
+- **Mentions**: for each person, the host's accounts whose records or
+  membership entries name them, and for each team, the packages whose
+  maintainers records name it. `getMemberships` and the people pages
+  start from it, and read the records of only those accounts.
+
+The host writes both after each commit to one of its accounts, from the
+PDS's commit events
+([pds-extensions.md](pds-extensions.md#commit-events)), and the
+operator's `sync-indexes` writes them again from the repositories.
+
+A host keeps its mentions even once there is an index. The memberships
+behind commitments are visible only to the host that keeps their entries
+([Private membership](#private-membership)), so no index can list them,
+and a person's memberships are read from each host they belong to. The
+catalog lists what one host holds, as `com.atproto.sync.listRepos` lists
+a PDS's repositories, and the index lists what every host holds. Once
+there is an index, the public pages read packages, versions and public
+roles from it, so that a package shows the same wherever it is hosted,
+and the rules for what a listing shows, such as the latest release that
+is not retracted, move into `package-manager` for the catalog and the
+index to share.
+
+| What                                                        | Who answers                                                 |
+| ----------------------------------------------------------- | ----------------------------------------------------------- |
+| A package's records, releases and attestations              | the PDS that holds the package                              |
+| The packages one host holds, with their latest releases     | that host's catalog                                         |
+| A person's memberships, private ones included               | each host they belong to, from its mentions and its entries |
+| Who maintains a package by DID, and what a person maintains | the host's mentions until there is an index, then the index |
+| Packages on every host, search, and dependents              | the index                                                   |
 
 ### Labelers
 
@@ -1982,8 +2031,8 @@ throttled. The host therefore limits who creates accounts and how many:
   automation accounts to `dev.zena-lang.*` records, enforces the limits on
   creating accounts and on storage, takes reports, and has the
   operator's tools for reviewing scopes and taking content down.
-- **The management interface**: a browser app on the index's site, with
-  no privileges of its own.
+- **The management interface**: pages on the host's site, and later the
+  index's, with no privileges of their own.
 - **Lexicons** for the records, the host's methods and the
   `dev.zena-lang.authPublish` permission set, in
   `packages/package-manager/lexicons`. Moving a package and recovering
