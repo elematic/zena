@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 12
+// An owner an `await` produces and the statement discards is released at
+// the end of the statement, as a discarded call's result is.
+import { Own, Disposable } from 'zena:core';
+
+var released = 0;
+
+resource class R {
+  new();
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+async function make(): Future<Own<R>> {
+  return new R();
+}
+
+function makeNow(): Own<R> {
+  return new R();
+}
+
+export async function main(): Future<i32> {
+  makeNow();
+  let afterCall = released;
+  await make();
+  return afterCall * 10 + released;
+}

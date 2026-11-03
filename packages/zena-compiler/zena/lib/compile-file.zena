@@ -20,7 +20,7 @@ import {
   Compiler, CompilerOptions, ProgramCheckResult, createCompiler, CompileOptions,
   checkCompilation, withBuiltinPackages, setCheckAllBodies
 } from './compiler.zena';
-import { DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
+import { DiagnosticCode, DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
 import { BinaryGenerator } from './codegen/binary-generator.zena';
 import { WatGenerator } from './codegen/wat-generator.zena';
 import { Program, CompilationUnit } from './program.zena';
@@ -260,6 +260,15 @@ function loadPackagesOrReport(
 
 function reportDiagnosticLine(kind: String, file: String, line: i32, column: i32, message: String) {
   console.error(`${file}:${i32ToString(line)}:${i32ToString(column)} - ${kind}: ${message}`);
+}
+
+/**
+ * Whether a warning is printed without `ZENA_WARN_UNNECESSARY_CASTS`: one
+ * about what the program does, where the others are hints about what it
+ * costs (casts, adaptations, boxing).
+ */
+function printsByDefault(code: DiagnosticCode) {
+  return code == DiagnosticCode.DiscardedOwner;
 }
 
 /**
@@ -816,7 +825,8 @@ export final class CompileSession {
             console.error("Error: " + diag.message);
           }
           hasError = true;
-        } else if (warnUnnecessaryCasts && diag.severity == DiagnosticSeverity.Warning) {
+        } else if (diag.severity == DiagnosticSeverity.Warning &&
+            (warnUnnecessaryCasts || printsByDefault(diag.code))) {
           if (diag.location != null) {
             let loc = diag.location as SourceSpan;
             reportDiagnosticLine("Warning", loc.file, loc.line, loc.column, diag.message);

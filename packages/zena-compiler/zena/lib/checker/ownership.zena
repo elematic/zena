@@ -2,7 +2,7 @@ import { HashSet } from 'zena:collections';
 import { growable } from 'zena:core';
 import { walkEnter } from '../visitor.zena';
 import {
-  AsExpression, AssignmentExpression, BinaryExpression, BindingPattern,
+  AsExpression, AssignmentExpression, AwaitExpression, BinaryExpression, BindingPattern,
   BindingProperty, CallExpression, ClassPattern, DeclareFunction,
   Expression, ExpressionStatement, Identifier, IdentifierPattern,
   IndexExpression, IsExpression, MatchExpression, MemberExpression,
@@ -1306,14 +1306,19 @@ function collectOwnedResources(t: Type, result: GrowableArray<ClassType>): boole
 }
 
 /**
- * A call or `new` whose result owns something, used as a statement: no
- * binding takes the owner, so it is released right there (#495). The
- * statement is marked for lowering, and the release's `:dispose` rooted
- * as an implicit drop's is.
+ * A call, `new` or `await` whose result owns something, used as a
+ * statement: no binding takes the owner, so it is released right there
+ * (#495). The statement is marked for lowering, and the release's
+ * `:dispose` rooted as an implicit drop's is.
+ *
+ * It is also a warning, since the release is easy to miss: a statement
+ * like `await app.listen(port);` reads as starting a server, and closes
+ * it again at once.
  */
 export function releaseDiscardedOwner(ctx: CheckerContext, stmt: Node, expression: Expression,
     exprType: Type): void {
-  if (!(expression is CallExpression) && !(expression is NewExpression)) {
+  if (!(expression is CallExpression) && !(expression is NewExpression) &&
+      !(expression is AwaitExpression)) {
     return;
   }
   let resources = ownedResourcesIn(exprType);
@@ -1322,6 +1327,8 @@ export function releaseDiscardedOwner(ctx: CheckerContext, stmt: Node, expressio
   }
   ctx.model.setScopeExitDrop(stmt, true);
   ctx.rootReleases(resources, true);
+  ctx.warning(`The '${typeToString(exprType)}' this statement discards is released at once. ` +
+      'To keep it, bind it to a name.', DiagnosticCode.DiscardedOwner, stmt.loc);
 }
 
 /**

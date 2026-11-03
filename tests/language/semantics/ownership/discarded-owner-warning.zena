@@ -1,0 +1,32 @@
+// @mode: check
+// A statement that discards an owner a call, `new` or `await` produced
+// releases it at once, and says so: a statement such as
+// `await app.listen(port);` reads as starting a server and closes it.
+import { Own, Disposable } from 'zena:core';
+
+resource class Server {
+  new();
+
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+function open(): Own<Server> {
+  return new Server();
+}
+
+async function listen(): Future<Own<Server>> {
+  return new Server();
+}
+
+function close(_server: Own<Server>): void {}
+
+export async function main(): Future<void> {
+  open(); // @warning: this statement discards is released at once
+  new Server(); // @warning: this statement discards is released at once
+  await listen(); // @warning: this statement discards is released at once
+  // A call that returns nothing, and an owner that is kept, are not
+  // discards.
+  close(open());
+  let kept = await listen();
+  close(kept);
+}
