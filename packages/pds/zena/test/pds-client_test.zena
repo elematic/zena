@@ -8,7 +8,7 @@ import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
 import {runFuture} from 'zena:async';
 import {MapValue, StringValue, newMap} from 'atproto:data';
-import {KeyType} from 'atproto:didkey';
+import {KeyType, formatDidKey} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
 import {InProcessPds} from 'pds:pds-client';
 import {CreateRecord, DeleteRecord, RepositoryError, Write} from 'pds:repository';
@@ -35,9 +35,14 @@ export let tests = suite('pds:pds-client', () => {
   test('makes a managed account, writes it in one commit, and reads every page back', (ctx) => {
     let pds = new Pds(new MemoryStorage());
     let client = new InProcessPds(pds, HOST);
-    runFuture(client.createAccount(DID, 'router.acme.pkg.test', new SigningKey(KeyType.Secp256k1,
-        new FixedArray<u8>(32, 7 as u8))));
-    equal((runFuture(pds.storage.getAccount(DID)) as Account).manager as String, HOST);
+    let temporary = new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8));
+    let made = runFuture(client.createAccount(DID, 'router.acme.pkg.test', temporary));
+    let account = runFuture(pds.storage.getAccount(DID)) as Account;
+    equal(account.manager as String, HOST);
+    // The PDS makes the account's signing key, which the host names in the
+    // DID document in place of the temporary one.
+    equal(formatDidKey(made), formatDidKey(runFuture(account.signingKey()).publicKey()));
+    isTrue(formatDidKey(made) != formatDidKey(temporary.publicKey()), 'a key of its own');
 
     let writes = new GrowableArray<Write>();
     for (var i = 0; i < 250; i += 1) {
