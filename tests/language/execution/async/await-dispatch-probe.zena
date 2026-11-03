@@ -1,0 +1,19 @@
+// @mode: run
+// @result: 14
+// An await of an async call and of a DeferredFuture in one program,
+// where the DeferredFuture overrides `subscribe`. Both settle and
+// resume. At -O1 both awaits call `subscribe` through the vtable, and
+// at -O2 both are devirtualized (#827); checking for the direct call
+// at -O1 is the codegen test that issue asks for.
+import {DeferredFuture} from 'zena:async';
+
+async function seven(): Future<i32> {
+  return 7;
+}
+
+export async function main(): Future<i32> {
+  let d: Future<i32> = new DeferredFuture<i32>(() => seven());
+  let a = await seven();
+  let b = await d;
+  return a + b;
+}
