@@ -71,8 +71,8 @@ use wasmtime::component::types::{
     ComponentFunc, ComponentInstance as InterfaceType, ComponentItem, Type,
 };
 use wasmtime::component::{
-    Accessor, AccessorTask, Component, Func, GuestTaskId, Instance, InstancePre, Linker,
-    Resource, ResourceAny, ResourceType, Val,
+    Accessor, AccessorTask, Component, Func, Instance, InstancePre, Linker, Resource,
+    ResourceAny, ResourceType, TaskGroupHook, TaskGroupId, Val,
 };
 use wasmtime::{
     AsContextMut, Engine, Result, Store, StoreContextMut, StoreLimitsBuilder, Trap, bail,
@@ -470,16 +470,48 @@ pub(crate) enum Callback {
 
 pub(crate) type CallbackSender = mpsc::UnboundedSender<Callback>;
 /// In an extension's store: the program's channel for each call from
-/// the program in flight, by the guest task running it.
-pub(crate) type Callbacks = HashMap<GuestTaskId, CallbackSender>;
+/// the program in flight, by the task group running it.
+pub(crate) type Callbacks = HashMap<TaskGroupId, CallbackSender>;
+/// In an extension's store: the task group it is running, as its
+/// [`GroupTracker`] records it.
+pub(crate) type CurrentGroup = Arc<std::sync::Mutex<Option<TaskGroupId>>>;
 
-/// The channel to the program for the call whose guest task the
-/// current host call runs in: the root of the async call stack, as
-/// the task that started the call registered it. None outside any call
-/// from the program, as in a task the extension started itself.
+/// Records the task group an extension's store enters and leaves. A
+/// group is one call into the store and every subtask that call
+/// creates, so the group running when the extension calls the host is
+/// the call from the program it belongs to.
+struct GroupTracker(CurrentGroup);
+
+impl TaskGroupHook for GroupTracker {
+    fn handle_start(&mut self, _: TaskGroupId) -> Result<()> {
+        Ok(())
+    }
+
+    fn handle_enter(&mut self, id: TaskGroupId) -> Result<()> {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+        Ok(())
+    }
+
+    fn handle_exit(&mut self, id: TaskGroupId) -> Result<()> {
+        let mut current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if *current == Some(id) {
+            *current = None;
+        }
+        Ok(())
+    }
+
+    fn handle_finish(&mut self, _: TaskGroupId) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The channel to the program for the call the current host call runs
+/// in, as the task that started the call registered it under its task
+/// group. None outside any call from the program, as in a task the
+/// extension started itself.
 fn current_callbacks(store: &mut StoreContextMut<'_, ComponentState>) -> Option<CallbackSender> {
-    let root = store.async_call_stack().ok()?.last()?;
-    store.data().callbacks.get(&root).cloned()
+    let group = (*store.data().current_group.lock().unwrap_or_else(|e| e.into_inner()))?;
+    store.data().callbacks.get(&group).cloned()
 }
 pub(crate) type ExtensionSender = mpsc::UnboundedSender<ToExtension>;
 
@@ -1060,13 +1092,16 @@ fn serve_callback(ctx: &mut Ctx<'_>, callback: Callback) -> Result<()> {
         } => match ctx {
             Ctx::Accessor(accessor) => {
                 accessor.with(|mut a| {
-                    a.spawn(ServeCallback {
-                        extension,
-                        interface,
-                        func,
-                        params,
-                        reply,
-                    })
+                    a.spawn(
+                        ServeCallback {
+                            extension,
+                            interface,
+                            func,
+                            params,
+                            reply,
+                        }
+                        .task(),
+                    )
                 })?;
             }
             Ctx::Direct(_) => {
@@ -1103,7 +1138,12 @@ struct DropOwn {
     any: ResourceAny,
 }
 
-impl AccessorTask<ComponentState> for DropOwn {
+impl DropOwn {
+    /// The drop as a task to spawn.
+    fn task(self) -> impl for<'fut> AccessorTask<'fut, ComponentState> {
+        async move |accessor: &Accessor<ComponentState>| self.run(accessor).await
+    }
+
     async fn run(self, accessor: &Accessor<ComponentState>) -> Result<()> {
         // The store is reachable only inside `with`. A failure is
         // reported, not returned: an error from a spawned task ends the
@@ -1133,7 +1173,12 @@ struct ServeCallback {
     reply: oneshot::Sender<Result<Carried>>,
 }
 
-impl AccessorTask<ComponentState> for ServeCallback {
+impl ServeCallback {
+    /// The call as a task to spawn.
+    fn task(self) -> impl for<'fut> AccessorTask<'fut, ComponentState> {
+        async move |accessor: &Accessor<ComponentState>| self.run(accessor).await
+    }
+
     async fn run(self, accessor: &Accessor<ComponentState>) -> Result<()> {
         let ServeCallback {
             extension,
@@ -1715,7 +1760,9 @@ impl Loaded {
                 .memory_size(usize::try_from(self.memory_limit).unwrap_or(usize::MAX))
                 .build();
         }
+        let current_group = state.current_group.clone();
         let mut store = Store::new(&self.engine, state);
+        store.task_group_hook(GroupTracker(current_group));
         if self.memory_limit > 0 {
             store.limiter(|state| &mut state.limits);
         }
@@ -1787,7 +1834,12 @@ struct RunCall {
     shared: Shared,
 }
 
-impl AccessorTask<ComponentState> for RunCall {
+impl RunCall {
+    /// The call as a task to spawn.
+    fn task(self) -> impl for<'fut> AccessorTask<'fut, ComponentState> {
+        async move |accessor: &Accessor<ComponentState>| self.run(accessor).await
+    }
+
     async fn run(self, accessor: &Accessor<ComponentState>) -> Result<()> {
         let RunCall {
             id,
@@ -1846,15 +1898,22 @@ async fn run_call(
     let mut results = vec![Val::Bool(false); result_types.len()];
     let started = accessor
         .with(|mut a| f.start_call_concurrent(a.as_context_mut(), &params, &mut results))?;
-    let task = started.task();
-    if let Some(callbacks) = callbacks {
+    let group = started.group();
+    if let Some(callbacks) = &callbacks {
         accessor.with(|mut a| {
-            a.get().callbacks.insert(task, callbacks);
+            a.get().callbacks.insert(group, callbacks.clone());
         });
     }
     let called = f.finish_call_concurrent(accessor, started).await;
     accessor.with(|mut a| {
-        a.get().callbacks.remove(&task);
+        // A finished group's id can be reused, and another call may
+        // have registered under it by now.
+        let callbacks_map = &mut a.get().callbacks;
+        if let (Some(ours), Some(registered)) = (&callbacks, callbacks_map.get(&group)) {
+            if registered.same_channel(ours) {
+                callbacks_map.remove(&group);
+            }
+        }
         let mut store = a.as_context_mut();
         release_borrowed(&mut store, &borrowed);
         called?;
@@ -1980,13 +2039,16 @@ fn serve(
                                 };
                                 accessor.with(|mut a| {
                                     arm_deadline(&mut a.as_context_mut(), state.deadline, &shared);
-                                    a.spawn(RunCall {
-                                        id,
-                                        call,
-                                        instance,
-                                        deadline: state.deadline,
-                                        shared: shared.clone(),
-                                    })
+                                    a.spawn(
+                                        RunCall {
+                                            id,
+                                            call,
+                                            instance,
+                                            deadline: state.deadline,
+                                            shared: shared.clone(),
+                                        }
+                                        .task(),
+                                    )
                                 })?;
                             }
                         }
@@ -2735,13 +2797,13 @@ impl extensions::HostWithStore<ComponentState> for wasmtime::component::HasSelf<
         for served in taken.served.values() {
             let object = served.object.try_lock().ok().and_then(|mut o| o.take());
             if let Some(any) = object {
-                host.spawn(DropOwn { any })?;
+                host.spawn(DropOwn { any }.task())?;
             }
         }
         if let Some(plugin) = &taken.plugin {
             let object = plugin.object.try_lock().ok().and_then(|mut o| o.take());
             if let Some(any) = object {
-                host.spawn(DropOwn { any })?;
+                host.spawn(DropOwn { any }.task())?;
             }
         }
         Ok(())

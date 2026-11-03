@@ -40,7 +40,7 @@ Rust crates that register graphics capabilities with a Wasmtime component
   `winit` for window management and event loops.
 - `frame-buffer-wasmtime`: host implementation of 2D software framebuffers.
 
-Both Zena and `wasi-gfx-runtime` use Wasmtime 48.
+Both Zena and `wasi-gfx-runtime` use Wasmtime 50.
 
 `zenafx` wraps Wasmtime, combining Zena's engine configuration with the
 `wasi-gfx` host extensions.
