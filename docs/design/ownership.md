@@ -1906,10 +1906,14 @@ a `match` arm's body (`registerPatternOwners`), so the release regions
 wrap the branch, after any guard, and cover its early exits
 (`lowerBranchStmt`, `lowerBranchValue`). A `match` arm whose record a core
 returns as fields has no region to carry the fields, so it releases with
-plain calls at its end (`emitPlainBranchDrops`). A call or `new` whose
-result owns something, used as a statement, is released where it is
+plain calls at its end (`emitPlainBranchDrops`). A call, `new` or `await`
+whose result owns something, used as a statement, is released where it is
 discarded (`releaseDiscardedOwner`, then `emitDrop` or `emitSlotsDrop` in
-lowering).
+lowering), and the checker warns there (`DiscardedOwner`, a warning the
+command line prints without `ZENA_WARN_UNNECESSARY_CASTS`). The
+`await` case leaked until #830: `await app.listen(port);` left a server
+running that nothing held, where the same statement on a synchronous
+call closed it.
 
 The pattern consumes its source, so an owner no name takes is released
 where the pattern takes it (#772): the owners under `_`, or in a `case _`
