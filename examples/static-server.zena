@@ -16,11 +16,13 @@ import { App, serve } from 'zena:http';
 export async function main(): Future<void> {
   let app = new App();
   app.use(async (req, res, next) => {
+    let method = req.method;
     let path = req.path;
-    await next();
-    console.log(`${req.method} ${path} -> ${res.statusCode}`);
+    await next(req);
+    console.log(`${method} ${path} -> ${res.statusCode}`);
   });
   app.use(serve('docs', {extensions: ['md']}));
   let server = await app.listen(8080 as u16);
   console.log(`Server listening on http://127.0.0.1:${server.port}`);
+  await server.done;
 }

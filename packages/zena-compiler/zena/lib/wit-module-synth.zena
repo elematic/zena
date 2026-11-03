@@ -152,7 +152,8 @@ var currentSpecifier = "";
  * version, the form `currentSpecifier` carries.
  */
 let ownedResourceSpecifiers = [
-  'zena-cli:host/process', 'zena-cli:host/wasm', 'wasi:filesystem/types'
+  'zena-cli:host/process', 'zena-cli:host/wasm', 'wasi:filesystem/types',
+  'wasi:http/types', 'zena-cli:host/http-server'
 ];
 
 function rendersAsResourceClass(specifier: String): boolean {
@@ -339,13 +340,14 @@ final class Ty {
   var resourceName = "";
   /** ResourceH only: whether the handle class is a `resource class`,
    * so that this position spells a handle — `Own<T>` for an own in a
-   * bare position, `Borrow<T>` for a borrow, `Unmanaged<T>` for an own
-   * inside a list, tuple, record or variant payload, which cannot
-   * hold an owner. See `rendersAsResourceClass`. */
+   * bare position or a tuple member there, `Borrow<T>` for a borrow,
+   * `Unmanaged<T>` for an own inside a list, record or variant
+   * payload, which cannot hold an owner. See `rendersAsResourceClass`. */
   var ownedClass = false;
-  /** Whether this type sits inside a list, tuple, record or variant
-   * payload: an aggregate's member cannot carry an affine type, so an
-   * own handle there is `Unmanaged<T>`, for the program to `adopt`. */
+  /** Whether this type sits inside a list, record or variant payload,
+   * directly or through tuples, options and results (`markInAggregate`):
+   * an aggregate's member cannot carry an affine type, so an own handle
+   * there is `Unmanaged<T>`, for the program to `adopt`. */
   var inAggregate = false;
   /** FutureH only: the payload's WIT source text, whitespace
    * collapsed — the canon type spelling the generated builtins name. */
@@ -355,6 +357,23 @@ final class Ty {
 
 function unsupported(reason: String) {
   return new Ty(TyKind.Unsupported, "", "", reason);
+}
+
+/**
+ * Mark `ty` as a list element, record field or variant payload, along
+ * with the members of a tuple, option or result it is, which sit in
+ * the same aggregate. A tuple is not an aggregate itself: a tuple in a
+ * bare position, such as a stream element or a function's result,
+ * carries owners (`(Own<Request>, Own<ResponseWriter>)`).
+ */
+function markInAggregate(ty: Ty): void {
+  ty.inAggregate = true;
+  if (ty.kind == TyKind.TupleT || ty.kind == TyKind.OptionT ||
+      ty.kind == TyKind.ResultT) {
+    for (let child in ty.children) {
+      markInAggregate(child);
+    }
+  }
 }
 
 /**
@@ -510,7 +529,7 @@ function classifyType(t: Type, ifaceItems: GrowableArray<InterfaceItem>): Ty {
       return pairTy(TyKind.BytesList);
     }
     let ty = pairTy(TyKind.ListT);
-    element.inAggregate = true;
+    markInAggregate(element);
     ty.children.push(element);
     return ty;
   }
@@ -546,7 +565,6 @@ function classifyType(t: Type, ifaceItems: GrowableArray<InterfaceItem>): Ty {
       if (child.kind == TyKind.Unsupported) {
         return child;
       }
-      child.inAggregate = true;
       ty.children.push(child);
     }
     layoutRecord(ty);
@@ -679,7 +697,7 @@ function classifyNamed(name: String, ifaceItems: GrowableArray<InterfaceItem>): 
           if (child.kind == TyKind.Unsupported) {
             return child;
           }
-          child.inAggregate = true;
+          markInAggregate(child);
           ty.children.push(child);
           ty.childNames.push(camelName(f.name.name));
         }
@@ -697,7 +715,7 @@ function classifyNamed(name: String, ifaceItems: GrowableArray<InterfaceItem>): 
           if (child.kind == TyKind.Unsupported) {
             return child;
           }
-          child.inAggregate = true;
+          markInAggregate(child);
           ty.children.push(child);
           // Prefixed with the variant's name: two variants in one
           // interface may declare same-named cases, and sealed cases
@@ -1071,19 +1089,26 @@ function errResultExpr(value: String): String {
   return `(false, ${value})`;
 }
 
-/** The test that the stored result `value` is ok. */
-function isOkResultExpr(okZ: String, value: String): String {
-  return `${value} is (true, ${okZ})`;
+/** A result arm's payload as a match arm binds it: `let ok3` and the
+ * name, or `_` and no name for a void arm. */
+final class ArmBinding {
+  pattern: String;
+  name: String;
+  new(this.pattern, this.name);
 }
 
-/** The ok payload of the stored result `value`, which is ok. */
-function okPayloadExpr(okZ: String, value: String): String {
-  return `(${value} as (true, ${okZ}))[1]`;
-}
-
-/** The error payload of the stored result `value`, which is an error. */
-function errPayloadExpr(errZ: String, value: String): String {
-  return `(${value} as (false, ${errZ}))[1]`;
+/**
+ * The binding for one arm of a stored result being lowered. The match
+ * moves the payload out once, so an owner inside it reaches the host
+ * exactly once, where reading it through a cast on each use would be a
+ * use after move.
+ */
+function resultArmBinding(arm: Ty, prefix: String, uses: SynthUses) {
+  if (isVoid(arm)) {
+    return new ArmBinding("_", "");
+  }
+  let name = `${prefix}${uses.nextTmp()}`;
+  return new ArmBinding(`let ${name}`, name);
 }
 
 /** Whether `ty` (or anything inside it) cannot be lifted yet. */
@@ -1351,7 +1376,7 @@ let reinterpretImport =
  * A lifted handle as the program holds it: the handle class around the
  * wire index. For a `resource class` that is an `Own<T>` fresh from its
  * constructor, except inside an aggregate, where it is disowned: a list
- * element or tuple member cannot carry an owner, and the program adopts
+ * element or record field cannot carry an owner, and the program adopts
  * the ones it keeps.
  */
 function liftedHandle(ty: Ty, handleExpr: String, uses: SynthUses): String {
@@ -1525,31 +1550,33 @@ function lowerMemStmts(ty: Ty, value: String, ptrExpr: String,
     // Only reachable as a future payload: the value is a stored result,
     // and it lowers as the canonical two-case variant.
     storedResultType(ty, uses);
-    let okZ = zenaTypeOf(ty.children[0], uses);
-    let errZ = zenaTypeOf(ty.children[1], uses);
     let payoff = payloadOffset(ty);
     uses.useAbi("storeU8");
+    let okBinding = resultArmBinding(ty.children[0], "ok", uses);
+    let errBinding = resultArmBinding(ty.children[1], "err", uses);
 
     let okStmts = growable<ZenaTemplate>([zena`storeU8(${ptrExpr}, 0);`]);
     if (!isVoid(ty.children[0])) {
-      okStmts.push(lowerMemStmts(ty.children[0],
-          okPayloadExpr(okZ, value),
+      okStmts.push(lowerMemStmts(ty.children[0], okBinding.name,
           displaced(ptrExpr, payoff), uses));
     }
 
     let errStmts = growable<ZenaTemplate>([zena`storeU8(${ptrExpr}, 1);`]);
     if (!isVoid(ty.children[1])) {
-      errStmts.push(lowerMemStmts(ty.children[1],
-          errPayloadExpr(errZ, value),
+      errStmts.push(lowerMemStmts(ty.children[1], errBinding.name,
           displaced(ptrExpr, payoff), uses));
     }
-    let isOk = isOkResultExpr(okZ, value);
+    let okPattern = okBinding.pattern;
+    let errPattern = errBinding.pattern;
 
     return zena`
-      if (${isOk}) {
-        ${okStmts}
-      } else {
-        ${errStmts}
+      match (${value}) {
+        case (true, ${okPattern}): {
+          ${okStmts}
+        }
+        case (false, ${errPattern}): {
+          ${errStmts}
+        }
       }
     `;
   }
@@ -1627,14 +1654,12 @@ function lowerMemStmts(ty: Ty, value: String, ptrExpr: String,
   if (ty.kind == TyKind.OptionT) {
     uses.option = true;
     uses.useAbi("storeU8");
-    let inner = ty.children[0];
-    let innerType = zenaTypeOf(inner, uses);
     let payoff = payloadOffset(ty);
-    let innerStmt = lowerMemStmts(inner,
-        `(${value} as Some<${innerType}>).value`,
+    let bound = `o${uses.nextTmp()}`;
+    let innerStmt = lowerMemStmts(ty.children[0], bound,
         displaced(ptrExpr, payoff), uses);
     return zena`
-      if (${value} is Some<${innerType}>) {
+      if (let Some {value: ${bound}} = ${value}) {
         storeU8(${ptrExpr}, 1);
         ${innerStmt}
       } else {
@@ -1847,12 +1872,10 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   }
   if (ty.kind == TyKind.OptionT) {
     uses.option = true;
-    let inner = ty.children[0];
-    let innerType = zenaTypeOf(inner, uses);
-    sb.append(indent).append(`if (${value} is Some<${innerType}>) {\n`);
+    let bound = `o${uses.nextTmp()}`;
+    sb.append(indent).append(`if (let Some {value: ${bound}} = ${value}) {\n`);
     writeSlot(sb, indent + "  ", slots[base], base, "1", "i32");
-    lowerFlatStmts(sb, inner,
-        `(${value} as Some<${innerType}>).value`,
+    lowerFlatStmts(sb, ty.children[0], bound,
         slots, base + 1, indent + "  ", uses);
     sb.append(indent).append("}\n");
     let total = flatCoreSlots(ty);
@@ -1862,22 +1885,24 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     // Only reachable as an async export's result: the value is a
     // stored result, lowered as the canonical two-case variant.
     storedResultType(ty, uses);
-    let okZ = zenaTypeOf(ty.children[0], uses);
-    let errZ = zenaTypeOf(ty.children[1], uses);
-    sb.append(indent).append(`if (${isOkResultExpr(okZ, value)}) {\n`);
-    writeSlot(sb, indent + "  ", slots[base], base, "0", "i32");
+    let okBinding = resultArmBinding(ty.children[0], "ok", uses);
+    let errBinding = resultArmBinding(ty.children[1], "err", uses);
+    let armIndent = indent + "    ";
+    sb.append(indent).append(`match (${value}) {\n`);
+    sb.append(indent).append(`  case (true, ${okBinding.pattern}): {\n`);
+    writeSlot(sb, armIndent, slots[base], base, "0", "i32");
     if (!isVoid(ty.children[0])) {
-      lowerFlatStmts(sb, ty.children[0],
-          okPayloadExpr(okZ, value),
-          slots, base + 1, indent + "  ", uses);
+      lowerFlatStmts(sb, ty.children[0], okBinding.name,
+          slots, base + 1, armIndent, uses);
     }
-    sb.append(indent).append("} else {\n");
-    writeSlot(sb, indent + "  ", slots[base], base, "1", "i32");
+    sb.append(indent).append("  }\n");
+    sb.append(indent).append(`  case (false, ${errBinding.pattern}): {\n`);
+    writeSlot(sb, armIndent, slots[base], base, "1", "i32");
     if (!isVoid(ty.children[1])) {
-      lowerFlatStmts(sb, ty.children[1],
-          errPayloadExpr(errZ, value),
-          slots, base + 1, indent + "  ", uses);
+      lowerFlatStmts(sb, ty.children[1], errBinding.name,
+          slots, base + 1, armIndent, uses);
     }
+    sb.append(indent).append("  }\n");
     sb.append(indent).append("}\n");
     let total = flatCoreSlots(ty);
     return (total as GrowableArray<String>).length;
@@ -2214,6 +2239,23 @@ function carriesEnd(ty: Ty): boolean {
   return false;
 }
 
+/**
+ * Whether a value of `ty` holds an owner: an owned handle of a
+ * `resource class` in a bare position, or a tuple, option, result,
+ * future or stream holding one. Such a value is affine, so a container
+ * of it is a restricted instantiation (owner-futures.md): one element
+ * at a time through a stream, and nothing in a `GrowableArray`.
+ */
+function holdsOwner(ty: Ty): boolean {
+  if (ty.kind == TyKind.ResourceH) {
+    return ty.ownedClass && !ty.isBorrow && !ty.inAggregate;
+  }
+  for (let child in ty.children) {
+    if (holdsOwner(child)) { return true; }
+  }
+  return false;
+}
+
 /** Whether a stream position carries an element other than `u8`,
  * moved by generated pumps rather than `zena:wasi`'s byte pumps. */
 function isTypedStream(ty: Ty): boolean {
@@ -2297,12 +2339,36 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
   let chunkSize = `${STREAM_CHUNK}`;
   let elemExpr = liftExprOf(element, `buf + i * ${size}`, uses);
   let lowerElemStmt = lowerMemStmts(element, "v", "buf", uses);
+  // A chunk of plain elements goes to the reader in one bulk write. A
+  // stream of owners is one element at a time (only a first-class
+  // stream has the bulk path), and every element read is the
+  // program's from then on: the one a stopped reader hands back, and
+  // the rest of the chunk after it, are released here.
+  let deliver = if (holdsOwner(element)) zena`
+    for (var i = 0; i < n; i += 1) {
+      let item = ${elemExpr};
+      if (open) {
+        if (let (false, refused) = await writer.write(item)) {
+          open = false;
+        }
+      }
+    }
+  ` else zena`
+    let items = new GrowableArray<${z}>(n);
+    for (var i = 0; i < n; i += 1) {
+      items.push(${elemExpr});
+    }
+    let delivered = await writer.writeAll(FixedArray.from(items), n);
+    if (!delivered) {
+      open = false;
+    }
+  `;
 
   emit(sb, "", zena`
     function liftStream${k}(end: i32): Stream<${z}> {
-      let writer = new StreamWriter<${z}>();
+      let (writer, stream) = StreamWriter.create<${z}>();
       pumpStreamIn${k}(end, writer);
-      return writer.stream;
+      return stream;
     }
     async function pumpStreamIn${k}(end: i32, writer: StreamWriter<${z}>): Future<void> {
       let buf = resultArea(${chunkSize} * ${size});
@@ -2315,14 +2381,7 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
         let n = packed >> 4;
         let completed = (packed & 15) == 0;
         if (n > 0) {
-          let items = new GrowableArray<${z}>(n);
-          for (var i = 0; i < n; i += 1) {
-            items.push(${elemExpr});
-          }
-          let delivered = await writer.writeAll(FixedArray.from(items), n);
-          if (!delivered) {
-            open = false;
-          }
+          ${deliver}
         } else if (completed) {
           freeLifted(buf);
           throw new Error('the stream read made no progress');
@@ -2343,11 +2402,7 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
     async function pumpStreamOut${k}(source: Stream<${z}>, end: i32): Future<void> {
       var open = true;
       while (open) {
-        let item = await source.readOne();
-        if (!(item is Some<${z}>)) {
-          open = false;
-        } else {
-          let v = (item as Some<${z}>).value;
+        if (let Some {value: v} = await source.readOne()) {
           let m0 = stagedMark();
           let buf = stageBuffer(${size});
           ${lowerElemStmt}
@@ -2360,6 +2415,8 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
             source.stop();
             open = false;
           }
+        } else {
+          open = false;
         }
       }
       streamDropWritable${k}_raw(end);

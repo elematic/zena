@@ -24,9 +24,9 @@ import { AsyncIterator, AsyncStep } from 'zena:async';
 import { HashMap } from 'zena:collections';
 import { Option, newByteArray, copyBytes, readULEB128_64, Result } from 'zena:core';
 import { Stream, readAllBytes } from 'zena:stream';
-import { ErrorCode, Fields } from 'wasi:http/types';
+import { ErrorCode } from 'wasi:http/types';
 import { Credentials, ProtoError, ProtoTransport, ProtoView, RpcError, RpcMetadata, RpcMethod } from './runtime.zena';
-import { Exchange, Origin, callHeaders, post } from './http.zena';
+import { Exchange, HeaderList, Origin, callHeaders, post } from './http.zena';
 
 export { RpcError } from './runtime.zena';
 
@@ -131,8 +131,8 @@ function errorFor(exchange: Exchange, body: ProtoView): RpcError {
  * response bodies with it.
  */
 export function readStreamBody(body: Stream<u8>): AsyncIterator<ProtoView> {
-  return new StreamBodyReader(Future.of(Exchange.of(200, Fields.create(), body,
-      Future.of<Result<Option<Fields>, ErrorCode>>((true, none)))));
+  return new StreamBodyReader(Future.of(Exchange.of(200, new GrowableArray<(String, FixedArray<u8>)>(), body,
+      Future.of<Result<Option<HeaderList>, ErrorCode>>((true, none)))));
 }
 
 /** The field numbers of `google.rpc.StreamBody`. */

@@ -8,7 +8,7 @@ import { Middleware, NextFunction, compose } from './middleware.zena';
 import { HttpError } from './error.zena';
 import { Server } from './server.zena';
 import { checkCancellation } from 'zena:async';
-import { unit } from 'zena:core';
+import { Own, unit } from 'zena:core';
 import { Stream } from 'zena:stream';
 
 /**
@@ -38,6 +38,7 @@ export class AppOptions {
  *
  *   let server = await app.listen(8080);
  *   console.log(`Listening on http://127.0.0.1:${server.port}`);
+ *   await server.done;
  * }
  * ```
  */
@@ -68,7 +69,7 @@ export class App {
    * Catches thrown `HttpError` instances and translates them to HTTP status codes
    * and responses. Any uncaught general `Error` results in a 500 Internal Server Error.
    */
-  async handleRequest(req: Request, res: Response): Future<void> {
+  async handleRequest(req: Own<Request>, res: Response): Future<void> {
     var pipeline = this.#pipeline;
     if (pipeline == null) {
       let composed = compose(this.#middleware);
@@ -77,8 +78,9 @@ export class App {
     }
     var noop = this.#noopNext;
     if (noop == null) {
+      // The end of the pipeline: a request nobody answered is released here.
       let completed = this.#completedVoid;
-      let fn: NextFunction = () => completed;
+      let fn: NextFunction = (unanswered) => completed;
       this.#noopNext = fn;
       noop = fn;
     }
@@ -93,12 +95,15 @@ export class App {
    * Binds an HTTP server on `127.0.0.1:{port}` (or an ephemeral port when
    * `port` is 0) and starts the accept loop in the background.
    *
-   * Returns a `Future<Server>` that resolves once the listener is bound, or
-   * rejects if binding fails (such as when `port` is already in use).
+   * Returns a future of the server's owner, which resolves once the
+   * listener is bound, or rejects if binding fails (such as when `port`
+   * is already in use). The owner closes the server when it leaves
+   * scope: hold it for as long as the server should run (`await
+   * server.done`), or call `keepOpen()` to run it until `close()`.
    * Cancelling the enclosing `CancelScope` closes the server and releases
    * its socket.
    */
-  async listen(port: u16 = 8080 as u16): Future<Server> {
+  async listen(port: u16 = 8080 as u16): Future<Own<Server>> {
     checkCancellation();
     let server = new Server(this, port);
     server.start();

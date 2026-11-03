@@ -4,7 +4,7 @@
  * Ported from Zipadee's `@zipadee/cors`.
  */
 
-import { join } from 'zena:core';
+import { Borrow, join } from 'zena:core';
 import { div } from 'zena:math';
 import { Duration } from 'zena:time';
 import { Middleware } from './middleware.zena';
@@ -16,9 +16,11 @@ let DEFAULT_ALLOW_METHODS = 'GET,HEAD,PUT,POST,DELETE,PATCH';
 
 /**
  * Callback returning the allowed origin for a request, or `null` to
- * disable CORS for that request. May return synchronously or as a `Future`.
+ * disable CORS for that request. May return synchronously or as a
+ * `Future`. It borrows the request, so an async callback reads it
+ * before its first `await`.
  */
-export type OriginFn = (req: Request) => String | null | Future<String | null>;
+export type OriginFn = (req: Borrow<Request>) => String | null | Future<String | null>;
 
 /**
  * An origin specification: a static origin string, `null` to disable CORS,
@@ -27,10 +29,10 @@ export type OriginFn = (req: Request) => String | null | Future<String | null>;
 export type Origin = String | null | OriginFn;
 
 /** Synchronous callback deciding whether credentials are allowed for a request. */
-export type SyncCredentialsFn = (req: Request) => boolean;
+export type SyncCredentialsFn = (req: Borrow<Request>) => boolean;
 
 /** Asynchronous callback deciding whether credentials are allowed for a request. */
-export type AsyncCredentialsFn = (req: Request) => Future<boolean>;
+export type AsyncCredentialsFn = (req: Borrow<Request>) => Future<boolean>;
 
 /** Callback deciding whether credentials are allowed for a request. */
 export type CredentialsFn = SyncCredentialsFn | AsyncCredentialsFn;
@@ -154,25 +156,25 @@ export function cors(options: CorsOptions = {}): Middleware {
       // `Access-Control-Allow-Origin: *`, and only if the origin option is '*'
       // and credentials is false.
       if (credentials) {
-        await next();
+        await next(req);
         return;
       }
 
       if (origin != null && (origin) == '*') {
         res.setHeader('Access-Control-Allow-Origin', '*');
-        await next();
+        await next(req);
         return;
       }
     }
 
     if (credentials && origin != null && (origin) == '*') {
       // Disallow wildcard origin with credentials.
-      await next();
+      await next(req);
       return;
     }
 
     if (origin == null || origin.length == 0) {
-      await next();
+      await next(req);
       return;
     }
 
@@ -181,7 +183,7 @@ export function cors(options: CorsOptions = {}): Middleware {
     if (req.method == 'OPTIONS') {
       // Preflight request: requires Access-Control-Request-Method.
       if (!req.hasHeader('Access-Control-Request-Method')) {
-        await next();
+        await next(req);
         return;
       }
 
@@ -228,6 +230,6 @@ export function cors(options: CorsOptions = {}): Middleware {
       res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     }
 
-    await next();
+    await next(req);
   };
 }

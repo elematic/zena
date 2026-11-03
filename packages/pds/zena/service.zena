@@ -81,7 +81,7 @@
  */
 
 import {Future} from 'zena:async';
-import {Option, Some, none, some} from 'zena:core';
+import {Option, Some, Unmanaged, none, some} from 'zena:core';
 import {App, Server, mount, serve as serveFiles} from 'zena:http';
 import {hex} from 'zena:encoding';
 import {randomBytes, randomInt} from 'zena:random';
@@ -633,7 +633,8 @@ function blobBytes(choice: BlobChoice): BlobBytes {
 
 /** A listening server, and the service it serves. */
 export final class Running {
-  server: Server;
+  /** Kept open: it runs until `close()`, or until its scope is cancelled. */
+  server: Unmanaged<Server>;
   service: Service;
   /** The origin it listens on, `http://127.0.0.1:<port>`. */
   origin: String;
@@ -663,9 +664,10 @@ export async function serve(config: ServiceConfig): Future<Running> {
   let server = new Server(outer, config.port);
   server.start();
   let origin = `http://127.0.0.1:${server.port as i32}`;
+  // Held until the service is built: a failure closes the server.
   let service = await buildService(config, origin);
   inner = service.app;
-  return new Running(server, service, origin);
+  return new Running(server.keepOpen(), service, origin);
 }
 
 /**

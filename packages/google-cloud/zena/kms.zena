@@ -22,6 +22,7 @@
  */
 
 import {Future} from 'zena:async';
+import {Own} from 'zena:core';
 import {base64} from 'zena:encoding';
 import {fetch, Response} from 'zena:fetch';
 import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
@@ -135,7 +136,7 @@ export final class CloudKms {
     return new KmsPublicKey(algorithm, pem);
   }
 
-  async #call(method: String, path: String, body: String | null): Future<Response> {
+  async #call(method: String, path: String, body: String | null): Future<Own<Response>> {
     let headers = new GrowableArray<(String, String)>();
     headers.push(('accept', 'application/json'));
     if (body != null) {
@@ -199,9 +200,10 @@ function jsonObject(text: String): JsonObject {
 }
 
 /** Returns `response`'s body text when it is a success, or throws `KmsError` naming what `doing` was. */
-async function checked(response: Response, doing: String): Future<String> {
+async function checked(response: Own<Response>, doing: String): Future<String> {
+  let status = response.status;
   let text = await response.text();
-  if (response.status >= 200 && response.status < 300) {
+  if (status >= 200 && status < 300) {
     return text;
   }
   var message = text;
@@ -219,5 +221,5 @@ async function checked(response: Response, doing: String): Future<String> {
       }
     }
   }
-  throw new KmsError(response.status, `Cloud KMS, ${doing}: HTTP ${response.status}: ${message}`);
+  throw new KmsError(status, `Cloud KMS, ${doing}: HTTP ${status}: ${message}`);
 }

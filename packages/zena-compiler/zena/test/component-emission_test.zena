@@ -405,7 +405,8 @@ export let tests = suite('Component emission', () => {
     isTrue(source.contains('finishTask<Result<String, String>>(describe(a0), ' +
         '(value: Result<String, String>): void => {'),
       'the wrapper does not hand the driver the future:\n' + source);
-    isTrue(source.contains('if (value is (true, String)) {'),
+    isTrue(source.contains('match (value) {') &&
+        source.contains('case (true, let ok'),
       'the result is not lowered by case:\n' + source);
     isTrue(source.contains('let v0 = stringFromMemory(p0, l0);'),
       'a string parameter is not lifted from memory:\n' + source);
@@ -473,12 +474,14 @@ export let tests = suite('Component emission', () => {
       'the export wrapper is missing:\n' + source);
     isTrue(source.contains('let v0 = new Request(a0);'),
       'the request handle is not lifted into its class:\n' + source);
-    isTrue(source.contains('finishTask<Result<Response, ErrorCode>>(' +
-        'handle(v0), (value: Result<Response, ErrorCode>): void => {'),
+    isTrue(source.contains('finishTask<Result<Own<Response>, ErrorCode>>(' +
+        'handle(v0), (value: Result<Own<Response>, ErrorCode>): void => {'),
       'the wrapper does not hand the driver the future:\n' + source);
     isTrue(source.contains(" } from 'wasi:http/types';"),
       'the used types are not imported from the types module:\n' + source);
-    isTrue(source.contains('.[rawHandle]();'),
+    // The response is an owner, moved out of the result by the match
+    // and disowned as its handle goes to the host.
+    isTrue(source.contains('disown(ok'),
       'the response handle is not lowered out of its class:\n' + source);
   });
 
@@ -794,17 +797,64 @@ export function reset(): boolean { return true; }
 
   test('a resource of an interface outside the owned list keeps the Disposable class',
       (ctx) => {
-    // `wasi:http/types` is not in the list yet: its `fields` renders
-    // as before, flag and all.
+    // `wasi:cli/terminal-input` is not in the list yet: its
+    // `terminal-input` renders as before, flag and all.
     let source = synthesizeWitModule(disk,
-        `wit:${stdlibRoot}/wit#wasi:http/types`,
+        `wit:${stdlibRoot}/wit#wasi:cli/terminal-input`,
         readWitSource(disk, `${stdlibRoot}/wit`));
-    isTrue(source.contains('export final class Fields implements Disposable {'),
-      `fields is not the Disposable class:\n${source}`);
+    isTrue(source.contains('export final class TerminalInput implements Disposable {'),
+      `terminal-input is not the Disposable class:\n${source}`);
     isTrue(source.contains('[markMoved](): void {'),
       `the moved flag is gone from the Disposable class:\n${source}`);
     isTrue(!source.contains('Own<'),
       `a handle spelling leaked into a Disposable-class interface:\n${source}`);
+  });
+
+  test('the HTTP resources render as resource classes, with owners in tuples',
+      (ctx) => {
+    // `wasi:http/types` and `zena-cli:host/http-server` joined the list
+    // with `zena:http`'s and `zena:fetch`'s migration. A tuple in a bare
+    // position carries owners: `new` hands back the request it made,
+    // `consume-body` a trailers future of an owned `fields`, and
+    // `listen` a stream of owned request and writer pairs. A tuple in a
+    // list still cannot, so `copy-all`'s entries stay plain data.
+    let wit = readWitSource(disk, `${stdlibRoot}/wit`);
+    let types = synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/wit#wasi:http/types`, wit);
+    for (let name in ['Fields', 'Request', 'Response']) {
+      isTrue(types.contains(`export resource class ${name} {`),
+        `${name} is not a resource class:\n${types}`);
+    }
+    isTrue(types.contains('): (Own<Request>, Future<Result<void, ErrorCode>>) {'),
+      `new does not hand back the request it made:\n${types}`);
+    isTrue(types.contains('static consumeBody(this_: Own<Request>, ' +
+        'res: Future<Result<void, ErrorCode>>): (Stream<u8>, ' +
+        'Future<Result<Option<Own<Fields>>, ErrorCode>>) {'),
+      `consume-body does not take the request and hand back owned trailers:\n${types}`);
+    isTrue(types.contains('copyAll(): Array<(String, FixedArray<u8>)> {'),
+      `copy-all's entries changed:\n${types}`);
+
+    let server = synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/host-wit#zena-cli:host/http-server`,
+        `${readWitSource(disk, `${stdlibRoot}/host-wit`)}\n${wit}`);
+    isTrue(server.contains('listen(): Stream<(Own<Request>, Own<ResponseWriter>)> {'),
+      `listen does not yield owned pairs:\n${server}`);
+    // A stream of owners has one reader, made with `create`, and the
+    // pump writes one element at a time, releasing the ones a stopped
+    // reader hands back: there is no bulk path at a restricted type.
+    isTrue(server.contains('let (writer, stream) = ' +
+        'StreamWriter.create<(Own<Request>, Own<ResponseWriter>)>();'),
+      `the stream of owners is not made with create:\n${server}`);
+    isTrue(server.contains('if (let (false, refused) = await writer.write(item)) {'),
+      `the pump does not write one owner at a time:\n${server}`);
+    isTrue(!server.contains('writeAll') && !server.contains('GrowableArray<(Own'),
+      `the pump buffers owners:\n${server}`);
+
+    let client = synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/wit#wasi:http/client`, wit);
+    isTrue(client.contains('export async function send(request: Own<Request>): ' +
+        'Future<Result<Own<Response>, ErrorCode>> {'),
+      `send does not move the request in and the response out:\n${client}`);
   });
 
   test('the filesystem descriptor renders as a resource class',
@@ -967,7 +1017,7 @@ export function reset(): boolean { return true; }
       `the inbound pump does not lift each record at its stride:\n${source}`);
     isTrue(source.contains(`export async function sink(events: Stream<PointerEvent>): Future<u32> {`),
       `the stream parameter is not a Stream<PointerEvent>:\n${source}`);
-    isTrue(source.contains(`let item = await source.readOne();`),
+    isTrue(source.contains(`if (let Some {value: v} = await source.readOne()) {`),
       `the outbound pump does not read one element at a time:\n${source}`);
     isTrue(source.contains(`import { Stream, StreamWriter } from 'zena:stream';`),
       `the writer is not imported:\n${source}`);
@@ -1467,7 +1517,8 @@ world only {
     isTrue(source.contains('} else if (n is NoteId) {'),
       'the variant chain should else-if through the cases:\n' + source);
     // The option wraps its payload staging in the Some arm.
-    isTrue(source.contains('if (n is Some<String>) {'),
+    isTrue(source.contains('if (let Some {value: o') &&
+        source.contains('} = n) {'),
       'the option lowering is missing:\n' + source);
     // The list parameter stages elements at the string pair stride.
     isTrue(source.contains('stageBuffer('),
@@ -1644,7 +1695,7 @@ world only {
     isTrue(source.contains('async function pumpFuture1(value: ' +
         'Future<Result<void, PipeError>>, end: i32): Future<void> {'),
       'the lower pump is missing:\n' + source);
-    isTrue(source.contains('if (v is (true, void)) {'),
+    isTrue(source.contains('match (v) {') && source.contains('case (true, _): {'),
       'the pump should lower the Result by case:\n' + source);
     // A rich future inside a tuple lifts from memory by helper.
     isTrue(source.contains('liftFuture2(loadI32('),

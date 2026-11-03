@@ -1,6 +1,7 @@
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { runFuture } from 'zena:async';
+import { Borrow } from 'zena:core';
 import { milliseconds } from 'zena:time';
 import { App, Middleware, Request, Response, cors } from 'zena:http';
 
@@ -138,7 +139,7 @@ export let tests = suite('zena:http cors', () => {
     test('sets Access-Control-Allow-Origin to request Origin header or fallback *', (ctx) => {
       runFuture((async () => {
         let app = helloApp(cors({
-          origin: (req: Request) => req.getHeader('Origin') ?? '*',
+          origin: (req: Borrow<Request>) => req.getHeader('Origin') ?? '*',
         }));
 
         let req1 = makeReq('/', 'GET', 'http://koajs.com');
@@ -206,7 +207,7 @@ export let tests = suite('zena:http cors', () => {
     test('can disable cors by returning null or enable by returning origin', (ctx) => {
       runFuture((async () => {
         let app = helloApp(cors({
-          origin: (req: Request) =>
+          origin: (req: Borrow<Request>) =>
               if (req.path == '/forbin') null else '*',
         }));
 
@@ -231,7 +232,7 @@ export let tests = suite('zena:http cors', () => {
     test('resolves async origin function', (ctx) => {
       runFuture((async () => {
         let app = helloApp(cors({
-          origin: async (req: Request): Future<String | null> => {
+          origin: async (req: Borrow<Request>): Future<String | null> => {
             if (req.path == '/forbin') {
               return null;
             }
@@ -312,7 +313,7 @@ export let tests = suite('zena:http cors', () => {
     test('enables Access-Control-Allow-Credentials on simple and preflight requests', (ctx) => {
       runFuture((async () => {
         let app = helloApp(cors({
-          origin: (req: Request) => req.getHeader('Origin'),
+          origin: (req: Borrow<Request>) => req.getHeader('Origin'),
           credentials: true,
         }));
 
@@ -366,8 +367,8 @@ export let tests = suite('zena:http cors', () => {
     test('supports synchronous credentialsFor function', (ctx) => {
       runFuture((async () => {
         let app = helloApp(cors({
-          origin: (req: Request) => req.getHeader('Origin'),
-          credentialsFor: (req: Request) => req.path != '/forbin',
+          origin: (req: Borrow<Request>) => req.getHeader('Origin'),
+          credentialsFor: (req: Borrow<Request>) => req.path != '/forbin',
         }));
 
         let req1 = makeReq('/', 'GET', 'http://koajs.com');
@@ -401,8 +402,8 @@ export let tests = suite('zena:http cors', () => {
     test('supports asynchronous credentialsFor function', (ctx) => {
       runFuture((async () => {
         let app = helloApp(cors({
-          origin: (req: Request) => req.getHeader('Origin'),
-          credentialsFor: async (req: Request): Future<boolean> => true,
+          origin: (req: Borrow<Request>) => req.getHeader('Origin'),
+          credentialsFor: async (req: Borrow<Request>): Future<boolean> => true,
         }));
 
         let req1 = makeReq('/', 'GET', 'http://koajs.com');

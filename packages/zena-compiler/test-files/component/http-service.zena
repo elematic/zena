@@ -1,10 +1,11 @@
 // A wasi:http service: `handle` answers every request with a text
 // body naming the path it was asked for. The world exports the
 // `handler` interface as an instance, the compiler-written wrapper
-// lifts the request handle into `Request` and lowers the `Outcome`
-// into a `task.return` typed `result<response, error-code>`, and
-// `wasmtime serve` drives it — the e2e script fetches a path and
-// reads the body back.
+// lifts the request handle into the `Request` the handler owns and
+// lowers the `Result` into a `task.return` typed
+// `result<response, error-code>`, and `wasmtime serve` drives it — the
+// e2e script fetches a path and reads the body back. The handler never
+// moves the request, so it is released when `handle` returns.
 //
 // The body is a `Stream<u8>` the response is built around, written by
 // a background task: a stream write meets its reader, and the reader
@@ -12,16 +13,15 @@
 // `textResponse` (zena:http) builds all of that from a string.
 import { Request, Response, ErrorCode } from 'wasi:http/types';
 import { Future } from 'zena:async';
-import { Option, Some, Result } from 'zena:core';
+import { Own, Some, Result } from 'zena:core';
 import { textResponse } from 'zena:http';
 import { sleep, milliseconds } from 'zena:time';
 
-export async function handle(request: Request): Future<Result<Response, ErrorCode>> {
+export async function handle(request: Own<Request>): Future<Result<Own<Response>, ErrorCode>> {
   // The path and query the request asked for, `/` when it named none.
   var path = '/';
-  let requestedPath = request.getPathWithQuery();
-  if (requestedPath is Some<String>) {
-    path = (requestedPath as Some<String>).value;
+  if (let Some {value} = request.getPathWithQuery()) {
+    path = value;
   }
   // Suspend mid-request, so that the e2e's concurrent requests are all
   // in flight at once: each is its own task, and the driver must keep

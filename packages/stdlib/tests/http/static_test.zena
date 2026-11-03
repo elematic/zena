@@ -4,7 +4,7 @@ import { Stream, readAllText } from 'zena:stream';
 import { milliseconds } from 'zena:time';
 import { blockOn } from 'zena:wasi';
 import { Completer } from 'zena:async';
-import { Result } from 'zena:core';
+import { Own, Result } from 'zena:core';
 import {
   App, ErrorCode, HttpError, Request, Response, SendOptions, WireResponse,
   httpDate, mimeType, send, serve, toWireResponse
@@ -24,13 +24,13 @@ let fixtures = () => 'packages/stdlib/tests/http/fixtures/static';
 
 /** One request through `serve(fixtures(), options)`, run to completion. */
 let serveOne = (
-  req: Request,
+  req: Own<Request>,
   options: SendOptions
 ) => {
   let middleware = serve(fixtures(), options);
   let res = new Response();
   var passed = false;
-  blockOn(middleware(req, res, async (): Future<void> => {
+  blockOn(middleware(req, res, async (passedOn): Future<void> => {
     passed = true;
   }));
   return new Served(res, passed);
@@ -179,7 +179,7 @@ export let tests = suite('zena:http static files', () => {
     let app = new App();
     var sentBody: Stream<u8> | null = null;
     app.use(async (req, res, next) => {
-      await next();
+      await next(req);
       sentBody = res.body as Stream<u8>;
       throw new HttpError(500);
     });

@@ -3,20 +3,14 @@
  */
 
 import { Server as HostServer, ResponseWriter } from 'zena-cli:host/http-server';
-import {
-  Request as WireRequest,
-  Response as WireResponse,
-  ErrorCode
-} from 'wasi:http/types';
-import { fromWireRequest, toWireResponse, textResponse } from './wasi.zena';
+import { Request as WireRequest } from 'wasi:http/types';
+import { toWireResponse, textResponse } from './wasi.zena';
 import { App } from './app.zena';
 import { Request } from './request.zena';
 import { Response } from './response.zena';
-import { Disposable, Option, Some } from 'zena:core';
+import { Disposable, Own, Some, Unmanaged, adopt, disown, unit } from 'zena:core';
 import { Completer } from 'zena:async';
 import { Stream } from 'zena:stream';
-
-function unit() {}
 
 let emptyHeadersList = new GrowableArray<(String, String)>(0);
 
@@ -24,20 +18,13 @@ function getEmptyHeaders(): Array<(String, String)> {
   return emptyHeadersList;
 }
 
+/** Answers with `res`'s status, headers and text `body` in one host call. */
 function completeTextResponse(
-  wireReq: WireRequest,
-  writer: ResponseWriter,
-  req: Request,
+  writer: Own<ResponseWriter>,
   res: Response,
   body: String,
   defaultCt: String
 ) {
-  var reqOpt: Option<WireRequest> = none;
-  if (req.isBodyConsumed) {
-    req.close();
-  } else {
-    reqOpt = some(wireReq);
-  }
   let ctOpt = res.contentTypeHeader;
   var ct = ctOpt ?? defaultCt;
   var headers = getEmptyHeaders();
@@ -52,12 +39,12 @@ function completeTextResponse(
     });
     headers = custom;
   }
-  ResponseWriter.completeText(writer, reqOpt, res.statusCode as u16, ct, headers, body);
+  ResponseWriter.completeText(writer, res.statusCode as u16, ct, headers, body);
 }
 
-type RequestTuple = (WireRequest, ResponseWriter);
+type RequestPair = (Own<WireRequest>, Own<ResponseWriter>);
 
-function createHostServer(port: u16): HostServer {
+function createHostServer(port: u16): Own<HostServer> {
   match (HostServer.create(port)) {
     case (true, let srv): { return srv; }
     case (false, let why): { throw new Error(why); }
@@ -65,26 +52,60 @@ function createHostServer(port: u16): HostServer {
 }
 
 /**
- * A running HTTP server instance.
+ * What a server and its accept loop share. Both close the host server:
+ * the server's owner by `close()` or by dropping it, and the loop when
+ * its scope is cancelled. So the host server is held unmanaged here,
+ * and `closeServer` closes and releases it once, whichever comes first.
  */
-export class Server implements Disposable {
-  #hostServer: HostServer;
-  #app: App;
-  var #closed: boolean = false;
-  var #running: boolean = false;
-  var #isDone: boolean = false;
-  var #doneCompleter: Completer<void> = new Completer<void>();
+final class ServerState {
+  var host: Unmanaged<HostServer> | null;
+  port: u16;
+  done = new Completer<void>();
+  var started = false;
 
-  new(app: App, port: u16)
-    : #hostServer = createHostServer(port),
-      #app = app;
+  new(host: Unmanaged<HostServer>, this.port) : host = host;
+}
+
+function bind(port: u16) {
+  let host = createHostServer(port);
+  let bound = host.port();
+  return new ServerState(disown(host), bound);
+}
+
+/** Closes the host server and releases it, the first time it is called. */
+function closeServer(state: ServerState) {
+  let host = state.host;
+  if (host == null) {
+    return;
+  }
+  state.host = null;
+  let owner = adopt(host);
+  owner.close();
+  state.done.tryComplete(unit());
+}
+
+/**
+ * A running HTTP server.
+ *
+ * A resource class, held as `Own<Server>`: its owner closes it when it
+ * leaves scope, so the server runs for as long as something holds it.
+ * `await server.done` holds it until it closes. `keepOpen()` trades the
+ * owner for a handle that keeps it running until `close()`, which an
+ * ordinary object can store.
+ */
+export resource class Server {
+  #state: ServerState;
+  #app: App;
+
+  /** Binds the listener; `start` runs the accept loop. */
+  new(app: App, port: u16) : #state = bind(port), #app = app;
 
   /**
    * The port this server is listening on.
    */
   port: u16 {
     get {
-      return this.#hostServer.port();
+      return this.#state.port;
     }
   }
 
@@ -93,7 +114,7 @@ export class Server implements Disposable {
    */
   isOpen: boolean {
     get {
-      return !this.#closed;
+      return this.#state.host != null;
     }
   }
 
@@ -102,7 +123,7 @@ export class Server implements Disposable {
    */
   done: Future<void> {
     get {
-      return this.#doneCompleter.future;
+      return this.#state.done.future;
     }
   }
 
@@ -111,7 +132,7 @@ export class Server implements Disposable {
    */
   isDone: boolean {
     get {
-      return this.#isDone;
+      return this.#state.host == null;
     }
   }
 
@@ -119,71 +140,89 @@ export class Server implements Disposable {
    * Closes the server and releases its socket.
    */
   close(): void {
-    if (!this.#closed) {
-      this.#closed = true;
-      this.#hostServer.close();
-      this.#isDone = true;
-      this.#doneCompleter.tryComplete(unit());
-    }
-  }
-
-  [Disposable.dispose](): void {
-    this.close();
+    closeServer(this.#state);
   }
 
   /**
-   * Runs the server accept loop.
+   * Keeps the server running after its owner's scope ends: the handle
+   * this returns never closes it implicitly, and an ordinary class or
+   * record can store it. The server then runs until `close()`, or until
+   * the scope it was started in is cancelled.
    */
-  async start(): Future<void> {
-    if (this.#running) return;
-    this.#running = true;
-    // `listen()` spawns a background WASI stream pump coroutine (`pumpStreamIn`).
-    // Running `listen()` inside `shielded` binds that pump to the uncancellable
-    // root scope so cancelling the server's scope doesn't abort the pump while
-    // a host `stream.read` is still in flight; instead, `finally` below stops
-    // the stream and closes the host server so the pump exits and drops its
-    // WASI stream handle cleanly.
-    var stream: Stream<RequestTuple> | null = null;
-    shielded {
-      stream = this.#hostServer.listen();
-    }
-    try {
-      while (!this.#closed) {
-        let opt = await stream.readOne();
-        if (opt is Some<RequestTuple>) {
-          let (wireReq, writer) = opt.value;
-          this.#dispatch(wireReq, writer);
-        } else {
-          break;
-        }
-      }
-    } finally {
-      stream.stop();
-      this.close();
-    }
+  keepOpen(this: Own<this>): Unmanaged<Server> {
+    return disown(this);
   }
 
-  async #dispatch(wireReq: WireRequest, writer: ResponseWriter): Future<void> {
-    try {
-      let req = fromWireRequest(wireReq);
-      let res = new Response();
-      await this.#app.handleRequest(req, res);
-      let b = res.body;
-      if (b is String) {
-        completeTextResponse(wireReq, writer, req, res, b, 'text/plain; charset=utf-8');
-      } else if (b == null) {
-        completeTextResponse(wireReq, writer, req, res, '', '');
-      } else {
-        req.close();
-        writer.respond(toWireResponse(res));
-        writer.[Disposable.dispose]();
-      }
-    } catch (e) {
-      let errRes = textResponse('Internal Server Error\n', 500);
-      writer.respond(errRes);
-      writer.[Disposable.dispose]();
+  /**
+   * Runs the accept loop in the background, once.
+   */
+  start(): void {
+    let state = this.#state;
+    if (state.started) {
+      return;
     }
-    return;
+    state.started = true;
+    serve(this.#app, state);
+  }
+
+  [Disposable.dispose](this: Own<this>): void {
+    this.close();
   }
 }
 
+/**
+ * The host's stream of requests. `listen` starts the pump that reads
+ * it; created inside `shielded`, the pump belongs to a scope no
+ * cancellation reaches, so cancelling the server's scope does not tear
+ * it down with a host read in flight. `serve`'s `finally` stops the
+ * stream instead, and the pump drops its end itself.
+ */
+async function listenShielded(host: Unmanaged<HostServer>): Future<Stream<RequestPair>> {
+  shielded {
+    return host.listen();
+  }
+}
+
+/**
+ * The accept loop: hands each request the host delivers to `app`,
+ * until the server closes, or its scope is cancelled, which closes it.
+ */
+async function serve(app: App, state: ServerState): Future<void> {
+  let host = state.host;
+  if (host == null) {
+    return;
+  }
+  let requests = await listenShielded(host);
+  try {
+    while (state.host != null) {
+      if (let Some {value} = await requests.readOne()) {
+        let (wire, writer) = value;
+        dispatch(app, wire, writer);
+      } else {
+        break;
+      }
+    }
+  } finally {
+    requests.stop();
+    closeServer(state);
+  }
+}
+
+/** Runs one request through `app` and answers it. */
+async function dispatch(app: App, wire: Own<WireRequest>, writer: Own<ResponseWriter>): Future<void> {
+  let res = new Response();
+  try {
+    await app.handleRequest(new Request.fromWire(wire), res);
+  } catch (e) {
+    writer.respond(textResponse('Internal Server Error\n', 500));
+    return;
+  }
+  let b = res.body;
+  if (b is String) {
+    completeTextResponse(writer, res, b, 'text/plain; charset=utf-8');
+  } else if (b == null) {
+    completeTextResponse(writer, res, '', '');
+  } else {
+    writer.respond(toWireResponse(res));
+  }
+}

@@ -9,7 +9,7 @@
  * host copies the file to the connection.
  */
 
-import { Own, Unmanaged } from 'zena:core';
+import { Borrow, Own, Unmanaged } from 'zena:core';
 import {
   Descriptor, DescriptorFlags, FileStat, FileType, FsError, FsErrorCode,
   resolvePreopen
@@ -99,13 +99,13 @@ export type SendOptions = {
  *   if (req.path == '/hello') {
  *     await send(req, res, 'hello.html', {root: 'pages'});
  *   } else {
- *     await next();
+ *     await next(req);
  *   }
  * });
  * ```
  */
-export async function send(
-  req: Request,
+export function send(
+  req: Borrow<Request>,
   res: Response,
   path: String,
   options: SendOptions = {}
@@ -114,7 +114,7 @@ export async function send(
   if (let {root: given} = options) {
     root = given;
   }
-  return await new StaticFiles(root, options, null).send(req, res, path);
+  return new StaticFiles(root, options, null).send(askedOf(req), res, path);
 }
 
 /**
@@ -136,15 +136,16 @@ export async function send(
 export function serve(root: String, options: SendOptions = {}): Middleware {
   let files = new StaticFiles(root, options, 'index.html');
   return async (req, res, next) => {
-    if (await sendFound(files, req, res, req.path)) {
+    let asked = askedOf(req);
+    if (await sendFound(files, asked, res, req.path)) {
       return;
     }
-    await next();
+    await next(req);
     if (let {notFound} = options) {
       if (!res.statusCodeSet && res.body == null &&
-          (req.method == 'GET' || req.method == 'HEAD')) {
+          (asked.method == 'GET' || asked.method == 'HEAD')) {
         res.statusCode = 404;
-        await sendFound(files, req, res, notFound);
+        await sendFound(files, asked, res, notFound);
       }
     }
   };
@@ -159,15 +160,15 @@ export function serve(root: String, options: SendOptions = {}): Middleware {
  */
 async function sendFound(
   files: StaticFiles,
-  req: Request,
+  asked: Asked,
   res: Response,
   path: String
 ): Future<boolean> {
-  if (req.method != 'GET' && req.method != 'HEAD') {
+  if (asked.method != 'GET' && asked.method != 'HEAD') {
     return false;
   }
   try {
-    return (await files.send(req, res, path)) != null;
+    return (await files.send(asked, res, path)) != null;
   } catch (e) {
     if (e is HttpError && e.status == 404) {
       return false;
@@ -229,7 +230,7 @@ final class StaticFiles {
     }
   }
 
-  async send(req: Request, res: Response, requestPath: String): Future<String | null> {
+  async send(asked: Asked, res: Response, requestPath: String): Future<String | null> {
     let trailingSlash = requestPath.endsWith('/');
     var start = 0;
     while (start < requestPath.length && requestPath.getByteAt(start) == SLASH) {
@@ -249,7 +250,7 @@ final class StaticFiles {
     var path = this.#under(relative);
 
     // A precompressed variant, when the client takes it.
-    let accepted = acceptEncodingOf(req);
+    let accepted = asked.acceptEncoding;
     var encodingExt = await this.#tryPrecompressed(base, path, accepted, res);
     if (encodingExt.length > 0) {
       path = path + encodingExt;
@@ -313,17 +314,17 @@ final class StaticFiles {
       res.type = type ?? 'application/octet-stream';
     }
 
-    let readOnly = (req.method == 'GET' || req.method == 'HEAD') &&
+    let readOnly = (asked.method == 'GET' || asked.method == 'HEAD') &&
         (!res.statusCodeSet || res.statusCode == 200);
     if (readOnly &&
-        matchesEtag(req.getHeader('if-none-match'), res.getHeader('etag') as String)) {
+        matchesEtag(asked.ifNoneMatch, res.getHeader('etag') as String)) {
       res.statusCode = 304;
       res.removeHeader('content-length');
       res.removeHeader('content-type');
       res.removeHeader('content-encoding');
       return path;
     }
-    if (req.method == 'HEAD') {
+    if (asked.method == 'HEAD') {
       if (!res.statusCodeSet) {
         res.statusCode = 200;
       }
@@ -460,7 +461,7 @@ function httpErrorOf(e: Error): Error {
 }
 
 /** Every `Accept-Encoding` value of a request, as one list. */
-function acceptEncodingOf(req: Request): String {
+function acceptEncodingOf(req: Borrow<Request>) {
   let values = req.getHeaders('accept-encoding');
   if (values.length == 0) {
     return '';
@@ -470,6 +471,21 @@ function acceptEncodingOf(req: Request): String {
     joined = `${joined},${values[i]}`;
   }
   return joined;
+}
+
+/**
+ * What sending a file reads from the request, read before anything
+ * awaits: a borrowed request cannot be read after a suspension, and
+ * `serve` hands the request on when it sends nothing.
+ */
+type Asked = {method: String, acceptEncoding: String, ifNoneMatch: String | null};
+
+function askedOf(req: Borrow<Request>): Asked {
+  return {
+    method: req.method,
+    acceptEncoding: acceptEncodingOf(req),
+    ifNoneMatch: req.getHeader('if-none-match'),
+  };
 }
 
 /**

@@ -8,7 +8,7 @@
  * "..."}`, with a 4xx or 5xx status.
  */
 
-import {StringBuilder} from 'zena:core';
+import {Own, StringBuilder} from 'zena:core';
 import {Response, fetch} from 'zena:fetch';
 import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {EncodeSet, percentEncode} from 'zena:url';
@@ -68,10 +68,9 @@ export final class XrpcClient {
    * something other than JSON, such as `com.atproto.sync.getRecord`.
    * Throws `XrpcError` for an error answer.
    */
-  async queryRaw(nsid: String, params: Array<(String, String)> | null = null): Future<Response> {
+  async queryRaw(nsid: String, params: Array<(String, String)> | null = null): Future<Own<Response>> {
     let response = await fetch(this.#url(nsid, params), {headers: this.#headers(null)});
-    await checkAnswer(nsid, response);
-    return response;
+    return await checkAnswer(nsid, response);
   }
 
   /** Calls a query that answers with JSON. Throws `XrpcError` for an error answer. */
@@ -92,8 +91,8 @@ export final class XrpcClient {
       headers: this.#headers(contentType),
       body,
     });
-    await checkAnswer(nsid, response);
-    let text = await response.text();
+    let answer = await checkAnswer(nsid, response);
+    let text = await answer.text();
     return if (text.length == 0) null else parseJson(text);
   }
 
@@ -105,18 +104,22 @@ export final class XrpcClient {
       headers: this.#headers(mimeType),
       body: bytes,
     });
-    await checkAnswer(nsid, response);
-    return parseJson(await response.text());
+    let answer = await checkAnswer(nsid, response);
+    return parseJson(await answer.text());
   }
 }
 
-/** Throws `XrpcError` unless `response` is a success. */
-async function checkAnswer(nsid: String, response: Response): Future<void> {
+/**
+ * `response` when it is a success, for its body to be read; otherwise
+ * throws `XrpcError`, with what the body says about the failure.
+ */
+async function checkAnswer(nsid: String, response: Own<Response>): Future<Own<Response>> {
   if (response.ok) {
-    return;
+    return response;
   }
+  let status = response.status;
   var error = '';
-  var message = `${nsid} failed with HTTP ${response.status}`;
+  var message = `${nsid} failed with HTTP ${status}`;
   try {
     let json = parseJson(await response.text());
     if (json is JsonObject) {
@@ -133,5 +136,5 @@ async function checkAnswer(nsid: String, response: Response): Future<void> {
   } catch (e) {
     // Not JSON: keep the status alone.
   }
-  throw new XrpcError(response.status, error, message);
+  throw new XrpcError(status, error, message);
 }

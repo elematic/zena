@@ -2,16 +2,18 @@
  * HTTP Router for method and path-based request routing.
  */
 
+import { Own } from 'zena:core';
 import { Request } from './request.zena';
 import { Response } from './response.zena';
 import { Middleware, NextFunction } from './middleware.zena';
 
 /**
  * Route handler callback receiving the request, response, downstream next function,
- * and extracted path parameters.
+ * and extracted path parameters. The handler owns the request, as a
+ * middleware does: `next(req)` hands it to the next matching route.
  */
 export type RouteHandler = (
-  req: Request,
+  req: Own<Request>,
   res: Response,
   next: NextFunction,
   params: Map<String, String>
@@ -159,31 +161,39 @@ export class Router {
    * Returns a Middleware function that dispatches matching routes.
    */
   routes(): Middleware {
-    return async (req: Request, res: Response, next: NextFunction): Future<void> => {
+    let routes = this.#routes;
+    return (req: Own<Request>, res: Response, next: NextFunction) => {
       let method = req.method;
-      let path = req.path;
-      let pathSegs = splitSegments(path);
-
-      var routeIdx = 0;
-      let routes = this.#routes;
-
-      let dispatchNextRoute = async (): Future<void> => {
-        while (routeIdx < routes.length) {
-          let route = routes[routeIdx];
-          routeIdx += 1;
-          if (route.method == 'ALL' || route.method == method) {
-            let match = matchRoute(route.segments, pathSegs);
-            if (match != null) {
-              let params = match;
-              await route.handler(req, res, dispatchNextRoute, params);
-              return;
-            }
-          }
-        }
-        await next();
-      };
-
-      await dispatchNextRoute();
+      let pathSegs = splitSegments(req.path);
+      return dispatchRoute(routes, 0, method, pathSegs, req, res, next);
     };
   }
+}
+
+/**
+ * Hands `req` to the first route from `from` on that matches it, with a
+ * `next` that tries the routes after that one, or to `next` when none
+ * matches.
+ */
+function dispatchRoute(
+  routes: GrowableArray<RouteEntry>,
+  from: i32,
+  method: String,
+  pathSegs: Array<String>,
+  req: Own<Request>,
+  res: Response,
+  next: NextFunction
+): Future<void> {
+  for (var i = from; i < routes.length; i += 1) {
+    let route = routes[i];
+    if (route.method == 'ALL' || route.method == method) {
+      let params = matchRoute(route.segments, pathSegs);
+      if (params != null) {
+        let after = i + 1;
+        return route.handler(req, res, (rest) =>
+            dispatchRoute(routes, after, method, pathSegs, rest, res, next), params);
+      }
+    }
+  }
+  return next(req);
 }

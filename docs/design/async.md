@@ -691,7 +691,7 @@ website served by a Zena server":
     less informative (a drain that never settles reports a deadlock).
   - **Fetch is implemented** — the "first real async I/O". `zena:fetch`
     is a virtual module for the JS-hosted targets, and its API follows
-    the web's: `fetch(url): Future<Response>`, where `Response` carries
+    the web's: `fetch(url): Future<Own<Response>>`, where `Response` carries
     `status`/`ok` and reads its body separately with
     `text(): Future<String>` — a 404 is a normal completion, and only
     "no response at all" (network error, CORS refusal, a host with no
@@ -709,10 +709,14 @@ website served by a Zena server":
     the host's own `fetch()`, sharing the outstanding-work count
     `run()` waits on — which is what puts fetch in the playground with
     no playground changes at all. As on the web, a body reads once:
-    a second `text()` throws rather than handing back an empty body.
-    `Response` carries no release obligation: the reference lives in
-    the WasmGC heap, so the engine's unified garbage collector frees
-    the host object when the `Response` dies. (An earlier version kept
+    `Response` is a resource class whose `text()` and `bytes()` consume
+    it, so a second read is a use-after-move error at compile time. On
+    the JS host its release does nothing: the reference lives in the
+    WasmGC heap, so the engine's unified garbage collector frees the
+    host object when the `Response` dies. On a component target the
+    same class holds a `wasi:http` response, which its release drops
+    (owner-futures.md, "What the `wasi:http` switch builds on this").
+    (An earlier version kept
     the response on the host behind an `i32` id, which brought a
     registry and a `Disposable` implementation with it; the reference
     completion deleted both.)

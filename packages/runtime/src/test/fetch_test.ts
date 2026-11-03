@@ -75,12 +75,13 @@ suite('Runtime - zena:fetch', () => {
         if (response.ok) {
           return 0 - 1;
         }
+        let status = response.status;
         // The error page's body is still there for whoever wants it.
         let body = await response.text();
         if (!(body == 'not here')) {
           return 0 - 2;
         }
-        return response.status;
+        return status;
       }
     `,
       {fetch: mockFetch},
@@ -190,23 +191,47 @@ suite('Runtime - zena:fetch', () => {
     );
   });
 
-  test('the body reads once; a second text() throws', async () => {
-    const mockFetch = (async () => new Response('once')) as typeof fetch;
-
-    // A local carried across a try that holds an await and a return —
-    // the shape that once miscompiled by silently skipping the catch
-    // (found by this very test, fixed 2026-08-14). Kept in its direct
-    // form as the regression guard.
-    const {main} = await hosted(
-      `
+  test('the body reads once; a second text() does not compile', () => {
+    // `text()` consumes the response, so reading it again is a use after
+    // the move.
+    assert.throws(
+      () =>
+        compile(`
       import { Future } from 'zena:async';
       import { fetch } from 'zena:fetch';
 
       export async function main(): Future<i32> {
         let response = await fetch('https://example.test/body');
         let first = await response.text();
+        let second = await response.text();
+        return first.length + second.length;
+      }
+    `),
+      /'response' may have been moved/,
+    );
+  });
+
+  test('a body read before a try that awaits and returns is read in its catch', async () => {
+    const mockFetch = (async () => new Response('once')) as typeof fetch;
+
+    // A local carried across a try that holds an await and a return —
+    // the shape that once miscompiled by silently skipping the catch
+    // (found by this test when it read the body twice, fixed 2026-08-14).
+    // Kept in its direct form as the regression guard.
+    const {main} = await hosted(
+      `
+      import { Future } from 'zena:async';
+      import { fetch } from 'zena:fetch';
+
+      async function fails(): Future<void> {
+        throw new Error('the second read');
+      }
+
+      export async function main(): Future<i32> {
+        let response = await fetch('https://example.test/body');
+        let first = await response.text();
         try {
-          await response.text();
+          await fails();
           return 0 - 1;
         } catch (e) {
           return first.length;
@@ -218,13 +243,13 @@ suite('Runtime - zena:fetch', () => {
     assert.strictEqual(await main(), 4);
   });
 
-  test('a status-only response carries no release obligation', async () => {
+  test('a response whose body is never read needs no code to release it', async () => {
     const mockFetch = (async () =>
       new Response('unread', {status: 202})) as typeof fetch;
 
-    // The response crosses as a reference the unified GC owns, so a
-    // caller that never reads the body holds nothing that needs
-    // releasing — no `using`, no dispose().
+    // The response is released when `main` returns. On this host the
+    // release does nothing: the response crosses as a reference the
+    // unified GC owns.
     const {main} = await hosted(
       `
       import { Future } from 'zena:async';
@@ -331,8 +356,9 @@ suite('Runtime - zena:fetch', () => {
           ],
           body: '{"name":"widget"}',
         });
+        let status = response.status;
         let text = await response.text();
-        return if (text == 'created') response.status else 0 - 1;
+        return if (text == 'created') status else 0 - 1;
       }
     `,
       {fetch: mockFetch},
@@ -345,7 +371,7 @@ suite('Runtime - zena:fetch', () => {
     assert.strictEqual(seenBody, '{"name":"widget"}');
   });
 
-  test('fetch sends a byte body and reads response.bytes() once', async () => {
+  test('fetch sends a byte body and reads response.bytes()', async () => {
     let seenBytes: number[] = [];
     const mockFetch = (async (
       _url: string | URL | Request,
@@ -375,12 +401,7 @@ suite('Runtime - zena:fetch', () => {
         if (out.length != 3 || out[0] != (10 as u8) || out[1] != (20 as u8) || out[2] != (255 as u8)) {
           return 0 - 1;
         }
-        try {
-          await response.bytes();
-          return 0 - 2;
-        } catch (e) {
-          return out.length;
-        }
+        return out.length;
       }
     `,
       {fetch: mockFetch},

@@ -8,10 +8,8 @@
 
 import {suite, test} from 'zena:test';
 import {isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
-import {fetch} from 'zena:fetch';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
-import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, write} from './cli-support.zena';
+import {Scratch, ZenaCommand, described, fakePdsOrigin, fetchText, read, startFakePds, write} from './cli-support.zena';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
 
@@ -85,9 +83,9 @@ export let tests = suite('zena ci', () => {
       isTrue(!done.succeeded() && done.stderr.contains('is waiting for approval'), described(done));
 
       // Its attestation of the release is in its own repository, on the host.
-      let listed = runFuture(fetch(
-          `${addresses['host'] as String}/xrpc/com.atproto.repo.listRecords?repo=ci.acme.pkg.test&collection=dev.zena-lang.package.attestation`));
-      let records = (parseJson(runFuture(listed.text())) as JsonObject)['records'] as JsonArray;
+      let listed = fetchText(
+          `${addresses['host'] as String}/xrpc/com.atproto.repo.listRecords?repo=ci.acme.pkg.test&collection=dev.zena-lang.package.attestation`);
+      let records = (parseJson(listed) as JsonObject)['records'] as JsonArray;
       isTrue(records.length == 1, `${records.length} attestations`);
     } finally {
       stack.waitFor(1 as i64);

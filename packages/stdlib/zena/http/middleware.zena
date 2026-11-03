@@ -2,65 +2,50 @@
  * Middleware types, composition, and mounting.
  */
 
+import { Own } from 'zena:core';
 import { Request } from './request.zena';
 import { Response } from './response.zena';
 
 /**
- * A callback function invoked by middleware to pass control to the downstream middleware.
+ * A callback function invoked by middleware to pass control, and the
+ * request, to the downstream middleware.
  */
-export type NextFunction = () => Future<void>;
+export type NextFunction = (req: Own<Request>) => Future<void>;
 
 /**
  * A middleware function handling an HTTP request and response pair.
+ *
+ * The middleware owns the request: it hands it on with `next(req)`, or
+ * answers itself and drops it. After `next(req)` the request is the
+ * downstream middleware's, so read what you need from it first; a
+ * second `next(req)`, or any use of `req` after it, is a compile error.
  */
-export type Middleware = (req: Request, res: Response, next: NextFunction) => Future<void>;
-
-async function rejectMultipleNext(): Future<void> {
-  throw new Error('next() called more than once');
-}
+export type Middleware = (req: Own<Request>, res: Response, next: NextFunction) => Future<void>;
 
 /**
  * Composes an array of middleware functions into a single middleware.
  *
  * Middleware executes in the order given, unwinding in reverse order as
- * downstream promises resolve (the onion model). Calling `next()` more than
- * once within a single middleware invocation throws an error.
+ * downstream futures resolve (the onion model).
  */
 export function compose(middleware: Array<Middleware>): Middleware {
   let len = middleware.length;
   if (len == 0) {
-    return (req: Request, res: Response, next: NextFunction) => next();
+    return (req: Own<Request>, res: Response, next: NextFunction) => next(req);
   }
   if (len == 1) {
-    let fn = middleware[0];
-    return (req: Request, res: Response, next: NextFunction) => {
-      var called = false;
-      return fn(req, res, () => {
-        if (called) {
-          return rejectMultipleNext();
-        }
-        called = true;
-        return next();
-      });
-    };
+    return middleware[0];
   }
-  return (req: Request, res: Response, next: NextFunction) => {
+  return (req: Own<Request>, res: Response, next: NextFunction) => {
     var currentNext = next;
     var i = len - 1;
     while (i >= 0) {
       let fn = middleware[i];
       let downstreamNext = currentNext;
-      var called = false;
-      currentNext = () => {
-        if (called) {
-          return rejectMultipleNext();
-        }
-        called = true;
-        return fn(req, res, downstreamNext);
-      };
+      currentNext = (downstream: Own<Request>) => fn(downstream, res, downstreamNext);
       i -= 1;
     }
-    return currentNext();
+    return currentNext(req);
   };
 }
 
@@ -68,24 +53,21 @@ export function compose(middleware: Array<Middleware>): Middleware {
  * Mounts middleware at a URL path prefix.
  *
  * If `req.path` starts with `prefix`, `req.path` is rewritten to the matched subpath
- * before `middleware` runs, and restored when passing control to `next()` or upon completion.
- * If `req.path` does not start with `prefix`, `middleware` is bypassed and `next()` is called.
+ * before `middleware` runs, and restored when it passes the request on with `next(req)`.
+ * If `req.path` does not start with `prefix`, `middleware` is bypassed and `next(req)` is called.
  */
 export function mount(prefix: String, middleware: Middleware): Middleware {
-  return async (req: Request, res: Response, next: NextFunction): Future<void> => {
+  return (req: Own<Request>, res: Response, next: NextFunction) => {
     let originalPath = req.path;
     let subpath = matchPath(prefix, originalPath);
-    if (subpath != null) {
-      req.path = subpath;
-      await middleware(req, res, async (): Future<void> => {
-        req.path = originalPath;
-        await next();
-        req.path = subpath;
-      });
-      req.path = originalPath;
-    } else {
-      await next();
+    if (subpath == null) {
+      return next(req);
     }
+    req.path = subpath;
+    return middleware(req, res, (passed) => {
+      passed.path = originalPath;
+      return next(passed);
+    });
   };
 }
 
