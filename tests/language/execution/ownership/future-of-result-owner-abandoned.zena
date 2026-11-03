@@ -1,0 +1,72 @@
+// @mode: run
+// @result: 11111
+// A future whose value is a result holding an owner, such as the
+// trailers future `wasi:http`'s `consume-body` hands back, is released
+// when it is dropped unread, along with the owner inside the result.
+//
+// A specialization is keyed by representation, so the `T` its release
+// sees is `[true, Trailers] | [false, String]` with the handle erased,
+// and the tuple release only counted an element written `Own<...>` as
+// an owner: it released nothing. Reachability did not look inside the
+// tuples either, so a class released only that way (`Lone`) had no
+// dispose to call.
+import { Own, Disposable, Option, Result } from 'zena:core';
+
+var released = 0;
+
+resource class Lone {
+  new();
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 10000;
+  }
+}
+
+async function lone(): Future<(Own<Lone>, i32)> {
+  return (new Lone(), 0);
+}
+
+resource class Trailers {
+  weight: i32;
+  new(this.weight);
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.weight;
+  }
+}
+
+sealed class Failure {
+  case Refused
+  case Reset(code: i32)
+}
+
+async function withTrailers(weight: i32): Future<Result<Option<Own<Trailers>>, Failure>> {
+  return (true, some(new Trailers(weight)));
+}
+
+async function owned(weight: i32): Future<Result<Own<Trailers>, String>> {
+  return (true, new Trailers(weight));
+}
+
+async function failed(): Future<Result<Own<Trailers>, String>> {
+  return (false, 'no trailers');
+}
+
+async function paired(weight: i32): Future<(Own<Trailers>, i32)> {
+  return (new Trailers(weight), 1);
+}
+
+export async function main(): Future<i32> {
+  {
+    let dropped = withTrailers(1);
+    let alsoDropped = owned(10);
+    let failure = failed();
+    let pair = paired(100);
+    let alone = lone();
+  }
+  let kept = await owned(1000);
+  if (let (true, trailers) = kept) {
+    let weight = trailers.weight;
+  }
+  return released;
+}

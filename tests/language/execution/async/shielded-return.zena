@@ -1,0 +1,21 @@
+// @mode: run
+// @result: 42
+// A body that ends in a `shielded` block returns from inside it: the
+// block always runs, and the shield's restore runs on the way out.
+
+async function tick(n: i32): Future<i32> {
+  return n;
+}
+
+async function inside(): Future<i32> {
+  shielded {
+    let n = await tick(40);
+    return n + 1;
+  }
+}
+
+export async function main(): Future<i32> {
+  let first = await inside();
+  // Back outside the shield, an await still works.
+  return first + await tick(1);
+}

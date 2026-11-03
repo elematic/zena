@@ -7,7 +7,7 @@ import {
   Expression, ExpressionStatement, ForInStatement, ForStatement,
   FunctionExpression, Identifier, IfExpression, IfStatement, IsExpression,
   MatchExpression, MemberExpression, Node, NullLiteral, ReturnStatement,
-  Statement, ThisExpression, ThrowExpression, UnaryExpression,
+  ShieldedStatement, Statement, ThisExpression, ThrowExpression, UnaryExpression,
   WhileStatement, getMemberPropertyName
 } from '../ast.zena';
 import {
@@ -95,6 +95,9 @@ export function branchDefinitelyExits(stmt: Statement, model: SemanticModel | nu
       if (body.length == 0) { false }
       else { branchDefinitelyExits(body[body.length - 1], model, neverCompletingLoops) }
     }
+    // A shielded block always runs, and exits when its body does.
+    case ShieldedStatement {body}:
+      branchDefinitelyExits(body, model, neverCompletingLoops)
     case IfStatement {consequent, alternate}: {
       if (alternate == null) { false }
       else {

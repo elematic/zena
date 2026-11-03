@@ -1535,8 +1535,9 @@ guard as nullable `using` (except a binding initialized to literal null,
 which can never hold anything to release). The checker decides per declaration (`exitOwnScope`; a use
 position must be affirmatively classified as a borrow, so anything
 unrecognized leaves the binding alone and leaks as before) and records the
-verdict in `SemanticModel.scopeExitDrops`; lowering routes a flagged
-declaration into `lowerScopeDropRegion`, `using`'s twin.
+verdict in `SemanticModel.scopeExitDrops`; lowering acquires a flagged
+declaration's value as it acquires a `using`'s and opens the same
+region over the rest of the block (`acquireScope`, `lowerScopeDrops`).
 
 **`var` owner bindings.** A `var` holding an `Own<resource>` is released
 too, and its stores release what they replace, so `h = h.replace(x)`
@@ -1577,12 +1578,33 @@ splitting an interval where an enclosing region ends, and keeps the set
 of bindings whose region is open so a nested statement list (a `using`
 region's rest) opens no second one.
 
+Regions must nest, and two kinds overlap here. In
+
+```zena
+var r = new File('a');
+if (again) { r = new File('b'); }
+let log = new File('log');   // released at the block's end
+let moved = r;               // r's interval closes before this
+consume(moved);
+log.write('done');
+```
+
+`r`'s interval closes before `let moved = r`, while `log`'s region runs
+from its declaration to the end of the block. So the interval closes
+after `log`'s acquisition instead, `log`'s region opens over the rest of
+the block, and the interval reopens inside it until the move. A
+statement the interval covers declares bindings the statements after it
+still read, and the region's protected part does not dominate them, so
+an interval closed early carries what its statements declared out
+through variables set on normal completion.
+
 Two things stay as they are for `let`. A move inside a nested statement
 — an `if` arm, a loop body — takes the whole statement out of the
 regions, so an unwind from the other arm leaks the value (the same
-paths §"Where the join rule does not reach" lists). And a binding
-declared in a block that opens no scope of its own, a `match` arm's
-body, is left alone.
+paths §"Where the join rule does not reach" lists). And a `var`
+declared in a block that opens no scope of its own, an `if`
+expression's arm or a `match` arm's body, is left alone: neither its
+stores nor its block's end release anything (#838).
 
 The branch-join rule is implemented for `if`/`else` and for `match`: a
 candidate moved on some arms and kept on others gets a compensating drop
@@ -1595,6 +1617,27 @@ decision ask, per binding, on which arms a move lies; nesting composes
 because an inner construct's compensation makes the binding definitely
 dead at its own merge. A diverging arm needs no compensation, which is
 what keeps the conditional-handoff shape working — in both constructs.
+
+**Early exits.** A `let` or an owned parameter that some statement
+moves gets no region to the block's end, so a `return`, `break` or
+`continue` taken while it is still live reaches neither a join nor a
+region that releases it:
+
+```zena
+function give(f: Own<File>, wanted: boolean): void {
+  if (!wanted) {
+    return;          // releases f
+  }
+  pool.give(f);
+}
+```
+
+The checker records each such exit when the binding's scope closes
+(`SemanticModel.exitDrops`): one the binding leaves behind (its scope is
+inside what the exit leaves) with no move on the path to it. Lowering
+releases the binding there, after a `return`'s value is computed and
+before the exit runs any finalizer. A `var` needs none, since its
+interval regions cover such an exit.
 
 **Owned parameters release too.** A function's `Own<resource>`
 parameter that the body never moves, captures or escapes is released

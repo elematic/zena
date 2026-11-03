@@ -88,8 +88,8 @@ import {
   returnMultiThroughFinally,
   collectAffineDropFields, emitMarkDropped, lowerFieldDropRegions,
   lowerSyntheticRelease, disposeOwnerClasses, emitMaybeDispose, emitDrop, dropPlanOf, emitSlotsDrop,
-  lowerLetCondition, lowerMatch, lowerParamDropRegions,
-  lowerScopeDropRegion, lowerStatementRange, lowerTryExpression,
+  emitExitDrops, lowerLetCondition, lowerMatch, lowerParamDropRegions,
+  lowerStatementRange, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
 } from './control-flow.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
@@ -3685,7 +3685,7 @@ export final class FunctionLowerer {
    * straight to its fields, a record held as fields (`explodedRecords`)
    * passes them, and any other record is read field by field.
    */
-  #returnFields(expr: Expression): void {
+  #returnFields(expr: Expression, exit: Node | null = null): void {
     let d = this.#explodedResult() as RecordDispatchInfo;
     let coreReturns = this.func.signature.returns;
     var values = new Array<i32>();
@@ -3722,12 +3722,31 @@ export final class FunctionLowerer {
     if (!this.#cx().reachable) {
       return;
     }
+    if (exit != null) {
+      this.#emitExitDrops(exit);
+    }
     if (values.length == 1) {
       if (!returnThroughFinally(this.#cx(), values[0])) {
         this.b.ret(values[0]);
       }
     } else if (!returnMultiThroughFinally(this.#cx(), values)) {
       this.b.retMulti(values);
+    }
+  }
+
+  /**
+   * Releases the bindings the checker found still live at this early
+   * exit, which a move elsewhere kept their scope's end from releasing
+   * (SemanticModel.exitDropsOf). After the exit's value is computed, so
+   * a value read from one is read first, and before control leaves.
+   */
+  #emitExitDrops(exit: Node): void {
+    if (!this.#cx().reachable) {
+      return;
+    }
+    let drops = this.func.model.exitDropsOf(exit);
+    if (drops != null) {
+      emitExitDrops(this.#cx(), drops);
     }
   }
 
@@ -3925,6 +3944,7 @@ export final class FunctionLowerer {
         if (isTail) {
           this.#lowerTailReturn(argument);
         } else if (argument == null) {
+          this.#emitExitDrops(stmt as Node);
           if (this.ctorFactoryThis >= 0) {
             // A bare `return;` in a constructor body inlined into the
             // factory returns the allocated instance.
@@ -3943,11 +3963,12 @@ export final class FunctionLowerer {
           // so a `never`-typed operand — a throw — in a value-returning
           // function keeps its existing path.)
           this.#lowerExpression(argument);
+          this.#emitExitDrops(stmt as Node);
           if (!returnThroughFinally(this.#cx(), -1)) {
             this.b.retVoid();
           }
         } else if (this.#explodedResult() != null) {
-          this.#returnFields(argument);
+          this.#returnFields(argument, stmt as Node);
         } else if (!this.presplitAsync &&
             (this.func.signature.returns.length > 1 ||
              this.#functionReturnLayout() != null)) {
@@ -3959,6 +3980,7 @@ export final class FunctionLowerer {
           // consult and bails, for a tuple literal and for a call that
           // returns another function's inline result alike.
           let values = this.#lowerMultiReturnValues(argument);
+          this.#emitExitDrops(stmt as Node);
           if (this.#cx().reachable &&
               !returnMultiThroughFinally(this.#cx(), values)) {
             this.b.retMulti(values);
@@ -3966,6 +3988,7 @@ export final class FunctionLowerer {
         } else {
           let ctx = this.#returnSlotVt();
           let value = this.#lowerExpressionCtx(argument, ctx);
+          this.#emitExitDrops(stmt as Node);
           // The operand may have left the function itself (a `throw`
           // as the operand); #emitCheckedRet checks for that, and
           // parking the return has to check for it too.
@@ -4006,6 +4029,7 @@ export final class FunctionLowerer {
         if (this.#cx().loops.length == 0) {
           this.#bail('break outside loop');
         }
+        this.#emitExitDrops(stmt as Node);
         // Leaves any `finally` region opened inside this loop, and so
         // owes its finalizer before it reaches the exit.
         if (!breakThroughFinally(this.#cx())) {
@@ -4018,6 +4042,7 @@ export final class FunctionLowerer {
         if (this.#cx().loops.length == 0) {
           this.#bail('continue outside loop');
         }
+        this.#emitExitDrops(stmt as Node);
         if (!continueThroughFinally(this.#cx())) {
           let loop = this.#cx().loops[this.#cx().loops.length - 1];
           this.b.br(loop.continueTarget, this.#envValues(loop.carried));

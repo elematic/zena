@@ -1,0 +1,42 @@
+// @mode: run
+// @result: 11
+// An async function owns its parameter: a path that returns early
+// without moving it releases it there, while a later path moves it
+// into a consuming call after an await. The middleware shape that
+// answers a request it will not serve and reads the body of one it
+// will; the early return used to release nothing.
+import { Own, Disposable } from 'zena:core';
+
+var released = 0;
+
+resource class Body {
+  new();
+
+  read(this: Own<this>): Future<i32> {
+    return Future.of(100);
+  }
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+async function tick(): Future<i32> {
+  return 1;
+}
+
+async function handle(body: Own<Body>, serve: boolean): Future<i32> {
+  if (!serve) {
+    return 0;
+  }
+  let n = await tick();
+  return n + await body.read();
+}
+
+export async function main(): Future<i32> {
+  let skipped = await handle(new Body(), false);
+  let served = await handle(new Body(), true);
+  // The skipped body is released at its early return; the served one
+  // when `read` consumes it.
+  return skipped + released * 10 + (if (served == 101) 1 else 0) - 10;
+}

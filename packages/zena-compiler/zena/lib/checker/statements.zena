@@ -297,6 +297,11 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
         }
       }
       ctx.requireScopedConsumed(loc, 0);
+      // A tail return's call takes the frame's place, so nothing can
+      // run after its operand: an owner live there is not released.
+      if (!isTail) {
+        ctx.recordPendingExit(stmt, 0);
+      }
       ctx.recordBodyExit();
       ctx.markFlowUnreachable();
     }
@@ -523,6 +528,7 @@ case _: {
           DiagnosticCode.BreakOutsideLoop, loc);
       }
       ctx.requireScopedConsumed(loc, ctx.scopedLoopFloor());
+      ctx.recordPendingExit(stmt, ctx.scopedLoopFloor());
       ctx.recordFlowBreak();
     }
     case ContinueStatement {loc}: {
@@ -535,6 +541,7 @@ case _: {
           DiagnosticCode.ContinueOutsideLoop, loc);
       }
       ctx.requireScopedConsumed(loc, ctx.scopedLoopFloor());
+      ctx.recordPendingExit(stmt, ctx.scopedLoopFloor());
       ctx.recordFlowContinue();
     }
     // Declarations that are handled during pre-pass or skipped for now.

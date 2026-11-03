@@ -1,0 +1,75 @@
+// @mode: run
+// @result: 111
+// A `var` owner's release interval closes before the statement that
+// moves the binding, in the middle of its block, while a `using` or an
+// implicit-drop `let` inside the interval scopes the rest of the block.
+// The two regions overlap, so the interval closes after that statement's
+// acquisition instead and reopens inside its region: the scoped value is
+// released at the end of the block, after the moved one, not where the
+// interval closes.
+import { Own, Disposable } from 'zena:core';
+
+var log = 0;
+
+resource class R {
+  id: i32;
+  new(this.id);
+
+  [Disposable.dispose](this: Own<this>): void {
+    log = log * 10 + this.id;
+  }
+}
+
+function sink(r: Own<R>): void {}
+
+function scoped(again: boolean): i32 {
+  var r = new R(1);
+  if (again) {
+    r = new R(2);
+  }
+  let other = new R(3);
+  let moved = r;
+  sink(moved);
+  return other.id;
+}
+
+function used(again: boolean): i32 {
+  var r = new R(1);
+  if (again) {
+    r = new R(2);
+  }
+  using other = new R(3);
+  let moved = r;
+  sink(moved);
+  return other.id;
+}
+
+// `b`'s interval closes at the implicit-drop `let` that moves it, inside
+// `a`'s, which covers that `let` and closes later.
+function nested(again: boolean): i32 {
+  var a = new R(1);
+  if (again) {
+    a = new R(2);
+  }
+  var b = new R(3);
+  if (again) {
+    b = new R(4);
+  }
+  let moved = b;
+  let taken = a;
+  sink(taken);
+  return moved.id;
+}
+
+export function main(): i32 {
+  var passed = 0;
+  log = 0;
+  // 1 at the store, 2 in `sink`, 3 at the block's end.
+  if (scoped(true) == 3 && log == 123) { passed += 1; }
+  log = 0;
+  if (used(true) == 3 && log == 123) { passed += 10; }
+  log = 0;
+  // 1 and 3 at the stores, 2 in `sink`, 4 at the block's end.
+  if (nested(true) == 4 && log == 1324) { passed += 100; }
+  return passed;
+}

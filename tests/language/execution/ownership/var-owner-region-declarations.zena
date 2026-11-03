@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 14
+// A `var` owner is released over intervals of its block, each lowered as
+// a region that closes before the statement that moves the binding, in
+// the middle of the block. A `let` declared inside such a region stays
+// in scope after it: the code after the region, a closure among it, can
+// still read it.
+import { Own, Disposable } from 'zena:core';
+
+var released = 0;
+
+resource class R {
+  new();
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+function sink(r: Own<R>): void {}
+
+function plain(again: boolean): i32 {
+  var r = new R();
+  if (again) {
+    r = new R();
+  }
+  let x = 5;
+  let moved = r;
+  sink(moved);
+  return x;
+}
+
+function captured(again: boolean): i32 {
+  var r = new R();
+  if (again) {
+    r = new R();
+  }
+  let x = 5;
+  let moved = r;
+  sink(moved);
+  let read = () => x;
+  return read();
+}
+
+export function main(): i32 {
+  // Each call releases the replaced owner at the store and the moved
+  // one in `sink`: four in all.
+  return plain(true) + captured(true) + released;
+}

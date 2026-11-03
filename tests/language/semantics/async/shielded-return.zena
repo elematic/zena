@@ -1,0 +1,23 @@
+// @mode: check
+// A `shielded` block always runs, so a body that ends in one returns
+// when the block does: a `return` inside it is the function's return.
+
+async function tick(): Future<i32> {
+  return 1;
+}
+
+async function returnsInside(): Future<i32> {
+  shielded {
+    return await tick();
+  }
+}
+
+async function fallsThrough(): Future<i32> { // @error: must return a value
+  shielded {
+    let x = await tick();
+  }
+}
+
+export async function main(): Future<i32> {
+  return await returnsInside() + await fallsThrough();
+}
