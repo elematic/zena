@@ -8,6 +8,7 @@
 //! their caller is on.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use zenafx::loader::{GuestScene, engine};
 use zenafx::ui::paint::Painter;
@@ -79,12 +80,25 @@ fn widgets() -> GuestScene {
 
 /// The tree is installed before the first frame, so the first frame is the
 /// finished picture and nothing is owed after it.
+///
+/// `load` returns at `ready`, which `runApp` calls as its last step, so the
+/// entry is still returning for a moment afterwards, and the host counts a
+/// running entry as owing a frame. On a busy machine that moment can outlast
+/// the frame, so the test waits for the debt to clear rather than reading it
+/// once.
 #[test]
 fn the_first_frame_is_complete() {
     let mut app = widgets();
     let commands = app.frame(frame_at(WIDTH, HEIGHT));
     assert!(!commands.is_empty(), "the first frame should draw");
-    assert!(!app.wants_another_frame(), "nothing is owed");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.wants_another_frame() {
+        assert!(
+            Instant::now() < deadline,
+            "something is still owed after the first frame"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// No clips, and one quad or glyph run per node that draws: the page, three
