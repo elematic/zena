@@ -35,6 +35,32 @@ export final class DidDocument {
 
   new(id: String, handle: String | null, signingKey: PublicKey | null, pds: String | null, json: JsonObject)
     : id = id, handle = handle, signingKey = signingKey, pds = pds, json = json;
+
+  /**
+   * The endpoint of the service whose id is `fragment`, such as
+   * `#atproto_pds`, written alone or after the DID, and whose type is
+   * `type`; null when the document lists none. The first such service
+   * counts.
+   */
+  serviceEndpoint(fragment: String, type: String): String | null {
+    return serviceIn(this.json, this.id, fragment, type);
+  }
+}
+
+function serviceIn(doc: JsonObject, did: String, fragment: String, type: String): String | null {
+  let services = arrayOrEmpty(doc['service']);
+  for (var i = 0; i < services.length; i += 1) {
+    let service = services[i];
+    if (service is JsonObject) {
+      let serviceId = service['id'];
+      let endpoint = service['serviceEndpoint'];
+      if (serviceId is String && isFragment(serviceId, did, fragment) && service['type'] == type
+          && endpoint is String) {
+        return endpoint;
+      }
+    }
+  }
+  return null;
 }
 
 /** Whether `id` names `fragment` within the document for `did`. */
@@ -93,20 +119,6 @@ export function parseDidDocument(json: JsonValue, expectedDid: String | null = n
     }
   }
 
-  var pds: String | null = null;
-  let services = arrayOrEmpty(doc['service']);
-  for (var i = 0; i < services.length; i += 1) {
-    let service = services[i];
-    if (pds == null && service is JsonObject) {
-      let serviceId = service['id'];
-      let type = service['type'];
-      let endpoint = service['serviceEndpoint'];
-      if (serviceId is String && isFragment(serviceId, did, '#atproto_pds')
-          && type == 'AtprotoPersonalDataServer' && endpoint is String) {
-        pds = endpoint;
-      }
-    }
-  }
-
+  let pds = serviceIn(doc, did, '#atproto_pds', 'AtprotoPersonalDataServer');
   return new DidDocument(did, handle, signingKey, pds, doc);
 }

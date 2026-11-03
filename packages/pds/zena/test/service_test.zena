@@ -14,7 +14,7 @@ import {now} from 'wasi:clocks/system-clock';
 import {KeyType, PublicKey, formatDidKey, publicKeyFor} from 'atproto:didkey';
 import {didDocument, genesisOperation} from 'atproto:plc';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
-import {JsonObject, parseJson, stringify} from 'zena:json';
+import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {parseDidDocument} from 'atproto:did';
 import {PackageHost} from 'pds:host';
 import {SigningKey} from 'pds:storage';
@@ -48,6 +48,16 @@ function refusal(pairs: Array<(String, String)>) {
     return if (e is ConfigError) e.message else `another error: ${e.message}`;
   }
   return '';
+}
+
+/** Whether `array` holds the string `text`. */
+function contains(array: JsonArray, text: String): boolean {
+  for (var i = 0; i < array.length; i += 1) {
+    if (array[i] == text) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function get(app: App, path: String) {
@@ -345,7 +355,20 @@ export let tests = suite('pds:service', () => {
     equal(document.statusCode, 200);
     let parsed = parseDidDocument(parseJson(document.body as String), 'did:web:pkg.test');
     equal(parsed.pds as String, 'https://pkg.test');
+    // It names the host's methods too, as a client finds them.
+    equal(parsed.serviceEndpoint('#zena_package_host', 'ZenaPackageHost') as String, 'https://pkg.test');
     equal(get(plain.app, '/.well-known/did.json').statusCode, 404);
+
+    // describeHost says what the host is, to anyone.
+    let described = parseJson(get(hosted.app, '/xrpc/dev.zena-lang.host.describeHost').body as String) as JsonObject;
+    equal(described['did'] as String, 'did:web:pkg.test');
+    equal(described['domain'] as String, 'pkg.test');
+    isTrue(contains(described['reservedScopes'] as JsonArray, 'std'), 'its reserved scopes');
+    equal(((described['limits'] as JsonObject)['maxBlobSize'] as Box<f64>).value as i64, host.config.maxBlobSize);
+    isTrue(!(described['scopeApproval'] as Box<boolean>).value, 'no approval');
+    isTrue(contains(described['methods'] as JsonArray, 'dev.zena-lang.host.publish'), 'publish');
+    isTrue(contains(described['methods'] as JsonArray, 'dev.zena-lang.host.createAutomationAccount'),
+        'automation accounts, which take sessions');
 
     // The PDS keeps managed accounts for the host it runs with, and none
     // without one.
