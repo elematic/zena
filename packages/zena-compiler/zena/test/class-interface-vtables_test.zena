@@ -1,0 +1,177 @@
+/**
+ * Reachability builds a class-interface vtable, and a trampoline per
+ * slot, for each class specialization a body packs into an interface
+ * (#815). Another specialization of the same generic class gets one
+ * only if something packs it too.
+ */
+import { suite, test } from 'zena:test';
+import { equalText } from 'zena:assert';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { WasmModule } from '../lib/codegen/wasm-module.zena';
+import { ReachabilityAnalysis } from '../lib/codegen/reachability/analysis.zena';
+import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+
+/** Runs reachability over `source` and returns the module it fills in. */
+function reach(source: String) {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+  let wasm = new WasmModule();
+  let program = new Program(units, entryUnit);
+  wasm.program = program;
+  new ReachabilityAnalysis(program, wasm, 'js').run();
+  return wasm;
+}
+
+/** Whether `part` is a declaration id, like the `s611` in `Box_s611_i32`. */
+function isId(part: String): boolean {
+  if (part.length < 2 || !part.startsWith('s')) {
+    return false;
+  }
+  for (var i = 1; i < part.length; i += 1) {
+    let b = part.getByteAt(i);
+    if (b < 48 || b > 57) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** A specialization key without its declaration ids: `Box_s611_i32` reads `Box_i32`. */
+function withoutIds(key: String) {
+  var out = '';
+  for (let part in key.split('_')) {
+    if (!isId(part)) {
+      out = if (out.length == 0) part else `${out}_${part}`;
+    }
+  }
+  return out;
+}
+
+/** The class-interface vtables built for `iface`, as `class as interface`. */
+function pairsOf(wasm: WasmModule, iface: String) {
+  var pairs = '';
+  for (let entry in wasm.classInterfaceVTables) {
+    let iKey = withoutIds(entry.key.interfaceKey as String);
+    if (iKey.startsWith(`${iface}_`)) {
+      let pair = `${withoutIds(entry.key.classKey as String)} as ${iKey}`;
+      pairs = if (pairs.length == 0) pair else `${pairs}, ${pair}`;
+    }
+  }
+  return pairs;
+}
+
+let declarations = `
+interface Shape<T> {
+  value(): T;
+}
+
+class Box<T> implements Shape<T> {
+  v: T;
+  new(this.v);
+  value(): T {
+    return this.v;
+  }
+}
+
+let read = (s: Shape<i32>): i32 => s.value();
+`;
+
+export let tests = suite('class-interface vtables', () => {
+  test('a specialization nothing packs gets no vtable', () => {
+    let wasm = reach(`${declarations}
+export let run = (): i32 => {
+  let a = new Box<i32>(1);
+  let b = new Box<boolean>(true);
+  return read(a) + (if (b.value()) 1 else 0);
+};
+`);
+    equalText(pairsOf(wasm, 'Shape'), 'Box_i32 as Shape_i32');
+  });
+
+  test('each packed specialization gets its own vtable', () => {
+    let wasm = reach(`${declarations}
+let readFlag = (s: Shape<boolean>): i32 => if (s.value()) 1 else 0;
+
+export let run = (): i32 => {
+  return read(new Box<i32>(1)) + readFlag(new Box<boolean>(true));
+};
+`);
+    equalText(pairsOf(wasm, 'Shape'), 'Box_i32 as Shape_i32, Box_bool as Shape_bool');
+  });
+
+  test('a pack in a generic body counts for the specialization it is walked under', () => {
+    let wasm = reach(`${declarations}
+let pack = <T>(b: Box<T>): Shape<T> => b;
+
+export let run = (): i32 => {
+  let b = new Box<boolean>(true);
+  return pack(new Box<i32>(1)).value() + (if (b.value()) 1 else 0);
+};
+`);
+    equalText(pairsOf(wasm, 'Shape'), 'Box_i32 as Shape_i32');
+  });
+
+  test('a pack in a generic method counts for the specialization it is walked under', () => {
+    let wasm = reach(`${declarations}
+class Packer {
+  new();
+  pack<T>(b: Box<T>): Shape<T> {
+    return b;
+  }
+}
+
+export let run = (): i32 => {
+  let b = new Box<boolean>(true);
+  return new Packer().pack(new Box<i32>(1)).value() + (if (b.value()) 1 else 0);
+};
+`);
+    equalText(pairsOf(wasm, 'Shape'), 'Box_i32 as Shape_i32');
+  });
+
+  // The trampoline for a field's slot calls the getter registered with
+  // the class, so the getter has to exist for the packed specialization
+  // whichever of the two RTA reaches first.
+  test('a packed specialization has the getters its interface fields need', () => {
+    let wasm = reach(`
+interface Named<T> {
+  name: T;
+}
+
+class Tag<T> implements Named<T> {
+  name: T;
+  new(this.name);
+}
+
+let readName = (n: Named<i32>): i32 => n.name;
+
+export let run = (): i32 => {
+  let b = new Tag<boolean>(true);
+  return readName(new Tag<i32>(1)) + (if (b.name) 1 else 0);
+};
+`);
+    equalText(pairsOf(wasm, 'Named'), 'Tag_i32 as Named_i32');
+  });
+});

@@ -1054,23 +1054,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // slot) are node-level facts the dependency records never carry
       // — the fourth organ. Without this, a generic class packed into
       // an interface from a specialized body has a struct and no
-      // class-interface vtable, and lowering's iface_pack fails. The
-      // unspec key is what the vtable phase gates on, so recording it
-      // is sufficient even where the resolver leaves a method type
-      // parameter unsubstituted.
+      // class-interface vtable, and lowering's iface_pack fails.
       if (n is Expression) {
         let ifaceAdaptation = model.getInterfaceAdaptation(n);
         if (ifaceAdaptation != null) {
           let srcT = resolveType(ifaceAdaptation.source);
           let tgtT = resolveType(ifaceAdaptation.target);
           if (srcT is ClassType && tgtT is InterfaceType) {
-            this.pass.wasm.usedInterfaceAdaptations[
-                getClassInterfaceKey(getClassKey(srcT),
-                    getInterfaceKey(tgtT))] = true;
-            let unspecCName = getClassKey(srcT.genericSource ?? srcT);
-            let unspecIName = getInterfaceKey(tgtT.genericSource ?? tgtT);
-            this.pass.wasm.usedInterfaceAdaptations[
-                getClassInterfaceKey(unspecCName, unspecIName)] = true;
+            this.pass.demandPackPair(srcT, tgtT);
           } else if (srcT is InterfaceType && tgtT is InterfaceType) {
             this.pass.typeLowerer.discoverType(srcT, model);
             this.pass.typeLowerer.discoverType(tgtT, model);
@@ -2063,16 +2054,13 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       protocolClasses: GrowableArray<ClassType>, model: SemanticModel): void {
     let iterableIface = this.pass.findPreludeInterface(iterable);
     if (iterableIface != null) {
-      let iterableKey = getInterfaceKey(iterableIface);
       let cha = this.pass.cha;
       let typeLowerer = this.pass.typeLowerer;
       for (let resolvedClass in protocolClasses) {
-        let cName = getClassKey(resolvedClass);
-        this.pass.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iterableKey)] = true;
-
-        let unspecCName = getClassKey(resolvedClass.genericSource ?? resolvedClass);
-        let unspecKey = getClassInterfaceKey(unspecCName, iterableKey);
-        this.pass.wasm.usedInterfaceAdaptations[unspecKey] = true;
+        // The prelude's iterable is the generic declaration; the pair
+        // the loop packs is the class's own specialization of it.
+        let specializedIterable = findImplementedInterfaceType(this.pass.wasm, resolvedClass, iterableIface);
+        this.pass.demandPackPair(resolvedClass, specializedIterable ?? iterableIface);
 
         let targetModel = this.pass.getClassModel(resolvedClass);
         let mds = cha.findImplementingMethods(resolvedClass, symbolKey);
@@ -2080,7 +2068,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
         }
 
-        let specializedIterable = findImplementedInterfaceType(this.pass.wasm, resolvedClass, iterableIface);
         if (specializedIterable != null) {
           typeLowerer.discoverType(specializedIterable, model);
         }
@@ -2850,14 +2837,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let srcT = resolveType(ifaceAdaptation.source);
           let tgtT = resolveType(ifaceAdaptation.target) as InterfaceType;
           if (srcT is ClassType) {
-            let cName = getClassKey(srcT);
-            let iName = getInterfaceKey(tgtT);
-            this.pass.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iName)] = true;
-            
-            let unspecCName = getClassKey(srcT.genericSource ?? srcT);
-            let unspecIName = getInterfaceKey(tgtT.genericSource ?? tgtT);
-            let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
-            this.pass.wasm.usedInterfaceAdaptations[unspecKey] = true;
+            this.pass.demandPackPair(srcT, tgtT);
           } else if (srcT is InterfaceType) {
             this.pass.typeLowerer.discoverType(srcT, model);
             this.pass.typeLowerer.discoverType(tgtT, model);

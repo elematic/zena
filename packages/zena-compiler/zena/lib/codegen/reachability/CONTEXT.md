@@ -225,6 +225,16 @@ without naming them (a generator's `next`, an async frame's `run`,
 `:toString` in a template) are demanded where that construct is
 registered. See §19 of `docs/design/binary-size.md`.
 
+A class-interface vtable exists only for a specialization something
+packs. `demandPackPair` marks the pair a pack site resolves to,
+`(Box<i32>, Shape<i32>)`, and the vtable phase builds `Box<String>`'s
+vtable only if a pack of `Box<String>` marks it too. A pair that still
+holds a type parameter or an erasure marks nothing: it comes from a
+walk of a generic body under its own parameters, and the walk under
+each substitution marks the real pair. Marking the generic pair
+instead built 3,749 vtables and 9,487 trampolines in the self-compile,
+of which 195 and 812 survived harvest (#815).
+
 ## A Class Nothing Reaches Specializes Nothing
 
 `#layoutClassStructs` lays out every declared class in every loaded
