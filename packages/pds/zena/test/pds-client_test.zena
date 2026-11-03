@@ -1,22 +1,38 @@
 /**
- * `InProcessPds`, the PDS the package host reaches in the same process
- * (`pds:pds-client`): what the host asks of it, as it would ask a PDS
- * over the network.
+ * The clients the package host reaches its PDS with (`pds:pds-client`),
+ * held to the same checks: `InProcessPds`, the PDS in the same process,
+ * and `XrpcPds`, a PDS with managed accounts served on a port here,
+ * called with the host's tokens as it would be over the network.
  */
 
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
-import {MapValue, StringValue, newMap} from 'atproto:data';
-import {KeyType, formatDidKey} from 'atproto:didkey';
+import {Future, runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {Unmanaged} from 'zena:core';
+import {Server} from 'zena:http';
+import {Cid} from 'atproto:cid';
+import {StringValue, newMap} from 'atproto:data';
+import {KeyType, PublicKey, formatDidKey} from 'atproto:didkey';
+import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
+import {ManagedAccounts, TrustedHost} from 'pds:managed';
 import {Pds} from 'pds:pds';
-import {InProcessPds} from 'pds:pds-client';
-import {CreateRecord, DeleteRecord, RepositoryError, Write} from 'pds:repository';
+import {InProcessPds, PdsClient, XrpcPds} from 'pds:pds-client';
+import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from 'pds:repository';
+import {createApp} from 'pds:server';
+import {LocalSigner} from 'pds:signer';
 import {Account, MemoryStorage, SigningKey} from 'pds:storage';
 
 let HOST = 'did:web:pkg.test';
-let DID = 'did:plc:routerrouterrouterrouter';
+let PDS_DID = 'did:web:padstone.test';
+/** The PDS the accounts' DID documents name, whatever address the test reaches it at. */
+let PDS_URL = 'https://padstone.test';
 let NOTE = 'dev.zena-lang.test.note';
+let NOBODY = 'did:plc:nobodynobodynobodynobody';
+
+function key(seed: i32) {
+  return new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, seed as u8));
+}
 
 function note(text: String) {
   let record = newMap();
@@ -31,84 +47,207 @@ function keyOf(n: i32) {
   return if (n < 10) `00${digits}` else if (n < 100) `0${digits}` else digits;
 }
 
-export let tests = suite('pds:pds-client', () => {
-  test('makes a managed account, writes it in one commit, and reads every page back', (ctx) => {
-    let pds = new Pds(new MemoryStorage());
-    let client = new InProcessPds(pds, HOST);
-    // The PDS makes the account's signing key, which the host names in the
-    // DID document, and the account takes it.
-    let reserved = runFuture(client.reserveSigningKey());
-    runFuture(client.createAccount(DID, 'router.acme.pkg.test', reserved));
-    let account = runFuture(pds.storage.getAccount(DID)) as Account;
-    equal(account.manager as String, HOST);
-    equal(formatDidKey(reserved), formatDidKey(runFuture(account.signingKey()).publicKey()));
-    // A key makes one account, and only a reserved key makes one.
-    var refused = '';
+/** The error a write refused with, or '' when it was taken. */
+function refusal(write: () => void) {
+  try {
+    write();
+  } catch (e) {
+    return if (e is RepositoryError) e.error else `another error: ${e.message}`;
+  }
+  return '';
+}
+
+/**
+ * A PDS, a client of it to test, and the host's side of an account's
+ * creation: its rotation key, which signs each DID's genesis operation,
+ * and the PLC directory, which records it.
+ */
+final class Harness {
+  pds: Pds;
+  var client: PdsClient;
+  rotation = key(11);
+  /** Each DID's operations, oldest first. */
+  logs = new HashMap<String, Array<PlcOperation>>();
+  var #server: Unmanaged<Server> | null = null;
+  /** Whether the client reaches the PDS over the network. */
+  var overNetwork = false;
+
+  /** A harness over `pds`, in the same process. */
+  new(pds: Pds = new Pds(new MemoryStorage())) : pds = pds, client = new InProcessPds(pds, HOST);
+
+  /**
+   * A harness over XRPC: the PDS trusts the host's rotation key, and finds
+   * the host's signing key in its DID document.
+   */
+  static overXrpc(): Harness {
+    let harness = new Harness();
+    let hostSigning = key(12);
+    let logs = harness.logs;
+    harness.pds.managed = new ManagedAccounts(PDS_DID, PDS_URL,
+        [new TrustedHost(HOST, [harness.rotation.publicKey()])],
+        async (did: String): Future<Array<PlcOperation>> => {
+          if (let (true, log) = logs.get(did)) {
+            return log;
+          }
+          return [];
+        },
+        async (did: String, fresh: boolean): Future<PublicKey | null> =>
+            if (did == HOST) hostSigning.publicKey() else null);
+    let server = new Server(createApp(harness.pds), 0 as u16);
+    server.start();
+    harness.client = new XrpcPds(`http://127.0.0.1:${server.port as i32}`, PDS_DID, HOST,
+        new LocalSigner(hostSigning));
+    harness.#server = server.keepOpen();
+    harness.overNetwork = true;
+    return harness;
+  }
+
+  /** A DID the host mints for `handle`, and the key the PDS reserved, which its genesis operation names. */
+  mint(handle: String): (String, PublicKey) {
+    let signing = runFuture(this.client.reserveSigningKey());
+    return (this.mintNaming(handle, signing), signing);
+  }
+
+  /** A DID the host mints for `handle`, whose genesis operation names `signing`. */
+  mintNaming(handle: String, signing: PublicKey): String {
+    let rotation = this.rotation;
+    let genesis = genesisOperation(signing, [rotation.publicKey()], handle, PDS_URL)
+        .signedWith((bytes) => rotation.sign(bytes));
+    let did = didOfGenesis(genesis);
+    this.logs[did] = [genesis];
+    return did;
+  }
+
+  /** Mints a DID, and has the PDS make its account. */
+  created(handle: String): String {
+    let (did, signing) = this.mint(handle);
+    runFuture(this.client.createAccount(did, handle, signing));
+    return did;
+  }
+
+  close(): void {
+    let server = this.#server;
+    if (server != null) {
+      server.close();
+    }
+  }
+}
+
+/** The checks every client passes, each against a harness from `make`. */
+function clientConformance(make: () => Harness) {
+  test('makes a managed account with the signing key the PDS reserved, once', (ctx) => {
+    let harness = make();
     try {
-      runFuture(client.createAccount('did:plc:otherotherotherotherothe', 'other.acme.pkg.test', reserved));
-    } catch (e) {
-      if (e is RepositoryError) {
-        refused = e.error;
-      }
+      let (did, reserved) = harness.mint('router.acme.pkg.test');
+      runFuture(harness.client.createAccount(did, 'router.acme.pkg.test', reserved));
+      let account = runFuture(harness.pds.storage.getAccount(did)) as Account;
+      equal(account.manager as String, HOST);
+      equal(formatDidKey(reserved), formatDidKey(runFuture(account.signingKey()).publicKey()));
+      // A key makes one account, and only a key the PDS reserved makes one.
+      let again = harness.mintNaming('again.acme.pkg.test', reserved);
+      equal(refusal(() => {
+        runFuture(harness.client.createAccount(again, 'again.acme.pkg.test', reserved));
+      }), 'InvalidRequest');
+      let unreserved = key(99).publicKey();
+      let stranger = harness.mintNaming('stranger.acme.pkg.test', unreserved);
+      equal(refusal(() => {
+        runFuture(harness.client.createAccount(stranger, 'stranger.acme.pkg.test', unreserved));
+      }), 'InvalidRequest');
+      isNull(runFuture(harness.pds.storage.getAccount(again)));
+      isNull(runFuture(harness.pds.storage.getAccount(stranger)));
+    } finally {
+      harness.close();
     }
-    equal(refused, 'InvalidRequest');
-    refused = '';
+  });
+
+  test('writes in one commit, and reads every page back', (ctx) => {
+    let harness = make();
     try {
-      runFuture(client.createAccount('did:plc:otherotherotherotherothe', 'other.acme.pkg.test',
-          new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8)).publicKey()));
-    } catch (e) {
-      if (e is RepositoryError) {
-        refused = e.error;
+      let did = harness.created('router.acme.pkg.test');
+      let writes = new GrowableArray<Write>();
+      for (var i = 0; i < 201; i += 1) {
+        writes.push(new CreateRecord(NOTE, keyOf(i), note(`note ${i}`)));
       }
+      // No more than a PDS takes at once.
+      equal(refusal(() => {
+        runFuture(harness.client.applyWrites(did, writes));
+      }), 'InvalidRequest');
+      let taken = new GrowableArray<Write>();
+      for (var i = 0; i < 150; i += 1) {
+        taken.push(writes[i]);
+      }
+      let head = runFuture(harness.client.applyWrites(did, taken));
+      let latest = runFuture(harness.client.latestCommit(did));
+      isTrue(latest != null && latest.cid.equals(head.cid), 'the commit');
+
+      // Two pages, in record-key order.
+      let records = runFuture(harness.client.listRecords(did, NOTE));
+      equal(records.length, 150);
+      equal(records[0].rkey, '000');
+      equal(records[149].rkey, '149');
+      let read = runFuture(harness.client.getRecord(did, NOTE, '120'));
+      isTrue(read != null && read.cid.equals(records[120].cid), 'the same record');
+      isNull(runFuture(harness.client.getRecord(did, NOTE, 'none')));
+
+      runFuture(harness.client.applyWrites(did, [new DeleteRecord(NOTE, '120', null) as Write]));
+      isNull(runFuture(harness.client.getRecord(did, NOTE, '120')));
+      equal(runFuture(harness.client.listRecords(did, NOTE)).length, 149);
+    } finally {
+      harness.close();
     }
-    equal(refused, 'InvalidRequest');
-    isNull(runFuture(pds.storage.getAccount('did:plc:otherotherotherotherothe')));
+  });
 
-    let writes = new GrowableArray<Write>();
-    for (var i = 0; i < 250; i += 1) {
-      writes.push(new CreateRecord(NOTE, keyOf(i), note(`note ${i}`)));
+  test('replaces and deletes a record only while it is the one swapped', (ctx) => {
+    let harness = make();
+    try {
+      let did = harness.created('router.acme.pkg.test');
+      runFuture(harness.client.applyWrites(did, [new CreateRecord(NOTE, 'self', note('one')) as Write]));
+      let first = (runFuture(harness.client.getRecord(did, NOTE, 'self')))?.cid;
+      runFuture(harness.client.applyWrites(did, [new UpdateRecord(NOTE, 'self', note('two'), first) as Write]));
+      let second = runFuture(harness.client.getRecord(did, NOTE, 'self'));
+      isTrue(second != null && first != null && !second.cid.equals(first), 'replaced');
+      // The first is no longer the record.
+      equal(refusal(() => {
+        runFuture(harness.client.applyWrites(did, [new UpdateRecord(NOTE, 'self', note('three'), first) as Write]));
+      }), 'InvalidSwap');
+      equal(refusal(() => {
+        runFuture(harness.client.applyWrites(did, [new DeleteRecord(NOTE, 'self', first) as Write]));
+      }), 'InvalidSwap');
+      runFuture(harness.client.applyWrites(did, [new DeleteRecord(NOTE, 'self', second?.cid) as Write]));
+      isNull(runFuture(harness.client.getRecord(did, NOTE, 'self')));
+    } finally {
+      harness.close();
     }
-    let head = runFuture(client.applyWrites(DID, writes));
-    let latest = runFuture(client.latestCommit(DID));
-    isTrue(latest != null && latest.cid.equals(head.cid), 'the commit');
-
-    // Three pages, in record-key order.
-    let records = runFuture(client.listRecords(DID, NOTE));
-    equal(records.length, 250);
-    equal(records[0].rkey, '000');
-    equal(records[249].rkey, '249');
-    let read = runFuture(client.getRecord(DID, NOTE, '120'));
-    isTrue(read != null && read.cid.equals(records[120].cid), 'the same record');
-
-    runFuture(client.applyWrites(DID, [new DeleteRecord(NOTE, '120', null) as Write]));
-    isNull(runFuture(client.getRecord(DID, NOTE, '120')));
-    equal(runFuture(client.listRecords(DID, NOTE)).length, 249);
   });
 
   test('keeps blobs, and refuses an account it does not hold', (ctx) => {
-    let pds = new Pds(new MemoryStorage());
-    let client = new InProcessPds(pds, HOST);
-    runFuture(client.createAccount(DID, 'router.acme.pkg.test', runFuture(client.reserveSigningKey())));
-    let bytes = 'a module'.toBytes();
-    let blob = runFuture(client.uploadBlob(DID, 'application/wasm', bytes));
-    equal(blob.size, bytes.length as i64);
-    let held = runFuture(client.getBlob(DID, blob.cid));
-    isTrue(held != null && held.mimeType == 'application/wasm', 'the blob');
-    // Only what the PDS's limits on managed accounts allow.
-    var page = '';
+    let harness = make();
     try {
-      runFuture(client.uploadBlob(DID, 'text/html', '<script></script>'.toBytes()));
-    } catch (e) {
-      page = if (e is RepositoryError) e.error else e.message;
+      let did = harness.created('router.acme.pkg.test');
+      let bytes = 'a module'.toBytes();
+      let blob = runFuture(harness.client.uploadBlob(did, 'application/wasm', bytes));
+      equal(blob.size, bytes.length as i64);
+      let held = runFuture(harness.client.getBlob(did, blob.cid));
+      isTrue(held != null && held.mimeType == 'application/wasm' && held.bytes.length == bytes.length, 'the blob');
+      // Only what the PDS's limits on managed accounts allow.
+      // TODO(#875): check it over the network too, where the refusal now
+      // hangs until the client's timeout.
+      if (!harness.overNetwork) {
+        equal(refusal(() => {
+          runFuture(harness.client.uploadBlob(did, 'text/html', '<script></script>'.toBytes()));
+        }), 'InvalidRequest');
+      }
+      isNull(runFuture(harness.client.getBlob(did, Cid.forBlob('another'.toBytes()))));
+      isTrue(refusal(() => {
+        runFuture(harness.client.applyWrites(NOBODY, [new CreateRecord(NOTE, 'x', note('x')) as Write]));
+      }) != '', 'refused');
+    } finally {
+      harness.close();
     }
-    equal(page, 'InvalidRequest');
-
-    var refused = '';
-    try {
-      runFuture(client.applyWrites('did:plc:nobodynobodynobodynobody', [new CreateRecord(NOTE, 'x', note('x')) as Write]));
-    } catch (e) {
-      refused = if (e is RepositoryError) e.error else e.message;
-    }
-    equal(refused, 'RepoNotFound');
   });
+}
+
+export let tests = suite('pds:pds-client', () => {
+  clientConformance(() => new Harness());
+  clientConformance(() => Harness.overXrpc());
 });

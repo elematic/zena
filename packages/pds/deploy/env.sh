@@ -21,7 +21,7 @@
 # key ring, and a Cloud DNS zone. Staging's are production's with -staging
 # after them.
 #
-# The host's online rotation key (packages/pds/zena/rotation.zena) is in
+# The host's online rotation key (packages/pds/zena/signer.zena) is in
 # Cloud KMS for production, which signs with it and never lets it out.
 # Staging keeps the secret its accounts were made with, since a host whose
 # key changed could no longer sign their operations; ZENA_ROTATION_KMS=1

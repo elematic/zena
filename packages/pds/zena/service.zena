@@ -26,9 +26,15 @@
  *   - `PDS_ROTATION_KEY`: the host's online PLC rotation key, a secp256k1
  *     private key in hex; or `PDS_ROTATION_KMS_KEY`, a Cloud KMS key
  *     version, `projects/…/cryptoKeyVersions/<n>`, on secp256k1 or P-256,
- *     which signs without the key leaving Cloud KMS (`pds:rotation`). One
+ *     which signs without the key leaving Cloud KMS (`pds:signer`). One
  *     of them is required with `firestore`, since the accounts it creates
  *     outlive the server. With `memory`, a missing key is made up at start.
+ *   - `PDS_HOST_SIGNING_KEY` or `PDS_HOST_SIGNING_KMS_KEY`: the host's own
+ *     signing key, given as the rotation key is, which signs its
+ *     service-auth tokens to the PDSes of its accounts and which its DID
+ *     document lists. A missing key is made up at start: the host reaches
+ *     its accounts' PDS in the same process, with no tokens, until the two
+ *     are services of their own (#851).
  *   - `PDS_OFFLINE_ROTATION_KEY`: the operator's offline rotation key, as
  *     a `did:key`, which every new account ranks above the online key, so
  *     that the operator can undo what a stolen online key signs.
@@ -109,7 +115,7 @@ import {InProcessPds} from './pds-client.zena';
 import {AppPart, createApp} from './server.zena';
 import {REQUEST_BODY_LIMIT, nowMicros} from './xrpc/common.zena';
 import {CredentialStore, MemoryCredentialStore, Sessions} from './sessions.zena';
-import {KmsRotationKey, LocalRotationKey, RotationKey} from './rotation.zena';
+import {KmsSigner, LocalSigner, Signer} from './signer.zena';
 import {CloudKms} from 'google-cloud:kms';
 import {KmsKeyEncryption} from './key-encryption.zena';
 import {AccountKind, MemoryStorage, SigningKey, Storage} from './storage.zena';
@@ -165,6 +171,10 @@ export final class HostSettings {
   rotationKey: SigningKey | null;
   /** The Cloud KMS key version of the online rotation key, in place of `rotationKey`. */
   var rotationKmsKey: String | null = null;
+  /** The host's own signing key, or null to make one up at start. */
+  var signingKey: SigningKey | null = null;
+  /** The Cloud KMS key version of the host's signing key, in place of `signingKey`. */
+  var signingKmsKey: String | null = null;
   /** The operator's offline rotation key. */
   var offlineRotationKey: PublicKey | null = null;
   reservedScopes: Array<String>;
@@ -279,25 +289,11 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   var host: HostSettings | null = null;
   let domain = value('PDS_HOST_DOMAIN');
   if (domain != null) {
-    var rotationKey: SigningKey | null = null;
-    let keyText = value('PDS_ROTATION_KEY');
-    if (keyText != null) {
-      let bytes = decodeKey(keyText);
-      if (bytes == null) {
-        problems.push('PDS_ROTATION_KEY is not 32 bytes of hex');
-      } else {
-        rotationKey = new SigningKey(KeyType.Secp256k1, bytes);
-      }
-    }
-    let kmsKey = value('PDS_ROTATION_KMS_KEY');
-    if (keyText != null && kmsKey != null) {
-      problems.push('give PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY, not both');
-    } else if (keyText == null && kmsKey == null && storageKind == 'firestore') {
+    let (rotationKey, kmsKey) = keyFrom(value, problems, 'PDS_ROTATION_KEY', 'PDS_ROTATION_KMS_KEY');
+    if (value('PDS_ROTATION_KEY') == null && kmsKey == null && storageKind == 'firestore') {
       problems.push('PDS_HOST_DOMAIN with PDS_STORAGE=firestore needs PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY');
     }
-    if (kmsKey != null && !kmsKey.contains('/cryptoKeyVersions/')) {
-      problems.push(`PDS_ROTATION_KMS_KEY is a key version, projects/…/cryptoKeyVersions/<n>, not ${kmsKey}`);
-    }
+    let (signingKey, signingKmsKey) = keyFrom(value, problems, 'PDS_HOST_SIGNING_KEY', 'PDS_HOST_SIGNING_KMS_KEY');
     var offlineKey: PublicKey | null = null;
     let offlineText = value('PDS_OFFLINE_ROTATION_KEY');
     if (offlineText != null) {
@@ -391,12 +387,15 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     let settings = new HostSettings(domain, serviceDid, publicUrl, rotationKey, reserved, maxBlobSize, records);
     settings.siteUrl = siteUrl;
     settings.rotationKmsKey = kmsKey;
+    settings.signingKey = signingKey;
+    settings.signingKmsKey = signingKmsKey;
     settings.admins = admins;
     settings.offlineRotationKey = offlineKey;
     settings.privateReads = privateReads == '1';
     host = settings;
   } else {
-    for (let name in ['PDS_ROTATION_KEY', 'PDS_ROTATION_KMS_KEY', 'PDS_OFFLINE_ROTATION_KEY', 'PDS_SERVICE_DID',
+    for (let name in ['PDS_ROTATION_KEY', 'PDS_ROTATION_KMS_KEY', 'PDS_HOST_SIGNING_KEY', 'PDS_HOST_SIGNING_KMS_KEY',
+        'PDS_OFFLINE_ROTATION_KEY', 'PDS_SERVICE_DID',
         'PDS_PUBLIC_URL', 'PDS_SITE_URL', 'PDS_RESERVED_SCOPES', 'PDS_ADMIN_DIDS',
         'PDS_MAX_BLOB_BYTES', 'PDS_PRIVATE_READS', 'PDS_HANDLE_RECORDS', 'PDS_DNS_ZONE', 'PDS_DNS_PROJECT']) {
       if (value(name) != null) {
@@ -453,6 +452,33 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   return config;
 }
 
+/**
+ * A secp256k1 key the environment gives in hex as `keyName`, or the Cloud
+ * KMS key version it gives as `kmsName`, each null when it gives none;
+ * what is wrong with them goes in `problems`.
+ */
+function keyFrom(value: (name: String) => String | null, problems: GrowableArray<String>, keyName: String,
+    kmsName: String): (SigningKey | null, String | null) {
+  var key: SigningKey | null = null;
+  let keyText = value(keyName);
+  if (keyText != null) {
+    let bytes = decodeKey(keyText);
+    if (bytes == null) {
+      problems.push(`${keyName} is not 32 bytes of hex`);
+    } else {
+      key = new SigningKey(KeyType.Secp256k1, bytes);
+    }
+  }
+  let kmsKey = value(kmsName);
+  if (keyText != null && kmsKey != null) {
+    problems.push(`give ${keyName} or ${kmsName}, not both`);
+  }
+  if (kmsKey != null && !kmsKey.contains('/cryptoKeyVersions/')) {
+    problems.push(`${kmsName} is a key version, projects/…/cryptoKeyVersions/<n>, not ${kmsKey}`);
+  }
+  return (key, kmsKey);
+}
+
 /** The 32 bytes `text` spells in hex, or null. */
 function decodeKey(text: String): FixedArray<u8> | null {
   if (text.length != 64) {
@@ -503,12 +529,11 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
       records = new CloudDnsRecords(CloudDns.connect(dnsProject, zone));
     }
   }
-  let kmsKey = settings.rotationKmsKey;
-  let rotationKey: RotationKey = if (kmsKey != null) await KmsRotationKey.connect(CloudKms.connect(kmsKey))
-      else new LocalRotationKey(settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32)));
+  let rotationKey = await signerOf(settings.rotationKey, settings.rotationKmsKey);
   let hostEndpoint = settings.publicUrl ?? endpoint;
   let serviceDid = settings.serviceDid ?? didWebOfOrigin(hostEndpoint);
   let hostConfig = new HostConfig(serviceDid, settings.domain, hostEndpoint, rotationKey);
+  hostConfig.signingKey = await signerOf(settings.signingKey, settings.signingKmsKey);
   hostConfig.siteUrl = settings.siteUrl;
   hostConfig.offlineRotationKey = settings.offlineRotationKey;
   hostConfig.privateReads = settings.privateReads;
@@ -569,6 +594,14 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
       else byHostName(site, withAssets(createApp(pds, host, sessions, AppPart.Site), config.webDir),
           withPlc(createApp(pds, host, sessions, AppPart.Pds), plc));
   return new Service(app, pds, host, records, plc, sessions);
+}
+
+/** The key `kmsKey` names in Cloud KMS, or else `key`, or else one made up now. */
+async function signerOf(key: SigningKey | null, kmsKey: String | null): Future<Signer> {
+  if (kmsKey != null) {
+    return await KmsSigner.connect(CloudKms.connect(kmsKey));
+  }
+  return new LocalSigner(key ?? new SigningKey(KeyType.Secp256k1, randomBytes(32)));
 }
 
 /**
