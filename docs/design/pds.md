@@ -251,14 +251,15 @@ whichever is newer.
 ## Staging
 
 A staging host runs the same image as the real one, with nothing it makes
-reaching the public PLC directory. It has a domain of its own,
-`pkg-staging.zena-lang.dev`, not `staging.pkg.zena-lang.dev`, which a
-scope named `staging` would own. It also has its own Firestore database,
-blob prefix, rotation key and handle records.
+reaching the public PLC directory. It has names of its own: the site and
+the handles at `pkg-staging.zena-lang.dev`, not
+`staging.pkg.zena-lang.dev`, which a scope named `staging` would own, and
+the PDS at `padstone-staging.zena-lang.dev`. It also has its own Firestore
+database, blob prefix, rotation key and handle records.
 
-With `PDS_PLC=staging` the server is a PLC directory itself, at `/plc`
-(`pds:plc-directory`). It records the operations of the accounts the host
-makes, after checking that each follows the last (`checkNextOperation`
+With `PDS_PLC=staging` the server is a PLC directory itself, at `/plc` on
+the PDS's name (`pds:plc-directory`). It records the operations of the
+accounts the host makes, after checking that each follows the last (`checkNextOperation`
 in `atproto:plc`), and serves those DIDs' documents and logs. Every other
 DID it reads from the public directory, so maintainers sign in with
 their real accounts, and the host checks their service-auth tokens with

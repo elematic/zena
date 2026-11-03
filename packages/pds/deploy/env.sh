@@ -5,11 +5,16 @@
 # production. ZENA_GCP_PROJECT is the project; ZENA_GCP_REGION and
 # ZENA_GCP_REPO default as the website's scripts do.
 #
-#   staging      pkg-staging.zena-lang.dev, with its own PLC directory at
-#                /plc (PDS_PLC=staging), so nothing it makes reaches
-#                plc.directory
-#   production   pkg.zena-lang.dev, sending its accounts' operations to
-#                plc.directory
+#   staging      the site and handles at pkg-staging.zena-lang.dev, the
+#                PDS at padstone-staging.zena-lang.dev, with its own PLC
+#                directory at /plc (PDS_PLC=staging), so nothing it makes
+#                reaches plc.directory
+#   production   the site and handles at pkg.zena-lang.dev, the PDS at
+#                padstone.zena-lang.dev, sending its accounts' operations
+#                to plc.directory
+#
+# One Cloud Run service serves both names, the site's and the PDS's
+# (docs/design/package-manager.md, "Names and addresses").
 #
 # Everything an environment owns has its name: a Cloud Run service, a
 # Firestore database, a bucket, a service account, secrets, a Cloud KMS
@@ -37,12 +42,14 @@ case "$PDS_ENV" in
   staging)
     SUFFIX=-staging
     DOMAIN=pkg-staging.zena-lang.dev
+    PDS_DOMAIN=padstone-staging.zena-lang.dev
     PLC_MODE=staging
     ROTATION_KMS="${ZENA_ROTATION_KMS:-0}"
     ;;
   production)
     SUFFIX=
     DOMAIN=pkg.zena-lang.dev
+    PDS_DOMAIN=padstone.zena-lang.dev
     PLC_MODE=public
     ROTATION_KMS=1
     ;;
@@ -85,11 +92,24 @@ ADMIN_DIDS="${ZENA_ADMIN_DIDS:-}"
 # project or ZENA_DNS_PARENT_PROJECT (ZENA_DNS_PARENT_ZONE names it), and
 # otherwise prints the NS records to add where its DNS is kept.
 ZONE="zena-pkg${SUFFIX}"
+# zena-lang.dev's own zone, which holds that delegation and the PDS's name,
+# PDS_DOMAIN, which is beside DOMAIN rather than under it.
+# find_parent_zone sets PARENT_ZONE to it: ZENA_DNS_PARENT_ZONE, or the
+# zone in PARENT_PROJECT whose DNS name is exactly zena-lang.dev., rather
+# than a --filter, whose matching of a dotted name depends on gcloud's
+# filter rules. It is empty when zena-lang.dev's DNS is kept elsewhere,
+# such as at the registrar. A function, so that sourcing this file runs no
+# gcloud.
+PARENT_PROJECT="${ZENA_DNS_PARENT_PROJECT:-$PROJECT}"
+find_parent_zone() {
+  PARENT_ZONE="${ZENA_DNS_PARENT_ZONE:-$(gcloud dns managed-zones list --project "$PARENT_PROJECT" \
+    --format 'value(name,dnsName)' | awk '$2 == "zena-lang.dev." { print $1; exit }')}"
+}
 # The tenant within the database (docs/design/pds.md, "Accounts,
 # organizations and tenants"). Each environment has a database of its own,
 # so both use the same one.
 TENANT=pkg
 
-echo "environment: $PDS_ENV ($DOMAIN)"
+echo "environment: $PDS_ENV ($DOMAIN, the PDS at $PDS_DOMAIN)"
 echo "project:     $PROJECT, $REGION"
 echo

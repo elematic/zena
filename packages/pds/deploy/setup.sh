@@ -169,12 +169,7 @@ NAMESERVERS="$(gcloud dns managed-zones describe "$ZONE" --project "$PROJECT" \
 # DNS zone, in this project or ZENA_DNS_PARENT_PROJECT, they are written
 # here. When zena-lang.dev's DNS is elsewhere, such as at the registrar,
 # they are printed for you to add there.
-PARENT_PROJECT="${ZENA_DNS_PARENT_PROJECT:-$PROJECT}"
-# Every zone's name and DNS name, and the one whose DNS name is exactly
-# zena-lang.dev., rather than a --filter, whose matching of a dotted name
-# depends on gcloud's filter rules.
-PARENT_ZONE="${ZENA_DNS_PARENT_ZONE:-$(gcloud dns managed-zones list --project "$PARENT_PROJECT" \
-  --format 'value(name,dnsName)' | awk '$2 == "zena-lang.dev." { print $1; exit }')}"
+find_parent_zone
 DELEGATE_BY_HAND=
 if [ -z "$PARENT_ZONE" ]; then
   DELEGATE_BY_HAND=1

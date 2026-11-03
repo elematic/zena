@@ -8,7 +8,7 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {App, Request, Response, Server} from 'zena:http';
+import {App, HTMLPartial, Request, Response, Server} from 'zena:http';
 import {hex} from 'zena:encoding';
 import {now} from 'wasi:clocks/system-clock';
 import {KeyType, PublicKey, formatDidKey, publicKeyFor} from 'atproto:didkey';
@@ -50,11 +50,30 @@ function refusal(pairs: Array<(String, String)>) {
 }
 
 function get(app: App, path: String) {
+  return getUrl(app, `http://localhost${path}`);
+}
+
+/** `app`'s answer to a GET of `url`, whose host name is the one the request is for. */
+function getUrl(app: App, url: String) {
   let res = new Response();
   runFuture((async () => {
-    await app.handleRequest(new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>()), res);
+    await app.handleRequest(new Request.fromUrl(url, 'GET', new HashMap<String, String>()), res);
   })());
   return res;
+}
+
+/** `res`'s body as text, whether it is JSON's or a page's. */
+function textOf(res: Response) {
+  let body = res.body;
+  if (body is String) {
+    return body;
+  }
+  return if (body is HTMLPartial) body.toString() else '';
+}
+
+/** The `did` member of `res`'s JSON body. */
+function didOf(res: Response) {
+  return (parseJson(res.body as String) as JsonObject)['did'] as String;
 }
 
 export let tests = suite('pds:service', () => {
@@ -173,6 +192,8 @@ export let tests = suite('pds:service', () => {
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'meta-garage-420114-zena-pkg-staging'),
       ('PDS_HOST_DOMAIN', 'pkg-staging.zena-lang.dev'),
+      ('PDS_PUBLIC_URL', 'https://padstone-staging.zena-lang.dev'),
+      ('PDS_SITE_URL', 'https://pkg-staging.zena-lang.dev'),
       ('PDS_HANDLE_RECORDS', 'cloud-dns'),
       ('PDS_DNS_ZONE', 'zena-pkg-staging'),
       ('PDS_DNS_PROJECT', 'meta-garage-420114'),
@@ -184,8 +205,9 @@ export let tests = suite('pds:service', () => {
     ]));
     isTrue(config.plcStaging, 'its own PLC directory');
     let host = config.host;
-    isTrue(host != null && host.serviceDid == 'did:web:pkg-staging.zena-lang.dev' &&
-        host.publicUrl as String == 'https://pkg-staging.zena-lang.dev', 'the host');
+    isTrue(host != null && host.serviceDid == 'did:web:padstone-staging.zena-lang.dev' &&
+        host.publicUrl as String == 'https://padstone-staging.zena-lang.dev' &&
+        host.siteUrl as String == 'https://pkg-staging.zena-lang.dev', 'the host');
   });
 
   test('reads the online rotation key from Cloud KMS, and the offline key', (ctx) => {
@@ -302,6 +324,70 @@ export let tests = suite('pds:service', () => {
     let parsed = parseDidDocument(parseJson(document.body as String), 'did:web:pkg.test');
     equal(parsed.pds as String, 'https://pkg.test');
     equal(get(plain.app, '/.well-known/did.json').statusCode, 404);
+  });
+
+  test("reads the site's address apart from the PDS's, and the DID from the PDS's", (ctx) => {
+    let split = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
+        ('PDS_SITE_URL', 'https://pkg.test')])).host as HostSettings;
+    equal(split.publicUrl as String, 'https://padstone.test');
+    equal(split.serviceDid as String, 'did:web:padstone.test');
+    equal(split.siteUrl as String, 'https://pkg.test');
+    // Without a site, one name is both.
+    let one = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test')])).host as HostSettings;
+    isTrue(one.siteUrl == null, 'no site of its own');
+    equal(one.serviceDid as String, 'did:web:pkg.test');
+
+    let alone = refusal([('PDS_SITE_URL', 'https://pkg.test')]);
+    isTrue(alone.contains('PDS_SITE_URL needs PDS_HOST_DOMAIN'), alone);
+    for (let url in ['pkg.test', 'ftp://pkg.test', 'https://pkg.test/pages']) {
+      let wrong = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
+          ('PDS_SITE_URL', url)]);
+      isTrue(wrong.contains('PDS_SITE_URL is an origin'), wrong);
+    }
+    // The PDS's URL is `https://pkg.test` unless it is given another.
+    let same = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_SITE_URL', 'https://pkg.test')]);
+    isTrue(same.contains("PDS_SITE_URL names the PDS's own host"), same);
+  });
+
+  test('serves the site and the PDS each under its own name', (ctx) => {
+    let config = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
+        ('PDS_SITE_URL', 'https://pkg.test')]));
+    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let app = service.app;
+
+    // The PDS: its methods, its DID document, and a page that points at the site.
+    let described = getUrl(app, 'https://padstone.test/xrpc/com.atproto.server.describeServer');
+    equal(described.statusCode, 200);
+    equal(didOf(described), 'did:web:padstone.test');
+    let document = getUrl(app, 'https://padstone.test/.well-known/did.json');
+    equal(document.statusCode, 200);
+    equal(parseDidDocument(parseJson(document.body as String), 'did:web:padstone.test').pds as String,
+        'https://padstone.test');
+    let root = getUrl(app, 'https://padstone.test/');
+    isTrue(root.statusCode == 200 && textOf(root).contains('https://pkg.test'), textOf(root));
+    for (let path in ['/me', '/packages/router.acme.pkg.test', '/scopes/acme', '/oauth/client-metadata.json',
+        '/xrpc/dev.zena-lang.host.createWebSession']) {
+      equal(getUrl(app, `https://padstone.test${path}`).statusCode, 404, `${path} on the PDS`);
+    }
+
+    // The site: its pages, and what its sign-in calls on its own origin.
+    let home = getUrl(app, 'https://pkg.test/');
+    isTrue(home.statusCode == 200 && (home.type ?? '').contains('text/html'), 'the home page');
+    let metadata = getUrl(app, 'https://pkg.test/oauth/client-metadata.json');
+    equal(metadata.statusCode, 200);
+    let client = parseJson(metadata.body as String) as JsonObject;
+    equal(client['client_id'] as String, 'https://pkg.test/oauth/client-metadata.json');
+    equal(client['client_uri'] as String, 'https://pkg.test');
+    let resolve = '/xrpc/com.atproto.identity.resolveHandle?handle=nobody.pkg.test';
+    equal(getUrl(app, `https://pkg.test${resolve}`).statusCode, getUrl(app, `https://padstone.test${resolve}`).statusCode,
+        'the handle resolver of the sign-in');
+    for (let path in ['/xrpc/com.atproto.server.describeServer', '/.well-known/did.json', '/xrpc/_health']) {
+      equal(getUrl(app, `https://pkg.test${path}`).statusCode, 404, `${path} on the site`);
+    }
+
+    // Any other name is the PDS's, as Cloud Run's own address is.
+    equal(getUrl(app, 'https://zena-pkg-abc.a.run.app/xrpc/_health').statusCode, 200);
+    equal(getUrl(app, 'https://zena-pkg-abc.a.run.app/me').statusCode, 404);
   });
 
   test('reads PDS_PLC', (ctx) => {

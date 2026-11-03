@@ -231,7 +231,7 @@ for a standalone binary.
 | `ZENA_ALLOW_EGRESS`                | Host names exempt from `ZENA_DENY_PRIVATE_EGRESS`, separated by commas.                                                   |
 | `ZENA_HTTP_HEADER_TIMEOUT_SECONDS` | How long a connection to a server a program runs may take to send a request's headers before it is closed. 30 by default. |
 | `ZENA_HTTP_MAX_CONNECTIONS`        | How many connections such a server keeps open at once; the next waits. 1024 by default.                                   |
-| `ZENA_PACKAGE_HOST`                | The package host `publish` and `package create` use, in place of `https://pkg.zena-lang.dev`.                             |
+| `ZENA_PACKAGE_HOST`                | The package host `publish` and `package create` use, in place of the Zena project's, `https://padstone.zena-lang.dev`.    |
 
 ## Development and Architecture
 

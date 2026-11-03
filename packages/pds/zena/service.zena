@@ -32,9 +32,16 @@
  *   - `PDS_OFFLINE_ROTATION_KEY`: the operator's offline rotation key, as
  *     a `did:key`, which every new account ranks above the online key, so
  *     that the operator can undo what a stolen online key signs.
- *   - `PDS_SERVICE_DID`: the host's DID, `did:web:<domain>` by default.
  *   - `PDS_PUBLIC_URL`: the origin the accounts' DID documents name as
  *     their PDS, `https://<domain>` by default.
+ *   - `PDS_SERVICE_DID`: the host's DID, by default the `did:web` of
+ *     `PDS_PUBLIC_URL`'s host.
+ *   - `PDS_SITE_URL`: the origin of the site, the host's web pages, when
+ *     it has a name of its own (docs/design/package-manager.md, "Names and
+ *     addresses"). A request for the site's host name then gets the pages
+ *     and what their sign-in calls, and a request for any other name gets
+ *     the PDS: its XRPC methods, its DID document and its staging PLC
+ *     directory. Without it, every name gets both, as on one machine.
  *   - `PDS_ADMIN_DIDS`: the DIDs of the host's admins, separated by commas
  *     or spaces, who sign in to the web app as themselves and may see every
  *     account the host holds and every private entry. `deploy.sh` passes
@@ -97,7 +104,7 @@ import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zen
 import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
 import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
-import {createApp} from './server.zena';
+import {AppPart, createApp} from './server.zena';
 import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
 import {CredentialStore, MemoryCredentialStore, Sessions} from './sessions.zena';
 import {KmsRotationKey, LocalRotationKey, RotationKey} from './rotation.zena';
@@ -147,6 +154,11 @@ export final class HostSettings {
   serviceDid: String | null;
   /** The accounts' PDS endpoint, or null for the server's own origin. */
   publicUrl: String | null;
+  /**
+   * The site's origin, when the pages have a host name of their own
+   * (`PDS_SITE_URL`); null serves the pages and the PDS under every name.
+   */
+  var siteUrl: String | null = null;
   /** The host's PLC rotation key, or null to make one up at start. */
   rotationKey: SigningKey | null;
   /** The Cloud KMS key version of the online rotation key, in place of `rotationKey`. */
@@ -356,8 +368,26 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     } else {
       problems.push(`PDS_HANDLE_RECORDS is cloud-dns or memory, not ${recordsKind}`);
     }
-    let settings = new HostSettings(domain, value('PDS_SERVICE_DID') ?? `did:web:${domain}`,
-        value('PDS_PUBLIC_URL') ?? `https://${domain}`, rotationKey, reserved, maxBlobSize, records);
+    let publicUrl = value('PDS_PUBLIC_URL') ?? `https://${domain}`;
+    let pdsOrigin = originOf(publicUrl);
+    if (pdsOrigin == null) {
+      problems.push(`PDS_PUBLIC_URL is an origin, such as https://padstone.zena-lang.dev, not ${publicUrl}`);
+    }
+    var siteUrl: String | null = null;
+    let siteText = value('PDS_SITE_URL');
+    if (siteText != null) {
+      let site = originOf(siteText);
+      if (site == null) {
+        problems.push(`PDS_SITE_URL is an origin, such as https://pkg.zena-lang.dev, not ${siteText}`);
+      } else if (pdsOrigin != null && site.host() == pdsOrigin.host()) {
+        problems.push(`PDS_SITE_URL names the PDS's own host, ${site.host()}: leave it out to serve the site and the PDS there, or give PDS_PUBLIC_URL another name`);
+      } else {
+        siteUrl = site.origin();
+      }
+    }
+    let serviceDid = value('PDS_SERVICE_DID') ?? (if (pdsOrigin != null) didWebOfOrigin(publicUrl) else null);
+    let settings = new HostSettings(domain, serviceDid, publicUrl, rotationKey, reserved, maxBlobSize, records);
+    settings.siteUrl = siteUrl;
     settings.rotationKmsKey = kmsKey;
     settings.admins = admins;
     settings.offlineRotationKey = offlineKey;
@@ -365,7 +395,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     host = settings;
   } else {
     for (let name in ['PDS_ROTATION_KEY', 'PDS_ROTATION_KMS_KEY', 'PDS_OFFLINE_ROTATION_KEY', 'PDS_SERVICE_DID',
-        'PDS_PUBLIC_URL', 'PDS_RESERVED_SCOPES', 'PDS_ADMIN_DIDS',
+        'PDS_PUBLIC_URL', 'PDS_SITE_URL', 'PDS_RESERVED_SCOPES', 'PDS_ADMIN_DIDS',
         'PDS_MAX_BLOB_BYTES', 'PDS_PRIVATE_READS', 'PDS_HANDLE_RECORDS', 'PDS_DNS_ZONE', 'PDS_DNS_PROJECT']) {
       if (value(name) != null) {
         problems.push(`${name} needs PDS_HOST_DOMAIN`);
@@ -477,6 +507,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let hostEndpoint = settings.publicUrl ?? endpoint;
   let serviceDid = settings.serviceDid ?? didWebOfOrigin(hostEndpoint);
   let hostConfig = new HostConfig(serviceDid, settings.domain, hostEndpoint, rotationKey);
+  hostConfig.siteUrl = settings.siteUrl;
   hostConfig.offlineRotationKey = settings.offlineRotationKey;
   hostConfig.privateReads = settings.privateReads;
   for (let did in settings.admins) {
@@ -517,8 +548,29 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let readable = (url: String) => host.mayRead(url);
   resolver.allowsPds = readable;
   dependencies.allowsPds = readable;
-  return new Service(withAssets(withPlc(createApp(pds, host, sessions), plc), config.webDir), pds, host, records, plc,
-      sessions);
+  let site = settings.siteUrl;
+  let app = if (site == null) withAssets(withPlc(createApp(pds, host, sessions), plc), config.webDir)
+      else byHostName(site, withAssets(createApp(pds, host, sessions, AppPart.Site), config.webDir),
+          withPlc(createApp(pds, host, sessions, AppPart.Pds), plc));
+  return new Service(app, pds, host, records, plc, sessions);
+}
+
+/**
+ * An application that gives a request for the host name of `siteUrl` to
+ * `site`, and any other to `pds`: the PDS's own name, and the server's
+ * address on Cloud Run.
+ */
+function byHostName(siteUrl: String, site: App, pds: App): App {
+  let siteHost = (URL.parse(siteUrl) as URL).host();
+  let both = new App();
+  both.use(async (req, res, next): Future<void> => {
+    if (req.url.host() == siteHost) {
+      await site.handleRequest(req, res);
+    } else {
+      await pds.handleRequest(req, res);
+    }
+  });
+  return both;
 }
 
 /**
@@ -614,6 +666,22 @@ export async function serve(config: ServiceConfig): Future<Running> {
   let service = await buildService(config, origin);
   inner = service.app;
   return new Running(server, service, origin);
+}
+
+/**
+ * `text` as an `http` or `https` origin, such as `https://pkg.zena-lang.dev`,
+ * or null when it is not one: a URL with a path, a query or credentials.
+ */
+function originOf(text: String): URL | null {
+  let url = URL.parse(text);
+  if (url == null) {
+    return null;
+  }
+  let parsed = url;
+  let web = parsed.protocol == 'https:' || parsed.protocol == 'http:';
+  let bare = parsed.pathname == '/' && parsed.search == '' && parsed.hash == '' && parsed.username == '' &&
+      parsed.password == '';
+  return if (web && bare) parsed else null;
 }
 
 /** The `did:web` of the server at `origin`, with its port, if it has one, percent-encoded. */
