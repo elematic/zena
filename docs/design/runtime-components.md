@@ -428,9 +428,10 @@ task of the store, so calls in flight at once interleave wherever the
 extension awaits: a request handler extension serves requests side by
 side, and a slow call does not hold up a quick one. A call's calls back
 to the program go through the channel of that call, which the task that
-started it registers under its guest task, and a call back finds from
-the root of the async call stack (`async_call_stack` in wasmtime), so
-two calls' calls back never cross. The thread holds the `InstancePre`,
+started it registers under the call's task group (wasmtime's
+`TaskGroupId`: the call and every subtask it creates). A call back finds
+the group from the store's `TaskGroupHook`, which records the group the
+store enters and leaves, so two calls' calls back never cross. The thread holds the `InstancePre`,
 so a fresh instance can be made when the old one is lost.
 
 - **Imports.** The extension's imports are resolved through its

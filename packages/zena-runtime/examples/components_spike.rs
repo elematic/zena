@@ -183,7 +183,12 @@ struct ServeCallback {
     callback: Callback,
 }
 
-impl AccessorTask<CallerState> for ServeCallback {
+impl ServeCallback {
+    /// The callback as a task to spawn.
+    fn task(self) -> impl for<'fut> AccessorTask<'fut, CallerState> {
+        async move |accessor: &Accessor<CallerState>| self.run(accessor).await
+    }
+
     async fn run(self, accessor: &Accessor<CallerState>) -> Result<()> {
         let Callback {
             func,
@@ -286,7 +291,7 @@ fn main() -> Result<()> {
                                     ServeCallback { installation, callback }.run(accessor).await?;
                                 } else {
                                     accessor.with(|mut a| {
-                                        a.spawn(ServeCallback { installation, callback })
+                                        a.spawn(ServeCallback { installation, callback }.task())
                                     })?;
                                 }
                             }

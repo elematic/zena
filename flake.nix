@@ -118,10 +118,10 @@
           cargoDeps = pkgs.rustPlatform.importCargoLock {
             lockFile = ./Cargo.lock;
             outputHashes = {
-              "frame-buffer-wasmtime-0.3.0" = "sha256-H4aCxBhb0L59/9JY1L0ZMIjFEsULOd/6sDdk0HKLP4E=";
-              "surface-wasmtime-0.3.0" = "sha256-H4aCxBhb0L59/9JY1L0ZMIjFEsULOd/6sDdk0HKLP4E=";
-              "wasi-gfx-runtime-shared-0.3.0" = "sha256-H4aCxBhb0L59/9JY1L0ZMIjFEsULOd/6sDdk0HKLP4E=";
-              "wasi-webgpu-wasmtime-0.3.0" = "sha256-H4aCxBhb0L59/9JY1L0ZMIjFEsULOd/6sDdk0HKLP4E=";
+              "frame-buffer-wasmtime-0.5.0" = "sha256-frQDn1/coKI/wHV0zSaLtiq78HuGytWVJ+nWE5IhMkc=";
+              "surface-wasmtime-0.5.0" = "sha256-frQDn1/coKI/wHV0zSaLtiq78HuGytWVJ+nWE5IhMkc=";
+              "wasi-gfx-runtime-shared-0.5.0" = "sha256-frQDn1/coKI/wHV0zSaLtiq78HuGytWVJ+nWE5IhMkc=";
+              "wasi-webgpu-wasmtime-0.5.0" = "sha256-frQDn1/coKI/wHV0zSaLtiq78HuGytWVJ+nWE5IhMkc=";
             };
           };
 
