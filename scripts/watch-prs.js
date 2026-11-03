@@ -16,6 +16,8 @@
  * Run it as a background task after pushing, so a merge or a red check
  * reaches the session without anyone relaying it, and start it again after
  * acting on what it printed. It prints the current state first, then polls.
+ * A poll that GitHub fails is skipped, and five failures in a row end the
+ * watch with an error.
  *
  *   npm run watch-prs -- [--interval <seconds>] [--minutes <n>] [--once] <pr>...
  *
@@ -157,28 +159,58 @@ if (once) process.exit(0);
 const sleep = (seconds) =>
   new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 
-const deadline = Date.now() + minutes * 60_000;
-for (;;) {
-  await sleep(interval);
+/**
+ * One poll: every PR's state now, compared with the last poll's. All of
+ * them are read before any is compared, so a poll that GitHub fails
+ * partway through changes nothing, and the next poll sees the same
+ * differences.
+ */
+const poll = () => {
+  const watchedNow = new Map([...watched.keys()].map((n) => [n, snapshot(n)]));
+  const basesNow = new Map([...bases.keys()].map((n) => [n, snapshot(n)]));
   const events = [];
-  for (const [n, before] of watched) {
-    const after = snapshot(n);
-    events.push(...changes(before, after));
+  for (const [n, after] of watchedNow) {
+    events.push(...changes(watched.get(n), after));
     watched.set(n, after);
   }
-  for (const [n, before] of bases) {
-    const after = snapshot(n);
-    if (after.state === 'MERGED' && before.state !== 'MERGED') {
+  for (const [n, after] of basesNow) {
+    if (after.state === 'MERGED' && bases.get(n).state !== 'MERGED') {
       for (const number of stackedOn.get(n) ?? []) {
-        const pr = snapshot(number);
         events.push(
-          pr.base === 'main'
+          watchedNow.get(number).base === 'main'
             ? `base #${n} is merged and GitHub moved #${number} onto main; update the local branch (AGENTS.md, "Stacked PRs")`
             : `base #${n} is merged; rebase #${number} onto main (AGENTS.md, "Stacked PRs")`,
         );
       }
     }
     bases.set(n, after);
+  }
+  return events;
+};
+
+/**
+ * GitHub answers a poll with a 502 now and then, and the next one works.
+ * After this many failures in a row the watch gives up, since the cause
+ * is likely one that waiting does not fix, such as an expired login.
+ */
+const FAILURES_ALLOWED = 5;
+let failures = 0;
+
+const deadline = Date.now() + minutes * 60_000;
+for (;;) {
+  await sleep(interval);
+  let events = [];
+  try {
+    events = poll();
+    failures = 0;
+  } catch (error) {
+    failures += 1;
+    const reason = String(error.stderr || error.message).trim();
+    if (failures >= FAILURES_ALLOWED) {
+      console.log(`${failures} polls in a row failed; the last: ${reason}`);
+      process.exit(1);
+    }
+    console.error(`a poll failed, trying again in ${interval}s: ${reason}`);
   }
   if (events.length > 0) {
     for (const event of events) console.log(event);
