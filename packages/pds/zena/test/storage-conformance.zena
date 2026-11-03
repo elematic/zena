@@ -14,7 +14,7 @@ import {MapValue, StringValue, newMap} from 'atproto:data';
 import {KeyType} from 'atproto:didkey';
 import {decodeCommit} from 'atproto:repo';
 import {MemberEntry, OWNER} from 'package-manager:records';
-import {HostStore, PackageSummary, PendingChange, PendingRelease} from 'pds:host';
+import {HostAccount, HostStore, PackageSummary, PendingChange, PendingRelease} from 'pds:host';
 import {PlcLog} from 'pds:plc-directory';
 import {AppPassword, CredentialStore, RefreshSession} from 'pds:sessions';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
@@ -256,6 +256,25 @@ export function hostStoreConformance(make: () => HostStore): void {
     equal(runFuture(store.nameInScope('acme', 'router')) as String, ALICE);
     runFuture(store.releaseName('acme', 'router', ALICE));
     isNull(runFuture(store.nameInScope('acme', 'router')));
+  });
+
+  test('keeps the accounts the host holds, with their kinds, scopes and names', (ctx) => {
+    let store = make();
+    isNull(runFuture(store.account(ALICE)));
+    equal(runFuture(store.accounts()).length, 0);
+    runFuture(store.putAccount(new HostAccount(ALICE, 'acme.pkg.test', AccountKind.Organization, 'acme', 'acme')));
+    runFuture(store.putAccount(new HostAccount(BOB, 'ci.acme.pkg.test', AccountKind.Automation, 'acme', 'ci')));
+    let org = runFuture(store.account(ALICE)) as HostAccount;
+    equal(org.handle, 'acme.pkg.test');
+    equal(org.kind, AccountKind.Organization);
+    equal(org.scope, 'acme');
+    equal(org.name, 'acme');
+    let bot = runFuture(store.account(BOB)) as HostAccount;
+    equal(bot.kind, AccountKind.Automation);
+    equal(bot.name, 'ci');
+    let all = runFuture(store.accounts());
+    equal(all.length, 2);
+    isTrue(all[0].did != all[1].did, 'both');
   });
 
   test("keeps each package's latest summary, by scope", (ctx) => {

@@ -31,11 +31,12 @@ import {
 import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
 import {
-  ClaimedName, ClaimedScope, HostConfig, HostError, HostStore, MemoryHostStore, PENDING_MICROS, PackageHost,
+  ClaimedName, ClaimedScope, HostAccount, HostConfig, HostError, HostStore, MemoryHostStore, PENDING_MICROS, PackageHost,
   PackageSummary, PendingChange, PendingRelease
 } from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
+import {InProcessPds} from 'pds:pds-client';
 import {CreateRecord, Repository, RepositoryError, UpdateRecord, Write} from 'pds:repository';
 import {TidClock} from 'atproto:tid';
 import {createApp} from 'pds:server';
@@ -103,7 +104,7 @@ final class Fixture {
     };
     let submitted = this.submitted;
     let pds = this.pds;
-    let host = new PackageHost(this.pds, config, store, this.records,
+    let host = new PackageHost(new InProcessPds(this.pds, HOST), config, store, this.records,
         async (did: String, fresh: boolean): Future<PublicKey | null> => {
           if (let (true, key) = callers.get(did)) {
             return key;
@@ -137,6 +138,9 @@ final class Fixture {
       return new FixedArray<u8>(count, (counter + 100) as u8);
     });
     host.sessions = sessions;
+    host.makeAutomationAccount = async (did: String, handle: String, key: SigningKey): Future<void> => {
+      await pds.createAccount(did, handle, key, 0 as i64, AccountKind.Automation);
+    };
     this.app = createApp(this.pds, host, sessions);
   }
 
@@ -252,6 +256,9 @@ final class Fixture {
 final class StaleHostStore implements HostStore {
   #inner = new MemoryHostStore();
 
+  async putAccount(account: HostAccount): Future<void> { await this.#inner.putAccount(account); }
+  async account(did: String): Future<HostAccount | null> { return await this.#inner.account(did); }
+  async accounts(): Future<Array<HostAccount>> { return await this.#inner.accounts(); }
   async scopeOwner(scope: String): Future<String | null> { return null; }
   async claimScope(scope: String, org: String): Future<boolean> { return await this.#inner.claimScope(scope, org); }
   async releaseScope(scope: String, org: String): Future<void> { await this.#inner.releaseScope(scope, org); }
@@ -562,17 +569,14 @@ export let tests = suite('pds:host', () => {
     let artifact = fixture.get(`/xrpc/com.atproto.sync.getBlob?did=${pkgDid}&cid=${blob.cid.toString()}`);
     equal(Cid.forBlob(artifact.body as FixedArray<u8>).toString(), Cid.forBlob(archive).toString());
 
-    // A package account holds package records only.
+    // A package account is the host's to write, and its PDS takes no
+    // write to it from anyone else.
     let account = runFuture(fixture.pds.storage.getAccount(pkgDid)) as Account;
-    equal(account.kind, AccountKind.Package);
-    var refused = '';
-    try {
-      runFuture(fixture.pds.repositoryOf(account).applyWrites([new CreateRecord('app.bsky.feed.post', 'x',
-          new Profile('x').toValue()) as Write], 0 as i64));
-    } catch (e) {
-      refused = if (e is RepositoryError) e.error else e.message;
-    }
-    equal(refused, 'InvalidRequest');
+    equal(account.manager as String, HOST);
+    let post = fixture.post('/xrpc/com.atproto.repo.putRecord',
+        `{"repo": "${pkgDid}", "collection": "app.bsky.feed.post", "rkey": "x", "record": {"$type": "app.bsky.feed.post"}}`,
+        fixture.token(ALICE, 'com.atproto.repo.putRecord'));
+    equal(post.statusCode, 403);
   });
 
   test('holds a release out of the repository until its maintainers attest it', (ctx) => {
@@ -1185,18 +1189,19 @@ export let tests = suite('pds:host', () => {
     equal(storage.reads, 0);
     let scopes = ok(fixture.get('/xrpc/dev.zena-lang.host.listScopes'))['scopes'] as JsonArray;
     equal(((scopes[0] as JsonObject)['packages'] as Box<f64>).value as i32, 2);
-    // The scopes' organizations, and nothing of their packages.
-    equal(storage.reads, 2);
+    // The organizations come from the host's own record of its accounts.
+    equal(storage.reads, 0);
   });
 
-  test("writes again the indexes a commit outside the host's hook left behind", (ctx) => {
+  test('writes again the indexes a commit the host did not make left behind', (ctx) => {
     let fixture = new Fixture();
     let router = seedBrowsable(fixture);
     let account = runFuture(fixture.pds.storage.getAccount(router)) as Account;
     let store = fixture.pds.storage.store(router);
     let current = runFuture(store.getRecord(PROFILE_TYPE, 'self')) as Cid;
-    // A repository of its own tells no listener: as another server, or this
-    // one before it kept summaries, would have written.
+    // A write the host did not make leaves its indexes as they were: as
+    // another server, or this one before it kept summaries, would have
+    // written.
     runFuture(new Repository(account, store, new TidClock(9)).applyWrites([new UpdateRecord(PROFILE_TYPE, 'self',
         new Profile('router', 'Routes everything', 'MIT').toValue(), current) as Write], 0 as i64));
     let listed = () => {

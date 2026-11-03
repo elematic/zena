@@ -105,13 +105,14 @@ import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
 import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
 import {ManagedAccounts, PlcLogLookup, TrustedHost} from './managed.zena';
 import {Pds} from './pds.zena';
+import {InProcessPds} from './pds-client.zena';
 import {AppPart, createApp} from './server.zena';
-import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
+import {REQUEST_BODY_LIMIT, nowMicros} from './xrpc/common.zena';
 import {CredentialStore, MemoryCredentialStore, Sessions} from './sessions.zena';
 import {KmsRotationKey, LocalRotationKey, RotationKey} from './rotation.zena';
 import {CloudKms} from 'google-cloud:kms';
 import {KmsKeyEncryption} from './key-encryption.zena';
-import {MemoryStorage, SigningKey, Storage} from './storage.zena';
+import {AccountKind, MemoryStorage, SigningKey, Storage} from './storage.zena';
 
 /** A configuration `configFromEnv` refuses, with every problem it found. */
 export class ConfigError extends Error {
@@ -546,9 +547,12 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     dependencies.plcDirectory = `${hostConfig.endpoint}/plc`;
     dependencies.dnsOverHttps = config.dnsOverHttps;
   }
-  let host = new PackageHost(pds, hostConfig, hostStore, records, keys, submit, (count: i32) => randomBytes(count),
-      dependencies);
+  let host = new PackageHost(new InProcessPds(pds, serviceDid), hostConfig, hostStore, records, keys, submit,
+      (count: i32) => randomBytes(count), dependencies);
   host.sessions = sessions;
+  host.makeAutomationAccount = async (did: String, handle: String, key: SigningKey): Future<void> => {
+    await pds.createAccount(did, handle, key, nowMicros(), AccountKind.Automation);
+  };
   // The PDS keeps managed accounts for the host it runs with
   // (package-manager.md, "Managed accounts"), which for now writes to its
   // accounts in process instead (#851).

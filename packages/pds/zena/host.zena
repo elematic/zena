@@ -15,12 +15,18 @@
  * from the record as it is now: an entry the current record no longer
  * commits to gives nothing. The limits on how many accounts a scope
  * creates, and the other methods, come later.
+ *
+ * The host keeps its accounts on a PDS, which it reaches only through
+ * `PdsClient`, as it would reach a PDS over the network, and it keeps its
+ * own record of them in its `HostStore`: what each is for, and the scope
+ * and name its handle is made of. It writes its indexes as it writes the
+ * records they come from.
  */
 
 import {Future} from 'zena:async';
 import {join} from 'zena:core';
 import {HashMap, HashSet} from 'zena:collections';
-import {decodeCbor, encodeCbor} from 'atproto:cbor';
+import {cidForValue, decodeCbor, encodeCbor} from 'atproto:cbor';
 import {readCar} from 'atproto:car';
 import {verifyRecordProof} from 'atproto:repo';
 import {fetch} from 'zena:fetch';
@@ -66,12 +72,12 @@ import {
 } from 'package-manager:records';
 import {isPublicHttps} from './egress.zena';
 import {HandleRecords} from './handles.zena';
-import {Pds} from './pds.zena';
+import {HeldRecord, PdsClient} from './pds-client.zena';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {Sessions} from './sessions.zena';
 import {RotationKey} from './rotation.zena';
 import {formatTimestamp, milliseconds} from 'zena:time';
-import {Account, AccountKind, Head, RecordChange, SigningKey, StoredBlob} from './storage.zena';
+import {AccountKind, Head, SigningKey} from './storage.zena';
 import {compareKeys} from 'atproto:mst';
 import {SYNC_GET_RECORD, xrpcPath} from 'atproto:methods';
 
@@ -101,11 +107,18 @@ export class HostError extends Error {
 }
 
 /**
- * What the host keeps beside the accounts: scope names, and private
- * entries. Several servers may share it, so a name is taken with one call
- * that fails when someone has it (`claimScope`, `claimName`).
+ * What the host keeps beside the accounts' repositories: the accounts it
+ * holds, scope names, and private entries. Several servers may share it,
+ * so a name is taken with one call that fails when someone has it
+ * (`claimScope`, `claimName`).
  */
 export interface HostStore {
+  /** Records an account the host made, once its PDS holds it. */
+  putAccount(account: HostAccount): Future<void>;
+  /** The account the host made with the DID `did`, or null. */
+  account(did: String): Future<HostAccount | null>;
+  /** Every account the host made. */
+  accounts(): Future<Array<HostAccount>>;
   /** The organization whose scope is `scope`, or null. */
   scopeOwner(scope: String): Future<String | null>;
   /** Gives `scope` to `org` unless it has an owner. Returns whether it did. */
@@ -234,11 +247,31 @@ export final class ClaimedName {
 
 /** The host's store in memory. */
 export final class MemoryHostStore implements HostStore {
+  #accounts = new HashMap<String, HostAccount>();
   #scopes = new HashMap<String, String>();
   /** Package summaries by DID. */
   #summaries = new HashMap<String, KeptSummary>();
   /** The accounts that mention each subject. */
   #mentions = new HashMap<String, HashSet<String>>();
+
+  async putAccount(account: HostAccount): Future<void> {
+    this.#accounts[account.did] = account;
+  }
+
+  async account(did: String): Future<HostAccount | null> {
+    if (let (true, account) = this.#accounts.get(did)) {
+      return account;
+    }
+    return null;
+  }
+
+  async accounts(): Future<Array<HostAccount>> {
+    let all = new GrowableArray<HostAccount>();
+    this.#accounts.forEach((did, account) => {
+      all.push(account);
+    });
+    return all;
+  }
 
   async addMentions(account: String, subjects: Array<String>): Future<void> {
     for (let subject in subjects) {
@@ -501,6 +534,13 @@ export final class HostConfig {
 /** Sends a signed operation for a DID to the PLC directory. */
 export type PlcSubmitter = (did: String, operation: PlcOperation) => Future<void>;
 
+/**
+ * Makes the automation account `did`, named `handle`, on the PDS, as an
+ * account that signs in and writes its own repository with `key`
+ * (`PackageHost.makeAutomationAccount`).
+ */
+export type AutomationAccountMaker = (did: String, handle: String, key: SigningKey) => Future<void>;
+
 /** `count` random bytes. */
 export type RandomBytes = (count: i32) => FixedArray<u8>;
 
@@ -521,10 +561,18 @@ export final class PackageHost {
    * without it, `createAutomationAccount` is not offered.
    */
   var sessions: Sessions | null = null;
+  /**
+   * Makes an automation account on the PDS, one that signs in with an app
+   * password and writes its own attestations; without it, as without
+   * `sessions`, `createAutomationAccount` is not offered.
+   */
+  // TODO(#853): make automation accounts managed accounts, which the host
+  // writes for with a token it issues, and drop this and `sessions`.
+  var makeAutomationAccount: AutomationAccountMaker | null = null;
   /** Reads other PDSes' records in place of the host's own reading, as tests do; null reads them. */
   var remoteRecords: RemoteRecords | null = null;
-  pds: Pds;
   config: HostConfig;
+  #pds: PdsClient;
   #store: HostStore;
   #records: HandleRecords;
   #keys: SigningKeyLookup;
@@ -535,35 +583,52 @@ export final class PackageHost {
   #replays = new ReplayGuard();
 
   /**
-   * A host over `pds`, keeping its names in `store`, writing its handles'
-   * DNS records to `records`, and resolving the dependencies of the
-   * releases it checks with `resolver`. It keeps its indexes with every
-   * commit `pds` makes: each package's summary, which `listPackages`
-   * lists, and which accounts mention each person and team, which
-   * `getMemberships` and `publicRolesOf` start from.
+   * A host keeping its accounts on `pds`, and its own record of them and
+   * its names in `store`, writing its handles' DNS records to `records`,
+   * and resolving the dependencies of the releases it checks with
+   * `resolver`.
    */
-  new(pds: Pds, config: HostConfig, store: HostStore, records: HandleRecords, keys: SigningKeyLookup,
+  new(pds: PdsClient, config: HostConfig, store: HostStore, records: HandleRecords, keys: SigningKeyLookup,
       submit: PlcSubmitter, random: RandomBytes, resolver: IdentityResolver)
-      : pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
-        #random = random, #resolver = resolver {
-    pds.onCommit(async (account, head, changes): Future<void> => {
-      await this.#indexCommit(account, head, changes);
-    });
+      : #pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
+        #random = random, #resolver = resolver;
+
+  /**
+   * Writes `writes` to `account`'s repository in one commit, answering
+   * writes the PDS refuses with its error, and keeps the indexes the
+   * commit changes (`#index`).
+   */
+  async #commit(account: HostAccount, writes: Array<Write>): Future<Head> {
+    let head = try {
+      await this.#pds.applyWrites(account.did, writes)
+    } catch (e) {
+      if (e is RepositoryError) {
+        throw new HostError(400, e.error, e.message);
+      }
+      throw e;
+    };
+    await this.#index(account, head, writes);
+    return head;
   }
 
   /**
-   * Keeps the indexes after a commit to `account`'s repository: the
-   * summary of a package whose profile, releases or retractions changed,
-   * and the mentions of an organization whose members or teams changed,
-   * or of a package whose maintainers did. The commit stands whatever
-   * happens here, so an index that cannot be written is left until the
-   * next commit, or `syncIndexes`.
+   * Keeps the indexes after `writes` to `account`'s repository made the
+   * commit `head`: the summary of a package whose profile, releases or
+   * retractions changed, which `listPackages` lists, and which people and
+   * teams an organization's members and teams, or a package's
+   * maintainers, mention, which `getMemberships` and `publicRolesOf`
+   * start from. The commit stands whatever happens here, so an index that
+   * cannot be written is left until the next commit, or `syncIndexes`.
    */
-  async #indexCommit(account: Account, head: Head, changes: GrowableArray<RecordChange>): Future<void> {
+  async #index(account: HostAccount, head: Head, writes: Array<Write>): Future<void> {
     var shown = false;
     var mentions = false;
-    for (let change in changes) {
-      let collection = change.collection;
+    for (let write in writes) {
+      let collection = match (write) {
+        case CreateRecord {collection}: collection
+        case UpdateRecord {collection}: collection
+        case DeleteRecord {collection}: collection
+      };
       if (account.kind == AccountKind.Package) {
         shown = shown || collection == PROFILE_TYPE || collection == RELEASE_TYPE || collection == RETRACTION_TYPE;
         mentions = mentions || collection == MAINTAINERS_TYPE;
@@ -572,10 +637,8 @@ export final class PackageHost {
       }
     }
     try {
-      let labels = this.#handleLabels(account);
-      if (shown && labels != null && labels.length == 2) {
-        await this.#store.putSummary(
-            await this.#summarize(account.did, account.handle ?? '', labels[1], labels[0]), head.rev);
+      if (shown) {
+        await this.#store.putSummary(await this.#summarize(account), head.rev);
       }
       if (mentions) {
         await this.#store.addMentions(account.did, await this.#subjectsOf(account));
@@ -586,25 +649,11 @@ export final class PackageHost {
   }
 
   /**
-   * The labels of `account`'s handle before the host's domain: `[scope]`
-   * for an organization, `[name, scope]` for a package; null for a handle
-   * of no such form.
-   */
-  #handleLabels(account: Account): Array<String> | null {
-    let handle = account.handle;
-    let suffix = `.${this.config.domain}`;
-    if (handle == null || !handle.endsWith(suffix)) {
-      return null;
-    }
-    return handle.sliceBytes(0, handle.length - suffix.length).split('.');
-  }
-
-  /**
    * Everyone and every team `account`'s records may give a role: each
    * person its entries name, and a package's maintainers named by DID,
    * and its teams, as `<org DID> <team>`.
    */
-  async #subjectsOf(account: Account): Future<Array<String>> {
+  async #subjectsOf(account: HostAccount): Future<Array<String>> {
     let subjects = new HashSet<String>();
     for (let entry in await this.#store.entries(account.did)) {
       subjects.add(entry.did);
@@ -630,11 +679,12 @@ export final class PackageHost {
   }
 
   /**
-   * The summary of the package `did`, named `name` in `scope`, from its
-   * profile and the release and retraction records in its repository.
+   * The summary of the package `account`, from its profile and the
+   * release and retraction records in its repository.
    */
-  async #summarize(did: String, handle: String, scope: String, name: String): Future<PackageSummary> {
-    let summary = new PackageSummary(did, handle, scope, name);
+  async #summarize(account: HostAccount): Future<PackageSummary> {
+    let did = account.did;
+    let summary = new PackageSummary(did, account.handle, account.scope, account.name);
     let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
     if (profile != null) {
       let read = Profile.fromValue(profile.value);
@@ -642,13 +692,12 @@ export final class PackageHost {
       summary.license = read.license;
     }
     let retracted = new HashSet<String>();
+    for (let record in await this.#pds.listRecords(did, RETRACTION_TYPE)) {
+      retracted.add(record.rkey);
+    }
     let versions = new GrowableArray<String>();
-    for (let entry in await this.pds.storage.store(did).allRecords()) {
-      if (entry.collection == RETRACTION_TYPE) {
-        retracted.add(entry.rkey);
-      } else if (entry.collection == RELEASE_TYPE) {
-        versions.push(entry.rkey);
-      }
+    for (let record in await this.#pds.listRecords(did, RELEASE_TYPE)) {
+      versions.push(record.rkey);
     }
     summary.releases = versions.length;
     var latest: Version | null = null;
@@ -676,27 +725,20 @@ export final class PackageHost {
    */
   async syncIndexes(): Future<i32> {
     var written = 0;
-    for (let claimed in await this.#store.allScopes()) {
-      let org = await this.pds.storage.getAccount(claimed.org);
-      if (org != null && org.kind == AccountKind.Organization) {
-        await this.#store.addMentions(claimed.org, await this.#subjectsOf(org));
+    for (let account in await this.#store.accounts()) {
+      if (account.kind == AccountKind.Organization) {
+        await this.#store.addMentions(account.did, await this.#subjectsOf(account));
+        written += 1;
+      } else if (account.kind == AccountKind.Package) {
+        // The head first, so the summary is of that commit or a later one.
+        let head = await this.#pds.latestCommit(account.did);
+        if (head == null) {
+          continue;
+        }
+        await this.#store.putSummary(await this.#summarize(account), head.rev);
+        await this.#store.addMentions(account.did, await this.#subjectsOf(account));
         written += 1;
       }
-    }
-    for (let claimed in await this.#store.allNames()) {
-      let account = await this.pds.storage.getAccount(claimed.did);
-      if (account == null || account.kind != AccountKind.Package) {
-        continue;
-      }
-      // The head first, so the summary is of that commit or a later one.
-      let head = await this.pds.storage.store(claimed.did).getHead();
-      if (head == null) {
-        continue;
-      }
-      let summary = await this.#summarize(claimed.did, account.handle ?? '', claimed.scope, claimed.name);
-      await this.#store.putSummary(summary, head.rev);
-      await this.#store.addMentions(claimed.did, await this.#subjectsOf(account));
-      written += 1;
     }
     return written;
   }
@@ -765,12 +807,12 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${name}' exists`);
     }
     let store = this.#store;
-    let account = await this.#createAccount(prepared, AccountKind.Organization, nowMicros,
+    let account = await this.#createAccount(prepared, new HostAccount(did, handle, AccountKind.Organization, name, name),
         async (): Future<void> => { await store.releaseScope(name, did); });
     let owner = new MemberEntry(caller, OWNER, this.#random(32));
     await this.#store.addEntries(account.did, [owner]);
     let members = new Members(new FixedArray<Cid>(1, owner.commitment()));
-    let cid = await this.#write(account, MEMBERS_TYPE, 'self', members.toValue(), nowMicros);
+    let cid = await this.#write(account, MEMBERS_TYPE, 'self', members.toValue());
     await this.#records.set(handle, account.did);
     return new Created(account.did, handle, `at://${account.did}/${MEMBERS_TYPE}/self`, cid);
   }
@@ -787,7 +829,8 @@ export final class PackageHost {
    */
   async createAutomationAccount(caller: String, org: String, name: String, nowMicros: i64): Future<Automation> {
     let sessions = this.sessions;
-    if (sessions == null) {
+    let make = this.makeAutomationAccount;
+    if (sessions == null || make == null) {
       throw new HostError(501, 'MethodNotImplemented', 'this host has no sessions to sign automation accounts in');
     }
     let organization = await this.#account(org, AccountKind.Organization, 'an organization');
@@ -797,7 +840,7 @@ export final class PackageHost {
     if (!isValidPackageName(name)) {
       throw new HostError(400, 'InvalidRequest', `'${name}' cannot name an account`);
     }
-    let scope = scopeOf(organization.handle as String, this.config.domain);
+    let scope = organization.scope;
     if ((await this.#store.nameInScope(scope, name)) != null) {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
@@ -808,8 +851,9 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
     let store = this.#store;
-    let account = await this.#createAccount(prepared, AccountKind.Automation, nowMicros,
-        async (): Future<void> => { await store.releaseName(scope, name, did); });
+    let account = await this.#createAccount(prepared, new HostAccount(did, handle, AccountKind.Automation, scope, name),
+        async (): Future<void> => { await store.releaseName(scope, name, did); },
+        async (): Future<void> => { await make(did, handle, prepared.signing); });
     let password = await sessions.addAppPassword(account.did, 'ci',
         formatTimestamp(nowMicros * (1000 as i64)));
     await this.#records.set(handle, account.did);
@@ -823,7 +867,7 @@ export final class PackageHost {
    */
   async createPackage(caller: String, org: String, recoveryKeys: Array<String>, profileValue: Value,
       maintainersValue: Value, entryValues: Array<Value>, nowMicros: i64): Future<Created> {
-    let organization = await this.pds.storage.getAccount(org);
+    let organization = await this.#store.account(org);
     if (organization == null || organization.kind != AccountKind.Organization) {
       throw new HostError(400, 'InvalidRequest', `${org} is not an organization on this host`);
     }
@@ -849,7 +893,7 @@ export final class PackageHost {
       }
       entries.push(entry);
     }
-    let scope = scopeOf(organization.handle as String, this.config.domain);
+    let scope = organization.scope;
     if ((await this.#store.nameInScope(scope, profile.name)) != null) {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${profile.name}'`);
     }
@@ -861,15 +905,15 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
     let store = this.#store;
-    let account = await this.#createAccount(prepared, AccountKind.Package, nowMicros,
+    let account = await this.#createAccount(prepared, new HostAccount(did, handle, AccountKind.Package, scope, name),
         async (): Future<void> => { await store.releaseName(scope, name, did); });
     await this.#store.addEntries(account.did, entries);
-    let repository = this.pds.repositoryOf(account);
-    await repository.applyWrites([
+    let maintainersRecord = asMap(maintainersValue);
+    await this.#commit(account, [
       new CreateRecord(PROFILE_TYPE, PROFILE_KEY, asMap(profileValue)) as Write,
-      new CreateRecord(MAINTAINERS_TYPE, 'self', asMap(maintainersValue)) as Write,
-    ], nowMicros);
-    let cid = (await this.pds.storage.store(account.did).getRecord(MAINTAINERS_TYPE, 'self')) as Cid;
+      new CreateRecord(MAINTAINERS_TYPE, 'self', maintainersRecord) as Write,
+    ]);
+    let cid = cidForValue(maintainersRecord);
     await this.#records.set(handle, account.did);
     return new Created(account.did, handle, `at://${account.did}/${MAINTAINERS_TYPE}/self`, cid);
   }
@@ -882,13 +926,13 @@ export final class PackageHost {
   async syncHandles(): Future<i32> {
     var written = 0;
     for (let claimed in await this.#store.allScopes()) {
-      if ((await this.pds.storage.getAccount(claimed.org)) != null) {
+      if ((await this.#store.account(claimed.org)) != null) {
         await this.#records.set(`${claimed.scope}.${this.config.domain}`, claimed.org);
         written += 1;
       }
     }
     for (let claimed in await this.#store.allNames()) {
-      if ((await this.pds.storage.getAccount(claimed.did)) != null) {
+      if ((await this.#store.account(claimed.did)) != null) {
         await this.#records.set(`${claimed.name}.${claimed.scope}.${this.config.domain}`, claimed.did);
         written += 1;
       }
@@ -913,9 +957,14 @@ export final class PackageHost {
     if ((bytes.length as i64) > this.config.maxBlobSize) {
       throw new HostError(400, 'TooLarge', `the blob is larger than ${this.config.maxBlobSize} bytes`);
     }
-    let cid = Cid.forBlob(bytes);
-    await this.pds.storage.store(account.did).putBlob(cid, new StoredBlob(mimeType, bytes));
-    return new BlobRef(cid, mimeType, bytes.length as i64);
+    try {
+      return await this.#pds.uploadBlob(account.did, mimeType, bytes);
+    } catch (e) {
+      if (e is RepositoryError) {
+        throw new HostError(400, e.error, e.message);
+      }
+      throw e;
+    }
   }
 
   /**
@@ -929,23 +978,23 @@ export final class PackageHost {
   async publish(caller: String, pkg: String, releaseValue: Value, nowMicros: i64): Future<Created> {
     let account = await this.#maintainedPackage(caller, pkg);
     let release = readRecord(() => Release.fromValue(releaseValue));
-    let store = this.pds.storage.store(account.did);
     for (let artifact in release.artifacts) {
       for (let blob in blobsOf(artifact.blob, artifact.parts, artifact.wit)) {
-        if ((await store.getBlob(blob.cid)) == null) {
+        if ((await this.#pds.getBlob(account.did, blob.cid)) == null) {
           throw new HostError(400, 'BlobNotFound', `${blob.cid.toString()} was not uploaded to ${pkg}`);
         }
       }
     }
     let version = release.version.toString();
-    if ((await store.getRecord(RELEASE_TYPE, version)) != null) {
+    if ((await this.#current(account.did, RELEASE_TYPE, version)) != null) {
       throw new HostError(400, 'VersionExists', `${pkg} has a release ${version}`);
     }
     // The host checks the release as every fetch will, against the archive
     // it holds and the name its own profile record gives, and trusts
     // nothing the client checked.
     let source = release.artifact(SOURCE);
-    let archive = if (source != null && source.blob != null) await store.getBlob((source.blob as BlobRef).cid) else null;
+    let archive = if (source != null && source.blob != null) await this.#pds.getBlob(account.did, (source.blob as BlobRef).cid)
+        else null;
     let problems = await validateRelease(release, pkg, archive?.bytes ?? new FixedArray<u8>(0, 0 as u8),
         // The host says why a dependency was not found only in outline, so
         // its answers map nothing of the network a DID document named.
@@ -960,8 +1009,7 @@ export final class PackageHost {
     // The record as the repository will store it, and so its CID.
     let record = encodeCbor(asMap(releaseValue));
     let cid = Cid.forDagCbor(record);
-    let created = new Created(account.did, account.handle ?? account.did,
-        `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
+    let created = new Created(account.did, account.handle, `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
     var held = await this.#held(pkg, version, nowMicros);
     if (held == null) {
       if (await this.#store.holdRelease(pkg, new PendingRelease(version, record, cid, caller, nowMicros))) {
@@ -985,12 +1033,12 @@ export final class PackageHost {
   async completeRelease(caller: String, pkg: String, version: String, nowMicros: i64): Future<Completion> {
     let account = await this.#maintainedPackage(caller, pkg);
     let uri = `at://${account.did}/${RELEASE_TYPE}/${version}`;
-    let written = await this.pds.storage.store(account.did).getRecord(RELEASE_TYPE, version);
+    let written = await this.#current(account.did, RELEASE_TYPE, version);
     let held = await this.#held(pkg, version, nowMicros);
     if (held == null) {
       if (written != null) {
         // Another call completed it.
-        return new Completion(uri, written, true, new Tally());
+        return new Completion(uri, written.cid, true, new Tally());
       }
       throw new HostError(400, 'ReleaseNotFound', `${pkg} has no release ${version} waiting for approval`);
     }
@@ -1000,7 +1048,7 @@ export final class PackageHost {
       return new Completion(uri, release.cid, false, tally);
     }
     if (written == null) {
-      await this.#write(account, RELEASE_TYPE, version, asMap(decodeCbor(release.record)), nowMicros);
+      await this.#write(account, RELEASE_TYPE, version, asMap(decodeCbor(release.record)));
     }
     await this.#store.dropRelease(pkg, version);
     return new Completion(uri, release.cid, true, tally);
@@ -1079,7 +1127,7 @@ export final class PackageHost {
     let record = Maintainers.fromValue(current.value);
     // The scope's policy can ask more of every release than the record does.
     var policy = new Policy();
-    let held = await this.pds.storage.getAccount(pkg);
+    let held = await this.#store.account(pkg);
     if (held != null) {
       let org = await this.#scopeOrganization(held);
       if (org != null) {
@@ -1105,7 +1153,7 @@ export final class PackageHost {
       tally.approvedBy.push(attester.did);
       if (!attester.automation) {
         tally.people += 1;
-      } else if ((await this.pds.storage.getAccount(attester.did)) != null) {
+      } else if ((await this.#store.account(attester.did)) != null) {
         hostAutomation += 1;
       } else {
         otherAutomation += 1;
@@ -1119,14 +1167,14 @@ export final class PackageHost {
   /**
    * Whether `did` has attested the record at `uri` whose CID is `cid`: an
    * attestation at `rkey` in their repository naming it. An account this
-   * host holds is read from its storage; anyone else's from their PDS, with
-   * the record's proof checked against the signing key in their DID
-   * document, so their PDS cannot answer for them.
+   * host holds is read from its PDS; anyone else's from theirs, with the
+   * record's proof checked against the signing key in their DID document,
+   * so their PDS cannot answer for them.
    */
   async #attested(did: String, uri: String, cid: Cid, rkey: String): Future<boolean> {
     try {
       var value: Value | null = null;
-      if ((await this.pds.storage.getAccount(did)) != null) {
+      if ((await this.#store.account(did)) != null) {
         let record = await this.#current(did, ATTESTATION_TYPE, rkey);
         value = record?.value;
       } else {
@@ -1179,7 +1227,7 @@ export final class PackageHost {
     }
     let scopes = new GrowableArray<ScopeSummary>();
     for (let claimed in await this.#store.allScopes()) {
-      let account = await this.pds.storage.getAccount(claimed.org);
+      let account = await this.#store.account(claimed.org);
       if (account == null || account.kind != AccountKind.Organization) {
         continue;
       }
@@ -1187,7 +1235,7 @@ export final class PackageHost {
       if (let (true, count) = counts.get(claimed.scope)) {
         packages = count;
       }
-      let summary = new ScopeSummary(claimed.scope, claimed.org, account.handle ?? '', packages);
+      let summary = new ScopeSummary(claimed.scope, claimed.org, account.handle, packages);
       var i = scopes.length;
       scopes.push(summary);
       while (i > 0 && compareKeys(scopes[i - 1].name, summary.name) > 0) {
@@ -1210,7 +1258,7 @@ export final class PackageHost {
     let memberships = new Memberships();
     let packages = new HashSet<String>();
     for (let did in await this.#store.mentionsOf(caller)) {
-      let account = await this.pds.storage.getAccount(did);
+      let account = await this.#store.account(did);
       if (account == null) {
         continue;
       }
@@ -1218,40 +1266,32 @@ export final class PackageHost {
         packages.add(did);
         continue;
       }
-      let labels = this.#handleLabels(account);
-      if (account.kind != AccountKind.Organization || labels == null || labels.length != 1) {
+      if (account.kind != AccountKind.Organization) {
         continue;
       }
-      let scope = labels[0];
+      let scope = account.scope;
       let role = await this.#orgRole(did, caller);
       if (role != null) {
-        memberships.orgs.push(new Membership(did, account.handle ?? '', scope, scope, role));
+        memberships.orgs.push(new Membership(did, account.handle, scope, scope, role));
       }
-      for (let entry in await this.pds.storage.store(did).allRecords()) {
-        if (entry.collection != TEAM_TYPE) {
-          continue;
-        }
-        let teamRole = await this.#teamRole(did, entry.rkey, caller);
+      for (let team in await this.#pds.listRecords(did, TEAM_TYPE)) {
+        let teamRole = await this.#teamRole(did, team.rkey, caller);
         if (teamRole != null) {
-          memberships.teams.push(new Membership(did, account.handle ?? '', scope, entry.rkey, teamRole));
-          for (let pkg in await this.#store.mentionsOf(`${did} ${entry.rkey}`)) {
+          memberships.teams.push(new Membership(did, account.handle, scope, team.rkey, teamRole));
+          for (let pkg in await this.#store.mentionsOf(`${did} ${team.rkey}`)) {
             packages.add(pkg);
           }
         }
       }
     }
     for (let did in packages) {
-      let pkg = await this.pds.storage.getAccount(did);
+      let pkg = await this.#store.account(did);
       if (pkg == null || pkg.kind != AccountKind.Package) {
-        continue;
-      }
-      let labels = this.#handleLabels(pkg);
-      if (labels == null || labels.length != 2) {
         continue;
       }
       let role = await this.#packageRole(did, caller);
       if (role != null) {
-        memberships.packages.push(new Membership(did, pkg.handle ?? '', labels[1], labels[0], role));
+        memberships.packages.push(new Membership(did, pkg.handle, pkg.scope, pkg.name, role));
       }
     }
     sortByName(memberships.orgs);
@@ -1269,18 +1309,17 @@ export final class PackageHost {
   async publicRolesOf(did: String): Future<Array<Membership>> {
     let roles = new GrowableArray<Membership>();
     for (let mentioning in await this.#store.mentionsOf(did)) {
-      let pkg = await this.pds.storage.getAccount(mentioning);
+      let pkg = await this.#store.account(mentioning);
       if (pkg == null || pkg.kind != AccountKind.Package) {
         continue;
       }
-      let labels = this.#handleLabels(pkg);
       let record = await this.#current(mentioning, MAINTAINERS_TYPE, 'self');
-      if (labels == null || labels.length != 2 || record == null) {
+      if (record == null) {
         continue;
       }
       for (let maintainer in Maintainers.fromValue(record.value).maintainers) {
         if (maintainer.did == did) {
-          roles.push(new Membership(mentioning, pkg.handle ?? '', labels[1], labels[0], maintainer.role));
+          roles.push(new Membership(mentioning, pkg.handle, pkg.scope, pkg.name, maintainer.role));
         }
       }
     }
@@ -1347,27 +1386,43 @@ export final class PackageHost {
   }
 
   /**
-   * Every account the host made, by its scope or name claim, with its
-   * kind: organizations, packages and automation accounts. Admins only.
+   * Every account the host made, with its kind: organizations, packages
+   * and automation accounts. Admins only.
    */
   async listAccounts(caller: String): Future<Array<HostAccount>> {
     if (!this.isHostAdmin(caller)) {
       throw new HostError(403, 'Forbidden', `${caller} is not an admin of this host`);
     }
-    let accounts = new GrowableArray<HostAccount>();
-    for (let claimed in await this.#store.allScopes()) {
-      let account = await this.pds.storage.getAccount(claimed.org);
-      if (account != null) {
-        accounts.push(new HostAccount(account.did, account.handle ?? '', account.kind, claimed.scope, claimed.scope));
-      }
+    return await this.#store.accounts();
+  }
+
+  /** The account the host made with the DID `did`, or null. */
+  async accountOf(did: String): Future<HostAccount | null> {
+    return await this.#store.account(did);
+  }
+
+  /**
+   * The record at `collection/rkey` in the repository of `did`, an account
+   * the host made, or null; null too for an account it did not make.
+   */
+  async recordOf(did: String, collection: String, rkey: String): Future<Value | null> {
+    if ((await this.#store.account(did)) == null) {
+      return null;
     }
-    for (let claimed in await this.#store.allNames()) {
-      let account = await this.pds.storage.getAccount(claimed.did);
-      if (account != null) {
-        accounts.push(new HostAccount(account.did, account.handle ?? '', account.kind, claimed.scope, claimed.name));
-      }
+    return (await this.#current(did, collection, rkey))?.value;
+  }
+
+  /** The account the host made whose handle is `handle`, by the scope and name it is made of, or null. */
+  async #accountByHandle(handle: String): Future<HostAccount | null> {
+    let suffix = `.${this.config.domain}`;
+    if (!handle.endsWith(suffix)) {
+      return null;
     }
-    return accounts;
+    let labels = handle.sliceBytes(0, handle.length - suffix.length).split('.');
+    let did = if (labels.length == 1) await this.#store.scopeOwner(labels[0])
+        else if (labels.length == 2) await this.#store.nameInScope(labels[1], labels[0])
+        else null;
+    return if (did != null) await this.#store.account(did) else null;
   }
 
   /**
@@ -1377,7 +1432,7 @@ export final class PackageHost {
    * than send their handles to a third party.
    */
   async resolveHandle(handle: String): Future<String | null> {
-    let held = await this.pds.storage.accountByHandle(handle.asciiLowerCase());
+    let held = await this.#accountByHandle(handle.asciiLowerCase());
     if (held != null) {
       return held.did;
     }
@@ -1394,7 +1449,7 @@ export final class PackageHost {
    * shows it for the person signed in.
    */
   async handleOf(did: String): Future<String | null> {
-    let held = await this.pds.storage.getAccount(did);
+    let held = await this.#store.account(did);
     if (held != null) {
       return held.handle;
     }
@@ -1447,11 +1502,11 @@ export final class PackageHost {
     if (org == null) {
       return null;
     }
-    let account = await this.pds.storage.getAccount(org);
+    let account = await this.#store.account(org);
     if (account == null || account.kind != AccountKind.Organization) {
       return null;
     }
-    let detail = new ScopeDetail(name, account.did, account.handle ?? '');
+    let detail = new ScopeDetail(name, account.did, account.handle);
     let profile = await this.#current(account.did, SCOPE_PROFILE_TYPE, 'self');
     if (profile != null) {
       detail.profile = ScopeProfile.fromValue(profile.value);
@@ -1460,12 +1515,8 @@ export final class PackageHost {
     if (members != null) {
       detail.members = Members.fromValue(members.value).members;
     }
-    let store = this.pds.storage.store(account.did);
-    for (let entry in await store.allRecords()) {
-      if (entry.collection == TEAM_TYPE) {
-        let team = Team.fromValue(decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>));
-        detail.teams.push(new NamedTeam(entry.rkey, team));
-      }
+    for (let team in await this.#pds.listRecords(account.did, TEAM_TYPE)) {
+      detail.teams.push(new NamedTeam(team.rkey, Team.fromValue(team.value)));
     }
     return detail;
   }
@@ -1477,14 +1528,12 @@ export final class PackageHost {
    * Public, as the records are.
    */
   async getPackage(handle: String): Future<PackageDetail | null> {
-    let account = await this.pds.storage.accountByHandle(handle);
+    let account = await this.#accountByHandle(handle);
     if (account == null || account.kind != AccountKind.Package) {
       return null;
     }
     let did = account.did;
-    // `<name>.<scope>.<domain>`.
-    let labels = scopeOf(handle, this.config.domain).split('.');
-    let detail = new PackageDetail(did, handle, labels[labels.length - 1]);
+    let detail = new PackageDetail(did, handle, account.scope);
     let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
     if (profile != null) {
       detail.profile = Profile.fromValue(profile.value);
@@ -1493,19 +1542,13 @@ export final class PackageHost {
     if (maintainers != null) {
       detail.maintainers = Maintainers.fromValue(maintainers.value);
     }
-    let store = this.pds.storage.store(did);
-    for (let entry in await store.allRecords()) {
-      if (entry.collection != RELEASE_TYPE && entry.collection != RETRACTION_TYPE) {
-        continue;
-      }
-      let value = decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>);
-      if (entry.collection == RETRACTION_TYPE) {
-        let retraction = Retraction.fromValue(value);
-        detail.retractions[retraction.version.toString()] = retraction;
-        continue;
-      }
-      let release = Release.fromValue(value);
-      detail.releaseCids[release.version.toString()] = entry.cid;
+    for (let record in await this.#pds.listRecords(did, RETRACTION_TYPE)) {
+      let retraction = Retraction.fromValue(record.value);
+      detail.retractions[retraction.version.toString()] = retraction;
+    }
+    for (let record in await this.#pds.listRecords(did, RELEASE_TYPE)) {
+      let release = Release.fromValue(record.value);
+      detail.releaseCids[release.version.toString()] = record.cid;
       let releases = detail.releases;
       var i = releases.length;
       releases.push(release);
@@ -1528,12 +1571,12 @@ export final class PackageHost {
   async retract(caller: String, pkg: String, version: String, reason: String | null, nowMicros: i64)
       : Future<Created> {
     let account = await this.#maintainedPackage(caller, pkg);
-    if ((await this.pds.storage.store(pkg).getRecord(RELEASE_TYPE, version)) == null) {
+    if ((await this.#current(pkg, RELEASE_TYPE, version)) == null) {
       throw new HostError(400, 'ReleaseNotFound', `${pkg} has no release ${version}`);
     }
     // A release's record key is its version, so `version` parses.
     let retraction = new Retraction(Version.parse(version), reason);
-    return await this.#put(account, RETRACTION_TYPE, version, retraction.toValue(), null, nowMicros);
+    return await this.#put(account, RETRACTION_TYPE, version, retraction.toValue(), null);
   }
 
   /**
@@ -1567,32 +1610,32 @@ export final class PackageHost {
   }
 
   /**
-   * Sends `prepared`'s genesis operation to the PLC directory and adds the
-   * account. When either fails, runs `release`, to give up the name taken
-   * for it, and throws.
+   * Sends `prepared`'s genesis operation to the PLC directory, has the PDS
+   * make the account, with `make` in place of `PdsClient.createAccount`
+   * when it is given, and records it as `account`. When any of these
+   * fails, runs `release`, to give up the name taken for it, and throws.
    */
-  async #createAccount(prepared: PreparedAccount, kind: AccountKind, nowMicros: i64, release: () => Future<void>)
-      : Future<Account> {
+  async #createAccount(prepared: PreparedAccount, account: HostAccount, release: () => Future<void>,
+      make: (() => Future<void>) | null = null): Future<HostAccount> {
     try {
       await this.#submit(prepared.did, prepared.operation);
-      return await this.pds.createAccount(prepared.did, prepared.handle, prepared.signing, nowMicros, kind);
+      if (make != null) {
+        await make();
+      } else {
+        await this.#pds.createAccount(prepared.did, prepared.handle, prepared.signing);
+      }
+      await this.#store.putAccount(account);
+      return account;
     } catch (e) {
       await release();
       throw e;
     }
   }
 
-  async #write(account: Account, collection: String, rkey: String, record: MapValue, nowMicros: i64)
-      : Future<Cid> {
-    try {
-      await this.pds.repositoryOf(account).applyWrites([new CreateRecord(collection, rkey, record) as Write], nowMicros);
-    } catch (e) {
-      if (e is RepositoryError) {
-        throw new HostError(400, e.error, e.message);
-      }
-      throw e;
-    }
-    return (await this.pds.storage.store(account.did).getRecord(collection, rkey)) as Cid;
+  /** Creates the record at `collection/rkey` in `account`'s repository, and returns its CID. */
+  async #write(account: HostAccount, collection: String, rkey: String, record: MapValue): Future<Cid> {
+    await this.#commit(account, [new CreateRecord(collection, rkey, record) as Write]);
+    return cidForValue(record);
   }
 
   /** The name `pkg`'s profile record gives. */
@@ -1608,7 +1651,7 @@ export final class PackageHost {
    * The package `pkg`, when `caller` maintains it, in any role. Throws
    * `HostError` otherwise.
    */
-  async #maintainedPackage(caller: String, pkg: String): Future<Account> {
+  async #maintainedPackage(caller: String, pkg: String): Future<HostAccount> {
     let account = await this.#account(pkg, AccountKind.Package, 'a package');
     if ((await this.#packageRole(pkg, caller)) == null) {
       throw new HostError(403, 'Forbidden', `${caller} does not maintain ${pkg}`);
@@ -1728,7 +1771,7 @@ export final class PackageHost {
       throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
     }
     readRecord(() => ScopeProfile.fromValue(profileValue));
-    return await this.#put(account, SCOPE_PROFILE_TYPE, 'self', asMap(profileValue), swapRecord, nowMicros);
+    return await this.#put(account, SCOPE_PROFILE_TYPE, 'self', asMap(profileValue), swapRecord);
   }
 
   /** `org`'s policy for the packages in its scope, as it is now, or the one that asks nothing more. */
@@ -1747,14 +1790,9 @@ export final class PackageHost {
     return false;
   }
 
-  /** The organization whose scope the package `account` is in, by its handle, or null. */
-  async #scopeOrganization(account: Account): Future<String | null> {
-    if (account.handle == null) {
-      return null;
-    }
-    // `<name>.<scope>.<domain>`.
-    let labels = scopeOf(account.handle as String, this.config.domain).split('.');
-    return if (labels.length == 2) await this.#store.scopeOwner(labels[1]) else null;
+  /** The organization whose scope the package `account` is in, or null. */
+  async #scopeOrganization(account: HostAccount): Future<String | null> {
+    return if (account.kind == AccountKind.Package) await this.#store.scopeOwner(account.scope) else null;
   }
 
   /**
@@ -1771,7 +1809,7 @@ export final class PackageHost {
     if ((await this.#current(org, TEAM_TYPE, name)) == null) {
       throw new HostError(400, 'TeamNotFound', `${org} has no team ${name}`);
     }
-    await this.#apply(account, new DeleteRecord(TEAM_TYPE, name, swapCid(swapRecord)), nowMicros);
+    await this.#commit(account, [new DeleteRecord(TEAM_TYPE, name, swapCid(swapRecord)) as Write]);
   }
 
   /**
@@ -1828,7 +1866,7 @@ export final class PackageHost {
       // log can count it only together with a person.
       let did = if (commitment != null) entries.byCommitment[commitment.toString()].did else maintainer.did;
       if (did != null) {
-        let held = await this.pds.storage.getAccount(did);
+        let held = await this.#store.account(did);
         let marked = maintainer.automation &&
             (commitment == null || entries.byCommitment[commitment.toString()].automation);
         if (held != null && held.kind == AccountKind.Automation) {
@@ -1867,10 +1905,10 @@ export final class PackageHost {
    * CID now. Answers with the AT-URI and CID the new record will have,
    * which the attestations name.
    */
-  async #propose(caller: String, account: Account, collection: String, rkey: String, record: MapValue,
+  async #propose(caller: String, account: HostAccount, collection: String, rkey: String, record: MapValue,
       swapRecord: String | null, nowMicros: i64): Future<Created> {
     let swap = swapCid(swapRecord);
-    let current = await this.pds.storage.store(account.did).getRecord(collection, rkey);
+    let current = (await this.#current(account.did, collection, rkey))?.cid;
     if (swap != null && (current == null || !current.equals(swap))) {
       throw new HostError(400, 'InvalidSwap', `${collection}/${rkey} is not ${swap.toString()}`);
     }
@@ -1878,7 +1916,7 @@ export final class PackageHost {
     let cid = Cid.forDagCbor(bytes);
     await this.#store.holdChange(account.did, new PendingChange(collection, rkey, bytes, cid, current, caller,
         nowMicros));
-    return new Created(account.did, account.handle ?? account.did, `at://${account.did}/${collection}/${rkey}`, cid);
+    return new Created(account.did, account.handle, `at://${account.did}/${collection}/${rkey}`, cid);
   }
 
   /**
@@ -1895,7 +1933,7 @@ export final class PackageHost {
     let target = await this.#changeTarget(uri);
     await this.#requireRole(caller, target);
     let did = target.account.did;
-    let current = await this.pds.storage.store(did).getRecord(target.collection, target.rkey);
+    let current = (await this.#current(did, target.collection, target.rkey))?.cid;
     let held = await this.#heldChange(target, nowMicros);
     if (held == null) {
       if (cid != null && current != null && current.equals(cid)) {
@@ -1914,10 +1952,9 @@ export final class PackageHost {
       return new ChangeCompletion(uri, change.cid, false, tally);
     }
     let record = asMap(decodeCbor(change.record));
-    await this.#apply(target.account,
+    await this.#commit(target.account, [
         if (current != null) new UpdateRecord(target.collection, target.rkey, record, current) as Write
-        else new CreateRecord(target.collection, target.rkey, record) as Write,
-        nowMicros);
+        else new CreateRecord(target.collection, target.rkey, record) as Write]);
     await this.#store.dropChange(did, target.collection, target.rkey, change.cid);
     return new ChangeCompletion(uri, change.cid, true, tally);
   }
@@ -1929,7 +1966,7 @@ export final class PackageHost {
    * is written. The caller must have a role in the account.
    */
   async pendingChanges(caller: String, account: String, nowMicros: i64): Future<Array<WaitingChange>> {
-    let held = await this.pds.storage.getAccount(account);
+    let held = await this.#store.account(account);
     if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
       throw new HostError(400, 'InvalidRequest', `${account} is not an organization or package on this host`);
     }
@@ -2132,7 +2169,7 @@ export final class PackageHost {
     for (let did in candidates) {
       if (!seen.has(did)) {
         seen.add(did);
-        let held = await this.pds.storage.getAccount(did);
+        let held = await this.#store.account(did);
         if (held == null || held.kind != AccountKind.Automation) {
           dids.push(did);
         }
@@ -2161,7 +2198,7 @@ export final class PackageHost {
    * package's; and everyone else, their own.
    */
   async getEntries(caller: String, account: String, team: String | null): Future<Array<MemberEntry>> {
-    let held = await this.pds.storage.getAccount(account);
+    let held = await this.#store.account(account);
     if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
       throw new HostError(400, 'InvalidRequest', `${account} is not an organization or package on this host`);
     }
@@ -2197,7 +2234,7 @@ export final class PackageHost {
    * and the admins of its scope's organization; and the host's admins, as
    * its operator could read the entries anyway.
    */
-  async #seesAll(caller: String, account: Account, team: String | null): Future<boolean> {
+  async #seesAll(caller: String, account: HostAccount, team: String | null): Future<boolean> {
     if (this.isHostAdmin(caller)) {
       return true;
     }
@@ -2216,8 +2253,8 @@ export final class PackageHost {
   }
 
   /** The account `did`, which must be of `kind`, described as `what` when it is not. */
-  async #account(did: String, kind: AccountKind, what: String): Future<Account> {
-    let account = await this.pds.storage.getAccount(did);
+  async #account(did: String, kind: AccountKind, what: String): Future<HostAccount> {
+    let account = await this.#store.account(did);
     if (account == null || account.kind != kind) {
       throw new HostError(400, 'InvalidRequest', `${did} is not ${what} on this host`);
     }
@@ -2225,14 +2262,8 @@ export final class PackageHost {
   }
 
   /** The record at `collection/rkey` in `did`'s repository as it is now, or null. */
-  async #current(did: String, collection: String, rkey: String): Future<CurrentRecord | null> {
-    let store = this.pds.storage.store(did);
-    let cid = await store.getRecord(collection, rkey);
-    if (cid == null) {
-      return null;
-    }
-    let bytes = (await store.getBlock(cid)) as FixedArray<u8>;
-    return new CurrentRecord(decodeCbor(bytes), cid);
+  async #current(did: String, collection: String, rkey: String): Future<HeldRecord | null> {
+    return await this.#pds.getRecord(did, collection, rkey);
   }
 
   /** The commitments the members or team record at `collection/rkey` lists now; none without one. */
@@ -2346,30 +2377,16 @@ export final class PackageHost {
    * Writes `record` at `collection/rkey`: creates it, or replaces it while
    * its CID is `swapRecord`, when one is given.
    */
-  async #put(account: Account, collection: String, rkey: String, record: MapValue, swapRecord: String | null,
-      nowMicros: i64): Future<Created> {
+  async #put(account: HostAccount, collection: String, rkey: String, record: MapValue, swapRecord: String | null)
+      : Future<Created> {
     let swap = swapCid(swapRecord);
-    let exists = (await this.pds.storage.store(account.did).getRecord(collection, rkey)) != null;
+    let exists = (await this.#current(account.did, collection, rkey)) != null;
     if (!exists && swap != null) {
       throw new HostError(400, 'InvalidSwap', `${collection}/${rkey} does not exist`);
     }
-    await this.#apply(account,
-        if (exists) new UpdateRecord(collection, rkey, record, swap) as Write else new CreateRecord(collection, rkey, record) as Write,
-        nowMicros);
-    let cid = (await this.pds.storage.store(account.did).getRecord(collection, rkey)) as Cid;
-    return new Created(account.did, account.handle ?? account.did, `at://${account.did}/${collection}/${rkey}`, cid);
-  }
-
-  /** Applies `write`, answering a write the repository refuses with its error. */
-  async #apply(account: Account, write: Write, nowMicros: i64): Future<void> {
-    try {
-      await this.pds.repositoryOf(account).applyWrites([write], nowMicros);
-    } catch (e) {
-      if (e is RepositoryError) {
-        throw new HostError(400, e.error, e.message);
-      }
-      throw e;
-    }
+    await this.#commit(account, [
+        if (exists) new UpdateRecord(collection, rkey, record, swap) as Write else new CreateRecord(collection, rkey, record) as Write]);
+    return new Created(account.did, account.handle, `at://${account.did}/${collection}/${rkey}`, cidForValue(record));
   }
 }
 
@@ -2420,7 +2437,7 @@ function commitmentsIn(collection: String, value: Value): Array<Cid> {
 
 /** A members, team or maintainers record a change is to, and its account. */
 final class ChangeTarget {
-  account: Account;
+  account: HostAccount;
   collection: String;
   rkey: String;
 
@@ -2469,7 +2486,10 @@ export final class WaitingChange {
   new(this.change, this.uri, this.tally);
 }
 
-/** An account the host made, as `listAccounts` describes it. */
+/**
+ * An account the host made: its DID, its handle, what it is for, and the
+ * scope and name its handle is made of.
+ */
 export final class HostAccount {
   did: String;
   handle: String;
@@ -2645,13 +2665,6 @@ export final class Automation {
 }
 
 /** A record as it is now, and its CID. */
-final class CurrentRecord {
-  value: Value;
-  cid: Cid;
-
-  new(this.value, this.cid);
-}
-
 /** The entries behind a record's commitments, and which of them are new. */
 final class EntriesBehind {
   /** By commitment, as a string. */
@@ -2690,11 +2703,6 @@ function swapCid(swapRecord: String | null): Cid | null {
   } catch (e) {
     throw new HostError(400, 'InvalidRequest', `swapRecord '${swapRecord}' is not a CID`);
   }
-}
-
-/** The scope of an organization whose handle is `<scope>.<domain>`. */
-function scopeOf(handle: String, domain: String): String {
-  return handle.sliceBytes(0, handle.length - domain.length - 1);
 }
 
 function asMap(value: Value): MapValue {

@@ -1,0 +1,90 @@
+/**
+ * `InProcessPds`, the PDS the package host reaches in the same process
+ * (`pds:pds-client`): what the host asks of it, as it would ask a PDS
+ * over the network.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {MapValue, StringValue, newMap} from 'atproto:data';
+import {KeyType} from 'atproto:didkey';
+import {Pds} from 'pds:pds';
+import {InProcessPds} from 'pds:pds-client';
+import {CreateRecord, DeleteRecord, RepositoryError, Write} from 'pds:repository';
+import {Account, MemoryStorage, SigningKey} from 'pds:storage';
+
+let HOST = 'did:web:pkg.test';
+let DID = 'did:plc:routerrouterrouterrouter';
+let NOTE = 'dev.zena-lang.test.note';
+
+function note(text: String) {
+  let record = newMap();
+  record.entries['$type'] = new StringValue(NOTE);
+  record.entries['text'] = new StringValue(text);
+  return record;
+}
+
+/** `n` padded to three digits, so that record keys sort as the numbers do. */
+function keyOf(n: i32) {
+  let digits = `${n}`;
+  return if (n < 10) `00${digits}` else if (n < 100) `0${digits}` else digits;
+}
+
+export let tests = suite('pds:pds-client', () => {
+  test('makes a managed account, writes it in one commit, and reads every page back', (ctx) => {
+    let pds = new Pds(new MemoryStorage());
+    let client = new InProcessPds(pds, HOST);
+    runFuture(client.createAccount(DID, 'router.acme.pkg.test', new SigningKey(KeyType.Secp256k1,
+        new FixedArray<u8>(32, 7 as u8))));
+    equal((runFuture(pds.storage.getAccount(DID)) as Account).manager as String, HOST);
+
+    let writes = new GrowableArray<Write>();
+    for (var i = 0; i < 250; i += 1) {
+      writes.push(new CreateRecord(NOTE, keyOf(i), note(`note ${i}`)));
+    }
+    let head = runFuture(client.applyWrites(DID, writes));
+    let latest = runFuture(client.latestCommit(DID));
+    isTrue(latest != null && latest.cid.equals(head.cid), 'the commit');
+
+    // Three pages, in record-key order.
+    let records = runFuture(client.listRecords(DID, NOTE));
+    equal(records.length, 250);
+    equal(records[0].rkey, '000');
+    equal(records[249].rkey, '249');
+    let read = runFuture(client.getRecord(DID, NOTE, '120'));
+    isTrue(read != null && read.cid.equals(records[120].cid), 'the same record');
+
+    runFuture(client.applyWrites(DID, [new DeleteRecord(NOTE, '120', null) as Write]));
+    isNull(runFuture(client.getRecord(DID, NOTE, '120')));
+    equal(runFuture(client.listRecords(DID, NOTE)).length, 249);
+  });
+
+  test('keeps blobs, and refuses an account it does not hold', (ctx) => {
+    let pds = new Pds(new MemoryStorage());
+    let client = new InProcessPds(pds, HOST);
+    runFuture(client.createAccount(DID, 'router.acme.pkg.test', new SigningKey(KeyType.Secp256k1,
+        new FixedArray<u8>(32, 7 as u8))));
+    let bytes = 'a module'.toBytes();
+    let blob = runFuture(client.uploadBlob(DID, 'application/wasm', bytes));
+    equal(blob.size, bytes.length as i64);
+    let held = runFuture(client.getBlob(DID, blob.cid));
+    isTrue(held != null && held.mimeType == 'application/wasm', 'the blob');
+    // Only what the PDS's limits on managed accounts allow.
+    var page = '';
+    try {
+      runFuture(client.uploadBlob(DID, 'text/html', '<script></script>'.toBytes()));
+    } catch (e) {
+      page = if (e is RepositoryError) e.error else e.message;
+    }
+    equal(page, 'InvalidRequest');
+
+    var refused = '';
+    try {
+      runFuture(client.applyWrites('did:plc:nobodynobodynobodynobody', [new CreateRecord(NOTE, 'x', note('x')) as Write]));
+    } catch (e) {
+      refused = if (e is RepositoryError) e.error else e.message;
+    }
+    equal(refused, 'RepoNotFound');
+  });
+});

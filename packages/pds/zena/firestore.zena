@@ -23,7 +23,9 @@
  * - A staging PLC directory's (`FirestorePlcLog`): `plc/{did}`: `length`,
  *   the number of operations; and under it `ops/{index}`: `json`, each
  *   operation, with indexes padded to eight digits so they list in order.
- * - The package host's (`FirestoreHostStore`): `scopes/{scope}`: `org`;
+ * - The package host's (`FirestoreHostStore`): `hostAccounts/{did}`:
+ *   `handle`, `kind`, `scope` and `name`, each account the host made;
+ *   `scopes/{scope}`: `org`;
  *   `names/{name}.{scope}`: `did`, `scope` and `name`;
  *   `summaries/{did}`: a package's summary, `handle`, `scope`, `name`,
  *   `description`, `license` and `latest` (each absent for none),
@@ -62,7 +64,7 @@ import {compareKeys} from 'atproto:mst';
 import {MemberEntry} from 'package-manager:records';
 import {JsonValue, parseJson, stringify} from 'zena:json';
 import {PlcOperation} from 'atproto:plc';
-import {ClaimedName, ClaimedScope, HostStore, PackageSummary, PendingChange, PendingRelease} from './host.zena';
+import {ClaimedName, ClaimedScope, HostAccount, HostStore, PackageSummary, PendingChange, PendingRelease} from './host.zena';
 import {PlcLog} from './plc-directory.zena';
 import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
@@ -387,6 +389,29 @@ export final class FirestoreHostStore implements HostStore {
   #root: DocumentReference;
 
   new(db: Firestore, tenant: String) : #db = db, #root = tenantRoot(db, tenant);
+
+  async putAccount(account: HostAccount): Future<void> {
+    await this.#root.collection('hostAccounts').doc(account.did).set(new Fields()
+      .string('handle', account.handle)
+      .string('kind', kindName(account.kind))
+      .string('scope', account.scope)
+      .string('name', account.name));
+  }
+
+  async account(did: String): Future<HostAccount | null> {
+    return hostAccountFrom(await this.#root.collection('hostAccounts').doc(did).get());
+  }
+
+  async accounts(): Future<Array<HostAccount>> {
+    let all = new GrowableArray<HostAccount>();
+    for (let snapshot in await this.#root.collection('hostAccounts').get()) {
+      let account = hostAccountFrom(snapshot);
+      if (account != null) {
+        all.push(account);
+      }
+    }
+    return all;
+  }
 
   async scopeOwner(scope: String): Future<String | null> {
     return stringAt(await this.#root.collection('scopes').doc(scope).get(), 'org');
@@ -843,6 +868,18 @@ async function accountFields(account: Account, keys: KeyEncryption | null): Futu
     fields.string('manager', manager);
   }
   return fields;
+}
+
+/** The host's account in `snapshot`, or null when there is none. */
+function hostAccountFrom(snapshot: DocumentSnapshot): HostAccount | null {
+  let handle = stringAt(snapshot, 'handle');
+  let kind = stringAt(snapshot, 'kind');
+  let scope = stringAt(snapshot, 'scope');
+  let name = stringAt(snapshot, 'name');
+  if (handle == null || kind == null || scope == null || name == null) {
+    return null;
+  }
+  return new HostAccount(snapshot.id, handle, kindNamed(kind), scope, name);
 }
 
 /**

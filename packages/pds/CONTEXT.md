@@ -52,6 +52,11 @@ first. When a pull request closes an item there, tick its box.
   through host methods with the person's token, never on the strength of
   the site's cookie (package-manager.md, "Names and addresses" and
   "Finding an App View").
+- The host reaches its accounts' repositories only through `PdsClient`
+  (`pds:pds-client`), in `com.atproto`'s terms, and keeps its own record
+  of its accounts, their kinds, scopes and names, in `HostStore`. It does
+  not read `Pds` or `Storage`; `InProcessPds` is the PDS in the same
+  process. Creating automation accounts is the one exception, until #853.
 
 ## Storage
 
@@ -65,10 +70,10 @@ first. When a pull request closes an item there, tick its box.
   Never write a key in the clear where a store has key encryption.
 - The package listings read `HostStore.summaries`, and memberships and
   public roles start from `HostStore.mentionsOf`, which the host writes
-  from `Pds.onCommit` after each commit (`PackageHost.#indexCommit`). A
-  method a page calls must not read every account or repository. These
-  indexes are where the App View's index starts, with only the accounts
-  it holds (package-manager.md, "The index").
+  after each commit it makes (`PackageHost.#index`). A method a page
+  calls must not read every account or repository. These indexes are
+  where the App View's index starts, with only the accounts it holds
+  (package-manager.md, "The index").
 - Several servers may share a store. Write through `AccountStore.commit`,
   which checks the head, and take names with `HostStore.claimScope` and
   `claimName`, never with a read and then a write.
