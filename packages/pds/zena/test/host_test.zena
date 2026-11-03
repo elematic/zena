@@ -8,9 +8,9 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {join} from 'zena:core';
+import {Unmanaged, join} from 'zena:core';
 import {hex} from 'zena:encoding';
-import {App, HTMLPartial, Request, Response} from 'zena:http';
+import {App, HTMLPartial, Request, Response, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {bytesStream} from 'zena:stream';
 import {now} from 'wasi:clocks/system-clock';
@@ -36,15 +36,18 @@ import {
 } from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
-import {InProcessPds} from 'pds:pds-client';
+import {InProcessPds, PdsClient, XrpcPds} from 'pds:pds-client';
+import {ManagedAccounts, TrustedHost} from 'pds:managed';
 import {CreateRecord, Repository, RepositoryError, UpdateRecord, Write} from 'pds:repository';
 import {TidClock} from 'atproto:tid';
 import {createApp} from 'pds:server';
 import {MemoryCredentialStore, Sessions} from 'pds:sessions';
-import {LocalRotationKey} from 'pds:rotation';
+import {LocalSigner} from 'pds:signer';
 import {Account, AccountKind, AccountStore, MemoryStorage, ReservedKey, SigningKey, Storage} from 'pds:storage';
 
 let HOST = 'did:web:pkg.test';
+/** The PDS's DID, when the host reaches it by XRPC. */
+let PDS_DID = 'did:web:padstone.test';
 let ALICE = 'did:plc:alicealicealicealicealic';
 let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 let ALICE_KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
@@ -100,20 +103,45 @@ final class Fixture {
    * reads from their PDSes.
    */
   remote = new HashMap<String, Value>();
+  /** The PDS served on a port, when the host reaches it by XRPC. */
+  var #server: Unmanaged<Server> | null = null;
   var #jti = 0;
   var #random = 0;
 
-  new(store: HostStore = new MemoryHostStore(), storage: Storage = new MemoryStorage())
+  /**
+   * A host on `storage`'s PDS, in the same process; or, `overXrpc`, served
+   * on a port as a PDS of its own, which trusts the host's rotation key and
+   * which the host reaches with its own tokens (`XrpcPds`).
+   */
+  new(store: HostStore = new MemoryHostStore(), storage: Storage = new MemoryStorage(), overXrpc: boolean = false)
       : pds = new Pds(storage), app = new App() {
     let rotation = new SigningKey(KeyType.Secp256k1, filled(200));
-    let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', new LocalRotationKey(rotation));
+    let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', new LocalSigner(rotation));
     let callers: HashMap<String, PublicKey> = {
       ALICE => new SigningKey(KeyType.P256, ALICE_KEY).publicKey(),
       BOB => new SigningKey(KeyType.P256, BOB_KEY).publicKey(),
     };
     let submitted = this.submitted;
     let pds = this.pds;
-    let host = new PackageHost(new InProcessPds(this.pds, HOST), config, store, this.records,
+    var client: PdsClient = new InProcessPds(this.pds, HOST);
+    if (overXrpc) {
+      let signing = new SigningKey(KeyType.Secp256k1, filled(199));
+      config.signingKey = new LocalSigner(signing);
+      pds.managed = new ManagedAccounts(PDS_DID, 'https://pkg.test', [new TrustedHost(HOST, [rotation.publicKey()])],
+          async (did: String): Future<Array<PlcOperation>> => {
+            if (let (true, log) = submitted.get(did)) {
+              return log;
+            }
+            return [];
+          },
+          async (did: String, fresh: boolean): Future<PublicKey | null> =>
+              if (did == HOST) signing.publicKey() else null);
+      let server = new Server(createApp(pds), 0 as u16);
+      server.start();
+      client = new XrpcPds(`http://127.0.0.1:${server.port as i32}`, PDS_DID, HOST, new LocalSigner(signing));
+      this.#server = server.keepOpen();
+    }
+    let host = new PackageHost(client, config, store, this.records,
         async (did: String, fresh: boolean): Future<PublicKey | null> => {
           if (let (true, key) = callers.get(did)) {
             return key;
@@ -154,6 +182,14 @@ final class Fixture {
       await pds.createAccount(did, handle, key, 0 as i64, AccountKind.Automation);
     };
     this.app = createApp(this.pds, host, sessions);
+  }
+
+  /** Stops the PDS served on a port, if there is one. */
+  close(): void {
+    let server = this.#server;
+    if (server != null) {
+      server.close();
+    }
   }
 
   /** The genesis operation the host sent for `did`. */
@@ -1700,6 +1736,27 @@ export let tests = suite('pds:host', () => {
     equal(read.reason as String, 'broken on Windows');
     // The release itself stays.
     ok(fixture.get(`/xrpc/com.atproto.repo.getRecord?repo=${pkgDid}&collection=${RELEASE_TYPE}&rkey=1.0.0`));
+  });
+
+  test('creates and publishes over a PDS it reaches by XRPC, with its own tokens', (ctx) => {
+    let fixture = new Fixture(new MemoryHostStore(), new MemoryStorage(), true);
+    try {
+      let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+      let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+      let blob = upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
+      release(fixture, ALICE, pkgDid, '1.0.0', blob);
+      // The PDS made the account for the host, whose DID document names
+      // the key the PDS holds.
+      let account = runFuture(fixture.pds.storage.getAccount(pkgDid)) as Account;
+      equal(account.manager as String, HOST);
+      equal(fixture.latestOf(pkgDid).verificationMethods['atproto'],
+          formatDidKey(runFuture(account.signingKey()).publicKey()));
+      ok(fixture.get(`/xrpc/com.atproto.repo.getRecord?repo=${pkgDid}&collection=${RELEASE_TYPE}&rkey=1.0.0`));
+      let listed = ok(fixture.get('/xrpc/dev.zena-lang.host.listPackages'))['packages'] as JsonArray;
+      equal((listed[0] as JsonObject)['latest'] as String, '1.0.0');
+    } finally {
+      fixture.close();
+    }
   });
 
   test('takes a name only once, however the lookups race', (ctx) => {

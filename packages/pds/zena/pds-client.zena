@@ -7,16 +7,27 @@
  *
  * `InProcessPds` is the PDS in the same process. It calls the PDS's core
  * directly, without the service-auth tokens a host sends over the network
- * (`pds:managed`), since nothing between them could forge one.
+ * (`pds:managed`), since nothing between them could forge one. `XrpcPds`
+ * is a PDS with managed accounts anywhere else, called with those tokens.
  */
 
 import {Future} from 'zena:async';
+import {hex} from 'zena:encoding';
+import {JsonArray, JsonObject, JsonValue} from 'zena:json';
+import {randomBytes} from 'zena:random';
 import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {BlobRef, Value} from 'atproto:data';
-import {PublicKey, formatDidKey} from 'atproto:didkey';
+import {BlobRef, Value, fromJson, toJson} from 'atproto:data';
+import {PublicKey, formatDidKey, parseDidKey} from 'atproto:didkey';
+import {
+  REPO_APPLY_WRITES, REPO_DELETE_RECORD, REPO_GET_RECORD, REPO_LIST_RECORDS, REPO_PUT_RECORD, REPO_UPLOAD_BLOB,
+  SERVER_CREATE_ACCOUNT, SERVER_RESERVE_SIGNING_KEY, SYNC_GET_BLOB, SYNC_GET_LATEST_COMMIT
+} from 'atproto:methods';
+import {ServiceAuthClaims, signServiceAuthToken} from 'atproto:service-auth';
+import {XrpcClient, XrpcError} from 'atproto:xrpc';
 import {Pds} from './pds.zena';
-import {RepositoryError, Write} from './repository.zena';
+import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
+import {Signer} from './signer.zena';
 import {Account, Head, StoredBlob} from './storage.zena';
 import {nowMicros, nowSeconds} from './xrpc/common.zena';
 
@@ -47,11 +58,14 @@ export interface PdsClient {
   createAccount(did: String, handle: String, signingKey: PublicKey): Future<void>;
   /**
    * `com.atproto.repo.applyWrites`: `writes` to `did`'s repository, in one
-   * commit, which it returns. Throws `RepositoryError` for writes the PDS
-   * refuses.
+   * commit, which it returns; at most `MAX_WRITES` of them. Throws
+   * `RepositoryError` for writes the PDS refuses.
    */
   applyWrites(did: String, writes: Array<Write>): Future<Head>;
-  /** `com.atproto.repo.uploadBlob`: `bytes`, of type `mimeType`, as a blob of `did`. */
+  /**
+   * `com.atproto.repo.uploadBlob`: `bytes`, of type `mimeType`, as a blob
+   * of `did`. Throws `RepositoryError` for a blob the PDS refuses.
+   */
   uploadBlob(did: String, mimeType: String, bytes: FixedArray<u8>): Future<BlobRef>;
   /** `com.atproto.sync.getBlob`: the blob `cid` of `did`, or null. */
   getBlob(did: String, cid: Cid): Future<StoredBlob | null>;
@@ -65,6 +79,9 @@ export interface PdsClient {
 
 /** The records `listRecords` reads at a time. */
 let PAGE = 100;
+
+/** The most writes one commit takes, as `com.atproto.repo.applyWrites` allows. */
+export let MAX_WRITES = 200;
 
 /** The PDS in the same process as the host. */
 export final class InProcessPds implements PdsClient {
@@ -87,6 +104,9 @@ export final class InProcessPds implements PdsClient {
   }
 
   async applyWrites(did: String, writes: Array<Write>): Future<Head> {
+    if (writes.length > MAX_WRITES) {
+      throw new RepositoryError('InvalidRequest', `at most ${MAX_WRITES} writes are taken at once`);
+    }
     return await this.#pds.repositoryOf(await this.#account(did)).applyWrites(writes, nowMicros());
   }
 
@@ -151,4 +171,248 @@ export final class InProcessPds implements PdsClient {
     }
     return account;
   }
+}
+
+/** How long the host's tokens to its PDS last, in seconds: one call's worth. */
+let TOKEN_SECONDS = 60 as i64;
+
+/**
+ * A PDS with managed accounts, at `endpoint`, whose DID is `pdsDid`, over
+ * XRPC. Each call carries a service-auth token for its one method from
+ * the host's DID `hostDid`, signed by `signer`, the key its DID document
+ * lists (package-manager.md, "Managed accounts").
+ */
+export final class XrpcPds implements PdsClient {
+  #endpoint: String;
+  #pdsDid: String;
+  #hostDid: String;
+  #signer: Signer;
+
+  new(endpoint: String, pdsDid: String, hostDid: String, signer: Signer)
+      : #endpoint = endpoint, #pdsDid = pdsDid, #hostDid = hostDid, #signer = signer;
+
+  async reserveSigningKey(): Future<PublicKey> {
+    let answer = await (await this.#asHost(SERVER_RESERVE_SIGNING_KEY))
+        .procedure(SERVER_RESERVE_SIGNING_KEY, new JsonObject());
+    let key = if (answer is JsonObject) answer['signingKey'] else null;
+    if (!(key is String)) {
+      throw new XrpcError(502, 'InvalidResponse', `${this.#endpoint} reserved no signing key`);
+    }
+    return parseDidKey(key);
+  }
+
+  // The PDS reads `signingKey` from the DID document.
+  async createAccount(did: String, handle: String, signingKey: PublicKey): Future<void> {
+    let input = new JsonObject();
+    input['did'] = did;
+    input['handle'] = handle;
+    try {
+      await (await this.#asHost(SERVER_CREATE_ACCOUNT)).procedure(SERVER_CREATE_ACCOUNT, input);
+    } catch (e) {
+      throw refusedOf(e);
+    }
+  }
+
+  // `applyWrites` has no `swapRecord` for each write, so a write that
+  // swaps goes alone, as `putRecord` or `deleteRecord`, which have one.
+  async applyWrites(did: String, writes: Array<Write>): Future<Head> {
+    try {
+      if (writes.length == 1) {
+        let only = writes[0];
+        if (let UpdateRecord {collection, rkey, record, swapRecord} = only) {
+          if (swapRecord != null) {
+            let input = this.#recordInput(did, collection, rkey);
+            input['record'] = toJson(record);
+            input['swapRecord'] = swapRecord.toString();
+            return commitOf(await (await this.#asHost(REPO_PUT_RECORD)).procedure(REPO_PUT_RECORD, input));
+          }
+        }
+        if (let DeleteRecord {collection, rkey, swapRecord} = only) {
+          if (swapRecord != null) {
+            let input = this.#recordInput(did, collection, rkey);
+            input['swapRecord'] = swapRecord.toString();
+            return commitOf(await (await this.#asHost(REPO_DELETE_RECORD)).procedure(REPO_DELETE_RECORD, input));
+          }
+        }
+      }
+      let list = new JsonArray();
+      for (let write in writes) {
+        list.push(writeJson(write));
+      }
+      let input = new JsonObject();
+      input['repo'] = did;
+      input['writes'] = list;
+      return commitOf(await (await this.#asHost(REPO_APPLY_WRITES)).procedure(REPO_APPLY_WRITES, input));
+    } catch (e) {
+      throw refusedOf(e);
+    }
+  }
+
+  async uploadBlob(did: String, mimeType: String, bytes: FixedArray<u8>): Future<BlobRef> {
+    try {
+      let answer = await (await this.#asHost(REPO_UPLOAD_BLOB)).upload(REPO_UPLOAD_BLOB, mimeType, bytes,
+          [('repo', did)]);
+      return BlobRef.fromValue(fromJson((answer as JsonObject)['blob']));
+    } catch (e) {
+      throw refusedOf(e);
+    }
+  }
+
+  async getBlob(did: String, cid: Cid): Future<StoredBlob | null> {
+    try {
+      let response = await new XrpcClient(this.#endpoint).queryRaw(SYNC_GET_BLOB,
+          [('did', did), ('cid', cid.toString())]);
+      let mimeType = response.header('content-type') ?? 'application/octet-stream';
+      return new StoredBlob(mimeType, await response.bytes());
+    } catch (e) {
+      if (e is XrpcError && (e.error == 'BlobNotFound' || e.error == 'RepoNotFound')) {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  async getRecord(did: String, collection: String, rkey: String): Future<HeldRecord | null> {
+    try {
+      let answer = await new XrpcClient(this.#endpoint).query(REPO_GET_RECORD,
+          [('repo', did), ('collection', collection), ('rkey', rkey)]);
+      return recordOf(rkey, answer as JsonObject);
+    } catch (e) {
+      if (e is XrpcError && (e.error == 'RecordNotFound' || e.error == 'RepoNotFound')) {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  async listRecords(did: String, collection: String): Future<Array<HeldRecord>> {
+    let records = new GrowableArray<HeldRecord>();
+    var cursor: String | null = null;
+    while (true) {
+      let params = new GrowableArray<(String, String)>();
+      params.push(('repo', did));
+      params.push(('collection', collection));
+      params.push(('limit', `${PAGE}`));
+      // In record-key order: a PDS lists the newest key first otherwise.
+      params.push(('reverse', 'true'));
+      if (cursor != null) {
+        params.push(('cursor', cursor));
+      }
+      let answer = (await new XrpcClient(this.#endpoint).query(REPO_LIST_RECORDS, params)) as JsonObject;
+      let page = answer['records'] as JsonArray;
+      for (var i = 0; i < page.length; i += 1) {
+        let record = page[i] as JsonObject;
+        let parts = (record['uri'] as String).split('/');
+        records.push(recordOf(parts[parts.length - 1], record));
+      }
+      let next = answer['cursor'];
+      if (!(next is String) || page.length == 0) {
+        return records;
+      }
+      cursor = next;
+    }
+  }
+
+  async latestCommit(did: String): Future<Head | null> {
+    try {
+      return commitFields(await new XrpcClient(this.#endpoint).query(SYNC_GET_LATEST_COMMIT, [('did', did)]));
+    } catch (e) {
+      if (e is XrpcError && e.error == 'RepoNotFound') {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  /** A client whose calls to `method` carry a token from the host. */
+  async #asHost(method: String): Future<XrpcClient> {
+    let key = this.#signer;
+    let token = await signServiceAuthToken(this.#claims(this.#hostDid, method), key.publicKey().type,
+        async (bytes): Future<FixedArray<u8>> => await key.sign(bytes));
+    return this.#client(token);
+  }
+
+  #claims(issuer: String, method: String): ServiceAuthClaims {
+    let issued = nowSeconds();
+    return new ServiceAuthClaims(issuer, this.#pdsDid, issued + TOKEN_SECONDS, issued, method,
+        hex.encode(randomBytes(16)));
+  }
+
+  #client(token: String): XrpcClient {
+    let client = new XrpcClient(this.#endpoint);
+    client.authorization = `Bearer ${token}`;
+    return client;
+  }
+
+  #recordInput(did: String, collection: String, rkey: String): JsonObject {
+    let input = new JsonObject();
+    input['repo'] = did;
+    input['collection'] = collection;
+    input['rkey'] = rkey;
+    return input;
+  }
+}
+
+/** `e` as a `RepositoryError` when it is the PDS refusing a write, which a 4xx answer is; otherwise `e`. */
+function refusedOf(e: Error): Error {
+  if (e is XrpcError && e.status >= 400 && e.status < 500) {
+    return new RepositoryError(if (e.error == '') 'InvalidRequest' else e.error, e.message);
+  }
+  return e;
+}
+
+/** `write` as one of `com.atproto.repo.applyWrites`'s `writes`. */
+function writeJson(write: Write): JsonObject {
+  let json = new JsonObject();
+  match (write) {
+    case CreateRecord {collection, rkey, record}: {
+      json['$type'] = 'com.atproto.repo.applyWrites#create';
+      json['collection'] = collection;
+      json['rkey'] = rkey;
+      json['value'] = toJson(record);
+    }
+    case UpdateRecord {collection, rkey, record, swapRecord}: {
+      if (swapRecord != null) {
+        throw new RepositoryError('InvalidRequest', 'applyWrites takes no swapRecord: write a swapping update alone');
+      }
+      json['$type'] = 'com.atproto.repo.applyWrites#update';
+      json['collection'] = collection;
+      json['rkey'] = rkey;
+      json['value'] = toJson(record);
+    }
+    case DeleteRecord {collection, rkey, swapRecord}: {
+      if (swapRecord != null) {
+        throw new RepositoryError('InvalidRequest', 'applyWrites takes no swapRecord: write a swapping delete alone');
+      }
+      json['$type'] = 'com.atproto.repo.applyWrites#delete';
+      json['collection'] = collection;
+      json['rkey'] = rkey;
+    }
+  }
+  return json;
+}
+
+/** The commit a write method answers with. */
+function commitOf(answer: JsonValue): Head {
+  let commit = if (answer is JsonObject) answer['commit'] else null;
+  let head = commitFields(commit);
+  if (head == null) {
+    throw new XrpcError(502, 'InvalidResponse', 'the PDS answered a write with no commit');
+  }
+  return head;
+}
+
+/** The commit `json` describes, by its `cid` and `rev`, or null. */
+function commitFields(json: JsonValue): Head | null {
+  if (!(json is JsonObject)) {
+    return null;
+  }
+  let cid = json['cid'];
+  let rev = json['rev'];
+  return if (cid is String && rev is String) new Head(Cid.parse(cid), rev) else null;
+}
+
+/** The record at `rkey` that `json`, as `getRecord` and `listRecords` give one, describes. */
+function recordOf(rkey: String, json: JsonObject): HeldRecord {
+  return new HeldRecord(rkey, fromJson(json['value']), Cid.parse(json['cid'] as String));
 }

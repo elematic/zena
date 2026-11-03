@@ -1,4 +1,4 @@
-/** The host's online rotation key in Cloud KMS (`pds:rotation`), against a fake key version. */
+/** A key the host signs with in Cloud KMS (`pds:signer`), against a fake key version. */
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
@@ -10,15 +10,15 @@ import {CloudKms} from 'google-cloud:kms';
 import {FAKE_KMS_KEY, FAKE_KMS_PRIVATE_KEY, startFakeKms} from 'google-cloud:testing/fake-kms';
 import {KeyType} from 'atproto:didkey';
 import {genesisOperation} from 'atproto:plc';
-import {KmsRotationKey} from 'pds:rotation';
+import {KmsSigner} from 'pds:signer';
 import {SigningKey} from 'pds:storage';
 
-export let tests = suite('pds:rotation', () => {
+export let tests = suite('pds:signer', () => {
   test('signs a genesis operation with a key in Cloud KMS', (ctx) => {
     let server = startFakeKms();
     try {
       let kms = new CloudKms(FAKE_KMS_KEY, new AccessTokenCredentials('token'), `http://127.0.0.1:${server.port as i32}`);
-      let key = runFuture(KmsRotationKey.connect(kms));
+      let key = runFuture(KmsSigner.connect(kms));
       equal(key.publicKey().type, KeyType.Secp256k1);
       equal(hex.encode(key.publicKey().bytes), hex.encode(secp256k1.publicKey(FAKE_KMS_PRIVATE_KEY)));
       let signing = new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 5 as u8)).publicKey();

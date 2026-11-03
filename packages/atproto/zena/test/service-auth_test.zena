@@ -4,13 +4,14 @@ import {Future, runFuture} from 'zena:async';
 import {base64Url, hex} from 'zena:encoding';
 import {readFileSync} from 'zena:fs';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
-import {KeyType, PublicKey, publicKeyFor} from 'atproto:didkey';
+import {KeyType, PublicKey, curveOf, publicKeyFor} from 'atproto:didkey';
 import {
   ReplayGuard,
   ServiceAuthClaims,
   ServiceAuthError,
   SigningKeyLookup,
   createServiceAuthToken,
+  signServiceAuthToken,
   verifyServiceAuth
 } from 'atproto:service-auth';
 
@@ -89,6 +90,21 @@ export let tests = suite('atproto:service-auth', () => {
       equal(checked.lxm as String, PUBLISH);
       equal(checked.jti as String, 'nonce-1');
       equal(keys.freshLookups, 0);
+    }
+  });
+
+  test('signs a token through a signer that answers later, as a key management service does', (ctx) => {
+    for (let (type, privateKey) in [(KeyType.P256, P256_KEY), (KeyType.Secp256k1, K256_KEY)]) {
+      let keys = new Keys(publicKeyFor(type, privateKey));
+      var asked = 0;
+      let token = runFuture(signServiceAuthToken(claims(), type, async (bytes): Future<FixedArray<u8>> => {
+        asked += 1;
+        return curveOf(type).sign(privateKey, bytes);
+      }));
+      equal(asked, 1);
+      equal(verify(token, keys).iss, ALICE);
+      // The same claims and key make the same token either way.
+      equal(token, createServiceAuthToken(claims(), type, privateKey));
     }
   });
 

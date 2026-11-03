@@ -17,6 +17,7 @@ import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {JsonObject, parseJson, stringify} from 'zena:json';
 import {parseDidDocument} from 'atproto:did';
 import {PackageHost} from 'pds:host';
+import {SigningKey} from 'pds:storage';
 import {
   ConfigError, HostSettings, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
   buildService, configFromEnv
@@ -237,6 +238,27 @@ export let tests = suite('pds:service', () => {
     isTrue(badOffline.contains('PDS_OFFLINE_ROTATION_KEY is not a did:key'), badOffline);
     let stray = refusal([('PDS_OFFLINE_ROTATION_KEY', offline)]);
     isTrue(stray.contains('PDS_OFFLINE_ROTATION_KEY needs PDS_HOST_DOMAIN'), stray);
+  });
+
+  test("reads the host's own signing key, as the rotation key is read", (ctx) => {
+    let given = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_HOST_SIGNING_KEY', KEY)])).host
+        as HostSettings;
+    equal(hex.encode((given.signingKey as SigningKey).privateKey), KEY);
+    let inKms = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'),
+        ('PDS_HOST_SIGNING_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/signing/cryptoKeyVersions/1')])).host
+        as HostSettings;
+    equal(inKms.signingKmsKey as String, 'projects/p/locations/l/keyRings/r/cryptoKeys/signing/cryptoKeyVersions/1');
+    let bad = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_HOST_SIGNING_KEY', 'abcd')]);
+    isTrue(bad.contains('PDS_HOST_SIGNING_KEY is not 32 bytes of hex'), bad);
+    let stray = refusal([('PDS_HOST_SIGNING_KEY', KEY)]);
+    isTrue(stray.contains('PDS_HOST_SIGNING_KEY needs PDS_HOST_DOMAIN'), stray);
+
+    // Its DID document lists the key, which the PDSes of its accounts
+    // check its tokens with.
+    let hosted = runFuture(buildService(configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'),
+        ('PDS_HOST_SIGNING_KEY', KEY)])), 'http://127.0.0.1:1'));
+    let document = parseDidDocument(parseJson(get(hosted.app, '/.well-known/did.json').body as String), 'did:web:pkg.test');
+    equal(formatDidKey(document.signingKey as PublicKey), formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode(KEY))));
   });
 
   test('makes up a rotation key for a host in memory', (ctx) => {

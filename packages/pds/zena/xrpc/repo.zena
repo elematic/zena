@@ -22,7 +22,7 @@ import {
 import {Pds} from '../pds.zena';
 import {CreateRecord, DeleteRecord, UpdateRecord, Write} from '../repository.zena';
 import {SessionError, Sessions} from '../sessions.zena';
-import {Account, StoredBlob} from '../storage.zena';
+import {Account, Head, StoredBlob} from '../storage.zena';
 import {accountFor, fail, json, jsonBody, nowMicros, nowSeconds, parseCid, required, sessionCall} from './common.zena';
 
 /** `com.atproto.repo.listRecords`'s page size, when the request gives none, and its largest. */
@@ -161,10 +161,11 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
       }
       let write = if (exists) new UpdateRecord(collection, rkey, record, swap) as Write
           else new CreateRecord(collection, rkey, record) as Write;
-      await pds.repositoryOf(account).applyWrites([write], nowMicros());
+      let head = await pds.repositoryOf(account).applyWrites([write], nowMicros());
       let answer = new JsonObject();
       answer['uri'] = `at://${account.did}/${collection}/${rkey}`;
       answer['cid'] = ((await store.getRecord(collection, rkey)) as Cid).toString();
+      answer['commit'] = commitJson(head);
       return answer;
     });
   });
@@ -183,12 +184,14 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
       let account = await writable(pds, sessions, authorization, input['repo'], REPO_DELETE_RECORD);
       let collection = input['collection'] as String;
       let rkey = input['rkey'] as String;
-      // Deleting a record that is not there is done already.
+      // Deleting a record that is not there is done already, with no commit.
+      let answer = new JsonObject();
       if ((await pds.storage.store(account.did).getRecord(collection, rkey)) != null) {
-        await pds.repositoryOf(account).applyWrites([new DeleteRecord(collection, rkey, swapCidOf(input))],
+        let head = await pds.repositoryOf(account).applyWrites([new DeleteRecord(collection, rkey, swapCidOf(input))],
             nowMicros());
+        answer['commit'] = commitJson(head);
       }
-      return new JsonObject();
+      return answer;
     });
   });
 
@@ -224,11 +227,8 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
       for (let write in writes) {
         results.push(resultOf(account, write));
       }
-      let commit = new JsonObject();
-      commit['cid'] = head.cid.toString();
-      commit['rev'] = head.rev;
       let answer = new JsonObject();
-      answer['commit'] = commit;
+      answer['commit'] = commitJson(head);
       answer['results'] = results;
       return answer;
     });
@@ -342,6 +342,14 @@ function recordOf(write: JsonObject): MapValue {
     throw new SessionError(400, 'InvalidRequest', 'a create or an update has an object as its value');
   }
   return record;
+}
+
+/** A write's commit, as the write methods answer with it: its CID and revision. */
+function commitJson(head: Head): JsonObject {
+  let commit = new JsonObject();
+  commit['cid'] = head.cid.toString();
+  commit['rev'] = head.rev;
+  return commit;
 }
 
 /** What `com.atproto.repo.applyWrites` answers for `write`. */

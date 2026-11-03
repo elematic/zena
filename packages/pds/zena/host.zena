@@ -76,7 +76,7 @@ import {HandleRecords} from './handles.zena';
 import {HeldRecord, PdsClient} from './pds-client.zena';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {Sessions} from './sessions.zena';
-import {RotationKey} from './rotation.zena';
+import {Signer} from './signer.zena';
 import {formatTimestamp, milliseconds} from 'zena:time';
 import {AccountKind, Head, SigningKey} from './storage.zena';
 import {compareKeys} from 'atproto:mst';
@@ -498,7 +498,13 @@ export final class HostConfig {
    * offline key. Without those, the host holds the account, as a PDS holds
    * its users' (package-manager.md, "Keys").
    */
-  rotationKey: RotationKey;
+  rotationKey: Signer;
+  /**
+   * The host's own signing key, which signs its service-auth tokens to
+   * the PDSes of its accounts, and which its DID document lists; null for
+   * a host with none, whose PDS needs no tokens from it.
+   */
+  var signingKey: Signer | null = null;
   /**
    * The operator's offline rotation key, ranked above the online one, so
    * that the operator can undo for 72 hours what a stolen online key
@@ -526,7 +532,7 @@ export final class HostConfig {
     get { return this.siteUrl ?? this.endpoint; }
   }
 
-  new(serviceDid: String, domain: String, endpoint: String, rotationKey: RotationKey)
+  new(serviceDid: String, domain: String, endpoint: String, rotationKey: Signer)
       : serviceDid = serviceDid, domain = domain, endpoint = endpoint, rotationKey = rotationKey {
     for (let name in ['www', 'api', 'admin', 'zena', 'pkg', 'mail']) {
       this.reservedScopes.add(name);

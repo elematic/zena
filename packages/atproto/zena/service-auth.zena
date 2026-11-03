@@ -75,6 +75,24 @@ export let CLOCK_SKEW = 300 as i64;
 /** A token for `claims`, signed with `privateKey`, a key of type `type`. */
 export function createServiceAuthToken(claims: ServiceAuthClaims, type: KeyType,
     privateKey: FixedArray<u8>): String {
+  let signingInput = signingInputOf(claims, type);
+  return withSignature(signingInput, curveOf(type).sign(privateKey, signingInput.toBytes()));
+}
+
+/**
+ * A token for `claims`, signed by `sign` with a key of type `type`, for a
+ * key that is not held here, such as one in a key management service.
+ * `sign` gives the 64-byte low-S signature of the SHA-256 hash of the
+ * bytes it is given.
+ */
+export async function signServiceAuthToken(claims: ServiceAuthClaims, type: KeyType,
+    sign: (bytes: FixedArray<u8>) => Future<FixedArray<u8>>): Future<String> {
+  let signingInput = signingInputOf(claims, type);
+  return withSignature(signingInput, await sign(signingInput.toBytes()));
+}
+
+/** What a token's signature covers: its header and payload, each base64url-encoded. */
+function signingInputOf(claims: ServiceAuthClaims, type: KeyType): String {
   let header = new JsonObject();
   header['typ'] = 'JWT';
   header['alg'] = if (type == KeyType.P256) 'ES256' else 'ES256K';
@@ -93,8 +111,10 @@ export function createServiceAuthToken(claims: ServiceAuthClaims, type: KeyType,
   if (jti != null) {
     payload['jti'] = jti;
   }
-  let signingInput = `${encodePart(stringify(header))}.${encodePart(stringify(payload))}`;
-  let signature = curveOf(type).sign(privateKey, signingInput.toBytes());
+  return `${encodePart(stringify(header))}.${encodePart(stringify(payload))}`;
+}
+
+function withSignature(signingInput: String, signature: FixedArray<u8>): String {
   return `${signingInput}.${base64Url.encode(signature, false)}`;
 }
 
