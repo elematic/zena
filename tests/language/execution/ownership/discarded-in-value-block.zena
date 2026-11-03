@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 191919
+// An owner a statement discards inside a `try` body or a `match` arm's
+// body is released where the statement ends, as in a statement block:
+// the release (1) comes before the statement after it (9). That holds
+// for the last statement of a `match` used as a statement too.
+import { Own, Disposable } from 'zena:core';
+
+var log = 0;
+
+resource class R {
+  new();
+
+  [Disposable.dispose](this: Own<this>): void {
+    log = log * 10 + 1;
+  }
+}
+
+function makeNow(): Own<R> {
+  return new R();
+}
+
+function inTry(): void {
+  try {
+    makeNow();
+    log = log * 10 + 9;
+  } catch (e) {
+  }
+}
+
+function inMatchArm(n: i32): i32 {
+  return match (n) {
+    case 1: {
+      makeNow();
+      log = log * 10 + 9;
+      5
+    }
+    case _: 0
+  };
+}
+
+function lastInStatementMatch(n: i32): void {
+  match (n) {
+    case 1: {
+      makeNow();
+    }
+    case _: {}
+  };
+  log = log * 10 + 9;
+}
+
+export function main(): i32 {
+  inTry();
+  let first = log;
+  log = 0;
+  inMatchArm(1);
+  let second = log;
+  log = 0;
+  lastInStatementMatch(1);
+  return first * 10000 + second * 100 + log;
+}

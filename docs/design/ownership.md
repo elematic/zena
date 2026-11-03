@@ -1598,13 +1598,19 @@ still read, and the region's protected part does not dominate them, so
 an interval closed early carries what its statements declared out
 through variables set on normal completion.
 
-Two things stay as they are for `let`. A move inside a nested statement
+One thing stays as it is for `let`. A move inside a nested statement
 — an `if` arm, a loop body — takes the whole statement out of the
 regions, so an unwind from the other arm leaks the value (the same
-paths §"Where the join rule does not reach" lists). And a `var`
-declared in a block that opens no scope of its own, an `if`
-expression's arm or a `match` arm's body, is left alone: neither its
-stores nor its block's end release anything (#838).
+paths §"Where the join rule does not reach" lists).
+
+A block checked for its value is a scope of its own: an `if`
+expression's arm, a `match` arm's body, and a `try`, `catch`, `cancel`
+or `finally` block bracket their statements as a statement block does
+(`checkIfBranchNode`, `checkMatchCaseBody`). So a `var` owner declared in
+one gets release intervals, and every statement in one but a valued
+tail goes through `checkStatement`, which releases an owner the
+statement discards. Before #838 such a `var` was never released, and a
+discard in one leaked.
 
 The branch-join rule is implemented for `if`/`else` and for `match`: a
 candidate moved on some arms and kept on others gets a compensating drop

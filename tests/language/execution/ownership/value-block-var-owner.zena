@@ -1,0 +1,77 @@
+// @mode: run
+// @result: 1111
+// A `var` owner declared in a block that is checked for its value, an
+// `if` expression's arm, a `match` arm's body or a `try` body, is
+// released like one in a statement block: a store releases what it
+// replaces, and the block's end releases what the binding still holds.
+import { Own, Disposable } from 'zena:core';
+
+var log = 0;
+
+resource class R {
+  id: i32;
+  new(this.id);
+
+  [Disposable.dispose](this: Own<this>): void {
+    log = log * 10 + this.id;
+  }
+}
+
+function sink(r: Own<R>): void {}
+
+function ifArm(again: boolean): i32 {
+  return if (again) {
+    var r = new R(1);
+    r = new R(2);
+    sink(r);
+    5
+  } else {
+    0
+  };
+}
+
+function matchArm(n: i32): i32 {
+  return match (n) {
+    case 1: {
+      var r = new R(1);
+      r = new R(2);
+      sink(r);
+      5
+    }
+    case _: 0
+  };
+}
+
+function tryBody(): i32 {
+  try {
+    var r = new R(1);
+    r = new R(2);
+    sink(r);
+  } catch (e) {
+  }
+  return 5;
+}
+
+function keptToTheEnd(again: boolean): i32 {
+  return if (again) {
+    var r = new R(1);
+    r = new R(2);
+    r.id
+  } else {
+    0
+  };
+}
+
+export function main(): i32 {
+  var passed = 0;
+  // 1 at the store, 2 where it is moved or at the block's end.
+  log = 0;
+  if (ifArm(true) == 5 && log == 12) { passed += 1; }
+  log = 0;
+  if (matchArm(1) == 5 && log == 12) { passed += 10; }
+  log = 0;
+  if (tryBody() == 5 && log == 12) { passed += 100; }
+  log = 0;
+  if (keptToTheEnd(true) == 2 && log == 12) { passed += 1000; }
+  return passed;
+}

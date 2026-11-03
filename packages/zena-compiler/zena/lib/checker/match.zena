@@ -669,35 +669,42 @@ export function checkMatchExpr(
 export function checkMatchCaseBody(ctx: CheckerContext, body: Node, expectedType: Type | null): Type {
   match (body) {
     case BlockStatement as block: {
-      // Execute statements; need to track return type.
+      // Execute statements; need to track return type. The block's owners
+      // are its own, as in checkIfBranchNode: a `match` arm's body, and a
+      // `try`, `catch`, `cancel` or `finally` block, all come here.
       let stmts = block.body;
       prescanPendingFunctions(ctx, stmts);
+      ctx.enterOwnScope();
       var lastType: Type = new VoidType();
       var si = 0;
       while (si < stmts.length) {
         let isLast = si == stmts.length - 1;
         let et = if (isLast) { expectedType } else { new VoidType() as Type };
-        match (stmts[si]) {
-          case ExpressionStatement {expression}: {
-            lastType = adaptArmToContext(ctx, expression,
-                checkExpression(ctx, expression, et), et);
-          }
-          case _: {
-            // A `return` lands here too: checkStatement gives it the
-            // full treatment (return-type inference, async adoption,
-            // and marking the flow unreachable — an arm that returns
-            // must not feed the match join), and definitelyExits makes
-            // the arm `never`, exactly like one ending in `throw`.
-            checkStatement(ctx, stmts[si]);
-            lastType = if (branchDefinitelyExits(stmts[si])) {
-              new NeverType() as Type
-            } else {
-              new VoidType() as Type
-            };
-          }
+        ctx.beginOwnStatement();
+        let stmt = stmts[si];
+        if (isLast && stmt is ExpressionStatement && !(et is VoidType)) {
+          // The block's value.
+          lastType = adaptArmToContext(ctx, stmt.expression,
+              checkExpression(ctx, stmt.expression, et), et);
+        } else {
+          // Every other statement is one: checkStatement releases an
+          // owner an expression statement discards, ends the path at a
+          // call that never returns, and gives a `return` the full
+          // treatment (return-type inference, async adoption, and
+          // marking the flow unreachable — an arm that returns must not
+          // feed the match join), and definitelyExits makes the arm
+          // `never`, exactly like one ending in `throw`.
+          checkStatement(ctx, stmt);
+          lastType = if (branchDefinitelyExits(stmt)) {
+            new NeverType() as Type
+          } else {
+            new VoidType() as Type
+          };
         }
+        ctx.endOwnStatement(si, stmt);
         si = si + 1;
       }
+      ctx.exitOwnScope(block as Node);
       return lastType;
     }
     case _: {
