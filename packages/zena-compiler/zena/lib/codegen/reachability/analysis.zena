@@ -2644,10 +2644,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         if (!wasm.typeTestPairs.has(key)) {
           wasm.typeTestPairs[key] = true;
           wasm.typeTestClasses[cName] = ct;
-          let unspecKey = getClassInterfaceKey(
-              getClassKey(ct.genericSource ?? ct),
-              getInterfaceKey(site.iface.genericSource ?? site.iface));
-          wasm.usedInterfaceAdaptations[unspecKey] = true;
+          this.demandPackPair(ct, site.iface);
           if (!wasm.typeTestSlots.has(iKey)) {
             wasm.typeTestSlots[iKey] = wasm.typeTestSlotInterfaces.length;
             wasm.typeTestSlotInterfaces.push(site.iface);
@@ -3731,14 +3728,24 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
-   * Marks a class-interface pack pair used, so the vtable fixpoint
-   * builds its trampoline vtable global (the gate reads the
-   * UNSPECIALIZED pair, mirroring checker-recorded pack sites).
+   * A pair that still holds a type parameter or an erasure marks
+   * nothing. It comes from a walk of a generic body under its own type
+   * parameters (a generic function's declaration, an erasure's
+   * referrer), and the walk of the same body under each substitution
+   * marks the specialization that substitution packs. Dependency
+   * records, which name a pair by its declarations, come here too.
    */
-  #demandPackPair(c: ClassType, i: InterfaceType): void {
-    let unspecCKey = getClassKey(c.genericSource ?? c);
-    let unspecIKey = getInterfaceKey(i.genericSource ?? i);
-    this.wasm.usedInterfaceAdaptations[getClassInterfaceKey(unspecCKey, unspecIKey)] = true;
+  demandPackPair(c: ClassType, i: InterfaceType): void {
+    if (isConcrete(c) && isConcrete(i) &&
+        !containsErasedType(c) && !containsErasedType(i)) {
+      this.wasm.usedInterfaceAdaptations.add(
+          getClassInterfaceKey(getClassKey(c), getInterfaceKey(i)));
+    }
+  }
+
+  isPackPairUsed(c: ClassType, i: InterfaceType): boolean {
+    return this.wasm.usedInterfaceAdaptations.has(
+        getClassInterfaceKey(getClassKey(c), getInterfaceKey(i)));
   }
 
   /**
@@ -3806,7 +3813,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           return null;
         }
         if (member is InterfaceType && this.#classImplementsKey(source, getInterfaceKey(member))) {
-          this.#demandPackPair(source, member);
+          this.demandPackPair(source, member);
           return new AdaptationPack(index,
               getClassInterfaceKey(getClassKey(source), getInterfaceKey(member)),
               null, getInterfaceKey(member), nullable);
@@ -3886,7 +3893,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           if (ipk is InterfaceType && cpk is ClassType) {
             let packIface = ipk as InterfaceType;
             let packClass = cpk as ClassType;
-            this.#demandPackPair(packClass, packIface);
+            this.demandPackPair(packClass, packIface);
             // +1: the closure impl signature's param 0 is the ctx.
             packs.push(new ForwarderParamPack(k + 1,
                 getClassInterfaceKey(getClassKey(packClass), getInterfaceKey(packIface)),
@@ -3929,7 +3936,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (ir is InterfaceType && cr is ClassType) {
         let retIface = ir as InterfaceType;
         let retClass = cr as ClassType;
-        this.#demandPackPair(retClass, retIface);
+        this.demandPackPair(retClass, retIface);
         trampFunc.trampolineResultPackPair = getClassInterfaceKey(getClassKey(retClass), getInterfaceKey(retIface));
         trampFunc.trampolineResultPackIface = getInterfaceKey(retIface);
       } else {
@@ -3960,7 +3967,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // which names no class.
     let classResult = this.#declaredResultType(target);
     if (interfaceResult is InterfaceType && classResult is ClassType) {
-      this.#demandPackPair(classResult, interfaceResult);
+      this.demandPackPair(classResult, interfaceResult);
       trampoline.trampolineResultPackPair = getClassInterfaceKey(
           getClassKey(classResult), getInterfaceKey(interfaceResult));
       trampoline.trampolineResultPackIface = getInterfaceKey(interfaceResult);
@@ -4182,9 +4189,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // for one now that mentioning the type no longer instantiates
       // it, and gating here would deny `FixedArray<T>` the
       // class-interface vtable its values genuinely dispatch through.
-      // `usedInterfaceAdaptations` just below is the honest signal:
-      // it is recorded from real pack sites, and gates each
-      // class-interface pair on its own.
+      // `isPackPairUsed` just below is the honest signal: it is
+      // recorded from real pack sites, and gates each class-interface
+      // pair on its own.
       if (!this.instantiatedSpecializedClasses.has(cName as String) &&
           !cType.isExtension) {
         continue;
@@ -4192,12 +4199,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let allIfaces = this.cha.collectAllImplementedInterfaces(cType);
       for (let iface in allIfaces) {
         let iName = getInterfaceKey(iface);
-        let unspecCName = getClassKey(cType.genericSource ?? cType);
-        let unspecIName = getInterfaceKey(iface.genericSource ?? iface);
-        let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
-        
         let key = getClassInterfaceKey(cName, iName);
-        if (this.wasm.usedInterfaceAdaptations.has(unspecKey)) {
+        if (this.isPackPairUsed(cType, iface)) {
           if (this.wasm.classInterfaceVTables.has(key)) {
             // Slots appended after this pair's vtable was built (a
             // demand discovered in a later round) leave the stored
@@ -4650,17 +4653,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             let classModel = this.symbolIdToModel[classId];
             let ct = this.getClassDeclType(classDecl, classModel);
             if (ct != null && it != null) {
-              let unspecCName = getClassKey(ct.genericSource ?? ct);
-              let unspecIName = getInterfaceKey(it.genericSource ?? it);
-              let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
-              this.wasm.usedInterfaceAdaptations[unspecKey] = true;
+              this.demandPackPair(ct, it);
             }
           } else if (classType != null) {
             if (classType != null && it != null) {
-              let unspecCName = getClassKey(classType.genericSource ?? classType);
-              let unspecIName = getInterfaceKey(it.genericSource ?? it);
-              let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
-              this.wasm.usedInterfaceAdaptations[unspecKey] = true;
+              this.demandPackPair(classType, it);
             }
           }
         }
