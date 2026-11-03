@@ -45,6 +45,13 @@ first. When a pull request closes an item there, tick its box.
   in `zena`. A new host method needs its lexicon and its constant; the
   lexicon test fails without either. Tests keep the literals, since they
   check the wire.
+- The pages in `zena/web/` are the site's (`pkg.zena-lang.dev`), and the
+  XRPC routes the PDS's (`padstone.zena-lang.dev`); they run in one
+  service for now. A page reaches the host only with calls it could make
+  over the network: a host method, or a public atproto read. Changes go
+  through host methods with the person's token, never on the strength of
+  the site's cookie (package-manager.md, "Names and addresses" and
+  "Finding a host").
 
 ## Storage
 
