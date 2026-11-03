@@ -109,6 +109,12 @@ final class ModelRange {
   first: i32;
   last: i32;
   model: SemanticModel;
+  /**
+   * Whether `model` still speaks for its file. `register` clears it
+   * when the file gets a newer model with a different range, so a
+   * lookup that lands here need not consult `currentByPath`.
+   */
+  var current = true;
   new(this.first, this.last, this.model);
 }
 
@@ -170,7 +176,7 @@ export final class ModelIndex {
       } else if (n > range.last) {
         lo = mid + 1;
       } else {
-        return this.#ifCurrent(range.model);
+        return if (range.current) range.model else null;
       }
     }
     if (let (true, m) = this.#nodeToModel.get(id)) {
@@ -239,6 +245,15 @@ export final class ModelIndex {
    * the same keys and the latest check wins.
    */
   register(model: SemanticModel): void {
+    if (let (true, previous) = this.currentByPath.get(model.sourcePath)) {
+      if (previous != model) {
+        for (let range in this.#ranges) {
+          if (range.model == previous) {
+            range.current = false;
+          }
+        }
+      }
+    }
     this.currentByPath[model.sourcePath] = model;
     this.#addRange(model);
 

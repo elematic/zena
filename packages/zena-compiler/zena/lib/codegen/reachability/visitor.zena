@@ -1,4 +1,4 @@
-import { Set } from 'zena:collections';
+import { HashSet, Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   isExistentialRecord, isValueHashCodeCall, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
@@ -538,6 +538,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   pass: ReachabilityContext;
   #discoveringOnDemand = new Set<SymbolId>();
   var #nodes: i32 = 0;
+  /**
+   * The class types `#rootEqOperator` has rooted, by `uid`, as
+   * reachable and as visited only. Every `==` on a class operand in a
+   * walked body comes there, and rooting a type a second time queues
+   * nothing new: the referrers it queues are keyed by the same type and
+   * reachability.
+   */
+  #eqRootedReachable = new HashSet<i32>();
+  #eqRootedVisited = new HashSet<i32>();
 
   new(this.pass);
 
@@ -947,6 +956,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     }
     if (ct == null) { return; }
+    let rooted = if (this.pass.currentReachable) this.#eqRootedReachable else this.#eqRootedVisited;
+    if (!rooted.add(ct.uid)) { return; }
+    if (this.pass.currentReachable) {
+      this.#eqRootedVisited.add(ct.uid);
+    }
     if (!ct.members.has("==") && !ct.isFinal) {
       this.pass.noteEqualityBase(ct);
     }

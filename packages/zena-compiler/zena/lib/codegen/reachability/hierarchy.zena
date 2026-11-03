@@ -313,6 +313,18 @@ export final class ClassHierarchyAnalysis {
 
   findImplementingAccessors(cType: ClassType, accName: String): GrowableArray<AccessorDeclaration> {
     let accessors = new Array<AccessorDeclaration>();
+    // Only an accessor slot's name, `get#x` or `set#x`, names an
+    // accessor. Member dependency records ask with method names too,
+    // and resolving every accessor's name to answer them was most of
+    // what a traversal cost.
+    if (accName.length <= 4) {
+      return accessors;
+    }
+    let wantsGetter = accName.startsWith("get#");
+    if (!wantsGetter && !accName.startsWith("set#")) {
+      return accessors;
+    }
+    let targetProp = accName.sliceBytes(4, accName.length);
     var seenStatic = false;
     var seenInstance = false;
     var curr: ClassType | null = cType;
@@ -325,27 +337,13 @@ export final class ClassHierarchyAnalysis {
           if (member is AccessorDeclaration) {
             if (member.isStatic && seenStatic) { continue; }
             if (!member.isStatic && seenInstance) { continue; }
-            let name = getAccessorName(model, member);
-            if (accName.length > 4 && member.getter != null && accName.sliceBytes(0, 4) == "get#") {
-              let targetProp = accName.sliceBytes(4, accName.length);
-              if (matchMemberName(name, targetProp)) {
-                accessors.push(member);
-                if (member.isStatic) {
-                  seenStatic = true;
-                } else {
-                  seenInstance = true;
-                }
-              }
-            }
-            if (accName.length > 4 && member.setter != null && accName.sliceBytes(0, 4) == "set#") {
-              let targetProp = accName.sliceBytes(4, accName.length);
-              if (matchMemberName(name, targetProp)) {
-                accessors.push(member);
-                if (member.isStatic) {
-                  seenStatic = true;
-                } else {
-                  seenInstance = true;
-                }
+            let hasKind = if (wantsGetter) member.getter != null else member.setter != null;
+            if (hasKind && matchMemberName(getAccessorName(model, member), targetProp)) {
+              accessors.push(member);
+              if (member.isStatic) {
+                seenStatic = true;
+              } else {
+                seenInstance = true;
               }
             }
           }
