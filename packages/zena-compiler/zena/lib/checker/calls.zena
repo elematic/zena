@@ -591,10 +591,20 @@ function checkCallExpressionInner(
         deferredCheckedTypes.push(null);
       }
 
+      // Only overload resolution and type-argument inference read these
+      // types, and inference only for a parameter that mentions a type
+      // parameter. Every other argument faces the same parameter type in
+      // the main loop, which checks it there once: checking it here too
+      // would check a closure's body twice, and a closure nested in
+      // closure arguments 2^depth times.
       let preArgsFlow = ctx.currentFlow;
       let argTypes = new Array<Type>();
       for (var i = 0; i < args.length; i += 1) {
-        if (deferredArgs[i] || (i >= callerArgCount && i < ft.parameters.length)) {
+        let read = ft.overloads != null || (typeArguments == null &&
+            ftTypeParams != null && ftTypeParams.length > 0 &&
+            i < ft.parameters.length && mentionsTypeParams(ft.parameters[i], ftTypeParams));
+        if (deferredArgs[i] || (i >= callerArgCount && i < ft.parameters.length) ||
+            (!read && i < ft.parameters.length)) {
           argTypes.push(ft.parameters[i]);
         } else {
           let expectedParamType = if (i < ft.parameters.length) {
