@@ -5,10 +5,13 @@ Status: **Proposed**, and partly built: the AT Protocol libraries
 (`packages/package-manager`), the compiler's reading of pinned packages,
 `zena add`, `zena update` and `zena fetch`, `zena login` with app
 passwords, `zena publish`, `zena package create` and `zena scope`, and a
-package host in the PDS written in Zena (`packages/pds`), with the methods
-for publishing and for changing members, teams and maintainers, each held
-until its threshold has attested it. The checksum log is not built yet, so
-for now the host's check of the attestations is the only one.
+package host with the methods for publishing and for changing members,
+teams and maintainers, each held until its threshold has attested it. The
+package host is built today as an extension of the PDS written in Zena
+(`packages/pds`); this design makes it a service of its own, which keeps
+its accounts on PDSes ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
+The checksum log is not built yet, so for now the host's check of the
+attestations is the only one.
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto
@@ -48,9 +51,10 @@ dependencies (`zena-lock.json`).
 - **Verification.** Records come with signed proofs from the package's
   repository, and artifacts are addressed by hash. A client checks both,
   so a cache or proxy needs no trust.
-- **Hosting and maintainers.** A package host, a PDS with an extension that
-  creates package accounts on request, lets maintainers publish by signing in with their
-  own atproto accounts, so no one holds a password for a package. Each
+- **Hosting and maintainers.** A package host, a service that creates
+  package accounts on request on a PDS and keeps the authority over them,
+  lets maintainers publish by signing in with their own atproto accounts,
+  so no one holds a password for a package. Each
   release is attested by the package's maintainers: each approves it with
   a record in their own repository, signed by their own PDS. A release
   needs M of N if the package asks for it, and the host holds it back
@@ -119,10 +123,13 @@ dependencies (`zena-lock.json`).
 These are the package manager's own terms. Each is described in full in
 the section it links to.
 
-- A **package host** is a PDS with an extension of `dev.zena-lang.host.*`
-  methods. It creates the accounts of packages, organizations and CI, and
-  holds their keys
+- A **package host** is a service with `dev.zena-lang.host.*` methods. It
+  creates the accounts of packages, organizations and CI on a PDS, holds
+  their rotation keys, and is the only one that writes to them
   ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
+- A **managed account** is an account a PDS creates for a package host
+  it trusts, with no email address, password or invite code, and that
+  only that host writes to ([Managed accounts](#managed-accounts)).
 - An **organization** is an account on a package host that owns a
   **scope**, the label its packages' handles share (`acme` in
   `router.acme.pkg.zena-lang.dev`). Its **members** have roles, and its
@@ -710,66 +717,131 @@ of its own to keep and share, and most PDSes would ask for an invite code
 or an email address per package. On bsky.social every package would also
 be a Bluesky user.
 
-A **package host** is a PDS with an extension: methods named
-`dev.zena-lang.host.*` that create package accounts on request and let
-their maintainers publish to them as themselves. Maintainers sign in with
-their own atproto account, the one they use for Bluesky or any other app,
-and no one has a password for a package account. The extension's methods
-are XRPC methods like any other. The host serves them at its own
-endpoint, and its service DID document lists them as a service,
-`#zena_package_host`, so that a client can also call them through its own
-PDS with `atproto-proxy`. To relays, AppViews and other PDSes, a package
-host is an ordinary PDS: they read its repositories with
-`com.atproto.sync.*` and never call the extension.
+A **package host** is a service that does this for maintainers. Its
+methods, named `dev.zena-lang.host.*`, create package, organization and
+automation accounts on request, and let their maintainers publish to them
+as themselves. Maintainers sign in with their own atproto account, the
+one they use for Bluesky or any other app, and no one has a password for
+a package account. The host:
 
-The Zena project runs a package host, a PDS written in Zena, at
-`padstone.zena-lang.dev`, with its handles and its web pages at
-`pkg.zena-lang.dev` ([Names and addresses](#names-and-addresses)).
-Anyone can run another by implementing the extension's lexicons.
+- mints each account's DID, and holds its rotation key ([Keys](#keys));
+- creates the account on a PDS, which stores the account's repository
+  and holds its signing key ([Managed accounts](#managed-accounts));
+- writes the account's records, after checking the caller's role and the
+  thresholds, and is the only one that writes to the account;
+- keeps what is private: the entries behind commitments, and the releases
+  and changes waiting for their attestations;
+- moves an account from one PDS to another
+  ([Moving to another PDS](#moving-to-another-pds)).
+
+The PDS stores the account and knows nothing about packages. To relays,
+AppViews and other PDSes, a package account is an ordinary account: they
+read its repository from its PDS with `com.atproto.sync.*`, and never
+call the host. The host's methods are XRPC methods like any other. The
+host serves them at its own endpoint, and its service DID document lists
+them as a service, `#zena_package_host`, so that a client can also call
+them through its own PDS with `atproto-proxy`.
+
+The Zena project runs a package host at `pkg.zena-lang.dev`, beside the
+site, and a PDS for its accounts, written in Zena, at
+`padstone.zena-lang.dev` ([Names and addresses](#names-and-addresses)).
+Anyone can run another host by implementing the host's lexicons, and keep
+its accounts on padstone, on a PDS of their own, or on any PDS that will
+create accounts for it.
 
 The `zena` command reads packages from any PDS, since reading needs only
 `com.atproto.sync.*` and the checks in
 [Fetching and verification](#fetching-and-verification). A package can
-also move from a package host to any PDS that accepts it (see
-[Moving to another host](#moving-to-another-host)), keeping its DID, its
+also leave its host for an ordinary account on any PDS that accepts it
+([Moving to another PDS](#moving-to-another-pds)), keeping its DID, its
 releases and its dependents. Publishing to a package on an ordinary PDS,
 with that account's own credentials and the maintainers' attestations,
 uses the same records, but the `zena` command does not implement it. That
 is left to whoever wants it. What the design guarantees is that no
 package depends on the Zena project's host to stay readable or to leave.
 
+### Managed accounts
+
+A package host keeps its accounts on PDSes. Padstone offers **managed
+accounts**: accounts it creates for a package host its operator trusts,
+with no email address, password or invite code, and which only that host
+writes to.
+
+- **Creating one.** The host mints the DID with a PLC genesis operation,
+  signed with its rotation key, that names a temporary signing key the
+  host holds and the PDS as the account's PDS. It calls the PDS's
+  `com.atproto.server.createAccount` with that DID and a service-auth
+  token signed with the temporary key, as atproto's account migration
+  does. The PDS creates the account when the DID's genesis operation was
+  signed by the rotation key of a host its operator trusts, which only
+  that host can do, and generates the account's signing key. The host then sends a PLC operation that names
+  that key, from `com.atproto.identity.getRecommendedDidCredentials`, and
+  drops the temporary one.
+- **Writing.** The PDS takes a write to a managed account, through
+  `com.atproto.repo.applyWrites` and `uploadBlob`, only with a service-auth
+  token from the account's host, for that method and addressed to the
+  PDS. No secret for the account is stored anywhere, and there is no email
+  address that could reset a password.
+
+Managed accounts are about trusting a service, not about packages, so any
+PDS can offer them to a package host, and the PDS stays ordinary storage
+otherwise.
+
+On a PDS without managed accounts, such as the reference PDS a person or
+an organization runs, the host creates an ordinary account. It needs an
+invite code from the PDS's operator, an email address unique to the
+account on a domain the host controls, and a password, which the host
+keeps encrypted. Whoever reads that address can reset the password, so
+the host guards the mailbox as it guards a key. The account works the
+same way otherwise. bsky.social asks for a phone number for every
+account, and would make every package a Bluesky user, so packages do not
+go there.
+
+The host is the only writer to its accounts, so on padstone, and on a PDS
+whose operator the host trusts, holding a release or a change until it is
+attested is enforced where the records are written. The operator of a PDS
+holds the signing keys of the accounts on it, and can write to them
+without the host. For a package on a PDS someone else runs, the guarantee
+that a release counts only with its maintainers' attestations comes from
+the clients and the log, which check the attestations
+([What the records guarantee](#what-the-records-guarantee)), as they do for
+every package.
+
 ### Keys
 
-| Key or credential                                            | Created by                                   | Held by                                                                                                             | Controls                                                            |
-| ------------------------------------------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| A maintainer's account keys                                  | the maintainer's PDS                         | the maintainer's PDS                                                                                                | the maintainer's repository, where their attestations are           |
-| A maintainer's OAuth session: a refresh token and a DPoP key | `zena login`                                 | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                           |
-| The package's signing key                                    | the host, when it creates the package        | the host, encrypted at rest by a key in its key management service                                                  | commits to the package's repository                                 |
-| The host's online rotation key                               | the host, once                               | the host, in a key management service apart from its database                                                       | PLC operations for every account it hosts, ranked last              |
-| The host's offline rotation key                              | the operator, once                           | the operator, offline                                                                                               | PLC operations, ranked above the online key, to undo what it signed |
-| Recovery keys, if the owners add them                        | a maintainer                                 | up to three maintainers, in a hardware key, the OS keychain, or `$XDG_CONFIG_HOME/zena/recovery-key`, mode 0600     | PLC operations, ranked above the host's keys                        |
-| Approval keys, if a maintainer adds them                     | the maintainer, as passkeys or security keys | the maintainer's devices                                                                                            | nothing alone: they countersign that maintainer's attestations      |
-| CI credentials                                               | a maintainer                                 | the CI system, as a secret                                                                                          | publishing as a bot maintainer                                      |
+| Key or credential                                            | Created by                                           | Held by                                                                                                             | Controls                                                            |
+| ------------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| A maintainer's account keys                                  | the maintainer's PDS                                 | the maintainer's PDS                                                                                                | the maintainer's repository, where their attestations are           |
+| A maintainer's OAuth session: a refresh token and a DPoP key | `zena login`                                         | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                           |
+| The package's signing key                                    | the package's PDS, when the host creates the account | the PDS; padstone keeps it encrypted at rest by a key in its key management service                                 | commits to the package's repository                                 |
+| The host's online rotation key                               | the host, once                                       | the host, in a key management service apart from its database                                                       | PLC operations for every account it creates, ranked last            |
+| The host's own signing key, which its DID document lists     | the host, once                                       | the host, in its key management service                                                                             | its service-auth tokens to the PDSes of its managed accounts        |
+| An account's password, on a PDS without managed accounts     | the host                                             | the host, encrypted, with the account's email address on a domain the host controls                                 | writing to that account                                             |
+| The host's offline rotation key                              | the operator, once                                   | the operator, offline                                                                                               | PLC operations, ranked above the online key, to undo what it signed |
+| Recovery keys, if the owners add them                        | a maintainer                                         | up to three maintainers, in a hardware key, the OS keychain, or `$XDG_CONFIG_HOME/zena/recovery-key`, mode 0600     | PLC operations, ranked above the host's keys                        |
+| Approval keys, if a maintainer adds them                     | the maintainer, as passkeys or security keys         | the maintainer's devices                                                                                            | nothing alone: they countersign that maintainer's attestations      |
+| CI credentials: an automation account's token                | the host, when a maintainer asks                     | the CI system, as a secret                                                                                          | publishing as a bot maintainer                                      |
 
 Keys are secp256k1, the curve the reference PDS uses. A maintainer uses
 the same recovery key for every package they hold one for.
 
-The host is the custodian of the accounts it creates, as Bluesky's PDS is
-of the accounts on it: it holds their signing keys and the rotation keys
-that control their DIDs, and no maintainer has to keep a key. The two
-kinds are separate because they are used differently. A signing key signs
+The host and the account's PDS are together the custodian of the
+accounts the host creates, as Bluesky's PDS is of the accounts on it: the
+PDS holds the signing key, the host holds the rotation keys that control
+the DID and decides every write, and no maintainer has to keep a key. The
+two kinds of key are separate because they are used differently. A signing key signs
 every commit, so it is in use all the time. A rotation key signs only the
 rare change to a DID document, so it can be kept where using it is slow
 and stealing it is hard, and it is what replaces a signing key that
 leaks.
 
-The host's database holds each signing key encrypted by a symmetric key
+Padstone's database holds each signing key encrypted by a symmetric key
 in the key management service, with the account's DID bound to the
-ciphertext so that it decrypts as no other account's key. The host
+ciphertext so that it decrypts as no other account's key. The PDS
 decrypts a key when it first signs with it, and keeps it in memory. A
 copy of the database, such as a backup or an export, then holds no key
 that signs: decrypting one needs the key service as well, where only the
-host's own service account may use that key. A leaked signing key would
+PDS's own service account may use that key. A leaked signing key would
 let its holder write releases, but not attestations, so none of them
 would count ([What the records guarantee](#what-the-records-guarantee));
 the encryption is defence in depth.
@@ -778,7 +850,8 @@ Releases do not depend on who holds the rotation keys. A release counts
 only with its maintainers' attestations, which the log checks (see
 [Who signs what](#who-signs-what)), so whoever controls a DID still
 cannot publish a release that counts. The rotation keys decide the DID
-document: which host serves the package, its signing key, and its handle.
+document: which PDS stores the package, its signing key, its handle, and
+which host manages it.
 Recovery keys let a package's owners decide those without the host: undo
 what the host signs, and leave a host that will not move them or has
 gone. They suit organizations and widely used packages, kept in a
@@ -865,14 +938,14 @@ The package is created in the scope the manifest's `scope` or `--scope`
 names, which must exist (see [Scopes](#scopes)). `zena package create`
 does only this, for scripts.
 
-The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
-`zena` reads its service DID and the domain its handles are under from its
-`com.atproto.server.describeServer`, and checks that the DID is the
-host's own before asking for any token addressed to it. A `did:web` must
-name the host's origin, which only that domain can hold. A `did:plc`'s
-document must name the origin as its PDS. Otherwise a server at any
-origin could answer with the real host's DID, and replay the tokens it
-was given to the real host.
+The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's,
+`https://pkg.zena-lang.dev`. `zena` reads its service DID and the domain
+its handles are under from its `dev.zena-lang.host.describeHost`, and
+checks that the DID is the host's own before asking for any token
+addressed to it. A `did:web` must name the host's origin, which only that
+domain can hold. A `did:plc`'s document must name the origin as its
+`#zena_package_host`. Otherwise a server at any origin could answer with
+the real host's DID, and replay the tokens it was given to the real host.
 
 1. **Sign in.** Once per machine, `zena login` signs the maintainer in to
    their own PDS with atproto OAuth, through the browser and a redirect to
@@ -895,9 +968,11 @@ was given to the real host.
    Every later call to the host is made the same way.
 4. **The DID.** `zena` calls `dev.zena-lang.host.createPackage` with the
    scope's organization, any recovery keys, the profile and the
-   maintainers record. The host generates the package's signing key,
-   writes the genesis operation, signs it with its online rotation key
-   and submits it to the PLC directory:
+   maintainers record. The host writes the genesis operation, signs it
+   with its online rotation key, submits it to the PLC directory, and
+   creates the account on its PDS
+   ([Managed accounts](#managed-accounts)). Once the PDS has made the
+   account's signing key, the host sends the operation that names it:
 
    ```json
    {
@@ -908,29 +983,35 @@ was given to the real host.
        "did:key:zQ3sh...(the host's online rotation key)"
      ],
      "verificationMethods": {
-       "atproto": "did:key:zQ3sh...(the package's signing key)"
+       "atproto": "did:key:zQ3sh...(the package's signing key, which the PDS holds)"
      },
      "alsoKnownAs": ["at://router.acme.pkg.zena-lang.dev"],
      "services": {
        "atproto_pds": {
          "type": "AtprotoPersonalDataServer",
          "endpoint": "https://padstone.zena-lang.dev"
+       },
+       "zena_package_host": {
+         "type": "ZenaPackageHost",
+         "endpoint": "https://pkg.zena-lang.dev"
        }
      },
-     "prev": null,
+     "prev": "bafyrei...(the genesis operation's CID)",
      "sig": "..."
    }
    ```
 
-   The DID is the first 24 characters of the base32 SHA-256 hash of this
-   signed operation. A new package's DID document therefore names the
-   host as its PDS and the host's key as its signing key, and lists the
+   The DID is the first 24 characters of the base32 SHA-256 hash of the
+   signed genesis operation, which named a temporary signing key the host
+   held until the PDS made the account's own. A new package's DID
+   document therefore names padstone as its PDS, the key padstone holds as
+   its signing key, and its host as `zena_package_host`, and lists the
    maintainer's recovery key, if any, ahead of the host's two rotation
    keys.
 
-5. **The repository.** The host creates the account's repository with the
-   profile, from `zena-package.json`, and a maintainers record listing the
-   maintainer, which `zena` attests. The log takes a package's first
+5. **The repository.** The host writes the account's first records
+   through its PDS: the profile, from `zena-package.json`, and a
+   maintainers record listing the maintainer, which `zena` attests. The log takes a package's first
    maintainers record once as many of the maintainers it lists as its
    threshold have attested it.
 6. **The manifest.** `zena` writes the DID into `zena-package.json` as
@@ -966,9 +1047,9 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
    repositories, checks each against the signing key in the maintainer's
    DID document, and counts them against the maintainers record (see
    [Thresholds](#thresholds)). Once they are enough, it writes the release
-   record, and only then is the release in the package's repository, its
-   firehose, the index, and what `zena add` and `zena update` choose
-   from.
+   record through the package's PDS, and only then is the release in the
+   package's repository, its PDS's firehose, the index, and what
+   `zena add` and `zena update` choose from.
 5. Otherwise the release waits. The other maintainers see it on the
    package's page and their `/me` page, and with
    `zena approve <package>@<version>`, which shows the release
@@ -992,30 +1073,36 @@ maintainer, without waiting: a retraction stops new builds from choosing
 a release and changes no one's existing builds.
 
 Publishing changes the package's repository and not its DID document. The
-DID document changes only when the package moves to another host, its
-handle changes, its signing key is replaced, or recovery keys are added or
-removed. Each of these is a PLC operation, signed with a rotation key.
+DID document changes only when the package moves to another PDS or
+another host, its handle changes, its signing key is replaced, or recovery
+keys are added or removed. Each of these is a PLC operation, signed with a
+rotation key.
 
 CI publishes as an automation account: a maintainer marked `automation`,
 which an organization's host creates on request, from `zena ci create` or
-the management interface, and whose app password is a CI secret. The host
-holds that account, so its attestation is one the host could make itself.
-The host therefore counts an automation account on the package's own host
-only together with at least one person's attestation, and so does the
-log; an automation account on another PDS counts like any maintainer. A package's owners add
-it with `zena owner add <handle> --automation`, as a publisher: the host
-refuses an automation account that is not marked as one, or that is an
-owner, since an owner chooses the maintainers. CI signs in to it with
-`zena login <handle>` and the password in `ZENA_APP_PASSWORD`, at the
-host, which is its PDS. Publishing from CI with no stored secret, as npm
-and PyPI allow with GitHub's OIDC tokens, is an open question.
+the management interface. It is a managed account like the package's, so
+no one signs in to it at its PDS. Its credential is a token the host
+issues once, which the CI system keeps as a secret, and with which `zena`
+calls the host's methods as the automation account. The host writes the
+automation account's attestations itself, so an attestation from it is
+one the host could make alone. The host therefore counts an automation
+account it holds only together with at least one person's attestation,
+and so does the log; an automation account on another PDS, whose owner
+writes its attestations, counts like any maintainer. A package's owners
+add it with `zena owner add <handle> --automation`, as a publisher: the
+host refuses an automation account that is not marked as one, or that is
+an owner, since an owner chooses the maintainers. Since the host verifies
+the token itself, it could also take a CI system's own identity token in
+its place, as npm and PyPI take GitHub's OIDC tokens; that is an open
+question.
 
 ### Who signs what
 
 - The **release record** is signed as part of a commit to the package's
-  repository, with the package's signing key. The host holds that key, so
-  this signature shows that the host wrote the release, and not who asked
-  it to.
+  repository, with the package's signing key. The package's PDS holds that
+  key, and writes to the account only for its host, so this signature
+  shows that the host wrote the release, or the PDS's operator did, and
+  not who asked it to.
 - An **attestation** is a record in the publishing maintainer's own
   repository. It is signed with their account's key, held by their own
   PDS:
@@ -1053,11 +1140,12 @@ and automation accounts that cannot publish without a person (see
 
 ### What the records guarantee
 
-The host holds the keys of every package, organization and automation
-account on it, so a signature by one of those accounts shows only that
-the host wrote the record. The design is meant to work without trusting
-the host to approve releases or choose who may approve them. Three kinds
-of public records make that possible:
+The host decides every write to the package, organization and automation
+accounts it creates, and their PDS signs what it writes, so a signature by
+one of those accounts shows only that the host, or the PDS's operator,
+wrote the record. The design is meant to work without trusting either of
+them to approve releases or choose who may approve them. Three kinds of
+public records make that possible:
 
 - **Attestations**, in each approver's own repository, signed by their
   own PDS. The host cannot write one for a person whose account it does
@@ -1091,10 +1179,11 @@ Two parties check the same rules:
   then (see [Publishing a release](#publishing-a-release) and
   [Adding and removing people](#adding-and-removing-people)). Until then
   the record before it decides every role on the host. So the
-  repository, its firehose and the index only ever hold approved records,
-  and nothing that reads them needs to know that records can be pending.
-  The checks of a misconfigured or compromised host could be wrong or
-  missing.
+  repository, its PDS's firehose and the index only ever hold approved
+  records, and nothing that reads them needs to know that records can be
+  pending. The checks of a misconfigured or compromised host could be
+  wrong or missing, and the operator of a PDS the host does not trust can
+  write around them ([Managed accounts](#managed-accounts)).
 - **The checksum log**, again and independently. It reads the
   attestations from the approvers' own repositories and the policy from
   the records it has recorded, and records a release, or a change to the
@@ -1111,8 +1200,8 @@ What this guarantees, with the log running:
 - Every maintainers, members and team record behind that was approved by
   the record before it, back to the records the package and its
   organization were created with.
-- The host alone cannot make a release count, or make an account count
-  as a maintainer, owner, admin or team member.
+- Neither the host nor the package's PDS alone can make a release count,
+  or make an account count as a maintainer, owner, admin or team member.
 - A pending release or change is in no repository, so it cannot reach a
   client.
 
@@ -1120,9 +1209,10 @@ What it does not guarantee:
 
 - **Before the log exists**, the host's check is the only one. The
   records make that check possible to audit, and nothing audits it yet.
-- **Availability.** The host can refuse to serve a package, or to write
-  an approved change. Pins in lockfiles, and moving the package to
-  another host, are the answers ([Trusting a host](#trusting-a-host)).
+- **Availability.** The PDS can refuse to serve a package, and the host
+  can refuse to write an approved change. Pins in lockfiles, and moving
+  the package to another PDS or another host, are the answers
+  ([Trusting a host](#trusting-a-host)).
 - **The DID.** PLC has no thresholds. A recovery key, or the host's own
   rotation key for a package without recovery keys, can act alone
   ([Thresholds](#thresholds)).
@@ -1274,8 +1364,8 @@ What still shows:
 **Separate maintainer accounts.** A maintainer need not use the atproto
 account they use elsewhere. Someone who wants their maintenance kept
 apart from their public identity can make an account just for it, on any
-PDS but the package's host, so that its record of approvals points to no
-one in particular.
+PDS but the package's, so that its record of approvals points to no one
+in particular.
 
 #### Adding and removing people
 
@@ -1426,7 +1516,7 @@ has no privileges of its own:
   key is a non-extractable WebCrypto key, and signing out revokes the
   session. The server learns who is signed in from a web session: the page
   asks the person's PDS for a service-auth token for
-  `dev.zena-lang.site.createWebSession`, addressed to the site's DID, and
+  `dev.zena-lang.host.createWebSession`, addressed to the host's DID, and
   trades it for an HttpOnly cookie, which stands for the person to the
   site's pages and to nothing else. It lasts a day, and the page renews it
   from the OAuth session.
@@ -1469,8 +1559,7 @@ How it handles keys:
 - **The host's keys** never appear. The interface calls the host's
   methods.
 - **CI credentials.** Creating a CI token has the host create an
-  automation account in the organization, and shows its app password
-  once.
+  automation account in the organization, and shows its token once.
 
 People approve what the interface shows them, so its code is what they
 trust. It is served as static, versioned files built from open source,
@@ -1481,11 +1570,12 @@ the host's `/admin` ([Finding a host](#finding-a-host)).
 
 ### The host's methods
 
-Each method of the extension is a lexicon in
+Each of the host's methods is a lexicon in
 `packages/package-manager/lexicons/dev/zena-lang/host/`. Every call
 carries a service-auth token from the caller's PDS, addressed to the
-host's DID with the method's NSID as its `lxm`, and the host checks the
-caller's role in the records it already holds. A write that changes
+host's DID with the method's NSID as its `lxm`, or, from CI, an
+automation account's token, and the host checks the caller's role in the
+records it already holds. A write that changes
 which releases count, such as a new maintainers record, takes effect
 once the attestations the previous record requires reach the log.
 
@@ -1493,7 +1583,7 @@ once the attestations the previous record requires reach the log.
 | ------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------- |
 | `createOrganization`      | anyone the host's limits allow                                | creates a scope, with the caller as its only owner                  |
 | `createPackage`           | an organization's admins, or a team they allow                | creates a package with its profile and maintainers record           |
-| `createAutomationAccount` | an organization's admins                                      | creates an account for CI and returns its app password once         |
+| `createAutomationAccount` | an organization's admins                                      | creates an account for CI and returns its token once                |
 | `uploadArtifact`          | a package's maintainers                                       | stores an artifact, or one part of it, as a blob of the package     |
 | `publish`                 | a package's maintainers                                       | checks a release and holds it, refusing a version that is taken     |
 | `completeRelease`         | a package's maintainers                                       | writes a held release once its attestations are enough              |
@@ -1535,14 +1625,18 @@ The Zena project's package host uses three names:
   organization is `acme.pkg.zena-lang.dev`, and its packages are names
   below that, such as `router.acme.pkg.zena-lang.dev`. DNS TXT records
   verify the handles, wherever the PDS runs. The same name is the address
-  of **the site**: the web pages, the management interface, and later
-  the index. The site's DID is `did:web:pkg.zena-lang.dev`.
-- **`padstone.zena-lang.dev`** is the PDS. Every package and organization
-  account's DID document names it as the account's PDS, and `zena`
-  publishes to it by default. Its DID, `did:web:padstone.zena-lang.dev`,
-  is the audience of every service-auth token for the host's methods. A
-  padstone is the block that spreads a beam's weight onto the wall below
-  it. The name is not under `pkg.zena-lang.dev`, where every name is a
+  of **the package host**, whose methods `zena` calls by default, and of
+  **the site**: the web pages, the management interface, and later the
+  index. Their DID is `did:web:pkg.zena-lang.dev`, the audience of every
+  service-auth token for the host's methods. Its document lists the
+  host's methods as `#zena_package_host`, and the host's own signing key
+  ([Keys](#keys)).
+- **`padstone.zena-lang.dev`** is the PDS, which stores the host's
+  accounts. Every package and organization account's DID document names
+  it as the account's PDS, and `zena` reads packages from it. Its DID,
+  `did:web:padstone.zena-lang.dev`, is the audience of the host's tokens
+  for writes to its managed accounts. A padstone is the block that spreads
+  a beam's weight onto the wall below it. The name is not under `pkg.zena-lang.dev`, where every name is a
   scope's. If the project runs more PDSes, they take the names of other
   stones that carry weight in a building, such as corbel or lintel.
 - **Staging** has the same pair: `pkg-staging.zena-lang.dev` and
@@ -1551,95 +1645,116 @@ The Zena project's package host uses three names:
 The PDS has a name of its own for two reasons. Anyone with an account can
 upload the blobs it serves, and on an origin other than the site's, a
 blob that a browser ran as a page cannot reach the site's session cookie.
-And the site can move to a service of its own by changing where
-`pkg.zena-lang.dev` points, with no need to route one name's paths to two
-services.
+And the PDS and the host can each move to a service of its own by
+changing where a name points, with no need to route one name's paths to
+two services.
 
-| Name                     | Paths                                                                                                                                                                                                                                                                                                                |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `padstone.zena-lang.dev` | `/xrpc/*`, for `com.atproto.*` and `dev.zena-lang.host.*`; `/.well-known/did.json`; `/`, a page that names the host and links to the site; `/admin`, for the host's operators; `/plc/*` on staging; later, `/oauth/*` for its authorization server, and account pages for the people whose atproto accounts it holds |
-| `pkg.zena-lang.dev`      | `/`, `/packages/:handle`, `/scopes/:name` and `/people/:id`; `/me`; `/sign-in/*`, the site's OAuth client; `/xrpc/*`, for `dev.zena-lang.site.*` and later the index's methods; `/assets/*` and `/docs/*`; later, `/admin` for the index's operators                                                                 |
+| Name                     | Paths                                                                                                                                                                                                                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `padstone.zena-lang.dev` | `/xrpc/*`, for `com.atproto.*`; `/.well-known/did.json`; `/`, a page that names the PDS and links to the site; `/plc/*` on staging; later, `/oauth/*` for its authorization server, and account pages for the people whose atproto accounts it holds                   |
+| `pkg.zena-lang.dev`      | `/`, `/packages/:handle`, `/scopes/:name` and `/people/:id`; `/me`; `/admin`, for the host's operators; `/sign-in/*`, the site's OAuth client; `/xrpc/*`, for `dev.zena-lang.host.*` and later the index's methods; `/.well-known/did.json`; `/assets/*` and `/docs/*` |
 
 A path asked for under the other name answers 404, so that no address
 works by accident and gets shared.
 
 Both names point at one service for now, which picks its routes by the
-name a request is for, and one store holds the data of both. The site's
-code keeps to what it could do over the network, so that splitting the
-site off changes no page:
+name a request is for, and one store holds the data of all three: the
+PDS, the host and the site. Two boundaries stay in the code, so that
+each part can move to a service of its own without changing the others:
 
-- Public data comes from atproto's public reads, such as
-  `com.atproto.repo.getRecord`, from the host's catalog methods, and later
-  from the index.
-- Private data and every change go through the host's methods, as the
-  signed-in person, with a token addressed to the host
+- **The site reaches the host only through the host's methods**, or
+  atproto's public reads such as `com.atproto.repo.getRecord`. Private
+  data and every change go through the host's methods, as the signed-in
+  person, with a token addressed to the host
   ([Finding a host](#finding-a-host)).
+- **The host reaches the PDS only through `com.atproto.*`**, as it would
+  reach any PDS: `createAccount`, `applyWrites`, `uploadBlob` and the
+  sync reads, with its own tokens for its managed accounts
+  ([Managed accounts](#managed-accounts)). It keeps its indexes of the
+  accounts it holds as it writes their records.
 
-While the two run as one, the site's pages call the host in the same
-process. Each such call is one the site could make as a host method or a
-public read. The pages read a person's private memberships for the person
-the site's session names; before the split, those reads carry the
-person's token for the host too.
+While they run as one, the site's pages call the host in the same
+process, and the host the PDS. Each such call is one that could be made
+over the network. The pages read a person's private memberships for the
+person the site's session names; before the site moves off, those reads
+carry the person's token for the host too.
 
-The site's own method, `dev.zena-lang.site.createWebSession`, takes a
-service-auth token addressed to the site's DID, and answers with the
-site's session cookie ([The management interface](#the-management-interface)).
+The site's sign-in trades a service-auth token for
+`dev.zena-lang.host.createWebSession`, addressed to the host's DID, for
+the site's session cookie ([The management interface](#the-management-interface)).
 
 ### Finding a host
 
 A client that manages an account finds the account's host, and what the
 host offers, from the account's DID:
 
-1. The account's DID document names its PDS, as `#atproto_pds`.
-2. That PDS's `com.atproto.server.describeServer` gives the PDS's DID,
-   which must name the PDS's origin, as `zena` checks
-   ([Creating a package](#creating-a-package)).
-3. That DID's document lists `#zena_package_host`, of type
-   `ZenaPackageHost`, when the PDS has the extension. A PDS without the
-   extension lists none, and the site shows its accounts without the
-   means to manage them.
-4. `dev.zena-lang.host.describeHost` answers with the host's handle
-   domain, its reserved scopes, its limits, whether a new scope waits for
-   the operator's approval, and which of the optional methods it serves.
-   A host answers a method it does not serve with XRPC's
+1. The account's DID document names its host, as `#zena_package_host`,
+   of type `ZenaPackageHost`, at the host's endpoint. The host writes that
+   entry when it creates the account, with its rotation key. An account
+   whose DID document has none is one no package host manages, and the
+   site shows it without the means to manage it.
+2. `dev.zena-lang.host.describeHost`, at that endpoint, answers with the
+   host's DID, which must name the endpoint's origin, as `zena` checks
+   ([Creating a package](#creating-a-package)); the host's handle domain,
+   its reserved scopes and its limits; whether a new scope waits for the
+   operator's approval; and which of the optional methods it serves. A
+   host answers a method it does not serve with XRPC's
    `MethodNotImplemented`, and the site leaves out what needs it.
 
 The site calls the host's methods as the signed-in person, through the
 person's own PDS, with
-`atproto-proxy: did:web:padstone.zena-lang.dev#zena_package_host`. The
-person's PDS adds the service-auth token, which the `rpc` permissions of
+`atproto-proxy: did:web:pkg.zena-lang.dev#zena_package_host`. The person's
+PDS adds the service-auth token, which the `rpc` permissions of
 `dev.zena-lang.authPublish` allow. The site writes attestations to the
 person's own repository. Its session cookie tells the site's pages who is
 signed in, and allows nothing at the host.
 
-A PDS's own pages are only those any PDS has: its operators' `/admin`,
-where they also review claims on scope names, and pages for the people
-whose atproto accounts it holds. Everything about packages and
-organizations is on the site, for every host it finds this way. The site
-can also show a package straight from its PDS, without the index, as
-`zena` reads it.
+A PDS's own pages are only those any PDS has: its operators' pages, and
+pages for the people whose atproto accounts it holds. Everything about
+packages and organizations is on the site, for every host it finds this
+way, and so is the host's `/admin`, where its operators review accounts,
+reports and claims on scope names. The site can also show a package
+straight from its PDS, without the index, as `zena` reads it.
 
-### Moving to another host
+### Moving to another PDS
 
-Keys do not move. The new host generates a signing key of its own, and
-the DID document is changed to name it:
+The host moves an account from one PDS to another with atproto's account
+migration. Signing keys do not move: the new PDS generates one of its own.
 
-1. The new host creates an account for the existing DID, with
-   `com.atproto.server.createAccount` and the DID, as atproto account
-   migration does.
-2. The repository and its blobs are copied from the old host, with
+1. The host creates an account for the existing DID on the new PDS, as a
+   managed account or, where the PDS has none, an ordinary one
+   ([Managed accounts](#managed-accounts)).
+2. It copies the repository and its blobs from the old PDS, with
    `com.atproto.sync.getRepo` and `com.atproto.sync.getBlob`. A record's
    CID is a hash of its content, so every pinned release keeps its CID.
-3. A PLC operation names the new host's endpoint and signing key, and
-   replaces the old host's rotation key with the new host's. The old host
-   signs it if it cooperates, and a recovery key holder if it does not.
-   A package without recovery keys moves only with its host's
-   cooperation. The Zena project's host signs a move once the package's
-   owners' threshold has attested it.
+3. It signs a PLC operation, with its rotation key, that names the new
+   PDS's endpoint and signing key.
 
-`zena package move --to <host>` does all three. If the old host is gone,
-the records and blobs can be rebuilt from caches and proxies, which hold
-every release anyone has fetched, and checked against the log.
+The Zena project's host moves a package once its owners' threshold has
+attested the move, with `zena package move --to <pds>`. So an
+organization can keep its packages on a PDS it runs, and still have the
+Zena project's host manage them.
+
+**Moving to another host** changes which host manages an account. A PLC
+operation replaces the old host's rotation key with the new host's, and
+names the new host as `#zena_package_host`. The old host signs it if it
+cooperates, and a recovery key holder if it does not, so a package
+without recovery keys moves to another host only with its host's
+cooperation. The Zena project's host signs such a move once the package's
+owners' threshold has attested it. The new host then writes to the
+account through a PDS that trusts it, so the account moves to such a PDS
+too, unless its PDS already trusts the new host.
+
+**Leaving every host** turns a package into an ordinary account, on a PDS
+of its owners' choice, that they publish to with its own credentials: a
+PLC operation names the new PDS, and drops `#zena_package_host` and the
+host's rotation key. `zena` still reads the package, and the log still
+takes releases that its maintainers attest, but `zena` does not publish
+to it.
+
+If the old PDS is gone, the records and blobs can be rebuilt from caches
+and proxies, which hold every release anyone has fetched, and checked
+against the log.
 
 ### Holding keys elsewhere
 
@@ -1649,13 +1764,15 @@ every release anyone has fetched, and checked against the log.
   key takes the DID. Keeping them in hardware keys or the OS keychain is
   an open question.
 - **The signing key** is held by whatever serves the repository, since a
-  commit is signed when records are written and served from there. A
-  package that trusts no host runs its own: the Zena project's host
-  software, with `zena package create --host <url>`, or an ordinary PDS,
-  which the `zena` command can read from but not publish to. A key on a
-  laptop that is usually offline cannot serve the repository, so this is
-  not supported.
-  A self-hosted package's risks are its host's: when the server is down,
+  commit is signed when records are written and served from there: the
+  package's PDS. A package that trusts no PDS but its owners' keeps its
+  account on a PDS they run, with the Zena project's host or another
+  managing it. A package that trusts no host runs its own, with
+  `zena package create --host <url>`, or leaves every host for an
+  ordinary account ([Moving to another PDS](#moving-to-another-pds)). A
+  key on a laptop that is usually offline cannot serve the repository, so
+  this is not supported.
+  A self-hosted package's risks are its PDS's: when the server is down,
   the package can be fetched only from caches, and if its signing key
   leaks, anyone can write releases, which still go unattested and so are
   never recorded by the log.
@@ -1665,14 +1782,17 @@ every release anyone has fetched, and checked against the log.
 
 ### Trusting a host
 
-A host can write anything to the repositories it holds, refuse to serve
-them, and sign PLC operations with its rotation key. What limits it:
+A host can write anything to the repositories of the accounts it
+manages, refuse to write what their maintainers approved, and sign PLC
+operations with its rotation key. A PDS can do the first through the
+signing keys it holds, and refuse to serve the repositories. What limits
+both:
 
 - Lockfiles pin the CID of every release, so a workspace that has
   resolved a release gets those bytes or fails.
 - The log records a release only with its maintainers' attestations, so
-  a release the host wrote alone is never recorded. A release changed
-  after the log recorded it is labeled `release-mutated`.
+  a release the host or the PDS wrote alone is never recorded. A release
+  changed after the log recorded it is labeled `release-mutated`.
 - PLC operations are public: the directory's export stream lists every
   operation on every DID, so a change a host makes to a package's DID
   document can be seen.
@@ -1686,8 +1806,8 @@ can move it, rename it, or refuse to move it, though it cannot publish a
 release that counts.
 
 A package's dependents rely on its maintainers, through their
-attestations, and on the log. They do not choose the package's host, and
-do not need to trust it.
+attestations, and on the log. They do not choose the package's host or
+its PDS, and do not need to trust either.
 
 ### The PLC directory
 
@@ -1716,8 +1836,8 @@ testing should use `did:web`.
 The index is an AppView that collects package records across PDSes. It
 serves search, version lists, reverse dependencies and a web interface,
 and it feeds the checksum log. It runs no relay of its own: Bluesky's
-relays crawl PDSes, the package host's among them once the host serves
-its firehose (`com.atproto.sync.subscribeRepos`).
+relays crawl PDSes, padstone among them once it serves its firehose
+(`com.atproto.sync.subscribeRepos`).
 
 The index is a separate service, built when there is a second package
 host, or a need for search or for a package's dependents. Until then the
@@ -1754,10 +1874,9 @@ site's pages read:
   maintainers records name it. `getMemberships` and the people pages
   start from it, and read the records of only those accounts.
 
-The host writes both after each commit to one of its accounts, from the
-PDS's commit events
-([pds-extensions.md](pds-extensions.md#commit-events)), and the
-operator's `sync-indexes` writes them again from the repositories.
+The host writes both as it writes its accounts' records, since it is
+their only writer, and the operator's `sync-indexes` writes them again
+from the repositories.
 
 A host keeps its mentions even once there is an index. The memberships
 behind commitments are visible only to the host that keeps their entries
@@ -1818,9 +1937,11 @@ for what limits that.
 
 Who might publish without the maintainers' consent, and what stops them:
 
-- **The host**, or whoever controls it, holds the package's signing key
-  and can write any record. It cannot write attestations in the
-  maintainers' repositories, so the log records none of it.
+- **The host or the package's PDS**, or whoever controls either, can
+  write any record to the package's repository: the host because the PDS
+  writes for it, the PDS because it holds the package's signing key.
+  Neither can write attestations in the maintainers' repositories, so the
+  log records none of it.
 - **Someone with a maintainer's session**, taken from their machine, can
   do what the maintainer can, attesting included. A threshold of 2 or
   more needs a second maintainer, and a maintainer with approval keys
@@ -1916,9 +2037,10 @@ seven days give the maintainers time to answer if it is misused.
 | If this is taken                  | The attacker can                                                                | What stops them                                                                                                                                                                 | Recovery                                                                                                                      |
 | --------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | A maintainer's session or account | attest as the maintainer, and ask the host for what the maintainer can          | the threshold, `humans` and approval keys; the other maintainers are told                                                                                                       | revoke the session or recover the account; the other maintainers remove the person if needed, and retract what was published  |
-| A CI secret                       | attest as the bot                                                               | `humans`; an automation account on the package's host counts only with a person's attestation                                                                                   | replace the app password                                                                                                      |
+| A CI secret                       | attest as the bot                                                               | `humans`; an automation account the host holds counts only with a person's attestation                                                                                          | the host revokes the token and issues another                                                                                 |
 | An approval key                   | nothing alone                                                                   | it signs only together with the maintainer's account                                                                                                                            | remove it from the maintainers record                                                                                         |
-| The package's signing key         | write records to the repository                                                 | the log, which records nothing unattested                                                                                                                                       | the host replaces the key with a PLC operation                                                                                |
+| The package's signing key         | write records to the repository                                                 | the log, which records nothing unattested                                                                                                                                       | the PDS makes a new key, and the host names it with a PLC operation                                                           |
+| The host's own signing key        | write to every account the host manages, through their PDSes                    | the log, which records nothing unattested                                                                                                                                       | the operator replaces the key in the host's DID document                                                                      |
 | The host's online rotation key    | change the DID document of every package on the host, and start recovery resets | the offline key and any recovery keys, which rank above it, undo its operations for 72 hours; the seven days of a reset; the index watches PLC operations and tells maintainers | the operator undoes the operations with the offline key, and replaces the online key                                          |
 | The host's offline rotation key   | the same, ranked above the online key                                           | recovery keys, where packages have them; the seven days of a reset                                                                                                              | packages with recovery keys undo the operations; packages without them move to new DIDs (below)                               |
 | A recovery key                    | change the DID document at that key's rank, and start a recovery reset          | higher-ranked keys, for 72 hours; the seven days of a reset; new releases still need the maintainers' attestations                                                              | undo with a higher-ranked key; if the first-ranked key was taken, the DID is lost, and the package moves to a new DID (below) |
@@ -2017,18 +2139,18 @@ operator handles reports.
 A package account exists to hold package records, and the host lets it do
 nothing else. The same goes for organization accounts.
 
-- The host has no way to sign in as one of these accounts: no
-  `com.atproto.server.createSession`, no app passwords and no OAuth
-  authorization. It does not serve `com.atproto.repo.createRecord`,
-  `putRecord`, `deleteRecord`, `applyWrites` or `uploadBlob` for them.
-  They are written only through the extension's methods.
-- An automation account signs in with its app password, since that is
-  how CI publishes. It can write attestations
-  (`dev.zena-lang.package.attestation`) to its own repository and call
-  the extension's methods, and nothing else.
-- The host's repository code refuses a write to any collection outside
-  `dev.zena-lang.*` in all of these accounts, whichever method makes it,
-  so a bug in one method cannot open an account up.
+- No one can sign in as one of these accounts. As managed accounts they
+  have no password, no app passwords and no OAuth authorization, and
+  their PDS takes writes to them only from their host
+  ([Managed accounts](#managed-accounts)). The host writes them only
+  through its own methods.
+- An automation account is used through the token its host issues, since
+  that is how CI publishes. With it, `zena` can call the host's methods,
+  and the host writes the account's attestations
+  (`dev.zena-lang.package.attestation`), and nothing else.
+- The host refuses a write to any collection outside `dev.zena-lang.*`
+  in all of these accounts, whichever method makes it, so a bug in one
+  method cannot open an account up.
 - Blobs are stored only as the artifacts a release declares, within the
   limits below.
 
@@ -2036,18 +2158,18 @@ So an account created by publishing a package cannot post to Bluesky
 (`app.bsky.feed.post`) or Leaflet, follow anyone, or hold a profile for
 any other application.
 
-A package that moves to another PDS leaves these limits behind, along
-with the host's domain: its handle under the host's domain resolves only
-while the host's DNS answers for it, and the host stops answering for a
-package it has taken down. What leaves with it is its DID, and anyone can
-create a `did:plc` at the PLC directory without a host.
+A package that leaves every host leaves these limits behind, along with
+the host's domain: its handle under the host's domain resolves only while
+the host's DNS answers for it, and the host stops answering for a package
+it has taken down. What leaves with it is its DID, and anyone can create
+a `did:plc` at the PLC directory without a host.
 
 ### Limits on creating accounts
 
 Each account a host creates costs others something: an operation at the
-PLC directory, and an account that relays carry, with its events on the
-host's firehose. Relays can limit how many accounts they carry from one
-PDS, so a host flooded with accounts risks having all of its packages
+PLC directory, and an account that relays carry, with its events on its
+PDS's firehose. Relays can limit how many accounts they carry from one
+PDS, so a PDS flooded with accounts risks having all of its packages
 throttled. The host therefore limits who creates accounts and how many:
 
 - **Scopes.** Creating a scope is the step the host checks. It needs the
@@ -2072,10 +2194,13 @@ throttled. The host therefore limits who creates accounts and how many:
   use, and through an address on its site. The index links every package
   page to it.
 - **Takedowns.** The operator can take down a release, a package or an
-  organization. The host then stops serving the records and blobs
-  involved, stops answering for a taken-down account's handle, and marks
-  the account as taken down on its firehose, as atproto's account status
-  events do. The operator's labeler labels what was taken down and why
+  organization. The host then stops answering for a taken-down account's
+  handle, and asks the account's PDS to take down the records and blobs
+  involved: on padstone, through the operator's admin methods, after
+  which it stops serving them and marks the account as taken down on its
+  firehose, as atproto's account status events do. On a PDS the operator
+  does not run, the host can only stop writing to the account, and leaves
+  serving it to that PDS's operator. The operator's labeler labels what was taken down and why
   (`legal`, `malware`, `spam`, `impersonation`), so a client whose fetch
   fails can say why.
 - **Legal notices.** The operator names an agent for notices such as DMCA
@@ -2116,16 +2241,21 @@ throttled. The host therefore limits who creates accounts and how many:
   mapping. Signing in needs OAuth with a loopback redirect, a
   client metadata document at `zena-lang.dev`, and the
   `dev.zena-lang.authPublish` permission set.
-- **A package host**: a PDS written in Zena, with the
-  `dev.zena-lang.host.*` extension: methods for creating packages, scopes
-  and automation accounts without an email address, publishing, changing
-  maintainers, members and teams, and moving packages. It checks
-  service-auth tokens against roles, keeps membership entries and gives
-  them to those allowed to see them, and writes its handles' records to
-  its domain's DNS zone. It confines package, organization and
-  automation accounts to `dev.zena-lang.*` records, enforces the limits on
-  creating accounts and on storage, takes reports, and has the
-  operator's tools for reviewing scopes and taking content down.
+- **A package host**: a Zena service with the `dev.zena-lang.host.*`
+  methods, for creating packages, scopes and automation accounts,
+  publishing, changing maintainers, members and teams, and moving
+  packages between PDSes. It mints their DIDs and holds their rotation
+  keys, creates their accounts on PDSes and writes their records through
+  `com.atproto.*`, checks service-auth tokens against roles, keeps
+  membership entries and gives them to those allowed to see them, and
+  writes its handles' records to its domain's DNS zone. It confines
+  package, organization and automation accounts to `dev.zena-lang.*`
+  records, enforces the limits on creating accounts and on storage, takes
+  reports, and has the operator's tools for reviewing scopes and taking
+  content down.
+- **A PDS with managed accounts**: padstone, the PDS written in Zena,
+  which creates accounts for a host its operator trusts and takes their
+  writes only from that host, and is otherwise an ordinary PDS.
 - **The management interface**: pages on the site, `pkg.zena-lang.dev`,
   with no privileges of their own, which find each account's host from
   its DID.
@@ -2152,6 +2282,51 @@ never change hands, and it would share its fate with one person's
 account. A DID per package keeps the package's identity separate from
 anyone who maintains it.
 
+### Package records in maintainers' repositories, with a minted DID
+
+A host could mint a DID for each package that is an identifier only, with
+no repository, and maintainers could write the package's records into
+their own repositories, each naming the package's DID; the index would
+know which records belong to which package. No package would need an
+account, and anyone could publish from bsky.social with an OAuth session
+alone. It gives up what an account per package guarantees:
+
+- **Which records count.** Anyone can write a record naming a package's
+  DID. Readers need a rule for whose records count, so the maintainers
+  list needs an authoritative place: a record in some person's
+  repository, which moves when ownership changes; the package's DID
+  document, which would take a PLC operation for every change of
+  maintainers; or the host's database, which only the host can vouch for.
+- **One release per version.** In the package's own repository a version
+  is a record key, so there is one `release/1.0.0`. Two maintainers could
+  each write a different 1.0.0 in their own repositories, and something
+  would have to choose.
+- **Finding releases.** `zena` would have to ask the index which
+  repositories hold a package's releases, which makes the index part of
+  what a client trusts.
+- **A maintainer who leaves.** Releases and their artifacts would live in
+  the account of whoever published them, and go when that account is
+  deleted or suspended. The DID keeps the package's identity separate
+  from its maintainers, and not its records.
+- **Tools.** Relays, the firehose and record browsers would not see a
+  package as an account; only the index would.
+
+A repository per package, which any atproto client can verify, is worth
+an account for each.
+
+### Delegation with UCANs
+
+UCANs are signed tokens that delegate a capability from one key to
+another, in chains: an organization to a team, a team to a person. A
+publish could carry such a chain, for the host or the log to check. atproto
+used them early on and moved to service-auth tokens and OAuth scopes, so
+no PDS or client speaks them. A chain needs every organization and team
+to have a private key that someone holds, which is the custody of keys
+this design keeps away from maintainers. The records already delegate:
+the maintainers, members and team records say who holds which role, and
+an attestation in a person's own repository is their signed approval,
+which anyone can check with atproto alone.
+
 ### Package accounts on any PDS, with a password each
 
 The first version of this design created each package with
@@ -2164,17 +2339,19 @@ address per package and make each one a Bluesky user. The `zena` command
 still reads packages from any PDS, and a package can move to one, but it
 does not publish to one.
 
-### A publishing gateway in front of an ordinary PDS
+### A package host that is a PDS
 
-A separate service could create package accounts on a reference PDS with
-its administrator's invite codes, keep each account's password, and write
-releases with `com.atproto.repo.*` after checking the maintainer's
-service-auth token. It controls package accounts as fully as a package
-host does, and needs no PDS of our own. It also keeps a password per
-package, needs an email address for each account where the PDS requires
-one, and is a second service to run beside the PDS. Clients would call
-the same `dev.zena-lang.host.*` methods, so a gateway could replace a
-package host, or the reverse, without changing them.
+The design before this one made the package host a PDS with an extension:
+the host's methods were served by the PDS that stored the accounts and
+held their signing keys, and wrote to their repositories directly. That
+is one service, with no managed accounts and no tokens between host and
+PDS. It also ties every package to that PDS software. An organization
+could not keep its packages on a PDS it runs while the Zena project's
+host managed them, and a package that moved to another PDS left its host
+behind. Separating the host, which holds the authority, from the PDS,
+which stores the account, lets accounts move between PDSes with
+atproto's own migration while the same host manages them. Clients call
+the same `dev.zena-lang.host.*` methods either way.
 
 ### Releases signed with maintainers' own keys
 

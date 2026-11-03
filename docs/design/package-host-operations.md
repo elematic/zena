@@ -6,9 +6,11 @@ exists today. It is the work list for the host's pages and methods.
 
 The protocol behind these operations (scopes, maintainers, thresholds,
 attestations, recovery, moderation) is in
-[package-manager.md](package-manager.md); the PDS that hosts packages is
-in [pds.md](pds.md). This document does not repeat the rules, only names
-the operations and where they live.
+[package-manager.md](package-manager.md). The host is a service of its
+own there, which keeps its accounts on a PDS ("Managed accounts"); the
+PDS written in Zena, which holds them today, is in [pds.md](pds.md). This
+document does not repeat the rules, only names the operations and where
+they live.
 
 ## Who acts
 
@@ -21,8 +23,9 @@ the operations and where they live.
 - **A package's maintainers** are its `publisher`s and `owner`s, named in
   its maintainers record by DID, by commitment to a private entry, or as a
   team.
-- **An automation account** publishes from CI with an app password. It
-  is a maintainer like any other, marked `automation`.
+- **An automation account** publishes from CI with a token its host
+  issues; today, with an app password at the PDS. It is a maintainer like
+  any other, marked `automation`.
 - **The host's admins** are the DIDs in `PDS_ADMIN_DIDS`. They see every
   account and every private entry, and handle reports and takedowns.
 - **The operator** runs the deployment: Cloud Run, Firestore, the
@@ -110,7 +113,7 @@ session, because the host holds nothing that can write there
 | Rename a scope                                       | owners, host admins                        | no                                                                               |
 | Dissolve a scope                                     | owners, host admins                        | no                                                                               |
 | Create an automation account                         | admins                                     | `zena ci create`; `createAutomationAccount`                                      |
-| Reset or revoke an automation account's app password | admins                                     | no                                                                               |
+| Reset or revoke an automation account's token        | admins                                     | no                                                                               |
 
 ## Packages
 
