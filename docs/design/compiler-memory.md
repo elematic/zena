@@ -409,7 +409,7 @@ Then three more, from the same table:
 
 Snapshot at the same point: 5.27M objects, 335 MiB; strings 475K.
 
-## A 2 s swing that is not in the compiler
+## Compile-time swings that are not in the compiler
 
 The interning and lazy-capture changes above made the `zena` module
 compile 2 s slower under wasmtime (18.0 s to 20.0 s, interleaved) and
@@ -433,20 +433,41 @@ milestones) over the same 425 distinct (subtype, supertype) pairs.
 The cache is `HashMap<u64, bool, NopHasher>` keyed by
 `(sub << 32) | sup`, and `NopHasher` returns the key as the hash. So
 hashbrown's bucket index is the low bits of the supertype's engine
-type index and its tag the high bits of the subtype's: every pair that
-casts to one common supertype (`Type`, `Node`, `Array`) lands in one
-bucket group, and with 425 entries in a 512-slot table the probe
-length is whatever the exact index values make it. Those values shift
-with any change to the module, so any edit can flip a compile between
-the fast and slow placements. Reserving 8,192 slots in the patched
-runtime took the slow build from 24.3 s to 22.3 s, level with the fast
-one (22.0–22.6 s; the patch's per-call env lookup inflates both).
+type index, and its 7-bit tag is the top bits of the subtype's, which
+are zero. Every entry has the same tag, so a lookup compares keys slot
+by slot, and every pair that casts to one common supertype (`Type`,
+`Node`, `Array`) starts probing at the same bucket. With 425 entries in
+a 512-slot table the probe length is whatever the exact index values
+make it. Those values shift with any change to the module, so any edit
+can flip a compile between the fast and slow placements. Reserving
+8,192 slots in the patched runtime took the slow build from 24.3 s to
+22.3 s, level with the fast one (22.0–22.6 s; the patch's per-call env
+lookup inflates both).
 
-This is wasmtime's to fix — a real hasher, or sizing the cache for a
-few thousand pairs — and the reproduction is the two modules and
-`samply-diff.py --callers is_subtype`. Until then, a 2 s step in the
-`zena` module compile between two builds says nothing about the change
-between them unless the subtype-check count or a profile says so too.
+By November 2026 the swing was 7 s. The self-compile at `-O1` took
+17.0 s with one build of the CLI module and 24.4 s with another that
+does less work (#822), all of the difference in discovery, which makes
+most of the type tests. The CLI module counts even when
+`ZENA_COMPILER_WASM` names the compiler: `zena-cli` loads it into the
+same engine first, so its types shift the compiler's indices. `main`'s
+compiler spent 7.7 s or 17 s in discovery depending only on which CLI
+module was built.
+
+A module that only type-tests 425 such pairs, 42.5 million times,
+takes 3.0 s on wasmtime 50: about 70 ns per test. Mixing the key in
+`NopHasher::finish` (Murmur3's 64-bit finalizer) takes it to 0.28 s,
+and the two self-compiles to 15.6 s and 14.9 s with the same output.
+The fix is wasmtime's; it is reported, with that module, as
+[bytecodealliance/wasmtime#15133](https://github.com/bytecodealliance/wasmtime/issues/15133).
+
+Until a release has the fix, a step in compile time between two
+compiler builds says nothing about the change between them. To
+compare two builds, hold the CLI module fixed, with
+`ZENA_CLI_MODULE=<a copy of packages/zena-cli/out/zena.wasm>` and
+`ZENA_COMPILER_WASM` naming each compiler; or put the change behind
+an environment toggle in one build; or time under V8. `npm test`
+rebuilds the CLI module, so timings from before and after a suite run
+are not comparable either.
 
 ## Where the allocation goes
 
