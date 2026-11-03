@@ -5527,11 +5527,12 @@ export final class FunctionLowerer {
     if (resolved is UnionType) {
       return this.#lowerUnionAwait(aw, resolved);
     }
-    if (resolved is ClassType &&
-        this.#futureMethodOf(resolved, ':valueOrThrow') != null &&
-        this.#futureMethodOf(resolved, ':subscribe') != null) {
-      let future = this.#lowerExpression(aw.argument);
-      return this.#suspendOnFuture(resolved, future);
+    if (resolved is ClassType) {
+      let futureCt = this.#futureClassOf(resolved);
+      if (futureCt != null) {
+        let future = this.#lowerExpression(aw.argument);
+        return this.#suspendOnFuture(futureCt, future);
+      }
     }
     // Anything else reached lowering through the GENERIC await —
     // `await x` with `x: T` open, typed `Awaited<T>` — specialized at
@@ -5551,6 +5552,24 @@ export final class FunctionLowerer {
     }
     this.b.switchTo(resume);
     return value;
+  }
+
+  /**
+   * The class an `await` of a `ct` suspends through: `ct` or the first
+   * superclass with `:valueOrThrow` and `:subscribe` registered, which
+   * for a subclass of `Future` such as `DeferredFuture` is its `Future`
+   * superclass. Null for a class that is not a future.
+   */
+  #futureClassOf(ct: ClassType): ClassType | null {
+    var current: ClassType | null = ct;
+    while (current != null) {
+      if (this.#futureMethodOf(current, ':valueOrThrow') != null &&
+          this.#futureMethodOf(current, ':subscribe') != null) {
+        return current;
+      }
+      current = current.superType;
+    }
+    return null;
   }
 
   /** The class's `:valueOrThrow`/`subscribe`, or null if it has

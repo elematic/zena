@@ -354,6 +354,25 @@ export function extractFutureValueType(ctx: CheckerContext, t: Type): Type | nul
 }
 
 /**
+ * The value an `await` of `t` yields when `t` is a future: a `Future<T>`,
+ * or a subclass of one such as `DeferredFuture<T>`, at its `Future`
+ * superclass. Null otherwise. An async function's declared return type
+ * is held to `Future<T>` itself (extractFutureValueType), since its
+ * frame builds a plain future.
+ */
+export function awaitedFutureValueType(ctx: CheckerContext, t: Type): Type | null {
+  var current: ClassType | null = if (t is ClassType) t else null;
+  while (current != null) {
+    let value = extractFutureValueType(ctx, current);
+    if (value != null) {
+      return value;
+    }
+    current = current.superType;
+  }
+  return null;
+}
+
+/**
  * The external type of an `async` function with no annotation:
  * Future<inferredValueType> from the prelude.
  */
