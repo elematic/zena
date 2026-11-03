@@ -23,14 +23,15 @@
 
 import { AsyncIterator, AsyncStep } from 'zena:async';
 import { HashMap } from 'zena:collections';
-import { Option, copyBytes, newByteArray } from 'zena:core';
+import { Option, Some, copyBytes, newByteArray } from 'zena:core';
 import { Stream } from 'zena:stream';
 import { div } from 'zena:math';
 import { Duration } from 'zena:time';
 import { percentDecode } from 'zena:url';
-import { ErrorCode, Fields } from 'wasi:http/types';
 import { Credentials, ProtoError, ProtoTransport, ProtoView, RpcError, RpcMetadata, RpcMethod } from './runtime.zena';
-import { Exchange, Origin, Trailers, callHeaders, headerValue, post } from './http.zena';
+import {
+  Exchange, HeaderList, Origin, Trailers, callHeaders, hasHeader, headerValue, post
+} from './http.zena';
 
 export { RpcError } from './runtime.zena';
 
@@ -197,7 +198,7 @@ async function nextMessage(reader: AsyncIterator<ProtoView>): Future<Option<Prot
  * are; the call's status ends the stream, and throws an `RpcError` unless
  * it is OK. `GrpcTransport` reads responses with it.
  */
-export function readGrpcResponse(status: i32, headers: Fields, body: Stream<u8>, trailers: Trailers): AsyncIterator<ProtoView> {
+export function readGrpcResponse(status: i32, headers: HeaderList, body: Stream<u8>, trailers: Trailers): AsyncIterator<ProtoView> {
   return new GrpcResponseReader(Future.of(Exchange.of(status, headers, body, trailers)));
 }
 
@@ -207,7 +208,7 @@ export function readGrpcResponse(status: i32, headers: Fields, body: Stream<u8>,
  * `grpc-status-details-bin` (a base64 `google.rpc.Status`). A missing or
  * malformed `grpc-status` is UNKNOWN.
  */
-export function statusError(fields: Fields): RpcError | null {
+export function statusError(fields: HeaderList): RpcError | null {
   let codeText = headerValue(fields, 'grpc-status');
   var code = if (codeText == null) -1 else parseCode(codeText);
   if (code == 0) {
@@ -363,7 +364,7 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
    * OK. A response that is not gRPC throws.
    */
   async #checkHead(exchange: Exchange): Future<void> {
-    if (exchange.headers.has('grpc-status')) {
+    if (hasHeader(exchange.headers, 'grpc-status')) {
       await this.#drain(exchange);
       let error = statusError(exchange.headers);
       if (error != null) {
@@ -402,8 +403,8 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
   async #trailerStatus(exchange: Exchange): Future<RpcError | null> {
     let trailers = await exchange.trailers;
     if (let (true, fields) = trailers) {
-      if (fields is Some<Fields>) {
-        return statusError(fields.value);
+      if (let Some {value} = fields) {
+        return statusError(value);
       }
       return new RpcError(CODE_INTERNAL, 'the response has no trailers', ProtoView.empty());
     }

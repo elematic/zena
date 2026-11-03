@@ -6,18 +6,12 @@ import {
   Fields,
   Request as WireRequest,
   Response as WireResponse,
-  ErrorCode,
-  Method,
-  MethodGet, MethodHead, MethodPost, MethodPut, MethodDelete,
-  MethodConnect, MethodOptions, MethodTrace, MethodPatch, MethodOther,
-  Scheme, SchemeHTTP, SchemeHTTPS, SchemeOther
+  ErrorCode
 } from 'wasi:http/types';
-import { Completer, DeferredFuture } from 'zena:async';
-import { HashMap } from 'zena:collections';
-import { Disposable, Option, Some, Result, unit } from 'zena:core';
+import { Completer, release } from 'zena:async';
+import { Option, Own, Result, unit } from 'zena:core';
 import { Stream, bytesStream, textStream, readAllText } from 'zena:stream';
-import { URL } from 'zena:url';
-import { Request, RequestSource, placeholderUrl, placeholderHeaders, fallbackUrl } from './request.zena';
+import { Request } from './request.zena';
 import { Response } from './response.zena';
 import { App as BaseApp, AppOptions } from './app.zena';
 import { HTMLPartial, htmlStream } from './html.zena';
@@ -25,8 +19,10 @@ import { HTMLPartial, htmlStream } from './html.zena';
 export { Request as WireRequest, Response as WireResponse, ErrorCode, Fields } from 'wasi:http/types';
 export { AppOptions } from './app.zena';
 
-let emptyTrailersFuture =
-    Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
+/** A trailers future for a body with no trailers. */
+function noTrailers() {
+  return Future.of<Result<Option<Own<Fields>>, ErrorCode>>((true, none));
+}
 
 let bytesTextPlain = 'text/plain; charset=utf-8'.toBytes();
 let bytesTextHtml = 'text/html; charset=utf-8'.toBytes();
@@ -61,141 +57,31 @@ function contentTypeToBytes(ct: String) {
   return ct.toBytes();
 }
 
-function methodToString(m: Method) {
-  if (m is MethodGet) return 'GET';
-  if (m is MethodPost) return 'POST';
-  if (m is MethodPut) return 'PUT';
-  if (m is MethodDelete) return 'DELETE';
-  if (m is MethodHead) return 'HEAD';
-  if (m is MethodPatch) return 'PATCH';
-  if (m is MethodOptions) return 'OPTIONS';
-  if (m is MethodConnect) return 'CONNECT';
-  if (m is MethodTrace) return 'TRACE';
-  if (m is MethodOther) return m.value.asciiUpperCase();
-  return 'GET';
-}
-
-function schemeToString(s: Scheme) {
-  if (s is SchemeHTTP) return 'http';
-  if (s is SchemeHTTPS) return 'https';
-  if (s is SchemeOther) return s.value;
-  return 'http';
-}
-
-export async function drainFuture<T>(f: Future<T>): Future<void> {
-  try {
-    await f;
-  } catch (e) {}
-}
-
-function disposeDeferred<T>(f: Future<T>) {
-  if (f is DeferredFuture<T>) {
-    f.[Disposable.dispose]();
-  }
-}
-
-final class WireRequestSource implements RequestSource {
-  #wire: WireRequest;
-  var #consumed: boolean = false;
-
-  new(wire: WireRequest) : #wire = wire {}
-
-  loadMethod(): String {
-    return methodToString(this.#wire.getMethod());
-  }
-
-  loadPath(): String {
-    let pathOpt = this.#wire.getPathWithQuery();
-    let pathWithQuery = if (pathOpt is Some<String>) pathOpt.value else '/';
-    let fullPath = if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
-    var i = 0;
-    while (i < fullPath.length) {
-      if (fullPath.getByteAt(i) == 0x3F) { // '?'
-        return if (i == 0) '/' else fullPath.sliceBytes(0, i);
-      }
-      i += 1;
-    }
-    return if (fullPath.length == 0) '/' else fullPath;
-  }
-
-  loadHeaders(): HashMap<String, GrowableArray<String>> {
-    let wireHeaders = this.#wire.getHeaders();
-    let entries = wireHeaders.copyAll();
-    wireHeaders.[Disposable.dispose]();
-    let headers = new HashMap<String, GrowableArray<String>>();
-    for (let entry in entries) {
-      let (fieldName, fieldValueBytes) = entry;
-      let key = fieldName.asciiLowerCase();
-      let val = String.fromBytes(fieldValueBytes);
-      if (let (true, existing) = headers.get(key)) {
-        existing.push(val);
-      } else {
-        let list = new GrowableArray<String>(1);
-        list.push(val);
-        headers[key] = list;
-      }
-    }
-    return headers;
-  }
-
-  loadUrl(): URL {
-    let schemeOpt = this.#wire.getScheme();
-    let scheme = if (schemeOpt is Some<Scheme>) schemeToString(schemeOpt.value) else 'http';
-    let authOpt = this.#wire.getAuthority();
-    var auth = if (authOpt is Some<String>) authOpt.value else '';
-    if (auth.length == 0) {
-      let wireHeaders = this.#wire.getHeaders();
-      let hostEntries = wireHeaders.get('host');
-      wireHeaders.[Disposable.dispose]();
-      if (hostEntries.length > 0) {
-        auth = String.fromBytes(hostEntries[0]);
-      }
-    }
-    if (auth.length == 0) auth = 'localhost';
-    let pathOpt = this.#wire.getPathWithQuery();
-    let pathWithQuery = if (pathOpt is Some<String>) pathOpt.value else '/';
-    let fullPath = if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
-    let href = `${scheme}://${auth}${fullPath}`;
-    let parsedUrl = URL.parse(href, null);
-    return parsedUrl ?? fallbackUrl();
-  }
-
-  loadBody(): Stream<u8> {
-    this.#consumed = true;
-    let received = Future.of<Result<void, ErrorCode>>((true, unit()));
-    let (bodyStream, trailers) = WireRequest.consumeBody(this.#wire, received);
-    disposeDeferred(trailers);
-    return bodyStream;
-  }
-
-  close(): void {
-    if (!this.#consumed) {
-      this.#wire.[Disposable.dispose]();
-    }
-  }
-}
-
 /**
  * Creates a Request from a low-level WASI HTTP Request resource.
  */
-export function fromWireRequest(wire: WireRequest): Request {
-  return new Request(placeholderUrl, 'GET', placeholderHeaders, null, new WireRequestSource(wire));
+export function fromWireRequest(wire: Own<WireRequest>): Own<Request> {
+  return new Request.fromWire(wire);
 }
 
 /**
  * Converts a Response into a low-level WASI WireResponse resource along with its transmitted future.
  */
-export function toWireResponseWithTransmitted(res: Response): (WireResponse, Future<Result<void, ErrorCode>>) {
+export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>, Future<Result<void, ErrorCode>>) {
   let fields = Fields.create();
   let ct = res.contentTypeHeader;
   var hasCt = ct != null;
   if (hasCt) {
     fields.append('content-type', contentTypeToBytes(ct as String));
   }
-  let hasCustom = res.hasCustomHeaders;
   var hasCl = false;
-  if (hasCustom) {
+  if (res.hasCustomHeaders) {
+    // Gathered first: a callback cannot capture the owned fields.
+    let custom = new GrowableArray<(String, String)>();
     res.forEachHeader((name, val) => {
+      custom.push((name, val));
+    });
+    for (let (name, val) in custom) {
       if (name == 'content-type') {
         hasCt = true;
         fields.append(name, contentTypeToBytes(val));
@@ -205,7 +91,7 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
         }
         fields.append(name, val.toBytes());
       }
-    });
+    }
   }
 
   let b = res.body;
@@ -238,7 +124,7 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
     streamOpt = some(b);
   }
 
-  let (wireResp, transmitted) = WireResponse.new_(fields, streamOpt, emptyTrailersFuture);
+  let (wireResp, transmitted) = WireResponse.new_(fields, streamOpt, noTrailers());
   let status = res.statusCode;
   if (status != 200) {
     wireResp.setStatusCode(status as u16);
@@ -249,20 +135,20 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
 /**
  * Converts a Response into a low-level WASI WireResponse resource.
  */
-export function toWireResponse(res: Response): WireResponse {
+export function toWireResponse(res: Response): Own<WireResponse> {
   let (wireResp, transmitted) = toWireResponseWithTransmitted(res);
-  disposeDeferred(transmitted);
+  // Nothing waits on the transmission. Dropping a future of a plain
+  // value releases nothing, so its end is given up here (TODO(#831)).
+  transmitted.[release]();
   return wireResp;
 }
 
 /**
  * Dispatches an incoming WASI wire request through an App's middleware pipeline.
  */
-export async function handleWireRequest(app: BaseApp, wire: WireRequest): Future<Result<WireResponse, ErrorCode>> {
-  let req = fromWireRequest(wire);
+export async function handleWireRequest(app: BaseApp, wire: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
   let res = new Response();
-  await app.handleRequest(req, res);
-  req.close();
+  await app.handleRequest(new Request.fromWire(wire), res);
   return (true, toWireResponse(res));
 }
 
@@ -270,7 +156,7 @@ export async function handleWireRequest(app: BaseApp, wire: WireRequest): Future
  * An HTTP application with native WASI handler integration.
  */
 export class App extends BaseApp {
-  async handle(wireRequest: WireRequest): Future<Result<WireResponse, ErrorCode>> {
+  async handle(wireRequest: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
     return handleWireRequest(this, wireRequest);
   }
 }
@@ -282,14 +168,15 @@ export function textResponse(
   body: String,
   status: i32 = 200,
   contentType: String = 'text/plain; charset=utf-8'
-): WireResponse {
+): Own<WireResponse> {
   let headers = Fields.create();
   if (let (false, err) = headers.append('content-type', contentTypeToBytes(contentType))) {
     throw new Error('zena:http: the content-type header was refused');
   }
   let (response, transmitted) =
-      WireResponse.new_(headers, some(textStream(body)), emptyTrailersFuture);
-  disposeDeferred(transmitted);
+      WireResponse.new_(headers, some(textStream(body)), noTrailers());
+  // As in toWireResponse (TODO(#831)).
+  transmitted.[release]();
   if (status != 200) {
     response.setStatusCode(status as u16);
   }
@@ -299,10 +186,9 @@ export function textResponse(
 /**
  * Reads a wire request's body to the end and decodes it as text.
  */
-export async function requestText(request: WireRequest): Future<String> {
+export async function requestText(request: Own<WireRequest>): Future<String> {
   let received = new Completer<Result<void, ErrorCode>>();
   let (body, trailers) = WireRequest.consumeBody(request, received.future);
-  disposeDeferred(trailers);
   let text = await readAllText(body);
   received.complete((true, unit()));
   return text;

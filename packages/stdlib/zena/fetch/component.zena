@@ -18,8 +18,8 @@
  */
 
 import { URL } from 'zena:url';
-import { Completer } from 'zena:async';
-import { Option, Result } from 'zena:core';
+import { Completer, release } from 'zena:async';
+import { Option, Own, Result, unit } from 'zena:core';
 import { Stream, bytesStream, readAllBytes, readAllText, textStream } from 'zena:stream';
 import {
   Fields, Method, MethodConnect, MethodDelete, MethodGet, MethodHead,
@@ -35,23 +35,23 @@ import { send } from 'wasi:http/client';
 import { RequestInit } from './options.zena';
 export { RequestInit } from './options.zena';
 
-/** The one spellable value of type void, for a `result<_, e>` ok arm. */
-function unit() {}
-
 /**
- * An HTTP response: the status, and a one-shot handle on the body.
+ * An HTTP response: the status and headers, and the body, which stays on
+ * the host until it is read.
  *
- * The body stays on the host until it is read, so reading is
- * asynchronous and — as on the web — allowed once: a second `text()`
- * or `bytes()` throws rather than handing back an empty body.
+ * A resource class over the wire response, held as `Own<Response>`.
+ * Reading the body consumes the response (`text`, `bytes`), so it is
+ * read at most once, and a second read is a use after move. Read the
+ * status and any headers you need first. A response dropped unread
+ * releases the wire response, and with it the body the host holds.
  */
-export class Response {
+export resource class Response {
   /** The HTTP status code. */
   status: i32;
-  #wire: WireResponse;
-  var #bodyUsed: boolean = false;
+  /** The wire response, until reading the body takes it. */
+  var #wire: Own<WireResponse> | null;
 
-  new(this.status, wire: WireResponse) : #wire = wire;
+  new(this.status, wire: Own<WireResponse>) : #wire = wire;
 
   /** True for a 2xx status, exactly like the web's `Response.ok`. */
   ok: boolean {
@@ -66,58 +66,45 @@ export class Response {
    * are bytes on the wire and decoded here as text.
    */
   header(name: String): String | null {
-    let copied = this.#copiedHeaders;
-    if (copied == null) {
-      let values = this.#wire.getHeaders().get(name);
-      return if (values.length == 0) null else String.fromBytes(values[0]);
+    let wire = this.#wire;
+    if (wire == null) {
+      return null;
     }
-    let wanted = name.asciiLowerCase();
-    for (let (field, value) in copied) {
-      if (field.asciiLowerCase() == wanted) {
-        return String.fromBytes(value);
-      }
-    }
-    return null;
+    let headers = wire.getHeaders();
+    let values = headers.get(name);
+    return if (values.length == 0) null else String.fromBytes(values[0]);
   }
 
-  /**
-   * The headers, copied from the wire response just before reading the
-   * body consumes it (`consume-body` takes the response resource), so
-   * `header` still answers afterwards.
-   */
-  var #copiedHeaders: Array<(String, FixedArray<u8>)> | null = null;
-
-  /** The response body, decoded as text. */
-  async text(): Future<String> {
-    let text = await readAllText(this.#body());
-    this.#received.complete((true, unit()));
+  /** The response body, decoded as text. Consumes the response. */
+  async text(this: Own<this>): Future<String> {
+    let received = new Completer<Result<void, ErrorCode>>();
+    let text = await readAllText(this.#consumeBody(received.future));
+    received.complete((true, unit()));
     return text;
   }
 
-  /** The response body's bytes. */
-  async bytes(): Future<FixedArray<u8>> {
-    let bytes = await readAllBytes(this.#body());
-    this.#received.complete((true, unit()));
+  /** The response body's bytes. Consumes the response. */
+  async bytes(this: Own<this>): Future<FixedArray<u8>> {
+    let received = new Completer<Result<void, ErrorCode>>();
+    let bytes = await readAllBytes(this.#consumeBody(received.future));
+    received.complete((true, unit()));
     return bytes;
   }
 
-  /** The future the reader settles to say how receiving went, the
-   * mirror of a request's trailers future: settled with success once
-   * the stream has ended. */
-  #received = new Completer<Result<void, ErrorCode>>();
-
-  /** The body stream, consumed once: `consume-body` takes the
-   * receiving future; the trailers future that comes back is left
-   * unobserved. */
-  #body(): Stream<u8> {
-    if (this.#bodyUsed) {
-      throw new Error(
-        'zena:fetch: the response body has already been read');
+  /**
+   * The body stream. `consume-body` takes the wire response and the
+   * future the reader settles to say how receiving went, the mirror of
+   * a request's trailers. The trailers future it hands back holds an
+   * owner, and dropping it unread releases it.
+   */
+  #consumeBody(this: Own<this>, received: Future<Result<void, ErrorCode>>): Stream<u8> {
+    let wire = this.#wire;
+    if (wire == null) {
+      // Only the consuming readers take it, and each consumes the
+      // response, so a response always has its wire here.
+      throw new Error('zena:fetch: the response body has already been read');
     }
-    this.#bodyUsed = true;
-    this.#copiedHeaders = this.#wire.getHeaders().copyAll();
-    let (body, trailers) =
-        WireResponse.consumeBody(this.#wire, this.#received.future);
+    let (body, trailers) = WireResponse.consumeBody(wire, received);
     return body;
   }
 }
@@ -138,7 +125,7 @@ export class Response {
  * 504, and so on): that is a response like any other, and the caller
  * checks `ok` or `status`.
  */
-export async function fetch(url: String | URL, init: RequestInit = {}): Future<Response> {
+export async function fetch(url: String | URL, init: RequestInit = {}): Future<Own<Response>> {
   var parsed: URL | null = null;
   if (url is URL) {
     parsed = url;
@@ -155,7 +142,8 @@ export async function fetch(url: String | URL, init: RequestInit = {}): Future<R
     case (true, let value): value
     case (false, let error): throw new Error(`zena:fetch: ${describe(error)}: ${target.href}`)
   };
-  return new Response(wire.getStatusCode() as i32, wire);
+  let status = wire.getStatusCode() as i32;
+  return new Response(status, wire);
 }
 
 /**
@@ -163,7 +151,7 @@ export async function fetch(url: String | URL, init: RequestInit = {}): Future<R
  * body, and the scheme, authority and path-with-query set from the URL.
  * A p3 request has no URL string; those three are its addressing.
  */
-function requestFor(target: URL, init: RequestInit): Request {
+function requestFor(target: URL, init: RequestInit): Own<Request> {
   let fields = Fields.create();
   if (let {headers} = init) {
     for (let (name, value) in headers) {
@@ -183,13 +171,16 @@ function requestFor(target: URL, init: RequestInit): Request {
   // The trailers future is the sender's to settle, and the host does
   // not consider the request body finished until it is: this request
   // has no trailers, so it settles now with "none".
-  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>(
+  let trailers = Future.of<Result<Option<Own<Fields>>, ErrorCode>>(
       (true, none));
   // `new` returns the request and a future that settles once it has
   // been transmitted; a client that wanted send errors ahead of the
-  // response would await it. It goes unobserved here (#587).
+  // response would await it. Nothing waits on it here, so its end is
+  // given up now: dropping a future of a plain value releases nothing
+  // (TODO(#831)).
   let (request, transmitted) =
       Request.new_(fields, contents, trailers, none);
+  transmitted.[release]();
   let {method = 'GET'} = init;
   request.setMethod(methodOf(method));
   request.setScheme(some(schemeOf(target.protocol)));

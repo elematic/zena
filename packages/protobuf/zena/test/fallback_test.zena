@@ -7,6 +7,7 @@
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { AsyncIterable, AsyncIterator, Completer, Future, runFuture } from 'zena:async';
+import { Borrow } from 'zena:core';
 import { StreamWriter } from 'zena:stream';
 import { App, Request, Response, Server } from 'zena:http';
 import { FallbackTransport, RpcError, codeForHttpStatus, readStreamBody } from '../fallback.zena';
@@ -58,10 +59,11 @@ function rpcServer() {
       return;
     }
     let method = req.path.sliceBytes(prefix.length, req.path.length);
+    // Reading the body consumes the request: the headers come first.
+    let auth = req.getHeader('authorization');
+    let routing = req.getHeader('x-goog-request-params');
     let request = Node.decode((await req.bytes()) as ByteArray);
     if (method == 'GetNode') {
-      let auth = req.getHeader('authorization');
-      let routing = req.getHeader('x-goog-request-params');
       respond(res, 200, Node.of({
         name: `${request.name}!`,
         from: auth ?? '',
@@ -135,12 +137,12 @@ async function incrementalRead(): Future<String> {
 
 function unit(): void {}
 
-function originOf(server: Server) {
+function originOf(server: Borrow<Server>) {
   return `http://127.0.0.1:${server.port as i32}`;
 }
 
-async function unaryCall(server: Server): Future<String> {
-  let transport = new FallbackTransport(originOf(server));
+async function unaryCall(origin: String): Future<String> {
+  let transport = new FallbackTransport(origin);
   transport.setHeader('authorization', 'Bearer t0k3n');
   let client = new ThingsClient(transport);
   let node = await client.getNode({name: 'ping'});
@@ -156,15 +158,15 @@ final class CountingCredentials implements Credentials {
   }
 }
 
-async function credentialedCalls(server: Server): Future<String> {
-  let client = new ThingsClient(new FallbackTransport(originOf(server), new CountingCredentials()));
+async function credentialedCalls(origin: String): Future<String> {
+  let client = new ThingsClient(new FallbackTransport(origin, new CountingCredentials()));
   let first = await client.getNode({name: 'nodes/a'});
   let second = await client.getNode({name: 'nodes/b'});
   return `${first.from} ${first.text} | ${second.from} ${second.text}`;
 }
 
-async function streamingCall(server: Server): Future<String> {
-  let client = new ThingsClient(new FallbackTransport(originOf(server)));
+async function streamingCall(origin: String): Future<String> {
+  let client = new ThingsClient(new FallbackTransport(origin));
   var names = '';
   for await (let node in client.listNodes({name: 'n'})) {
     names = `${names}${node.name},`;
@@ -189,20 +191,20 @@ async function failure(call: () => Future<String>): Future<String> {
 export let tests = suite('fallback transport', () => {
   test('calls a unary method, sending the headers set', () => {
     let server = rpcServer();
-    equal(runFuture(unaryCall(server)), 'ping! Bearer t0k3n');
+    equal(runFuture(unaryCall(originOf(server))), 'ping! Bearer t0k3n');
     server.close();
   });
 
   test('asks the credentials before each call and sends the routing header', () => {
     let server = rpcServer();
-    equal(runFuture(credentialedCalls(server)),
+    equal(runFuture(credentialedCalls(originOf(server))),
         'Bearer token-1 name=nodes%2Fa | Bearer token-2 name=nodes%2Fb');
     server.close();
   });
 
   test('reads a server-streaming response as it arrives', () => {
     let server = rpcServer();
-    equal(runFuture(streamingCall(server)), 'n0,n1,n2,');
+    equal(runFuture(streamingCall(originOf(server))), 'n0,n1,n2,');
     server.close();
   });
 

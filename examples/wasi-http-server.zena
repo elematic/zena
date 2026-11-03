@@ -1,48 +1,58 @@
 /**
  * WASI HTTP 0.3 Service Component Example.
  *
- * Demonstrates exporting wasi:http/handler@0.3.0 from a Zena application.
+ * Demonstrates exporting wasi:http/handler@0.3.0 from a Zena application:
+ * the component's `handle` owns each request the host hands it and
+ * passes it through the app's middleware.
  *
- * Note: Exporting functions taking resource parameters (like `Request`) across
- * the component boundary requires richer component model type emission
- * (planned in C3, see docs/design/component-emission.md). For self-hosted
- * servers running under zena-cli, use examples/http-server.zena instead.
+ * For self-hosted servers running under zena-cli, use
+ * examples/http-server.zena instead.
  *
  * Build with:
- *   ./target/release/zena-cli build examples/wasi-http-server.zena --target component -o examples/wasi-http-server.wasm
+ *   ./target/release/zena-cli build examples/wasi-http-server.zena --target component \
+ *     --wit examples/wasi-http-server.wit --world wasi-http-server -o examples/wasi-http-server.wasm
+ *
+ * The build fails today: the module keeps the zena-cli host server's
+ * imports, which `App.listen` reaches and nothing here calls (#840).
  *
  * Serve with:
- *   wasmtime serve examples/wasi-http-server.wasm --addr 127.0.0.1:8080
+ *   wasmtime serve -Sp3,cli examples/wasi-http-server.wasm --addr 127.0.0.1:8080
  */
 
 import { App, Router, handleWireRequest } from 'zena:http';
 import { Request as WireRequest, Response as WireResponse, ErrorCode } from 'wasi:http/types';
-import { Result } from 'zena:core';
+import { Own, Result } from 'zena:core';
 
-let app = new App();
-let router = new Router();
+function createApp() {
+  let app = new App();
+  let router = new Router();
 
-// Logging middleware
-app.use(async (req, res, next) => {
-  let path = req.path;
-  await next();
-  console.log(`${req.method} ${path} -> ${res.statusCode}`);
-});
+  // Logging middleware. `next` takes the request on to the rest of the
+  // pipeline, so what the log line needs is read first.
+  app.use(async (req, res, next) => {
+    let method = req.method;
+    let path = req.path;
+    await next(req);
+    console.log(`${method} ${path} -> ${res.statusCode}`);
+  });
 
-router.get('/', async (req, res, next, params) => {
-  res.type = 'text/plain; charset=utf-8';
-  res.body = 'Hello from Zena WASI HTTP service!';
-});
+  router.get('/', async (req, res, next, params) => {
+    res.type = 'text/plain; charset=utf-8';
+    res.body = 'Hello from Zena WASI HTTP service!';
+  });
 
-router.get('/greet/:name', async (req, res, next, params) => {
-  let name = params.getOr('name', 'stranger');
-  res.type = 'text/plain; charset=utf-8';
-  res.body = `Hello, ${name}! Welcome to WebAssembly GC on WASI 0.3 HTTP.\n`;
-});
+  router.get('/greet/:name', async (req, res, next, params) => {
+    let name = params.getOr('name', 'stranger');
+    res.type = 'text/plain; charset=utf-8';
+    res.body = `Hello, ${name}! Welcome to WebAssembly GC on WASI 0.3 HTTP.\n`;
+  });
 
-app.use(router.routes());
-
-export async function handle(request: WireRequest): Future<Result<WireResponse, ErrorCode>> {
-  return await handleWireRequest(app, request);
+  app.use(router.routes());
+  return app;
 }
 
+let app = createApp();
+
+export async function handle(request: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
+  return await handleWireRequest(app, request);
+}

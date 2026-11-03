@@ -6,9 +6,9 @@
  * only.
  */
 
-import { Completer } from 'zena:async';
+import { Completer, release } from 'zena:async';
 import { HashMap } from 'zena:collections';
-import { Option, Result } from 'zena:core';
+import { Option, Own, Result, Some, unit } from 'zena:core';
 import { Stream, bytesStream } from 'zena:stream';
 import { URL } from 'zena:url';
 import {
@@ -18,16 +18,19 @@ import {
 import { send } from 'wasi:http/client';
 import { Credentials, ProtoError, ProtoView, RpcError, RpcMetadata, RpcMethod } from './runtime.zena';
 
-/** The one spellable value of type void, for a `result<_, e>` ok arm. */
-export function unit(): void {}
-
 /** `google.rpc.Code` DEADLINE_EXCEEDED, for a server that did not answer in time. */
 let CODE_DEADLINE_EXCEEDED = 4;
 /** `google.rpc.Code` UNAVAILABLE, for a server that could not be reached. */
 let CODE_UNAVAILABLE = 14;
 
-/** What a `wasi:http` request is sent with. */
-export type Trailers = Future<Result<Option<Fields>, ErrorCode>>;
+/**
+ * A response's headers or trailers, copied out of the host's `fields`:
+ * each field's name and value, in order.
+ */
+export type HeaderList = Array<(String, FixedArray<u8>)>;
+
+/** A response's trailers, which arrive after its body. */
+export type Trailers = Future<Result<Option<HeaderList>, ErrorCode>>;
 
 /** The scheme and authority of an origin such as `https://firestore.googleapis.com`. */
 export final class Origin {
@@ -58,7 +61,7 @@ export async function callHeaders(
   fixed: HashMap<String, String>,
   metadata: RpcMetadata,
   credentials: Credentials | null
-): Future<Fields> {
+): Future<Own<Fields>> {
   let headers = Fields.create();
   headers.append('content-type', contentType.toBytes());
   for (let entry in fixed) {
@@ -76,16 +79,53 @@ export async function callHeaders(
   return headers;
 }
 
-/** The first value of header `name` in `fields`, or null. */
-export function headerValue(fields: Fields, name: String): String | null {
-  let values = fields.get(name);
-  return if (values.length > 0) String.fromBytes(values[0]) else null;
+/** The first value of header `name` in `fields`, or null. Names match case-insensitively. */
+export function headerValue(fields: HeaderList, name: String): String | null {
+  let wanted = name.asciiLowerCase();
+  for (let (field, value) in fields) {
+    if (field.asciiLowerCase() == wanted) {
+      return String.fromBytes(value);
+    }
+  }
+  return null;
+}
+
+/** Whether `fields` has a header `name`. */
+export function hasHeader(fields: HeaderList, name: String): boolean {
+  return headerValue(fields, name) != null;
+}
+
+/** The fields the trailers future holds once they arrive, as a list. */
+async function trailerList(
+  trailers: Future<Result<Option<Own<Fields>>, ErrorCode>>
+): Future<Result<Option<HeaderList>, ErrorCode>> {
+  match (await trailers) {
+    case (true, let fields): {
+      if (let Some {value} = fields) {
+        return (true, some(value.copyAll()));
+      }
+      return (true, none);
+    }
+    case (false, let error): {
+      return (false, error);
+    }
+  }
+}
+
+/** The options of a request whose first byte must arrive within `firstByteTimeout`, when it is not negative. */
+function optionsFor(firstByteTimeout: i64): Option<Own<RequestOptions>> {
+  if (firstByteTimeout < 0) {
+    return none;
+  }
+  let options = RequestOptions.create();
+  options.setFirstByteTimeout(some(firstByteTimeout as u64));
+  return some(options);
 }
 
 /** One response: its status, headers, body, and the trailers after the body. */
 export final class Exchange {
   status: i32;
-  headers: Fields;
+  headers: HeaderList;
   body: Stream<u8>;
   trailers: Trailers;
   #received: Completer<Result<void, ErrorCode>>;
@@ -94,7 +134,7 @@ export final class Exchange {
     : #received = received;
 
   /** A response made of the given parts, for reading a body that did not come from `post`. */
-  static of(status: i32, headers: Fields, body: Stream<u8>, trailers: Trailers): Exchange {
+  static of(status: i32, headers: HeaderList, body: Stream<u8>, trailers: Trailers): Exchange {
     return new Exchange(status, headers, body, trailers, new Completer<Result<void, ErrorCode>>());
   }
 
@@ -120,23 +160,20 @@ export final class Exchange {
 export async function post(
   origin: Origin,
   path: String,
-  headers: Fields,
+  headers: Own<Fields>,
   body: ByteArray,
   method: RpcMethod,
   firstByteTimeout: i64 = -1
 ): Future<Exchange> {
   // The trailers future is the sender's to settle, and the host does
   // not consider the request body finished until it is.
-  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>(
+  let trailers = Future.of<Result<Option<Own<Fields>>, ErrorCode>>(
       (true, none));
-  var options: Option<RequestOptions> = none;
-  if (firstByteTimeout >= 0) {
-    let set = RequestOptions.create();
-    set.setFirstByteTimeout(some(firstByteTimeout as u64));
-    options = some(set);
-  }
-  let (wire, transmitted) =
-      Request.new_(headers, some(bytesStream(body as FixedArray<u8>)), trailers, options);
+  let (wire, transmitted) = Request.new_(headers,
+      some(bytesStream(body as FixedArray<u8>)), trailers, optionsFor(firstByteTimeout));
+  // Nothing waits on the transmission. Dropping a future of a plain
+  // value releases nothing, so its end is given up here (TODO(#831)).
+  transmitted.[release]();
   wire.setMethod(new MethodPost());
   wire.setScheme(some(origin.scheme));
   wire.setAuthority(some(origin.authority));
@@ -161,9 +198,12 @@ export async function post(
   };
   // Read the status and headers first: `consumeBody` takes the response.
   let status = response.getStatusCode() as i32;
-  let responseHeaders = response.getHeaders();
+  let wireHeaders = response.getHeaders();
+  let responseHeaders = wireHeaders.copyAll();
   let received = new Completer<Result<void, ErrorCode>>();
   let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
-  return new Exchange(status, responseHeaders, responseBody, responseTrailers, received);
+  // Read as they arrive, which is after the body: the reader keeps
+  // plain data, while the trailers future holds the host's fields.
+  return new Exchange(status, responseHeaders, responseBody, trailerList(responseTrailers), received);
 }
 

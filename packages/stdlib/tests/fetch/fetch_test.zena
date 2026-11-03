@@ -6,16 +6,22 @@
 import { suite, test } from 'zena:test';
 import { equal, isNull, isTrue } from 'zena:assert';
 import { Future, runFuture } from 'zena:async';
+import { Borrow } from 'zena:core';
 import { fetch } from 'zena:fetch';
 import { App, Server } from 'zena:http';
 import { URL } from 'zena:url';
 import { TimeoutError, timeout } from 'zena:task';
 import { milliseconds, monotonic, sleep } from 'zena:time';
 
-function startEchoServer(): Server {
+function startEchoServer() {
   let app = new App();
   app.use(async (req, res, next): Future<void> => {
-    res.setHeader('x-method', req.method);
+    // Reading the body consumes the request: what else the answer
+    // needs is read first.
+    let method = req.method;
+    let path = req.path;
+    let query = req.query;
+    res.setHeader('x-method', method);
     let auth = req.getHeader('authorization');
     if (auth != null) {
       res.setHeader('x-echo-auth', auth);
@@ -24,7 +30,7 @@ function startEchoServer(): Server {
     if (custom != null) {
       res.setHeader('x-echo-custom', custom);
     }
-    if (req.path == '/bytes') {
+    if (path == '/bytes') {
       let input = await req.bytes();
       let out = new FixedArray<u8>(input.length, 0 as u8);
       for (var i = 0; i < input.length; i += 1) {
@@ -33,21 +39,21 @@ function startEchoServer(): Server {
       res.statusCode = 200;
       res.type = 'application/octet-stream';
       res.body = out;
-    } else if (req.path == '/slow') {
+    } else if (path == '/slow') {
       await sleep(milliseconds(3000));
       res.statusCode = 200;
       res.body = 'late';
-    } else if (req.path == '/status/404') {
+    } else if (path == '/status/404') {
       res.statusCode = 404;
       res.body = 'missing';
-    } else if (req.method == 'DELETE') {
+    } else if (method == 'DELETE') {
       res.statusCode = 204;
       res.body = '';
     } else {
       let body = await req.text();
-      res.statusCode = if (req.method == 'POST') 201 else 200;
+      res.statusCode = if (method == 'POST') 201 else 200;
       res.type = 'text/plain';
-      res.body = `${req.method} ${req.path}${req.query}: ${body}`;
+      res.body = `${method} ${path}${query}: ${body}`;
     }
   });
   let server = new Server(app, 0 as u16);
@@ -55,134 +61,156 @@ function startEchoServer(): Server {
   return server;
 }
 
-function originOf(server: Server): String {
+function originOf(server: Borrow<Server>) {
   return `http://127.0.0.1:${server.port as i32}`;
 }
 
+// A response is an owner, so each test runs as an async body that
+// awaits it, rather than taking it out of a future with `runFuture`.
 export let tests = suite('zena:fetch', () => {
-  test('reads headers after the body, as before it', () => {
-    let server = startEchoServer();
-    let response = runFuture(fetch(`${originOf(server)}/after`));
-    equal(runFuture(response.text()), 'GET /after: ');
-    equal(response.header('x-method') as String, 'GET');
-    equal(response.header('Content-Type') as String, 'text/plain');
-    isNull(response.header('x-missing'));
-    let bytes = runFuture(fetch(`${originOf(server)}/after`));
-    equal(runFuture(bytes.bytes()).length, 12);
-    equal(bytes.header('x-method') as String, 'GET');
-    server.close();
+  test('reads the status and headers, then the body', () => {
+    runFuture((async (): Future<void> => {
+      let server = startEchoServer();
+      let response = await fetch(`${originOf(server)}/after`);
+      equal(response.header('x-method') as String, 'GET');
+      equal(response.header('Content-Type') as String, 'text/plain');
+      isNull(response.header('x-missing'));
+      equal(await response.text(), 'GET /after: ');
+      let bytes = await fetch(`${originOf(server)}/after`);
+      equal(bytes.header('x-method') as String, 'GET');
+      equal((await bytes.bytes()).length, 12);
+      server.close();
+    })());
+  });
+
+  test('a response dropped unread releases its body', () => {
+    runFuture((async (): Future<void> => {
+      let server = startEchoServer();
+      for (var i = 0; i < 3; i += 1) {
+        let response = await fetch(`${originOf(server)}/unread`);
+        equal(response.status, 200);
+      }
+      // The connection is not left holding an unread body: the next
+      // request is answered.
+      let last = await fetch(`${originOf(server)}/last`);
+      equal(await last.text(), 'GET /last: ');
+      server.close();
+    })());
   });
 
   test('GET sends headers and reads status, headers, and text', () => {
-    let server = startEchoServer();
-    let response = runFuture(fetch(`${originOf(server)}/hello?a=1`, {
-      headers: [
-        ('authorization', 'Bearer secret'),
-        ('x-custom', 'two'),
-      ],
-    }));
-    equal(response.status, 200);
-    isTrue(response.ok);
-    equal(response.header('x-method') as String, 'GET');
-    equal(response.header('x-echo-auth') as String, 'Bearer secret');
-    equal(response.header('x-echo-custom') as String, 'two');
-    isNull(response.header('x-absent'));
-    equal(runFuture(response.text()), 'GET /hello?a=1: ');
-    server.close();
+    runFuture((async (): Future<void> => {
+      let server = startEchoServer();
+      let response = await fetch(`${originOf(server)}/hello?a=1`, {
+        headers: [
+          ('authorization', 'Bearer secret'),
+          ('x-custom', 'two'),
+        ],
+      });
+      equal(response.status, 200);
+      isTrue(response.ok);
+      equal(response.header('x-method') as String, 'GET');
+      equal(response.header('x-echo-auth') as String, 'Bearer secret');
+      equal(response.header('x-echo-custom') as String, 'two');
+      isNull(response.header('x-absent'));
+      equal(await response.text(), 'GET /hello?a=1: ');
+      server.close();
+    })());
   });
 
   test('POST, PATCH, and DELETE send their methods and text bodies', () => {
-    let server = startEchoServer();
-    let origin = originOf(server);
+    runFuture((async (): Future<void> => {
+      let server = startEchoServer();
+      let origin = originOf(server);
 
-    let created = runFuture(fetch(`${origin}/items`, {
-      method: 'POST',
-      headers: [('content-type', 'application/json')],
-      body: '{"name":"box"}',
-    }));
-    equal(created.status, 201);
-    isTrue(created.ok);
-    equal(runFuture(created.text()), 'POST /items: {"name":"box"}');
+      let created = await fetch(`${origin}/items`, {
+        method: 'POST',
+        headers: [('content-type', 'application/json')],
+        body: '{"name":"box"}',
+      });
+      equal(created.status, 201);
+      isTrue(created.ok);
+      equal(await created.text(), 'POST /items: {"name":"box"}');
 
-    let patched = runFuture(fetch(URL.parse(`${origin}/items/1`) as URL, {
-      method: 'PATCH',
-      body: '{"name":"crate"}',
-    }));
-    equal(patched.status, 200);
-    equal(runFuture(patched.text()), 'PATCH /items/1: {"name":"crate"}');
+      let patched = await fetch(URL.parse(`${origin}/items/1`) as URL, {
+        method: 'PATCH',
+        body: '{"name":"crate"}',
+      });
+      equal(patched.status, 200);
+      equal(await patched.text(), 'PATCH /items/1: {"name":"crate"}');
 
-    let deleted = runFuture(fetch(`${origin}/items/1`, {
-      method: 'DELETE',
-    }));
-    equal(deleted.status, 204);
-    isTrue(deleted.ok);
-    server.close();
+      let deleted = await fetch(`${origin}/items/1`, {
+        method: 'DELETE',
+      });
+      equal(deleted.status, 204);
+      isTrue(deleted.ok);
+      server.close();
+    })());
   });
 
-  test('sends a FixedArray<u8> body and reads response.bytes() once', () => {
-    let server = startEchoServer();
-    let payload = new FixedArray<u8>(3, 0 as u8);
-    payload[0] = 0x00 as u8;
-    payload[1] = 0x0f as u8;
-    payload[2] = 0xff as u8;
-    let response = runFuture(fetch(`${originOf(server)}/bytes`, {
-      method: 'PUT',
-      body: payload,
-    }));
-    equal(response.status, 200);
-    let out = runFuture(response.bytes());
-    equal(out.length, 3);
-    equal(out[0], 0xff as u8);
-    equal(out[1], 0xf0 as u8);
-    equal(out[2], 0x00 as u8);
-
-    var threw = false;
-    try {
-      runFuture(response.bytes());
-    } catch (e) {
-      threw = true;
-    }
-    isTrue(threw);
-    server.close();
+  test('sends a FixedArray<u8> body and reads response.bytes()', () => {
+    runFuture((async (): Future<void> => {
+      let server = startEchoServer();
+      let payload = new FixedArray<u8>(3, 0 as u8);
+      payload[0] = 0x00 as u8;
+      payload[1] = 0x0f as u8;
+      payload[2] = 0xff as u8;
+      let response = await fetch(`${originOf(server)}/bytes`, {
+        method: 'PUT',
+        body: payload,
+      });
+      equal(response.status, 200);
+      let out = await response.bytes();
+      equal(out.length, 3);
+      equal(out[0], 0xff as u8);
+      equal(out[1], 0xf0 as u8);
+      equal(out[2], 0x00 as u8);
+      server.close();
+    })());
   });
 
   test('non-2xx responses resolve with ok == false and a readable body', () => {
-    let server = startEchoServer();
-    let response = runFuture(fetch(`${originOf(server)}/status/404`));
-    equal(response.status, 404);
-    isTrue(!response.ok);
-    equal(runFuture(response.text()), 'missing');
-    server.close();
+    runFuture((async (): Future<void> => {
+      let server = startEchoServer();
+      let response = await fetch(`${originOf(server)}/status/404`);
+      equal(response.status, 404);
+      isTrue(!response.ok);
+      equal(await response.text(), 'missing');
+      server.close();
+    })());
   });
 
   test('fails on an invalid URL or an unreachable server', () => {
-    var badUrl = false;
-    try {
-      runFuture(fetch('not a url'));
-    } catch (e) {
-      badUrl = true;
-    }
-    isTrue(badUrl);
+    runFuture((async (): Future<void> => {
+      var badUrl = false;
+      try {
+        let response = await fetch('not a url');
+      } catch (e) {
+        badUrl = true;
+      }
+      isTrue(badUrl);
 
-    let server = startEchoServer();
-    let origin = originOf(server);
-    server.close();
-    var unreachable = false;
-    try {
-      runFuture(fetch(origin));
-    } catch (e) {
-      unreachable = true;
-    }
-    isTrue(unreachable);
+      let server = startEchoServer();
+      let origin = originOf(server);
+      server.close();
+      var unreachable = false;
+      try {
+        let response = await fetch(origin);
+      } catch (e) {
+        unreachable = true;
+      }
+      isTrue(unreachable);
+    })());
   });
 
   test('stops waiting for a slow server when its attempt is cancelled', () => {
     let server = startEchoServer();
+    let origin = originOf(server);
     let start = monotonic();
     var timedOut = false;
     try {
       runFuture(timeout<String>(milliseconds(100), async (): Future<String> => {
-        let response = await fetch(`${originOf(server)}/slow`);
+        let response = await fetch(`${origin}/slow`);
         return await response.text();
       })());
     } catch (e) {

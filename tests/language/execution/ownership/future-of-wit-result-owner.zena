@@ -1,0 +1,21 @@
+// @mode: run
+// @result: 1
+// The trailers future `wasi:http`'s `consume-body` hands back is a
+// future of a result holding an owned `fields`: dropping it unread
+// releases it, through the release a lifted future has before anything
+// reads it. `new` hands back the request it made as an owner, which
+// `consume-body` takes, and a future of a plain value is released by
+// hand.
+import { Fields, ErrorCode, Request } from 'wasi:http/types';
+import { release } from 'zena:async';
+import { Own, Option, Result, unit } from 'zena:core';
+
+export function main(): i32 {
+  let (request, transmitted) = Request.new_(Fields.create(), none,
+      Future.of<Result<Option<Own<Fields>>, ErrorCode>>((true, none)), none);
+  transmitted.[release]();
+  let (body, trailers) = Request.consumeBody(request,
+      Future.of<Result<void, ErrorCode>>((true, unit())));
+  body.stop();
+  return 1;
+}

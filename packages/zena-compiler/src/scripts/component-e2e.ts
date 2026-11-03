@@ -356,10 +356,10 @@ const FIXTURES: Fixture[] = [
     wit: ['http-service.wit', 'http-service'],
     // The wasi:http service world: `wasi:http/handler@0.3.0` exported
     // as an instance whose `handle` the program implements, driven by
-    // `wasmtime serve`. The request handle lifts into `Request`, the
-    // `Outcome<Response, ErrorCode>` lowers into a typed
-    // `task.return`, and the body streams out through a canonical
-    // stream after the response has been returned.
+    // `wasmtime serve`. The request handle lifts into the `Request` the
+    // handler owns, the `Result<Own<Response>, ErrorCode>` lowers into
+    // a typed `task.return`, and the body streams out through a
+    // canonical stream after the response has been returned.
     serveRequest: [18924, '/greet', 'hello from zena at /greet'],
     serveConcurrent: 4,
     invocations: [],

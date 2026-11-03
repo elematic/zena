@@ -15,6 +15,7 @@
  */
 
 import {Future} from 'zena:async';
+import {Own} from 'zena:core';
 import {fetch, Response} from 'zena:fetch';
 import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {EncodeSet, percentEncode} from 'zena:url';
@@ -146,7 +147,7 @@ export final class CloudDns {
     return true;
   }
 
-  async #call(method: String, path: String, body: String | null): Future<Response> {
+  async #call(method: String, path: String, body: String | null): Future<Own<Response>> {
     let headers = new GrowableArray<(String, String)>();
     headers.push(('accept', 'application/json'));
     if (body != null) {
@@ -165,9 +166,10 @@ export final class CloudDns {
 }
 
 /** Returns `response`'s body text when it is a success, or throws `DnsError` naming what `doing` was. */
-async function checked(response: Response, doing: String): Future<String> {
+async function checked(response: Own<Response>, doing: String): Future<String> {
+  let status = response.status;
   let responseText = await response.text();
-  if (response.status >= 200 && response.status < 300) {
+  if (status >= 200 && status < 300) {
     return responseText;
   }
   var message = responseText;
@@ -185,5 +187,5 @@ async function checked(response: Response, doing: String): Future<String> {
       }
     }
   }
-  throw new DnsError(response.status, `Cloud DNS, ${doing}: HTTP ${response.status}: ${message}`);
+  throw new DnsError(status, `Cloud DNS, ${doing}: HTTP ${status}: ${message}`);
 }

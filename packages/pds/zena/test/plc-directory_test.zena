@@ -8,6 +8,7 @@ import {equal, isTrue} from 'zena:assert';
 import {Future, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {hex} from 'zena:encoding';
+import {Unmanaged} from 'zena:core';
 import {App, Request, Response, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {bytesStream} from 'zena:stream';
@@ -33,7 +34,8 @@ function genesis(handle: String) {
 /** An upstream directory that has `UPSTREAM_DID`, and counts its requests. */
 final class Upstream {
   var requests = 0;
-  var server: Server | null = null;
+  /** Kept open until `close`. */
+  var server: Unmanaged<Server> | null = null;
 
   start(): String {
     let app = new App();
@@ -52,10 +54,18 @@ final class Upstream {
         res.body = '{"message":"DID not registered"}';
       }
     });
-    let server = new Server(app, 0 as u16);
-    server.start();
+    let started = new Server(app, 0 as u16);
+    started.start();
+    let server = started.keepOpen();
     this.server = server;
     return `http://127.0.0.1:${server.port as i32}`;
+  }
+
+  close(): void {
+    let server = this.server;
+    if (server != null) {
+      server.close();
+    }
   }
 }
 
@@ -102,7 +112,7 @@ export let tests = suite('pds:plc-directory', () => {
     let again = call(app, 'POST', `/plc/${did}`, stringify(second.toJson()));
     equal(again.statusCode, 400);
     isTrue((again.body as String).contains('must follow'), again.body as String);
-    (upstream.server as Server).close();
+    upstream.close();
   });
 
   test('reads every other DID from upstream, and takes no operations for those', (ctx) => {
@@ -126,7 +136,7 @@ export let tests = suite('pds:plc-directory', () => {
     equal(call(app, 'POST', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', 'not json').statusCode, 400);
     equal(call(app, 'GET', '/plc/did:web:example.com').statusCode, 404);
     equal(call(app, 'GET', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/other').statusCode, 404);
-    (upstream.server as Server).close();
+    upstream.close();
   });
 
   test('appends to a log only at its end', (ctx) => {

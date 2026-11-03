@@ -1257,7 +1257,6 @@ impl http_server::HostResponseWriter for ComponentState {
     fn complete_text(
         &mut self,
         writer: Resource<ResponseWriterState>,
-        req: Option<Resource<wasmtime_wasi_http::p3::Request>>,
         status: u16,
         content_type: String,
         headers: Vec<(String, String)>,
@@ -1318,9 +1317,6 @@ impl http_server::HostResponseWriter for ComponentState {
                 );
             }
             let _ = sender.send(resp);
-        }
-        if let Some(req_res) = req {
-            let _ = self.table.delete(req_res);
         }
         Ok(())
     }

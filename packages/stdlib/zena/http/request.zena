@@ -3,8 +3,16 @@
  */
 
 import { HashMap } from 'zena:collections';
+import { Borrow, Disposable, Own, Result, Some, parseI64, unit } from 'zena:core';
+import {
+  Request as WireRequest,
+  ErrorCode,
+  Method,
+  MethodGet, MethodHead, MethodPost, MethodPut, MethodDelete,
+  MethodConnect, MethodOptions, MethodTrace, MethodPatch, MethodOther,
+  Scheme, SchemeHTTP, SchemeHTTPS, SchemeOther
+} from 'wasi:http/types';
 import { Stream, StreamLimitError, StreamWriter, readAllBytes } from 'zena:stream';
-import { parseI64 } from 'zena:core';
 import { HttpError } from './error.zena';
 import { URL } from 'zena:url';
 import { parseCookies } from './cookie.zena';
@@ -12,16 +20,116 @@ import { parseCookies } from './cookie.zena';
 export function fallbackUrl(): URL {
   return URL.parse('http://localhost/', null) as URL;
 }
-export let placeholderUrl = fallbackUrl();
-export let placeholderHeaders = new HashMap<String, GrowableArray<String>>();
 
-export interface RequestSource {
-  loadMethod(): String;
-  loadPath(): String;
-  loadUrl(): URL;
-  loadHeaders(): HashMap<String, GrowableArray<String>>;
-  loadBody(): Stream<u8>;
-  close(): void;
+function methodToString(m: Method) {
+  if (m is MethodGet) return 'GET';
+  if (m is MethodPost) return 'POST';
+  if (m is MethodPut) return 'PUT';
+  if (m is MethodDelete) return 'DELETE';
+  if (m is MethodHead) return 'HEAD';
+  if (m is MethodPatch) return 'PATCH';
+  if (m is MethodOptions) return 'OPTIONS';
+  if (m is MethodConnect) return 'CONNECT';
+  if (m is MethodTrace) return 'TRACE';
+  if (m is MethodOther) return m.value.asciiUpperCase();
+  return 'GET';
+}
+
+function schemeToString(s: Scheme) {
+  if (s is SchemeHTTP) return 'http';
+  if (s is SchemeHTTPS) return 'https';
+  if (s is SchemeOther) return s.value;
+  return 'http';
+}
+
+/** The wire request's path and query, with a leading `/`. */
+function wirePathWithQuery(wire: Borrow<WireRequest>) {
+  let pathOpt = wire.getPathWithQuery();
+  let pathWithQuery = if (pathOpt is Some<String>) pathOpt.value else '/';
+  return if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
+}
+
+/** The wire request's path, without the query. */
+function wirePath(wire: Borrow<WireRequest>) {
+  let fullPath = wirePathWithQuery(wire);
+  var i = 0;
+  while (i < fullPath.length) {
+    if (fullPath.getByteAt(i) == 0x3F) { // '?'
+      return if (i == 0) '/' else fullPath.sliceBytes(0, i);
+    }
+    i += 1;
+  }
+  return if (fullPath.length == 0) '/' else fullPath;
+}
+
+function wireHeaders(wire: Borrow<WireRequest>) {
+  let fields = wire.getHeaders();
+  let headers = new HashMap<String, GrowableArray<String>>();
+  for (let (fieldName, fieldValueBytes) in fields.copyAll()) {
+    let key = fieldName.asciiLowerCase();
+    let val = String.fromBytes(fieldValueBytes);
+    if (let (true, existing) = headers.get(key)) {
+      existing.push(val);
+    } else {
+      let list = new GrowableArray<String>(1);
+      list.push(val);
+      headers[key] = list;
+    }
+  }
+  return headers;
+}
+
+function wireUrl(wire: Borrow<WireRequest>) {
+  let schemeOpt = wire.getScheme();
+  let scheme = if (schemeOpt is Some<Scheme>) schemeToString(schemeOpt.value) else 'http';
+  let authOpt = wire.getAuthority();
+  var auth = if (authOpt is Some<String>) authOpt.value else '';
+  if (auth.length == 0) {
+    let fields = wire.getHeaders();
+    let hostEntries = fields.get('host');
+    if (hostEntries.length > 0) {
+      auth = String.fromBytes(hostEntries[0]);
+    }
+  }
+  if (auth.length == 0) auth = 'localhost';
+  let href = `${scheme}://${auth}${wirePathWithQuery(wire)}`;
+  return URL.parse(href, null) ?? fallbackUrl();
+}
+
+/** A stream that has already ended: the body of a request without one. */
+function emptyBody() {
+  let writer = new StreamWriter<u8>();
+  writer.close();
+  return writer.stream;
+}
+
+/**
+ * Reads `body` to the end, within `limit` bytes when it is not -1. A
+ * body over the limit is refused with an `HttpError` of 413, which
+ * `App` answers: one whose declared `Content-Length` is over it before
+ * anything is read, and one that does not say once it passes it.
+ */
+async function readBody(body: Stream<u8>, limit: i64, declared: String | null): Future<FixedArray<u8>> {
+  if (limit >= (0 as i64) && declared != null) {
+    if (let (true, length) = parseI64(declared.trim())) {
+      if (length > limit) {
+        body.stop();
+        throw new HttpError(413);
+      }
+    }
+  }
+  return try {
+    await readAllBytes(body, limit)
+  } catch (e) {
+    if (e is StreamLimitError) {
+      throw new HttpError(413);
+    }
+    throw e;
+  };
+}
+
+async function decodeText(bytes: Future<FixedArray<u8>>): Future<String> {
+  return String.fromBytes(await bytes);
 }
 
 /**
@@ -29,19 +137,22 @@ export interface RequestSource {
  *
  * Provides typed access to the method, URL, headers, and body stream,
  * as well as a mutable `path` property used by routers and prefix mounting.
+ *
+ * A resource class, held as `Own<Request>`: a handler owns the request
+ * it is given and hands it on with `next(req)`, so whoever holds it last
+ * reads or releases its body. Reading the body consumes the request
+ * (`text`, `bytes`, `body`); read anything else you need from it first.
+ * A request dropped with its body unread releases the wire request,
+ * and with it the body the host holds.
  */
-export class Request {
-  var #source: RequestSource | null = null;
-  var #url: URL;
-  var #urlLoaded: boolean = true;
-  var #method: String;
-  var #methodLoaded: boolean = true;
-  var #headers: HashMap<String, GrowableArray<String>>;
-  var #headersLoaded: boolean = true;
+export resource class Request {
+  /** The incoming request, until reading the body takes it. */
+  var #wire: Own<WireRequest> | null = null;
+  var #url: URL | null = null;
+  var #method: String | null = null;
+  var #headers: HashMap<String, GrowableArray<String>> | null = null;
   var #path: String | null = null;
   var #bodyStream: Stream<u8> | null = null;
-  var #bodyText: String | null = null;
-  var #bodyBytes: FixedArray<u8> | null = null;
   /**
    * The most bytes `text()` and `bytes()` read of the body, or -1 for no
    * limit. A body over it is refused with an `HttpError` of 413, which
@@ -52,45 +163,17 @@ export class Request {
   var bodyLimit: i64 = -1 as i64;
 
   /**
-   * Constructs a Request with explicit parameters or a lazy RequestSource.
+   * Constructs a Request with explicit parameters.
    */
   new(
     url: URL,
     method: String = 'GET',
     headers: HashMap<String, GrowableArray<String>> = new HashMap<String, GrowableArray<String>>(),
-    bodyStream: Stream<u8> | null = null,
-    source: RequestSource | null = null
-  ) : #source = source,
-      #url = url,
-      #urlLoaded = source == null,
-      #method = if (source == null) method.asciiUpperCase() else method,
-      #methodLoaded = source == null,
+    bodyStream: Stream<u8> | null = null
+  ) : #url = url,
+      #method = method.asciiUpperCase(),
       #headers = headers,
-      #headersLoaded = source == null,
       #bodyStream = bodyStream {}
-
-  /**
-   * True if the request body stream has been accessed.
-   */
-  isBodyConsumed: boolean {
-    get {
-      return this.#bodyStream != null;
-    }
-  }
-
-  /**
-   * Releases any underlying wire request or body stream resources.
-   */
-  close(): void {
-    if (this.#bodyStream != null) {
-      (this.#bodyStream as Stream<u8>).stop();
-    }
-    if (this.#source != null) {
-      let src = this.#source as RequestSource;
-      this.#source = null;
-      src.close();
-    }
-  }
 
   /**
    * Constructs a Request from a string URL and optional headers.
@@ -100,29 +183,36 @@ export class Request {
     method: String = 'GET',
     headers: Map<String, String> | null = null,
     bodyStream: Stream<u8> | null = null
-  ) : #url = if (URL.parse(urlString, null) != null) URL.parse(urlString, null) as URL else fallbackUrl(),
+  ) : #url = URL.parse(urlString, null) ?? fallbackUrl(),
       #method = method.asciiUpperCase(),
-      #headers = new HashMap<String, GrowableArray<String>>(),
       #bodyStream = bodyStream {
+    let byName = new HashMap<String, GrowableArray<String>>();
     if (headers != null) {
-      let h = headers;
-      for (let entry in h) {
-        let key = entry.key.asciiLowerCase();
+      for (let entry in headers) {
         let arr = new GrowableArray<String>(1);
         arr.push(entry.value);
-        this.#headers[key] = arr;
+        byName[entry.key.asciiLowerCase()] = arr;
       }
     }
+    this.#headers = byName;
   }
 
+  /**
+   * Constructs a Request over an incoming `wasi:http` request, which it
+   * reads from as its members are asked for.
+   */
+  new fromWire(wire: Own<WireRequest>) : #wire = wire;
+
   #ensureHeaders(): HashMap<String, GrowableArray<String>> {
-    if (!this.#headersLoaded) {
-      this.#headersLoaded = true;
-      if (this.#source != null) {
-        this.#headers = (this.#source as RequestSource).loadHeaders();
-      }
+    let known = this.#headers;
+    if (known != null) {
+      return known;
     }
-    return this.#headers;
+    let wire = this.#wire;
+    let headers = if (wire != null) wireHeaders(wire)
+        else new HashMap<String, GrowableArray<String>>();
+    this.#headers = headers;
+    return headers;
   }
 
   /**
@@ -130,13 +220,14 @@ export class Request {
    */
   method: String {
     get {
-      if (!this.#methodLoaded) {
-        this.#methodLoaded = true;
-        if (this.#source != null) {
-          this.#method = (this.#source as RequestSource).loadMethod();
-        }
+      let known = this.#method;
+      if (known != null) {
+        return known;
       }
-      return this.#method;
+      let wire = this.#wire;
+      let method = if (wire != null) methodToString(wire.getMethod()) else 'GET';
+      this.#method = method;
+      return method;
     }
   }
 
@@ -145,13 +236,14 @@ export class Request {
    */
   url: URL {
     get {
-      if (!this.#urlLoaded) {
-        this.#urlLoaded = true;
-        if (this.#source != null) {
-          this.#url = (this.#source as RequestSource).loadUrl();
-        }
+      let known = this.#url;
+      if (known != null) {
+        return known;
       }
-      return this.#url;
+      let wire = this.#wire;
+      let url = if (wire != null) wireUrl(wire) else fallbackUrl();
+      this.#url = url;
+      return url;
     }
   }
 
@@ -163,11 +255,14 @@ export class Request {
    */
   path: String {
     get {
-      if (this.#path != null) {
-        return this.#path as String;
+      let known = this.#path;
+      if (known != null) {
+        return known;
       }
-      if (this.#source != null && this.#urlLoaded == false) {
-        let p = (this.#source as RequestSource).loadPath();
+      // The path alone needs no URL: read it off the wire request.
+      let wire = this.#wire;
+      if (wire != null && this.#url == null) {
+        let p = wirePath(wire);
         this.#path = p;
         return p;
       }
@@ -280,70 +375,49 @@ export class Request {
   }
 
   /**
-   * The body stream of the request.
+   * The body stream. Consumes the request.
    */
-  body: Stream<u8> {
-    get {
-      if (this.#bodyStream != null) {
-        return this.#bodyStream as Stream<u8>;
-      }
-      if (this.#source != null) {
-        // Taking the body consumes the wire request, after which the source
-        // can read nothing else from it, so read the rest first.
-        let method = this.method;
-        let path = this.path;
-        let url = this.url;
-        this.#ensureHeaders();
-        let s = (this.#source as RequestSource).loadBody();
-        this.#bodyStream = s;
-        return s;
-      }
-      let emptyWriter = new StreamWriter<u8>();
-      emptyWriter.close();
-      this.#bodyStream = emptyWriter.stream;
-      return emptyWriter.stream;
+  body(this: Own<this>): Stream<u8> {
+    let stream = this.#bodyStream;
+    if (stream != null) {
+      this.#bodyStream = null;
+      return stream;
     }
+    let wire = this.#wire;
+    if (wire != null) {
+      // `consume-body` takes the wire request. The trailers future it
+      // hands back holds an owner, and dropping it unread releases it.
+      let (body, trailers) = WireRequest.consumeBody(wire,
+          Future.of<Result<void, ErrorCode>>((true, unit())));
+      return body;
+    }
+    return emptyBody();
   }
 
   /**
-   * Reads and decodes the full request body as text, within `bodyLimit`.
+   * Reads and decodes the full request body as text, within
+   * `bodyLimit`. Consumes the request.
    */
-  async text(): Future<String> {
-    if (this.#bodyText != null) {
-      return this.#bodyText as String;
-    }
-    let str = String.fromBytes(await this.bytes());
-    this.#bodyText = str;
-    return str;
+  text(this: Own<this>): Future<String> {
+    return decodeText(this.bytes());
   }
 
   /**
-   * Reads the full request body as bytes, within `bodyLimit`.
+   * Reads the full request body as bytes, within `bodyLimit`. Consumes
+   * the request.
    */
-  async bytes(): Future<FixedArray<u8>> {
-    if (this.#bodyBytes != null) {
-      return this.#bodyBytes as FixedArray<u8>;
-    }
+  bytes(this: Own<this>): Future<FixedArray<u8>> {
     let limit = this.bodyLimit;
-    if (limit >= (0 as i64)) {
-      let declared = this.getHeader('content-length');
-      if (declared != null) {
-        if (let (true, length) = parseI64(declared.trim())) {
-          if (length > limit) {
-            throw new HttpError(413);
-          }
-        }
-      }
+    let declared = if (limit >= (0 as i64)) this.getHeader('content-length') else null;
+    return readBody(this.body(), limit, declared);
+  }
+
+  /** A body nobody read is stopped, so its writer, or the host, can
+   * let go of it. */
+  [Disposable.dispose](this: Own<this>): void {
+    let stream = this.#bodyStream;
+    if (stream != null) {
+      stream.stop();
     }
-    let b = try {
-      await readAllBytes(this.body, limit)
-    } catch (e) {
-      if (e is StreamLimitError) {
-        throw new HttpError(413);
-      }
-      throw e;
-    };
-    this.#bodyBytes = b;
-    return b;
   }
 }

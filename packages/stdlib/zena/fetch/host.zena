@@ -18,6 +18,7 @@
  */
 
 import { pending } from 'zena:js';
+import { Disposable, Own } from 'zena:core';
 import { URL } from 'zena:url';
 import { RequestInit } from './options.zena';
 export { RequestInit } from './options.zena';
@@ -99,17 +100,18 @@ declare function __bytes_get(bytes: JsBytes, index: i32): i32;
 declare function __response_header(response: JsResponse, name: String, len: i32): String | null;
 
 /**
- * An HTTP response: the status, and a one-shot handle on the body.
+ * An HTTP response: the status and headers, and the body, which lives on
+ * the host until it is read.
  *
- * The body lives on the host until it is read, so reading is
- * asynchronous and — as on the web — allowed once: a second `text()`
- * or `bytes()` throws rather than handing back an empty body.
+ * A resource class, held as `Own<Response>`, as on the component
+ * targets: reading the body consumes the response (`text`, `bytes`), so
+ * it is read at most once, as on the web, and a second read is a use
+ * after move. Read the status and any headers you need first.
  */
-export class Response {
+export resource class Response {
   /** The HTTP status code. */
   status: i32;
   #response: JsResponse;
-  var #bodyUsed: boolean = false;
 
   new(this.status, response: JsResponse) : #response = response;
 
@@ -128,35 +130,33 @@ export class Response {
     return __response_header(this.#response, name, name.length);
   }
 
-  /** The response body, decoded as text. */
-  text(): Future<String> {
-    if (this.#bodyUsed) {
-      throw new Error(
-        'zena:fetch: the response body has already been read');
-    }
-    this.#bodyUsed = true;
+  /** The response body, decoded as text. Consumes the response. */
+  text(this: Own<this>): Future<String> {
     let p = pending<String>();
     __response_text(p.handle, this.#response);
     return p.future;
   }
 
-  /** The response body's bytes. */
-  async bytes(): Future<FixedArray<u8>> {
-    if (this.#bodyUsed) {
-      throw new Error(
-        'zena:fetch: the response body has already been read');
-    }
-    this.#bodyUsed = true;
+  /** The response body's bytes. Consumes the response. */
+  bytes(this: Own<this>): Future<FixedArray<u8>> {
     let p = pending<anyref>();
     __response_bytes(p.handle, this.#response);
-    let raw = (await p.future) as JsBytes;
-    let len = __bytes_length(raw);
-    let out = new FixedArray<u8>(len, 0 as u8);
-    for (var i = 0; i < len; i += 1) {
-      out[i] = __bytes_get(raw, i) as u8;
-    }
-    return out;
+    return bytesOf(p.future);
   }
+
+  /** The host's response is the garbage collector's: nothing to release. */
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+/** The bytes of the `Uint8Array` the host completes `raw` with. */
+async function bytesOf(raw: Future<anyref>): Future<FixedArray<u8>> {
+  let bytes = (await raw) as JsBytes;
+  let len = __bytes_length(bytes);
+  let out = new FixedArray<u8>(len, 0 as u8);
+  for (var i = 0; i < len; i += 1) {
+    out[i] = __bytes_get(bytes, i) as u8;
+  }
+  return out;
 }
 
 let buildInit = (init: RequestInit): JsRequestInit | null => {
@@ -208,7 +208,7 @@ let buildInit = (init: RequestInit): JsRequestInit | null => {
  * 504, and so on): that is a response like any other, and the caller
  * checks `ok` or `status`.
  */
-export async function fetch(url: String | URL, init: RequestInit = {}): Future<Response> {
+export async function fetch(url: String | URL, init: RequestInit = {}): Future<Own<Response>> {
   let href = if (url is URL) url.href else url;
   let p = pending<anyref>();
   __fetch_start(p.handle, href, href.length, buildInit(init));

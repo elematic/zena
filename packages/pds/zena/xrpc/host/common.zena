@@ -8,6 +8,7 @@
  */
 
 import {Future} from 'zena:async';
+import {Own} from 'zena:core';
 import {Request, Response, Router} from 'zena:http';
 import {JsonArray, JsonObject} from 'zena:json';
 import {div} from 'zena:math';
@@ -21,7 +22,7 @@ import {fail, json, nowMicros} from '../common.zena';
  * JSON to answer with, or null when it has answered already, as with an
  * error.
  */
-export type HostMethod = (req: Request, res: Response, caller: String) => Future<JsonObject | null>;
+export type HostMethod = (req: Own<Request>, res: Response, caller: String) => Future<JsonObject | null>;
 
 /** Adds the host query `method`, a GET, to `router`. */
 export function hostQuery(router: Router, host: PackageHost, method: String, call: HostMethod): void {
@@ -37,7 +38,7 @@ export function hostProcedure(router: Router, host: PackageHost, method: String,
   });
 }
 
-async function hostCall(host: PackageHost, req: Request, res: Response, method: String, call: HostMethod)
+async function hostCall(host: PackageHost, req: Own<Request>, res: Response, method: String, call: HostMethod)
     : Future<void> {
   try {
     let caller = await host.authenticate(req.getHeader('authorization'), method,

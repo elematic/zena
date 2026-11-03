@@ -1,8 +1,8 @@
 /**
  * The gRPC transport's framing and status handling, on responses built in
- * the test: bodies from a `StreamWriter`, headers and trailers from
- * `wasi:http` fields. Calls over the network are tested against the
- * Firestore emulator (packages/google-cloud).
+ * the test: bodies from a `StreamWriter`, headers and trailers as the
+ * lists the transport copies out of `wasi:http` fields. Calls over the
+ * network are tested against the Firestore emulator (packages/google-cloud).
  */
 
 import { suite, test } from 'zena:test';
@@ -10,11 +10,12 @@ import { equal, isTrue } from 'zena:assert';
 import { AsyncIterable, AsyncIterator, Completer, runFuture } from 'zena:async';
 import { Option, Result } from 'zena:core';
 import { StreamWriter } from 'zena:stream';
-import { ErrorCode, Fields } from 'wasi:http/types';
+import { ErrorCode } from 'wasi:http/types';
 import { ProtoView, ProtoWriter, RpcError, RpcMethod } from '../runtime.zena';
 import {
   codeForGrpcHttpStatus, decodeBase64, frame, frames, grpcTimeout, readGrpcResponse, singleMessage, statusError
 } from '../grpc.zena';
+import { HeaderList } from '../http.zena';
 import { Node } from '../../test-files/generated/everything.zena';
 
 function unit() {}
@@ -28,20 +29,20 @@ final class ReaderIterable implements AsyncIterable<ProtoView> {
   }
 }
 
-function fieldsOf(pairs: Array<String>) {
-  let fields = Fields.create();
+function fieldsOf(pairs: Array<String>): HeaderList {
+  let fields = new GrowableArray<(String, FixedArray<u8>)>();
   for (var i = 0; i + 1 < pairs.length; i += 2) {
-    fields.append(pairs[i], pairs[i + 1].toBytes());
+    fields.push((pairs[i], pairs[i + 1].toBytes()));
   }
   return fields;
 }
 
 function trailersOf(pairs: Array<String>) {
-  return Future.of<Result<Option<Fields>, ErrorCode>>((true, some(fieldsOf(pairs))));
+  return Future.of<Result<Option<HeaderList>, ErrorCode>>((true, some(fieldsOf(pairs))));
 }
 
 function noTrailers() {
-  return Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
+  return Future.of<Result<Option<HeaderList>, ErrorCode>>((true, none));
 }
 
 let GRPC_HEADERS = ['content-type', 'application/grpc'];
@@ -99,7 +100,7 @@ async function readAll(reader: AsyncIterator<ProtoView>): Future<String> {
 }
 
 /** A response with `bytes` for a body, sent one byte at a time. */
-function respond(status: i32, headers: Array<String>, bytes: FixedArray<u8>, trailers: Future<Result<Option<Fields>, ErrorCode>>) {
+function respond(status: i32, headers: Array<String>, bytes: FixedArray<u8>, trailers: Future<Result<Option<HeaderList>, ErrorCode>>) {
   let writer = new StreamWriter<u8>();
   produce(writer, bytes);
   return readGrpcResponse(status, fieldsOf(headers), writer.stream, trailers);

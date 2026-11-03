@@ -27,6 +27,8 @@ export function releaseRoutes(router: Router, host: PackageHost): void {
       fail(res, 400, 'InvalidRequest', 'Missing required parameter: package');
       return null;
     }
+    // Reading the body consumes the request: its type is read first.
+    let mimeType = req.getHeader('content-type') ?? 'application/octet-stream';
     // As large as the host stores, and refused before more is read.
     req.bodyLimit = host.config.maxBlobSize;
     let bytes = try {
@@ -38,7 +40,6 @@ export function releaseRoutes(router: Router, host: PackageHost): void {
       }
       throw e;
     };
-    let mimeType = req.getHeader('content-type') ?? 'application/octet-stream';
     let blob = await host.uploadArtifact(caller, pkg, mimeType, bytes);
     let body = new JsonObject();
     body['blob'] = toJson(blob.toValue());

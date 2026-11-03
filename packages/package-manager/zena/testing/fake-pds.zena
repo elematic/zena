@@ -32,7 +32,7 @@
 import {Future} from 'zena:async';
 import {HashMap, OrderedHashMap} from 'zena:collections';
 import {p256} from 'zena:crypto';
-import {parseI64} from 'zena:core';
+import {Own, Unmanaged, parseI64} from 'zena:core';
 import {hex} from 'zena:encoding';
 import {App, Request, Response, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
@@ -192,7 +192,8 @@ export final class FakePds {
   var upstreamPlc: String | null = null;
   /** The `(aud, lxm)` of each service-auth token handed out, in order. */
   serviceAuthRequests = new GrowableArray<(String, String)>();
-  var #server: Server | null = null;
+  /** Kept open: the fake runs until `close`, past the owner's scope. */
+  var #server: Unmanaged<Server> | null = null;
 
   new() {
     this.accounts[DID] = new FakeAccount(DID, null);
@@ -215,7 +216,7 @@ export final class FakePds {
 
   /** Starts serving, on a port of the system's choosing. */
   start(): void {
-    let server = serve(this);
+    let server = serve(this).keepOpen();
     this.#server = server;
     this.origin = `http://127.0.0.1:${server.port as i32}`;
     this.accounts.forEach((did, account) => {
@@ -294,7 +295,11 @@ export final class FakePds {
 
   /** Completes when the server stops. */
   done(): Future<void> {
-    return (this.#server as Server).done;
+    let server = this.#server;
+    if (server == null) {
+      throw new Error('the fake PDS was not started');
+    }
+    return server.done;
   }
 
   close(): void {
@@ -305,7 +310,7 @@ export final class FakePds {
   }
 }
 
-function serve(pds: FakePds): Server {
+function serve(pds: FakePds): Own<Server> {
   let app = new App();
   app.use(async (req, res, next): Future<void> => {
     pds.requests += 1;
@@ -445,7 +450,7 @@ function errorJson(message: String): JsonObject {
 
 /** The DID document the operation `operation` gives `did`. */
 /** `com.atproto.repo.putRecord`, for a signed-in account's own repository. */
-async function servePutRecord(pds: FakePds, req: Request, res: Response): Future<void> {
+async function servePutRecord(pds: FakePds, req: Own<Request>, res: Response): Future<void> {
   let bearer = req.getHeader('authorization') ?? '';
   let token = if (bearer.startsWith('Bearer ')) bearer.sliceBytes(7, bearer.length) else '';
   let input = parseJson(await req.text()) as JsonObject;
@@ -470,7 +475,7 @@ async function servePutRecord(pds: FakePds, req: Request, res: Response): Future
 }
 
 /** Answers the session methods of `com.atproto.server`. */
-async function serveSession(pds: FakePds, req: Request, res: Response): Future<void> {
+async function serveSession(pds: FakePds, req: Own<Request>, res: Response): Future<void> {
   let path = req.path;
   let bearer = req.getHeader('authorization') ?? '';
   let token = if (bearer.startsWith('Bearer ')) bearer.sliceBytes(7, bearer.length) else '';

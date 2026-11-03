@@ -2,11 +2,11 @@
 
 ## Status
 
-Accepted 2026-11-02, after seven revisions. Stages 1–3 are implemented,
-and stage 4 is in progress (§"Staging"). Part of elematic/zena#284:
-switching `wasi:http` and `zena-cli:host/http-server` to resource
-classes needs it, and so does the open "lifted `future<T>` ownership"
-item there.
+Accepted 2026-11-02, after seven revisions. Stages 1–3 and 5 are
+implemented, and so is the `wasi:http` switch they were for; stage 4
+lacks `FutureClaim` and loop-variable release for `for await`
+(§"Staging"). Part of elematic/zena#284, whose open "lifted `future<T>`
+ownership" item needs it too.
 
 ## Overview
 
@@ -509,6 +509,33 @@ and with them:
 - `zena:http`'s server `Response` holds no handle (its body is text,
   bytes or a `Stream<u8>`), so it stays an ordinary class.
 
+A server is a resource like any other: `App.listen` returns
+`Future<Own<Server>>`, and the owner closes the server when it leaves
+scope, so a program that starts one and forgets it does not leave it
+listening. A program holds it for as long as it should run:
+
+```zena
+let server = await app.listen(8080);
+await server.done;
+```
+
+A server that should outlive its scope, such as one a service object
+keeps, is traded for a handle that closes only on `close()`:
+`server.keepOpen()` consumes the owner and returns
+`Unmanaged<Server>`, which an ordinary class can store. This is
+`disown`, under a name that says what it is for. Neither form needs code
+to keep the process alive: the accept loop's pending read of the host's
+request stream is a waitable the driver waits on, so the program does
+not exit while it is outstanding.
+
+The switch also needed the release fixes it exposed: a written
+`[Disposable.dispose]` beside an owner field releases the field too
+(#388), `releaseOwned` releases the owners of a tuple, or of a union of
+tuples, at a specialization keyed by representation, a `return`,
+`break` or `continue` releases the owners still live that it leaves
+behind, and a `let` declared in a `var` owner's release region stays in
+scope after it (ownership.md, "Implicit drop").
+
 ## Staging
 
 1. **Restricted instantiations (checker).** #613 did the owner case for
@@ -544,13 +571,13 @@ and with them:
      member is affine and released by its member), #791 (the static half
      of `isFirstClass<T>()`, and first-class-only fields), and #796
      (streams whose writes hand refused elements back,
-     `StreamWriter.create`, and the `share_reference` intrinsic).
-   - In review: #804 (a call returning another function's inline result
-     at a zero-width instantiation) and #805 (`Completer.create`, a
-     `tryComplete` that hands its loser back, and a dropped completer
-     failing its future).
+     `StreamWriter.create`, and the `share_reference` intrinsic), #804 (a
+     call returning another function's inline result at a zero-width
+     instantiation), #805 (`Completer.create`, a `tryComplete` that hands
+     its loser back, and a dropped completer failing its future), #807
+     (awaiting a value typed as a subclass of `Future`) and #808 (a
+     `DeferredFuture` holding an owner).
    - Next: `FutureClaim` and loop-variable release for `for await`.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
-   `zena:fetch` and the protobuf transports removed.
-
-Then the `wasi:http` switch above.
+   `zena:fetch` and the protobuf transports removed. Done together with
+   the `wasi:http` switch above.

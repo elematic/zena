@@ -6,6 +6,7 @@
  */
 
 import {Future} from 'zena:async';
+import {Borrow, Own} from 'zena:core';
 import {HttpError, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {div} from 'zena:math';
@@ -43,7 +44,7 @@ export function json(res: Response, body: JsonObject): void {
  * The query parameters `names`, all of them present and not empty; null,
  * after answering `InvalidRequest`, when one is missing.
  */
-export function required(req: Request, res: Response, names: Array<String>): GrowableArray<String> | null {
+export function required(req: Borrow<Request>, res: Response, names: Array<String>): GrowableArray<String> | null {
   let params = req.url.searchParams();
   let values = new GrowableArray<String>();
   for (let name in names) {
@@ -86,13 +87,18 @@ export function nowSeconds(): i64 {
   return now().seconds;
 }
 
-/** The JSON object a request's body holds; null, after answering `InvalidRequest`, when it is not one. */
-export async function jsonBody(req: Request, res: Response): Future<JsonObject | null> {
+/**
+ * The JSON object a request's body holds; null, after answering
+ * `InvalidRequest`, when it is not one. Reading the body consumes the
+ * request.
+ */
+export async function jsonBody(req: Own<Request>, res: Response): Future<JsonObject | null> {
+  let limit = req.bodyLimit;
   let text = try {
     await req.text()
   } catch (e) {
     if (e is HttpError && e.status == 413) {
-      fail(res, 413, 'PayloadTooLarge', `the body is larger than the ${req.bodyLimit} bytes this method takes`);
+      fail(res, 413, 'PayloadTooLarge', `the body is larger than the ${limit} bytes this method takes`);
       return null;
     }
     throw e;

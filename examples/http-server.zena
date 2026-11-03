@@ -32,11 +32,13 @@ export async function main(): Future<void> {
   let app = new App();
   let router = new Router();
 
-  // 1. Logging middleware
+  // 1. Logging middleware. `next` takes the request on to the rest of
+  // the pipeline, so what the log line needs is read first.
   app.use(async (req, res, next) => {
+    let method = req.method;
     let path = req.path;
-    await next();
-    console.log(`${req.method} ${path} -> ${res.statusCode}`);
+    await next(req);
+    console.log(`${method} ${path} -> ${res.statusCode}`);
   });
 
   // 2. Define routes
@@ -75,7 +77,9 @@ export async function main(): Future<void> {
   console.log('  GET  http://127.0.0.1:8080/secret');
   console.log('');
 
+  // The server runs for as long as `main` holds it.
   let server = await app.listen(8080 as u16);
   console.log(`Server listening on http://127.0.0.1:${server.port}`);
+  await server.done;
 }
 
