@@ -1,0 +1,28 @@
+// @mode: check
+// A callback is checked once, against the parameter it is passed to,
+// however deeply callbacks nest. An argument checked a second time would
+// report each error in its body once more per level of nesting.
+
+function run(f: () => void): void {
+  f();
+}
+
+function keep<T>(value: T, f: () => void): T {
+  f();
+  return value;
+}
+
+export function main(): i32 {
+  run(() => {
+    run(() => {
+      run(() => {
+        let s: String = 1; // @error: Type mismatch
+      });
+    });
+  });
+  // In a generic call, an argument whose parameter mentions no type
+  // parameter is checked once too.
+  return keep(0, () => {
+    let t: String = 2; // @error: Type mismatch
+  });
+}
