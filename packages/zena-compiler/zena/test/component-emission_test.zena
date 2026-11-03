@@ -849,6 +849,11 @@ export function reset(): boolean { return true; }
       `the pump does not write one owner at a time:\n${server}`);
     isTrue(!server.contains('writeAll') && !server.contains('GrowableArray<(Own'),
       `the pump buffers owners:\n${server}`);
+    // The pump that lowers a stream of owners lifts back the element a
+    // refused write took nothing of, so its handles are released.
+    isTrue(server.contains('if ((packed >> 4) == 0) {') &&
+        server.contains('let refused = liftVal'),
+      `the lowering pump does not take back a refused element:\n${server}`);
 
     let client = synthesizeWitModule(disk,
         `wit:${stdlibRoot}/wit#wasi:http/client`, wit);

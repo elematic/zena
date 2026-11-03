@@ -2339,6 +2339,15 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
   let chunkSize = `${STREAM_CHUNK}`;
   let elemExpr = liftExprOf(element, `buf + i * ${size}`, uses);
   let lowerElemStmt = lowerMemStmts(element, "v", "buf", uses);
+  // A write the reader refused took nothing, and lowering the element
+  // already moved its handles out of their classes into the buffer,
+  // where they are still this component's: lift them back, and the
+  // binding releases them where it ends (#833).
+  let reclaim = if (holdsOwner(element)) zena`
+    if ((packed >> 4) == 0) {
+      let refused = ${liftExprOf(element, "buf", uses)};
+    }
+  ` else "";
   // A chunk of plain elements goes to the reader in one bulk write. A
   // stream of owners is one element at a time (only a first-class
   // stream has the bulk path), and every element read is the
@@ -2410,6 +2419,7 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
           if (packed == -1) {
             packed = await awaitWaitable(end);
           }
+          ${reclaim}
           releaseStagedFrom(m0);
           if ((packed & 15) != 0) {
             source.stop();
