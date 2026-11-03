@@ -722,9 +722,10 @@ PDS with `atproto-proxy`. To relays, AppViews and other PDSes, a package
 host is an ordinary PDS: they read its repositories with
 `com.atproto.sync.*` and never call the extension.
 
-The Zena project runs a package host, a PDS written in Zena, at a name
-still to be chosen (`pkg.zena-lang.dev` below). Anyone can run another by
-implementing the extension's lexicons.
+The Zena project runs a package host, a PDS written in Zena, at
+`padstone.zena-lang.dev`, with its handles and its web pages at
+`pkg.zena-lang.dev` ([Names and addresses](#names-and-addresses)).
+Anyone can run another by implementing the extension's lexicons.
 
 The `zena` command reads packages from any PDS, since reading needs only
 `com.atproto.sync.*` and the checks in
@@ -913,7 +914,7 @@ was given to the real host.
      "services": {
        "atproto_pds": {
          "type": "AtprotoPersonalDataServer",
-         "endpoint": "https://pkg.zena-lang.dev"
+         "endpoint": "https://padstone.zena-lang.dev"
        }
      },
      "prev": null,
@@ -1416,35 +1417,37 @@ not planned.
 
 People sign in as themselves, never as an organization or a package:
 those have no passwords, and are managed through someone's role in them.
-The management interface is pages rendered on the server: on the package
-host's site, and on the index's once there is one
-([The index](#the-index)). It has no privileges of its own:
+The management interface is pages on the site, `pkg.zena-lang.dev`,
+rendered on the server ([Names and addresses](#names-and-addresses)). It
+has no privileges of its own:
 
 - **Signing in.** The page signs in with atproto OAuth, as a browser
   client, and the OAuth session stays in the browser. The session's DPoP
   key is a non-extractable WebCrypto key, and signing out revokes the
   session. The server learns who is signed in from a web session: the page
   asks the person's PDS for a service-auth token for
-  `dev.zena-lang.host.createWebSession` and trades it for an HttpOnly
-  cookie, which stands for the person to the site's pages and to nothing
-  else. It lasts a day, and the page renews it from the OAuth session.
+  `dev.zena-lang.site.createWebSession`, addressed to the site's DID, and
+  trades it for an HttpOnly cookie, which stands for the person to the
+  site's pages and to nothing else. It lasts a day, and the page renews it
+  from the OAuth session.
 - **Reading.** It reads public data from the index, or from the host
-  until there is one: packages, their maintainers records, releases
-  waiting for approvals, pending recovery resets and PLC operations. It
-  asks each host the person uses for the memberships the index cannot
-  see: the person's own, and for an organization's owners and admins, the
-  whole list.
+  until there is one, or straight from a package's PDS: packages, their
+  maintainers records, releases waiting for approvals, pending recovery
+  resets and PLC operations. It asks each host the person uses for the
+  memberships the index cannot see: the person's own, and for an
+  organization's owners and admins, the whole list.
 - **Writing.** It writes attestations to the person's own repository.
   Everything else goes to the package's or organization's host, through
   the person's PDS, which proxies the call with a service-auth token
   (`atproto-proxy`, which the `rpc` permission covers).
 
 The pages hold nothing that can publish, attest or change a record:
-every write goes through the person's PDS. On the package host's site,
-the host's server renders them, and it holds its packages' signing keys
-as their custodian ([Keys](#keys)), so a compromise of that server is a
-compromise of the host. The index's server holds no keys, so a
-compromised index can show wrong data, and do no more.
+every write goes through the person's PDS. While the site and the PDS run
+as one service, the server that renders the pages also holds the
+packages' signing keys as their custodian ([Keys](#keys)), so a
+compromise of that server is a compromise of the host. Once the site runs
+apart, its server holds no keys, so a compromised site can show wrong
+data, and do no more.
 
 The interface lists a person's packages, organizations and teams with
 their roles, the releases waiting for their approval, with the changes to
@@ -1472,9 +1475,9 @@ How it handles keys:
 People approve what the interface shows them, so its code is what they
 trust. It is served as static, versioned files built from open source,
 with Subresource Integrity on its scripts, and `zena approve` remains a
-way to inspect and approve releases without it. A package host can also
-have pages of its own for settings only it holds, such as claims on scope
-names.
+way to inspect and approve releases without it. Settings only a host
+holds, such as claims on scope names, are its operators' to review, on
+the host's `/admin` ([Finding a host](#finding-a-host)).
 
 ### The host's methods
 
@@ -1523,6 +1526,98 @@ Moving a package to another host, and the recovery of
 [Recovery](#recovery), have no methods yet. Both need PLC operations that
 the host signs only with the maintainers' attestations, and the rules for
 that are a later revision of this design.
+
+### Names and addresses
+
+The Zena project's package host uses three names:
+
+- **`pkg.zena-lang.dev`** is the domain handles are under. A scope's
+  organization is `acme.pkg.zena-lang.dev`, and its packages are names
+  below that, such as `router.acme.pkg.zena-lang.dev`. DNS TXT records
+  verify the handles, wherever the PDS runs. The same name is the address
+  of **the site**: the web pages, the management interface, and later
+  the index. The site's DID is `did:web:pkg.zena-lang.dev`.
+- **`padstone.zena-lang.dev`** is the PDS. Every package and organization
+  account's DID document names it as the account's PDS, and `zena`
+  publishes to it by default. Its DID, `did:web:padstone.zena-lang.dev`,
+  is the audience of every service-auth token for the host's methods. A
+  padstone is the block that spreads a beam's weight onto the wall below
+  it. The name is not under `pkg.zena-lang.dev`, where every name is a
+  scope's. If the project runs more PDSes, they take the names of other
+  stones that carry weight in a building, such as corbel or lintel.
+- **Staging** has the same pair: `pkg-staging.zena-lang.dev` and
+  `padstone-staging.zena-lang.dev`.
+
+The PDS has a name of its own for two reasons. Anyone with an account can
+upload the blobs it serves, and on an origin other than the site's, a
+blob that a browser ran as a page cannot reach the site's session cookie.
+And the site can move to a service of its own by changing where
+`pkg.zena-lang.dev` points, with no need to route one name's paths to two
+services.
+
+| Name                     | Paths                                                                                                                                                                                                                                                                                                                |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `padstone.zena-lang.dev` | `/xrpc/*`, for `com.atproto.*` and `dev.zena-lang.host.*`; `/.well-known/did.json`; `/`, a page that names the host and links to the site; `/admin`, for the host's operators; `/plc/*` on staging; later, `/oauth/*` for its authorization server, and account pages for the people whose atproto accounts it holds |
+| `pkg.zena-lang.dev`      | `/`, `/packages/:handle`, `/scopes/:name` and `/people/:id`; `/me`; `/sign-in/*`, the site's OAuth client; `/xrpc/*`, for `dev.zena-lang.site.*` and later the index's methods; `/assets/*` and `/docs/*`; later, `/admin` for the index's operators                                                                 |
+
+A path asked for under the other name answers 404, so that no address
+works by accident and gets shared.
+
+Both names point at one service for now, which picks its routes by the
+name a request is for, and one store holds the data of both. The site's
+code keeps to what it could do over the network, so that splitting the
+site off changes no page:
+
+- Public data comes from atproto's public reads, such as
+  `com.atproto.repo.getRecord`, from the host's catalog methods, and later
+  from the index.
+- Private data and every change go through the host's methods, as the
+  signed-in person, with a token addressed to the host
+  ([Finding a host](#finding-a-host)).
+
+While the two run as one, the site's pages call the host in the same
+process. Each such call is one the site could make as a host method or a
+public read. The pages read a person's private memberships for the person
+the site's session names; before the split, those reads carry the
+person's token for the host too.
+
+The site's own method, `dev.zena-lang.site.createWebSession`, takes a
+service-auth token addressed to the site's DID, and answers with the
+site's session cookie ([The management interface](#the-management-interface)).
+
+### Finding a host
+
+A client that manages an account finds the account's host, and what the
+host offers, from the account's DID:
+
+1. The account's DID document names its PDS, as `#atproto_pds`.
+2. That PDS's `com.atproto.server.describeServer` gives the PDS's DID,
+   which must name the PDS's origin, as `zena` checks
+   ([Creating a package](#creating-a-package)).
+3. That DID's document lists `#zena_package_host`, of type
+   `ZenaPackageHost`, when the PDS has the extension. A PDS without the
+   extension lists none, and the site shows its accounts without the
+   means to manage them.
+4. `dev.zena-lang.host.describeHost` answers with the host's handle
+   domain, its reserved scopes, its limits, whether a new scope waits for
+   the operator's approval, and which of the optional methods it serves.
+   A host answers a method it does not serve with XRPC's
+   `MethodNotImplemented`, and the site leaves out what needs it.
+
+The site calls the host's methods as the signed-in person, through the
+person's own PDS, with
+`atproto-proxy: did:web:padstone.zena-lang.dev#zena_package_host`. The
+person's PDS adds the service-auth token, which the `rpc` permissions of
+`dev.zena-lang.authPublish` allow. The site writes attestations to the
+person's own repository. Its session cookie tells the site's pages who is
+signed in, and allows nothing at the host.
+
+A PDS's own pages are only those any PDS has: its operators' `/admin`,
+where they also review claims on scope names, and pages for the people
+whose atproto accounts it holds. Everything about packages and
+organizations is on the site, for every host it finds this way. The site
+can also show a package straight from its PDS, without the index, as
+`zena` reads it.
 
 ### Moving to another host
 
@@ -1626,8 +1721,8 @@ its firehose (`com.atproto.sync.subscribeRepos`).
 
 The index is a separate service, built when there is a second package
 host, or a need for search or for a package's dependents. Until then the
-package host is the only place packages are published, and its pages
-read the host's own indexes ([The host's indexes](#the-hosts-indexes)).
+package host is the only place packages are published, and the site's
+pages read the host's own indexes ([The host's indexes](#the-hosts-indexes)).
 
 The index keeps a store of its own, filled through one ingest interface
 from events in the firehose's form: the records a commit created,
@@ -1647,8 +1742,8 @@ updated or deleted, and changes of handle. Two kinds of source feed it:
 
 ### The host's indexes
 
-The package host keeps two indexes of the accounts it holds, which its
-pages read:
+The package host keeps two indexes of the accounts it holds, which the
+site's pages read:
 
 - **A catalog** of its packages: each one's name and scope, its profile's
   description and license, its latest release that is not retracted, and
@@ -2031,8 +2126,9 @@ throttled. The host therefore limits who creates accounts and how many:
   automation accounts to `dev.zena-lang.*` records, enforces the limits on
   creating accounts and on storage, takes reports, and has the
   operator's tools for reviewing scopes and taking content down.
-- **The management interface**: pages on the host's site, and later the
-  index's, with no privileges of their own.
+- **The management interface**: pages on the site, `pkg.zena-lang.dev`,
+  with no privileges of their own, which find each account's host from
+  its DID.
 - **Lexicons** for the records, the host's methods and the
   `dev.zena-lang.authPublish` permission set, in
   `packages/package-manager/lexicons`. Moving a package and recovering
@@ -2146,9 +2242,9 @@ the cache share files across versions.
 ## Open questions
 
 - **Who runs the checksum log and its witnesses.**
-- **The Zena package host's domain, and its policy on scope names**: for
-  example, reserving scopes for verified domains or GitHub organizations,
-  and settling disputes.
+- **The Zena package host's policy on scope names**: for example,
+  reserving scopes for verified domains or GitHub organizations, and
+  settling disputes.
 - **The Zena package host's moderation**: who reviews new scopes and
   reports, the quotas on packages and storage, the legal entity that
   receives notices, and which labelers the host follows for maintainers.

@@ -130,6 +130,15 @@ extension. An admin page (#582) declares paths. An account extension's
 methods are served only for requests about its account; how a request
 names that account is an open question.
 
+A host extension can name a service for its methods, which the core
+lists in the host's DID document beside `#atproto_pds`. The package
+host's is `#zena_package_host`, so that a client finds which PDSes are
+package hosts, and calls their methods through the caller's own PDS with
+`atproto-proxy` ([package-manager.md](./package-manager.md#finding-a-host)).
+Paths are the PDS's own: the site's pages, at another name, are not an
+extension
+([package-manager.md](./package-manager.md#names-and-addresses)).
+
 ### Record write policy
 
 Before a commit, the core asks each installation that registered for
