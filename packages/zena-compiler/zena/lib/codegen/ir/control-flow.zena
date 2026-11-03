@@ -3903,7 +3903,10 @@ function lowerForInIteratorLoop(cx: LoweringContext, stmt: ForInStatement,
   // error — whenever the body always left the loop (an unconditional
   // `break` or `return`).
   cx.loops.push(new LoopCtx(header, exitB, carried));
-  lowerStmt(cx, stmt.body);
+  // An element the iteration binds is the body's to consume or release,
+  // as an `if let`'s binding is its branch's: the region releases the
+  // owners the body does not move, on every way out of the iteration.
+  lowerBranchStmt(cx, stmt.pattern as Node, stmt.body);
   if (cx.reachable) {
     cx.b.br(header, cx.envValues(carried));
   }

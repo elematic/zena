@@ -1,0 +1,63 @@
+// @mode: run
+// @result: 6302
+// An owner a `for await` iteration binds is the body's: released at the
+// end of the iteration unless the body moves it, and on the way out of a
+// `break` too.
+import { Own, Disposable } from 'zena:core';
+import { StreamWriter } from 'zena:stream';
+
+var released = 0;
+
+resource class R {
+  id: i32;
+  new(this.id);
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+function sink(r: Own<R>): void {}
+
+async function produce(writer: StreamWriter<Own<R>>, count: i32): Future<void> {
+  for (var i = 1; i <= count; i += 1) {
+    if (let (false, refused) = await writer.write(new R(i))) {
+      return;
+    }
+  }
+  writer.close();
+}
+
+async function everyElement(): Future<i32> {
+  released = 0;
+  let (writer, stream) = StreamWriter.create<Own<R>>();
+  produce(writer, 3);
+  var seen = 0;
+  for await (let r in stream) {
+    seen += r.id;
+    if (r.id == 2) {
+      sink(r);
+    }
+  }
+  // 1 and 3 released by the loop, 2 by `sink`.
+  return seen * 10 + released;
+}
+
+async function breakOut(): Future<i32> {
+  released = 0;
+  let (writer, stream) = StreamWriter.create<Own<R>>();
+  produce(writer, 2);
+  for await (let r in stream) {
+    if (r.id == 2) {
+      break;
+    }
+  }
+  // 1 at the end of its iteration, 2 on the way out of the `break`.
+  return released;
+}
+
+export async function main(): Future<i32> {
+  let first = await everyElement();
+  let second = await breakOut();
+  return first * 100 + second;
+}

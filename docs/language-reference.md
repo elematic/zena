@@ -6038,7 +6038,9 @@ as reading an owner field does. An unmoved tuple is released at scope exit,
 each owner element in turn and the last first, and so is an owner bound by
 destructuring; a union of tuples releases the owners of the member it holds.
 An owner bound by an `if let`, `while let` or `match` pattern is released at
-the end of its branch, and a call, `new` or `await` whose result holds an
+the end of its branch, one a `for`-`in` or `for await` loop binds at the end
+of each iteration (and on the way out of a `break`, `continue` or `return`),
+unless the body moves it, and a call, `new` or `await` whose result holds an
 owner, used as a statement, has it released there. When an `if let` or
 `while let` pattern does not match, the owners of the member the source does
 hold are not released yet (#495).
