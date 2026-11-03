@@ -1,5 +1,5 @@
 // @mode: run
-// @result: 111
+// @result: 1111
 // A `var` owner's release interval closes before the statement that
 // moves the binding, in the middle of its block, while a `using` or an
 // implicit-drop `let` inside the interval scopes the rest of the block.
@@ -61,6 +61,20 @@ function nested(again: boolean): i32 {
   return moved.id;
 }
 
+// The same split in a block checked for its value.
+function valueBlock(again: boolean): i32 {
+  return if (again) {
+    var r = new R(1);
+    r = new R(2);
+    let other = new R(3);
+    let moved = r;
+    sink(moved);
+    other.id
+  } else {
+    0
+  };
+}
+
 export function main(): i32 {
   var passed = 0;
   log = 0;
@@ -71,5 +85,7 @@ export function main(): i32 {
   log = 0;
   // 1 and 3 at the stores, 2 in `sink`, 4 at the block's end.
   if (nested(true) == 4 && log == 1324) { passed += 100; }
+  log = 0;
+  if (valueBlock(true) == 3 && log == 123) { passed += 1000; }
   return passed;
 }

@@ -76,6 +76,10 @@ import { checkTupleUnionTest, combineArmTypes, createUnionType, eitherType, subt
 function checkIfBranchNode(ctx: CheckerContext, node: Node, expectedType: Type | null): Type {
   if (node is BlockStatement) {
     ctx.enterScope();
+    // The block's owners are its own, as a statement block's are, so a
+    // `var` owner declared in it gets release intervals over its
+    // statements (ownership.md §Implicit drop).
+    ctx.enterOwnScope();
     // Check all statements except the last; the last is the block's
     // value when it is an expression statement. Checking it exactly
     // once matters beyond cost: a re-check runs downstream of the
@@ -87,15 +91,20 @@ function checkIfBranchNode(ctx: CheckerContext, node: Node, expectedType: Type |
     while (i < node.body.length) {
       let statement = node.body[i];
       let isLast = i == node.body.length - 1;
-      if (isLast && statement is ExpressionStatement) {
+      ctx.beginOwnStatement();
+      // In a void context the last statement is a statement like any
+      // other, so an owner it discards is released (checkStatement).
+      if (isLast && statement is ExpressionStatement && !(expectedType is VoidType)) {
         resultType = adaptArmToContext(ctx, statement.expression,
             checkExpression(ctx, statement.expression, expectedType),
             expectedType);
       } else {
         checkStatement(ctx, statement);
       }
+      ctx.endOwnStatement(i, statement);
       i += 1;
     }
+    ctx.exitOwnScope(node);
     ctx.exitScope();
     return resultType;
   }
