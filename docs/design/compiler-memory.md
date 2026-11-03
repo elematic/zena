@@ -442,11 +442,20 @@ the fast and slow placements. Reserving 8,192 slots in the patched
 runtime took the slow build from 24.3 s to 22.3 s, level with the fast
 one (22.0–22.6 s; the patch's per-call env lookup inflates both).
 
-This is wasmtime's to fix — a real hasher, or sizing the cache for a
-few thousand pairs — and the reproduction is the two modules and
-`samply-diff.py --callers is_subtype`. Until then, a 2 s step in the
-`zena` module compile between two builds says nothing about the change
-between them unless the subtype-check count or a profile says so too.
+The hasher is also why: `NopHasher` returned the key as the hash, so
+hashbrown's 7-bit tag, taken from the top bits, was zero for every
+entry, and a lookup compared the key of every slot it probed. By
+November 2026 the swing was 7 s: compiling the compiler at `-O1` took
+17.0 s with one build of the CLI module and 24.4 s with another, though
+the second did less work. The build now uses a copy of wasmtime whose
+`NopHasher` mixes the key (`third_party/README.md`), which took the two
+to 15.6 s and 14.9 s with the same output. The problem is reported to
+wasmtime, and the copy goes once a release fixes it.
+
+Until then, the copy has to follow every wasmtime update. A step in
+compile time between two builds on a wasmtime without the fix says
+nothing about the change between them unless the subtype-check count or
+a profile says so too.
 
 ## Where the allocation goes
 

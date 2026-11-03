@@ -1,0 +1,23 @@
+--- a/src/runtime/vm/gc/enabled.rs
++++ b/src/runtime/vm/gc/enabled.rs
+@@ -46,7 +46,19 @@
+ impl core::hash::Hasher for NopHasher {
+     #[inline]
+     fn finish(&self) -> u64 {
+-        self.0
++        // Zena patch: hashbrown takes the bucket from the hash's low bits
++        // and the 7-bit tag from its top bits. A type index's top bits
++        // are zero, so returning the key unmixed gave every entry the same
++        // tag, and the subtype cache's `(sub << 32) | sup` keys started
++        // probing at their supertype's bucket. Murmur3's 64-bit finalizer
++        // spreads every key bit into both.
++        let mut h = self.0;
++        h ^= h >> 33;
++        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
++        h ^= h >> 33;
++        h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
++        h ^= h >> 33;
++        h
+     }
+ 
+     #[inline]

@@ -208,6 +208,7 @@ in the root `CLAUDE.md`.
 - **`packages/website`** & **`packages/website-client`**: Project website and documentation (`@zena-lang/website`).
 - **`packages/vscode-zena`**: VS Code extension providing syntax highlighting and language server client integration.
 - **`tests/language/`**: Portable language tests.
+- **`third_party/`**: A copy of the `wasmtime` crate with one patch, built in place of the published crate; a wasmtime update needs a new copy (see its README).
 - **`docs/language-reference.md`**: Official language reference.
 - **`docs/design/`**: Design documents for complex features.
 - **`docs/agents/`**: The checks that run on agents' changes, and the loop that adds one when a mistake repeats.
