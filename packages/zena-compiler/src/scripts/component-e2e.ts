@@ -365,6 +365,17 @@ const FIXTURES: Fixture[] = [
     invocations: [],
   },
   {
+    name: 'http-app',
+    wasi: ['p3=y', 'http=y'],
+    wit: ['http-service.wit', 'http-service'],
+    // The same world, served by a program written on `zena:http`'s
+    // `App`: its router answers, and the build needs harvest to delete
+    // the host server's imports, which `App.listen` reaches and the
+    // world does not provide.
+    serveRequest: [18926, '/greet/zena', 'hello, zena'],
+    invocations: [],
+  },
+  {
     name: 'service',
     wasi: ['p3=y'],
     wit: ['service.wit', 'service'],

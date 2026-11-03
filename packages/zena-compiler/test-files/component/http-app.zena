@@ -1,0 +1,26 @@
+// A wasi:http service written on `zena:http`'s `App`, built against the
+// same world as `http-service.zena` and driven by `wasmtime serve`: the
+// e2e script fetches a path and reads the body back. `App` reaches the
+// zena-cli host server's bindings through `listen`, which this program
+// never calls, so the build depends on harvest deleting the imports
+// nothing calls: the world does not import the host server (#840).
+import { Request, Response, ErrorCode } from 'wasi:http/types';
+import { Own, Result } from 'zena:core';
+import { App, Router, handleWireRequest } from 'zena:http';
+
+function createApp() {
+  let app = new App();
+  let router = new Router();
+  router.get('/greet/:name', async (req, res, next, params) => {
+    res.type = 'text/plain; charset=utf-8';
+    res.body = `hello, ${params.getOr('name', 'nobody')}`;
+  });
+  app.use(router.routes());
+  return app;
+}
+
+let app = createApp();
+
+export async function handle(request: Own<Request>): Future<Result<Own<Response>, ErrorCode>> {
+  return await handleWireRequest(app, request);
+}
