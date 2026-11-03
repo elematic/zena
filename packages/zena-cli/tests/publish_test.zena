@@ -8,11 +8,12 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
 import {existsSync, listDirSync} from 'zena:fs';
+import {fetch} from 'zena:fetch';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {
-  MAIN, Scratch, ZenaCommand, described, ensureDir, fakePdsOrigin, fetchText, read, startFakePds,
-  write
+  MAIN, Scratch, ZenaCommand, described, ensureDir, fakePdsOrigin, read, startFakePds, write
 } from './cli-support.zena';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
@@ -173,9 +174,9 @@ export let tests = suite('zena publish', () => {
 
       // Alice attested the scope's members record and the three releases, in
       // her own repository.
-      let listed = fetchText(
-          `${(addresses['plc'] as String).sliceBytes(0, (addresses['plc'] as String).length - 4)}/xrpc/com.atproto.repo.listRecords?repo=${ALICE}&collection=dev.zena-lang.package.attestation`);
-      equal(((parseJson(listed) as JsonObject)['records'] as JsonArray).length, 4);
+      let listed = runFuture(fetch(
+          `${(addresses['plc'] as String).sliceBytes(0, (addresses['plc'] as String).length - 4)}/xrpc/com.atproto.repo.listRecords?repo=${ALICE}&collection=dev.zena-lang.package.attestation`));
+      equal(((parseJson(runFuture(listed.text())) as JsonObject)['records'] as JsonArray).length, 4);
 
       // Another workspace adds the package by its handle and runs it.
       write(scratch.at('app/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);

@@ -814,8 +814,12 @@ export class DeferredFuture<scoped T> extends Future<T> implements Disposable {
  * links `blockOn`. A portable component that runs a future waiting on
  * the host without that is reported as a deadlock here; an `async
  * main` that awaits it is the way to write it.
+ *
+ * `T` may be an owner (`runFuture(fetch(url))`): the value comes out
+ * of `f` by a take, so the caller owns it, and `f`, released at exit
+ * as an owned parameter is, holds nothing to release.
  */
-export function runFuture<T>(f: Future<T>): T {
+export function runFuture<scoped T>(f: Future<T>): T {
   drainMicrotasks();
   // Still pending after the drain: block for what the host owes, when
   // the target can (see `setBlockingParker`), draining after each

@@ -125,8 +125,9 @@ the value to anyone but that one waiter are not available on a
 restricted instantiation: `then`, and the combinators `all`, `race` and
 `any`, whose type parameters stay unrestricted and so already reject a
 restricted argument. `Future.allSettled<scoped T>` awaits each input
-once and is available. `runFuture<T>` reads once but is unrestricted
-today; it can opt in when a program needs it.
+once and is available, and so is `runFuture<scoped T>`, which takes the
+value out once (#837): synchronous code, a test body, gets the owner a
+future settles with, and the emptied future releases nothing.
 
 ## Runtime state
 
@@ -415,7 +416,9 @@ a `FutureClaim` is single-holder: `split()` is unavailable. At an owner,
 releasing the claim releases the last claim, which cancels the work, and
 its future is dropped like any other: if a value arrives anyway, the
 releasing waiter releases it. At a must-consume `T` the claim's future
-must be awaited, so the claim cannot be released early.
+must be awaited, so the claim cannot be released early. How a single
+holder awaits it, and what "unavailable" means for `split()`, are open
+(#873).
 
 ## The class half of `scoped T`
 
@@ -559,7 +562,7 @@ scope after it (ownership.md, "Implicit drop").
    rejected). `never` releases its resource. Still to do:
    `DeferredFuture`'s readable-end drop moving into the glue, once its
    `T` is `scoped`, and the throw on a store into a full `T` field at a
-   restricted specialization.
+   restricted specialization, which waits on how lowering fails (#872).
 4. **`Option`, streams, `Completer.create` and `FutureClaim`** at
    restricted types, with loop-variable release for `for await`.
    - Merged: #782 (a pattern that takes a `scoped T` instance apart
