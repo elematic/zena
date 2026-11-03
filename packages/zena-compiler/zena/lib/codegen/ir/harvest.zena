@@ -14,6 +14,13 @@
  * installs live, and a live singleton global makes its class's vtable
  * global live. Nothing else can name a function or a global.
  *
+ * An imported function is live when something live calls or names it,
+ * and the others go too: reachability reaches a host function through
+ * any method in a vtable (`App.listen` reaches the host server), and a
+ * component imports exactly what its module does, so an import left
+ * behind is one the host must provide, which a declared world that does
+ * not import it rejects (#840).
+ *
  * Removal rebinds function and global indices the way layout assigns
  * them (imports first, then survivors in order) and recomputes which
  * functions need an element-segment entry. Emission reads indices off
@@ -30,12 +37,14 @@
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal } from './ir.zena';
 import { WasmModule, WasmFunction, WasmGlobal } from '../wasm-module.zena';
 import { getClassKey } from '../codegen-utils.zena';
+import { HashSet } from 'zena:collections';
 
 /** What one harvest removed. */
 export final class HarvestResult {
   functions: i32;
   globals: i32;
-  new(this.functions, this.globals);
+  imports: i32;
+  new(this.functions, this.globals, this.imports);
 }
 
 /**
@@ -60,10 +69,16 @@ export function pruneUnreached(wasm: WasmModule,
   for (var i = 0; i < gcount; i += 1) {
     liveG.push(false);
   }
+  // An import has no body to walk: it is live once something names it.
+  let liveImports = new HashSet<WasmFunction>();
   // One worklist for both kinds: function entries are their body
   // index, global entries are offset past the function count.
   let work = new Array<i32>();
   let markFunction = (f: WasmFunction) => {
+    if (f.isImport) {
+      liveImports.add(f);
+      return;
+    }
     if (let (true, idx) = bodyIndex.get(f)) {
       if (!liveF[idx]) {
         liveF[idx] = true;
@@ -166,8 +181,21 @@ export function pruneUnreached(wasm: WasmModule,
       removedG += 1;
     }
   }
-  if (removedF == 0 && removedG == 0) {
-    return new HarvestResult(0, 0);
+  let keptImports = new Array<WasmFunction>();
+  for (let f in wasm.functionImports) {
+    if (liveImports.has(f)) {
+      keptImports.push(f);
+    }
+  }
+  let removedI = wasm.functionImports.length - keptImports.length;
+  if (removedF == 0 && removedG == 0 && removedI == 0) {
+    return new HarvestResult(0, 0, 0);
+  }
+  if (removedI > 0) {
+    wasm.functionImports.clear();
+    for (let f in keptImports) {
+      wasm.functionImports.push(f);
+    }
   }
   while (wasm.functions.length > 0) {
     wasm.functions.pop();
@@ -215,5 +243,5 @@ export function pruneUnreached(wasm: WasmModule,
       }
     }
   }
-  return new HarvestResult(removedF, removedG);
+  return new HarvestResult(removedF, removedG, removedI);
 }

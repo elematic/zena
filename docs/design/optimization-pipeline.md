@@ -273,6 +273,10 @@ ir.md §10 in staged form:
    and types never reached are dropped before layout. Because indices
    bind at emission off the target objects, pruning is deleting from
    `wasm.functions` and re-running index assignment — no body rewrites.
+   Imported functions nothing live calls go the same way, from
+   `wasm.functionImports`: a component imports what its module does,
+   so an import a deleted method alone called (`App.listen`'s host
+   server) would otherwise be one the host has to provide (#840).
 2. **Instantiation feedback.** Recompute the instantiated-class set
    from surviving `struct_new` sites and singleton references. If it
    shrank relative to what devirtualization last used, rerun devirt +

@@ -1,0 +1,90 @@
+/**
+ * Harvest (lib/codegen/ir/harvest.zena) deletes an imported function
+ * nothing live calls, with the functions that called it. A component's
+ * imports are the module's, so an import left behind is one the host must
+ * provide anyway, and a declared world that does not import it rejects
+ * the build (#840).
+ */
+import { suite, test } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+
+function compileToWat(source: String, optLevel: i32) {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+
+  let generator = new WatGenerator("js", false, optLevel);
+  return generator.generate(new Program(units, entryUnit));
+}
+
+// `Base.other` is in the vtable, so reachability reaches it and the
+// import it calls, but no call reads its slot: the dead-slot pass deletes
+// the slot, harvest the method, and with this change the import.
+let fixture = `
+@external("host", "used")
+declare function used(): i32;
+
+@external("host", "unused")
+declare function unused(): i32;
+
+class Base {
+  value(): i32 {
+    return used();
+  }
+
+  other(): i32 {
+    return unused();
+  }
+}
+
+class Sub extends Base {
+  value(): i32 {
+    return 2;
+  }
+}
+
+function pick(sub: boolean): Base {
+  return if (sub) new Sub() else new Base();
+}
+
+export ${'function'} main(): i32 {
+  return pick(false).value() + pick(true).value();
+}
+`;
+
+export let tests = suite('harvest: imports', () => {
+  test('an import only a deleted function called is deleted too', (ctx) => {
+    let wat = compileToWat(fixture, 1);
+    isTrue(wat.contains('(import "host" "used"'),
+        `the live import is missing:\n${wat}`);
+    isTrue(!wat.contains('(import "host" "unused"'),
+        `the import only Base.other called survived:\n${wat}`);
+  });
+});
