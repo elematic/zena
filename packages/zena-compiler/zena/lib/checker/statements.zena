@@ -889,7 +889,14 @@ case _: {
         );
       }
       bindPattern(ctx, pattern, elementType);
+      // An element an iteration binds is the body's to consume or
+      // release, as an `if let`'s binding is its branch's: it is
+      // released at the end of the iteration unless the body moves it
+      // (owner-futures.md, "Streams").
+      ctx.enterOwnScope();
+      registerPatternOwners(ctx, pattern as Node);
       checkStatement(ctx, body);
+      ctx.exitOwnScope(body as Node);
       ctx.exitLoop();
       ctx.exitScope();
       ctx.exitFlowLoop(loopHead);

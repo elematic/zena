@@ -4,9 +4,8 @@
 
 Accepted 2026-11-02, after seven revisions. Stages 1–3 and 5 are
 implemented, and so is the `wasi:http` switch they were for; stage 4
-lacks `FutureClaim` and loop-variable release for `for await`
-(§"Staging"). Part of elematic/zena#284, whose open "lifted `future<T>`
-ownership" item needs it too.
+lacks `FutureClaim` (§"Staging"). Part of elematic/zena#284, whose open
+"lifted `future<T>` ownership" item needs it too.
 
 ## Overview
 
@@ -579,8 +578,11 @@ scope after it (ownership.md, "Implicit drop").
      instantiation), #805 (`Completer.create`, a `tryComplete` that hands
      its loser back, and a dropped completer failing its future), #807
      (awaiting a value typed as a subclass of `Future`) and #808 (a
-     `DeferredFuture` holding an owner).
-   - Next: `FutureClaim` and loop-variable release for `for await`.
+     `DeferredFuture` holding an owner). The loop variable of a `for await`
+     (or a `for`-`in` over an iterator) is a candidate of the loop body,
+     released at the end of each iteration unless the body moves it
+     (`lowerBranchStmt` in `lowerForInIteratorLoop`).
+   - Next: `FutureClaim`.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
    `zena:fetch` and the protobuf transports removed. Done together with
    the `wasi:http` switch above.
