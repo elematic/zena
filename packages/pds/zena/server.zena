@@ -4,7 +4,12 @@
  * `com.atproto.repo` (`xrpc/repo.zena`) for every account, and with
  * `Sessions`, password sessions (`xrpc/server.zena`) and an account's
  * writes to its own repository. With a `PackageHost`, it also serves the
- * host's methods (`xrpc/host/`) and its web pages (`web/`).
+ * host's methods (`xrpc/host/`), and the site: the web pages (`web/`) and
+ * what their sign-in calls.
+ *
+ * The PDS and the site can each have a host name of their own
+ * (docs/design/package-manager.md, "Names and addresses"), so an
+ * application serves one part, `AppPart`, or both, as on one machine.
  *
  * `/` and `/xrpc/_health` follow pds.js's
  * `packages/core/src/handlers/server-meta.js`, at the revision
@@ -22,7 +27,9 @@ import {webPages} from './web/routes.zena';
 import {contextOf} from './web/session.zena';
 import {People} from './web/people.zena';
 import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
+import {resolveHandleRoute} from './xrpc/host/identity.zena';
 import {hostRoutes} from './xrpc/host/routes.zena';
+import {webSessionRoutes} from './xrpc/host/web.zena';
 import {repoRoutes} from './xrpc/repo.zena';
 import {serverRoutes} from './xrpc/server.zena';
 import {syncRoutes} from './xrpc/sync.zena';
@@ -32,11 +39,22 @@ export let version = '0.0.1';
 
 let banner = 'An AT Protocol PDS written in Zena\n';
 
+/** Which of the server's parts an application serves. */
+export enum AppPart {
+  /** The PDS, with the host's methods: what its own host name serves. */
+  Pds,
+  /** The site: the pages, and what their sign-in calls, under the site's name. */
+  Site,
+  /** Both, under every name. */
+  Both
+}
+
 /**
- * Returns the application that serves every route, for the accounts in
- * `pds`, and the host methods of `host` when there is one.
+ * Returns the application that serves `part`, for the accounts in `pds`,
+ * with the host's methods and the site when there is a `host`.
  */
-export function createApp(pds: Pds, host: PackageHost | null = null, sessions: Sessions | null = null): App {
+export function createApp(pds: Pds, host: PackageHost | null = null, sessions: Sessions | null = null,
+    part: AppPart = AppPart.Both): App {
   let app = new App();
   let router = new Router();
   // Before any route reads a body (`REQUEST_BODY_LIMIT`).
@@ -45,33 +63,49 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
     await next();
   });
 
-  if (host == null) {
-    router.get('/', async (req, res, next, params) => {
-      res.type = 'text/plain; charset=utf-8';
-      res.body = banner;
+  if (part != AppPart.Site) {
+    // The site's home page is `/` wherever the site is served.
+    if (host == null || part == AppPart.Pds) {
+      let text = if (host == null) banner else pdsBanner(host);
+      router.get('/', async (req, res, next, params) => {
+        res.type = 'text/plain; charset=utf-8';
+        res.body = text;
+      });
+    }
+
+    router.get('/xrpc/_health', async (req, res, next, params) => {
+      res.type = 'application/json';
+      res.body = new JsonBuilder()
+        .beginObject()
+        .key('version').string(version)
+        .endObject()
+        .toString();
     });
-  }
 
-  router.get('/xrpc/_health', async (req, res, next, params) => {
-    res.type = 'application/json';
-    res.body = new JsonBuilder()
-      .beginObject()
-      .key('version').string(version)
-      .endObject()
-      .toString();
-  });
-
-  syncRoutes(router, pds);
-  repoRoutes(router, pds, sessions);
-  if (sessions != null) {
-    serverRoutes(router, sessions);
+    syncRoutes(router, pds);
+    repoRoutes(router, pds, sessions);
+    if (sessions != null) {
+      serverRoutes(router, sessions);
+    }
   }
   if (host == null) {
     app.use(router.routes());
     return app;
   }
   let pages = host;
-  hostRoutes(router, pages);
+  if (part != AppPart.Site) {
+    hostRoutes(router, pages);
+  }
+  if (part == AppPart.Pds) {
+    app.use(router.routes());
+    return app;
+  }
+  webSessionRoutes(router, pages);
+  if (part == AppPart.Site) {
+    // The sign-in resolves the handle a person types on the site's own
+    // origin; the PDS's routes have it already.
+    resolveHandleRoute(router, pages);
+  }
   // One cache of the people the pages show, for every page.
   let people = People.forHost(pages);
   webPages(router, pages, people);
@@ -84,6 +118,11 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
     }
   });
   return app;
+}
+
+/** What `/` answers under the PDS's own name: what it is, and where its pages are. */
+function pdsBanner(host: PackageHost): String {
+  return `The PDS of the Zena package host for ${host.config.domain}, written in Zena.\nIts pages are at ${host.config.siteOrigin}\n`;
 }
 
 /** Whether `path` is one of the server's APIs', which answer in JSON rather than with pages. */

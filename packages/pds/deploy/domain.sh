@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
-# Maps the environment's domain to its Cloud Run service, once, after the
-# first deploy, and writes the records the mapping asks for into the
-# environment's zone.
+# Maps the environment's two names, the site's (DOMAIN) and the PDS's
+# (PDS_DOMAIN), to its Cloud Run service, once, after the first deploy,
+# and writes the records the mappings ask for: the site's into the
+# environment's zone, and the PDS's into zena-lang.dev's.
 #
 #   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:domain -w @zena-lang/pds
 #
 # Domain mappings are a beta command, so this needs gcloud's beta
 # component: `gcloud components install beta`, or a gcloud that has it.
 # zena-lang.dev must be verified for your account (it is, if you mapped the
-# website). Google then provisions the certificate, which can take a while
+# website). Google then provisions the certificates, which can take a while
 # after the records are in.
 
 set -euo pipefail
@@ -17,16 +18,18 @@ cd "$(dirname "$0")"
 # shellcheck source=env.sh
 source ./env.sh
 
-echo "==> Mapping $DOMAIN to $SERVICE"
-if gcloud beta run domain-mappings describe --domain "$DOMAIN" --project "$PROJECT" --region "$REGION" \
-  > /dev/null 2>&1; then
-  echo "    exists"
-else
-  gcloud beta run domain-mappings create --service "$SERVICE" --domain "$DOMAIN" \
-    --project "$PROJECT" --region "$REGION" --quiet
-fi
+for name in "$DOMAIN" "$PDS_DOMAIN"; do
+  echo "==> Mapping $name to $SERVICE"
+  if gcloud beta run domain-mappings describe --domain "$name" --project "$PROJECT" --region "$REGION" \
+    > /dev/null 2>&1; then
+    echo "    exists"
+  else
+    gcloud beta run domain-mappings create --service "$SERVICE" --domain "$name" \
+      --project "$PROJECT" --region "$REGION" --quiet
+  fi
+done
 
-echo "==> Records in $ZONE"
+echo "==> Records for $DOMAIN in $ZONE"
 TYPES="$(gcloud beta run domain-mappings describe --domain "$DOMAIN" --project "$PROJECT" --region "$REGION" \
   --format 'value(status.resourceRecords[].type)' | tr ';' ' ')"
 echo "    the mapping asks for: ${TYPES:-nothing yet}"
@@ -49,6 +52,27 @@ for type in A AAAA; do
   fi
 done
 
+# The PDS's name is beside the domain, under zena-lang.dev rather than in
+# the environment's zone, so its record, the CNAME a subdomain's mapping
+# asks for, goes in zena-lang.dev's zone.
+echo "==> Records for $PDS_DOMAIN"
+find_parent_zone
+if [ -z "$PARENT_ZONE" ]; then
+  echo "    zena-lang.dev. is not a Cloud DNS zone in $PARENT_PROJECT, so add this record where"
+  echo "    zena-lang.dev's DNS is kept (or set ZENA_DNS_PARENT_PROJECT and ZENA_DNS_PARENT_ZONE,"
+  echo "    and run this again):"
+  echo "      ${PDS_DOMAIN}.  CNAME  ghs.googlehosted.com."
+elif gcloud dns record-sets describe "${PDS_DOMAIN}." --type CNAME --zone "$PARENT_ZONE" \
+  --project "$PARENT_PROJECT" > /dev/null 2>&1; then
+  echo "    CNAME exists in $PARENT_ZONE"
+else
+  gcloud dns record-sets create "${PDS_DOMAIN}." --type CNAME --ttl 300 --rrdatas ghs.googlehosted.com. \
+    --zone "$PARENT_ZONE" --project "$PARENT_PROJECT" --quiet > /dev/null
+  echo "    CNAME ghs.googlehosted.com. in $PARENT_ZONE"
+fi
+
 echo
-echo "Once the certificate is ready, https://${DOMAIN}/.well-known/did.json answers. Watch it with:"
+echo "Once the certificates are ready, https://${PDS_DOMAIN}/.well-known/did.json and https://${DOMAIN}/"
+echo "answer. Watch them with:"
+echo "  gcloud beta run domain-mappings describe --domain $PDS_DOMAIN --project $PROJECT --region $REGION"
 echo "  gcloud beta run domain-mappings describe --domain $DOMAIN --project $PROJECT --region $REGION"

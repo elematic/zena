@@ -128,19 +128,27 @@ the server cannot use stops it with every problem listed, and status 2.
 ## Deploying
 
 The package host runs on Cloud Run, in two environments that `PDS_ENV`
-picks: `staging`, the default, at `pkg-staging.zena-lang.dev`, with its
-own PLC directory, so nothing it makes reaches `plc.directory`; and
-`production`, at `pkg.zena-lang.dev`. `deploy/env.sh` names what each one
-owns: a service, a Firestore database, a bucket, a service account with
-roles on those alone, a rotation-key secret, a session secret, and a Cloud DNS zone
-delegated from `zena-lang.dev`'s for its handle records. With `gcloud`
-signed in to the project:
+picks: `staging`, the default, with its own PLC directory, so nothing it
+makes reaches `plc.directory`; and `production`. Each has two names,
+which one service serves (docs/design/package-manager.md, "Names and
+addresses"):
+
+| Environment  | The site and the handles    | The PDS                          |
+| ------------ | --------------------------- | -------------------------------- |
+| `staging`    | `pkg-staging.zena-lang.dev` | `padstone-staging.zena-lang.dev` |
+| `production` | `pkg.zena-lang.dev`         | `padstone.zena-lang.dev`         |
+
+`deploy/env.sh` names what each one owns: a service, a Firestore
+database, a bucket, a service account with roles on those alone, a
+rotation-key secret, a session secret, and a Cloud DNS zone delegated
+from `zena-lang.dev`'s for its handle records. With `gcloud` signed in to
+the project:
 
 ```sh
 export ZENA_GCP_PROJECT=meta-garage-420114 PDS_ENV=staging
 npm run deploy:setup -w @zena-lang/pds    # once: the resources, the key and the zone
 npm run deploy -w @zena-lang/pds          # builds the image with Cloud Build, and deploys it
-npm run deploy:domain -w @zena-lang/pds   # once: maps the domain, with gcloud's beta component
+npm run deploy:domain -w @zena-lang/pds   # once: maps both names, with gcloud's beta component
 ```
 
 `deploy:setup` is idempotent, and makes the rotation key and the session
@@ -151,8 +159,11 @@ adds a resource, such as the session secret, before `deploy`. When
 environment's domain, to add where that DNS is kept. Back up staging's
 key with
 `gcloud secrets versions access latest --secret zena-pkg-staging-rotation-key`.
-`deploy` checks that the new revision answers `describeServer`. The
-certificate for the domain can take a while after `deploy:domain`.
+`deploy` checks that the new revision answers `describeServer`.
+`deploy:domain` writes the site's records into the environment's zone,
+and the PDS's `CNAME` into `zena-lang.dev`'s, or prints it when that zone
+is not in Cloud DNS. The certificates for the names can take a while
+after it.
 
 `zena` uses staging with two variables, which `deploy/staging.env` sets;
 it also clears `ZENA_DNS_OVER_HTTPS`, which a shell that ran the demo still
