@@ -324,6 +324,17 @@ export let tests = suite('pds:service', () => {
     let parsed = parseDidDocument(parseJson(document.body as String), 'did:web:pkg.test');
     equal(parsed.pds as String, 'https://pkg.test');
     equal(get(plain.app, '/.well-known/did.json').statusCode, 404);
+
+    // The PDS keeps managed accounts for the host it runs with, and none
+    // without one.
+    let managed = hosted.pds.managed;
+    if (managed == null) {
+      isTrue(false, 'managed accounts');
+      return;
+    }
+    equal(managed.serviceDid, 'did:web:pkg.test');
+    equal(managed.endpoint, 'https://pkg.test');
+    isTrue(plain.pds.managed == null, 'no managed accounts without a host');
   });
 
   test("reads the site's address apart from the PDS's, and the DID from the PDS's", (ctx) => {

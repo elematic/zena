@@ -3,7 +3,9 @@
  * for each namespace: `com.atproto.sync` (`xrpc/sync.zena`) and
  * `com.atproto.repo` (`xrpc/repo.zena`) for every account, and with
  * `Sessions`, password sessions (`xrpc/server.zena`) and an account's
- * writes to its own repository. With a `PackageHost`, it also serves the
+ * writes to its own repository. With managed accounts (`Pds.managed`), it
+ * creates them for the package hosts it trusts (`xrpc/managed.zena`) and
+ * takes their writes from those hosts. With a `PackageHost`, it also serves the
  * host's methods (`xrpc/host/`), and the site: the web pages (`web/`) and
  * what their sign-in calls.
  *
@@ -30,6 +32,7 @@ import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
 import {resolveHandleRoute} from './xrpc/host/identity.zena';
 import {hostRoutes} from './xrpc/host/routes.zena';
 import {webSessionRoutes} from './xrpc/host/web.zena';
+import {managedRoutes} from './xrpc/managed.zena';
 import {repoRoutes} from './xrpc/repo.zena';
 import {serverRoutes} from './xrpc/server.zena';
 import {syncRoutes} from './xrpc/sync.zena';
@@ -86,6 +89,10 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
     repoRoutes(router, pds, sessions);
     if (sessions != null) {
       serverRoutes(router, sessions);
+    }
+    let managed = pds.managed;
+    if (managed != null) {
+      managedRoutes(router, pds, managed);
     }
   }
   if (host == null) {

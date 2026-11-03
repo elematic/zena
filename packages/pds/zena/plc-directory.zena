@@ -17,7 +17,7 @@ import {HashMap} from 'zena:collections';
 import {Own} from 'zena:core';
 import {App, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
-import {PlcError, PlcOperation, checkNextOperation, didDocument} from 'atproto:plc';
+import {PlcError, PlcOperation, checkNextOperation, didDocument, fetchOperations} from 'atproto:plc';
 import {isValidDid} from 'atproto:syntax';
 import {fetch} from 'zena:fetch';
 
@@ -86,6 +86,18 @@ export final class PlcDirectory {
       }
     }
     throw new PlcError(`${did}: other operations kept landing first`);
+  }
+
+  /**
+   * The operations of `did`, oldest first, recorded here or read from
+   * upstream. Throws `PlcError` when neither has them.
+   */
+  async operations(did: String): Future<Array<PlcOperation>> {
+    let log = await this.#log.operations(did);
+    if (log.length > 0) {
+      return log;
+    }
+    return await fetchOperations(this.upstream, did);
   }
 
   /** The DID document of `did`, recorded here or read from upstream, or null when neither has it. */

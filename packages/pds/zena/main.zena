@@ -35,11 +35,10 @@
 import {Future} from 'zena:async';
 import {exit, getArguments, getEnv, readStdin} from 'zena:cli';
 import {hex} from 'zena:encoding';
-import {fetch} from 'zena:fetch';
-import {JsonArray, parseJson, stringify} from 'zena:json';
+import {stringify} from 'zena:json';
 import {randomBytes} from 'zena:random';
 import {KeyType, formatDidKey} from 'atproto:didkey';
-import {PlcError, PlcOperation, submitPlcOperation, undoOperation} from 'atproto:plc';
+import {PlcError, fetchOperations, submitPlcOperation, undoOperation} from 'atproto:plc';
 import {SigningKey} from './storage.zena';
 import {HostError} from './host.zena';
 import {nowMicros} from './xrpc/common.zena';
@@ -220,19 +219,7 @@ async function plcRestore(): Future<void> {
   }
   let offline = key;
   try {
-    let response = await fetch(`${directory}/${did}/log`);
-    if (!response.ok) {
-      throw new PlcError(`${directory} has no log for ${did}: HTTP ${response.status}`);
-    }
-    let list = parseJson(await response.text());
-    if (!(list is JsonArray)) {
-      throw new PlcError(`${directory} answered ${did}'s log with something other than a list`);
-    }
-    let log = new GrowableArray<PlcOperation>();
-    let items = list;
-    for (var i = 0; i < items.length; i += 1) {
-      log.push(PlcOperation.fromJson(items[i]));
-    }
+    let log = await fetchOperations(directory, did);
     let undo = undoOperation(log, cid, offline.publicKey()).signedWith((bytes) => offline.sign(bytes));
     console.log(stringify(undo.toJson()));
     if (!yes) {

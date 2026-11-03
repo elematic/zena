@@ -37,7 +37,7 @@ import {OrderedHashMap} from 'zena:collections';
 import {sha256} from 'zena:crypto';
 import {base32Lower, base64Url} from 'zena:encoding';
 import {fetch} from 'zena:fetch';
-import {JsonArray, JsonObject, JsonValue, stringify} from 'zena:json';
+import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {encodeCbor} from './cbor.zena';
 import {Cid} from './cid.zena';
 import {ListValue, MapValue, NullValue, StringValue, Value, newMap} from './data.zena';
@@ -373,6 +373,27 @@ export async function submitPlcOperation(directory: String, did: String, operati
   if (!response.ok) {
     throw new PlcError(`${directory} refused the operation for ${did}: HTTP ${response.status} ${await response.text()}`);
   }
+}
+
+/**
+ * The operations the PLC directory at `directory` has recorded for `did`,
+ * oldest first, the genesis operation among them. Throws `PlcError` when
+ * the directory has no log for it.
+ */
+export async function fetchOperations(directory: String, did: String): Future<Array<PlcOperation>> {
+  let response = await fetch(`${directory}/${did}/log`);
+  if (!response.ok) {
+    throw new PlcError(`${directory} has no log for ${did}: HTTP ${response.status}`);
+  }
+  let list = parseJson(await response.text());
+  if (!(list is JsonArray)) {
+    throw new PlcError(`${directory} answered ${did}'s log with something other than a list`);
+  }
+  let log = new GrowableArray<PlcOperation>();
+  for (var i = 0; i < list.length; i += 1) {
+    log.push(PlcOperation.fromJson(list[i]));
+  }
+  return log;
 }
 
 function stringArray(items: Array<String>): JsonArray {

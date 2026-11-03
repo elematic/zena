@@ -133,6 +133,14 @@ export function storageConformance(make: () => Storage): void {
     isTrue((runFuture(storage.getAccount(BOB)) as Account).kind == AccountKind.Person, 'person');
     runFuture(storage.putAccount(new Account('did:plc:nohandlenohandlenohandle', null, key())));
     isNull((runFuture(storage.getAccount('did:plc:nohandlenohandlenohandle')) as Account).handle);
+
+    // A managed account keeps the host that manages it.
+    let managed = new Account('did:plc:managedmanagedmanagedman', 'router.acme.test', key(), AccountKind.Package);
+    managed.manager = 'did:web:pkg.test';
+    runFuture(storage.putAccount(managed));
+    equal((runFuture(storage.getAccount('did:plc:managedmanagedmanagedman')) as Account).manager as String,
+        'did:web:pkg.test');
+    isNull((runFuture(storage.getAccount(BOB)) as Account).manager);
   });
 
   test('keeps blocks and blobs', (ctx) => {

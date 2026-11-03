@@ -1,32 +1,41 @@
 /**
  * The `com.atproto.repo` methods: reading a repository's description, a
- * record and a page of records, and, with sessions, an account's writes
- * to its own repository, `putRecord` and `deleteRecord`. Ported from
+ * record and a page of records, and the writes, `putRecord`,
+ * `deleteRecord`, `applyWrites` and `uploadBlob`. An account writes its
+ * own repository with a session; a managed account takes writes only
+ * with its package host's service-auth token (`pds:managed`). Ported from
  * pds.js's `packages/core/src/handlers/xrpc-repo.js`, at the revision
  * docs/design/pds.md pins.
  */
 
 import {Future} from 'zena:async';
 import {parseI32} from 'zena:core';
-import {Router} from 'zena:http';
+import {HttpError, Router} from 'zena:http';
 import {JsonArray, JsonObject, JsonValue} from 'zena:json';
-import {decodeCbor} from 'atproto:cbor';
+import {cidForValue, decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {MapValue, fromJson, toJson} from 'atproto:data';
+import {BlobRef, MapValue, fromJson, toJson} from 'atproto:data';
 import {
-  REPO_DELETE_RECORD, REPO_DESCRIBE_REPO, REPO_GET_RECORD, REPO_LIST_RECORDS, REPO_PUT_RECORD, xrpcPath
+  REPO_APPLY_WRITES, REPO_DELETE_RECORD, REPO_DESCRIBE_REPO, REPO_GET_RECORD, REPO_LIST_RECORDS, REPO_PUT_RECORD,
+  REPO_UPLOAD_BLOB, xrpcPath
 } from 'atproto:methods';
 import {Pds} from '../pds.zena';
 import {CreateRecord, DeleteRecord, UpdateRecord, Write} from '../repository.zena';
 import {SessionError, Sessions} from '../sessions.zena';
-import {Account} from '../storage.zena';
+import {Account, StoredBlob} from '../storage.zena';
 import {accountFor, fail, json, jsonBody, nowMicros, nowSeconds, parseCid, required, sessionCall} from './common.zena';
 
 /** `com.atproto.repo.listRecords`'s page size, when the request gives none, and its largest. */
 let DEFAULT_LIMIT = 50;
 let MAX_LIMIT = 100;
 
-/** Adds the reads of the repositories in `pds`, and with `sessions`, their accounts' writes. */
+/** The most writes one `com.atproto.repo.applyWrites` takes, as its lexicon allows. */
+let MAX_WRITES = 200;
+
+/**
+ * Adds the reads of the repositories in `pds`, and their writes: by their
+ * own accounts with `sessions`, and by their hosts for managed accounts.
+ */
 export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null): void {
   router.get(xrpcPath(REPO_DESCRIBE_REPO), async (req, res, next, params) => {
     let given = required(req, res, ['repo']);
@@ -113,16 +122,20 @@ export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null):
     json(res, body);
   });
 
-  if (sessions != null) {
+  if (sessions != null || pds.managed != null) {
     writeRoutes(router, pds, sessions);
   }
 }
 
-/** Adds an account's writes to its own repository, as its session allows. */
-function writeRoutes(router: Router, pds: Pds, sessions: Sessions): void {
+/**
+ * Adds the writes to the repositories in `pds`. The body is read before
+ * the caller is checked, since its `repo` says whose token a write needs
+ * (`writable`), so it is no larger than `REQUEST_BODY_LIMIT`.
+ */
+function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void {
   router.post(xrpcPath(REPO_PUT_RECORD), async (req, res, next, params) => {
     await sessionCall(res, async (): Future<JsonObject | null> => {
-      let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
+      let authorization = req.getHeader('authorization');
       let input = await jsonBody(req, res);
       if (input == null) {
         return null;
@@ -131,7 +144,7 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions): void {
         fail(res, 400, 'InvalidRequest', 'repo, collection, rkey and record are required');
         return null;
       }
-      let account = await ownRepository(pds, caller.account, input['repo']);
+      let account = await writable(pds, sessions, authorization, input['repo'], REPO_PUT_RECORD);
       let collection = input['collection'] as String;
       let rkey = input['rkey'] as String;
       let record = fromJson(input['record']);
@@ -158,7 +171,7 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions): void {
 
   router.post(xrpcPath(REPO_DELETE_RECORD), async (req, res, next, params) => {
     await sessionCall(res, async (): Future<JsonObject | null> => {
-      let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
+      let authorization = req.getHeader('authorization');
       let input = await jsonBody(req, res);
       if (input == null) {
         return null;
@@ -167,7 +180,7 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions): void {
         fail(res, 400, 'InvalidRequest', 'repo, collection and rkey are required');
         return null;
       }
-      let account = await ownRepository(pds, caller.account, input['repo']);
+      let account = await writable(pds, sessions, authorization, input['repo'], REPO_DELETE_RECORD);
       let collection = input['collection'] as String;
       let rkey = input['rkey'] as String;
       // Deleting a record that is not there is done already.
@@ -178,18 +191,172 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions): void {
       return new JsonObject();
     });
   });
+
+  router.post(xrpcPath(REPO_APPLY_WRITES), async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let authorization = req.getHeader('authorization');
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      let given = input['writes'];
+      if (!(given is JsonArray)) {
+        fail(res, 400, 'InvalidRequest', 'repo and writes are required');
+        return null;
+      }
+      let list = given;
+      if (list.length > MAX_WRITES) {
+        fail(res, 400, 'InvalidRequest', `at most ${MAX_WRITES} writes are taken at once`);
+        return null;
+      }
+      if (input['swapCommit'] != null) {
+        fail(res, 400, 'InvalidRequest', 'swapCommit is not supported');
+        return null;
+      }
+      let account = await writable(pds, sessions, authorization, input['repo'], REPO_APPLY_WRITES);
+      let micros = nowMicros();
+      let writes = new GrowableArray<Write>();
+      for (var i = 0; i < list.length; i += 1) {
+        writes.push(writeOf(pds, list[i], micros));
+      }
+      let head = await pds.repositoryOf(account).applyWrites(writes, micros);
+      let results = new JsonArray();
+      for (let write in writes) {
+        results.push(resultOf(account, write));
+      }
+      let commit = new JsonObject();
+      commit['cid'] = head.cid.toString();
+      commit['rev'] = head.rev;
+      let answer = new JsonObject();
+      answer['commit'] = commit;
+      answer['results'] = results;
+      return answer;
+    });
+  });
+
+  // Only managed accounts take blobs for now: an account's own uploads
+  // would need the ones no record references collected, as the reference
+  // PDS does. A host's token names no account, so the upload names it in
+  // `repo`, a parameter the lexicon does not have.
+  router.post(xrpcPath(REPO_UPLOAD_BLOB), async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let given = required(req, res, ['repo']);
+      if (given == null) {
+        return null;
+      }
+      let named = await pds.findAccount(given[0]);
+      if (named == null || named.manager == null) {
+        throw new SessionError(403, 'Forbidden', 'only managed accounts take blobs here');
+      }
+      let account = await writable(pds, sessions, req.getHeader('authorization'), named.did, REPO_UPLOAD_BLOB);
+      // Reading the body consumes the request: its type is read first.
+      let mimeType = req.getHeader('content-type') ?? 'application/octet-stream';
+      req.bodyLimit = pds.maxBlobSize;
+      let bytes = try {
+        await req.bytes()
+      } catch (e) {
+        if (e is HttpError && e.status == 413) {
+          fail(res, 413, 'BlobTooLarge', `the blob is larger than ${pds.maxBlobSize} bytes`);
+          return null;
+        }
+        throw e;
+      };
+      let cid = Cid.forBlob(bytes);
+      await pds.storage.store(account.did).putBlob(cid, new StoredBlob(mimeType, bytes));
+      let answer = new JsonObject();
+      answer['blob'] = toJson(new BlobRef(cid, mimeType, bytes.length as i64).toValue());
+      return answer;
+    });
+  });
 }
 
 /**
- * The account a write names as its `repo`, which must be the caller's:
- * an account writes its own repository only.
+ * The account a write names as its `repo`, once `authorization` shows the
+ * caller may write it: a managed account's host, with a token for
+ * `method` (`ManagedAccounts.fromHost`), or the account itself, with a
+ * session.
  */
-async function ownRepository(pds: Pds, caller: Account, repo: JsonValue): Future<Account> {
+async function writable(pds: Pds, sessions: Sessions | null, authorization: String | null, repo: JsonValue,
+    method: String): Future<Account> {
   let named = if (repo is String) await pds.findAccount(repo) else null;
-  if (named == null || named.did != caller.did) {
-    throw new SessionError(403, 'Forbidden', `${caller.did} may write only its own repository`);
+  if (named != null && named.manager != null) {
+    let managed = pds.managed;
+    if (managed == null) {
+      throw new SessionError(403, 'Forbidden', `${named.did} takes writes only from its package host`);
+    }
+    await managed.fromHost(authorization, named, method, nowSeconds());
+    return named;
   }
-  return caller;
+  if (sessions == null) {
+    throw new SessionError(403, 'Forbidden', 'this PDS takes writes only to managed accounts, from their package hosts');
+  }
+  let caller = await sessions.authenticate(authorization, nowSeconds());
+  if (named == null || named.did != caller.account.did) {
+    throw new SessionError(403, 'Forbidden', `${caller.account.did} may write only its own repository`);
+  }
+  return named;
+}
+
+/**
+ * The write one of `com.atproto.repo.applyWrites`'s `writes` asks for. A
+ * create with no `rkey` gets a TID.
+ */
+function writeOf(pds: Pds, value: JsonValue, nowMicros: i64): Write {
+  if (!(value is JsonObject)) {
+    throw new SessionError(400, 'InvalidRequest', 'each write is an object');
+  }
+  let write = value;
+  let given = write['$type'];
+  let type = if (given is String) given else '';
+  let collection = write['collection'];
+  if (!(collection is String)) {
+    throw new SessionError(400, 'InvalidRequest', 'each write names its collection');
+  }
+  let rkey = write['rkey'];
+  if (type == 'com.atproto.repo.applyWrites#create') {
+    return new CreateRecord(collection, if (rkey is String) rkey else pds.newRecordKey(nowMicros),
+        recordOf(write));
+  }
+  if (!(rkey is String)) {
+    throw new SessionError(400, 'InvalidRequest', 'an update or a delete names its rkey');
+  }
+  if (type == 'com.atproto.repo.applyWrites#update') {
+    return new UpdateRecord(collection, rkey, recordOf(write), null);
+  }
+  if (type == 'com.atproto.repo.applyWrites#delete') {
+    return new DeleteRecord(collection, rkey, null);
+  }
+  throw new SessionError(400, 'InvalidRequest', `'${type}' is not a write applyWrites takes`);
+}
+
+/** The record a create or an update writes, its `value`. */
+function recordOf(write: JsonObject): MapValue {
+  let record = fromJson(write['value']);
+  if (!(record is MapValue)) {
+    throw new SessionError(400, 'InvalidRequest', 'a create or an update has an object as its value');
+  }
+  return record;
+}
+
+/** What `com.atproto.repo.applyWrites` answers for `write`. */
+function resultOf(account: Account, write: Write): JsonObject {
+  let result = new JsonObject();
+  match (write) {
+    case CreateRecord {collection, rkey, record}: {
+      result['$type'] = 'com.atproto.repo.applyWrites#createResult';
+      result['uri'] = `at://${account.did}/${collection}/${rkey}`;
+      result['cid'] = cidForValue(record).toString();
+    }
+    case UpdateRecord {collection, rkey, record}: {
+      result['$type'] = 'com.atproto.repo.applyWrites#updateResult';
+      result['uri'] = `at://${account.did}/${collection}/${rkey}`;
+      result['cid'] = cidForValue(record).toString();
+    }
+    case DeleteRecord {}: {
+      result['$type'] = 'com.atproto.repo.applyWrites#deleteResult';
+    }
+  }
+  return result;
 }
 
 /** The `swapRecord` CID a write gives, or null; one that is not a CID is refused. */
