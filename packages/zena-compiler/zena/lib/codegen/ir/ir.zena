@@ -368,11 +368,32 @@ export function isIrTerminator(op: IrOp): boolean {
 }
 
 /**
+ * `isUnaryNumericOp` and `isSingleValueOp` by op, computed once from
+ * the definitions below. The operand decoder asks for every
+ * instruction it lists, and the definitions' chains of comparisons
+ * cost more than the listing.
+ */
+let unaryNumericOps = opTable((op) => definesUnaryNumericOp(op));
+let singleValueOps = opTable((op) => definesSingleValueOp(op));
+
+/**
  * Unary numeric and conversion ops: exactly one value operand (slot a),
  * no payload. Shared by the operand decoder, the emitter, and (soon)
  * the simplify/constant-folding pass.
  */
 export function isUnaryNumericOp(op: IrOp): boolean {
+  return unaryNumericOps[op as i32];
+}
+
+function opTable(member: (op: IrOp) => boolean): GrowableArray<boolean> {
+  let table = new Array<boolean>();
+  for (var i = 0; i < IrOp.op_count as i32; i += 1) {
+    table.push(member(i as IrOp));
+  }
+  return table;
+}
+
+function definesUnaryNumericOp(op: IrOp): boolean {
   return op == IrOp.i32_eqz || op == IrOp.i64_eqz || op == IrOp.f64_neg ||
       op == IrOp.f32_neg || op == IrOp.i32_wrap_i64 ||
       op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
@@ -446,7 +467,11 @@ export function wideArithOpcode(op: IrOp): i32 {
  * operand is the stored value; the target global rides in slot b.
  */
 export function isSingleValueOp(op: IrOp): boolean {
-  return isUnaryNumericOp(op) ||
+  return singleValueOps[op as i32];
+}
+
+function definesSingleValueOp(op: IrOp): boolean {
+  return definesUnaryNumericOp(op) ||
       op == IrOp.ref_is_null || op == IrOp.ref_as_non_null ||
       op == IrOp.ref_test || op == IrOp.ref_cast || op == IrOp.array_len ||
       op == IrOp.extern_convert_any || op == IrOp.any_convert_extern ||
