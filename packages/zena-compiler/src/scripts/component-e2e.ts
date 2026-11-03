@@ -393,6 +393,16 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'http-service-world',
+    wasi: ['p3=y', 'http=y'],
+    // The standard library's own `wasi:http/service` world, which
+    // reaches the clocks and random interfaces through `include` and
+    // `types` only through what its imports and exports use.
+    wit: ['../../../stdlib/zena/wit/http.wit', 'service'],
+    serveRequest: [18927, '/hello', 'served by the service world at /hello'],
+    invocations: [],
+  },
+  {
     name: 'fs-probe',
     wasi: ['p3=y'],
     preopen: true,
