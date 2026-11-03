@@ -1253,9 +1253,15 @@ WIT document.
 
 `--wit` / `--world` are built — Part 3 states the contract (the
 declared world is the authority; emission follows it; disagreements
-are errors, checked in both directions). Still open here: world-level
-`use` and type definitions, `include`, cross-document packages, and
-fixed-length lists. `future` and `stream` refuse loudly until C6.
+are errors, checked in both directions). A world's `include`s are
+expanded into its imports and exports (`expandedWorldItems` in
+wit-parser's component encoder; an item gated `@unstable` is left out,
+and an `include ... with { }` rename is refused), and the interfaces
+its imports and exports `use` count as imported, as WIT says they are
+(#839): the standard library's `wasi:http/service` world builds as it
+is. Still open here: world-level `use` and type definitions,
+cross-document packages, and fixed-length lists. `future` and `stream`
+refuse loudly until C6.
 
 #### C3.3 — imported memory, and stdio. **Done.**
 

@@ -23,14 +23,14 @@ import { StringBuilder } from 'zena:core';
 import { parse, parseSyntax, resolve } from 'wit-parser:wit';
 import {
   ComponentTypeEncoder, EncodedWorld, funcFlatMeta, worldFuncFlatMeta,
-  interfaceExportFlatMeta, WitFuncMeta,
+  interfaceExportFlatMeta, WitFuncMeta, expandedWorldItems,
   worldNames, qualifiedInterfaceName, NestedExport
 } from 'wit-parser:component-encoder';
 import {
   Ast, AstItemTag, WorldDef, WorldItemTag, Import, Export, ExternKind,
   ExternKindTag, UsePath, UsePathTag, Id, Func, Type, TypeTag, PackageName,
   AstItem, InterfaceDef, InterfaceItem, InterfaceItemTag, NamedFunc, TypeDef, TypeDefTag,
-  ResourceFunc, ResourceFuncTag, NestedPackage, Docs
+  ResourceFunc, ResourceFuncTag, NestedPackage, Docs, Use
 } from 'wit-parser:parser';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc,
@@ -600,10 +600,12 @@ final class DeclaredExport {
  * and every disagreement between the WIT and the Zena program is a
  * compile error.
  *
- * Concretely: the component imports exactly what the world imports
- * (plus `use` dependencies, which WIT implies); every `@external` must
- * name a function of an interface the world explicitly imports, with a
- * core signature matching the WIT's canonical flattening; and the
+ * Concretely: the component imports exactly what the world imports,
+ * with its `include`s expanded (expandedWorldItems), plus the interfaces
+ * those imports and the world's exports `use` types from, which WIT
+ * implies; every `@external` must name a function of one of those
+ * interfaces, with a core signature matching the WIT's canonical
+ * flattening; and the
  * export surfaces must agree in both directions — a world export the
  * program does not provide, or a program export the world does not
  * declare, is an error, as is a type or asyncness mismatch on one they
@@ -612,8 +614,13 @@ final class DeclaredExport {
 final class DeclaredWorldEncoder implements ImportTypeEncoder {
   #ast: Ast;
   var #worldName = "";
-  /** The world's explicit interface imports, by qualified name. */
+  /**
+   * The world's interface imports, by qualified name: the ones it names,
+   * then the ones they and its exports `use` types from.
+   */
   #importedInterfaces = new Array<String>();
+  /** The world's exported interfaces, by qualified name. */
+  #exportedInterfaces = new Array<String>();
   /** The world's function exports, in declaration order. */
   #declaredExports = new Array<DeclaredExport>();
 
@@ -646,20 +653,75 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
       let world = item.worldDef as WorldDef;
       if (world.name.name != name) { continue; }
       found = true;
-      for (let wi in world.items) {
+      for (let wi in expandedWorldItems(this.#ast, world)) {
         if (wi.tag == WorldItemTag.Import) {
           this.#collectImport((wi.importItem as Import).kind);
         } else if (wi.tag == WorldItemTag.Export) {
           this.#collectExport((wi.exportItem as Export).kind);
         }
-        // use / typedef / include fail in the encoder with their own
-        // messages; collecting nothing here keeps that the one error.
+        // use / typedef fail in the encoder with their own messages;
+        // collecting nothing here keeps that the one error.
       }
     }
     if (!found) {
       throw new Error("--world '" + name + "' is not a world the --wit " +
           "document declares.");
     }
+    this.#addUsedInterfaces();
+  }
+
+  /**
+   * Adds the interfaces the world's imports and exports `use` types
+   * from, and the ones those use, to its imports. WIT imports each of
+   * them whether or not the world names it, and so does the encoder, so
+   * a program may call into one: the stdlib's `wasi:http/service` world
+   * reaches `types` only through `client` and `handler`.
+   */
+  #addUsedInterfaces(): void {
+    let pending = new Array<String>();
+    for (let q in this.#importedInterfaces) { pending.push(q); }
+    for (let q in this.#exportedInterfaces) { pending.push(q); }
+    var i = 0;
+    while (i < pending.length) {
+      let qualified = pending[i];
+      i += 1;
+      for (let used in this.#usedInterfaces(qualified)) {
+        var known = false;
+        for (let q in this.#importedInterfaces) {
+          if (q == used) { known = true; }
+        }
+        if (!known) {
+          this.#importedInterfaces.push(used);
+          pending.push(used);
+        }
+      }
+    }
+  }
+
+  /** The interfaces the interface `qualified` uses types from, by qualified name. */
+  #usedInterfaces(qualified: String): GrowableArray<String> {
+    let used = new Array<String>();
+    let collect = (pkg: PackageName | null, items: GrowableArray<AstItem>) => {
+      for (let item in items) {
+        if (item.tag != AstItemTag.Interface) { continue; }
+        let def = item.interfaceDef as InterfaceDef;
+        if (qualifiedInterfaceName(pkg, def.name.name) != qualified) { continue; }
+        for (let member in def.items) {
+          if (member.tag != InterfaceItemTag.Use) { continue; }
+          let from = (member.use as Use).from;
+          used.push(if (from.tag == UsePathTag.Id) {
+            qualifiedInterfaceName(pkg, (from.id as Id).name)
+          } else {
+            qualifiedInterfaceName(from.packageId, (from.name as Id).name)
+          });
+        }
+      }
+    };
+    collect(this.#ast.packageName, this.#ast.items);
+    for (let nested in this.#ast.nestedPackages) {
+      collect(nested.name, nested.items);
+    }
+    return used;
   }
 
   #collectImport(kind: ExternKind): void {
@@ -702,6 +764,7 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
         throw new Error("The declared world exports '" + qualified +
             "', which the document does not declare.");
       }
+      this.#exportedInterfaces.push(qualified);
       for (let item in items as GrowableArray<InterfaceItem>) {
         if (item.tag == InterfaceItemTag.Func) {
           let nf = item.func as NamedFunc;

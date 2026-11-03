@@ -1,0 +1,18 @@
+// A wasi:http service built against the standard library's own
+// `wasi:http/service` world (packages/stdlib/zena/wit/http.wit), where
+// `http-service.zena` has a world of its own. That world reaches the
+// clocks and random interfaces through `include`, and `types` only
+// through what `client` and `handler` use, so building against it needs
+// both expanded (#839). `wasmtime serve` drives it, and the e2e script
+// fetches a path and reads the body back.
+import { Request, Response, ErrorCode } from 'wasi:http/types';
+import { Own, Some, Result } from 'zena:core';
+import { textResponse } from 'zena:http';
+
+export async function handle(request: Own<Request>): Future<Result<Own<Response>, ErrorCode>> {
+  var path = '/';
+  if (let Some {value} = request.getPathWithQuery()) {
+    path = value;
+  }
+  return (true, textResponse(`served by the service world at ${path}`));
+}

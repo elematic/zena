@@ -1,0 +1,43 @@
+// `include`: the world `app` brings in `base`, a world of its own
+// package named by a bare name, and `imports`, a world of a nested
+// package named by path, whose bare `import now` means that package's
+// interface. `log` arrives through both includes and is imported once,
+// and `zones`, gated behind a feature nothing enables, not at all.
+package test:includes@1.0.0;
+
+interface log {
+  write: func(message: string);
+}
+
+interface config {
+  get: func(key: string) -> option<string>;
+}
+
+world base {
+  import log;
+}
+
+world app {
+  include base;
+  include test:clock/imports@1.0.0;
+  import config;
+}
+
+package test:clock@1.0.0 {
+  interface now {
+    now: func() -> u64;
+  }
+
+  @unstable(feature = clock-zones)
+  interface zones {
+    @unstable(feature = clock-zones)
+    zone: func() -> string;
+  }
+
+  world imports {
+    import now;
+    import test:includes/log@1.0.0;
+    @unstable(feature = clock-zones)
+    import zones;
+  }
+}

@@ -52,7 +52,8 @@ import {
   ResourceFunc, ResourceFuncTag, Use, UsePath, UsePathTag,
   IdUsePath, PackageUsePath,
   PackageName, WorldItem, WorldItemTag, Import, Export, ExternKind,
-  ExternKindTag, Id, Field, Case, EnumCaseDef, FlagDef, Parser,
+  ExternKindTag, Id, Include, Field, Case, EnumCaseDef, FlagDef, Parser,
+  Docs, AttributeTag,
 } from './parser.zena';
 
 /** A failure to encode: a construct the encoder cannot express yet. */
@@ -402,11 +403,13 @@ export final class ComponentTypeEncoder {
    * Encode the world's imports. Interfaces are imported in first-use
    * order with their `use` dependencies ahead of them — WIT implies the
    * import of anything a used type comes from, so a dependency absent
-   * from the world's own list still gets an instance.
+   * from the world's own list still gets an instance. An `include`
+   * brings the included world's imports and exports
+   * (expandedWorldItems).
    */
   encodeWorld(worldName: String): EncodedWorld {
     let world = this.#findWorld(worldName);
-    for (let item in world.items) {
+    for (let item in expandedWorldItems(this.#ast, world)) {
       if (item.tag == WorldItemTag.Import) {
         this.#encodeWorldImport((item.importItem as Import).kind);
       } else if (item.tag == WorldItemTag.Export) {
@@ -1107,7 +1110,7 @@ export final class ComponentTypeEncoder {
    */
   encodeWorldExportFuncType(worldName: String, exportName: String): i32 {
     let world = this.#findWorld(worldName);
-    for (let item in world.items) {
+    for (let item in expandedWorldItems(this.#ast, world)) {
       if (item.tag != WorldItemTag.Export) { continue; }
       let kind = (item.exportItem as Export).kind;
       if (kind.tag != ExternKindTag.Func) { continue; }
@@ -2074,7 +2077,7 @@ export function worldFuncFlatMeta(
     if (item.tag != AstItemTag.World) { continue; }
     let def = item.worldDef as WorldDef;
     if (def.name.name != worldName) { continue; }
-    for (let wi in def.items) {
+    for (let wi in expandedWorldItems(ast, def)) {
       if (wi.tag != WorldItemTag.Export) { continue; }
       let kind = (wi.exportItem as Export).kind;
       if (kind.tag != ExternKindTag.Func) { continue; }
@@ -2212,6 +2215,131 @@ export function funcFlatMeta(
     return null;
   }
   return null;
+}
+
+/**
+ * The items of `world`, a world of the document's main package, with
+ * every `include` expanded in place: the included world's imports and
+ * exports, its own includes expanded too, in order. An include names a
+ * world of the including world's package by a bare name, or of another
+ * package by path. An item that an included world names an interface by
+ * a bare name means that world's package's interface, so its path comes
+ * back qualified with the package. An import or export that two
+ * includes both bring is kept once, as WIT merges them. An item gated
+ * `@unstable(feature = ...)` is left out, as WIT tooling leaves it out
+ * while no feature is enabled: `wasi:clocks/imports` gates `timezone`,
+ * which hosts do not provide.
+ */
+export function expandedWorldItems(ast: Ast, world: WorldDef): GrowableArray<WorldItem> {
+  let out = new GrowableArray<WorldItem>();
+  appendWorldItems(ast, world, ast.packageName, false, out,
+      new GrowableArray<String>(), 0);
+  return out;
+}
+
+function appendWorldItems(ast: Ast, world: WorldDef, pkg: PackageName | null,
+    included: boolean, out: GrowableArray<WorldItem>, seen: GrowableArray<String>,
+    depth: i32): void {
+  if (depth > 32) {
+    throw new EncodeError(`world '${world.name.name}' includes itself`);
+  }
+  for (let item in world.items) {
+    if (item.tag == WorldItemTag.Include) {
+      let inc = item.include as Include;
+      if (isUnstable(inc.docs)) { continue; }
+      if (inc.names.length > 0) {
+        throw new EncodeError("an `include` that renames with `with` is not encodable yet");
+      }
+      let from = inc.from;
+      if (from.tag == UsePathTag.Id) {
+        let name = (from.id as Id).name;
+        appendWorldItems(ast, findPackageWorld(ast, pkg, name), pkg, true, out, seen,
+            depth + 1);
+      } else {
+        let fromPkg = from.packageId as PackageName;
+        appendWorldItems(ast, findPackageWorld(ast, fromPkg, (from.name as Id).name),
+            fromPkg, true, out, seen, depth + 1);
+      }
+      continue;
+    }
+    if (item.tag != WorldItemTag.Import && item.tag != WorldItemTag.Export) {
+      out.push(item);
+      continue;
+    }
+    let isImport = item.tag == WorldItemTag.Import;
+    let docs = if (isImport) (item.importItem as Import).docs
+        else (item.exportItem as Export).docs;
+    if (isUnstable(docs)) { continue; }
+    let kind = if (isImport) (item.importItem as Import).kind
+        else (item.exportItem as Export).kind;
+    let key = `${if (isImport) 'import' else 'export'} ${externKey(kind, pkg)}`;
+    var known = false;
+    for (let k in seen) {
+      if (k == key) { known = true; }
+    }
+    if (known) { continue; }
+    seen.push(key);
+    let path = kind.path;
+    if (!included || kind.tag != ExternKindTag.Path || path == null ||
+        path.tag != UsePathTag.Id || pkg == null) {
+      out.push(item);
+      continue;
+    }
+    let qualified = ExternKind.fromPath(UsePath.fromPackage(pkg, path.id as Id));
+    out.push(if (isImport) {
+      WorldItem.fromImport(new Import((item.importItem as Import).docs, qualified))
+    } else {
+      WorldItem.fromExport(new Export((item.exportItem as Export).docs, qualified))
+    });
+  }
+}
+
+/** Whether an item is gated behind a feature with `@unstable`. */
+function isUnstable(docs: Docs): boolean {
+  let attributes = docs.attributes;
+  if (attributes == null) {
+    return false;
+  }
+  for (let attribute in attributes) {
+    if (attribute.tag == AttributeTag.Unstable) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** What identifies an import or export: its qualified interface, or its name. */
+function externKey(kind: ExternKind, pkg: PackageName | null): String {
+  let path = kind.path;
+  if (kind.tag == ExternKindTag.Path && path != null) {
+    return if (path.tag == UsePathTag.Id) {
+      qualifiedInterfaceName(pkg, (path.id as Id).name)
+    } else {
+      qualifiedInterfaceName(path.packageId, (path.name as Id).name)
+    };
+  }
+  return (kind.name as Id).name;
+}
+
+/** The world named `name` in package `pkg`: the main one, or a nested one. */
+function findPackageWorld(ast: Ast, pkg: PackageName | null, name: String): WorldDef {
+  let wanted = qualifiedInterfaceName(pkg, name);
+  if (qualifiedInterfaceName(ast.packageName, name) == wanted) {
+    for (let item in ast.items) {
+      if (item.tag == AstItemTag.World && (item.worldDef as WorldDef).name.name == name) {
+        return item.worldDef as WorldDef;
+      }
+    }
+  }
+  for (let nested in ast.nestedPackages) {
+    if (qualifiedInterfaceName(nested.name, name) != wanted) { continue; }
+    for (let item in nested.items) {
+      if (item.tag == AstItemTag.World && (item.worldDef as WorldDef).name.name == name) {
+        return item.worldDef as WorldDef;
+      }
+    }
+  }
+  throw new EncodeError(`no world '${wanted}' to include in this document`);
 }
 
 /** The names of the worlds the document's main package defines. */
