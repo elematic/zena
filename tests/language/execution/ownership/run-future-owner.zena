@@ -1,0 +1,34 @@
+// @mode: run
+// @result: 101
+// `runFuture` hands synchronous code the owner a future settles with:
+// the caller owns it from then on, and the future, emptied by the take,
+// releases nothing at `runFuture`'s exit.
+import { runFuture } from 'zena:async';
+import { Own, Disposable } from 'zena:core';
+
+var released = 0;
+
+resource class R {
+  id: i32;
+  new(this.id);
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+async function make(id: i32): Future<Own<R>> {
+  return new R(id);
+}
+
+function held(): i32 {
+  let r = runFuture(make(1));
+  // Nothing is released while the caller holds the owner.
+  return released * 100 + r.id;
+}
+
+export function main(): i32 {
+  let value = held();
+  // `r` is released at `held`'s exit, once.
+  return value * 100 + released;
+}
