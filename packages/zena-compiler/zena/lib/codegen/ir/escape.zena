@@ -18,6 +18,10 @@ import { HashMap } from 'zena:collections';
  * summaries start optimistic (nothing escapes) and iterate to a
  * fixpoint: a parameter is marked escaping only when a concrete
  * escaping use exists, which makes the result sound for cycles too.
+ * Each parameter is walked once, and again only when a callee
+ * parameter its walk passed the value to turns out to escape: the
+ * walk records those parameters, and marking one escaping queues the
+ * walks that relied on it.
  *
  * The inliner uses this: a fresh allocation whose only use is a call
  * to a function whose parameter does not escape becomes, after
@@ -48,40 +52,49 @@ export final class EscapeSummaries {
       this.escapes.push(row);
     }
     // The bodies do not change during the fixpoint, so each one's use
-    // lists are built once, on the first round that needs them.
+    // lists are built once, by the first walk that needs them.
     let tables = new Array<IrUseLists | null>(bodies.length);
     for (var f = 0; f < bodies.length; f += 1) {
       tables.push(null);
     }
-    var round = 0;
-    var changed = true;
-    while (changed && round < 8) {
-      changed = false;
-      for (var f = 0; f < bodies.length; f += 1) {
-        let row = this.escapes[f];
-        if (row.length == 0) {
-          continue;
-        }
-        let users = tables[f] ?? buildUseLists(bodies[f], scratch);
-        tables[f] = users;
-        for (var k = 0; k < row.length; k += 1) {
-          if (row[k]) {
-            continue;
-          }
-          if (this.#paramEscapes(bodies[f], users, k, scratch)) {
-            row[k] = true;
-            changed = true;
-          }
-        }
-      }
-      round += 1;
+    // dependents[g]: triples (g's parameter i, f, k) for each walk of
+    // f's k-th parameter that passed the value to g's parameter i
+    // while that did not escape.
+    let dependents = new Array<GrowableArray<i32> | null>(bodies.length);
+    for (var f = 0; f < bodies.length; f += 1) {
+      dependents.push(null);
     }
-    if (changed) {
-      // The cap was hit: anything still optimistic could be wrong, so
-      // give up the optimism for those rows.
-      for (let row in this.escapes) {
-        for (var k = 0; k < row.length; k += 1) {
-          row[k] = true;
+    // The walks to do, as (f, k) pairs: every parameter in module order,
+    // then the ones a parameter's escaping put in doubt.
+    let work = new Array<i32>();
+    for (var f = 0; f < bodies.length; f += 1) {
+      for (var k = 0; k < this.escapes[f].length; k += 1) {
+        work.push(f);
+        work.push(k);
+      }
+    }
+    var next = 0;
+    while (next < work.length) {
+      let f = work[next];
+      let k = work[next + 1];
+      next += 2;
+      let row = this.escapes[f];
+      if (row[k]) {
+        continue;
+      }
+      let users = tables[f] ?? buildUseLists(bodies[f], scratch);
+      tables[f] = users;
+      if (!this.#paramEscapes(bodies[f], users, f, k, dependents, scratch)) {
+        continue;
+      }
+      row[k] = true;
+      let waiting = dependents[f];
+      if (waiting != null) {
+        for (var d = 0; d < waiting.length; d += 3) {
+          if (waiting[d] == k && !this.escapes[waiting[d + 1]][waiting[d + 2]]) {
+            work.push(waiting[d + 1]);
+            work.push(waiting[d + 2]);
+          }
         }
       }
     }
@@ -96,14 +109,21 @@ export final class EscapeSummaries {
     return row[k];
   }
 
-  #paramEscapes(body: IrBody, users: IrUseLists, k: i32, scratch: IrScratch): boolean {
+  #paramEscapes(body: IrBody, users: IrUseLists, f: i32, k: i32,
+      dependents: GrowableArray<GrowableArray<i32> | null>, scratch: IrScratch): boolean {
     scratch.enter();
-    let result = this.#paramEscapesOn(body, users, k, scratch);
+    let result = this.#paramEscapesOn(body, users, f, k, dependents, scratch);
     scratch.exit();
     return result;
   }
 
-  #paramEscapesOn(body: IrBody, users: IrUseLists, k: i32, scratch: IrScratch): boolean {
+  /**
+   * Walks function `f`'s parameter `k`. A call that passes the value to
+   * a parameter not yet known to escape is recorded in `dependents`, so
+   * the walk is done again if that parameter turns out to escape.
+   */
+  #paramEscapesOn(body: IrBody, users: IrUseLists, f: i32, k: i32,
+      dependents: GrowableArray<GrowableArray<i32> | null>, scratch: IrScratch): boolean {
     let count = body.instCount();
     let alias = scratch.bool();
     for (var i = 0; i < count; i += 1) {
@@ -161,6 +181,14 @@ export final class EscapeSummaries {
               if (calleeIdx < 0 || this.paramEscapes(calleeIdx, i)) {
                 return true;
               }
+              var waiting = dependents[calleeIdx];
+              if (waiting == null) {
+                waiting = new Array<i32>();
+                dependents[calleeIdx] = waiting;
+              }
+              waiting.push(i);
+              waiting.push(f);
+              waiting.push(k);
             }
             i += 1;
           }
