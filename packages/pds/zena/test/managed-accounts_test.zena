@@ -1,0 +1,255 @@
+/**
+ * Managed accounts (docs/design/package-manager.md, "Managed accounts"),
+ * through the HTTP application as a package host calls them: the PDS
+ * creates an account for a DID only when a host it trusts signed the DID's
+ * genesis operation, and takes the account's writes only with that host's
+ * service-auth tokens.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {App, Request, Response} from 'zena:http';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {bytesStream} from 'zena:stream';
+import {now} from 'wasi:clocks/system-clock';
+import {KeyType, PublicKey, formatDidKey} from 'atproto:didkey';
+import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
+import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
+import {ManagedAccounts, TrustedHost} from 'pds:managed';
+import {Pds} from 'pds:pds';
+import {createApp} from 'pds:server';
+import {Account, MemoryStorage, SigningKey} from 'pds:storage';
+
+let PDS_DID = 'did:web:padstone.test';
+let PDS_URL = 'https://padstone.test';
+let HOST_DID = 'did:web:pkg.test';
+let HANDLE = 'router.acme.pkg.test';
+let PROFILE = 'dev.zena-lang.package.profile';
+
+function key(seed: i32) {
+  return new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, seed as u8));
+}
+
+/** A PDS that trusts one package host, with the PLC directory and DID documents it reads. */
+final class Fixture {
+  var app: App;
+  pds: Pds;
+  /** The host's rotation key, which signs its DIDs' genesis operations. */
+  hostRotation = key(11);
+  /** The host's own signing key, which its service-auth tokens are signed with. */
+  hostSigning = key(12);
+  /** Each DID's operations, oldest first. */
+  logs = new HashMap<String, Array<PlcOperation>>();
+  /** The signing key each DID's document names now. */
+  keys = new HashMap<String, PublicKey>();
+  var #jti = 0;
+  var #seed = 100;
+
+  new() : pds = new Pds(new MemoryStorage()), app = new App() {
+    this.keys[HOST_DID] = this.hostSigning.publicKey();
+    let logs = this.logs;
+    let keys = this.keys;
+    this.pds.managed = new ManagedAccounts(PDS_DID, PDS_URL,
+        [new TrustedHost(HOST_DID, [this.hostRotation.publicKey()])],
+        async (did: String): Future<Array<PlcOperation>> => {
+          if (let (true, log) = logs.get(did)) {
+            return log;
+          }
+          return [];
+        },
+        async (did: String, fresh: boolean): Future<PublicKey | null> => {
+          if (let (true, found) = keys.get(did)) {
+            return found;
+          }
+          return null;
+        });
+    this.app = createApp(this.pds);
+  }
+
+  /**
+   * A DID as a host mints one: a genesis operation naming `temporary` as
+   * its signing key and `endpoint` as its PDS, with `rotation` as its
+   * rotation keys, signed with `signer`.
+   */
+  // TODO(#855): default `endpoint` to PDS_URL itself.
+  mint(signer: SigningKey, temporary: SigningKey, endpoint: String | null = null,
+      rotation: Array<PublicKey> | null = null): String {
+    let keys: Array<PublicKey> = rotation ?? [this.hostRotation.publicKey()];
+    let operation = genesisOperation(temporary.publicKey(), keys, HANDLE, endpoint ?? PDS_URL)
+        .signedWith((bytes) => signer.sign(bytes));
+    let did = didOfGenesis(operation);
+    this.logs[did] = [operation];
+    this.keys[did] = temporary.publicKey();
+    return did;
+  }
+
+  /** A service-auth token from `issuer`, signed with `signer`, for `method` at this PDS. */
+  token(issuer: String, signer: SigningKey, method: String): String {
+    this.#jti += 1;
+    let seconds = now().seconds;
+    return createServiceAuthToken(new ServiceAuthClaims(issuer, PDS_DID, seconds + 60, seconds, method,
+        `jti-${this.#jti}`), KeyType.Secp256k1, signer.privateKey);
+  }
+
+  call(method: String, httpMethod: String, token: String | null, body: String | FixedArray<u8> | null,
+      query: String = '', contentType: String = 'application/json'): Response {
+    let headers = new HashMap<String, String>();
+    if (token != null) {
+      headers['authorization'] = `Bearer ${token}`;
+    }
+    let url = `${PDS_URL}/xrpc/${method}${query}`;
+    var req = new Request.fromUrl(url, httpMethod, headers);
+    if (body != null) {
+      headers['content-type'] = contentType;
+      let bytes = if (body is String) body.toBytes() else body;
+      req = new Request.fromUrl(url, httpMethod, headers, bytesStream(bytes));
+    }
+    let res = new Response();
+    let app = this.app;
+    let request = req;
+    runFuture((async () => {
+      await app.handleRequest(request, res);
+    })());
+    return res;
+  }
+
+  /** Creates the managed account of a DID the host mints, and returns the DID. */
+  created(): String {
+    this.#seed += 1;
+    let temporary = key(this.#seed);
+    let did = this.mint(this.hostRotation, temporary);
+    ok(this.call('com.atproto.server.createAccount', 'POST',
+        this.token(did, temporary, 'com.atproto.server.createAccount'), `{"did": "${did}", "handle": "${HANDLE}"}`));
+    return did;
+  }
+
+  /** A token from the host for `method`. */
+  hostToken(method: String): String {
+    return this.token(HOST_DID, this.hostSigning, method);
+  }
+}
+
+function ok(res: Response): JsonObject {
+  isTrue(res.statusCode == 200, `${res.statusCode}: ${res.body as String}`);
+  return parseJson(res.body as String) as JsonObject;
+}
+
+function errorOf(res: Response) {
+  isTrue(res.statusCode >= 400, `${res.statusCode}`);
+  return (parseJson(res.body as String) as JsonObject)['error'] as String;
+}
+
+export let tests = suite('pds:managed', () => {
+  test('creates an account for a DID a trusted host made, with a signing key of its own', (ctx) => {
+    let fixture = new Fixture();
+    let temporary = key(21);
+    let did = fixture.mint(fixture.hostRotation, temporary);
+    let created = ok(fixture.call('com.atproto.server.createAccount', 'POST',
+        fixture.token(did, temporary, 'com.atproto.server.createAccount'), `{"did": "${did}", "handle": "${HANDLE}"}`));
+    equal(created['did'] as String, did);
+    equal(created['handle'] as String, HANDLE);
+    let account = runFuture(fixture.pds.storage.getAccount(did)) as Account;
+    equal(account.manager as String, HOST_DID);
+    let signing = runFuture(account.signingKey()).publicKey();
+    isTrue(formatDidKey(signing) != formatDidKey(temporary.publicKey()), 'a key of its own');
+
+    // The host learns the key to name in the DID document as account
+    // migration does, with a token from the DID's current key.
+    let credentials = ok(fixture.call('com.atproto.identity.getRecommendedDidCredentials', 'GET',
+        fixture.token(did, temporary, 'com.atproto.identity.getRecommendedDidCredentials'), null));
+    equal((credentials['verificationMethods'] as JsonObject)['atproto'] as String, formatDidKey(signing));
+    let pds = ((credentials['services'] as JsonObject)['atproto_pds'] as JsonObject);
+    equal(pds['endpoint'] as String, PDS_URL);
+    equal((credentials['alsoKnownAs'] as JsonArray)[0] as String, `at://${HANDLE}`);
+
+    // Once is enough.
+    equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST',
+        fixture.token(did, temporary, 'com.atproto.server.createAccount'), `{"did": "${did}", "handle": "${HANDLE}"}`)),
+        'InvalidRequest');
+  });
+
+  test('refuses an account no trusted host made', (ctx) => {
+    let fixture = new Fixture();
+    let method = 'com.atproto.server.createAccount';
+    let create = (did: String, signer: SigningKey) =>
+      fixture.call('com.atproto.server.createAccount', 'POST', fixture.token(did, signer, method),
+          `{"did": "${did}", "handle": "${HANDLE}"}`);
+
+    // Naming the host's rotation key is not enough: the host must have signed.
+    let attacker = key(31);
+    let temporary = key(32);
+    let forged = fixture.mint(attacker, temporary, PDS_URL, [fixture.hostRotation.publicKey(), attacker.publicKey()]);
+    equal(errorOf(create(forged, temporary)), 'IncompatibleDidDoc');
+    isTrue(runFuture(fixture.pds.storage.getAccount(forged)) == null, 'no account');
+
+    // A DID whose document names another PDS.
+    let elsewhere = fixture.mint(fixture.hostRotation, temporary, 'https://other.test');
+    equal(errorOf(create(elsewhere, temporary)), 'IncompatibleDidDoc');
+
+    // A token that is not the DID's own.
+    let did = fixture.mint(fixture.hostRotation, temporary);
+    equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST', fixture.hostToken(method),
+        `{"did": "${did}", "handle": "${HANDLE}"}`)), 'InvalidToken');
+    equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST', null,
+        `{"did": "${did}", "handle": "${HANDLE}"}`)), 'AuthenticationRequired');
+
+    // An account of its own, with an email address and a password, is not one this PDS makes.
+    equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST', null,
+        '{"handle": "alice.padstone.test", "email": "alice@example.com", "password": "secret"}')), 'InvalidRequest');
+  });
+
+  test("takes a managed account's writes only from its host", (ctx) => {
+    let fixture = new Fixture();
+    let did = fixture.created();
+    let profile = `{"$type": "${PROFILE}", "name": "router"}`;
+    let writes = `{"repo": "${did}", "writes": [{"$type": "com.atproto.repo.applyWrites#create", "collection": "${PROFILE}", "rkey": "self", "value": ${profile}}]}`;
+
+    // Not without a token, nor with the account's own DID's token.
+    equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST', null, writes)), 'AuthenticationRequired');
+    let temporary = key(101);
+    equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST',
+        fixture.token(did, temporary, 'com.atproto.repo.applyWrites'), writes)), 'Forbidden');
+    // Nor with the host's token for another method.
+    equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST',
+        fixture.hostToken('com.atproto.repo.putRecord'), writes)), 'InvalidToken');
+
+    let applied = ok(fixture.call('com.atproto.repo.applyWrites', 'POST',
+        fixture.hostToken('com.atproto.repo.applyWrites'), writes));
+    isTrue((applied['commit'] as JsonObject)['rev'] is String, 'a commit');
+    let result = (applied['results'] as JsonArray)[0] as JsonObject;
+    equal(result['uri'] as String, `at://${did}/${PROFILE}/self`);
+    let read = ok(fixture.call('com.atproto.repo.getRecord', 'GET', null, null,
+        `?repo=${did}&collection=${PROFILE}&rkey=self`));
+    equal(read['cid'] as String, result['cid'] as String);
+
+    // putRecord and deleteRecord take the host's token too.
+    ok(fixture.call('com.atproto.repo.putRecord', 'POST', fixture.hostToken('com.atproto.repo.putRecord'),
+        `{"repo": "${did}", "collection": "${PROFILE}", "rkey": "self", "record": {"$type": "${PROFILE}", "name": "routing"}}`));
+    ok(fixture.call('com.atproto.repo.deleteRecord', 'POST', fixture.hostToken('com.atproto.repo.deleteRecord'),
+        `{"repo": "${did}", "collection": "${PROFILE}", "rkey": "self"}`));
+    equal(fixture.call('com.atproto.repo.getRecord', 'GET', null, null,
+        `?repo=${did}&collection=${PROFILE}&rkey=self`).statusCode, 404);
+
+    // A blob, for the account its `repo` names, since the host's token names none.
+    let bytes = 'an artifact'.toBytes();
+    let blob = ok(fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.hostToken('com.atproto.repo.uploadBlob'),
+        bytes, `?repo=${did}`, 'application/octet-stream'))['blob'] as JsonObject;
+    equal(blob['mimeType'] as String, 'application/octet-stream');
+    equal((blob['size'] as Box<f64>).value as i32, bytes.length);
+    equal(errorOf(fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.hostToken('com.atproto.repo.uploadBlob'),
+        bytes, '', 'application/octet-stream')), 'InvalidRequest');
+  });
+
+  test('takes no writes to an account that is not managed, without sessions', (ctx) => {
+    let fixture = new Fixture();
+    let did = 'did:plc:ownownownownownownownownow';
+    runFuture(fixture.pds.createAccount(did, 'own.padstone.test', key(41), 0 as i64));
+    let profile = `{"$type": "${PROFILE}", "name": "own"}`;
+    equal(errorOf(fixture.call('com.atproto.repo.putRecord', 'POST', fixture.hostToken('com.atproto.repo.putRecord'),
+        `{"repo": "${did}", "collection": "${PROFILE}", "rkey": "self", "record": ${profile}}`)), 'Forbidden');
+    equal(errorOf(fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.hostToken('com.atproto.repo.uploadBlob'),
+        'bytes'.toBytes(), `?repo=${did}`, 'application/octet-stream')), 'Forbidden');
+  });
+});

@@ -92,7 +92,7 @@ import {Storage as CloudStorage} from 'google-cloud:storage';
 import {KeyType} from 'atproto:didkey';
 import {IdentityResolver, didWebFor} from 'atproto:identity';
 import {URL} from 'zena:url';
-import {PlcOperation, submitPlcOperation} from 'atproto:plc';
+import {PlcOperation, fetchOperations, submitPlcOperation} from 'atproto:plc';
 import {
   BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreCredentialStore, FirestoreHostStore, FirestorePlcLog,
   FirestoreStorage
@@ -103,6 +103,7 @@ import {SigningKeyLookup} from 'atproto:service-auth';
 import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
 import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
 import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
+import {ManagedAccounts, PlcLogLookup, TrustedHost} from './managed.zena';
 import {Pds} from './pds.zena';
 import {AppPart, createApp} from './server.zena';
 import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
@@ -527,6 +528,9 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   var submit = async (did: String, operation: PlcOperation): Future<void> => {
     await submitPlcOperation(upstream, did, operation);
   };
+  var operations: PlcLogLookup = async (did: String): Future<Array<PlcOperation>> => {
+    return await fetchOperations(upstream, did);
+  };
   // A release's dependencies are resolved as a fetch of it would resolve
   // them: a staging host's through its own directory, since they are its.
   var dependencies = resolver;
@@ -535,6 +539,9 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     submit = async (did: String, operation: PlcOperation): Future<void> => {
       await plc.submit(did, operation);
     };
+    operations = async (did: String): Future<Array<PlcOperation>> => {
+      return await plc.operations(did);
+    };
     dependencies = new IdentityResolver();
     dependencies.plcDirectory = `${hostConfig.endpoint}/plc`;
     dependencies.dnsOverHttps = config.dnsOverHttps;
@@ -542,6 +549,11 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let host = new PackageHost(pds, hostConfig, hostStore, records, keys, submit, (count: i32) => randomBytes(count),
       dependencies);
   host.sessions = sessions;
+  // The PDS keeps managed accounts for the host it runs with
+  // (package-manager.md, "Managed accounts"), which for now writes to its
+  // accounts in process instead (#851).
+  pds.managed = new ManagedAccounts(serviceDid, hostEndpoint,
+      [new TrustedHost(serviceDid, [rotationKey.publicKey()])], operations, keys);
   // A DID document is written by whoever controls the DID, so the PDS it
   // names is read only where the host may read (`PackageHost.mayRead`):
   // anywhere else, the document resolves with no PDS.

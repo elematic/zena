@@ -5,10 +5,11 @@
  * documents are under `tenants/{tenant}`, and its blobs' objects under
  * `{tenant}/`. Under `tenants/{tenant}`:
  *
- * - `accounts/{did}`: `handle` (absent for none), `kind`, `keyType`, and
- *   the repository signing key: `encryptedKey`, its bytes encrypted by
- *   the store's `KeyEncryption` for the account's DID, or, in a store
- *   with none, `privateKey`, its bytes.
+ * - `accounts/{did}`: `handle` and `manager`, the DID of the package host
+ *   that manages it (each absent for none), `kind`, `keyType`, and the
+ *   repository signing key: `encryptedKey`, its bytes encrypted by the
+ *   store's `KeyEncryption` for the account's DID, or, in a store with
+ *   none, `privateKey`, its bytes.
  * - `handles/{handle}`: `did`.
  * - `heads/{did}`: `cid` and `rev`, the repository's current commit.
  * - `accounts/{did}/blocks/{cid}`: `bytes`.
@@ -837,6 +838,10 @@ async function accountFields(account: Account, keys: KeyEncryption | null): Futu
   if (handle != null) {
     fields.string('handle', handle);
   }
+  let manager = account.manager;
+  if (manager != null) {
+    fields.string('manager', manager);
+  }
   return fields;
 }
 
@@ -853,19 +858,22 @@ function accountFrom(did: String, snapshot: DocumentSnapshot, keys: KeyEncryptio
   }
   let type = keyTypeNamed(keyType);
   let handle = stringAt(snapshot, 'handle');
+  var account: Account | null = null;
   let ciphertext = bytesAt(snapshot, 'encryptedKey');
   if (ciphertext != null) {
     if (keys == null) {
       throw new Error(`${did}'s signing key is encrypted, and the server has no key encryption (PDS_KEY_ENCRYPTION_KMS_KEY) to decrypt it`);
     }
-    return new Account(did, handle, new EncryptedKey(type, ciphertext, keys),
-        kindNamed(kind));
+    account = new Account(did, handle, new EncryptedKey(type, ciphertext, keys), kindNamed(kind));
+  } else {
+    let privateKey = bytesAt(snapshot, 'privateKey');
+    if (privateKey == null) {
+      return null;
+    }
+    account = new Account(did, handle, new SigningKey(type, privateKey), kindNamed(kind));
   }
-  let privateKey = bytesAt(snapshot, 'privateKey');
-  if (privateKey == null) {
-    return null;
-  }
-  return new Account(did, handle, new SigningKey(type, privateKey), kindNamed(kind));
+  account.manager = stringAt(snapshot, 'manager');
+  return account;
 }
 
 function kindName(kind: AccountKind): String {

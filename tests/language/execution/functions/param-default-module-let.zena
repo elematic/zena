@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 0
+// @skip: #855, a method's default is checked with its signature, before the module's lets have types
+// A default parameter can name a module-level `let`, in a function and in
+// a method alike, called from inside the class and from outside it.
+
+let BASE = 'https://example.test';
+let STEP = 3;
+
+function joined(path: String, base: String = BASE): String {
+  return `${base}${path}`;
+}
+
+class Client {
+  url(path: String, base: String = BASE): String {
+    return `${base}${path}`;
+  }
+
+  step(by: i32 = STEP): i32 {
+    return by;
+  }
+
+  inside(): String {
+    return this.url('/inside');
+  }
+}
+
+export let main = (): i32 => {
+  if (joined('/a') != 'https://example.test/a') return 1;
+  let client = new Client();
+  if (client.url('/b') != 'https://example.test/b') return 2;
+  if (client.url('/c', 'https://other.test') != 'https://other.test/c') return 3;
+  if (client.step() != 3) return 4;
+  if (client.inside() != 'https://example.test/inside') return 5;
+  return 0;
+};

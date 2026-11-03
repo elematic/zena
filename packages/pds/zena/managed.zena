@@ -1,0 +1,154 @@
+/**
+ * Managed accounts (docs/design/package-manager.md, "Managed accounts"):
+ * accounts this PDS creates for a package host its operator trusts, with
+ * no email address, password or invite code, and which take writes only
+ * from that host.
+ *
+ * A host mints the account's `did:plc` with a genesis operation that it
+ * signs with its rotation key, naming a temporary signing key it holds and
+ * this PDS. It asks for the account with `com.atproto.server.createAccount`
+ * and a service-auth token from the DID, signed with that temporary key,
+ * as atproto's account migration does. `admit` checks that the genesis
+ * operation was signed by a trusted host's rotation key, and that the DID
+ * document names this PDS. The PDS then gives the account a signing key of
+ * its own, which the host names in the DID document after asking
+ * `com.atproto.identity.getRecommendedDidCredentials` for it.
+ *
+ * Every write to the account carries a service-auth token from its host,
+ * for the write's method and addressed to this PDS (`fromHost`).
+ */
+
+import {Future} from 'zena:async';
+import {SERVER_CREATE_ACCOUNT} from 'atproto:methods';
+import {PublicKey, formatDidKey} from 'atproto:didkey';
+import {PlcError, PlcOperation, didOfGenesis} from 'atproto:plc';
+import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
+import {SessionError} from './sessions.zena';
+import {Account} from './storage.zena';
+
+/** A package host the operator trusts: its DID, and the rotation keys it signs its DIDs' genesis operations with. */
+export final class TrustedHost {
+  did: String;
+  rotationKeys: Array<PublicKey>;
+
+  new(this.did, this.rotationKeys);
+}
+
+/**
+ * The operations a PLC directory has recorded for a DID, oldest first.
+ * Throws `PlcError`, or answers none, when it has no log for the DID.
+ */
+export type PlcLogLookup = (did: String) => Future<Array<PlcOperation>>;
+
+/** The trusted hosts, and the checks on the tokens of managed accounts and their hosts. */
+export final class ManagedAccounts {
+  /** This PDS's DID, which the tokens are addressed to. */
+  serviceDid: String;
+  /** This PDS's endpoint, which a managed account's DID document names. */
+  endpoint: String;
+  #hosts: Array<TrustedHost>;
+  #log: PlcLogLookup;
+  #keys: SigningKeyLookup;
+  #replays = new ReplayGuard();
+
+  new(serviceDid: String, endpoint: String, hosts: Array<TrustedHost>, log: PlcLogLookup, keys: SigningKeyLookup)
+      : serviceDid = serviceDid, endpoint = endpoint, #hosts = hosts, #log = log, #keys = keys;
+
+  /**
+   * The trusted host that may have an account for `did`: the one whose
+   * rotation key signed the DID's genesis operation, when the token in
+   * `authorization` is the DID's own and its DID document names this PDS.
+   * Throws `SessionError`.
+   */
+  async admit(authorization: String | null, did: String, nowSeconds: i64): Future<TrustedHost> {
+    let caller = await this.caller(authorization, SERVER_CREATE_ACCOUNT, nowSeconds);
+    if (caller != did) {
+      throw new SessionError(401, 'InvalidToken', `the token is from ${caller}, not ${did}`);
+    }
+    var log: Array<PlcOperation> = [];
+    try {
+      log = await this.#log(did);
+    } catch (e) {
+      if (!(e is PlcError)) {
+        throw e;
+      }
+    }
+    if (log.length == 0 || !makes(log[0], did)) {
+      throw new SessionError(400, 'UnresolvableDid', `the PLC directory has no genesis operation for ${did}`);
+    }
+    let host = this.#signer(log[0]);
+    if (host == null) {
+      throw new SessionError(400, 'IncompatibleDidDoc', `${did} was not made by a package host this PDS trusts`);
+    }
+    let pds = pdsOf(log[log.length - 1]);
+    if (pds != this.endpoint) {
+      throw new SessionError(400, 'IncompatibleDidDoc', `${did}'s DID document names ${pds ?? 'no PDS'}, not ${this.endpoint}`);
+    }
+    return host;
+  }
+
+  /**
+   * Checks that `authorization` holds a token from `account`'s host, for
+   * `method`. Throws `SessionError`.
+   */
+  async fromHost(authorization: String | null, account: Account, method: String, nowSeconds: i64): Future<void> {
+    let caller = await this.caller(authorization, method, nowSeconds);
+    if (caller != account.manager) {
+      throw new SessionError(403, 'Forbidden', `only ${account.manager ?? 'its host'} writes to ${account.did}`);
+    }
+  }
+
+  /**
+   * Who sent the service-auth token in `authorization`, addressed to this
+   * PDS for `method`, once its signature checks against the issuer's DID
+   * document. Throws `SessionError`.
+   */
+  async caller(authorization: String | null, method: String, nowSeconds: i64): Future<String> {
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      throw new SessionError(401, 'AuthenticationRequired', 'a service-auth token is required');
+    }
+    let token = authorization.sliceBytes(7, authorization.length);
+    try {
+      let claims = await verifyServiceAuth(token, this.serviceDid, method, nowSeconds, this.#keys);
+      this.#replays.accept(claims, nowSeconds);
+      return claims.iss;
+    } catch (e) {
+      if (e is ServiceAuthError) {
+        throw new SessionError(401, 'InvalidToken', e.message);
+      }
+      throw e;
+    }
+  }
+
+  /** The trusted host whose rotation key, among `genesis`'s own, signed it, or null. */
+  #signer(genesis: PlcOperation): TrustedHost | null {
+    for (let host in this.#hosts) {
+      for (let key in host.rotationKeys) {
+        if (genesis.rotationKeys.contains(formatDidKey(key)) && genesis.isSignedBy(key)) {
+          return host;
+        }
+      }
+    }
+    return null;
+  }
+}
+
+/** Whether `operation` is the signed genesis operation of `did`. */
+function makes(operation: PlcOperation, did: String): boolean {
+  try {
+    return didOfGenesis(operation) == did;
+  } catch (e) {
+    if (e is PlcError) {
+      return false;
+    }
+    throw e;
+  }
+}
+
+/** The PDS endpoint `operation` names, or null. */
+function pdsOf(operation: PlcOperation): String | null {
+  if (let (true, service) = operation.services.get('atproto_pds')) {
+    return service.endpoint;
+  }
+  return null;
+}

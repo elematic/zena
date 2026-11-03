@@ -1,0 +1,96 @@
+/**
+ * The `com.atproto` methods a package host calls to create a managed
+ * account (`pds:managed`): `com.atproto.server.createAccount`, with the
+ * DID the host minted and a token from that DID, and
+ * `com.atproto.identity.getRecommendedDidCredentials`, for the signing key
+ * the host then names in the DID document. The account's writes are the
+ * `com.atproto.repo` routes (`xrpc/repo.zena`).
+ *
+ * A managed account has no password and no sessions, so `createAccount`
+ * answers with its DID and handle, without the `accessJwt` and
+ * `refreshJwt` its lexicon gives an account that signs in.
+ */
+
+import {Future} from 'zena:async';
+import {Router} from 'zena:http';
+import {JsonArray, JsonObject} from 'zena:json';
+import {randomBytes} from 'zena:random';
+import {KeyType, formatDidKey} from 'atproto:didkey';
+import {IDENTITY_GET_RECOMMENDED_DID_CREDENTIALS, SERVER_CREATE_ACCOUNT, xrpcPath} from 'atproto:methods';
+import {isValidDid, isValidHandle, normalizeHandle} from 'atproto:syntax';
+import {ManagedAccounts} from '../managed.zena';
+import {Pds} from '../pds.zena';
+import {SessionError} from '../sessions.zena';
+import {AccountKind, SigningKey} from '../storage.zena';
+import {fail, jsonBody, nowMicros, nowSeconds, sessionCall} from './common.zena';
+
+/** Adds the routes that create the managed accounts of the hosts `managed` trusts. */
+export function managedRoutes(router: Router, pds: Pds, managed: ManagedAccounts): void {
+  router.post(xrpcPath(SERVER_CREATE_ACCOUNT), async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let authorization = req.getHeader('authorization');
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      let did = input['did'];
+      let handle = input['handle'];
+      if (!(did is String) || !isValidDid(did)) {
+        fail(res, 400, 'InvalidRequest', 'this PDS creates accounts only for the package hosts it trusts, with a did');
+        return null;
+      }
+      if (!(handle is String) || !isValidHandle(handle)) {
+        fail(res, 400, 'InvalidRequest', 'a valid handle is required');
+        return null;
+      }
+      let host = await managed.admit(authorization, did, nowSeconds());
+      if ((await pds.storage.getAccount(did)) != null) {
+        throw new SessionError(400, 'InvalidRequest', `${did} already has an account here`);
+      }
+      let name = normalizeHandle(handle);
+      if ((await pds.storage.accountByHandle(name)) != null) {
+        throw new SessionError(400, 'HandleNotAvailable', `${name} is taken`);
+      }
+      // The host decides what its accounts hold, so the PDS does not
+      // restrict them to a kind's collections: a person's account takes any.
+      let account = await pds.createAccount(did, name, new SigningKey(KeyType.Secp256k1, randomBytes(32)),
+          nowMicros(), AccountKind.Person, host.did);
+      let answer = new JsonObject();
+      answer['did'] = account.did;
+      answer['handle'] = name;
+      return answer;
+    });
+  });
+
+  // The DID's current key signs the token, as in account migration: until
+  // the host names the account's signing key, that is the temporary key it
+  // minted the DID with.
+  router.get(xrpcPath(IDENTITY_GET_RECOMMENDED_DID_CREDENTIALS), async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let did = await managed.caller(req.getHeader('authorization'), IDENTITY_GET_RECOMMENDED_DID_CREDENTIALS,
+          nowSeconds());
+      let account = await pds.storage.getAccount(did);
+      if (account == null || account.manager == null) {
+        throw new SessionError(403, 'Forbidden', `${did} has no managed account here`);
+      }
+      let methods = new JsonObject();
+      methods['atproto'] = formatDidKey((await account.signingKey()).publicKey());
+      let pdsService = new JsonObject();
+      pdsService['type'] = 'AtprotoPersonalDataServer';
+      pdsService['endpoint'] = managed.endpoint;
+      let services = new JsonObject();
+      services['atproto_pds'] = pdsService;
+      let aka = new JsonArray();
+      let handle = account.handle;
+      if (handle != null) {
+        aka.push(`at://${handle}`);
+      }
+      // No `rotationKeys`: the host holds them, and this PDS recommends none.
+      let answer = new JsonObject();
+      answer['alsoKnownAs'] = aka;
+      answer['verificationMethods'] = methods;
+      answer['services'] = services;
+      return answer;
+    });
+  });
+}
