@@ -18,7 +18,7 @@ import {readCar} from 'atproto:car';
 import {BlobRef, MapValue, Value, fromJson, toJson} from 'atproto:data';
 import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto:didkey';
-import {PlcOperation, didOfGenesis} from 'atproto:plc';
+import {PlcOperation, checkNextOperation, didOfGenesis} from 'atproto:plc';
 import {IdentityResolver} from 'atproto:identity';
 import {packSource} from 'package-manager:archive';
 import {verifyRecordProof} from 'atproto:repo';
@@ -80,7 +80,8 @@ final class Fixture {
   var app: App;
   var host: PackageHost | null = null;
   pds: Pds;
-  submitted = new HashMap<String, PlcOperation>();
+  /** The PLC operations the host sent for each DID, oldest first. */
+  submitted = new HashMap<String, GrowableArray<PlcOperation>>();
   /** The handles' DNS records the host wrote. */
   records = new MemoryHandleRecords();
   /** Whether the PLC directory refuses operations. */
@@ -117,7 +118,10 @@ final class Fixture {
           if (this.plcDown) {
             throw new Error('the PLC directory is down');
           }
-          submitted[did] = operation;
+          if (!submitted.has(did)) {
+            submitted[did] = new GrowableArray<PlcOperation>();
+          }
+          submitted[did].push(operation);
         },
         (count: i32) => {
           this.#random += 1;
@@ -142,6 +146,17 @@ final class Fixture {
       await pds.createAccount(did, handle, key, 0 as i64, AccountKind.Automation);
     };
     this.app = createApp(this.pds, host, sessions);
+  }
+
+  /** The genesis operation the host sent for `did`. */
+  genesisOf(did: String): PlcOperation {
+    return this.submitted[did][0];
+  }
+
+  /** The last operation the host sent for `did`, which its DID document now follows. */
+  latestOf(did: String): PlcOperation {
+    let log = this.submitted[did];
+    return log[log.length - 1];
   }
 
   /** An attestation by `caller`, Alice or Bob, of the record at `uri` whose CID is `cid`. */
@@ -534,11 +549,26 @@ export let tests = suite('pds:host', () => {
     equal(org['handle'] as String, 'acme.pkg.test');
     // The host sent the organization's genesis operation, which makes its
     // DID, with Alice's recovery key ranked above the host's key.
-    let orgOperation = fixture.submitted[orgDid];
+    let orgOperation = fixture.genesisOf(orgDid);
     equal(didOfGenesis(orgOperation), orgDid);
     equal(orgOperation.rotationKeys[0], RECOVERY);
     equal(orgOperation.rotationKeys.length, 2);
     equal(orgOperation.services['atproto_pds'].endpoint, 'https://pkg.test');
+    // It named a temporary signing key. The next operation names the key
+    // the PDS made for the account, keeps the rotation keys and the
+    // handle, and names the host as the account's package host.
+    equal(fixture.submitted[orgDid].length, 2);
+    let identity = fixture.latestOf(orgDid);
+    checkNextOperation(orgDid, [orgOperation], identity);
+    let orgKey = runFuture((runFuture(fixture.pds.storage.getAccount(orgDid)) as Account).signingKey()).publicKey();
+    equal(identity.verificationMethods['atproto'], formatDidKey(orgKey));
+    isTrue(orgOperation.verificationMethods['atproto'] != identity.verificationMethods['atproto'], 'not the temporary key');
+    equal(identity.rotationKeys.length, 2);
+    equal(identity.rotationKeys[0], RECOVERY);
+    equal(identity.alsoKnownAs[0], 'at://acme.pkg.test');
+    equal(identity.services['atproto_pds'].endpoint, 'https://pkg.test');
+    equal(identity.services['zena_package_host'].kind, 'ZenaPackageHost');
+    equal(identity.services['zena_package_host'].endpoint, 'https://pkg.test');
 
     let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
     let pkgDid = pkg['did'] as String;
@@ -561,7 +591,7 @@ export let tests = suite('pds:host', () => {
 
     // The release can be fetched with a proof that verifies with the signing
     // key the package's DID document names.
-    let signingKey = parseDidKey(fixture.submitted[pkgDid].verificationMethods['atproto']);
+    let signingKey = parseDidKey(fixture.latestOf(pkgDid).verificationMethods['atproto']);
     let proof = fixture.get(`/xrpc/com.atproto.sync.getRecord?did=${pkgDid}&collection=${RELEASE_TYPE}&rkey=1.0.0`);
     let verified = verifyRecordProof(readCar(proof.body as FixedArray<u8>), pkgDid, RELEASE_TYPE, '1.0.0',
         (signed, sig) => verifySignature(signingKey, signed, sig));
@@ -736,11 +766,11 @@ export let tests = suite('pds:host', () => {
     let fixture = new Fixture();
     let host = (fixture.host as PackageHost).config.rotationKey.publicKey();
     let org = ok(fixture.call(ALICE, 'createOrganization', '{"name": "acme"}'));
-    let operation = fixture.submitted[org['did'] as String];
+    let operation = fixture.genesisOf(org['did'] as String);
     equal(operation.rotationKeys.length, 1);
     equal(operation.rotationKeys[0], formatDidKey(host));
     let none = ok(fixture.call(ALICE, 'createOrganization', '{"name": "acme2", "recoveryKeys": []}'));
-    equal(fixture.submitted[none['did'] as String].rotationKeys.length, 1);
+    equal(fixture.genesisOf(none['did'] as String).rotationKeys.length, 1);
 
     // The host keeps two of PLC's five rotation keys for itself (#597).
     let four = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
@@ -756,7 +786,7 @@ export let tests = suite('pds:host', () => {
     let offline = new SigningKey(KeyType.Secp256k1, filled(201)).publicKey();
     host.config.offlineRotationKey = offline;
     let org = ok(createOrganization(fixture, ALICE, 'acme'));
-    let operation = fixture.submitted[org['did'] as String];
+    let operation = fixture.genesisOf(org['did'] as String);
     equal(operation.rotationKeys.length, 3);
     equal(operation.rotationKeys[0], RECOVERY);
     equal(operation.rotationKeys[1], formatDidKey(offline));
@@ -775,7 +805,7 @@ export let tests = suite('pds:host', () => {
     equal(errorOf(createOrganization(fixture, ALICE, 'zena')), 'NameTaken');
     let created = runFuture(host.createScopeAsOperator(ALICE, 'zena', [], 0 as i64));
     equal(created.handle, 'zena.pkg.test');
-    equal(fixture.submitted[created.did].rotationKeys.length, 1);
+    equal(fixture.genesisOf(created.did).rotationKeys.length, 1);
     // Its owner is Alice, who can create packages in it.
     ok(createPackage(fixture, ALICE, created.did, 'wit-parser'));
     // Taken once, as any scope.
@@ -1111,7 +1141,7 @@ export let tests = suite('pds:host', () => {
     let botDid = bot['did'] as String;
     equal(bot['handle'] as String, 'ci.acme.pkg.test');
     equal(fixture.records.lookup('ci.acme.pkg.test') as String, botDid);
-    equal(fixture.submitted[botDid].rotationKeys.length, 1);
+    equal(fixture.genesisOf(botDid).rotationKeys.length, 1);
     equal((runFuture(fixture.pds.storage.getAccount(botDid)) as Account).kind, AccountKind.Automation);
     // Its name is taken in the scope, as a package's would be.
     equal(errorOf(fixture.call(ALICE, 'createAutomationAccount', body)), 'NameTaken');

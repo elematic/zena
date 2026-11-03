@@ -13,7 +13,9 @@
 import {Future} from 'zena:async';
 import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
+import {randomBytes} from 'zena:random';
 import {BlobRef, Value} from 'atproto:data';
+import {KeyType, PublicKey} from 'atproto:didkey';
 import {Pds} from './pds.zena';
 import {RepositoryError, Write} from './repository.zena';
 import {Account, AccountKind, Head, SigningKey, StoredBlob} from './storage.zena';
@@ -32,9 +34,13 @@ export final class HeldRecord {
 export interface PdsClient {
   /**
    * `com.atproto.server.createAccount`: a managed account for `did`, named
-   * `handle`, whose repository `key` signs and which only the host writes.
+   * `handle`, which only the host writes. `temporary` is the signing key
+   * the DID's genesis operation names, which signs the host's token for
+   * the call. Returns the signing key the PDS made for the account, which
+   * the host names in the DID document next
+   * (`com.atproto.identity.getRecommendedDidCredentials`).
    */
-  createAccount(did: String, handle: String, key: SigningKey): Future<void>;
+  createAccount(did: String, handle: String, temporary: SigningKey): Future<PublicKey>;
   /**
    * `com.atproto.repo.applyWrites`: `writes` to `did`'s repository, in one
    * commit, which it returns. Throws `RepositoryError` for writes the PDS
@@ -64,8 +70,10 @@ export final class InProcessPds implements PdsClient {
 
   new(pds: Pds, host: String) : #pds = pds, #host = host;
 
-  async createAccount(did: String, handle: String, key: SigningKey): Future<void> {
+  async createAccount(did: String, handle: String, temporary: SigningKey): Future<PublicKey> {
+    let key = new SigningKey(KeyType.Secp256k1, randomBytes(32));
     await this.#pds.createAccount(did, handle, key, nowMicros(), AccountKind.Person, this.#host);
+    return key.publicKey();
   }
 
   async applyWrites(did: String, writes: Array<Write>): Future<Head> {
