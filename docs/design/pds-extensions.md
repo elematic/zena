@@ -2,7 +2,8 @@
 
 ## Status
 
-- **Status**: Proposed
+- **Status**: Proposed. The package host no longer needs it: it becomes a
+  service of its own (below).
 - **Date**: 2026-10-26
 - **Issue**: #584
 
@@ -32,6 +33,20 @@ point each piece needs, who may install an extension and what it can
 reach, and what the runtime needs to load one. It proposes an order of
 work that starts inside the current source tree, before any Wasm is
 involved.
+
+The package host has since taken another way out of the PDS.
+[package-manager.md](./package-manager.md) ("Hosting, keys and
+maintainers") makes it a service of its own, which mints its accounts'
+DIDs, creates the accounts on PDSes with
+`com.atproto.server.createAccount`, and writes them with
+`com.atproto.repo.*`. All it needs from a PDS is managed accounts:
+accounts created for a host the operator trusts, with no email address,
+password or invite code, which take writes only from that host
+([package-manager.md](./package-manager.md#managed-accounts)). Managed
+accounts are about trusting a service, not about packages, so they belong
+in the core. What follows still describes extensions for other uses,
+such as an account's own; the package host's rows in the table below are
+where its pieces are today, before it moves.
 
 ## What the package host adds
 
@@ -77,6 +92,7 @@ plus the general pieces from the table above:
 - storage (`pds:storage`, `pds:firestore`);
 - identity: resolving DIDs and handles, creating `did:plc`s and sending
   their operations, and the staging PLC directory;
+- managed accounts, for the services the operator trusts;
 - handle records in a DNS zone;
 - checking service-auth tokens;
 - installing, loading and calling extensions;
@@ -172,9 +188,11 @@ or deleted. These are the changes the firehose (#680) sends. The commit
 is already made when an extension hears of it, so an extension that fails
 to handle an event logs the failure, and a job (below) redoes the work.
 
-The package host keeps its catalog and mentions with these events
-([package-manager.md](./package-manager.md#the-hosts-indexes)). Today
-`Pds.onCommit` calls `PackageHost.#indexCommit` in the same process.
+Today the package host keeps its catalog and mentions with these events:
+`Pds.onCommit` calls `PackageHost.#indexCommit` in the same process. Once
+the host is a service of its own, it writes its indexes as it writes its
+accounts' records, since it is their only writer
+([package-manager.md](./package-manager.md#the-hosts-indexes)).
 
 ### Accounts and identity
 
