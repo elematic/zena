@@ -6,6 +6,7 @@ import {
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, InlineRecordType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType, releaseMemberOf, hasReleaseMember, synthesizedRelease,
+  ownershipHandleOf, OwnershipHandle, soleNonNullMember,
 } from '../../types.zena';
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
@@ -707,16 +708,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             this.noteReleaseTargets(ta, func.model);
           }
         }
-        // A synthesized :dispose releases each resource field the same
-        // way, and a synthesized [release] what each `T` field owns.
+        // A resource's :dispose releases each owner field the same way,
+        // written or synthesized: lowering appends the field glue to a
+        // written one too (collectAffineDropFields). A synthesized
+        // [release] releases what each `T` field owns.
         let releaseOwner = func.classType;
-        if (func.isSyntheticRelease && releaseOwner != null) {
-          if (releaseOwner.isResource) {
-            this.#noteFieldStaticTargets(releaseOwner, ":dispose");
-          } else {
-            for (let fieldType in scopedFieldTypesAt(this.wasm, releaseOwner)) {
-              this.noteReleaseTargets(fieldType, func.model);
-            }
+        if (releaseOwner != null && releaseOwner.isResource &&
+            (func.isSyntheticRelease ||
+             func.methodName == releaseMemberOf(releaseOwner))) {
+          this.#noteOwnerFieldReleases(releaseOwner, func.model);
+        } else if (func.isSyntheticRelease && releaseOwner != null) {
+          for (let fieldType in scopedFieldTypesAt(this.wasm, releaseOwner)) {
+            this.noteReleaseTargets(fieldType, func.model);
           }
         }
         if (!func.isImport) {
@@ -2306,7 +2309,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    */
   noteReleaseTargets(t: Type, model: SemanticModel): void {
     let classes = new Array<ClassType>();
-    collectNamedClasses(t, classes, 0);
+    collectNamedClasses(t, classes, 0, true);
     let deps = new SymbolDependencies();
     for (let ct in classes) {
       let member = releaseMemberOf(ct);
@@ -2332,6 +2335,30 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (isConcrete(ct) && !ct.isMixinIntermediate) {
         this.#pendingStaticTargets.push(new PendingStaticTarget(ct, memberName));
       }
+    }
+  }
+
+  /**
+   * noteReleaseTargets for each owner field of the resource class
+   * `owner`: what the glue appended to its `:dispose` releases
+   * (collectAffineDropFields in ir/control-flow.zena). Through the
+   * release record rather than a static target, since the field's own
+   * `:dispose` may be synthesized, and a synthesized member has no
+   * declaration for a static target to find (#493).
+   */
+  #noteOwnerFieldReleases(owner: ClassType, model: SemanticModel): void {
+    for (let mPair in owner.members) {
+      let member = mPair.value;
+      if (!(member is FieldInfo) || member.isStatic) {
+        continue;
+      }
+      let core = soleNonNullMember(member.type) ?? member.type;
+      if (ownershipHandleOf(core) != OwnershipHandle.Own) {
+        continue;
+      }
+      let fieldType = substituteTypeParamsInCodegen(this.wasm,
+          getClassTypeParameters(owner), owner.typeArguments, member.type);
+      this.noteReleaseTargets(fieldType, model);
     }
   }
 
@@ -5814,7 +5841,7 @@ final class PendingStaticTarget {
  * target and arguments of an alias. Bounded, since aliases can nest.
  */
 function collectNamedClasses(t: Type, out: GrowableArray<ClassType>,
-    depth: i32): void {
+    depth: i32, throughTuples: boolean = false): void {
   if (depth > 8) {
     return;
   }
@@ -5824,18 +5851,33 @@ function collectNamedClasses(t: Type, out: GrowableArray<ClassType>,
     }
     case UnionType {types}: {
       for (let m in types) {
-        collectNamedClasses(m, out, depth + 1);
+        collectNamedClasses(m, out, depth + 1, throughTuples);
       }
     }
     case EnumType as et: {
-      collectNamedClasses(et.backingType, out, depth + 1);
+      collectNamedClasses(et.backingType, out, depth + 1, throughTuples);
     }
     case TypeAliasType as ta: {
-      collectNamedClasses(ta.target, out, depth + 1);
+      collectNamedClasses(ta.target, out, depth + 1, throughTuples);
       let {typeArguments} = ta;
       if (typeArguments != null) {
         for (let a in typeArguments as Array<Type>) {
-          collectNamedClasses(a, out, depth + 1);
+          collectNamedClasses(a, out, depth + 1, throughTuples);
+        }
+      }
+    }
+    // Releasing a tuple releases the owners among its elements.
+    case TupleType {elementTypes}: {
+      if (throughTuples) {
+        for (let el in elementTypes) {
+          collectNamedClasses(el, out, depth + 1, throughTuples);
+        }
+      }
+    }
+    case InlineTupleType {elementTypes}: {
+      if (throughTuples) {
+        for (let el in elementTypes) {
+          collectNamedClasses(el, out, depth + 1, throughTuples);
         }
       }
     }

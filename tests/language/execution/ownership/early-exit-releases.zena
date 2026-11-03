@@ -1,0 +1,65 @@
+// @mode: run
+// @result: 2221
+// A binding moved on one path is not released at its scope's end, so
+// the paths that leave early holding it release it as they leave: a
+// `continue` and a `break` out of the loop it was declared in, and a
+// `return` out of the function. A return that moves the binding
+// releases nothing.
+import { Own, Disposable, Unmanaged, disown } from 'zena:core';
+
+var released = 0;
+var consumed = 0;
+
+resource class Body {
+  new();
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+/** Keeps what it is given, unreleased, so a move shows as no release. */
+let sink = new GrowableArray<Unmanaged<Body>>();
+
+function consume(body: Own<Body>): void {
+  sink.push(disown(body));
+  consumed += 1;
+}
+
+/** One body per round: rounds 2 and 4 leave early, the rest consume. */
+function rounds(): void {
+  var i = 0;
+  while (i < 6) {
+    let body = new Body();
+    i += 1;
+    if (i == 2) {
+      continue;
+    }
+    if (i == 4) {
+      break;
+    }
+    consume(body);
+  }
+}
+
+function handOver(body: Own<Body>): Own<Body> {
+  return body;
+}
+
+function either(body: Own<Body>, keep: boolean): Own<Body> | null {
+  if (keep) {
+    return handOver(body);
+  }
+  consume(body);
+  return null;
+}
+
+export function main(): i32 {
+  rounds();
+  // Rounds 1 and 3 consumed; 2 and 4 released as they left.
+  let releasedByRounds = released;
+  let kept = either(new Body(), true);
+  // The returned body was moved out, not released: `kept` holds it.
+  return releasedByRounds * 1000 + consumed * 100 + released * 10 +
+      (if (kept != null) 1 else 0);
+}

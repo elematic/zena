@@ -6046,12 +6046,15 @@ released yet (#495).
 A record may not hold an owner: a record converts by adaptation, which
 copies, and a copy would duplicate the obligation.
 
-The compiler releases a binding only when it still owns the value at every
-exit. A binding is left alone when anything moves it (a call taking
-`Own<R>`, `disown`, a consuming method, rebinding), reassigns it, captures
-it in a closure, or uses it in a position the compiler does not recognize
-as a borrow. Left alone means what it always meant before implicit drop:
-the value leaks unless something else releases it.
+The compiler releases a binding only where it still owns the value. A
+`let` that something moves (a call taking `Own<R>`, `disown`, a
+consuming method, rebinding) is released at the end of an arm that kept
+it and at a `return`, `break` or `continue` taken before the move, as
+below; an exception thrown before the move leaks it. A binding is left
+alone when anything reassigns it,
+captures it in a closure, or uses it in a position the compiler does not
+recognize as a borrow. Left alone means what it always meant before
+implicit drop: the value leaks unless something else releases it.
 
 A move on one arm of an `if` or a `match` releases the binding at the
 end of each arm that kept it, so it is uniformly dead after the merge —
@@ -6062,6 +6065,17 @@ let f = open(path);
 if (handOff) {
   pool.give(f);   // moved
 }                 // not handing off? released here
+```
+
+A `return`, `break` or `continue` that leaves the block before the move,
+with the binding still live, releases it there:
+
+```zena
+let f = open(path);
+if (!wanted) {
+  return;         // released here
+}
+pool.give(f);     // moved
 ```
 
 Release timing is observable when `dispose` has effects: a resource

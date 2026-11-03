@@ -1,0 +1,58 @@
+// @mode: run
+// @result: 4302
+// A resource class with a nullable owner field: a borrowing method
+// reads the field into a local borrow, which takes nothing, and a
+// consuming method takes it, leaving null for the release glue to skip.
+import { Own, Borrow, Disposable } from 'zena:core';
+
+var log = 0;
+
+resource class Wire {
+  id: i32;
+  new(this.id);
+
+  [Disposable.dispose](this: Own<this>): void {
+    log += this.id;
+  }
+}
+
+function consumeWire(wire: Own<Wire>): i32 {
+  return wire.id * 100;
+}
+
+resource class Holder {
+  var #wire: Own<Wire> | null;
+  new(wire: Own<Wire> | null) : #wire = wire;
+
+  /** Borrows the field: the holder keeps it. */
+  peek(): i32 {
+    let wire: Borrow<Wire> | null = this.#wire;
+    if (wire != null) {
+      return wire.id;
+    }
+    return 0;
+  }
+
+  /** Takes the field: the holder is consumed. */
+  consume(this: Own<this>): i32 {
+    let wire = this.#wire;
+    if (wire != null) {
+      return consumeWire(wire);
+    }
+    return -1;
+  }
+
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+export function main(): i32 {
+  let kept = new Holder(new Wire(2));
+  let seen = kept.peek() + kept.peek();
+  // `kept` is released at the end of main, with its wire: log += 2.
+  let taken = new Holder(new Wire(3));
+  let consumed = taken.consume();
+  // The taken wire was released by consumeWire: log += 3.
+  let empty = new Holder(null);
+  let none = empty.consume();
+  return consumed + seen * 1000 + none + log;
+}

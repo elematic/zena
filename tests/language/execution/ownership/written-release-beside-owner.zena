@@ -1,0 +1,52 @@
+// @mode: run
+// @result: 1111
+// A resource class that writes its own dispose and holds an owner
+// (#388). Lowering appends the field glue to the written dispose, so
+// the program's dispose runs and then the field is released; the
+// field's class is released only through that glue, so reachability
+// has to reach its dispose from the written one, as it does from a
+// synthesized one.
+import { Own, Disposable } from 'zena:core';
+
+var released = 0;
+
+resource class Inner {
+  weight: i32;
+  new(this.weight);
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.weight;
+  }
+}
+
+resource class Outer {
+  #inner: Own<Inner>;
+  new(inner: Own<Inner>) : #inner = inner;
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+/** An explicit close forwards to the written dispose. */
+resource class Closable {
+  #inner: Own<Inner>;
+  new(inner: Own<Inner>) : #inner = inner;
+
+  close(this: Own<this>): void {
+    this.[Disposable.dispose]();
+  }
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 100;
+  }
+}
+
+export function main(): i32 {
+  {
+    let outer = new Outer(new Inner(10));
+  }
+  let closable = new Closable(new Inner(1000));
+  closable.close();
+  return released;
+}

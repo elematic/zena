@@ -31,7 +31,7 @@ import {
   eraseTypeParameters, findExtendedWellKnownInterface,
   findImplementedWellKnownInterface, getNonNullableType,
   typeToValTypeWithSub, InlineLayout, inlineLayoutOf, iteratorInterfaceOf,
-  stepInlineValue, scopedFieldTypesAt,
+  stepInlineValue, scopedFieldTypesAt, getCellStruct,
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
@@ -45,6 +45,7 @@ import {
   recordDispatchOfValue,
 } from './patterns.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
+import { walkEnter } from '../../visitor.zena';
 import { HashMap, HashSet } from 'zena:collections';
 import { growable } from 'zena:core';
 
@@ -184,7 +185,7 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
 /** Whether some member of `layout` holds an owner. */
 function layoutHoldsOwner(layout: InlineLayout): boolean {
   for (var m = 0; m < layout.members.length; m += 1) {
-    if (memberReleases(layout, m, null)) {
+    if (memberReleases(layout, m, null, false)) {
       return true;
     }
   }
@@ -380,7 +381,17 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
       if (raw < 0) {
         return lowerValueRegionRestVar(cx, plan, body, i, ctxVt, tail);
       }
-      lowerVarDropRegion(cx, plan, body, i, raw, false);
+      // As in lowerRangeAcquiring: the interval closes after the
+      // acquisition of a statement in it that scopes the rest of the
+      // block, and reopens inside that statement's region.
+      let opener = firstScopeOpener(cx, body, i, raw);
+      if (opener >= 0) {
+        let acquired = lowerVarDropRegion(cx, plan, body, i, opener, false, true);
+        if (acquired == null) { return -1; }
+        return lowerValueRegionRest(cx, acquired.values, acquired.plans, 0, body,
+            opener + 1, ctxVt, tail);
+      }
+      lowerVarDropRegion(cx, plan, body, i, raw, false, false);
       openedEnd = raw;
       break;
     }
@@ -388,39 +399,12 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
       i = openedEnd;
       continue;
     }
-    if (body[i] is UsingStatement) {
-      let us = body[i] as UsingStatement;
-      // Acquire exactly as lowerUsingRegion does, then wrap the rest
-      // of the block in the result-carrying region.
-      let declType = cx.substitutedNodeType(us.init);
-      if (declType == null) {
-        bail(cx, 'untyped using initializer');
-      }
-      let owners = disposeOwnerClasses(cx, declType);
-      let usingPlan = new DropPlan(owners, null);
-      let value = lowerExpr(cx, us.init, null);
-      let pattern = us.pattern;
-      if (pattern != null) {
-        let pat = pattern as Node;
-        if (!(pat is IdentifierPattern)) {
-          bail(cx, 'using destructuring pattern');
-        }
-        let symOpt = cx.func.model.resolveDeclaration(pat);
-        if (symOpt == null) {
-          bail(cx, 'using binding symbol');
-        }
-        cx.bindPatternSym(symOpt, value);
-      }
-      return lowerValueRegionRest(cx, growable<i32>([value]),
-          growable<DropPlan>([usingPlan]), 0, body, i + 1, ctxVt, tail);
-    }
-    if (body[i] is VariableDeclaration &&
-        declScopeDrop(cx, body[i] as VariableDeclaration)) {
-      let vd = body[i] as VariableDeclaration;
-      let drops = scopeDropsOf(cx, vd);
-      varDecl(cx, vd);
-      let values = cx.envValues(drops.syms);
-      return lowerValueRegionRest(cx, values, drops.plans, 0, body, i + 1, ctxVt, tail);
+    if (opensScope(cx, body[i])) {
+      // Acquire, then wrap the rest of the block in the result-carrying
+      // region.
+      let acquired = acquireScope(cx, body[i]);
+      return lowerValueRegionRest(cx, acquired.values, acquired.plans, 0, body,
+          i + 1, ctxVt, tail);
     }
     lowerStmt(cx, body[i]);
     i += 1;
@@ -748,6 +732,23 @@ function emitEdgeDrops(cx: LoweringContext, stmt: IfStatement, onTrue: boolean) 
     let plan = dropPlanOf(cx, declType);
     let syms = growable<SymbolId>([d.symbolId]);
     let value = cx.envValues(syms)[0];
+    emitDrop(cx, value, plan);
+  }
+}
+
+/**
+ * The drops an early exit owes (SemanticModel.exitDropsOf): bindings a
+ * move elsewhere kept from their scope's release, still live as control
+ * leaves here. Plain calls, as an arm's compensating drops are.
+ */
+export function emitExitDrops(cx: LoweringContext, drops: GrowableArray<SymbolId>): void {
+  for (let symId in drops) {
+    let declType = cx.bindingTypeOf(symId);
+    if (declType == null) {
+      bail(cx, 'exit drop untyped binding');
+    }
+    let plan = dropPlanOf(cx, declType);
+    let value = cx.envValues(growable<SymbolId>([symId]))[0];
     emitDrop(cx, value, plan);
   }
 }
@@ -2107,15 +2108,28 @@ export final class DropPlan {
    * them releases nothing.
    */
   var partial: boolean = false;
+  /**
+   * Whether `tuple`'s owners are judged by representation: a resource
+   * class element is an owner whatever handle it was written with. For
+   * `releaseOwned<T>` in a specialization, which is keyed by
+   * representation, so its `T` arrives with the handles erased
+   * (reachability/CONTEXT.md, "A Specialization Is Keyed by
+   * Representation"). Everywhere else the handle decides, and an
+   * `Unmanaged<R>` element is never released.
+   */
+  var byRepresentation: boolean = false;
 
   new(this.owners, this.tuple);
 }
 
 /** The drop plan for a value of type `t` (see `DropPlan`). */
-export function dropPlanOf(cx: LoweringContext, t: Type): DropPlan {
+export function dropPlanOf(cx: LoweringContext, t: Type,
+    byRepresentation: boolean = false): DropPlan {
   let core = soleNonNullMember(t) ?? t;
-  if (tupleHoldsOwner(core)) {
-    return new DropPlan(null, t);
+  if (tupleHoldsOwner(core, byRepresentation)) {
+    let plan = new DropPlan(null, t);
+    plan.byRepresentation = byRepresentation;
+    return plan;
   }
   let containers = releasingUnionMembers(core);
   if (containers != null) {
@@ -2159,8 +2173,8 @@ function releasingUnionMembers(t: Type): GrowableArray<ClassType> | null {
  */
 export function emitReleaseOwned(cx: LoweringContext, value: i32, t: Type): void {
   let core = soleNonNullMember(t) ?? t;
-  if (tupleHoldsOwner(core)) {
-    emitDrop(cx, value, new DropPlan(null, t));
+  if (tupleHoldsOwner(core, true)) {
+    emitDrop(cx, value, dropPlanOf(cx, t, true));
     return;
   }
   var target = core;
@@ -2190,15 +2204,18 @@ export function emitDrop(cx: LoweringContext, value: i32, plan: DropPlan): void 
     }
     return;
   }
-  emitTupleDrop(cx, value, plan.tuple as Type);
+  emitTupleDrop(cx, value, plan.tuple as Type, plan.byRepresentation);
 }
 
-/** Whether `t` is a tuple, or a union of tuples, with an owner element. */
-function tupleHoldsOwner(t: Type): boolean {
+/**
+ * Whether `t` is a tuple, or a union of tuples, with an owner element;
+ * by representation, a resource class element counts (`DropPlan`).
+ */
+function tupleHoldsOwner(t: Type, byRepresentation: boolean = false): boolean {
   let resolved = unwrapAliases(t);
   if (let UnionType {types} = resolved) {
     for (let member in types) {
-      if (tupleHoldsOwner(member)) {
+      if (tupleHoldsOwner(member, byRepresentation)) {
         return true;
       }
     }
@@ -2213,7 +2230,7 @@ function tupleHoldsOwner(t: Type): boolean {
     return false;
   }
   for (let el in elements) {
-    if (elementHoldsOwner(el)) {
+    if (elementHoldsOwner(el, byRepresentation)) {
       return true;
     }
   }
@@ -2222,12 +2239,29 @@ function tupleHoldsOwner(t: Type): boolean {
 
 /**
  * Whether a tuple element is an owner, a tuple holding one, or a
- * `scoped T` container of one.
+ * `scoped T` container of one. By representation, an element whose
+ * class is a resource class is an owner whatever its handle.
  */
-function elementHoldsOwner(t: Type): boolean {
+function elementHoldsOwner(t: Type, byRepresentation: boolean = false): boolean {
   let core = soleNonNullMember(t) ?? t;
-  return ownershipHandleOf(core) == OwnershipHandle.Own || tupleHoldsOwner(core) ||
+  if (byRepresentation && isResourceRepresentation(core)) {
+    return true;
+  }
+  return ownershipHandleOf(core) == OwnershipHandle.Own ||
+      tupleHoldsOwner(core, byRepresentation) ||
       releasableContainer(core) != null || releasingUnionMembers(core) != null;
+}
+
+/** Whether `t`, through any handle, is a resource class. */
+function isResourceRepresentation(t: Type): boolean {
+  var target = t;
+  while (isOwnershipWrapper(target)) {
+    let inner = ownershipHandleInner(target);
+    if (inner == null) { break; }
+    target = inner;
+  }
+  let base = unwrapAliases(target);
+  return base is ClassType && base.isResource;
 }
 
 /**
@@ -2236,7 +2270,8 @@ function elementHoldsOwner(t: Type): boolean {
  * tuples branches on the literal at position 0 to the member the value
  * is; a nested tuple releases its own owners the same way.
  */
-function emitTupleDrop(cx: LoweringContext, value: i32, t: Type): void {
+function emitTupleDrop(cx: LoweringContext, value: i32, t: Type,
+    byRepresentation: boolean = false): void {
   // A nullable tuple holds nothing when it is null.
   let core = soleNonNullMember(t);
   if (core != null) {
@@ -2246,7 +2281,7 @@ function emitTupleDrop(cx: LoweringContext, value: i32, t: Type): void {
     let doB = cx.b.newBlock();
     cx.b.brIf(isNull, skipB, noValues(), doB, noValues());
     cx.b.switchTo(doB);
-    emitTupleDrop(cx, value, core);
+    emitTupleDrop(cx, value, core, byRepresentation);
     cx.b.br(skipB, noValues());
     cx.b.switchTo(skipB);
     return;
@@ -2255,7 +2290,7 @@ function emitTupleDrop(cx: LoweringContext, value: i32, t: Type): void {
   if (sourceOpt == null) {
     bail(cx, 'drop of a tuple that is not tuples');
   }
-  emitSlotsDrop(cx, sourceOpt as MultiValues);
+  emitSlotsDropExcept(cx, sourceOpt, null, null, byRepresentation);
 }
 
 /**
@@ -2272,7 +2307,8 @@ export function emitSlotsDrop(cx: LoweringContext, source: MultiValues): void {
  * which something else releases: the owners a pattern bound to names.
  */
 export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
-    allowed: GrowableArray<boolean> | null, kept: HashSet<String> | null): void {
+    allowed: GrowableArray<boolean> | null, kept: HashSet<String> | null,
+    byRepresentation: boolean = false): void {
   let layout = source.layout;
   if (layout == null) {
     bail(cx, 'drop of a tuple with no slots');
@@ -2287,13 +2323,13 @@ export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
       continue;
     }
     reaching += 1;
-    if (memberReleases(layout, m, kept)) {
+    if (memberReleases(layout, m, kept, byRepresentation)) {
       releasing.push(m);
     }
   }
   if (reaching == 1) {
     if (releasing.length == 1) {
-      emitTupleMemberDrop(cx, source, releasing[0], kept);
+      emitTupleMemberDrop(cx, source, releasing[0], kept, byRepresentation);
     }
     return;
   }
@@ -2317,7 +2353,7 @@ export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
     let next = cx.b.newBlock();
     cx.b.brIf(cond, hit, noValues(), next, noValues());
     cx.b.switchTo(hit);
-    emitTupleMemberDrop(cx, source, m, kept);
+    emitTupleMemberDrop(cx, source, m, kept, byRepresentation);
     cx.b.br(join, noValues());
     cx.b.switchTo(next);
   }
@@ -2327,10 +2363,10 @@ export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
 
 /** Whether member `m` has an owner outside `kept` to release. */
 function memberReleases(layout: InlineLayout, m: i32,
-    kept: HashSet<String> | null): boolean {
+    kept: HashSet<String> | null, byRepresentation: boolean): boolean {
   let elements = layout.members[m].elementTypes;
   for (var p = 0; p < elements.length; p += 1) {
-    if (elementHoldsOwner(elements[p]) &&
+    if (elementHoldsOwner(elements[p], byRepresentation) &&
         !isKeptPath(kept, layout.memberPaths[m][p])) {
       return true;
     }
@@ -2353,19 +2389,20 @@ function isKeptPath(kept: HashSet<String> | null, path: String): boolean {
 
 /** Releases the owner elements of member `m`, last first, but those in `kept`. */
 function emitTupleMemberDrop(cx: LoweringContext, source: MultiValues, m: i32,
-    kept: HashSet<String> | null): void {
+    kept: HashSet<String> | null, byRepresentation: boolean): void {
   let layout = source.layout as InlineLayout;
   let elements = layout.members[m].elementTypes;
   for (var p = elements.length - 1; p >= 0; p -= 1) {
     let el = elements[p];
-    if (!elementHoldsOwner(el) || isKeptPath(kept, layout.memberPaths[m][p])) {
+    if (!elementHoldsOwner(el, byRepresentation) ||
+        isKeptPath(kept, layout.memberPaths[m][p])) {
       continue;
     }
     let slot = layout.slotOf(m, p);
     if (slot < 0) {
       continue;
     }
-    emitDrop(cx, source.values[slot], dropPlanOf(cx, el));
+    emitDrop(cx, source.values[slot], dropPlanOf(cx, el, byRepresentation));
   }
 }
 
@@ -2457,22 +2494,126 @@ function emitVarDropRelease(cx: LoweringContext, plan: VarDropPlan): void {
  * statement that moves the binding, or where an enclosing region ends
  * — releases only on the exits that leave early, since on normal
  * completion the value is still the binding's.
+ *
+ * With `acquire`, the region also covers the acquisition of `body[end]`,
+ * a statement that scopes the rest of its block (lowerRangeAcquiring),
+ * and returns what it acquired, or null when the region cannot complete.
  */
 function lowerVarDropRegion(cx: LoweringContext, plan: VarDropPlan,
-    body: GrowableArray<Statement>, start: i32, end: i32, toBlockEnd: boolean): void {
+    body: GrowableArray<Statement>, start: i32, end: i32, toBlockEnd: boolean,
+    acquire: boolean): ScopeAcquisition | null {
+  let covered = if (acquire) end + 1 else end;
   let mirrored = new Array<SymbolId>();
-  for (var k = start; k < end; k += 1) {
+  for (var k = start; k < covered; k += 1) {
     cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
   }
+  // A region closed before the block's end leaves the block's later
+  // statements in scope of what its own statements declared. The
+  // protected part does not dominate the code after the region, so
+  // those bindings leave it through variables set on normal completion,
+  // the one way out that continues after it; so does an acquisition.
+  let declared = new Array<Symbol>();
+  if (!toBlockEnd) {
+    for (var k = start; k < covered; k += 1) {
+      let s = body[k];
+      if (s is VariableDeclaration) {
+        collectDeclaredSyms(cx, s.pattern as Node, declared);
+      } else if (s is UsingStatement && s.pattern != null) {
+        collectDeclaredSyms(cx, s.pattern as Node, declared);
+      }
+    }
+  }
+  let carried = new Array<Symbol>();
+  // Per carried binding, its variable, or -1 for a zero-width binding,
+  // whose environment entry holds no value and is restored as it was.
+  let carriedVars = new Array<i32>();
+  let carriedEntries = new Array<i32>();
+  let acquiredVars = new Array<i32>();
+  var acquiredPlans: GrowableArray<DropPlan> | null = null;
   cx.openVarDrops.add(plan.symId as i32);
   lowerFinallyRegion(cx, mirrored, true, null,
       (scope, resultVar, saved) => {
-        lowerStatementRange(cx, body, start, end);
+        let acquired = lowerRangeAcquiring(cx, body, start, end, acquire);
+        if (cx.reachable) {
+          for (let sym in declared) {
+            if (let (true, value) = cx.env.get(sym.id)) {
+              let vt = carriedValType(cx, sym);
+              carried.push(sym);
+              carriedEntries.push(value);
+              if (vt is ValTypeVoid) {
+                carriedVars.push(-1);
+                continue;
+              }
+              let varId = cx.b.newVar(vt);
+              cx.b.varSet(varId, cx.conformToSlot(value, vt, 'carried binding type'));
+              carriedVars.push(varId);
+            }
+          }
+          if (acquired != null) {
+            for (let value in acquired.values) {
+              let varId = cx.b.newVar(cx.valueTypeOf(value));
+              cx.b.varSet(varId, value);
+              acquiredVars.push(varId);
+            }
+            acquiredPlans = acquired.plans;
+          }
+        }
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       (fscope) => { emitVarDropRelease(cx, plan); },
       toBlockEnd);
   cx.openVarDrops.delete(plan.symId as i32);
+  if (!cx.reachable) {
+    return null;
+  }
+  for (var c = 0; c < carried.length; c += 1) {
+    let varId = carriedVars[c];
+    cx.env[carried[c].id] = if (varId >= 0) cx.b.varGet(varId) else carriedEntries[c];
+  }
+  if (!acquire) {
+    return null;
+  }
+  let plans = acquiredPlans;
+  if (plans == null) {
+    bail(cx, 'var owner region lost its acquisition');
+  }
+  let values = new Array<i32>();
+  for (let varId in acquiredVars) {
+    values.push(cx.b.varGet(varId));
+  }
+  return new ScopeAcquisition(values, plans);
+}
+
+/**
+ * The type of the variable that carries `sym` out of a region: its
+ * binding's, or its cell's when a closure captures it mutably.
+ */
+function carriedValType(cx: LoweringContext, sym: Symbol): ValType {
+  let bindingType = cx.func.model.getBindingType(sym);
+  if (bindingType == null) {
+    bail(cx, 'untyped carried binding');
+  }
+  let vt = typeToValTypeWithSub(cx.wasm, bindingType, cx.func);
+  if (cx.isCelled(sym.id)) {
+    return new ValTypeRef(getCellStruct(cx.wasm, vt));
+  }
+  return vt;
+}
+
+/**
+ * The bindings a declaration's pattern introduces, as `IdentifierPattern`s,
+ * and those of any default inside it, which nothing after the
+ * declaration reads; carrying one costs a variable and nothing else.
+ */
+function collectDeclaredSyms(cx: LoweringContext, pattern: Node, out: GrowableArray<Symbol>): void {
+  walkEnter(pattern, (n) => {
+    if (n is IdentifierPattern) {
+      let sym = cx.func.model.resolveDeclaration(n);
+      if (sym != null) {
+        out.push(sym);
+      }
+    }
+  });
 }
 
 /**
@@ -2490,10 +2631,28 @@ function lowerVarDropRegion(cx: LoweringContext, plan: VarDropPlan,
  */
 export function lowerStatementRange(cx: LoweringContext, body: GrowableArray<Statement>,
     start: i32, end: i32): void {
+  lowerRangeAcquiring(cx, body, start, end, false);
+}
+
+/**
+ * `lowerStatementRange`, and when `acquire` is set, then the acquisition
+ * of `body[end]`, a statement that scopes the rest of its block, whose
+ * region the caller opens: what it acquired, or null when the range
+ * cannot complete.
+ *
+ * Regions must nest, and a `var` owner's interval can close inside the
+ * block, before the statement that moves the binding, while a region
+ * opened inside the interval runs to the end of the range. So an
+ * interval closing before the range's end closes after the acquisition
+ * of the first such statement in it instead, and the rest of the range
+ * lowers inside that statement's region, where the interval reopens.
+ */
+function lowerRangeAcquiring(cx: LoweringContext, body: GrowableArray<Statement>,
+    start: i32, end: i32, acquire: boolean): ScopeAcquisition | null {
   let plans = varDropPlans(cx, body);
   var i = start;
   while (i < end) {
-    if (!cx.reachable) { return; }
+    if (!cx.reachable) { return null; }
     var openedEnd = -1;
     for (let plan in plans) {
       if (cx.openVarDrops.has(plan.symId as i32)) { continue; }
@@ -2501,7 +2660,19 @@ export function lowerStatementRange(cx: LoweringContext, body: GrowableArray<Sta
       if (raw == -2) { continue; }
       let b = if (raw < 0) body.length else raw;
       let regionEnd = if (b < end) b else end;
-      lowerVarDropRegion(cx, plan, body, i, regionEnd, raw < 0 && regionEnd == b);
+      let opener = if (regionEnd < end) firstScopeOpener(cx, body, i, regionEnd) else -1;
+      if (opener >= 0) {
+        let acquired = lowerVarDropRegion(cx, plan, body, i, opener, false, true);
+        if (acquired == null) { return null; }
+        lowerScopeDrops(cx, acquired.values, acquired.plans, 0, body, opener + 1, end);
+        return null;
+      }
+      // An interval that covers the acquisition takes it in; one closing
+      // at it, before a statement that moves the binding, does not.
+      let acquiresHere = acquire && regionEnd == end && b > end;
+      let acquired = lowerVarDropRegion(cx, plan, body, i, regionEnd,
+          raw < 0 && regionEnd == b, acquiresHere);
+      if (acquiresHere) { return acquired; }
       openedEnd = regionEnd;
       break;
     }
@@ -2510,54 +2681,83 @@ export function lowerStatementRange(cx: LoweringContext, body: GrowableArray<Sta
       continue;
     }
     let s = body[i];
-    if (s is UsingStatement) {
-      lowerUsingRegion(cx, s as UsingStatement, body, i + 1, end);
-      return;
-    }
-    if (s is VariableDeclaration && declScopeDrop(cx, s as VariableDeclaration)) {
-      // An implicit-drop binding scopes the rest of its block the way
-      // `using` does (ownership.md §Implicit drop).
-      lowerScopeDropRegion(cx, s as VariableDeclaration, body, i + 1, end);
-      return;
+    if (opensScope(cx, s)) {
+      // A `using`, or an implicit-drop binding, which scopes the rest of
+      // its block the way `using` does (ownership.md §Implicit drop).
+      let acquired = acquireScope(cx, s);
+      lowerScopeDrops(cx, acquired.values, acquired.plans, 0, body, i + 1, end);
+      return null;
     }
     lowerStmt(cx, s);
     i += 1;
   }
+  if (!acquire || !cx.reachable) { return null; }
+  return acquireScope(cx, body[end]);
+}
+
+/**
+ * The first statement of `body[start..end)` that scopes the rest of its
+ * block, or -1.
+ */
+function firstScopeOpener(cx: LoweringContext, body: GrowableArray<Statement>,
+    start: i32, end: i32): i32 {
+  for (var k = start; k < end; k += 1) {
+    if (opensScope(cx, body[k])) { return k; }
+  }
+  return -1;
+}
+
+/** Whether a statement scopes the rest of its block: a `using`, or an implicit-drop binding. */
+function opensScope(cx: LoweringContext, s: Statement): boolean {
+  return s is UsingStatement ||
+      (s is VariableDeclaration && declScopeDrop(cx, s));
+}
+
+/** What a statement that scopes the rest of its block acquired, and how each value is released. */
+final class ScopeAcquisition {
+  values: GrowableArray<i32>;
+  plans: GrowableArray<DropPlan>;
+  new(this.values, this.plans);
+}
+
+/**
+ * Lowers the acquisition of a statement `opensScope` accepts — a
+ * `using`'s value, or an implicit-drop declaration — without opening the
+ * region it is released over: a release is owed only once acquisition
+ * has succeeded.
+ */
+function acquireScope(cx: LoweringContext, s: Statement): ScopeAcquisition {
+  if (s is UsingStatement) {
+    let declType = cx.substitutedNodeType(s.init);
+    if (declType == null) {
+      bail(cx, 'untyped using initializer');
+    }
+    let plan = new DropPlan(disposeOwnerClasses(cx, declType), null);
+    let value = lowerExpr(cx, s.init, null);
+    let pattern = s.pattern;
+    if (pattern != null) {
+      let pat = pattern as Node;
+      if (!(pat is IdentifierPattern)) {
+        bail(cx, 'using destructuring pattern');
+      }
+      let symOpt = cx.func.model.resolveDeclaration(pat);
+      if (symOpt == null) {
+        bail(cx, 'using binding symbol');
+      }
+      cx.bindPatternSym(symOpt, value);
+    }
+    return new ScopeAcquisition(growable<i32>([value]), growable<DropPlan>([plan]));
+  }
+  let vd = s as VariableDeclaration;
+  let drops = scopeDropsOf(cx, vd);
+  varDecl(cx, vd);
+  return new ScopeAcquisition(cx.envValues(drops.syms), drops.plans);
 }
 
 export function lowerUsingRegion(cx: LoweringContext, stmt: UsingStatement,
     rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void {
-  let declType = cx.substitutedNodeType(stmt.init);
-  if (declType == null) {
-    bail(cx, 'untyped using initializer');
-  }
-  let ownerClasses = disposeOwnerClasses(cx, declType);
-
-  let value = lowerExpr(cx, stmt.init, null);
-  let pattern = stmt.pattern;
-  if (pattern != null) {
-    let pat = pattern as Node;
-    if (!(pat is IdentifierPattern)) {
-      bail(cx, 'using destructuring pattern');
-    }
-    let symOpt = cx.func.model.resolveDeclaration(pat);
-    if (symOpt == null) {
-      bail(cx, 'using binding symbol');
-    }
-    cx.bindPatternSym(symOpt, value);
-  }
-
-  let mirrored = new Array<SymbolId>();
-  for (var k = restStart; k < restEnd; k += 1) {
-    cx.appendAssignedEnvSyms(rest[k] as Node, mirrored);
-  }
-
-  lowerFinallyRegion(cx, mirrored, true, null,
-      (scope, resultVar, saved) => {
-        lowerStatementRange(cx, rest, restStart, restEnd);
-        finishProtectedArm(cx, scope, resultVar, -1);
-      },
-      (fscope) => { emitMaybeDispose(cx, value, ownerClasses); });
+  let acquired = acquireScope(cx, stmt);
+  lowerScopeDrops(cx, acquired.values, acquired.plans, 0, rest, restStart, restEnd);
 }
 
 /** Whether the checker marked this declaration for release at scope exit. */
@@ -2869,26 +3069,17 @@ export function lowerParamDropRegions(cx: LoweringContext,
 }
 
 /**
- * An implicit-drop declaration and everything after it in its block:
- * `using` without the keyword. The checker marked the binding as an
- * owned resource nothing moves, reassigns, captures or escapes
- * (ownership.md §Implicit drop), so the rest of the block is the region
- * the value is live over, and the release is the same shared finally
- * region `using` compiles to — one dispose, outside the region, reached
- * by normal completion, the handler edge, and every early exit.
- */
-export function lowerScopeDropRegion(cx: LoweringContext, vd: VariableDeclaration,
-    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void {
-  let drops = scopeDropsOf(cx, vd);
-  varDecl(cx, vd);
-  let values = cx.envValues(drops.syms);
-  lowerScopeDrops(cx, values, drops.plans, 0, rest, restStart, restEnd);
-}
-
-/**
  * The rest of a block behind one release region per dropped binding,
  * the first binding's outermost, so the bindings release in reverse
  * order.
+ *
+ * An implicit-drop declaration is `using` without the keyword. The
+ * checker marked the binding as an owned resource nothing moves,
+ * reassigns, captures or escapes (ownership.md §Implicit drop), so the
+ * rest of the block is the region the value is live over, and the
+ * release is the same shared finally region `using` compiles to — one
+ * dispose, outside the region, reached by normal completion, the
+ * handler edge, and every early exit.
  */
 function lowerScopeDrops(cx: LoweringContext, values: GrowableArray<i32>,
     plans: GrowableArray<DropPlan>, idx: i32,

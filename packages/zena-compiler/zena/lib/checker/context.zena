@@ -3,7 +3,7 @@ import { growable } from 'zena:core';
 import {
   BorrowUseRec, FlowAssign, FlowBodyState, FlowJoin, FlowMove,
   FlowNarrowings, FlowNode, FlowStart, FlowSuspend, FlowUnreachable,
-  PendingEdgeIf, PendingEdgeMatch
+  PendingEdgeIf, PendingEdgeMatch, PendingExit
 } from '../analysis/flow.zena';
 import {
   ClassDeclaration, DeclareFunction, EnumDeclaration, Expression,
@@ -588,6 +588,9 @@ export final class CheckerContext {
    * N-ary sibling; same lifecycle. */
   var #pendingEdgeMatches = new Array<PendingEdgeMatch>();
 
+  /** The early exits recorded for the same decision; same lifecycle. */
+  var #pendingExits = new Array<PendingExit>();
+
   /** Whether any open scope holds an implicit-drop candidate. */
   #hasOwnCandidates(): boolean {
     for (let frame in this.#ownScopeStack) {
@@ -614,6 +617,21 @@ export final class CheckerContext {
     if (!this.#hasOwnCandidates()) { return; }
     this.#pendingEdgeMatches.push(
       new PendingEdgeMatch(matchNode, preBranch, armEnds));
+  }
+
+  /**
+   * Record an early exit at the current flow, leaving the own scopes at
+   * depth `start` and above: 0 for a `return`, which leaves every frame
+   * of the body, or `scopedLoopFloor()` for a `break` or `continue`.
+   * Called once the exit's own operand has been checked, so a `return f`
+   * that moves `f` is a move here.
+   */
+  recordPendingExit(exitNode: Node, start: i32): void {
+    if (!this.#hasOwnCandidates()) { return; }
+    if (this.#currentFlow is FlowUnreachable) { return; }
+    var from = start;
+    if (from < this.#scopedBodyFloor) { from = this.#scopedBodyFloor; }
+    this.#pendingExits.push(new PendingExit(exitNode, this.#currentFlow, from));
   }
 
   /**
@@ -2774,6 +2792,7 @@ export final class CheckerContext {
     let c = new OwnDropCandidate(sym, patternNode, resources, isVar, declNode,
         this.#currentFlow.id);
     c.moveMark = this.#moveCount(sym.id);
+    c.exitMark = this.#pendingExits.length;
     this.#ownScopeStack[this.#ownScopeStack.length - 1].push(c);
   }
 
@@ -2846,7 +2865,8 @@ export final class CheckerContext {
       this.#scopedScopeStack.pop();
     }
     if (this.#ownScopeStack.length == 0) { return; }
-    let frame = this.#ownScopeStack[this.#ownScopeStack.length - 1];
+    let depth = this.#ownScopeStack.length - 1;
+    let frame = this.#ownScopeStack[depth];
     this.#ownScopeStack.pop();
     if (frame.length == 0) { return; }
     let ids = new Set<i32>();
@@ -2893,6 +2913,19 @@ export final class CheckerContext {
               if (!armMoved[ai]) {
                 this.#addEdgeDrop(pm.matchNode, c.sym.id, false, ai, c.resources);
               }
+            }
+          }
+        }
+        // A path that leaves early with the binding still live reaches
+        // no join and no scope end that releases it, so the exit does:
+        // `if (!wanted) { return; } consume(f);`. A `var` is released
+        // over its intervals, whose regions cover such an exit already.
+        if (!c.isVar) {
+          for (var ei = c.exitMark; ei < this.#pendingExits.length; ei += 1) {
+            let e = this.#pendingExits[ei];
+            if (e.fromDepth <= depth &&
+                this.findLiveMove(c.sym.id, e.flow, c.declFlowId) == null) {
+              this.#addExitDrop(e.exitNode, c.sym.id, c.resources);
             }
           }
         }
@@ -2948,6 +2981,23 @@ export final class CheckerContext {
     drop.armIndex = armIndex;
     kept.push(drop);
     this.model.setEdgeDrops(node, kept);
+    this.rootReleases(resources, false);
+  }
+
+  /** Commit one drop at an early exit, replacing a stale entry for the
+   * same binding there. Roots `:dispose` like an edge drop. */
+  #addExitDrop(node: Node, symId: SymbolId, resources: GrowableArray<ClassType>): void {
+    let existing = this.model.exitDropsOfDirect(node);
+    let kept = new Array<SymbolId>();
+    if (existing != null) {
+      for (let d in existing) {
+        if ((d as i32) != (symId as i32)) {
+          kept.push(d);
+        }
+      }
+    }
+    kept.push(symId);
+    this.model.setExitDrops(node, kept);
     this.rootReleases(resources, false);
   }
 
@@ -3124,6 +3174,8 @@ export final class CheckerContext {
     this.#bodyBorrowUses = new Array<BorrowUseRec>();
     saved.pendingEdgeMatches = this.#pendingEdgeMatches;
     this.#pendingEdgeMatches = new Array<PendingEdgeMatch>();
+    saved.pendingExits = this.#pendingExits;
+    this.#pendingExits = new Array<PendingExit>();
     saved.bodyExits = this.#bodyExits;
     this.#bodyExits = new Array<FlowNode>();
     saved.bodyPathMoves = this.#bodyPathMoves;
@@ -3146,6 +3198,7 @@ export final class CheckerContext {
     }
     this.#bodyBorrowUses = saved.borrowUses;
     this.#pendingEdgeMatches = saved.pendingEdgeMatches;
+    this.#pendingExits = saved.pendingExits;
     this.#bodyExits = saved.bodyExits;
     this.#bodyPathMoves = saved.bodyPathMoves;
     this.#currentFlow = saved.current;

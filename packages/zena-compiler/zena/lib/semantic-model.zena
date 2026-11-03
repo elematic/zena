@@ -287,6 +287,9 @@ export final class ModelIndex {
     let edKeys = model.edgeDrops.map.keys();
     for (let k in edKeys) { this.#claim(model, k); }
 
+    let xdKeys = model.exitDrops.map.keys();
+    for (let k in xdKeys) { this.#claim(model, k); }
+
     let odKeys = model.ownDropIntervals.map.keys();
     for (let k in odKeys) { this.#claim(model, k); }
 
@@ -1015,6 +1018,37 @@ export final class SemanticModel {
   }
 
   /**
+   * Drops owed at an early exit, keyed by its `return`, `break` or
+   * `continue`: bindings still live there that a move elsewhere kept
+   * from being released at their scope's end. Lowering releases them
+   * after the exit's value is computed and before control leaves.
+   */
+  #exitDrops = new NodeMap<GrowableArray<SymbolId>>();
+
+  setExitDrops(node: Node, drops: GrowableArray<SymbolId>): void {
+    this.#exitDrops[node] = drops;
+  }
+
+  exitDropsOfDirect(node: Node): GrowableArray<SymbolId> | null {
+    if (let (true, d) = this.#exitDrops.get(node)) {
+      return d;
+    }
+    return null;
+  }
+
+  exitDropsOf(node: Node): GrowableArray<SymbolId> | null {
+    let direct = this.exitDropsOfDirect(node);
+    if (direct != null) { return direct; }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.exitDropsOfDirect(node);
+      }
+    }
+    return null;
+  }
+
+  /**
    * The affine fields a consuming method's body moved out, keyed by
    * its MethodDefinition: dispose glue skips them
    * (ownership.md §Affine fields).
@@ -1426,6 +1460,7 @@ export final class SemanticModel {
   memberKeys: NodeMap<String> { get { return this.#memberKeys; } }
   scopeExitDrops: NodeMap<boolean> { get { return this.#scopeExitDrops; } }
   edgeDrops: NodeMap<GrowableArray<EdgeDrop>> { get { return this.#edgeDrops; } }
+  exitDrops: NodeMap<GrowableArray<SymbolId>> { get { return this.#exitDrops; } }
   movedOutFields: NodeMap<GrowableArray<String>> { get { return this.#movedOutFields; } }
   parents: DenseNodeMap<Node> { get { return this.#parents; } }
   bindingTypes: HashMap<SymbolId, Type> { get { return this.#bindingTypes; } }
