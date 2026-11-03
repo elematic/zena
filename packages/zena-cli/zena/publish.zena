@@ -23,7 +23,7 @@
  * The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's
  * PDS, `https://padstone.zena-lang.dev`, whose handles are under
  * `pkg.zena-lang.dev`; its service DID and handle domain come from
- * its `com.atproto.server.describeServer`, and the DID must be the
+ * its `dev.zena-lang.host.describeHost`, and the DID must be the
  * origin's own (`checkHostDid`) before any token is made for it.
  */
 
@@ -57,9 +57,9 @@ import { packageResolver } from './fetch.zena';
 import { didWebHost } from 'atproto:identity';
 import { URL } from 'zena:url';
 import { configDir, currentSession, saveSession } from './login.zena';
-import { REPO_GET_RECORD, REPO_PUT_RECORD, SERVER_DESCRIBE_SERVER } from 'atproto:methods';
+import { REPO_GET_RECORD, REPO_PUT_RECORD } from 'atproto:methods';
 import {
-  COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, PUBLISH, UPLOAD_ARTIFACT
+  COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, DESCRIBE_HOST, PUBLISH, UPLOAD_ARTIFACT
 } from 'package-manager:host-methods';
 
 let DEFAULT_HOST = 'https://padstone.zena-lang.dev';
@@ -67,7 +67,7 @@ let DEFAULT_HOST = 'https://padstone.zena-lang.dev';
 /** A DID no package has, for checking a release before its package exists. */
 let STAND_IN_DID = 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa';
 
-/** A package host, as its `describeServer` describes it. */
+/** A package host, as its `describeHost` describes it. */
 export final class Host {
   origin: String;
   /** The DID tokens for it are addressed to. */
@@ -208,12 +208,10 @@ export function findHost(args: ParsedArgs): Host {
   if (let (true, given) = args.getOption('host')) {
     origin = given;
   }
-  let described = runFuture(new XrpcClient(origin).query(SERVER_DESCRIBE_SERVER)) as JsonObject;
-  let domains = described['availableUserDomains'] as JsonArray;
-  let domain = domains[0] as String;
+  let described = runFuture(new XrpcClient(origin).query(DESCRIBE_HOST)) as JsonObject;
   let did = described['did'] as String;
   checkHostDid(origin, did);
-  return new Host(origin, did, if (domain.startsWith('.')) domain.sliceBytes(1, domain.length) else domain);
+  return new Host(origin, did, described['domain'] as String);
 }
 
 /**
