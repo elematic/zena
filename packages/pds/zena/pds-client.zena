@@ -1,0 +1,136 @@
+/**
+ * The PDS the package host keeps its accounts on, as the host reaches it
+ * (docs/design/package-manager.md, "Names and addresses"): the calls a
+ * host could make of any PDS over the network, in `com.atproto`'s terms.
+ * The host reads and writes its accounts' repositories through nothing
+ * else, so that it can move to a service of its own.
+ *
+ * `InProcessPds` is the PDS in the same process. It calls the PDS's core
+ * directly, without the service-auth tokens a host sends over the network
+ * (`pds:managed`), since nothing between them could forge one.
+ */
+
+import {Future} from 'zena:async';
+import {decodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {BlobRef, Value} from 'atproto:data';
+import {Pds} from './pds.zena';
+import {RepositoryError, Write} from './repository.zena';
+import {Account, AccountKind, Head, SigningKey, StoredBlob} from './storage.zena';
+import {nowMicros} from './xrpc/common.zena';
+
+/** A record in a repository: its key, its value and its CID. */
+export final class HeldRecord {
+  rkey: String;
+  value: Value;
+  cid: Cid;
+
+  new(this.rkey, this.value, this.cid);
+}
+
+/** The PDS that keeps the package host's accounts. */
+export interface PdsClient {
+  /**
+   * `com.atproto.server.createAccount`: a managed account for `did`, named
+   * `handle`, whose repository `key` signs and which only the host writes.
+   */
+  createAccount(did: String, handle: String, key: SigningKey): Future<void>;
+  /**
+   * `com.atproto.repo.applyWrites`: `writes` to `did`'s repository, in one
+   * commit, which it returns. Throws `RepositoryError` for writes the PDS
+   * refuses.
+   */
+  applyWrites(did: String, writes: Array<Write>): Future<Head>;
+  /** `com.atproto.repo.uploadBlob`: `bytes`, of type `mimeType`, as a blob of `did`. */
+  uploadBlob(did: String, mimeType: String, bytes: FixedArray<u8>): Future<BlobRef>;
+  /** `com.atproto.sync.getBlob`: the blob `cid` of `did`, or null. */
+  getBlob(did: String, cid: Cid): Future<StoredBlob | null>;
+  /** `com.atproto.repo.getRecord`: the record at `collection/rkey` in `did`'s repository, or null. */
+  getRecord(did: String, collection: String, rkey: String): Future<HeldRecord | null>;
+  /** `com.atproto.repo.listRecords`, every page: the records of `collection`, in record-key order. */
+  listRecords(did: String, collection: String): Future<Array<HeldRecord>>;
+  /** `com.atproto.sync.getLatestCommit`: `did`'s current commit, or null before its first. */
+  latestCommit(did: String): Future<Head | null>;
+}
+
+/** The records `listRecords` reads at a time. */
+let PAGE = 100;
+
+/** The PDS in the same process as the host. */
+export final class InProcessPds implements PdsClient {
+  #pds: Pds;
+  /** The host's DID, which the PDS records as each account's manager. */
+  #host: String;
+
+  new(pds: Pds, host: String) : #pds = pds, #host = host;
+
+  async createAccount(did: String, handle: String, key: SigningKey): Future<void> {
+    await this.#pds.createAccount(did, handle, key, nowMicros(), AccountKind.Person, this.#host);
+  }
+
+  async applyWrites(did: String, writes: Array<Write>): Future<Head> {
+    return await this.#pds.repositoryOf(await this.#account(did)).applyWrites(writes, nowMicros());
+  }
+
+  // The limits the PDS sets on a managed account's blobs, as its
+  // `uploadBlob` route checks them.
+  async uploadBlob(did: String, mimeType: String, bytes: FixedArray<u8>): Future<BlobRef> {
+    await this.#account(did);
+    let limits = this.#pds.managedLimits;
+    let type = limits.blobType(mimeType);
+    if (type == null) {
+      throw new RepositoryError('InvalidRequest', `a managed account's blob is not of type ${mimeType}`);
+    }
+    if ((bytes.length as i64) > limits.maxBlobSize) {
+      throw new RepositoryError('BlobTooLarge', `the blob is larger than ${limits.maxBlobSize} bytes`);
+    }
+    let cid = Cid.forBlob(bytes);
+    await this.#pds.storage.store(did).putBlob(cid, new StoredBlob(type, bytes));
+    return new BlobRef(cid, type, bytes.length as i64);
+  }
+
+  async getBlob(did: String, cid: Cid): Future<StoredBlob | null> {
+    return await this.#pds.storage.store(did).getBlob(cid);
+  }
+
+  async getRecord(did: String, collection: String, rkey: String): Future<HeldRecord | null> {
+    let store = this.#pds.storage.store(did);
+    let cid = await store.getRecord(collection, rkey);
+    if (cid == null) {
+      return null;
+    }
+    let bytes = await store.getBlock(cid);
+    return if (bytes != null) new HeldRecord(rkey, decodeCbor(bytes), cid) else null;
+  }
+
+  async listRecords(did: String, collection: String): Future<Array<HeldRecord>> {
+    let store = this.#pds.storage.store(did);
+    let records = new GrowableArray<HeldRecord>();
+    var after: String | null = null;
+    while (true) {
+      let page = await store.listRecords(collection, after, PAGE, false);
+      for (let entry in page) {
+        let bytes = await store.getBlock(entry.cid);
+        if (bytes != null) {
+          records.push(new HeldRecord(entry.rkey, decodeCbor(bytes), entry.cid));
+        }
+      }
+      if (page.length < PAGE) {
+        return records;
+      }
+      after = page[page.length - 1].rkey;
+    }
+  }
+
+  async latestCommit(did: String): Future<Head | null> {
+    return await this.#pds.storage.store(did).getHead();
+  }
+
+  async #account(did: String): Future<Account> {
+    let account = await this.#pds.storage.getAccount(did);
+    if (account == null) {
+      throw new RepositoryError('RepoNotFound', `Could not find repo: ${did}`);
+    }
+    return account;
+  }
+}

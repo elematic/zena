@@ -16,7 +16,6 @@ import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
 import {now} from 'wasi:clocks/system-clock';
-import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
 import {Value, fromJson} from 'atproto:data';
 import {ATTESTATION_TYPE, Attestation, attestationKey} from 'package-manager:records';
@@ -47,20 +46,10 @@ export final class Approvals {
 
   new(people: People, local: LocalRecord) : #people = people, #local = local;
 
-  /** Approvals reading accounts this host holds from its storage, and anyone else's from their PDS. */
+  /** Approvals reading accounts this host holds through the host, and anyone else's from their PDS. */
   static forHost(host: PackageHost, people: People): Approvals {
-    return new Approvals(people, async (did: String, collection: String, rkey: String): Future<Value | null> => {
-      if ((await host.pds.storage.getAccount(did)) == null) {
-        return null;
-      }
-      let store = host.pds.storage.store(did);
-      let cid = await store.getRecord(collection, rkey);
-      if (cid == null) {
-        return null;
-      }
-      let block = await store.getBlock(cid);
-      return if (block != null) decodeCbor(block) else null;
-    });
+    return new Approvals(people, async (did: String, collection: String, rkey: String): Future<Value | null> =>
+        await host.recordOf(did, collection, rkey));
   }
 
   /**
