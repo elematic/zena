@@ -4450,22 +4450,32 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * Classes compared with `==` that have no `operator ==` of their own.
    * Such a comparison dispatches to the classes below that introduce one
    * (ir/equality.zena, lowerClassEquality), so their operators are reached
-   * once both the comparison and the class are.
+   * once both the comparison and the class are. A base compared by
+   * reachable code is in both sets.
    */
   #equalityBases = new Set<String>();
+  #reachableEqualityBases = new Set<String>();
 
   noteEqualityBase(ct: ClassType): void {
     let key = getClassKey(ct) as String;
-    if (this.#equalityBases.has(key)) {
+    // A base first compared by code that is only visited is noted again
+    // when reachable code compares it, so the operators below it are
+    // reached as reachable too.
+    if (this.currentReachable) {
+      if (!this.#reachableEqualityBases.add(key)) {
+        return;
+      }
+      this.#equalityBases.add(key);
+    } else if (!this.#equalityBases.add(key)) {
       return;
     }
-    this.#equalityBases.add(key);
+    // Only the classes below this base are new to compare; a class below
+    // another base was reached when that base, or the class, arrived.
+    // Classes instantiated later are checked as they are
+    // (Specializer.instantiateClassType).
     let below = new Array<ClassType>();
-    for (let entry in this.wasm.classInfos) {
-      let sub = entry.value.structType.classType;
-      if (sub != null && this.instantiatedSpecializedClasses.has(entry.key as String)) {
-        below.push(sub);
-      }
+    for (let sub in this.cha.findInstantiatedSubclasses(ct)) {
+      below.push(sub);
     }
     for (let sub in below) {
       this.reachEqualityBelowComparedBase(sub);
