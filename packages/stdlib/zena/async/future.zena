@@ -746,8 +746,13 @@ export class Completer<scoped T> extends AnyCompleter {
  *
  * Its own class rather than a field on `Future`: a future is
  * allocated per await-able call, and the deferred kind is rare.
+ *
+ * `T` is `scoped`, as `Future`'s is: a lifted WIT future may carry an
+ * owner, and dropping one nobody subscribed to runs `drop`, the host's
+ * readable-end drop, so the host releases what it wrote
+ * (owner-futures.md §"Releasing what nobody took").
  */
-export class DeferredFuture<T> extends Future<T> implements Disposable {
+export class DeferredFuture<scoped T> extends Future<T> implements Disposable {
   /** The work, until it has run; null after. */
   var #produce: (() => Future<T>) | null;
   var #drop: (() => void) | null;
@@ -765,6 +770,9 @@ export class DeferredFuture<T> extends Future<T> implements Disposable {
     super.[subscribe](t);
   }
 
+  /** Gives up the work if it has not run: its value is never read. A
+   * deferred future of a first-class value is disposed by hand; one of
+   * an owner is released by its drop instead. */
   [Disposable.dispose](): void {
     let d = this.#drop;
     this.#produce = null;
@@ -772,6 +780,17 @@ export class DeferredFuture<T> extends Future<T> implements Disposable {
     if (d != null) {
       d();
     }
+  }
+
+  /** What dropping one of an owner does: before anyone subscribed, give
+   * up the work, as `[Disposable.dispose]` does; while it is read,
+   * release the value when it lands, as any future does. */
+  [release](): void {
+    if (this.#produce != null) {
+      this.[Disposable.dispose]();
+      return;
+    }
+    super.[release]();
   }
 }
 

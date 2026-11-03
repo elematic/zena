@@ -1,0 +1,47 @@
+// @mode: run
+// @result: 1215
+// A deferred future of an owner (owner-futures.md §"Releasing what
+// nobody took"): dropped before anyone subscribed, its drop runs, as a
+// lifted WIT future's drops the host's readable end; awaited, it reads
+// the value once and its consumer releases it.
+import {Own, Disposable} from 'zena:core';
+import {DeferredFuture} from 'zena:async';
+
+var released = 0;
+var dropped = 0;
+var produced = 0;
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  n(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+async function make(): Future<Own<Res>> {
+  produced += 1;
+  return new Res(5);
+}
+
+function deferred(): DeferredFuture<Own<Res>> {
+  return new DeferredFuture<Own<Res>>(() => make(), () => { dropped += 1; });
+}
+
+function neverSubscribed(): void {
+  let f = deferred();
+}
+
+async function awaited(): Future<i32> {
+  let r = await deferred();
+  return r.n();
+}
+
+export async function main(): Future<i32> {
+  neverSubscribed();
+  if (dropped != 1 || produced != 0 || released != 0) { return 100 + dropped; }
+  let n = await awaited();
+  if (n != 5 || dropped != 1 || produced != 1 || released != 1) { return 200 + released; }
+  return dropped * 1000 + produced * 200 + released * 10 + n;
+}
