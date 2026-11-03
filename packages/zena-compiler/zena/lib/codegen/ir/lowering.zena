@@ -5527,12 +5527,11 @@ export final class FunctionLowerer {
     if (resolved is UnionType) {
       return this.#lowerUnionAwait(aw, resolved);
     }
-    if (resolved is ClassType) {
-      let futureCt = this.#futureClassOf(resolved);
-      if (futureCt != null) {
-        let future = this.#lowerExpression(aw.argument);
-        return this.#suspendOnFuture(futureCt, future);
-      }
+    if (resolved is ClassType &&
+        this.#futureMethodOwner(resolved, ':valueOrThrow') != null &&
+        this.#futureMethodOwner(resolved, ':subscribe') != null) {
+      let future = this.#lowerExpression(aw.argument);
+      return this.#suspendOnFuture(resolved, future);
     }
     // Anything else reached lowering through the GENERIC await —
     // `await x` with `x: T` open, typed `Awaited<T>` — specialized at
@@ -5555,16 +5554,17 @@ export final class FunctionLowerer {
   }
 
   /**
-   * The class an `await` of a `ct` suspends through: `ct` or the first
-   * superclass with `:valueOrThrow` and `:subscribe` registered, which
-   * for a subclass of `Future` such as `DeferredFuture` is its `Future`
-   * superclass. Null for a class that is not a future.
+   * The class whose `name` an `await` of a `ct` calls: `ct`, or the
+   * nearest superclass that registers it. A subclass of `Future`
+   * inherits `:valueOrThrow` from `Future`, while a `DeferredFuture`
+   * registers its own `:subscribe`, so the await calls that one
+   * directly unless a subclass of it overrides it in turn. Null when
+   * no class in the chain has it: `ct` is not a future.
    */
-  #futureClassOf(ct: ClassType): ClassType | null {
+  #futureMethodOwner(ct: ClassType, name: String): ClassType | null {
     var current: ClassType | null = ct;
     while (current != null) {
-      if (this.#futureMethodOf(current, ':valueOrThrow') != null &&
-          this.#futureMethodOf(current, ':subscribe') != null) {
+      if (this.#futureMethodOf(current, name) != null) {
         return current;
       }
       current = current.superType;
@@ -5588,22 +5588,25 @@ export final class FunctionLowerer {
    * surface as a plain throw at the resume point.
    */
   #suspendOnFuture(ct: ClassType, future: i32): i32 {
-    let getter = this.#futureMethodOf(ct, ':valueOrThrow');
-    if (getter == null) {
+    let getterOwner = this.#futureMethodOwner(ct, ':valueOrThrow');
+    if (getterOwner == null) {
       this.#bail('await operand is not a Future: ' +
           (getClassKey(ct) as String));
     }
-    let subOpt = this.#futureMethodOf(ct, ':subscribe');
-    if (subOpt == null) {
+    let getter = this.#futureMethodOf(getterOwner, ':valueOrThrow');
+    let subOwner = this.#futureMethodOwner(ct, ':subscribe');
+    if (subOwner == null) {
       this.#bail('await operand has no subscribe: ' +
           (getClassKey(ct) as String));
     }
-    let sub = subOpt as WasmFunction;
+    let sub = this.#futureMethodOf(subOwner, ':subscribe') as WasmFunction;
     // A subclass overriding `subscribe` (a `DeferredFuture`, say) is
     // reached through the vtable, as any overridden method is; the
-    // slot loads before the terminator, in the await's own block.
+    // slot loads before the terminator, in the await's own block. The
+    // question is asked of the class that registers the `subscribe`
+    // called, so a `DeferredFuture`-typed await calls its own directly.
     var virtualCallee = -1;
-    if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) {
+    if (let (true, info) = this.wasm.classInfos.get(getClassKey(subOwner))) {
       if (this.#cx().memberProvidedBySubclass(info, ':subscribe')) {
         if (this.#vtableSlotIndex(info, ':subscribe') < 0) {
           this.#bail('overridden subscribe without vtable slot');
