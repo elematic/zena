@@ -1,0 +1,28 @@
+/**
+ * Databases on the Firestore emulator, for tests of code that keeps its
+ * data in Firestore. A package's `test:emulator` script starts the
+ * emulator and sets `FIRESTORE_EMULATOR_HOST`.
+ */
+
+import {getEnv} from 'zena:cli';
+import {getRandomU64} from 'wasi:random/random';
+import {GrpcTransport} from 'protobuf:grpc';
+import {AccessTokenCredentials} from '../auth.zena';
+import {Firestore} from '../firestore.zena';
+
+/**
+ * A database in a new project on the emulator at
+ * `FIRESTORE_EMULATOR_HOST`. The emulator keeps projects apart, so tests
+ * and runs do not see each other's documents. Throws when the variable is
+ * not set.
+ */
+export function freshEmulatedDatabase(): Firestore {
+  let address = getEnv('FIRESTORE_EMULATOR_HOST');
+  if (address == null || address.length == 0) {
+    throw new Error("FIRESTORE_EMULATOR_HOST is not set; run the package's test:emulator script");
+  }
+  return new Firestore({
+    projectId: `test-${getRandomU64() % (1000000000 as u64)}`,
+    transport: new GrpcTransport(`http://${address}`, new AccessTokenCredentials('owner')),
+  });
+}

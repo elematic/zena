@@ -1,0 +1,85 @@
+/**
+ * The App View's HTTP application, with the PDS it keeps its accounts on
+ * in the same process: the PDS's routes (`pds:server`), the registry
+ * methods (`xrpc/`), and the site: the web pages (`web/`) and what their
+ * sign-in calls.
+ *
+ * The PDS and the site can each have a host name of their own
+ * (docs/design/package-manager.md, "Names and addresses"), so an
+ * application serves one part, `AppPart`, or both, as on one machine.
+ */
+
+import {Future} from 'zena:async';
+import {App, Router} from 'zena:http';
+import {Pds} from 'pds:pds';
+import {limitedApp, pdsRoutes} from 'pds:server';
+import {Sessions} from 'pds:sessions';
+import {AppView} from './app-view.zena';
+import {notFound} from './web/pages/not-found.zena';
+import {webPages} from './web/routes.zena';
+import {contextOf} from './web/session.zena';
+import {People} from './web/people.zena';
+import {resolveHandleRoute} from './xrpc/identity.zena';
+import {registryRoutes} from './xrpc/routes.zena';
+import {webSessionRoutes} from './xrpc/web.zena';
+
+/** Which of the server's parts an application serves. */
+export enum AppPart {
+  /** The PDS, with the App View's methods: what its own host name serves. */
+  Pds,
+  /** The site: the pages, and what their sign-in calls, under the site's name. */
+  Site,
+  /** Both, under every name. */
+  Both
+}
+
+/** Returns the application that serves `part`, for `appView` and the accounts in `pds`. */
+export function createApp(pds: Pds, appView: AppView, sessions: Sessions | null = null,
+    part: AppPart = AppPart.Both): App {
+  let app = limitedApp();
+  let router = new Router();
+  if (part != AppPart.Site) {
+    // The site's home page is `/` wherever the site is served.
+    if (part == AppPart.Pds) {
+      let text = pdsBanner(appView);
+      router.get('/', async (req, res, next, params) => {
+        res.type = 'text/plain; charset=utf-8';
+        res.body = text;
+      });
+    }
+    pdsRoutes(router, pds, sessions);
+    registryRoutes(router, appView);
+  }
+  if (part == AppPart.Pds) {
+    app.use(router.routes());
+    return app;
+  }
+  webSessionRoutes(router, appView);
+  if (part == AppPart.Site) {
+    // The sign-in resolves the handle a person types on the site's own
+    // origin; the PDS's routes have it already.
+    resolveHandleRoute(router, appView);
+  }
+  // One cache of the people the pages show, for every page.
+  let people = People.forAppView(appView);
+  webPages(router, appView, people);
+  app.use(router.routes());
+  // A page path no route took: the web app's not-found page.
+  app.use(async (req, res, next): Future<void> => {
+    if (!res.statusCodeSet && res.body == null && (req.method == 'GET' || req.method == 'HEAD') &&
+        !isApiPath(req.path) && !req.path.startsWith('/assets/')) {
+      notFound(res, await contextOf(req, appView, people), `Nothing is at ${req.path}.`);
+    }
+  });
+  return app;
+}
+
+/** What `/` answers under the PDS's own name: what it is, and where its pages are. */
+function pdsBanner(appView: AppView): String {
+  return `The PDS of the Zena App View for ${appView.config.domain}, written in Zena.\nIts pages are at ${appView.config.siteOrigin}\n`;
+}
+
+/** Whether `path` is one of the server's APIs', which answer in JSON rather than with pages. */
+function isApiPath(path: String): boolean {
+  return path.startsWith('/xrpc/') || path.startsWith('/plc/') || path.startsWith('/.well-known/');
+}

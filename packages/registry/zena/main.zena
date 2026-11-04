@@ -1,0 +1,269 @@
+/**
+ * Starts the PDS, and the App View when `PDS_APP_VIEW_DOMAIN` is set, as
+ * the environment configures them (see `registry:service`). With no
+ * configuration it is a PDS on port 2583, the reference PDS's port, with
+ * its data in memory.
+ *
+ * With the argument `sync-handles`, it writes the DNS record of every
+ * handle the App View has given out instead, from its store, and exits: for
+ * after records were lost, or a write of one failed. `sync-indexes`
+ * writes the App View's indexes, the summary of every package that the
+ * package listings read and the accounts that mention each person and
+ * team, from the repositories, and exits: for accounts made before the
+ * App View kept them, or a commit whose indexes were not written.
+ *
+ * Two commands are for the operator's offline rotation key, on the
+ * operator's own machine, and read no configuration but
+ * `PDS_PLC_DIRECTORY`:
+ *
+ * - `generate-key` prints a new secp256k1 private key in hex and its
+ *   `did:key`, for `PDS_OFFLINE_ROTATION_KEY`. Keep the private key
+ *   offline.
+ * - `plc-restore <did> <cid> [--yes]` undoes every operation of `<did>`
+ *   after the one whose CID is `<cid>`, as after the online key was
+ *   stolen: it reads the offline private key from stdin, prints the
+ *   operation it would send, and sends it to the PLC directory with
+ *   `--yes`. The directory takes it within 72 hours of the first
+ *   operation it undoes.
+ *
+ * With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`,
+ * it creates a scope owned by `<did>` alone, as the App View's operator, and
+ * exits. Unlike `zena scope create`, it may take a name the App View reserves
+ * (package-manager.md, "Scopes").
+ */
+
+import {Future} from 'zena:async';
+import {exit, getArguments, getEnv, readStdin} from 'zena:cli';
+import {hex} from 'zena:encoding';
+import {stringify} from 'zena:json';
+import {randomBytes} from 'zena:random';
+import {KeyType, formatDidKey} from 'atproto:didkey';
+import {PlcError, fetchOperations, submitPlcOperation, undoOperation} from 'atproto:plc';
+import {SigningKey} from 'pds:storage';
+import {AppViewError} from './app-view.zena';
+import {nowMicros} from 'pds:xrpc/common';
+import {ConfigError, ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
+
+/** The configuration the environment gives, or null, having said why. */
+function readConfig(): ServiceConfig | null {
+  try {
+    return configFromEnv((name) => getEnv(name));
+  } catch (e) {
+    if (e is ConfigError) {
+      console.error(e.message);
+      return null;
+    }
+    throw e;
+  }
+}
+
+export async function main(): Future<void> {
+  if (hasArgument('generate-key')) {
+    generateKey();
+    return;
+  }
+  if (hasArgument('plc-restore')) {
+    await plcRestore();
+    return;
+  }
+  let config = readConfig();
+  if (config == null) {
+    exit(2);
+    return;
+  }
+  if (hasArgument('sync-handles')) {
+    await syncHandles(config);
+    return;
+  }
+  if (hasArgument('sync-indexes')) {
+    await syncIndexes(config);
+    return;
+  }
+  if (hasArgument('create-scope')) {
+    await createScope(config);
+    return;
+  }
+  let running = await serve(config);
+  let appView = running.service.appView;
+  if (appView != null) {
+    console.log(`PDS and App View for ${appView.config.domain} listening on ${running.origin}`);
+  } else {
+    console.log(`PDS listening on ${running.origin}`);
+  }
+  await running.server.done;
+}
+
+/**
+ * Whether the command line, after the program, holds `name`. `zena run`
+ * passes on the `--` before a program's arguments, and a module run by
+ * itself has none, so the position varies.
+ */
+function hasArgument(name: String): boolean {
+  let args = getArguments();
+  for (var i = 1; i < args.length; i += 1) {
+    if (args[i] == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The arguments after `name`, or null when the command line has no `name`. */
+function argumentsAfter(name: String): Array<String> | null {
+  let args = getArguments();
+  for (var i = 1; i < args.length; i += 1) {
+    if (args[i] == name) {
+      let rest = new GrowableArray<String>();
+      for (var j = i + 1; j < args.length; j += 1) {
+        rest.push(args[j]);
+      }
+      return rest;
+    }
+  }
+  return null;
+}
+
+/** Creates the scope `create-scope` names, as the operator, and exits. */
+async function createScope(config: ServiceConfig): Future<void> {
+  let usage = 'usage: create-scope <name> --owner <did> [--recovery-key <did:key>]...';
+  let args = argumentsAfter('create-scope') as Array<String>;
+  var name: String | null = null;
+  var owner: String | null = null;
+  let recoveryKeys = new GrowableArray<String>();
+  var i = 0;
+  while (i < args.length) {
+    let arg = args[i];
+    if ((arg == '--owner' || arg == '--recovery-key') && i + 1 < args.length) {
+      if (arg == '--owner') {
+        owner = args[i + 1];
+      } else {
+        recoveryKeys.push(args[i + 1]);
+      }
+      i += 2;
+    } else if (name == null && !arg.startsWith('-')) {
+      name = arg;
+      i += 1;
+    } else {
+      console.error(usage);
+      exit(2);
+      return;
+    }
+  }
+  if (name == null || owner == null || !owner.startsWith('did:')) {
+    console.error(usage);
+    exit(2);
+    return;
+  }
+  let service = await buildService(config, '');
+  let appView = service.appView;
+  if (appView == null) {
+    console.error('create-scope needs an App View: set PDS_APP_VIEW_DOMAIN');
+    exit(2);
+    return;
+  }
+  try {
+    let created = await appView.createScopeAsOperator(owner, name, recoveryKeys, nowMicros());
+    console.log(`created the scope ${created.handle} (${created.did}), owned by ${owner}`);
+  } catch (e) {
+    if (e is AppViewError) {
+      console.error(`create-scope: ${e.message}`);
+      exit(1);
+      return;
+    }
+    throw e;
+  }
+  exit(0);
+}
+
+/** Prints a new secp256k1 private key and its `did:key`, and exits. */
+function generateKey(): void {
+  let key = new SigningKey(KeyType.Secp256k1, randomBytes(32));
+  console.log(`private key (keep it offline): ${hex.encode(key.privateKey)}`);
+  console.log(`did:key (PDS_OFFLINE_ROTATION_KEY): ${formatDidKey(key.publicKey())}`);
+  exit(0);
+}
+
+/**
+ * Undoes every operation of a DID after one, with the offline key read
+ * from stdin, and exits.
+ */
+async function plcRestore(): Future<void> {
+  let usage = 'usage: plc-restore <did> <cid> [--yes], with the offline private key in hex on stdin';
+  let args = argumentsAfter('plc-restore') as Array<String>;
+  let positional = new GrowableArray<String>();
+  var yes = false;
+  for (let arg in args) {
+    if (arg == '--yes') {
+      yes = true;
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length != 2 || !positional[0].startsWith('did:plc:')) {
+    console.error(usage);
+    exit(2);
+    return;
+  }
+  let did = positional[0];
+  let cid = positional[1];
+  let directory = getEnv('PDS_PLC_DIRECTORY') ?? 'https://plc.directory';
+  let keyText = (await readStdin()).trim();
+  var key: SigningKey | null = null;
+  try {
+    key = new SigningKey(KeyType.Secp256k1, hex.decode(keyText));
+    key.publicKey();
+  } catch (e) {
+    console.error('plc-restore: stdin does not hold a secp256k1 private key in hex');
+    exit(2);
+    return;
+  }
+  let offline = key;
+  try {
+    let log = await fetchOperations(directory, did);
+    let undo = undoOperation(log, cid, offline.publicKey()).signedWith((bytes) => offline.sign(bytes));
+    console.log(stringify(undo.toJson()));
+    if (!yes) {
+      console.log(`run again with --yes to send it to ${directory}, undoing every operation of ${did} after ${cid}`);
+      exit(0);
+      return;
+    }
+    await submitPlcOperation(directory, did, undo);
+    console.log(`sent: ${did} is as ${cid} left it`);
+  } catch (e) {
+    if (e is PlcError) {
+      console.error(`plc-restore: ${e.message}`);
+      exit(1);
+      return;
+    }
+    throw e;
+  }
+  exit(0);
+}
+
+/** Writes the App View's indexes from the repositories, and exits. */
+async function syncIndexes(config: ServiceConfig): Future<void> {
+  let service = await buildService(config, '');
+  let appView = service.appView;
+  if (appView == null) {
+    console.error('sync-indexes needs an App View: set PDS_APP_VIEW_DOMAIN');
+    exit(2);
+    return;
+  }
+  let written = await appView.syncIndexes();
+  console.log(`indexed ${written} organizations and packages for ${appView.config.domain}`);
+  exit(0);
+}
+
+/** Writes every handle record from the App View's store, and exits. */
+async function syncHandles(config: ServiceConfig): Future<void> {
+  let service = await buildService(config, '');
+  let appView = service.appView;
+  if (appView == null) {
+    console.error('sync-handles needs an App View: set PDS_APP_VIEW_DOMAIN');
+    exit(2);
+    return;
+  }
+  let written = await appView.syncHandles();
+  console.log(`wrote ${written} handle records for ${appView.config.domain}`);
+  exit(0);
+}

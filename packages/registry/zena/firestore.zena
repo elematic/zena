@@ -1,0 +1,380 @@
+/**
+ * The App View's stores in Firestore, beside the PDS's (`pds:firestore`),
+ * under the same `tenants/{tenant}`:
+ *
+ * - A staging PLC directory's (`FirestorePlcLog`): `plc/{did}`: `length`,
+ *   the number of operations; and under it `ops/{index}`: `json`, each
+ *   operation, with indexes padded to eight digits so they list in order.
+ * - The App View's (`FirestoreAppViewStore`): `appViewAccounts/{did}`:
+ *   `handle`, `kind`, `scope` and `name`, each account the App View made;
+ *   `scopes/{scope}`: `org`;
+ *   `names/{name}.{scope}`: `did`, `scope` and `name`;
+ *   `summaries/{did}`: a package's summary, `handle`, `scope`, `name`,
+ *   `description`, `license` and `latest` (each absent for none),
+ *   `releases`, and `rev`, the revision of the commit it was made from;
+ *   `mentions/{subject}/by/{account}`: `account`, for each account whose
+ *   records or entries mention a person's DID or a team, `<org DID> <team>`;
+ *   and
+ *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR.
+ */
+
+import {Future} from 'zena:async';
+import {parseJson, stringify} from 'zena:json';
+import {
+  CollectionReference, Fields, Firestore, Operator, DocumentReference, DocumentSnapshot, bytesValue, stringValue
+} from 'google-cloud:firestore';
+import {decodeCbor, encodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {compareKeys} from 'atproto:mst';
+import {PlcOperation} from 'atproto:plc';
+import {MemberEntry} from 'package-manager:records';
+import {
+  BATCH_WRITES, bytesAt, cidAt, claim, kindName, kindNamed, recordId, release, stringAt, tenantRoot
+} from 'pds:firestore';
+import {ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, PackageSummary, PendingChange, PendingRelease} from './app-view.zena';
+import {PlcLog} from './plc-directory.zena';
+
+/** The App View's names and entries in Firestore, for `tenant`. */
+export final class FirestoreAppViewStore implements AppViewStore {
+  #db: Firestore;
+  #root: DocumentReference;
+
+  new(db: Firestore, tenant: String) : #db = db, #root = tenantRoot(db, tenant);
+
+  async putAccount(account: AppViewAccount): Future<void> {
+    await this.#root.collection('appViewAccounts').doc(account.did).set(new Fields()
+      .string('handle', account.handle)
+      .string('kind', kindName(account.kind))
+      .string('scope', account.scope)
+      .string('name', account.name));
+  }
+
+  async account(did: String): Future<AppViewAccount | null> {
+    return appViewAccountFrom(await this.#root.collection('appViewAccounts').doc(did).get());
+  }
+
+  async accounts(): Future<Array<AppViewAccount>> {
+    let all = new GrowableArray<AppViewAccount>();
+    for (let snapshot in await this.#root.collection('appViewAccounts').get()) {
+      let account = appViewAccountFrom(snapshot);
+      if (account != null) {
+        all.push(account);
+      }
+    }
+    return all;
+  }
+
+  async scopeOwner(scope: String): Future<String | null> {
+    return stringAt(await this.#root.collection('scopes').doc(scope).get(), 'org');
+  }
+
+  async claimScope(scope: String, org: String): Future<boolean> {
+    return await claim(this.#db, this.#root.collection('scopes').doc(scope), new Fields().string('org', org));
+  }
+
+  async releaseScope(scope: String, org: String): Future<void> {
+    await release(this.#db, this.#root.collection('scopes').doc(scope), 'org', org);
+  }
+
+  async nameInScope(scope: String, name: String): Future<String | null> {
+    return stringAt(await this.#root.collection('names').doc(`${name}.${scope}`).get(), 'did');
+  }
+
+  async claimName(scope: String, name: String, did: String): Future<boolean> {
+    return await claim(this.#db, this.#root.collection('names').doc(`${name}.${scope}`),
+        new Fields().string('did', did).string('scope', scope).string('name', name));
+  }
+
+  async releaseName(scope: String, name: String, did: String): Future<void> {
+    await release(this.#db, this.#root.collection('names').doc(`${name}.${scope}`), 'did', did);
+  }
+
+  async allScopes(): Future<Array<ClaimedScope>> {
+    let all = new GrowableArray<ClaimedScope>();
+    for (let snapshot in await this.#root.collection('scopes').get()) {
+      let org = stringAt(snapshot, 'org');
+      if (org != null) {
+        all.push(new ClaimedScope(snapshot.id, org));
+      }
+    }
+    return all;
+  }
+
+  async allNames(): Future<Array<ClaimedName>> {
+    let all = new GrowableArray<ClaimedName>();
+    for (let snapshot in await this.#root.collection('names').get()) {
+      let scope = stringAt(snapshot, 'scope');
+      let name = stringAt(snapshot, 'name');
+      let did = stringAt(snapshot, 'did');
+      if (scope != null && name != null && did != null) {
+        all.push(new ClaimedName(scope, name, did));
+      }
+    }
+    return all;
+  }
+
+  async putSummary(summary: PackageSummary, rev: String): Future<void> {
+    let ref = this.#root.collection('summaries').doc(summary.did);
+    await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
+      let kept = stringAt(await tx.get(ref), 'rev');
+      if (kept != null && compareKeys(kept, rev) >= 0) {
+        return false;
+      }
+      let fields = new Fields()
+        .string('handle', summary.handle)
+        .string('scope', summary.scope)
+        .string('name', summary.name)
+        .integer('releases', summary.releases as i64)
+        .string('rev', rev);
+      if (summary.description != null) {
+        fields.string('description', summary.description as String);
+      }
+      if (summary.license != null) {
+        fields.string('license', summary.license as String);
+      }
+      if (summary.latest != null) {
+        fields.string('latest', summary.latest as String);
+      }
+      tx.set(ref, fields);
+      return true;
+    });
+  }
+
+  async addMentions(account: String, subjects: Array<String>): Future<void> {
+    var i = 0;
+    while (i < subjects.length) {
+      let batch = this.#db.batch();
+      let end = if (subjects.length - i > BATCH_WRITES) i + BATCH_WRITES else subjects.length;
+      for (var j = i; j < end; j += 1) {
+        batch.set(this.#root.collection('mentions').doc(subjects[j]).collection('by').doc(account),
+            new Fields().string('account', account));
+      }
+      await batch.commit();
+      i = end;
+    }
+  }
+
+  async mentionsOf(subject: String): Future<Array<String>> {
+    let out = new GrowableArray<String>();
+    for (let snapshot in await this.#root.collection('mentions').doc(subject).collection('by').get()) {
+      out.push(snapshot.id);
+    }
+    return out;
+  }
+
+  async summaries(scope: String | null): Future<Array<PackageSummary>> {
+    let collection = this.#root.collection('summaries');
+    let snapshots = if (scope != null) await collection.where('scope', Operator.Equal, stringValue(scope)).get()
+        else await collection.get();
+    let out = new GrowableArray<PackageSummary>();
+    for (let snapshot in snapshots) {
+      let handle = stringAt(snapshot, 'handle');
+      let inScope = stringAt(snapshot, 'scope');
+      let name = stringAt(snapshot, 'name');
+      if (handle == null || inScope == null || name == null) {
+        continue;
+      }
+      let summary = new PackageSummary(snapshot.id, handle, inScope, name);
+      summary.description = stringAt(snapshot, 'description');
+      summary.license = stringAt(snapshot, 'license');
+      summary.latest = stringAt(snapshot, 'latest');
+      if (let (true, releases) = snapshot.getInteger('releases')) {
+        summary.releases = releases as i32;
+      }
+      out.push(summary);
+    }
+    return out;
+  }
+
+  async entries(account: String): Future<Array<MemberEntry>> {
+    let entries = new GrowableArray<MemberEntry>();
+    for (let snapshot in await this.#root.collection('entries').doc(account).collection('list').get()) {
+      let bytes = bytesAt(snapshot, 'cbor');
+      if (bytes != null) {
+        entries.push(MemberEntry.fromValue(decodeCbor(bytes)));
+      }
+    }
+    return entries;
+  }
+
+  /** Held releases, at `pending/<pkg>/releases/<version>`. */
+  #held(pkg: String): CollectionReference {
+    return this.#root.collection('pending').doc(pkg).collection('releases');
+  }
+
+  async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
+    return await claim(this.#db, this.#held(pkg).doc(recordId(release.version)), new Fields()
+        .set('cbor', bytesValue(release.record as ByteArray))
+        .string('cid', release.cid.toString())
+        .string('publisher', release.publisher)
+        .integer('heldAt', release.heldAt));
+  }
+
+  async heldRelease(pkg: String, version: String): Future<PendingRelease | null> {
+    return pendingAt(await this.#held(pkg).doc(recordId(version)).get(), version);
+  }
+
+  async heldReleases(pkg: String): Future<Array<PendingRelease>> {
+    let held = new GrowableArray<PendingRelease>();
+    for (let snapshot in await this.#held(pkg).get()) {
+      let release = pendingAt(snapshot, null);
+      if (release != null) {
+        held.push(release);
+      }
+    }
+    return held;
+  }
+
+  async dropRelease(pkg: String, version: String): Future<void> {
+    await this.#held(pkg).doc(recordId(version)).delete();
+  }
+
+  /** Held changes, at `pending/<account>/changes/<collection> <rkey>`. */
+  #changes(account: String): CollectionReference {
+    return this.#root.collection('pending').doc(account).collection('changes');
+  }
+
+  async holdChange(account: String, change: PendingChange): Future<void> {
+    var fields = new Fields()
+        .string('collection', change.collection)
+        .string('rkey', change.rkey)
+        .set('cbor', bytesValue(change.record as ByteArray))
+        .string('cid', change.cid.toString())
+        .string('proposer', change.proposer)
+        .integer('heldAt', change.heldAt);
+    let base = change.base;
+    if (base != null) {
+      fields = fields.string('base', base.toString());
+    }
+    await this.#changes(account).doc(changeId(change.collection, change.rkey)).set(fields);
+  }
+
+  async heldChange(account: String, collection: String, rkey: String): Future<PendingChange | null> {
+    return changeAt(await this.#changes(account).doc(changeId(collection, rkey)).get());
+  }
+
+  async heldChanges(account: String): Future<Array<PendingChange>> {
+    let held = new GrowableArray<PendingChange>();
+    for (let snapshot in await this.#changes(account).get()) {
+      let change = changeAt(snapshot);
+      if (change != null) {
+        held.push(change);
+      }
+    }
+    return held;
+  }
+
+  async dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void> {
+    await release(this.#db, this.#changes(account).doc(changeId(collection, rkey)), 'cid', cid.toString());
+  }
+
+  /** Adds `entries`, each under the base32 CID of its DAG-CBOR, its commitment. */
+  async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
+    let list = this.#root.collection('entries').doc(account).collection('list');
+    let batch = this.#db.batch();
+    for (let entry in entries) {
+      let bytes = encodeCbor(entry.toValue());
+      batch.set(list.doc(entry.commitment().toString()), new Fields().set('cbor', bytesValue(bytes as ByteArray)));
+    }
+    await batch.commit();
+  }
+}
+
+/** A staging PLC directory's operations in Firestore, for `tenant`. */
+export final class FirestorePlcLog implements PlcLog {
+  #db: Firestore;
+  #root: DocumentReference;
+
+  new(db: Firestore, tenant: String) : #db = db, #root = tenantRoot(db, tenant);
+
+  async operations(did: String): Future<Array<PlcOperation>> {
+    let operations = new GrowableArray<PlcOperation>();
+    for (let snapshot in await this.#root.collection('plc').doc(did).collection('ops').get()) {
+      let text = stringAt(snapshot, 'json');
+      if (text != null) {
+        operations.push(PlcOperation.fromJson(parseJson(text)));
+      }
+    }
+    return operations;
+  }
+
+  async append(did: String, index: i32, operation: PlcOperation): Future<boolean> {
+    let head = this.#root.collection('plc').doc(did);
+    let entry = head.collection('ops').doc(padIndex(index));
+    let json = stringify(operation.toJson());
+    return await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
+      var length = 0 as i64;
+      if (let (true, recorded) = (await tx.get(head)).getInteger('length')) {
+        length = recorded;
+      }
+      if (length != index as i64) {
+        return false;
+      }
+      tx.set(entry, new Fields().string('json', json));
+      tx.set(head, new Fields().integer('length', (index + 1) as i64));
+      return true;
+    });
+  }
+}
+
+/** `index` with zeros before it, to eight digits. */
+function padIndex(index: i32): String {
+  var text = `${index}`;
+  while (text.length < 8) {
+    text = `0${text}`;
+  }
+  return text;
+}
+
+/** The held release `snapshot` is, at `version` or its own ID's; null when it does not exist. */
+function pendingAt(snapshot: DocumentSnapshot, version: String | null): PendingRelease | null {
+  let record = bytesAt(snapshot, 'cbor');
+  let cid = cidAt(snapshot);
+  let publisher = stringAt(snapshot, 'publisher');
+  if (record == null || cid == null || publisher == null) {
+    return null;
+  }
+  var heldAt = 0 as i64;
+  if (let (true, micros) = snapshot.getInteger('heldAt')) {
+    heldAt = micros;
+  }
+  let id = snapshot.id;
+  let key = version ?? (if (id.startsWith('%')) id.sliceBytes(1, id.length) else id);
+  return new PendingRelease(key, record, cid, publisher, heldAt);
+}
+
+/** The document ID of the held change to the record at `collection/rkey`. */
+function changeId(collection: String, rkey: String): String {
+  return `${collection} ${rkey}`;
+}
+
+/** The held change `snapshot` is; null when it does not exist. */
+function changeAt(snapshot: DocumentSnapshot): PendingChange | null {
+  let collection = stringAt(snapshot, 'collection');
+  let rkey = stringAt(snapshot, 'rkey');
+  let record = bytesAt(snapshot, 'cbor');
+  let cid = cidAt(snapshot);
+  let proposer = stringAt(snapshot, 'proposer');
+  if (collection == null || rkey == null || record == null || cid == null || proposer == null) {
+    return null;
+  }
+  let base = stringAt(snapshot, 'base');
+  var heldAt = 0 as i64;
+  if (let (true, micros) = snapshot.getInteger('heldAt')) {
+    heldAt = micros;
+  }
+  return new PendingChange(collection, rkey, record, cid,
+      if (base == null) null else Cid.parse(base), proposer, heldAt);
+}
+
+/** The App View's account in `snapshot`, or null when there is none. */
+function appViewAccountFrom(snapshot: DocumentSnapshot): AppViewAccount | null {
+  let handle = stringAt(snapshot, 'handle');
+  let kind = stringAt(snapshot, 'kind');
+  let scope = stringAt(snapshot, 'scope');
+  let name = stringAt(snapshot, 'name');
+  if (handle == null || kind == null || scope == null || name == null) {
+    return null;
+  }
+  return new AppViewAccount(snapshot.id, handle, kindNamed(kind), scope, name);
+}

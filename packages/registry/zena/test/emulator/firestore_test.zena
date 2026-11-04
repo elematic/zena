@@ -1,0 +1,63 @@
+/**
+ * The App View's store conformance tests (`../store-conformance.zena`)
+ * against the Firestore emulator, and the service on Firestore. Run with
+ * `npm run test:emulator -w @zena-lang/registry`, which starts the
+ * emulator and sets `FIRESTORE_EMULATOR_HOST`. Each test works in a
+ * project of its own (`freshEmulatedDatabase`).
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {Request, Response} from 'zena:http';
+import {getRandomU64} from 'wasi:random/random';
+import {freshEmulatedDatabase} from 'google-cloud:testing/firestore-emulator';
+import {KeyType} from 'atproto:didkey';
+import {SigningKey} from 'pds:storage';
+import {AppViewStore} from 'registry:app-view';
+import {FirestoreAppViewStore, FirestorePlcLog} from 'registry:firestore';
+import {PlcLog} from 'registry:plc-directory';
+import {buildService, configFromEnv} from 'registry:service';
+import {appViewStoreConformance, plcLogConformance} from '../store-conformance.zena';
+
+export let tests = suite('Firestore App View stores', () => {
+  // TODO(#520): drop the return types.
+  appViewStoreConformance((): AppViewStore => new FirestoreAppViewStore(freshEmulatedDatabase(), 'test'));
+  plcLogConformance((): PlcLog => new FirestorePlcLog(freshEmulatedDatabase(), 'test'));
+
+  test('keeps tenants apart', (ctx) => {
+    let db = freshEmulatedDatabase();
+    let did = 'did:plc:alicealicealicealicealic';
+    isTrue(runFuture(new FirestoreAppViewStore(db, 'one').claimScope('acme', did)), 'claimed');
+    isTrue(runFuture(new FirestoreAppViewStore(db, 'two').claimScope('acme', did)), 'claimed in the other tenant');
+  });
+
+  test('serves a PDS on Firestore, as PDS_STORAGE=firestore configures it', (ctx) => {
+    let env: HashMap<String, String> = {
+      'PDS_STORAGE' => 'firestore',
+      'PDS_TENANT' => `service-${getRandomU64() % (1000000000 as u64)}`,
+      'PDS_BLOB_DIR' => '/tmp/pds-service-blobs',
+      'PDS_JWT_SECRET' => '0101010101010101010101010101010101010101010101010101010101010101',
+    };
+    // TODO(#520): the return type is only for the compiler.
+    let config = configFromEnv((name): String | null => {
+      if (let (true, value) = env.get(name)) {
+        return value;
+      }
+      return null;
+    });
+    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let did = 'did:plc:alicealicealicealicealic';
+    runFuture(service.pds.createAccount(did, 'alice.test', new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8)),
+        1792800000000000 as i64));
+    let res = new Response();
+    let app = service.app;
+    runFuture((async () => {
+      await app.handleRequest(new Request.fromUrl(
+          `http://localhost/xrpc/com.atproto.repo.describeRepo?repo=${did}`, 'GET', new HashMap<String, String>()), res);
+    })());
+    equal(res.statusCode, 200);
+    isTrue((res.body as String).contains('alice.test'), res.body as String);
+  });
+});

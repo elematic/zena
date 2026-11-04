@@ -1,0 +1,121 @@
+/**
+ * What a client needs to find and call the App View: its DID
+ * document, when its service DID is a `did:web`, which names the App View's
+ * methods as `#zena_registry`; `dev.zena-lang.registry.describeRegistry`,
+ * which gives that DID, which tokens are addressed to, the domain its
+ * handles are under, and what it serves (package-manager.md, "Finding an
+ * App View"); `com.atproto.server.describeServer`, the PDS's; and
+ * `com.atproto.identity.resolveHandle`, which the web app's sign-in
+ * resolves handles with, since a browser cannot look DNS up itself.
+ */
+
+import {Router} from 'zena:http';
+import {JsonArray, JsonObject} from 'zena:json';
+import {formatMultikey} from 'atproto:didkey';
+import {IDENTITY_RESOLVE_HANDLE, SERVER_DESCRIBE_SERVER, xrpcPath} from 'atproto:methods';
+import {
+  CREATE_AUTOMATION_ACCOUNT, DESCRIBE_REGISTRY, REGISTRY_METHODS, REGISTRY_SERVICE, REGISTRY_TYPE
+} from 'package-manager:registry-methods';
+import {AppView} from '../app-view.zena';
+import {fail, json} from 'pds:xrpc/common';
+
+/** Adds the App View's DID document, `describeRegistry`, `describeServer` and `resolveHandle` to `router`. */
+export function identityRoutes(router: Router, appView: AppView): void {
+  // A `did:web` resolves to `https://<host>/.well-known/did.json`. It names
+  // the server as a PDS, and its App View methods, and lists the App View's
+  // signing key, which its tokens to the PDSes of its accounts are
+  // checked with.
+  if (appView.config.serviceDid.startsWith('did:web:')) {
+    router.get('/.well-known/did.json', async (req, res, next, params) => {
+      let context = new JsonArray();
+      context.push('https://www.w3.org/ns/did/v1');
+      context.push('https://w3id.org/security/multikey/v1');
+      let pds = new JsonObject();
+      pds['id'] = '#atproto_pds';
+      pds['type'] = 'AtprotoPersonalDataServer';
+      pds['serviceEndpoint'] = appView.config.endpoint;
+      let registryService = new JsonObject();
+      registryService['id'] = `#${REGISTRY_SERVICE}`;
+      registryService['type'] = REGISTRY_TYPE;
+      registryService['serviceEndpoint'] = appView.config.endpoint;
+      let services = new JsonArray();
+      services.push(pds);
+      services.push(registryService);
+      let body = new JsonObject();
+      body['@context'] = context;
+      body['id'] = appView.config.serviceDid;
+      let signingKey = appView.config.signingKey;
+      if (signingKey != null) {
+        let method = new JsonObject();
+        method['id'] = `${appView.config.serviceDid}#atproto`;
+        method['type'] = 'Multikey';
+        method['controller'] = appView.config.serviceDid;
+        method['publicKeyMultibase'] = formatMultikey(signingKey.publicKey());
+        let methods = new JsonArray();
+        methods.push(method);
+        body['verificationMethod'] = methods;
+      }
+      body['service'] = services;
+      json(res, body);
+    });
+  }
+
+  router.get(xrpcPath(DESCRIBE_REGISTRY), async (req, res, next, params) => {
+    let reserved = new JsonArray();
+    for (let name in appView.config.reservedScopes) {
+      reserved.push(name);
+    }
+    let limits = new JsonObject();
+    limits['maxBlobSize'] = new Box<f64>(appView.config.maxBlobSize as f64);
+    // An App View with no sessions cannot sign automation accounts in.
+    let served = new JsonArray();
+    for (let method in REGISTRY_METHODS) {
+      if (method != CREATE_AUTOMATION_ACCOUNT || appView.sessions != null) {
+        served.push(method);
+      }
+    }
+    let body = new JsonObject();
+    body['did'] = appView.config.serviceDid;
+    body['domain'] = appView.config.domain;
+    body['reservedScopes'] = reserved;
+    body['limits'] = limits;
+    // New scopes do not wait for the operator yet (#670).
+    body['scopeApproval'] = new Box<boolean>(false);
+    body['methods'] = served;
+    json(res, body);
+  });
+
+  router.get(xrpcPath(SERVER_DESCRIBE_SERVER), async (req, res, next, params) => {
+    let domains = new JsonArray();
+    domains.push(`.${appView.config.domain}`);
+    let body = new JsonObject();
+    body['did'] = appView.config.serviceDid;
+    body['availableUserDomains'] = domains;
+    json(res, body);
+  });
+
+  resolveHandleRoute(router, appView);
+}
+
+/**
+ * Adds `com.atproto.identity.resolveHandle`, which the site's sign-in
+ * also calls on its own origin to resolve the handle a person types, to
+ * `router`.
+ */
+export function resolveHandleRoute(router: Router, appView: AppView): void {
+  router.get(xrpcPath(IDENTITY_RESOLVE_HANDLE), async (req, res, next, params) => {
+    let handle = req.url.searchParams().get('handle');
+    if (handle == null || handle == '') {
+      fail(res, 400, 'InvalidRequest', 'Missing required parameter: handle');
+      return;
+    }
+    let did = await appView.resolveHandle(handle);
+    if (did == null) {
+      fail(res, 400, 'HandleNotFound', `${handle} does not resolve to a DID`);
+      return;
+    }
+    let answer = new JsonObject();
+    answer['did'] = did;
+    json(res, answer);
+  });
+}

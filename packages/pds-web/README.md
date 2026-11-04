@@ -1,9 +1,9 @@
-# The PDS's web assets
+# The App View's web assets
 
 The stylesheet, script, and static documentation (`/docs/`) of the App
-View's web pages. The dynamic pages are rendered on the server, by the PDS
-written in Zena (`packages/pds/zena/web`), as `zena:http` routes using its
-`html` tag:
+View's web pages. The dynamic pages are rendered on the server, by the App
+View written in Zena (`packages/registry/zena/web`), as `zena:http` routes
+using its `html` tag:
 
 - `/`: the landing page, with a hero search form (`?q=`), every package,
   every scope, and links into `/docs/`;
@@ -34,7 +34,7 @@ A page shows a person by their avatar and name, linked to their page. The
 name and avatar come from their own profile record, `app.bsky.actor.profile`,
 which this App View reads from their PDS and caches, and never keeps a copy
 of: a person changes them in the app that writes that record
-(`pds:web/people`). Reading someone else's PDS while a page renders, and
+(`registry:web/people`). Reading someone else's PDS while a page renders, and
 serving their avatar, are limited so the App View is no tool for anyone else:
 
 - Each read runs under `zena:task`'s `timeout`, and answers are cached,
@@ -49,7 +49,7 @@ serving their avatar, are limited so the App View is no tool for anyone else:
 ## Approvals
 
 A release's approvers are the maintainers whose own repositories hold an
-attestation of its record (`pds:web/approvals`). An attestation sits at a
+attestation of its record (`registry:web/approvals`). An attestation sits at a
 record key fixed by the record's AT-URI and CID, so the page asks each
 maintainer's repository for that key, with no index: the maintainers the
 record names, by DID, by commitment, or through a team
@@ -89,7 +89,7 @@ in the browser. Then:
 2. The App View checks the token as it checks every call to its methods, and
    answers with a cookie: an HS256 token naming the person's DID and
    handle, signed with `PDS_JWT_SECRET`, HttpOnly, SameSite=Lax, and
-   Secure over HTTPS (`pds:web/session`).
+   Secure over HTTPS (`registry:web/session`).
 3. Every page reads the cookie, so the pages are rendered for the person
    on the server. Signing out posts a form to `/signout`, which drops the
    cookie, after the page revokes the OAuth session.
@@ -125,7 +125,7 @@ account (`zena login <handle or DID>`, with an app password), then
 `zena scope create <name> --yes`, and reload `/me`. That writes nothing to
 your repository; `zena publish` does, since it writes your attestation of
 the release there. To see `/admin`, start the demo with your DID as an admin:
-`PDS_ADMIN_DIDS=did:plc:… npm run demo -w @zena-lang/pds`.
+`PDS_ADMIN_DIDS=did:plc:… npm run demo -w @zena-lang/registry`.
 
 ## Commands
 
@@ -133,17 +133,17 @@ From the repository root:
 
 ```sh
 npm run build -w @zena-lang/pds-web    # typecheck, and bundle into out/
-npm run demo -w @zena-lang/pds         # an App View on this machine, serving the pages
+npm run demo -w @zena-lang/registry         # an App View on this machine, serving the pages
 ```
 
 The demo serves the pages at `http://127.0.0.1:2583`; it starts empty, and
 prints the `zena` commands that publish a package to it. The deployed App View
-serves the assets from its image (`packages/pds/deploy`).
+serves the assets from its image (`packages/registry/deploy`).
 
-## How the PDS serves them
+## How the App View serves them
 
-`PDS_WEB_DIR` names `out/`, and the PDS serves its files at `/assets/` and
-`out/docs/` at `/docs/` (`pds:service`). A program run by `zena run` or
+`PDS_WEB_DIR` names `out/`, and the App View serves its files at `/assets/` and
+`out/docs/` at `/docs/` (`registry:service`). A program run by `zena run` or
 `zena-run` sees only the directories it is given, so the directory is given
 with `--dir`: `npm run demo` passes `--dir packages/pds-web/out::/web` with
 `PDS_WEB_DIR=/web`, and the image passes `--dir /app/web::/web`. Without
