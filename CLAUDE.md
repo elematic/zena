@@ -9,6 +9,6 @@ read the CONTEXT.md nearest their work before editing:
 - `packages/zena-compiler/zena/lib/checker/CONTEXT.md` — the type checker's libraries
 - `packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md` — RTA, specialization
 - `packages/zena-cli/CONTEXT.md` — Rust CLI / wasmtime embedder
-- `packages/pds/CONTEXT.md` — the PDS and package host
+- `packages/pds/CONTEXT.md` — the PDS and the App View
 - `packages/pds-web/CONTEXT.md` — the PDS's server-rendered pages and their assets
 - `packages/workspace-hack/CONTEXT.md` — generated crate unifying the Rust crates' dependency features

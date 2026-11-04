@@ -6,7 +6,7 @@
 
 import {HTMLPartial, Router, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
-import {Membership, PackageHost} from '../../host.zena';
+import {Membership, AppView} from '../../app-view.zena';
 import {page} from '../layout.zena';
 import {People, Person} from '../people.zena';
 import {PageContext, contextOf} from '../session.zena';
@@ -15,26 +15,26 @@ import {avatar} from '../partials/person.zena';
 import {notFound} from './not-found.zena';
 
 /** Adds the people pages to `router`. */
-export function personPage(router: Router, host: PackageHost, people: People): void {
+export function personPage(router: Router, appView: AppView, people: People): void {
   router.get('/people/:id', async (req, res, next, params) => {
-    let context = await contextOf(req, host, people);
+    let context = await contextOf(req, appView, people);
     let id = percentDecode(params['id'] ?? '');
-    let did = if (id.startsWith('did:')) id else await host.resolveHandle(id);
+    let did = if (id.startsWith('did:')) id else await appView.resolveHandle(id);
     if (did == null) {
       notFound(res, context, `${id} does not resolve to an account.`);
       return;
     }
     let person = await people.person(did);
-    let roles = await host.publicRolesOf(person.did);
+    let roles = await appView.publicRolesOf(person.did);
     res.type = 'text/html; charset=utf-8';
     res.body = page(`${person.name()} · Zena packages`, context, personBody(context, person, roles));
   });
 
-  // Only an avatar a page linked to: the URL's signature is the host's
-  // own, so the host is no open proxy for whatever a DID document names.
+  // Only an avatar a page linked to: the URL's signature is the App View's
+  // own, so the App View is no open proxy for whatever a DID document names.
   router.get('/people/:did/avatar', async (req, res, next, params) => {
     let did = percentDecode(params['did'] ?? '');
-    let sessions = host.sessions;
+    let sessions = appView.sessions;
     if (sessions == null || !sessions.checkUrlSignature(did, req.url.searchParams().get('s'))) {
       res.statusCode = 404;
       res.body = '';

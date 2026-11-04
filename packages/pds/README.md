@@ -2,7 +2,7 @@
 
 An [AT Protocol](https://atproto.com) Personal Data Server written in Zena,
 ported from [pds.js](https://tangled.org/chadtmiller.com/pds.js). It is to
-be the Zena project's package host: a PDS with the `dev.zena-lang.host.*`
+be the Zena project's App View: a PDS with the `dev.zena-lang.registry.*`
 extension, which creates package accounts and lets their maintainers
 publish to them ([docs/design/package-manager.md](../../docs/design/package-manager.md)).
 
@@ -14,31 +14,31 @@ reads of `com.atproto.sync` (`getRecord`, `getRepo`, `getLatestCommit`,
 `describeRepo`). An account with an app password signs in with
 `com.atproto.server.createSession`, and with its session refreshes it,
 gets service-auth tokens (`getServiceAuth`), and writes its own repository
-(`putRecord`, `deleteRecord`); the accounts the package host creates have
-no other password. With a `PackageHost`, it also serves the package host's
+(`putRecord`, `deleteRecord`); the accounts the App View creates have
+no other password. With a `AppView`, it also serves the App View's
 methods, each checked with a service-auth token from the caller's PDS, and
 `com.atproto.server.describeServer`, which tells `zena` its service DID and
-handle domain. `zena` refuses a host whose DID does not name its origin, so
+handle domain. `zena` refuses an App View whose DID does not name its origin, so
 `PDS_SERVICE_DID` defaults to `did:web:<domain>`, and the demo's to the
 `did:web` of `127.0.0.1` and its port. pds.js's license is
 in `LICENSE-pds-js`.
 [docs/design/pds.md](../../docs/design/pds.md) describes the reference
 implementation, what is still missing, and the order of the work.
 
-With a package host, it serves web pages at its origin, rendered on the
+With an App View, it serves web pages at its origin, rendered on the
 server (`zena/web/`), beside its XRPC routes (`zena/xrpc/`): a visitor
-browses the host's scopes and packages there, and a person signs in with
+browses the App View's scopes and packages there, and a person signs in with
 atproto OAuth to see their own. For
-that, the host serves the pages' OAuth client metadata at
+that, the App View serves the pages' OAuth client metadata at
 `/oauth/client-metadata.json`, resolves handles
 (`com.atproto.identity.resolveHandle`), and trades a service-auth token
-for a web session cookie (`dev.zena-lang.host.createWebSession`).
-The DIDs in `PDS_ADMIN_DIDS` are the host's admins, who sign in as anyone
+for a web session cookie (`dev.zena-lang.registry.createWebSession`).
+The DIDs in `PDS_ADMIN_DIDS` are the App View's admins, who sign in as anyone
 does and see every account it holds, at `/admin`, and every private entry.
 `PDS_WEB_DIR` names the build of the pages' stylesheet and script
 (`packages/pds-web`), which it serves at `/assets/`.
 
-The host reads other PDSes, for maintainers' attestations, profiles and
+The App View reads other PDSes, for maintainers' attestations, profiles and
 the dependencies of the releases it is given, only at public HTTPS names:
 a DID document that names any other PDS resolves as naming none, and a
 release whose dependency cannot be found is refused without the error
@@ -59,21 +59,21 @@ From the repository root:
 ```sh
 npm test -w @zena-lang/pds                       # its tests, through wireit
 npm run test:emulator -w @zena-lang/pds          # the storage tests against the Firestore emulator
-npm run demo -w @zena-lang/pds                   # a package host to try zena against, on this machine
+npm run demo -w @zena-lang/pds                   # an App View to try zena against, on this machine
 ./target/release/zena-cli test "packages/pds/zena/test/*_test.zena"
 ./target/release/zena-cli run packages/pds/zena/main.zena   # serve on $PORT, default 2583
 ```
 
 ## The demo
 
-`npm run demo -w @zena-lang/pds` starts a package host for `pkg.test`, a
+`npm run demo -w @zena-lang/pds` starts an App View for `pkg.test`, a
 stand-in PLC directory with a maintainer who has an app password, and a
-DNS-over-HTTPS resolver that answers from the host's handle records, all
+DNS-over-HTTPS resolver that answers from the App View's handle records, all
 on this machine (`dev/demo.zena`). It prints the environment to give
 `zena`, and the commands of a first `zena login` and `zena publish`; a
 package it publishes can then be added by its handle and run from another
 workspace. Nothing goes to the public PLC directory or to real DNS. It
-builds the host from the environment as `main.zena` does, so it runs on
+builds the App View from the environment as `main.zena` does, so it runs on
 the Firestore emulator too, with `PDS_STORAGE=firestore` and the rest.
 
 ## Configuration
@@ -83,41 +83,41 @@ lists every variable). With none, it is a PDS in memory on port 2583.
 
 A deployment keeps its data in Firestore, for a tenant, with blob bytes in
 a Cloud Storage bucket, writes its handles' TXT records to the Cloud DNS
-zone that holds its domain, and gives the host's PLC rotation key, a
+zone that holds its domain, and gives the App View's PLC rotation key, a
 secp256k1 private key in hex, and the secret that signs sessions' tokens,
 32 bytes in hex, from secrets:
 
 ```sh
 PDS_STORAGE=firestore PDS_TENANT=pkg PDS_BLOB_BUCKET=<bucket> PDS_JWT_SECRET=<hex> \
-PDS_HOST_DOMAIN=pkg.zena-lang.dev PDS_ROTATION_KEY=<hex> \
+PDS_APP_VIEW_DOMAIN=pkg.zena-lang.dev PDS_ROTATION_KEY=<hex> \
 PDS_HANDLE_RECORDS=cloud-dns PDS_DNS_ZONE=<managed zone> \
   ./target/release/zena-cli run packages/pds/zena/main.zena
 ```
 
-A staging host adds `PDS_PLC=staging`: the server is then a PLC directory
-itself, at `/plc`, that records the DIDs the host makes and reads every
+A staging App View adds `PDS_PLC=staging`: the server is then a PLC directory
+itself, at `/plc`, that records the DIDs the App View makes and reads every
 other DID from the public directory, so nothing it makes reaches the
 public one (docs/design/pds.md, "Staging").
 
 The same configuration with the argument `sync-handles`
 (`zena-cli run packages/pds/zena/main.zena -- sync-handles`) writes every
-handle record again from the host's store and exits, for after a record
+handle record again from the App View's store and exits, for after a record
 write failed or records were lost.
 
 The package listings, on the pages and from `listPackages` and
-`listScopes`, read a summary of each package that the host writes with
+`listScopes`, read a summary of each package that the App View writes with
 every commit to the package's repository, rather than the repositories
 themselves. The memberships of `/me` (`getMemberships`) and the roles on
 a person's page start from a second index, of the accounts whose records
-or entries mention each person and team, which the host writes with
+or entries mention each person and team, which the App View writes with
 every commit to an organization's members or teams or a package's
 maintainers. `sync-indexes` writes both again from the repositories and
-exits: for accounts made before the host kept them, and for a commit
+exits: for accounts made before the App View kept them, and for a commit
 whose indexes could not be written, which the server logs.
 
 With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`, it
 creates a scope owned by that DID and exits. This is how the operator
-takes a name the host reserves (`www`, `api`, `admin`, `zena`, `pkg`,
+takes a name the App View reserves (`www`, `api`, `admin`, `zena`, `pkg`,
 `mail`, and `PDS_RESERVED_SCOPES`), which no `zena scope create` can.
 
 `PDS_BLOB_DIR=<dir>` keeps blob bytes in a directory instead, for a server
@@ -127,7 +127,7 @@ the server cannot use stops it with every problem listed, and status 2.
 
 ## Deploying
 
-The package host runs on Cloud Run, in two environments that `PDS_ENV`
+The App View runs on Cloud Run, in two environments that `PDS_ENV`
 picks: `staging`, the default, with its own PLC directory, so nothing it
 makes reaches `plc.directory`; and `production`. Each has two names,
 which one service serves (docs/design/package-manager.md, "Names and
@@ -170,7 +170,7 @@ it also clears `ZENA_DNS_OVER_HTTPS`, which a shell that ran the demo still
 points at the demo's own resolver:
 
 ```sh
-source packages/pds/deploy/staging.env    # ZENA_PACKAGE_HOST and ZENA_PLC_DIRECTORY
+source packages/pds/deploy/staging.env    # ZENA_REGISTRY and ZENA_PLC_DIRECTORY
 export ZENA_CONFIG_DIR=$(mktemp -d)       # optional: a staging sign-in apart from your usual one
 ```
 
@@ -180,8 +180,8 @@ DID is looked up in `plc.directory`, which has never heard of it.
 
 ### Rotation keys
 
-Every account the host creates lists, highest ranked first: any recovery
-keys its owners gave, the operator's offline key, and the host's online
+Every account the App View creates lists, highest ranked first: any recovery
+keys its owners gave, the operator's offline key, and the App View's online
 key, which signs its operations (docs/design/package-manager.md, "Keys").
 
 - **The online key** is in Cloud KMS for production
@@ -190,7 +190,7 @@ key, which signs its operations (docs/design/package-manager.md, "Keys").
   cannot be read or backed up. Staging keeps the secret
   `zena-pkg-staging-rotation-key` (`PDS_ROTATION_KEY`), which its accounts
   were made with; `ZENA_ROTATION_KMS=1` moves it to Cloud KMS, which
-  leaves the host unable to sign for the accounts it already has, so do
+  leaves the App View unable to sign for the accounts it already has, so do
   that only for a staging whose data was reset.
 - **The offline key** is the operator's, made on a machine you trust, and
   never on the server:
@@ -251,11 +251,11 @@ fails.
   - `repository`: an account's repository: writes, commits, proofs and
     exports;
   - `pds`: the accounts and their repositories;
-  - `host`: the package host's methods, and what it keeps beside the
+  - `registry`: the App View's methods, and what it keeps beside the
     accounts: scopes, names in them, and private membership entries;
-  - `handles`: the DNS records that make the host's handles resolve, in
+  - `handles`: the DNS records that make the App View's handles resolve, in
     memory, and a DNS-over-HTTPS resolver that answers from them;
-  - `plc-directory`: the PLC directory a staging host is, which records
+  - `plc-directory`: the PLC directory a staging App View is, which records
     the DIDs it makes and reads the rest from the public directory;
   - `server`: the HTTP routes;
   - `service`: the configuration, read from the environment, and the

@@ -9,7 +9,7 @@ import { HashMap } from 'zena:collections';
 import { GrowableArray } from 'zena:core';
 import { existsSync, readFileSync } from 'zena:fs';
 import { HTMLPartial, Router, TemplateValue, html } from 'zena:http';
-import { PackageHost, PackageSummary } from '../../host.zena';
+import { AppView, PackageSummary } from '../../app-view.zena';
 import { page } from '../layout.zena';
 import { People } from '../people.zena';
 import { contextOf } from '../session.zena';
@@ -50,14 +50,14 @@ let FEATURED_PACKAGES = [
 ];
 
 /** Adds the home page, `/`, to `router`. */
-export function homePage(router: Router, host: PackageHost, people: People): void {
+export function homePage(router: Router, appView: AppView, people: People): void {
   router.get('/', async (req, res, next, params) => {
-    let context = await contextOf(req, host, people);
+    let context = await contextOf(req, appView, people);
     let query = (req.url.searchParams().get('q') ?? '').trim();
     res.type = 'text/html; charset=utf-8';
 
     if (query != '') {
-      let packages = await host.listPackages(null);
+      let packages = await appView.listPackages(null);
       let shown = filtered(packages, query);
       res.body = page('Search · Zena packages', context, html`
         <div class="home-page">

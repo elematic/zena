@@ -5,7 +5,7 @@
 
 import {GrowableArray} from 'zena:core';
 import {HTMLPartial, Router, html} from 'zena:http';
-import {Membership, Memberships, PackageHost} from '../../host.zena';
+import {Membership, Memberships, AppView} from '../../app-view.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {contextOf} from '../session.zena';
@@ -13,9 +13,9 @@ import {chip, each, when} from '../partials/common.zena';
 import {PendingRow, pendingOf, pendingTable} from '../partials/pending.zena';
 
 /** Adds `/me` to `router`. */
-export function mePage(router: Router, host: PackageHost, people: People): void {
+export function mePage(router: Router, appView: AppView, people: People): void {
   router.get('/me', async (req, res, next, params) => {
-    let context = await contextOf(req, host, people);
+    let context = await contextOf(req, appView, people);
     res.type = 'text/html; charset=utf-8';
     let who = context.who;
     if (who == null) {
@@ -25,10 +25,10 @@ export function mePage(router: Router, host: PackageHost, people: People): void 
       `);
       return;
     }
-    let memberships = await host.getMemberships(who.did);
+    let memberships = await appView.getMemberships(who.did);
     let rows = new GrowableArray<PendingRow>();
     for (let pkg in memberships.packages) {
-      for (let held in await pendingOf(host, who.did, pkg.did)) {
+      for (let held in await pendingOf(appView, who.did, pkg.did)) {
         rows.push(new PendingRow(pkg.handle, pkg.name, held));
       }
     }

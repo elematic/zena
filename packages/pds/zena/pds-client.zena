@@ -1,12 +1,12 @@
 /**
- * The PDS the package host keeps its accounts on, as the host reaches it
- * (docs/design/package-manager.md, "Names and addresses"): the calls a
- * host could make of any PDS over the network, in `com.atproto`'s terms.
- * The host reads and writes its accounts' repositories through nothing
+ * The PDS the App View keeps its accounts on, as the App View reaches it
+ * (docs/design/package-manager.md, "Names and addresses"): the calls an
+ * App View could make of any PDS over the network, in `com.atproto`'s terms.
+ * The App View reads and writes its accounts' repositories through nothing
  * else, so that it can move to a service of its own.
  *
  * `InProcessPds` is the PDS in the same process. It calls the PDS's core
- * directly, without the service-auth tokens a host sends over the network
+ * directly, without the service-auth tokens an App View sends over the network
  * (`pds:managed`), since nothing between them could forge one. `XrpcPds`
  * is a PDS with managed accounts anywhere else, called with those tokens.
  */
@@ -40,18 +40,18 @@ export final class HeldRecord {
   new(this.rkey, this.value, this.cid);
 }
 
-/** The PDS that keeps the package host's accounts. */
+/** The PDS that keeps the App View's accounts. */
 export interface PdsClient {
   /**
    * `com.atproto.server.reserveSigningKey`: a signing key the PDS makes and
-   * keeps for an account the host is about to create, which the host names
-   * in the DID's genesis operation.
+   * keeps for an account the App View is about to create, which the App
+   * View names in the DID's genesis operation.
    */
   reserveSigningKey(): Future<PublicKey>;
   /**
    * `com.atproto.server.createAccount`: a managed account for `did`, named
-   * `handle`, which only the host writes, with `signingKey`, the key its
-   * DID document names, which the host reserved. A PDS over the network
+   * `handle`, which only the App View writes, with `signingKey`, the key its
+   * DID document names, which the App View reserved. A PDS over the network
    * reads the key from the DID document. Throws `RepositoryError` when the
    * PDS refuses.
    */
@@ -83,23 +83,23 @@ let PAGE = 100;
 /** The most writes one commit takes, as `com.atproto.repo.applyWrites` allows. */
 export let MAX_WRITES = 200;
 
-/** The PDS in the same process as the host. */
+/** The PDS in the same process as the App View. */
 export final class InProcessPds implements PdsClient {
   #pds: Pds;
-  /** The host's DID, which the PDS records as each account's manager. */
-  #host: String;
+  /** The App View's DID, which the PDS records as each account's manager. */
+  #appView: String;
 
-  new(pds: Pds, host: String) : #pds = pds, #host = host;
+  new(pds: Pds, appView: String) : #pds = pds, #appView = appView;
 
   async reserveSigningKey(): Future<PublicKey> {
-    return await this.#pds.reserveSigningKey(this.#host, nowSeconds());
+    return await this.#pds.reserveSigningKey(this.#appView, nowSeconds());
   }
 
   async createAccount(did: String, handle: String, signingKey: PublicKey): Future<void> {
-    let account = await this.#pds.createManagedAccount(did, handle, formatDidKey(signingKey), this.#host, nowMicros(),
+    let account = await this.#pds.createManagedAccount(did, handle, formatDidKey(signingKey), this.#appView, nowMicros(),
         nowSeconds());
     if (account == null) {
-      throw new RepositoryError('InvalidRequest', `${formatDidKey(signingKey)} is not a key the host reserved`);
+      throw new RepositoryError('InvalidRequest', `${formatDidKey(signingKey)} is not a key the App View reserved`);
     }
   }
 
@@ -173,26 +173,26 @@ export final class InProcessPds implements PdsClient {
   }
 }
 
-/** How long the host's tokens to its PDS last, in seconds: one call's worth. */
+/** How long the App View's tokens to its PDS last, in seconds: one call's worth. */
 let TOKEN_SECONDS = 60 as i64;
 
 /**
  * A PDS with managed accounts, at `endpoint`, whose DID is `pdsDid`, over
  * XRPC. Each call carries a service-auth token for its one method from
- * the host's DID `hostDid`, signed by `signer`, the key its DID document
- * lists (package-manager.md, "Managed accounts").
+ * the App View's DID `appViewDid`, signed by `signer`, the key its DID
+ * document lists (package-manager.md, "Managed accounts").
  */
 export final class XrpcPds implements PdsClient {
   #endpoint: String;
   #pdsDid: String;
-  #hostDid: String;
+  #appViewDid: String;
   #signer: Signer;
 
-  new(endpoint: String, pdsDid: String, hostDid: String, signer: Signer)
-      : #endpoint = endpoint, #pdsDid = pdsDid, #hostDid = hostDid, #signer = signer;
+  new(endpoint: String, pdsDid: String, appViewDid: String, signer: Signer)
+      : #endpoint = endpoint, #pdsDid = pdsDid, #appViewDid = appViewDid, #signer = signer;
 
   async reserveSigningKey(): Future<PublicKey> {
-    let answer = await (await this.#asHost(SERVER_RESERVE_SIGNING_KEY))
+    let answer = await (await this.#asAppView(SERVER_RESERVE_SIGNING_KEY))
         .procedure(SERVER_RESERVE_SIGNING_KEY, new JsonObject());
     let key = if (answer is JsonObject) answer['signingKey'] else null;
     if (!(key is String)) {
@@ -207,7 +207,7 @@ export final class XrpcPds implements PdsClient {
     input['did'] = did;
     input['handle'] = handle;
     try {
-      await (await this.#asHost(SERVER_CREATE_ACCOUNT)).procedure(SERVER_CREATE_ACCOUNT, input);
+      await (await this.#asAppView(SERVER_CREATE_ACCOUNT)).procedure(SERVER_CREATE_ACCOUNT, input);
     } catch (e) {
       throw refusedOf(e);
     }
@@ -224,14 +224,14 @@ export final class XrpcPds implements PdsClient {
             let input = this.#recordInput(did, collection, rkey);
             input['record'] = toJson(record);
             input['swapRecord'] = swapRecord.toString();
-            return commitOf(await (await this.#asHost(REPO_PUT_RECORD)).procedure(REPO_PUT_RECORD, input));
+            return commitOf(await (await this.#asAppView(REPO_PUT_RECORD)).procedure(REPO_PUT_RECORD, input));
           }
         }
         if (let DeleteRecord {collection, rkey, swapRecord} = only) {
           if (swapRecord != null) {
             let input = this.#recordInput(did, collection, rkey);
             input['swapRecord'] = swapRecord.toString();
-            return commitOf(await (await this.#asHost(REPO_DELETE_RECORD)).procedure(REPO_DELETE_RECORD, input));
+            return commitOf(await (await this.#asAppView(REPO_DELETE_RECORD)).procedure(REPO_DELETE_RECORD, input));
           }
         }
       }
@@ -242,7 +242,7 @@ export final class XrpcPds implements PdsClient {
       let input = new JsonObject();
       input['repo'] = did;
       input['writes'] = list;
-      return commitOf(await (await this.#asHost(REPO_APPLY_WRITES)).procedure(REPO_APPLY_WRITES, input));
+      return commitOf(await (await this.#asAppView(REPO_APPLY_WRITES)).procedure(REPO_APPLY_WRITES, input));
     } catch (e) {
       throw refusedOf(e);
     }
@@ -250,7 +250,7 @@ export final class XrpcPds implements PdsClient {
 
   async uploadBlob(did: String, mimeType: String, bytes: FixedArray<u8>): Future<BlobRef> {
     try {
-      let answer = await (await this.#asHost(REPO_UPLOAD_BLOB)).upload(REPO_UPLOAD_BLOB, mimeType, bytes,
+      let answer = await (await this.#asAppView(REPO_UPLOAD_BLOB)).upload(REPO_UPLOAD_BLOB, mimeType, bytes,
           [('repo', did)]);
       return BlobRef.fromValue(fromJson((answer as JsonObject)['blob']));
     } catch (e) {
@@ -324,10 +324,10 @@ export final class XrpcPds implements PdsClient {
     }
   }
 
-  /** A client whose calls to `method` carry a token from the host. */
-  async #asHost(method: String): Future<XrpcClient> {
+  /** A client whose calls to `method` carry a token from the App View. */
+  async #asAppView(method: String): Future<XrpcClient> {
     let key = this.#signer;
-    let token = await signServiceAuthToken(this.#claims(this.#hostDid, method), key.publicKey().type,
+    let token = await signServiceAuthToken(this.#claims(this.#appViewDid, method), key.publicKey().type,
         async (bytes): Future<FixedArray<u8>> => await key.sign(bytes));
     return this.#client(token);
   }

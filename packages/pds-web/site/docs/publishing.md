@@ -22,7 +22,7 @@ echo "$APP_PASSWORD" | zena login alice.bsky.social --password-stdin
 
 ## 2. Create a scope
 
-Every package hosted on `pkg.zena-lang.dev` belongs to a scope, such as `@acme`. A scope is an organization account on the package host (`acme.pkg.zena-lang.dev`).
+Every package hosted on `pkg.zena-lang.dev` belongs to a scope, such as `@acme`. A scope is an organization account on the registry (`acme.pkg.zena-lang.dev`).
 
 Create a scope before publishing your first package to it:
 
@@ -76,14 +76,14 @@ zena publish --scope acme
 
 When `zena publish` runs:
 
-1. **Account creation (first publish only)**: When `zena-package.json` has no `did` field, the CLI asks the package host to create a new package account (`router.acme.pkg.zena-lang.dev`) and writes the resulting `did` into `zena-package.json`. Commit this updated `zena-package.json` so future releases publish to the same DID.
-2. **Archive packing and upload**: The CLI packs the package's source files and manifest into a deterministic IPLD CAR archive and uploads it as a blob to the package host.
+1. **Account creation (first publish only)**: When `zena-package.json` has no `did` field, the CLI asks the registry to create a new package account (`router.acme.pkg.zena-lang.dev`) and writes the resulting `did` into `zena-package.json`. Commit this updated `zena-package.json` so future releases publish to the same DID.
+2. **Archive packing and upload**: The CLI packs the package's source files and manifest into a deterministic IPLD CAR archive and uploads it as a blob to the registry.
 3. **Attestation**: The CLI writes a signed `dev.zena-lang.maintainer.attestation` record into your own atproto repository, attesting to the release record's AT-URI and CID.
-4. **Release commit**: Once the package's required number of maintainers (`threshold`) have attested the release, the package host commits the `dev.zena-lang.package.release` record into the package's repository.
+4. **Release commit**: Once the package's required number of maintainers (`threshold`) have attested the release, the registry commits the `dev.zena-lang.package.release` record into the package's repository.
 
 ## 5. Approving multi-maintainer releases
 
-When a package is configured to require more than one maintainer approval (for example, 2 of 3 maintainers, or human approval of a CI publish), `zena publish` holds the release in a pending state on the host.
+When a package is configured to require more than one maintainer approval (for example, 2 of 3 maintainers, or human approval of a CI publish), `zena publish` holds the release in a pending state on the registry.
 
 Other maintainers can inspect the pending release and its diff or metadata with `zena approve`:
 

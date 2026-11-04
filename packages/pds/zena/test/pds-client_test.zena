@@ -1,8 +1,8 @@
 /**
- * The clients the package host reaches its PDS with (`pds:pds-client`),
+ * The clients the App View reaches its PDS with (`pds:pds-client`),
  * held to the same checks: `InProcessPds`, the PDS in the same process,
  * and `XrpcPds`, a PDS with managed accounts served on a port here,
- * called with the host's tokens as it would be over the network.
+ * called with the App View's tokens as it would be over the network.
  */
 
 import {suite, test} from 'zena:test';
@@ -15,7 +15,7 @@ import {Cid} from 'atproto:cid';
 import {StringValue, newMap} from 'atproto:data';
 import {KeyType, PublicKey, formatDidKey} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
-import {ManagedAccounts, TrustedHost} from 'pds:managed';
+import {ManagedAccounts, TrustedAppView} from 'pds:managed';
 import {Pds} from 'pds:pds';
 import {InProcessPds, PdsClient, XrpcPds} from 'pds:pds-client';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from 'pds:repository';
@@ -23,7 +23,7 @@ import {createApp} from 'pds:server';
 import {LocalSigner} from 'pds:signer';
 import {Account, MemoryStorage, SigningKey} from 'pds:storage';
 
-let HOST = 'did:web:pkg.test';
+let APP_VIEW = 'did:web:pkg.test';
 let PDS_DID = 'did:web:padstone.test';
 /** The PDS the accounts' DID documents name, whatever address the test reaches it at. */
 let PDS_URL = 'https://padstone.test';
@@ -58,7 +58,7 @@ function refusal(write: () => void) {
 }
 
 /**
- * A PDS, a client of it to test, and the host's side of an account's
+ * A PDS, a client of it to test, and the App View's side of an account's
  * creation: its rotation key, which signs each DID's genesis operation,
  * and the PLC directory, which records it.
  */
@@ -73,18 +73,18 @@ final class Harness {
   var overNetwork = false;
 
   /** A harness over `pds`, in the same process. */
-  new(pds: Pds = new Pds(new MemoryStorage())) : pds = pds, client = new InProcessPds(pds, HOST);
+  new(pds: Pds = new Pds(new MemoryStorage())) : pds = pds, client = new InProcessPds(pds, APP_VIEW);
 
   /**
-   * A harness over XRPC: the PDS trusts the host's rotation key, and finds
-   * the host's signing key in its DID document.
+   * A harness over XRPC: the PDS trusts the App View's rotation key, and finds
+   * the App View's signing key in its DID document.
    */
   static overXrpc(): Harness {
     let harness = new Harness();
-    let hostSigning = key(12);
+    let appViewSigning = key(12);
     let logs = harness.logs;
     harness.pds.managed = new ManagedAccounts(PDS_DID, PDS_URL,
-        [new TrustedHost(HOST, [harness.rotation.publicKey()])],
+        [new TrustedAppView(APP_VIEW, [harness.rotation.publicKey()])],
         async (did: String): Future<Array<PlcOperation>> => {
           if (let (true, log) = logs.get(did)) {
             return log;
@@ -92,23 +92,23 @@ final class Harness {
           return [];
         },
         async (did: String, fresh: boolean): Future<PublicKey | null> =>
-            if (did == HOST) hostSigning.publicKey() else null);
+            if (did == APP_VIEW) appViewSigning.publicKey() else null);
     let server = new Server(createApp(harness.pds), 0 as u16);
     server.start();
-    harness.client = new XrpcPds(`http://127.0.0.1:${server.port as i32}`, PDS_DID, HOST,
-        new LocalSigner(hostSigning));
+    harness.client = new XrpcPds(`http://127.0.0.1:${server.port as i32}`, PDS_DID, APP_VIEW,
+        new LocalSigner(appViewSigning));
     harness.#server = server.keepOpen();
     harness.overNetwork = true;
     return harness;
   }
 
-  /** A DID the host mints for `handle`, and the key the PDS reserved, which its genesis operation names. */
+  /** A DID the App View mints for `handle`, and the key the PDS reserved, which its genesis operation names. */
   mint(handle: String): (String, PublicKey) {
     let signing = runFuture(this.client.reserveSigningKey());
     return (this.mintNaming(handle, signing), signing);
   }
 
-  /** A DID the host mints for `handle`, whose genesis operation names `signing`. */
+  /** A DID the App View mints for `handle`, whose genesis operation names `signing`. */
   mintNaming(handle: String, signing: PublicKey): String {
     let rotation = this.rotation;
     let genesis = genesisOperation(signing, [rotation.publicKey()], handle, PDS_URL)
@@ -141,7 +141,7 @@ function clientConformance(make: () => Harness) {
       let (did, reserved) = harness.mint('router.acme.pkg.test');
       runFuture(harness.client.createAccount(did, 'router.acme.pkg.test', reserved));
       let account = runFuture(harness.pds.storage.getAccount(did)) as Account;
-      equal(account.manager as String, HOST);
+      equal(account.manager as String, APP_VIEW);
       equal(formatDidKey(reserved), formatDidKey(runFuture(account.signingKey()).publicKey()));
       // A key makes one account, and only a key the PDS reserved makes one.
       let again = harness.mintNaming('again.acme.pkg.test', reserved);

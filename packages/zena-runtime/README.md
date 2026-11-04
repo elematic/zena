@@ -30,7 +30,7 @@ it:
   addresses is private, loopback, link-local or otherwise not on the
   internet, and connected to at those same addresses, so a second lookup
   cannot answer differently. A server that reads URLs other people chose
-  sets it; the package host's image does.
+  sets it; the App View's image does.
 - **The `zena-cli:host@1.0.0` interfaces**, declared in
   `packages/stdlib/zena/host-wit/host.wit` and implemented in
   `src/component.rs` with `bindgen!`:

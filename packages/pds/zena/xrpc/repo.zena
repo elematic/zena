@@ -3,7 +3,7 @@
  * record and a page of records, and the writes, `putRecord`,
  * `deleteRecord`, `applyWrites` and `uploadBlob`. An account writes its
  * own repository with a session; a managed account takes writes only
- * with its package host's service-auth token (`pds:managed`). Ported from
+ * with its App View's service-auth token (`pds:managed`). Ported from
  * pds.js's `packages/core/src/handlers/xrpc-repo.js`, at the revision
  * docs/design/pds.md pins.
  */
@@ -34,7 +34,7 @@ let MAX_WRITES = 200;
 
 /**
  * Adds the reads of the repositories in `pds`, and their writes: by their
- * own accounts with `sessions`, and by their hosts for managed accounts.
+ * own accounts with `sessions`, and by their App Views for managed accounts.
  */
 export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null): void {
   router.get(xrpcPath(REPO_DESCRIBE_REPO), async (req, res, next, params) => {
@@ -236,7 +236,7 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
 
   // Only managed accounts take blobs for now: an account's own uploads
   // would need the ones no record references collected, as the reference
-  // PDS does. A host's token names no account, so the upload names it in
+  // PDS does. An App View's token names no account, so the upload names it in
   // `repo`, a parameter the lexicon does not have.
   router.post(xrpcPath(REPO_UPLOAD_BLOB), async (req, res, next, params) => {
     await sessionCall(res, async (): Future<JsonObject | null> => {
@@ -278,8 +278,8 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
 
 /**
  * The account a write names as its `repo`, once `authorization` shows the
- * caller may write it: a managed account's host, with a token for
- * `method` (`ManagedAccounts.fromHost`), or the account itself, with a
+ * caller may write it: a managed account's App View, with a token for
+ * `method` (`ManagedAccounts.fromAppView`), or the account itself, with a
  * session.
  */
 async function writable(pds: Pds, sessions: Sessions | null, authorization: String | null, repo: JsonValue,
@@ -288,13 +288,13 @@ async function writable(pds: Pds, sessions: Sessions | null, authorization: Stri
   if (named != null && named.manager != null) {
     let managed = pds.managed;
     if (managed == null) {
-      throw new SessionError(403, 'Forbidden', `${named.did} takes writes only from its package host`);
+      throw new SessionError(403, 'Forbidden', `${named.did} takes writes only from its App View`);
     }
-    await managed.fromHost(authorization, named, method, nowSeconds());
+    await managed.fromAppView(authorization, named, method, nowSeconds());
     return named;
   }
   if (sessions == null) {
-    throw new SessionError(403, 'Forbidden', 'this PDS takes writes only to managed accounts, from their package hosts');
+    throw new SessionError(403, 'Forbidden', 'this PDS takes writes only to managed accounts, from their App Views');
   }
   let caller = await sessions.authenticate(authorization, nowSeconds());
   if (named == null || named.did != caller.account.did) {

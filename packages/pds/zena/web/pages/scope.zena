@@ -3,7 +3,7 @@
 import {GrowableArray} from 'zena:core';
 import {Router, TemplateValue, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
-import {PackageHost, ScopeDetail} from '../../host.zena';
+import {AppView, ScopeDetail} from '../../app-view.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {contextOf} from '../session.zena';
@@ -13,17 +13,17 @@ import {packageList} from '../partials/packages.zena';
 import {notFound} from './not-found.zena';
 
 /** Adds the scope page, `/scopes/<name>`, to `router`. */
-export function scopePage(router: Router, host: PackageHost, people: People): void {
+export function scopePage(router: Router, appView: AppView, people: People): void {
   router.get('/scopes/:name', async (req, res, next, params) => {
-    let context = await contextOf(req, host, people);
+    let context = await contextOf(req, appView, people);
     let name = percentDecode(params['name'] ?? '');
-    let scope = await host.getScope(name);
+    let scope = await appView.getScope(name);
     if (scope == null) {
       notFound(res, context, `No scope here is named @${name}.`);
       return;
     }
     let found = scope;
-    let packages = await host.listPackages(name);
+    let packages = await appView.listPackages(name);
     // The entries the viewer may see, of the members and of every team,
     // in one map: each commitment is a different hash.
     let entries = await visibleEntries(context, found.did, null);

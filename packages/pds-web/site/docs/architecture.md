@@ -54,9 +54,9 @@ When `zena fetch` downloads a pinned dependency:
 
 Because both the record proof and the blob hash are verified by the client, mirrors, caches, and CDNs require no trust.
 
-## The package host (`packages/pds`)
+## The registry (`packages/pds`)
 
-`pkg.zena-lang.dev` runs `packages/pds`, an AT Protocol PDS written in Zena and compiled to WebAssembly. In addition to standard `com.atproto.sync.*`, `com.atproto.repo.*`, and `com.atproto.server.*` endpoints, it implements the `dev.zena-lang.host.*` XRPC methods:
+`pkg.zena-lang.dev` runs `packages/pds`, an AT Protocol PDS written in Zena and compiled to WebAssembly. In addition to standard `com.atproto.sync.*`, `com.atproto.repo.*`, and `com.atproto.server.*` endpoints, it implements the `dev.zena-lang.registry.*` XRPC methods:
 
 - Authenticates callers using atproto service-auth tokens (`Bearer` JWTs signed by the caller's own PDS signing key for a specific `lxm` method).
 - Creates organization accounts, package accounts, and CI automation accounts, registering their `did:plc` identities and DNS handle records.
@@ -68,4 +68,4 @@ Because both the record proof and the blob hash are verified by the client, mirr
 In atproto, an account holder can technically rewrite their own repository. The Zena package manager prevents retroactive tampering in two ways:
 
 1. **Lockfile CID pins**: `zena-lock.json` pins the exact CID of every release record and source archive. Any modification produces a different CID and is rejected by `zena fetch`.
-2. **Checksum and attestation verification**: The host refuses to overwrite an existing release key (`VersionExists`), checks maintainer attestations from each maintainer's independent PDS, and pairs with an append-only checksum log that records the first CID seen for each `<did>@<version>` alongside its maintainer attestations.
+2. **Checksum and attestation verification**: The registry refuses to overwrite an existing release key (`VersionExists`), checks maintainer attestations from each maintainer's independent PDS, and pairs with an append-only checksum log that records the first CID seen for each `<did>@<version>` alongside its maintainer attestations.

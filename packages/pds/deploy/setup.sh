@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-time Google Cloud setup for one environment of the package host
+# One-time Google Cloud setup for one environment of the App View
 # (env.sh). Idempotent: safe to re-run, and re-running is the fix when a
 # step failed part way. It never replaces a key once made: the rotation
 # key, or the key that encrypts accounts' signing keys.
@@ -55,7 +55,7 @@ if gcloud iam service-accounts describe "$SERVICE_ACCOUNT_EMAIL" --project "$PRO
   echo "    exists"
 else
   gcloud iam service-accounts create "$SERVICE_ACCOUNT" --project "$PROJECT" \
-    --display-name "Zena package host ($PDS_ENV)" --quiet
+    --display-name "Zena App View ($PDS_ENV)" --quiet
 fi
 MEMBER="serviceAccount:$SERVICE_ACCOUNT_EMAIL"
 
@@ -160,7 +160,7 @@ if gcloud dns managed-zones describe "$ZONE" --project "$PROJECT" > /dev/null 2>
   echo "    exists"
 else
   gcloud dns managed-zones create "$ZONE" --project "$PROJECT" --dns-name "${DOMAIN}." \
-    --description "Zena package host ($PDS_ENV): handle records" --quiet
+    --description "Zena App View ($PDS_ENV): handle records" --quiet
 fi
 NAMESERVERS="$(gcloud dns managed-zones describe "$ZONE" --project "$PROJECT" \
   --format 'value(nameServers.list())' | tr ';' ',')"

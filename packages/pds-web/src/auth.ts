@@ -2,9 +2,9 @@
  * Signing in, with atproto OAuth: a person signs in as their own atproto
  * account, at their own PDS, which never shows this site a password
  * (docs/design/package-manager.md, "The management interface"). The OAuth
- * session stays in the browser. The host's pages learn who is signed in
+ * session stays in the browser. The App View's pages learn who is signed in
  * from a web session: a service-auth token from the person's PDS, traded
- * for an HttpOnly cookie (`dev.zena-lang.host.createWebSession`), so the
+ * for an HttpOnly cookie (`dev.zena-lang.registry.createWebSession`), so the
  * server never holds anything that can write to their repository.
  *
  * `main.ts` loads this module only when someone signs in or out, or comes
@@ -13,7 +13,7 @@
  *
  * On 127.0.0.1, as in `npm run demo`, the client is atproto's loopback
  * client, which needs no metadata document; elsewhere its client_id is the
- * metadata document the host serves.
+ * metadata document the App View serves.
  */
 
 import {
@@ -25,15 +25,15 @@ import {
 /**
  * The scope the page asks for: service-auth tokens for `createWebSession`,
  * and no access to the person's repository or other apps' data. The
- * host's metadata document says the same (`pds:server`, `OAUTH_SCOPE`).
+ * App View's metadata document says the same (`pds:server`, `OAUTH_SCOPE`).
  */
-const SCOPE = 'atproto rpc:dev.zena-lang.host.createWebSession?aud=*';
+const SCOPE = 'atproto rpc:dev.zena-lang.registry.createWebSession?aud=*';
 
-/** Where the person's PDS sends them back; a page of the host's (`pds:web/pages/sign-in`). */
+/** Where the person's PDS sends them back; a page of the App View's (`pds:web/pages/sign-in`). */
 export const CALLBACK_PATH = '/oauth/callback';
 
-/** The host method that trades a service-auth token for a web session. */
-const CREATE_WEB_SESSION = 'dev.zena-lang.host.createWebSession';
+/** The registry method that trades a service-auth token for a web session. */
+const CREATE_WEB_SESSION = 'dev.zena-lang.registry.createWebSession';
 
 const isLoopback = () =>
   ['127.0.0.1', '[::1]', 'localhost'].includes(location.hostname);
@@ -43,7 +43,7 @@ let client: Promise<BrowserOAuthClient> | undefined;
 const getClient = () => (client ??= createClient());
 
 const createClient = async (): Promise<BrowserOAuthClient> => {
-  // The host resolves handles (com.atproto.identity.resolveHandle), so
+  // The App View resolves handles (com.atproto.identity.resolveHandle), so
   // nobody's handle goes to a third party.
   const handleResolver = location.origin;
   if (isLoopback()) {
@@ -108,7 +108,7 @@ export const signOut = async (did: string): Promise<void> => {
 
 /**
  * Trades a service-auth token from the person's PDS, addressed to the
- * host, for a web session cookie.
+ * App View, for a web session cookie.
  */
 const createWebSession = async (session: OAuthSession, serviceDid: string) => {
   const tokenResponse = await session.fetchHandler(
@@ -127,7 +127,7 @@ const createWebSession = async (session: OAuthSession, serviceDid: string) => {
   if (!answer.ok) {
     const error = await answer.json().catch(() => ({}));
     throw new Error(
-      error.message ?? `The host refused the sign-in (${answer.status}).`,
+      error.message ?? `The App View refused the sign-in (${answer.status}).`,
     );
   }
 };

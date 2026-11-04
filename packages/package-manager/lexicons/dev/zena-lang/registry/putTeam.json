@@ -1,0 +1,75 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.registry.putTeam",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Asks to create or replace one of an organization's teams, with the entries behind its commitments. The caller must be an admin or owner of the organization, or a maintainer of the team. The registry holds the record, outside the organization's repository, until the team's 'threshold' of maintainers, or the organization's 'adminThreshold' of admins and owners, have attested it, and 'dev.zena-lang.registry.completeChange' writes it; a new team needs the admins. A later call for the same team takes the place of one held.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["organization", "name", "team", "entries"],
+          "properties": {
+            "organization": {
+              "type": "string",
+              "format": "did",
+              "description": "The organization, whose handle is a scope on this registry."
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 63,
+              "description": "One DNS label, under the rules for a profile's 'name'."
+            },
+            "team": {
+              "type": "unknown",
+              "description": "A 'dev.zena-lang.org.team' record."
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "type": "ref",
+                "ref": "dev.zena-lang.org.defs#entry"
+              },
+              "description": "The entries behind the record's commitments, which the registry keeps private."
+            },
+            "swapRecord": {
+              "type": "string",
+              "format": "cid",
+              "description": "The CID the record must have now; the write fails with 'InvalidSwap' otherwise."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["uri", "cid", "state"],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "at-uri",
+              "description": "Where the new record will be written, which an attestation names."
+            },
+            "cid": {
+              "type": "string",
+              "format": "cid",
+              "description": "The new record's CID, which an attestation names."
+            },
+            "state": {
+              "type": "string",
+              "knownValues": ["pending"]
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidSwap",
+          "description": "The record's current CID is not 'swapRecord'."
+        }
+      ]
+    }
+  }
+}

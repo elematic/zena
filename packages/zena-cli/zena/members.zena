@@ -6,12 +6,12 @@
  *
  * Each change takes the same steps: read the record and its CID from the
  * account's repository, and the private entries behind its commitments
- * from the host (`getEntries`); make the new person's entry, with a new
- * salt, or leave out the one removed; call the host's method with the new
+ * from the registry (`getEntries`); make the new person's entry, with a new
+ * salt, or leave out the one removed; call the registry's method with the new
  * record, the entries, and the CID read, so that a change someone else
  * made since is refused rather than overwritten; attest the new record in
- * the caller's own repository; and ask the host to write it
- * (`completeChange`). The host holds it until the record before it allows
+ * the caller's own repository; and ask the registry to write it
+ * (`completeChange`). The registry holds it until the record before it allows
  * it: until enough of the owners, admins or team maintainers that record
  * names have attested it, which with thresholds of one is the caller.
  * Until then the command says what it waits for, and the others approve it
@@ -35,12 +35,12 @@ import { DiskFiles, readWorkspace } from 'package-manager:workspace';
 import { Options, repoRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import {
-  Host, PublishError, attest, findHost, hostClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+  Registry, PublishError, attest, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
 } from './publish.zena';
 import { REPO_GET_RECORD } from 'atproto:methods';
 import {
   COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_POLICY, PUT_TEAM
-} from 'package-manager:host-methods';
+} from 'package-manager:registry-methods';
 
 /** A record in an account's repository, as it is now. */
 export final class Held {
@@ -57,12 +57,12 @@ export function scopeAddCommand(args: ParsedArgs, options: Options): i32 {
     let (scope, person) = twoArguments(args, 'zena scope add <scope> <handle or DID> [--role member|admin|owner]');
     let role = roleOf(args, MEMBER, [MEMBER, ADMIN, OWNER]);
     let session = signedIn();
-    let host = findHost(args);
-    let org = scopeDid(host, scope);
+    let registry = findRegistry(args);
+    let org = scopeDid(registry, scope);
     let did = personDid(person);
     let held = required(current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
     let members = Members.fromValue(fromJson(held.value));
-    let entries = withoutPerson(allEntries(session, host, org, null, members.members, scope), did);
+    let entries = withoutPerson(allEntries(session, registry, org, null, members.members, scope), did);
     let added = newEntry(did, role);
     entries.push(added);
     let record = new Members(commitmentsOf(entries), members.ownerThreshold, members.adminThreshold);
@@ -71,7 +71,7 @@ export function scopeAddCommand(args: ParsedArgs, options: Options): i32 {
     input['members'] = toJson(record.toValue());
     input['entries'] = entriesJson([added]);
     input['swapRecord'] = held.cid;
-    if (write(session, host, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+    if (write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
       console.log(`Added ${person} to ${scope} as ${role}.`);
     }
     saveIfRefreshed(session);
@@ -83,12 +83,12 @@ export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
     let (scope, person) = twoArguments(args, 'zena scope remove <scope> <handle or DID>');
     let session = signedIn();
-    let host = findHost(args);
-    let org = scopeDid(host, scope);
+    let registry = findRegistry(args);
+    let org = scopeDid(registry, scope);
     let did = personDid(person);
     let held = required(current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
     let members = Members.fromValue(fromJson(held.value));
-    let before = allEntries(session, host, org, null, members.members, scope);
+    let before = allEntries(session, registry, org, null, members.members, scope);
     let entries = withoutPerson(before, did);
     if (entries.length == before.length) {
       throw new PublishError(`${person} is not a member of ${scope}`);
@@ -99,7 +99,7 @@ export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
     input['members'] = toJson(record.toValue());
     input['entries'] = new JsonArray();
     input['swapRecord'] = held.cid;
-    if (write(session, host, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+    if (write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
       console.log(`Removed ${person} from ${scope}.`);
     }
     saveIfRefreshed(session);
@@ -122,8 +122,8 @@ export function scopeSettingsCommand(args: ParsedArgs, options: Options): i32 {
     let owners = countOption(args, 'owner-threshold', 1);
     let admins = countOption(args, 'admin-threshold', 1);
     let session = signedIn();
-    let host = findHost(args);
-    let org = scopeDid(host, scope);
+    let registry = findRegistry(args);
+    let org = scopeDid(registry, scope);
     let held = required(current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
     let members = Members.fromValue(fromJson(held.value));
     if (owners < 0 && admins < 0) {
@@ -138,7 +138,7 @@ export function scopeSettingsCommand(args: ParsedArgs, options: Options): i32 {
     input['members'] = toJson(record.toValue());
     input['entries'] = new JsonArray();
     input['swapRecord'] = held.cid;
-    if (write(session, host, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+    if (write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
       console.log(scopeSettings(scope, record));
     }
     saveIfRefreshed(session);
@@ -163,8 +163,8 @@ export function scopePolicyCommand(args: ParsedArgs, options: Options): i32 {
     }
     let scope = args.rest[1];
     let session = signedIn();
-    let host = findHost(args);
-    let org = scopeDid(host, scope);
+    let registry = findRegistry(args);
+    let org = scopeDid(registry, scope);
     let held = current(org, POLICY_TYPE, 'self');
     let policy = if (held == null) new Policy() else Policy.fromValue(fromJson(held.value));
     let minimum = countOption(args, 'minimum-threshold', 1);
@@ -207,7 +207,7 @@ export function scopePolicyCommand(args: ParsedArgs, options: Options): i32 {
     if (held != null) {
       input['swapRecord'] = held.cid;
     }
-    if (write(session, host, PUT_POLICY, input, `${scope}'s policy`, `@${scope}`)) {
+    if (write(session, registry, PUT_POLICY, input, `${scope}'s policy`, `@${scope}`)) {
       console.log(describePolicy(scope, policy));
     }
     saveIfRefreshed(session);
@@ -260,10 +260,10 @@ export function scopeMembersCommand(args: ParsedArgs, options: Options): i32 {
       throw new PublishError('give the scope: zena scope members <scope>');
     }
     let session = signedIn();
-    let host = findHost(args);
-    let org = scopeDid(host, args.rest[1]);
+    let registry = findRegistry(args);
+    let org = scopeDid(registry, args.rest[1]);
     required(current(org, MEMBERS_TYPE, 'self'), `${args.rest[1]} has no members record`);
-    printEntries(visibleEntries(session, host, org, null));
+    printEntries(visibleEntries(session, registry, org, null));
     saveIfRefreshed(session);
   });
 }
@@ -282,14 +282,14 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
     let sub = args.rest[0];
     let (scope, name) = teamName(args.rest[1]);
     let session = signedIn();
-    let host = findHost(args);
-    let org = scopeDid(host, scope);
+    let registry = findRegistry(args);
+    let org = scopeDid(registry, scope);
     let held = current(org, TEAM_TYPE, name);
     if (sub == 'create') {
       if (held != null) {
         throw new PublishError(`${scope} already has the team ${name}`);
       }
-      if (putTeam(session, host, scope, org, name, new Team([]), [], null)) {
+      if (putTeam(session, registry, scope, org, name, new Team([]), [], null)) {
         console.log(`Created the team ${scope}/${name}. Add its members with zena team add ${scope}/${name} <person>.`);
       }
     } else {
@@ -303,11 +303,11 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
         input['organization'] = org;
         input['name'] = name;
         input['swapRecord'] = found.cid;
-        runFuture(hostClient(session, host, DELETE_TEAM)
+        runFuture(registryClient(session, registry, DELETE_TEAM)
           .procedure(DELETE_TEAM, input));
         console.log(`Deleted the team ${scope}/${name}.`);
       } else if (sub == 'members') {
-        printEntries(visibleEntries(session, host, org, name));
+        printEntries(visibleEntries(session, registry, org, name));
       } else if (sub == 'settings' && args.rest.length == 2) {
         // How many of the team's maintainers must approve a change to it.
         let threshold = countOption(args, 'threshold', 1);
@@ -315,14 +315,14 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
           console.log(teamSettings(scope, name, team));
         } else {
           let changed = new Team(team.members, threshold);
-          if (putTeam(session, host, scope, org, name, changed, [], found.cid)) {
+          if (putTeam(session, registry, scope, org, name, changed, [], found.cid)) {
             console.log(teamSettings(scope, name, changed));
           }
         }
       } else if ((sub == 'add' || sub == 'remove') && args.rest.length == 3) {
         let person = args.rest[2];
         let did = personDid(person);
-        let before = allEntries(session, host, org, name, team.members, `${scope}/${name}`);
+        let before = allEntries(session, registry, org, name, team.members, `${scope}/${name}`);
         let entries = withoutPerson(before, did);
         let fresh = new GrowableArray<MemberEntry>();
         if (sub == 'add') {
@@ -332,7 +332,7 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
         } else if (entries.length == before.length) {
           throw new PublishError(`${person} is not on the team ${scope}/${name}`);
         }
-        if (putTeam(session, host, scope, org, name, new Team(commitmentsOf(entries), team.threshold), fresh,
+        if (putTeam(session, registry, scope, org, name, new Team(commitmentsOf(entries), team.threshold), fresh,
             found.cid)) {
           console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${person} ${if (sub == 'add') 'to' else 'from'} ${scope}/${name}.`);
         }
@@ -349,7 +349,7 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
  * in the current directory or the one `--package` names. A person is added
  * by commitment, so the record does not name them; `--team <scope>/<team>`
  * adds or removes a team, and `--automation` marks an automation account
- * (`zena ci create`), which the host requires of one, as a publisher.
+ * (`zena ci create`), which the registry requires of one, as a publisher.
  */
 export function ownerCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
@@ -359,8 +359,8 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
     }
     let sub = args.rest[0];
     let session = signedIn();
-    let host = findHost(args);
-    let pkg = packageDid(host, args);
+    let registry = findRegistry(args);
+    let pkg = packageDid(registry, args);
     let held = current(pkg, MAINTAINERS_TYPE, 'self');
     if (held == null) {
       throw new PublishError(`${pkg} has no maintainers record`);
@@ -374,7 +374,7 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
       }
     }
     if (sub == 'list') {
-      let entries = visibleEntries(session, host, pkg, null);
+      let entries = visibleEntries(session, registry, pkg, null);
       for (let maintainer in record.maintainers) {
         console.log(`${describeMaintainer(maintainer, entries)}  ${maintainer.role}`);
       }
@@ -399,7 +399,7 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
       input['maintainers'] = toJson(changed.toValue());
       input['entries'] = new JsonArray();
       input['swapRecord'] = found.cid;
-      if (write(session, host, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAsOf(args, pkg))) {
+      if (write(session, registry, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAsOf(args, pkg))) {
         console.log(packageSettings(changed));
       }
       saveIfRefreshed(session);
@@ -408,7 +408,7 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
     if (sub != 'add' && sub != 'remove') {
       throw new PublishError(usage);
     }
-    let entries = allEntries(session, host, pkg, null, commitments, pkg);
+    let entries = allEntries(session, registry, pkg, null, commitments, pkg);
     // Who the change is about: a team, or a person by DID.
     var teamOrg: String | null = null;
     var teamLabel: String | null = null;
@@ -416,7 +416,7 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
     var who = '';
     if (let (true, given) = args.getOption('team')) {
       let (scope, name) = teamName(given);
-      teamOrg = scopeDid(host, scope);
+      teamOrg = scopeDid(registry, scope);
       teamLabel = name;
       who = `the team ${given}`;
     } else if (args.rest.length == 2) {
@@ -461,7 +461,7 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
     input['maintainers'] = toJson(changed.toValue());
     input['entries'] = entriesJson(fresh);
     input['swapRecord'] = found.cid;
-    if (write(session, host, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAsOf(args, pkg))) {
+    if (write(session, registry, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAsOf(args, pkg))) {
       console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.`);
     }
     saveIfRefreshed(session);
@@ -469,31 +469,31 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
 }
 
 /**
- * Asks the host for the change `method` makes with `input`, to `what`'s
- * record, attests the new record, and asks the host to write it
+ * Asks the registry for the change `method` makes with `input`, to `what`'s
+ * record, attests the new record, and asks the registry to write it
  * (`completeChange`). Returns whether it did.
  */
-function write(session: Session, host: Host, method: String, input: JsonObject, what: String, approveAs: String)
+function write(session: Session, registry: Registry, method: String, input: JsonObject, what: String, approveAs: String)
     : boolean {
-  let held = runFuture(hostClient(session, host, method).procedure(method, input)) as JsonObject;
+  let held = runFuture(registryClient(session, registry, method).procedure(method, input)) as JsonObject;
   let uri = held['uri'] as String;
   let cid = held['cid'] as String;
   attest(session, uri, Cid.parse(cid));
-  return completeChange(session, host, uri, cid, what, approveAs);
+  return completeChange(session, registry, uri, cid, what, approveAs);
 }
 
 /**
- * Asks the host to write the change to the record at `uri`, whose new
+ * Asks the registry to write the change to the record at `uri`, whose new
  * record's CID is `cid`, once the record before it allows it. Returns
  * whether it did; otherwise says what the change to `what` waits for, and
  * the command that approves it, `zena approve <approveAs>`.
  */
-export function completeChange(session: Session, host: Host, uri: String, cid: String, what: String,
+export function completeChange(session: Session, registry: Registry, uri: String, cid: String, what: String,
     approveAs: String): boolean {
   let input = new JsonObject();
   input['uri'] = uri;
   input['cid'] = cid;
-  let answer = runFuture(hostClient(session, host, COMPLETE_CHANGE).procedure(COMPLETE_CHANGE, input))
+  let answer = runFuture(registryClient(session, registry, COMPLETE_CHANGE).procedure(COMPLETE_CHANGE, input))
     as JsonObject;
   if ((answer['state'] as String) == 'written') {
     return true;
@@ -528,7 +528,7 @@ function teamSettings(scope: String, name: String, team: Team): String {
       }, or the admins of ${scope}.`;
 }
 
-function putTeam(session: Session, host: Host, scope: String, org: String, name: String, team: Team,
+function putTeam(session: Session, registry: Registry, scope: String, org: String, name: String, team: Team,
     fresh: Array<MemberEntry>, swap: String | null): boolean {
   let input = new JsonObject();
   input['organization'] = org;
@@ -538,7 +538,7 @@ function putTeam(session: Session, host: Host, scope: String, org: String, name:
   if (swap != null) {
     input['swapRecord'] = swap;
   }
-  return write(session, host, PUT_TEAM, input, `the team ${scope}/${name}`, `@${scope}`);
+  return write(session, registry, PUT_TEAM, input, `the team ${scope}/${name}`, `@${scope}`);
 }
 
 /** What a package's maintainers record asks of its releases and of changes to it. */
@@ -626,11 +626,11 @@ function teamName(text: String): (String, String) {
 }
 
 /** The organization of `scope` on `host`. */
-export function scopeDid(host: Host, scope: String): String {
-  let handle = `${scope}.${host.domain}`;
+export function scopeDid(registry: Registry, scope: String): String {
+  let handle = `${scope}.${registry.domain}`;
   let org = scopeOrganization(handle);
   if (org == null) {
-    throw new PublishError(`${host.origin} has no scope ${scope}`);
+    throw new PublishError(`${registry.origin} has no scope ${scope}`);
   }
   return org;
 }
@@ -649,24 +649,24 @@ function personDid(person: String): String {
 
 /**
  * The package `--package` names, by DID, handle or `@scope/name` on the
- * host, else the one in the current directory, by its manifest's DID.
+ * registry, else the one in the current directory, by its manifest's DID.
  */
-export function packageDid(host: Host, args: ParsedArgs): String {
+export function packageDid(registry: Registry, args: ParsedArgs): String {
   if (let (true, given) = args.getOption('package')) {
-    return namedPackage(host, given);
+    return namedPackage(registry, given);
   }
   return currentPackageDid();
 }
 
-/** The package `given` names, by DID, handle or `@scope/name` on the host. */
-export function namedPackage(host: Host, given: String): String {
+/** The package `given` names, by DID, handle or `@scope/name` on the registry. */
+export function namedPackage(registry: Registry, given: String): String {
   if (given.startsWith('did:')) {
     return given;
   }
   var handle = given;
   if (given.startsWith('@')) {
     let (scope, name) = teamName(given.sliceBytes(1, given.length));
-    handle = `${name}.${scope}.${host.domain}`;
+    handle = `${name}.${scope}.${registry.domain}`;
   }
   let did = scopeOrganization(handle);
   if (did == null) {
@@ -712,11 +712,11 @@ function required(held: Held | null, missing: String): Held {
 /**
  * Every entry behind `commitments`, the record of `what` as it is now.
  * Changing a record needs them all, which only those who may change it
- * see from the host.
+ * see from the registry.
  */
-function allEntries(session: Session, host: Host, account: String, team: String | null, commitments: Array<Cid>,
+function allEntries(session: Session, registry: Registry, account: String, team: String | null, commitments: Array<Cid>,
     what: String): GrowableArray<MemberEntry> {
-  let entries = visibleEntries(session, host, account, team);
+  let entries = visibleEntries(session, registry, account, team);
   if (entries.length < commitments.length) {
     throw new PublishError(
         `you can see ${entries.length} of the ${commitments.length} people in ${what}, so you cannot change it`);
@@ -724,15 +724,15 @@ function allEntries(session: Session, host: Host, account: String, team: String 
   return entries;
 }
 
-/** The entries behind the record's commitments that the caller may see, from the host. */
-export function visibleEntries(session: Session, host: Host, account: String, team: String | null)
+/** The entries behind the record's commitments that the caller may see, from the registry. */
+export function visibleEntries(session: Session, registry: Registry, account: String, team: String | null)
     : GrowableArray<MemberEntry> {
   let params: Array<(String, String)> = if (team != null) {
     [('account', account), ('team', team)]
   } else {
     [('account', account)]
   };
-  let answer = runFuture(hostClient(session, host, GET_ENTRIES)
+  let answer = runFuture(registryClient(session, registry, GET_ENTRIES)
     .query(GET_ENTRIES, params)) as JsonObject;
   let list = answer['entries'] as JsonArray;
   let entries = new GrowableArray<MemberEntry>();

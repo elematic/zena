@@ -37,14 +37,14 @@ Every Zena package has a `zena-package.json` manifest at its root. The manifest 
 | -------------- | ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
 | `name`         | `string`                     | Any package    | The package's name (a single lowercase DNS label), suggested as the default local name to dependents |
 | `did`          | `string`                     | Any package    | The package's AT Protocol DID, written by `zena publish` or `zena package create`                    |
-| `scope`        | `string`                     | Any package    | The scope on the package host where the package is created (e.g., `acme`)                            |
+| `scope`        | `string`                     | Any package    | The scope on the registry where the package is created (e.g., `acme`)                                |
 | `version`      | `string`                     | Any package    | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena publish`                        |
 | `description`  | `string`                     | Any package    | One-sentence summary of the package; required to publish                                             |
 | `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish            |
 | `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>:<library>`                                      |
 | `dependencies` | `Record<string, Dependency>` | Any package    | Packages imported by this package's libraries, keyed by local name                                   |
 | `workspace`    | `{packages: string[]}`       | Workspace root | Directories or `/*` globs of workspace member packages                                               |
-| `scopes`       | `Record<string, string>`     | Workspace root | Custom host domains for `@scope/name` lookups                                                        |
+| `scopes`       | `Record<string, string>`     | Workspace root | Custom handle domains for `@scope/name` lookups                                                      |
 
 All file and directory paths in `zena-package.json` are relative to the directory containing that manifest.
 
@@ -124,7 +124,7 @@ Synthesizes Zena interface declarations from a `.wit` file or directory for WebA
 
 ## Custom scope domains (`scopes`)
 
-By default, `zena add @scope/name` resolves `<name>.<scope>.pkg.zena-lang.dev` (or the host in `ZENA_PACKAGE_HOST`). If an organization hosts packages under its own domain, map the scope in the workspace root's `zena-package.json`:
+By default, `zena add @scope/name` resolves `<name>.<scope>.pkg.zena-lang.dev` (or the registry in `ZENA_REGISTRY`). If an organization hosts packages under its own domain, map the scope in the workspace root's `zena-package.json`:
 
 ```json
 {

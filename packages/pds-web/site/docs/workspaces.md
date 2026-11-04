@@ -53,7 +53,7 @@ Workspace packages depend on each other using `path` dependencies:
 }
 ```
 
-When you publish `packages/server` with `zena publish`, the CLI replaces `{"path": "../core"}` in the published release record with `core`'s `did` and `version` from `packages/core/zena-package.json`. Publish `packages/core` first so that it has a `did` and a published release on the host.
+When you publish `packages/server` with `zena publish`, the CLI replaces `{"path": "../core"}` in the published release record with `core`'s `did` and `version` from `packages/core/zena-package.json`. Publish `packages/core` first so that it has a `did` and a published release on the registry.
 
 ## Minimal version selection
 

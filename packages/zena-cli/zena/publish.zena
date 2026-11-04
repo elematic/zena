@@ -1,10 +1,10 @@
 /**
  * `zena publish` and `zena package create`: publishing the package the
- * command is run in to a package host (docs/design/package-manager.md,
+ * command is run in to a registry (docs/design/package-manager.md,
  * "Creating a package" and "Publishing a release").
  *
  * Both act as the signed-in maintainer (`zena login`): each call to the
- * host carries a service-auth token from the maintainer's own PDS. A
+ * registry carries a service-auth token from the maintainer's own PDS. A
  * package whose manifest has no `did` yet is created first, once `--yes`
  * says to, in the scope its manifest names, else its workspace root's,
  * else `--scope`. The scope must exist: `zena scope create` makes one
@@ -16,14 +16,14 @@
  * Publishing packs the files the manifest publishes (`package-manager:files`)
  * into a source archive, uploads it, writes the release for the manifest's
  * `version`, and writes the maintainer's attestation of the release to
- * their own repository. The release is checked first, before the host is
+ * their own repository. The release is checked first, before the registry is
  * asked anything, so a package whose release would be refused is never
  * created.
  *
- * The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's
+ * The registry is `--registry`, else `ZENA_REGISTRY`, else the Zena project's
  * PDS, `https://padstone.zena-lang.dev`, whose handles are under
  * `pkg.zena-lang.dev`; its service DID and handle domain come from
- * its `dev.zena-lang.host.describeHost`, and the DID must be the
+ * its `dev.zena-lang.registry.describeRegistry`, and the DID must be the
  * origin's own (`checkHostDid`) before any token is made for it.
  */
 
@@ -59,16 +59,16 @@ import { URL } from 'zena:url';
 import { configDir, currentSession, saveSession } from './login.zena';
 import { REPO_GET_RECORD, REPO_PUT_RECORD } from 'atproto:methods';
 import {
-  COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, DESCRIBE_HOST, PUBLISH, UPLOAD_ARTIFACT
-} from 'package-manager:host-methods';
+  COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, DESCRIBE_REGISTRY, PUBLISH, UPLOAD_ARTIFACT
+} from 'package-manager:registry-methods';
 
 let DEFAULT_HOST = 'https://padstone.zena-lang.dev';
 
 /** A DID no package has, for checking a release before its package exists. */
 let STAND_IN_DID = 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa';
 
-/** A package host, as its `describeHost` describes it. */
-export final class Host {
+/** A registry, as its `describeRegistry` describes it. */
+export final class Registry {
   origin: String;
   /** The DID tokens for it are addressed to. */
   did: String;
@@ -92,7 +92,7 @@ export function publishCommand(args: ParsedArgs, options: Options): i32 {
     var manifestText = target.text as String;
     if (target.manifest.did == null) {
       // Everything about the release is checked before anything is asked
-      // of the host, let alone the package created: with a stand-in for
+      // of the registry, let alone the package created: with a stand-in for
       // the DID it will have, written into the manifest as createPackage
       // writes the real one. Only the DID's value is left to check once
       // it exists.
@@ -100,16 +100,16 @@ export function publishCommand(args: ParsedArgs, options: Options): i32 {
       prepareRelease(target, readManifest(draft), STAND_IN_DID, draft);
     }
     let session = signedIn();
-    let host = findHost(args);
+    let registry = findRegistry(args);
     if (target.manifest.did == null) {
-      manifestText = createPackage(args, session, host, target);
+      manifestText = createPackage(args, session, registry, target);
     } else {
-      checkScope(args, host, target);
+      checkScope(args, registry, target);
     }
     let manifest = readManifest(manifestText);
     let scope = scopeOf(args, target);
     let approveAs = if (scope != null) `@${scope}/${manifest.name as String}` else manifest.did as String;
-    publish(session, host, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText),
+    publish(session, registry, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText),
         approveAs);
     saveIfRefreshed(session);
   });
@@ -123,14 +123,14 @@ export function packageCreateCommand(args: ParsedArgs, options: Options): i32 {
     }
     refuseProblems(checkMetadata(target.manifest, target.manifestPath()));
     let session = signedIn();
-    createPackage(args, session, findHost(args), target);
+    createPackage(args, session, findRegistry(args), target);
     saveIfRefreshed(session);
   });
 }
 
 /**
  * Runs `body`, printing the message alone for a `PublishError`, or for a
- * call the host or a PDS refused (`XrpcError`, which names the error).
+ * call the registry or a PDS refused (`XrpcError`, which names the error).
  */
 export function runCommand(body: () => void): i32 {
   try {
@@ -159,7 +159,7 @@ function currentPackage(): WorkspacePackage {
 /**
  * Throws for a WIT dependency, which a published package cannot have: its
  * path is on this disk (docs/design/package-manifest.md). Checked before
- * anything is created on the host.
+ * anything is created on the registry.
  */
 function refuseWitDependencies(manifest: Manifest): void {
   manifest.wits.forEach((name, wit) => {
@@ -171,7 +171,7 @@ function refuseWitDependencies(manifest: Manifest): void {
 /**
  * Throws unless each dependency is a release that is published and not
  * retracted: a release that names one that is not could never be resolved.
- * Checked before anything is created on the host.
+ * Checked before anything is created on the registry.
  */
 function requirePublished(dependencies: FixedArray<Dependency>): void {
   refuseProblems(runFuture(checkDependencies(dependencies, packageResolver())));
@@ -203,29 +203,29 @@ export function saveIfRefreshed(session: Session): void {
   }
 }
 
-export function findHost(args: ParsedArgs): Host {
-  var origin = getEnv('ZENA_PACKAGE_HOST') ?? DEFAULT_HOST;
-  if (let (true, given) = args.getOption('host')) {
+export function findRegistry(args: ParsedArgs): Registry {
+  var origin = getEnv('ZENA_REGISTRY') ?? DEFAULT_HOST;
+  if (let (true, given) = args.getOption('registry')) {
     origin = given;
   }
-  let described = runFuture(new XrpcClient(origin).query(DESCRIBE_HOST)) as JsonObject;
+  let described = runFuture(new XrpcClient(origin).query(DESCRIBE_REGISTRY)) as JsonObject;
   let did = described['did'] as String;
-  checkHostDid(origin, did);
-  return new Host(origin, did, described['domain'] as String);
+  checkRegistryDid(origin, did);
+  return new Registry(origin, did, described['domain'] as String);
 }
 
 /**
  * Throws unless `did`, the DID the server at `origin` says it has, is the
- * origin's own: a `did:web` by its host, which only the origin's domain can
+ * origin's own: a `did:web` by its registry, which only the origin's domain can
  * hold, and a `did:plc` by the PDS endpoint its document names. Tokens for
- * the host are addressed to its DID, so a server at any other origin that
- * answered with the real host's DID would be given tokens it could replay
- * to the real host, as whoever asked for them.
+ * the registry are addressed to its DID, so a server at any other origin that
+ * answered with the real registry's DID would be given tokens it could replay
+ * to the real registry, as whoever asked for them.
  */
-function checkHostDid(origin: String, did: String): void {
+function checkRegistryDid(origin: String, did: String): void {
   let url = URL.parse(origin);
   if (url == null) {
-    throw new PublishError(`the package host ${origin} is not a URL`);
+    throw new PublishError(`the registry ${origin} is not a URL`);
   }
   let parsed = url;
   let authority = if (parsed.port == '') parsed.hostname else `${parsed.hostname}:${parsed.port}`;
@@ -233,21 +233,21 @@ function checkHostDid(origin: String, did: String): void {
     let named = try {
       didWebHost(did)
     } catch (e) {
-      throw new PublishError(`the package host ${origin} says it is ${did}: ${e.message}`);
+      throw new PublishError(`the registry ${origin} says it is ${did}: ${e.message}`);
     };
     if (named.asciiLowerCase() != authority.asciiLowerCase()) {
-      throw new PublishError(`the package host ${origin} says it is ${did}, which is the host at ${named}, not ${authority}`);
+      throw new PublishError(`the registry ${origin} says it is ${did}, which is the registry at ${named}, not ${authority}`);
     }
     return;
   }
   if (did.startsWith('did:plc:')) {
     let endpoint = runFuture(packageResolver().resolveDid(did)).pds;
     if (endpoint == null || trimSlash(endpoint) != trimSlash(`${parsed.protocol}//${authority}`)) {
-      throw new PublishError(`the package host ${origin} says it is ${did}, whose PDS is ${endpoint ?? 'none'}`);
+      throw new PublishError(`the registry ${origin} says it is ${did}, whose PDS is ${endpoint ?? 'none'}`);
     }
     return;
   }
-  throw new PublishError(`the package host ${origin} says it is ${did}, which is neither a did:web nor a did:plc`);
+  throw new PublishError(`the registry ${origin} says it is ${did}, which is neither a did:web nor a did:plc`);
 }
 
 /** `url` without a trailing `/`. */
@@ -255,10 +255,10 @@ function trimSlash(url: String): String {
   return if (url.endsWith('/')) url.sliceBytes(0, url.length - 1) else url;
 }
 
-/** A client for `host` that calls `method` as the signed-in maintainer. */
-export function hostClient(session: Session, host: Host, method: String): XrpcClient {
-  let token = runFuture(getServiceAuth(session, host.did, method));
-  let client = new XrpcClient(host.origin);
+/** A client for `registry` that calls `method` as the signed-in maintainer. */
+export function registryClient(session: Session, registry: Registry, method: String): XrpcClient {
+  let token = runFuture(getServiceAuth(session, registry.did, method));
+  let client = new XrpcClient(registry.origin);
   client.authorization = `Bearer ${token}`;
   return client;
 }
@@ -292,13 +292,13 @@ function rootScope(): String | null {
  * with no scope, such as one whose handle is on its maintainers' own
  * domain, is not checked.
  */
-function checkScope(args: ParsedArgs, host: Host, target: WorkspacePackage): void {
+function checkScope(args: ParsedArgs, registry: Registry, target: WorkspacePackage): void {
   let scope = scopeOf(args, target);
   if (scope == null) {
     return;
   }
   let did = target.manifest.did as String;
-  let expected = `${target.manifest.name as String}.${scope}.${host.domain}`;
+  let expected = `${target.manifest.name as String}.${scope}.${registry.domain}`;
   let handle = runFuture(packageResolver().resolveDid(did)).handle;
   if (handle != expected) {
     throw new PublishError(
@@ -307,11 +307,11 @@ function checkScope(args: ParsedArgs, host: Host, target: WorkspacePackage): voi
 }
 
 /**
- * Creates the package `target` is on `host`, in its scope (`scopeOf`),
+ * Creates the package `target` is on `registry`, in its scope (`scopeOf`),
  * which must exist, and writes its DID into the manifest, with the scope
  * when only `--scope` named it. Returns the manifest's new text.
  */
-function createPackage(args: ParsedArgs, session: Session, host: Host, target: WorkspacePackage): String {
+function createPackage(args: ParsedArgs, session: Session, registry: Registry, target: WorkspacePackage): String {
   let name = target.manifest.name as String;
   let found = scopeOf(args, target);
   if (found == null) {
@@ -319,14 +319,14 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
         `${name} has no DID yet; name the scope to create it in, with "scope" in ${target.manifestPath()} or --scope <name>`);
   }
   let scope = found;
-  let org = scopeOrganization(`${scope}.${host.domain}`);
+  let org = scopeOrganization(`${scope}.${registry.domain}`);
   if (org == null) {
-    throw new PublishError(`${host.origin} has no scope ${scope}; create it with zena scope create ${scope}`);
+    throw new PublishError(`${registry.origin} has no scope ${scope}; create it with zena scope create ${scope}`);
   }
-  let handle = `${name}.${scope}.${host.domain}`;
+  let handle = `${name}.${scope}.${registry.domain}`;
   if (!args.getFlag('yes')) {
     throw new PublishError(
-        `${name} has no DID yet. Run again with --yes to create the package ${handle} on ${host.origin}, maintained by ${session.handle}.`);
+        `${name} has no DID yet. Run again with --yes to create the package ${handle} on ${registry.origin}, maintained by ${session.handle}.`);
   }
   let recoveryKeys = recoveryDidKeys();
 
@@ -336,7 +336,7 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
   // The profile says what the manifest says, for the index to show.
   input['profile'] = toJson(new Profile(name, target.manifest.description, target.manifest.license).toValue());
   input['maintainers'] = toJson(initialMaintainers(session.did, org).toValue());
-  let created = runFuture(hostClient(session, host, CREATE_PACKAGE)
+  let created = runFuture(registryClient(session, registry, CREATE_PACKAGE)
     .procedure(CREATE_PACKAGE, input)) as JsonObject;
   let did = created['did'] as String;
   let text = writeDid(target.text as String, did,
@@ -386,14 +386,14 @@ export function scopePolicy(org: String): Policy {
 }
 
 /**
- * Creates the scope `scope` on `host`, owned by the signed-in maintainer,
+ * Creates the scope `scope` on `registry`, owned by the signed-in maintainer,
  * and attests its members record. Returns the organization's DID.
  */
-export function createOrganization(session: Session, host: Host, scope: String): String {
+export function createOrganization(session: Session, registry: Registry, scope: String): String {
   let input = new JsonObject();
   input['name'] = scope;
   input['recoveryKeys'] = strings(recoveryDidKeys());
-  let created = runFuture(hostClient(session, host, CREATE_ORGANIZATION)
+  let created = runFuture(registryClient(session, registry, CREATE_ORGANIZATION)
     .procedure(CREATE_ORGANIZATION, input)) as JsonObject;
   console.log(`Created the scope ${created['handle'] as String} (${created['did'] as String}), with you as its owner.`);
   let members = created['members'] as JsonObject;
@@ -403,7 +403,7 @@ export function createOrganization(session: Session, host: Host, scope: String):
 
 /**
  * The organization the handle of a scope names, or null when the handle
- * does not resolve, as for a scope that does not exist yet. The host
+ * does not resolve, as for a scope that does not exist yet. The registry
  * refuses to create a scope that does exist (`NameTaken`), so a lookup
  * that fails for another reason does no harm.
  */
@@ -416,9 +416,9 @@ export function scopeOrganization(handle: String): String | null {
 }
 
 /**
- * The recovery keys to rank above the host's, as `did:key`s: the
+ * The recovery keys to rank above the registry's, as `did:key`s: the
  * maintainer's, when they keep one in the configuration directory, and
- * none otherwise. None is never made here: the host holds the accounts it
+ * none otherwise. None is never made here: the registry holds the accounts it
  * creates, and a recovery key is for owners who choose to keep one
  * (package-manager.md, "Keys").
  */
@@ -440,7 +440,7 @@ final class PreparedRelease {
 
 /**
  * `manifest`'s version of `target`, the package `did`, packed and checked
- * as the host and every fetch will check it: its source archive, with
+ * as the registry and every fetch will check it: its source archive, with
  * `manifestText` as its `zena-package.json`, and its release record.
  * Throws the problems found.
  */
@@ -452,8 +452,8 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
   let files = sourceFiles(target.dir, manifest);
   files['zena-package.json'] = manifestText.toBytes();
   let archive = packSource(files);
-  // The blob the host will store, named by its contents, so the release is
-  // checked as the host and every fetch will check it before anything is
+  // The blob the registry will store, named by its contents, so the release is
+  // checked as the registry and every fetch will check it before anything is
   // uploaded.
   let blob = new BlobRef(Cid.forBlob(archive), SOURCE_MIME_TYPE, archive.length as i64);
   let release = new Release(manifest.version as Version, formatTimestamp(nowNanos()),
@@ -467,7 +467,7 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
  * attests it, and completes it, unless it waits for other maintainers to
  * approve it, as `zena approve <approveAs>@<version>`.
  */
-function publish(session: Session, host: Host, target: WorkspacePackage, manifest: Manifest,
+function publish(session: Session, registry: Registry, target: WorkspacePackage, manifest: Manifest,
     prepared: PreparedRelease, approveAs: String): void {
   let name = manifest.name as String;
   let did = manifest.did as String;
@@ -476,33 +476,33 @@ function publish(session: Session, host: Host, target: WorkspacePackage, manifes
   let release = prepared.release;
   let blob = release.artifact(SOURCE) as Artifact;
 
-  let uploaded = runFuture(hostClient(session, host, UPLOAD_ARTIFACT)
+  let uploaded = runFuture(registryClient(session, registry, UPLOAD_ARTIFACT)
     .upload(UPLOAD_ARTIFACT, SOURCE_MIME_TYPE, archive, [('package', did)]))
     as JsonObject;
   if (!BlobRef.fromValue(fromJson(uploaded['blob'])).cid.equals(blob.cid)) {
-    throw new PublishError('the host stored the archive under another CID');
+    throw new PublishError('the registry stored the archive under another CID');
   }
   let input = new JsonObject();
   input['package'] = did;
   input['release'] = toJson(release.toValue());
-  let published = runFuture(hostClient(session, host, PUBLISH)
+  let published = runFuture(registryClient(session, registry, PUBLISH)
     .procedure(PUBLISH, input)) as JsonObject;
   attest(session, published['uri'] as String, Cid.parse(published['cid'] as String));
-  completeRelease(session, host, did, version.toString(), `${name} ${version.toString()}`, approveAs);
+  completeRelease(session, registry, did, version.toString(), `${name} ${version.toString()}`, approveAs);
 }
 
 /**
- * Asks the host to write the release of `pkg` at `version`, which it holds
+ * Asks the registry to write the release of `pkg` at `version`, which it holds
  * until its maintainers' attestations are enough, and says whether it did
  * or what the release waits for. `label` names the release, and
  * `approveAs` the package, for `zena approve`.
  */
-export function completeRelease(session: Session, host: Host, pkg: String, version: String, label: String,
+export function completeRelease(session: Session, registry: Registry, pkg: String, version: String, label: String,
     approveAs: String): void {
   let input = new JsonObject();
   input['package'] = pkg;
   input['version'] = version;
-  let answer = runFuture(hostClient(session, host, COMPLETE_RELEASE)
+  let answer = runFuture(registryClient(session, registry, COMPLETE_RELEASE)
     .procedure(COMPLETE_RELEASE, input)) as JsonObject;
   if ((answer['state'] as String) == 'published') {
     console.log(`Published ${label}: ${answer['uri'] as String}`);
@@ -524,8 +524,8 @@ export function approvals(answer: JsonObject): String {
   let needed = if (humans == 0) '' else if (humans == 1) ', one of them a person' else `, ${humans} of them people`;
   let phrase = `approved by ${approved} of the ${threshold} maintainers it needs${needed}`;
   if (approved >= threshold && people >= humans) {
-    // Enough, but for automation the host holds, which counts only with a person.
-    return `${phrase}; an automation account on the host counts only together with a person`;
+    // Enough, but for automation the registry holds, which counts only with a person.
+    return `${phrase}; an automation account on the registry counts only together with a person`;
   }
   return phrase;
 }

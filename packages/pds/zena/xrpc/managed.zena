@@ -1,9 +1,9 @@
 /**
- * The `com.atproto` methods a package host calls to create a managed
+ * The `com.atproto` methods an App View calls to create a managed
  * account (`pds:managed`): `com.atproto.server.reserveSigningKey`, for the
- * signing key the host names in the DID it mints, and then
- * `com.atproto.server.createAccount`, with that DID. The host calls both
- * with service-auth tokens of its own. The account's writes are the
+ * signing key the App View names in the DID it mints, and then
+ * `com.atproto.server.createAccount`, with that DID. The App View calls
+ * both with service-auth tokens of its own. The account's writes are the
  * `com.atproto.repo` routes (`xrpc/repo.zena`).
  *
  * A managed account has no password and no sessions, so `createAccount`
@@ -22,19 +22,19 @@ import {Pds} from '../pds.zena';
 import {SessionError} from '../sessions.zena';
 import {fail, jsonBody, nowMicros, nowSeconds, sessionCall} from './common.zena';
 
-/** Adds the routes that create the managed accounts of the hosts `managed` trusts. */
+/** Adds the routes that create the managed accounts of the App Views `managed` trusts. */
 export function managedRoutes(router: Router, pds: Pds, managed: ManagedAccounts): void {
   // Account migration also calls this method, with the `did` of the
   // account to move here in its input; a managed account's DID does not
-  // exist yet, so this PDS reserves the key for the host, not for a DID.
+  // exist yet, so this PDS reserves the key for the App View, not for a DID.
   router.post(xrpcPath(SERVER_RESERVE_SIGNING_KEY), async (req, res, next, params) => {
     await sessionCall(res, async (): Future<JsonObject | null> => {
       let authorization = req.getHeader('authorization');
       if ((await jsonBody(req, res)) == null) {
         return null;
       }
-      let host = await managed.reserver(authorization, nowSeconds());
-      let key = await pds.reserveSigningKey(host.did, nowSeconds());
+      let appView = await managed.reserver(authorization, nowSeconds());
+      let key = await pds.reserveSigningKey(appView.did, nowSeconds());
       let answer = new JsonObject();
       answer['signingKey'] = formatDidKey(key);
       return answer;
@@ -51,7 +51,7 @@ export function managedRoutes(router: Router, pds: Pds, managed: ManagedAccounts
       let did = input['did'];
       let handle = input['handle'];
       if (!(did is String) || !isValidDid(did)) {
-        fail(res, 400, 'InvalidRequest', 'this PDS creates accounts only for the package hosts it trusts, with a did');
+        fail(res, 400, 'InvalidRequest', 'this PDS creates accounts only for the App Views it trusts, with a did');
         return null;
       }
       if (!(handle is String) || !isValidHandle(handle)) {
@@ -66,11 +66,11 @@ export function managedRoutes(router: Router, pds: Pds, managed: ManagedAccounts
       if ((await pds.storage.accountByHandle(name)) != null) {
         throw new SessionError(400, 'HandleNotAvailable', `${name} is taken`);
       }
-      let account = await pds.createManagedAccount(did, name, admission.signingKey, admission.host.did, nowMicros(),
+      let account = await pds.createManagedAccount(did, name, admission.signingKey, admission.appView.did, nowMicros(),
           nowSeconds());
       if (account == null) {
         throw new SessionError(400, 'InvalidRequest',
-            `${did}'s DID document names ${admission.signingKey}, which is not a key ${admission.host.did} reserved here`);
+            `${did}'s DID document names ${admission.signingKey}, which is not a key ${admission.appView.did} reserved here`);
       }
       let answer = new JsonObject();
       answer['did'] = account.did;

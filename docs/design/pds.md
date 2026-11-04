@@ -25,7 +25,7 @@ Beyond it:
   that interface into a WIT world.
 - **Hosting Zena packages.** Zena's package manager publishes each package
   as an atproto account ([package-manager.md](package-manager.md)). This
-  PDS, with the `dev.zena-lang.host.*` extension, is the Zena project's
+  PDS, with the `dev.zena-lang.registry.*` extension, is the Zena project's
   App View: it creates package accounts on request, lets their
   maintainers publish to them through service auth, confines them to
   package records, and refuses changes to release records. Extensions are
@@ -203,7 +203,7 @@ grows. Milestones 1 to 4 are done.
    account from the request from the start.
 6. **The App View.** Package and organization accounts created on request,
    each with a `did:plc` whose genesis operation the App View signs; the
-   `dev.zena-lang.host.*` methods, checked with service auth
+   `dev.zena-lang.registry.*` methods, checked with service auth
    (`atproto:service-auth`); package accounts confined to
    `dev.zena-lang.*` records; and the limits on accounts and storage. The
    `zena` command's publishing tests run against it, in memory.
@@ -250,7 +250,7 @@ whichever is newer.
 
 ## Staging
 
-A staging host runs the same image as the real one, with nothing it makes
+A staging App View runs the same image as the real one, with nothing it makes
 reaching the public PLC directory. It has names of its own: the site and
 the handles at `pkg-staging.zena-lang.dev`, not
 `staging.pkg.zena-lang.dev`, which a scope named `staging` would own, and
@@ -265,19 +265,19 @@ and logs. Every other
 DID it reads from the public directory, so maintainers sign in with
 their real accounts, and the App View checks their service-auth tokens with
 their real keys. It refuses operations for DIDs the public directory
-has. `zena` uses staging with `ZENA_PACKAGE_HOST` and
-`ZENA_PLC_DIRECTORY` pointed at the staging host and its `/plc`.
+has. `zena` uses staging with `ZENA_REGISTRY` and
+`ZENA_PLC_DIRECTORY` pointed at the staging App View and its `/plc`.
 
 The directory takes operations only in order. The specification also
 lets a higher-ranked rotation key replace operations from the last 72
-hours, which a staging host does not need.
+hours, which a staging App View does not need.
 
 ## Tests
 
 - **Unit tests** are `packages/pds/zena/test/*_test.zena`, and use the
   interop vectors and vlpds vectors as known answers.
 - **Storage**: `zena/test/storage-conformance.zena` holds the tests every
-  `Storage` and `HostStore` passes. `npm test` runs them in memory, and
+  `Storage` and `AppViewStore` passes. `npm test` runs them in memory, and
   `npm run test:emulator -w @zena-lang/pds` against the Firestore
   emulator, which the root `emulators:start` service runs. There is no
   emulator for Cloud Storage's gRPC API, so that run keeps blob bytes in

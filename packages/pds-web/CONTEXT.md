@@ -1,7 +1,7 @@
 # The PDS's web assets (For AI Agents)
 
 `packages/pds-web` builds the stylesheet, script, and static documentation
-(`/docs/`) of the package host's pages. The dynamic pages are rendered on
+(`/docs/`) of the App View's pages. The dynamic pages are rendered on
 the server, in Zena, in `packages/pds/zena/web/`; the static documentation
 pages are rendered by Eleventy from `site/docs/` into `out/docs/` and
 served at `/docs/` by `pds:service`. Read this package's README first.
@@ -17,11 +17,11 @@ served at `/docs/` by `pds:service`. Read this package's README first.
   `String`, an `html` result, `unsafeHTML`, null, or an iterable of those:
   format numbers yourself, and use `each` and `when`. An array of `html`
   results must be typed `Array<TemplateValue>`: arrays are invariant.
-- Pages read the host in-process (`PackageHost`), never through its XRPC
-  routes. Data a page needs that the host does not give yet is a method on
-  `PackageHost`, tested in `host_test.zena`, which also renders the pages.
+- Pages read the App View in-process (`AppView`), never through its XRPC
+  routes. Data a page needs that the App View does not give yet is a method on
+  `AppView`, tested in `app-view_test.zena`, which also renders the pages.
 - Who is signed in is `PageContext.who` (`pds:web/session`), from a cookie
-  the host sets in `createWebSession`; pages never see OAuth. The browser
+  the App View sets in `createWebSession`; pages never see OAuth. The browser
   half is `src/auth.ts`, which `src/main.ts` imports dynamically, so the
   OAuth library loads only to sign in, sign out or renew. The OAuth
   library's README does not match its types in places; read
@@ -29,10 +29,10 @@ served at `/docs/` by `pds:service`. Read this package's README first.
   a real atproto account, so no test covers the OAuth half: try it in the
   demo (README, "Signing in").
 - What a page shows of private members goes through
-  `PackageHost.getEntries` as the person signed in (`visibleEntries` in
-  `pds:web/partials/members`), never around it, so the host's rules decide. The
-  host's admins (`PDS_ADMIN_DIDS`, `PageContext.isAdmin`) are ordinary
-  signed-in accounts the host answers more for.
+  `AppView.getEntries` as the person signed in (`visibleEntries` in
+  `pds:web/partials/members`), never around it, so the App View's rules decide. The
+  App View's admins (`PDS_ADMIN_DIDS`, `PageContext.isAdmin`) are ordinary
+  signed-in accounts the App View answers more for.
 - Show a person with `personLink` or `avatar` (`pds:web/partials/person`), from the
   `Person`s `PageContext.people` reads (`pds:web/people`); read the DIDs a
   page names together, with `People.each`. Never put a URL from someone's
@@ -40,7 +40,7 @@ served at `/docs/` by `pds:service`. Read this package's README first.
   `/people/<did>/avatar`. A link someone chose, such as a package's
   homepage, goes through `externalLink` (`pds:web/partials/common`), which
   renders only `http:` and `https:` URLs: escaping keeps a value in its
-  attribute, but a `javascript:` URL would still run on the host's origin.
+  attribute, but a `javascript:` URL would still run on the App View's origin.
 - Prefer plain links and GET forms to script. Use a Radica element only for
   what must happen in the browser, and import it in `src/main.ts`; its
   looks come with it. Server-rendered markup is styled in `src/app.css`,

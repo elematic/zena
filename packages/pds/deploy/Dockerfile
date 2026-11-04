@@ -1,4 +1,4 @@
-# The package host's image: the server, pds.wasm, built from
+# The App View's image: the server, pds.wasm, built from
 # zena/main.zena; the zena-run host binary, which runs it; and the web app
 # (packages/pds-web), which the server serves from /web.
 #

@@ -1,5 +1,5 @@
 /**
- * What every `Storage` and `HostStore` must do, as tests that run against
+ * What every `Storage` and `AppViewStore` must do, as tests that run against
  * any of them: `storage_test.zena` runs them in memory, and
  * `emulator/firestore_test.zena` against the Firestore emulator.
  */
@@ -14,7 +14,7 @@ import {MapValue, StringValue, newMap} from 'atproto:data';
 import {KeyType} from 'atproto:didkey';
 import {decodeCommit} from 'atproto:repo';
 import {MemberEntry, OWNER} from 'package-manager:records';
-import {HostAccount, HostStore, PackageSummary, PendingChange, PendingRelease} from 'pds:host';
+import {AppViewAccount, AppViewStore, PackageSummary, PendingChange, PendingRelease} from 'pds:app-view';
 import {PlcLog} from 'pds:plc-directory';
 import {AppPassword, CredentialStore, RefreshSession} from 'pds:sessions';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
@@ -134,7 +134,7 @@ export function storageConformance(make: () => Storage): void {
     runFuture(storage.putAccount(new Account('did:plc:nohandlenohandlenohandle', null, key())));
     isNull((runFuture(storage.getAccount('did:plc:nohandlenohandlenohandle')) as Account).handle);
 
-    // A managed account keeps the host that manages it.
+    // A managed account keeps the App View that manages it.
     let managed = new Account('did:plc:managedmanagedmanagedman', 'router.acme.test', key(), AccountKind.Package);
     managed.manager = 'did:web:pkg.test';
     runFuture(storage.putAccount(managed));
@@ -254,8 +254,8 @@ export function storageConformance(make: () => Storage): void {
   });
 }
 
-/** Registers the host store tests, each on a new store from `make`. */
-export function hostStoreConformance(make: () => HostStore): void {
+/** Registers the App View store tests, each on a new store from `make`. */
+export function appViewStoreConformance(make: () => AppViewStore): void {
   test('gives each scope and name to one account', (ctx) => {
     let store = make();
     isNull(runFuture(store.scopeOwner('acme')));
@@ -280,18 +280,18 @@ export function hostStoreConformance(make: () => HostStore): void {
     isNull(runFuture(store.nameInScope('acme', 'router')));
   });
 
-  test('keeps the accounts the host holds, with their kinds, scopes and names', (ctx) => {
+  test('keeps the accounts the App View holds, with their kinds, scopes and names', (ctx) => {
     let store = make();
     isNull(runFuture(store.account(ALICE)));
     equal(runFuture(store.accounts()).length, 0);
-    runFuture(store.putAccount(new HostAccount(ALICE, 'acme.pkg.test', AccountKind.Organization, 'acme', 'acme')));
-    runFuture(store.putAccount(new HostAccount(BOB, 'ci.acme.pkg.test', AccountKind.Automation, 'acme', 'ci')));
-    let org = runFuture(store.account(ALICE)) as HostAccount;
+    runFuture(store.putAccount(new AppViewAccount(ALICE, 'acme.pkg.test', AccountKind.Organization, 'acme', 'acme')));
+    runFuture(store.putAccount(new AppViewAccount(BOB, 'ci.acme.pkg.test', AccountKind.Automation, 'acme', 'ci')));
+    let org = runFuture(store.account(ALICE)) as AppViewAccount;
     equal(org.handle, 'acme.pkg.test');
     equal(org.kind, AccountKind.Organization);
     equal(org.scope, 'acme');
     equal(org.name, 'acme');
-    let bot = runFuture(store.account(BOB)) as HostAccount;
+    let bot = runFuture(store.account(BOB)) as AppViewAccount;
     equal(bot.kind, AccountKind.Automation);
     equal(bot.name, 'ci');
     let all = runFuture(store.accounts());

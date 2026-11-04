@@ -12,10 +12,10 @@
 `packages/pds` is an atproto PDS written in Zena (see [pds.md](./pds.md)).
 It is also the Zena App View: it creates package and organization
 accounts, takes scope and package names, checks the callers of its
-`dev.zena-lang.host.*` methods, writes handle records to DNS, and checks
+`dev.zena-lang.registry.*` methods, writes handle records to DNS, and checks
 releases before recording them
 ([package-manager.md](./package-manager.md), "Hosting, keys and
-maintainers"). All of that is compiled into the server today. `pds:host`
+maintainers"). All of that is compiled into the server today. `pds:app-view`
 holds most of it, and `pds:server`, `pds:storage`, `pds:repository` and
 `pds:service` reach into it.
 
@@ -56,20 +56,20 @@ use.
 
 | What                                                                                                                                     | Where today                                                                               | Specific to packages                                                                          |
 | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| The `dev.zena-lang.host.*` methods: `createOrganization`, `createPackage`, `uploadArtifact`, `publish`                                   | `host.zena` (`PackageHost`), routes in `server.zena` (`hostRoutes`)                       | yes                                                                                           |
+| The `dev.zena-lang.registry.*` methods: `createOrganization`, `createPackage`, `uploadArtifact`, `publish`                               | `app-view.zena` (`AppView`), routes in `server.zena` (`registryRoutes`)                   | yes                                                                                           |
 | `com.atproto.server.describeServer` with the App View's DID and handle domain                                                            | `server.zena`                                                                             | no: the core PDS answers it, with values from configuration                                   |
 | The App View's own DID document at `/.well-known/did.json`                                                                               | `server.zena`                                                                             | no                                                                                            |
-| Checking service-auth tokens addressed to the App View, with replay protection                                                           | `PackageHost.authenticate`, using `atproto:service-auth`                                  | no: any extension with methods of its own needs it                                            |
+| Checking service-auth tokens addressed to the App View, with replay protection                                                           | `AppView.authenticate`, using `atproto:service-auth`                                      | no: any extension with methods of its own needs it                                            |
 | Account kinds (package, organization, automation), each allowed only some collections                                                    | `AccountKind` and `Account.allows` in `storage.zena`, checked in `Repository.applyWrites` | the kinds are; refusing writes by a policy is not                                             |
-| Creating an account with a new `did:plc`, whose genesis operation ranks the maintainers' recovery keys above the App View's rotation key | `PackageHost.#prepareAccount`, `#createAccount`                                           | partly: creating accounts with `did:plc`s is core; the recovery-key ranking is the App View's |
-| Scope and package names, claimed once each                                                                                               | `HostStore.claimScope`, `claimName` and their Firestore implementation                    | yes                                                                                           |
-| Private membership entries behind the commitments in members and maintainers records, and the role checks that read them                 | `HostStore.entries`, `PackageHost.#hasRole`, `#maintainedPackage`                         | yes                                                                                           |
-| Checking a release against its source archive and dependencies before recording it                                                       | `package-manager:validate`, called from `PackageHost.publish` (#574)                      | yes                                                                                           |
-| Writing each handle's `_atproto` TXT record to a DNS zone, and rewriting them all (`sync-handles`)                                       | `pds:handles`, `PackageHost.syncHandles`, `main.zena`                                     | no: any PDS that gives out handles under its own domain needs it                              |
+| Creating an account with a new `did:plc`, whose genesis operation ranks the maintainers' recovery keys above the App View's rotation key | `AppView.#prepareAccount`, `#createAccount`                                               | partly: creating accounts with `did:plc`s is core; the recovery-key ranking is the App View's |
+| Scope and package names, claimed once each                                                                                               | `AppViewStore.claimScope`, `claimName` and their Firestore implementation                 | yes                                                                                           |
+| Private membership entries behind the commitments in members and maintainers records, and the role checks that read them                 | `AppViewStore.entries`, `AppView.#hasRole`, `#maintainedPackage`                          | yes                                                                                           |
+| Checking a release against its source archive and dependencies before recording it                                                       | `package-manager:validate`, called from `AppView.publish` (#574)                          | yes                                                                                           |
+| Writing each handle's `_atproto` TXT record to a DNS zone, and rewriting them all (`sync-handles`)                                       | `pds:handles`, `AppView.syncHandles`, `main.zena`                                         | no: any PDS that gives out handles under its own domain needs it                              |
 | A PLC directory of its own for staging, reading other DIDs from the public one                                                           | `pds:plc-directory`, mounted in `pds:service`                                             | no                                                                                            |
 | Configuration: the domain, service DID, public URL, rotation key, reserved scopes, largest artifact, handle records                      | `pds:service` (`configFromEnv`)                                                           | partly                                                                                        |
 | Telling listeners, after each commit, which records it changed                                                                           | `Pds.onCommit`, called from `Repository.applyWrites`                                      | no: the firehose (#680) sends the same changes                                                |
-| A catalog of the App View's packages, and which accounts mention each person and team, written with each commit and by `sync-indexes`    | `PackageHost.#indexCommit`, `HostStore.putSummary` and `addMentions`, `main.zena`         | yes                                                                                           |
+| A catalog of the App View's packages, and which accounts mention each person and team, written with each commit and by `sync-indexes`    | `AppView.#indexCommit`, `AppViewStore.putSummary` and `addMentions`, `main.zena`          | yes                                                                                           |
 
 Several rows are not specific to packages. Handle records, the staging
 PLC directory, the App View's DID document, `describeServer`, service-auth
@@ -141,14 +141,14 @@ the token first, against the method's NSID, and passes the caller's DID
 to the extension with the request. The extension answers with a status,
 headers and a body.
 
-The App View declares the `dev.zena-lang.host.*` methods, as an App View
+The App View declares the `dev.zena-lang.registry.*` methods, as an App View
 extension. An admin page (#582) declares paths. An account extension's
 methods are served only for requests about its account; how a request
 names that account is an open question.
 
 An App View extension can name a service for its methods, which the core
 lists in the App View's DID document beside `#atproto_pds`. The App View's
-is `#zena_package_host`, so that a client finds which PDSes are App Views,
+is `#zena_registry`, so that a client finds which PDSes are App Views,
 and calls their methods through the caller's own PDS with `atproto-proxy`
 ([package-manager.md](./package-manager.md#finding-an-app-view)). Paths
 are the PDS's own: the site's pages, at another name, are not an extension
@@ -188,7 +188,7 @@ is already made when an extension hears of it, so an extension that fails
 to handle an event logs the failure, and a job (below) redoes the work.
 
 Today the App View keeps its catalog and mentions with these events:
-`Pds.onCommit` calls `PackageHost.#indexCommit` in the same process. Once
+`Pds.onCommit` calls `AppView.#indexCommit` in the same process. Once
 the App View is a service of its own, it writes its indexes as it writes its
 accounts' records, since it is their only writer
 ([package-manager.md](./package-manager.md#the-index)).
@@ -207,7 +207,7 @@ The core writes the new handle's DNS record, so the App View does
 not need its own `pds:handles` calls. Taking a name in a scope stays the
 App View's: it claims the name in its storage before asking for the
 account, and releases it if the core fails to create one, as
-`PackageHost.createOrganization` does today.
+`AppView.createOrganization` does today.
 
 ### Extension storage
 
@@ -220,7 +220,7 @@ Account extensions have a quota.
 
 The App View keeps its scope and name claims, its membership entries,
 its catalog and mentions, and its account kinds there. Today these are
-`pds:host`'s `HostStore` and its Firestore implementation, which this
+`pds:app-view`'s `AppViewStore` and its Firestore implementation, which this
 storage replaces.
 
 ### Jobs

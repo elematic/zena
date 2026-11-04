@@ -1,0 +1,148 @@
+/**
+ * The App View methods that make accounts, an organization for a scope, a
+ * package, and an automation account for CI, that set how a scope
+ * presents itself, and the public lists of the scopes and packages a
+ * visitor browses.
+ */
+
+import {Future} from 'zena:async';
+import {Router} from 'zena:http';
+import {JsonArray, JsonObject} from 'zena:json';
+import {fromJson} from 'atproto:data';
+import {xrpcPath} from 'atproto:methods';
+import {
+  CREATE_AUTOMATION_ACCOUNT, CREATE_ORGANIZATION, CREATE_PACKAGE, LIST_PACKAGES, LIST_SCOPES, PUT_SCOPE_PROFILE
+} from 'package-manager:registry-methods';
+import {Created, AppView} from '../../app-view.zena';
+import {fail, json, jsonBody, nowMicros, strings} from '../common.zena';
+import {entriesOf, registryProcedure, writtenJson} from './common.zena';
+
+/** Adds the methods that make accounts, and the lists of scopes and packages, to `router`. */
+export function accountRoutes(router: Router, appView: AppView): void {
+  registryProcedure(router, appView, CREATE_ORGANIZATION, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    let keys = recoveryKeys(input);
+    if (!(input['name'] is String) || keys == null) {
+      fail(res, 400, 'InvalidRequest', 'name is required, and recoveryKeys must be a list of strings');
+      return null;
+    }
+    let created = await appView.createOrganization(caller, input['name'] as String, keys,
+        nowMicros());
+    return createdJson(created, 'members');
+  });
+
+  registryProcedure(router, appView, CREATE_PACKAGE, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    let keys = recoveryKeys(input);
+    if (!(input['organization'] is String) || keys == null || input['profile'] == null ||
+        input['maintainers'] == null) {
+      fail(res, 400, 'InvalidRequest',
+          'organization, profile and maintainers are required, and recoveryKeys must be a list of strings');
+      return null;
+    }
+    let created = await appView.createPackage(caller, input['organization'] as String,
+        keys, fromJson(input['profile']), fromJson(input['maintainers']),
+        entriesOf(input), nowMicros());
+    return createdJson(created, 'maintainers');
+  });
+
+  registryProcedure(router, appView, CREATE_AUTOMATION_ACCOUNT, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['organization'] is String) || !(input['name'] is String)) {
+      fail(res, 400, 'InvalidRequest', 'organization and name are required');
+      return null;
+    }
+    let made = await appView.createAutomationAccount(caller, input['organization'] as String, input['name'] as String,
+        nowMicros());
+    let answer = new JsonObject();
+    answer['did'] = made.did;
+    answer['handle'] = made.handle;
+    answer['appPassword'] = made.appPassword;
+    return answer;
+  });
+
+  registryProcedure(router, appView, PUT_SCOPE_PROFILE, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['organization'] is String) || input['profile'] == null) {
+      fail(res, 400, 'InvalidRequest', 'organization and profile are required');
+      return null;
+    }
+    let swap = input['swapRecord'];
+    return writtenJson(await appView.putScopeProfile(caller, input['organization'] as String, fromJson(input['profile']),
+        if (swap is String) swap else null, nowMicros()));
+  });
+
+  // Public: what a logged-out visitor browses.
+  router.get(xrpcPath(LIST_SCOPES), async (req, res, next, params) => {
+    let list = new JsonArray();
+    for (let scope in await appView.listScopes()) {
+      let item = new JsonObject();
+      item['name'] = scope.name;
+      item['did'] = scope.did;
+      item['handle'] = scope.handle;
+      item['packages'] = new Box<f64>(scope.packages as f64);
+      list.push(item);
+    }
+    let answer = new JsonObject();
+    answer['scopes'] = list;
+    json(res, answer);
+  });
+
+  router.get(xrpcPath(LIST_PACKAGES), async (req, res, next, params) => {
+    let scope = req.url.searchParams().get('scope');
+    let list = new JsonArray();
+    for (let summary in await appView.listPackages(if (scope == null || scope == '') null else scope)) {
+      let item = new JsonObject();
+      item['did'] = summary.did;
+      item['handle'] = summary.handle;
+      item['scope'] = summary.scope;
+      item['name'] = summary.name;
+      if (summary.description != null) {
+        item['description'] = summary.description as String;
+      }
+      if (summary.license != null) {
+        item['license'] = summary.license as String;
+      }
+      if (summary.latest != null) {
+        item['latest'] = summary.latest as String;
+      }
+      item['releases'] = new Box<f64>(summary.releases as f64);
+      list.push(item);
+    }
+    let answer = new JsonObject();
+    answer['packages'] = list;
+    json(res, answer);
+  });
+}
+
+/** The optional `recoveryKeys`: empty when absent, null when not a list of strings. */
+function recoveryKeys(input: JsonObject): GrowableArray<String> | null {
+  if (input['recoveryKeys'] == null) {
+    return new GrowableArray<String>();
+  }
+  return strings(input, 'recoveryKeys');
+}
+
+/** The answer to a call that made an account: its DID and handle, and the record `recordName` it wrote. */
+function createdJson(created: Created, recordName: String): JsonObject {
+  let ref = new JsonObject();
+  ref['uri'] = created.uri;
+  ref['cid'] = created.cid.toString();
+  let body = new JsonObject();
+  body['did'] = created.did;
+  body['handle'] = created.handle;
+  body[recordName] = ref;
+  return body;
+}

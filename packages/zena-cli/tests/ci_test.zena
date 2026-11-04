@@ -2,7 +2,7 @@
  * Publishing from CI, from end to end, against
  * `tests/fixtures/publish-stack.zena`: Alice creates an automation account
  * in her scope and adds it to a package, and the account signs in with its
- * app password, as CI would, and publishes. The host holds the account's
+ * app password, as CI would, and publishes. The registry holds the account's
  * keys, so its release waits until Alice approves it.
  */
 
@@ -36,7 +36,7 @@ export let tests = suite('zena ci', () => {
         new ZenaCommand(scratch.host('lib'), scratch.at('lib'), scratch.host('cache'))
           .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
           .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
-          .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
+          .set('ZENA_REGISTRY', addresses['registry'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
       write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
       write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
@@ -84,9 +84,9 @@ export let tests = suite('zena ci', () => {
       let done = alice.run(['approve', '1.1.0']);
       isTrue(!done.succeeded() && done.stderr.contains('is waiting for approval'), described(done));
 
-      // Its attestation of the release is in its own repository, on the host.
+      // Its attestation of the release is in its own repository, on the registry.
       let listed = runFuture(fetch(
-          `${addresses['host'] as String}/xrpc/com.atproto.repo.listRecords?repo=ci.acme.pkg.test&collection=dev.zena-lang.package.attestation`));
+          `${addresses['registry'] as String}/xrpc/com.atproto.repo.listRecords?repo=ci.acme.pkg.test&collection=dev.zena-lang.package.attestation`));
       let records = (parseJson(runFuture(listed.text())) as JsonObject)['records'] as JsonArray;
       isTrue(records.length == 1, `${records.length} attestations`);
     } finally {

@@ -17,10 +17,10 @@ import {getRandomU64} from 'wasi:random/random';
 import {AccessTokenCredentials} from 'google-cloud:auth';
 import {Firestore} from 'google-cloud:firestore';
 import {GrpcTransport} from 'protobuf:grpc';
-import {FirestoreCredentialStore, FirestoreHostStore, FirestorePlcLog, FirestoreStorage, MemoryBlobs} from 'pds:firestore';
+import {FirestoreCredentialStore, FirestoreAppViewStore, FirestorePlcLog, FirestoreStorage, MemoryBlobs} from 'pds:firestore';
 import {CredentialStore} from 'pds:sessions';
 import {PlcLog} from 'pds:plc-directory';
-import {HostStore} from 'pds:host';
+import {AppViewStore} from 'pds:app-view';
 import {buildService, configFromEnv} from 'pds:service';
 import {HashMap} from 'zena:collections';
 import {Request, Response} from 'zena:http';
@@ -29,7 +29,7 @@ import {hex} from 'zena:encoding';
 import {Cid} from 'atproto:cid';
 import {KeyType} from 'atproto:didkey';
 import {
-  TestKeyEncryption, credentialStoreConformance, hostStoreConformance, plcLogConformance, storageConformance
+  TestKeyEncryption, credentialStoreConformance, appViewStoreConformance, plcLogConformance, storageConformance
 } from '../storage-conformance.zena';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
@@ -65,7 +65,7 @@ export let tests = suite('Firestore storage', () => {
   // TODO(#520): drop the return types.
   storageConformance((): Storage => new FirestoreStorage(freshDatabase(), 'test', new MemoryBlobs()));
   storageConformance((): Storage => new FirestoreStorage(freshDatabase(), 'test', new MemoryBlobs(), new TestKeyEncryption()));
-  hostStoreConformance((): HostStore => new FirestoreHostStore(freshDatabase(), 'test'));
+  appViewStoreConformance((): AppViewStore => new FirestoreAppViewStore(freshDatabase(), 'test'));
   plcLogConformance((): PlcLog => new FirestorePlcLog(freshDatabase(), 'test'));
   credentialStoreConformance((): CredentialStore => new FirestoreCredentialStore(freshDatabase(), 'test'));
 
@@ -85,9 +85,8 @@ export let tests = suite('Firestore storage', () => {
     isTrue(runFuture(two.store(did).getRecord('com.example.post', 'a')) == null, 'no record in the other tenant');
     runFuture(one.store(did).putBlob(cid, new StoredBlob('text/plain', 'x'.toBytes())));
     isTrue(runFuture(two.store(did).getBlob(cid)) == null, 'no blob in the other tenant');
-    let hostOne = new FirestoreHostStore(db, 'one');
-    isTrue(runFuture(hostOne.claimScope('acme', did)), 'claimed');
-    isTrue(runFuture(new FirestoreHostStore(db, 'two').claimScope('acme', did)), 'claimed in the other tenant');
+    isTrue(runFuture(new FirestoreAppViewStore(db, 'one').claimScope('acme', did)), 'claimed');
+    isTrue(runFuture(new FirestoreAppViewStore(db, 'two').claimScope('acme', did)), 'claimed in the other tenant');
   });
 
   test('keeps signing keys encrypted, and decrypts one when it is first used', (ctx) => {

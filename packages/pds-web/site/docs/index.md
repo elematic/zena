@@ -46,7 +46,7 @@ zena scope create acme
 zena publish --scope acme
 ```
 
-On the first publish, the package host creates an atproto account for the package under `@acme`, writes the new `did` field into `zena-package.json`, uploads the source archive blob, and records your release attestation.
+On the first publish, the registry creates an atproto account for the package under `@acme`, writes the new `did` field into `zena-package.json`, uploads the source archive blob, and records your release attestation.
 
 ## Documentation guide
 

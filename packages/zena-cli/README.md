@@ -10,7 +10,7 @@ zb, zenadoc and the formatter linked in. `zena-cli` is the Rust binary
 that runs it on wasmtime. See
 [docs/design/cli-module.md](../../docs/design/cli-module.md).
 
-The host-side pieces (engine configuration, the `.cwasm` cache, the
+The registry-side pieces (engine configuration, the `.cwasm` cache, the
 stack-trace, `zena:process` and `zena:wasm` imports) live in the
 [`zena-runtime`](../zena-runtime) crate. [`zena-run`](../zena-run) embeds
 the same crate to run any compiled module.
@@ -56,9 +56,9 @@ of what the command does.
 | `fetch`                                                          | Fetches the packages `zena-lock.json` pins into the package cache.                                                                                                                            |
 | `login <handle or DID> [--password-stdin]`                       | Signs in to your atproto account with an app password, to publish.                                                                                                                            |
 | `logout`                                                         | Ends the session `login` started.                                                                                                                                                             |
-| `publish [--scope <name> --yes] [--host <url>]`                  | Publishes the package you are in at its manifest's `version`, creating it on the host first, in the scope `--scope` names, when it has no `did`.                                              |
+| `publish [--scope <name> --yes] [--registry <url>]`              | Publishes the package you are in at its manifest's `version`, creating it on the registry first, in the scope `--scope` names, when it has no `did`.                                          |
 | `approve [<package>@]<version> \| @<scope> \| <package> [--yes]` | Shows a release, or changes to who belongs, waiting for approval, and with `--yes` approves them.                                                                                             |
-| `package create --scope <name> --yes [--host <url>]`             | Creates the package you are in on the host, and writes its DID into `zena-package.json`, without publishing.                                                                                  |
+| `package create --scope <name> --yes [--registry <url>]`         | Creates the package you are in on the registry, and writes its DID into `zena-package.json`, without publishing.                                                                              |
 | `doc <path> [-o <out.json>]`                                     | Extracts a package's public API as JSON.                                                                                                                                                      |
 | `bench <suite.json> [-o <out.json>]`                             | Runs a benchmark suite.                                                                                                                                                                       |
 | `lsp`                                                            | Runs the language server over stdin and stdout.                                                                                                                                               |
@@ -114,7 +114,7 @@ zena-cli login alice.bsky.social
 echo "$APP_PASSWORD" | zena-cli login alice.bsky.social --password-stdin
 ```
 
-Packages on a package host are in scopes: `router.acme.<host domain>` is
+Packages on a registry are in scopes: `router.acme.<registry domain>` is
 the package `router` in the scope `acme`. `zena scope create acme --yes`
 creates a scope, with you as its only owner, and `zena scope info acme`
 describes one. Publishing never creates a scope.
@@ -122,7 +122,7 @@ describes one. Publishing never creates a scope.
 `zena publish` publishes the package you are in, at the `version` its
 `zena-package.json` gives, which needs a `description` and an SPDX
 `license`, such as `"MIT"`. The first time, the package has no `did`, and
-`zena publish --yes` creates it on the package host in the scope its
+`zena publish --yes` creates it on the registry in the scope its
 manifest's `"scope"` names, else its workspace root's, else `--scope`.
 It writes the DID into the manifest, with the scope when only `--scope`
 gave it. Later publishes check that the package's handle is still in that
@@ -135,13 +135,13 @@ documentation, images, demos. The manifest, a README and a license always
 do, and hidden files, `node_modules` and the lockfile never do. See
 docs/design/package-manifest.md, "files".
 
-The host holds the package's keys, as a PDS holds its users'. If you keep
+The registry holds the package's keys, as a PDS holds its users'. If you keep
 a recovery key, a secp256k1 private key in hex in `recovery-key` in the
-configuration directory, it is ranked above the host's, so you can move
-the package without the host. None is made for you. Each publish uploads
-the package's source archive, which the host checks, writes your
-attestation of the release to your own repository, and asks the host to
-complete it. The host writes the release once the attestations meet the
+configuration directory, it is ranked above the registry's, so you can move
+the package without the registry. None is made for you. Each publish uploads
+the package's source archive, which the registry checks, writes your
+attestation of the release to your own repository, and asks the registry to
+complete it. The registry writes the release once the attestations meet the
 package's maintainers record, its `threshold` of maintainers, of whom
 `humans` are people; with one maintainer, that is your own. Until then
 the release waits, for seven days, and the other maintainers approve it
@@ -165,7 +165,7 @@ zena-cli ci create acme/ci                          # prints the app password, o
 zena-cli owner add ci.acme.pkg.zena-lang.dev --automation
 ```
 
-The host holds an automation account's keys, so its attestation counts
+The registry holds an automation account's keys, so its attestation counts
 only together with a person's: a release CI publishes waits until a
 maintainer approves it.
 
@@ -179,12 +179,12 @@ lockfiles pin it keep using it, and `zena add` and `zena update` skip it.
 Any maintainer may retract a release.
 
 A scope's owners change who belongs to it, and a package's owners who
-maintains it. Each change asks the host for the new record, attests it in
-your own repository, and asks the host to write it. The host writes it
+maintains it. Each change asks the registry for the new record, attests it in
+your own repository, and asks the registry to write it. The registry writes it
 once the record before it allows it: with thresholds of 1, at once, and
 otherwise once enough of its owners, admins or team maintainers have
 approved it with `zena approve @<scope>` or `zena approve <package>`. Who
-belongs stays private: records list commitments, and the host shows the
+belongs stays private: records list commitments, and the registry shows the
 entries behind them only to those who may see them.
 
 ```bash
@@ -210,7 +210,7 @@ The `settings` commands change thresholds, and with no flags print them.
 every release in the scope needs at once, the teams and thresholds new
 packages start with, and the teams whose members may create packages
 besides its admins. `zena scope profile` sets how the scope presents
-itself on the host's pages.
+itself on the registry's pages.
 A change to a threshold is approved under the thresholds it replaces: one
 owner raises `--owner-threshold` from 1 to 2, and lowering it again needs
 both.
@@ -231,7 +231,7 @@ for a standalone binary.
 | `ZENA_ALLOW_EGRESS`                | Host names exempt from `ZENA_DENY_PRIVATE_EGRESS`, separated by commas.                                                   |
 | `ZENA_HTTP_HEADER_TIMEOUT_SECONDS` | How long a connection to a server a program runs may take to send a request's headers before it is closed. 30 by default. |
 | `ZENA_HTTP_MAX_CONNECTIONS`        | How many connections such a server keeps open at once; the next waits. 1024 by default.                                   |
-| `ZENA_PACKAGE_HOST`                | The package host `publish` and `package create` use, in place of the Zena project's, `https://padstone.zena-lang.dev`.    |
+| `ZENA_REGISTRY`                    | The registry `publish` and `package create` use, in place of the Zena project's, `https://padstone.zena-lang.dev`.        |
 
 ## Development and Architecture
 

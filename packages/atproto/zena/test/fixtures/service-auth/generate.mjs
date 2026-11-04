@@ -49,7 +49,7 @@ for (const [curve, alg, nodeCurve] of [
     aud: 'did:web:pkg.zena-lang.dev',
     exp: NOW + 60,
     iat: NOW,
-    lxm: 'dev.zena-lang.host.publish',
+    lxm: 'dev.zena-lang.registry.publish',
     jti: '9f2c4e7a1b3d5f60',
   });
   const input = `${header}.${payload}`;

@@ -1,22 +1,23 @@
 /**
  * Managed accounts (docs/design/package-manager.md, "Managed accounts"):
- * accounts this PDS creates for a package host its operator trusts, with
+ * accounts this PDS creates for an App View its operator trusts, with
  * no email address, password or invite code, and which take writes only
- * from that host.
+ * from that App View.
  *
- * A host first asks for a signing key with
+ * An App View first asks for a signing key with
  * `com.atproto.server.reserveSigningKey`, which the PDS makes and keeps
- * for that host (`reserver`). The host mints the account's `did:plc` with
- * a genesis operation naming that key and this PDS, signed with its
- * rotation key, which is the DID's only PLC operation. It then asks for
- * the account with `com.atproto.server.createAccount` and a service-auth
- * token of its own. `admit` checks that the genesis operation was signed
- * by the rotation key of the trusted host the token is from, and that the
- * DID document names this PDS; the PDS makes the account with the key the
- * document names, if that host reserved it (`Pds.createManagedAccount`).
+ * for that App View (`reserver`). The App View mints the account's
+ * `did:plc` with a genesis operation naming that key and this PDS, signed
+ * with its rotation key, which is the DID's only PLC operation. It then
+ * asks for the account with `com.atproto.server.createAccount` and a
+ * service-auth token of its own. `admit` checks that the genesis
+ * operation was signed by the rotation key of the trusted App View the
+ * token is from, and that the DID document names this PDS; the PDS makes
+ * the account with the key the document names, if that App View reserved
+ * it (`Pds.createManagedAccount`).
  *
- * Every write to the account carries a service-auth token from its host,
- * for the write's method and addressed to this PDS (`fromHost`). Whoever
+ * Every write to the account carries a service-auth token from its App View,
+ * for the write's method and addressed to this PDS (`fromAppView`). Whoever
  * writes, the account holds only what `ManagedLimits` allows: by default
  * the records and artifacts of Zena packages.
  */
@@ -69,21 +70,21 @@ export final class ManagedLimits {
   }
 }
 
-/** A package host the operator trusts: its DID, and the rotation keys it signs its DIDs' genesis operations with. */
-export final class TrustedHost {
+/** An App View the operator trusts: its DID, and the rotation keys it signs its DIDs' genesis operations with. */
+export final class TrustedAppView {
   did: String;
   rotationKeys: Array<PublicKey>;
 
   new(this.did, this.rotationKeys);
 }
 
-/** What `ManagedAccounts.admit` admits: the host, and the signing key the DID document names. */
+/** What `ManagedAccounts.admit` admits: the App View, and the signing key the DID document names. */
 export final class Admission {
-  host: TrustedHost;
-  /** A `did:key`, which the PDS makes the account with if the host reserved it. */
+  appView: TrustedAppView;
+  /** A `did:key`, which the PDS makes the account with if the App View reserved it. */
   signingKey: String;
 
-  new(this.host, this.signingKey);
+  new(this.appView, this.signingKey);
 }
 
 /**
@@ -92,37 +93,38 @@ export final class Admission {
  */
 export type PlcLogLookup = (did: String) => Future<Array<PlcOperation>>;
 
-/** The trusted hosts, and the checks on the tokens of managed accounts and their hosts. */
+/** The trusted App Views, and the checks on the tokens of managed accounts and their App Views. */
 export final class ManagedAccounts {
   /** This PDS's DID, which the tokens are addressed to. */
   serviceDid: String;
   /** This PDS's endpoint, which a managed account's DID document names. */
   endpoint: String;
-  #hosts: Array<TrustedHost>;
+  #appViews: Array<TrustedAppView>;
   #log: PlcLogLookup;
   #keys: SigningKeyLookup;
   #replays = new ReplayGuard();
 
-  new(serviceDid: String, endpoint: String, hosts: Array<TrustedHost>, log: PlcLogLookup, keys: SigningKeyLookup)
-      : serviceDid = serviceDid, endpoint = endpoint, #hosts = hosts, #log = log, #keys = keys;
+  new(serviceDid: String, endpoint: String, appViews: Array<TrustedAppView>, log: PlcLogLookup, keys: SigningKeyLookup)
+      : serviceDid = serviceDid, endpoint = endpoint, #appViews = appViews, #log = log, #keys = keys;
 
   /**
-   * The trusted host that the token in `authorization`, for
+   * The trusted App View that the token in `authorization`, for
    * `com.atproto.server.reserveSigningKey`, is from. Throws `SessionError`.
    */
-  async reserver(authorization: String | null, nowSeconds: i64): Future<TrustedHost> {
+  async reserver(authorization: String | null, nowSeconds: i64): Future<TrustedAppView> {
     let caller = await this.caller(authorization, SERVER_RESERVE_SIGNING_KEY, nowSeconds);
-    let host = this.#trusted(caller);
-    if (host == null) {
-      throw new SessionError(403, 'Forbidden', `${caller} is not a package host this PDS trusts`);
+    let appView = this.#trusted(caller);
+    if (appView == null) {
+      throw new SessionError(403, 'Forbidden', `${caller} is not an App View this PDS trusts`);
     }
-    return host;
+    return appView;
   }
 
   /**
-   * Whether the host that the token in `authorization` is from may have an
-   * account for `did`: when its rotation key signed the DID's genesis
-   * operation, and the DID document names this PDS. Throws `SessionError`.
+   * Whether the App View that the token in `authorization` is from may
+   * have an account for `did`: when its rotation key signed the DID's
+   * genesis operation, and the DID document names this PDS. Throws
+   * `SessionError`.
    */
   async admit(authorization: String | null, did: String, nowSeconds: i64): Future<Admission> {
     let caller = await this.caller(authorization, SERVER_CREATE_ACCOUNT, nowSeconds);
@@ -137,12 +139,12 @@ export final class ManagedAccounts {
     if (log.length == 0 || !makes(log[0], did)) {
       throw new SessionError(400, 'UnresolvableDid', `the PLC directory has no genesis operation for ${did}`);
     }
-    let host = this.#signer(log[0]);
-    if (host == null) {
-      throw new SessionError(400, 'IncompatibleDidDoc', `${did} was not made by a package host this PDS trusts`);
+    let appView = this.#signer(log[0]);
+    if (appView == null) {
+      throw new SessionError(400, 'IncompatibleDidDoc', `${did} was not made by an App View this PDS trusts`);
     }
-    if (host.did != caller) {
-      throw new SessionError(403, 'Forbidden', `${did} was made by ${host.did}, not ${caller}`);
+    if (appView.did != caller) {
+      throw new SessionError(403, 'Forbidden', `${did} was made by ${appView.did}, not ${caller}`);
     }
     let latest = log[log.length - 1];
     let pds = pdsOf(latest);
@@ -150,19 +152,19 @@ export final class ManagedAccounts {
       throw new SessionError(400, 'IncompatibleDidDoc', `${did}'s DID document names ${pds ?? 'no PDS'}, not ${this.endpoint}`);
     }
     if (let (true, signingKey) = latest.verificationMethods.get('atproto')) {
-      return new Admission(host, signingKey);
+      return new Admission(appView, signingKey);
     }
     throw new SessionError(400, 'IncompatibleDidDoc', `${did}'s DID document names no signing key`);
   }
 
   /**
-   * Checks that `authorization` holds a token from `account`'s host, for
+   * Checks that `authorization` holds a token from `account`'s App View, for
    * `method`. Throws `SessionError`.
    */
-  async fromHost(authorization: String | null, account: Account, method: String, nowSeconds: i64): Future<void> {
+  async fromAppView(authorization: String | null, account: Account, method: String, nowSeconds: i64): Future<void> {
     let caller = await this.caller(authorization, method, nowSeconds);
     if (caller != account.manager) {
-      throw new SessionError(403, 'Forbidden', `only ${account.manager ?? 'its host'} writes to ${account.did}`);
+      throw new SessionError(403, 'Forbidden', `only ${account.manager ?? 'its App View'} writes to ${account.did}`);
     }
   }
 
@@ -188,22 +190,22 @@ export final class ManagedAccounts {
     }
   }
 
-  /** The trusted host whose DID is `did`, or null. */
-  #trusted(did: String): TrustedHost | null {
-    for (let host in this.#hosts) {
-      if (host.did == did) {
-        return host;
+  /** The trusted App View whose DID is `did`, or null. */
+  #trusted(did: String): TrustedAppView | null {
+    for (let appView in this.#appViews) {
+      if (appView.did == did) {
+        return appView;
       }
     }
     return null;
   }
 
-  /** The trusted host whose rotation key, among `genesis`'s own, signed it, or null. */
-  #signer(genesis: PlcOperation): TrustedHost | null {
-    for (let host in this.#hosts) {
-      for (let key in host.rotationKeys) {
+  /** The trusted App View whose rotation key, among `genesis`'s own, signed it, or null. */
+  #signer(genesis: PlcOperation): TrustedAppView | null {
+    for (let appView in this.#appViews) {
+      for (let key in appView.rotationKeys) {
         if (genesis.rotationKeys.contains(formatDidKey(key)) && genesis.isSignedBy(key)) {
-          return host;
+          return appView;
         }
       }
     }

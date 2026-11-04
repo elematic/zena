@@ -1,6 +1,6 @@
 /**
  * `zena ci create <scope>/<name>`: an automation account for CI to publish
- * as (docs/design/package-manager.md, "Publishing a release"). The host
+ * as (docs/design/package-manager.md, "Publishing a release"). The registry
  * creates it in the scope and gives it an app password, which this prints
  * once: CI keeps it as a secret and signs in with it. The account
  * publishes a package once the package's owners add it, with
@@ -11,8 +11,8 @@ import { ParsedArgs } from 'zena:args';
 import { runFuture } from 'zena:async';
 import { JsonObject } from 'zena:json';
 import { Options } from './env.zena';
-import { PublishError, findHost, hostClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn } from './publish.zena';
-import { CREATE_AUTOMATION_ACCOUNT } from 'package-manager:host-methods';
+import { PublishError, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn } from './publish.zena';
+import { CREATE_AUTOMATION_ACCOUNT } from 'package-manager:registry-methods';
 
 export function ciCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
@@ -26,15 +26,15 @@ export function ciCommand(args: ParsedArgs, options: Options): i32 {
     let scope = parts[0];
     let name = parts[1];
     let session = signedIn();
-    let host = findHost(args);
-    let org = scopeOrganization(`${scope}.${host.domain}`);
+    let registry = findRegistry(args);
+    let org = scopeOrganization(`${scope}.${registry.domain}`);
     if (org == null) {
-      throw new PublishError(`${host.origin} has no scope ${scope}`);
+      throw new PublishError(`${registry.origin} has no scope ${scope}`);
     }
     let input = new JsonObject();
     input['organization'] = org;
     input['name'] = name;
-    let made = runFuture(hostClient(session, host, CREATE_AUTOMATION_ACCOUNT)
+    let made = runFuture(registryClient(session, registry, CREATE_AUTOMATION_ACCOUNT)
       .procedure(CREATE_AUTOMATION_ACCOUNT, input)) as JsonObject;
     let handle = made['handle'] as String;
     console.log(`Created the automation account ${handle} (${made['did'] as String}).`);

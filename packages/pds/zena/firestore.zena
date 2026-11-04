@@ -5,7 +5,7 @@
  * documents are under `tenants/{tenant}`, and its blobs' objects under
  * `{tenant}/`. Under `tenants/{tenant}`:
  *
- * - `accounts/{did}`: `handle` and `manager`, the DID of the package host
+ * - `accounts/{did}`: `handle` and `manager`, the DID of the App View
  *   that manages it (each absent for none), `kind`, `keyType`, and the
  *   repository signing key: `encryptedKey`, its bytes encrypted by the
  *   store's `KeyEncryption` for the account's DID, or, in a store with
@@ -26,8 +26,8 @@
  * - A staging PLC directory's (`FirestorePlcLog`): `plc/{did}`: `length`,
  *   the number of operations; and under it `ops/{index}`: `json`, each
  *   operation, with indexes padded to eight digits so they list in order.
- * - The package host's (`FirestoreHostStore`): `hostAccounts/{did}`:
- *   `handle`, `kind`, `scope` and `name`, each account the host made;
+ * - The App View's (`FirestoreAppViewStore`): `appViewAccounts/{did}`:
+ *   `handle`, `kind`, `scope` and `name`, each account the App View made;
  *   `scopes/{scope}`: `org`;
  *   `names/{name}.{scope}`: `did`, `scope` and `name`;
  *   `summaries/{did}`: a package's summary, `handle`, `scope`, `name`,
@@ -67,7 +67,7 @@ import {compareKeys} from 'atproto:mst';
 import {MemberEntry} from 'package-manager:records';
 import {JsonValue, parseJson, stringify} from 'zena:json';
 import {PlcOperation} from 'atproto:plc';
-import {ClaimedName, ClaimedScope, HostAccount, HostStore, PackageSummary, PendingChange, PendingRelease} from './host.zena';
+import {ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, PackageSummary, PendingChange, PendingRelease} from './app-view.zena';
 import {PlcLog} from './plc-directory.zena';
 import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
@@ -441,29 +441,29 @@ export final class FirestoreAccountStore implements AccountStore {
   }
 }
 
-/** The package host's names and entries in Firestore, for `tenant`. */
-export final class FirestoreHostStore implements HostStore {
+/** The App View's names and entries in Firestore, for `tenant`. */
+export final class FirestoreAppViewStore implements AppViewStore {
   #db: Firestore;
   #root: DocumentReference;
 
   new(db: Firestore, tenant: String) : #db = db, #root = tenantRoot(db, tenant);
 
-  async putAccount(account: HostAccount): Future<void> {
-    await this.#root.collection('hostAccounts').doc(account.did).set(new Fields()
+  async putAccount(account: AppViewAccount): Future<void> {
+    await this.#root.collection('appViewAccounts').doc(account.did).set(new Fields()
       .string('handle', account.handle)
       .string('kind', kindName(account.kind))
       .string('scope', account.scope)
       .string('name', account.name));
   }
 
-  async account(did: String): Future<HostAccount | null> {
-    return hostAccountFrom(await this.#root.collection('hostAccounts').doc(did).get());
+  async account(did: String): Future<AppViewAccount | null> {
+    return appViewAccountFrom(await this.#root.collection('appViewAccounts').doc(did).get());
   }
 
-  async accounts(): Future<Array<HostAccount>> {
-    let all = new GrowableArray<HostAccount>();
-    for (let snapshot in await this.#root.collection('hostAccounts').get()) {
-      let account = hostAccountFrom(snapshot);
+  async accounts(): Future<Array<AppViewAccount>> {
+    let all = new GrowableArray<AppViewAccount>();
+    for (let snapshot in await this.#root.collection('appViewAccounts').get()) {
+      let account = appViewAccountFrom(snapshot);
       if (account != null) {
         all.push(account);
       }
@@ -928,8 +928,8 @@ async function accountFields(account: Account, keys: KeyEncryption | null): Futu
   return fields;
 }
 
-/** The host's account in `snapshot`, or null when there is none. */
-function hostAccountFrom(snapshot: DocumentSnapshot): HostAccount | null {
+/** The App View's account in `snapshot`, or null when there is none. */
+function appViewAccountFrom(snapshot: DocumentSnapshot): AppViewAccount | null {
   let handle = stringAt(snapshot, 'handle');
   let kind = stringAt(snapshot, 'kind');
   let scope = stringAt(snapshot, 'scope');
@@ -937,7 +937,7 @@ function hostAccountFrom(snapshot: DocumentSnapshot): HostAccount | null {
   if (handle == null || kind == null || scope == null || name == null) {
     return null;
   }
-  return new HostAccount(snapshot.id, handle, kindNamed(kind), scope, name);
+  return new AppViewAccount(snapshot.id, handle, kindNamed(kind), scope, name);
 }
 
 /**

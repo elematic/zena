@@ -4,10 +4,10 @@
  * `com.atproto.repo` (`xrpc/repo.zena`) for every account, and with
  * `Sessions`, password sessions (`xrpc/server.zena`) and an account's
  * writes to its own repository. With managed accounts (`Pds.managed`), it
- * creates them for the package hosts it trusts (`xrpc/managed.zena`) and
- * takes their writes from those hosts. With a `PackageHost`, it also serves the
- * host's methods (`xrpc/host/`), and the site: the web pages (`web/`) and
- * what their sign-in calls.
+ * creates them for the App Views it trusts (`xrpc/managed.zena`) and
+ * takes their writes from those App Views. With an `AppView`, it also
+ * serves the registry methods (`xrpc/registry/`), and the site: the web
+ * pages (`web/`) and what their sign-in calls.
  *
  * The PDS and the site can each have a host name of their own
  * (docs/design/package-manager.md, "Names and addresses"), so an
@@ -21,7 +21,7 @@
 import {Future} from 'zena:async';
 import {App, Router} from 'zena:http';
 import {JsonBuilder} from 'zena:json';
-import {PackageHost} from './host.zena';
+import {AppView} from './app-view.zena';
 import {Pds} from './pds.zena';
 import {Sessions} from './sessions.zena';
 import {notFound} from './web/pages/not-found.zena';
@@ -29,9 +29,9 @@ import {webPages} from './web/routes.zena';
 import {contextOf} from './web/session.zena';
 import {People} from './web/people.zena';
 import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
-import {resolveHandleRoute} from './xrpc/host/identity.zena';
-import {hostRoutes} from './xrpc/host/routes.zena';
-import {webSessionRoutes} from './xrpc/host/web.zena';
+import {resolveHandleRoute} from './xrpc/registry/identity.zena';
+import {registryRoutes} from './xrpc/registry/routes.zena';
+import {webSessionRoutes} from './xrpc/registry/web.zena';
 import {managedRoutes} from './xrpc/managed.zena';
 import {repoRoutes} from './xrpc/repo.zena';
 import {serverRoutes} from './xrpc/server.zena';
@@ -44,7 +44,7 @@ let banner = 'An AT Protocol PDS written in Zena\n';
 
 /** Which of the server's parts an application serves. */
 export enum AppPart {
-  /** The PDS, with the host's methods: what its own host name serves. */
+  /** The PDS, with the App View's methods: what its own host name serves. */
   Pds,
   /** The site: the pages, and what their sign-in calls, under the site's name. */
   Site,
@@ -54,9 +54,9 @@ export enum AppPart {
 
 /**
  * Returns the application that serves `part`, for the accounts in `pds`,
- * with the host's methods and the site when there is a `host`.
+ * with the App View's methods and the site when there is a `host`.
  */
-export function createApp(pds: Pds, host: PackageHost | null = null, sessions: Sessions | null = null,
+export function createApp(pds: Pds, appView: AppView | null = null, sessions: Sessions | null = null,
     part: AppPart = AppPart.Both): App {
   let app = new App();
   let router = new Router();
@@ -68,8 +68,8 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
 
   if (part != AppPart.Site) {
     // The site's home page is `/` wherever the site is served.
-    if (host == null || part == AppPart.Pds) {
-      let text = if (host == null) banner else pdsBanner(host);
+    if (appView == null || part == AppPart.Pds) {
+      let text = if (appView == null) banner else pdsBanner(appView);
       router.get('/', async (req, res, next, params) => {
         res.type = 'text/plain; charset=utf-8';
         res.body = text;
@@ -95,13 +95,13 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
       managedRoutes(router, pds, managed);
     }
   }
-  if (host == null) {
+  if (appView == null) {
     app.use(router.routes());
     return app;
   }
-  let pages = host;
+  let pages = appView;
   if (part != AppPart.Site) {
-    hostRoutes(router, pages);
+    registryRoutes(router, pages);
   }
   if (part == AppPart.Pds) {
     app.use(router.routes());
@@ -114,7 +114,7 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
     resolveHandleRoute(router, pages);
   }
   // One cache of the people the pages show, for every page.
-  let people = People.forHost(pages);
+  let people = People.forAppView(pages);
   webPages(router, pages, people);
   app.use(router.routes());
   // A page path no route took: the web app's not-found page.
@@ -128,8 +128,8 @@ export function createApp(pds: Pds, host: PackageHost | null = null, sessions: S
 }
 
 /** What `/` answers under the PDS's own name: what it is, and where its pages are. */
-function pdsBanner(host: PackageHost): String {
-  return `The PDS of the Zena package host for ${host.config.domain}, written in Zena.\nIts pages are at ${host.config.siteOrigin}\n`;
+function pdsBanner(appView: AppView): String {
+  return `The PDS of the Zena App View for ${appView.config.domain}, written in Zena.\nIts pages are at ${appView.config.siteOrigin}\n`;
 }
 
 /** Whether `path` is one of the server's APIs', which answer in JSON rather than with pages. */
