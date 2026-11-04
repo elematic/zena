@@ -138,7 +138,7 @@ console.log(`Area: ${area(shape)}`);
 let scores = {'José' => 99, 'Kim' => 97};
 scores['Xavier'] = 98;
 
-if (let (true, score) = scores.get('Xavier'))) {
+if (let (true, score) = scores.get('Xavier')) {
   console.log(`Xavier scored ${score}`);
 } else {
   console.log(`No score for Xavier`);
@@ -185,7 +185,7 @@ console.log(
               <div class="icon">🎯</div>
               <h2 class="title">WebAssembly GC native</h2>
             </div>
-            <p class="details">Primitives, references, records, tuples, and arrays map directly Wasm GC types. Operators and function calls directly to Wasm instructions. No allocator, garbage collector, or language runtime shipped in your module.</p>
+            <p class="details">Primitives, references, records, tuples, and arrays map directly to Wasm GC types. Operators and function calls map directly to Wasm instructions. No allocator, garbage collector, or language runtime shipped in your module.</p>
             <div class="link-text">
               <p class="link-text-value">WebAssembly <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
@@ -256,7 +256,7 @@ console.log(
               <div class="icon">🛠️</div>
               <h2 class="title">Unified toolchain</h2>
             </div>
-            <p class="details">Compiler, test runner, formatter, and language server in a single CLI, all written in Zena and running natively on Wasm.</p>
+            <p class="details">Compiler, test runner, formatter, linter, benchmark runner, doc generator, package manager, and language server in a single CLI, all written in Zena and running natively on Wasm.</p>
             <div class="link-text">
               <p class="link-text-value">Zena CLI <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
@@ -292,7 +292,7 @@ that elevate everyday safety, performance, and developer ergonomics:
     <div class="differentiator-content">
       <div class="differentiator-header">
         <h3 class="differentiator-title">First-Class Async Cancellation</h3>
-        <span class="badge warning">In progress</span>
+        <span class="badge success">Complete</span>
       </div>
       <p class="differentiator-contrast">No more passing <code>AbortSignal</code> through every layer of your application.</p>
       <p class="differentiator-desc">Cancellation flows through a dedicated language-level channel. Dedicated <code>cancel</code> blocks handle interruption cleanly, while <code>shielded</code> blocks guarantee critical asynchronous cleanup always finishes without race conditions. <a href="#generators-async">Learn more &darr;</a></p>
@@ -350,7 +350,7 @@ See more examples in the [Playground &rarr;](./playground/).
 
 Zena's syntax is directly inspired by TypeScript, with familiar expressions,
 functions, object literals (records in Zena), classes, type annotations, strings,
-template literals, destructuring/spread, enums, imports/exports, and more nearly identical to TypeScript
+template literals, destructuring/spread, enums, imports/exports, and more nearly identical to TypeScript.
 
 This familiarity makes Zena code intuitive to read and write for humans and
 AI tools alike, with virtually no ramp-up time for syntax.
@@ -358,7 +358,7 @@ AI tools alike, with virtually no ramp-up time for syntax.
 However, Zena deliberately diverges from JavaScript to avoid historical baggage
 and add ergonomic improvements:
 
-- `var` is block scoped, `let` is immuatble.
+- `var` is block scoped, `let` is immutable.
 - Pattern-matching `match` replaces `switch`.
 - `if`, `match`, `try`, `throw`, `return`, `continue`, and `break` are
   expressions.
@@ -391,7 +391,7 @@ further to close common soundness holes:
 
 - **Non-nullable references**: References are non-nullable by default. `null` is
   added to types via standard unions.
-- **No implicit type coercion**: Zena does not perform implicit type coercion
+- **No implicit type coercion**: Zena does not perform implicit type coercion.
 - **No unchecked casts**: Downcasts are checked at runtime. This ensures runtime
   soundness.
 - **No `any` type**: Because there is no Wasm GC `any` type, Zena doesn't
@@ -438,7 +438,7 @@ flexible enough to feel more like a dynamic language.
 
 Zena is a garbage-collected language, providing memory safety and developer
 convenience for everyday programming. Zena compiles directly to WebAssembly GC,
-so no garbage colelctor is bundled with your binary.
+so no garbage collector is bundled with your binary.
 
 Uniquely, Zena pairs its garbage collector with an affine ownership system
 (`Own<T>`, `Borrow<T>`), allowing safe, automatic management of foreign handles
@@ -470,8 +470,9 @@ no heap allocations. The `Iterable` interface includes powerful methods like
 `map`, `filter`, and `fold` so you can write declarative data transforms on
 any collection, and generators make it trivial to build iterators.
 
-Upcoming features, like tail-call elimination (`tail return`), will make using
-recursion more efficient.
+Explicit tail calls (`tail return`) compile directly to WebAssembly tail-call
+instructions, running recursive algorithms in constant stack space, and adopt
+futures without allocating intermediate frames in `async` functions.
 
 Control flow like `if`, `match`, `try-catch`, `return`, `throw`, `continue`, and `break` are all expressions, making it easy to compose functions and control flow.
 
@@ -516,7 +517,7 @@ refine the match with arbitrary boolean expressions.
 
 The compiler enforces
 exhaustiveness checking on `match` expressions, ensuring that all cases are
-handled. Exhaustiveness checking is enforces for enums, unions, and sealed
+handled. Exhaustiveness checking is enforced for enums, unions, and sealed
 class hierarchies.
 
 Sealed classes in Zena let you define algebraic data types with state and
@@ -528,17 +529,18 @@ normal classes.
 <details id="generators-async">
   <summary>Generators & async functions</summary>
 
-Zena supports both async and generator functions. The compiler optimizes them
-away when consumed in their most common forms - generators in loops, and async
-functions in `await` expressions.
+Zena supports synchronous generators, async functions, and async generators
+(`async gen` with `for await`). The compiler optimizes them away when consumed
+in their most common forms - generators in loops, and async functions in `await`
+expressions.
 
 Async cancellation is built natively into the language, travelling through a
-dedicated exception channel handeable within `cancel` blocks of `try/catch/cancel/finally`. `shielded` blocks ensure asynchronous cleanup completes safely during cancellation.
+dedicated exception channel handled within `cancel` blocks of `try/catch/cancel/finally`. `shielded` blocks ensure asynchronous cleanup completes safely during cancellation.
 
 </details>
 
 <details id="ownership">
-  <summary>Ownership & resource management</summary>
+  <summary>Ownership & resource management <span class="badge warning">In progress</span></summary>
 
 Zena provides both explicit and automatic resource management, for non-GC resources
 like WASI file descriptors, WASI Component handles, linear-memory allocations, and
@@ -559,7 +561,7 @@ Owned resources and `using`-bound values have their `dispose()` method called ex
 
 Zena supports multi-value returns without heap allocation. Functions can return multiple values as unboxed tuples `(T1, T2)` that are destructured at call sites.
 
-Standard library APIs use multi-value returns to eliminate boxing overhea. For instance, `Map.get()` returns an inline `(found, value)` tuple and `Iterator.next()` returns `(hasValue, value)`. This provides presence and value retrieval in one
+Standard library APIs use multi-value returns to eliminate boxing overhead. For instance, `Map.get()` returns an inline `(found, value)` tuple and `Iterator.next()` returns `(hasValue, value)`. This provides presence and value retrieval in one
 method call with no heap allocations.
 
 The `??` operator works with `Option<>` and `Result<>` style inline tuples to
@@ -571,9 +573,10 @@ provide fallback for missing values.
   <summary>SIMD</summary>
 
 Zena provides direct access to 128-bit SIMD vector instructions through the `v128`
-primitive type and the `zena:simd` standard library. Over 200 fixed-width SIMD
-instructions—including `i32x4`, `f32x4`, `f64x2`, lanes, shuffles, and bitwise
-operations—map directly to WebAssembly SIMD bytecode.
+primitive type and the `zena:simd` standard library. All 236 fixed-width SIMD
+instructions map directly to WebAssembly SIMD bytecode, alongside zero-cost
+vector types (`I8x16`, `I16x8`, `I32x4`, `I64x2`, `F32x4`, `F64x2`) with
+elementwise operators.
 
 Future additions include typed arrays and SIMD operations on them.
 
@@ -582,11 +585,13 @@ Future additions include typed arrays and SIMD operations on them.
 <details id="value-types">
   <summary>Value types <span class="badge warning">In progress</span></summary>
 
-Zena is expanding its support of inline tuples to include first-class value
-types with unboxed storage across both records and classes.
+Inline tuples and closed records pass unboxed across `inline` parameters and
+`let` bindings, and the optimizer automatically explodes record arguments and
+results into scalar locals.
 
-This allows performance-critical code to use composite data structures without a
-large number of heap allocations and the associated GC overhead.
+Work is underway on inline record returns, unboxed value classes, and flattened
+composite fields in structs and arrays so performance-critical code can compose
+structured data without heap allocations and GC overhead.
 
 Data-oriented programming will be enabled with a Zig-style MultiArrayList that
 implements a Struct of Arrays (SoA) and integrates with the ownership system for
@@ -597,9 +602,15 @@ automatic memory management without GC.
 <details id="wit-integration">
   <summary>First class WIT integration <span class="badge warning">In progress</span></summary>
 
-Zena is building native compiler support for the WebAssembly Component Model and WebAssembly Interface Type (`.wit`) specifications. Rather than relying on external code generators or clumsy glue layers, the Zena compiler directly parses, types, and binds WIT world interfaces.
+The Zena compiler parses and resolves `.wit` packages directly, synthesizes
+typed Zena bindings for world imports and exports, and emits WebAssembly P3
+components without external code generators.
 
-This enables Zena modules to import and export standard WASI interfaces and third-party components as native Zena interfaces, types, and functions with zero runtime marshaling overhead, making Zena a tier-one language for composable Wasm ecosystems.
+Synchronous and asynchronous functions, records, variants, flags, `result`
+types, imported and exported resources, and `stream<T>` and `future<T>` handles
+work end to end across WASI 0.3 and custom worlds, alongside dynamic host
+extension loading via `zena:extensions`. Remaining work covers edge shapes such
+as fixed-length lists and borrowed imported resources in exported signatures.
 
 </details>
 
@@ -631,9 +642,13 @@ compile time and remaining conditions can be checked at runtime when enabled.
 <details id="meta-programming">
   <summary>Compile-time meta-programming <span class="badge info">Planned</span></summary>
 
-Zena will introduce a hygienic, type-safe, compile-time macro and meta-programming
-system that executes during compilation. Macros will be keyed off of a JavaScript
-decorator-like syntax and run in separate, restricted Wasm containers for safety.
+User-defined field decorators (`decorator` declarations) are implemented today,
+replacing a class field with a compile-time accessor and storing per-field state
+inline on the host Wasm struct with no wrapper allocation.
+
+Beyond field decorators, Zena plans to introduce a hygienic, type-safe,
+compile-time macro and meta-programming system. Macros will use decorator syntax
+and run in separate, restricted Wasm containers for safety.
 
 For a lighter-weight alternative to full macros, restricted, pure Zena `const`
 evaluation will be available in a Dart-like `const` or Zig-like comptime
@@ -644,11 +659,11 @@ system.
 <details id="declarative-syntaxes">
   <summary>Declarative syntax(es) <span class="badge info">Planned</span></summary>
 
-Zena supports tagged template literals for embedded langauges like HTML and SQL,
-and will add support for richer, Zena-specific declarative syntaxes, for
-example JSX or a Kotlin builder-style syntax, for expressing hierarchical
-structures, UI component trees, document markup, and even database queries in an
-intuitive, readable, and safe format.
+Zena supports type-checked tagged template literals for embedded languages like
+HTML, SVG, CSS, and SQL, and will add support for richer, Zena-specific
+declarative syntaxes—such as JSX or a Kotlin builder-style syntax—for expressing
+hierarchical structures, UI component trees, document markup, and database
+queries in an intuitive, readable, and safe format.
 
 </details>
 
@@ -670,10 +685,6 @@ happen frequently.
       </thead>
       <tbody>
         <tr>
-          <td>Bootstrap compiler (TypeScript)</td>
-          <td><span class="badge success">Complete</span></td>
-        </tr>
-        <tr>
           <td>Self-hosted compiler</td>
           <td><span class="badge success">Complete</span></td>
         </tr>
@@ -686,7 +697,7 @@ happen frequently.
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
-          <td>Reachability & dead code removal</td>
+          <td>Reachability &amp; dead code removal</td>
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
@@ -702,19 +713,31 @@ happen frequently.
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
+          <td>Linter &amp; autofix</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
           <td>Test runner</td>
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
           <td>Benchmark runner</td>
-          <td><span class="badge warning">In progress</span></td>
+          <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
           <td>Compiler benchmarks</td>
-          <td><span class="badge warning">In progress</span></td>
+          <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
           <td>Language benchmarks</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>API doc generator (zenadoc)</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Build runner (zb)</td>
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
@@ -731,15 +754,23 @@ happen frequently.
         </tr>
         <tr>
           <td>WASI support</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>WIT &amp; Component Model</td>
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
           <td>Packages</td>
-          <td><span class="badge info">Planned</span></td>
+          <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
-          <td>Package manager</td>
-          <td><span class="badge info">Planned</span></td>
+          <td>Package manager &amp; registry</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Graphical runtime (zenafx)</td>
+          <td><span class="badge warning">In progress</span></td>
         </tr>
       </tbody>
     </table>
@@ -756,6 +787,10 @@ happen frequently.
       <tbody>
         <tr>
           <td>Functions, closures, multi-value returns</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Tail calls</td>
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
@@ -779,7 +814,7 @@ happen frequently.
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
-          <td>Monomophized generics</td>
+          <td>Monomorphized generics</td>
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
@@ -795,7 +830,7 @@ happen frequently.
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
-          <td>Generators</td>
+          <td>Generators &amp; async generators</td>
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
@@ -804,10 +839,14 @@ happen frequently.
         </tr>
         <tr>
           <td>Async cancellation</td>
-          <td><span class="badge warning">In progress</span></td>
+          <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
-          <td>Values types</td>
+          <td>Structured concurrency</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Value types</td>
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
@@ -816,7 +855,7 @@ happen frequently.
         </tr>
         <tr>
           <td>Decorators &amp; macros</td>
-          <td><span class="badge info">Planned</span></td>
+          <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
           <td>F-bounded polymorphism</td>
@@ -839,7 +878,7 @@ happen frequently.
           <td><span class="badge info">Planned</span></td>
         </tr>
         <tr>
-          <td>Concurrency</td>
+          <td>Multithreading</td>
           <td><span class="badge info">Planned</span></td>
         </tr>
         <tr>
@@ -877,7 +916,7 @@ happen frequently.
         </tr>
         <tr>
           <td>Math: Trigonometry, etc</td>
-          <td><span class="badge info">Planned</span></td>
+          <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
           <td>Regular expressions</td>
@@ -888,8 +927,24 @@ happen frequently.
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
-          <td>Async: Futures &amp; timers</td>
+          <td>Encoding (hex, base32, base64)</td>
           <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>CLI, args, path, &amp; glob</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Async: Futures, tasks, &amp; timers</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Signals</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Crypto &amp; random</td>
+          <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
           <td>Streams</td>
@@ -912,20 +967,12 @@ happen frequently.
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
-          <td>Swift-style String revamp</td>
-          <td><span class="badge info">Planned</span></td>
-        </tr>
-        <tr>
           <td>Date &amp; time</td>
-          <td><span class="badge info">Planned</span></td>
+          <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
-          <td>Signals</td>
-          <td><span class="badge info">Planned</span></td>
-        </tr>
-        <tr>
-          <td>DOM bindings</td>
-          <td><span class="badge info">Planned</span></td>
+          <td>Web UI (templates &amp; elements)</td>
+          <td><span class="badge warning">In progress</span></td>
         </tr>
       </tbody>
     </table>
