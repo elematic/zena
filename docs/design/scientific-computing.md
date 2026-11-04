@@ -158,13 +158,23 @@ satisfy it.
 ([#886](https://github.com/elematic/zena/issues/886)). The earlier
 version of this document chose linear memory, for zero-copy BLAS calls
 and SIMD loads. The recommendation now is GC arrays for the first
-version: nothing frees them, the engine bounds-checks them, and the
-ownership design that would release linear memory is not built. The
-costs are that SIMD loads need linear memory unless the element type is
-`v128`, and a host BLAS call copies out and back. A layout contract keeps
-a linear-memory store a later drop-in: row-major, explicit strides in
-elements, views that share storage and change only shape, strides and
-offset, and a store that is not part of the public API.
+version: they are what the rest of the language stores, so a
+`FixedArray<f64>` becomes a matrix without a copy, the engine
+bounds-checks them, and nothing frees them. A linear-memory store is
+library work on top of the [ownership design](ownership.md), whose
+moves, drops and handle kinds are implemented: an allocator whose
+pointers are resource classes, so that a dropped matrix frees its block.
+That store can come when a measurement asks for it. The costs of GC
+arrays are two. SIMD has no load from a GC array, so a kernel that wants
+`f64x2` arithmetic stores `v128` elements, which the contract below
+allows, or copies to linear memory in bulk
+([#248](https://github.com/elematic/zena/issues/248)); a host call per
+load would cost more than the two scalar loads it replaces. And a host
+BLAS call reads the array through wasmtime's API or a bulk copy, as
+described under [Host libraries](#host-libraries). A layout contract
+keeps every store a drop-in: row-major, explicit strides in elements,
+views that share storage and change only shape, strides and offset, and
+a store that is not part of the public API.
 
 **A primitive on the left of an operator**
 ([#887](https://github.com/elematic/zena/issues/887)). `v * 2.0`
@@ -197,7 +207,7 @@ misread; `-` and `/` are excluded for that reason.
   now and as nominal value types when
   [#140](https://github.com/elematic/zena/issues/140) lands. They are the
   motivating consumers for that work.
-- **The `mat[...]` tagged literal**
+- **The `@mat[...]` tagged literal**
   ([#891](https://github.com/elematic/zena/issues/891)), after there is
   a matrix type to construct.
 - **Host BLAS and LAPACK**
@@ -221,9 +231,12 @@ over the same store. A kernel checks once whether the strides are the
 contiguous row-major ones and takes a fast path when they are.
 
 **Store.** `FixedArray<T>` for the first version, as decided in
-[#886](https://github.com/elematic/zena/issues/886). A linear-memory
-store, when the ownership work gives it a release mechanism, has the
-same header and the same contract.
+[#886](https://github.com/elematic/zena/issues/886). Two other stores
+fit the same header and contract: a `FixedArray<v128>` holding two `f64`
+or four `f32` per element, for kernels that want SIMD arithmetic without
+leaving the GC heap (a scalar read extracts a lane, selecting by the
+index's low bits), and a linear-memory block owned by a resource class,
+released by the ownership machinery when the matrix is dropped.
 
 **Small vectors.** `Vec2`, `Vec3` and `Vec4` are not matrices. They are
 two to four fields that belong in locals, and the `f32` four-wide one is
@@ -231,13 +244,15 @@ an `F32x4`. They become allocation-free with nominal value types.
 
 ## Matrix literals
 
-`mat[...]` is an identifier followed by a bracketed literal. The parser
-cannot tell it from indexing, so the identifier's category decides: a
-variable is always indexed, and a type or a macro is a tag. A variable
-cannot be a tag. The same rule gives `Set[1, 2, 3]` and
-`Complex{re: 1.0, im: 2.0}` as tagged literals over user types, which is
-the subject of [macros.md](macros.md); `mat` itself is a compiler
-intrinsic, so no macro engine is needed for it.
+The spelling is `@mat[...]`. `@` is the decorator sigil, and
+[decorators.md](decorators.md) already reserves decorating an expression
+as the way a macro is applied to it, so a tagged literal is a decorator
+applied to a literal: `@mat[[1.0, 0.0], [0.0, 1.0]]`, `@Set[1, 2, 3]`,
+`@Complex{re: 1.0, im: 2.0}`. The sigil removes the ambiguity with
+indexing, so `mat[...]` without it stays indexing whatever `mat` names,
+and no rule about an identifier's category is needed. Tagged literals
+over user types are the subject of [macros.md](macros.md); `mat` itself
+is a compiler intrinsic, so no macro engine is needed for it.
 
 The intrinsic reads the nested literal for its shape, which must be
 rectangular, and stores the elements directly into the matrix's array.
@@ -250,13 +265,24 @@ Details in [#891](https://github.com/elematic/zena/issues/891).
 ## Host libraries
 
 A pure-Zena `matmul` will not match OpenBLAS, and a general eigensolver
-or SVD is a large port. The Rust host already provides the
-`zena-cli:host` imports, so the path is a `zena-cli:blas` WIT interface
-the host implements by linking a BLAS and LAPACK, with `zena:linalg`
-choosing between a pure-Zena backend and the host one by whether the
-import is present. GC-stored arrays copy to linear memory for the call
-([#248](https://github.com/elematic/zena/issues/248) asks for the bulk
-copy); a linear-memory store passes its pointer. Details in
+or SVD is a large port. The Rust runtime already provides the host
+imports behind `zena:error-stack`, `zena:process` and `zena:wasm`, so
+the path is a BLAS interface in the same WIT package, which the runtime
+implements by linking a BLAS and LAPACK, and which `zena:linalg` uses
+when the import is present and falls back from otherwise. The package is
+`zena-cli:host` today and is to be renamed, since any runtime may
+implement it ([#899](https://github.com/elematic/zena/issues/899)).
+
+How a GC-stored matrix reaches the library is the first thing to settle.
+The host can read a GC array through wasmtime's `ArrayRef` without any
+guest-side copy, one `Val` per element; the runtime measured that path
+at 2.4 s/GiB for writes, which beside a BLAS call on a matrix of a few
+megabytes is acceptable and beside a vector operation is not. Whether
+the reference can reach a host function on the component target before
+the Component Model gains GC types is open. The alternative is a bulk
+copy to linear memory in the guest
+([#248](https://github.com/elematic/zena/issues/248)), which a
+linear-memory store would skip. Details in
 [#892](https://github.com/elematic/zena/issues/892). WASI-NN is the
 standard interface for inference and a separate consideration.
 
@@ -296,16 +322,21 @@ unaddressed. A matrix library built that way is written once per element
 type and cannot negate a vector. The operator fixes and the numeric bound
 come first.
 
-**Linear memory as the first store.** Rejected for the first version
-for the reasons under Decisions: no release mechanism yet, and the copy
-to linear memory for a BLAS call is a measurable cost rather than a
-structural one. The layout contract keeps it available.
+**Linear memory as the first store.** Deferred for the reasons under
+Decisions: GC arrays convert from the rest of the language for free, and
+the copy for a BLAS call is a cost to measure rather than a structural
+one. The layout contract keeps it a drop-in, and the ownership design
+makes it library work.
 
 **Host finalization for linear-memory matrices.** The earlier design
 proposed a `dispose()` method plus a JS `FinalizationRegistry` as a
-safety net. With GC arrays as the store there is nothing to free, and
-when a linear-memory store arrives the ownership design is its release
-mechanism, so neither is needed.
+safety net. With GC arrays as the store there is nothing to free, and a
+linear-memory store is released by the ownership machinery when its
+owner is dropped, so neither is needed.
+
+**Tagged literals by identifier category.** The earlier design spelled
+the literal `mat[...]` and told it from indexing by whether `mat` named
+a variable or a type. The `@` sigil makes the distinction syntactic.
 
 **Units as a library over extension classes.** Considered and rejected in
 [units-of-measure.md](units-of-measure.md): the unit set is closed, the
