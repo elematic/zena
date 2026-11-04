@@ -1,6 +1,6 @@
 /**
  * The script every page of the PDS's web app loads. The pages are rendered
- * on the server (`packages/pds/zena/web`) or built statically (`site/docs/`);
+ * on the server (`packages/registry/zena/web`) or built statically (`site/docs/`);
  * this defines the shared Zena website custom elements (`packages/website-client`)
  * and does what must happen in the browser: signing in and out with atproto
  * OAuth (`./auth.ts`, loaded only when it is needed).

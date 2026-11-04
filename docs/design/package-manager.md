@@ -7,9 +7,10 @@ Status: **Proposed**, and partly built: the AT Protocol libraries
 passwords, `zena publish`, `zena package create` and `zena scope`, and an
 App View with the methods for publishing and for changing members,
 teams and maintainers, each held until its threshold has attested it. The
-App View is built today as an extension of the PDS written in Zena
-(`packages/pds`); this design makes it a service of its own, which keeps
-its accounts on PDSes ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
+App View (`packages/registry`) runs today in one service with the PDS
+written in Zena that keeps its accounts (`packages/pds`); this design
+makes it a service of its own, which keeps its accounts on PDSes
+([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
 The checksum log is not built yet, so for now the App View's check of the
 attestations is the only one.
 
@@ -938,7 +939,7 @@ project that runs the App View, with a command run with the App View's own
 configuration, as `sync-handles` is:
 
 ```sh
-zena run packages/pds/zena/main.zena -- create-scope zena \
+zena run packages/registry/zena/main.zena -- create-scope zena \
   --owner did:plc:... --recovery-key did:key:...
 ```
 

@@ -29,7 +29,7 @@ import {
  */
 const SCOPE = 'atproto rpc:dev.zena-lang.registry.createWebSession?aud=*';
 
-/** Where the person's PDS sends them back; a page of the App View's (`pds:web/pages/sign-in`). */
+/** Where the person's PDS sends them back; a page of the App View's (`registry:web/pages/sign-in`). */
 export const CALLBACK_PATH = '/oauth/callback';
 
 /** The registry method that trades a service-auth token for a web session. */

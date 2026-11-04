@@ -2,7 +2,7 @@
  * Eleventy configuration for the Zena package manager documentation site
  * (`site/docs/` -> `out/docs/`) and the server-interpolated home page
  * template (`site/index.md` -> `out/home.html` and
- * `../pds/zena/web/pages/home-template.zena`).
+ * `../registry/zena/web/pages/home-template.zena`).
  *
  * Reuses the main documentation site's Shiki Zena highlighter, markdown-it
  * plugins, TOC extractor, and sidebar helpers from `../website/lib/`.
@@ -22,7 +22,7 @@ import {
 import {extractOutline} from '../website/lib/toc.js';
 
 const HOME_ZENA_PATH = new URL(
-  '../pds/zena/web/pages/home-template.zena',
+  '../registry/zena/web/pages/home-template.zena',
   import.meta.url,
 );
 
@@ -33,7 +33,7 @@ export default async function (eleventyConfig) {
 
   /**
    * Emits a named slot sentinel (`<!--zena-slot-->name<!--zena-slot-->`) that
-   * the Zena server (`packages/pds/zena/web/partials/slots.zena`) replaces at
+   * the Zena server (`packages/registry/zena/web/partials/slots.zena`) replaces at
    * request time with a server-rendered `HTMLPartial`.
    */
   eleventyConfig.addShortcode(

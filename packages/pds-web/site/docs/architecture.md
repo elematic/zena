@@ -2,7 +2,7 @@
 title: AT Protocol Architecture
 ---
 
-Zena's package manager is built directly on the [AT Protocol](https://atproto.com) (`packages/atproto`, `packages/package-manager`, and `packages/pds`). Rather than inventing a bespoke registry database and authentication protocol, packages use standard atproto primitives: DIDs, handles, signed Merkle Search Tree (MST) repositories, DAG-CBOR records, and content-addressed blobs.
+Zena's package manager is built directly on the [AT Protocol](https://atproto.com) (`packages/atproto`, `packages/package-manager`, `packages/registry` and `packages/pds`). Rather than inventing a bespoke registry database and authentication protocol, packages use standard atproto primitives: DIDs, handles, signed Merkle Search Tree (MST) repositories, DAG-CBOR records, and content-addressed blobs.
 
 For the complete specification, see [`docs/design/package-manager.md`](https://github.com/elematic/zena/blob/main/docs/design/package-manager.md) in the Zena repository.
 
@@ -54,9 +54,9 @@ When `zena fetch` downloads a pinned dependency:
 
 Because both the record proof and the blob hash are verified by the client, mirrors, caches, and CDNs require no trust.
 
-## The registry (`packages/pds`)
+## The registry (`packages/registry`)
 
-`pkg.zena-lang.dev` runs `packages/pds`, an AT Protocol PDS written in Zena and compiled to WebAssembly. In addition to standard `com.atproto.sync.*`, `com.atproto.repo.*`, and `com.atproto.server.*` endpoints, it implements the `dev.zena-lang.registry.*` XRPC methods:
+`pkg.zena-lang.dev` runs `packages/registry`, the App View, written in Zena and compiled to WebAssembly, in one service with `packages/pds`, the AT Protocol PDS that keeps its accounts. Beside the PDS's standard `com.atproto.sync.*`, `com.atproto.repo.*`, and `com.atproto.server.*` endpoints, it implements the `dev.zena-lang.registry.*` XRPC methods:
 
 - Authenticates callers using atproto service-auth tokens (`Bearer` JWTs signed by the caller's own PDS signing key for a specific `lxm` method).
 - Creates organization accounts, package accounts, and CI automation accounts, registering their `did:plc` identities and DNS handle records.

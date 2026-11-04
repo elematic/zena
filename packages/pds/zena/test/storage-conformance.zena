@@ -1,7 +1,9 @@
 /**
- * What every `Storage` and `AppViewStore` must do, as tests that run against
- * any of them: `storage_test.zena` runs them in memory, and
- * `emulator/firestore_test.zena` against the Firestore emulator.
+ * What every `Storage` and `CredentialStore` must do, as tests that run
+ * against any of them: `storage_test.zena` runs them in memory, and
+ * `emulator/firestore_test.zena` against the Firestore emulator. The App
+ * View's stores have their own, in
+ * `packages/registry/zena/test/store-conformance.zena`.
  */
 
 import {test} from 'zena:test';
@@ -13,12 +15,8 @@ import {Cid} from 'atproto:cid';
 import {MapValue, StringValue, newMap} from 'atproto:data';
 import {KeyType} from 'atproto:didkey';
 import {decodeCommit} from 'atproto:repo';
-import {MemberEntry, OWNER} from 'package-manager:records';
-import {AppViewAccount, AppViewStore, PackageSummary, PendingChange, PendingRelease} from 'pds:app-view';
-import {PlcLog} from 'pds:plc-directory';
 import {AppPassword, CredentialStore, RefreshSession} from 'pds:sessions';
-import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
-import {curveOf, formatDidKey, publicKeyFor} from 'atproto:didkey';
+import {formatDidKey} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
 import {CreateRecord, DeleteRecord, UpdateRecord, Write} from 'pds:repository';
 import {
@@ -254,226 +252,6 @@ export function storageConformance(make: () => Storage): void {
   });
 }
 
-/** Registers the App View store tests, each on a new store from `make`. */
-export function appViewStoreConformance(make: () => AppViewStore): void {
-  test('gives each scope and name to one account', (ctx) => {
-    let store = make();
-    isNull(runFuture(store.scopeOwner('acme')));
-    isTrue(runFuture(store.claimScope('acme', ALICE)), 'claimed');
-    isTrue(!runFuture(store.claimScope('acme', BOB)), 'taken');
-    equal(runFuture(store.scopeOwner('acme')) as String, ALICE);
-    // Only its owner gives it back.
-    runFuture(store.releaseScope('acme', BOB));
-    equal(runFuture(store.scopeOwner('acme')) as String, ALICE);
-    runFuture(store.releaseScope('acme', ALICE));
-    isNull(runFuture(store.scopeOwner('acme')));
-    isTrue(runFuture(store.claimScope('acme', BOB)), 'claimed again');
-
-    isNull(runFuture(store.nameInScope('acme', 'router')));
-    isTrue(runFuture(store.claimName('acme', 'router', ALICE)), 'claimed');
-    isTrue(!runFuture(store.claimName('acme', 'router', BOB)), 'taken');
-    isTrue(runFuture(store.claimName('other', 'router', BOB)), 'another scope');
-    equal(runFuture(store.nameInScope('acme', 'router')) as String, ALICE);
-    runFuture(store.releaseName('acme', 'router', BOB));
-    equal(runFuture(store.nameInScope('acme', 'router')) as String, ALICE);
-    runFuture(store.releaseName('acme', 'router', ALICE));
-    isNull(runFuture(store.nameInScope('acme', 'router')));
-  });
-
-  test('keeps the accounts the App View holds, with their kinds, scopes and names', (ctx) => {
-    let store = make();
-    isNull(runFuture(store.account(ALICE)));
-    equal(runFuture(store.accounts()).length, 0);
-    runFuture(store.putAccount(new AppViewAccount(ALICE, 'acme.pkg.test', AccountKind.Organization, 'acme', 'acme')));
-    runFuture(store.putAccount(new AppViewAccount(BOB, 'ci.acme.pkg.test', AccountKind.Automation, 'acme', 'ci')));
-    let org = runFuture(store.account(ALICE)) as AppViewAccount;
-    equal(org.handle, 'acme.pkg.test');
-    equal(org.kind, AccountKind.Organization);
-    equal(org.scope, 'acme');
-    equal(org.name, 'acme');
-    let bot = runFuture(store.account(BOB)) as AppViewAccount;
-    equal(bot.kind, AccountKind.Automation);
-    equal(bot.name, 'ci');
-    let all = runFuture(store.accounts());
-    equal(all.length, 2);
-    isTrue(all[0].did != all[1].did, 'both');
-  });
-
-  test("keeps each package's latest summary, by scope", (ctx) => {
-    let store = make();
-    equal(runFuture(store.summaries(null)).length, 0);
-    let router = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
-    router.description = 'Routes requests';
-    router.license = 'MIT';
-    router.latest = '1.0.0';
-    router.releases = 2;
-    runFuture(store.putSummary(router, '3l3qo2vutsw2b'));
-    runFuture(store.putSummary(new PackageSummary(BOB, 'json.other.pkg.test', 'other', 'json'), '3l3qo2vutsw2a'));
-    let all = runFuture(store.summaries(null));
-    equal(all.length, 2);
-    let acme = runFuture(store.summaries('acme'));
-    equal(acme.length, 1);
-    let read = acme[0];
-    equal(read.did, ALICE);
-    equal(read.handle, 'router.acme.pkg.test');
-    equal(read.name, 'router');
-    equal(read.description as String, 'Routes requests');
-    equal(read.license as String, 'MIT');
-    equal(read.latest as String, '1.0.0');
-    equal(read.releases, 2);
-    let json = runFuture(store.summaries('other'))[0];
-    isNull(json.description);
-    isNull(json.license);
-    isNull(json.latest);
-    equal(json.releases, 0);
-
-    // A summary of an earlier commit does not replace one of a later.
-    let older = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
-    runFuture(store.putSummary(older, '3l3qo2vutsw2a'));
-    equal(runFuture(store.summaries('acme'))[0].latest as String, '1.0.0');
-    let newer = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
-    newer.latest = '1.1.0';
-    runFuture(store.putSummary(newer, '3l3qo2vutsw2c'));
-    let replaced = runFuture(store.summaries('acme'));
-    equal(replaced.length, 1);
-    equal(replaced[0].latest as String, '1.1.0');
-    isNull(replaced[0].description);
-  });
-
-  test('notes which accounts mention a person or a team, and forgets none', (ctx) => {
-    let store = make();
-    equal(runFuture(store.mentionsOf(ALICE)).length, 0);
-    let org = 'did:plc:orgorgorgorgorgorgorgorgo';
-    let pkg = 'did:plc:pkgpkgpkgpkgpkgpkgpkgpkgp';
-    runFuture(store.addMentions(org, [ALICE, BOB]));
-    runFuture(store.addMentions(pkg, [ALICE, `${org} core`]));
-    // Again, as each commit notes them: once is enough.
-    runFuture(store.addMentions(pkg, [ALICE]));
-    let alice = runFuture(store.mentionsOf(ALICE));
-    equal(alice.length, 2);
-    isTrue((alice[0] == org && alice[1] == pkg) || (alice[0] == pkg && alice[1] == org), 'both accounts');
-    let bob = runFuture(store.mentionsOf(BOB));
-    equal(bob.length, 1);
-    equal(bob[0], org);
-    let team = runFuture(store.mentionsOf(`${org} core`));
-    equal(team.length, 1);
-    equal(team[0], pkg);
-    runFuture(store.addMentions(org, []));
-    equal(runFuture(store.mentionsOf(BOB)).length, 1);
-  });
-
-  test('lists every scope and name', (ctx) => {
-    let store = make();
-    runFuture(store.claimScope('acme', ALICE));
-    runFuture(store.claimScope('other', BOB));
-    runFuture(store.claimName('acme', 'router', BOB));
-    runFuture(store.claimName('other', 'router', ALICE));
-    runFuture(store.claimName('acme', 'gone', ALICE));
-    runFuture(store.releaseName('acme', 'gone', ALICE));
-    var scopes = '';
-    for (let claimed in runFuture(store.allScopes())) {
-      scopes = `${scopes}${claimed.scope}=${if (claimed.org == ALICE) 'alice' else 'bob'};`;
-    }
-    isTrue(scopes == 'acme=alice;other=bob;' || scopes == 'other=bob;acme=alice;', scopes);
-    let names = runFuture(store.allNames());
-    equal(names.length, 2);
-    for (let claimed in names) {
-      equal(claimed.name, 'router');
-      equal(claimed.did, if (claimed.scope == 'acme') BOB else ALICE);
-    }
-  });
-
-  test('keeps member entries', (ctx) => {
-    let store = make();
-    equal(runFuture(store.entries(ALICE)).length, 0);
-    let owner = new MemberEntry(BOB, OWNER, new FixedArray<u8>(32, 1 as u8));
-    let bot = new MemberEntry('did:plc:botbotbotbotbotbotbotbotb', 'publisher', new FixedArray<u8>(32, 2 as u8), true);
-    runFuture(store.addEntries(ALICE, [owner]));
-    runFuture(store.addEntries(ALICE, [bot]));
-    let entries = runFuture(store.entries(ALICE));
-    equal(entries.length, 2);
-    var commitments = 0;
-    for (let entry in entries) {
-      if (entry.commitment().equals(owner.commitment()) || entry.commitment().equals(bot.commitment())) {
-        commitments += 1;
-      }
-    }
-    equal(commitments, 2);
-    equal(runFuture(store.entries(BOB)).length, 0);
-  });
-
-  test('holds each release of a package once, until it is dropped', (ctx) => {
-    let store = make();
-    let record = new FixedArray<u8>(3, 7 as u8);
-    let cid = Cid.forDagCbor(record);
-    isNull(runFuture(store.heldRelease(ALICE, '1.0.0')));
-    isTrue(runFuture(store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, BOB, 42 as i64))), 'held');
-    isTrue(!runFuture(store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 43 as i64))), 'taken');
-    isTrue(runFuture(store.holdRelease(ALICE, new PendingRelease('1.1.0', record, cid, BOB, 44 as i64))), 'another version');
-    isTrue(runFuture(store.holdRelease(BOB, new PendingRelease('1.0.0', record, cid, BOB, 45 as i64))), 'another package');
-    let held = runFuture(store.heldRelease(ALICE, '1.0.0'));
-    if (held == null) {
-      throw new Error('1.0.0 is not held');
-    }
-    equal(held.version, '1.0.0');
-    equal(hex.encode(held.record), '070707');
-    isTrue(held.cid.equals(cid), 'cid');
-    equal(held.publisher, BOB);
-    equal(held.heldAt, 42 as i64);
-    equal(runFuture(store.heldReleases(ALICE)).length, 2);
-    runFuture(store.dropRelease(ALICE, '1.0.0'));
-    isNull(runFuture(store.heldRelease(ALICE, '1.0.0')));
-    let rest = runFuture(store.heldReleases(ALICE));
-    equal(rest.length, 1);
-    equal(rest[0].version, '1.1.0');
-    isTrue(runFuture(store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 46 as i64))), 'held again');
-  });
-
-  test('holds one change to each record, the latest, until it is dropped', (ctx) => {
-    let store = make();
-    let first = Cid.forDagCbor(new FixedArray<u8>(1, 1 as u8));
-    let second = Cid.forDagCbor(new FixedArray<u8>(1, 2 as u8));
-    let base = Cid.forDagCbor(new FixedArray<u8>(1, 3 as u8));
-    let members = 'dev.zena-lang.org.members';
-    let team = 'dev.zena-lang.org.team';
-    isNull(runFuture(store.heldChange(ALICE, members, 'self')));
-    runFuture(store.holdChange(ALICE, new PendingChange(members, 'self', new FixedArray<u8>(1, 1 as u8), first, base,
-        BOB, 42 as i64)));
-    // A new team has no record before it.
-    runFuture(store.holdChange(ALICE, new PendingChange(team, 'core', new FixedArray<u8>(1, 4 as u8), first, null,
-        ALICE, 43 as i64)));
-    runFuture(store.holdChange(BOB, new PendingChange(members, 'self', new FixedArray<u8>(1, 5 as u8), first, base,
-        BOB, 44 as i64)));
-    let held = runFuture(store.heldChange(ALICE, members, 'self'));
-    if (held == null) {
-      throw new Error('no change is held');
-    }
-    equal(held.collection, members);
-    equal(held.rkey, 'self');
-    equal(hex.encode(held.record), '01');
-    isTrue(held.cid.equals(first), 'cid');
-    isTrue(held.base != null && (held.base as Cid).equals(base), 'base');
-    equal(held.proposer, BOB);
-    equal(held.heldAt, 42 as i64);
-    let newTeam = runFuture(store.heldChange(ALICE, team, 'core'));
-    isTrue(newTeam != null && newTeam.base == null, 'a new team has no base');
-    equal(runFuture(store.heldChanges(ALICE)).length, 2);
-
-    // A later change to the record takes the earlier one's place, and
-    // dropping the earlier one leaves it.
-    runFuture(store.holdChange(ALICE, new PendingChange(members, 'self', new FixedArray<u8>(1, 2 as u8), second, base,
-        ALICE, 45 as i64)));
-    equal(runFuture(store.heldChanges(ALICE)).length, 2);
-    runFuture(store.dropChange(ALICE, members, 'self', first));
-    let latest = runFuture(store.heldChange(ALICE, members, 'self'));
-    isTrue(latest != null && latest.cid.equals(second), 'the later change stays');
-    runFuture(store.dropChange(ALICE, members, 'self', second));
-    isNull(runFuture(store.heldChange(ALICE, members, 'self')));
-    equal(runFuture(store.heldChanges(ALICE)).length, 1);
-    equal(runFuture(store.heldChanges(BOB)).length, 1);
-  });
-}
-
 /** Registers the PLC log tests, each on a new log from `make`. */
 /** What every `CredentialStore` must do. */
 export function credentialStoreConformance(make: () => CredentialStore): void {
@@ -511,36 +289,5 @@ export function credentialStoreConformance(make: () => CredentialStore): void {
     isNull(runFuture(store.takeSession('jti1')));
     isNull(runFuture(store.getSession('jti1')));
     isNull(runFuture(store.getSession('never')));
-  });
-}
-
-export function plcLogConformance(make: () => PlcLog): void {
-  test('keeps each DID\'s operations in order, appending only at the end', (ctx) => {
-    let log = make();
-    let rotation = new FixedArray<u8>(32, 3 as u8);
-    let sign = (bytes: FixedArray<u8>) => curveOf(KeyType.P256).sign(rotation, bytes);
-    let first = genesisOperation(publicKeyFor(KeyType.P256, rotation), [publicKeyFor(KeyType.P256, rotation)],
-        'a.pkg.test', 'https://pkg.test').signedWith(sign);
-    let did = didOfGenesis(first);
-    equal(runFuture(log.operations(did)).length, 0);
-    isTrue(runFuture(log.append(did, 0, first)), 'the genesis operation');
-    isTrue(!runFuture(log.append(did, 0, first)), 'another at index 0');
-    var previous = first;
-    // More than nine, so the order is not the order of unpadded digits.
-    for (var i = 1; i < 12; i += 1) {
-      let aka = new GrowableArray<String>();
-      aka.push(`at://a${i}.pkg.test`);
-      let next = new PlcOperation(previous.rotationKeys, previous.verificationMethods, aka, previous.services,
-          previous.cid().toString()).signedWith(sign);
-      isTrue(runFuture(log.append(did, i, next)), `operation ${i}`);
-      previous = next;
-    }
-    isTrue(!runFuture(log.append(did, 20, first)), 'past the end');
-    let all = runFuture(log.operations(did));
-    equal(all.length, 12);
-    equal(all[0].alsoKnownAs[0], 'at://a.pkg.test');
-    equal(all[11].alsoKnownAs[0], 'at://a11.pkg.test');
-    equal(all[11].prev as String, all[10].cid().toString());
-    equal(runFuture(log.operations('did:plc:otherotherotherotherothe')).length, 0);
   });
 }

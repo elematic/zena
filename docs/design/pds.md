@@ -213,11 +213,11 @@ grows. Milestones 1 to 4 are done.
    tenant and account from the start. The adapters are done, tested
    against the Firestore emulator with a suite every storage passes
    (`zena/test/storage-conformance.zena`), and so is the server's
-   configuration (`pds:service`), read from the environment. The App View
+   configuration (`registry:service`), read from the environment. The App View
    writes a TXT record for each handle it gives out, to a Cloud DNS zone
-   or in memory (`pds:handles`), and `npm run demo` runs it on this
+   or in memory (`registry:handles`), and `npm run demo` runs it on this
    machine. The image, its Cloud Run scripts for a staging and a
-   production environment, and their zones are in `packages/pds/deploy`;
+   production environment, and their zones are in `packages/registry/deploy`;
    neither environment is up yet.
 8. **Conformance.** The pds.js e2e suite, run against this server, with
    `com.atproto.repo.*` and AppView proxying for ordinary accounts.
@@ -258,7 +258,7 @@ the PDS at `padstone-staging.zena-lang.dev`. It also has its own Firestore
 database, blob prefix, rotation key and handle records.
 
 With `PDS_PLC=staging` the server is a PLC directory itself, at `/plc` on
-the PDS's name (`pds:plc-directory`). It records the operations of the
+the PDS's name (`registry:plc-directory`). It records the operations of the
 accounts the App View makes, after checking that each follows the last
 (`checkNextOperation` in `atproto:plc`), and serves those DIDs' documents
 and logs. Every other
@@ -275,12 +275,15 @@ hours, which a staging App View does not need.
 ## Tests
 
 - **Unit tests** are `packages/pds/zena/test/*_test.zena`, and use the
-  interop vectors and vlpds vectors as known answers.
+  interop vectors and vlpds vectors as known answers. The App View's are
+  `packages/registry/zena/test/*_test.zena`.
 - **Storage**: `zena/test/storage-conformance.zena` holds the tests every
-  `Storage` and `AppViewStore` passes. `npm test` runs them in memory, and
-  `npm run test:emulator -w @zena-lang/pds` against the Firestore
+  `Storage` and `CredentialStore` passes, and the App View's
+  `zena/test/store-conformance.zena` those every `AppViewStore` and
+  `PlcLog` passes. `npm test` runs them in memory, and
+  `npm run test:emulator` in each package against the Firestore
   emulator, which the root `emulators:start` service runs. There is no
   emulator for Cloud Storage's gRPC API, so that run keeps blob bytes in
   memory.
 - **Conformance**: the pds.js e2e suite, run from a pinned pds.js checkout
-  with a `zena` platform helper that starts `packages/pds/zena/main.zena`.
+  with a `zena` platform helper that starts `packages/registry/zena/main.zena`.
