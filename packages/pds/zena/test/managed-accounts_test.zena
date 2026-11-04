@@ -78,12 +78,10 @@ final class Fixture {
   }
 
   /** A signing key the PDS reserves for the host, or for `issuer`, the other one. */
-  // TODO(#855): default `issuer` to HOST_DID itself.
-  reserve(issuer: String | null = null): PublicKey {
-    let from = issuer ?? HOST_DID;
-    let signer = if (from == HOST_DID) this.hostSigning else this.otherSigning;
+  reserve(issuer: String = HOST_DID): PublicKey {
+    let signer = if (issuer == HOST_DID) this.hostSigning else this.otherSigning;
     let reserved = ok(this.call('com.atproto.server.reserveSigningKey', 'POST',
-        this.token(from, signer, 'com.atproto.server.reserveSigningKey'), '{}'));
+        this.token(issuer, signer, 'com.atproto.server.reserveSigningKey'), '{}'));
     return parseDidKey(reserved['signingKey'] as String);
   }
 
@@ -92,11 +90,10 @@ final class Fixture {
    * its signing key and `endpoint` as its PDS, with `rotation` as its
    * rotation keys, signed with `signer`.
    */
-  // TODO(#855): default `endpoint` to PDS_URL itself.
-  mint(signer: SigningKey, signing: PublicKey, endpoint: String | null = null,
+  mint(signer: SigningKey, signing: PublicKey, endpoint: String = PDS_URL,
       rotation: Array<PublicKey> | null = null): String {
     let keys: Array<PublicKey> = rotation ?? [this.hostRotation.publicKey()];
-    let operation = genesisOperation(signing, keys, HANDLE, endpoint ?? PDS_URL)
+    let operation = genesisOperation(signing, keys, HANDLE, endpoint)
         .signedWith((bytes) => signer.sign(bytes));
     let did = didOfGenesis(operation);
     this.logs[did] = [operation];

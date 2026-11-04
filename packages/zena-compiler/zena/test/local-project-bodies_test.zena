@@ -109,4 +109,30 @@ export let tests = suite('Local project bodies', () => {
     let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
     equal(errorDiagnostics(checked.diagnostics).length, 0);
   });
+
+  test('a dependency method default naming a module-level let is checked even when bodies are deferred', () => {
+    let host = new MockHost();
+    host.addFile("/dep/mod.zena",
+        badBody +
+        "let BASE = 100;\n" +
+        "export class DepClient {\n" +
+        "  offset(delta: i32, base: i32 = BASE): i32 {\n" +
+        "    return base + delta;\n" +
+        "  }\n" +
+        "  badDefault(flag: boolean = BASE): boolean {\n" +
+        "    return flag;\n" +
+        "  }\n" +
+        "}\n");
+    host.addFile("/project/main.zena",
+        "import { DepClient } from 'dep:mod';\n" +
+        "export let main = (): i32 => new DepClient().offset(5);\n");
+    let compiler = makeCompiler(host, depPackage());
+    let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
+    // `badBody` was deferred and never reached, while `offset`'s default
+    // resolved `BASE` and `badDefault`'s default was still type-checked.
+    let errors = errorDiagnostics(checked.diagnostics);
+    equal(errors.length, 1);
+    let span = errors[0].location as SourceSpan;
+    equal(span.file, "/dep/mod.zena");
+  });
 });

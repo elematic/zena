@@ -1,0 +1,27 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+
+// Module-private `let`s and functions in an imported library are reached
+// even when they are referenced only through spliced default arguments on
+// case classes, abstract base methods, and superclass constructors.
+
+import {Config, BaseClient, SubClient, SuperBase} from './default_param_module_let_helper.zena';
+
+class Derived extends SuperBase {
+  new() : super();
+}
+
+export let main = (): i32 => {
+  let cfg = new Config();
+  if (cfg.base != 'https://private.test') return 1;
+  if (cfg.tag != 'tag') return 2;
+
+  let client: BaseClient = new SubClient();
+  if (client.url('/x') != 'https://private.test/x') return 3;
+
+  let d = new Derived();
+  if (d.step != 7) return 4;
+
+  return 0;
+};
