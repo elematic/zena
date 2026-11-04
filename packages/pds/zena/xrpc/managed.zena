@@ -29,10 +29,11 @@ export function managedRoutes(router: Router, pds: Pds, managed: ManagedAccounts
   // exist yet, so this PDS reserves the key for the host, not for a DID.
   router.post(xrpcPath(SERVER_RESERVE_SIGNING_KEY), async (req, res, next, params) => {
     await sessionCall(res, async (): Future<JsonObject | null> => {
+      let authorization = req.getHeader('authorization');
       if ((await jsonBody(req, res)) == null) {
         return null;
       }
-      let host = await managed.reserver(req.getHeader('authorization'), nowSeconds());
+      let host = await managed.reserver(authorization, nowSeconds());
       let key = await pds.reserveSigningKey(host.did, nowSeconds());
       let answer = new JsonObject();
       answer['signingKey'] = formatDidKey(key);
