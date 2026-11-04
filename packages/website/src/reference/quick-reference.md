@@ -2471,6 +2471,21 @@ max(3.0, 7.0); // 7.0
 Also includes bit manipulation: `clz` (count leading zeros), `ctz` (count
 trailing zeros), `popcnt` (population count).
 
+The functions WASM has no instruction for are a port of musl's libm, each
+over `f64` and `f32`, accurate to under 1 ulp: `exp`, `exp2`, `expm1`,
+`log`, `log2`, `log10`, `log1p`, `pow`, `sin`, `cos`, `tan`, `asin`,
+`acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`,
+`atanh`, `cbrt`, `hypot` and `fma` (exact, in software). The constants
+`PI`, `E`, `TAU`, `LN2`, `LN10` and `SQRT2` are `f64`.
+
+```zena
+import {sin, pow, atan2, PI} from 'zena:math';
+
+sin(PI / 6.0); // 0.49999999999999994
+pow(2.0, 0.5); // 1.4142135623730951
+atan2(1.0, -1.0); // 2.356194490192345
+```
+
 ### zena:simd
 
 Two layers over WebAssembly SIMD, in one import.

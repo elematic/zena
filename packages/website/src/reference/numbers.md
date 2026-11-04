@@ -187,6 +187,30 @@ import {div} from 'zena:math';
 let quotient = div(7, 2); // 3 (i32)
 ```
 
+### Mathematical functions
+
+`zena:math` has the operations WebAssembly has instructions for (`sqrt`,
+`abs`, `floor`, `ceil`, `trunc`, `nearest`, `min`, `max`, `copysign`), and
+the exponential, logarithmic, trigonometric and hyperbolic functions, `pow`,
+`cbrt`, `hypot` and `fma`, which it computes in software. Each is overloaded
+over `f64` and `f32`, and the result is within 1 ulp of the true value (`fma`
+is exact).
+
+```zena
+import {exp, log, sin, atan2, hypot, pow, PI} from 'zena:math';
+
+let growth = exp(0.05); // 1.0512710963760241
+let halfLife = log(2.0) / 0.1; // 6.931471805599452
+let height = 10.0 * sin(PI / 4.0); // 7.071067811865475
+let angle = atan2(3.0, 4.0); // 0.6435011087932844
+let distance = hypot(3.0, 4.0); // 5.0
+let root = pow(27.0, 1.0 / 3.0); // 3.0
+```
+
+`**` on floats lowers to a squaring loop that truncates a non-integer
+exponent, so write `pow(x, y)` for a non-integer `y` until it lowers to
+`pow` ([#878](https://github.com/elematic/zena/issues/878)).
+
 ## Number literals
 
 Zena supports decimal and hexadecimal number literals:

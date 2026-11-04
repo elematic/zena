@@ -1,0 +1,186 @@
+/**
+ * `exp` and `expm1`, ported from musl's `exp.c` and `expm1.c`, which are
+ * FreeBSD's `e_exp.c` and `s_expm1.c`:
+ *
+ *   Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+ *   Developed at SunPro, a Sun Microsystems, Inc. business.
+ *   Permission to use, copy, modify, and distribute this software is
+ *   freely granted, provided that this notice is preserved.
+ *
+ * Both reduce `x` to `k * ln2 + r` with `|r| <= 0.5 * ln2`, approximate
+ * `exp(r)` by a rational function in `r * r`, and scale by `2^k`. The
+ * error is under 1 ulp.
+ */
+
+import { f64_reinterpret_i64 } from './intrinsics.zena';
+import { X1P1023, highWord, scalbn } from './float-bits.zena';
+
+let LN2HI = 0.6931471803691238; // 0x3fe62e42fee00000
+let LN2LO = 0.00000000019082149292705877; // 0x3dea39ef35793c76
+let INVLN2 = 1.4426950408889634; // 0x3ff71547652b82fe
+
+// exp: R(r*r) ~ 2 + P1 z + ... + P5 z^5, |error| <= 2^-59 on [0, 0.34658].
+let P1 = 0.16666666666666602; // 0x3fc555555555553e
+let P2 = -0.0027777777777015593; // 0xbf66c16c16bebd93
+let P3 = 0.00006613756321437934; // 0x3f11566aaf25de2c
+let P4 = -0.0000016533902205465252; // 0xbebbbd41c5d26bf1
+let P5 = 0.000000041381367970572385; // 0x3e66376972bea4d0
+
+// expm1: scaled Q's, Qn_here = 2^n * Qn, for R(2 z) where z = x*x/2.
+let Q1 = -0.03333333333333313; // 0xbfa11111111110f4
+let Q2 = 0.0015873015872548146; // 0x3f5a01a019fe5585
+let Q3 = -0.0000793650757867488; // 0xbf14ce199eaadbb7
+let Q4 = 0.000004008217827329362; // 0x3ed0cfca86e65239
+let Q5 = -0.00000020109921818362437; // 0xbe8afdb76e09c32d
+
+/** exp(x) overflows above this. */
+let O_THRESHOLD = 709.782712893384; // 0x40862e42fefa39ef
+
+/**
+ * e raised to `x`. Overflows to infinity above 709.78 and underflows to
+ * zero below -745.13; `exp(NaN)` is NaN.
+ */
+export function exp(x: f64): f64 {
+  let hx = highWord(x);
+  let sign = hx < 0;
+  let ax = hx & 0x7fffffff;
+  if (ax >= 0x4086232b) {
+    // |x| >= 708.39
+    if (x != x) {
+      return x;
+    }
+    if (x > O_THRESHOLD) {
+      return x * X1P1023; // overflow, and infinity stays infinity
+    }
+    if (x < -745.1332191019411) {
+      return 0.0;
+    }
+  }
+  var xr = x;
+  var hi = 0.0;
+  var lo = 0.0;
+  var k = 0;
+  if (ax > 0x3fd62e42) {
+    // |x| > 0.5 ln2
+    if (ax >= 0x3ff0a2b2) {
+      // |x| >= 1.5 ln2
+      k = (INVLN2 * x + (if (sign) -0.5 else 0.5)) as i32;
+    } else {
+      k = if (sign) -1 else 1;
+    }
+    let kf = k as f64;
+    hi = x - kf * LN2HI; // k * ln2hi is exact here
+    lo = kf * LN2LO;
+    xr = hi - lo;
+  } else if (ax > 0x3e300000) {
+    // |x| > 2^-28
+    hi = x;
+  } else {
+    return 1.0 + x;
+  }
+  // xr is now in the primary range
+  let xx = xr * xr;
+  let c = xr - xx * (P1 + xx * (P2 + xx * (P3 + xx * (P4 + xx * P5))));
+  let y = 1.0 + (xr * c / (2.0 - c) - lo + hi);
+  if (k == 0) {
+    return y;
+  }
+  return scalbn(y, k);
+}
+
+export function exp(x: f32): f32 {
+  return exp(x as f64) as f32;
+}
+
+/**
+ * `exp(x) - 1`, accurate for small `x` where `exp(x) - 1.0` would cancel.
+ */
+export function expm1(x: f64): f64 {
+  let hx0 = highWord(x);
+  let hx = hx0 & 0x7fffffff;
+  let sign = hx0 < 0;
+  if (hx >= 0x4043687a) {
+    // |x| >= 56 ln2
+    if (x != x) {
+      return x;
+    }
+    if (sign) {
+      return -1.0;
+    }
+    if (x > O_THRESHOLD) {
+      return x * X1P1023;
+    }
+  }
+  var xr = x;
+  var c = 0.0;
+  var k = 0;
+  if (hx > 0x3fd62e42) {
+    // |x| > 0.5 ln2
+    var hi = 0.0;
+    var lo = 0.0;
+    if (hx < 0x3ff0a2b2) {
+      // and |x| < 1.5 ln2
+      if (sign) {
+        hi = x + LN2HI;
+        lo = -LN2LO;
+        k = -1;
+      } else {
+        hi = x - LN2HI;
+        lo = LN2LO;
+        k = 1;
+      }
+    } else {
+      k = (INVLN2 * x + (if (sign) -0.5 else 0.5)) as i32;
+      let t = k as f64;
+      hi = x - t * LN2HI; // t * ln2hi is exact here
+      lo = t * LN2LO;
+    }
+    xr = hi - lo;
+    c = (hi - xr) - lo;
+  } else if (hx < 0x3c900000) {
+    // |x| < 2^-54
+    return x;
+  }
+  // xr is now in the primary range
+  let hfx = 0.5 * xr;
+  let hxs = xr * hfx;
+  let r1 = 1.0 + hxs * (Q1 + hxs * (Q2 + hxs * (Q3 + hxs * (Q4 + hxs * Q5))));
+  let t = 3.0 - r1 * hfx;
+  var e = hxs * ((r1 - t) / (6.0 - xr * t));
+  if (k == 0) {
+    // c is 0
+    return xr - (xr * e - hxs);
+  }
+  e = xr * (e - c) - c;
+  e -= hxs;
+  // exp(x) ~ 2^k (xr - e + 1)
+  if (k == -1) {
+    return 0.5 * (xr - e) - 0.5;
+  }
+  if (k == 1) {
+    if (xr < -0.25) {
+      return -2.0 * (e - (xr + 0.5));
+    }
+    return 1.0 + 2.0 * (xr - e);
+  }
+  let twopk = f64_reinterpret_i64(((0x3ff + k) as i64) << 52); // 2^k
+  if (k < 0 || k > 56) {
+    // suffices to return exp(x) - 1
+    var y = xr - e + 1.0;
+    if (k == 1024) {
+      y = y * 2.0 * X1P1023;
+    } else {
+      y = y * twopk;
+    }
+    return y - 1.0;
+  }
+  let uf = f64_reinterpret_i64(((0x3ff - k) as i64) << 52); // 2^-k
+  if (k < 20) {
+    return (xr - e + (1.0 - uf)) * twopk;
+  }
+  return (xr - (e + uf) + 1.0) * twopk;
+}
+
+export function expm1(x: f32): f32 {
+  return expm1(x as f64) as f32;
+}

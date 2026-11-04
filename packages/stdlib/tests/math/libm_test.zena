@@ -1,0 +1,571 @@
+// The libm port in zena:math, checked against correctly rounded results
+// (tests/math/libm-reference.zena, from MPFR) with a ULP tolerance per
+// function, plus the special cases: NaN, infinities, signed zeros, the
+// overflow and underflow thresholds and the domain errors.
+import { suite, test } from 'zena:test';
+import { equal, isTrue, fail } from 'zena:assert';
+import { parseF64 } from 'zena:core';
+import {
+  exp, exp2, expm1, log, log2, log10, log1p, pow,
+  sin, cos, tan, asin, acos, atan, atan2,
+  sinh, cosh, tanh, asinh, acosh, atanh,
+  cbrt, hypot, fma, sqrt,
+  PI, E, TAU, LN2, LN10, SQRT2,
+  i64_reinterpret_f64, i32_reinterpret_f32, isNaN,
+} from 'zena:math';
+import {
+  EXP, EXP2, EXPM1, LOG, LOG2, LOG10, LOG1P, POW,
+  SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2,
+  SINH, COSH, TANH, ASINH, ACOSH, ATANH,
+  CBRT, HYPOT, FMA,
+  EXP_F32, EXP2_F32, EXPM1_F32, LOG_F32, LOG2_F32, LOG10_F32, LOG1P_F32, POW_F32,
+  SIN_F32, COS_F32, TAN_F32, ASIN_F32, ACOS_F32, ATAN_F32, ATAN2_F32,
+  SINH_F32, COSH_F32, TANH_F32, ASINH_F32, ACOSH_F32, ATANH_F32,
+  CBRT_F32, HYPOT_F32, FMA_F32,
+} from './libm-reference.zena';
+
+let INFINITY = 1.0 / 0.0;
+let NAN = 0.0 / 0.0;
+let MAX = parseF64('1.7976931348623157e308');
+let MIN_NORMAL = parseF64('2.2250738585072014e-308');
+let MIN_SUBNORMAL = parseF64('5e-324');
+let ABS_MASK: i64 = 0x7fffffffffffffff;
+
+function isNegativeZero(x: f64) {
+  return x == 0.0 && 1.0 / x < 0.0;
+}
+
+/** The bits of `x` on a scale where adjacent doubles differ by one. */
+function ordered(x: f64) {
+  let b = i64_reinterpret_f64(x);
+  return if (b < 0) -(b & ABS_MASK) else b;
+}
+
+function ordered32(x: f32) {
+  let b = i32_reinterpret_f32(x);
+  return if (b < 0) -(b & 0x7fffffff) else b;
+}
+
+/**
+ * How many doubles apart `actual` and `expected` are, or -1 when one is
+ * NaN and the other is not. Infinity is one past the largest double.
+ */
+function ulpDistance(actual: f64, expected: f64): i64 {
+  if (isNaN(expected)) {
+    return if (isNaN(actual)) 0 else -1;
+  }
+  if (isNaN(actual)) {
+    return -1;
+  }
+  let d = ordered(actual) - ordered(expected);
+  return if (d < 0) -d else d;
+}
+
+function ulpDistance32(actual: f32, expected: f32): i64 {
+  if (expected != expected) {
+    return if (actual != actual) 0 else -1;
+  }
+  if (actual != actual) {
+    return -1;
+  }
+  let d = ordered32(actual) - ordered32(expected);
+  return (if (d < 0) -d else d) as i64;
+}
+
+function fields(line: String) {
+  let parts = line.split(' ');
+  let values = new FixedArray<f64>(parts.length, 0.0);
+  var i = 0;
+  while (i < parts.length) {
+    values[i] = parseF64(parts[i]);
+    i += 1;
+  }
+  return values;
+}
+
+function checkTable(
+  name: String, table: String, tolerance: i64, f: (args: FixedArray<f64>) => f64,
+) {
+  var worst = 0 as i64;
+  var count = 0;
+  for (let line in table.split('\n')) {
+    let v = fields(line);
+    let expected = v[v.length - 1];
+    let actual = f(v);
+    let d = ulpDistance(actual, expected);
+    if (d < 0 || d > tolerance) {
+      fail(`${name}(${line}): got ${actual}, ${d} ulp off (tolerance ${tolerance})`);
+    }
+    if (d > worst) {
+      worst = d;
+    }
+    count += 1;
+  }
+  isTrue(count > 50, `${name}: too few cases (${count})`);
+}
+
+function checkTable32(
+  name: String, table: String, tolerance: i64, f: (args: FixedArray<f64>) => f32,
+) {
+  var count = 0;
+  for (let line in table.split('\n')) {
+    let v = fields(line);
+    let expected = v[v.length - 1] as f32;
+    let actual = f(v);
+    let d = ulpDistance32(actual, expected);
+    if (d < 0 || d > tolerance) {
+      fail(`${name}(${line}) over f32: got ${actual}, ${d} ulp off (tolerance ${tolerance})`);
+    }
+    count += 1;
+  }
+  isTrue(count > 20, `${name}: too few f32 cases (${count})`);
+}
+
+export let tests = suite('zena:math libm', () => {
+  test('exponentials against MPFR', (ctx) => {
+    checkTable('exp', EXP, 1, (v) => exp(v[0]));
+    checkTable('exp2', EXP2, 1, (v) => exp2(v[0]));
+    checkTable('expm1', EXPM1, 1, (v) => expm1(v[0]));
+    checkTable('pow', POW, 1, (v) => pow(v[0], v[1]));
+  });
+
+  test('logarithms against MPFR', (ctx) => {
+    checkTable('log', LOG, 1, (v) => log(v[0]));
+    checkTable('log2', LOG2, 1, (v) => log2(v[0]));
+    checkTable('log10', LOG10, 1, (v) => log10(v[0]));
+    checkTable('log1p', LOG1P, 1, (v) => log1p(v[0]));
+  });
+
+  test('trigonometric functions against MPFR', (ctx) => {
+    checkTable('sin', SIN, 1, (v) => sin(v[0]));
+    checkTable('cos', COS, 1, (v) => cos(v[0]));
+    checkTable('tan', TAN, 1, (v) => tan(v[0]));
+    checkTable('asin', ASIN, 1, (v) => asin(v[0]));
+    checkTable('acos', ACOS, 1, (v) => acos(v[0]));
+    checkTable('atan', ATAN, 1, (v) => atan(v[0]));
+    checkTable('atan2', ATAN2, 1, (v) => atan2(v[0], v[1]));
+  });
+
+  test('hyperbolic functions against MPFR', (ctx) => {
+    checkTable('sinh', SINH, 1, (v) => sinh(v[0]));
+    checkTable('cosh', COSH, 1, (v) => cosh(v[0]));
+    checkTable('tanh', TANH, 2, (v) => tanh(v[0]));
+    checkTable('asinh', ASINH, 2, (v) => asinh(v[0]));
+    checkTable('acosh', ACOSH, 2, (v) => acosh(v[0]));
+    checkTable('atanh', ATANH, 2, (v) => atanh(v[0]));
+  });
+
+  test('cbrt, hypot and fma against MPFR', (ctx) => {
+    checkTable('cbrt', CBRT, 1, (v) => cbrt(v[0]));
+    checkTable('hypot', HYPOT, 1, (v) => hypot(v[0], v[1]));
+    checkTable('fma', FMA, 0, (v) => fma(v[0], v[1], v[2]));
+  });
+
+  test('f32 overloads against MPFR', (ctx) => {
+    checkTable32('exp', EXP_F32, 1, (v) => exp(v[0] as f32));
+    checkTable32('exp2', EXP2_F32, 1, (v) => exp2(v[0] as f32));
+    checkTable32('expm1', EXPM1_F32, 1, (v) => expm1(v[0] as f32));
+    checkTable32('log', LOG_F32, 1, (v) => log(v[0] as f32));
+    checkTable32('log2', LOG2_F32, 1, (v) => log2(v[0] as f32));
+    checkTable32('log10', LOG10_F32, 1, (v) => log10(v[0] as f32));
+    checkTable32('log1p', LOG1P_F32, 1, (v) => log1p(v[0] as f32));
+    checkTable32('pow', POW_F32, 1, (v) => pow(v[0] as f32, v[1] as f32));
+    checkTable32('sin', SIN_F32, 1, (v) => sin(v[0] as f32));
+    checkTable32('cos', COS_F32, 1, (v) => cos(v[0] as f32));
+    checkTable32('tan', TAN_F32, 1, (v) => tan(v[0] as f32));
+    checkTable32('asin', ASIN_F32, 1, (v) => asin(v[0] as f32));
+    checkTable32('acos', ACOS_F32, 1, (v) => acos(v[0] as f32));
+    checkTable32('atan', ATAN_F32, 1, (v) => atan(v[0] as f32));
+    checkTable32('atan2', ATAN2_F32, 1, (v) => atan2(v[0] as f32, v[1] as f32));
+    checkTable32('sinh', SINH_F32, 1, (v) => sinh(v[0] as f32));
+    checkTable32('cosh', COSH_F32, 1, (v) => cosh(v[0] as f32));
+    checkTable32('tanh', TANH_F32, 1, (v) => tanh(v[0] as f32));
+    checkTable32('asinh', ASINH_F32, 1, (v) => asinh(v[0] as f32));
+    checkTable32('acosh', ACOSH_F32, 1, (v) => acosh(v[0] as f32));
+    checkTable32('atanh', ATANH_F32, 1, (v) => atanh(v[0] as f32));
+    checkTable32('cbrt', CBRT_F32, 1, (v) => cbrt(v[0] as f32));
+    checkTable32('hypot', HYPOT_F32, 1, (v) => hypot(v[0] as f32, v[1] as f32));
+    checkTable32('fma', FMA_F32, 0, (v) => fma(v[0] as f32, v[1] as f32, v[2] as f32));
+  });
+
+  test('constants', (ctx) => {
+    equal(PI, 3.141592653589793);
+    equal(E, 2.718281828459045);
+    equal(TAU, 2.0 * PI);
+    equal(LN2, 0.6931471805599453);
+    equal(LN10, 2.302585092994046);
+    equal(SQRT2, sqrt(2.0));
+    isTrue(isNaN(NAN));
+    isTrue(!isNaN(INFINITY));
+    isTrue(!isNaN(0.0));
+    isTrue(isNaN((0.0 as f32) / (0.0 as f32)));
+    isTrue(!isNaN(1.0 as f32));
+    equal(cos(PI), -1.0);
+    equal(sin(PI / 2.0), 1.0);
+    equal(log(E), 1.0);
+    equal(pow(SQRT2, 2.0), 2.0000000000000004);
+  });
+
+  test('exp special cases', (ctx) => {
+    equal(exp(0.0), 1.0);
+    equal(exp(-0.0), 1.0);
+    equal(exp(INFINITY), INFINITY);
+    equal(exp(-INFINITY), 0.0);
+    isTrue(isNaN(exp(NAN)));
+    isTrue(exp(709.782712893384) < INFINITY);
+    equal(exp(709.7827128933841), INFINITY);
+    equal(exp(-745.1332191019411), MIN_SUBNORMAL);
+    equal(exp(-745.1332191019412), 0.0);
+    equal(exp(-708.5), parseF64('2.006132305331306e-308'));
+    equal(exp(1.0), 2.7182818284590455);
+    equal(exp(MIN_SUBNORMAL), 1.0);
+    equal(exp(-1000.0), 0.0);
+    equal(exp(1000.0), INFINITY);
+  });
+
+  test('exp2 and expm1 special cases', (ctx) => {
+    equal(exp2(0.0), 1.0);
+    equal(exp2(10.0), 1024.0);
+    equal(exp2(-10.0), 0.0009765625);
+    equal(exp2(1023.0), parseF64('8.98846567431158e307'));
+    equal(exp2(1024.0), INFINITY);
+    equal(exp2(-1074.0), MIN_SUBNORMAL);
+    equal(exp2(-1075.0), 0.0);
+    equal(exp2(-1022.0), MIN_NORMAL);
+    equal(exp2(INFINITY), INFINITY);
+    equal(exp2(-INFINITY), 0.0);
+    isTrue(isNaN(exp2(NAN)));
+    equal(expm1(0.0), 0.0);
+    isTrue(isNegativeZero(expm1(-0.0)));
+    equal(expm1(INFINITY), INFINITY);
+    equal(expm1(-INFINITY), -1.0);
+    isTrue(isNaN(expm1(NAN)));
+    equal(expm1(parseF64('1e-20')), parseF64('1e-20'));
+    equal(expm1(-1000.0), -1.0);
+    equal(expm1(1000.0), INFINITY);
+    equal(expm1(MIN_SUBNORMAL), MIN_SUBNORMAL);
+  });
+
+  test('log special cases', (ctx) => {
+    equal(log(1.0), 0.0);
+    equal(log(0.0), -INFINITY);
+    equal(log(-0.0), -INFINITY);
+    isTrue(isNaN(log(-1.0)));
+    isTrue(isNaN(log(-INFINITY)));
+    equal(log(INFINITY), INFINITY);
+    isTrue(isNaN(log(NAN)));
+    equal(log(MIN_SUBNORMAL), -744.4400719213812);
+    equal(log(MAX), 709.782712893384);
+    equal(log2(1.0), 0.0);
+    equal(log2(0.0), -INFINITY);
+    isTrue(isNaN(log2(-1.0)));
+    equal(log2(1024.0), 10.0);
+    equal(log2(0.125), -3.0);
+    equal(log2(MIN_SUBNORMAL), -1074.0);
+    equal(log2(INFINITY), INFINITY);
+    equal(log10(1.0), 0.0);
+    equal(log10(0.0), -INFINITY);
+    isTrue(isNaN(log10(-1.0)));
+    equal(log10(1000.0), 3.0);
+    equal(log10(0.001), -3.0);
+    equal(log10(parseF64('1e22')), 22.0);
+    equal(log10(INFINITY), INFINITY);
+    equal(log1p(0.0), 0.0);
+    isTrue(isNegativeZero(log1p(-0.0)));
+    equal(log1p(-1.0), -INFINITY);
+    isTrue(isNaN(log1p(-1.5)));
+    isTrue(isNaN(log1p(-INFINITY)));
+    equal(log1p(INFINITY), INFINITY);
+    isTrue(isNaN(log1p(NAN)));
+    equal(log1p(parseF64('1e-20')), parseF64('1e-20'));
+    equal(log1p(MIN_SUBNORMAL), MIN_SUBNORMAL);
+  });
+
+  test('pow special cases', (ctx) => {
+    // C's rules: anything to the zero is 1, 1 to anything is 1
+    equal(pow(NAN, 0.0), 1.0);
+    equal(pow(NAN, -0.0), 1.0);
+    equal(pow(1.0, NAN), 1.0);
+    equal(pow(1.0, INFINITY), 1.0);
+    equal(pow(-1.0, INFINITY), 1.0);
+    equal(pow(-1.0, -INFINITY), 1.0);
+    isTrue(isNaN(pow(NAN, 1.0)));
+    isTrue(isNaN(pow(2.0, NAN)));
+    // zeros
+    equal(pow(0.0, 3.0), 0.0);
+    isTrue(isNegativeZero(pow(-0.0, 3.0)));
+    equal(pow(-0.0, 4.0), 0.0);
+    equal(pow(0.0, 0.5), 0.0);
+    equal(pow(-0.0, 0.5), 0.0);
+    equal(pow(0.0, -1.0), INFINITY);
+    equal(pow(-0.0, -1.0), -INFINITY);
+    equal(pow(-0.0, -2.0), INFINITY);
+    equal(pow(0.0, -INFINITY), INFINITY);
+    equal(pow(0.0, INFINITY), 0.0);
+    // infinities
+    equal(pow(INFINITY, 2.0), INFINITY);
+    equal(pow(INFINITY, -2.0), 0.0);
+    equal(pow(-INFINITY, 3.0), -INFINITY);
+    equal(pow(-INFINITY, 2.0), INFINITY);
+    isTrue(isNegativeZero(pow(-INFINITY, -3.0)));
+    equal(pow(-INFINITY, -2.0), 0.0);
+    equal(pow(2.0, INFINITY), INFINITY);
+    equal(pow(2.0, -INFINITY), 0.0);
+    equal(pow(0.5, INFINITY), 0.0);
+    equal(pow(0.5, -INFINITY), INFINITY);
+    // negative bases
+    equal(pow(-2.0, 3.0), -8.0);
+    equal(pow(-2.0, 2.0), 4.0);
+    equal(pow(-2.0, -3.0), -0.125);
+    isTrue(isNaN(pow(-2.0, 0.5)));
+    isTrue(isNaN(pow(-2.0, 1.5)));
+    equal(pow(-2.0, 9007199254740992.0), INFINITY); // 2^53 is even
+    equal(pow(-0.5, 9007199254740992.0), 0.0);
+    equal(pow(-2.0, 9007199254740991.0), -INFINITY); // 2^53 - 1 is odd
+    // exact results
+    equal(pow(2.0, 10.0), 1024.0);
+    equal(pow(2.0, -1.0), 0.5);
+    equal(pow(10.0, 22.0), parseF64('1e22'));
+    equal(pow(3.0, 2.0), 9.0);
+    equal(pow(4.0, 0.5), 2.0);
+    equal(pow(2.0, 1023.0), parseF64('8.98846567431158e307'));
+    equal(pow(2.0, 1024.0), INFINITY);
+    equal(pow(2.0, -1074.0), MIN_SUBNORMAL);
+    equal(pow(2.0, -1075.0), 0.0);
+    equal(pow(1.5, 2.0), 2.25);
+    equal(pow(2.0, 0.3), 1.2311444133449163);
+    equal(pow(MAX, 2.0), INFINITY);
+    equal(pow(MIN_SUBNORMAL, 2.0), 0.0);
+    equal(pow(MAX, -1.0), parseF64('5.562684646268003e-309'));
+  });
+
+  test('sin, cos and tan special cases', (ctx) => {
+    equal(sin(0.0), 0.0);
+    isTrue(isNegativeZero(sin(-0.0)));
+    isTrue(isNaN(sin(INFINITY)));
+    isTrue(isNaN(sin(-INFINITY)));
+    isTrue(isNaN(sin(NAN)));
+    equal(sin(MIN_SUBNORMAL), MIN_SUBNORMAL);
+    equal(sin(parseF64('1e-10')), parseF64('1e-10'));
+    equal(sin(parseF64('1e22')), -0.8522008497671888);
+    equal(sin(PI), parseF64('1.2246467991473532e-16'));
+    equal(cos(0.0), 1.0);
+    equal(cos(-0.0), 1.0);
+    isTrue(isNaN(cos(INFINITY)));
+    isTrue(isNaN(cos(NAN)));
+    equal(cos(parseF64('1e-10')), 1.0);
+    equal(cos(PI / 2.0), parseF64('6.123233995736766e-17'));
+    equal(tan(0.0), 0.0);
+    isTrue(isNegativeZero(tan(-0.0)));
+    isTrue(isNaN(tan(INFINITY)));
+    isTrue(isNaN(tan(NAN)));
+    equal(tan(parseF64('1e-10')), parseF64('1e-10'));
+    equal(tan(PI / 4.0), 0.9999999999999999);
+    equal(tan(PI / 2.0), 16331239353195370.0);
+  });
+
+  test('inverse trigonometric special cases', (ctx) => {
+    equal(asin(0.0), 0.0);
+    isTrue(isNegativeZero(asin(-0.0)));
+    equal(asin(1.0), PI / 2.0);
+    equal(asin(-1.0), -PI / 2.0);
+    isTrue(isNaN(asin(1.0000000000000002)));
+    isTrue(isNaN(asin(-1.5)));
+    isTrue(isNaN(asin(INFINITY)));
+    isTrue(isNaN(asin(NAN)));
+    equal(asin(MIN_SUBNORMAL), MIN_SUBNORMAL);
+    equal(asin(0.5), 0.5235987755982989);
+    equal(acos(1.0), 0.0);
+    equal(acos(-1.0), PI);
+    equal(acos(0.0), PI / 2.0);
+    equal(acos(-0.0), PI / 2.0);
+    isTrue(isNaN(acos(1.0000000000000002)));
+    isTrue(isNaN(acos(-INFINITY)));
+    isTrue(isNaN(acos(NAN)));
+    equal(acos(0.5), 1.0471975511965979);
+    equal(atan(0.0), 0.0);
+    isTrue(isNegativeZero(atan(-0.0)));
+    equal(atan(INFINITY), PI / 2.0);
+    equal(atan(-INFINITY), -PI / 2.0);
+    isTrue(isNaN(atan(NAN)));
+    equal(atan(1.0), PI / 4.0);
+    equal(atan(MIN_SUBNORMAL), MIN_SUBNORMAL);
+    equal(atan(MAX), PI / 2.0);
+  });
+
+  test('atan2 special cases', (ctx) => {
+    equal(atan2(0.0, 1.0), 0.0);
+    isTrue(isNegativeZero(atan2(-0.0, 1.0)));
+    equal(atan2(0.0, -1.0), PI);
+    equal(atan2(-0.0, -1.0), -PI);
+    equal(atan2(0.0, 0.0), 0.0);
+    equal(atan2(0.0, -0.0), PI);
+    equal(atan2(-0.0, -0.0), -PI);
+    equal(atan2(1.0, 0.0), PI / 2.0);
+    equal(atan2(-1.0, 0.0), -PI / 2.0);
+    equal(atan2(1.0, -0.0), PI / 2.0);
+    equal(atan2(1.0, INFINITY), 0.0);
+    isTrue(isNegativeZero(atan2(-1.0, INFINITY)));
+    equal(atan2(1.0, -INFINITY), PI);
+    equal(atan2(-1.0, -INFINITY), -PI);
+    equal(atan2(INFINITY, 1.0), PI / 2.0);
+    equal(atan2(-INFINITY, 1.0), -PI / 2.0);
+    equal(atan2(INFINITY, INFINITY), PI / 4.0);
+    equal(atan2(INFINITY, -INFINITY), 3.0 * PI / 4.0);
+    equal(atan2(-INFINITY, INFINITY), -PI / 4.0);
+    equal(atan2(-INFINITY, -INFINITY), -3.0 * PI / 4.0);
+    isTrue(isNaN(atan2(NAN, 1.0)));
+    isTrue(isNaN(atan2(1.0, NAN)));
+    equal(atan2(1.0, 1.0), PI / 4.0);
+    equal(atan2(-1.0, -1.0), -3.0 * PI / 4.0);
+    equal(atan2(MIN_SUBNORMAL, 1.0), MIN_SUBNORMAL);
+    equal(atan2(MIN_SUBNORMAL, -1.0), PI);
+    equal(atan2(MAX, MIN_SUBNORMAL), PI / 2.0);
+  });
+
+  test('hyperbolic special cases', (ctx) => {
+    equal(sinh(0.0), 0.0);
+    isTrue(isNegativeZero(sinh(-0.0)));
+    equal(sinh(INFINITY), INFINITY);
+    equal(sinh(-INFINITY), -INFINITY);
+    isTrue(isNaN(sinh(NAN)));
+    equal(sinh(MIN_SUBNORMAL), MIN_SUBNORMAL);
+    equal(sinh(parseF64('1e-10')), parseF64('1e-10'));
+    isTrue(sinh(710.4758600739439) < INFINITY);
+    equal(sinh(710.475860073944), INFINITY);
+    equal(sinh(-710.475860073944), -INFINITY);
+    equal(cosh(0.0), 1.0);
+    equal(cosh(-0.0), 1.0);
+    equal(cosh(INFINITY), INFINITY);
+    equal(cosh(-INFINITY), INFINITY);
+    isTrue(isNaN(cosh(NAN)));
+    equal(cosh(parseF64('1e-10')), 1.0);
+    isTrue(cosh(710.4758600739439) < INFINITY);
+    equal(cosh(710.475860073944), INFINITY);
+    equal(tanh(0.0), 0.0);
+    isTrue(isNegativeZero(tanh(-0.0)));
+    equal(tanh(INFINITY), 1.0);
+    equal(tanh(-INFINITY), -1.0);
+    isTrue(isNaN(tanh(NAN)));
+    equal(tanh(MIN_SUBNORMAL), MIN_SUBNORMAL);
+    equal(tanh(parseF64('1e-10')), parseF64('1e-10'));
+    equal(tanh(20.0), 1.0);
+    equal(tanh(-20.0), -1.0);
+    equal(tanh(1000.0), 1.0);
+    equal(asinh(0.0), 0.0);
+    isTrue(isNegativeZero(asinh(-0.0)));
+    equal(asinh(INFINITY), INFINITY);
+    equal(asinh(-INFINITY), -INFINITY);
+    isTrue(isNaN(asinh(NAN)));
+    equal(asinh(MIN_SUBNORMAL), MIN_SUBNORMAL);
+    equal(asinh(parseF64('1e-10')), parseF64('1e-10'));
+    equal(asinh(MAX), 710.4758600739439);
+    equal(acosh(1.0), 0.0);
+    isTrue(isNaN(acosh(0.9999999999999999)));
+    isTrue(isNaN(acosh(0.0)));
+    isTrue(isNaN(acosh(-1.0)));
+    isTrue(isNaN(acosh(-INFINITY)));
+    equal(acosh(INFINITY), INFINITY);
+    isTrue(isNaN(acosh(NAN)));
+    equal(acosh(MAX), 710.4758600739439);
+    equal(atanh(0.0), 0.0);
+    isTrue(isNegativeZero(atanh(-0.0)));
+    equal(atanh(1.0), INFINITY);
+    equal(atanh(-1.0), -INFINITY);
+    isTrue(isNaN(atanh(1.0000000000000002)));
+    isTrue(isNaN(atanh(-1.5)));
+    isTrue(isNaN(atanh(INFINITY)));
+    isTrue(isNaN(atanh(NAN)));
+    equal(atanh(MIN_SUBNORMAL), MIN_SUBNORMAL);
+    equal(atanh(parseF64('1e-10')), parseF64('1e-10'));
+  });
+
+  test('cbrt and hypot special cases', (ctx) => {
+    equal(cbrt(0.0), 0.0);
+    isTrue(isNegativeZero(cbrt(-0.0)));
+    equal(cbrt(INFINITY), INFINITY);
+    equal(cbrt(-INFINITY), -INFINITY);
+    isTrue(isNaN(cbrt(NAN)));
+    equal(cbrt(8.0), 2.0);
+    equal(cbrt(-27.0), -3.0);
+    equal(cbrt(1.0), 1.0);
+    equal(cbrt(parseF64('1e300')), parseF64('1e100'));
+    equal(cbrt(MIN_SUBNORMAL), parseF64('1.7031839360032603e-108'));
+    equal(cbrt(MAX), parseF64('5.643803094122362e102'));
+    equal(hypot(3.0, 4.0), 5.0);
+    equal(hypot(-3.0, 4.0), 5.0);
+    equal(hypot(3.0, -4.0), 5.0);
+    equal(hypot(0.0, 0.0), 0.0);
+    equal(hypot(-0.0, -0.0), 0.0);
+    equal(hypot(0.0, -2.0), 2.0);
+    equal(hypot(INFINITY, 1.0), INFINITY);
+    equal(hypot(1.0, -INFINITY), INFINITY);
+    equal(hypot(INFINITY, NAN), INFINITY); // C's rule: an infinity wins over NaN
+    equal(hypot(NAN, -INFINITY), INFINITY);
+    isTrue(isNaN(hypot(NAN, 1.0)));
+    isTrue(isNaN(hypot(1.0, NAN)));
+    equal(hypot(MAX, MAX), INFINITY);
+    equal(hypot(MAX, 0.0), MAX);
+    equal(hypot(parseF64('1e300'), parseF64('1e300')), parseF64('1.4142135623730952e300'));
+    equal(hypot(MIN_SUBNORMAL, MIN_SUBNORMAL), MIN_SUBNORMAL); // sqrt(2) rounds down
+    equal(hypot(parseF64('1e-300'), parseF64('1e-300')), parseF64('1.414213562373095e-300'));
+    equal(hypot(1.0, parseF64('1e-20')), 1.0);
+  });
+
+  test('fma special cases', (ctx) => {
+    equal(fma(2.0, 3.0, 1.0), 7.0);
+    equal(fma(0.1, 10.0, -1.0), parseF64('5.551115123125783e-17'));
+    equal(fma(1.0000000000000002, 1.0000000000000002, -1.0), parseF64('4.440892098500626e-16'));
+    equal(fma(MAX, 2.0, -MAX), MAX);
+    equal(fma(MAX, 2.0, 0.0), INFINITY);
+    equal(fma(parseF64('1e308'), 10.0, -parseF64('1e308')), INFINITY);
+    equal(fma(MIN_SUBNORMAL, 0.5, 0.0), 0.0);
+    equal(fma(MIN_SUBNORMAL, 0.5, MIN_SUBNORMAL), parseF64('1e-323'));
+    equal(fma(MIN_SUBNORMAL, 0.75, 0.0), MIN_SUBNORMAL);
+    equal(fma(MIN_NORMAL, 0.5, MIN_NORMAL / 2.0), MIN_NORMAL);
+    equal(fma(INFINITY, 1.0, 1.0), INFINITY);
+    isTrue(isNaN(fma(INFINITY, 1.0, -INFINITY)));
+    isTrue(isNaN(fma(INFINITY, 0.0, 1.0)));
+    isTrue(isNaN(fma(NAN, 1.0, 1.0)));
+    isTrue(isNaN(fma(1.0, 1.0, NAN)));
+    equal(fma(1.0, 1.0, -1.0), 0.0);
+    isTrue(isNegativeZero(fma(-0.0, 1.0, -0.0)));
+    equal(fma(-0.0, 1.0, 0.0), 0.0);
+    equal(fma(0.0, 5.0, -0.0), 0.0);
+    equal(fma(2.0, 3.0, -6.0), 0.0);
+    equal(fma(-2.0, 3.0, 6.0), 0.0);
+    // with two roundings, 0.1 * 10.0 - 1.0 is 0
+    equal(0.1 * 10.0 - 1.0, 0.0);
+  });
+
+  test('f32 special cases', (ctx) => {
+    let inf32 = INFINITY as f32;
+    equal(exp(0.0 as f32), 1.0 as f32);
+    equal(exp(89.0 as f32), inf32);
+    equal(exp(-104.0 as f32), 0.0 as f32);
+    equal(exp(-103.0 as f32), parseF64('1.4e-45') as f32);
+    equal(exp2(128.0 as f32), inf32);
+    equal(exp2(-149.0 as f32), parseF64('1.4e-45') as f32);
+    equal(exp2(-150.0 as f32), 0.0 as f32);
+    equal(log(0.0 as f32), -inf32);
+    isTrue((log(-1.0 as f32)) != (log(-1.0 as f32)));
+    equal(log2(1024.0 as f32), 10.0 as f32);
+    equal(log10(1000.0 as f32), 3.0 as f32);
+    equal(pow(2.0 as f32, 10.0 as f32), 1024.0 as f32);
+    equal(pow(-2.0 as f32, 3.0 as f32), -8.0 as f32);
+    equal(pow(2.0 as f32, 128.0 as f32), inf32);
+    equal(pow(2.0 as f32, -150.0 as f32), 0.0 as f32);
+    equal(sin(0.0 as f32), 0.0 as f32);
+    isTrue((sin(inf32)) != (sin(inf32)));
+    equal(cos(0.0 as f32), 1.0 as f32);
+    equal(atan2(0.0 as f32, -1.0 as f32), PI as f32);
+    equal(hypot(3.0 as f32, 4.0 as f32), 5.0 as f32);
+    equal(hypot(parseF64('3e38') as f32, parseF64('3e38') as f32), inf32);
+    equal(hypot(inf32, (0.0 as f32) / (0.0 as f32)), inf32);
+    equal(cbrt(-8.0 as f32), -2.0 as f32);
+    equal(tanh(20.0 as f32), 1.0 as f32);
+    equal(fma(2.0 as f32, 3.0 as f32, 1.0 as f32), 7.0 as f32);
+    equal(fma(0.1 as f32, 10.0 as f32, -1.0 as f32), parseF64('1.4901161e-8') as f32);
+    equal(fma(parseF64('3e38') as f32, 10.0 as f32, -inf32), -inf32);
+  });
+});

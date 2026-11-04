@@ -1,0 +1,98 @@
+/**
+ * Bit-level helpers for the libm port in this directory: the words of an
+ * f64, powers of two, and scaling by a power of two.
+ *
+ * `zena:math` re-exports the functions in this directory, so these files
+ * import the intrinsics they use from `intrinsics.zena` rather than from
+ * `zena:math`, which would be a cycle.
+ */
+
+import { i64_reinterpret_f64, f64_reinterpret_i64 } from './intrinsics.zena';
+
+let LOW_MASK: i64 = 0xffffffff;
+let HIGH_MASK: i64 = 0xffffffff00000000;
+
+/**
+ * The high 32 bits of `x` as a signed i32, so the sign of `x` is the sign
+ * of the result and `highWord(x) & 0x7fffffff` is the high word of `|x|`.
+ */
+export function highWord(x: f64): i32 {
+  return (i64_reinterpret_f64(x) >> 32) as i32;
+}
+
+/** The low 32 bits of `x`, as a bit pattern. */
+export function lowWord(x: f64): i32 {
+  return i64_reinterpret_f64(x) as i32;
+}
+
+export function withHighWord(x: f64, hi: i32): f64 {
+  return f64_reinterpret_i64(((hi as i64) << 32) | (i64_reinterpret_f64(x) & LOW_MASK));
+}
+
+export function withLowWord(x: f64, lo: i32): f64 {
+  return f64_reinterpret_i64((i64_reinterpret_f64(x) & HIGH_MASK) | ((lo as i64) & LOW_MASK));
+}
+
+/**
+ * `x` with its low word cleared: the sign, exponent and top 20 bits of
+ * the significand. The port's error analyses split a product into a
+ * 21-bit head (whose products are exact) and a tail this way.
+ */
+export function zeroLowWord(x: f64): f64 {
+  return f64_reinterpret_i64(i64_reinterpret_f64(x) & HIGH_MASK);
+}
+
+export function fromWords(hi: i32, lo: i32): f64 {
+  return f64_reinterpret_i64(((hi as i64) << 32) | ((lo as i64) & LOW_MASK));
+}
+
+/** 2^n, for n in [-1022, 1023]. */
+export function pow2(n: i32): f64 {
+  return f64_reinterpret_i64(((0x3ff + n) as i64) << 52);
+}
+
+export let X1P1023 = pow2(1023);
+export let X1P54 = 18014398509481984.0;
+export let X1P53 = 9007199254740992.0;
+export let X1P24 = 16777216.0;
+export let X1P_24 = 0.00000005960464477539063;
+let X1P_969 = pow2(-969);
+
+/** 1e300 and 1e-300: `HUGE * HUGE` overflows and `TINY * TINY` underflows. */
+export let HUGE = f64_reinterpret_i64(0x7e37e43c8800759c);
+export let TINY = f64_reinterpret_i64(0x01a56e1fc2f8f359);
+
+/**
+ * `x * 2^n`, rounded once. The scale is applied in up to three steps so
+ * that a result inside the range is exact even when `2^n` itself is out
+ * of it, and a result that underflows is rounded by the last multiply
+ * alone.
+ */
+export function scalbn(x: f64, n: i32): f64 {
+  var y = x;
+  var k = n;
+  if (k > 1023) {
+    y *= X1P1023;
+    k -= 1023;
+    if (k > 1023) {
+      y *= X1P1023;
+      k -= 1023;
+      if (k > 1023) {
+        k = 1023;
+      }
+    }
+  } else if (k < -1022) {
+    // 2^-969 is 2^-1022 * 2^53: a scale that keeps y normal while it
+    // brings k into range.
+    y *= X1P_969;
+    k += 969;
+    if (k < -1022) {
+      y *= X1P_969;
+      k += 969;
+      if (k < -1022) {
+        k = -1022;
+      }
+    }
+  }
+  return y * pow2(k);
+}

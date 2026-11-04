@@ -1,0 +1,326 @@
+/**
+ * `pow` and `exp2`, ported from musl's `pow.c`, which is FreeBSD's
+ * `e_pow.c`:
+ *
+ *   Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+ *   Permission to use, copy, modify, and distribute this software is
+ *   freely granted, provided that this notice is preserved.
+ *
+ * `pow(x, y)` computes `log2(x)` as a sum `t1 + t2` of two doubles with
+ * about 64 bits between them, multiplies by `y` split the same way, and
+ * raises 2 to the result. `exp2` is that last step alone. The error is
+ * under 1 ulp, and `pow` is exact when the result is representable
+ * (`pow(2, 3)` is exactly 8).
+ */
+
+import { abs, i64_reinterpret_f64, sqrt } from './intrinsics.zena';
+import {
+  HUGE, TINY, X1P53, fromWords, highWord, lowWord, scalbn, withHighWord,
+  zeroLowWord,
+} from './float-bits.zena';
+
+// log2(1 + f) on the two intervals |x| < sqrt(3/2) and |x| < sqrt(3),
+// around 1 and 1.5: dp = log2(1.5) as a head and a tail.
+let DP_H1 = 0.5849624872207642; // 0x3fe2b80340000000
+let DP_L1 = 0.00000001350039202129749; // 0x3e4cfdeb43cfd006
+let L1 = 0.5999999999999946; // 0x3fe3333333333303
+let L2 = 0.4285714285785502; // 0x3fdb6db6db6fabff
+let L3 = 0.33333332981837743; // 0x3fd55555518f264d
+let L4 = 0.272728123808534; // 0x3fd17460a91d4101
+let L5 = 0.23066074577556175; // 0x3fcd864a93c9db65
+let L6 = 0.20697501780033842; // 0x3fca7e284a454eef
+let P1 = 0.16666666666666602; // 0x3fc555555555553e
+let P2 = -0.0027777777777015593; // 0xbf66c16c16bebd93
+let P3 = 0.00006613756321437934; // 0x3f11566aaf25de2c
+let P4 = -0.0000016533902205465252; // 0xbebbbd41c5d26bf1
+let P5 = 0.000000041381367970572385; // 0x3e66376972bea4d0
+let LG2 = 0.6931471805599453; // 0x3fe62e42fefa39ef
+let LG2_H = 0.6931471824645996; // 0x3fe62e4300000000
+let LG2_L = -0.000000001904654299957768; // 0xbe205c610ca86c39
+let OVT = 0.00000000000000008008566259537294; // -(1024 - log2(ovfl + .5ulp))
+let CP = 0.9617966939259756; // 0x3feec709dc3a03fd = 2/(3 ln2)
+let CP_H = 0.9617967009544373; // 0x3feec709e0000000 = (float) cp
+let CP_L = -0.000000007028461650952758; // 0xbe3e2fe0145b01f5 = tail of cp_h
+let IVLN2 = 1.4426950408889634; // 0x3ff71547652b82fe = 1/ln2
+let IVLN2_H = 1.4426950216293335; // 0x3ff7154760000000 = 24 bits of 1/ln2
+let IVLN2_L = 0.000000019259629911266175; // 0x3e54ae0bf85ddf44 = 1/ln2 tail
+
+/**
+ * `x` raised to `y`. The special cases follow C's `pow`: `pow(x, 0)` and
+ * `pow(1, y)` are 1 even for NaN, a negative `x` with a non-integer `y`
+ * is NaN, and an odd integer `y` keeps the sign of a negative `x`.
+ */
+export function pow(x: f64, y: f64): f64 {
+  let bx = i64_reinterpret_f64(x);
+  let by = i64_reinterpret_f64(y);
+  let hx = (bx >> 32) as i32;
+  let lx = bx as i32;
+  let hy = (by >> 32) as i32;
+  let ly = by as i32;
+  var ix = hx & 0x7fffffff;
+  let iy = hy & 0x7fffffff;
+
+  // x**0 = 1, even if x is NaN
+  if ((iy | ly) == 0) {
+    return 1.0;
+  }
+  // 1**y = 1, even if y is NaN
+  if (hx == 0x3ff00000 && lx == 0) {
+    return 1.0;
+  }
+  // NaN if either argument is NaN
+  if (ix > 0x7ff00000 || (ix == 0x7ff00000 && lx != 0)
+      || iy > 0x7ff00000 || (iy == 0x7ff00000 && ly != 0)) {
+    return x + y;
+  }
+
+  // When x < 0, whether y is an integer: 0 means it is not, 1 an odd
+  // integer, 2 an even integer.
+  var yisint = 0;
+  if (hx < 0) {
+    if (iy >= 0x43400000) {
+      yisint = 2; // |y| >= 2^53: even
+    } else if (iy >= 0x3ff00000) {
+      let k = (iy >> 20) - 0x3ff; // exponent
+      if (k > 20) {
+        let j = ly >>> (52 - k);
+        if ((j << (52 - k)) == ly) {
+          yisint = 2 - (j & 1);
+        }
+      } else if (ly == 0) {
+        let j = iy >> (20 - k);
+        if ((j << (20 - k)) == iy) {
+          yisint = 2 - (j & 1);
+        }
+      }
+    }
+  }
+
+  if (ly == 0) {
+    // special values of y
+    if (iy == 0x7ff00000) {
+      // y is +-inf
+      if (((ix - 0x3ff00000) | lx) == 0) {
+        return 1.0; // (-1)**+-inf is 1
+      }
+      if (ix >= 0x3ff00000) {
+        // (|x| > 1)**+-inf = inf, 0
+        return if (hy >= 0) y else 0.0;
+      }
+      // (|x| < 1)**+-inf = 0, inf
+      return if (hy >= 0) 0.0 else -y;
+    }
+    if (iy == 0x3ff00000) {
+      // y is +-1
+      return if (hy >= 0) x else 1.0 / x;
+    }
+    if (hy == 0x40000000) {
+      return x * x; // y is 2
+    }
+    if (hy == 0x3fe00000 && hx >= 0) {
+      return sqrt(x); // y is 0.5 and x >= +0
+    }
+  }
+
+  var ax = abs(x);
+  if (lx == 0 && (ix == 0x7ff00000 || ix == 0 || ix == 0x3ff00000)) {
+    // x is +-0, +-inf or +-1
+    var z = ax;
+    if (hy < 0) {
+      z = 1.0 / z;
+    }
+    if (hx < 0) {
+      if (((ix - 0x3ff00000) | yisint) == 0) {
+        z = (z - z) / (z - z); // (-1)**non-int is NaN
+      } else if (yisint == 1) {
+        z = -z; // (x < 0)**odd = -(|x|**odd)
+      }
+    }
+    return z;
+  }
+
+  var s = 1.0; // the sign of the result
+  if (hx < 0) {
+    if (yisint == 0) {
+      return (x - x) / (x - x); // (x < 0)**(non-int) is NaN
+    }
+    if (yisint == 1) {
+      s = -1.0;
+    }
+  }
+
+  // t1 + t2 ~ log2(ax)
+  var t1 = 0.0;
+  var t2 = 0.0;
+  if (iy > 0x41e00000) {
+    // |y| > 2^31
+    if (iy > 0x43f00000) {
+      // |y| > 2^64 must over- or underflow
+      if (ix <= 0x3fefffff) {
+        return if (hy < 0) HUGE * HUGE else TINY * TINY;
+      }
+      if (ix >= 0x3ff00000) {
+        return if (hy > 0) HUGE * HUGE else TINY * TINY;
+      }
+    }
+    // over- or underflow if x is not close to one
+    if (ix < 0x3fefffff) {
+      return if (hy < 0) s * HUGE * HUGE else s * TINY * TINY;
+    }
+    if (ix > 0x3ff00000) {
+      return if (hy > 0) s * HUGE * HUGE else s * TINY * TINY;
+    }
+    // |1 - x| <= 2^-20: log(x) by x - x^2/2 + x^3/3 - x^4/4 suffices
+    let t = ax - 1.0; // t has 20 trailing zeros
+    let w = (t * t) * (0.5 - t * (0.3333333333333333 - t * 0.25));
+    let u = IVLN2_H * t; // ivln2_h has 21 significant bits
+    let v = t * IVLN2_L - w * IVLN2;
+    t1 = zeroLowWord(u + v);
+    t2 = v - (t1 - u);
+  } else {
+    var n = 0;
+    if (ix < 0x00100000) {
+      // subnormal x
+      ax *= X1P53;
+      n -= 53;
+      ix = highWord(ax);
+    }
+    n += (ix >> 20) - 0x3ff;
+    let j = ix & 0x000fffff;
+    // determine the interval
+    ix = j | 0x3ff00000; // normalize ix
+    var k = 0;
+    if (j <= 0x3988e) {
+      k = 0; // |x| < sqrt(3/2)
+    } else if (j < 0xbb67a) {
+      k = 1; // |x| < sqrt(3)
+    } else {
+      k = 0;
+      n += 1;
+      ix -= 0x00100000;
+    }
+    ax = withHighWord(ax, ix);
+    let bp = if (k == 0) 1.0 else 1.5;
+    let dpH = if (k == 0) 0.0 else DP_H1;
+    let dpL = if (k == 0) 0.0 else DP_L1;
+
+    // ss = sH + sL = (x - 1) / (x + 1) or (x - 1.5) / (x + 1.5)
+    let u = ax - bp;
+    let v = 1.0 / (ax + bp);
+    let ss = u * v;
+    let sH = zeroLowWord(ss);
+    // tH = ax + bp, high part
+    let tH = fromWords(((ix >> 1) | 0x20000000) + 0x00080000 + (k << 18), 0);
+    let tL = ax - (tH - bp);
+    let sL = v * ((u - sH * tH) - sH * tL);
+    // log(ax)
+    let s2 = ss * ss;
+    var r = s2 * s2 * (L1 + s2 * (L2 + s2 * (L3 + s2 * (L4 + s2 * (L5 + s2 * L6)))));
+    r += sL * (sH + ss);
+    let s2h = sH * sH;
+    let tH2 = zeroLowWord(3.0 + s2h + r);
+    let tL2 = r - ((tH2 - 3.0) - s2h);
+    // u2 + v2 = ss * (1 + ...)
+    let u2 = sH * tH2;
+    let v2 = sL * tH2 + tL2 * ss;
+    // 2 / (3 log2) * (ss + ...)
+    let pH = zeroLowWord(u2 + v2);
+    let pL = v2 - (pH - u2);
+    let zH = CP_H * pH; // cpH + cpL = 2 / (3 log2)
+    let zL = CP_L * pH + pL * CP + dpL;
+    // log2(ax) = (ss + ..) * 2 / (3 log2) = n + dpH + zH + zL
+    let t = n as f64;
+    t1 = zeroLowWord(((zH + zL) + dpH) + t);
+    t2 = zL - (((t1 - t) - dpH) - zH);
+  }
+
+  // split y into y1 + y2 and compute (y1 + y2) * (t1 + t2)
+  let y1 = zeroLowWord(y);
+  let pL = (y - y1) * t1 + y * t2;
+  let pH = y1 * t1;
+  return exp2Split(pH, pL, s);
+}
+
+export function pow(x: f32, y: f32): f32 {
+  return pow(x as f64, y as f64) as f32;
+}
+
+/**
+ * `s * 2^(pH + pL)`, where `pH` carries the high bits of the exponent
+ * and `pL` the rest, and `s` is +-1. Overflows and underflows go to
+ * `s * inf` and `s * 0`; a subnormal result is rounded once, by `scalbn`.
+ */
+function exp2Split(pH0: f64, pL: f64, s: f64): f64 {
+  var pH = pH0;
+  let z0 = pL + pH;
+  let j = highWord(z0);
+  let i0 = lowWord(z0);
+  if (j >= 0x40900000) {
+    // z >= 1024
+    if (((j - 0x40900000) | i0) != 0) {
+      return s * HUGE * HUGE; // z > 1024: overflow
+    }
+    if (pL + OVT > z0 - pH) {
+      return s * HUGE * HUGE; // overflow
+    }
+  } else if ((j & 0x7fffffff) >= 0x4090cc00) {
+    // z <= -1075
+    if (j != (0xc090cc00 as i32) || i0 != 0) {
+      return s * TINY * TINY; // z < -1075: underflow
+    }
+    if (pL <= z0 - pH) {
+      return s * TINY * TINY; // underflow
+    }
+  }
+
+  // 2^(pH + pL)
+  let i = j & 0x7fffffff;
+  var k = (i >> 20) - 0x3ff;
+  var n = 0;
+  if (i > 0x3fe00000) {
+    // |z| > 0.5: n = round(z), taken from the high word
+    n = j + (0x00100000 >> (k + 1));
+    k = ((n & 0x7fffffff) >> 20) - 0x3ff; // the new k for n
+    let t = fromWords(n & ((0x000fffff >> k) ^ -1), 0);
+    n = ((n & 0x000fffff) | 0x00100000) >> (20 - k);
+    if (j < 0) {
+      n = -n;
+    }
+    pH -= t;
+  }
+  let t = zeroLowWord(pL + pH);
+  let u = t * LG2_H;
+  let v = (pL - (t - pH)) * LG2 + t * LG2_L;
+  var z = u + v;
+  let w = v - (z - u);
+  let tt = z * z;
+  let t1 = z - tt * (P1 + tt * (P2 + tt * (P3 + tt * (P4 + tt * P5))));
+  let r = (z * t1) / (t1 - 2.0) - (w + z * w);
+  z = 1.0 - (r - z);
+  var jz = highWord(z);
+  jz += n << 20;
+  if ((jz >> 20) <= 0) {
+    z = scalbn(z, n); // subnormal output
+  } else {
+    z = withHighWord(z, jz);
+  }
+  return s * z;
+}
+
+/**
+ * 2 raised to `x`. Overflows to infinity from 1024 and underflows to
+ * zero below -1075; `exp2(NaN)` is NaN.
+ */
+export function exp2(x: f64): f64 {
+  if (x != x) {
+    return x;
+  }
+  if ((highWord(x) & 0x7fffffff) < 0x3c900000) {
+    return 1.0 + x; // |x| < 2^-54
+  }
+  return exp2Split(x, 0.0, 1.0);
+}
+
+export function exp2(x: f32): f32 {
+  return exp2(x as f64) as f32;
+}
