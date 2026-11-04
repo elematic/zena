@@ -142,17 +142,22 @@ These need no design decision and do not depend on each other.
 Three decisions shape the array library and should be made before it is
 written. Each has an issue with the options and a recommendation.
 
-**A numeric bound for generic code**
+**A `Number` interface for generic code**
 ([#885](https://github.com/elematic/zena/issues/885)). A type parameter
 has no operators, so `sum<T>(xs: FixedArray<T>)` cannot be written and
-every kernel would exist once per element type. The recommendation is a
-builtin bound, `where T: numeric`, satisfied by the numeric primitives,
-inside which the arithmetic operators and contextually typed literals are
-allowed on `T`. Monomorphization already gives each instantiation the
-concrete type, so the change is in the checker. It is written so that an
-interface the primitives implement through their extension classes can
-replace it later, which is what would let user types such as `Complex`
-satisfy it.
+every kernel would exist once per element type. The proposal is a family
+of interfaces the numeric primitives satisfy without an `implements`
+clause, as `Equatable` and `Hashable` already do, with operators
+declared as binary methods over `this`: `Additive`, `Multiplicative`,
+`Comparable`, and `Number` for all of them. `defaultValue<T>()` from
+`zena:core` is the zero. Under a bound of `T extends Number`, each
+instantiation is monomorphized and `total += x` lowers to `f64.add` as
+it does today, so the interface appears only as a constraint and codegen
+needs nothing new. The subsets are what let user types join generic
+code honestly: `Complex` is `Additive` and `Multiplicative` and not
+`Comparable`, and `Money * Money` must not type-check. A `Box` that
+implements `Number` by forwarding to its primitive covers a `Number`
+held as a value.
 
 **The backing store of dense arrays**
 ([#886](https://github.com/elematic/zena/issues/886)). The earlier
@@ -291,7 +296,7 @@ standard interface for inference and a separate consideration.
 How the four environments map onto this plan, and where the fit ends.
 
 **NumPy.** The closest fit: an n-dimensional array with broadcasting,
-views and elementwise functions over a numeric bound. Static types and
+views and elementwise functions over `Number`. Static types and
 monomorphization put Zena nearer Julia than Python, and a kernel written
 in Zena runs as the compiled code it is.
 
@@ -319,8 +324,8 @@ target.
 **Matrices before operators.** The earlier plan built vectors and
 matrices in its third phase and units first, with the operator bugs
 unaddressed. A matrix library built that way is written once per element
-type and cannot negate a vector. The operator fixes and the numeric bound
-come first.
+type and cannot negate a vector. The operator fixes and the `Number`
+interface come first.
 
 **Linear memory as the first store.** Deferred for the reasons under
 Decisions: GC arrays convert from the rest of the language for free, and
