@@ -546,6 +546,138 @@ export function isBinaryNumericOp(op: IrOp): boolean {
 }
 
 /**
+ * Where an instruction keeps its value operands: the shapes of the
+ * operand-encoding table in the file header, as `appendValueOperands`
+ * and `rewriteValueOperands` decode them. Slot b of an `InA` op, and
+ * the slots of a `None` op, hold payloads (refTable and typeTable
+ * indices, immediates), never values.
+ */
+enum OperandShape {
+  /** Constants, params, and reads of module entities through slot b. */
+  None,
+  /** One value in slot a. */
+  InA,
+  /** Two values, in slots a and b. */
+  InAB,
+  /** A fixed number of values (`extraOperandCounts`) in `extra` from slot a. */
+  InExtra,
+  /** `array_new`: [length, init] in `extra`, init -1 when default-initialized. */
+  ArrayNew,
+  /** A counted list in `extra`: [argc, arg*]. */
+  Counted,
+  /** `call_ref`'s callee, then a counted list: [callee, argc, arg*]. */
+  CalleeThenCounted,
+  /** `ret`: slot a, or -1 for a void return. */
+  Ret,
+  /** `br`, `try_br`: the arguments of every successor edge (`try_br`'s slot a is a tag). */
+  Successors,
+  /** The conditional branches and suspensions: slot a, then the successor edges' arguments. */
+  InAThenSuccessors,
+  /** An op neither decoder handles. */
+  Unhandled,
+}
+
+/**
+ * Each op's `OperandShape`, and for `InExtra` ops their count, computed
+ * once from `operandShapeOf`. The decoders run for every instruction a
+ * pass visits; testing the op against each shape's list in turn cost
+ * them more than the decoding.
+ */
+let operandShapes = operandShapeTable();
+let extraOperandCounts = extraOperandCountTable();
+
+function operandShapeTable(): GrowableArray<OperandShape> {
+  let table = new Array<OperandShape>();
+  for (var i = 0; i < IrOp.op_count as i32; i += 1) {
+    table.push(operandShapeOf(i as IrOp));
+  }
+  return table;
+}
+
+function extraOperandCountTable(): GrowableArray<i32> {
+  let table = new Array<i32>();
+  for (var i = 0; i < IrOp.op_count as i32; i += 1) {
+    table.push(extraOperandCountOf(i as IrOp));
+  }
+  return table;
+}
+
+/** The decoders' one classification of `op`. */
+function operandShapeOf(op: IrOp): OperandShape {
+  if (op == IrOp.nop || op == IrOp.param || op == IrOp.const_i32 ||
+      op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
+      op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
+      op == IrOp.global_get || op == IrOp.var_get ||
+      op == IrOp.struct_new_default || op == IrOp.simd_const ||
+      op == IrOp.memory_size || op == IrOp.unreachable) {
+    return OperandShape.None;
+  }
+  if (definesSingleValueOp(op)) {
+    return OperandShape.InA;
+  }
+  if (op == IrOp.array_get || op == IrOp.array_get_u ||
+      op == IrOp.array_get_s || op == IrOp.ref_eq ||
+      isWideMulOp(op) || isBinaryNumericOp(op)) {
+    return OperandShape.InAB;
+  }
+  if (extraOperandCountOf(op) > 0) {
+    return OperandShape.InExtra;
+  }
+  if (op == IrOp.array_new) {
+    return OperandShape.ArrayNew;
+  }
+  if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.ret_call ||
+      op == IrOp.throw || op == IrOp.array_new_fixed || op == IrOp.ret_multi) {
+    return OperandShape.Counted;
+  }
+  if (op == IrOp.call_ref || op == IrOp.ret_call_ref) {
+    return OperandShape.CalleeThenCounted;
+  }
+  if (op == IrOp.ret) {
+    return OperandShape.Ret;
+  }
+  if (op == IrOp.br || op == IrOp.try_br) {
+    return OperandShape.Successors;
+  }
+  if (op == IrOp.br_if || op == IrOp.br_on_cast ||
+      op == IrOp.br_on_cast_fail || op == IrOp.br_table ||
+      op == IrOp.yield_ || op == IrOp.await_) {
+    return OperandShape.InAThenSuccessors;
+  }
+  return OperandShape.Unhandled;
+}
+
+/** How many values an `InExtra` op keeps in `extra`; 0 for every other op. */
+function extraOperandCountOf(op: IrOp): i32 {
+  // i64.add128 / i64.sub128: [lhsLo, lhsHi, rhsLo, rhsHi].
+  if (op == IrOp.i64_add128 || op == IrOp.i64_sub128) {
+    return 4;
+  }
+  // struct_set and the memory stores: [receiver or address, value].
+  if (op == IrOp.struct_set || op == IrOp.i32_store ||
+      op == IrOp.i32_store8 || op == IrOp.i64_store ||
+      op == IrOp.f32_store || op == IrOp.f64_store) {
+    return 2;
+  }
+  // array_set: [array, index, value].
+  if (op == IrOp.array_set) {
+    return 3;
+  }
+  // array_copy: [dest, destOff, src, srcOff, len].
+  if (op == IrOp.array_copy) {
+    return 5;
+  }
+  // array_new_data: [offset, length, dataIndex]; the data index is an
+  // immediate.
+  if (op == IrOp.array_new_data) {
+    return 2;
+  }
+  // SIMD: the wasm opcode and any lane or alignment immediate ride in
+  // slot b.
+  return simdExtraOperandCount(op);
+}
+
+/**
  * A symbolic reference to a module entity. Instructions address these via
  * refTable indices; numeric wasm indices, field offsets, and vtable slots
  * are bound at layout time, after the optimization fixpoint (ir.md §10.2).
@@ -693,87 +825,21 @@ export final class IrBody {
   appendValueOperands(inst: i32, out: GrowableArray<i32>): void {
     let op = this.op(inst);
     let av = this.a[inst];
-    // Each branch below corresponds to one shape from the operand-encoding
-    // table in the file header; a/b hold either value ids directly or an
-    // index into `extra`, depending on that shape.
-    // Shape: no value operands. Constants and params define values from
-    // payloads; ref_func/str_lit/global_get read module entities via b.
-    if (op == IrOp.nop || op == IrOp.param || op == IrOp.const_i32 ||
-        op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
-        op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
-        op == IrOp.global_get || op == IrOp.var_get ||
-        op == IrOp.struct_new_default || op == IrOp.simd_const ||
-        op == IrOp.memory_size || op == IrOp.unreachable) {
-      return;
-    }
-    // Shape: one value in slot a. Slot b is free for the non-value payload
-    // (a refTable index for global_set/struct_get/vt_*, a typeTable index
-    // for ref_test/ref_cast, unused for the pure unary numerics).
-    if (isSingleValueOp(op)) {
+    // One case per `OperandShape`, the commonest first.
+    let shape = operandShapes[op as i32];
+    if (shape == OperandShape.InA) {
       out.push(av);
       return;
     }
-    // Shape: two values, inline in slots a and b.
-    if (op == IrOp.array_get || op == IrOp.array_get_u ||
-        op == IrOp.array_get_s || op == IrOp.ref_eq ||
-        isWideMulOp(op) || isBinaryNumericOp(op)) {
+    if (shape == OperandShape.InAB) {
       out.push(av);
       out.push(this.b[inst]);
       return;
     }
-    // i64.add128 / i64.sub128: fixed 4-tuple [lhsLo, lhsHi, rhsLo, rhsHi].
-    if (op == IrOp.i64_add128 || op == IrOp.i64_sub128) {
-      out.push(this.extra[av]);
-      out.push(this.extra[av + 1]);
-      out.push(this.extra[av + 2]);
-      out.push(this.extra[av + 3]);
+    if (shape == OperandShape.None) {
       return;
     }
-    // Shapes with more than two operands spill to `extra`; slot a holds the
-    // extra index (slot b keeps the refTable index where one is needed).
-    // struct_set / memory stores: fixed pair [receiver|addr, value].
-    if (op == IrOp.struct_set || op == IrOp.i32_store ||
-        op == IrOp.i32_store8 || op == IrOp.i64_store ||
-        op == IrOp.f32_store || op == IrOp.f64_store) {
-      out.push(this.extra[av]);
-      out.push(this.extra[av + 1]);
-      return;
-    }
-    // array_set: fixed triple [array, index, value].
-    if (op == IrOp.array_set) {
-      out.push(this.extra[av]);
-      out.push(this.extra[av + 1]);
-      out.push(this.extra[av + 2]);
-      return;
-    }
-    // array_copy: fixed 5-tuple [dest, destOff, src, srcOff, len].
-    if (op == IrOp.array_copy) {
-      out.push(this.extra[av]);
-      out.push(this.extra[av + 1]);
-      out.push(this.extra[av + 2]);
-      out.push(this.extra[av + 3]);
-      out.push(this.extra[av + 4]);
-      return;
-    }
-    // array_new_data: [offset, length, dataIndex] — dataIndex is an
-    // immediate, not a value.
-    if (op == IrOp.array_new_data) {
-      out.push(this.extra[av]);
-      out.push(this.extra[av + 1]);
-      return;
-    }
-    // array_new: [length, init], where init is -1 for default-initialized.
-    if (op == IrOp.array_new) {
-      out.push(this.extra[av]);
-      let init = this.extra[av + 1];
-      if (init >= 0) {
-        out.push(init);
-      }
-      return;
-    }
-    // Counted argument list: [argc, arg*].
-    if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.ret_call ||
-        op == IrOp.throw || op == IrOp.array_new_fixed) {
+    if (shape == OperandShape.Counted) {
       let argc = this.extra[av];
       var i = 0;
       while (i < argc) {
@@ -782,8 +848,25 @@ export final class IrBody {
       }
       return;
     }
-    // call_ref: the callee value precedes the counted list: [callee, argc, arg*].
-    if (op == IrOp.call_ref || op == IrOp.ret_call_ref) {
+    if (shape == OperandShape.InAThenSuccessors) {
+      out.push(av);
+      this.#appendSuccessorArgs(inst, out);
+      return;
+    }
+    if (shape == OperandShape.Successors) {
+      this.#appendSuccessorArgs(inst, out);
+      return;
+    }
+    if (shape == OperandShape.InExtra) {
+      let n = extraOperandCounts[op as i32];
+      var i = 0;
+      while (i < n) {
+        out.push(this.extra[av + i]);
+        i += 1;
+      }
+      return;
+    }
+    if (shape == OperandShape.CalleeThenCounted) {
       out.push(this.extra[av]);
       let argc = this.extra[av + 1];
       var i = 0;
@@ -793,46 +876,17 @@ export final class IrBody {
       }
       return;
     }
-    // ret: slot a is the value, or -1 for a void return.
-    if (op == IrOp.ret) {
+    if (shape == OperandShape.Ret) {
       if (av >= 0) {
         out.push(av);
       }
       return;
     }
-    // ret_multi: counted value list.
-    if (op == IrOp.ret_multi) {
-      let argc = this.extra[av];
-      var i = 0;
-      while (i < argc) {
-        out.push(this.extra[av + 1 + i]);
-        i += 1;
-      }
-      return;
-    }
-    // Branches: the operands are the branch arguments of every successor
-    // edge (decoded via successors()), plus — for the conditional forms —
-    // the condition/scrutinee/selector riding in slot a.
-    if (op == IrOp.br || op == IrOp.try_br) {
-      // try_br's slot a is the exception-tag ref, not a value.
-      this.#appendSuccessorArgs(inst, out);
-      return;
-    }
-    if (op == IrOp.br_if || op == IrOp.br_on_cast ||
-        op == IrOp.br_on_cast_fail || op == IrOp.br_table ||
-        op == IrOp.yield_ || op == IrOp.await_) {
-      out.push(av);
-      this.#appendSuccessorArgs(inst, out);
-      return;
-    }
-    // SIMD: a fixed-length operand list in `extra`. The wasm opcode and
-    // any lane or alignment immediate ride in slot b, never here.
-    let simdCount = simdExtraOperandCount(op);
-    if (simdCount > 0) {
-      var si = 0;
-      while (si < simdCount) {
-        out.push(this.extra[av + si]);
-        si += 1;
+    if (shape == OperandShape.ArrayNew) {
+      out.push(this.extra[av]);
+      let init = this.extra[av + 1];
+      if (init >= 0) {
+        out.push(init);
       }
       return;
     }
@@ -848,69 +902,20 @@ export final class IrBody {
   rewriteValueOperands(inst: i32, map: (v: i32) => i32): void {
     let op = this.op(inst);
     let av = this.a[inst];
-    if (op == IrOp.nop || op == IrOp.param || op == IrOp.const_i32 ||
-        op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
-        op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
-        op == IrOp.global_get || op == IrOp.var_get ||
-        op == IrOp.struct_new_default || op == IrOp.simd_const ||
-        op == IrOp.memory_size || op == IrOp.unreachable) {
-      return;
-    }
-    if (isSingleValueOp(op)) {
+    let shape = operandShapes[op as i32];
+    if (shape == OperandShape.InA) {
       this.a[inst] = map(av);
       return;
     }
-    if (op == IrOp.array_get || op == IrOp.array_get_u ||
-        op == IrOp.array_get_s || op == IrOp.ref_eq ||
-        isWideMulOp(op) || isBinaryNumericOp(op)) {
+    if (shape == OperandShape.InAB) {
       this.a[inst] = map(av);
       this.b[inst] = map(this.b[inst]);
       return;
     }
-    if (op == IrOp.i64_add128 || op == IrOp.i64_sub128) {
-      var wi = 0;
-      while (wi < 4) {
-        this.extra[av + wi] = map(this.extra[av + wi]);
-        wi += 1;
-      }
+    if (shape == OperandShape.None) {
       return;
     }
-    if (op == IrOp.struct_set || op == IrOp.i32_store ||
-        op == IrOp.i32_store8 || op == IrOp.i64_store ||
-        op == IrOp.f32_store || op == IrOp.f64_store) {
-      this.extra[av] = map(this.extra[av]);
-      this.extra[av + 1] = map(this.extra[av + 1]);
-      return;
-    }
-    if (op == IrOp.array_set) {
-      this.extra[av] = map(this.extra[av]);
-      this.extra[av + 1] = map(this.extra[av + 1]);
-      this.extra[av + 2] = map(this.extra[av + 2]);
-      return;
-    }
-    if (op == IrOp.array_copy) {
-      var ci = 0;
-      while (ci < 5) {
-        this.extra[av + ci] = map(this.extra[av + ci]);
-        ci += 1;
-      }
-      return;
-    }
-    if (op == IrOp.array_new_data) {
-      this.extra[av] = map(this.extra[av]);
-      this.extra[av + 1] = map(this.extra[av + 1]);
-      return;
-    }
-    if (op == IrOp.array_new) {
-      this.extra[av] = map(this.extra[av]);
-      let init = this.extra[av + 1];
-      if (init >= 0) {
-        this.extra[av + 1] = map(init);
-      }
-      return;
-    }
-    if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.ret_call ||
-        op == IrOp.throw || op == IrOp.array_new_fixed) {
+    if (shape == OperandShape.Counted) {
       let argc = this.extra[av];
       var i = 0;
       while (i < argc) {
@@ -919,7 +924,25 @@ export final class IrBody {
       }
       return;
     }
-    if (op == IrOp.call_ref || op == IrOp.ret_call_ref) {
+    if (shape == OperandShape.InAThenSuccessors) {
+      this.a[inst] = map(av);
+      this.#rewriteSuccessorArgs(inst, map);
+      return;
+    }
+    if (shape == OperandShape.Successors) {
+      this.#rewriteSuccessorArgs(inst, map);
+      return;
+    }
+    if (shape == OperandShape.InExtra) {
+      let n = extraOperandCounts[op as i32];
+      var i = 0;
+      while (i < n) {
+        this.extra[av + i] = map(this.extra[av + i]);
+        i += 1;
+      }
+      return;
+    }
+    if (shape == OperandShape.CalleeThenCounted) {
       this.extra[av] = map(this.extra[av]);
       let argc = this.extra[av + 1];
       var i = 0;
@@ -929,38 +952,17 @@ export final class IrBody {
       }
       return;
     }
-    if (op == IrOp.ret) {
+    if (shape == OperandShape.Ret) {
       if (av >= 0) {
         this.a[inst] = map(av);
       }
       return;
     }
-    if (op == IrOp.ret_multi) {
-      let argc = this.extra[av];
-      var i = 0;
-      while (i < argc) {
-        this.extra[av + 1 + i] = map(this.extra[av + 1 + i]);
-        i += 1;
-      }
-      return;
-    }
-    if (op == IrOp.br || op == IrOp.try_br) {
-      this.#rewriteSuccessorArgs(inst, map);
-      return;
-    }
-    if (op == IrOp.br_if || op == IrOp.br_on_cast ||
-        op == IrOp.br_on_cast_fail || op == IrOp.br_table ||
-        op == IrOp.yield_ || op == IrOp.await_) {
-      this.a[inst] = map(av);
-      this.#rewriteSuccessorArgs(inst, map);
-      return;
-    }
-    let simdCount = simdExtraOperandCount(op);
-    if (simdCount > 0) {
-      var si = 0;
-      while (si < simdCount) {
-        this.extra[av + si] = map(this.extra[av + si]);
-        si += 1;
+    if (shape == OperandShape.ArrayNew) {
+      this.extra[av] = map(this.extra[av]);
+      let init = this.extra[av + 1];
+      if (init >= 0) {
+        this.extra[av + 1] = map(init);
       }
       return;
     }
