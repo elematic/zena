@@ -12,8 +12,9 @@
  */
 
 import {
-  bits, fromBits, fsqrt, highWord, idiv, pow2, X1P54,
-} from './float-bits.zena';
+  div, f64_reinterpret_i64, i64_reinterpret_f64, sqrt,
+} from './intrinsics.zena';
+import { X1P54, highWord, pow2 } from './float-bits.zena';
 
 let B1 = 715094163; // (1023 - 1023/3 - 0.03306235651) * 2^20
 let B2 = 696219795; // (1023 - 1023/3 - 54/3 - 0.03306235651) * 2^20
@@ -40,27 +41,27 @@ export function cbrt(x: f64): f64 {
   // A rough cbrt to 5 bits: cbrt(2^e (1 + m)) ~= 2^(e/3) (1 + (e%3 + m)/3).
   // Integer division of the biased exponent and significand bits by 3
   // computes that, with a bias that halves the error.
-  var ui = bits(x);
+  var ui = i64_reinterpret_f64(x);
   if (hx < 0x00100000) {
     // zero or subnormal
-    ui = bits(x * X1P54);
+    ui = i64_reinterpret_f64(x * X1P54);
     hx = ((ui >> 32) as i32) & 0x7fffffff;
     if (hx == 0) {
       return x; // cbrt(0) is itself
     }
-    hx = idiv(hx, 3) + B2;
+    hx = div(hx, 3) + B2;
   } else {
-    hx = idiv(hx, 3) + B1;
+    hx = div(hx, 3) + B1;
   }
   ui = ui & SIGN_MASK;
   ui = ui | (hx as i64) << 32;
-  var t = fromBits(ui);
+  var t = f64_reinterpret_i64(ui);
   // A new cbrt to 23 bits: cbrt(x) = t cbrt(x / t^3) ~= t P(t^3 / x).
   let r = (t * t) * (t / x);
   t = t * ((P0 + r * (P1 + r * P2)) + ((r * r) * r) * (P3 + r * P4));
   // Round t away from zero to 23 bits, so it is larger in magnitude
   // than cbrt(x) but by no more than about 2 23-bit ulps.
-  t = fromBits((bits(t) + 0x80000000) & CBRT_ROUND_MASK);
+  t = f64_reinterpret_i64((i64_reinterpret_f64(t) + 0x80000000) & CBRT_ROUND_MASK);
   // one step of Newton's iteration to 53 bits with error < 0.667 ulp
   let s = t * t; // exact
   let r1 = x / s; // error <= 0.5 ulp, |r1| < |t|
@@ -95,8 +96,8 @@ function square(x: f64): inline (f64, f64) {
  * NaN. The error is under 1 ulp.
  */
 export function hypot(x0: f64, y0: f64): f64 {
-  var ux = bits(x0) & ABS_MASK;
-  var uy = bits(y0) & ABS_MASK;
+  var ux = i64_reinterpret_f64(x0) & ABS_MASK;
+  var uy = i64_reinterpret_f64(y0) & ABS_MASK;
   // arrange |x| >= |y|
   if (ux < uy) {
     let t = ux;
@@ -105,8 +106,8 @@ export function hypot(x0: f64, y0: f64): f64 {
   }
   let ex = (ux >> 52) as i32;
   let ey = (uy >> 52) as i32;
-  var x = fromBits(ux);
-  var y = fromBits(uy);
+  var x = f64_reinterpret_i64(ux);
+  var y = f64_reinterpret_i64(uy);
   // hypot(inf, NaN) is inf
   if (ey == 0x7ff) {
     return y;
@@ -132,7 +133,7 @@ export function hypot(x0: f64, y0: f64): f64 {
   }
   let (hx, lx) = square(x);
   let (hy, ly) = square(y);
-  return z * fsqrt(ly + lx + hy + hx);
+  return z * sqrt(ly + lx + hy + hx);
 }
 
 /**
@@ -142,10 +143,10 @@ export function hypot(x0: f64, y0: f64): f64 {
 export function hypot(x: f32, y: f32): f32 {
   let xd = x as f64;
   let yd = y as f64;
-  let ax = fromBits(bits(xd) & ABS_MASK);
-  let ay = fromBits(bits(yd) & ABS_MASK);
+  let ax = f64_reinterpret_i64(i64_reinterpret_f64(xd) & ABS_MASK);
+  let ay = f64_reinterpret_i64(i64_reinterpret_f64(yd) & ABS_MASK);
   if (ax == INFINITY || ay == INFINITY) {
     return INFINITY as f32; // hypot(inf, NaN) is inf
   }
-  return fsqrt(xd * xd + yd * yd) as f32;
+  return sqrt(xd * xd + yd * yd) as f32;
 }

@@ -12,9 +12,10 @@
  */
 
 import {
-  bits, bits32, fromBits32, fcopysign, clz64, mulWide, scalbn,
-  pow2,
-} from './float-bits.zena';
+  clz, copysign, f32_reinterpret_i32, i32_reinterpret_f32,
+  i64_reinterpret_f64, mulWide,
+} from './intrinsics.zena';
+import { pow2, scalbn } from './float-bits.zena';
 
 let MANTISSA_MASK: i64 = 0x000fffffffffffff;
 let SIGN_BIT: i64 = 0x8000000000000000;
@@ -29,12 +30,12 @@ let ZERO_INF_NAN = 0x7ff - 0x3ff - 52 - 1;
  * exponent `e` with `x = m * 2^e`, and its sign bit.
  */
 function normalize(x: f64): inline (i64, i32, i32) {
-  var ix = bits(x);
+  var ix = i64_reinterpret_f64(x);
   var e = (ix >>> 52) as i32;
   let sign = e & 0x800;
   e = e & 0x7ff;
   if (e == 0) {
-    ix = bits(x * X1P63);
+    ix = i64_reinterpret_f64(x * X1P63);
     e = ((ix >>> 52) as i32) & 0x7ff;
     e = if (e != 0) e - 63 else 0x800;
   }
@@ -137,10 +138,10 @@ export function fma(x: f64, y: f64, z: f64): f64 {
   // set rhi to the top 63 bits of the result, with the last bit sticky
   if (nonzero) {
     e += 64;
-    d = (clz64(rhi) as i32) - 1; // d > 0
+    d = (clz(rhi) as i32) - 1; // d > 0
     rhi = (rhi << d) | (rlo >>> (64 - d)) | nonZero(rlo << d);
   } else if (rlo != 0) {
-    d = (clz64(rlo) as i32) - 1;
+    d = (clz(rlo) as i32) - 1;
     if (d < 0) {
       rhi = (rlo >>> 1) | (rlo & 1);
     } else {
@@ -167,7 +168,7 @@ export function fma(x: f64, y: f64, z: f64): f64 {
       }
       if (r == c) {
         // the minimum normal after rounding
-        return fcopysign(X1P_1022, r);
+        return copysign(X1P_1022, r);
       }
       // one bit is lost when scaled: add another top bit so that the
       // conversion rounds once, when it is inexact
@@ -194,15 +195,15 @@ export function fma(x: f64, y: f64, z: f64): f64 {
 
 let F32_MAX = 340282346638528859811704183484516925440.0; // 2^128 - 2^104
 let F32_OVERFLOW = 340282356779733661637539395458142568448.0; // 2^128 - 2^103
-let F32_MIN_SUBNORMAL = fromBits32(1);
+let F32_MIN_SUBNORMAL = f32_reinterpret_i32(1);
 
 /** The next f32 above `f`. */
 function nextUp32(f: f32) {
   if (f == (0.0 as f32)) {
     return F32_MIN_SUBNORMAL;
   }
-  let b = bits32(f);
-  return fromBits32(if (f > (0.0 as f32)) b + 1 else b - 1);
+  let b = i32_reinterpret_f32(f);
+  return f32_reinterpret_i32(if (f > (0.0 as f32)) b + 1 else b - 1);
 }
 
 /** The next f32 below `f`. */
@@ -210,8 +211,8 @@ function nextDown32(f: f32) {
   if (f == (0.0 as f32)) {
     return -F32_MIN_SUBNORMAL;
   }
-  let b = bits32(f);
-  return fromBits32(if (f > (0.0 as f32)) b - 1 else b + 1);
+  let b = i32_reinterpret_f32(f);
+  return f32_reinterpret_i32(if (f > (0.0 as f32)) b - 1 else b + 1);
 }
 
 /**
@@ -232,8 +233,8 @@ function roundToF32(s: f64, e: f64) {
   var mid = 0.0;
   if (fd - fd != 0.0) {
     // f is infinite: the neighbor is the largest finite f32
-    other = fcopysign(F32_MAX, fd) as f32;
-    mid = fcopysign(F32_OVERFLOW, fd);
+    other = copysign(F32_MAX, fd) as f32;
+    mid = copysign(F32_OVERFLOW, fd);
   } else {
     other = if (s > fd) nextUp32(f) else nextDown32(f);
     mid = (fd + (other as f64)) * 0.5; // exact

@@ -12,7 +12,8 @@
  * error is under 1 ulp.
  */
 
-import { fromBits, highWord, scalbn, X1P1023 } from './float-bits.zena';
+import { f64_reinterpret_i64 } from './intrinsics.zena';
+import { X1P1023, highWord, scalbn } from './float-bits.zena';
 
 let LN2HI = 0.6931471803691238; // 0x3fe62e42fee00000
 let LN2LO = 0.00000000019082149292705877; // 0x3dea39ef35793c76
@@ -162,7 +163,7 @@ export function expm1(x: f64): f64 {
     }
     return 1.0 + 2.0 * (xr - e);
   }
-  let twopk = fromBits(((0x3ff + k) as i64) << 52); // 2^k
+  let twopk = f64_reinterpret_i64(((0x3ff + k) as i64) << 52); // 2^k
   if (k < 0 || k > 56) {
     // suffices to return exp(x) - 1
     var y = xr - e + 1.0;
@@ -173,7 +174,7 @@ export function expm1(x: f64): f64 {
     }
     return y - 1.0;
   }
-  let uf = fromBits(((0x3ff - k) as i64) << 52); // 2^-k
+  let uf = f64_reinterpret_i64(((0x3ff - k) as i64) << 52); // 2^-k
   if (k < 20) {
     return (xr - e + (1.0 - uf)) * twopk;
   }

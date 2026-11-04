@@ -13,9 +13,10 @@
  * (`pow(2, 3)` is exactly 8).
  */
 
+import { abs, i64_reinterpret_f64, sqrt } from './intrinsics.zena';
 import {
-  fabs, fsqrt, bits, highWord, lowWord, withHighWord, zeroLowWord,
-  fromWords, scalbn, X1P53, HUGE, TINY,
+  HUGE, TINY, X1P53, fromWords, highWord, lowWord, scalbn, withHighWord,
+  zeroLowWord,
 } from './float-bits.zena';
 
 // log2(1 + f) on the two intervals |x| < sqrt(3/2) and |x| < sqrt(3),
@@ -50,8 +51,8 @@ let IVLN2_L = 0.000000019259629911266175; // 0x3e54ae0bf85ddf44 = 1/ln2 tail
  * is NaN, and an odd integer `y` keeps the sign of a negative `x`.
  */
 export function pow(x: f64, y: f64): f64 {
-  let bx = bits(x);
-  let by = bits(y);
+  let bx = i64_reinterpret_f64(x);
+  let by = i64_reinterpret_f64(y);
   let hx = (bx >> 32) as i32;
   let lx = bx as i32;
   let hy = (by >> 32) as i32;
@@ -117,11 +118,11 @@ export function pow(x: f64, y: f64): f64 {
       return x * x; // y is 2
     }
     if (hy == 0x3fe00000 && hx >= 0) {
-      return fsqrt(x); // y is 0.5 and x >= +0
+      return sqrt(x); // y is 0.5 and x >= +0
     }
   }
 
-  var ax = fabs(x);
+  var ax = abs(x);
   if (lx == 0 && (ix == 0x7ff00000 || ix == 0 || ix == 0x3ff00000)) {
     // x is +-0, +-inf or +-1
     var z = ax;

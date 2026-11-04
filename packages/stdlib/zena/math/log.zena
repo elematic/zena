@@ -14,9 +14,8 @@
  * error of each function is under 1 ulp.
  */
 
-import {
-  bits, fromBits, fromWords, zeroLowWord, X1P54,
-} from './float-bits.zena';
+import { f64_reinterpret_i64, i64_reinterpret_f64 } from './intrinsics.zena';
+import { X1P54, fromWords, zeroLowWord } from './float-bits.zena';
 
 let LN2_HI = 0.6931471803691238; // 0x3fe62e42fee00000
 let LN2_LO = 0.00000000019082149292705877; // 0x3dea39ef35793c76
@@ -51,7 +50,7 @@ function logR(z: f64) {
  */
 export function log(x: f64): f64 {
   var xr = x;
-  var ui = bits(x);
+  var ui = i64_reinterpret_f64(x);
   var hx = (ui >> 32) as i32;
   var k = 0;
   if (hx < 0x00100000) {
@@ -65,7 +64,7 @@ export function log(x: f64): f64 {
     // subnormal: scale x up
     k -= 54;
     xr = x * X1P54;
-    ui = bits(xr);
+    ui = i64_reinterpret_f64(xr);
     hx = (ui >> 32) as i32;
   } else if (hx >= 0x7ff00000) {
     return x;
@@ -92,7 +91,7 @@ export function log(x: f32): f32 {
 /** The base 2 logarithm of `x`. */
 export function log2(x: f64): f64 {
   var xr = x;
-  var ui = bits(x);
+  var ui = i64_reinterpret_f64(x);
   var hx = (ui >> 32) as i32;
   var k = 0;
   if (hx < 0x00100000) {
@@ -104,7 +103,7 @@ export function log2(x: f64): f64 {
     }
     k -= 54;
     xr = x * X1P54;
-    ui = bits(xr);
+    ui = i64_reinterpret_f64(xr);
     hx = (ui >> 32) as i32;
   } else if (hx >= 0x7ff00000) {
     return x;
@@ -138,7 +137,7 @@ export function log2(x: f32): f32 {
 /** The base 10 logarithm of `x`. */
 export function log10(x: f64): f64 {
   var xr = x;
-  var ui = bits(x);
+  var ui = i64_reinterpret_f64(x);
   var hx = (ui >> 32) as i32;
   var k = 0;
   if (hx < 0x00100000) {
@@ -150,7 +149,7 @@ export function log10(x: f64): f64 {
     }
     k -= 54;
     xr = x * X1P54;
-    ui = bits(xr);
+    ui = i64_reinterpret_f64(xr);
     hx = (ui >> 32) as i32;
   } else if (hx >= 0x7ff00000) {
     return x;
@@ -190,7 +189,7 @@ let LOW_MASK: i64 = 0xffffffff;
  * number below -1 is NaN.
  */
 export function log1p(x: f64): f64 {
-  var ui = bits(x);
+  var ui = i64_reinterpret_f64(x);
   let hx = ui >>> 32; // the high word, unsigned
   var k = 1;
   var f = 0.0;
@@ -218,13 +217,13 @@ export function log1p(x: f64): f64 {
     return x;
   }
   if (k > 0) {
-    ui = bits(1.0 + x);
+    ui = i64_reinterpret_f64(1.0 + x);
     var hu = ui >>> 32;
     hu += 0x3ff00000 - 0x3fe6a09e;
     k = ((hu >> 20) - 0x3ff) as i32;
     // correction term ~ log(1 + x) - log(u), avoiding underflow in c / u
     if (k < 54) {
-      let u = fromBits(ui);
+      let u = f64_reinterpret_i64(ui);
       c = if (k >= 2) 1.0 - (u - x) else x - (u - 1.0);
       c /= u;
     } else {
@@ -233,7 +232,7 @@ export function log1p(x: f64): f64 {
     // reduce u into [sqrt(2)/2, sqrt(2)]
     hu = (hu & 0x000fffff) + 0x3fe6a09e;
     ui = (hu << 32) | (ui & LOW_MASK);
-    f = fromBits(ui) - 1.0;
+    f = f64_reinterpret_i64(ui) - 1.0;
   }
   let hfsq = 0.5 * f * f;
   let s = f / (2.0 + f);

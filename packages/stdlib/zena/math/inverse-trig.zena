@@ -15,9 +15,8 @@
  * error is under 1 ulp.
  */
 
-import {
-  bits, fabs, fsqrt, highWord, lowWord, zeroLowWord, pow2,
-} from './float-bits.zena';
+import { abs, i64_reinterpret_f64, sqrt } from './intrinsics.zena';
+import { highWord, lowWord, pow2, zeroLowWord } from './float-bits.zena';
 
 let PIO2_HI = 1.5707963267948966; // 0x3ff921fb54442d18
 let PIO2_LO = 0.00000000000000006123233995736766; // 0x3c91a62633145c07
@@ -66,8 +65,8 @@ export function asin(x: f64): f64 {
     return x + x * asinR(x * x);
   }
   // 1 > |x| >= 0.5
-  let z = (1.0 - fabs(x)) * 0.5;
-  let s = fsqrt(z);
+  let z = (1.0 - abs(x)) * 0.5;
+  let s = sqrt(z);
   let r = asinR(z);
   var result = 0.0;
   if (ix >= 0x3fef3333) {
@@ -114,13 +113,13 @@ export function acos(x: f64): f64 {
   if (hx < 0) {
     // x < -0.5
     let z = (1.0 + x) * 0.5;
-    let s = fsqrt(z);
+    let s = sqrt(z);
     let w = asinR(z) * s - PIO2_LO;
     return 2.0 * (PIO2_HI - (s + w));
   }
   // x > 0.5
   let z = (1.0 - x) * 0.5;
-  let s = fsqrt(z);
+  let s = sqrt(z);
   let df = zeroLowWord(s);
   let c = (z - df * df) / (s + df);
   let w = asinR(z) * s + c;
@@ -178,7 +177,7 @@ export function atan(x0: f64): f64 {
     }
     id = -1;
   } else {
-    x = fabs(x);
+    x = abs(x);
     if (ix < 0x3ff30000) {
       // |x| < 1.1875
       if (ix < 0x3fe60000) {
@@ -227,8 +226,8 @@ export function atan2(y: f64, x: f64): f64 {
   if (x != x || y != y) {
     return x + y;
   }
-  let bx = bits(x);
-  let by = bits(y);
+  let bx = i64_reinterpret_f64(x);
+  let by = i64_reinterpret_f64(y);
   var ix = bx >>> 32; // the high words, unsigned
   let lx = bx & LOW_MASK;
   var iy = by >>> 32;
@@ -287,7 +286,7 @@ export function atan2(y: f64, x: f64): f64 {
   if ((m & 2) != 0 && iy + (64 << 20) < ix) {
     z = 0.0; // |y / x| < 2^-64, x < 0
   } else {
-    z = atan(fabs(y / x));
+    z = atan(abs(y / x));
   }
   if (m == 0) {
     return z; // atan(+, +)

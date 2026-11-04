@@ -17,7 +17,10 @@
  */
 
 import {
-  bits, fromBits, highWord, ffloor, scalbn, zeroLowWord, idiv, X1P24, X1P_24,
+  div, f64_reinterpret_i64, floor, i64_reinterpret_f64,
+} from './intrinsics.zena';
+import {
+  X1P24, X1P_24, highWord, scalbn, zeroLowWord,
 } from './float-bits.zena';
 
 // The sine kernel's polynomial on [-pi/4, pi/4]: |error| <= 2^-58.
@@ -141,7 +144,7 @@ function remPio2Medium(x: f64, ix: i32): inline (i32, f64, f64) {
   var w = fn * PIO2_1T; // first round, good to 85 bits
   var y0 = r - w;
   let ex = ix >> 20;
-  var ey = ((bits(y0) >> 52) as i32) & 0x7ff;
+  var ey = ((i64_reinterpret_f64(y0) >> 52) as i32) & 0x7ff;
   if (ex - ey > 16) {
     // second round, good to 118 bits
     var t = r;
@@ -149,7 +152,7 @@ function remPio2Medium(x: f64, ix: i32): inline (i32, f64, f64) {
     r = t - w;
     w = fn * PIO2_2T - ((t - r) - w);
     y0 = r - w;
-    ey = ((bits(y0) >> 52) as i32) & 0x7ff;
+    ey = ((i64_reinterpret_f64(y0) >> 52) as i32) & 0x7ff;
     if (ex - ey > 49) {
       // third round, good to 151 bits, which covers all cases
       t = r;
@@ -263,7 +266,7 @@ let MANTISSA_MASK: i64 = 0x000fffffffffffff;
 
 /** `|x|`'s significand with the exponent set to 23: a value in [2^23, 2^24). */
 function fromMantissa(x: f64): f64 {
-  return fromBits((bits(x) & MANTISSA_MASK) | (((0x3ff + 23) as i64) << 52));
+  return f64_reinterpret_i64((i64_reinterpret_f64(x) & MANTISSA_MASK) | (((0x3ff + 23) as i64) << 52));
 }
 
 // 2/pi in 24-bit words: 396 hex digits, enough for the exponent range of
@@ -308,7 +311,7 @@ function remPio2Large(x: FixedArray<f64>, nx: i32, y: FixedArray<f64>, e0: i32):
 
   // jx, jv and q0, with q0 < 3
   let jx = nx - 1;
-  var jv = idiv(e0 - 3, 24);
+  var jv = div(e0 - 3, 24);
   if (jv < 0) {
     jv = 0;
   }
@@ -358,7 +361,7 @@ function remPio2Large(x: FixedArray<f64>, nx: i32, y: FixedArray<f64>, e0: i32):
 
     // n
     z = scalbn(z, q0); // the actual value of z
-    z -= 8.0 * ffloor(z * 0.125); // trim off integers >= 8
+    z -= 8.0 * floor(z * 0.125); // trim off integers >= 8
     n = z as i32;
     z -= n as f64;
     ih = 0;

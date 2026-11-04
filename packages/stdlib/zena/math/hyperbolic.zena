@@ -10,7 +10,10 @@
  * `atanh` within 1.7 ulp below 0.5.
  */
 
-import { bits, fromBits, fsqrt, highWord, pow2 } from './float-bits.zena';
+import {
+  f64_reinterpret_i64, i64_reinterpret_f64, sqrt,
+} from './intrinsics.zena';
+import { highWord, pow2 } from './float-bits.zena';
 import { exp, expm1 } from './exp.zena';
 import { log, log1p } from './log.zena';
 
@@ -23,7 +26,7 @@ let ABS_MASK: i64 = 0x7fffffffffffffff;
  * so that `k ln2` has minimal relative error and `x - k ln2 > log(DBL_MIN)`.
  */
 function expo2(x: f64) {
-  let kln2 = fromBits(0x40962066151add8b); // 2043 * ln2
+  let kln2 = f64_reinterpret_i64(0x40962066151add8b); // 2043 * ln2
   let scale = pow2(1021); // k is odd, and scale * scale overflows
   return exp(x - kln2) * scale * scale;
 }
@@ -31,10 +34,10 @@ function expo2(x: f64) {
 /** The hyperbolic sine of `x`. */
 export function sinh(x: f64): f64 {
   var h = 0.5;
-  if (bits(x) < 0) {
+  if (i64_reinterpret_f64(x) < 0) {
     h = -h;
   }
-  let absx = fromBits(bits(x) & ABS_MASK);
+  let absx = f64_reinterpret_i64(i64_reinterpret_f64(x) & ABS_MASK);
   let w = highWord(absx);
   if (w < 0x40862e42) {
     // |x| < log(DBL_MAX)
@@ -57,7 +60,7 @@ export function sinh(x: f32): f32 {
 
 /** The hyperbolic cosine of `x`. */
 export function cosh(x: f64): f64 {
-  let absx = fromBits(bits(x) & ABS_MASK);
+  let absx = f64_reinterpret_i64(i64_reinterpret_f64(x) & ABS_MASK);
   let w = highWord(absx);
   if (w < 0x3fe62e42) {
     // |x| < log(2)
@@ -82,8 +85,8 @@ export function cosh(x: f32): f32 {
 
 /** The hyperbolic tangent of `x`, in [-1, 1]. */
 export function tanh(x: f64): f64 {
-  let sign = bits(x) < 0;
-  let absx = fromBits(bits(x) & ABS_MASK);
+  let sign = i64_reinterpret_f64(x) < 0;
+  let absx = f64_reinterpret_i64(i64_reinterpret_f64(x) & ABS_MASK);
   let w = highWord(absx);
   var t = 0.0;
   if (w > 0x3fe193ea) {
@@ -116,19 +119,19 @@ export function tanh(x: f32): f32 {
 
 /** The inverse hyperbolic sine of `x`. */
 export function asinh(x0: f64): f64 {
-  let u = bits(x0);
+  let u = i64_reinterpret_f64(x0);
   let e = ((u >> 52) as i32) & 0x7ff;
   let sign = u < 0;
-  var x = fromBits(u & ABS_MASK);
+  var x = f64_reinterpret_i64(u & ABS_MASK);
   if (e >= 0x3ff + 26) {
     // |x| >= 2^26, inf or NaN
     x = log(x) + LN2;
   } else if (e >= 0x3ff + 1) {
     // |x| >= 2
-    x = log(2.0 * x + 1.0 / (fsqrt(x * x + 1.0) + x));
+    x = log(2.0 * x + 1.0 / (sqrt(x * x + 1.0) + x));
   } else if (e >= 0x3ff - 26) {
     // |x| >= 2^-26, up to 1.6 ulp of error in [0.125, 0.5]
-    x = log1p(x + x * x / (fsqrt(x * x + 1.0) + 1.0));
+    x = log1p(x + x * x / (sqrt(x * x + 1.0) + 1.0));
   }
   // |x| < 2^-26: asinh(x) = x
   return if (sign) -x else x;
@@ -143,16 +146,16 @@ export function asinh(x: f32): f32 {
  * number below 1 is NaN.
  */
 export function acosh(x: f64): f64 {
-  let ux = bits(x);
+  let ux = i64_reinterpret_f64(x);
   let e = ((ux >> 52) as i32) & 0x7ff;
   if (e < 0x3ff + 1) {
     // |x| < 2, invalid if x < 1; up to 2 ulp of error in [1, 1.125]
     let x1 = x - 1.0;
-    return log1p(x1 + fsqrt(x1 * x1 + 2.0 * x1));
+    return log1p(x1 + sqrt(x1 * x1 + 2.0 * x1));
   }
   if (e < 0x3ff + 26 && ux >= 0) {
     // 2 <= x < 2^26
-    return log(2.0 * x - 1.0 / (x + fsqrt(x * x - 1.0)));
+    return log(2.0 * x - 1.0 / (x + sqrt(x * x - 1.0)));
   }
   // x >= 2^26, x <= -2, or NaN
   return log(x) + LN2;
@@ -167,10 +170,10 @@ export function acosh(x: f32): f32 {
  * is +-infinity, and `atanh` of a number outside [-1, 1] is NaN.
  */
 export function atanh(x: f64): f64 {
-  let u = bits(x);
+  let u = i64_reinterpret_f64(x);
   let e = ((u >> 52) as i32) & 0x7ff;
   let sign = u < 0;
-  var y = fromBits(u & ABS_MASK);
+  var y = f64_reinterpret_i64(u & ABS_MASK);
   if (e < 0x3ff - 1) {
     if (e >= 0x3ff - 32) {
       // 2^-32 <= |x| < 0.5, up to 1.7 ulp of error
