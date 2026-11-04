@@ -135,6 +135,8 @@ compiler's shape rather than to the library, and belongs with the
 longer-term direction: a fully asynchronous compiler, with parsing and
 scope analysis in workers. This change is the first step of that; the
 library the compiler would await already exists.
+[async-compiler.md](./async-compiler.md) proposes the next step: an
+asynchronous `CompilerHost` and everything that calls it.
 
 ## Related
 

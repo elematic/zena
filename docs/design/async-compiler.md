@@ -1,0 +1,328 @@
+# Asynchronous compiler I/O
+
+## Status
+
+Proposed 2026-11-04. Nothing here is implemented. It waits on two
+changes, described under "Prerequisites": asynchronous test bodies in
+`zena:test`, and elematic/zena#633.
+
+## Overview
+
+The compiler reads source through `CompilerHost`
+(`packages/zena-compiler/zena/lib/library-loader.zena`), whose two
+methods are synchronous:
+
+```zena
+interface CompilerHost {
+  readFile(path: String): String;
+  listDir(path: String): Array<String> | null;
+}
+```
+
+The hosts that read from disk call `zena:fs`'s `Sync` forms, which wait
+for the asynchronous WASI 0.3 call in `blockOn`
+([async-fs-cli.md](./async-fs-cli.md)). This document makes every
+compiler operation that reaches a host return a `Future`: the host
+interface, the library loader, `Compiler.compile`, `compileFile`, and
+the tools and the language service that call them. Type checking and
+code generation do no I/O and stay synchronous.
+
+The change is wanted for four reasons:
+
+- A host that cannot answer synchronously can serve the compiler. In a
+  browser, the language service gets the standard library from an
+  in-memory map built ahead of time (`createVirtualFileReader`), because
+  `FileReader` has to return a string. With an asynchronous host it can
+  fetch a library when the compiler asks for it.
+- The compiler can read from disk where `blockOn` traps. A `Sync` form
+  works only inside a task the host lifted `async`, so a compile
+  started from a component's synchronous export traps at its first
+  read.
+- A compile stops holding its task while a read is in flight. The
+  language server reads one message, handles it, and reads the next; a
+  read inside `blockOn` holds that loop.
+- A compiler that hands work to another Wasm instance has to await the
+  answer. Parsing or code generation in workers therefore needs these
+  signatures first.
+
+It does not make a build faster. See "Measurements".
+
+## Measurements
+
+`zena build --time packages/zena-cli/zena/main.zena` at `-O1`, measured
+on 2026-11-04 with a `zena-cli` built from the branch that became #898.
+Two runs agreed to within 4%; the machine's load average was 4 on 16
+cores.
+
+| phase            | time   |
+| ---------------- | ------ |
+| load (367 files) | 0.34 s |
+| parse            | 0.91 s |
+| scope analysis   | 0.65 s |
+| check            | 1.7 s  |
+| code generation  | 69.7 s |
+| total            | 73.3 s |
+
+Reading source is 0.5% of the compile, about 0.9 ms a file, so issuing
+reads concurrently would save at most a third of a second. Parsing,
+scope analysis and checking together are 4.4%. Work on parallelism
+should start from code generation, which is 95%.
+
+## Scope
+
+"I/O" here means a call that reaches a host and can wait: reading a
+file, listing a directory, testing whether a path exists, writing the
+output. Three things the compiler also asks a host for stay
+synchronous:
+
+- `console` output, which is synchronous by design
+  ([async-fs-cli.md](./async-fs-cli.md), "`zena:console`").
+- `getEnv` and the command line, which are synchronous WIT functions.
+- The clock behind `--time`.
+
+A function that becomes asynchronous uses the asynchronous `zena:fs`
+forms for its own I/O. A function that stays synchronous keeps the
+`Sync` forms. So `zb`, the package manager's commands and the other
+tools that do not call the compiler are unchanged.
+
+## Detailed design
+
+### `CompilerHost`
+
+```zena
+interface CompilerHost {
+  readFile(path: String): Future<String>;
+  listDir(path: String): Future<Array<String> | null>;
+}
+```
+
+A missing file fails the future, as it throws today. There are eleven
+implementations: `FileHost` (`compile-file.zena`), `DiskHost`
+(`fs-host.zena`), `DocumentHost` (the language service), `ManifestHost`
+(`zena-cli`'s `lsp.zena`), the hosts in `zenadoc` and `zena-lint`, and
+five in the compiler's tests and benchmarks. A host that holds its
+sources in memory declares the methods `async` and returns directly.
+
+### Library loader
+
+`LibraryLoader.load`, `#register` and `refreshCache` become
+asynchronous. `loadSynthesized` does too, because it loads the imports
+of the module it is given. `invalidate`, `delete`, `has`, `get` and
+`computeGraph` read and edit the cache only and stay synchronous.
+
+The loader awaits one read at a time, in the order it reads today: a
+library is read, parsed and cached, and then each of its imports is
+loaded in source order before the next. The order matters because every
+parse draws node ids from one generator and interns identifiers in one
+`StringTable`, both owned by the loader. Node ids key the semantic
+model, and their order reaches the emitted module. Keeping the order
+keeps the compiler's output byte for byte what it is now.
+
+`#register` catches a failed read of an import and leaves the import
+for the checker to report as a missing library. The `await` sits inside
+that `try`.
+
+### One compile at a time
+
+A `Compiler` holds mutable state for each target: the loader's cache,
+the id generators and the scope trees. A synchronous `compile` could not
+be interrupted. An asynchronous one can: while it waits for a read, the
+caller is free to call `compile` or `invalidate` on the same compiler,
+and the second call would see a cache the first has half filled.
+
+`Compiler.compile` and `Compiler.invalidate` throw when a compile is in
+flight on that compiler. The batch drivers (`CompileSession`, the
+portable test runners, `zenadoc`) await each compile before starting
+the next, so they never reach the check. The language service is the
+one caller whose requests can overlap, because JavaScript can call
+`check` twice without awaiting the first. `LanguageService` queues its
+two asynchronous methods, `check` and `checkProgram`, and runs them in
+arrival order.
+
+### Package manifests and WIT
+
+`loadWorkspace` (`package-manifest.zena`), `readWitDocument` and
+`readWitSource` (`wit-source.zena`) and `synthesizeWitModule`
+(`wit-module-synth.zena`) read through the host and become
+asynchronous. `FileHost.readFile` awaits `synthesizeWitModule` for a
+WIT-backed module.
+
+### `Compiler` and `compile-file.zena`
+
+```zena
+Compiler.compile(options: CompileOptions): Future<CompilationResult>
+openCompileSession(options): Future<CompileSession | null>
+CompileSession.compile(entry, outPath): Future<i32>
+compileFile(options): Future<i32>
+compileComponentRuntimeModule(compiler, stdlibRoot): Future<ByteBuffer>
+```
+
+`CompilerTarget.compile` awaits the loads of the prelude, the entry and
+the target's runtime libraries, then runs scope analysis and import
+wiring synchronously as it does now. `checkCompilation`, the
+generators and everything under `lib/codegen/` keep their signatures,
+with one exception: `compileComponentRuntimeModule` compiles the
+component's memory module with `compiler.compile`, so it is
+asynchronous, and `CompileSession` awaits it before it constructs the
+generator.
+
+`compile-file.zena`'s own calls move to the asynchronous forms:
+`exists` for the WIT path and the package roots, `readFileBytes` for a
+prebuilt runtime memory module, `writeFile` and `writeFileBytes` for
+the output.
+
+### Command-line tools
+
+The compiler's `main` (`zena/cli/main.zena`) and `zena-cli`'s `main`
+become `async function main(): Future<i32>`. The commands that compile
+(`build`, `run`, `test`, `bench`, `lint`, `doc`, `lsp`) become
+asynchronous down to the call that reaches the compiler. That takes in
+`compileTo`, `compileCached` and `compileIntoCache` in `zena-cli`'s
+`compile.zena`, `zenadoc`'s `documentPackage`, and `zena-lint`'s
+`Project` (`checking.zena`), which type-checks each fix before keeping
+it.
+
+The portable test runners (`portable_syntax`, `portable_semantics`,
+`portable_execution`) embed the compiler and get an asynchronous `main`
+the same way.
+
+### Language service
+
+`LanguageService.check` and `checkProgram` compile, so they return
+futures, and so does `compileToWasm` (`lib/compile.zena`), which calls
+`checkProgram`. The other methods stay synchronous: `lint`, `fixAll`,
+`getDefinition`, `getHover` and `getCompletions` read the results of
+the last check, `getDocumentSymbols` parses the text it is given, and
+`openDocument` and `closeDocument` edit the host's document map.
+
+`LspServer.handle` becomes asynchronous. `zena lsp`'s loop awaits each
+message before reading the next, which keeps today's ordering.
+
+`lsp.wasm` is built for the `js` target, where a Wasm export returns a
+Wasm value and cannot return a `Future` the host could use. Each
+asynchronous export in `lsp.zena` (`init`, which reads the workspace's
+manifests, `check` and `compileToWasm`) therefore returns the
+JavaScript promise that `zena:js`'s `toPromise` makes from its future.
+The file reader import
+(`compiler.read_file`) becomes an asynchronous import registered
+through `@zena-lang/runtime`'s `asyncImports`, so the package
+instantiates `lsp.wasm` with the runtime's `instantiate` in place of
+its own.
+
+The published JavaScript API of `@zena-lang/language-service` changes
+to match:
+
+```ts
+type FileReader = (
+  path: string,
+) => string | undefined | null | Promise<string | undefined | null>;
+
+class ZenaLanguageService {
+  check(path: string, source?: string): Promise<Diagnostic[]>;
+  lint(path: string, source?: string): Promise<LintFinding[]>;
+  compileToWasm(
+    path: string,
+    source?: string,
+  ): Promise<Uint8Array<ArrayBuffer> | null>;
+}
+```
+
+`lint` returns a promise because it checks the document first when it
+is given a source. Its callers are the playground's compiler worker, which already answers
+over messages, and the VS Code extension's `compiler-service.ts`, which
+binds `lsp.wasm`'s exports itself and changes with them.
+
+### Tests
+
+The compiler's tests call the changed functions at about 230 sites in
+about 50 files. Each such test body becomes asynchronous and awaits the
+compile.
+`MockHost` and `PlainHost` (`test-utils.zena`) return their in-memory
+sources from `async` methods.
+
+## Prerequisites
+
+**Asynchronous test bodies.** `zena:test` runs a test by calling
+`fn(ctx)` and treats its return as the end of the test. `test` has to
+accept a body that returns `Future<void>`, the runner has to await each
+test before the next, `runAndReport` has to return `Future<i32>`, and
+the `main` the compiler appends to a test file in test mode has to be
+asynchronous. Without this, each compiler test would wait in `blockOn`,
+which exists only on the component targets.
+
+**elematic/zena#633.** Passing a record to a parameter of a wider
+record type fails in code generation inside an `async` function.
+`compiler.compile({entry, target})` is that case once its caller is
+asynchronous: `CompileOptions` has optional fields the literal leaves
+out.
+
+## Landing order
+
+1. The two prerequisites.
+2. A probe of the bootstrap. The compiler's own source has no `async`
+   function today. The bootstrap already compiles the ones in `zena:fs`,
+   which the `Sync` forms call, so asynchronous functions and `await`
+   are known to work. Asynchronous methods called through an interface
+   and asynchronous private methods are new to it. If the bootstrap
+   cannot compile them, the change lands in two steps with a reseed
+   between, as [bootstrapping.md](./bootstrapping.md) describes.
+3. The change itself, as one pull request. `Compiler.compile`'s new
+   return type breaks every caller in the same commit, and `lsp.wasm`
+   cannot keep a synchronous path beside the asynchronous one because
+   the `js` target has no `blockOn`.
+
+## Verification
+
+- `npm test`, which includes the stage B and stage C comparison.
+- The same inputs compiled by a compiler built before the change and
+  one built after it produce identical bytes (`ZENA_COMPILER_WASM`,
+  `packages/zena-compiler/CONTEXT.md`, "Debugging the compiler").
+- The `load` line of `--time` before and after, for the compile
+  measured above.
+- The size of `lsp.wasm` before and after. The `js` target is the
+  size-sensitive one, and this change links the future machinery and
+  `zena:js`'s promise support into it.
+
+## Later work
+
+These are outside this change and depend on it.
+
+- **Concurrent reads.** Starting all of a library's imports at once
+  makes read completion order vary between runs. Parse order must stay
+  fixed, or node ids must stop depending on it, for example by
+  numbering nodes per file.
+- **Workers.** Wasm GC objects cannot be shared between instances, so a
+  worker's result crosses as bytes. Code generation already produces
+  bytes; a worker that parses would have to serialize its AST.
+- **Language server responsiveness.** Reading the next message while a
+  compile is in flight, and cancelling a compile that a newer edit has
+  made obsolete.
+
+## Alternatives considered
+
+**A synchronous compiler behind an asynchronous prefetch.** The caller
+would fetch every source first and hand the compiler an in-memory host.
+The set of files is known only by parsing each one for its imports, so
+the prefetch would need its own import scanner and module resolver, or
+a loop that compiles, collects the missing paths, fetches them and
+compiles again. Rejected because it keeps two paths through resolution
+and still leaves the compiler unable to await a worker.
+
+**Synchronous entry points beside the asynchronous ones.** A
+`compileSync` that waits in `blockOn` would spare the tools and tests
+this change. It would work only on the component targets and only
+inside an `async`-lifted task, and it would be a second path to keep
+correct. Rejected for the same reason the repository keeps no
+compatibility shims.
+
+## Related
+
+- [async-fs-cli.md](./async-fs-cli.md): the asynchronous `zena:fs`
+  this builds on, and where `blockOn` traps.
+- [async.md](./async.md): `async`, `await`, `Future`, and the `js`
+  host's completion protocol.
+- [bootstrapping.md](./bootstrapping.md): landing a compiler change the
+  bootstrap cannot compile.
+- [lsp.md](./lsp.md): the language server.
+- [self-hosted-compiler.md](./self-hosted-compiler.md): the compiler's
+  architecture, including `CompilerHost`.
