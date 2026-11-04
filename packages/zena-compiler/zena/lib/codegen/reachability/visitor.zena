@@ -15,7 +15,7 @@ import {
   isScopedType, scopedInner, internFunctionType, forInLowersToIndexLoop,
   isIterableRangeClass } from '../../types.zena';
 import {
-  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
+  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral,
 } from '../../ast.zena';
 import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo, TypeTestSite,
@@ -1241,7 +1241,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           }
         }
       }
+      if (n is SuperInitializer) {
+        this.#noteSplicedDefaultGlobals(n, n.args, model, resolveType);
+      }
       if (n is NewExpression) {
+        this.#noteSplicedDefaultGlobals(n, n.args, model, resolveType);
         let neType = model.getNodeType(n);
         let ctorName = if (n.constructorName != null) {
           getNodeMemberName(model, n.constructorName as Node)
@@ -1300,6 +1304,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       this.registerAsyncNode(n, model, resolveType);
       if (n is CallExpression) {
+        this.#noteSplicedDefaultGlobals(n, n.args, model, resolveType);
         this.#noteIntrinsicEqTargets(n, model, resolveType);
         this.#noteMethodCall(n, model, resolveType);
         // Plain identifier calls: the dependency records omit
@@ -1360,6 +1365,69 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         }
       }
     });
+  }
+
+  /**
+   * Default argument expressions are spliced from the callee's AST into
+   * the caller's argument list without re-checking them in the caller, so
+   * globals they name are absent from the caller's dependency records and
+   * may belong to another module's `globalDeclarations`.
+   */
+  #noteSplicedDefaultGlobals(
+      node: Node,
+      args: GrowableArray<Expression>,
+      model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    let orig = model.getOriginalArgCount(node);
+    if (orig < 0 || orig >= args.length) {
+      return;
+    }
+    var i = orig;
+    while (i < args.length) {
+      walkEnter(args[i], (n) => {
+        if (n is Identifier) {
+          let sym = model.resolve(n);
+          if (sym != null) {
+            let target = sym.resolveTarget();
+            if (let (true, targetModel) = this.pass.symbolIdToModel.get(target.id)) {
+              this.pass.queueReferrer(new Referrer(true, target.id, -1,
+                  targetModel, null, this.pass.currentReachable));
+              let parentNode = targetModel.getParent(n);
+              if (parentNode is CallExpression && parentNode.callee === n) {
+                this.#noteRecordLiteralArgs(parentNode, target.id);
+                this.#noteRecordResultCall(parentNode, targetModel, target.id);
+                let rawCalleeType = targetModel.getNodeType(n);
+                if (rawCalleeType != null) {
+                  let calleeType = resolveType(rawCalleeType);
+                  if (calleeType is FunctionType) {
+                    let {typeArguments} = calleeType;
+                    if (typeArguments != null && typeArguments.length > 0) {
+                      let resolvedArgs = new Array<Type>();
+                      for (let arg in typeArguments) {
+                        resolvedArgs.push(arg);
+                      }
+                      if (noOpenTypeParameters(resolvedArgs) &&
+                          this.pass.wasm.genericFunctions.has(target.id)) {
+                        let spec = this.pass.specializer.instantiateGenericFunction(
+                            target.id, resolvedArgs);
+                        this.#noteSpecializedCall(parentNode, targetModel, spec);
+                      }
+                    }
+                  }
+                }
+              } else {
+                let rawNodeType = targetModel.getNodeType(n);
+                if (rawNodeType != null) {
+                  this.discoverIdentifierReferenceAsValue(
+                      n, targetModel, resolveType(rawNodeType));
+                }
+              }
+            }
+          }
+        }
+      });
+      i += 1;
+    }
   }
 
   /**
@@ -2683,7 +2751,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           }
         }
       }
+      if (n is SuperInitializer) {
+        this.#noteSplicedDefaultGlobals(n, n.args, model, resolveType);
+      }
       if (n is NewExpression) {
+        this.#noteSplicedDefaultGlobals(n, n.args, model, resolveType);
         let neType = model.getNodeType(n);
         let ctorName = if (n.constructorName != null) {
           getNodeMemberName(model, n.constructorName as Node)
@@ -2742,6 +2814,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       this.registerAsyncNode(n, model, resolveType);
       if (n is CallExpression) {
+        this.#noteSplicedDefaultGlobals(n, n.args, model, resolveType);
         this.#noteIntrinsicEqTargets(n, model, resolveType);
         this.#noteMethodCall(n, model, resolveType);
         // Plain identifier calls: the dependency records omit

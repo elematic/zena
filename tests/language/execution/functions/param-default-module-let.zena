@@ -1,10 +1,11 @@
 // @mode: run
 // @result: 0
-// @skip: #855, a method's default is checked with its signature, before the module's lets have types
-// A default parameter can name a module-level `let`, in a function and in
-// a method alike, called from inside the class and from outside it.
+// A default parameter can name a module-level `let` across functions,
+// methods, constructors, case classes, sealed variants, interface
+// constructors, and mixins.
 
 let BASE = 'https://example.test';
+let ANNOTATED_BASE: String = 'https://typed.test';
 let STEP = 3;
 
 function joined(path: String, base: String = BASE): String {
@@ -12,7 +13,17 @@ function joined(path: String, base: String = BASE): String {
 }
 
 class Client {
+  defaultBase: String;
+
+  new(this.defaultBase = BASE);
+
+  new typed(this.defaultBase = ANNOTATED_BASE);
+
   url(path: String, base: String = BASE): String {
+    return `${base}${path}`;
+  }
+
+  static buildUrl(path: String, base: String = ANNOTATED_BASE): String {
     return `${base}${path}`;
   }
 
@@ -25,12 +36,60 @@ class Client {
   }
 }
 
+class Endpoint(path: String, base: String = BASE)
+
+sealed class Route {
+  case Page(path: String, base: String = BASE, hops: i32 = STEP)
+}
+
+interface Buffer {
+  new(capacity: i32 = STEP) {
+    return new FixedBuffer(capacity);
+  }
+  capacity(): i32;
+}
+
+class FixedBuffer implements Buffer {
+  size: i32;
+  new(this.size);
+  capacity(): i32 { return this.size; }
+}
+
+mixin Prefixed {
+  prefix: String = BASE;
+  prefixed(path: String, base: String = BASE): String {
+    return `${base}${path}`;
+  }
+}
+
+class Service with Prefixed {}
+
 export let main = (): i32 => {
   if (joined('/a') != 'https://example.test/a') return 1;
   let client = new Client();
-  if (client.url('/b') != 'https://example.test/b') return 2;
-  if (client.url('/c', 'https://other.test') != 'https://other.test/c') return 3;
-  if (client.step() != 3) return 4;
-  if (client.inside() != 'https://example.test/inside') return 5;
+  if (client.defaultBase != 'https://example.test') return 2;
+  if (client.url('/b') != 'https://example.test/b') return 3;
+  if (client.url('/c', 'https://other.test') != 'https://other.test/c') return 4;
+  if (client.step() != 3) return 5;
+  if (client.inside() != 'https://example.test/inside') return 6;
+
+  let typedClient = new Client.typed();
+  if (typedClient.defaultBase != 'https://typed.test') return 7;
+  if (Client.buildUrl('/s') != 'https://typed.test/s') return 8;
+
+  let ep = new Endpoint('/ep');
+  if (`${ep.base}${ep.path}` != 'https://example.test/ep') return 9;
+
+  let route = new Page('/home');
+  if (`${route.base}${route.path}` != 'https://example.test/home') return 10;
+  if (route.hops != 3) return 11;
+
+  let buf = new Buffer();
+  if (buf.capacity() != 3) return 12;
+
+  let svc = new Service();
+  if (svc.prefix != 'https://example.test') return 13;
+  if (svc.prefixed('/m') != 'https://example.test/m') return 14;
+
   return 0;
 };

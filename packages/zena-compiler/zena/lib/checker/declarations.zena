@@ -22,7 +22,8 @@ import { WellKnown, protocolSymbolKey } from '../well-known.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
 import { checkInlineParameterType, resolveResultAnnotation, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
 import {
-  checkAccessorBodies, checkMethodBody, checkMethodSignature, validateDecoratorBody
+  checkAccessorBodies, checkMethodBody, checkMethodParameterDefaults,
+  checkMethodSignature, validateDecoratorBody
 } from './classes.zena';
 import { BodyContext, CheckerContext, newEnumType } from './context.zena';
 import { checkExpression } from './expressions.zena';
@@ -281,7 +282,7 @@ export function checkEnumDeclaration(ctx: CheckerContext, ed: EnumDeclaration): 
 // ============================================================================
 // Mixin Declaration
 // ============================================================================
-export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration): void {
+export function registerMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration): void {
   let mixinName = md.name.name;
 
   // Look up pre-registered MixinType, or create one.
@@ -449,6 +450,7 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
   // `this` sees the mixin's members, composed ones included, through
   // the mixin itself (MemberTable).
   thisType.mixinSelf = mixinType;
+  mixinType.selfType = thisType;
 
   // Process body members.
   ctx.enterInterface();
@@ -492,25 +494,6 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
             mixinType.sharedMembers = shared;
             shared.add(fieldName);
           }
-        }
-
-        // Check initializer if present.
-        let {value} = fd;
-        if (value != null) {
-          ctx.enterNodeReferrer(fd.id as i32);
-          let initType = checkExpression(ctx, value, fieldType);
-          if (!isAssignableTo(ctx, initType, fieldType)) {
-            ctx.error(
-              "Type mismatch: field '" + displayMemberName(fieldName) + "' has type '" +
-              typeToString(fieldType) + "' but initializer has type '" +
-              typeToString(initType) + "'.",
-              DiagnosticCode.TypeMismatch,
-              fd.loc
-            );
-          } else {
-            adaptToExpected(ctx, value, initType, fieldType);
-          }
-          ctx.exitNodeReferrer(fd.id as i32);
         }
       }
       case MethodDefinition as methDef: {
@@ -626,7 +609,68 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
     validateDecoratorBody(ctx, md, mixinType);
   }
 
-  // 2. Check bodies
+  ctx.exitScope();
+}
+
+export function checkMixinBodies(ctx: CheckerContext, md: MixinDeclaration): void {
+  let resolved = ctx.declaredTypeOf(md) ?? ctx.resolveTypeName(md.name.name);
+  if (!(resolved is MixinType)) {
+    return;
+  }
+  let mixinType = resolved;
+  let {selfType} = mixinType;
+  if (selfType == null) {
+    return;
+  }
+  let thisType = selfType;
+
+  ctx.enterScope();
+  let {typeParameters} = mixinType;
+  if (typeParameters != null) {
+    for (let tp in typeParameters) {
+      ctx.declareTypeName(tp.name, tp);
+    }
+  }
+
+  let {decoratorSubject} = md;
+  if (decoratorSubject != null && decoratorSubject.name is Identifier) {
+    let contextSym = ctx.model.resolveDeclaration(decoratorSubject.name);
+    if (contextSym != null && contextSym.isDecoratorContext) {
+      let existing = ctx.model.getBindingTypeDirect(contextSym);
+      if (existing != null) {
+        ctx.declareBinding(contextSym, existing);
+      }
+    }
+  }
+
+  // Mixin and decorator field initializers run before `this` is bound.
+  ctx.enterInterface();
+  for (let member in md.body) {
+    if (member is FieldDefinition) {
+      if (!isSymbolFieldDeclaration(member) && member.value != null) {
+        let fieldName = getMemberName(ctx, member.name);
+        let members = mixinType.memberTable(member.isStatic);
+        if (members.has(fieldName)) {
+          let fieldType = members[fieldName].type;
+          let value = member.value as Expression;
+          ctx.enterNodeReferrer(member.id as i32);
+          let initType = checkExpression(ctx, value, fieldType);
+          if (!isAssignableTo(ctx, initType, fieldType)) {
+            ctx.error(
+              `Type mismatch: field '${displayMemberName(fieldName)}' has type '${typeToString(fieldType)}' but initializer has type '${typeToString(initType)}'.`,
+              DiagnosticCode.TypeMismatch,
+              member.loc
+            );
+          } else {
+            adaptToExpected(ctx, value, initType, fieldType);
+          }
+          ctx.exitNodeReferrer(member.id as i32);
+        }
+      }
+    }
+  }
+  ctx.exitInterface();
+
   ctx.enterClass(thisType);
   let prevBodyThis = ctx.bodyThisType;
   ctx.setBodyThisType(selfTypeOfClass(thisType));
@@ -636,11 +680,15 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
       case MethodDefinition as methDef: {
         let methodName = getMemberName(ctx, methDef.name);
         let members = mixinType.memberTable(methDef.isStatic);
-        if (!methDef.isConstructor && methodName != "<constructor>" && methDef.body != null && members.has(methodName)) {
+        if (!methDef.isConstructor && methodName != "<constructor>" && members.has(methodName)) {
           if (let (true, methodTypeInfo) = members.get(methodName)) {
-            ctx.enterNodeReferrer(methDef.id as i32);
-            checkMethodBody(ctx, thisType, methodTypeInfo.type as FunctionType, methDef);
-            ctx.exitNodeReferrer(methDef.id as i32);
+            let ft = methodTypeInfo.type as FunctionType;
+            checkMethodParameterDefaults(ctx, thisType, ft, methDef);
+            if (methDef.body != null) {
+              ctx.enterNodeReferrer(methDef.id as i32);
+              checkMethodBody(ctx, thisType, ft, methDef);
+              ctx.exitNodeReferrer(methDef.id as i32);
+            }
           }
         }
       }
@@ -653,8 +701,12 @@ export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration)
 
   ctx.setBodyThisType(prevBodyThis);
   ctx.exitClass();
-
   ctx.exitScope();
+}
+
+export function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration): void {
+  registerMixinDeclaration(ctx, md);
+  checkMixinBodies(ctx, md);
 }
 
 export function validateFunctionDecorators(ctx: CheckerContext, decorators: GrowableArray<Decorator> | null, needsIntrinsicOrExternal: boolean, loc: SourceLocation | null): void {
@@ -1119,10 +1171,16 @@ export function checkInterfaceConstructorBodies(ctx: CheckerContext, id: Interfa
         continue;
       }
       seen.add(ctorName);
-      if (member.body == null || !ifaceType.constructors.has(ctorName)) {
+      if (!ifaceType.constructors.has(ctorName)) {
         continue;
       }
       let ctorType = ifaceType.constructors[ctorName];
+      ctx.enterInterface();
+      checkMethodParameterDefaults(ctx, null, ctorType, member);
+      ctx.exitInterface();
+      if (member.body == null) {
+        continue;
+      }
       // A declared result type must be an instance of the interface.
       // Checked here rather than at registration because the class it
       // names may be declared below the interface, and only has its

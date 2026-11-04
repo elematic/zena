@@ -1,0 +1,41 @@
+// @mode: check
+// Default parameter expressions on methods, constructors, case classes,
+// sealed variants, interface constructors, and mixins are type-checked
+// once module-level `let` bindings have their types.
+
+let BASE = 'https://example.test';
+
+class BadDefaults {
+  new(x: i32 = BASE); // @error: Type mismatch: default value of type 'String' is not assignable to parameter type 'i32'.
+
+  step(by: i32 = BASE): i32 { // @error: Type mismatch: default value of type 'String' is not assignable to parameter type 'i32'.
+    return by;
+  }
+
+  laterLet(s: String = DECLARED_BELOW): String { // @error: Variable 'DECLARED_BELOW' not found.
+    return s;
+  }
+}
+
+class BadCase(count: i32 = BASE) // @error: Type mismatch: default value of type 'String' is not assignable to parameter type 'i32'.
+
+sealed class BadSealed {
+  case BadVariant(count: i32 = BASE) // @error: Type mismatch: default value of type 'String' is not assignable to parameter type 'i32'.
+}
+
+interface BadIface {
+  new(count: i32 = BASE) { // @error: Type mismatch: default value of type 'String' is not assignable to parameter type 'i32'.
+    return new Impl();
+  }
+}
+
+class Impl implements BadIface {}
+
+mixin BadMixin {
+  count: i32 = BASE; // @error: Type mismatch: field 'count' has type 'i32' but initializer has type 'String'.
+  run(by: i32 = BASE): i32 { // @error: Type mismatch: default value of type 'String' is not assignable to parameter type 'i32'.
+    return by;
+  }
+}
+
+let DECLARED_BELOW = 'too late';

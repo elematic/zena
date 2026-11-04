@@ -953,18 +953,6 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
 
       if (cp.defaultValue != null) {
         hasCtorInitializers = true;
-        let initExp = cp.defaultValue as Expression;
-        let initType = checkExpression(ctx, initExp, fieldType);
-        if (!isAssignableTo(ctx, initType, fieldType)) {
-          ctx.error(
-            "Type mismatch: default value of type '" + typeToString(initType) +
-            "' is not assignable to parameter type '" + typeToString(fieldType) + "'.",
-            DiagnosticCode.TypeMismatch,
-            initExp.loc
-          );
-        } else {
-          adaptToExpected(ctx, initExp, initType, fieldType);
-        }
       }
 
       // Check for duplicate fields (but allow implementing abstract fields).
@@ -1741,18 +1729,6 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
 
           if (vp.defaultValue != null) {
             hasVCtorInitializers = true;
-            let initExp = vp.defaultValue as Expression;
-            let initType = checkExpression(ctx, initExp, vpType);
-            if (!isAssignableTo(ctx, initType, vpType)) {
-              ctx.error(
-                "Type mismatch: default value of type '" + typeToString(initType) +
-                "' is not assignable to parameter type '" + typeToString(vpType) + "'.",
-                DiagnosticCode.TypeMismatch,
-                initExp.loc
-              );
-            } else {
-              adaptToExpected(ctx, initExp, initType, vpType);
-            }
           }
 
           let isMut = vp.mutability != null && vp.mutability == "var";
@@ -2186,6 +2162,23 @@ export function checkDeferredClassMember(
  * class — `:dispose` is synthesized here — so both run whether or not
  * anything reaches the class.
  */
+function checkDefaultValueExpr(
+  ctx: CheckerContext,
+  initExp: Expression,
+  expectedType: Type
+) {
+  let initType = checkExpression(ctx, initExp, expectedType);
+  if (!isAssignableTo(ctx, initType, expectedType)) {
+    ctx.error(
+      `Type mismatch: default value of type '${typeToString(initType)}' is not assignable to parameter type '${typeToString(expectedType)}'.`,
+      DiagnosticCode.TypeMismatch,
+      initExp.loc
+    );
+  } else {
+    adaptToExpected(ctx, initExp, initType, expectedType);
+  }
+}
+
 export function checkClassBodies(
     ctx: CheckerContext,
     cd: ClassDeclaration,
@@ -2193,7 +2186,61 @@ export function checkClassBodies(
   let className = cd.name.name;
 
   let classType = classTypeOfDeclaration(ctx, cd);
+
+  // Case class parameter defaults are checked before entering the class body
+  // scope (`this` is not bound in the parameter list), in Phase 2 so module
+  // `let`s declared above the class have their types bound.
+  if (cd.caseParams != null) {
+    let caseParams = cd.caseParams as GrowableArray<CaseClassParam>;
+    var hasCaseDefaults = false;
+    for (let cp in caseParams) {
+      if (cp.defaultValue != null) {
+        hasCaseDefaults = true;
+      }
+    }
+    if (hasCaseDefaults) {
+      ctx.enterScope();
+      let {typeParameters} = classType;
+      if (typeParameters != null) {
+        for (let tp in typeParameters) {
+          ctx.declareTypeName(tp.name, tp);
+        }
+      }
+      for (let cp in caseParams) {
+        let {defaultValue} = cp;
+        if (defaultValue != null && classType.members.has(cp.name.name)) {
+          checkDefaultValueExpr(ctx, defaultValue, classType.members[cp.name.name].type);
+        }
+      }
+      ctx.exitScope();
+    }
+  }
+
   let prevBodyThis = enterClassBodyScope(ctx, classType);
+
+  let {sealedVariants} = cd;
+  if (sealedVariants != null) {
+    for (let variant in sealedVariants) {
+      let {params} = variant;
+      if (params != null) {
+        let variantInfo = ctx.model.resolveDeclaration(variant);
+        let boundVariant = if (variantInfo != null) {
+          ctx.model.getBindingTypeDirect(variantInfo)
+        } else {
+          null
+        };
+        let variantResolved = boundVariant ?? ctx.resolveTypeName(variant.name.name);
+        if (variantResolved is ClassType) {
+          for (let vp in params) {
+            let {defaultValue} = vp;
+            if (defaultValue != null && variantResolved.members.has(vp.name.name)) {
+              checkDefaultValueExpr(ctx, defaultValue, variantResolved.members[vp.name.name].type);
+            }
+          }
+        }
+      }
+    }
+  }
 
   // Check method bodies and field initializers.
   // Collect field names in declaration order for forward-reference detection.
@@ -2233,7 +2280,11 @@ export function checkClassBodies(
           instanceFieldIndex = instanceFieldIndex + 1;
         }
       }
-      case MethodDefinition {}: {
+      case MethodDefinition as md: {
+        let sigType = ctx.model.getNodeTypeDirect(md);
+        if (sigType is FunctionType) {
+          checkMethodParameterDefaults(ctx, classType, sigType, md);
+        }
         if (deferred != null) {
           deferred.addMember(member as Node, cd);
         } else {
@@ -2640,28 +2691,8 @@ export function checkMethodSignature(
       bindPattern(ctx, pattern, paramType);
     }
 
-    let {defaultValue} = param;
-    if (defaultValue != null) { 
-      hasInitializers = true; 
-      let initExp = defaultValue;
-      let pushedReferrer = ctx.currentDependencies() == null;
-      if (pushedReferrer) {
-        ctx.enterNodeReferrer(md.id as i32);
-      }
-      let initType = checkExpression(ctx, initExp, paramType);
-      if (!isAssignableTo(ctx, initType, paramType)) {
-        ctx.error(
-          "Type mismatch: default value of type '" + typeToString(initType) +
-          "' is not assignable to parameter type '" + typeToString(paramType) + "'.",
-          DiagnosticCode.TypeMismatch,
-          initExp.loc
-        );
-      } else {
-        adaptToExpected(ctx, initExp, initType, paramType);
-      }
-      if (pushedReferrer) {
-        ctx.exitNodeReferrer(md.id as i32);
-      }
+    if (param.defaultValue != null) {
+      hasInitializers = true;
     }
     initializers.push(param.defaultValue);
     if (isOptional) {
@@ -2809,6 +2840,62 @@ export function checkMethodSignature(
   ctx.setNodeType(md, ft);
   ctx.exitScope();
   return ft;
+}
+
+/**
+ * Check default expressions on a method or constructor's parameters.
+ * Runs in the module's body phase so defaults can name module-level
+ * bindings declared above the enclosing type, and runs even when member
+ * bodies are deferred because external callers splice the default AST
+ * without re-checking it.
+ */
+export function checkMethodParameterDefaults(
+  ctx: CheckerContext,
+  classType: ClassType | null,
+  methodType: FunctionType,
+  md: MethodDefinition
+): void {
+  if (methodType.parameterInitializers == null) {
+    return;
+  }
+  ctx.enterScope();
+  let {typeParameters} = methodType;
+  if (typeParameters != null) {
+    for (let tpType in typeParameters) {
+      ctx.declareTypeName(tpType.name, tpType);
+    }
+  }
+  let selfType = if (classType != null) selfTypeOfClass(classType) else null;
+  var i = 0;
+  while (i < md.params.length && i < methodType.parameters.length) {
+    let param = md.params[i];
+    let paramType = if (selfType != null) {
+      substituteThisType(selfType, methodType.parameters[i])
+    } else {
+      methodType.parameters[i]
+    };
+    let paramInfo = ctx.model.resolveDeclaration(param);
+    if (paramInfo != null) {
+      ctx.declareBinding(paramInfo, paramType);
+    }
+    let {pattern} = param;
+    if (pattern != null) {
+      bindPattern(ctx, pattern, paramType);
+    }
+    let {defaultValue} = param;
+    if (defaultValue != null) {
+      let pushedReferrer = ctx.currentDependencies() == null;
+      if (pushedReferrer) {
+        ctx.enterNodeReferrer(md.id as i32);
+      }
+      checkDefaultValueExpr(ctx, defaultValue, paramType);
+      if (pushedReferrer) {
+        ctx.exitNodeReferrer(md.id as i32);
+      }
+    }
+    i += 1;
+  }
+  ctx.exitScope();
 }
 
 /**
