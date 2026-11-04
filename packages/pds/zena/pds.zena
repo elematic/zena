@@ -9,7 +9,7 @@
 import {Future} from 'zena:async';
 import {normalizeHandle} from 'atproto:syntax';
 import {TidClock} from 'atproto:tid';
-import {ManagedAccounts} from './managed.zena';
+import {ManagedAccounts, ManagedLimits} from './managed.zena';
 import {CommitListener, Repository} from './repository.zena';
 import {Account, AccountKind, SigningKey, Storage} from './storage.zena';
 
@@ -17,8 +17,8 @@ export final class Pds {
   storage: Storage;
   /** The package hosts this server keeps managed accounts for, or null when it keeps none. */
   var managed: ManagedAccounts | null = null;
-  /** The largest blob `com.atproto.repo.uploadBlob` takes, in bytes. */
-  var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
+  /** What a managed account may hold, whoever writes it. */
+  managedLimits = new ManagedLimits();
   /** Hands out every commit's `rev`. */
   #clock: TidClock;
   #listeners = new GrowableArray<CommitListener>();
@@ -57,7 +57,10 @@ export final class Pds {
   }
 
   repositoryOf(account: Account): Repository {
-    return new Repository(account, this.storage.store(account.did), this.#clock, this.#listeners);
+    let limits = this.managedLimits;
+    let allows: ((collection: String) => boolean) | null = if (account.manager != null)
+        (collection: String) => limits.allowsCollection(collection) else null;
+    return new Repository(account, this.storage.store(account.did), this.#clock, this.#listeners, allows);
   }
 
   /**
