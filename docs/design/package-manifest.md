@@ -50,8 +50,8 @@ else moved.
 | Field          | Type                            | Where          | Description                                                            |
 | -------------- | ------------------------------- | -------------- | ---------------------------------------------------------------------- |
 | `name`         | `string`                        | any package    | The package's own name, and the name it suggests to its dependents     |
-| `did`          | `string`                        | any package    | The package's DID, once it has been created on a package host          |
-| `scope`        | `string`                        | any package    | The scope on a package host the package is created in                  |
+| `did`          | `string`                        | any package    | The package's DID, once it has been created on an App View             |
+| `scope`        | `string`                        | any package    | The scope on an App View the package is created in                     |
 | `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish            |
 | `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish         |
 | `version`      | `string`                        | any package    | The version `zena publish` publishes next                              |
@@ -80,15 +80,14 @@ published to the same package.
 
 ### `scope`
 
-The scope on a package host that the package's first `zena publish`
-creates it in, such as `acme` for `router.acme.pkg.zena-lang.dev`
-(package-manager.md, "Scopes"). The scope must exist on the host. Once the
-package has a `did`, `zena publish` refuses when the package's handle is
-not in this scope, since the manifest and the package then disagree about
-where it is. A workspace root's `scope` is also the scope of each
+The scope on an App View that the package's first `zena publish` creates
+it in, such as `acme` for `router.acme.pkg.zena-lang.dev`
+(package-manager.md, "Scopes"). The scope must exist on the App View. Once
+the package has a `did`, `zena publish` refuses when the package's handle
+is not in this scope, since the manifest and the package then disagree
+about where it is. A workspace root's `scope` is also the scope of each
 workspace package that has none of its own. A package whose handle is on
-its maintainers' own domain has no `scope`. The compiler does not read
-it.
+its maintainers' own domain has no `scope`. The compiler does not read it.
 
 `scope` is unrelated to `scopes`, below, which says where `zena add`
 looks up the packages of other scopes.
@@ -190,7 +189,7 @@ archive must hold. Other kinds of package may give other paths a meaning
   on their own.
 
 A pattern must be a path inside the package: not empty, not absolute, and
-without `..`. The package host refuses an archive that holds a file its
+without `..`. The App View refuses an archive that holds a file its
 manifest does not publish, or lacks a file its `exports` name
 (`package-manager:files`, `package-manager:validate`). Releases published
 before the rule are fetched as they are.
