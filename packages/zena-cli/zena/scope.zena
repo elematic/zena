@@ -1,8 +1,8 @@
 /**
  * `zena scope create`, `zena scope info` and `zena scope profile`: the
- * scopes on a package host
+ * scopes on a registry
  * (docs/design/package-manager.md, "Scopes"). A scope is an organization
- * account whose handle is one label below the host's domain, and packages
+ * account whose handle is one label below the registry's domain, and packages
  * are created in it by `zena publish` (`publish.zena`), which never
  * creates a scope itself.
  */
@@ -13,16 +13,16 @@ import { JsonArray, JsonObject, JsonValue } from 'zena:json';
 import { fromJson, toJson } from 'atproto:data';
 import { XrpcClient, XrpcError } from 'atproto:xrpc';
 import { MEMBERS_TYPE, RecordError, SCOPE_PROFILE_TYPE, ScopeProfile, isValidScopeName } from 'package-manager:records';
-import { PUT_SCOPE_PROFILE } from 'package-manager:host-methods';
+import { PUT_SCOPE_PROFILE } from 'package-manager:registry-methods';
 import { Options } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import {
-  PublishError, createOrganization, findHost, hostClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+  PublishError, createOrganization, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
 } from './publish.zena';
 import { REPO_GET_RECORD } from 'atproto:methods';
 
 /**
- * `zena scope create <name>`: creates the scope on the host, with the
+ * `zena scope create <name>`: creates the scope on the registry, with the
  * signed-in maintainer as its only owner, once `--yes` says to.
  */
 export function scopeCreateCommand(args: ParsedArgs, options: Options): i32 {
@@ -36,24 +36,24 @@ export function scopeCreateCommand(args: ParsedArgs, options: Options): i32 {
           `'${name}' cannot be a scope: use lowercase letters, digits and -, starting with a letter`);
     }
     let session = signedIn();
-    let host = findHost(args);
-    let handle = `${name}.${host.domain}`;
+    let registry = findRegistry(args);
+    let handle = `${name}.${registry.domain}`;
     if (scopeOrganization(handle) != null) {
-      throw new PublishError(`${host.origin} already has the scope ${name} (${handle})`);
+      throw new PublishError(`${registry.origin} already has the scope ${name} (${handle})`);
     }
     if (!args.getFlag('yes')) {
       throw new PublishError(
-          `Run again with --yes to create the scope ${handle} on ${host.origin}, owned by ${session.handle}.`);
+          `Run again with --yes to create the scope ${handle} on ${registry.origin}, owned by ${session.handle}.`);
     }
-    createOrganization(session, host, name);
+    createOrganization(session, registry, name);
     saveIfRefreshed(session);
   });
 }
 
 /**
- * `zena scope info <scope>`: the scope's DID, handle and host, and its
+ * `zena scope info <scope>`: the scope's DID, handle and PDS, and its
  * members record: how many members it commits to, and its thresholds.
- * The scope is its name on the host, its handle, or its DID. Who the
+ * The scope is its name on the registry, its handle, or its DID. Who the
  * members are is private (package-manager.md, "Private membership").
  */
 export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
@@ -64,7 +64,7 @@ export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
     let given = args.rest[1];
     var did = given;
     if (!given.startsWith('did:')) {
-      let handle = if (given.contains('.')) given else `${given}.${findHost(args).domain}`;
+      let handle = if (given.contains('.')) given else `${given}.${findRegistry(args).domain}`;
       let found = scopeOrganization(handle);
       if (found == null) {
         throw new PublishError(`no scope has the handle ${handle}`);
@@ -90,7 +90,7 @@ export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
       printProfile(ScopeProfile.fromValue(fromJson(profile['value'])));
     }
     console.log(`  DID: ${did}`);
-    console.log(`  Host: ${document.pds as String}`);
+    console.log(`  PDS: ${document.pds as String}`);
     console.log(`  Members: ${(members['members'] as JsonArray).length}`);
     console.log(`  Owners needed to change members: ${number(members['ownerThreshold'])}`);
     console.log(`  Admins needed to change teams: ${number(members['adminThreshold'])}`);
@@ -99,7 +99,7 @@ export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
 
 /**
  * `zena scope profile <scope> [--name <text>] [--description <text>]
- * [--website <url>]`: how the scope presents itself on the host's pages.
+ * [--website <url>]`: how the scope presents itself on the registry's pages.
  * A flag given empty clears its field. With no flags, prints it. Its
  * admins write it at once: it decides no one's role.
  */
@@ -110,10 +110,10 @@ export function scopeProfileCommand(args: ParsedArgs, options: Options): i32 {
     }
     let scope = args.rest[1];
     let session = signedIn();
-    let host = findHost(args);
-    let org = scopeOrganization(`${scope}.${host.domain}`);
+    let registry = findRegistry(args);
+    let org = scopeOrganization(`${scope}.${registry.domain}`);
     if (org == null) {
-      throw new PublishError(`${host.origin} has no scope ${scope}`);
+      throw new PublishError(`${registry.origin} has no scope ${scope}`);
     }
     let held = recordOf(org, SCOPE_PROFILE_TYPE);
     let profile = if (held == null) new ScopeProfile()
@@ -132,12 +132,12 @@ export function scopeProfileCommand(args: ParsedArgs, options: Options): i32 {
       changed = true;
     }
     if (!changed) {
-      console.log(`${scope}.${host.domain}`);
+      console.log(`${scope}.${registry.domain}`);
       printProfile(profile);
       saveIfRefreshed(session);
       return;
     }
-    // Checked here as the host will check it, so a bad website is refused before the call.
+    // Checked here as the registry will check it, so a bad website is refused before the call.
     try {
       ScopeProfile.fromValue(profile.toValue());
     } catch (e) {
@@ -152,7 +152,7 @@ export function scopeProfileCommand(args: ParsedArgs, options: Options): i32 {
     if (held != null) {
       input['swapRecord'] = held['cid'] as String;
     }
-    runFuture(hostClient(session, host, PUT_SCOPE_PROFILE).procedure(PUT_SCOPE_PROFILE, input));
+    runFuture(registryClient(session, registry, PUT_SCOPE_PROFILE).procedure(PUT_SCOPE_PROFILE, input));
     console.log(`Changed the profile of ${scope}.`);
     printProfile(profile);
     saveIfRefreshed(session);

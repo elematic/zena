@@ -2,15 +2,15 @@
  * People as the pages show them: an account's handle, and the name,
  * description and avatar of its profile. The profile is the account's own
  * `app.bsky.actor.profile` record, read from its PDS, so a person changes
- * it in the app that writes that record, and this host keeps no copy but a
+ * it in the app that writes that record, and this App View keeps no copy but a
  * cache.
  *
  * Reading someone else's PDS while a page renders costs that page time,
- * and serving their avatar costs this host bandwidth. So each read runs
+ * and serving their avatar costs this App View bandwidth. So each read runs
  * under `zena:task`'s `timeout`, answers are cached (failures too, for a
  * shorter time), only public HTTPS hosts are read, and only images up to
  * `MAX_AVATAR_BYTES` are served, from avatar URLs the pages signed
- * (`./session.zena`). A cancelled read's request still runs on in the host
+ * (`./session.zena`). A cancelled read's request still runs on in the App View
  * until the PDS answers (#640); the cache keeps a slow PDS from being asked
  * again soon.
  */
@@ -27,7 +27,7 @@ import {isPublicHttps} from '../egress.zena';
 import {now} from 'wasi:clocks/system-clock';
 import {Cid} from 'atproto:cid';
 import {Identity} from 'atproto:identity';
-import {PackageHost} from '../host.zena';
+import {AppView} from '../app-view.zena';
 import {REPO_GET_RECORD, SYNC_GET_BLOB, xrpcPath} from 'atproto:methods';
 
 /** The profile record pages read: Bluesky's, which most atproto accounts have. */
@@ -79,9 +79,9 @@ export final class Fetched {
 }
 
 /**
- * Where `People` reads from: the handle of an account this host holds
+ * Where `People` reads from: the handle of an account this App View holds
  * (null for any other), an account's identity, and a URL. Tests pass
- * fakes; `People.forHost` passes the host's storage and resolver, and
+ * fakes; `People.forHost` passes the App View's storage and resolver, and
  * `zena:fetch`.
  */
 export final class PeopleSources {
@@ -92,7 +92,7 @@ export final class PeopleSources {
   new(this.local, this.identity, this.get);
 }
 
-/** An account this host holds, and its handle. */
+/** An account this App View holds, and its handle. */
 export final class LocalAccount {
   handle: String | null;
 
@@ -122,26 +122,26 @@ export final class People {
   /** The avatars' keys, oldest first, and their bytes in all. */
   var #avatarOrder = new GrowableArray<String>();
   var #avatarBytes = 0;
-  /** Whether a PDS at this URL may be read (`PackageHost.mayRead`). */
+  /** Whether a PDS at this URL may be read (`AppView.mayRead`). */
   var mayRead = (url: String) => isPublicHttps(url);
 
   new(sources: PeopleSources) : #sources = sources;
 
   /** People reading through `host`'s storage and identity resolver, and the network. */
-  static forHost(host: PackageHost): People {
+  static forAppView(appView: AppView): People {
     let people = new People(new PeopleSources(
         async (did: String): Future<LocalAccount | null> => {
-          let held = await host.accountOf(did);
+          let held = await appView.accountOf(did);
           return if (held != null) new LocalAccount(held.handle) else null;
         },
-        async (did: String): Future<Identity | null> => await host.identityOf(did),
+        async (did: String): Future<Identity | null> => await appView.identityOf(did),
         async (url: String): Future<Fetched | null> => await httpGet(url)));
-    people.mayRead = (url: String) => host.mayRead(url);
+    people.mayRead = (url: String) => appView.mayRead(url);
     return people;
   }
 
   /**
-   * `did`'s handle and profile. An account of this host has a handle and
+   * `did`'s handle and profile. An account of this App View has a handle and
    * no profile. Anyone else's comes from their DID document and their
    * PDS, and stands as just a DID when those cannot be read.
    */

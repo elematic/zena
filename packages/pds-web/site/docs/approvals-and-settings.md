@@ -9,10 +9,10 @@ The Zena package manager protects packages against single-account compromise by 
 When a maintainer publishes a release or proposes a change to a package's maintainers, a scope's members, or a team:
 
 1. The author's CLI writes a `dev.zena-lang.maintainer.attestation` record into the author's own atproto repository, naming the target record's AT-URI and its content hash (CID).
-2. If the target's approval threshold is `1`, the package host verifies the attestation against the author's DID document signing key and commits the record immediately.
-3. If the threshold is greater than `1` (or the release was uploaded by a CI automation account that requires human approval), the host holds the proposed record in a pending state until enough eligible maintainers have written matching attestations in their own repositories.
+2. If the target's approval threshold is `1`, the registry verifies the attestation against the author's DID document signing key and commits the record immediately.
+3. If the threshold is greater than `1` (or the release was uploaded by a CI automation account that requires human approval), the registry holds the proposed record in a pending state until enough eligible maintainers have written matching attestations in their own repositories.
 
-Because each maintainer's attestation lives in their own PDS repository and is signed by their own key, compromising one maintainer account—or even the package host itself—cannot forge approvals from other maintainers on the public checksum log.
+Because each maintainer's attestation lives in their own PDS repository and is signed by their own key, compromising one maintainer account—or even the registry itself—cannot forge approvals from other maintainers on the public checksum log.
 
 ## Reviewing and approving changes
 
@@ -22,7 +22,7 @@ Use `zena approve` to inspect pending releases or membership changes and write y
 # Inspect a held release
 zena approve @acme/router@2.0.0
 
-# Approve the release (writes an attestation to your repository and notifies the host)
+# Approve the release (writes an attestation to your repository and notifies the registry)
 zena approve @acme/router@2.0.0 --yes
 
 # Inspect and approve pending membership or team changes on a scope or package
@@ -72,7 +72,7 @@ zena scope policy acme \
   --package-creators member
 ```
 
-A package in `@acme` cannot set its `threshold` below the scope's `minReleaseThreshold`, and the package host refuses any release that does not meet the higher of the package's threshold and the scope's minimum.
+A package in `@acme` cannot set its `threshold` below the scope's `minReleaseThreshold`, and the registry refuses any release that does not meet the higher of the package's threshold and the scope's minimum.
 
 ## CI automation accounts (`zena ci create`)
 

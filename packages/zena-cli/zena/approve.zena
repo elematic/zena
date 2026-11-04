@@ -3,20 +3,20 @@
  * (docs/design/package-manager.md, "Publishing a release" and "Adding and
  * removing people").
  *
- * - `zena approve [<package>@]<version>`: a release. The host holds a
+ * - `zena approve [<package>@]<version>`: a release. The registry holds a
  *   published release out of the package's repository until enough
  *   maintainers attest it. The command shows the release, who published
  *   it, its dependencies, and who has approved it so far.
  * - `zena approve @<scope>` or `zena approve <package>`: the changes
  *   waiting to an organization's members and teams, or to a package's
- *   maintainers, which the host holds until enough owners, admins or team
+ *   maintainers, which the registry holds until enough owners, admins or team
  *   maintainers of the record before each attest it. The command shows
  *   who each change adds and removes, and the thresholds it changes.
  *
  * With `--yes` it writes the attestations to the caller's own repository
- * and asks the host to complete each, as `zena publish` and `zena scope
+ * and asks the registry to complete each, as `zena publish` and `zena scope
  * add` do for the caller's own. A package is a DID, a handle or
- * `@scope/name` on the host, else the package in the current directory.
+ * `@scope/name` on the registry, else the package in the current directory.
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -36,10 +36,10 @@ import {
   scopeDid, visibleEntries
 } from './members.zena';
 import {
-  Host, PublishError, approvals, attest, completeRelease, findHost, hostClient, runCommand, saveIfRefreshed,
+  Registry, PublishError, approvals, attest, completeRelease, findRegistry, registryClient, runCommand, saveIfRefreshed,
   signedIn
 } from './publish.zena';
-import { GET_PENDING_CHANGES, GET_PENDING_RELEASES } from 'package-manager:host-methods';
+import { GET_PENDING_CHANGES, GET_PENDING_RELEASES } from 'package-manager:registry-methods';
 import { Session } from 'atproto:session';
 
 let USAGE = 'zena approve [<package>@]<version> | @<scope> | <package> [--yes]';
@@ -59,23 +59,23 @@ export function approveCommand(args: ParsedArgs, options: Options): i32 {
       isVersion = false;
     }
     let session = signedIn();
-    let host = findHost(args);
+    let registry = findRegistry(args);
     if (isVersion) {
-      approveRelease(args, session, host, given, parts.length > 1, version);
+      approveRelease(args, session, registry, given, parts.length > 1, version);
     } else {
-      approveChanges(args, session, host, given);
+      approveChanges(args, session, registry, given);
     }
     saveIfRefreshed(session);
   });
 }
 
 /** Shows, and with `--yes` approves, the release `version` of the package `given` names, or of this one. */
-function approveRelease(args: ParsedArgs, session: Session, host: Host, given: String, named: boolean,
+function approveRelease(args: ParsedArgs, session: Session, registry: Registry, given: String, named: boolean,
     version: String): void {
   let name = given.sliceBytes(0, given.length - version.length - 1);
-  let pkg = if (named) namedPackage(host, name) else currentPackageDid();
+  let pkg = if (named) namedPackage(registry, name) else currentPackageDid();
   let label = if (named) name else pkg;
-  let pending = runFuture(hostClient(session, host, GET_PENDING_RELEASES)
+  let pending = runFuture(registryClient(session, registry, GET_PENDING_RELEASES)
     .query(GET_PENDING_RELEASES, [('package', pkg)])) as JsonObject;
   let releases = pending['releases'] as JsonArray;
   var waiting: JsonObject | null = null;
@@ -93,7 +93,7 @@ function approveRelease(args: ParsedArgs, session: Session, host: Host, given: S
   let mine = listed(entry['approvedBy'] as JsonArray, session.did);
   if (!args.getFlag('yes')) {
     if (mine) {
-      console.log(`You have approved it. Run again with --yes to ask ${host.origin} to complete it.`);
+      console.log(`You have approved it. Run again with --yes to ask ${registry.origin} to complete it.`);
     } else {
       console.log(`Run again with --yes to approve it as ${session.handle}.`);
     }
@@ -102,7 +102,7 @@ function approveRelease(args: ParsedArgs, session: Session, host: Host, given: S
   if (!mine) {
     attest(session, entry['uri'] as String, Cid.parse(entry['cid'] as String));
   }
-  completeRelease(session, host, pkg, version, `${label} ${version}`, label);
+  completeRelease(session, registry, pkg, version, `${label} ${version}`, label);
 }
 
 /** Prints what a maintainer approves: the release `entry` describes, of the package `label`. */
@@ -130,10 +130,10 @@ function describeRelease(entry: JsonObject, label: String): void {
  * Shows, and with `--yes` approves, the changes waiting to the records of
  * the organization `@<scope>` or the package `given` names.
  */
-function approveChanges(args: ParsedArgs, session: Session, host: Host, given: String): void {
-  let account = if (given.startsWith('@') && !given.contains('/')) scopeDid(host, given.sliceBytes(1, given.length))
-      else namedPackage(host, given);
-  let answer = runFuture(hostClient(session, host, GET_PENDING_CHANGES)
+function approveChanges(args: ParsedArgs, session: Session, registry: Registry, given: String): void {
+  let account = if (given.startsWith('@') && !given.contains('/')) scopeDid(registry, given.sliceBytes(1, given.length))
+      else namedPackage(registry, given);
+  let answer = runFuture(registryClient(session, registry, GET_PENDING_CHANGES)
     .query(GET_PENDING_CHANGES, [('account', account)])) as JsonObject;
   let changes = answer['changes'] as JsonArray;
   if (changes.length == 0) {
@@ -142,14 +142,14 @@ function approveChanges(args: ParsedArgs, session: Session, host: Host, given: S
   var unapproved = 0;
   for (var i = 0; i < changes.length; i += 1) {
     let change = changes[i] as JsonObject;
-    describeChange(session, host, account, given, change);
+    describeChange(session, registry, account, given, change);
     if (!approvedByMe(change, session.did)) {
       unapproved += 1;
     }
   }
   if (!args.getFlag('yes')) {
     if (unapproved == 0) {
-      console.log(`You have approved them. Run again with --yes to ask ${host.origin} to complete them.`);
+      console.log(`You have approved them. Run again with --yes to ask ${registry.origin} to complete them.`);
     } else {
       console.log(`Run again with --yes to approve ${if (changes.length == 1) 'it' else 'them'} as ${session.handle}.`);
     }
@@ -163,7 +163,7 @@ function approveChanges(args: ParsedArgs, session: Session, host: Host, given: S
       attest(session, uri, Cid.parse(cid));
     }
     let what = whatChanges(change, given);
-    if (completeChange(session, host, uri, cid, what, given)) {
+    if (completeChange(session, registry, uri, cid, what, given)) {
       console.log(`Changed ${what}.`);
     }
   }
@@ -185,14 +185,14 @@ function whatChanges(change: JsonObject, given: String): String {
 }
 
 /** Prints a change waiting to one of `account`'s records: who it adds and removes, and the thresholds it changes. */
-function describeChange(session: Session, host: Host, account: String, given: String, change: JsonObject): void {
+function describeChange(session: Session, registry: Registry, account: String, given: String, change: JsonObject): void {
   let collection = change['collection'] as String;
   let rkey = change['rkey'] as String;
   console.log(`${whatChanges(change, given)}, asked for by ${change['proposer'] as String} at ${change['heldAt'] as String}`);
   console.log(`  record: ${change['uri'] as String} (${change['cid'] as String})`);
   let held = current(account, collection, rkey);
   let before = if (held == null) new GrowableArray<MemberEntry>()
-      else visibleEntries(session, host, account, if (collection == TEAM_TYPE) rkey else null);
+      else visibleEntries(session, registry, account, if (collection == TEAM_TYPE) rkey else null);
   let after = new GrowableArray<MemberEntry>();
   let list = change['entries'] as JsonArray;
   for (var i = 0; i < list.length; i += 1) {

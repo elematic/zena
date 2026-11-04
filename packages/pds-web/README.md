@@ -1,7 +1,7 @@
 # The PDS's web assets
 
-The stylesheet, script, and static documentation (`/docs/`) of the package
-host's web pages. The dynamic pages are rendered on the server, by the PDS
+The stylesheet, script, and static documentation (`/docs/`) of the App
+View's web pages. The dynamic pages are rendered on the server, by the PDS
 written in Zena (`packages/pds/zena/web`), as `zena:http` routes using its
 `html` tag:
 
@@ -18,31 +18,31 @@ written in Zena (`packages/pds/zena/web`), as `zena:http` routes using its
   name them as a maintainer publicly;
 - `/me`: once signed in, the scopes, teams and packages you have a role in,
   with the role, and the releases of your packages waiting for approval;
-- `/admin`: for the host's admins, every scope, with its packages and
+- `/admin`: for the App View's admins, every scope, with its packages and
   automation accounts.
 
 A scope's page lists its members and teams, and a package's its
 maintainers. Each member is a commitment to a private entry, so a page
 names a member only to someone who may see their entry: the member
 themselves, an organization's owners and admins, a team's maintainers, a
-package's owners, and the host's admins. Everyone else sees "a private
+package's owners, and the App View's admins. Everyone else sees "a private
 member".
 
 ## People
 
 A page shows a person by their avatar and name, linked to their page. The
 name and avatar come from their own profile record, `app.bsky.actor.profile`,
-which this host reads from their PDS and caches, and never keeps a copy
+which this App View reads from their PDS and caches, and never keeps a copy
 of: a person changes them in the app that writes that record
 (`pds:web/people`). Reading someone else's PDS while a page renders, and
-serving their avatar, are limited so the host is no tool for anyone else:
+serving their avatar, are limited so the App View is no tool for anyone else:
 
 - Each read runs under `zena:task`'s `timeout`, and answers are cached,
   failures for a shorter time.
 - Only public HTTPS hosts are read: no addresses, `localhost`, or private
   names. A public name that resolves to a private address is #643.
-- Avatars are served through this host, at URLs the pages sign, so a
-  visitor's browser asks no third party, and the host serves only
+- Avatars are served through this App View, at URLs the pages sign, so a
+  visitor's browser asks no third party, and the App View serves only
   avatars its pages linked to. Only images up to 1 MB are served, with
   `nosniff` and a content security policy that allows nothing.
 
@@ -53,7 +53,7 @@ attestation of its record (`pds:web/approvals`). An attestation sits at a
 record key fixed by the record's AT-URI and CID, so the page asks each
 maintainer's repository for that key, with no index: the maintainers the
 record names, by DID, by commitment, or through a team
-(`PackageHost.attesters`). Showing one names a private maintainer, as
+(`AppView.attesters`). Showing one names a private maintainer, as
 acting in a role always does. The page looks at the ten newest releases,
 asks the repositories all at once, and caches what it finds for a day and
 what it does not for ten minutes. It reads each attestation as its PDS
@@ -84,9 +84,9 @@ for their password, and this site never sees it. The OAuth session stays
 in the browser. Then:
 
 1. The page asks the person's PDS for a service-auth token for
-   `dev.zena-lang.host.createWebSession`, addressed to the host, and calls
+   `dev.zena-lang.registry.createWebSession`, addressed to the App View, and calls
    that method with it.
-2. The host checks the token as it checks every call to its methods, and
+2. The App View checks the token as it checks every call to its methods, and
    answers with a cookie: an HS256 token naming the person's DID and
    handle, signed with `PDS_JWT_SECRET`, HttpOnly, SameSite=Lax, and
    Secure over HTTPS (`pds:web/session`).
@@ -98,21 +98,21 @@ The server never holds anything that can write to the person's
 repository. A cookie cannot be revoked, so it lasts a day; a page with no
 cookie, when the browser still has an OAuth session, makes a new one.
 
-- Deployed, the client's `client_id` is the metadata document the host
+- Deployed, the client's `client_id` is the metadata document the App View
   serves at `/oauth/client-metadata.json`, from `PDS_PUBLIC_URL`, with
   `/oauth/callback` as its redirect.
 - On `127.0.0.1`, as in `npm run demo`, it is atproto's loopback client,
   which needs no metadata document, so signing in works on this machine
   with no tunnel. Use `http://127.0.0.1:<port>`, not `localhost`.
-- Handles are resolved by the host (`com.atproto.identity.resolveHandle`),
+- Handles are resolved by the App View (`com.atproto.identity.resolveHandle`),
   not sent to a third party.
 
 ## Admins
 
-The host's admins are the DIDs in `PDS_ADMIN_DIDS` (`ZENA_ADMIN_DIDS` for
+The App View's admins are the DIDs in `PDS_ADMIN_DIDS` (`ZENA_ADMIN_DIDS` for
 `deploy`). An admin signs in as their own account, as anyone does, and the
 header links them to `/admin`; there is no separate admin password. The
-host shows them every account it made (`PackageHost.listAccounts`) and
+App View shows them every account it made (`AppView.listAccounts`) and
 every private entry (`getEntries`), as its operator could read them from
 the store anyway.
 
@@ -133,11 +133,11 @@ From the repository root:
 
 ```sh
 npm run build -w @zena-lang/pds-web    # typecheck, and bundle into out/
-npm run demo -w @zena-lang/pds         # a package host on this machine, serving the pages
+npm run demo -w @zena-lang/pds         # an App View on this machine, serving the pages
 ```
 
 The demo serves the pages at `http://127.0.0.1:2583`; it starts empty, and
-prints the `zena` commands that publish a package to it. The deployed host
+prints the `zena` commands that publish a package to it. The deployed App View
 serves the assets from its image (`packages/pds/deploy`).
 
 ## How the PDS serves them

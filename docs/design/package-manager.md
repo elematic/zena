@@ -129,8 +129,8 @@ the section it links to.
   writes to them
   ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)). It is
   also the index: it collects package records across PDSes, from
-  the firehose ([The index](#the-index)). Its methods are named
-  `dev.zena-lang.host.*`.
+  the firehose ([The index](#the-index)). Its methods are the package
+  registry's, `dev.zena-lang.registry.*`.
 - A **managed account** is an account a PDS creates for an App View
   it trusts, with no email address, password or invite code, and that
   only that App View writes to ([Managed accounts](#managed-accounts)).
@@ -227,7 +227,7 @@ Only handles are scarce, and the compiler and the lockfile never see
 them, so the rules below are about finding packages.
 
 **Scopes on an App View.** A package's handle on an App View always has a
-scope: `<package>.<scope>.<host domain>`, such as
+scope: `<package>.<scope>.<domain>`, such as
 `router.acme.pkg.zena-lang.dev`. A name one label below the App View's
 domain, `acme.pkg.zena-lang.dev`, is the handle of a scope, which is an
 organization account (see
@@ -722,7 +722,7 @@ or an email address per package. On bsky.social every package would also
 be a Bluesky user.
 
 The **App View** is a service that does this for maintainers. Its
-methods, named `dev.zena-lang.host.*`, create package, organization and
+methods, named `dev.zena-lang.registry.*`, create package, organization and
 automation accounts on request, and let their maintainers publish to them
 as themselves. Maintainers sign in with their own atproto account, the
 one they use for Bluesky or any other app, and no one has a password for
@@ -746,7 +746,7 @@ AppViews and other PDSes, a package account is an ordinary account: they
 read its repository from its PDS with `com.atproto.sync.*`, and never
 call the App View. The App View's methods are XRPC methods like any
 other. It serves them at its own endpoint, and its service DID document
-lists them as a service, `#zena_package_host`, so that a client can also
+lists them as a service, `#zena_registry`, so that a client can also
 call them through its own PDS with `atproto-proxy`.
 
 The Zena project runs its App View, which also serves the site, at
@@ -781,7 +781,7 @@ View writes to.
   own, and the PDS makes a signing key and keeps it for that App View for
   a few minutes. The App View mints the DID with a PLC genesis operation,
   signed with its rotation key, that names the reserved key, the PDS as
-  the account's PDS, and itself as `zena_package_host`. It then calls
+  the account's PDS, and itself as `zena_registry`. It then calls
   `com.atproto.server.createAccount` with that DID and another token of
   its own. The PDS creates the account when the DID's genesis operation
   was signed by the rotation key of the App View the token is from, which
@@ -893,7 +893,7 @@ with them as its only owner, and an organization's packages in a scope its
 owners share.
 
 **Creating a scope.** `zena scope create acme` asks the App View for the
-organization, with `dev.zena-lang.host.createOrganization`, with the
+organization, with `dev.zena-lang.registry.createOrganization`, with the
 caller as its only owner. Like `zena publish`, it names the handle it
 would create, `acme.pkg.zena-lang.dev`, and stops, and `--yes` creates
 it. It prints the scope's DID and handle.
@@ -919,7 +919,7 @@ name dependents import it by, and a DNS label. `@acme/router` is only
 
 Once the package exists, its DID decides where it is, and `scope` is a
 check. `zena publish` resolves the DID's handle, and refuses when it is
-not `<name>.<scope>.<host domain>`, naming both. That catches a manifest
+not `<name>.<scope>.<domain>`, naming both. That catches a manifest
 copied from another package, and a package renamed or moved without its
 manifest following. A package whose handle is on a domain its maintainers
 control has no `scope`.
@@ -956,13 +956,13 @@ The package is created in the scope the manifest's `scope` or `--scope`
 names, which must exist (see [Scopes](#scopes)). `zena package create`
 does only this, for scripts.
 
-The App View is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena
+The App View is `--registry`, else `ZENA_REGISTRY`, else the Zena
 project's, `https://pkg.zena-lang.dev`. `zena` reads its service DID and
 the domain its handles are under from its
-`dev.zena-lang.host.describeHost`, and checks that the DID is the App
+`dev.zena-lang.registry.describeRegistry`, and checks that the DID is the App
 View's own before asking for any token addressed to it. A `did:web` must
 name the App View's origin, which only that domain can hold. A `did:plc`'s
-document must name the origin as its `#zena_package_host`. Otherwise a
+document must name the origin as its `#zena_registry`. Otherwise a
 server at any origin could answer with the real App View's DID, and replay
 the tokens it was given to the real App View.
 
@@ -980,12 +980,12 @@ the tokens it was given to the real App View.
    App View's keys are the package's only rotation keys (see [Keys](#keys)).
 3. **A token for the App View.** `zena` asks the maintainer's PDS for a
    service-auth token with `com.atproto.server.getServiceAuth`, addressed
-   to the App View's DID, for the method `dev.zena-lang.host.createPackage`.
+   to the App View's DID, for the method `dev.zena-lang.registry.createPackage`.
    The token is a short-lived JWT signed with the maintainer's account
    key. The App View checks it against the maintainer's DID document, so it
    knows which account the request is from without a password of its own.
    Every later call to the App View is made the same way.
-4. **The DID.** `zena` calls `dev.zena-lang.host.createPackage` with the
+4. **The DID.** `zena` calls `dev.zena-lang.registry.createPackage` with the
    scope's organization, any recovery keys, the profile and the
    maintainers record. The App View has its PDS reserve the account's
    signing key, writes the genesis operation, signs it with its online
@@ -1010,8 +1010,8 @@ the tokens it was given to the real App View.
          "type": "AtprotoPersonalDataServer",
          "endpoint": "https://padstone.zena-lang.dev"
        },
-       "zena_package_host": {
-         "type": "ZenaPackageHost",
+       "zena_registry": {
+         "type": "ZenaRegistry",
          "endpoint": "https://pkg.zena-lang.dev"
        }
      },
@@ -1023,7 +1023,7 @@ the tokens it was given to the real App View.
    The DID is the first 24 characters of the base32 SHA-256 hash of the
    signed genesis operation. A new package's DID document therefore names
    padstone as its PDS, the key padstone holds as its signing key, and its
-   App View as `zena_package_host`, and lists the maintainer's recovery
+   App View as `zena_registry`, and lists the maintainer's recovery
    key, if any, ahead of the App View's two rotation keys.
 
 5. **The repository.** The App View writes the account's first records
@@ -1047,8 +1047,8 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
    ([package-manifest.md](package-manifest.md#publishing-a-workspace-package)).
    The record's CID is known before it is written, since it is the
    record's hash.
-2. It uploads the artifacts (`dev.zena-lang.host.uploadArtifact`), and
-   calls `dev.zena-lang.host.publish` with the record, each with a
+2. It uploads the artifacts (`dev.zena-lang.registry.uploadArtifact`), and
+   calls `dev.zena-lang.registry.publish` with the record, each with a
    service-auth token as above. The App View checks everything a fetch will:
    that the caller is a maintainer, the archive against the record and
    its manifest, the dependencies, and that the version is free. The
@@ -1059,7 +1059,7 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
 3. `zena publish` writes an attestation of that AT-URI and CID to the
    maintainer's own repository. An attestation names a record by its hash,
    so it can be made before the record exists.
-4. It calls `dev.zena-lang.host.completeRelease`. The App View reads the
+4. It calls `dev.zena-lang.registry.completeRelease`. The App View reads the
    attestation of each of the package's maintainers from their own
    repositories, checks each against the signing key in the maintainer's
    DID document, and counts them against the maintainers record (see
@@ -1070,11 +1070,11 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
 5. Otherwise the release waits. The other maintainers see it on the
    package's page and their `/me` page, and with
    `zena approve <package>@<version>`, which shows the release
-   (`dev.zena-lang.host.getPendingReleases`), writes the maintainer's
+   (`dev.zena-lang.registry.getPendingReleases`), writes the maintainer's
    attestation, and calls `completeRelease` again. A pending release
    expires after seven days, which frees its version, and its publisher
    or an owner can withdraw it sooner
-   (`dev.zena-lang.host.withdrawRelease`).
+   (`dev.zena-lang.registry.withdrawRelease`).
 6. `zena publish` looks the version up in the checksum log, which records
    it.
 
@@ -1433,7 +1433,7 @@ Each change takes the same steps:
    have.
 4. It writes an attestation of that AT-URI and CID to the caller's own
    repository.
-5. It calls `dev.zena-lang.host.completeChange`. The App View counts the
+5. It calls `dev.zena-lang.registry.completeChange`. The App View counts the
    attestations against the record before it (see below). Once they are
    enough, it writes the new record, and only then does the change take
    effect, on the App View and in the repository. With thresholds of 1, the
@@ -1458,7 +1458,7 @@ So one owner of a package whose `ownerThreshold` is 2 cannot replace the
 others, and until the others approve, the record before the change
 decides every role: the owner being removed is still an owner. The
 others see a waiting change with `zena approve @acme` or
-`zena approve <package>` (`dev.zena-lang.host.getPendingChanges`), which
+`zena approve <package>` (`dev.zena-lang.registry.getPendingChanges`), which
 shows the entries added and removed and the thresholds changed first,
 and with `--yes` writes their attestations and calls `completeChange`.
 
@@ -1470,7 +1470,7 @@ and with `--yes` writes their attestations and calls `completeChange`.
   changed, so it is asked for again.
 - **A change waits seven days**, and the one who asked for it, or anyone
   who sees every entry behind the record, can withdraw it sooner
-  (`dev.zena-lang.host.withdrawChange`).
+  (`dev.zena-lang.registry.withdrawChange`).
 - **Creating** an organization or a package writes its first members or
   maintainers record at once, with its creator as its only owner. There
   is no record before it to approve it. **Deleting** a team is done by an
@@ -1535,7 +1535,7 @@ has no privileges of its own:
   key is a non-extractable WebCrypto key, and signing out revokes the
   session. The server learns who is signed in from a web session: the page
   asks the person's PDS for a service-auth token for
-  `dev.zena-lang.host.createWebSession`, addressed to the App View's DID,
+  `dev.zena-lang.registry.createWebSession`, addressed to the App View's DID,
   and trades it for an HttpOnly cookie, which stands for the person to the
   site's pages and to nothing else. It lasts a day, and the page renews it
   from the OAuth session.
@@ -1590,7 +1590,7 @@ the App View's `/admin` ([Finding an App View](#finding-an-app-view)).
 ### The App View's methods
 
 Each of the App View's methods is a lexicon in
-`packages/package-manager/lexicons/dev/zena-lang/host/`. Every call
+`packages/package-manager/lexicons/dev/zena-lang/registry/`. Every call
 carries a service-auth token from the caller's PDS, addressed to the
 App View's DID with the method's NSID as its `lxm`, or, from CI, an
 automation account's token, and the App View checks the caller's role in the
@@ -1648,7 +1648,7 @@ The Zena project's App View and PDS use three names:
   index, and **the site**, its web pages and management interface. Its
   DID is `did:web:pkg.zena-lang.dev`, the audience of every service-auth
   token for its methods. Its DID document lists the methods as
-  `#zena_package_host`, and the App View's own signing key ([Keys](#keys)).
+  `#zena_registry`, and the App View's own signing key ([Keys](#keys)).
 - **`padstone.zena-lang.dev`** is the PDS, which stores the App View's
   accounts. Every package and organization account's DID document names
   it as the account's PDS, and `zena` reads packages from it. Its DID,
@@ -1696,7 +1696,7 @@ boundaries stay in the code:
   person's private memberships for the person the site's session names.
 
 The site's sign-in trades a service-auth token for
-`dev.zena-lang.host.createWebSession`, addressed to the App View's DID, for
+`dev.zena-lang.registry.createWebSession`, addressed to the App View's DID, for
 the site's session cookie ([The management interface](#the-management-interface)).
 
 ### Finding an App View
@@ -1704,12 +1704,12 @@ the site's session cookie ([The management interface](#the-management-interface)
 A client that manages an account finds the account's App View, and what the
 App View offers, from the account's DID:
 
-1. The account's DID document names its App View, as `#zena_package_host`,
-   of type `ZenaPackageHost`, at the App View's endpoint. The App View
+1. The account's DID document names its App View, as `#zena_registry`,
+   of type `ZenaRegistry`, at the App View's endpoint. The App View
    writes that entry when it creates the account, with its rotation key.
    An account whose DID document has none is one no App View manages, and
    the site shows it without the means to manage it.
-2. `dev.zena-lang.host.describeHost`, at that endpoint, answers with the
+2. `dev.zena-lang.registry.describeRegistry`, at that endpoint, answers with the
    App View's DID, which must name the endpoint's origin, as `zena` checks
    ([Creating a package](#creating-a-package)); the App View's handle
    domain, its reserved scopes and its limits; whether a new scope waits
@@ -1719,7 +1719,7 @@ App View offers, from the account's DID:
 
 The site calls the App View's methods as the signed-in person, through the
 person's own PDS, with
-`atproto-proxy: did:web:pkg.zena-lang.dev#zena_package_host`. The person's
+`atproto-proxy: did:web:pkg.zena-lang.dev#zena_registry`. The person's
 PDS adds the service-auth token, which the `rpc` permissions of
 `dev.zena-lang.authPublish` allow. The site writes attestations to the
 person's own repository. Its session cookie tells the site's pages who is
@@ -1754,7 +1754,7 @@ Zena project's App View manage them.
 
 **Moving to another App View** changes which App View manages an account.
 A PLC operation replaces the old App View's rotation key with the new App
-View's, and names the new App View as `#zena_package_host`. The old App
+View's, and names the new App View as `#zena_registry`. The old App
 View signs it if it cooperates, and a recovery key holder if it does not,
 so a package without recovery keys moves to another App View only with its
 App View's cooperation. The Zena project's App View signs such a move once
@@ -1764,7 +1764,7 @@ to such a PDS too, unless its PDS already trusts the new App View.
 
 **Leaving every App View** turns a package into an ordinary account, on a
 PDS of its owners' choice, that they publish to with its own credentials:
-a PLC operation names the new PDS, and drops `#zena_package_host` and the
+a PLC operation names the new PDS, and drops `#zena_registry` and the
 App View's rotation key. `zena` still reads the package, and the log still
 takes releases that its maintainers attest, but `zena` does not publish to
 it.
@@ -1785,7 +1785,7 @@ against the log.
   package's PDS. A package that trusts no PDS but its owners' keeps its
   account on a PDS they run, with the Zena project's App View or another
   managing it. A package that trusts no App View runs its own, with
-  `zena package create --host <url>`, or leaves every App View for an
+  `zena package create --registry <url>`, or leaves every App View for an
   ordinary account ([Moving to another PDS](#moving-to-another-pds)). A
   key on a laptop that is usually offline cannot serve the repository, so
   this is not supported.
@@ -1882,7 +1882,7 @@ The index keeps:
 - **A catalog** of packages: each one's name and scope, its profile's
   description and license, its latest release that is not retracted, and
   how many releases it has. The home and scope pages, and
-  `dev.zena-lang.host.listPackages` and `listScopes`, read it.
+  `dev.zena-lang.registry.listPackages` and `listScopes`, read it.
 - **Mentions**: for each person, the accounts whose records or
   membership entries name them, and for each team, the packages whose
   maintainers records name it. `getMemberships` and the people pages
@@ -2243,7 +2243,7 @@ throttled. The App View therefore limits who creates accounts and how many:
   mapping. Signing in needs OAuth with a loopback redirect, a
   client metadata document at `zena-lang.dev`, and the
   `dev.zena-lang.authPublish` permission set.
-- **The App View**: a Zena service with the `dev.zena-lang.host.*`
+- **The App View**: a Zena service with the `dev.zena-lang.registry.*`
   methods, for creating packages, scopes and automation accounts,
   publishing, changing maintainers, members and teams, and moving
   packages between PDSes. It mints their DIDs and holds their rotation
@@ -2355,7 +2355,7 @@ project's App View managed them, and a package that moved to another PDS
 left its App View behind. Separating the App View, which holds the
 authority, from the PDS, which stores the account, lets accounts move
 between PDSes with atproto's own migration while the same App View
-manages them. Clients call the same `dev.zena-lang.host.*` methods
+manages them. Clients call the same `dev.zena-lang.registry.*` methods
 either way.
 
 ### A package host apart from the index

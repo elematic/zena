@@ -17,9 +17,9 @@ package in this repository's workspace or from a package that lists it in its
   entries it commits to, read from the atproto data model with the checks
   their lexicons describe, and written back. Also the rules for package
   names.
-- `package-manager:host-methods`: the NSIDs of the package host's XRPC
-  methods, which the host serves and `zena` calls. A test checks them
-  against the host's lexicons.
+- `package-manager:registry-methods`: the NSIDs of the App View's XRPC
+  methods, which the App View serves and `zena` calls. A test checks them
+  against the App View's lexicons.
 - `package-manager:files`: which files a package publishes: its manifest's
   `files` patterns, or by default every file but tests, and always the
   manifest, README and license, never hidden files, `node_modules` or the
@@ -64,14 +64,14 @@ package in this repository's workspace or from a package that lists it in its
   three, and their lexicons state only constraints it checks.
 - `org/`: an organization's members and team records, and the private
   entries their commitments stand for.
-- `host/`: the App View's methods
+- `registry/`: the App View's methods, the registry's
   ([docs/design/package-manager.md](../../docs/design/package-manager.md),
   "The App View's methods").
 - `authPublish.json`: the OAuth permission set `zena login` asks for:
-  writing attestations and calling the host's methods.
+  writing attestations and calling the App View's methods.
 
 `zena/test/lexicons_test.zena` checks that each file is named by its NSID,
-that its references resolve, and that the permission set covers every host
+that its references resolve, and that the permission set covers every App View
 method.
 
 ## Tests

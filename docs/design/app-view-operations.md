@@ -100,7 +100,7 @@ session, because the App View holds nothing that can write there
 | Operation                                            | Who                                        | Exists                                                                           |
 | ---------------------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------- |
 | Create a scope                                       | a person the App View allows               | `zena scope create`; `createOrganization`                                        |
-| Approve a scope request                              | host admins                                | no; `create-scope` for the operator                                              |
+| Approve a scope request                              | App View admins                            | no; `create-scope` for the operator                                              |
 | Claim a scope by domain or GitHub org                | a person                                   | no                                                                               |
 | See a scope's members and teams                      | members; owners and admins see all         | `/scopes/<name>`; `zena scope members`, `getEntries`                             |
 | See and approve changes waiting                      | members; owners and admins approve         | `zena approve @<scope>`; `getPendingChanges`, `completeChange`, `withdrawChange` |
@@ -110,8 +110,8 @@ session, because the App View holds nothing that can write there
 | Set minimums and defaults for the scope's packages   | owners (_threshold_)                       | `zena scope policy`; `putPolicy`                                                 |
 | Let a team create packages                           | owners (_threshold_)                       | `zena scope policy --creators`; `putPolicy`                                      |
 | Edit the scope's profile: name, description, website | admins                                     | `zena scope profile`; `putScopeProfile`                                          |
-| Rename a scope                                       | owners, host admins                        | no                                                                               |
-| Dissolve a scope                                     | owners, host admins                        | no                                                                               |
+| Rename a scope                                       | owners, App View admins                    | no                                                                               |
+| Dissolve a scope                                     | owners, App View admins                    | no                                                                               |
 | Create an automation account                         | admins                                     | `zena ci create`; `createAutomationAccount`                                      |
 | Reset or revoke an automation account's token        | admins                                     | no                                                                               |
 

@@ -1,0 +1,59 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.registry.createOrganization",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Creates an organization, whose handle is a scope on this registry, with the caller as its only owner. The registry writes its members record and its DID's genesis operation, with any 'recoveryKeys' ranked above the registry's rotation keys. Without recovery keys, the registry's are the DID's only rotation keys. The members record counts once the caller attests it.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 63,
+              "description": "The scope's name: the first label of the organization's handle."
+            },
+            "recoveryKeys": {
+              "type": "array",
+              "maxLength": 3,
+              "items": {
+                "type": "string",
+                "description": "A public key as a 'did:key'."
+              },
+              "description": "Optional recovery keys, held by the owners, ranked first to last above the registry's rotation keys. At most three: the registry keeps two of a DID's five rotation keys."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["did", "handle", "members"],
+          "properties": {
+            "did": {"type": "string", "format": "did"},
+            "handle": {"type": "string", "format": "handle"},
+            "members": {"type": "ref", "ref": "com.atproto.repo.strongRef"}
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NameTaken",
+          "description": "The scope exists, or the registry reserves its name."
+        },
+        {
+          "name": "NotAllowed",
+          "description": "The registry's rules do not let the caller create a scope, such as one that needs the operator's approval or a claim on a domain."
+        },
+        {
+          "name": "QuotaExceeded",
+          "description": "The caller has created as many scopes as the registry allows."
+        }
+      ]
+    }
+  }
+}

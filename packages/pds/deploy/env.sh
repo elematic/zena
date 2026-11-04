@@ -1,5 +1,5 @@
 # shellcheck shell=bash disable=SC2034
-# The names of one environment of the package host, for the deploy scripts
+# The names of one environment of the App View, for the deploy scripts
 # beside this file to source. PDS_ENV picks it: staging (the default, so a
 # command run without thinking about it never touches production) or
 # production. ZENA_GCP_PROJECT is the project; ZENA_GCP_REGION and
@@ -21,16 +21,16 @@
 # key ring, and a Cloud DNS zone. Staging's are production's with -staging
 # after them.
 #
-# The host's online rotation key (packages/pds/zena/signer.zena) is in
+# The App View's online rotation key (packages/pds/zena/signer.zena) is in
 # Cloud KMS for production, which signs with it and never lets it out.
-# Staging keeps the secret its accounts were made with, since a host whose
-# key changed could no longer sign their operations; ZENA_ROTATION_KMS=1
+# Staging keeps the secret its accounts were made with, since an App View
+# whose key changed could no longer sign their operations; ZENA_ROTATION_KMS=1
 # moves it to Cloud KMS too, for a staging whose data was reset. The
 # operator's offline rotation key, ranked above the online one, is
 # ZENA_OFFLINE_ROTATION_KEY: its did:key, from
 # `zena-cli run packages/pds/zena/main.zena -- generate-key`, whose private
 # key is kept offline. Production needs it. ZENA_ADMIN_DIDS lists the DIDs
-# of the host's admins, who see everything it holds in the web app,
+# of the App View's admins, who see everything it holds in the web app,
 # separated by spaces or commas.
 
 PROJECT="${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the project id, such as meta-garage-420114}"

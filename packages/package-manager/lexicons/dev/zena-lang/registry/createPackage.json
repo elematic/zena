@@ -1,0 +1,68 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.registry.createPackage",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Creates a package in an organization's scope. The caller must be an admin of the organization, or on a team it allows. The registry generates the package's signing key, submits its DID's genesis operation with any 'recoveryKeys' ranked above the registry's rotation keys, and writes the profile and the maintainers record. The maintainers record counts once its maintainers' threshold attests it.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["organization", "profile", "maintainers"],
+          "properties": {
+            "organization": {
+              "type": "string",
+              "format": "did",
+              "description": "The organization, whose handle is a scope on this registry."
+            },
+            "recoveryKeys": {
+              "type": "array",
+              "maxLength": 3,
+              "items": {
+                "type": "string",
+                "description": "A public key as a 'did:key'."
+              },
+              "description": "Optional recovery keys, held by the owners, ranked first to last above the registry's rotation keys. At most three: the registry keeps two of a DID's five rotation keys."
+            },
+            "profile": {
+              "type": "unknown",
+              "description": "A 'dev.zena-lang.package.profile' record."
+            },
+            "maintainers": {
+              "type": "unknown",
+              "description": "A 'dev.zena-lang.package.maintainers' record."
+            },
+            "entries": {
+              "type": "array",
+              "items": {"type": "ref", "ref": "dev.zena-lang.org.defs#entry"},
+              "description": "The entries behind the record's commitments, which the registry keeps private."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["did", "handle", "maintainers"],
+          "properties": {
+            "did": {"type": "string", "format": "did"},
+            "handle": {"type": "string", "format": "handle"},
+            "maintainers": {"type": "ref", "ref": "com.atproto.repo.strongRef"}
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NameTaken",
+          "description": "The scope has a name equal to the profile's 'name'."
+        },
+        {
+          "name": "QuotaExceeded",
+          "description": "The organization has created as many packages as the registry allows."
+        }
+      ]
+    }
+  }
+}

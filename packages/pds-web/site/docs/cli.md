@@ -61,7 +61,7 @@ Ends the current session and removes `$ZENA_CONFIG_DIR/session.json`.
 ### `zena publish`
 
 ```sh
-zena publish [--scope <name>] [--host <url>] [--yes]
+zena publish [--scope <name>] [--registry <url>] [--yes]
 ```
 
 Packs and publishes the package in the current directory at the `version` in `zena-package.json`. Creates the package account on first publish when `zena-package.json` has no `did`.
@@ -69,10 +69,10 @@ Packs and publishes the package in the current directory at the `version` in `ze
 ### `zena package create`
 
 ```sh
-zena package create [--scope <name>] [--host <url>] [--yes]
+zena package create [--scope <name>] [--registry <url>] [--yes]
 ```
 
-Creates the package's account on the package host and writes its `did` into `zena-package.json` without publishing a release.
+Creates the package's account on the registry and writes its `did` into `zena-package.json` without publishing a release.
 
 ### `zena approve`
 
@@ -80,7 +80,7 @@ Creates the package's account on the package host and writes its `did` into `zen
 zena approve [<package>@]<version> | @<scope> | <package> [--yes]
 ```
 
-Without `--yes`, displays the pending release or pending membership/settings change waiting for maintainer attestations. With `--yes`, writes your attestation record to your repository and submits it to the package host.
+Without `--yes`, displays the pending release or pending membership/settings change waiting for maintainer attestations. With `--yes`, writes your attestation record to your repository and submits it to the registry.
 
 ### `zena retract`
 
@@ -147,7 +147,7 @@ Lists and modifies a package's maintainers (`owner` and `publisher` roles) and r
 
 | Variable              | Default                                | Description                                                                 |
 | --------------------- | -------------------------------------- | --------------------------------------------------------------------------- |
-| `ZENA_PACKAGE_HOST`   | `https://padstone.zena-lang.dev`       | The package host `publish`, `scope`, `team` and `owner` call                |
+| `ZENA_REGISTRY`       | `https://padstone.zena-lang.dev`       | The registry `publish`, `scope`, `team` and `owner` call                    |
 | `ZENA_CONFIG_DIR`     | `~/.config/zena`                       | Directory where `session.json` is stored                                    |
 | `ZENA_CACHE_DIR`      | `~/.cache/zena`                        | Base directory for the unpacked package cache (`packages/sources/<cid>`)    |
 | `ZENA_PROJECT_CACHE`  | _(unset)_                              | When set, stores the package cache in `.zena/packages` inside the workspace |

@@ -29,7 +29,7 @@ export let tests = suite('zena publish', () => {
         new ZenaCommand(scratch.host(dir), scratch.at(dir), scratch.host('cache'))
           .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
           .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
-          .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
+          .set('ZENA_REGISTRY', addresses['registry'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host('config'));
 
       write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
@@ -53,7 +53,7 @@ export let tests = suite('zena publish', () => {
           !unlicensed.stdout.contains('Created'), described(unlicensed));
 
       // A package that depends on a WIT is refused before anything is made
-      // for it on the host.
+      // for it on the registry.
       write(scratch.at('lib/zena-package.json'),
           '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0", "dependencies": {"gfx": {"wit": "./wit"}}}\n');
       let wit = lib.run(['publish', '--scope', 'acme', '--yes']);
@@ -107,7 +107,7 @@ export let tests = suite('zena publish', () => {
       let did = manifest['did'] as String;
       isTrue(did.startsWith('did:plc:'), did);
       equal(manifest['scope'] as String, 'acme');
-      // The host holds the accounts it creates: no recovery key is made.
+      // The registry holds the accounts it creates: no recovery key is made.
       isTrue(!existsSync(scratch.at('config/recovery-key')), 'no recovery key was created');
 
       // A version is published once.
@@ -143,7 +143,7 @@ export let tests = suite('zena publish', () => {
       let third = new ZenaCommand(scratch.host('ws'), scratch.at('ws/pkgs/third'), scratch.host('cache'))
         .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
         .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
-        .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
+        .set('ZENA_REGISTRY', addresses['registry'] as String)
         .set('ZENA_CONFIG_DIR', scratch.host('config'))
         .run(['package', 'create', '--yes']);
       isTrue(third.succeeded() && third.stdout.contains('Created third.acme.pkg.test'), described(third));

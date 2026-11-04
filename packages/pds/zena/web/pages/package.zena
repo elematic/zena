@@ -9,7 +9,7 @@ import {GrowableArray} from 'zena:core';
 import {HTMLPartial, Router, TemplateValue, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
 import {Dependency, Maintainer, Maintainers, RELEASE_TYPE, Release} from 'package-manager:records';
-import {PackageDetail, PackageHost} from '../../host.zena';
+import {PackageDetail, AppView} from '../../app-view.zena';
 import {Approvals} from '../approvals.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
@@ -24,21 +24,21 @@ import {notFound} from './not-found.zena';
 let APPROVALS_SHOWN = 10;
 
 /** Adds the package page, `/packages/<handle>`, to `router`. */
-export function packagePage(router: Router, host: PackageHost, people: People, approvals: Approvals): void {
+export function packagePage(router: Router, appView: AppView, people: People, approvals: Approvals): void {
   router.get('/packages/:handle', async (req, res, next, params) => {
-    let context = await contextOf(req, host, people);
+    let context = await contextOf(req, appView, people);
     let handle = percentDecode(params['handle'] ?? '');
-    let detail = await host.getPackage(handle);
+    let detail = await appView.getPackage(handle);
     if (detail == null) {
       notFound(res, context, `No package here has the handle ${handle}.`);
       return;
     }
     let found = detail;
-    // The handles of the dependencies this host holds, to link to them.
+    // The handles of the dependencies this App View holds, to link to them.
     let handles = new HashMap<String, String>();
     for (let release in found.releases) {
       for (let dependency in release.dependencies) {
-        let account = await host.accountOf(dependency.did);
+        let account = await appView.accountOf(dependency.did);
         if (account != null) {
           handles[dependency.did] = account.handle;
         }
@@ -59,7 +59,7 @@ export function packagePage(router: Router, host: PackageHost, people: People, a
     }
     // Who approved the newest releases: each attester's repository is
     // asked once per release, so the oldest are left out.
-    let attesters = await host.attesters(found.did);
+    let attesters = await appView.attesters(found.did);
     let approvedBy = new HashMap<String, Array<String>>();
     var checked = 0;
     for (let release in found.releases) {
@@ -80,7 +80,7 @@ export function packagePage(router: Router, host: PackageHost, people: People, a
       for (let maintainer in record.maintainers) {
         let org = maintainer.org;
         if (org != null) {
-          let account = await host.accountOf(org);
+          let account = await appView.accountOf(org);
           if (account != null) {
             shown.scopes[org] = account.scope;
           }
@@ -92,7 +92,7 @@ export function packagePage(router: Router, host: PackageHost, people: People, a
     let who = context.who;
     if (who != null) {
       let rows = new GrowableArray<PendingRow>();
-      for (let held in await pendingOf(host, who.did, found.did)) {
+      for (let held in await pendingOf(appView, who.did, found.did)) {
         rows.push(new PendingRow(found.handle, name, held));
       }
       if (rows.length > 0) {

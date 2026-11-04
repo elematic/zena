@@ -1,5 +1,5 @@
 /**
- * A package host to try `zena` against on this machine. Nothing it makes
+ * An App View to try `zena` against on this machine. Nothing it makes
  * reaches the public PLC directory or real DNS, but real accounts resolve,
  * so a person can sign in to its pages and `zena` as themselves. It
  * starts:
@@ -7,7 +7,7 @@
  * - a stand-in PLC directory, which records the demo's DIDs and reads
  *   every other DID from `plc.directory`, and the PDS of a maintainer,
  *   with an app password (`package-manager:testing/fake-pds`);
- * - the package host for `pkg.test`, built from the environment as
+ * - the App View for `pkg.test`, built from the environment as
  *   `main.zena` builds it, so `PDS_STORAGE=firestore` and the rest work
  *   here too, with the Firestore emulator. Its handle records are in
  *   memory;
@@ -17,7 +17,7 @@
  *
  * `npm run demo` builds the web app (`packages/pds-web`) and gives it to
  * the demo as the directory `/web` (`--dir packages/pds-web/out::/web`,
- * `PDS_WEB_DIR=/web`), which the host serves at its origin.
+ * `PDS_WEB_DIR=/web`), which the App View serves at its origin.
  *
  * Then it prints the environment `zena` needs, and the commands of a
  * first publish. Run from the repository root with
@@ -48,15 +48,15 @@ export async function main(): Future<void> {
   let port = getEnv('PORT') ?? '2583';
   let defaults = new HashMap<String, String>();
   defaults['PORT'] = port;
-  defaults['PDS_HOST_DOMAIN'] = 'pkg.test';
+  defaults['PDS_APP_VIEW_DOMAIN'] = 'pkg.test';
   defaults['PDS_PUBLIC_URL'] = `http://127.0.0.1:${port}`;
-  // The did:web of that origin, which `zena` checks the host's DID against.
+  // The did:web of that origin, which `zena` checks the App View's DID against.
   defaults['PDS_SERVICE_DID'] = `did:web:127.0.0.1%3A${port}`;
   defaults['PDS_PLC_DIRECTORY'] = world.plcDirectory;
   // The resolver below answers from records in memory, wherever the
   // accounts are kept.
   defaults['PDS_HANDLE_RECORDS'] = 'memory';
-  // The demo maintainer's PDS is on this machine, and the host reads
+  // The demo maintainer's PDS is on this machine, and the App View reads
   // their attestations from it.
   defaults['PDS_PRIVATE_READS'] = '1';
   // TODO(#520): the return type is only for the compiler.
@@ -78,7 +78,7 @@ export async function main(): Future<void> {
 
   let dnsUrl = `http://127.0.0.1:${dns.port as i32}/dns-query`;
   console.log(dedent`
-    A package host for pkg.test is listening on ${running.origin}, which
+    An App View for pkg.test is listening on ${running.origin}, which
     serves its web pages there too.
 
     In another shell, in a directory with a zena-package.json that has a name, a
@@ -86,7 +86,7 @@ export async function main(): Future<void> {
 
       export ZENA_PLC_DIRECTORY=${world.plcDirectory}
       export ZENA_DNS_OVER_HTTPS=${dnsUrl}
-      export ZENA_PACKAGE_HOST=${running.origin}
+      export ZENA_REGISTRY=${running.origin}
       export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
 
       echo ${PASSWORD} | zena login ${MAINTAINER} --password-stdin
@@ -96,7 +96,7 @@ export async function main(): Future<void> {
     and in another workspace, \`zena add <name>.acme.pkg.test\` and \`zena run\`.
     To see /admin when you sign in to the pages, start the demo with
     PDS_ADMIN_DIDS set to your DID.
-    Ctrl-C stops the host and forgets everything it held in memory.
+    Ctrl-C stops the App View and forgets everything it held in memory.
   `);
   await world.done();
 }

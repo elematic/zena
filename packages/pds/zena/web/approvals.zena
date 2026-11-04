@@ -19,7 +19,7 @@ import {now} from 'wasi:clocks/system-clock';
 import {Cid} from 'atproto:cid';
 import {Value, fromJson} from 'atproto:data';
 import {ATTESTATION_TYPE, Attestation, attestationKey} from 'package-manager:records';
-import {PackageHost} from '../host.zena';
+import {AppView} from '../app-view.zena';
 import {People} from './people.zena';
 
 let FOUND_SECONDS = (24 * 60 * 60) as i64;
@@ -27,7 +27,7 @@ let MISSING_SECONDS = (10 * 60) as i64;
 
 /**
  * The record at `collection/rkey` in the repository of `did`, an account
- * this host holds, or null when it holds no such account or record.
+ * this App View holds, or null when it holds no such account or record.
  */
 export type LocalRecord = (did: String, collection: String, rkey: String) => Future<Value | null>;
 
@@ -46,10 +46,10 @@ export final class Approvals {
 
   new(people: People, local: LocalRecord) : #people = people, #local = local;
 
-  /** Approvals reading accounts this host holds through the host, and anyone else's from their PDS. */
-  static forHost(host: PackageHost, people: People): Approvals {
+  /** Approvals reading accounts this App View holds through the App View, and anyone else's from their PDS. */
+  static forAppView(appView: AppView, people: People): Approvals {
     return new Approvals(people, async (did: String, collection: String, rkey: String): Future<Value | null> =>
-        await host.recordOf(did, collection, rkey));
+        await appView.recordOf(did, collection, rkey));
   }
 
   /**

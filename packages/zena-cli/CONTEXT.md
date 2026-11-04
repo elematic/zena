@@ -9,7 +9,7 @@ the `zena` command. The design is in
 
 1. **The command is a Zena program: the CLI module**
    - `zena/main.zena` reads the command line (`zena:args`) and dispatches.
-     Beside it: `env.zena` (what the host told the module, shared flags),
+     Beside it: `env.zena` (what the registry told the module, shared flags),
      `compile.zena` (compiling, and the compile cache), `run.zena`,
      `test-run.zena`, `bench-run.zena`, which hands a suite to
      `zena:bench`'s `runSuite` with a function that compiles its `zena`
@@ -25,13 +25,13 @@ the `zena` command. The design is in
      `zena logout`, which keep the maintainer's atproto session
      (`atproto:session`) in the configuration directory, and
      `publish.zena`, for `zena publish` and `zena package create`, which
-     call a package host's `dev.zena-lang.host.*` methods with service-auth
+     call a registry's `dev.zena-lang.registry.*` methods with service-auth
      tokens from that session, `scope.zena`, for `zena scope create` and
      `zena scope info`, and `members.zena`, for `zena scope add`, `remove`
      and `members`, `zena team` and `zena owner`, which change who belongs
-     through the host's `put*` methods, `retract.zena`, for
+     through the registry's `put*` methods, `retract.zena`, for
      `zena retract`, `approve.zena`, for `zena approve`, which attests a
-     release waiting for its maintainers and asks the host to complete
+     release waiting for its maintainers and asks the registry to complete
      it, and `ci.zena`, for `zena ci create`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
@@ -40,7 +40,7 @@ the `zena` command. The design is in
      playground) have their own entry points built from the same
      libraries.
 
-2. **The host binary: `src/main.rs`**
+2. **The registry binary: `src/main.rs`**
    - Loads the CLI module and runs its `main`, with WASI preview 1 and the
      `zena-runtime` imports. It has no command-line logic of its own.
    - The repository's binary (`build:cargo`) is built without
@@ -157,7 +157,7 @@ the `zena` command. The design is in
      `could not start <program>: … No such file or directory`, and the
      missing file is the directory. `zenaIn` does not create its
      workspace directory, so `ensureDir` it first. A spawn's `cwd` is
-     translated through the test's preopens, so a host path under `/tmp`
+     translated through the test's preopens, so a registry path under `/tmp`
      (one `mktemp` printed, say) names a directory under `.zena/tmp`
      that does not exist.
    - `test:pds-js`, which `test` does not run because it needs the

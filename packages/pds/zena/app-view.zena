@@ -1,0 +1,2759 @@
+/**
+ * The App View: the `dev.zena-lang.registry.*` extension
+ * (docs/design/package-manager.md, "Hosting, keys and maintainers", and the
+ * lexicons in `packages/package-manager/lexicons/dev/zena-lang/registry`).
+ *
+ * Every call comes from a maintainer's own account, with a service-auth
+ * token their PDS signed for this App View and the one method called. The App View
+ * checks the token, and the caller's role in the records it holds, and then
+ * acts for the package or organization account, which no one signs in as.
+ *
+ * This implements creating organizations and packages, uploading artifacts,
+ * publishing releases, and changing who belongs: an organization's
+ * members, its teams, and a package's maintainers, with the private
+ * entries behind their commitments ("Private membership"). A role is read
+ * from the record as it is now: an entry the current record no longer
+ * commits to gives nothing. The limits on how many accounts a scope
+ * creates, and the other methods, come later.
+ *
+ * The App View keeps its accounts on a PDS, which it reaches only through
+ * `PdsClient`, as it would reach a PDS over the network, and it keeps its
+ * own record of them in its `AppViewStore`: what each is for, and the scope
+ * and name its handle is made of. It writes its indexes as it writes the
+ * records they come from.
+ */
+
+import {Future} from 'zena:async';
+import {join} from 'zena:core';
+import {HashMap, HashSet} from 'zena:collections';
+import {cidForValue, decodeCbor, encodeCbor} from 'atproto:cbor';
+import {readCar} from 'atproto:car';
+import {verifyRecordProof} from 'atproto:repo';
+import {fetch} from 'zena:fetch';
+import {timeout} from 'zena:task';
+import {BlobRef, MapValue, Value} from 'atproto:data';
+import {Cid} from 'atproto:cid';
+import {KeyType, PublicKey, parseDidKey, verifySignature} from 'atproto:didkey';
+import {PlcOperation, PlcService, didOfGenesis, genesisOperation} from 'atproto:plc';
+import {REGISTRY_SERVICE, REGISTRY_TYPE} from 'package-manager:registry-methods';
+import {Identity, IdentityResolver} from 'atproto:identity';
+import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
+import {ARTIFACT_MIME_TYPES, artifactMimeType, validateRelease} from 'package-manager:validate';
+import {Version} from 'package-manager:version';
+import {
+  ADMIN,
+  ATTESTATION_TYPE,
+  Attestation,
+  attestationKey,
+  MAINTAINER,
+  MEMBER,
+  MEMBERS_TYPE,
+  MAINTAINERS_TYPE,
+  Maintainers,
+  MemberEntry,
+  Members,
+  OWNER,
+  POLICY_TYPE,
+  Policy,
+  SCOPE_PROFILE_TYPE,
+  ScopeProfile,
+  TEAM_TYPE,
+  Team,
+  PROFILE_KEY,
+  PROFILE_TYPE,
+  Profile,
+  RELEASE_TYPE,
+  RETRACTION_TYPE,
+  RecordError,
+  Release,
+  Retraction,
+  SOURCE,
+  isValidPackageName,
+  isValidScopeName
+} from 'package-manager:records';
+import {isPublicHttps} from './egress.zena';
+import {HandleRecords} from './handles.zena';
+import {HeldRecord, PdsClient} from './pds-client.zena';
+import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
+import {Sessions} from './sessions.zena';
+import {Signer} from './signer.zena';
+import {formatTimestamp, milliseconds} from 'zena:time';
+import {AccountKind, Head, SigningKey} from './storage.zena';
+import {compareKeys} from 'atproto:mst';
+import {SYNC_GET_RECORD, xrpcPath} from 'atproto:methods';
+
+/** The most recovery keys an account's genesis operation ranks above the App View's keys. */
+let MAX_RECOVERY_KEYS = 3;
+
+/** How long a release waits for approval before its version is free again: seven days. */
+export let PENDING_MICROS = ((7 * 24 * 60 * 60) as i64) * (1000000 as i64);
+
+/** How long reading one maintainer's attestation from their PDS may take. */
+let ATTESTATION_READ_MILLISECONDS = 5000 as i64;
+
+/**
+ * The record at `collection/rkey` in the repository of `did`, an account
+ * on another PDS, or null. Tests replace how the App View reads one; it reads
+ * from the account's PDS with the record's proof checked.
+ */
+export type RemoteRecords = (did: String, collection: String, rkey: String) => Future<Value | null>;
+
+/** A call the App View refuses, with the XRPC error and HTTP status to answer with. */
+export class AppViewError extends Error {
+  status: i32;
+  /** Such as `AuthenticationRequired`, `Forbidden` or `NameTaken`. */
+  error: String;
+
+  new(status: i32, error: String, message: String) : status = status, error = error, super(message);
+}
+
+/**
+ * What the App View keeps beside the accounts' repositories: the accounts it
+ * holds, scope names, and private entries. Several servers may share it,
+ * so a name is taken with one call that fails when someone has it
+ * (`claimScope`, `claimName`).
+ */
+export interface AppViewStore {
+  /** Records an account the App View made, once its PDS holds it. */
+  putAccount(account: AppViewAccount): Future<void>;
+  /** The account the App View made with the DID `did`, or null. */
+  account(did: String): Future<AppViewAccount | null>;
+  /** Every account the App View made. */
+  accounts(): Future<Array<AppViewAccount>>;
+  /** The organization whose scope is `scope`, or null. */
+  scopeOwner(scope: String): Future<String | null>;
+  /** Gives `scope` to `org` unless it has an owner. Returns whether it did. */
+  claimScope(scope: String, org: String): Future<boolean>;
+  /** Takes `scope` back from `org`, whose account could not be made. */
+  releaseScope(scope: String, org: String): Future<void>;
+  /** The account named `name` in `scope`, or null. */
+  nameInScope(scope: String, name: String): Future<String | null>;
+  /** Gives `name` in `scope` to `did` unless it is taken. Returns whether it did. */
+  claimName(scope: String, name: String, did: String): Future<boolean>;
+  /** Takes `name` in `scope` back from `did`, whose account could not be made. */
+  releaseName(scope: String, name: String, did: String): Future<void>;
+  /** Every scope, and its organization. */
+  allScopes(): Future<Array<ClaimedScope>>;
+  /** Every name in every scope, and the account it is given to. */
+  allNames(): Future<Array<ClaimedName>>;
+  /**
+   * Keeps `summary`, made from the commit whose revision is `rev`, unless
+   * the summary kept for its package was made from that commit or a later
+   * one: two servers that commit to a package at once leave the later
+   * commit's summary.
+   */
+  putSummary(summary: PackageSummary, rev: String): Future<void>;
+  /** The package summaries kept, of every scope or of `scope`, in no order. */
+  summaries(scope: String | null): Future<Array<PackageSummary>>;
+  /**
+   * Notes that `account`'s records or entries mention each of `subjects`:
+   * a person's DID, or a team as `<org DID> <team>`. Notes are never
+   * taken back, so one can outlive the mention; a reader reads the
+   * account's records to find the role.
+   */
+  addMentions(account: String, subjects: Array<String>): Future<void>;
+  /** The accounts noted as mentioning `subject`, in no order. */
+  mentionsOf(subject: String): Future<Array<String>>;
+  /** The entries behind the commitments in `account`'s records. */
+  entries(account: String): Future<Array<MemberEntry>>;
+  addEntries(account: String, entries: Array<MemberEntry>): Future<void>;
+  /**
+   * Holds `release` of `pkg` until it is approved, unless a release of its
+   * version is held already. Returns whether it did: several servers may
+   * share the store, so the version is reserved with this one call.
+   */
+  holdRelease(pkg: String, release: PendingRelease): Future<boolean>;
+  /** The release of `pkg` held at `version`, or null. */
+  heldRelease(pkg: String, version: String): Future<PendingRelease | null>;
+  /** Every release of `pkg` held. */
+  heldReleases(pkg: String): Future<Array<PendingRelease>>;
+  /** Stops holding the release of `pkg` at `version`. */
+  dropRelease(pkg: String, version: String): Future<void>;
+  /**
+   * Holds `change` to one of `account`'s records until it is approved, in
+   * place of any change to that record held before.
+   */
+  holdChange(account: String, change: PendingChange): Future<void>;
+  /** The change to `account`'s record at `collection/rkey` held, or null. */
+  heldChange(account: String, collection: String, rkey: String): Future<PendingChange | null>;
+  /** Every change to `account`'s records held. */
+  heldChanges(account: String): Future<Array<PendingChange>>;
+  /**
+   * Stops holding the change to `account`'s record at `collection/rkey`
+   * when it is the one whose new record's CID is `cid`, and not one held
+   * since in its place.
+   */
+  dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void>;
+}
+
+/**
+ * A release held back until its maintainers have attested it: the record
+ * the App View will write, which is in no repository until then (`publish`,
+ * `completeRelease`).
+ */
+export final class PendingRelease {
+  version: String;
+  /** The release record's DAG-CBOR, as it will be written. */
+  record: FixedArray<u8>;
+  /** The record's CID, which the attestations name. */
+  cid: Cid;
+  /** Who published it. */
+  publisher: String;
+  /** When the App View took it, in microseconds since the epoch. */
+  heldAt: i64;
+
+  new(this.version, this.record, this.cid, this.publisher, this.heldAt);
+}
+
+/**
+ * A change to an organization's members record or one of its teams, or to
+ * a package's maintainers record, held back until the record before it
+ * allows it: until enough of the roles that record names have attested
+ * the new one (`putMembers`, `putTeam`, `putMaintainers`,
+ * `completeChange`). Until then the record before it decides every role.
+ */
+export final class PendingChange {
+  collection: String;
+  rkey: String;
+  /** The new record's DAG-CBOR, as it will be written. */
+  record: FixedArray<u8>;
+  /** The new record's CID, which the attestations name. */
+  cid: Cid;
+  /** The CID of the record it replaces, or null for a new team. */
+  base: Cid | null;
+  /** Who asked for it. */
+  proposer: String;
+  /** When the App View took it, in microseconds since the epoch. */
+  heldAt: i64;
+
+  new(this.collection, this.rkey, this.record, this.cid, this.base, this.proposer, this.heldAt);
+}
+
+/** A scope and the organization it belongs to. */
+export final class ClaimedScope {
+  scope: String;
+  org: String;
+
+  new(this.scope, this.org);
+}
+
+/** A name in a scope and the account it is given to. */
+export final class ClaimedName {
+  scope: String;
+  name: String;
+  did: String;
+
+  new(this.scope, this.name, this.did);
+}
+
+/** The App View's store in memory. */
+export final class MemoryAppViewStore implements AppViewStore {
+  #accounts = new HashMap<String, AppViewAccount>();
+  #scopes = new HashMap<String, String>();
+  /** Package summaries by DID. */
+  #summaries = new HashMap<String, KeptSummary>();
+  /** The accounts that mention each subject. */
+  #mentions = new HashMap<String, HashSet<String>>();
+
+  async putAccount(account: AppViewAccount): Future<void> {
+    this.#accounts[account.did] = account;
+  }
+
+  async account(did: String): Future<AppViewAccount | null> {
+    if (let (true, account) = this.#accounts.get(did)) {
+      return account;
+    }
+    return null;
+  }
+
+  async accounts(): Future<Array<AppViewAccount>> {
+    let all = new GrowableArray<AppViewAccount>();
+    this.#accounts.forEach((did, account) => {
+      all.push(account);
+    });
+    return all;
+  }
+
+  async addMentions(account: String, subjects: Array<String>): Future<void> {
+    for (let subject in subjects) {
+      if (let (true, accounts) = this.#mentions.get(subject)) {
+        accounts.add(account);
+      } else {
+        let accounts = new HashSet<String>();
+        accounts.add(account);
+        this.#mentions[subject] = accounts;
+      }
+    }
+  }
+
+  async mentionsOf(subject: String): Future<Array<String>> {
+    let out = new GrowableArray<String>();
+    if (let (true, accounts) = this.#mentions.get(subject)) {
+      for (let account in accounts) {
+        out.push(account);
+      }
+    }
+    return out;
+  }
+
+  async putSummary(summary: PackageSummary, rev: String): Future<void> {
+    if (let (true, kept) = this.#summaries.get(summary.did)) {
+      if (compareKeys(kept.rev, rev) >= 0) {
+        return;
+      }
+    }
+    this.#summaries[summary.did] = new KeptSummary(summary, rev);
+  }
+
+  async summaries(scope: String | null): Future<Array<PackageSummary>> {
+    let out = new GrowableArray<PackageSummary>();
+    this.#summaries.forEach((did, kept) => {
+      if (scope == null || kept.summary.scope == scope) {
+        out.push(kept.summary);
+      }
+    });
+    return out;
+  }
+  /** Held releases by `<pkg> <version>`. */
+  #held = new HashMap<String, PendingRelease>();
+
+  async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
+    let key = `${pkg} ${release.version}`;
+    if (this.#held.has(key)) {
+      return false;
+    }
+    this.#held[key] = release;
+    return true;
+  }
+
+  async heldRelease(pkg: String, version: String): Future<PendingRelease | null> {
+    if (let (true, release) = this.#held.get(`${pkg} ${version}`)) {
+      return release;
+    }
+    return null;
+  }
+
+  async heldReleases(pkg: String): Future<Array<PendingRelease>> {
+    let held = new GrowableArray<PendingRelease>();
+    for (let entry in this.#held) {
+      if (entry.key.startsWith(`${pkg} `)) {
+        held.push(entry.value);
+      }
+    }
+    return held;
+  }
+
+  async dropRelease(pkg: String, version: String): Future<void> {
+    this.#held.delete(`${pkg} ${version}`);
+  }
+
+  /** Held changes by `<account> <collection> <rkey>`. */
+  #changes = new HashMap<String, PendingChange>();
+
+  async holdChange(account: String, change: PendingChange): Future<void> {
+    this.#changes[`${account} ${change.collection} ${change.rkey}`] = change;
+  }
+
+  async heldChange(account: String, collection: String, rkey: String): Future<PendingChange | null> {
+    if (let (true, change) = this.#changes.get(`${account} ${collection} ${rkey}`)) {
+      return change;
+    }
+    return null;
+  }
+
+  async heldChanges(account: String): Future<Array<PendingChange>> {
+    let held = new GrowableArray<PendingChange>();
+    for (let entry in this.#changes) {
+      if (entry.key.startsWith(`${account} `)) {
+        held.push(entry.value);
+      }
+    }
+    return held;
+  }
+
+  async dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void> {
+    let key = `${account} ${collection} ${rkey}`;
+    if (let (true, change) = this.#changes.get(key)) {
+      if (change.cid.equals(cid)) {
+        this.#changes.delete(key);
+      }
+    }
+  }
+  /** Claimed names by `<name>.<scope>`. */
+  #names = new HashMap<String, ClaimedName>();
+  #entries = new HashMap<String, GrowableArray<MemberEntry>>();
+
+  async scopeOwner(scope: String): Future<String | null> {
+    if (let (true, org) = this.#scopes.get(scope)) {
+      return org;
+    }
+    return null;
+  }
+
+  async claimScope(scope: String, org: String): Future<boolean> {
+    if (this.#scopes.has(scope)) {
+      return false;
+    }
+    this.#scopes[scope] = org;
+    return true;
+  }
+
+  async releaseScope(scope: String, org: String): Future<void> {
+    if (let (true, owner) = this.#scopes.get(scope)) {
+      if (owner == org) {
+        this.#scopes.delete(scope);
+      }
+    }
+  }
+
+  async nameInScope(scope: String, name: String): Future<String | null> {
+    if (let (true, claimed) = this.#names.get(`${name}.${scope}`)) {
+      return claimed.did;
+    }
+    return null;
+  }
+
+  async claimName(scope: String, name: String, did: String): Future<boolean> {
+    let key = `${name}.${scope}`;
+    if (this.#names.has(key)) {
+      return false;
+    }
+    this.#names[key] = new ClaimedName(scope, name, did);
+    return true;
+  }
+
+  async releaseName(scope: String, name: String, did: String): Future<void> {
+    let key = `${name}.${scope}`;
+    if (let (true, claimed) = this.#names.get(key)) {
+      if (claimed.did == did) {
+        this.#names.delete(key);
+      }
+    }
+  }
+
+  async allScopes(): Future<Array<ClaimedScope>> {
+    let all = new GrowableArray<ClaimedScope>();
+    this.#scopes.forEach((scope, org) => {
+      all.push(new ClaimedScope(scope, org));
+    });
+    return all;
+  }
+
+  async allNames(): Future<Array<ClaimedName>> {
+    let all = new GrowableArray<ClaimedName>();
+    this.#names.forEach((key, claimed) => {
+      all.push(claimed);
+    });
+    return all;
+  }
+
+  async entries(account: String): Future<Array<MemberEntry>> {
+    if (let (true, list) = this.#entries.get(account)) {
+      return list;
+    }
+    return new GrowableArray<MemberEntry>();
+  }
+
+  async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
+    var list = new GrowableArray<MemberEntry>();
+    if (let (true, existing) = this.#entries.get(account)) {
+      list = existing;
+    }
+    for (let entry in entries) {
+      list.push(entry);
+    }
+    this.#entries[account] = list;
+  }
+}
+
+/** An account `#prepareAccount` made ready, with the DID it will have. */
+final class PreparedAccount {
+  did: String;
+  handle: String;
+  /** The signing key the genesis operation names, which the PDS reserved. */
+  signingKey: PublicKey;
+  /** The genesis operation, which is the DID's only operation. */
+  operation: PlcOperation;
+
+  new(this.did, this.handle, this.signingKey, this.operation);
+}
+
+/** How an App View is set up. */
+export final class AppViewConfig {
+  /** The App View's service DID, which callers' tokens are addressed to. */
+  serviceDid: String;
+  /** The domain its scopes are under, such as `pkg.zena-lang.dev`. */
+  domain: String;
+  /** Its PDS endpoint, which every account's DID document names. */
+  endpoint: String;
+  /**
+   * The site's origin, when the pages have a host name of their own
+   * (package-manager.md, "Names and addresses"), or null when the pages
+   * are served beside the PDS, at `endpoint`.
+   */
+  var siteUrl: String | null = null;
+  /**
+   * Its online PLC rotation key, which signs every account's operations,
+   * ranked last: below any recovery keys an account's owners give, and the
+   * offline key. Without those, the App View holds the account, as a PDS holds
+   * its users' (package-manager.md, "Keys").
+   */
+  rotationKey: Signer;
+  /**
+   * The App View's own signing key, which signs its service-auth tokens to
+   * the PDSes of its accounts, and which its DID document lists; null for
+   * an App View with none, whose PDS needs no tokens from it.
+   */
+  var signingKey: Signer | null = null;
+  /**
+   * The operator's offline rotation key, ranked above the online one, so
+   * that the operator can undo for 72 hours what a stolen online key
+   * signs. The server knows only its public key.
+   */
+  var offlineRotationKey: PublicKey | null = null;
+  /** The largest blob `uploadArtifact` stores. */
+  var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
+  /** Scope names no one may take. */
+  reservedScopes = new HashSet<String>();
+  /**
+   * The DIDs of the App View's admins (`PDS_ADMIN_DIDS`), who sign in as
+   * themselves, as anyone does, and may see every account the App View holds
+   * and every private entry.
+   */
+  admins = new HashSet<String>();
+  /**
+   * Whether the App View may read PDSes on this machine or a private network,
+   * which only a stack on one machine needs (`PDS_PRIVATE_READS`).
+   */
+  var privateReads = false;
+
+  /** Where the pages are: the site's origin, or the PDS's when the site has no name of its own. */
+  siteOrigin: String {
+    get { return this.siteUrl ?? this.endpoint; }
+  }
+
+  new(serviceDid: String, domain: String, endpoint: String, rotationKey: Signer)
+      : serviceDid = serviceDid, domain = domain, endpoint = endpoint, rotationKey = rotationKey {
+    for (let name in ['www', 'api', 'admin', 'zena', 'pkg', 'mail']) {
+      this.reservedScopes.add(name);
+    }
+  }
+}
+
+/** Sends a signed operation for a DID to the PLC directory. */
+export type PlcSubmitter = (did: String, operation: PlcOperation) => Future<void>;
+
+/**
+ * Makes the automation account `did`, named `handle`, on the PDS, as an
+ * account that signs in and writes its own repository with `key`
+ * (`AppView.makeAutomationAccount`).
+ */
+export type AutomationAccountMaker = (did: String, handle: String, key: SigningKey) => Future<void>;
+
+/** `count` random bytes. */
+export type RandomBytes = (count: i32) => FixedArray<u8>;
+
+/** An account the App View created: its DID, handle, and the record the caller attests. */
+export final class Created {
+  did: String;
+  handle: String;
+  uri: String;
+  cid: Cid;
+
+  new(did: String, handle: String, uri: String, cid: Cid) : did = did, handle = handle, uri = uri, cid = cid;
+}
+
+/** The `dev.zena-lang.registry.*` methods, over a PDS's accounts. */
+export final class AppView {
+  /**
+   * Signs accounts in, and gives automation accounts their app passwords;
+   * without it, `createAutomationAccount` is not offered.
+   */
+  var sessions: Sessions | null = null;
+  /**
+   * Makes an automation account on the PDS, one that signs in with an app
+   * password and writes its own attestations; without it, as without
+   * `sessions`, `createAutomationAccount` is not offered.
+   */
+  // TODO(#853): make automation accounts managed accounts, which the App View
+  // writes for with a token it issues, and drop this and `sessions`.
+  var makeAutomationAccount: AutomationAccountMaker | null = null;
+  /** Reads other PDSes' records in place of the App View's own reading, as tests do; null reads them. */
+  var remoteRecords: RemoteRecords | null = null;
+  config: AppViewConfig;
+  #pds: PdsClient;
+  #store: AppViewStore;
+  #records: HandleRecords;
+  #keys: SigningKeyLookup;
+  #submit: PlcSubmitter;
+  #random: RandomBytes;
+  /** Resolves the DIDs of a release's dependencies, to check them. */
+  #resolver: IdentityResolver;
+  #replays = new ReplayGuard();
+
+  /**
+   * An App View keeping its accounts on `pds`, and its own record of them and
+   * its names in `store`, writing its handles' DNS records to `records`,
+   * and resolving the dependencies of the releases it checks with
+   * `resolver`.
+   */
+  new(pds: PdsClient, config: AppViewConfig, store: AppViewStore, records: HandleRecords, keys: SigningKeyLookup,
+      submit: PlcSubmitter, random: RandomBytes, resolver: IdentityResolver)
+      : #pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
+        #random = random, #resolver = resolver;
+
+  /**
+   * Writes `writes` to `account`'s repository in one commit, answering
+   * writes the PDS refuses with its error, and keeps the indexes the
+   * commit changes (`#index`).
+   */
+  async #commit(account: AppViewAccount, writes: Array<Write>): Future<Head> {
+    let head = try {
+      await this.#pds.applyWrites(account.did, writes)
+    } catch (e) {
+      if (e is RepositoryError) {
+        throw new AppViewError(400, e.error, e.message);
+      }
+      throw e;
+    };
+    await this.#index(account, head, writes);
+    return head;
+  }
+
+  /**
+   * Keeps the indexes after `writes` to `account`'s repository made the
+   * commit `head`: the summary of a package whose profile, releases or
+   * retractions changed, which `listPackages` lists, and which people and
+   * teams an organization's members and teams, or a package's
+   * maintainers, mention, which `getMemberships` and `publicRolesOf`
+   * start from. The commit stands whatever happens here, so an index that
+   * cannot be written is left until the next commit, or `syncIndexes`.
+   */
+  async #index(account: AppViewAccount, head: Head, writes: Array<Write>): Future<void> {
+    var shown = false;
+    var mentions = false;
+    for (let write in writes) {
+      let collection = match (write) {
+        case CreateRecord {collection}: collection
+        case UpdateRecord {collection}: collection
+        case DeleteRecord {collection}: collection
+      };
+      if (account.kind == AccountKind.Package) {
+        shown = shown || collection == PROFILE_TYPE || collection == RELEASE_TYPE || collection == RETRACTION_TYPE;
+        mentions = mentions || collection == MAINTAINERS_TYPE;
+      } else if (account.kind == AccountKind.Organization) {
+        mentions = mentions || collection == MEMBERS_TYPE || collection == TEAM_TYPE;
+      }
+    }
+    try {
+      if (shown) {
+        await this.#store.putSummary(await this.#summarize(account), head.rev);
+      }
+      if (mentions) {
+        await this.#store.addMentions(account.did, await this.#subjectsOf(account));
+      }
+    } catch (e) {
+      console.error(`the indexes of ${account.did} were not written: ${e.message}`);
+    }
+  }
+
+  /**
+   * Everyone and every team `account`'s records may give a role: each
+   * person its entries name, and a package's maintainers named by DID,
+   * and its teams, as `<org DID> <team>`.
+   */
+  async #subjectsOf(account: AppViewAccount): Future<Array<String>> {
+    let subjects = new HashSet<String>();
+    for (let entry in await this.#store.entries(account.did)) {
+      subjects.add(entry.did);
+    }
+    if (account.kind == AccountKind.Package) {
+      let record = await this.#current(account.did, MAINTAINERS_TYPE, 'self');
+      if (record != null) {
+        for (let maintainer in Maintainers.fromValue(record.value).maintainers) {
+          if (maintainer.did != null) {
+            subjects.add(maintainer.did as String);
+          }
+          if (maintainer.org != null && maintainer.team != null) {
+            subjects.add(`${maintainer.org as String} ${maintainer.team as String}`);
+          }
+        }
+      }
+    }
+    let out = new GrowableArray<String>();
+    for (let subject in subjects) {
+      out.push(subject);
+    }
+    return out;
+  }
+
+  /**
+   * The summary of the package `account`, from its profile and the
+   * release and retraction records in its repository.
+   */
+  async #summarize(account: AppViewAccount): Future<PackageSummary> {
+    let did = account.did;
+    let summary = new PackageSummary(did, account.handle, account.scope, account.name);
+    let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
+    if (profile != null) {
+      let read = Profile.fromValue(profile.value);
+      summary.description = read.description;
+      summary.license = read.license;
+    }
+    let retracted = new HashSet<String>();
+    for (let record in await this.#pds.listRecords(did, RETRACTION_TYPE)) {
+      retracted.add(record.rkey);
+    }
+    let versions = new GrowableArray<String>();
+    for (let record in await this.#pds.listRecords(did, RELEASE_TYPE)) {
+      versions.push(record.rkey);
+    }
+    summary.releases = versions.length;
+    var latest: Version | null = null;
+    for (let text in versions) {
+      if (retracted.has(text)) {
+        continue;
+      }
+      let version = Version.parse(text);
+      if (latest == null || version.compareTo(latest) > 0) {
+        latest = version;
+      }
+    }
+    if (latest != null) {
+      summary.latest = latest.toString();
+    }
+    return summary;
+  }
+
+  /**
+   * Writes the App View's indexes again, each package's summary and the
+   * mentions of every organization and package, from the repositories as
+   * they are now, and returns how many accounts it indexed: for accounts
+   * a server before the indexes made, or a commit whose indexes were not
+   * written.
+   */
+  async syncIndexes(): Future<i32> {
+    var written = 0;
+    for (let account in await this.#store.accounts()) {
+      if (account.kind == AccountKind.Organization) {
+        await this.#store.addMentions(account.did, await this.#subjectsOf(account));
+        written += 1;
+      } else if (account.kind == AccountKind.Package) {
+        // The head first, so the summary is of that commit or a later one.
+        let head = await this.#pds.latestCommit(account.did);
+        if (head == null) {
+          continue;
+        }
+        await this.#store.putSummary(await this.#summarize(account), head.rev);
+        await this.#store.addMentions(account.did, await this.#subjectsOf(account));
+        written += 1;
+      }
+    }
+    return written;
+  }
+
+  /**
+   * The DID of the account a call to `method` comes from, read from its
+   * `authorization` header: a service-auth token for this App View and that
+   * method, not seen before. Throws `AppViewError`.
+   */
+  async authenticate(authorization: String | null, method: String, nowSeconds: i64): Future<String> {
+    if (authorization == null || !authorization.startsWith('Bearer ')) {
+      throw new AppViewError(401, 'AuthenticationRequired', 'a service-auth token is required');
+    }
+    let header = authorization;
+    let token = header.sliceBytes(7, header.length);
+    try {
+      let claims = await verifyServiceAuth(token, this.config.serviceDid, method, nowSeconds, this.#keys);
+      this.#replays.accept(claims, nowSeconds);
+      return claims.iss;
+    } catch (e) {
+      if (e is ServiceAuthError) {
+        throw new AppViewError(401, 'InvalidToken', e.message);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * `createOrganization`: a scope named `name`, owned by `caller` alone.
+   * `recoveryKeys`, which may be none, are `did:key`s, ranked above the
+   * App View's rotation key. The scope's handle record is written last, so the
+   * handle resolves only to an organization that is whole. A reserved name
+   * is refused: only the operator takes one (`createScopeAsOperator`).
+   */
+  async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+      : Future<Created> {
+    if (this.config.reservedScopes.has(name)) {
+      throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
+    }
+    return await this.#createOrganization(caller, name, recoveryKeys, nowMicros);
+  }
+
+  /**
+   * A scope named `name`, owned by `owner` alone, created by the App View's
+   * operator: as `createOrganization`, but a reserved name may be taken.
+   * No XRPC method reaches it; `main.zena -- create-scope` calls it with
+   * the server's own configuration (package-manager.md, "Scopes").
+   */
+  async createScopeAsOperator(owner: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+      : Future<Created> {
+    return await this.#createOrganization(owner, name, recoveryKeys, nowMicros);
+  }
+
+  async #createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+      : Future<Created> {
+    if (!isValidScopeName(name)) {
+      throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
+    }
+    if ((await this.#store.scopeOwner(name)) != null) {
+      throw new AppViewError(400, 'NameTaken', `the scope '${name}' exists`);
+    }
+    let handle = `${name}.${this.config.domain}`;
+    let prepared = await this.#prepareAccount(handle, recoveryKeys);
+    let did = prepared.did;
+    if (!(await this.#store.claimScope(name, did))) {
+      throw new AppViewError(400, 'NameTaken', `the scope '${name}' exists`);
+    }
+    let store = this.#store;
+    let account = await this.#createAccount(prepared, new AppViewAccount(did, handle, AccountKind.Organization, name, name),
+        async (): Future<void> => { await store.releaseScope(name, did); });
+    let owner = new MemberEntry(caller, OWNER, this.#random(32));
+    await this.#store.addEntries(account.did, [owner]);
+    let members = new Members(new FixedArray<Cid>(1, owner.commitment()));
+    let cid = await this.#write(account, MEMBERS_TYPE, 'self', members.toValue());
+    await this.#records.set(handle, account.did);
+    return new Created(account.did, handle, `at://${account.did}/${MEMBERS_TYPE}/self`, cid);
+  }
+
+  /**
+   * `createAutomationAccount`: an account named `name` in `org`'s scope,
+   * for CI to publish as, with an app password, which is returned and
+   * never shown again. The caller must be an owner or admin of `org`. The
+   * account is a maintainer of nothing until a package's owners add it,
+   * marked `automation`; it can sign in, write attestations to its own
+   * repository, and call the App View's methods, and nothing else. Its name
+   * is taken in the scope as a package's would be. It has no recovery
+   * keys: the App View holds it, as it holds the organization.
+   */
+  async createAutomationAccount(caller: String, org: String, name: String, nowMicros: i64): Future<Automation> {
+    let sessions = this.sessions;
+    let make = this.makeAutomationAccount;
+    if (sessions == null || make == null) {
+      throw new AppViewError(501, 'MethodNotImplemented', 'this App View has no sessions to sign automation accounts in');
+    }
+    let organization = await this.#account(org, AccountKind.Organization, 'an organization');
+    if (!isAdmin(await this.#orgRole(org, caller))) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    }
+    if (!isValidPackageName(name)) {
+      throw new AppViewError(400, 'InvalidRequest', `'${name}' cannot name an account`);
+    }
+    let scope = organization.scope;
+    if ((await this.#store.nameInScope(scope, name)) != null) {
+      throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
+    }
+    let handle = `${name}.${scope}.${this.config.domain}`;
+    let key = new SigningKey(KeyType.Secp256k1, this.#random(32));
+    let prepared = await this.#prepareAccount(handle, [], key);
+    let did = prepared.did;
+    if (!(await this.#store.claimName(scope, name, did))) {
+      throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
+    }
+    let store = this.#store;
+    let account = await this.#createAccount(prepared, new AppViewAccount(did, handle, AccountKind.Automation, scope, name),
+        async (): Future<void> => { await store.releaseName(scope, name, did); },
+        async (): Future<void> => { await make(did, handle, key); });
+    let password = await sessions.addAppPassword(account.did, 'ci',
+        formatTimestamp(nowMicros * (1000 as i64)));
+    await this.#records.set(handle, account.did);
+    return new Automation(account.did, handle, password);
+  }
+
+  /**
+   * `createPackage`: a package in `org`'s scope, named by its profile, with
+   * its maintainers record. The caller must be an owner or admin of `org`.
+   * As with an organization, its handle record is written last.
+   */
+  async createPackage(caller: String, org: String, recoveryKeys: Array<String>, profileValue: Value,
+      maintainersValue: Value, entryValues: Array<Value>, nowMicros: i64): Future<Created> {
+    let organization = await this.#store.account(org);
+    if (organization == null || organization.kind != AccountKind.Organization) {
+      throw new AppViewError(400, 'InvalidRequest', `${org} is not an organization on this App View`);
+    }
+    let policy = await this.#policy(org);
+    if (!isAdmin(await this.#orgRole(org, caller)) && !(await this.#isCreator(org, policy, caller))) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}, or on a team its policy lets create packages`);
+    }
+    let profile = readRecord(() => Profile.fromValue(profileValue, true));
+    let maintainers = readRecord(() => Maintainers.fromValue(maintainersValue));
+    meetsPolicy(maintainers, policy, org);
+    let committed = new HashSet<String>();
+    for (let maintainer in maintainers.maintainers) {
+      let commitment = maintainer.commitment;
+      if (commitment != null) {
+        committed.add(commitment.toString());
+      }
+    }
+    let entries = new GrowableArray<MemberEntry>();
+    for (let value in entryValues) {
+      let entry = readRecord(() => MemberEntry.fromValue(value));
+      if (!committed.has(entry.commitment().toString())) {
+        throw new AppViewError(400, 'InvalidRequest', 'an entry is not behind any commitment in the maintainers record');
+      }
+      entries.push(entry);
+    }
+    let scope = organization.scope;
+    if ((await this.#store.nameInScope(scope, profile.name)) != null) {
+      throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${profile.name}'`);
+    }
+    let handle = `${profile.name}.${scope}.${this.config.domain}`;
+    let prepared = await this.#prepareAccount(handle, recoveryKeys);
+    let did = prepared.did;
+    let name = profile.name;
+    if (!(await this.#store.claimName(scope, name, did))) {
+      throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
+    }
+    let store = this.#store;
+    let account = await this.#createAccount(prepared, new AppViewAccount(did, handle, AccountKind.Package, scope, name),
+        async (): Future<void> => { await store.releaseName(scope, name, did); });
+    await this.#store.addEntries(account.did, entries);
+    let maintainersRecord = asMap(maintainersValue);
+    await this.#commit(account, [
+      new CreateRecord(PROFILE_TYPE, PROFILE_KEY, asMap(profileValue)) as Write,
+      new CreateRecord(MAINTAINERS_TYPE, 'self', maintainersRecord) as Write,
+    ]);
+    let cid = cidForValue(maintainersRecord);
+    await this.#records.set(handle, account.did);
+    return new Created(account.did, handle, `at://${account.did}/${MAINTAINERS_TYPE}/self`, cid);
+  }
+
+  /**
+   * Writes the handle record of every scope and name the App View has given to
+   * an account that exists, from its store, as after records were lost or
+   * a write of one failed. Returns how many it wrote.
+   */
+  async syncHandles(): Future<i32> {
+    var written = 0;
+    for (let claimed in await this.#store.allScopes()) {
+      if ((await this.#store.account(claimed.org)) != null) {
+        await this.#records.set(`${claimed.scope}.${this.config.domain}`, claimed.org);
+        written += 1;
+      }
+    }
+    for (let claimed in await this.#store.allNames()) {
+      if ((await this.#store.account(claimed.did)) != null) {
+        await this.#records.set(`${claimed.name}.${claimed.scope}.${this.config.domain}`, claimed.did);
+        written += 1;
+      }
+    }
+    return written;
+  }
+
+  /**
+   * `uploadArtifact`: stores `bytes` as a blob of `pkg`, for a release, when
+   * `contentType` is one of an artifact's (`ARTIFACT_MIME_TYPES`).
+   */
+  async uploadArtifact(caller: String, pkg: String, contentType: String, bytes: FixedArray<u8>)
+      : Future<BlobRef> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    // Only what an artifact can be: a blob the App View serves as a page or a
+    // script would run on its origin.
+    let type = artifactMimeType(contentType);
+    if (type == null) {
+      throw new AppViewError(400, 'InvalidRequest', `'${contentType}' is not an artifact's type: ${join(ARTIFACT_MIME_TYPES, ', ')}`);
+    }
+    let mimeType = type;
+    if ((bytes.length as i64) > this.config.maxBlobSize) {
+      throw new AppViewError(400, 'TooLarge', `the blob is larger than ${this.config.maxBlobSize} bytes`);
+    }
+    try {
+      return await this.#pds.uploadBlob(account.did, mimeType, bytes);
+    } catch (e) {
+      if (e is RepositoryError) {
+        throw new AppViewError(400, e.error, e.message);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * `publish`: checks a release of `pkg` as every fetch will, and holds it
+   * until its maintainers have attested it (`completeRelease`), which
+   * reserves its version. Every blob it references must have been
+   * uploaded. Answers with the AT-URI and CID its record will have, which
+   * the attestations name. Publishing a release already held, with the
+   * same record, answers the same.
+   */
+  async publish(caller: String, pkg: String, releaseValue: Value, nowMicros: i64): Future<Created> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    let release = readRecord(() => Release.fromValue(releaseValue));
+    for (let artifact in release.artifacts) {
+      for (let blob in blobsOf(artifact.blob, artifact.parts, artifact.wit)) {
+        if ((await this.#pds.getBlob(account.did, blob.cid)) == null) {
+          throw new AppViewError(400, 'BlobNotFound', `${blob.cid.toString()} was not uploaded to ${pkg}`);
+        }
+      }
+    }
+    let version = release.version.toString();
+    if ((await this.#current(account.did, RELEASE_TYPE, version)) != null) {
+      throw new AppViewError(400, 'VersionExists', `${pkg} has a release ${version}`);
+    }
+    // The App View checks the release as every fetch will, against the archive
+    // it holds and the name its own profile record gives, and trusts
+    // nothing the client checked.
+    let source = release.artifact(SOURCE);
+    let archive = if (source != null && source.blob != null) await this.#pds.getBlob(account.did, (source.blob as BlobRef).cid)
+        else null;
+    let problems = await validateRelease(release, pkg, archive?.bytes ?? new FixedArray<u8>(0, 0 as u8),
+        // The App View says why a dependency was not found only in outline, so
+        // its answers map nothing of the network a DID document named.
+        await this.#profileName(pkg), this.#resolver, false);
+    if (problems.length > 0) {
+      var message = `release ${version} of ${pkg} is not valid:`;
+      for (let problem in problems) {
+        message = `${message}\n  ${problem}`;
+      }
+      throw new AppViewError(400, 'InvalidRelease', message);
+    }
+    // The record as the repository will store it, and so its CID.
+    let record = encodeCbor(asMap(releaseValue));
+    let cid = Cid.forDagCbor(record);
+    let created = new Created(account.did, account.handle, `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
+    var held = await this.#held(pkg, version, nowMicros);
+    if (held == null) {
+      if (await this.#store.holdRelease(pkg, new PendingRelease(version, record, cid, caller, nowMicros))) {
+        return created;
+      }
+      // Another publish of the version holds it.
+      held = await this.#held(pkg, version, nowMicros);
+    }
+    if (held != null && held.cid.equals(cid)) {
+      return created;
+    }
+    throw new AppViewError(400, 'VersionExists', `${pkg} has a release ${version} waiting for approval`);
+  }
+
+  /**
+   * `completeRelease`: writes the release of `pkg` held at `version` once
+   * its maintainers' attestations meet the maintainers record (`#tally`),
+   * and stops holding it. The caller must be a maintainer. Until then it
+   * answers how far the attestations are from enough.
+   */
+  async completeRelease(caller: String, pkg: String, version: String, nowMicros: i64): Future<Completion> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    let uri = `at://${account.did}/${RELEASE_TYPE}/${version}`;
+    let written = await this.#current(account.did, RELEASE_TYPE, version);
+    let held = await this.#held(pkg, version, nowMicros);
+    if (held == null) {
+      if (written != null) {
+        // Another call completed it.
+        return new Completion(uri, written.cid, true, new Tally());
+      }
+      throw new AppViewError(400, 'ReleaseNotFound', `${pkg} has no release ${version} waiting for approval`);
+    }
+    let release = held;
+    let tally = await this.#tally(pkg, uri, release.cid);
+    if (!tally.enough) {
+      return new Completion(uri, release.cid, false, tally);
+    }
+    if (written == null) {
+      await this.#write(account, RELEASE_TYPE, version, asMap(decodeCbor(release.record)));
+    }
+    await this.#store.dropRelease(pkg, version);
+    return new Completion(uri, release.cid, true, tally);
+  }
+
+  /**
+   * `getPendingReleases`: the releases of `pkg` waiting for approval, each
+   * with its attestations so far. The caller must be a maintainer.
+   */
+  async pendingReleases(caller: String, pkg: String, nowMicros: i64): Future<Array<Waiting>> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    let waiting = new GrowableArray<Waiting>();
+    for (let release in await this.#store.heldReleases(pkg)) {
+      if (await this.#expired(pkg, release, nowMicros)) {
+        continue;
+      }
+      let uri = `at://${account.did}/${RELEASE_TYPE}/${release.version}`;
+      waiting.push(new Waiting(release, uri, await this.#tally(pkg, uri, release.cid)));
+    }
+    return waiting;
+  }
+
+  /**
+   * `withdrawRelease`: stops holding the release of `pkg` at `version`,
+   * which frees its version. Its publisher or an owner of `pkg` may.
+   */
+  async withdrawRelease(caller: String, pkg: String, version: String, nowMicros: i64): Future<void> {
+    await this.#maintainedPackage(caller, pkg);
+    let held = await this.#held(pkg, version, nowMicros);
+    if (held == null) {
+      throw new AppViewError(400, 'ReleaseNotFound', `${pkg} has no release ${version} waiting for approval`);
+    }
+    if (held.publisher != caller && (await this.#packageRole(pkg, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} neither published ${version} of ${pkg} nor owns it`);
+    }
+    await this.#store.dropRelease(pkg, version);
+  }
+
+  /** Whether the App View may read `url` for someone (`isPublicHttps`, `AppViewConfig.privateReads`). */
+  mayRead(url: String): boolean {
+    return this.config.privateReads || isPublicHttps(url);
+  }
+
+  /** The release of `pkg` held at `version`, unless there is none or it has expired. */
+  async #held(pkg: String, version: String, nowMicros: i64): Future<PendingRelease | null> {
+    let held = await this.#store.heldRelease(pkg, version);
+    if (held == null || await this.#expired(pkg, held, nowMicros)) {
+      return null;
+    }
+    return held;
+  }
+
+  /** Whether `release` has waited longer than `PENDING_MICROS`; one that has is dropped. */
+  async #expired(pkg: String, release: PendingRelease, nowMicros: i64): Future<boolean> {
+    if (nowMicros - release.heldAt <= PENDING_MICROS) {
+      return false;
+    }
+    await this.#store.dropRelease(pkg, release.version);
+    return true;
+  }
+
+  /**
+   * Who of `pkg`'s maintainers has attested the record at `uri` whose CID
+   * is `cid`, and whether that is enough for its maintainers record: its
+   * `threshold` of attestations, of which `humans` from people. An
+   * automation account this App View holds counts only together with a
+   * person: the App View holds its keys, so it could attest alone
+   * (package-manager.md, "Publishing a release").
+   */
+  async #tally(pkg: String, uri: String, cid: Cid): Future<Tally> {
+    let tally = new Tally();
+    let current = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
+    if (current == null) {
+      return tally;
+    }
+    let record = Maintainers.fromValue(current.value);
+    // The scope's policy can ask more of every release than the record does.
+    var policy = new Policy();
+    let held = await this.#store.account(pkg);
+    if (held != null) {
+      let org = await this.#scopeOrganization(held);
+      if (org != null) {
+        policy = await this.#policy(org);
+      }
+    }
+    tally.threshold = if (policy.minimumThreshold > record.threshold) policy.minimumThreshold else record.threshold;
+    tally.humans = if (policy.minimumHumans > record.humans) policy.minimumHumans else record.humans;
+    let attesters = await this.#attesterList(pkg, record);
+    let rkey = attestationKey(uri, cid);
+    // Every repository is asked at once.
+    let checks = new GrowableArray<Future<boolean>>();
+    for (let attester in attesters) {
+      checks.push(this.#attested(attester.did, uri, cid, rkey));
+    }
+    var appViewAutomation = 0;
+    var otherAutomation = 0;
+    for (var i = 0; i < attesters.length; i += 1) {
+      if (!(await checks[i])) {
+        continue;
+      }
+      let attester = attesters[i];
+      tally.approvedBy.push(attester.did);
+      if (!attester.automation) {
+        tally.people += 1;
+      } else if ((await this.#store.account(attester.did)) != null) {
+        appViewAutomation += 1;
+      } else {
+        otherAutomation += 1;
+      }
+    }
+    let counted = tally.people + otherAutomation + (if (tally.people > 0) appViewAutomation else 0);
+    tally.enough = (counted as i64) >= tally.threshold && (tally.people as i64) >= tally.humans;
+    return tally;
+  }
+
+  /**
+   * Whether `did` has attested the record at `uri` whose CID is `cid`: an
+   * attestation at `rkey` in their repository naming it. An account this
+   * App View holds is read from its PDS; anyone else's from theirs, with the
+   * record's proof checked against the signing key in their DID document,
+   * so their PDS cannot answer for them.
+   */
+  async #attested(did: String, uri: String, cid: Cid, rkey: String): Future<boolean> {
+    try {
+      var value: Value | null = null;
+      if ((await this.#store.account(did)) != null) {
+        let record = await this.#current(did, ATTESTATION_TYPE, rkey);
+        value = record?.value;
+      } else {
+        let reader = this.remoteRecords;
+        value = if (reader != null) await reader(did, ATTESTATION_TYPE, rkey)
+            else await timeout<Value | null>(milliseconds(ATTESTATION_READ_MILLISECONDS),
+                () => this.#provenRecord(did, ATTESTATION_TYPE, rkey))();
+      }
+      if (value == null) {
+        return false;
+      }
+      let attestation = Attestation.fromValue(value);
+      return attestation.uri == uri && attestation.cid.equals(cid);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** The record at `collection/rkey` in `did`'s repository, from their PDS, with its proof checked. */
+  async #provenRecord(did: String, collection: String, rkey: String): Future<Value | null> {
+    let document = await this.#resolver.resolveDid(did);
+    let pds = document.pds;
+    let key = document.signingKey;
+    if (pds == null || key == null || !this.mayRead(pds)) {
+      return null;
+    }
+    let response = await fetch(`${pds}${xrpcPath(SYNC_GET_RECORD)}?did=${did}&collection=${collection}&rkey=${rkey}`);
+    if (response.status != 200) {
+      return null;
+    }
+    let signer = key;
+    let proof = verifyRecordProof(readCar(await response.bytes()), did, collection, rkey,
+        (signed, signature) => verifySignature(signer, signed, signature));
+    return proof.record;
+  }
+
+  /**
+   * `listScopes`: every scope whose organization exists, by name, with how
+   * many packages each has, from the packages' summaries. Public: scope
+   * names are in DNS anyway.
+   */
+  async listScopes(): Future<Array<ScopeSummary>> {
+    let counts = new HashMap<String, i32>();
+    for (let claimed in await this.#store.summaries(null)) {
+      var count = 0;
+      if (let (true, held) = counts.get(claimed.scope)) {
+        count = held;
+      }
+      counts[claimed.scope] = count + 1;
+    }
+    let scopes = new GrowableArray<ScopeSummary>();
+    for (let claimed in await this.#store.allScopes()) {
+      let account = await this.#store.account(claimed.org);
+      if (account == null || account.kind != AccountKind.Organization) {
+        continue;
+      }
+      var packages = 0;
+      if (let (true, count) = counts.get(claimed.scope)) {
+        packages = count;
+      }
+      let summary = new ScopeSummary(claimed.scope, claimed.org, account.handle, packages);
+      var i = scopes.length;
+      scopes.push(summary);
+      while (i > 0 && compareKeys(scopes[i - 1].name, summary.name) > 0) {
+        scopes[i] = scopes[i - 1];
+        i -= 1;
+      }
+      scopes[i] = summary;
+    }
+    return scopes;
+  }
+
+  /**
+   * `getMemberships`: the organizations, teams and packages on this App View
+   * that `caller` has a role in, each with the role, as the records stand
+   * now. A package `caller` maintains through a team is listed with the
+   * team's role. Only the accounts noted as mentioning `caller`, or a team
+   * of theirs, are read.
+   */
+  async getMemberships(caller: String): Future<Memberships> {
+    let memberships = new Memberships();
+    let packages = new HashSet<String>();
+    for (let did in await this.#store.mentionsOf(caller)) {
+      let account = await this.#store.account(did);
+      if (account == null) {
+        continue;
+      }
+      if (account.kind == AccountKind.Package) {
+        packages.add(did);
+        continue;
+      }
+      if (account.kind != AccountKind.Organization) {
+        continue;
+      }
+      let scope = account.scope;
+      let role = await this.#orgRole(did, caller);
+      if (role != null) {
+        memberships.orgs.push(new Membership(did, account.handle, scope, scope, role));
+      }
+      for (let team in await this.#pds.listRecords(did, TEAM_TYPE)) {
+        let teamRole = await this.#teamRole(did, team.rkey, caller);
+        if (teamRole != null) {
+          memberships.teams.push(new Membership(did, account.handle, scope, team.rkey, teamRole));
+          for (let pkg in await this.#store.mentionsOf(`${did} ${team.rkey}`)) {
+            packages.add(pkg);
+          }
+        }
+      }
+    }
+    for (let did in packages) {
+      let pkg = await this.#store.account(did);
+      if (pkg == null || pkg.kind != AccountKind.Package) {
+        continue;
+      }
+      let role = await this.#packageRole(did, caller);
+      if (role != null) {
+        memberships.packages.push(new Membership(did, pkg.handle, pkg.scope, pkg.name, role));
+      }
+    }
+    sortByName(memberships.orgs);
+    sortByName(memberships.teams);
+    sortByName(memberships.packages);
+    return memberships;
+  }
+
+  /**
+   * The packages whose maintainers records name `did` directly, each with
+   * its role there, for anyone to see. A role behind a commitment is
+   * private, so it is left out here even when the caller could see it.
+   * Only the packages noted as mentioning `did` are read.
+   */
+  async publicRolesOf(did: String): Future<Array<Membership>> {
+    let roles = new GrowableArray<Membership>();
+    for (let mentioning in await this.#store.mentionsOf(did)) {
+      let pkg = await this.#store.account(mentioning);
+      if (pkg == null || pkg.kind != AccountKind.Package) {
+        continue;
+      }
+      let record = await this.#current(mentioning, MAINTAINERS_TYPE, 'self');
+      if (record == null) {
+        continue;
+      }
+      for (let maintainer in Maintainers.fromValue(record.value).maintainers) {
+        if (maintainer.did == did) {
+          roles.push(new Membership(mentioning, pkg.handle, pkg.scope, pkg.name, maintainer.role));
+        }
+      }
+    }
+    sortByName(roles);
+    return roles;
+  }
+
+  /**
+   * Everyone whose attestation could approve `pkg`'s releases: the people
+   * its maintainers record names now, by DID, by a commitment whose entry
+   * the App View keeps, or as members of a team it names. A page looks for
+   * each one's attestation in their own repository. Showing one reveals
+   * a private maintainer, as acting in a role always does
+   * (package-manager.md, "Private membership").
+   */
+  async attesters(pkg: String): Future<Array<String>> {
+    let dids = new GrowableArray<String>();
+    let record = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
+    if (record == null) {
+      return dids;
+    }
+    for (let attester in await this.#attesterList(pkg, Maintainers.fromValue(record.value))) {
+      dids.push(attester.did);
+    }
+    return dids;
+  }
+
+  /**
+   * The people `record`, `pkg`'s maintainers record, names: by DID, by a
+   * commitment whose entry the App View keeps, or as members of a team it
+   * names, each once, with whether they are automation.
+   */
+  async #attesterList(pkg: String, record: Maintainers): Future<Array<Attester>> {
+    let found = new GrowableArray<Attester>();
+    let seen = new HashSet<String>();
+    let add = (did: String, automation: boolean) => {
+      if (!seen.has(did)) {
+        seen.add(did);
+        found.push(new Attester(did, automation));
+      }
+    };
+    for (let maintainer in record.maintainers) {
+      if (maintainer.did != null) {
+        add(maintainer.did as String, maintainer.automation);
+      }
+    }
+    for (let entry in await this.#committed(pkg, await this.#commitmentsOf(pkg, MAINTAINERS_TYPE, 'self'))) {
+      add(entry.did, entry.automation);
+    }
+    for (let maintainer in record.maintainers) {
+      if (maintainer.org != null && maintainer.team != null) {
+        let org = maintainer.org as String;
+        for (let entry in await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE, maintainer.team as String))) {
+          add(entry.did, entry.automation);
+        }
+      }
+    }
+    return found;
+  }
+
+  /** Whether `did` is one of the App View's admins. */
+  isAppViewAdmin(did: String): boolean {
+    return this.config.admins.has(did);
+  }
+
+  /**
+   * Every account the App View made, with its kind: organizations, packages
+   * and automation accounts. Admins only.
+   */
+  async listAccounts(caller: String): Future<Array<AppViewAccount>> {
+    if (!this.isAppViewAdmin(caller)) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of this App View`);
+    }
+    return await this.#store.accounts();
+  }
+
+  /** The account the App View made with the DID `did`, or null. */
+  async accountOf(did: String): Future<AppViewAccount | null> {
+    return await this.#store.account(did);
+  }
+
+  /**
+   * The record at `collection/rkey` in the repository of `did`, an account
+   * the App View made, or null; null too for an account it did not make.
+   */
+  async recordOf(did: String, collection: String, rkey: String): Future<Value | null> {
+    if ((await this.#store.account(did)) == null) {
+      return null;
+    }
+    return (await this.#current(did, collection, rkey))?.value;
+  }
+
+  /** The account the App View made whose handle is `handle`, by the scope and name it is made of, or null. */
+  async #accountByHandle(handle: String): Future<AppViewAccount | null> {
+    let suffix = `.${this.config.domain}`;
+    if (!handle.endsWith(suffix)) {
+      return null;
+    }
+    let labels = handle.sliceBytes(0, handle.length - suffix.length).split('.');
+    let did = if (labels.length == 1) await this.#store.scopeOwner(labels[0])
+        else if (labels.length == 2) await this.#store.nameInScope(labels[1], labels[0])
+        else null;
+    return if (did != null) await this.#store.account(did) else null;
+  }
+
+  /**
+   * `com.atproto.identity.resolveHandle`: the DID of `handle`, from this
+   * App View's own accounts, or as its resolver finds it, or null. A browser
+   * cannot look DNS up, so the web app signs people in through this rather
+   * than send their handles to a third party.
+   */
+  async resolveHandle(handle: String): Future<String | null> {
+    let held = await this.#accountByHandle(handle.asciiLowerCase());
+    if (held != null) {
+      return held.did;
+    }
+    try {
+      return await this.#resolver.resolveHandle(handle.asciiLowerCase());
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * The handle `did`'s DID document claims, when it resolves back to
+   * `did`; null when there is none, or the DID does not resolve. A page
+   * shows it for the person signed in.
+   */
+  async handleOf(did: String): Future<String | null> {
+    let held = await this.#store.account(did);
+    if (held != null) {
+      return held.handle;
+    }
+    let identity = await this.identityOf(did);
+    return identity?.handle;
+  }
+
+  /**
+   * `did`'s DID document, and the handle it claims when that resolves back
+   * to `did`, from the App View's resolver; null when it does not resolve.
+   */
+  async identityOf(did: String): Future<Identity | null> {
+    try {
+      return await this.#resolver.resolve(did);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * `listPackages`: the packages on the App View, or in `scope`, by scope and
+   * name, each with its profile's description and license and its latest
+   * release that is not retracted. Public, as the records are. It reads
+   * the packages' summaries, which the App View keeps with each commit, and no
+   * repository. Automation accounts, which also take names in a scope,
+   * have none.
+   */
+  async listPackages(scope: String | null): Future<Array<PackageSummary>> {
+    let packages = new GrowableArray<PackageSummary>();
+    for (let summary in await this.#store.summaries(scope)) {
+      var i = packages.length;
+      packages.push(summary);
+      while (i > 0 && compareKeys(packages[i - 1].sortKey(), summary.sortKey()) > 0) {
+        packages[i] = packages[i - 1];
+        i -= 1;
+      }
+      packages[i] = summary;
+    }
+    return packages;
+  }
+
+  /**
+   * The scope `name`, as its page shows it: its organization, the
+   * commitments of its members record, and its teams, by name; or null
+   * when no organization holds it. Public, as the records are; the entries
+   * behind the commitments come from `getEntries`.
+   */
+  async getScope(name: String): Future<ScopeDetail | null> {
+    let org = await this.#store.scopeOwner(name);
+    if (org == null) {
+      return null;
+    }
+    let account = await this.#store.account(org);
+    if (account == null || account.kind != AccountKind.Organization) {
+      return null;
+    }
+    let detail = new ScopeDetail(name, account.did, account.handle);
+    let profile = await this.#current(account.did, SCOPE_PROFILE_TYPE, 'self');
+    if (profile != null) {
+      detail.profile = ScopeProfile.fromValue(profile.value);
+    }
+    let members = await this.#current(account.did, MEMBERS_TYPE, 'self');
+    if (members != null) {
+      detail.members = Members.fromValue(members.value).members;
+    }
+    for (let team in await this.#pds.listRecords(account.did, TEAM_TYPE)) {
+      detail.teams.push(new NamedTeam(team.rkey, Team.fromValue(team.value)));
+    }
+    return detail;
+  }
+
+  /**
+   * The package whose handle is `handle`, as its page shows it: its
+   * profile, its releases, newest first, its retractions and its
+   * maintainers record; or null when no package here has that handle.
+   * Public, as the records are.
+   */
+  async getPackage(handle: String): Future<PackageDetail | null> {
+    let account = await this.#accountByHandle(handle);
+    if (account == null || account.kind != AccountKind.Package) {
+      return null;
+    }
+    let did = account.did;
+    let detail = new PackageDetail(did, handle, account.scope);
+    let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
+    if (profile != null) {
+      detail.profile = Profile.fromValue(profile.value);
+    }
+    let maintainers = await this.#current(did, MAINTAINERS_TYPE, 'self');
+    if (maintainers != null) {
+      detail.maintainers = Maintainers.fromValue(maintainers.value);
+    }
+    for (let record in await this.#pds.listRecords(did, RETRACTION_TYPE)) {
+      let retraction = Retraction.fromValue(record.value);
+      detail.retractions[retraction.version.toString()] = retraction;
+    }
+    for (let record in await this.#pds.listRecords(did, RELEASE_TYPE)) {
+      let release = Release.fromValue(record.value);
+      detail.releaseCids[release.version.toString()] = record.cid;
+      let releases = detail.releases;
+      var i = releases.length;
+      releases.push(release);
+      while (i > 0 && releases[i - 1].version.compareTo(release.version) < 0) {
+        releases[i] = releases[i - 1];
+        i -= 1;
+      }
+      releases[i] = release;
+    }
+    return detail;
+  }
+
+  /**
+   * `retract`: marks release `version` of `pkg` as retracted, with
+   * `reason`, at the record key equal to the version. The release stays,
+   * for the builds that pin it; choosing a version skips it. Any maintainer
+   * may retract a release, as any may publish one. Retracting a version
+   * again replaces the reason.
+   */
+  async retract(caller: String, pkg: String, version: String, reason: String | null, nowMicros: i64)
+      : Future<Created> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    if ((await this.#current(pkg, RELEASE_TYPE, version)) == null) {
+      throw new AppViewError(400, 'ReleaseNotFound', `${pkg} has no release ${version}`);
+    }
+    // A release's record key is its version, so `version` parses.
+    let retraction = new Retraction(Version.parse(version), reason);
+    return await this.#put(account, RETRACTION_TYPE, version, retraction.toValue(), null);
+  }
+
+  /**
+   * An account named `handle` on this App View, to be: the genesis
+   * operation of a `did:plc` that names a signing key the PDS reserved,
+   * the PDS, and this App View as `zena_registry` (package-manager.md,
+   * "Creating a package"). It ranks `recoveryKeys` first, then the
+   * operator's offline key, then the online rotation key, which signs it.
+   * A PLC operation lists at most five rotation keys, and the App View
+   * keeps two of them for its own. An automation account names `local`,
+   * the key it signs in with, in place of a reserved one.
+   */
+  async #prepareAccount(handle: String, recoveryKeys: Array<String>, local: SigningKey | null = null)
+      : Future<PreparedAccount> {
+    if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
+      throw new AppViewError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
+    }
+    let rotation = new GrowableArray<PublicKey>();
+    for (let key in recoveryKeys) {
+      try {
+        rotation.push(parseDidKey(key));
+      } catch (e) {
+        throw new AppViewError(400, 'InvalidRequest', `'${key}' is not a did:key`);
+      }
+    }
+    let offline = this.config.offlineRotationKey;
+    if (offline != null) {
+      rotation.push(offline);
+    }
+    rotation.push(this.config.rotationKey.publicKey());
+    let signingKey = if (local != null) local.publicKey() else await this.#pds.reserveSigningKey();
+    let unsigned = genesisOperation(signingKey, rotation, handle, this.config.endpoint);
+    unsigned.services[REGISTRY_SERVICE] = new PlcService(REGISTRY_TYPE, this.config.endpoint);
+    let operation = unsigned.withSignature(await this.config.rotationKey.sign(unsigned.signingBytes()));
+    return new PreparedAccount(didOfGenesis(operation), handle, signingKey, operation);
+  }
+
+  /**
+   * Sends `prepared`'s genesis operation to the PLC directory, has the PDS
+   * make the account, with `make` in place of `PdsClient.createAccount`
+   * when it is given, and records the account as `account`. When any of
+   * these fails, runs `release`, to give up the name taken for it, and
+   * throws. An account the PDS made is left there, with no name on this
+   * App View.
+   */
+  async #createAccount(prepared: PreparedAccount, account: AppViewAccount, release: () => Future<void>,
+      make: (() => Future<void>) | null = null): Future<AppViewAccount> {
+    try {
+      await this.#submit(prepared.did, prepared.operation);
+      if (make != null) {
+        await make();
+      } else {
+        await this.#pds.createAccount(prepared.did, prepared.handle, prepared.signingKey);
+      }
+      await this.#store.putAccount(account);
+      return account;
+    } catch (e) {
+      await release();
+      throw e;
+    }
+  }
+
+  /** Creates the record at `collection/rkey` in `account`'s repository, and returns its CID. */
+  async #write(account: AppViewAccount, collection: String, rkey: String, record: MapValue): Future<Cid> {
+    await this.#commit(account, [new CreateRecord(collection, rkey, record) as Write]);
+    return cidForValue(record);
+  }
+
+  /** The name `pkg`'s profile record gives. */
+  async #profileName(pkg: String): Future<String> {
+    let profile = await this.#current(pkg, PROFILE_TYPE, PROFILE_KEY);
+    if (profile == null) {
+      throw new AppViewError(400, 'InvalidRequest', `${pkg} has no profile`);
+    }
+    return Profile.fromValue(profile.value).name;
+  }
+
+  /**
+   * The package `pkg`, when `caller` maintains it, in any role. Throws
+   * `AppViewError` otherwise.
+   */
+  async #maintainedPackage(caller: String, pkg: String): Future<AppViewAccount> {
+    let account = await this.#account(pkg, AccountKind.Package, 'a package');
+    if ((await this.#packageRole(pkg, caller)) == null) {
+      throw new AppViewError(403, 'Forbidden', `${caller} does not maintain ${pkg}`);
+    }
+    return account;
+  }
+
+  /**
+   * `putMembers`: replaces `org`'s members record. The caller must be an
+   * owner of `org`. Every commitment needs an entry, given now or kept from
+   * before, and the record must leave the organization owners enough to
+   * meet its thresholds, so that it can still be changed.
+   */
+  async putMembers(caller: String, org: String, membersValue: Value, entryValues: Array<Value>,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    if ((await this.#orgRole(org, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
+    }
+    let members = readRecord(() => Members.fromValue(membersValue));
+    let entries = await this.#entriesBehind(org, members.members, entryValues);
+    var owners = 0;
+    var admins = 0;
+    for (let entry in entries.all) {
+      if (entry.role != OWNER && entry.role != ADMIN && entry.role != MEMBER) {
+        throw new AppViewError(400, 'InvalidRequest', `'${entry.role}' is not a role in an organization`);
+      }
+      if (entry.role == OWNER) {
+        owners += 1;
+      }
+      if (isAdmin(entry.role)) {
+        admins += 1;
+      }
+    }
+    if ((owners as i64) < members.ownerThreshold || (admins as i64) < members.adminThreshold) {
+      throw new AppViewError(400, 'InvalidRequest',
+          `${owners} owners and ${admins} admins or owners cannot meet the thresholds of ${members.ownerThreshold} and ${members.adminThreshold}`);
+    }
+    await this.#store.addEntries(org, entries.fresh);
+    return await this.#propose(caller, account, MEMBERS_TYPE, 'self', asMap(membersValue), swapRecord, nowMicros);
+  }
+
+  /**
+   * `putTeam`: creates or replaces `org`'s team `name`. The caller must be
+   * an owner or admin of `org`, or a maintainer of the team as it is. Its
+   * members must be members of `org`.
+   */
+  async putTeam(caller: String, org: String, name: String, teamValue: Value, entryValues: Array<Value>,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    if (!isValidPackageName(name)) {
+      throw new AppViewError(400, 'InvalidRequest', `'${name}' cannot name a team`);
+    }
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    let existing = await this.#current(org, TEAM_TYPE, name);
+    if (!isAdmin(await this.#orgRole(org, caller)) &&
+        (existing == null || (await this.#teamRole(org, name, caller)) != MAINTAINER)) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org} or a maintainer of its team ${name}`);
+    }
+    let team = readRecord(() => Team.fromValue(teamValue));
+    let entries = await this.#entriesBehind(org, team.members, entryValues);
+    let inOrg = new HashSet<String>();
+    for (let member in await this.#committed(org, await this.#commitmentsOf(org, MEMBERS_TYPE, 'self'))) {
+      inOrg.add(member.did);
+    }
+    for (let entry in entries.all) {
+      if (entry.role != MEMBER && entry.role != MAINTAINER) {
+        throw new AppViewError(400, 'InvalidRequest', `'${entry.role}' is not a role in a team`);
+      }
+      if (!inOrg.has(entry.did)) {
+        throw new AppViewError(400, 'InvalidRequest', `${entry.did} is not a member of ${org}`);
+      }
+    }
+    await this.#store.addEntries(org, entries.fresh);
+    return await this.#propose(caller, account, TEAM_TYPE, name, asMap(teamValue), swapRecord, nowMicros);
+  }
+
+  /**
+   * `putPolicy`: asks for a new policy for the packages in `org`'s scope
+   * (`Policy`), which the members record's owners must approve, as they do
+   * a change to the members. The caller must be an owner of `org`. Its
+   * teams must exist, and its defaults must ask no less than its minimums.
+   */
+  async putPolicy(caller: String, org: String, policyValue: Value, swapRecord: String | null, nowMicros: i64)
+      : Future<Created> {
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    if ((await this.#orgRole(org, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
+    }
+    let policy = readRecord(() => Policy.fromValue(policyValue));
+    let teams = new GrowableArray<String>();
+    for (let team in policy.defaultTeams) {
+      teams.push(team.team);
+    }
+    for (let team in policy.creators) {
+      teams.push(team);
+    }
+    for (let team in teams) {
+      if ((await this.#current(org, TEAM_TYPE, team)) == null) {
+        throw new AppViewError(400, 'TeamNotFound', `${org} has no team ${team}`);
+      }
+    }
+    if (policy.defaultThreshold < policy.minimumThreshold || policy.defaultHumans < policy.minimumHumans) {
+      throw new AppViewError(400, 'InvalidRequest', 'the policy\'s defaults ask less than its minimums');
+    }
+    return await this.#propose(caller, account, POLICY_TYPE, 'self', asMap(policyValue), swapRecord, nowMicros);
+  }
+
+  /**
+   * `putScopeProfile`: writes how `org` presents its scope (`ScopeProfile`),
+   * at once: it decides no one's role. The caller must be an admin or
+   * owner of `org`.
+   */
+  async putScopeProfile(caller: String, org: String, profileValue: Value, swapRecord: String | null,
+      nowMicros: i64): Future<Created> {
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    if (!isAdmin(await this.#orgRole(org, caller))) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    }
+    readRecord(() => ScopeProfile.fromValue(profileValue));
+    return await this.#put(account, SCOPE_PROFILE_TYPE, 'self', asMap(profileValue), swapRecord);
+  }
+
+  /** `org`'s policy for the packages in its scope, as it is now, or the one that asks nothing more. */
+  async #policy(org: String): Future<Policy> {
+    let current = await this.#current(org, POLICY_TYPE, 'self');
+    return if (current != null) Policy.fromValue(current.value) else new Policy();
+  }
+
+  /** Whether `caller` is on a team `policy` lets create packages in `org`'s scope. */
+  async #isCreator(org: String, policy: Policy, caller: String): Future<boolean> {
+    for (let team in policy.creators) {
+      if ((await this.#teamRole(org, team, caller)) != null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** The organization whose scope the package `account` is in, or null. */
+  async #scopeOrganization(account: AppViewAccount): Future<String | null> {
+    return if (account.kind == AccountKind.Package) await this.#store.scopeOwner(account.scope) else null;
+  }
+
+  /**
+   * `deleteTeam`: deletes `org`'s team `name`. The caller must be an owner
+   * or admin of `org`. Packages the team maintained keep their other
+   * maintainers.
+   */
+  async deleteTeam(caller: String, org: String, name: String, swapRecord: String | null, nowMicros: i64)
+      : Future<void> {
+    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    if (!isAdmin(await this.#orgRole(org, caller))) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    }
+    if ((await this.#current(org, TEAM_TYPE, name)) == null) {
+      throw new AppViewError(400, 'TeamNotFound', `${org} has no team ${name}`);
+    }
+    await this.#commit(account, [new DeleteRecord(TEAM_TYPE, name, swapCid(swapRecord)) as Write]);
+  }
+
+  /**
+   * `putMaintainers`: replaces `pkg`'s maintainers record. The caller must
+   * be an owner of `pkg`. Each commitment needs an entry in the role the
+   * record gives it, each team must exist, and the record must name enough
+   * owners for its owner threshold, and enough maintainers for its release
+   * threshold.
+   */
+  async putMaintainers(caller: String, pkg: String, maintainersValue: Value, entryValues: Array<Value>,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    let account = await this.#account(pkg, AccountKind.Package, 'a package');
+    if ((await this.#packageRole(pkg, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${pkg}`);
+    }
+    let maintainers = readRecord(() => Maintainers.fromValue(maintainersValue));
+    let commitments = new GrowableArray<Cid>();
+    for (let maintainer in maintainers.maintainers) {
+      let commitment = maintainer.commitment;
+      if (commitment != null) {
+        commitments.push(commitment);
+      }
+    }
+    let entries = await this.#entriesBehind(pkg, commitments, entryValues);
+    var owners = 0;
+    // People who could attest; a team could have any number.
+    var people = 0;
+    var teams = false;
+    for (let maintainer in maintainers.maintainers) {
+      let commitment = maintainer.commitment;
+      if (commitment != null) {
+        let entry = entries.byCommitment[commitment.toString()];
+        if (entry.role != maintainer.role) {
+          throw new AppViewError(400, 'InvalidRequest',
+              `the entry behind ${commitment.toString()} gives the role ${entry.role}, and the record ${maintainer.role}`);
+        }
+      }
+      if (maintainer.org != null) {
+        let org = maintainer.org as String;
+        await this.#account(org, AccountKind.Organization, 'an organization');
+        if ((await this.#current(org, TEAM_TYPE, maintainer.team as String)) == null) {
+          throw new AppViewError(400, 'TeamNotFound', `${org} has no team ${maintainer.team as String}`);
+        }
+      }
+      if (maintainer.role == OWNER) {
+        owners += 1;
+      }
+      if (maintainer.org != null) {
+        teams = true;
+      } else if (!maintainer.automation) {
+        people += 1;
+      }
+      // A bot is marked as one, in the record and its entry, so that the
+      // log can count it only together with a person.
+      let did = if (commitment != null) entries.byCommitment[commitment.toString()].did else maintainer.did;
+      if (did != null) {
+        let held = await this.#store.account(did);
+        let marked = maintainer.automation &&
+            (commitment == null || entries.byCommitment[commitment.toString()].automation);
+        if (held != null && held.kind == AccountKind.Automation) {
+          if (!marked) {
+            throw new AppViewError(400, 'InvalidRequest',
+                `${did} is an automation account: mark it as one, with automation: true`);
+          }
+          // An owner chooses the maintainers, which no bot should.
+          if (maintainer.role == OWNER) {
+            throw new AppViewError(400, 'InvalidRequest', `${did} is an automation account, which only publishes`);
+          }
+        }
+      }
+    }
+    if ((owners as i64) < maintainers.ownerThreshold || (maintainers.maintainers.length as i64) < maintainers.threshold) {
+      throw new AppViewError(400, 'InvalidRequest',
+          `${owners} owners of ${maintainers.maintainers.length} maintainers cannot meet the thresholds of ${maintainers.ownerThreshold} and ${maintainers.threshold}`);
+    }
+    if (!teams && (people as i64) < maintainers.humans) {
+      throw new AppViewError(400, 'InvalidRequest',
+          `${people} people among the maintainers cannot meet humans: ${maintainers.humans}`);
+    }
+    let org = await this.#scopeOrganization(account);
+    if (org != null) {
+      meetsPolicy(maintainers, await this.#policy(org), org);
+    }
+    await this.#store.addEntries(pkg, entries.fresh);
+    return await this.#propose(caller, account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue), swapRecord,
+        nowMicros);
+  }
+
+  /**
+   * Holds `record`, which `caller` asks for at `collection/rkey`, in place
+   * of any change to it held before, until the record it replaces allows
+   * it (`completeChange`). `swapRecord`, when given, must be that record's
+   * CID now. Answers with the AT-URI and CID the new record will have,
+   * which the attestations name.
+   */
+  async #propose(caller: String, account: AppViewAccount, collection: String, rkey: String, record: MapValue,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    let swap = swapCid(swapRecord);
+    let current = (await this.#current(account.did, collection, rkey))?.cid;
+    if (swap != null && (current == null || !current.equals(swap))) {
+      throw new AppViewError(400, 'InvalidSwap', `${collection}/${rkey} is not ${swap.toString()}`);
+    }
+    let bytes = encodeCbor(record);
+    let cid = Cid.forDagCbor(bytes);
+    await this.#store.holdChange(account.did, new PendingChange(collection, rkey, bytes, cid, current, caller,
+        nowMicros));
+    return new Created(account.did, account.handle, `at://${account.did}/${collection}/${rkey}`, cid);
+  }
+
+  /**
+   * `completeChange`: writes the change held to the record at `uri` once
+   * the record it replaces allows it (`#changeTally`), and stops holding
+   * it. Until then it answers how far the attestations are from enough.
+   * The caller must have a role in the account. A change asked for before
+   * the record last changed is dropped: the roles that were to approve it
+   * may have changed. With `cid`, a record that is already the one with
+   * that CID answers as written, so a second call after the first wrote
+   * it does not fail.
+   */
+  async completeChange(caller: String, uri: String, cid: Cid | null, nowMicros: i64): Future<ChangeCompletion> {
+    let target = await this.#changeTarget(uri);
+    await this.#requireRole(caller, target);
+    let did = target.account.did;
+    let current = (await this.#current(did, target.collection, target.rkey))?.cid;
+    let held = await this.#heldChange(target, nowMicros);
+    if (held == null) {
+      if (cid != null && current != null && current.equals(cid)) {
+        return new ChangeCompletion(uri, cid, true, new ChangeTally());
+      }
+      throw new AppViewError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
+    }
+    let change = held;
+    let base = change.base;
+    if ((base == null) != (current == null) || (base != null && !base.equals(current as Cid))) {
+      await this.#store.dropChange(did, target.collection, target.rkey, change.cid);
+      throw new AppViewError(400, 'InvalidSwap', `${uri} changed after this change was asked for: ask for it again`);
+    }
+    let tally = await this.#changeTally(target, change, uri);
+    if (!tally.enough) {
+      return new ChangeCompletion(uri, change.cid, false, tally);
+    }
+    let record = asMap(decodeCbor(change.record));
+    await this.#commit(target.account, [
+        if (current != null) new UpdateRecord(target.collection, target.rkey, record, current) as Write
+        else new CreateRecord(target.collection, target.rkey, record) as Write]);
+    await this.#store.dropChange(did, target.collection, target.rkey, change.cid);
+    return new ChangeCompletion(uri, change.cid, true, tally);
+  }
+
+  /**
+   * `getPendingChanges`: the changes to `account`'s records waiting for
+   * approval, each with its attestations so far, and the entries behind
+   * the new record's commitments, as `getEntries` would show them once it
+   * is written. The caller must have a role in the account.
+   */
+  async pendingChanges(caller: String, account: String, nowMicros: i64): Future<Array<WaitingChange>> {
+    let held = await this.#store.account(account);
+    if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
+      throw new AppViewError(400, 'InvalidRequest', `${account} is not an organization or package on this App View`);
+    }
+    let found = held;
+    let waiting = new GrowableArray<WaitingChange>();
+    var checked = false;
+    for (let change in await this.#store.heldChanges(account)) {
+      let target = new ChangeTarget(found, change.collection, change.rkey);
+      if (!checked) {
+        await this.#requireRole(caller, target);
+        checked = true;
+      }
+      if (nowMicros - change.heldAt > PENDING_MICROS) {
+        await this.#store.dropChange(account, change.collection, change.rkey, change.cid);
+        continue;
+      }
+      let uri = `at://${account}/${change.collection}/${change.rkey}`;
+      let entry = new WaitingChange(change, uri, await this.#changeTally(target, change, uri));
+      let seesAll = await this.#seesAll(caller, found,
+          if (change.collection == TEAM_TYPE) change.rkey else null);
+      for (let member in await this.#committed(account, commitmentsIn(change.collection,
+          decodeCbor(change.record)))) {
+        if (seesAll || member.did == caller) {
+          entry.entries.push(member);
+        }
+      }
+      waiting.push(entry);
+    }
+    if (!checked) {
+      await this.#requireRole(caller, new ChangeTarget(found, '', ''));
+    }
+    return waiting;
+  }
+
+  /**
+   * `withdrawChange`: stops holding the change to the record at `uri`. The
+   * one who asked for it may, and anyone who sees every entry behind the
+   * record: an organization's owners and admins, a team's maintainers, a
+   * package's owners.
+   */
+  async withdrawChange(caller: String, uri: String, nowMicros: i64): Future<void> {
+    let target = await this.#changeTarget(uri);
+    await this.#requireRole(caller, target);
+    let held = await this.#heldChange(target, nowMicros);
+    if (held == null) {
+      throw new AppViewError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
+    }
+    let change = held;
+    if (change.proposer != caller && !(await this.#seesAll(caller, target.account,
+        if (target.collection == TEAM_TYPE) target.rkey else null))) {
+      throw new AppViewError(403, 'Forbidden', `${caller} neither asked for the change to ${uri} nor can approve it`);
+    }
+    await this.#store.dropChange(target.account.did, target.collection, target.rkey, change.cid);
+  }
+
+  /** The record of members, a team or maintainers `uri` names, on this App View. */
+  async #changeTarget(uri: String): Future<ChangeTarget> {
+    let parts = if (uri.startsWith('at://')) uri.sliceBytes(5, uri.length).split('/') else new FixedArray<String>(0, '');
+    if (parts.length != 3) {
+      throw new AppViewError(400, 'InvalidRequest', `'${uri}' is not the AT-URI of a record`);
+    }
+    let collection = parts[1];
+    let rkey = parts[2];
+    if (collection == MAINTAINERS_TYPE && rkey == 'self') {
+      return new ChangeTarget(await this.#account(parts[0], AccountKind.Package, 'a package'), collection, rkey);
+    }
+    if (((collection == MEMBERS_TYPE || collection == POLICY_TYPE) && rkey == 'self') || collection == TEAM_TYPE) {
+      return new ChangeTarget(await this.#account(parts[0], AccountKind.Organization, 'an organization'), collection,
+          rkey);
+    }
+    throw new AppViewError(400, 'InvalidRequest', `${uri} is not a members, team or maintainers record`);
+  }
+
+  /** Throws unless `caller` has a role in the account `target` is a record of. */
+  async #requireRole(caller: String, target: ChangeTarget): Future<void> {
+    let did = target.account.did;
+    let role = if (target.account.kind == AccountKind.Organization) await this.#orgRole(did, caller)
+        else await this.#packageRole(did, caller);
+    if (role == null) {
+      throw new AppViewError(403, 'Forbidden', `${caller} has no role in ${did}`);
+    }
+  }
+
+  /** The change held to `target`, unless there is none or it has expired. */
+  async #heldChange(target: ChangeTarget, nowMicros: i64): Future<PendingChange | null> {
+    let did = target.account.did;
+    let held = await this.#store.heldChange(did, target.collection, target.rkey);
+    if (held == null) {
+      return null;
+    }
+    if (nowMicros - held.heldAt > PENDING_MICROS) {
+      await this.#store.dropChange(did, target.collection, target.rkey, held.cid);
+      return null;
+    }
+    return held;
+  }
+
+  /**
+   * Whether the record `target` names, as it is now, allows `change`, which
+   * would replace it: whether enough of the roles it gives have attested
+   * the new record at `uri`.
+   *
+   * - An organization's members record: its `ownerThreshold` of owners.
+   * - A team: its `threshold` of the team's maintainers, or the
+   *   organization's `adminThreshold` of admins and owners; a new team, the
+   *   admins alone.
+   * - A package's maintainers record: its `ownerThreshold` of owners, each
+   *   listed by DID, by commitment, or as a member of a team in the owner
+   *   role.
+   *
+   * Only people count: automation chooses no one's roles.
+   */
+  async #changeTally(target: ChangeTarget, change: PendingChange, uri: String): Future<ChangeTally> {
+    let tally = new ChangeTally();
+    let did = target.account.did;
+    let rkey = attestationKey(uri, change.cid);
+    if (target.collection == MAINTAINERS_TYPE) {
+      let current = await this.#current(did, MAINTAINERS_TYPE, 'self');
+      if (current != null) {
+        let record = Maintainers.fromValue(current.value);
+        let owners = new GrowableArray<String>();
+        let entries = await this.#committed(did, await this.#commitmentsOf(did, MAINTAINERS_TYPE, 'self'));
+        for (let maintainer in record.maintainers) {
+          if (maintainer.role != OWNER || maintainer.automation) {
+            continue;
+          }
+          if (maintainer.did != null) {
+            owners.push(maintainer.did as String);
+          } else if (maintainer.commitment != null) {
+            for (let entry in entries) {
+              if (entry.commitment().equals(maintainer.commitment as Cid) && !entry.automation) {
+                owners.push(entry.did);
+              }
+            }
+          } else {
+            let org = maintainer.org as String;
+            for (let entry in await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE,
+                maintainer.team as String))) {
+              if (!entry.automation) {
+                owners.push(entry.did);
+              }
+            }
+          }
+        }
+        tally.requirements.push(await this.#requirement(OWNER, record.ownerThreshold, owners, uri, change.cid, rkey));
+      }
+    } else {
+      let members = await this.#current(did, MEMBERS_TYPE, 'self');
+      let record = if (members != null) Members.fromValue(members.value) else null;
+      // TODO(#713): the annotation is only for the compiler.
+      let entries: Array<MemberEntry> = if (record != null) await this.#committed(did, record.members) else [];
+      // The members record's owners decide its members and the scope's policy.
+      if ((target.collection == MEMBERS_TYPE || target.collection == POLICY_TYPE) && record != null) {
+        tally.requirements.push(await this.#requirement(OWNER, record.ownerThreshold,
+            await this.#peopleIn(entries, (role) => role == OWNER), uri, change.cid, rkey));
+      }
+      if (target.collection == TEAM_TYPE) {
+        let team = await this.#current(did, TEAM_TYPE, target.rkey);
+        if (team != null) {
+          let current = Team.fromValue(team.value);
+          tally.requirements.push(await this.#requirement(MAINTAINER, current.threshold,
+              await this.#peopleIn(await this.#committed(did, current.members), (role) => role == MAINTAINER),
+              uri, change.cid, rkey));
+        }
+        if (record != null) {
+          tally.requirements.push(await this.#requirement(ADMIN, record.adminThreshold,
+              await this.#peopleIn(entries, (role) => isAdmin(role)), uri, change.cid, rkey));
+        }
+      }
+    }
+    for (let requirement in tally.requirements) {
+      if (requirement.met) {
+        tally.enough = true;
+      }
+    }
+    return tally;
+  }
+
+  /** The DIDs of `entries` in a role `matches` takes, but for automation. */
+  async #peopleIn(entries: Array<MemberEntry>, matches: (role: String) => boolean): Future<Array<String>> {
+    let people = new GrowableArray<String>();
+    for (let entry in entries) {
+      if (!entry.automation && matches(entry.role)) {
+        people.push(entry.did);
+      }
+    }
+    return people;
+  }
+
+  /**
+   * Which of `candidates`, in `role`, have attested the record at `uri`
+   * whose CID is `cid`, and whether `threshold` of them have. An
+   * automation account this App View holds is never counted.
+   */
+  async #requirement(role: String, threshold: i64, candidates: Array<String>, uri: String, cid: Cid, rkey: String)
+      : Future<Requirement> {
+    let requirement = new Requirement(role, threshold);
+    let seen = new HashSet<String>();
+    let dids = new GrowableArray<String>();
+    for (let did in candidates) {
+      if (!seen.has(did)) {
+        seen.add(did);
+        let held = await this.#store.account(did);
+        if (held == null || held.kind != AccountKind.Automation) {
+          dids.push(did);
+        }
+      }
+    }
+    // Every repository is asked at once.
+    let checks = new GrowableArray<Future<boolean>>();
+    for (let did in dids) {
+      checks.push(this.#attested(did, uri, cid, rkey));
+    }
+    for (var i = 0; i < dids.length; i += 1) {
+      if (await checks[i]) {
+        requirement.approvedBy.push(dids[i]);
+      }
+    }
+    requirement.met = (requirement.approvedBy.length as i64) >= threshold;
+    return requirement;
+  }
+
+  /**
+   * `getEntries`: the entries behind `account`'s commitments that `caller`
+   * may see. For an organization, those of its members record, or of its
+   * team `team`; for a package, those of its maintainers record. Its owners
+   * and admins see every entry of an organization, its teams and its
+   * packages; a team's maintainers, the team's; a package's owners, the
+   * package's; and everyone else, their own.
+   */
+  async getEntries(caller: String, account: String, team: String | null): Future<Array<MemberEntry>> {
+    let held = await this.#store.account(account);
+    if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
+      throw new AppViewError(400, 'InvalidRequest', `${account} is not an organization or package on this App View`);
+    }
+    var commitments: Array<Cid> = [];
+    if (held.kind == AccountKind.Organization) {
+      if (team == null) {
+        commitments = await this.#commitmentsOf(account, MEMBERS_TYPE, 'self');
+      } else {
+        let name = team;
+        if ((await this.#current(account, TEAM_TYPE, name)) == null) {
+          throw new AppViewError(400, 'TeamNotFound', `${account} has no team ${name}`);
+        }
+        commitments = await this.#commitmentsOf(account, TEAM_TYPE, name);
+      }
+    } else {
+      commitments = await this.#commitmentsOf(account, MAINTAINERS_TYPE, 'self');
+    }
+    let seesAll = await this.#seesAll(caller, held, team);
+    let visible = new GrowableArray<MemberEntry>();
+    for (let entry in await this.#committed(account, commitments)) {
+      if (seesAll || entry.did == caller) {
+        visible.push(entry);
+      }
+    }
+    return visible;
+  }
+
+  /**
+   * Whether `caller` sees every entry behind the commitments of `account`,
+   * an organization or a package: of the members record, or of the team
+   * `team`, or of the maintainers record. An organization's owners and
+   * admins do, and its team's maintainers for the team; a package's owners,
+   * and the admins of its scope's organization; and the App View's admins, as
+   * its operator could read the entries anyway.
+   */
+  async #seesAll(caller: String, account: AppViewAccount, team: String | null): Future<boolean> {
+    if (this.isAppViewAdmin(caller)) {
+      return true;
+    }
+    let did = account.did;
+    if (account.kind == AccountKind.Organization) {
+      if (isAdmin(await this.#orgRole(did, caller))) {
+        return true;
+      }
+      return team != null && (await this.#teamRole(did, team, caller)) == MAINTAINER;
+    }
+    if ((await this.#packageRole(did, caller)) == OWNER) {
+      return true;
+    }
+    let org = await this.#scopeOrganization(account);
+    return org != null && isAdmin(await this.#orgRole(org, caller));
+  }
+
+  /** The account `did`, which must be of `kind`, described as `what` when it is not. */
+  async #account(did: String, kind: AccountKind, what: String): Future<AppViewAccount> {
+    let account = await this.#store.account(did);
+    if (account == null || account.kind != kind) {
+      throw new AppViewError(400, 'InvalidRequest', `${did} is not ${what} on this App View`);
+    }
+    return account;
+  }
+
+  /** The record at `collection/rkey` in `did`'s repository as it is now, or null. */
+  async #current(did: String, collection: String, rkey: String): Future<HeldRecord | null> {
+    return await this.#pds.getRecord(did, collection, rkey);
+  }
+
+  /** The commitments the members or team record at `collection/rkey` lists now; none without one. */
+  async #commitmentsOf(did: String, collection: String, rkey: String): Future<Array<Cid>> {
+    let record = await this.#current(did, collection, rkey);
+    if (record == null) {
+      return [];
+    }
+    return commitmentsIn(collection, record.value);
+  }
+
+  /** The entries `account` keeps that `commitments` commit to. */
+  async #committed(account: String, commitments: Array<Cid>): Future<Array<MemberEntry>> {
+    let wanted = new HashSet<String>();
+    for (let commitment in commitments) {
+      wanted.add(commitment.toString());
+    }
+    let found = new GrowableArray<MemberEntry>();
+    let seen = new HashSet<String>();
+    for (let entry in await this.#store.entries(account)) {
+      let key = entry.commitment().toString();
+      if (wanted.has(key) && !seen.has(key)) {
+        seen.add(key);
+        found.push(entry);
+      }
+    }
+    return found;
+  }
+
+  /** `caller`'s role in `org`'s members record as it is now, or null. */
+  async #orgRole(org: String, caller: String): Future<String | null> {
+    return bestRole(await this.#committed(org, await this.#commitmentsOf(org, MEMBERS_TYPE, 'self')), caller);
+  }
+
+  /** `caller`'s role in `org`'s team `team` as it is now, or null. */
+  async #teamRole(org: String, team: String, caller: String): Future<String | null> {
+    return bestRole(await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE, team)), caller);
+  }
+
+  /**
+   * `caller`'s role in `pkg`'s maintainers record as it is now, `owner` or
+   * `publisher`, or null: listed by DID, by a commitment whose entry names
+   * them, or as a member of a team the record names, in the team's role.
+   */
+  async #packageRole(pkg: String, caller: String): Future<String | null> {
+    let record = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
+    if (record == null) {
+      return null;
+    }
+    let maintainers = Maintainers.fromValue(record.value);
+    let mine = new HashSet<String>();
+    for (let entry in await this.#store.entries(pkg)) {
+      if (entry.did == caller) {
+        mine.add(entry.commitment().toString());
+      }
+    }
+    var found: String | null = null;
+    for (let maintainer in maintainers.maintainers) {
+      let commitment = maintainer.commitment;
+      var matches = (maintainer.did != null && maintainer.did as String == caller) ||
+          (commitment != null && mine.has(commitment.toString()));
+      if (!matches && maintainer.org != null) {
+        matches = (await this.#teamRole(maintainer.org as String, maintainer.team as String, caller)) != null;
+      }
+      if (matches && (found == null || maintainer.role == OWNER)) {
+        found = maintainer.role;
+      }
+    }
+    return found;
+  }
+
+  /**
+   * The entries behind `commitments`: those in `entryValues`, which must
+   * each be behind one, and those `account` keeps from before. Every
+   * commitment must have one.
+   */
+  async #entriesBehind(account: String, commitments: Array<Cid>, entryValues: Array<Value>): Future<EntriesBehind> {
+    let wanted = new HashSet<String>();
+    for (let commitment in commitments) {
+      wanted.add(commitment.toString());
+    }
+    let result = new EntriesBehind();
+    for (let value in entryValues) {
+      let entry = readRecord(() => MemberEntry.fromValue(value));
+      let key = entry.commitment().toString();
+      if (!wanted.has(key)) {
+        throw new AppViewError(400, 'InvalidRequest', `the entry for ${entry.did} is not behind any commitment in the record`);
+      }
+      if (!result.byCommitment.has(key)) {
+        result.byCommitment[key] = entry;
+        result.fresh.push(entry);
+      }
+    }
+    for (let entry in await this.#store.entries(account)) {
+      let key = entry.commitment().toString();
+      if (wanted.has(key) && !result.byCommitment.has(key)) {
+        result.byCommitment[key] = entry;
+      }
+    }
+    for (let commitment in commitments) {
+      let key = commitment.toString();
+      if (!result.byCommitment.has(key)) {
+        throw new AppViewError(400, 'InvalidRequest', `no entry is behind the commitment ${key}`);
+      }
+      result.all.push(result.byCommitment[key]);
+    }
+    return result;
+  }
+
+  /**
+   * Writes `record` at `collection/rkey`: creates it, or replaces it while
+   * its CID is `swapRecord`, when one is given.
+   */
+  async #put(account: AppViewAccount, collection: String, rkey: String, record: MapValue, swapRecord: String | null)
+      : Future<Created> {
+    let swap = swapCid(swapRecord);
+    let exists = (await this.#current(account.did, collection, rkey)) != null;
+    if (!exists && swap != null) {
+      throw new AppViewError(400, 'InvalidSwap', `${collection}/${rkey} does not exist`);
+    }
+    await this.#commit(account, [
+        if (exists) new UpdateRecord(collection, rkey, record, swap) as Write else new CreateRecord(collection, rkey, record) as Write]);
+    return new Created(account.did, account.handle, `at://${account.did}/${collection}/${rkey}`, cidForValue(record));
+  }
+}
+
+/**
+ * Throws unless `maintainers` could meet the release thresholds `policy`,
+ * the policy of `org`'s scope, sets: as many maintainers as the larger
+ * threshold, and as many people as the larger `humans`. A team could have
+ * any number.
+ */
+function meetsPolicy(maintainers: Maintainers, policy: Policy, org: String): void {
+  var people = 0;
+  var teams = false;
+  for (let maintainer in maintainers.maintainers) {
+    if (maintainer.org != null) {
+      teams = true;
+    } else if (!maintainer.automation) {
+      people += 1;
+    }
+  }
+  if (teams) {
+    return;
+  }
+  if ((maintainers.maintainers.length as i64) < policy.minimumThreshold || (people as i64) < policy.minimumHumans) {
+    throw new AppViewError(400, 'InvalidRequest',
+        `the policy of ${org}'s scope asks ${policy.minimumThreshold} maintainers to approve each release, ${policy.minimumHumans} of them people, and ${maintainers.maintainers.length} maintainers, ${people} of them people, cannot`);
+  }
+}
+
+/** The commitments the members, team or maintainers record `value`, of `collection`, lists. */
+function commitmentsIn(collection: String, value: Value): Array<Cid> {
+  if (collection == POLICY_TYPE) {
+    return [];
+  }
+  if (collection == MEMBERS_TYPE) {
+    return Members.fromValue(value).members;
+  }
+  if (collection == TEAM_TYPE) {
+    return Team.fromValue(value).members;
+  }
+  let commitments = new GrowableArray<Cid>();
+  for (let maintainer in Maintainers.fromValue(value).maintainers) {
+    if (maintainer.commitment != null) {
+      commitments.push(maintainer.commitment as Cid);
+    }
+  }
+  return commitments;
+}
+
+/** A members, team or maintainers record a change is to, and its account. */
+final class ChangeTarget {
+  account: AppViewAccount;
+  collection: String;
+  rkey: String;
+
+  new(this.account, this.collection, this.rkey);
+}
+
+/**
+ * One way a change can be allowed: `threshold` attestations from those in
+ * `role` (`owner`, `admin` or `maintainer`) in the record it replaces.
+ */
+export final class Requirement {
+  role: String;
+  threshold: i64;
+  /** Who in the role has attested the new record. */
+  approvedBy = new GrowableArray<String>();
+  var met = false;
+
+  new(this.role, this.threshold);
+}
+
+/** A change's attestations, against each way the record it replaces allows it. */
+export final class ChangeTally {
+  /** Any one of them met is enough. */
+  requirements = new GrowableArray<Requirement>();
+  var enough = false;
+}
+
+/** What `completeChange` did: whether it wrote the record, and its tally. */
+export final class ChangeCompletion {
+  uri: String;
+  cid: Cid;
+  written: boolean;
+  tally: ChangeTally;
+
+  new(this.uri, this.cid, this.written, this.tally);
+}
+
+/** A change waiting for approval, as `getPendingChanges` gives it. */
+export final class WaitingChange {
+  change: PendingChange;
+  uri: String;
+  tally: ChangeTally;
+  /** The entries behind the new record's commitments that the caller may see. */
+  entries = new GrowableArray<MemberEntry>();
+
+  new(this.change, this.uri, this.tally);
+}
+
+/**
+ * An account the App View made: its DID, its handle, what it is for, and the
+ * scope and name its handle is made of.
+ */
+export final class AppViewAccount {
+  did: String;
+  handle: String;
+  kind: AccountKind;
+  scope: String;
+  /** The scope, for an organization; else the name in the scope. */
+  name: String;
+
+  new(this.did, this.handle, this.kind, this.scope, this.name);
+}
+
+/** One account `getMemberships` found a role in: an organization, a team of one, or a package. */
+export final class Membership {
+  /** The organization's or the package's DID; a team's organization's. */
+  did: String;
+  handle: String;
+  scope: String;
+  /** The scope, the team's name, or the package's name. */
+  name: String;
+  role: String;
+
+  new(this.did, this.handle, this.scope, this.name, this.role);
+}
+
+/** Sorts `memberships` by scope, then name, in place. */
+function sortByName(memberships: GrowableArray<Membership>): void {
+  for (var i = 1; i < memberships.length; i += 1) {
+    let membership = memberships[i];
+    let key = `${membership.scope} ${membership.name}`;
+    var j = i;
+    while (j > 0 && compareKeys(`${memberships[j - 1].scope} ${memberships[j - 1].name}`, key) > 0) {
+      memberships[j] = memberships[j - 1];
+      j -= 1;
+    }
+    memberships[j] = membership;
+  }
+}
+
+/** What `getMemberships` finds. */
+export final class Memberships {
+  orgs = new GrowableArray<Membership>();
+  teams = new GrowableArray<Membership>();
+  packages = new GrowableArray<Membership>();
+}
+
+/** A scope, as `listScopes` describes it. */
+export final class ScopeSummary {
+  name: String;
+  did: String;
+  handle: String;
+  packages: i32;
+
+  new(this.name, this.did, this.handle, this.packages);
+}
+
+/** A package, as `listPackages` describes it. */
+export final class PackageSummary {
+  did: String;
+  handle: String;
+  scope: String;
+  name: String;
+  var description: String | null = null;
+  var license: String | null = null;
+  /** The highest version that is not retracted, or null. */
+  var latest: String | null = null;
+  /** How many releases it has, retracted ones included. */
+  var releases: i32 = 0;
+
+  new(this.did, this.handle, this.scope, this.name);
+
+  /** What `listPackages` orders by: the scope, then the name. */
+  sortKey(): String {
+    return `${this.scope} ${this.name}`;
+  }
+}
+
+/** A package's summary, and the revision of the commit it was made from. */
+final class KeptSummary {
+  summary: PackageSummary;
+  rev: String;
+
+  new(this.summary, this.rev);
+}
+
+/** A scope, as `getScope` reads it. */
+export final class ScopeDetail {
+  name: String;
+  /** Its organization's DID and handle. */
+  did: String;
+  handle: String;
+  /** How the organization presents its scope, when it says. */
+  var profile: ScopeProfile | null = null;
+  /** The commitments of the organization's members record. */
+  var members: FixedArray<Cid> = [];
+  /** By name, as the records list them. */
+  teams = new GrowableArray<NamedTeam>();
+
+  new(this.name, this.did, this.handle);
+}
+
+/** A team record, and the team's name, its record key. */
+export final class NamedTeam {
+  name: String;
+  team: Team;
+
+  new(this.name, this.team);
+}
+
+/** A maintainer who could attest a release, and whether they are automation. */
+final class Attester {
+  did: String;
+  automation: boolean;
+
+  new(this.did, this.automation);
+}
+
+/** A release's attestations, against what its maintainers record asks for. */
+export final class Tally {
+  /** The maintainers who attested it, in the record's order. */
+  approvedBy = new GrowableArray<String>();
+  /** How many of them are people. */
+  var people = 0;
+  var threshold: i64 = 1 as i64;
+  var humans: i64 = 0 as i64;
+  /** Whether they are enough. */
+  var enough = false;
+}
+
+/** What `completeRelease` did: whether it wrote the release, and its tally. */
+export final class Completion {
+  uri: String;
+  cid: Cid;
+  published: boolean;
+  tally: Tally;
+
+  new(this.uri, this.cid, this.published, this.tally);
+}
+
+/** A release waiting for approval, as `getPendingReleases` gives it. */
+export final class Waiting {
+  release: PendingRelease;
+  uri: String;
+  tally: Tally;
+
+  new(this.release, this.uri, this.tally);
+}
+
+/** A package, as `getPackage` reads it. */
+export final class PackageDetail {
+  did: String;
+  handle: String;
+  /** The scope it is in. */
+  scope: String;
+  var profile: Profile | null = null;
+  /** Newest first. */
+  releases = new GrowableArray<Release>();
+  /** Each release record's CID, by version: what an attestation of it names. */
+  releaseCids = new HashMap<String, Cid>();
+  /** By version. */
+  retractions = new HashMap<String, Retraction>();
+  var maintainers: Maintainers | null = null;
+
+  new(this.did, this.handle, this.scope);
+}
+
+/** An automation account `createAutomationAccount` made, with its app password. */
+export final class Automation {
+  did: String;
+  handle: String;
+  appPassword: String;
+
+  new(this.did, this.handle, this.appPassword);
+}
+
+/** A record as it is now, and its CID. */
+/** The entries behind a record's commitments, and which of them are new. */
+final class EntriesBehind {
+  /** By commitment, as a string. */
+  byCommitment = new HashMap<String, MemberEntry>();
+  /** In the record's order. */
+  all = new GrowableArray<MemberEntry>();
+  /** Those given with the call, which the App View keeps from now on. */
+  fresh = new GrowableArray<MemberEntry>();
+}
+
+/** The highest of the roles `entries` give `caller`: `owner`, then `admin` or `maintainer`, then any. */
+function bestRole(entries: Array<MemberEntry>, caller: String): String | null {
+  var found: String | null = null;
+  for (let entry in entries) {
+    if (entry.did == caller) {
+      if (found == null || entry.role == OWNER || (found != OWNER && (entry.role == ADMIN || entry.role == MAINTAINER))) {
+        found = entry.role;
+      }
+    }
+  }
+  return found;
+}
+
+/** Whether `role` is an organization's owner or admin. */
+function isAdmin(role: String | null): boolean {
+  return role == OWNER || role == ADMIN;
+}
+
+/** `swapRecord` as a CID, or null; one that is not a CID is refused. */
+function swapCid(swapRecord: String | null): Cid | null {
+  if (swapRecord == null) {
+    return null;
+  }
+  try {
+    return Cid.parse(swapRecord);
+  } catch (e) {
+    throw new AppViewError(400, 'InvalidRequest', `swapRecord '${swapRecord}' is not a CID`);
+  }
+}
+
+function asMap(value: Value): MapValue {
+  if (!(value is MapValue)) {
+    throw new AppViewError(400, 'InvalidRequest', 'a record is not an object');
+  }
+  return value;
+}
+
+/** Reads a record with `read`, answering `InvalidRequest` when it is not one. */
+function readRecord<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (e) {
+    if (e is RecordError) {
+      throw new AppViewError(400, 'InvalidRequest', e.message);
+    }
+    throw e;
+  }
+}
+
+function blobsOf(blob: BlobRef | null, parts: FixedArray<BlobRef> | null, wit: BlobRef | null)
+    : GrowableArray<BlobRef> {
+  let all = new GrowableArray<BlobRef>();
+  if (blob != null) {
+    all.push(blob);
+  }
+  if (parts != null) {
+    for (let part in parts) {
+      all.push(part);
+    }
+  }
+  if (wit != null) {
+    all.push(wit);
+  }
+  return all;
+}

@@ -18,7 +18,7 @@ import {
 let FIXTURES = 'packages/atproto/zena/test/fixtures/service-auth/tokens.json';
 let ALICE = 'did:plc:alicealicealicealicealic';
 let HOST = 'did:web:pkg.zena-lang.dev';
-let PUBLISH = 'dev.zena-lang.host.publish';
+let PUBLISH = 'dev.zena-lang.registry.publish';
 let NOW = 1792800000 as i64;
 
 /** The P-256 key from RFC 6979, appendix A.2.5. */
@@ -148,8 +148,8 @@ export let tests = suite('atproto:service-auth', () => {
     let keys = new Keys(publicKeyFor(KeyType.P256, P256_KEY));
     let token = createServiceAuthToken(claims(), KeyType.P256, P256_KEY);
     let changed = withPayload(token,
-        `{"iss":"${ALICE}","aud":"${HOST}","exp":${NOW + 60},"lxm":"dev.zena-lang.host.retract"}`);
-    equal(failure(changed, keys, 'dev.zena-lang.host.retract'),
+        `{"iss":"${ALICE}","aud":"${HOST}","exp":${NOW + 60},"lxm":"dev.zena-lang.registry.retract"}`);
+    equal(failure(changed, keys, 'dev.zena-lang.registry.retract'),
         "the signature does not verify with did:plc:alicealicealicealicealic's signing key");
   });
 
@@ -158,13 +158,13 @@ export let tests = suite('atproto:service-auth', () => {
     let sign = (c: ServiceAuthClaims) => createServiceAuthToken(c, KeyType.P256, P256_KEY);
     let token = sign(claims());
     isTrue(failure(token, keys, PUBLISH, 'did:web:other.example').contains('not did:web:other.example'));
-    isTrue(failure(token, keys, 'dev.zena-lang.host.retract').contains('not for dev.zena-lang.host.retract'));
+    isTrue(failure(token, keys, 'dev.zena-lang.registry.retract').contains('not for dev.zena-lang.registry.retract'));
     // A token for any method passes only where no method is required.
     let anyMethod = sign(claims(null));
     isTrue(failure(anyMethod, keys).contains('not for'));
     equal(failure(anyMethod, keys, null), '');
     // An audience with a service fragment.
-    let fragment = sign(new ServiceAuthClaims(ALICE, `${HOST}#zena_package_host`, NOW + 60, NOW,
+    let fragment = sign(new ServiceAuthClaims(ALICE, `${HOST}#zena_registry`, NOW + 60, NOW,
         PUBLISH, 'n'));
     equal(failure(fragment, keys), '');
     isTrue(failure(sign(claims(PUBLISH, NOW)), keys).contains('expired'));

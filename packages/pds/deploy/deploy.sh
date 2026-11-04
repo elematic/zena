@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Deploys the image `deploy:image` pushed to one environment of the package
-# host (env.sh), configured as pds:service reads it, and checks that it
+# Deploys the image `deploy:image` pushed to one environment of the App
+# View (env.sh), configured as pds:service reads it, and checks that it
 # answers.
 #
 #   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy -w @zena-lang/pds
@@ -19,7 +19,7 @@ ENV_VARS+=",PDS_FIRESTORE_DATABASE=${DATABASE}"
 ENV_VARS+=",PDS_KEY_ENCRYPTION_KMS_KEY=${SIGNING_KEYS_KMS_NAME}"
 ENV_VARS+=",PDS_TENANT=${TENANT}"
 ENV_VARS+=",PDS_BLOB_BUCKET=${BUCKET}"
-ENV_VARS+=",PDS_HOST_DOMAIN=${DOMAIN}"
+ENV_VARS+=",PDS_APP_VIEW_DOMAIN=${DOMAIN}"
 ENV_VARS+=",PDS_PUBLIC_URL=https://${PDS_DOMAIN}"
 ENV_VARS+=",PDS_SITE_URL=https://${DOMAIN}"
 ENV_VARS+=",PDS_HANDLE_RECORDS=cloud-dns"
@@ -49,7 +49,7 @@ echo "service: $SERVICE"
 echo "image:   $IMAGE"
 echo
 
-# Public: the package host's methods check their own callers, with
+# Public: the App View's methods check their own callers, with
 # service-auth tokens, and its reads are public by design.
 gcloud run deploy "$SERVICE" \
   --project "$PROJECT" \
