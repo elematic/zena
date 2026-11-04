@@ -4,15 +4,16 @@
  * no email address, password or invite code, and which take writes only
  * from that host.
  *
- * A host mints the account's `did:plc` with a genesis operation that it
- * signs with its rotation key, naming a temporary signing key it holds and
- * this PDS. It asks for the account with `com.atproto.server.createAccount`
- * and a service-auth token from the DID, signed with that temporary key,
- * as atproto's account migration does. `admit` checks that the genesis
- * operation was signed by a trusted host's rotation key, and that the DID
- * document names this PDS. The PDS then gives the account a signing key of
- * its own, which the host names in the DID document after asking
- * `com.atproto.identity.getRecommendedDidCredentials` for it.
+ * A host first asks for a signing key with
+ * `com.atproto.server.reserveSigningKey`, which the PDS makes and keeps
+ * for that host (`reserver`). The host mints the account's `did:plc` with
+ * a genesis operation naming that key and this PDS, signed with its
+ * rotation key, which is the DID's only PLC operation. It then asks for
+ * the account with `com.atproto.server.createAccount` and a service-auth
+ * token of its own. `admit` checks that the genesis operation was signed
+ * by the rotation key of the trusted host the token is from, and that the
+ * DID document names this PDS; the PDS makes the account with the key the
+ * document names, if that host reserved it (`Pds.createManagedAccount`).
  *
  * Every write to the account carries a service-auth token from its host,
  * for the write's method and addressed to this PDS (`fromHost`). Whoever
@@ -21,7 +22,7 @@
  */
 
 import {Future} from 'zena:async';
-import {SERVER_CREATE_ACCOUNT} from 'atproto:methods';
+import {SERVER_CREATE_ACCOUNT, SERVER_RESERVE_SIGNING_KEY} from 'atproto:methods';
 import {PublicKey, formatDidKey} from 'atproto:didkey';
 import {PlcError, PlcOperation, didOfGenesis} from 'atproto:plc';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
@@ -76,6 +77,15 @@ export final class TrustedHost {
   new(this.did, this.rotationKeys);
 }
 
+/** What `ManagedAccounts.admit` admits: the host, and the signing key the DID document names. */
+export final class Admission {
+  host: TrustedHost;
+  /** A `did:key`, which the PDS makes the account with if the host reserved it. */
+  signingKey: String;
+
+  new(this.host, this.signingKey);
+}
+
 /**
  * The operations a PLC directory has recorded for a DID, oldest first.
  * Throws `PlcError`, or answers none, when it has no log for the DID.
@@ -97,16 +107,25 @@ export final class ManagedAccounts {
       : serviceDid = serviceDid, endpoint = endpoint, #hosts = hosts, #log = log, #keys = keys;
 
   /**
-   * The trusted host that may have an account for `did`: the one whose
-   * rotation key signed the DID's genesis operation, when the token in
-   * `authorization` is the DID's own and its DID document names this PDS.
-   * Throws `SessionError`.
+   * The trusted host that the token in `authorization`, for
+   * `com.atproto.server.reserveSigningKey`, is from. Throws `SessionError`.
    */
-  async admit(authorization: String | null, did: String, nowSeconds: i64): Future<TrustedHost> {
-    let caller = await this.caller(authorization, SERVER_CREATE_ACCOUNT, nowSeconds);
-    if (caller != did) {
-      throw new SessionError(401, 'InvalidToken', `the token is from ${caller}, not ${did}`);
+  async reserver(authorization: String | null, nowSeconds: i64): Future<TrustedHost> {
+    let caller = await this.caller(authorization, SERVER_RESERVE_SIGNING_KEY, nowSeconds);
+    let host = this.#trusted(caller);
+    if (host == null) {
+      throw new SessionError(403, 'Forbidden', `${caller} is not a package host this PDS trusts`);
     }
+    return host;
+  }
+
+  /**
+   * Whether the host that the token in `authorization` is from may have an
+   * account for `did`: when its rotation key signed the DID's genesis
+   * operation, and the DID document names this PDS. Throws `SessionError`.
+   */
+  async admit(authorization: String | null, did: String, nowSeconds: i64): Future<Admission> {
+    let caller = await this.caller(authorization, SERVER_CREATE_ACCOUNT, nowSeconds);
     var log: Array<PlcOperation> = [];
     try {
       log = await this.#log(did);
@@ -122,11 +141,18 @@ export final class ManagedAccounts {
     if (host == null) {
       throw new SessionError(400, 'IncompatibleDidDoc', `${did} was not made by a package host this PDS trusts`);
     }
-    let pds = pdsOf(log[log.length - 1]);
+    if (host.did != caller) {
+      throw new SessionError(403, 'Forbidden', `${did} was made by ${host.did}, not ${caller}`);
+    }
+    let latest = log[log.length - 1];
+    let pds = pdsOf(latest);
     if (pds != this.endpoint) {
       throw new SessionError(400, 'IncompatibleDidDoc', `${did}'s DID document names ${pds ?? 'no PDS'}, not ${this.endpoint}`);
     }
-    return host;
+    if (let (true, signingKey) = latest.verificationMethods.get('atproto')) {
+      return new Admission(host, signingKey);
+    }
+    throw new SessionError(400, 'IncompatibleDidDoc', `${did}'s DID document names no signing key`);
   }
 
   /**
@@ -160,6 +186,16 @@ export final class ManagedAccounts {
       }
       throw e;
     }
+  }
+
+  /** The trusted host whose DID is `did`, or null. */
+  #trusted(did: String): TrustedHost | null {
+    for (let host in this.#hosts) {
+      if (host.did == did) {
+        return host;
+      }
+    }
+    return null;
   }
 
   /** The trusted host whose rotation key, among `genesis`'s own, signed it, or null. */

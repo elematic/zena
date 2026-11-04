@@ -13,13 +13,12 @@
 import {Future} from 'zena:async';
 import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {randomBytes} from 'zena:random';
 import {BlobRef, Value} from 'atproto:data';
-import {KeyType, PublicKey} from 'atproto:didkey';
+import {PublicKey, formatDidKey} from 'atproto:didkey';
 import {Pds} from './pds.zena';
 import {RepositoryError, Write} from './repository.zena';
-import {Account, AccountKind, Head, SigningKey, StoredBlob} from './storage.zena';
-import {nowMicros} from './xrpc/common.zena';
+import {Account, Head, StoredBlob} from './storage.zena';
+import {nowMicros, nowSeconds} from './xrpc/common.zena';
 
 /** A record in a repository: its key, its value and its CID. */
 export final class HeldRecord {
@@ -33,14 +32,19 @@ export final class HeldRecord {
 /** The PDS that keeps the package host's accounts. */
 export interface PdsClient {
   /**
-   * `com.atproto.server.createAccount`: a managed account for `did`, named
-   * `handle`, which only the host writes. `temporary` is the signing key
-   * the DID's genesis operation names, which signs the host's token for
-   * the call. Returns the signing key the PDS made for the account, which
-   * the host names in the DID document next
-   * (`com.atproto.identity.getRecommendedDidCredentials`).
+   * `com.atproto.server.reserveSigningKey`: a signing key the PDS makes and
+   * keeps for an account the host is about to create, which the host names
+   * in the DID's genesis operation.
    */
-  createAccount(did: String, handle: String, temporary: SigningKey): Future<PublicKey>;
+  reserveSigningKey(): Future<PublicKey>;
+  /**
+   * `com.atproto.server.createAccount`: a managed account for `did`, named
+   * `handle`, which only the host writes, with `signingKey`, the key its
+   * DID document names, which the host reserved. A PDS over the network
+   * reads the key from the DID document. Throws `RepositoryError` when the
+   * PDS refuses.
+   */
+  createAccount(did: String, handle: String, signingKey: PublicKey): Future<void>;
   /**
    * `com.atproto.repo.applyWrites`: `writes` to `did`'s repository, in one
    * commit, which it returns. Throws `RepositoryError` for writes the PDS
@@ -70,10 +74,16 @@ export final class InProcessPds implements PdsClient {
 
   new(pds: Pds, host: String) : #pds = pds, #host = host;
 
-  async createAccount(did: String, handle: String, temporary: SigningKey): Future<PublicKey> {
-    let key = new SigningKey(KeyType.Secp256k1, randomBytes(32));
-    await this.#pds.createAccount(did, handle, key, nowMicros(), AccountKind.Person, this.#host);
-    return key.publicKey();
+  async reserveSigningKey(): Future<PublicKey> {
+    return await this.#pds.reserveSigningKey(this.#host, nowSeconds());
+  }
+
+  async createAccount(did: String, handle: String, signingKey: PublicKey): Future<void> {
+    let account = await this.#pds.createManagedAccount(did, handle, formatDidKey(signingKey), this.#host, nowMicros(),
+        nowSeconds());
+    if (account == null) {
+      throw new RepositoryError('InvalidRequest', `${formatDidKey(signingKey)} is not a key the host reserved`);
+    }
   }
 
   async applyWrites(did: String, writes: Array<Write>): Future<Head> {

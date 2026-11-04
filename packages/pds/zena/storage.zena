@@ -134,6 +134,21 @@ export final class Account {
   }
 }
 
+/**
+ * A signing key the PDS made for an account an App View is about to
+ * create (`com.atproto.server.reserveSigningKey`), held until the account
+ * takes it or the reservation expires.
+ */
+export final class ReservedKey {
+  key: SigningKey;
+  /** The DID of the App View it was reserved for, which alone may create an account with it. */
+  reservedFor: String;
+  /** When the reservation ends, in seconds since the Unix epoch. */
+  expiresAt: i64;
+
+  new(this.key, this.reservedFor, this.expiresAt);
+}
+
 /** A record in a repository's index: where it is, and its CID. */
 export final class RecordEntry {
   collection: String;
@@ -208,6 +223,15 @@ export interface Storage {
   putAccount(account: Account): Future<void>;
   /** The store of the account `did`. */
   store(did: String): AccountStore;
+  /** Holds `reserved` under its public key, `didKey`, as a `did:key`. */
+  reserveKey(didKey: String, reserved: ReservedKey): Future<void>;
+  /**
+   * The key reserved under `didKey` for `reservedFor`, which is no longer
+   * held after this; or null when none is, it was reserved for someone
+   * else, whose reservation stays, or its reservation ended before
+   * `nowSeconds`. Two calls never take the same key.
+   */
+  takeReservedKey(didKey: String, reservedFor: String, nowSeconds: i64): Future<ReservedKey | null>;
 }
 
 /** An account's store in memory. */
@@ -306,6 +330,7 @@ export final class MemoryAccountStore implements AccountStore {
 export final class MemoryStorage implements Storage {
   #accounts = new HashMap<String, Account>();
   #stores = new HashMap<String, MemoryAccountStore>();
+  #reserved = new HashMap<String, ReservedKey>();
 
   async getAccount(did: String): Future<Account | null> {
     if (let (true, account) = this.#accounts.get(did)) {
@@ -335,6 +360,21 @@ export final class MemoryStorage implements Storage {
     let store = new MemoryAccountStore();
     this.#stores[did] = store;
     return store;
+  }
+
+  async reserveKey(didKey: String, reserved: ReservedKey): Future<void> {
+    this.#reserved[didKey] = reserved;
+  }
+
+  async takeReservedKey(didKey: String, reservedFor: String, nowSeconds: i64): Future<ReservedKey | null> {
+    if (let (true, reserved) = this.#reserved.get(didKey)) {
+      if (reserved.reservedFor != reservedFor) {
+        return null;
+      }
+      this.#reserved.delete(didKey);
+      return if (reserved.expiresAt > nowSeconds) reserved else null;
+    }
+    return null;
   }
 }
 

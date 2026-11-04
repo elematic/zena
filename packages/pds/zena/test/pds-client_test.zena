@@ -35,14 +35,34 @@ export let tests = suite('pds:pds-client', () => {
   test('makes a managed account, writes it in one commit, and reads every page back', (ctx) => {
     let pds = new Pds(new MemoryStorage());
     let client = new InProcessPds(pds, HOST);
-    let temporary = new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8));
-    let made = runFuture(client.createAccount(DID, 'router.acme.pkg.test', temporary));
+    // The PDS makes the account's signing key, which the host names in the
+    // DID document, and the account takes it.
+    let reserved = runFuture(client.reserveSigningKey());
+    runFuture(client.createAccount(DID, 'router.acme.pkg.test', reserved));
     let account = runFuture(pds.storage.getAccount(DID)) as Account;
     equal(account.manager as String, HOST);
-    // The PDS makes the account's signing key, which the host names in the
-    // DID document in place of the temporary one.
-    equal(formatDidKey(made), formatDidKey(runFuture(account.signingKey()).publicKey()));
-    isTrue(formatDidKey(made) != formatDidKey(temporary.publicKey()), 'a key of its own');
+    equal(formatDidKey(reserved), formatDidKey(runFuture(account.signingKey()).publicKey()));
+    // A key makes one account, and only a reserved key makes one.
+    var refused = '';
+    try {
+      runFuture(client.createAccount('did:plc:otherotherotherotherothe', 'other.acme.pkg.test', reserved));
+    } catch (e) {
+      if (e is RepositoryError) {
+        refused = e.error;
+      }
+    }
+    equal(refused, 'InvalidRequest');
+    refused = '';
+    try {
+      runFuture(client.createAccount('did:plc:otherotherotherotherothe', 'other.acme.pkg.test',
+          new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8)).publicKey()));
+    } catch (e) {
+      if (e is RepositoryError) {
+        refused = e.error;
+      }
+    }
+    equal(refused, 'InvalidRequest');
+    isNull(runFuture(pds.storage.getAccount('did:plc:otherotherotherotherothe')));
 
     let writes = new GrowableArray<Write>();
     for (var i = 0; i < 250; i += 1) {
@@ -68,8 +88,7 @@ export let tests = suite('pds:pds-client', () => {
   test('keeps blobs, and refuses an account it does not hold', (ctx) => {
     let pds = new Pds(new MemoryStorage());
     let client = new InProcessPds(pds, HOST);
-    runFuture(client.createAccount(DID, 'router.acme.pkg.test', new SigningKey(KeyType.Secp256k1,
-        new FixedArray<u8>(32, 7 as u8))));
+    runFuture(client.createAccount(DID, 'router.acme.pkg.test', runFuture(client.reserveSigningKey())));
     let bytes = 'a module'.toBytes();
     let blob = runFuture(client.uploadBlob(DID, 'application/wasm', bytes));
     equal(blob.size, bytes.length as i64);

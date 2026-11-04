@@ -11,6 +11,9 @@
  *   store's `KeyEncryption` for the account's DID, or, in a store with
  *   none, `privateKey`, its bytes.
  * - `handles/{handle}`: `did`.
+ * - `reservedKeys/{did:key}`: `keyType`, `reservedFor`, the App View's
+ *   DID, `expiresAt`, in seconds, and the key, as an account's is kept,
+ *   encrypted for its `did:key`; until an account takes it.
  * - `heads/{did}`: `cid` and `rev`, the repository's current commit.
  * - `accounts/{did}/blocks/{cid}`: `bytes`.
  * - `accounts/{did}/collections/{nsid}`, written with the collection's
@@ -68,8 +71,8 @@ import {ClaimedName, ClaimedScope, HostAccount, HostStore, PackageSummary, Pendi
 import {PlcLog} from './plc-directory.zena';
 import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
-  Account, AccountKind, AccountStore, EncryptedKey, Head, KeyEncryption, RecordChange, RecordEntry, SigningKey,
-  Storage, StoredBlob, sameHead, sortRecordEntries
+  Account, AccountKind, AccountStore, EncryptedKey, Head, KeyEncryption, RecordChange, RecordEntry, ReservedKey,
+  SigningKey, Storage, StoredBlob, sameHead, sortRecordEntries
 } from './storage.zena';
 
 /** The most writes one batch of blocks holds. */
@@ -233,6 +236,61 @@ export final class FirestoreStorage implements Storage {
 
   store(did: String): AccountStore {
     return new FirestoreAccountStore(this.#db, this.#root, did, `${this.#tenant}/${did}`, this.#blobs);
+  }
+
+  // The private key is kept as an account's is, encrypted for the
+  // `did:key` it was reserved under until an account takes it.
+  async reserveKey(didKey: String, reserved: ReservedKey): Future<void> {
+    let keys = this.#keys;
+    let fields = new Fields()
+      .string('keyType', keyTypeName(reserved.key.type))
+      .string('reservedFor', reserved.reservedFor)
+      .integer('expiresAt', reserved.expiresAt);
+    if (keys != null) {
+      fields.set('encryptedKey', bytesValue(await keys.encrypt(didKey, reserved.key.privateKey) as ByteArray));
+    } else {
+      fields.set('privateKey', bytesValue(reserved.key.privateKey as ByteArray));
+    }
+    await this.#root.collection('reservedKeys').doc(didKey).set(fields);
+  }
+
+  async takeReservedKey(didKey: String, reservedFor: String, nowSeconds: i64): Future<ReservedKey | null> {
+    let ref = this.#root.collection('reservedKeys').doc(didKey);
+    var taken: DocumentSnapshot | null = null;
+    await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
+      let snapshot = await tx.get(ref);
+      if (!snapshot.exists || stringAt(snapshot, 'reservedFor') != reservedFor) {
+        return false;
+      }
+      tx.delete(ref);
+      taken = snapshot;
+      return true;
+    });
+    let snapshot = taken;
+    if (snapshot == null) {
+      return null;
+    }
+    let keyType = stringAt(snapshot, 'keyType');
+    var expiresAt = 0 as i64;
+    if (let (true, value) = snapshot.getInteger('expiresAt')) {
+      expiresAt = value;
+    }
+    if (keyType == null || expiresAt <= nowSeconds) {
+      return null;
+    }
+    var privateKey = bytesAt(snapshot, 'privateKey');
+    let ciphertext = bytesAt(snapshot, 'encryptedKey');
+    if (ciphertext != null) {
+      let keys = this.#keys;
+      if (keys == null) {
+        throw new Error(`the key reserved as ${didKey} is encrypted, and the server has no key encryption to decrypt it`);
+      }
+      privateKey = await keys.decrypt(didKey, ciphertext);
+    }
+    if (privateKey == null) {
+      return null;
+    }
+    return new ReservedKey(new SigningKey(keyTypeNamed(keyType), privateKey), reservedFor, expiresAt);
   }
 }
 

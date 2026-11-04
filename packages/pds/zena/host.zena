@@ -25,7 +25,7 @@
 
 import {Future} from 'zena:async';
 import {join} from 'zena:core';
-import {HashMap, HashSet, OrderedHashMap} from 'zena:collections';
+import {HashMap, HashSet} from 'zena:collections';
 import {cidForValue, decodeCbor, encodeCbor} from 'atproto:cbor';
 import {readCar} from 'atproto:car';
 import {verifyRecordProof} from 'atproto:repo';
@@ -33,7 +33,7 @@ import {fetch} from 'zena:fetch';
 import {timeout} from 'zena:task';
 import {BlobRef, MapValue, Value} from 'atproto:data';
 import {Cid} from 'atproto:cid';
-import {KeyType, PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto:didkey';
+import {KeyType, PublicKey, parseDidKey, verifySignature} from 'atproto:didkey';
 import {PlcOperation, PlcService, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {PACKAGE_HOST_SERVICE, PACKAGE_HOST_TYPE} from 'package-manager:host-methods';
 import {Identity, IdentityResolver} from 'atproto:identity';
@@ -470,11 +470,12 @@ export final class MemoryHostStore implements HostStore {
 final class PreparedAccount {
   did: String;
   handle: String;
-  /** The signing key the genesis operation names until the PDS makes the account's own. */
-  temporary: SigningKey;
+  /** The signing key the genesis operation names, which the PDS reserved. */
+  signingKey: PublicKey;
+  /** The genesis operation, which is the DID's only operation. */
   operation: PlcOperation;
 
-  new(this.did, this.handle, this.temporary, this.operation);
+  new(this.did, this.handle, this.signingKey, this.operation);
 }
 
 /** How a host is set up. */
@@ -847,7 +848,8 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
     let handle = `${name}.${scope}.${this.config.domain}`;
-    let prepared = await this.#prepareAccount(handle, []);
+    let key = new SigningKey(KeyType.Secp256k1, this.#random(32));
+    let prepared = await this.#prepareAccount(handle, [], key);
     let did = prepared.did;
     if (!(await this.#store.claimName(scope, name, did))) {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
@@ -855,7 +857,7 @@ export final class PackageHost {
     let store = this.#store;
     let account = await this.#createAccount(prepared, new HostAccount(did, handle, AccountKind.Automation, scope, name),
         async (): Future<void> => { await store.releaseName(scope, name, did); },
-        async (): Future<void> => { await make(did, handle, prepared.temporary); });
+        async (): Future<void> => { await make(did, handle, key); });
     let password = await sessions.addAppPassword(account.did, 'ci',
         formatTimestamp(nowMicros * (1000 as i64)));
     await this.#records.set(handle, account.did);
@@ -1582,13 +1584,17 @@ export final class PackageHost {
   }
 
   /**
-   * An account named `handle` on this host, to be: a temporary signing
-   * key, and the genesis operation of a `did:plc` that names it, ranking
-   * `recoveryKeys` first, then the operator's offline key, then the online
-   * rotation key, which signs it. A PLC operation lists at most five
-   * rotation keys, and the host keeps two of them for its own.
+   * An account named `handle` on this host, to be: the genesis operation
+   * of a `did:plc` that names a signing key the PDS reserved, the PDS, and
+   * the host as the account's package host (package-manager.md, "Creating
+   * a package"). It ranks `recoveryKeys` first, then the operator's
+   * offline key, then the online rotation key, which signs it. A PLC
+   * operation lists at most five rotation keys, and the host keeps two of
+   * them for its own. An automation account names `local`, the key it
+   * signs in with, in place of a reserved one.
    */
-  async #prepareAccount(handle: String, recoveryKeys: Array<String>): Future<PreparedAccount> {
+  async #prepareAccount(handle: String, recoveryKeys: Array<String>, local: SigningKey | null = null)
+      : Future<PreparedAccount> {
     if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
       throw new HostError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
     }
@@ -1605,52 +1611,30 @@ export final class PackageHost {
       rotation.push(offline);
     }
     rotation.push(this.config.rotationKey.publicKey());
-    let temporary = new SigningKey(KeyType.Secp256k1, this.#random(32));
-    let unsigned = genesisOperation(temporary.publicKey(), rotation, handle, this.config.endpoint);
+    let signingKey = if (local != null) local.publicKey() else await this.#pds.reserveSigningKey();
+    let unsigned = genesisOperation(signingKey, rotation, handle, this.config.endpoint);
+    unsigned.services[PACKAGE_HOST_SERVICE] = new PlcService(PACKAGE_HOST_TYPE, this.config.endpoint);
     let operation = unsigned.withSignature(await this.config.rotationKey.sign(unsigned.signingBytes()));
-    return new PreparedAccount(didOfGenesis(operation), handle, temporary, operation);
-  }
-
-  /**
-   * The operation that follows `prepared`'s genesis operation once the PDS
-   * holds the account: it names `signing`, the key the PDS made, and the
-   * host as the account's package host, with the same rotation keys and
-   * handle (package-manager.md, "Creating a package"). The online rotation
-   * key signs it.
-   */
-  async #identityOperation(prepared: PreparedAccount, signing: PublicKey): Future<PlcOperation> {
-    let genesis = prepared.operation;
-    let methods = new OrderedHashMap<String, String>();
-    methods['atproto'] = formatDidKey(signing);
-    let services = new OrderedHashMap<String, PlcService>();
-    services['atproto_pds'] = genesis.services['atproto_pds'];
-    services[PACKAGE_HOST_SERVICE] = new PlcService(PACKAGE_HOST_TYPE, this.config.endpoint);
-    let unsigned = new PlcOperation(genesis.rotationKeys, methods, genesis.alsoKnownAs, services,
-        genesis.cid().toString());
-    return unsigned.withSignature(await this.config.rotationKey.sign(unsigned.signingBytes()));
+    return new PreparedAccount(didOfGenesis(operation), handle, signingKey, operation);
   }
 
   /**
    * Sends `prepared`'s genesis operation to the PLC directory, has the PDS
    * make the account, with `make` in place of `PdsClient.createAccount`
-   * when it is given, sends the operation that names the account's signing
-   * key (`#identityOperation`), and records the account as `account`.
-   * When any of these fails, runs `release`, to give up the name taken for
-   * it, and throws. An account the PDS made is left there, with no name
-   * on this host.
+   * when it is given, and records the account as `account`. When any of
+   * these fails, runs `release`, to give up the name taken for it, and
+   * throws. An account the PDS made is left there, with no name on this
+   * host.
    */
   async #createAccount(prepared: PreparedAccount, account: HostAccount, release: () => Future<void>,
       make: (() => Future<void>) | null = null): Future<HostAccount> {
     try {
       await this.#submit(prepared.did, prepared.operation);
-      var signing = prepared.temporary.publicKey();
       if (make != null) {
-        // An automation account keeps the key it signs in with.
         await make();
       } else {
-        signing = await this.#pds.createAccount(prepared.did, prepared.handle, prepared.temporary);
+        await this.#pds.createAccount(prepared.did, prepared.handle, prepared.signingKey);
       }
-      await this.#submit(prepared.did, await this.#identityOperation(prepared, signing));
       await this.#store.putAccount(account);
       return account;
     } catch (e) {
