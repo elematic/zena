@@ -242,6 +242,26 @@ export let tests = suite('pds:managed', () => {
         bytes, '', 'application/octet-stream')), 'InvalidRequest');
   });
 
+  test('limits a managed account to package records and artifacts, whoever writes', (ctx) => {
+    let fixture = new Fixture();
+    let did = fixture.created();
+    // Even the host's writes: the limits are the PDS operator's.
+    let post = `{"repo": "${did}", "writes": [{"$type": "com.atproto.repo.applyWrites#create", "collection": "app.bsky.feed.post", "rkey": "x", "value": {"$type": "app.bsky.feed.post", "text": "hi"}}]}`;
+    equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST',
+        fixture.hostToken('com.atproto.repo.applyWrites'), post)), 'InvalidRequest');
+    equal(errorOf(fixture.call('com.atproto.repo.putRecord', 'POST', fixture.hostToken('com.atproto.repo.putRecord'),
+        `{"repo": "${did}", "collection": "app.bsky.feed.post", "rkey": "x", "record": {"$type": "app.bsky.feed.post"}}`)),
+        'InvalidRequest');
+    // A blob a browser would run as a page is refused, as is one too large.
+    equal(errorOf(fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.hostToken('com.atproto.repo.uploadBlob'),
+        '<script></script>'.toBytes(), `?repo=${did}`, 'text/html')), 'InvalidRequest');
+    fixture.pds.managedLimits.maxBlobSize = 8 as i64;
+    let tooLarge = fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.hostToken('com.atproto.repo.uploadBlob'),
+        'twelve bytes'.toBytes(), `?repo=${did}`, 'application/octet-stream');
+    equal(tooLarge.statusCode, 413);
+    equal(errorOf(tooLarge), 'BlobTooLarge');
+  });
+
   test('takes no writes to an account that is not managed, without sessions', (ctx) => {
     let fixture = new Fixture();
     let did = 'did:plc:ownownownownownownownownow';

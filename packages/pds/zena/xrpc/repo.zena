@@ -9,7 +9,7 @@
  */
 
 import {Future} from 'zena:async';
-import {parseI32} from 'zena:core';
+import {join, parseI32} from 'zena:core';
 import {HttpError, Router} from 'zena:http';
 import {JsonArray, JsonObject, JsonValue} from 'zena:json';
 import {cidForValue, decodeCbor} from 'atproto:cbor';
@@ -249,14 +249,20 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
         throw new SessionError(403, 'Forbidden', 'only managed accounts take blobs here');
       }
       let account = await writable(pds, sessions, req.getHeader('authorization'), named.did, REPO_UPLOAD_BLOB);
-      // Reading the body consumes the request: its type is read first.
-      let mimeType = req.getHeader('content-type') ?? 'application/octet-stream';
-      req.bodyLimit = pds.maxBlobSize;
+      // Reading the body consumes the request: its type is read first, and
+      // a managed account takes only the types its limits allow.
+      let limits = pds.managedLimits;
+      let mimeType = limits.blobType(req.getHeader('content-type') ?? 'application/octet-stream');
+      if (mimeType == null) {
+        fail(res, 400, 'InvalidRequest', `a managed account's blob is one of ${join(limits.blobTypes, ', ')}`);
+        return null;
+      }
+      req.bodyLimit = limits.maxBlobSize;
       let bytes = try {
         await req.bytes()
       } catch (e) {
         if (e is HttpError && e.status == 413) {
-          fail(res, 413, 'BlobTooLarge', `the blob is larger than ${pds.maxBlobSize} bytes`);
+          fail(res, 413, 'BlobTooLarge', `the blob is larger than ${limits.maxBlobSize} bytes`);
           return null;
         }
         throw e;

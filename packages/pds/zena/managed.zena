@@ -15,7 +15,9 @@
  * `com.atproto.identity.getRecommendedDidCredentials` for it.
  *
  * Every write to the account carries a service-auth token from its host,
- * for the write's method and addressed to this PDS (`fromHost`).
+ * for the write's method and addressed to this PDS (`fromHost`). Whoever
+ * writes, the account holds only what `ManagedLimits` allows: by default
+ * the records and artifacts of Zena packages.
  */
 
 import {Future} from 'zena:async';
@@ -23,8 +25,48 @@ import {SERVER_CREATE_ACCOUNT} from 'atproto:methods';
 import {PublicKey, formatDidKey} from 'atproto:didkey';
 import {PlcError, PlcOperation, didOfGenesis} from 'atproto:plc';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
+import {ARTIFACT_MIME_TYPES} from 'package-manager:validate';
 import {SessionError} from './sessions.zena';
 import {Account} from './storage.zena';
+
+/**
+ * What the PDS lets a managed account hold, whoever writes it: its
+ * operator's limits against abuse, since it creates such an account on an
+ * App View's word (package-manager.md, "Managed accounts"). By default,
+ * the records and artifacts of Zena packages.
+ */
+export final class ManagedLimits {
+  /** The NSID prefixes a record's collection must start with. */
+  var collections: Array<String> = ['dev.zena-lang.'];
+  /** The MIME types a blob may have. */
+  var blobTypes: Array<String> = ARTIFACT_MIME_TYPES;
+  /** The largest blob, in bytes. */
+  var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
+
+  /** Whether a managed account may hold records of `collection`. */
+  allowsCollection(collection: String): boolean {
+    for (let prefix in this.collections) {
+      if (collection.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The MIME type `contentType` names, without its parameters and in
+   * lowercase, when a managed account's blob may have it; otherwise null.
+   */
+  blobType(contentType: String): String | null {
+    let type = contentType.split(';')[0].trim().asciiLowerCase();
+    for (let allowed in this.blobTypes) {
+      if (type == allowed) {
+        return type;
+      }
+    }
+    return null;
+  }
+}
 
 /** A package host the operator trusts: its DID, and the rotation keys it signs its DIDs' genesis operations with. */
 export final class TrustedHost {

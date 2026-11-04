@@ -67,10 +67,13 @@ export final class Repository {
   #store: AccountStore;
   #clock: TidClock;
   #listeners: GrowableArray<CommitListener>;
+  /** Which collections the account may hold beyond what its kind allows, or null for any its kind does. */
+  #allows: ((collection: String) => boolean) | null;
 
   new(account: Account, store: AccountStore, clock: TidClock,
-      listeners: GrowableArray<CommitListener> = new GrowableArray<CommitListener>())
-      : #account = account, #store = store, #clock = clock, #listeners = listeners;
+      listeners: GrowableArray<CommitListener> = new GrowableArray<CommitListener>(),
+      allows: ((collection: String) => boolean) | null = null)
+      : #account = account, #store = store, #clock = clock, #listeners = listeners, #allows = allows;
 
   /**
    * Writes the repository's first commit, of an empty tree, unless it has
@@ -125,7 +128,8 @@ export final class Repository {
       let collection = collectionOf(write);
       let rkey = rkeyOf(write);
       checkKey(collection, rkey);
-      if (!this.#account.allows(collection)) {
+      let allows = this.#allows;
+      if (!this.#account.allows(collection) || (allows != null && !allows(collection))) {
         throw new RepositoryError('InvalidRequest',
             `${this.#account.did} cannot hold records of ${collection}`);
       }
