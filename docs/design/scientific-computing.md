@@ -1,289 +1,312 @@
 # Scientific Computing in Zena
 
-This document outlines the design for making Zena a first-class language for scientific and mathematical computing. The goal is to combine the safety and performance of Zena with the expressiveness required for complex mathematical modeling.
-
-## 1. Units of Measure
-
-Numeric types annotated with units — meters, seconds, kilograms — so that the
-checker rejects adding a length to a time and derives the unit of a product or
-quotient. Erased before code generation.
-
-The design lives in [units-of-measure.md](units-of-measure.md): the split
-between dimension and unit, the operator and conversion rules, literal suffix
-syntax, unit polymorphism, and an incremental plan. That document supersedes
-the sketch that was here.
-
-## 2. Vectors and Matrices
-
-Zena should support linear algebra operations with a clean, concise syntax.
-
-### 2.1 Syntax
-
-We can leverage Zena's tuple syntax `[...]` combined with a postfix modifier to denote vectors or matrices.
-
-```zena
-// Vector
-let v = [1.0, 2.0, 3.0] v;
-
-// Matrix (Row-major)
-let m = [
-  [1.0, 0.0, 0.0],
-  [0.0, 1.0, 0.0],
-  [0.0, 0.0, 1.0]
-] mat;
-```
-
-### 2.2 Operator Overloading
-
-Standard operators should work on vectors/matrices element-wise or as linear algebra operations (dot product, matrix multiplication).
-
-```zena
-let v1 = [1, 2] v;
-let v2 = [3, 4] v;
-
-let sum = v1 + v2; // [4, 6] v
-let dot = v1 * v2; // Dot product? Or element-wise?
-                   // NumPy uses * for element-wise, @ for matmul.
-                   // Zena might define a specific operator for dot product, e.g. `.*` or `dot(a, b)`.
-```
-
-### 2.4 Syntax Semantics: Tagged Literals
-
-We can unify the syntax for `mat` with Zena's existing **Tagged Template Literals** and extend it to other literals (Tuples, Records, Arrays).
-
-**Concept**: A "Tagged Literal" is an identifier followed immediately by a literal.
-
-- `tag`template`` (Existing)
-- `tag[...]` (Tagged Tuple/Array)
-- `tag{...}` (Tagged Record)
-
-**Application to Matrices**:
-Instead of postfix `[...] mat`, we can use prefix `mat[...]`.
-
-```zena
-let m = mat[
-  [1.0, 0.0],
-  [0.0, 1.0]
-];
-```
-
-**Ambiguity & Resolution**:
-Syntactically, `mat[...]` is identical to **Array Indexing** (`arr[index]`). To resolve this, and to avoid conflicts with future features like Callable Objects (functors) that might also implement `[]` for indexing, we enforce a strict distinction based on the identifier's category:
-
-1.  **Runtime Variables**: If the identifier resolves to a **Variable** (e.g., `let m = ...`), `m[...]` is always treated as **Indexing**.
-    - Even if the object is "callable" (acts like a function), `[...]` remains the index operator.
-    - This preserves standard semantics: `myVector[0]`.
-
-2.  **Compile-Time Entities (Types/Macros)**: If the identifier resolves to a **Type** (e.g., `Set`) or **Macro** (e.g., `mat`), `Tag[...]` is treated as a **Tagged Literal**.
-    - This allows `Set[1, 2]` or `mat[1, 2]` to act as constructors.
-    - Since Types and Macros are not runtime values that can be indexed, there is no overlap.
-
-**Restriction**: You cannot use a runtime variable as a tag.
-
-```zena
-let myTag = mat; // Assuming we could alias macros (unlikely) or types
-myTag[1, 2];     // Error: 'myTag' is a variable, treated as indexing.
-```
-
-**Benefits**:
-
-1.  **Consistency**: Aligns with `wat`...`` (inline WASM) and other DSLs.
-2.  **Extensibility**: Users can define their own "Tags" (Classes or Macros).
-    - `Set[1, 2, 3]` -> Creates a Set.
-    - `Vec[1, 2]` -> Creates a Vector.
-    - `Complex{r: 1, i: 2}` -> Creates a Complex number.
-
-**Built-in Tags**:
-
-- `mat[...]`: Matrix construction.
-- `wat`...``: Inline WASM (returns `v128` or other types).
-
-### 2.5 Zero-Copy Construction Strategy
-
-Can avoid copying. **Yes, absolutely.** This is the primary motivation for treating `mat` as a macro rather than a function.
-
-**The Naive Approach (Function Call)**:
-If `mat` were a function `func mat(data: Array<f64>)`, the compiler would:
-
-1.  Allocate a GC Array.
-2.  Fill it with literals.
-3.  Pass it to `mat`.
-4.  `mat` would copy values to Linear Memory.
-5.  GC Array is discarded (garbage).
-
-**The Macro Approach (Zero-Copy)**:
-Since `mat` is a compile-time construct, it consumes the _syntax_ of the literal.
-
-1.  **Analysis**: The compiler sees `mat[1.0, 2.0]`.
-2.  **Code Gen**: It generates instructions to write `1.0` and `2.0` _directly_ into the final destination (Linear Memory).
-    - **No intermediate array is ever allocated.**
-    - **No copying occurs.**
-
-**Large Literals**:
-For large constant matrices (e.g., embedding weights), the macro can optimize further:
-
-1.  Store the data in a **WASM Data Segment** (static binary data).
-2.  Emit a `memory.init` instruction to bulk-copy the data from the binary to the heap at runtime.
-    - This is the fastest possible initialization.
-
-**Future User-Defined Macros**:
-To allow users to write efficient constructors like `mat`, we could introduce a macro system. This is a complex feature requiring a sandboxed execution environment (likely WASM-in-WASM) to safely run user code during compilation.
-
-See `docs/design/macros.md` for the detailed design of the macro system.
-
-For the near term, `mat` will be implemented as a **Compiler Intrinsic**, meaning the logic is hard-coded into the compiler, bypassing the need for a full macro engine.
-
-### 2.6 Implementation & Storage
-
-For a language targeting scientific computing, memory layout is critical for performance.
-
-#### Flat vs. Nested Layout
-
-While the syntax `[[1, 2], [3, 4]]` suggests an "Array of Arrays" (nested tuples), this is inefficient for numerical computing due to:
-
-1.  **Pointer Chasing**: Accessing `m[i][j]` requires two memory lookups.
-2.  **Cache Locality**: Rows might be scattered in memory.
-3.  **SIMD/BLAS Incompatibility**: Hardware vector units and standard libraries (BLAS) expect contiguous blocks of memory.
-
-**Design Decision**: The `mat` modifier (or constructor) MUST flatten the data into a **single contiguous array**.
-
-- **Layout**: Row-Major (C-style) is preferred for compatibility with NumPy and C libraries.
-- **Representation**: A Matrix is a struct containing:
-  - `data`: The backing flat array.
-  - `rows`: Number of rows.
-  - `cols`: Number of columns.
-  - `strides`: (Optional) To support views/slicing without copying.
-
-#### Backing Storage: GC Arrays vs. Linear Memory
-
-There are two options for the backing array in WASM:
-
-1.  **WASM GC Packed Arrays** (`(array f64)`):
-    - _Pros_: Managed by the engine's GC. Safe. No manual `free()`.
-    - _Cons_: Harder to pass to C/C++ libraries (BLAS) which expect a raw pointer to Linear Memory. SIMD support for GC arrays is evolving but less mature than Linear Memory.
-
-2.  **Linear Memory** (WASM `memory`):
-    - _Pros_: Standard for C/C++/Rust interop. Zero-copy passing to BLAS. Native SIMD support (`v128.load`).
-    - _Cons_: Requires manual memory management (malloc/free) or a custom allocator within Zena.
-
-**Recommendation**:
-For the "Scientific Computing" module, Zena should likely use **Linear Memory** (wrapped in a `Float64Array`-like class) as the backing store. This allows:
-
-- **Zero-Copy Interop**: We can pass the pointer directly to a WASI implementation of BLAS.
-- **SIMD**: We can easily load `v128` vectors from the buffer.
-
-The `mat` syntax should compile to code that allocates this buffer and populates it directly.
-
-**Optimization**: The compiler should **avoid** creating an intermediate tuple or array at runtime.
-
-1.  **Allocation**: Allocate the linear memory buffer.
-2.  **Initialization**: Emit `f64.store` instructions to write the literal values directly into the buffer.
-    - _Constant Data_: If the matrix is fully constant, the compiler can place the data in a WASM Data Segment and use `memory.init` for bulk initialization.
-
-```zena
-// Conceptually compiles to (pseudo-code):
-let ptr = malloc(6 * 8); // 6 elements * 8 bytes
-f64.store(ptr, 1.0);
-f64.store(ptr + 8, 0.0);
-// ...
-let m = new Matrix(2, 3, ptr);
-```
-
-#### Memory Management (Linear Memory)
-
-Using Linear Memory introduces a challenge: **Who frees the memory?** The `Matrix` object is a GC struct, but the pointer it holds points to unmanaged linear memory. If the `Matrix` is collected, the linear memory leaks.
-
-**Strategy 1: Explicit Disposal (Deterministic)**
-Users must manually free large matrices.
-
-```zena
-let m = ...;
-// use m
-m.dispose(); // Calls free(m.ptr)
-```
-
-_Pros_: Deterministic, simple.
-_Cons_: Unsafe (use-after-free), ergonomic burden.
-
-**Strategy 2: Host Finalization (Safety Net)**
-We can leverage the Host's `FinalizationRegistry` (in JS) to free memory when the Zena object is collected.
-
-1.  **Zena**: Exports a `free(ptr: i32)` function.
-2.  **Host**: Imports a `registerFinalizer(obj: anyref, ptr: i32)` function.
-3.  **Runtime**: When `Matrix` is allocated, Zena calls `registerFinalizer(this, this.ptr)`.
-4.  **Cleanup**: When the JS engine detects the Zena `Matrix` is unreachable, it triggers the registry callback, which calls Zena's `free(ptr)`.
-
-This provides a "best effort" automatic cleanup, similar to how Node.js `Buffer` or WebGL resources work.
-
-**Strategy 3: WASM WeakRefs (Future)**
-Native WASM WeakRefs and Finalizers are a [Post-MVP proposal](https://github.com/WebAssembly/gc/blob/main/proposals/gc/Post-MVP.md). Once available, Zena can implement this entirely within WASM without host help.
-
-**Decision**: Implement **Strategy 1 (Dispose)** for immediate control and **Strategy 2 (Host Finalization)** as the automatic safety net for JS environments.
-
-#### Small Vectors
-
-Small fixed-size vectors (Vec2, Vec3, Vec4) should be treated differently. They should be value types (structs) or mapped directly to `v128` where possible, living on the stack or in registers, not the heap.
-
-## 3. WASM SIMD Support
-
-**Status: implemented.** See [simd.md](simd.md) for the design as built; this
-section records what that means for scientific computing.
-
-### 3.1 The `v128` Type
-
-`v128` is a primitive type. It has no literals, operators or casts: the bits
-carry no interpretation of their own, so an instruction decides whether they
-are four floats or sixteen bytes.
-
-### 3.2 Intrinsics
-
-`zena:simd` exposes all 236 fixed-width instructions as `@intrinsic`
-functions, named after the wasm instructions.
-
-```zena
-import { f32x4Splat, f32x4Add } from 'zena:simd';
-
-let a = f32x4Splat(10.0 as f32);
-let b = f32x4Splat(20.0 as f32);
-let c = f32x4Add(a, b);
-```
-
-### 3.3 High-Level Abstractions
-
-The Vector/Matrix syntax described in Section 2 should compile down to these SIMD instructions whenever the dimensions allow (e.g., a `Vector4` should fit in a single `v128`).
-
-## 4. Host Interop & Libraries (BLAS/LAPACK)
-
-For heavy-duty scientific computing, Zena should not reinvent the wheel. It should be able to bind to highly optimized native libraries (like BLAS, LAPACK, TensorFlow, Torch) provided by the host environment.
-
-### 4.1 The "Scientific Interface"
-
-We can define a standard Zena interface for matrix operations that can be swapped out.
-
-```zena
-interface LinearAlgebraBackend {
-  matmul(a: Matrix, b: Matrix): Matrix;
-  svd(m: Matrix): SVDResult;
-}
-```
-
-### 4.2 WASI-NN and Host Bindings
-
-- **WASI-NN**: Zena should support the WASI-NN standard for machine learning inference.
-- **Custom Host Imports**: Zena's `declare` syntax can import optimized math functions from JavaScript (which might call into WebGPU or WebGL) or a native host.
-
-```zena
-@external("env", "cblas_dgemm")
-declare func dgemm(...): void;
-```
-
-### 4.3 Integration with NumPy (via Python Host)
-
-If Zena is running in a Python environment (e.g., via a WASM runtime in Python), we can design a bridge where Zena `Matrix` objects are actually handles to NumPy arrays, and operations are delegated to NumPy.
-
-## 5. Roadmap
-
-1.  **Phase 1**: Design and implement the **Units of Measure** system in the type checker. This is a pure compile-time feature.
-2.  **Phase 2**: Add `v128` support and SIMD intrinsics to the code generator.
-3.  **Phase 3**: Implement Vector/Matrix syntax and basic pure-Zena implementation.
-4.  **Phase 4**: Build the Host Interop layer for hardware-accelerated linear algebra.
+Zena should be a good language for scientific, mathematical and financial
+computing: the work people do today in NumPy, R, MATLAB and Mathematica,
+with a path to BLAS-backed linear algebra. This document records what the
+language has for that today, what it lacks, the decisions still to make,
+and the order of the work. The umbrella issue is
+[#894](https://github.com/elematic/zena/issues/894).
+
+Two features have their own designs and are summarized here rather than
+repeated: [units of measure](units-of-measure.md) and [SIMD](simd.md).
+
+## Current state
+
+### Numeric core
+
+Every integer width from `i8` to `u64`, `f32` and `f64`, with sound
+promotion and no implicit coercion ([arithmetic-conversions.md](arithmetic-conversions.md)).
+`/` always produces a float; integer division is `div` from `zena:math`.
+`**` is exponentiation, right-associative. Literals take their type from
+context, so `let x: f64 = 3;` and `let n: i64 = 5000000000;` compile.
+Float printing and parsing are correct and shortest-round-trip
+([float-conversion.md](float-conversion.md)). `zena:math` has the
+operations Wasm has instructions for, and the 128-bit wide arithmetic
+intrinsics `mulWide`, `add128` and `sub128`.
+
+### Operators on user types
+
+A class can declare `operator +`, `-`, `*`, `/`, `**`, `==`, `[]` and
+`[]=`. An extension class over a primitive can declare the same, and is
+erased, so a `Celsius on f64` costs a call per operation and no
+allocation. `zena:simd`'s `F32x4` and siblings are built this way over
+`v128`.
+
+### SIMD
+
+`v128` is a primitive, all 236 fixed-width instructions are intrinsics in
+`zena:simd`, and the shaped types give them elementwise `+`, `-`, `*` and
+named lanes. Reductions, unsigned shapes and boolean lane comparisons
+remain ([simd.md](simd.md)).
+
+### Memory and arrays
+
+`FixedArray<T>` is a raw Wasm GC array, with narrow elements packed.
+Ranges index arrays (`xs[1..3]`, a copy), take any numeric bound, and
+iterate as counting loops. `zena:memory` has typed loads and stores over
+linear memory, two allocators, and `@external` imports for host
+functions ([linear-memory.md](linear-memory.md)).
+
+### Value types
+
+Records and tuples are value types, and inline tuple and record
+parameters pass in locals with no allocation. The roadmap to nominal
+value types, a class declared with value semantics and stored inline, is
+[#140](https://github.com/elematic/zena/issues/140). That is what makes a
+`Complex` or a `Vec3` free.
+
+### Optimizer
+
+The ZIR backend has an inliner at `-O2`, constant folding, GVN and
+scalar replacement ([ir.md](ir.md)). Nothing yet measures it on a
+floating-point loop.
+
+### Units of measure
+
+Designed in full ([units-of-measure.md](units-of-measure.md)): a unit kind
+in the checker, erased before codegen, with literal suffixes and unit
+polymorphism, and no compiler-derived conversion in the first version.
+Its first step is a set of operator bugs that are still open.
+
+## Gaps
+
+Three gaps matter more than anything else on the list.
+
+**No exponential, logarithm or trigonometry.** Wasm has no instructions
+for them, so `zena:math` has `sqrt` and nothing above it. Every language
+on Wasm ships its own libm; Zena needs one
+([#879](https://github.com/elematic/zena/issues/879)).
+
+**Float `**` is wrong for a non-integer exponent.** The lowering
+truncates the exponent to an integer and runs a squaring loop, with `0.5`
+special-cased as `sqrt`, so `2.0 ** 0.3` returns `1.0`
+([#878](https://github.com/elematic/zena/issues/878)).
+
+**Operator dispatch is incomplete**, in ways that every numeric type hits
+at once. Unary minus never dispatches
+([#233](https://github.com/elematic/zena/issues/233)), relational
+operators never dispatch
+([#253](https://github.com/elematic/zena/issues/253)), an operator on a
+generic class does not substitute its type arguments
+([#232](https://github.com/elematic/zena/issues/232)), a second
+`operator -` with a different parameter type is never considered, `==`
+on a numeric extension class is an internal compiler error
+([#252](https://github.com/elematic/zena/issues/252)), and `Array<T>`
+over an extension class fails in ZIR
+([#234](https://github.com/elematic/zena/issues/234)). `Instant` and
+`Duration` spell ordering as methods because of these, and units,
+`Complex`, `Decimal`, `BigInt` and any matrix type would each hit them in
+turn. Tracked together as
+[#883](https://github.com/elematic/zena/issues/883).
+
+## Plan
+
+### Work that can start now
+
+These need no design decision and do not depend on each other.
+
+- **A libm port in `zena:math`**
+  ([#879](https://github.com/elematic/zena/issues/879)): `exp`, `log`,
+  `pow`, the trigonometric and hyperbolic functions, `cbrt`, `hypot`,
+  from the fdlibm or musl algorithms, tested against correctly rounded
+  values with a per-function ULP tolerance. Float `**` then lowers to
+  `pow` ([#878](https://github.com/elematic/zena/issues/878)).
+- **A seeded pseudorandom generator**
+  ([#880](https://github.com/elematic/zena/issues/880)): one fixed
+  algorithm, independent streams, and the common distributions.
+  Simulation, sampling and randomized tests all assume it.
+- **Numeric benchmark kernels**
+  ([#881](https://github.com/elematic/zena/issues/881)): nbody,
+  spectral-norm, mandelbrot, matmul and saxpy beside the Rust variants
+  the suite already builds. Each later step is then measured, and the
+  optimizer gaps that numeric loops expose, bounds checks and loop
+  invariants that are not hoisted, show up as numbers.
+- **`BigInt`** ([#882](https://github.com/elematic/zena/issues/882)),
+  which `Rational` and a wide `Decimal` build on.
+- **Operator completeness**
+  ([#883](https://github.com/elematic/zena/issues/883)): the bugs above,
+  plus operator overloads by parameter type. The first consumer is
+  `zena:time` ([#136](https://github.com/elematic/zena/issues/136)), and
+  the units design's step 1 is done with it.
+- **Numeric literals**
+  ([#884](https://github.com/elematic/zena/issues/884)): decide the
+  exponent grammar ([#235](https://github.com/elematic/zena/issues/235))
+  as maximal munch, then exponent literals
+  ([#74](https://github.com/elematic/zena/issues/74)), digit separators
+  ([#75](https://github.com/elematic/zena/issues/75)) and representation
+  suffixes. Code without `6.022e23` is not scientific code, and the unit
+  suffixes cannot ship until the grammar is settled.
+
+### Decisions
+
+Three decisions shape the array library and should be made before it is
+written. Each has an issue with the options and a recommendation.
+
+**A numeric bound for generic code**
+([#885](https://github.com/elematic/zena/issues/885)). A type parameter
+has no operators, so `sum<T>(xs: FixedArray<T>)` cannot be written and
+every kernel would exist once per element type. The recommendation is a
+builtin bound, `where T: numeric`, satisfied by the numeric primitives,
+inside which the arithmetic operators and contextually typed literals are
+allowed on `T`. Monomorphization already gives each instantiation the
+concrete type, so the change is in the checker. It is written so that an
+interface the primitives implement through their extension classes can
+replace it later, which is what would let user types such as `Complex`
+satisfy it.
+
+**The backing store of dense arrays**
+([#886](https://github.com/elematic/zena/issues/886)). The earlier
+version of this document chose linear memory, for zero-copy BLAS calls
+and SIMD loads. The recommendation now is GC arrays for the first
+version: nothing frees them, the engine bounds-checks them, and the
+ownership design that would release linear memory is not built. The
+costs are that SIMD loads need linear memory unless the element type is
+`v128`, and a host BLAS call copies out and back. A layout contract keeps
+a linear-memory store a later drop-in: row-major, explicit strides in
+elements, views that share storage and change only shape, strides and
+offset, and a store that is not part of the public API.
+
+**A primitive on the left of an operator**
+([#887](https://github.com/elematic/zena/issues/887)). `v * 2.0`
+dispatches to `Vector`'s `operator *`; `2.0 * v` has nowhere to go,
+because a primitive carries no operators for other types. The
+recommendation is a reflected lookup for `*` and `+` only: when the left
+operand is a primitive and the right operand's class has an operator
+taking that primitive, call it with the operands swapped. Both operators
+are commutative for every type this applies to, so the swap cannot be
+misread; `-` and `/` are excluded for that reason.
+
+### Work that follows
+
+- **Units of measure**
+  ([#893](https://github.com/elematic/zena/issues/893)), steps 2 to 5 of
+  its design: declarations and the unit kind, suffixes, polymorphism,
+  `zena:units`. Independent of the array work once the operator and
+  literal issues are in.
+- **`zena:ndarray` and `zena:linalg`**
+  ([#888](https://github.com/elematic/zena/issues/888)): shape, strides
+  and views; broadcasting; elementwise operations over the numeric
+  bound; pairwise reductions; naive then blocked `matmul`; LU, Cholesky,
+  QR and Jacobi eigenvalues in pure Zena.
+- **Fixed-scale decimals**
+  ([#889](https://github.com/elematic/zena/issues/889)): `Money` over
+  `i64` as an erased extension class, which needs only the operator
+  fixes, then a 128-bit `Decimal` with a per-value scale.
+- **Complex numbers and small vectors**
+  ([#890](https://github.com/elematic/zena/issues/890)) as case classes
+  now and as nominal value types when
+  [#140](https://github.com/elematic/zena/issues/140) lands. They are the
+  motivating consumers for that work.
+- **The `mat[...]` tagged literal**
+  ([#891](https://github.com/elematic/zena/issues/891)), after there is
+  a matrix type to construct.
+- **Host BLAS and LAPACK**
+  ([#892](https://github.com/elematic/zena/issues/892)), after the pure
+  Zena baseline exists to compare against.
+
+## Dense arrays
+
+The layout decisions, kept here because the array library, the tagged
+literal and the host interface all depend on them.
+
+**Flat storage.** `[[1, 2], [3, 4]]` reads as an array of arrays, and an
+array of arrays is the wrong layout: `m[i][j]` chases two pointers, rows
+scatter across the heap, and neither SIMD nor BLAS can consume it. A
+matrix is one contiguous array with a shape. Row-major order matches
+NumPy and C.
+
+**Views.** A matrix carries `shape`, `strides` (in elements) and an
+`offset` into its store. A slice, a transpose or a column is a new header
+over the same store. A kernel checks once whether the strides are the
+contiguous row-major ones and takes a fast path when they are.
+
+**Store.** `FixedArray<T>` for the first version, as decided in
+[#886](https://github.com/elematic/zena/issues/886). A linear-memory
+store, when the ownership work gives it a release mechanism, has the
+same header and the same contract.
+
+**Small vectors.** `Vec2`, `Vec3` and `Vec4` are not matrices. They are
+two to four fields that belong in locals, and the `f32` four-wide one is
+an `F32x4`. They become allocation-free with nominal value types.
+
+## Matrix literals
+
+`mat[...]` is an identifier followed by a bracketed literal. The parser
+cannot tell it from indexing, so the identifier's category decides: a
+variable is always indexed, and a type or a macro is a tag. A variable
+cannot be a tag. The same rule gives `Set[1, 2, 3]` and
+`Complex{re: 1.0, im: 2.0}` as tagged literals over user types, which is
+the subject of [macros.md](macros.md); `mat` itself is a compiler
+intrinsic, so no macro engine is needed for it.
+
+The intrinsic reads the nested literal for its shape, which must be
+rectangular, and stores the elements directly into the matrix's array.
+No intermediate array of arrays exists. A literal whose elements are all
+constants goes into a data segment and is initialized with
+`array.new_data`, which
+[#272](https://github.com/elematic/zena/issues/272) asks for in general.
+Details in [#891](https://github.com/elematic/zena/issues/891).
+
+## Host libraries
+
+A pure-Zena `matmul` will not match OpenBLAS, and a general eigensolver
+or SVD is a large port. The Rust host already provides the
+`zena-cli:host` imports, so the path is a `zena-cli:blas` WIT interface
+the host implements by linking a BLAS and LAPACK, with `zena:linalg`
+choosing between a pure-Zena backend and the host one by whether the
+import is present. GC-stored arrays copy to linear memory for the call
+([#248](https://github.com/elematic/zena/issues/248) asks for the bulk
+copy); a linear-memory store passes its pointer. Details in
+[#892](https://github.com/elematic/zena/issues/892). WASI-NN is the
+standard interface for inference and a separate consideration.
+
+## Use cases
+
+How the four environments map onto this plan, and where the fit ends.
+
+**NumPy.** The closest fit: an n-dimensional array with broadcasting,
+views and elementwise functions over a numeric bound. Static types and
+monomorphization put Zena nearer Julia than Python, and a kernel written
+in Zena runs as the compiled code it is.
+
+**R.** Columnar data frames, missing values and factors. The
+struct-of-arrays layout in [row-types.md](row-types.md) is the data
+frame's storage, nullable types cover missing values, and enums cover
+factors. A formula language waits on macros.
+
+**MATLAB.** Matrix literals, linear algebra and plots: the tagged
+literal, `zena:linalg`, and plotting through `zenafx`. Indexing stays
+zero-based.
+
+**Mathematica.** Exact arithmetic and an interactive surface. `BigInt`,
+`Rational` and a big float cover exactness. Symbolic algebra is out of
+scope. An interactive runner is plausible, since the compiler is fast and
+the language service exists, and a notebook kernel is a reasonable later
+target.
+
+**Finance.** Exact decimals with named rounding modes, `Instant` and
+`Duration` over integers, and units for currencies once units land. The
+`Money` type ships first because it needs the least.
+
+## Alternatives considered
+
+**Matrices before operators.** The earlier plan built vectors and
+matrices in its third phase and units first, with the operator bugs
+unaddressed. A matrix library built that way is written once per element
+type and cannot negate a vector. The operator fixes and the numeric bound
+come first.
+
+**Linear memory as the first store.** Rejected for the first version
+for the reasons under Decisions: no release mechanism yet, and the copy
+to linear memory for a BLAS call is a measurable cost rather than a
+structural one. The layout contract keeps it available.
+
+**Host finalization for linear-memory matrices.** The earlier design
+proposed a `dispose()` method plus a JS `FinalizationRegistry` as a
+safety net. With GC arrays as the store there is nothing to free, and
+when a linear-memory store arrives the ownership design is its release
+mechanism, so neither is needed.
+
+**Units as a library over extension classes.** Considered and rejected in
+[units-of-measure.md](units-of-measure.md): the unit set is closed, the
+operator table is quadratic, and the representation is fixed.
