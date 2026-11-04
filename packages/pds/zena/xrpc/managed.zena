@@ -25,10 +25,13 @@ import {fail, jsonBody, nowMicros, nowSeconds, sessionCall} from './common.zena'
 /** Adds the routes that create the managed accounts of the hosts `managed` trusts. */
 export function managedRoutes(router: Router, pds: Pds, managed: ManagedAccounts): void {
   // Account migration also calls this method, with the `did` of the
-  // account to move here; a managed account's DID does not exist yet, so
-  // this PDS takes no input.
+  // account to move here in its input; a managed account's DID does not
+  // exist yet, so this PDS reserves the key for the host, not for a DID.
   router.post(xrpcPath(SERVER_RESERVE_SIGNING_KEY), async (req, res, next, params) => {
     await sessionCall(res, async (): Future<JsonObject | null> => {
+      if ((await jsonBody(req, res)) == null) {
+        return null;
+      }
       let host = await managed.reserver(req.getHeader('authorization'), nowSeconds());
       let key = await pds.reserveSigningKey(host.did, nowSeconds());
       let answer = new JsonObject();
