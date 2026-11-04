@@ -1,8 +1,9 @@
 /**
  * Managed accounts (docs/design/package-manager.md, "Managed accounts"),
  * through the HTTP application as a package host calls them: the PDS
- * creates an account for a DID only when a host it trusts signed the DID's
- * genesis operation, and takes the account's writes only with that host's
+ * reserves a signing key for a host it trusts, creates an account for a
+ * DID only when that host signed the DID's genesis operation, which names
+ * the key, and takes the account's writes only with that host's
  * service-auth tokens.
  */
 
@@ -14,7 +15,7 @@ import {App, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {bytesStream} from 'zena:stream';
 import {now} from 'wasi:clocks/system-clock';
-import {KeyType, PublicKey, formatDidKey} from 'atproto:didkey';
+import {KeyType, PublicKey, formatDidKey, parseDidKey} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {ManagedAccounts, TrustedHost} from 'pds:managed';
@@ -25,6 +26,7 @@ import {Account, MemoryStorage, SigningKey} from 'pds:storage';
 let PDS_DID = 'did:web:padstone.test';
 let PDS_URL = 'https://padstone.test';
 let HOST_DID = 'did:web:pkg.test';
+let OTHER_DID = 'did:web:other-pkg.test';
 let HANDLE = 'router.acme.pkg.test';
 let PROFILE = 'dev.zena-lang.package.profile';
 
@@ -32,7 +34,10 @@ function key(seed: i32) {
   return new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, seed as u8));
 }
 
-/** A PDS that trusts one package host, with the PLC directory and DID documents it reads. */
+/**
+ * A PDS that trusts two package hosts, the one under test and another,
+ * with the PLC directory and DID documents it reads.
+ */
 final class Fixture {
   var app: App;
   pds: Pds;
@@ -40,19 +45,23 @@ final class Fixture {
   hostRotation = key(11);
   /** The host's own signing key, which its service-auth tokens are signed with. */
   hostSigning = key(12);
+  /** Another trusted host's keys. */
+  otherRotation = key(13);
+  otherSigning = key(14);
   /** Each DID's operations, oldest first. */
   logs = new HashMap<String, Array<PlcOperation>>();
   /** The signing key each DID's document names now. */
   keys = new HashMap<String, PublicKey>();
   var #jti = 0;
-  var #seed = 100;
 
   new() : pds = new Pds(new MemoryStorage()), app = new App() {
     this.keys[HOST_DID] = this.hostSigning.publicKey();
+    this.keys[OTHER_DID] = this.otherSigning.publicKey();
     let logs = this.logs;
     let keys = this.keys;
     this.pds.managed = new ManagedAccounts(PDS_DID, PDS_URL,
-        [new TrustedHost(HOST_DID, [this.hostRotation.publicKey()])],
+        [new TrustedHost(HOST_DID, [this.hostRotation.publicKey()]),
+         new TrustedHost(OTHER_DID, [this.otherRotation.publicKey()])],
         async (did: String): Future<Array<PlcOperation>> => {
           if (let (true, log) = logs.get(did)) {
             return log;
@@ -68,20 +77,30 @@ final class Fixture {
     this.app = createApp(this.pds);
   }
 
+  /** A signing key the PDS reserves for the host, or for `issuer`, the other one. */
+  // TODO(#855): default `issuer` to HOST_DID itself.
+  reserve(issuer: String | null = null): PublicKey {
+    let from = issuer ?? HOST_DID;
+    let signer = if (from == HOST_DID) this.hostSigning else this.otherSigning;
+    let reserved = ok(this.call('com.atproto.server.reserveSigningKey', 'POST',
+        this.token(from, signer, 'com.atproto.server.reserveSigningKey'), '{}'));
+    return parseDidKey(reserved['signingKey'] as String);
+  }
+
   /**
-   * A DID as a host mints one: a genesis operation naming `temporary` as
+   * A DID as a host mints one: a genesis operation naming `signing` as
    * its signing key and `endpoint` as its PDS, with `rotation` as its
    * rotation keys, signed with `signer`.
    */
   // TODO(#855): default `endpoint` to PDS_URL itself.
-  mint(signer: SigningKey, temporary: SigningKey, endpoint: String | null = null,
+  mint(signer: SigningKey, signing: PublicKey, endpoint: String | null = null,
       rotation: Array<PublicKey> | null = null): String {
     let keys: Array<PublicKey> = rotation ?? [this.hostRotation.publicKey()];
-    let operation = genesisOperation(temporary.publicKey(), keys, HANDLE, endpoint ?? PDS_URL)
+    let operation = genesisOperation(signing, keys, HANDLE, endpoint ?? PDS_URL)
         .signedWith((bytes) => signer.sign(bytes));
     let did = didOfGenesis(operation);
     this.logs[did] = [operation];
-    this.keys[did] = temporary.publicKey();
+    this.keys[did] = signing;
     return did;
   }
 
@@ -115,13 +134,15 @@ final class Fixture {
     return res;
   }
 
+  /** `createAccount` for `did`, with `token`. */
+  create(did: String, token: String | null): Response {
+    return this.call('com.atproto.server.createAccount', 'POST', token, `{"did": "${did}", "handle": "${HANDLE}"}`);
+  }
+
   /** Creates the managed account of a DID the host mints, and returns the DID. */
   created(): String {
-    this.#seed += 1;
-    let temporary = key(this.#seed);
-    let did = this.mint(this.hostRotation, temporary);
-    ok(this.call('com.atproto.server.createAccount', 'POST',
-        this.token(did, temporary, 'com.atproto.server.createAccount'), `{"did": "${did}", "handle": "${HANDLE}"}`));
+    let did = this.mint(this.hostRotation, this.reserve());
+    ok(this.create(did, this.hostToken('com.atproto.server.createAccount')));
     return did;
   }
 
@@ -142,58 +163,62 @@ function errorOf(res: Response) {
 }
 
 export let tests = suite('pds:managed', () => {
-  test('creates an account for a DID a trusted host made, with a signing key of its own', (ctx) => {
+  test('creates an account for a DID a trusted host made, with the key it reserved', (ctx) => {
     let fixture = new Fixture();
-    let temporary = key(21);
-    let did = fixture.mint(fixture.hostRotation, temporary);
-    let created = ok(fixture.call('com.atproto.server.createAccount', 'POST',
-        fixture.token(did, temporary, 'com.atproto.server.createAccount'), `{"did": "${did}", "handle": "${HANDLE}"}`));
+    let reserved = fixture.reserve();
+    let did = fixture.mint(fixture.hostRotation, reserved);
+    let created = ok(fixture.create(did, fixture.hostToken('com.atproto.server.createAccount')));
     equal(created['did'] as String, did);
     equal(created['handle'] as String, HANDLE);
     let account = runFuture(fixture.pds.storage.getAccount(did)) as Account;
     equal(account.manager as String, HOST_DID);
-    let signing = runFuture(account.signingKey()).publicKey();
-    isTrue(formatDidKey(signing) != formatDidKey(temporary.publicKey()), 'a key of its own');
-
-    // The host learns the key to name in the DID document as account
-    // migration does, with a token from the DID's current key.
-    let credentials = ok(fixture.call('com.atproto.identity.getRecommendedDidCredentials', 'GET',
-        fixture.token(did, temporary, 'com.atproto.identity.getRecommendedDidCredentials'), null));
-    equal((credentials['verificationMethods'] as JsonObject)['atproto'] as String, formatDidKey(signing));
-    let pds = ((credentials['services'] as JsonObject)['atproto_pds'] as JsonObject);
-    equal(pds['endpoint'] as String, PDS_URL);
-    equal((credentials['alsoKnownAs'] as JsonArray)[0] as String, `at://${HANDLE}`);
+    // The key the genesis operation names, which the PDS made and holds.
+    equal(formatDidKey(runFuture(account.signingKey()).publicKey()), formatDidKey(reserved));
 
     // Once is enough.
-    equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST',
-        fixture.token(did, temporary, 'com.atproto.server.createAccount'), `{"did": "${did}", "handle": "${HANDLE}"}`)),
-        'InvalidRequest');
+    equal(errorOf(fixture.create(did, fixture.hostToken('com.atproto.server.createAccount'))), 'InvalidRequest');
   });
 
-  test('refuses an account no trusted host made', (ctx) => {
+  test('reserves keys only for the hosts it trusts', (ctx) => {
     let fixture = new Fixture();
-    let method = 'com.atproto.server.createAccount';
-    let create = (did: String, signer: SigningKey) =>
-      fixture.call('com.atproto.server.createAccount', 'POST', fixture.token(did, signer, method),
-          `{"did": "${did}", "handle": "${HANDLE}"}`);
+    let method = 'com.atproto.server.reserveSigningKey';
+    equal(errorOf(fixture.call(method, 'POST', null, '{}')), 'AuthenticationRequired');
+    let stranger = key(41);
+    fixture.keys['did:web:stranger.test'] = stranger.publicKey();
+    equal(errorOf(fixture.call(method, 'POST', fixture.token('did:web:stranger.test', stranger, method), '{}')),
+        'Forbidden');
+    equal(errorOf(fixture.call(method, 'POST', fixture.hostToken('com.atproto.server.createAccount'), '{}')),
+        'InvalidToken');
+  });
+
+  test('refuses an account no trusted host made, or with a key it did not reserve', (ctx) => {
+    let fixture = new Fixture();
+    let create = (did: String) => fixture.create(did, fixture.hostToken('com.atproto.server.createAccount'));
 
     // Naming the host's rotation key is not enough: the host must have signed.
     let attacker = key(31);
-    let temporary = key(32);
-    let forged = fixture.mint(attacker, temporary, PDS_URL, [fixture.hostRotation.publicKey(), attacker.publicKey()]);
-    equal(errorOf(create(forged, temporary)), 'IncompatibleDidDoc');
+    let forged = fixture.mint(attacker, fixture.reserve(), PDS_URL,
+        [fixture.hostRotation.publicKey(), attacker.publicKey()]);
+    equal(errorOf(create(forged)), 'IncompatibleDidDoc');
     isTrue(runFuture(fixture.pds.storage.getAccount(forged)) == null, 'no account');
 
     // A DID whose document names another PDS.
-    let elsewhere = fixture.mint(fixture.hostRotation, temporary, 'https://other.test');
-    equal(errorOf(create(elsewhere, temporary)), 'IncompatibleDidDoc');
+    equal(errorOf(create(fixture.mint(fixture.hostRotation, fixture.reserve(), 'https://other.test'))),
+        'IncompatibleDidDoc');
 
-    // A token that is not the DID's own.
-    let did = fixture.mint(fixture.hostRotation, temporary);
-    equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST', fixture.hostToken(method),
-        `{"did": "${did}", "handle": "${HANDLE}"}`)), 'InvalidToken');
-    equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST', null,
-        `{"did": "${did}", "handle": "${HANDLE}"}`)), 'AuthenticationRequired');
+    // A key the PDS did not reserve, or reserved for another host, whose
+    // reservation stays.
+    equal(errorOf(create(fixture.mint(fixture.hostRotation, key(32).publicKey()))), 'InvalidRequest');
+    let others = fixture.reserve(OTHER_DID);
+    equal(errorOf(create(fixture.mint(fixture.hostRotation, others))), 'InvalidRequest');
+    let theirs = fixture.mint(fixture.otherRotation, others, PDS_URL, [fixture.otherRotation.publicKey()]);
+    ok(fixture.create(theirs, fixture.token(OTHER_DID, fixture.otherSigning, 'com.atproto.server.createAccount')));
+
+    // Only the host that made the DID asks for its account.
+    let did = fixture.mint(fixture.hostRotation, fixture.reserve());
+    equal(errorOf(fixture.create(did, fixture.token(OTHER_DID, fixture.otherSigning,
+        'com.atproto.server.createAccount'))), 'Forbidden');
+    equal(errorOf(fixture.create(did, null)), 'AuthenticationRequired');
 
     // An account of its own, with an email address and a password, is not one this PDS makes.
     equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST', null,
@@ -208,9 +233,9 @@ export let tests = suite('pds:managed', () => {
 
     // Not without a token, nor with the account's own DID's token.
     equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST', null, writes)), 'AuthenticationRequired');
-    let temporary = key(101);
+    let own = runFuture((runFuture(fixture.pds.storage.getAccount(did)) as Account).signingKey());
     equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST',
-        fixture.token(did, temporary, 'com.atproto.repo.applyWrites'), writes)), 'Forbidden');
+        fixture.token(did, own, 'com.atproto.repo.applyWrites'), writes)), 'Forbidden');
     // Nor with the host's token for another method.
     equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST',
         fixture.hostToken('com.atproto.repo.putRecord'), writes)), 'InvalidToken');

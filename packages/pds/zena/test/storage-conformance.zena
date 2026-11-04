@@ -18,11 +18,11 @@ import {HostAccount, HostStore, PackageSummary, PendingChange, PendingRelease} f
 import {PlcLog} from 'pds:plc-directory';
 import {AppPassword, CredentialStore, RefreshSession} from 'pds:sessions';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
-import {curveOf, publicKeyFor} from 'atproto:didkey';
+import {curveOf, formatDidKey, publicKeyFor} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
 import {CreateRecord, DeleteRecord, UpdateRecord, Write} from 'pds:repository';
 import {
-  Account, AccountKind, Head, KeyEncryption, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob
+  Account, AccountKind, Head, KeyEncryption, RecordChange, RecordEntry, ReservedKey, SigningKey, Storage, StoredBlob
 } from 'pds:storage';
 import {Future} from 'zena:async';
 import {sha256} from 'zena:crypto';
@@ -141,6 +141,28 @@ export function storageConformance(make: () => Storage): void {
     equal((runFuture(storage.getAccount('did:plc:managedmanagedmanagedman')) as Account).manager as String,
         'did:web:pkg.test');
     isNull((runFuture(storage.getAccount(BOB)) as Account).manager);
+  });
+
+  test('keeps a reserved signing key until it is taken, once, or expires', (ctx) => {
+    let storage = make();
+    let reserved = key(KeyType.Secp256k1);
+    let didKey = formatDidKey(reserved.publicKey());
+    let now = 1792800000 as i64;
+    isNull(runFuture(storage.takeReservedKey(didKey, 'did:web:pkg.test', now)));
+    runFuture(storage.reserveKey(didKey, new ReservedKey(reserved, 'did:web:pkg.test', now + 3600)));
+    // Only the App View it was reserved for takes it; another leaves it.
+    isNull(runFuture(storage.takeReservedKey(didKey, 'did:web:other.test', now)));
+    let taken = runFuture(storage.takeReservedKey(didKey, 'did:web:pkg.test', now)) as ReservedKey;
+    equal(taken.reservedFor, 'did:web:pkg.test');
+    isTrue(taken.key.type == KeyType.Secp256k1, 'key type');
+    isTrue(sameBytes(taken.key.privateKey, reserved.privateKey), 'private key');
+    // Once: a second account cannot take the same key.
+    isNull(runFuture(storage.takeReservedKey(didKey, 'did:web:pkg.test', now)));
+
+    let late = key();
+    let lateKey = formatDidKey(late.publicKey());
+    runFuture(storage.reserveKey(lateKey, new ReservedKey(late, 'did:web:pkg.test', now - 1)));
+    isNull(runFuture(storage.takeReservedKey(lateKey, 'did:web:pkg.test', now)));
   });
 
   test('keeps blocks and blobs', (ctx) => {

@@ -7,11 +7,13 @@
  */
 
 import {Future} from 'zena:async';
+import {randomBytes} from 'zena:random';
+import {KeyType, PublicKey, formatDidKey} from 'atproto:didkey';
 import {normalizeHandle} from 'atproto:syntax';
 import {TidClock} from 'atproto:tid';
 import {ManagedAccounts, ManagedLimits} from './managed.zena';
 import {CommitListener, Repository} from './repository.zena';
-import {Account, AccountKind, SigningKey, Storage} from './storage.zena';
+import {Account, AccountKind, ReservedKey, SigningKey, Storage} from './storage.zena';
 
 export final class Pds {
   storage: Storage;
@@ -19,6 +21,12 @@ export final class Pds {
   var managed: ManagedAccounts | null = null;
   /** What a managed account may hold, whoever writes it. */
   managedLimits = new ManagedLimits();
+  /**
+   * How long a key `reserveSigningKey` makes waits for its account, in
+   * seconds. The App View creates the account as soon as the PLC directory
+   * has its DID.
+   */
+  var reservationSeconds: i64 = (10 * 60) as i64;
   /** Hands out every commit's `rev`. */
   #clock: TidClock;
   #listeners = new GrowableArray<CommitListener>();
@@ -41,6 +49,37 @@ export final class Pds {
     await this.storage.putAccount(account);
     await this.repositoryOf(account).initialize(nowMicros);
     return account;
+  }
+
+  /**
+   * Makes a signing key for a managed account that the App View
+   * `reservedFor` is about to create, and keeps it for
+   * `reservationSeconds`. Returns its public key, which the App View names
+   * in the account's DID document.
+   */
+  async reserveSigningKey(reservedFor: String, nowSeconds: i64): Future<PublicKey> {
+    let key = new SigningKey(KeyType.Secp256k1, randomBytes(32));
+    let publicKey = key.publicKey();
+    await this.storage.reserveKey(formatDidKey(publicKey),
+        new ReservedKey(key, reservedFor, nowSeconds + this.reservationSeconds));
+    return publicKey;
+  }
+
+  /**
+   * Creates `did`'s managed account for the App View `manager`, with the
+   * signing key `didKey`, when `manager` reserved it and the reservation
+   * has not expired; otherwise creates nothing and returns null. A key
+   * makes one account.
+   */
+  async createManagedAccount(did: String, handle: String, didKey: String, manager: String, nowMicros: i64,
+      nowSeconds: i64): Future<Account | null> {
+    let reserved = await this.storage.takeReservedKey(didKey, manager, nowSeconds);
+    if (reserved == null) {
+      return null;
+    }
+    // The App View decides what its accounts hold, so the PDS does not
+    // restrict them to a kind's collections: a person's account takes any.
+    return await this.createAccount(did, handle, reserved.key, nowMicros, AccountKind.Person, manager);
   }
 
   /** The account a DID or a handle names, or null. */

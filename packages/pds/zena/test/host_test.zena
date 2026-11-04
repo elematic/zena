@@ -18,7 +18,7 @@ import {readCar} from 'atproto:car';
 import {BlobRef, MapValue, Value, fromJson, toJson} from 'atproto:data';
 import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto:didkey';
-import {PlcOperation, checkNextOperation, didOfGenesis} from 'atproto:plc';
+import {PlcOperation, didOfGenesis} from 'atproto:plc';
 import {IdentityResolver} from 'atproto:identity';
 import {packSource} from 'package-manager:archive';
 import {verifyRecordProof} from 'atproto:repo';
@@ -42,7 +42,7 @@ import {TidClock} from 'atproto:tid';
 import {createApp} from 'pds:server';
 import {MemoryCredentialStore, Sessions} from 'pds:sessions';
 import {LocalRotationKey} from 'pds:rotation';
-import {Account, AccountKind, AccountStore, MemoryStorage, SigningKey, Storage} from 'pds:storage';
+import {Account, AccountKind, AccountStore, MemoryStorage, ReservedKey, SigningKey, Storage} from 'pds:storage';
 
 let HOST = 'did:web:pkg.test';
 let ALICE = 'did:plc:alicealicealicealicealic';
@@ -72,6 +72,14 @@ final class CountingStorage implements Storage {
   store(did: String): AccountStore {
     this.reads += 1;
     return this.#inner.store(did);
+  }
+
+  async reserveKey(didKey: String, reserved: ReservedKey): Future<void> {
+    await this.#inner.reserveKey(didKey, reserved);
+  }
+
+  async takeReservedKey(didKey: String, reservedFor: String, nowSeconds: i64): Future<ReservedKey | null> {
+    return await this.#inner.takeReservedKey(didKey, reservedFor, nowSeconds);
   }
 }
 
@@ -548,27 +556,21 @@ export let tests = suite('pds:host', () => {
     let orgDid = org['did'] as String;
     equal(org['handle'] as String, 'acme.pkg.test');
     // The host sent the organization's genesis operation, which makes its
-    // DID, with Alice's recovery key ranked above the host's key.
+    // DID, with Alice's recovery key ranked above the host's key. It is the
+    // DID's only operation: it names the signing key the PDS reserved and
+    // holds for the account, the PDS, and the host as the account's
+    // package host.
     let orgOperation = fixture.genesisOf(orgDid);
+    equal(fixture.submitted[orgDid].length, 1);
     equal(didOfGenesis(orgOperation), orgDid);
     equal(orgOperation.rotationKeys[0], RECOVERY);
     equal(orgOperation.rotationKeys.length, 2);
-    equal(orgOperation.services['atproto_pds'].endpoint, 'https://pkg.test');
-    // It named a temporary signing key. The next operation names the key
-    // the PDS made for the account, keeps the rotation keys and the
-    // handle, and names the host as the account's package host.
-    equal(fixture.submitted[orgDid].length, 2);
-    let identity = fixture.latestOf(orgDid);
-    checkNextOperation(orgDid, [orgOperation], identity);
+    equal(orgOperation.alsoKnownAs[0], 'at://acme.pkg.test');
     let orgKey = runFuture((runFuture(fixture.pds.storage.getAccount(orgDid)) as Account).signingKey()).publicKey();
-    equal(identity.verificationMethods['atproto'], formatDidKey(orgKey));
-    isTrue(orgOperation.verificationMethods['atproto'] != identity.verificationMethods['atproto'], 'not the temporary key');
-    equal(identity.rotationKeys.length, 2);
-    equal(identity.rotationKeys[0], RECOVERY);
-    equal(identity.alsoKnownAs[0], 'at://acme.pkg.test');
-    equal(identity.services['atproto_pds'].endpoint, 'https://pkg.test');
-    equal(identity.services['zena_package_host'].kind, 'ZenaPackageHost');
-    equal(identity.services['zena_package_host'].endpoint, 'https://pkg.test');
+    equal(orgOperation.verificationMethods['atproto'], formatDidKey(orgKey));
+    equal(orgOperation.services['atproto_pds'].endpoint, 'https://pkg.test');
+    equal(orgOperation.services['zena_package_host'].kind, 'ZenaPackageHost');
+    equal(orgOperation.services['zena_package_host'].endpoint, 'https://pkg.test');
 
     let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
     let pkgDid = pkg['did'] as String;

@@ -774,17 +774,20 @@ accounts**: accounts it creates for an App View its operator trusts,
 with no email address, password or invite code, and which only that App
 View writes to.
 
-- **Creating one.** The App View mints the DID with a PLC genesis
-  operation, signed with its rotation key, that names a temporary signing
-  key the App View holds and the PDS as the account's PDS. It calls the
-  PDS's `com.atproto.server.createAccount` with that DID and a
-  service-auth token signed with the temporary key, as atproto's account
-  migration does. The PDS creates the account when the DID's genesis
-  operation was signed by the rotation key of an App View its operator
-  trusts, which only that App View can do, and generates the account's
-  signing key. The App View then sends a PLC operation that names that
-  key, from `com.atproto.identity.getRecommendedDidCredentials`, and drops
-  the temporary one.
+- **Creating one.** The App View holds the DID's rotation keys and the PDS
+  holds its signing key, so creating an account takes two calls to the
+  PDS around one PLC operation. The App View first calls
+  `com.atproto.server.reserveSigningKey` with a service-auth token of its
+  own, and the PDS makes a signing key and keeps it for that App View for
+  a few minutes. The App View mints the DID with a PLC genesis operation,
+  signed with its rotation key, that names the reserved key, the PDS as
+  the account's PDS, and itself as `zena_package_host`. It then calls
+  `com.atproto.server.createAccount` with that DID and another token of
+  its own. The PDS creates the account when the DID's genesis operation
+  was signed by the rotation key of the App View the token is from, which
+  its operator trusts, the DID document names the PDS, and the signing
+  key it names is one the PDS reserved for that App View. A reserved key
+  makes one account. The genesis operation is the DID's only operation.
 - **Writing.** The PDS takes a write to a managed account, through
   `com.atproto.repo.applyWrites`, `putRecord`, `deleteRecord` and
   `uploadBlob`, only with a service-auth token from the account's App
@@ -984,11 +987,11 @@ the tokens it was given to the real App View.
    Every later call to the App View is made the same way.
 4. **The DID.** `zena` calls `dev.zena-lang.host.createPackage` with the
    scope's organization, any recovery keys, the profile and the
-   maintainers record. The App View writes the genesis operation, signs it
-   with its online rotation key, submits it to the PLC directory, and
-   creates the account on its PDS
-   ([Managed accounts](#managed-accounts)). Once the PDS has made the
-   account's signing key, the App View sends the operation that names it:
+   maintainers record. The App View has its PDS reserve the account's
+   signing key, writes the genesis operation, signs it with its online
+   rotation key, submits it to the PLC directory, and creates the account
+   on its PDS ([Managed accounts](#managed-accounts)). The genesis
+   operation is:
 
    ```json
    {
@@ -1012,18 +1015,16 @@ the tokens it was given to the real App View.
          "endpoint": "https://pkg.zena-lang.dev"
        }
      },
-     "prev": "bafyrei...(the genesis operation's CID)",
+     "prev": null,
      "sig": "..."
    }
    ```
 
    The DID is the first 24 characters of the base32 SHA-256 hash of the
-   signed genesis operation, which named a temporary signing key the App
-   View held until the PDS made the account's own. A new package's DID
-   document therefore names padstone as its PDS, the key padstone holds as
-   its signing key, and its App View as `zena_package_host`, and lists the
-   maintainer's recovery key, if any, ahead of the App View's two rotation
-   keys.
+   signed genesis operation. A new package's DID document therefore names
+   padstone as its PDS, the key padstone holds as its signing key, and its
+   App View as `zena_package_host`, and lists the maintainer's recovery
+   key, if any, ahead of the App View's two rotation keys.
 
 5. **The repository.** The App View writes the account's first records
    through its PDS: the profile, from `zena-package.json`, and a
