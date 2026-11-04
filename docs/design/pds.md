@@ -1,7 +1,7 @@
 # A PDS written in Zena
 
 `packages/pds` is a port of an existing AT Protocol PDS (Personal Data
-Server) to Zena, and the base of the Zena project's package host
+Server) to Zena, and the base of the Zena project's App View
 ([package-manager.md](package-manager.md)). This document records which
 implementation it ports, what is still missing, and the order the work
 lands in.
@@ -26,12 +26,12 @@ Beyond it:
 - **Hosting Zena packages.** Zena's package manager publishes each package
   as an atproto account ([package-manager.md](package-manager.md)). This
   PDS, with the `dev.zena-lang.host.*` extension, is the Zena project's
-  package host: it creates package accounts on request, lets their
+  App View: it creates package accounts on request, lets their
   maintainers publish to them through service auth, confines them to
   package records, and refuses changes to release records. Extensions are
   distributed as such packages.
 
-The package host comes first, since the Zena package ecosystem needs it to
+The App View comes first, since the Zena package ecosystem needs it to
 start.
 
 The single-account server is built so these do not require a rewrite; see
@@ -46,7 +46,7 @@ writes and signs a commit for each batch, rebuilding the record tree from
 the record index; pds.js updates the tree along the changed paths, and
 porting that is still to do. Several servers can share one store: a commit
 is stored only if the head it was built on is still the head, and is
-otherwise built again, and the host takes a scope or package name in one
+otherwise built again, and the App View takes a scope or package name in one
 call that fails when it is taken. The server answers `/`,
 `/xrpc/_health`, the `com.atproto.sync` reads `getRecord`, `getRepo`,
 `getLatestCommit` and `getBlob`, and the `com.atproto.repo` reads
@@ -55,7 +55,7 @@ it has app-password sign-in (`com.atproto.server.createSession`,
 `refreshSession`, `getSession`, `deleteSession`), `getServiceAuth`, and
 an account's writes to its own repository (`putRecord`, `deleteRecord`),
 in `pds:sessions`; account passwords, `createAppPassword` and the other
-writes wait for ordinary accounts. Of the package host (milestone 6), it
+writes wait for ordinary accounts. Of the App View (milestone 6), it
 has account kinds that confine package, organization and automation
 accounts to `dev.zena-lang.*` records, and the methods
 `createOrganization`, `createPackage` (which signs and submits each new
@@ -171,13 +171,13 @@ bytes, Firestore and Cloud Storage clients (`google-cloud:firestore`,
 `google-cloud:storage`) and the atproto libraries listed in
 [Status](#status). What is left:
 
-| Need                                                    | Status in Zena                                                                     | Plan                                                                                                                            |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| PBKDF2 for passwords                                    | None                                                                               | Over HMAC-SHA256, in `zena:crypto`                                                                                              |
-| BLAKE3                                                  | None                                                                               | Port pds.js `packages/spaces/src/blake3.js`, for spaces                                                                         |
-| WebSocket server, for `com.atproto.sync.subscribeRepos` | None. The `zena-cli` host serves HTTP/1.1 and HTTP/2 through hyper with no upgrade | Add an upgrade API to the host                                                                                                  |
-| Writing a package host's handle records                 | None                                                                               | A Cloud DNS client in `google-cloud`, which the host writes `_atproto` TXT records with (package-manager.md, "Serving handles") |
-| Wall-clock dates                                        | `wasi:clocks/system-clock` directly, and no ISO-8601 formatting                    | Add both to `zena:time`                                                                                                         |
+| Need                                                    | Status in Zena                                                                     | Plan                                                                                                                                |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| PBKDF2 for passwords                                    | None                                                                               | Over HMAC-SHA256, in `zena:crypto`                                                                                                  |
+| BLAKE3                                                  | None                                                                               | Port pds.js `packages/spaces/src/blake3.js`, for spaces                                                                             |
+| WebSocket server, for `com.atproto.sync.subscribeRepos` | None. The `zena-cli` host serves HTTP/1.1 and HTTP/2 through hyper with no upgrade | Add an upgrade API to the host                                                                                                      |
+| Writing an App View's handle records                    | None                                                                               | A Cloud DNS client in `google-cloud`, which the App View writes `_atproto` TXT records with (package-manager.md, "Serving handles") |
+| Wall-clock dates                                        | `wasi:clocks/system-clock` directly, and no ISO-8601 formatting                    | Add both to `zena:time`                                                                                                             |
 
 ## Milestones
 
@@ -201,29 +201,29 @@ grows. Milestones 1 to 4 are done.
    account's repository, `com.atproto.sync.*` except `subscribeRepos`,
    blobs, `com.atproto.server.*` sessions and identity. Handlers get their
    account from the request from the start.
-6. **The package host.** Package and organization accounts created on
-   request, each with a `did:plc` whose genesis operation the host signs;
-   the `dev.zena-lang.host.*` methods, checked with service auth
-   (`atproto:service-auth`); package accounts confined to `dev.zena-lang.*`
-   records; and the limits on accounts and storage. The `zena` command's
-   publishing tests run against it, in memory.
-7. **Deployment.** A Firestore adapter for the storage ports, GCS for blobs,
-   and a Cloud Run image running under `zena-cli`, with the host's handle
-   records in its DNS zone.
-   Firestore documents are keyed by tenant and account from the start. The
-   adapters are done, tested against the Firestore emulator with a suite
-   every storage passes (`zena/test/storage-conformance.zena`), and so is
-   the server's configuration (`pds:service`), read from the environment.
-   The host writes a TXT record for each handle it gives out, to a Cloud
-   DNS zone or in memory (`pds:handles`), and `npm run demo` runs it on
-   this machine. The image, its Cloud Run scripts for a staging and a
+6. **The App View.** Package and organization accounts created on request,
+   each with a `did:plc` whose genesis operation the App View signs; the
+   `dev.zena-lang.host.*` methods, checked with service auth
+   (`atproto:service-auth`); package accounts confined to
+   `dev.zena-lang.*` records; and the limits on accounts and storage. The
+   `zena` command's publishing tests run against it, in memory.
+7. **Deployment.** A Firestore adapter for the storage ports, GCS for
+   blobs, and a Cloud Run image running under `zena-cli`, with the App
+   View's handle records in its DNS zone. Firestore documents are keyed by
+   tenant and account from the start. The adapters are done, tested
+   against the Firestore emulator with a suite every storage passes
+   (`zena/test/storage-conformance.zena`), and so is the server's
+   configuration (`pds:service`), read from the environment. The App View
+   writes a TXT record for each handle it gives out, to a Cloud DNS zone
+   or in memory (`pds:handles`), and `npm run demo` runs it on this
+   machine. The image, its Cloud Run scripts for a staging and a
    production environment, and their zones are in `packages/pds/deploy`;
    neither environment is up yet.
 8. **Conformance.** The pds.js e2e suite, run against this server, with
    `com.atproto.repo.*` and AppView proxying for ordinary accounts.
 9. **Firehose.** `subscribeRepos`, after the Zena host can upgrade a request
    to a WebSocket, so that relays and the package index can follow the
-   host. Events are numbered per tenant.
+   App View. Events are numbered per tenant.
 10. **OAuth.** The authorization server (PAR, DPoP, PKCE, scopes) and the
     account pages, from `oauth.js`, `scope.js` and `handlers/oauth.js`.
 11. **Multiple ordinary accounts.** Account creation with invite codes,
@@ -259,10 +259,11 @@ database, blob prefix, rotation key and handle records.
 
 With `PDS_PLC=staging` the server is a PLC directory itself, at `/plc` on
 the PDS's name (`pds:plc-directory`). It records the operations of the
-accounts the host makes, after checking that each follows the last (`checkNextOperation`
-in `atproto:plc`), and serves those DIDs' documents and logs. Every other
+accounts the App View makes, after checking that each follows the last
+(`checkNextOperation` in `atproto:plc`), and serves those DIDs' documents
+and logs. Every other
 DID it reads from the public directory, so maintainers sign in with
-their real accounts, and the host checks their service-auth tokens with
+their real accounts, and the App View checks their service-auth tokens with
 their real keys. It refuses operations for DIDs the public directory
 has. `zena` uses staging with `ZENA_PACKAGE_HOST` and
 `ZENA_PLC_DIRECTORY` pointed at the staging host and its `/plc`.

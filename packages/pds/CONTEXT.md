@@ -51,7 +51,7 @@ first. When a pull request closes an item there, tick its box.
   over the network: a host method, or a public atproto read. Changes go
   through host methods with the person's token, never on the strength of
   the site's cookie (package-manager.md, "Names and addresses" and
-  "Finding a host").
+  "Finding an App View").
 
 ## Storage
 
@@ -67,9 +67,8 @@ first. When a pull request closes an item there, tick its box.
   public roles start from `HostStore.mentionsOf`, which the host writes
   from `Pds.onCommit` after each commit (`PackageHost.#indexCommit`). A
   method a page calls must not read every account or repository. These
-  indexes cover only this host's accounts: packages on other hosts,
-  search and dependents belong to the index, an AppView outside the PDS
-  (package-manager.md, "The index" and "The host's indexes").
+  indexes are where the App View's index starts, with only the accounts
+  it holds (package-manager.md, "The index").
 - Several servers may share a store. Write through `AccountStore.commit`,
   which checks the head, and take names with `HostStore.claimScope` and
   `claimName`, never with a read and then a write.

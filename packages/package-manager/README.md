@@ -64,9 +64,9 @@ package in this repository's workspace or from a package that lists it in its
   three, and their lexicons state only constraints it checks.
 - `org/`: an organization's members and team records, and the private
   entries their commitments stand for.
-- `host/`: the package host's methods
+- `host/`: the App View's methods
   ([docs/design/package-manager.md](../../docs/design/package-manager.md),
-  "The host's methods").
+  "The App View's methods").
 - `authPublish.json`: the OAuth permission set `zena login` asks for:
   writing attestations and calling the host's methods.
 
