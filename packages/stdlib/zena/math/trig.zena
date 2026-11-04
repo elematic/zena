@@ -1,0 +1,584 @@
+/**
+ * `sin`, `cos` and `tan`, ported from musl's `sin.c`, `cos.c`, `tan.c`,
+ * `__sin.c`, `__cos.c`, `__tan.c`, `__rem_pio2.c` and `__rem_pio2_large.c`,
+ * which are FreeBSD's `s_sin.c`, `s_cos.c`, `s_tan.c`, `k_sin.c`,
+ * `k_cos.c`, `k_tan.c`, `e_rem_pio2.c` and `k_rem_pio2.c`:
+ *
+ *   Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *   Developed at SunPro, a Sun Microsystems, Inc. business.
+ *   Permission to use, copy, modify, and distribute this software is
+ *   freely granted, provided that this notice is preserved.
+ *
+ * Each reduces `x` to `y = x - n * pi/2` with `|y| <= pi/4`, as a pair
+ * of doubles `y0 + y1`, and evaluates a polynomial kernel on `y` chosen
+ * by `n mod 4`. The reduction uses three pieces of `pi/2` up to
+ * `2^20 * pi/2`, and the 66-word binary expansion of `2/pi` beyond
+ * that, so it is exact for every double. The error is under 1 ulp.
+ */
+
+import {
+  bits, fromBits, highWord, ffloor, scalbn, zeroLowWord, idiv, X1P24, X1P_24,
+} from './float-bits.zena';
+
+// The sine kernel's polynomial on [-pi/4, pi/4]: |error| <= 2^-58.
+let S1 = -0.16666666666666632; // 0xbfc5555555555549
+let S2 = 0.00833333333332249; // 0x3f8111111110f8a6
+let S3 = -0.0001984126982985795; // 0xbf2a01a019c161d5
+let S4 = 0.0000027557313707070068; // 0x3ec71de357b1fe7d
+let S5 = -0.000000025050760253406863; // 0xbe5ae5e68a2b9ceb
+let S6 = 0.000000000158969099521155; // 0x3de5d93a5acfd57c
+
+// The cosine kernel's polynomial: |error| <= 2^-58.
+let C1 = 0.0416666666666666; // 0x3fa555555555554c
+let C2 = -0.001388888888887411; // 0xbf56c16c16c15177
+let C3 = 0.00002480158728947673; // 0x3efa01a019cb1590
+let C4 = -0.00000027557314351390663; // 0xbe927e4f809c52ad
+let C5 = 0.000000002087572321298175; // 0x3e21ee9ebdb4b1c4
+let C6 = -0.000000000011359647557788195; // 0xbda8fae9be8838d4
+
+// The tangent kernel's polynomial: |error| <= 2^-59.2 on [-pi/4, pi/4].
+let T0 = 0.3333333333333341; // 0x3fd5555555555563
+let T1 = 0.13333333333320124; // 0x3fc111111110fe7a
+let T2 = 0.05396825397622605; // 0x3faba1ba1bb341fe
+let T3 = 0.021869488294859542; // 0x3f9664f48406d637
+let T4 = 0.0088632398235993; // 0x3f8226e3e96e8493
+let T5 = 0.0035920791075913124; // 0x3f6d6d22c9560328
+let T6 = 0.0014562094543252903; // 0x3f57dbc8fee08315
+let T7 = 0.0005880412408202641; // 0x3f4344d8f2f26501
+let T8 = 0.0002464631348184699; // 0x3f3026f71a8d1068
+let T9 = 0.00007817944429395571; // 0x3f147e88a03792a6
+let T10 = 0.00007140724913826082; // 0x3f12b80f32f0a7e9
+let T11 = -0.000018558637485527546; // 0xbef375cbdb605373
+let T12 = 0.00002590730518636337; // 0x3efb2a7074bf7ad4
+let PIO4 = 0.7853981633974483; // 0x3fe921fb54442d18
+let PIO4_LO = 0.00000000000000003061616997868383; // 0x3c81a62633145c07
+
+/**
+ * `sin(x + y)` for `|x| <= pi/4`, where `y` is the tail of the reduced
+ * argument; `iy` is 0 when `y` is 0 (the argument was not reduced).
+ */
+function kernelSin(x: f64, y: f64, iy: i32) {
+  let z = x * x;
+  let w = z * z;
+  let r = S2 + z * (S3 + z * S4) + z * w * (S5 + z * S6);
+  let v = z * x;
+  if (iy == 0) {
+    return x + v * (S1 + z * r);
+  }
+  return x - ((z * (0.5 * y - v * r) - y) - v * S1);
+}
+
+/** `cos(x + y)` for `|x| <= pi/4`. */
+function kernelCos(x: f64, y: f64) {
+  let z = x * x;
+  let w = z * z;
+  let r = z * (C1 + z * (C2 + z * C3)) + w * w * (C4 + z * (C5 + z * C6));
+  let hz = 0.5 * z;
+  let w1 = 1.0 - hz;
+  return w1 + (((1.0 - w1) - hz) + (z * r - x * y));
+}
+
+/**
+ * `tan(x + y)` for `|x| <= pi/4`, or `-1 / tan(x + y)` when `odd` is 1.
+ * Arguments above 0.6744 are reflected through `pi/4` first.
+ */
+function kernelTan(x0: f64, y0: f64, odd: i32) {
+  var x = x0;
+  var y = y0;
+  let hx = highWord(x);
+  let big = (hx & 0x7fffffff) >= 0x3fe59428; // |x| >= 0.6744
+  let sign = hx < 0;
+  if (big) {
+    if (sign) {
+      x = -x;
+      y = -y;
+    }
+    x = (PIO4 - x) + (PIO4_LO - y);
+    y = 0.0;
+  }
+  let z = x * x;
+  let w = z * z;
+  // x^5 (T1 + x^2 T2 + ...) split into even and odd terms
+  let r = T1 + w * (T3 + w * (T5 + w * (T7 + w * (T9 + w * T11))));
+  let v = z * (T2 + w * (T4 + w * (T6 + w * (T8 + w * (T10 + w * T12)))));
+  let s = z * x;
+  let r1 = y + z * (s * (r + v) + y) + s * T0;
+  let w1 = x + r1;
+  if (big) {
+    let s1 = 1.0 - 2.0 * (odd as f64);
+    let v1 = s1 - 2.0 * (x + (r1 - w1 * w1 / (w1 + s1)));
+    return if (sign) -v1 else v1;
+  }
+  if (odd == 0) {
+    return w1;
+  }
+  // -1.0 / (x + r1) has up to 2 ulp of error, so compute it carefully
+  let w0 = zeroLowWord(w1);
+  let v1 = r1 - (w0 - x); // w0 + v1 = r1 + x
+  let a = -1.0 / w1;
+  let a0 = zeroLowWord(a);
+  return a0 + a * (1.0 + a0 * w0 + a0 * v1);
+}
+
+// pi/2 in three pieces of 33 bits each, with the tail of each.
+let INV_PIO2 = 0.6366197723675814; // 0x3fe45f306dc9c883
+let PIO2_1 = 1.5707963267341256; // 0x3ff921fb54400000
+let PIO2_1T = 0.00000000006077100506506192; // 0x3dd0b4611a626331
+let PIO2_2 = 0.00000000006077100506303966; // 0x3dd0b4611a600000
+let PIO2_2T = 0.0000000000000000000020222662487959506; // 0x3ba3198a2e037073
+let PIO2_3 = 0.0000000000000000000020222662487111665; // 0x3ba3198a2e000000
+let PIO2_3T = 0.000000000000000000000000000000084784276603689; // 0x397b839a252049c1
+let TO_INT = 6755399441055744.0; // 1.5 / 2^-52: adding it rounds to an integer
+
+/**
+ * The reduction `x = n * pi/2 + (y0 + y1)` for `|x| < 2^20 * pi/2`,
+ * with `n = rint(x / (pi/2))`.
+ */
+function remPio2Medium(x: f64, ix: i32): inline (i32, f64, f64) {
+  let fn = (x * INV_PIO2 + TO_INT) - TO_INT;
+  let n = fn as i32;
+  var r = x - fn * PIO2_1;
+  var w = fn * PIO2_1T; // first round, good to 85 bits
+  var y0 = r - w;
+  let ex = ix >> 20;
+  var ey = ((bits(y0) >> 52) as i32) & 0x7ff;
+  if (ex - ey > 16) {
+    // second round, good to 118 bits
+    var t = r;
+    w = fn * PIO2_2;
+    r = t - w;
+    w = fn * PIO2_2T - ((t - r) - w);
+    y0 = r - w;
+    ey = ((bits(y0) >> 52) as i32) & 0x7ff;
+    if (ex - ey > 49) {
+      // third round, good to 151 bits, which covers all cases
+      t = r;
+      w = fn * PIO2_3;
+      r = t - w;
+      w = fn * PIO2_3T - ((t - r) - w);
+      y0 = r - w;
+    }
+  }
+  let y1 = (r - y0) - w;
+  return (n, y0, y1);
+}
+
+/**
+ * The reduction `x = n * pi/2 + (y0 + y1)`, with `|y0 + y1| <= pi/4`,
+ * for any finite `x`; `n` is returned modulo 8 for large `x`. For an
+ * infinity or NaN the result is NaN.
+ */
+function remPio2(x: f64): inline (i32, f64, f64) {
+  let hx = highWord(x);
+  let sign = hx < 0;
+  let ix = hx & 0x7fffffff;
+  if (ix <= 0x400f6a7a) {
+    // |x| ~<= 5pi/4
+    if ((ix & 0xfffff) == 0x921fb) {
+      // |x| ~= pi/2 or 2pi/2: cancellation, use the medium case
+      return remPio2Medium(x, ix);
+    }
+    if (ix <= 0x4002d97c) {
+      // |x| ~<= 3pi/4
+      if (sign) {
+        let z = x + PIO2_1;
+        let y0 = z + PIO2_1T;
+        return (-1, y0, (z - y0) + PIO2_1T);
+      }
+      let z = x - PIO2_1; // one round good to 85 bits
+      let y0 = z - PIO2_1T;
+      return (1, y0, (z - y0) - PIO2_1T);
+    }
+    if (sign) {
+      let z = x + 2.0 * PIO2_1;
+      let y0 = z + 2.0 * PIO2_1T;
+      return (-2, y0, (z - y0) + 2.0 * PIO2_1T);
+    }
+    let z = x - 2.0 * PIO2_1;
+    let y0 = z - 2.0 * PIO2_1T;
+    return (2, y0, (z - y0) - 2.0 * PIO2_1T);
+  }
+  if (ix <= 0x401c463b) {
+    // |x| ~<= 9pi/4
+    if (ix <= 0x4015fdbc) {
+      // |x| ~<= 7pi/4
+      if (ix == 0x4012d97c) {
+        // |x| ~= 3pi/2
+        return remPio2Medium(x, ix);
+      }
+      if (sign) {
+        let z = x + 3.0 * PIO2_1;
+        let y0 = z + 3.0 * PIO2_1T;
+        return (-3, y0, (z - y0) + 3.0 * PIO2_1T);
+      }
+      let z = x - 3.0 * PIO2_1;
+      let y0 = z - 3.0 * PIO2_1T;
+      return (3, y0, (z - y0) - 3.0 * PIO2_1T);
+    }
+    if (ix == 0x401921fb) {
+      // |x| ~= 4pi/2
+      return remPio2Medium(x, ix);
+    }
+    if (sign) {
+      let z = x + 4.0 * PIO2_1;
+      let y0 = z + 4.0 * PIO2_1T;
+      return (-4, y0, (z - y0) + 4.0 * PIO2_1T);
+    }
+    let z = x - 4.0 * PIO2_1;
+    let y0 = z - 4.0 * PIO2_1T;
+    return (4, y0, (z - y0) - 4.0 * PIO2_1T);
+  }
+  if (ix < 0x413921fb) {
+    // |x| ~< 2^20 * (pi/2), medium size
+    return remPio2Medium(x, ix);
+  }
+  if (ix >= 0x7ff00000) {
+    // inf or NaN
+    let y0 = x - x;
+    return (0, y0, y0);
+  }
+  // z = scalbn(|x|, -ilogb(x) + 23): |x|'s significand with exponent 23,
+  // split into up to three 24-bit integers
+  var z = fromMantissa(x);
+  let tx = new FixedArray<f64>(3, 0.0);
+  tx[0] = ((z as i32) as f64);
+  z = (z - tx[0]) * X1P24;
+  tx[1] = ((z as i32) as f64);
+  z = (z - tx[1]) * X1P24;
+  tx[2] = z;
+  // skip zero terms; the first term is non-zero
+  var nx = 3;
+  while (nx > 1 && tx[nx - 1] == 0.0) {
+    nx -= 1;
+  }
+  let ty = new FixedArray<f64>(2, 0.0);
+  let n = remPio2Large(tx, nx, ty, (ix >> 20) - (0x3ff + 23));
+  if (sign) {
+    return (-n, -ty[0], -ty[1]);
+  }
+  return (n, ty[0], ty[1]);
+}
+
+let MANTISSA_MASK: i64 = 0x000fffffffffffff;
+
+/** `|x|`'s significand with the exponent set to 23: a value in [2^23, 2^24). */
+function fromMantissa(x: f64): f64 {
+  return fromBits((bits(x) & MANTISSA_MASK) | (((0x3ff + 23) as i64) << 52));
+}
+
+// 2/pi in 24-bit words: 396 hex digits, enough for the exponent range of
+// a double.
+let IPIO2 = [
+  0xA2F983, 0x6E4E44, 0x1529FC, 0x2757D1, 0xF534DD, 0xC0DB62, 0x95993C, 0x439041, 0xFE5163,
+  0xABDEBB, 0xC561B7, 0x246E3A, 0x424DD2, 0xE00649, 0x2EEA09, 0xD1921C, 0xFE1DEB, 0x1CB129,
+  0xA73EE8, 0x8235F5, 0x2EBB44, 0x84E99C, 0x7026B4, 0x5F7E41, 0x3991D6, 0x398353, 0x39F49C,
+  0x845F8B, 0xBDF928, 0x3B1FF8, 0x97FFDE, 0x05980F, 0xEF2F11, 0x8B5A0A, 0x6D1F6D, 0x367ECF,
+  0x27CB09, 0xB74F46, 0x3F669E, 0x5FEA2D, 0x7527BA, 0xC7EBE5, 0xF17B3D, 0x0739F7, 0x8A5292,
+  0xEA6BFB, 0x5FB11F, 0x8D5D08, 0x560330, 0x46FC7B, 0x6BABF0, 0xCFBC20, 0x9AF436, 0x1DA9E3,
+  0x91615E, 0xE61B08, 0x659985, 0x5F14A0, 0x68408D, 0xFFD880, 0x4D7327, 0x310606, 0x1556CA,
+  0x73A8C9, 0x60E27B, 0xC08C6B,
+];
+
+// pi/2 in 24-bit pieces.
+let PIO2 = [
+  1.570796251296997, // 0x3ff921fb40000000
+  0.00000007549789415861596, // 0x3e74442d00000000
+  0.000000000000005390302529957765, // 0x3cf8469880000000
+  0.0000000000000000000003282003415807913, // 0x3b78cc5160000000
+  0.00000000000000000000000000001270655753080676, // 0x39f01b8380000000
+  0.0000000000000000000000000000000000012293330898111133, // 0x387a252040000000
+  0.000000000000000000000000000000000000000000027337005381646456, // 0x36e3822280000000
+  0.0000000000000000000000000000000000000000000000000021674168387780482, // 0x3569f31d00000000
+];
+
+/**
+ * The reduction of a large argument. `x` holds `nx` 24-bit integers
+ * (as doubles) whose sum, times `2^e0`, is the argument. It writes
+ * `y0 + y1 = x - n * pi/2` with `|y0 + y1| <= pi/4` into `y`, and
+ * returns `n mod 8`. This is `__rem_pio2_large` with `prec` fixed at 1
+ * (a two-double result).
+ */
+function remPio2Large(x: FixedArray<f64>, nx: i32, y: FixedArray<f64>, e0: i32): i32 {
+  let jk = 4; // the number of terms of 2/pi needed
+  let jp = jk;
+  let f = new FixedArray<f64>(20, 0.0);
+  let fq = new FixedArray<f64>(20, 0.0);
+  let q = new FixedArray<f64>(20, 0.0);
+  let iq = new FixedArray<i32>(20, 0);
+
+  // jx, jv and q0, with q0 < 3
+  let jx = nx - 1;
+  var jv = idiv(e0 - 3, 24);
+  if (jv < 0) {
+    jv = 0;
+  }
+  var q0 = e0 - 24 * (jv + 1);
+
+  // f[0] to f[jx + jk], where f[jx + jk] = ipio2[jv + jk]
+  var j = jv - jx;
+  let m = jx + jk;
+  var i = 0;
+  while (i <= m) {
+    f[i] = if (j < 0) 0.0 else (IPIO2[j] as f64);
+    j += 1;
+    i += 1;
+  }
+
+  // q[0], q[1], ... q[jk]
+  i = 0;
+  while (i <= jk) {
+    var fw = 0.0;
+    j = 0;
+    while (j <= jx) {
+      fw += x[j] * f[jx + i - j];
+      j += 1;
+    }
+    q[i] = fw;
+    i += 1;
+  }
+
+  var jz = jk;
+  var z = 0.0;
+  var n = 0;
+  var ih = 0;
+  var recompute = true;
+  while (recompute) {
+    recompute = false;
+    // distill q[] into iq[], in reverse
+    i = 0;
+    z = q[jz];
+    j = jz;
+    while (j >= 1) {
+      let fw = ((X1P_24 * z) as i32) as f64;
+      iq[i] = (z - X1P24 * fw) as i32;
+      z = q[j - 1] + fw;
+      i += 1;
+      j -= 1;
+    }
+
+    // n
+    z = scalbn(z, q0); // the actual value of z
+    z -= 8.0 * ffloor(z * 0.125); // trim off integers >= 8
+    n = z as i32;
+    z -= n as f64;
+    ih = 0;
+    if (q0 > 0) {
+      // iq[jz - 1] is needed to determine n
+      i = iq[jz - 1] >> (24 - q0);
+      n += i;
+      iq[jz - 1] -= i << (24 - q0);
+      ih = iq[jz - 1] >> (23 - q0);
+    } else if (q0 == 0) {
+      ih = iq[jz - 1] >> 23;
+    } else if (z >= 0.5) {
+      ih = 2;
+    }
+
+    if (ih > 0) {
+      // q > 0.5
+      n += 1;
+      var carry = 0;
+      i = 0;
+      while (i < jz) {
+        // 1 - q
+        j = iq[i];
+        if (carry == 0) {
+          if (j != 0) {
+            carry = 1;
+            iq[i] = 0x1000000 - j;
+          }
+        } else {
+          iq[i] = 0xffffff - j;
+        }
+        i += 1;
+      }
+      if (q0 == 1) {
+        iq[jz - 1] = iq[jz - 1] & 0x7fffff;
+      } else if (q0 == 2) {
+        iq[jz - 1] = iq[jz - 1] & 0x3fffff;
+      }
+      if (ih == 2) {
+        z = 1.0 - z;
+        if (carry != 0) {
+          z -= scalbn(1.0, q0);
+        }
+      }
+    }
+
+    // whether a recomputation is needed
+    if (z == 0.0) {
+      j = 0;
+      i = jz - 1;
+      while (i >= jk) {
+        j = j | iq[i];
+        i -= 1;
+      }
+      if (j == 0) {
+        // k is the number of terms needed
+        var k = 1;
+        while (iq[jk - k] == 0) {
+          k += 1;
+        }
+        // add q[jz + 1] to q[jz + k]
+        i = jz + 1;
+        while (i <= jz + k) {
+          f[jx + i] = IPIO2[jv + i] as f64;
+          var fw = 0.0;
+          j = 0;
+          while (j <= jx) {
+            fw += x[j] * f[jx + i - j];
+            j += 1;
+          }
+          q[i] = fw;
+          i += 1;
+        }
+        jz += k;
+        recompute = true;
+      }
+    }
+  }
+
+  // chop off zero terms
+  if (z == 0.0) {
+    jz -= 1;
+    q0 -= 24;
+    while (iq[jz] == 0) {
+      jz -= 1;
+      q0 -= 24;
+    }
+  } else {
+    // break z into 24-bit pieces if necessary
+    z = scalbn(z, -q0);
+    if (z >= X1P24) {
+      let fw = ((X1P_24 * z) as i32) as f64;
+      iq[jz] = (z - X1P24 * fw) as i32;
+      jz += 1;
+      q0 += 24;
+      iq[jz] = fw as i32;
+    } else {
+      iq[jz] = z as i32;
+    }
+  }
+
+  // convert the integer chunks to floating-point values
+  var fw = scalbn(1.0, q0);
+  i = jz;
+  while (i >= 0) {
+    q[i] = fw * (iq[i] as f64);
+    fw *= X1P_24;
+    i -= 1;
+  }
+
+  // PIo2[0, ..., jp] * q[jz, ..., 0]
+  i = jz;
+  while (i >= 0) {
+    fw = 0.0;
+    var k = 0;
+    while (k <= jp && k <= jz - i) {
+      fw += PIO2[k] * q[i + k];
+      k += 1;
+    }
+    fq[jz - i] = fw;
+    i -= 1;
+  }
+
+  // compress fq[] into y[]
+  fw = 0.0;
+  i = jz;
+  while (i >= 0) {
+    fw += fq[i];
+    i -= 1;
+  }
+  y[0] = if (ih == 0) fw else -fw;
+  fw = fq[0] - fw;
+  i = 1;
+  while (i <= jz) {
+    fw += fq[i];
+    i += 1;
+  }
+  y[1] = if (ih == 0) fw else -fw;
+  return n & 7;
+}
+
+/** The sine of `x`, in radians. `sin` of an infinity or NaN is NaN. */
+export function sin(x: f64): f64 {
+  let ix = highWord(x) & 0x7fffffff;
+  if (ix <= 0x3fe921fb) {
+    // |x| ~<= pi/4
+    if (ix < 0x3e500000) {
+      return x; // |x| < 2^-26
+    }
+    return kernelSin(x, 0.0, 0);
+  }
+  if (ix >= 0x7ff00000) {
+    return x - x; // sin(inf or NaN) is NaN
+  }
+  let (n, y0, y1) = remPio2(x);
+  let quadrant = n & 3;
+  if (quadrant == 0) {
+    return kernelSin(y0, y1, 1);
+  }
+  if (quadrant == 1) {
+    return kernelCos(y0, y1);
+  }
+  if (quadrant == 2) {
+    return -kernelSin(y0, y1, 1);
+  }
+  return -kernelCos(y0, y1);
+}
+
+export function sin(x: f32): f32 {
+  return sin(x as f64) as f32;
+}
+
+/** The cosine of `x`, in radians. `cos` of an infinity or NaN is NaN. */
+export function cos(x: f64): f64 {
+  let ix = highWord(x) & 0x7fffffff;
+  if (ix <= 0x3fe921fb) {
+    // |x| ~<= pi/4
+    if (ix < 0x3e46a09e) {
+      return 1.0; // |x| < 2^-27 * sqrt(2)
+    }
+    return kernelCos(x, 0.0);
+  }
+  if (ix >= 0x7ff00000) {
+    return x - x; // cos(inf or NaN) is NaN
+  }
+  let (n, y0, y1) = remPio2(x);
+  let quadrant = n & 3;
+  if (quadrant == 0) {
+    return kernelCos(y0, y1);
+  }
+  if (quadrant == 1) {
+    return -kernelSin(y0, y1, 1);
+  }
+  if (quadrant == 2) {
+    return -kernelCos(y0, y1);
+  }
+  return kernelSin(y0, y1, 1);
+}
+
+export function cos(x: f32): f32 {
+  return cos(x as f64) as f32;
+}
+
+/** The tangent of `x`, in radians. `tan` of an infinity or NaN is NaN. */
+export function tan(x: f64): f64 {
+  let ix = highWord(x) & 0x7fffffff;
+  if (ix <= 0x3fe921fb) {
+    // |x| ~<= pi/4
+    if (ix < 0x3e400000) {
+      return x; // |x| < 2^-27
+    }
+    return kernelTan(x, 0.0, 0);
+  }
+  if (ix >= 0x7ff00000) {
+    return x - x; // tan(inf or NaN) is NaN
+  }
+  let (n, y0, y1) = remPio2(x);
+  return kernelTan(y0, y1, n & 1);
+}
+
+export function tan(x: f32): f32 {
+  return tan(x as f64) as f32;
+}

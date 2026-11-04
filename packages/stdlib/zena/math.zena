@@ -2,189 +2,63 @@
  * Mathematical operations, numeric limits, bit manipulation intrinsics, and
  * wide arithmetic.
  *
- * Provides constants for integer bounds (`I32_MIN`, `I32_MAX`, etc.), bitwise
- * operations (`clz`, `ctz`, `popcnt`), floating-point functions (`abs`,
- * `floor`, `ceil`, `sqrt`, `min`, `max`), and 128-bit arithmetic (`mulWide`,
- * `add128`).
+ * Provides constants for integer bounds (`I32_MIN`, `I32_MAX`, etc.) and
+ * for `PI`, `E`, `TAU`, `LN2`, `LN10` and `SQRT2`; bitwise operations
+ * (`clz`, `ctz`, `popcnt`); the floating-point operations Wasm has
+ * instructions for (`abs`, `floor`, `ceil`, `sqrt`, `min`, `max`); the
+ * exponential, logarithmic, trigonometric and hyperbolic functions,
+ * `pow`, `cbrt`, `hypot` and `fma`, each over `f64` and `f32`; and
+ * 128-bit arithmetic (`mulWide`, `add128`).
+ *
+ * The transcendental functions are a port of musl's libm, which is
+ * FreeBSD's and before that Sun's fdlibm (the `math/` directory). Each
+ * is accurate to under 1 ulp unless its documentation says otherwise,
+ * and `fma` is exact.
  *
  * ## Examples
  *
  * ```zena
- * import { min, max, sqrt, clz, popcnt } from 'zena:math';
+ * import { min, max, sqrt, clz, popcnt, sin, pow, PI } from 'zena:math';
  *
  * let smallest = min(3.0, 7.5);
  * let root = sqrt(16.0);
  * let leadingZeros = clz(16);
  * let bits = popcnt(7);
+ * let height = sin(PI / 6.0);
+ * let cube = pow(3.0, 3.0);
  * ```
  */
 
-export let I32_MIN: i32 = -2147483648;
-export let I32_MAX: i32 = 2147483647;
-export let U32_MIN = 0 as u32;
-export let U32_MAX = 4294967295 as u32;
+export * from './math/intrinsics.zena';
+export { exp, expm1 } from './math/exp.zena';
+export { exp2, pow } from './math/pow.zena';
+export { log, log2, log10, log1p } from './math/log.zena';
+export { sin, cos, tan } from './math/trig.zena';
+export { asin, acos, atan, atan2 } from './math/inverse-trig.zena';
+export {
+  sinh, cosh, tanh, asinh, acosh, atanh,
+} from './math/hyperbolic.zena';
+export { cbrt, hypot } from './math/roots.zena';
+export { fma } from './math/fma.zena';
 
-export let I64_MIN = -9223372036854775808 as i64;
-export let I64_MAX = 9223372036854775807 as i64;
-export let U64_MIN = 0 as u64;
-export let U64_MAX = 18446744073709551615 as u64;
+/** The ratio of a circle's circumference to its diameter. */
+export let PI = 3.141592653589793;
+/** The base of the natural logarithm. */
+export let E = 2.718281828459045;
+/** `2 * PI`: the circumference of the unit circle. */
+export let TAU = 6.283185307179586;
+/** The natural logarithm of 2. */
+export let LN2 = 0.6931471805599453;
+/** The natural logarithm of 10. */
+export let LN10 = 2.302585092994046;
+/** The square root of 2. */
+export let SQRT2 = 1.4142135623730951;
 
-// ---------------------------------------------------------------------------
-// 128-bit arithmetic
-//
-// These are the WebAssembly wide-arithmetic proposal, one for one: two
-// i64 results each, LOW HALF FIRST, which is why they return
-// `inline (u64, u64)` and must be destructured at the call site.
-//
-// Whether they compile to the proposal's instructions or to the
-// equivalent 32-bit-halves sequences is a compiler flag
-// (ZENA_WIDE_ARITHMETIC=1); the two produce identical results for
-// every input, so nothing written against these needs to know which
-// it got.
-// ---------------------------------------------------------------------------
+/** Whether `x` is NaN, which `x == x` cannot tell: NaN is unequal to itself. */
+export function isNaN(x: f64): boolean {
+  return x != x;
+}
 
-/** The full 128-bit unsigned product of two u64s, as (low, high). */
-@intrinsic('i64.mul_wide_u')
-export declare function mulWide(x: u64, y: u64): inline (u64, u64);
-
-/** The full 128-bit signed product of two i64s, as (low, high). */
-@intrinsic('i64.mul_wide_s')
-export declare function mulWideSigned(x: i64, y: i64): inline (i64, i64);
-
-/** 128-bit addition of (aLow, aHigh) + (bLow, bHigh), wrapping. */
-@intrinsic('i64.add128')
-export declare function add128(
-  aLow: u64, aHigh: u64, bLow: u64, bHigh: u64): inline (u64, u64);
-
-/** 128-bit subtraction of (aLow, aHigh) - (bLow, bHigh), wrapping. */
-@intrinsic('i64.sub128')
-export declare function sub128(
-  aLow: u64, aHigh: u64, bLow: u64, bHigh: u64): inline (u64, u64);
-
-@intrinsic('i32.clz')
-export declare function clz(x: i32): i32;
-@intrinsic('i64.clz')
-export declare function clz(x: i64): i64;
-@intrinsic('i64.clz')
-export declare function clz(x: u64): u64;
-
-@intrinsic('i32.ctz')
-export declare function ctz(x: i32): i32;
-@intrinsic('i64.ctz')
-export declare function ctz(x: i64): i64;
-@intrinsic('i64.ctz')
-export declare function ctz(x: u64): u64;
-
-@intrinsic('i32.popcnt')
-export declare function popcnt(x: i32): i32;
-@intrinsic('i64.popcnt')
-export declare function popcnt(x: i64): i64;
-@intrinsic('i64.popcnt')
-export declare function popcnt(x: u64): u64;
-
-@intrinsic('f32.abs')
-export declare function abs(x: f32): f32;
-@intrinsic('f64.abs')
-export declare function abs(x: f64): f64;
-
-@intrinsic('f32.neg')
-export declare function neg(x: f32): f32;
-@intrinsic('f64.neg')
-export declare function neg(x: f64): f64;
-
-@intrinsic('f32.ceil')
-export declare function ceil(x: f32): f32;
-@intrinsic('f64.ceil')
-export declare function ceil(x: f64): f64;
-
-@intrinsic('f32.floor')
-export declare function floor(x: f32): f32;
-@intrinsic('f64.floor')
-export declare function floor(x: f64): f64;
-
-@intrinsic('f32.trunc')
-export declare function trunc(x: f32): f32;
-@intrinsic('f64.trunc')
-export declare function trunc(x: f64): f64;
-
-@intrinsic('f32.nearest')
-export declare function nearest(x: f32): f32;
-@intrinsic('f64.nearest')
-export declare function nearest(x: f64): f64;
-
-@intrinsic('f32.sqrt')
-export declare function sqrt(x: f32): f32;
-@intrinsic('f64.sqrt')
-export declare function sqrt(x: f64): f64;
-
-@intrinsic('f32.min')
-export declare function min(a: f32, b: f32): f32;
-@intrinsic('f64.min')
-export declare function min(a: f64, b: f64): f64;
-
-@intrinsic('f32.max')
-export declare function max(a: f32, b: f32): f32;
-@intrinsic('f64.max')
-export declare function max(a: f64, b: f64): f64;
-
-@intrinsic('f32.copysign')
-export declare function copysign(x: f32, y: f32): f32;
-@intrinsic('f64.copysign')
-export declare function copysign(x: f64, y: f64): f64;
-
-// Integer division (signed)
-@intrinsic('i32.div_s')
-export declare function div(a: i32, b: i32): i32;
-@intrinsic('i64.div_s')
-export declare function div(a: i64, b: i64): i64;
-
-// Integer division (unsigned)
-@intrinsic('i32.div_u')
-export declare function div(a: u32, b: u32): u32;
-@intrinsic('i64.div_u')
-export declare function div(a: u64, b: u64): u64;
-
-// Saturating float-to-int conversions
-// i32 conversions (signed)
-@intrinsic('i32.trunc_sat_f32_s')
-export declare function i32_trunc_s(x: f32): i32;
-@intrinsic('i32.trunc_sat_f64_s')
-export declare function i32_trunc_s(x: f64): i32;
-
-// i32 conversions (unsigned)
-@intrinsic('i32.trunc_sat_f32_u')
-export declare function i32_trunc_u(x: f32): i32;
-@intrinsic('i32.trunc_sat_f64_u')
-export declare function i32_trunc_u(x: f64): i32;
-
-// i64 conversions (signed)
-@intrinsic('i64.trunc_sat_f32_s')
-export declare function i64_trunc_s(x: f32): i64;
-@intrinsic('i64.trunc_sat_f64_s')
-export declare function i64_trunc_s(x: f64): i64;
-
-// i64 conversions (unsigned)
-@intrinsic('i64.trunc_sat_f32_u')
-export declare function i64_trunc_u(x: f32): i64;
-@intrinsic('i64.trunc_sat_f64_u')
-export declare function i64_trunc_u(x: f64): i64;
-
-// Bit reinterpretation (float <-> int)
-// These reinterpret the bits of a float as an integer, or vice versa.
-// No conversion is performed - the raw bits are preserved.
-
-/** Reinterpret the bits of an f32 as an i32. */
-@intrinsic('i32.reinterpret_f32')
-export declare function i32_reinterpret_f32(x: f32): i32;
-
-/** Reinterpret the bits of an f64 as an i64. */
-@intrinsic('i64.reinterpret_f64')
-export declare function i64_reinterpret_f64(x: f64): i64;
-
-/** Reinterpret the bits of an i32 as an f32. */
-@intrinsic('f32.reinterpret_i32')
-export declare function f32_reinterpret_i32(x: i32): f32;
-
-/** Reinterpret the bits of an i64 as an f64. */
-@intrinsic('f64.reinterpret_i64')
-export declare function f64_reinterpret_i64(x: i64): f64;
+export function isNaN(x: f32): boolean {
+  return x != x;
+}

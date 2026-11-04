@@ -1,0 +1,306 @@
+/**
+ * `asin`, `acos`, `atan` and `atan2`, ported from musl's `asin.c`,
+ * `acos.c`, `atan.c` and `atan2.c`, which are FreeBSD's `e_asin.c`,
+ * `e_acos.c`, `s_atan.c` and `e_atan2.c`:
+ *
+ *   Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *   Developed at SunSoft, a Sun Microsystems, Inc. business.
+ *   Permission to use, copy, modify, and distribute this software is
+ *   freely granted, provided that this notice is preserved.
+ *
+ * `asin` and `acos` use a rational approximation of `(asin(x) - x) / x^3`
+ * on [0, 0.5] and the identity `asin(x) = pi/2 - 2 asin(sqrt((1 - x)/2))`
+ * above it. `atan` reduces into one of five intervals around 0, 0.5, 1,
+ * 1.5 and infinity, each with a tabulated `atan` of its center. The
+ * error is under 1 ulp.
+ */
+
+import {
+  bits, fabs, fsqrt, highWord, lowWord, zeroLowWord, pow2,
+} from './float-bits.zena';
+
+let PIO2_HI = 1.5707963267948966; // 0x3ff921fb54442d18
+let PIO2_LO = 0.00000000000000006123233995736766; // 0x3c91a62633145c07
+let PI = 3.141592653589793; // 0x400921fb54442d18
+let PI_LO = 0.00000000000000012246467991473532; // 0x3ca1a62633145c07
+
+// R(x^2) = P(x^2) / Q(x^2), with |(asin(x) - x) / x^3 - R| < 2^-58.75.
+let P_S0 = 0.16666666666666666; // 0x3fc5555555555555
+let P_S1 = -0.3255658186224009; // 0xbfd4d61203eb6f7d
+let P_S2 = 0.20121253213486293; // 0x3fc9c1550e884455
+let P_S3 = -0.04005553450067941; // 0xbfa48228b5688f3b
+let P_S4 = 0.0007915349942898145; // 0x3f49efe07501b288
+let P_S5 = 0.00003479331075960212; // 0x3f023de10dfdf709
+let Q_S1 = -2.403394911734414; // 0xc0033a271c8a2d4b
+let Q_S2 = 2.0209457602335057; // 0x40002ae59c598ac8
+let Q_S3 = -0.6882839716054533; // 0xbfe6066c1b8d0159
+let Q_S4 = 0.07703815055590194; // 0x3fb3b8c5b12e9282
+
+function asinR(z: f64) {
+  let p = z * (P_S0 + z * (P_S1 + z * (P_S2 + z * (P_S3 + z * (P_S4 + z * P_S5)))));
+  let q = 1.0 + z * (Q_S1 + z * (Q_S2 + z * (Q_S3 + z * Q_S4)));
+  return p / q;
+}
+
+let X1P_120 = pow2(-120);
+
+/**
+ * The arc sine of `x`, in [-pi/2, pi/2]. `asin` of a number outside
+ * [-1, 1] is NaN.
+ */
+export function asin(x: f64): f64 {
+  let hx = highWord(x);
+  let ix = hx & 0x7fffffff;
+  if (ix >= 0x3ff00000) {
+    // |x| >= 1 or NaN
+    if (((ix - 0x3ff00000) | lowWord(x)) == 0) {
+      return x * PIO2_HI + X1P_120; // asin(+-1) = +-pi/2
+    }
+    return 0.0 / (x - x);
+  }
+  if (ix < 0x3fe00000) {
+    // |x| < 0.5
+    if (ix < 0x3e500000 && ix >= 0x00100000) {
+      return x; // 2^-1022 <= |x| < 2^-26
+    }
+    return x + x * asinR(x * x);
+  }
+  // 1 > |x| >= 0.5
+  let z = (1.0 - fabs(x)) * 0.5;
+  let s = fsqrt(z);
+  let r = asinR(z);
+  var result = 0.0;
+  if (ix >= 0x3fef3333) {
+    // |x| > 0.975
+    result = PIO2_HI - (2.0 * (s + s * r) - PIO2_LO);
+  } else {
+    // f + c = sqrt(z)
+    let f = zeroLowWord(s);
+    let c = (z - f * f) / (s + f);
+    result = 0.5 * PIO2_HI - (2.0 * s * r - (PIO2_LO - 2.0 * c) - (0.5 * PIO2_HI - 2.0 * f));
+  }
+  return if (hx < 0) -result else result;
+}
+
+export function asin(x: f32): f32 {
+  return asin(x as f64) as f32;
+}
+
+/**
+ * The arc cosine of `x`, in [0, pi]. `acos` of a number outside [-1, 1]
+ * is NaN.
+ */
+export function acos(x: f64): f64 {
+  let hx = highWord(x);
+  let ix = hx & 0x7fffffff;
+  if (ix >= 0x3ff00000) {
+    // |x| >= 1 or NaN
+    if (((ix - 0x3ff00000) | lowWord(x)) == 0) {
+      // acos(1) = 0, acos(-1) = pi
+      if (hx < 0) {
+        return 2.0 * PIO2_HI + X1P_120;
+      }
+      return 0.0;
+    }
+    return 0.0 / (x - x);
+  }
+  if (ix < 0x3fe00000) {
+    // |x| < 0.5
+    if (ix <= 0x3c600000) {
+      return PIO2_HI + X1P_120; // |x| < 2^-57
+    }
+    return PIO2_HI - (x - (PIO2_LO - x * asinR(x * x)));
+  }
+  if (hx < 0) {
+    // x < -0.5
+    let z = (1.0 + x) * 0.5;
+    let s = fsqrt(z);
+    let w = asinR(z) * s - PIO2_LO;
+    return 2.0 * (PIO2_HI - (s + w));
+  }
+  // x > 0.5
+  let z = (1.0 - x) * 0.5;
+  let s = fsqrt(z);
+  let df = zeroLowWord(s);
+  let c = (z - df * df) / (s + df);
+  let w = asinR(z) * s + c;
+  return 2.0 * (df + w);
+}
+
+export function acos(x: f32): f32 {
+  return acos(x as f64) as f32;
+}
+
+// atan(0.5), atan(1), atan(1.5) and atan(inf), each as a head and a tail.
+let ATANHI = [
+  0.4636476090008061, // 0x3fddac670561bb4f
+  0.7853981633974483, // 0x3fe921fb54442d18
+  0.982793723247329, // 0x3fef730bd281f69b
+  1.5707963267948966, // 0x3ff921fb54442d18
+];
+let ATANLO = [
+  0.000000000000000022698777452961687, // 0x3c7a2b7f222f65e2
+  0.00000000000000003061616997868383, // 0x3c81a62633145c07
+  0.000000000000000013903311031230998, // 0x3c7007887af0cbbd
+  0.00000000000000006123233995736766, // 0x3c91a62633145c07
+];
+let AT0 = 0.3333333333333293; // 0x3fd555555555550d
+let AT1 = -0.19999999999876483; // 0xbfc999999998ebc4
+let AT2 = 0.14285714272503466; // 0x3fc24924920083ff
+let AT3 = -0.11111110405462356; // 0xbfbc71c6fe231671
+let AT4 = 0.09090887133436507; // 0x3fb745cdc54c206e
+let AT5 = -0.0769187620504483; // 0xbfb3b0f2af749a6d
+let AT6 = 0.06661073137387531; // 0x3fb10d66a0d03d51
+let AT7 = -0.058335701337905735; // 0xbfadde2d52defd9a
+let AT8 = 0.049768779946159324; // 0x3fa97b4b24760deb
+let AT9 = -0.036531572744216916; // 0xbfa2b4442c6a6c2f
+let AT10 = 0.016285820115365782; // 0x3f90ad3ae322da11
+
+/** The arc tangent of `x`, in [-pi/2, pi/2]. */
+export function atan(x0: f64): f64 {
+  var x = x0;
+  let hx = highWord(x);
+  let sign = hx < 0;
+  let ix = hx & 0x7fffffff;
+  if (ix >= 0x44100000) {
+    // |x| >= 2^66
+    if (x != x) {
+      return x;
+    }
+    let z = ATANHI[3] + X1P_120;
+    return if (sign) -z else z;
+  }
+  var id = 0;
+  if (ix < 0x3fdc0000) {
+    // |x| < 0.4375
+    if (ix < 0x3e400000) {
+      return x; // |x| < 2^-27
+    }
+    id = -1;
+  } else {
+    x = fabs(x);
+    if (ix < 0x3ff30000) {
+      // |x| < 1.1875
+      if (ix < 0x3fe60000) {
+        // 7/16 <= |x| < 11/16
+        x = (2.0 * x - 1.0) / (2.0 + x);
+        id = 0;
+      } else {
+        // 11/16 <= |x| < 19/16
+        x = (x - 1.0) / (x + 1.0);
+        id = 1;
+      }
+    } else if (ix < 0x40038000) {
+      // |x| < 2.4375
+      x = (x - 1.5) / (1.0 + 1.5 * x);
+      id = 2;
+    } else {
+      // 2.4375 <= |x| < 2^66
+      x = -1.0 / x;
+      id = 3;
+    }
+  }
+  let z = x * x;
+  let w = z * z;
+  // the sum of AT[i] z^(i + 1) as odd and even polynomials
+  let s1 = z * (AT0 + w * (AT2 + w * (AT4 + w * (AT6 + w * (AT8 + w * AT10)))));
+  let s2 = w * (AT1 + w * (AT3 + w * (AT5 + w * (AT7 + w * AT9))));
+  if (id < 0) {
+    return x - x * (s1 + s2);
+  }
+  let result = ATANHI[id] - (x * (s1 + s2) - ATANLO[id] - x);
+  return if (sign) -result else result;
+}
+
+export function atan(x: f32): f32 {
+  return atan(x as f64) as f32;
+}
+
+let LOW_MASK: i64 = 0xffffffff;
+
+/**
+ * The angle of the point `(x, y)`, in (-pi, pi]: `atan(y / x)` adjusted
+ * by the quadrant, with the C `atan2` conventions for zeros and
+ * infinities (`atan2(0, -1)` is pi, `atan2(-0, -1)` is -pi).
+ */
+export function atan2(y: f64, x: f64): f64 {
+  if (x != x || y != y) {
+    return x + y;
+  }
+  let bx = bits(x);
+  let by = bits(y);
+  var ix = bx >>> 32; // the high words, unsigned
+  let lx = bx & LOW_MASK;
+  var iy = by >>> 32;
+  let ly = by & LOW_MASK;
+  if (ix == 0x3ff00000 && lx == 0) {
+    return atan(y); // x = 1.0
+  }
+  let m = (((iy >> 31) & 1) | ((ix >> 30) & 2)) as i32; // 2 sign(x) + sign(y)
+  ix = ix & 0x7fffffff;
+  iy = iy & 0x7fffffff;
+  if ((iy | ly) == 0) {
+    // y = 0
+    if (m == 0 || m == 1) {
+      return y; // atan(+-0, +anything) = +-0
+    }
+    if (m == 2) {
+      return PI; // atan(+0, -anything) = pi
+    }
+    return -PI; // atan(-0, -anything) = -pi
+  }
+  if ((ix | lx) == 0) {
+    // x = 0
+    return if ((m & 1) != 0) -PI / 2.0 else PI / 2.0;
+  }
+  if (ix == 0x7ff00000) {
+    // x is inf
+    if (iy == 0x7ff00000) {
+      if (m == 0) {
+        return PI / 4.0; // atan(+inf, +inf)
+      }
+      if (m == 1) {
+        return -PI / 4.0; // atan(-inf, +inf)
+      }
+      if (m == 2) {
+        return 3.0 * PI / 4.0; // atan(+inf, -inf)
+      }
+      return -3.0 * PI / 4.0; // atan(-inf, -inf)
+    }
+    if (m == 0) {
+      return 0.0; // atan(+..., +inf)
+    }
+    if (m == 1) {
+      return -0.0; // atan(-..., +inf)
+    }
+    if (m == 2) {
+      return PI; // atan(+..., -inf)
+    }
+    return -PI; // atan(-..., -inf)
+  }
+  // |y / x| > 2^64
+  if (ix + (64 << 20) < iy || iy == 0x7ff00000) {
+    return if ((m & 1) != 0) -PI / 2.0 else PI / 2.0;
+  }
+  // z = atan(|y / x|) without spurious underflow
+  var z = 0.0;
+  if ((m & 2) != 0 && iy + (64 << 20) < ix) {
+    z = 0.0; // |y / x| < 2^-64, x < 0
+  } else {
+    z = atan(fabs(y / x));
+  }
+  if (m == 0) {
+    return z; // atan(+, +)
+  }
+  if (m == 1) {
+    return -z; // atan(-, +)
+  }
+  if (m == 2) {
+    return PI - (z - PI_LO); // atan(+, -)
+  }
+  return (z - PI_LO) - PI; // atan(-, -)
+}
+
+export function atan2(y: f32, x: f32): f32 {
+  return atan2(y as f64, x as f64) as f32;
+}

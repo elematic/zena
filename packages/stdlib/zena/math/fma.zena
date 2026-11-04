@@ -1,0 +1,263 @@
+/**
+ * `fma`: `x * y + z` with one rounding, ported from musl's `fma.c` (MIT
+ * licensed; see musl's COPYRIGHT).
+ *
+ * Wasm has no fused multiply-add instruction, so this is software: the
+ * significands are multiplied into 128 bits with `i64.mul_wide_u`, `z`
+ * is added at the right alignment with a sticky bit, and the top 63
+ * bits are converted to a double. The result is exact up to that final
+ * conversion, so `fma` is correctly rounded, at a cost of some tens of
+ * integer operations. A fused multiply-add that rounds twice is wrong
+ * when the product and `z` cancel, which is what `fma` is for.
+ */
+
+import {
+  bits, bits32, fromBits32, fcopysign, clz64, mulWide, scalbn,
+  pow2,
+} from './float-bits.zena';
+
+let MANTISSA_MASK: i64 = 0x000fffffffffffff;
+let SIGN_BIT: i64 = 0x8000000000000000;
+let X1P63 = pow2(63);
+let X1P_1022 = pow2(-1022);
+
+// The exponent of a zero, an infinity or a NaN after normalizing.
+let ZERO_INF_NAN = 0x7ff - 0x3ff - 52 - 1;
+
+/**
+ * `x` as a significand `m` with its top 10 bits and last bit zero, an
+ * exponent `e` with `x = m * 2^e`, and its sign bit.
+ */
+function normalize(x: f64): inline (i64, i32, i32) {
+  var ix = bits(x);
+  var e = (ix >>> 52) as i32;
+  let sign = e & 0x800;
+  e = e & 0x7ff;
+  if (e == 0) {
+    ix = bits(x * X1P63);
+    e = ((ix >>> 52) as i32) & 0x7ff;
+    e = if (e != 0) e - 63 else 0x800;
+  }
+  ix = ix & MANTISSA_MASK;
+  ix = ix | (1 as i64) << 52;
+  ix = ix << 1;
+  e -= 0x3ff + 52 + 1;
+  return (ix, e, sign);
+}
+
+/** Unsigned `a < b`. */
+function ltu(a: i64, b: i64) {
+  return (a ^ SIGN_BIT) < (b ^ SIGN_BIT);
+}
+
+/** 1 when `v` is non-zero, else 0: the sticky bit of shifted-out bits. */
+function nonZero(v: i64): i64 {
+  return if (v != 0) 1 else 0;
+}
+
+/** `x * y + z`, rounded once. */
+export function fma(x: f64, y: f64, z: f64): f64 {
+  let (mx, ex, signX) = normalize(x);
+  let (my, ey, signY) = normalize(y);
+  let (mz, ez, signZ) = normalize(z);
+  if (ex >= ZERO_INF_NAN || ey >= ZERO_INF_NAN) {
+    return x * y + z;
+  }
+  if (ez >= ZERO_INF_NAN) {
+    if (ez > ZERO_INF_NAN) {
+      return x * y; // z == 0
+    }
+    return z;
+  }
+
+  // r = x * y, in 128 bits: either the top 20 or 21 bits of rhi and
+  // the last 2 bits of rlo are 0
+  let (lo, hi) = mulWide(mx as u64, my as u64);
+  var rhi = hi as i64;
+  var rlo = lo as i64;
+  var zhi = 0 as i64;
+  var zlo = 0 as i64;
+
+  // align the exponents: z <<= kz and r >>= kr with kz + kr == d, and
+  // e = e + kr (== ez - kz)
+  var e = ex + ey;
+  var d = ez - e;
+  if (d > 0) {
+    if (d < 64) {
+      zlo = mz << d;
+      zhi = mz >>> (64 - d);
+    } else {
+      zlo = 0;
+      zhi = mz;
+      e = ez - 64;
+      d -= 64;
+      if (d == 0) {
+        // r is already aligned
+      } else if (d < 64) {
+        rlo = (rhi << (64 - d)) | (rlo >>> d) | nonZero(rlo << (64 - d));
+        rhi = rhi >>> d;
+      } else {
+        rlo = 1;
+        rhi = 0;
+      }
+    }
+  } else {
+    zhi = 0;
+    d = -d;
+    if (d == 0) {
+      zlo = mz;
+    } else if (d < 64) {
+      zlo = (mz >>> d) | nonZero(mz << (64 - d));
+    } else {
+      zlo = 1;
+    }
+  }
+
+  // add
+  var sign = signX ^ signY;
+  let sameSign = (sign ^ signZ) == 0;
+  var nonzero = true;
+  if (sameSign) {
+    // r += z
+    rlo += zlo;
+    rhi += zhi + (if (ltu(rlo, zlo)) 1 else 0);
+  } else {
+    // r -= z
+    let t = rlo;
+    rlo -= zlo;
+    rhi = rhi - zhi - (if (ltu(t, rlo)) 1 else 0);
+    if (rhi < 0) {
+      rlo = -rlo;
+      rhi = -rhi - nonZero(rlo);
+      sign = if (sign != 0) 0 else 0x800;
+    }
+    nonzero = rhi != 0;
+  }
+
+  // set rhi to the top 63 bits of the result, with the last bit sticky
+  if (nonzero) {
+    e += 64;
+    d = (clz64(rhi) as i32) - 1; // d > 0
+    rhi = (rhi << d) | (rlo >>> (64 - d)) | nonZero(rlo << d);
+  } else if (rlo != 0) {
+    d = (clz64(rlo) as i32) - 1;
+    if (d < 0) {
+      rhi = (rlo >>> 1) | (rlo & 1);
+    } else {
+      rhi = rlo << d;
+    }
+  } else {
+    // exact +-0
+    return x * y + z;
+  }
+  e -= d;
+
+  // convert to double
+  var i = rhi; // in [2^62, 2^63 - 1]
+  if (sign != 0) {
+    i = -i;
+  }
+  var r = i as f64; // |r| is in [2^62, 2^63]
+  if (e < -1022 - 62) {
+    // the result is subnormal before rounding
+    if (e == -1022 - 63) {
+      var c = X1P63;
+      if (sign != 0) {
+        c = -c;
+      }
+      if (r == c) {
+        // the minimum normal after rounding
+        return fcopysign(X1P_1022, r);
+      }
+      // one bit is lost when scaled: add another top bit so that the
+      // conversion rounds once, when it is inexact
+      if ((rhi << 53) != 0) {
+        i = (rhi >>> 1) | (rhi & 1) | ((1 as i64) << 62);
+        if (sign != 0) {
+          i = -i;
+        }
+        r = i as f64;
+        r = 2.0 * r - c; // remove the top bit
+      }
+    } else {
+      // round only once when scaled
+      d = 10;
+      i = ((rhi >>> d) | nonZero(rhi << (64 - d))) << d;
+      if (sign != 0) {
+        i = -i;
+      }
+      r = i as f64;
+    }
+  }
+  return scalbn(r, e);
+}
+
+let F32_MAX = 340282346638528859811704183484516925440.0; // 2^128 - 2^104
+let F32_OVERFLOW = 340282356779733661637539395458142568448.0; // 2^128 - 2^103
+let F32_MIN_SUBNORMAL = fromBits32(1);
+
+/** The next f32 above `f`. */
+function nextUp32(f: f32) {
+  if (f == (0.0 as f32)) {
+    return F32_MIN_SUBNORMAL;
+  }
+  let b = bits32(f);
+  return fromBits32(if (f > (0.0 as f32)) b + 1 else b - 1);
+}
+
+/** The next f32 below `f`. */
+function nextDown32(f: f32) {
+  if (f == (0.0 as f32)) {
+    return -F32_MIN_SUBNORMAL;
+  }
+  let b = bits32(f);
+  return fromBits32(if (f > (0.0 as f32)) b - 1 else b + 1);
+}
+
+/**
+ * The f32 nearest to `s + e`, where `s` is a double and `e` a rounding
+ * error with `|e| <= ulp(s) / 2`. Rounding `s` alone is wrong only when
+ * `s` is exactly halfway between two f32s, where `e` breaks the tie.
+ */
+function roundToF32(s: f64, e: f64) {
+  let f = s as f32;
+  if (e == 0.0) {
+    return f;
+  }
+  let fd = f as f64;
+  if (fd == s) {
+    return f;
+  }
+  var other = f;
+  var mid = 0.0;
+  if (fd - fd != 0.0) {
+    // f is infinite: the neighbor is the largest finite f32
+    other = fcopysign(F32_MAX, fd) as f32;
+    mid = fcopysign(F32_OVERFLOW, fd);
+  } else {
+    other = if (s > fd) nextUp32(f) else nextDown32(f);
+    mid = (fd + (other as f64)) * 0.5; // exact
+  }
+  if (s != mid) {
+    return f;
+  }
+  // s is halfway: the true value is on e's side of it
+  return if ((e > 0.0) == (other > f)) other else f;
+}
+
+/**
+ * `x * y + z` over f32, rounded once. The product is exact in f64, the
+ * sum's rounding error is recovered, and the two round to f32 together.
+ */
+export function fma(x: f32, y: f32, z: f32): f32 {
+  let p = (x as f64) * (y as f64); // exact: 24 + 24 bits
+  let zd = z as f64;
+  let s = p + zd;
+  if (s - s != 0.0) {
+    return s as f32; // infinite or NaN
+  }
+  // the error of s = p + zd, by TwoSum
+  let bb = s - p;
+  let e = (p - (s - bb)) + (zd - bb);
+  return roundToF32(s, e);
+}

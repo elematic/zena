@@ -1,0 +1,247 @@
+/**
+ * `log`, `log2`, `log10` and `log1p`, ported from musl's `log.c`,
+ * `log2.c`, `log10.c` and `log1p.c`, which are FreeBSD's `e_log.c`,
+ * `e_log2.c`, `e_log10.c` and `s_log1p.c`:
+ *
+ *   Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *   Developed at SunSoft, a Sun Microsystems, Inc. business.
+ *   Permission to use, copy, modify, and distribute this software is
+ *   freely granted, provided that this notice is preserved.
+ *
+ * Each reduces `x` to `2^k * (1 + f)` with `sqrt(2)/2 < 1 + f < sqrt(2)`,
+ * then with `s = f / (2 + f)` computes `log(1 + f) = 2s + s * R(s^2)`
+ * from a degree-14 polynomial `R` whose error is under 2^-58.45. The
+ * error of each function is under 1 ulp.
+ */
+
+import {
+  bits, fromBits, fromWords, zeroLowWord, X1P54,
+} from './float-bits.zena';
+
+let LN2_HI = 0.6931471803691238; // 0x3fe62e42fee00000
+let LN2_LO = 0.00000000019082149292705877; // 0x3dea39ef35793c76
+let LG1 = 0.6666666666666735; // 0x3fe5555555555593
+let LG2 = 0.3999999999940942; // 0x3fd999999997fa04
+let LG3 = 0.2857142874366239; // 0x3fd2492494229359
+let LG4 = 0.22222198432149784; // 0x3fcc71c51d8e78af
+let LG5 = 0.1818357216161805; // 0x3fc7466496cb03de
+let LG6 = 0.15313837699209373; // 0x3fc39a09d078c69f
+let LG7 = 0.14798198605116586; // 0x3fc2f112df3e5244
+
+// 1/ln2 and 1/ln10 and log10(2), each as a head with 21 significant
+// bits and a tail.
+let IVLN2HI = 1.4426950407214463; // 0x3ff7154765200000
+let IVLN2LO = 0.00000000016751713164886512; // 0x3de705fc2eefa200
+let IVLN10HI = 0.4342944818781689; // 0x3fdbcb7b15200000
+let IVLN10LO = 0.000000000025082946711645275; // 0x3dbb9438ca9aadd5
+let LOG10_2HI = 0.30102999566361177; // 0x3fd34413509f6000
+let LOG10_2LO = 0.0000000000003694239077158931; // 0x3d59fef311f12b36
+
+/** `R(z)` with `z = s * s`: the polynomial part of `log(1 + f)`. */
+function logR(z: f64) {
+  let w = z * z;
+  let t1 = w * (LG2 + w * (LG4 + w * LG6));
+  let t2 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)));
+  return t2 + t1;
+}
+
+/**
+ * The natural logarithm of `x`. `log(0)` is negative infinity and `log`
+ * of a negative number is NaN.
+ */
+export function log(x: f64): f64 {
+  var xr = x;
+  var ui = bits(x);
+  var hx = (ui >> 32) as i32;
+  var k = 0;
+  if (hx < 0x00100000) {
+    // x is negative, zero or subnormal
+    if ((ui << 1) == 0) {
+      return -1.0 / (x * x); // log(+-0) = -inf
+    }
+    if (hx < 0) {
+      return (x - x) / 0.0; // log(-x) = NaN
+    }
+    // subnormal: scale x up
+    k -= 54;
+    xr = x * X1P54;
+    ui = bits(xr);
+    hx = (ui >> 32) as i32;
+  } else if (hx >= 0x7ff00000) {
+    return x;
+  } else if (hx == 0x3ff00000 && (ui as i32) == 0) {
+    return 0.0;
+  }
+  // reduce x into [sqrt(2)/2, sqrt(2)]
+  hx += 0x3ff00000 - 0x3fe6a09e;
+  k += (hx >> 20) - 0x3ff;
+  hx = (hx & 0x000fffff) + 0x3fe6a09e;
+  xr = fromWords(hx, ui as i32);
+  let f = xr - 1.0;
+  let hfsq = 0.5 * f * f;
+  let s = f / (2.0 + f);
+  let r = logR(s * s);
+  let dk = k as f64;
+  return s * (hfsq + r) + dk * LN2_LO - hfsq + f + dk * LN2_HI;
+}
+
+export function log(x: f32): f32 {
+  return log(x as f64) as f32;
+}
+
+/** The base 2 logarithm of `x`. */
+export function log2(x: f64): f64 {
+  var xr = x;
+  var ui = bits(x);
+  var hx = (ui >> 32) as i32;
+  var k = 0;
+  if (hx < 0x00100000) {
+    if ((ui << 1) == 0) {
+      return -1.0 / (x * x); // log(+-0) = -inf
+    }
+    if (hx < 0) {
+      return (x - x) / 0.0; // log(-x) = NaN
+    }
+    k -= 54;
+    xr = x * X1P54;
+    ui = bits(xr);
+    hx = (ui >> 32) as i32;
+  } else if (hx >= 0x7ff00000) {
+    return x;
+  } else if (hx == 0x3ff00000 && (ui as i32) == 0) {
+    return 0.0;
+  }
+  hx += 0x3ff00000 - 0x3fe6a09e;
+  k += (hx >> 20) - 0x3ff;
+  hx = (hx & 0x000fffff) + 0x3fe6a09e;
+  xr = fromWords(hx, ui as i32);
+  let f = xr - 1.0;
+  let hfsq = 0.5 * f * f;
+  let s = f / (2.0 + f);
+  let r = logR(s * s);
+  // hi + lo = f - hfsq + s * (hfsq + R) ~ log(1 + f)
+  let hi = zeroLowWord(f - hfsq);
+  let lo = f - hi - hfsq + s * (hfsq + r);
+  let valHi = hi * IVLN2HI;
+  var valLo = (lo + hi) * IVLN2LO + lo * IVLN2HI;
+  // add k in extra precision
+  let y = k as f64;
+  let w = y + valHi;
+  valLo += (y - w) + valHi;
+  return valLo + w;
+}
+
+export function log2(x: f32): f32 {
+  return log2(x as f64) as f32;
+}
+
+/** The base 10 logarithm of `x`. */
+export function log10(x: f64): f64 {
+  var xr = x;
+  var ui = bits(x);
+  var hx = (ui >> 32) as i32;
+  var k = 0;
+  if (hx < 0x00100000) {
+    if ((ui << 1) == 0) {
+      return -1.0 / (x * x); // log(+-0) = -inf
+    }
+    if (hx < 0) {
+      return (x - x) / 0.0; // log(-x) = NaN
+    }
+    k -= 54;
+    xr = x * X1P54;
+    ui = bits(xr);
+    hx = (ui >> 32) as i32;
+  } else if (hx >= 0x7ff00000) {
+    return x;
+  } else if (hx == 0x3ff00000 && (ui as i32) == 0) {
+    return 0.0;
+  }
+  hx += 0x3ff00000 - 0x3fe6a09e;
+  k += (hx >> 20) - 0x3ff;
+  hx = (hx & 0x000fffff) + 0x3fe6a09e;
+  xr = fromWords(hx, ui as i32);
+  let f = xr - 1.0;
+  let hfsq = 0.5 * f * f;
+  let s = f / (2.0 + f);
+  let r = logR(s * s);
+  // hi + lo = f - hfsq + s * (hfsq + R) ~ log(1 + f)
+  let hi = zeroLowWord(f - hfsq);
+  let lo = f - hi - hfsq + s * (hfsq + r);
+  // valHi + valLo ~ log10(1 + f) + k * log10(2)
+  let valHi = hi * IVLN10HI;
+  let dk = k as f64;
+  let y = dk * LOG10_2HI;
+  var valLo = dk * LOG10_2LO + (lo + hi) * IVLN10LO + lo * IVLN10HI;
+  let w = y + valHi;
+  valLo += (y - w) + valHi;
+  return valLo + w;
+}
+
+export function log10(x: f32): f32 {
+  return log10(x as f64) as f32;
+}
+
+let LOW_MASK: i64 = 0xffffffff;
+
+/**
+ * `log(1 + x)`, accurate for small `x` where `log(1.0 + x)` would lose
+ * the low bits of `x`. `log1p(-1)` is negative infinity and `log1p` of a
+ * number below -1 is NaN.
+ */
+export function log1p(x: f64): f64 {
+  var ui = bits(x);
+  let hx = ui >>> 32; // the high word, unsigned
+  var k = 1;
+  var f = 0.0;
+  var c = 0.0;
+  if (hx < 0x3fda827a || hx >= 0x80000000) {
+    // 1 + x < sqrt(2)+
+    if (hx >= 0xbff00000) {
+      // x <= -1.0
+      if (x == -1.0) {
+        return x / 0.0; // log1p(-1) = -inf
+      }
+      return (x - x) / 0.0; // log1p(x < -1) = NaN
+    }
+    if ((hx & 0x7fffffff) < 0x3ca00000) {
+      // |x| < 2^-53
+      return x;
+    }
+    if (hx <= 0xbfd2bec4) {
+      // sqrt(2)/2- <= 1 + x < sqrt(2)+
+      k = 0;
+      c = 0.0;
+      f = x;
+    }
+  } else if (hx >= 0x7ff00000) {
+    return x;
+  }
+  if (k > 0) {
+    ui = bits(1.0 + x);
+    var hu = ui >>> 32;
+    hu += 0x3ff00000 - 0x3fe6a09e;
+    k = ((hu >> 20) - 0x3ff) as i32;
+    // correction term ~ log(1 + x) - log(u), avoiding underflow in c / u
+    if (k < 54) {
+      let u = fromBits(ui);
+      c = if (k >= 2) 1.0 - (u - x) else x - (u - 1.0);
+      c /= u;
+    } else {
+      c = 0.0;
+    }
+    // reduce u into [sqrt(2)/2, sqrt(2)]
+    hu = (hu & 0x000fffff) + 0x3fe6a09e;
+    ui = (hu << 32) | (ui & LOW_MASK);
+    f = fromBits(ui) - 1.0;
+  }
+  let hfsq = 0.5 * f * f;
+  let s = f / (2.0 + f);
+  let r = logR(s * s);
+  let dk = k as f64;
+  return s * (hfsq + r) + (dk * LN2_LO + c) - hfsq + f + dk * LN2_HI;
+}
+
+export function log1p(x: f32): f32 {
+  return log1p(x as f64) as f32;
+}

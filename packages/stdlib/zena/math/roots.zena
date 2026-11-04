@@ -1,0 +1,151 @@
+/**
+ * `cbrt` and `hypot`, ported from musl's `cbrt.c` and `hypot.c`. `cbrt`
+ * is FreeBSD's `s_cbrt.c`:
+ *
+ *   Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *   Developed at SunPro, a Sun Microsystems, Inc. business.
+ *   Permission to use, copy, modify, and distribute this software is
+ *   freely granted, provided that this notice is preserved.
+ *   Optimized by Bruce D. Evans.
+ *
+ * and `hypot` is musl's own (MIT licensed; see musl's COPYRIGHT).
+ */
+
+import {
+  bits, fromBits, fsqrt, highWord, idiv, pow2, X1P54,
+} from './float-bits.zena';
+
+let B1 = 715094163; // (1023 - 1023/3 - 0.03306235651) * 2^20
+let B2 = 696219795; // (1023 - 1023/3 - 54/3 - 0.03306235651) * 2^20
+
+// |1 / cbrt(x) - p(x)| < 2^-23.5 for |x - 1| < 1/10.
+let P0 = 1.87595182427177; // 0x3ffe03e60f61e692
+let P1 = -1.8849797954337717; // 0xbffe28e092f02420
+let P2 = 1.6214297201053545; // 0x3ff9f1604a49d6c2
+let P3 = -0.758397934778766; // 0xbfe844cbbee751d9
+let P4 = 0.14599619288661245; // 0x3fc2b000d4e4edd7
+
+let SIGN_MASK: i64 = 0x8000000000000000;
+let CBRT_ROUND_MASK: i64 = 0xffffffffc0000000;
+
+/**
+ * The cube root of `x`, with the sign of `x`. The error is under 0.667
+ * ulp.
+ */
+export function cbrt(x: f64): f64 {
+  var hx = highWord(x) & 0x7fffffff;
+  if (hx >= 0x7ff00000) {
+    return x + x; // cbrt(NaN, inf) is itself
+  }
+  // A rough cbrt to 5 bits: cbrt(2^e (1 + m)) ~= 2^(e/3) (1 + (e%3 + m)/3).
+  // Integer division of the biased exponent and significand bits by 3
+  // computes that, with a bias that halves the error.
+  var ui = bits(x);
+  if (hx < 0x00100000) {
+    // zero or subnormal
+    ui = bits(x * X1P54);
+    hx = ((ui >> 32) as i32) & 0x7fffffff;
+    if (hx == 0) {
+      return x; // cbrt(0) is itself
+    }
+    hx = idiv(hx, 3) + B2;
+  } else {
+    hx = idiv(hx, 3) + B1;
+  }
+  ui = ui & SIGN_MASK;
+  ui = ui | (hx as i64) << 32;
+  var t = fromBits(ui);
+  // A new cbrt to 23 bits: cbrt(x) = t cbrt(x / t^3) ~= t P(t^3 / x).
+  let r = (t * t) * (t / x);
+  t = t * ((P0 + r * (P1 + r * P2)) + ((r * r) * r) * (P3 + r * P4));
+  // Round t away from zero to 23 bits, so it is larger in magnitude
+  // than cbrt(x) but by no more than about 2 23-bit ulps.
+  t = fromBits((bits(t) + 0x80000000) & CBRT_ROUND_MASK);
+  // one step of Newton's iteration to 53 bits with error < 0.667 ulp
+  let s = t * t; // exact
+  let r1 = x / s; // error <= 0.5 ulp, |r1| < |t|
+  let w = t + t; // exact
+  let r2 = (r1 - t) / (w + r1); // r1 - t is exact, w + r1 ~= 3t
+  return t + t * r2; // error <= 0.5 + 0.5/3 + epsilon
+}
+
+export function cbrt(x: f32): f32 {
+  return cbrt(x as f64) as f32;
+}
+
+let SPLIT = 134217729.0; // 2^27 + 1
+let ABS_MASK: i64 = 0x7fffffffffffffff;
+let X1P700 = pow2(700);
+let X1P_700 = pow2(-700);
+let INFINITY = 1.0 / 0.0;
+
+/** `x * x` as a head `hi` and a tail `lo`, with the product exact. */
+function square(x: f64): inline (f64, f64) {
+  let xc = x * SPLIT;
+  let xh = x - xc + xc;
+  let xl = x - xh;
+  let hi = x * x;
+  let lo = xh * xh - hi + 2.0 * xh * xl + xl * xl;
+  return (hi, lo);
+}
+
+/**
+ * `sqrt(x * x + y * y)`, without overflow or underflow in the squares.
+ * `hypot` of an infinity is infinity even when the other argument is
+ * NaN. The error is under 1 ulp.
+ */
+export function hypot(x0: f64, y0: f64): f64 {
+  var ux = bits(x0) & ABS_MASK;
+  var uy = bits(y0) & ABS_MASK;
+  // arrange |x| >= |y|
+  if (ux < uy) {
+    let t = ux;
+    ux = uy;
+    uy = t;
+  }
+  let ex = (ux >> 52) as i32;
+  let ey = (uy >> 52) as i32;
+  var x = fromBits(ux);
+  var y = fromBits(uy);
+  // hypot(inf, NaN) is inf
+  if (ey == 0x7ff) {
+    return y;
+  }
+  if (ex == 0x7ff || uy == 0) {
+    return x;
+  }
+  // hypot(x, y) ~= x + y * y / x / 2 for small y / x
+  if (ex - ey > 64) {
+    return x + y;
+  }
+  // A precise argument for sqrt without overflow: xh * xh must not
+  // overflow and xl * xl must not underflow in square.
+  var z = 1.0;
+  if (ex > 0x3ff + 510) {
+    z = X1P700;
+    x *= X1P_700;
+    y *= X1P_700;
+  } else if (ey < 0x3ff - 450) {
+    z = X1P_700;
+    x *= X1P700;
+    y *= X1P700;
+  }
+  let (hx, lx) = square(x);
+  let (hy, ly) = square(y);
+  return z * fsqrt(ly + lx + hy + hx);
+}
+
+/**
+ * `sqrt(x * x + y * y)` over f32: the squares and their sum are computed
+ * in f64, where they cannot overflow.
+ */
+export function hypot(x: f32, y: f32): f32 {
+  let xd = x as f64;
+  let yd = y as f64;
+  let ax = fromBits(bits(xd) & ABS_MASK);
+  let ay = fromBits(bits(yd) & ABS_MASK);
+  if (ax == INFINITY || ay == INFINITY) {
+    return INFINITY as f32; // hypot(inf, NaN) is inf
+  }
+  return fsqrt(xd * xd + yd * yd) as f32;
+}
