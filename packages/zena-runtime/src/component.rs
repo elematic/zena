@@ -1383,6 +1383,10 @@ fn internal_error_response() -> http::Response<ResponseBody> {
         .unwrap()
 }
 
+/// Default maximum byte budget for a `wasmtime_wasi_http::FieldMap`, matching
+/// `WasiHttpCtx::new()`.
+const WASI_HTTP_FIELD_SIZE_LIMIT: usize = 128 * 1024;
+
 fn build_text_response(
     hooks: &mut dyn wasmtime_wasi_http::WasiHttpHooks,
     status: u16,
@@ -1391,17 +1395,11 @@ fn build_text_response(
     body: String,
 ) -> Option<http::Response<ResponseBody>> {
     use http_body_util::BodyExt as _;
+    if !(100..=599).contains(&status) {
+        return None;
+    }
     let status_code = http::StatusCode::from_u16(status).ok()?;
-    let is_forbidden = hooks.forbidden_header_filter();
-    let body_bytes = bytes::Bytes::from(body.into_bytes());
-    let body_len = body_bytes.len();
-    let mut resp = http::Response::new(
-        http_body_util::Full::new(body_bytes)
-            .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
-            .boxed_unsync(),
-    );
-    *resp.status_mut() = status_code;
-    let hmap = resp.headers_mut();
+    let mut fields = wasmtime_wasi_http::FieldMap::new_mutable(WASI_HTTP_FIELD_SIZE_LIMIT);
     if !content_type.is_empty() {
         let ct_val = match content_type.as_str() {
             "application/json; charset=utf-8" => {
@@ -1416,46 +1414,42 @@ fn build_text_response(
             }
             _ => http::HeaderValue::try_from(content_type).ok()?,
         };
-        hmap.insert(http::header::CONTENT_TYPE, ct_val);
+        fields
+            .append_raw(http::header::CONTENT_TYPE, ct_val)
+            .ok()?;
     }
-    let mut explicit_cl: Option<u64> = None;
     for (k, v) in headers {
-        let name = http::header::HeaderName::try_from(k.as_str()).ok()?;
-        if (is_forbidden)(&name) {
+        fields.append(hooks, k, v.into_bytes()).ok()?;
+    }
+    let body_bytes = bytes::Bytes::from(body.into_bytes());
+    let body_len = body_bytes.len();
+    if let Some(cl_val) = fields.get(http::header::CONTENT_LENGTH) {
+        if status_code.is_informational() || status_code == http::StatusCode::NO_CONTENT {
             return None;
         }
-        if name == http::header::CONTENT_LENGTH {
-            if explicit_cl.is_some()
-                || status_code.is_informational()
-                || status_code == http::StatusCode::NO_CONTENT
-            {
-                return None;
-            }
-            if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            let cl: u64 = v.parse().ok()?;
-            if body_len > 0 && cl != body_len as u64 {
-                return None;
-            }
-            explicit_cl = Some(cl);
-            hmap.insert(http::header::CONTENT_LENGTH, http::HeaderValue::from(cl));
-        } else {
-            let val = http::HeaderValue::try_from(v).ok()?;
-            hmap.append(name, val);
+        let cl: u64 = cl_val.to_str().ok()?.parse().ok()?;
+        if body_len > 0 && cl != body_len as u64 {
+            return None;
         }
-    }
-    if explicit_cl.is_none()
-        && body_len > 0
+    } else if body_len > 0
         && !status_code.is_informational()
         && status_code != http::StatusCode::NO_CONTENT
         && status_code != http::StatusCode::NOT_MODIFIED
     {
-        hmap.insert(
-            http::header::CONTENT_LENGTH,
-            http::HeaderValue::from(body_len),
-        );
+        fields
+            .append_raw(
+                http::header::CONTENT_LENGTH,
+                http::HeaderValue::from(body_len),
+            )
+            .ok()?;
     }
+    let mut resp = http::Response::new(
+        http_body_util::Full::new(body_bytes)
+            .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+            .boxed_unsync(),
+    );
+    *resp.status_mut() = status_code;
+    *resp.headers_mut() = http::HeaderMap::from(fields);
     Some(resp)
 }
 
@@ -1596,17 +1590,29 @@ fn parse_authority(authority: &str) -> Option<http::uri::Authority> {
 
 /// Populates the `http` scheme and `Host` authority on incoming HTTP/1.x
 /// requests before `Request::from_http` strips `Host` from the header map.
-/// Returns the resolved authority so request targets whose URI form cannot
-/// hold an authority in `http::Uri` (such as `OPTIONS *`) still carry it onto
+///
+/// Rejects requests that violate RFC 9112 §3.2 (`HTTP/1.1` without `Host`,
+/// multiple `Host` header fields, or a malformed `Host` authority) so the
+/// accept loop answers `400 Bad Request` without invoking the guest. Returns
+/// the resolved authority so request targets whose URI form cannot hold an
+/// authority in `http::Uri` (such as `OPTIONS *`) still carry it onto
 /// `wasmtime_wasi_http::p3::Request`.
-fn populate_http1_uri(parts: &mut http::request::Parts) -> Option<http::uri::Authority> {
-    let authority = parts.uri.authority().cloned().or_else(|| {
-        parts
-            .headers
-            .get(http::header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .and_then(parse_authority)
-    });
+fn populate_http1_uri(
+    parts: &mut http::request::Parts,
+) -> std::result::Result<Option<http::uri::Authority>, ()> {
+    let mut hosts = parts.headers.get_all(http::header::HOST).iter();
+    let host_authority = match hosts.next() {
+        Some(val) => {
+            if hosts.next().is_some() {
+                return Err(());
+            }
+            let text = val.to_str().map_err(|_| ())?;
+            Some(parse_authority(text).ok_or(())?)
+        }
+        None if parts.version >= http::Version::HTTP_11 => return Err(()),
+        None => None,
+    };
+    let authority = parts.uri.authority().cloned().or(host_authority);
     if parts.uri.scheme().is_none()
         && parts.uri.path() != "*"
         && let Some(ref auth) = authority
@@ -1621,7 +1627,7 @@ fn populate_http1_uri(parts: &mut http::request::Parts) -> Option<http::uri::Aut
             parts.uri = uri;
         }
     }
-    authority
+    Ok(authority)
 }
 
 /// Accepts connections on `listener` within `limits`, and sends each
@@ -1669,10 +1675,33 @@ async fn accept_connections(
                     let req_tx = req_tx.clone();
                     service_abandoned.store(false, std::sync::atomic::Ordering::Relaxed);
                     let (mut parts, body) = req.into_parts();
-                    let authority = populate_http1_uri(&mut parts);
+                    let authority_res = populate_http1_uri(&mut parts);
                     let shared_body = SharedIncomingBody::new(body, service_abandoned.clone());
-                    let req = http::Request::from_parts(parts, shared_body.clone());
+                    let req_opt = authority_res
+                        .ok()
+                        .map(|authority| (http::Request::from_parts(parts, shared_body.clone()), authority));
                     async move {
+                        let Some((req, authority)) = req_opt else {
+                            shared_body.release();
+                            let bad_req = http::Response::builder()
+                                .status(http::StatusCode::BAD_REQUEST)
+                                .header(http::header::CONNECTION, "close")
+                                .header(http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                                .body(ReleaseIncomingOnFinish {
+                                    inner: http_body_util::Full::new(bytes::Bytes::from_static(
+                                        b"Bad Request\n",
+                                    ))
+                                    .map_err(
+                                        |e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
+                                            match e {}
+                                        },
+                                    )
+                                    .boxed_unsync(),
+                                    req_body: SharedIncomingBody::default(),
+                                })
+                                .unwrap();
+                            return Ok::<_, std::convert::Infallible>(bad_req);
+                        };
                         let (res_tx, res_rx) = tokio::sync::oneshot::channel();
 
                         if req_tx
@@ -2017,7 +2046,7 @@ mod server_tests {
             .body(())
             .unwrap()
             .into_parts();
-        let auth = populate_http1_uri(&mut parts);
+        let auth = populate_http1_uri(&mut parts).unwrap();
         assert_eq!(auth.unwrap().as_str(), "example.test:9090");
         assert_eq!(parts.uri.to_string(), "http://example.test:9090/items?page=2");
 
@@ -2027,7 +2056,7 @@ mod server_tests {
             .body(())
             .unwrap()
             .into_parts();
-        let ipv6_auth = populate_http1_uri(&mut ipv6_parts);
+        let ipv6_auth = populate_http1_uri(&mut ipv6_parts).unwrap();
         assert_eq!(ipv6_auth.unwrap().as_str(), "[::1]:8080");
         assert_eq!(ipv6_parts.uri.to_string(), "http://[::1]:8080/v6");
 
@@ -2038,7 +2067,7 @@ mod server_tests {
             .body(())
             .unwrap()
             .into_parts();
-        let star_auth = populate_http1_uri(&mut star_parts);
+        let star_auth = populate_http1_uri(&mut star_parts).unwrap();
         assert_eq!(star_auth.unwrap().as_str(), "example.test:9090");
         assert_eq!(star_parts.uri.to_string(), "*");
 
@@ -2048,7 +2077,23 @@ mod server_tests {
             .body(())
             .unwrap()
             .into_parts();
-        assert!(populate_http1_uri(&mut bad_port_parts).is_none());
+        assert!(populate_http1_uri(&mut bad_port_parts).is_err());
+
+        let (mut missing_host_parts, ()) = http::Request::builder()
+            .uri("/no-host")
+            .body(())
+            .unwrap()
+            .into_parts();
+        assert!(populate_http1_uri(&mut missing_host_parts).is_err());
+
+        let (mut dup_host_parts, ()) = http::Request::builder()
+            .uri("/dup")
+            .header(http::header::HOST, "one.test")
+            .header(http::header::HOST, "two.test")
+            .body(())
+            .unwrap()
+            .into_parts();
+        assert!(populate_http1_uri(&mut dup_host_parts).is_err());
     }
 
     #[test]
@@ -2105,5 +2150,47 @@ mod server_tests {
             String::new(),
         )
         .is_none());
+        // Status codes outside Wasmtime's 100..=599 range and header maps
+        // exceeding Wasmtime's 128 KiB FieldMap limit fail validation too.
+        assert!(build_text_response(
+            &mut hooks,
+            700,
+            "text/plain".into(),
+            vec![],
+            "bad".into(),
+        )
+        .is_none());
+        let oversized_val = "x".repeat(30 * 1024);
+        assert!(build_text_response(
+            &mut hooks,
+            200,
+            "text/plain".into(),
+            (0..5)
+                .map(|i| (format!("x-huge-{i}"), oversized_val.clone()))
+                .collect(),
+            "bad".into(),
+        )
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn http11_requests_with_missing_duplicate_or_invalid_host_answer_400() {
+        let addr = serve(ServerLimits::default()).await;
+        for raw_req in [
+            &b"GET / HTTP/1.1\r\nconnection: close\r\n\r\n"[..],
+            &b"GET / HTTP/1.1\r\nhost: one.test\r\nhost: two.test\r\nconnection: close\r\n\r\n"[..],
+            &b"GET / HTTP/1.1\r\nhost: example.test:abc\r\nconnection: close\r\n\r\n"[..],
+        ] {
+            let mut conn = TcpStream::connect(addr).await.unwrap();
+            conn.write_all(raw_req).await.unwrap();
+            let answer = until_closed(&mut conn, Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert!(
+                answer.starts_with(b"HTTP/1.1 400"),
+                "expected 400 Bad Request, got: {}",
+                String::from_utf8_lossy(&answer)
+            );
+        }
     }
 }

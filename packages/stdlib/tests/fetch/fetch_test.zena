@@ -347,6 +347,21 @@ export let tests = suite('zena:fetch', () => {
         } else if (p == '/invalid-bytes') {
           res.setHeader('x-bad', 'a\r\nb');
           res.body = 'bad'.toBytes();
+        } else if (p == '/status-700') {
+          res.statusCode = 700;
+          res.body = 'bad';
+        } else if (p == '/status-wrap') {
+          res.statusCode = 65736;
+          res.body = 'bad';
+        } else if (p == '/bad-cl-empty-text') {
+          res.body = '';
+          res.setHeader('content-length', '99');
+        } else if (p == '/bad-cl-bytes') {
+          res.body = 'hello'.toBytes();
+          res.setHeader('content-length', '99');
+        } else if (p == '/head-metadata') {
+          res.statusCode = 200;
+          res.setHeader('content-length', '99');
         }
       });
       let server = new Server(app, 0 as u16);
@@ -383,6 +398,17 @@ export let tests = suite('zena:fetch', () => {
         let rInvalidBytes = await fetch(`${origin}/invalid-bytes`);
         equal(rInvalidBytes.status, 500);
         await rInvalidBytes.text();
+
+        for (let p in ['/status-700', '/status-wrap', '/bad-cl-empty-text', '/bad-cl-bytes']) {
+          let badResp = await fetch(`${origin}${p}`);
+          equal(badResp.status, 500);
+          await badResp.text();
+        }
+
+        let rHead = await fetch(`${origin}/head-metadata`, { method: 'HEAD' });
+        equal(rHead.status, 200);
+        equal(rHead.header('content-length') as String, '99');
+        equal(await rHead.text(), '');
       } finally {
         server.close();
       }

@@ -25,21 +25,23 @@ function completeTextResponse(
   body: String,
   defaultCt: String
 ) {
+  let code = res.statusCode;
+  let wireStatus = if (code >= 100 && code <= 599) code as u16 else 0 as u16;
   let ctOpt = res.contentTypeHeader;
-  var ct = ctOpt ?? defaultCt;
+  var hasCustomCt = false;
   var headers = getEmptyHeaders();
   if (res.hasCustomHeaders) {
     let custom = new GrowableArray<(String, String)>();
     res.forEachHeader((name, val) => {
       if (name == 'content-type') {
-        ct = val;
-      } else {
-        custom.push((name, val));
+        hasCustomCt = true;
       }
+      custom.push((name, val));
     });
     headers = custom;
   }
-  ResponseWriter.completeText(writer, res.statusCode as u16, ct, headers, body);
+  let ct = ctOpt ?? (if (hasCustomCt) '' else defaultCt);
+  ResponseWriter.completeText(writer, wireStatus, ct, headers, body);
 }
 
 type RequestPair = (Own<WireRequest>, Own<ResponseWriter>);
@@ -221,7 +223,7 @@ async function dispatch(app: App, wire: Own<WireRequest>, writer: Own<ResponseWr
       return;
     }
     let b = res.body;
-    if (b is String) {
+    if (b is String && (b.length > 0 || !res.hasCustomHeaders)) {
       completeTextResponse(writer, res, b, 'text/plain; charset=utf-8');
       sent = true;
     } else if (b == null) {
