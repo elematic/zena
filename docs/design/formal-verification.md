@@ -47,17 +47,22 @@ let max = (arr: array<i32>): i32 => { ... };
 
 // Contracts: Check properties at runtime
 let max = (arr: array<i32>): i32
-  requires arr.length > 0
-  ensures result >= arr[0]  // But this doesn't prove it's the MAXIMUM!
+  requires (arr.length > 0)
+  ensures (result >= arr[0])  // But this doesn't prove it's the MAXIMUM!
 => { ... };
 
 // Formal proof: Prove it's actually the maximum
 let max = (arr: array<i32>): i32
-  requires arr.length > 0
-  ensures forall i: i32 :: 0 <= i && i < arr.length ==> result >= arr[i]
-  ensures exists i: i32 :: 0 <= i && i < arr.length && result == arr[i]
+  requires (arr.length > 0)
+  ensures (forall i: i32 :: 0 <= i && i < arr.length ==> result >= arr[i])
+  ensures (exists i: i32 :: 0 <= i && i < arr.length && result == arr[i])
 => { ... };
 ```
+
+The clause syntax in this document's Zena examples (a keyword and a
+parenthesized condition, between the signature and the body) is the one
+[contracts.md](./contracts.md) specifies. Quantifiers, `ghost`,
+`decreases`, `lemma` and `@verify` are sketches.
 
 The formal specification says: "The result is greater than or equal to every
 element, AND the result equals some element." That's what "maximum" actually
@@ -304,9 +309,9 @@ the starting point:
 
 ```zena
 let withdraw = (account: Account, amount: i32): Account
-  requires amount > 0
-  requires account.balance >= amount
-  ensures result.balance == account.balance - amount
+  requires (amount > 0)
+  requires (account.balance >= amount)
+  ensures (result.balance == account.balance - amount)
 => { ... };
 ```
 
@@ -349,7 +354,7 @@ For simple properties, the verifier handles everything automatically:
 
 ```zena
 let abs = (x: i32): i32
-  ensures result >= 0
+  ensures (result >= 0)
 => if (x >= 0) { x } else { -x };
 // SMT solver: "In both branches, result >= 0. QED."
 ```
@@ -358,11 +363,11 @@ For loops, you need **invariants**—properties that hold at every iteration:
 
 ```zena
 let sum = (arr: array<i32>): i32
-  ensures result == sumOf(arr)  // sumOf is a mathematical spec function
+  ensures (result == sumOf(arr))  // sumOf is a mathematical spec function
 => {
   var total = 0;
   for (var i = 0; i < arr.length; i = i + 1)
-    invariant total == sumOf(arr[0..i])  // Partial sum so far
+    invariant (total == sumOf(arr[0..i]))  // Partial sum so far
   {
     total = total + arr[i];
   }
@@ -374,9 +379,9 @@ For recursive functions, you need **decreases clauses**:
 
 ```zena
 let factorial = (n: i32): i32
-  requires n >= 0
-  ensures result >= 1
-  decreases n  // Proves termination: n gets smaller each call
+  requires (n >= 0)
+  ensures (result >= 1)
+  decreases (n)  // Proves termination: n gets smaller each call
 => {
   if (n == 0) { 1 }
   else { n * factorial(n - 1) }
@@ -387,7 +392,7 @@ For complex proofs, you write **lemmas**—helper theorems:
 
 ```zena
 lemma reversePreservesLength<T>(list: List<T>)
-  ensures list.reverse().length == list.length
+  ensures (list.reverse().length == list.length)
 {
   match (list) {
     case Nil: // trivial
@@ -423,16 +428,16 @@ Ghost code exists only for specification—it's erased at compile time:
 
 ```zena
 let binarySearch = (arr: array<i32>, target: i32): i32
-  requires isSorted(arr)  // Ghost precondition
-  ensures result == -1 || arr[result] == target
+  requires (isSorted(arr))  // Ghost precondition
+  ensures (result == -1 || arr[result] == target)
 => {
   var lo = 0;
   var hi = arr.length;
 
   while (lo < hi)
-    invariant 0 <= lo && lo <= hi && hi <= arr.length
-    ghost invariant forall j :: 0 <= j < lo ==> arr[j] < target
-    ghost invariant forall j :: hi <= j < arr.length ==> arr[j] > target
+    invariant (0 <= lo && lo <= hi && hi <= arr.length)
+    ghost invariant (forall j :: 0 <= j < lo ==> arr[j] < target)
+    ghost invariant (forall j :: hi <= j < arr.length ==> arr[j] > target)
   {
     // ... implementation
   }
@@ -458,8 +463,8 @@ on each iteration and is bounded below:
 
 ```zena
 let gcd = (a: i32, b: i32): i32
-  requires a > 0 && b > 0
-  decreases b  // b decreases and is bounded below by 0
+  requires (a > 0 && b > 0)
+  decreases (b)  // b decreases and is bounded below by 0
 => {
   if (b == 0) { a }
   else { gcd(b, a % b) }
@@ -512,14 +517,14 @@ extra annotations.
 
 ```zena
 let max = (arr: array<i32>): i32
-  requires arr.length > 0
-  ensures forall i :: 0 <= i < arr.length ==> result >= arr[i]
-  ensures exists i :: 0 <= i < arr.length && result == arr[i]
+  requires (arr.length > 0)
+  ensures (forall i :: 0 <= i < arr.length ==> result >= arr[i])
+  ensures (exists i :: 0 <= i < arr.length && result == arr[i])
 => {
   var max = arr[0];
   for (var i = 1; i < arr.length; i = i + 1)
-    invariant forall j :: 0 <= j < i ==> max >= arr[j]
-    invariant exists j :: 0 <= j < i && max == arr[j]
+    invariant (forall j :: 0 <= j < i ==> max >= arr[j])
+    invariant (exists j :: 0 <= j < i && max == arr[j])
   {
     if (arr[i] > max) { max = arr[i]; }
   }
@@ -576,8 +581,8 @@ needs:
 
 ```zena
 let withdraw = (account: Account, amount: i32): Account
-  requires amount > 0
-  requires account.balance >= amount
+  requires (amount > 0)
+  requires (account.balance >= amount)
 => { ... };
 ```
 
@@ -588,9 +593,9 @@ Preconditions checked at runtime. Documents intent, catches bugs early.
 ```zena
 @verify
 let withdraw = (account: Account, amount: i32): Account
-  requires amount > 0
-  requires account.balance >= amount
-  ensures result.balance == account.balance - amount
+  requires (amount > 0)
+  requires (account.balance >= amount)
+  ensures (result.balance == account.balance - amount)
 => { ... };
 ```
 
@@ -612,7 +617,7 @@ Types carry lightweight proofs. Verified automatically where possible.
 ```zena
 @proof
 lemma sortPreservesElements<T>(arr: array<T>)
-  ensures arr.sort().toSet() == arr.toSet()
+  ensures (arr.sort().toSet() == arr.toSet())
 {
   // Proof by induction...
 }
@@ -702,6 +707,7 @@ AI figures out how, verifier ensures correctness.
 ### Near-Term (2026-2027)
 
 1. **Implement runtime contracts** (`requires`, `ensures`, `invariant`)
+   - Syntax and status: [contracts.md](./contracts.md)
    - Checked at runtime (like current Zena error handling)
    - Documents intent, catches bugs early
    - Foundation for future verification

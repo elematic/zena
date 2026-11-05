@@ -104,6 +104,7 @@ export sealed class Node {
   case PropertySignature
   case ImportSpecifier
   case Decorator
+  case ContractClause
   case SymbolPropertyName
 
   abstract loc: SourceLocation | null;
@@ -137,6 +138,13 @@ export final class Module(
    * structures keep a hash map for it.
    */
   var lastNodeId: NodeId = 0 as NodeId;
+
+  /**
+   * Every contract clause in the module, or null when it has none. The
+   * checker does not check clauses yet, and reports each one from this
+   * list so that a contract is never accepted and then not enforced.
+   */
+  var contractClauses: GrowableArray<ContractClause> | null = null;
 }
 
 // ============================================================================
@@ -203,6 +211,8 @@ export sealed class Expression extends Node {
     body: BlockStatement | Expression,
     isGenerator: boolean,
     isAsync: boolean,
+    /** The `requires` and `ensures` clauses, in source order; null when there are none. */
+    contracts: GrowableArray<ContractClause> | null,
     loc: SourceLocation | null)
   case AwaitExpression(argument: Expression, loc: SourceLocation | null)
   case CallExpression(
@@ -339,18 +349,28 @@ export sealed class Statement extends Node {
     consequent: Statement,
     alternate: Statement | null,
     loc: SourceLocation | null)
-  case WhileStatement(test: Node, body: Statement, loc: SourceLocation | null)
+  /**
+   * `invariants`, here and on the two `for` loops, are the loop's
+   * `invariant` clauses in source order; null when there are none.
+   */
+  case WhileStatement(
+    test: Node,
+    body: Statement,
+    invariants: GrowableArray<ContractClause> | null,
+    loc: SourceLocation | null)
   case ForStatement(
     init: Node | null,
     test: Expression | null,
     update: Expression | null,
     body: Statement,
+    invariants: GrowableArray<ContractClause> | null,
     loc: SourceLocation | null)
   case ForInStatement(
     pattern: Pattern,
     iterable: Expression,
     body: Statement,
     isAwait: boolean,
+    invariants: GrowableArray<ContractClause> | null,
     loc: SourceLocation | null)
   case ClassDeclaration(
     name: Identifier,
@@ -719,6 +739,8 @@ export final class MethodDefinition(
   isConstructor: boolean,
   /** `shared`: see FieldDefinition.isShared. */
   isShared: boolean,
+  /** The `requires` and `ensures` clauses, in source order; null when there are none. */
+  contracts: GrowableArray<ContractClause> | null,
   loc: SourceLocation | null) extends Node
 
 // ============================================================================
@@ -763,6 +785,8 @@ export final class MethodSignature(
   typeParameters: GrowableArray<TypeParameter> | null,
   params: GrowableArray<Parameter>,
   returnType: TypeAnnotation | null,
+  /** The `requires` and `ensures` clauses, in source order; null when there are none. */
+  contracts: GrowableArray<ContractClause> | null,
   loc: SourceLocation | null) extends Node
 
 export final class AccessorSignature(
@@ -816,6 +840,39 @@ export final class Decorator(
   name: String,
   path: GrowableArray<Identifier>,
   args: GrowableArray<Expression>,
+  loc: SourceLocation | null) extends Node
+
+// ============================================================================
+// Contracts
+// ============================================================================
+
+export enum ContractKind {
+  /** `requires (c)`: holds when the function is entered. */
+  Requires,
+  /** `ensures (c)`: holds when the function returns; `result` names the returned value. */
+  Ensures,
+  /** `invariant (c)`: holds each time a loop is about to test its condition. */
+  Invariant,
+}
+
+/** The keyword a clause of `kind` is written with. */
+export function contractKeyword(kind: ContractKind): String {
+  return match (kind) {
+    case ContractKind.Requires: 'requires'
+    case ContractKind.Ensures: 'ensures'
+    case ContractKind.Invariant: 'invariant'
+  };
+}
+
+/**
+ * One contract clause: `requires (c)` or `ensures (c)` between a
+ * function's signature and its body, or `invariant (c)` between a loop's
+ * header and its body. The keywords are contextual. See
+ * docs/design/contracts.md.
+ */
+export final class ContractClause(
+  kind: ContractKind,
+  condition: Expression,
   loc: SourceLocation | null) extends Node
 
 /**

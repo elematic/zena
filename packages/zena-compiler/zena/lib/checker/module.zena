@@ -7,7 +7,7 @@ import {
   IdentifierPattern, ImportDeclaration, InterfaceDeclaration,
   MixinDeclaration, Module, Node, Pattern, RecordPattern, RestPattern,
   SetterInfo, SourceLocation, Statement, SymbolDeclaration, TuplePattern,
-  TypeAliasDeclaration, VariableDeclaration
+  TypeAliasDeclaration, VariableDeclaration, contractKeyword
 } from '../ast.zena';
 import {
   AnyRefType, ArrayType, ExternRefType, FunctionType, I32Type, Type,
@@ -585,6 +585,19 @@ export function beginModule(
     var loc: SourceLocation | null = null;
     if (let TypeAliasDeclaration {name} = dup.node) { loc = name.loc; }
     ctx.error(`Type '${dup.name}' is already declared in this scope.`, DiagnosticCode.DuplicateDeclaration, loc);
+  }
+
+  // Contract clauses parse, and nothing checks or runs them yet
+  // (docs/design/contracts.md).
+  let contractClauses = ast.contractClauses;
+  if (contractClauses != null) {
+    for (let clause in contractClauses) {
+      ctx.error(
+        `'${contractKeyword(clause.kind)}' clauses are not implemented yet.`,
+        DiagnosticCode.TypeMismatch,
+        clause.loc
+      );
+    }
   }
 
   // Emit warnings for unused and never-mutated variables.

@@ -301,7 +301,7 @@ Features that distinguish Zena from TypeScript:
   arguments, dotted decorator names, method and class decorators, and
   expression decorators as macro application
   ([macros.md](docs/design/macros.md)).
-- **Contracts**: `requires` and `ensures` pre/post-conditions, enabling runtime assertion checks and future static verification using SMT solvers.
+- **Contracts**: `requires` and `ensures` pre/post-conditions and loop `invariant`s, enabling runtime assertion checks and future static verification using SMT solvers. The syntax parses (`requires (c)` between a signature and its body); the checker rejects clauses until they are checked and run. Design in [contracts.md](docs/design/contracts.md).
 - **Graphical Applications & WebGPU Runtime (`zenafx` / `zfx`)**: Native runtime support for running graphical WebAssembly components with GPU hardware acceleration (`wasi:webgpu`) and OS window presentation (`wasi-gfx:surface`).
   - **Host runtime (`zfx`) is implemented**: `packages/zenafx` embeds Wasmtime 50 with Zena's engine settings (WasmGC, exceptions, tail calls) and `wasi-gfx` host linkers (`surface-wasmtime`, `wasi-webgpu-wasmtime`, `frame-buffer-wasmtime`), running the `winit` OS event loop on the main thread and Wasm execution on Tokio.
   - Design in [graphical-runtime.md](docs/design/graphical-runtime.md).

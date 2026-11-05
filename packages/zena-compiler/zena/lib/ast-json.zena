@@ -5,7 +5,7 @@
 
 import { JsonObject, JsonArray, stringify } from 'zena:json';
 import {
-  Node, Module, Statement, Expression, TypeAnnotation, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, LetPatternCondition, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, Identifier, BindingPattern, IdentifierPattern, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateElement, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, Parameter, CallExpression, TypeParameter, MemberExpression, IndexExpression, ThisExpression, NewExpression, ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement, MapLiteral, MapEntry, RecordPattern, TuplePattern, ArrayPattern, RestPattern, BindingProperty, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, MatchExpression, MatchCase, IfExpression, ThrowExpression, TryExpression, AwaitExpression, CatchClause, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, ThisTypeAnnotation, PropertySignature, TypeAliasDeclaration, CaseClassParam, SealedVariant, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, SuperExpression, FieldInitializer, SuperInitializer, InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature, EnumDeclaration, EnumMember, ImportDeclaration, ImportSpecifier, ExportAllDeclaration, ExportFromDeclaration, Decorator, DeclareFunction, SymbolDeclaration, SymbolPropertyName,
+  Node, Module, Statement, Expression, TypeAnnotation, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, LetPatternCondition, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, Identifier, BindingPattern, IdentifierPattern, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateElement, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, Parameter, CallExpression, TypeParameter, MemberExpression, IndexExpression, ThisExpression, NewExpression, ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement, MapLiteral, MapEntry, RecordPattern, TuplePattern, ArrayPattern, RestPattern, BindingProperty, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, MatchExpression, MatchCase, IfExpression, ThrowExpression, TryExpression, AwaitExpression, CatchClause, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, ThisTypeAnnotation, PropertySignature, TypeAliasDeclaration, CaseClassParam, SealedVariant, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, SuperExpression, FieldInitializer, SuperInitializer, InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature, EnumDeclaration, EnumMember, ImportDeclaration, ImportSpecifier, ExportAllDeclaration, ExportFromDeclaration, Decorator, ContractClause, contractKeyword, DeclareFunction, SymbolDeclaration, SymbolPropertyName,
 } from './ast.zena';
 
 // ============================================================================
@@ -131,6 +131,7 @@ function nodeTypeName(node: Node) {
     case ExportAllDeclaration {}: 'ExportAllDeclaration'
     case ExportFromDeclaration {}: 'ExportFromDeclaration'
     case Decorator {}: 'Decorator'
+    case ContractClause {}: 'ContractClause'
     case DeclareFunction {}: 'DeclareFunction'
     case SymbolDeclaration {}: 'SymbolDeclaration'
     case SymbolPropertyName {}: 'SymbolPropertyName'
@@ -313,13 +314,16 @@ export function nodeToJson(node: Node): JsonObject {
       }
       obj['arguments'] = expressionsToJson(args);
     }
-    case FunctionExpression { typeParameters, params, returnType, body, isGenerator, isAsync }: {
+    case FunctionExpression { typeParameters, params, returnType, body, isGenerator, isAsync, contracts }: {
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters);
       }
       obj['params'] = parametersToJson(params);
       if (returnType != null) {
         obj['returnType'] = nodeToJson(returnType as Node);
+      }
+      if (contracts != null) {
+        obj['contracts'] = contractsToJson(contracts);
       }
       obj['body'] = nodeToJson(body);
       // Only emitted when set: bootstrap snapshots predate generators.
@@ -476,11 +480,14 @@ export function nodeToJson(node: Node): JsonObject {
       };
       obj['body'] = nodeToJson(body);
     }
-    case WhileStatement { test, body }: {
+    case WhileStatement { test, body, invariants }: {
       obj['test'] = nodeToJson(test);
+      if (invariants != null) {
+        obj['invariants'] = contractsToJson(invariants);
+      }
       obj['body'] = nodeToJson(body);
     }
-    case ForStatement { init, test, update, body }: {
+    case ForStatement { init, test, update, body, invariants }: {
       if (init != null) {
         obj['init'] = nodeToJson(init);
       }
@@ -490,11 +497,17 @@ export function nodeToJson(node: Node): JsonObject {
       if (update != null) {
         obj['update'] = nodeToJson(update);
       }
+      if (invariants != null) {
+        obj['invariants'] = contractsToJson(invariants);
+      }
       obj['body'] = nodeToJson(body);
     }
-    case ForInStatement { pattern, iterable, body }: {
+    case ForInStatement { pattern, iterable, body, invariants }: {
       obj['pattern'] = nodeToJson(pattern);
       obj['iterable'] = nodeToJson(iterable);
+      if (invariants != null) {
+        obj['invariants'] = contractsToJson(invariants);
+      }
       obj['body'] = nodeToJson(body);
     }
     case LetPatternCondition { pattern, init }: {
@@ -644,6 +657,10 @@ export function nodeToJson(node: Node): JsonObject {
       obj['name'] = name;
       obj['args'] = decoratorArgsToJson(args);
     }
+    case ContractClause { kind, condition }: {
+      obj['kind'] = contractKeyword(kind);
+      obj['condition'] = nodeToJson(condition);
+    }
     case DeclareFunction { name, typeParameters, params, returnType, externalModule, externalName, exported, decorators }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
@@ -731,9 +748,12 @@ export function nodeToJson(node: Node): JsonObject {
         obj['mutability'] = mutability;
       }
     }
-    case MethodDefinition { name, typeParameters, receiver, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, isConstructor, isShared }: {
+    case MethodDefinition { name, typeParameters, receiver, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, isConstructor, isShared, contracts }: {
       if (isShared) {
         obj['isShared'] = new Box<boolean>(true);
+      }
+      if (contracts != null) {
+        obj['contracts'] = contractsToJson(contracts);
       }
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
@@ -822,7 +842,7 @@ export function nodeToJson(node: Node): JsonObject {
       obj['body'] = nodesToJson(body);
       obj['exported'] = new Box<boolean>(exported);
     }
-    case MethodSignature { name, typeParameters, params, returnType }: {
+    case MethodSignature { name, typeParameters, params, returnType, contracts }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters);
@@ -830,6 +850,9 @@ export function nodeToJson(node: Node): JsonObject {
       obj['params'] = parametersToJson(params);
       if (returnType != null) {
         obj['returnType'] = nodeToJson(returnType as Node);
+      }
+      if (contracts != null) {
+        obj['contracts'] = contractsToJson(contracts);
       }
     }
     case AccessorSignature { name, typeAnnotation, hasGetter, hasSetter }: {
@@ -1042,6 +1065,14 @@ function decoratorsToJson(decorators: GrowableArray<Decorator>): JsonArray {
   let arr = new JsonArray();
   for (let decorator in decorators) {
     arr.push(nodeToJson(decorator));
+  }
+  return arr;
+}
+
+function contractsToJson(contracts: GrowableArray<ContractClause>): JsonArray {
+  let arr = new JsonArray();
+  for (let contract in contracts) {
+    arr.push(nodeToJson(contract));
   }
   return arr;
 }

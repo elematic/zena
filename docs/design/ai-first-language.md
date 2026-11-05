@@ -80,11 +80,13 @@ Design-by-contract features make function requirements explicit and machine-chec
 
 ```zena
 let withdraw = (account: Account, amount: i32): Account
-  requires amount > 0
-  requires account.balance >= amount
-  ensures result.balance == account.balance - amount
+  requires (amount > 0)
+  requires (account.balance >= amount)
+  ensures (result.balance == account.balance - amount)
 => { ... };
 ```
+
+The syntax is specified in [contracts.md](./contracts.md).
 
 **Contracts can be gradual.** TypeScript developers already use lightweight contracts: type annotations (shape), non-nullable types (presence), exhaustive matches (coverage). Simple contracts feel natural; richer contracts are available for critical code.
 
