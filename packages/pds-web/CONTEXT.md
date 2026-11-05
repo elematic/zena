@@ -31,7 +31,7 @@ served at `/docs/` by `registry:service`. Read this package's README first.
 - What a page shows of private members goes through
   `AppView.getEntries` as the person signed in (`visibleEntries` in
   `registry:web/partials/members`), never around it, so the App View's rules decide. The
-  App View's admins (`PDS_ADMIN_DIDS`, `PageContext.isAdmin`) are ordinary
+  App View's admins (`APP_VIEW_ADMIN_DIDS`, `PageContext.isAdmin`) are ordinary
   signed-in accounts the App View answers more for.
 - Show a person with `personLink` or `avatar` (`registry:web/partials/person`), from the
   `Person`s `PageContext.people` reads (`registry:web/people`); read the DIDs a

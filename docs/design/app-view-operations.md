@@ -26,7 +26,7 @@ they live.
 - **An automation account** publishes from CI with a token its App View
   issues; today, with an app password at the PDS. It is a maintainer like
   any other, marked `automation`.
-- **The App View's admins** are the DIDs in `PDS_ADMIN_DIDS`. They see every
+- **The App View's admins** are the DIDs in `APP_VIEW_ADMIN_DIDS`. They see every
   account and every private entry, and handle reports and takedowns.
 - **The operator** runs the deployment: Cloud Run, Firestore, the
   rotation keys, DNS. The operator acts through `deploy/` and the
@@ -149,18 +149,18 @@ session, because the App View holds nothing that can write there
 These are the App View's admins' work, on the pages. Each is described in
 package-manager.md, "Reports and takedowns".
 
-| Operation                                    | Exists                                   |
-| -------------------------------------------- | ---------------------------------------- |
-| See every account                            | `/admin`                                 |
-| See every private entry                      | the scope and package pages, as an admin |
-| Read and close reports                       | no                                       |
-| Take down a release, package or organization | no                                       |
-| Restore what was taken down                  | no                                       |
-| Delete a release for a legal notice          | no                                       |
-| Refuse a maintainer's requests               | no                                       |
-| Reserve scope names                          | `PDS_RESERVED_SCOPES`, by the operator   |
-| Label what was taken down, and why           | no; needs the labeler                    |
-| See a log of admin actions                   | no                                       |
+| Operation                                    | Exists                                      |
+| -------------------------------------------- | ------------------------------------------- |
+| See every account                            | `/admin`                                    |
+| See every private entry                      | the scope and package pages, as an admin    |
+| Read and close reports                       | no                                          |
+| Take down a release, package or organization | no                                          |
+| Restore what was taken down                  | no                                          |
+| Delete a release for a legal notice          | no                                          |
+| Refuse a maintainer's requests               | no                                          |
+| Reserve scope names                          | `APP_VIEW_RESERVED_SCOPES`, by the operator |
+| Label what was taken down, and why           | no; needs the labeler                       |
+| See a log of admin actions                   | no                                          |
 
 The three ways to remove a release differ in who does it and what stays:
 
@@ -185,4 +185,4 @@ The three ways to remove a release differ in who does it and what stays:
 | Create a scope for an organization         | `main.zena create-scope`             |
 | Rewrite every handle's DNS records         | `main.zena sync-handles`             |
 | Rewrite the summaries and mentions indexes | `main.zena sync-indexes`             |
-| Name the App View's admins                 | `PDS_ADMIN_DIDS`                     |
+| Name the App View's admins                 | `APP_VIEW_ADMIN_DIDS`                |

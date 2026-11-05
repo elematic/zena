@@ -213,7 +213,9 @@ grows. Milestones 1 to 4 are done.
    tenant and account from the start. The adapters are done, tested
    against the Firestore emulator with a suite every storage passes
    (`zena/test/storage-conformance.zena`), and so is the server's
-   configuration (`registry:service`), read from the environment. The App View
+   configuration, read from the environment: the PDS's alone
+   (`pds:service`, `PDS_*`), and the App View's with a PDS in the same
+   process (`registry:service`, `APP_VIEW_*`). The App View
    writes a TXT record for each handle it gives out, to a Cloud DNS zone
    or in memory (`registry:handles`), and `npm run demo` runs it on this
    machine. The image, its Cloud Run scripts for a staging and a
@@ -257,7 +259,7 @@ the handles at `pkg-staging.zena-lang.dev`, not
 the PDS at `padstone-staging.zena-lang.dev`. It also has its own Firestore
 database, blob prefix, rotation key and handle records.
 
-With `PDS_PLC=staging` the server is a PLC directory itself, at `/plc` on
+With `APP_VIEW_PLC=staging` the server is a PLC directory itself, at `/plc` on
 the PDS's name (`registry:plc-directory`). It records the operations of the
 accounts the App View makes, after checking that each follows the last
 (`checkNextOperation` in `atproto:plc`), and serves those DIDs' documents
@@ -286,4 +288,4 @@ hours, which a staging App View does not need.
   emulator for Cloud Storage's gRPC API, so that run keeps blob bytes in
   memory.
 - **Conformance**: the pds.js e2e suite, run from a pinned pds.js checkout
-  with a `zena` platform helper that starts `packages/registry/zena/main.zena`.
+  with a `zena` platform helper that starts `packages/pds/zena/main.zena`.

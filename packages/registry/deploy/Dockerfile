@@ -22,7 +22,7 @@ RUN /app/zena-run --precompile /app/registry.wasm
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
-ENV PDS_WEB_DIR=/web
+ENV APP_VIEW_WEB_DIR=/web
 # The server reads URLs other people chose (the PDS a DID document names),
 # so zena-run connects only to public addresses, and refuses a public
 # name pointed at a private one. The metadata server, which is link-local,

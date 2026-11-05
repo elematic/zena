@@ -18,10 +18,8 @@ import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {parseDidDocument} from 'atproto:did';
 import {AppView} from 'registry:app-view';
 import {SigningKey} from 'pds:storage';
-import {
-  ConfigError, AppViewSettings, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
-  buildService, configFromEnv
-} from 'registry:service';
+import {ConfigError, InBucket, InDirectory, InFirestore, InMemory} from 'pds:service';
+import {AppViewSettings, InCloudDns, RecordsInMemory, buildService, configFromEnv} from 'registry:service';
 
 let KEY = 'c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721';
 
@@ -89,8 +87,8 @@ function didOf(res: Response) {
 
 export let tests = suite('registry:service', () => {
   test("serves the web app's assets and docs, beside its pages and APIs", (ctx) => {
-    let service = runFuture(buildService(configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test'),
-        ('PDS_WEB_DIR', 'packages/registry/zena/test/fixtures/web')])), 'http://127.0.0.1:1'));
+    let service = runFuture(buildService(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
+        ('APP_VIEW_WEB_DIR', 'packages/registry/zena/test/fixtures/web')])), 'http://127.0.0.1:1'));
     let script = get(service.app, '/assets/app.js');
     equal(script.statusCode, 200, 'script');
     isTrue((script.type ?? '').contains('javascript'), script.type ?? 'no type');
@@ -106,19 +104,17 @@ export let tests = suite('registry:service', () => {
     let health = get(service.app, '/xrpc/_health');
     equal(health.statusCode, 200, `health: ${health.statusCode}`);
     isTrue((health.body as String).contains('version'), health.body as String);
-
-    // A PDS with no App View has no pages: its banner is at /.
-    let plain = runFuture(buildService(configFromEnv(envOf([])), 'http://127.0.0.1:1'));
-    isTrue((get(plain.app, '/').body as String).contains('PDS'), 'the banner');
   });
 
-  test('defaults to a PDS in memory on 2583', (ctx) => {
-    let config = configFromEnv(envOf([]));
-    equal(config.port as i32, 2583);
-    isTrue(config.storage is InMemory, 'in memory');
-    isTrue(config.appView == null, 'no App View');
+  test('needs a domain, and reads the PDS it runs as the PDS reads itself', (ctx) => {
+    let missing = refusal([]);
+    isTrue(missing.contains('APP_VIEW_DOMAIN is required'), missing);
+    let config = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test')]));
+    equal(config.pds.port as i32, 2583);
+    isTrue(config.pds.storage is InMemory, 'in memory');
     equal(config.plcDirectory, 'https://plc.directory');
-    isTrue(config.clockId >= 0 && config.clockId < 1024, `clock ${config.clockId}`);
+    // Its methods are served at the PDS's name, which is by default its domain.
+    equal(config.pds.publicUrl as String, 'https://pkg.test');
   });
 
   test('reads an App View on Firestore', (ctx) => {
@@ -130,21 +126,23 @@ export let tests = suite('registry:service', () => {
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
       ('PDS_FIRESTORE_DATABASE', 'pkg'),
       ('PDS_KEY_ENCRYPTION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/signing-keys'),
-      ('PDS_APP_VIEW_DOMAIN', 'pkg.example.dev'),
-      ('PDS_ROTATION_KEY', KEY),
-      ('PDS_RESERVED_SCOPES', 'std, core,,'),
-      ('PDS_ADMIN_DIDS', 'did:plc:aaaa, did:web:ops.example.dev,did:plc:cccc  did:plc:dddd'),
-      ('PDS_MAX_BLOB_BYTES', '1000'),
+      ('APP_VIEW_DOMAIN', 'pkg.example.dev'),
+      ('APP_VIEW_ROTATION_KEY', KEY),
+      ('APP_VIEW_RESERVED_SCOPES', 'std, core,,'),
+      ('APP_VIEW_ADMIN_DIDS', 'did:plc:aaaa, did:web:ops.example.dev,did:plc:cccc  did:plc:dddd'),
+      ('APP_VIEW_MAX_BLOB_BYTES', '1000'),
       ('PDS_CLOCK_ID', '7'),
       ('PDS_PLC_DIRECTORY', 'http://plc.test'),
-      ('PDS_HANDLE_RECORDS', 'cloud-dns'),
-      ('PDS_DNS_ZONE', 'pkg-zone'),
-      ('PDS_DNS_PROJECT', 'dns-project'),
+      ('APP_VIEW_PLC_DIRECTORY', 'http://app-view-plc.test'),
+      ('APP_VIEW_HANDLE_RECORDS', 'cloud-dns'),
+      ('APP_VIEW_DNS_ZONE', 'pkg-zone'),
+      ('APP_VIEW_DNS_PROJECT', 'dns-project'),
     ]));
-    equal(config.port as i32, 8080);
-    equal(config.clockId, 7);
-    equal(config.plcDirectory, 'http://plc.test');
-    if (let InFirestore {tenant, blobs, database, keyEncryptionKey} = config.storage) {
+    equal(config.pds.port as i32, 8080);
+    equal(config.pds.clockId, 7);
+    equal(config.pds.plcDirectory, 'http://plc.test');
+    equal(config.plcDirectory, 'http://app-view-plc.test');
+    if (let InFirestore {tenant, blobs, database, keyEncryptionKey} = config.pds.storage) {
       equal(tenant, 'pkg');
         equal(database as String, 'pkg');
         equal(keyEncryptionKey as String, 'projects/p/locations/l/keyRings/r/cryptoKeys/signing-keys');
@@ -153,13 +151,9 @@ export let tests = suite('registry:service', () => {
       isTrue(false, 'not in memory');
     }
     let appView = config.appView;
-    if (appView == null) {
-      isTrue(false, 'an App View');
-      return;
-    }
     equal(appView.domain, 'pkg.example.dev');
     equal(appView.serviceDid, 'did:web:pkg.example.dev');
-    equal(appView.publicUrl as String, 'https://pkg.example.dev');
+    equal(config.pds.publicUrl as String, 'https://pkg.example.dev');
     isTrue(appView.rotationKey != null, 'the rotation key');
     equal(appView.admins.length, 4);
     equal(appView.admins[0], 'did:plc:aaaa');
@@ -179,18 +173,17 @@ export let tests = suite('registry:service', () => {
       ('PDS_JWT_SECRET', KEY),
       ('PDS_TENANT', 'dev'),
       ('PDS_BLOB_DIR', '/var/pds/blobs'),
-      ('PDS_APP_VIEW_DOMAIN', 'pkg.test'),
-      ('PDS_ROTATION_KEY', KEY),
-      ('PDS_SERVICE_DID', 'did:web:other.test'),
+      ('APP_VIEW_DOMAIN', 'pkg.test'),
+      ('APP_VIEW_ROTATION_KEY', KEY),
+      ('APP_VIEW_DID', 'did:web:other.test'),
       ('PDS_PUBLIC_URL', 'http://localhost:2583'),
-      ('PDS_HANDLE_RECORDS', 'memory'),
+      ('APP_VIEW_HANDLE_RECORDS', 'memory'),
     ]));
-    if (let InFirestore {blobs} = local.storage) {
+    if (let InFirestore {blobs} = local.pds.storage) {
       isTrue(blobs is InDirectory && blobs.path == '/var/pds/blobs', 'the directory');
     }
-    let localAppView = local.appView;
-    isTrue(localAppView != null && localAppView.serviceDid == 'did:web:other.test' &&
-        localAppView.publicUrl as String == 'http://localhost:2583', 'the DID and URL given');
+    isTrue(local.appView.serviceDid == 'did:web:other.test' && local.pds.publicUrl as String == 'http://localhost:2583',
+        'the DID and URL given');
   });
 
   test('accepts the configuration deploy/deploy.sh gives staging', (ctx) => {
@@ -202,22 +195,22 @@ export let tests = suite('registry:service', () => {
       ('PDS_FIRESTORE_DATABASE', 'zena-pkg-staging'),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'meta-garage-420114-zena-pkg-staging'),
-      ('PDS_APP_VIEW_DOMAIN', 'pkg-staging.zena-lang.dev'),
+      ('APP_VIEW_DOMAIN', 'pkg-staging.zena-lang.dev'),
       ('PDS_PUBLIC_URL', 'https://padstone-staging.zena-lang.dev'),
-      ('PDS_SITE_URL', 'https://pkg-staging.zena-lang.dev'),
-      ('PDS_HANDLE_RECORDS', 'cloud-dns'),
-      ('PDS_DNS_ZONE', 'zena-pkg-staging'),
-      ('PDS_DNS_PROJECT', 'meta-garage-420114'),
-      ('PDS_PLC', 'staging'),
+      ('APP_VIEW_SITE_URL', 'https://pkg-staging.zena-lang.dev'),
+      ('APP_VIEW_HANDLE_RECORDS', 'cloud-dns'),
+      ('APP_VIEW_DNS_ZONE', 'zena-pkg-staging'),
+      ('APP_VIEW_DNS_PROJECT', 'meta-garage-420114'),
+      ('APP_VIEW_PLC', 'staging'),
       ('GOOGLE_CLOUD_PROJECT', 'meta-garage-420114'),
       ('PDS_KEY_ENCRYPTION_KMS_KEY',
           'projects/meta-garage-420114/locations/us-central1/keyRings/zena-pkg-staging/cryptoKeys/signing-keys'),
-      ('PDS_ROTATION_KEY', KEY),
+      ('APP_VIEW_ROTATION_KEY', KEY),
     ]));
     isTrue(config.plcStaging, 'its own PLC directory');
     let appView = config.appView;
-    isTrue(appView != null && appView.serviceDid == 'did:web:padstone-staging.zena-lang.dev' &&
-        appView.publicUrl as String == 'https://padstone-staging.zena-lang.dev' &&
+    isTrue(appView.serviceDid == 'did:web:padstone-staging.zena-lang.dev' &&
+        config.pds.publicUrl as String == 'https://padstone-staging.zena-lang.dev' &&
         appView.siteUrl as String == 'https://pkg-staging.zena-lang.dev', 'the App View');
   });
 
@@ -228,71 +221,63 @@ export let tests = suite('registry:service', () => {
       ('PDS_JWT_SECRET', KEY),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
-      ('PDS_APP_VIEW_DOMAIN', 'pkg.example.dev'),
-      ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1'),
-      ('PDS_OFFLINE_ROTATION_KEY', offline),
-      ('PDS_HANDLE_RECORDS', 'memory'),
+      ('APP_VIEW_DOMAIN', 'pkg.example.dev'),
+      ('APP_VIEW_ROTATION_KMS_KEY', 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1'),
+      ('APP_VIEW_OFFLINE_ROTATION_KEY', offline),
+      ('APP_VIEW_HANDLE_RECORDS', 'memory'),
     ]));
-    let appView = config.appView as AppViewSettings;
+    let appView = config.appView;
     isTrue(appView.rotationKey == null, 'no key of its own');
     equal(appView.rotationKmsKey as String, 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1');
     equal(formatDidKey(appView.offlineRotationKey as PublicKey), offline);
 
-    let both = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_ROTATION_KEY', KEY),
-        ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1')]);
+    let both = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_ROTATION_KEY', KEY),
+        ('APP_VIEW_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1')]);
     isTrue(both.contains('not both'), both);
-    let notVersion = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'),
-        ('PDS_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k')]);
+    let notVersion = refusal([('APP_VIEW_DOMAIN', 'pkg.test'),
+        ('APP_VIEW_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k')]);
     isTrue(notVersion.contains('is a key version'), notVersion);
-    let badOffline = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_OFFLINE_ROTATION_KEY', 'zQ3sh')]);
-    isTrue(badOffline.contains('PDS_OFFLINE_ROTATION_KEY is not a did:key'), badOffline);
-    let stray = refusal([('PDS_OFFLINE_ROTATION_KEY', offline)]);
-    isTrue(stray.contains('PDS_OFFLINE_ROTATION_KEY needs PDS_APP_VIEW_DOMAIN'), stray);
+    let badOffline = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_OFFLINE_ROTATION_KEY', 'zQ3sh')]);
+    isTrue(badOffline.contains('APP_VIEW_OFFLINE_ROTATION_KEY is not a did:key'), badOffline);
   });
 
   test("reads the App View's own signing key, as the rotation key is read", (ctx) => {
-    let given = configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_APP_VIEW_SIGNING_KEY', KEY)])).appView
-        as AppViewSettings;
+    let given = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_SIGNING_KEY', KEY)])).appView;
     equal(hex.encode((given.signingKey as SigningKey).privateKey), KEY);
-    let inKms = configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test'),
-        ('PDS_APP_VIEW_SIGNING_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/signing/cryptoKeyVersions/1')])).appView
-        as AppViewSettings;
+    let inKms = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
+        ('APP_VIEW_SIGNING_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/signing/cryptoKeyVersions/1')])).appView;
     equal(inKms.signingKmsKey as String, 'projects/p/locations/l/keyRings/r/cryptoKeys/signing/cryptoKeyVersions/1');
-    let bad = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_APP_VIEW_SIGNING_KEY', 'abcd')]);
-    isTrue(bad.contains('PDS_APP_VIEW_SIGNING_KEY is not 32 bytes of hex'), bad);
-    let stray = refusal([('PDS_APP_VIEW_SIGNING_KEY', KEY)]);
-    isTrue(stray.contains('PDS_APP_VIEW_SIGNING_KEY needs PDS_APP_VIEW_DOMAIN'), stray);
+    let bad = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_SIGNING_KEY', 'abcd')]);
+    isTrue(bad.contains('APP_VIEW_SIGNING_KEY is not 32 bytes of hex'), bad);
 
     // Its DID document lists the key, which the PDSes of its accounts
     // check its tokens with.
-    let hosted = runFuture(buildService(configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test'),
-        ('PDS_APP_VIEW_SIGNING_KEY', KEY)])), 'http://127.0.0.1:1'));
+    let hosted = runFuture(buildService(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
+        ('APP_VIEW_SIGNING_KEY', KEY)])), 'http://127.0.0.1:1'));
     let document = parseDidDocument(parseJson(get(hosted.app, '/.well-known/did.json').body as String), 'did:web:pkg.test');
     equal(formatDidKey(document.signingKey as PublicKey), formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode(KEY))));
   });
 
   test('makes up a rotation key for an App View in memory', (ctx) => {
-    let appView = configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test')])).appView;
-    isTrue(appView != null && appView.rotationKey == null, 'no key until the server starts');
-    isTrue(appView != null && appView.records is RecordsInMemory, 'records in memory');
+    let appView = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test')])).appView;
+    isTrue(appView.rotationKey == null, 'no key until the server starts');
+    isTrue(appView.records is RecordsInMemory, 'records in memory');
   });
 
   test('names every problem in a configuration', (ctx) => {
-    let firestore = refusal([('PDS_STORAGE', 'firestore'), ('PDS_APP_VIEW_DOMAIN', 'pkg.test')]);
+    let firestore = refusal([('PDS_STORAGE', 'firestore'), ('APP_VIEW_DOMAIN', 'pkg.test')]);
     isTrue(firestore.contains('needs PDS_TENANT'), firestore);
     isTrue(firestore.contains('needs PDS_BLOB_BUCKET or PDS_BLOB_DIR'), firestore);
-    isTrue(firestore.contains('needs PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY'), firestore);
-    isTrue(firestore.contains('needs PDS_HANDLE_RECORDS'), firestore);
+    isTrue(firestore.contains('needs APP_VIEW_ROTATION_KEY or APP_VIEW_ROTATION_KMS_KEY'), firestore);
+    isTrue(firestore.contains('needs APP_VIEW_HANDLE_RECORDS'), firestore);
     isTrue(firestore.contains('needs PDS_JWT_SECRET'), firestore);
-    let records = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_HANDLE_RECORDS', 'cloud-dns')]);
-    isTrue(records.contains('needs PDS_DNS_ZONE'), records);
-    let unknown = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_HANDLE_RECORDS', 'route53'),
-        ('PDS_DNS_ZONE', 'z')]);
-    isTrue(unknown.contains('PDS_HANDLE_RECORDS is cloud-dns or memory'), unknown);
-    let zoneAlone = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_DNS_ZONE', 'z')]);
-    isTrue(zoneAlone.contains('need PDS_HANDLE_RECORDS=cloud-dns'), zoneAlone);
-    let noAppView = refusal([('PDS_HANDLE_RECORDS', 'memory')]);
-    isTrue(noAppView.contains('PDS_HANDLE_RECORDS needs PDS_APP_VIEW_DOMAIN'), noAppView);
+    let records = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_HANDLE_RECORDS', 'cloud-dns')]);
+    isTrue(records.contains('needs APP_VIEW_DNS_ZONE'), records);
+    let unknown = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_HANDLE_RECORDS', 'route53'),
+        ('APP_VIEW_DNS_ZONE', 'z')]);
+    isTrue(unknown.contains('APP_VIEW_HANDLE_RECORDS is cloud-dns or memory'), unknown);
+    let zoneAlone = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_DNS_ZONE', 'z')]);
+    isTrue(zoneAlone.contains('need APP_VIEW_HANDLE_RECORDS=cloud-dns'), zoneAlone);
     let keysInMemory = refusal([('PDS_KEY_ENCRYPTION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k')]);
     isTrue(keysInMemory.contains('PDS_KEY_ENCRYPTION_KMS_KEY needs PDS_STORAGE=firestore'), keysInMemory);
     let keyVersion = refusal([('PDS_STORAGE', 'firestore'),
@@ -303,24 +288,22 @@ export let tests = suite('registry:service', () => {
       ('PORT', 'eighty'),
       ('PDS_STORAGE', 'disk'),
       ('PDS_CLOCK_ID', '1024'),
-      ('PDS_APP_VIEW_DOMAIN', 'pkg.test'),
-      ('PDS_ROTATION_KEY', 'abcd'),
-      ('PDS_MAX_BLOB_BYTES', '-5'),
+      ('APP_VIEW_DOMAIN', 'pkg.test'),
+      ('APP_VIEW_ROTATION_KEY', 'abcd'),
+      ('APP_VIEW_MAX_BLOB_BYTES', '-5'),
       ('PDS_JWT_SECRET', 'not hex'),
     ]);
     for (let expected in ['PORT is not a number', 'PDS_STORAGE is memory or firestore', 'PDS_CLOCK_ID is 0 to 1023',
-        'PDS_ROTATION_KEY is not 32 bytes of hex', 'PDS_MAX_BLOB_BYTES must be positive',
+        'APP_VIEW_ROTATION_KEY is not 32 bytes of hex', 'APP_VIEW_MAX_BLOB_BYTES must be positive',
         'PDS_JWT_SECRET is not 32 bytes of hex']) {
       isTrue(values.contains(expected), `${expected} in: ${values}`);
     }
 
-    let admin = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_ADMIN_DIDS', 'did:plc:aaaa,alice.example.com')]);
-    isTrue(admin.contains("PDS_ADMIN_DIDS has 'alice.example.com', which is not a DID"), admin);
-    let strayAdmin = refusal([('PDS_ADMIN_DIDS', 'did:plc:aaaa')]);
-    isTrue(strayAdmin.contains('PDS_ADMIN_DIDS needs PDS_APP_VIEW_DOMAIN'), strayAdmin);
+    let admin = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_ADMIN_DIDS', 'did:plc:aaaa,alice.example.com')]);
+    isTrue(admin.contains("APP_VIEW_ADMIN_DIDS has 'alice.example.com', which is not a DID"), admin);
 
-    let stray = refusal([('PDS_ROTATION_KEY', KEY), ('PDS_BLOB_DIR', '/tmp/x')]);
-    isTrue(stray.contains('PDS_ROTATION_KEY needs PDS_APP_VIEW_DOMAIN'), stray);
+    let stray = refusal([('APP_VIEW_ROTATION_KEY', KEY), ('PDS_BLOB_DIR', '/tmp/x')]);
+    isTrue(stray.contains('APP_VIEW_DOMAIN is required'), stray);
     isTrue(stray.contains('need PDS_STORAGE=firestore'), stray);
     let strayDatabase = refusal([('PDS_FIRESTORE_DATABASE', 'pkg')]);
     isTrue(strayDatabase.contains('need PDS_STORAGE=firestore'), strayDatabase);
@@ -329,20 +312,11 @@ export let tests = suite('registry:service', () => {
     isTrue(both.contains('not both'), both);
   });
 
-  test('builds a PDS, and an App View when it has a domain', (ctx) => {
-    let plain = runFuture(buildService(configFromEnv(envOf([])), 'http://127.0.0.1:1'));
-    isTrue(plain.appView == null, 'no App View');
-    equal(get(plain.app, '/xrpc/_health').statusCode, 200);
-    equal(get(plain.app, '/xrpc/com.atproto.server.describeServer').statusCode, 404);
-
-    let config = configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_RESERVED_SCOPES', 'std'),
-        ('PDS_ADMIN_DIDS', 'did:plc:aaaa')]));
+  test('builds an App View, with the PDS it runs', (ctx) => {
+    let config = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_RESERVED_SCOPES', 'std'),
+        ('APP_VIEW_ADMIN_DIDS', 'did:plc:aaaa')]));
     let hosted = runFuture(buildService(config, 'http://127.0.0.1:1'));
     let appView = hosted.appView;
-    if (appView == null) {
-      isTrue(false, 'an App View');
-      return;
-    }
     equal(appView.config.endpoint, 'https://pkg.test');
     isTrue(appView.config.reservedScopes.has('std') && appView.config.reservedScopes.has('www'), 'the reserved scopes');
     isTrue(appView.isAppViewAdmin('did:plc:aaaa') && !appView.isAppViewAdmin('did:plc:bbbb'), 'the admins');
@@ -357,7 +331,6 @@ export let tests = suite('registry:service', () => {
     equal(parsed.pds as String, 'https://pkg.test');
     // It names the App View's methods too, as a client finds them.
     equal(parsed.serviceEndpoint('#zena_registry', 'ZenaRegistry') as String, 'https://pkg.test');
-    equal(get(plain.app, '/.well-known/did.json').statusCode, 404);
 
     // describeRegistry says what the App View is, to anyone.
     let described = parseJson(get(hosted.app, '/xrpc/dev.zena-lang.registry.describeRegistry').body as String) as JsonObject;
@@ -370,8 +343,7 @@ export let tests = suite('registry:service', () => {
     isTrue(contains(described['methods'] as JsonArray, 'dev.zena-lang.registry.createAutomationAccount'),
         'automation accounts');
 
-    // The PDS keeps managed accounts for the App View it runs with, and none
-    // without one.
+    // The PDS keeps managed accounts for the App View it runs with.
     let managed = hosted.pds.managed;
     if (managed == null) {
       isTrue(false, 'managed accounts');
@@ -379,35 +351,33 @@ export let tests = suite('registry:service', () => {
     }
     equal(managed.serviceDid, 'did:web:pkg.test');
     equal(managed.endpoint, 'https://pkg.test');
-    isTrue(plain.pds.managed == null, 'no managed accounts without an App View');
   });
 
   test("reads the site's address apart from the PDS's, and the DID from the PDS's", (ctx) => {
-    let split = configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
-        ('PDS_SITE_URL', 'https://pkg.test')])).appView as AppViewSettings;
-    equal(split.publicUrl as String, 'https://padstone.test');
+    let both = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
+        ('APP_VIEW_SITE_URL', 'https://pkg.test')]));
+    let split = both.appView;
+    equal(both.pds.publicUrl as String, 'https://padstone.test');
     equal(split.serviceDid as String, 'did:web:padstone.test');
     equal(split.siteUrl as String, 'https://pkg.test');
     // Without a site, one name is both.
-    let one = configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test')])).appView as AppViewSettings;
+    let one = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test')])).appView;
     isTrue(one.siteUrl == null, 'no site of its own');
     equal(one.serviceDid as String, 'did:web:pkg.test');
 
-    let alone = refusal([('PDS_SITE_URL', 'https://pkg.test')]);
-    isTrue(alone.contains('PDS_SITE_URL needs PDS_APP_VIEW_DOMAIN'), alone);
     for (let url in ['pkg.test', 'ftp://pkg.test', 'https://pkg.test/pages']) {
-      let wrong = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
-          ('PDS_SITE_URL', url)]);
-      isTrue(wrong.contains('PDS_SITE_URL is an origin'), wrong);
+      let wrong = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
+          ('APP_VIEW_SITE_URL', url)]);
+      isTrue(wrong.contains('APP_VIEW_SITE_URL is an origin'), wrong);
     }
     // The PDS's URL is `https://pkg.test` unless it is given another.
-    let same = refusal([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_SITE_URL', 'https://pkg.test')]);
-    isTrue(same.contains("PDS_SITE_URL names the PDS's own App View"), same);
+    let same = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_SITE_URL', 'https://pkg.test')]);
+    isTrue(same.contains("APP_VIEW_SITE_URL names the PDS's own App View"), same);
   });
 
   test('serves the site and the PDS each under its own name', (ctx) => {
-    let config = configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
-        ('PDS_SITE_URL', 'https://pkg.test')]));
+    let config = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
+        ('APP_VIEW_SITE_URL', 'https://pkg.test')]));
     let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
     let app = service.app;
 
@@ -446,11 +416,11 @@ export let tests = suite('registry:service', () => {
     equal(getUrl(app, 'https://zena-pkg-abc.a.run.app/me').statusCode, 404);
   });
 
-  test('reads PDS_PLC', (ctx) => {
-    isTrue(!configFromEnv(envOf([])).plcStaging, 'public by default');
-    isTrue(configFromEnv(envOf([('PDS_PLC', 'staging')])).plcStaging, 'staging');
-    let wrong = refusal([('PDS_PLC', 'sandbox')]);
-    isTrue(wrong.contains('PDS_PLC is public or staging'), wrong);
+  test('reads APP_VIEW_PLC', (ctx) => {
+    isTrue(!configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test')])).plcStaging, 'public by default');
+    isTrue(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PLC', 'staging')])).plcStaging, 'staging');
+    let wrong = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PLC', 'sandbox')]);
+    isTrue(wrong.contains('APP_VIEW_PLC is public or staging'), wrong);
   });
 
   test('is a staging PLC directory, reading other DIDs from upstream', (ctx) => {
@@ -477,10 +447,10 @@ export let tests = suite('registry:service', () => {
     });
     let upstream = new Server(api, 0 as u16);
     upstream.start();
-    let config = configFromEnv(envOf([('PDS_APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_PLC', 'staging'),
-        ('PDS_PLC_DIRECTORY', `http://127.0.0.1:${upstream.port as i32}`)]));
+    let config = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PLC', 'staging'),
+        ('APP_VIEW_PLC_DIRECTORY', `http://127.0.0.1:${upstream.port as i32}`)]));
     let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
-    let appView = service.appView as AppView;
+    let appView = service.appView;
 
     // Alice's token is checked with her key, read through from upstream.
     let seconds = now().seconds;

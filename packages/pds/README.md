@@ -41,10 +41,28 @@ From the repository root:
 npm test -w @zena-lang/pds                       # its tests, through wireit
 npm run test:emulator -w @zena-lang/pds          # the storage tests against the Firestore emulator
 ./target/release/zena-cli test "packages/pds/zena/test/*_test.zena"
+./target/release/zena-cli run packages/pds/zena/main.zena   # padstone alone, on $PORT, default 2583
 ```
 
-The service that serves it, alone or with the App View, is
-`packages/registry/zena/main.zena`; see its [README](../registry/README.md).
+## Configuration
+
+`main.zena` reads its configuration from the environment, `PDS_*`
+(`pds:service` lists every variable). With none, it is a PDS in memory on
+port 2583, which keeps managed accounts for no App View. A PDS for the
+Zena App View names its own origin and DID, and the App View it trusts,
+by its DID and the online rotation key that signs its accounts' genesis
+operations:
+
+```sh
+PDS_STORAGE=firestore PDS_TENANT=pkg PDS_BLOB_BUCKET=<bucket> PDS_JWT_SECRET=<hex> \
+PDS_PUBLIC_URL=https://padstone.zena-lang.dev PDS_DID=did:web:padstone.zena-lang.dev \
+PDS_TRUSTED_APP_VIEWS="did:web:pkg.zena-lang.dev=did:key:zQ3sh..." \
+  ./target/release/zena-cli run packages/pds/zena/main.zena
+```
+
+The App View can also run a PDS in the same process, from the same
+variables: that is how it is deployed for now. See
+[`packages/registry`](../registry/README.md).
 
 ## Layout
 
@@ -64,5 +82,7 @@ The service that serves it, alone or with the App View, is
   - `signer`: the keys an App View signs with, held here or in Cloud KMS,
     which `XrpcPds` signs its tokens with;
   - `pds-client`: the PDS as an App View reaches it;
-  - `server`: the HTTP application, whose routes are in `xrpc/`.
+  - `server`: the HTTP application, whose routes are in `xrpc/`;
+  - `service`: the configuration, read from the environment, and the
+    server it describes; `main` is the two together.
 - `zena/test/`: its tests.

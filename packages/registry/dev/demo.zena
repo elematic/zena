@@ -12,12 +12,12 @@
  *   here too, with the Firestore emulator. Its handle records are in
  *   memory;
  * - a DNS-over-HTTPS resolver that answers from those records, and asks
- *   `PDS_DNS_OVER_HTTPS` (Cloudflare's, by default) about every other
+ *   `APP_VIEW_DNS_OVER_HTTPS` (Cloudflare's, by default) about every other
  *   name, so handles on a person's own domain resolve.
  *
  * `npm run demo` builds the web app (`packages/pds-web`) and gives it to
  * the demo as the directory `/web` (`--dir packages/pds-web/out::/web`,
- * `PDS_WEB_DIR=/web`), which the App View serves at its origin.
+ * `APP_VIEW_WEB_DIR=/web`), which the App View serves at its origin.
  *
  * Then it prints the environment `zena` needs, and the commands of a
  * first publish. Run from the repository root with
@@ -48,20 +48,21 @@ export async function main(): Future<void> {
   let port = getEnv('PORT') ?? '2583';
   let defaults = new HashMap<String, String>();
   defaults['PORT'] = port;
-  defaults['PDS_APP_VIEW_DOMAIN'] = 'pkg.test';
+  defaults['APP_VIEW_DOMAIN'] = 'pkg.test';
   defaults['PDS_PUBLIC_URL'] = `http://127.0.0.1:${port}`;
   // The did:web of that origin, which `zena` checks the App View's DID against.
-  defaults['PDS_SERVICE_DID'] = `did:web:127.0.0.1%3A${port}`;
+  defaults['APP_VIEW_DID'] = `did:web:127.0.0.1%3A${port}`;
+  defaults['APP_VIEW_PLC_DIRECTORY'] = world.plcDirectory;
   defaults['PDS_PLC_DIRECTORY'] = world.plcDirectory;
   // The resolver below answers from records in memory, wherever the
   // accounts are kept.
-  defaults['PDS_HANDLE_RECORDS'] = 'memory';
+  defaults['APP_VIEW_HANDLE_RECORDS'] = 'memory';
   // The demo maintainer's PDS is on this machine, and the App View reads
   // their attestations from it.
-  defaults['PDS_PRIVATE_READS'] = '1';
+  defaults['APP_VIEW_PRIVATE_READS'] = '1';
   // TODO(#520): the return type is only for the compiler.
   let config = configFromEnv((name): String | null => {
-    let fixed = name == 'PDS_HANDLE_RECORDS' || name == 'PDS_PLC_DIRECTORY';
+    let fixed = name == 'APP_VIEW_HANDLE_RECORDS' || name == 'APP_VIEW_PLC_DIRECTORY' || name == 'PDS_PLC_DIRECTORY';
     let given = if (fixed) null else getEnv(name);
     if (given != null) {
       return given;
@@ -72,7 +73,7 @@ export async function main(): Future<void> {
     return null;
   });
   let running = await serve(config);
-  let upstream = dnsOverHttpsUpstream(getEnv('PDS_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
+  let upstream = dnsOverHttpsUpstream(getEnv('APP_VIEW_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
   let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords, upstream), 0 as u16);
   dns.start();
 
@@ -95,7 +96,7 @@ export async function main(): Future<void> {
 
     and in another workspace, \`zena add <name>.acme.pkg.test\` and \`zena run\`.
     To see /admin when you sign in to the pages, start the demo with
-    PDS_ADMIN_DIDS set to your DID.
+    APP_VIEW_ADMIN_DIDS set to your DID.
     Ctrl-C stops the App View and forgets everything it held in memory.
   `);
   await world.done();

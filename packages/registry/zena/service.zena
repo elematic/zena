@@ -1,146 +1,107 @@
 /**
- * The PDS as a server: its configuration, read from the environment by
- * `configFromEnv`, and `serve`, which builds the storage, the PDS and the
- * App View the configuration names and listens. `main.zena` is the
- * two together.
+ * The App View as a server, with the PDS it keeps its accounts on in the
+ * same process: its configuration, read from the environment by
+ * `configFromEnv`, and `serve`, which builds the PDS (`pds:service`), the
+ * App View's stores and the App View the configuration names, and
+ * listens. `main.zena` is the two together.
  *
- * The variables:
+ * The PDS reads its own variables, `PDS_*` (see `pds:service`): its
+ * storage, which the App View keeps its stores beside, under the same
+ * tenant, its origin, which the accounts' DID documents name
+ * (`PDS_PUBLIC_URL`, `https://<APP_VIEW_DOMAIN>` by default), and the rest.
+ * It trusts the App View it runs with, beside any `PDS_TRUSTED_APP_VIEWS`.
+ * The App View's:
  *
- * - `PORT`: the port to listen on, 2583 by default.
- * - `PDS_STORAGE`: `memory` (the default), which forgets everything when
- *   the server stops, or `firestore`.
- * - With `firestore`:
- *   - `PDS_TENANT`, the tenant whose documents these are;
- *   - and either `PDS_BLOB_BUCKET`, the Cloud Storage bucket for blob bytes,
- *     or `PDS_BLOB_DIR`, a directory for them, for a server on one machine.
- *   - `PDS_FIRESTORE_DATABASE`, the database, `(default)` when unset.
- *   - `PDS_KEY_ENCRYPTION_KMS_KEY`, a Cloud KMS symmetric key,
- *     `projects/…/cryptoKeys/<key>`, that accounts' signing keys are
- *     encrypted with in Firestore (`pds:key-encryption`). Without it they
- *     are kept in the clear, and an encrypted one cannot be read.
- *   - The project and credentials come from `google-cloud:firestore`'s
- *     defaults, and `FIRESTORE_EMULATOR_HOST` points it at the emulator.
- * - `PDS_APP_VIEW_DOMAIN`: the App View's domain, such as
- *   `pkg.zena-lang.dev`. Without it the server is a PDS with no App
- *   View. With it:
- *   - `PDS_ROTATION_KEY`: the App View's online PLC rotation key, a secp256k1
- *     private key in hex; or `PDS_ROTATION_KMS_KEY`, a Cloud KMS key
- *     version, `projects/…/cryptoKeyVersions/<n>`, on secp256k1 or P-256,
- *     which signs without the key leaving Cloud KMS (`pds:signer`). One
- *     of them is required with `firestore`, since the accounts it creates
- *     outlive the server. With `memory`, a missing key is made up at start.
- *   - `PDS_APP_VIEW_SIGNING_KEY` or `PDS_APP_VIEW_SIGNING_KMS_KEY`: the App View's own
- *     signing key, given as the rotation key is, which signs its
- *     service-auth tokens to the PDSes of its accounts and which its DID
- *     document lists. A missing key is made up at start: the App View reaches
- *     its accounts' PDS in the same process, with no tokens, until the two
- *     are services of their own (#851).
- *   - `PDS_OFFLINE_ROTATION_KEY`: the operator's offline rotation key, as
- *     a `did:key`, which every new account ranks above the online key, so
- *     that the operator can undo what a stolen online key signs.
- *   - `PDS_PUBLIC_URL`: the origin the accounts' DID documents name as
- *     their PDS, `https://<domain>` by default.
- *   - `PDS_SERVICE_DID`: the App View's DID, by default the `did:web` of
- *     `PDS_PUBLIC_URL`'s host.
- *   - `PDS_SITE_URL`: the origin of the site, the App View's web pages, when
- *     it has a name of its own (docs/design/package-manager.md, "Names and
- *     addresses"). A request for the site's host name then gets the pages
- *     and what their sign-in calls, and a request for any other name gets
- *     the PDS: its XRPC methods, its DID document and its staging PLC
- *     directory. Without it, every name gets both, as on one machine.
- *   - `PDS_ADMIN_DIDS`: the DIDs of the App View's admins, separated by commas
- *     or spaces, who sign in to the web app as themselves and may see every
- *     account the App View holds and every private entry. `deploy.sh` passes
- *     spaces, since `gcloud --set-env-vars` splits on commas.
- *   - `PDS_RESERVED_SCOPES`: scope names no one may take, comma-separated,
- *     beside the App View's own.
- *   - `PDS_MAX_BLOB_BYTES`: the largest artifact the App View stores.
- *   - `PDS_PRIVATE_READS`: `1` lets the App View read PDSes at addresses on
- *     this machine or a private network, as a stack on one machine needs
- *     (tests, demos). Off by default, so a DID document cannot point the
- *     App View's reads at what is behind it.
- *   - `PDS_HANDLE_RECORDS`: where the App View writes its handles' DNS records
- *     (`registry:handles`): `cloud-dns`, a Cloud DNS managed zone, or `memory`,
- *     for local runs. `memory` by default, but required with `firestore`,
- *     so that no deployment keeps them in memory by leaving it out. With
- *     `cloud-dns`, `PDS_DNS_ZONE` names the zone, and `PDS_DNS_PROJECT`
- *     its project, by default the one the server runs in.
- * - `PDS_PLC_DIRECTORY` and `PDS_DNS_OVER_HTTPS`: where DIDs and handles
- *   are resolved, `https://plc.directory` and Cloudflare's resolver by
- *   default.
- * - `PDS_PLC`: `public` (the default), where the App View sends the operations
- *   of the accounts it makes to `PDS_PLC_DIRECTORY`; or `staging`, where
- *   the server is a PLC directory itself, at `/plc` (`registry:plc-directory`),
- *   that records them in its storage and reads every other DID from
- *   `PDS_PLC_DIRECTORY`, so nothing a staging App View makes reaches it.
- * - `PDS_JWT_SECRET`: 32 bytes in hex, which signs the access and refresh
- *   tokens of sessions (`pds:sessions`). Required with `firestore`, since
- *   sessions outlive the server and every server of a deployment checks
- *   them. With `memory`, a missing secret is made up at start.
- * - `PDS_WEB_DIR`: the directory of the web app's assets and static
+ * - `APP_VIEW_DOMAIN`, required: the App View's domain, such as
+ *   `pkg.zena-lang.dev`. A PDS with no App View starts from
+ *   `packages/pds/zena/main.zena`.
+ * - `APP_VIEW_ROTATION_KEY`: the App View's online PLC rotation key, a
+ *   secp256k1 private key in hex; or `APP_VIEW_ROTATION_KMS_KEY`, a Cloud
+ *   KMS key version, `projects/…/cryptoKeyVersions/<n>`, on secp256k1 or
+ *   P-256, which signs without the key leaving Cloud KMS (`pds:signer`).
+ *   One of them is required with `PDS_STORAGE=firestore`, since the
+ *   accounts it creates outlive the server. With `memory`, a missing key
+ *   is made up at start.
+ * - `APP_VIEW_SIGNING_KEY` or `APP_VIEW_SIGNING_KMS_KEY`: the App View's own
+ *   signing key, given as the rotation key is, which signs its
+ *   service-auth tokens to the PDSes of its accounts and which its DID
+ *   document lists. A missing key is made up at start: the App View
+ *   reaches the PDS in the same process, with no tokens, until the two are
+ *   services of their own (#851).
+ * - `APP_VIEW_OFFLINE_ROTATION_KEY`: the operator's offline rotation key,
+ *   as a `did:key`, which every new account ranks above the online key, so
+ *   that the operator can undo what a stolen online key signs.
+ * - `APP_VIEW_DID`: the App View's DID, by default the `did:web` of
+ *   `PDS_PUBLIC_URL`'s host, where its methods are served.
+ * - `APP_VIEW_SITE_URL`: the origin of the site, the App View's web pages,
+ *   when it has a name of its own (docs/design/package-manager.md, "Names
+ *   and addresses"). A request for the site's host name then gets the
+ *   pages and what their sign-in calls, and a request for any other name
+ *   gets the PDS: its XRPC methods, its DID document and its staging PLC
+ *   directory. Without it, every name gets both, as on one machine.
+ * - `APP_VIEW_ADMIN_DIDS`: the DIDs of the App View's admins, separated by
+ *   commas or spaces, who sign in to the web app as themselves and may see
+ *   every account the App View holds and every private entry. `deploy.sh`
+ *   passes spaces, since `gcloud --set-env-vars` splits on commas.
+ * - `APP_VIEW_RESERVED_SCOPES`: scope names no one may take,
+ *   comma-separated, beside the App View's own.
+ * - `APP_VIEW_MAX_BLOB_BYTES`: the largest artifact the App View stores.
+ * - `APP_VIEW_PRIVATE_READS`: `1` lets the App View read PDSes at
+ *   addresses on this machine or a private network, as a stack on one
+ *   machine needs (tests, demos). Off by default, so a DID document cannot
+ *   point the App View's reads at what is behind it.
+ * - `APP_VIEW_HANDLE_RECORDS`: where the App View writes its handles' DNS
+ *   records (`registry:handles`): `cloud-dns`, a Cloud DNS managed zone,
+ *   or `memory`, for local runs. `memory` by default, but required with
+ *   `PDS_STORAGE=firestore`, so that no deployment keeps them in memory by
+ *   leaving it out. With `cloud-dns`, `APP_VIEW_DNS_ZONE` names the zone,
+ *   and `APP_VIEW_DNS_PROJECT` its project, by default the one the server
+ *   runs in.
+ * - `APP_VIEW_PLC_DIRECTORY` and `APP_VIEW_DNS_OVER_HTTPS`: where DIDs and
+ *   handles are resolved, `https://plc.directory` and Cloudflare's
+ *   resolver by default.
+ * - `APP_VIEW_PLC`: `public` (the default), where the App View sends the
+ *   operations of the accounts it makes to `APP_VIEW_PLC_DIRECTORY`; or
+ *   `staging`, where the server is a PLC directory itself, at `/plc`
+ *   (`registry:plc-directory`), that records them in its storage and reads
+ *   every other DID from `APP_VIEW_PLC_DIRECTORY`, so nothing a staging
+ *   App View makes reaches it.
+ * - `APP_VIEW_WEB_DIR`: the directory of the web app's assets and static
  *   documentation (`packages/pds-web`'s build), which the server serves at
- *   `/assets/` and `/docs/`. An App View renders its pages
- *   (`registry:web/routes`) with or without it, but unstyled without; a PDS with
- *   no App View answers `/` with its banner.
- * - `PDS_CLOCK_ID`: 0 to 1023, which keeps this server's revisions apart
- *   from another's made in the same microsecond. Random by default.
+ *   `/assets/` and `/docs/`. The App View renders its pages
+ *   (`registry:web/routes`) with or without it, but unstyled without.
  */
 
 import {Future} from 'zena:async';
 import {Option, Some, Unmanaged, none, some} from 'zena:core';
 import {App, Server, mount, serve as serveFiles} from 'zena:http';
-import {hex} from 'zena:encoding';
-import {randomBytes, randomInt} from 'zena:random';
+import {randomBytes} from 'zena:random';
+import {URL} from 'zena:url';
 import {defaultProjectId} from 'google-cloud:auth';
 import {CloudDns} from 'google-cloud:dns';
 import {Firestore} from 'google-cloud:firestore';
-import {Storage as CloudStorage} from 'google-cloud:storage';
-import {KeyType} from 'atproto:didkey';
-import {IdentityResolver, didWebFor} from 'atproto:identity';
-import {URL} from 'zena:url';
-import {PlcOperation, fetchOperations, submitPlcOperation} from 'atproto:plc';
-import {BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreCredentialStore, FirestoreStorage} from 'pds:firestore';
+import {CloudKms} from 'google-cloud:kms';
 import {parseDidDocument} from 'atproto:did';
-import {PublicKey, parseDidKey} from 'atproto:didkey';
+import {KeyType, PublicKey, parseDidKey} from 'atproto:didkey';
+import {IdentityResolver} from 'atproto:identity';
+import {PlcOperation, fetchOperations, submitPlcOperation} from 'atproto:plc';
 import {SigningKeyLookup} from 'atproto:service-auth';
-import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
-import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
-import {AppViewConfig, AppViewStore, MemoryAppViewStore, AppView} from './app-view.zena';
-import {FirestoreAppViewStore, FirestorePlcLog} from './firestore.zena';
-import {AppPart, createApp} from './server.zena';
-import {ManagedAccounts, PlcLogLookup, TrustedAppView} from 'pds:managed';
+import {PlcLogLookup, TrustedAppView} from 'pds:managed';
 import {Pds} from 'pds:pds';
 import {InProcessPds} from 'pds:pds-client';
-import {createApp as createPdsApp} from 'pds:server';
-import {REQUEST_BODY_LIMIT} from 'pds:xrpc/common';
-import {CredentialStore, MemoryCredentialStore, Sessions} from 'pds:sessions';
+import {
+  InFirestore, InMemory, PdsConfig, buildPds, decodeKey, didWebOfOrigin, listen, originOf, readPdsConfig,
+  refuseProblems, valuesOf
+} from 'pds:service';
+import {Sessions} from 'pds:sessions';
 import {KmsSigner, LocalSigner, Signer} from 'pds:signer';
-import {CloudKms} from 'google-cloud:kms';
-import {KmsKeyEncryption} from 'pds:key-encryption';
-import {MemoryStorage, SigningKey, Storage} from 'pds:storage';
-
-/** A configuration `configFromEnv` refuses, with every problem it found. */
-export class ConfigError extends Error {
-  new(message: String) : super(message);
-}
-
-/** Where the server keeps its data. */
-export sealed class StorageChoice {
-  case InMemory
-  /**
-   * Firestore, for `tenant`, in the database `database`, or the project's
-   * default one when null, with blob bytes in `blobs`, and signing keys
-   * encrypted with the Cloud KMS key `keyEncryptionKey`, or in the clear
-   * when it is null.
-   */
-  case InFirestore(tenant: String, blobs: BlobChoice, database: String | null, keyEncryptionKey: String | null)
-}
-
-/** Where blob bytes go beside Firestore. */
-export sealed class BlobChoice {
-  case InBucket(bucket: String)
-  case InDirectory(path: String)
-}
+import {SigningKey} from 'pds:storage';
+import {REQUEST_BODY_LIMIT} from 'pds:xrpc/common';
+import {AppViewConfig, AppViewStore, MemoryAppViewStore, AppView} from './app-view.zena';
+import {FirestoreAppViewStore, FirestorePlcLog} from './firestore.zena';
+import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
+import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
+import {AppPart, createApp} from './server.zena';
 
 /** Where the App View writes its handles' DNS records. */
 export sealed class RecordsChoice {
@@ -159,11 +120,9 @@ export final class AppViewSettings {
    * whose DID does not name its origin.
    */
   serviceDid: String | null;
-  /** The accounts' PDS endpoint, or null for the server's own origin. */
-  publicUrl: String | null;
   /**
    * The site's origin, when the pages have a host name of their own
-   * (`PDS_SITE_URL`); null serves the pages and the PDS under every name.
+   * (`APP_VIEW_SITE_URL`); null serves the pages and the PDS under every name.
    */
   var siteUrl: String | null = null;
   /** The App View's PLC rotation key, or null to make one up at start. */
@@ -181,44 +140,39 @@ export final class AppViewSettings {
   var admins: Array<String> = [];
   /** The largest artifact the App View stores, or none for the App View's default. */
   maxBlobSize: Option<i64>;
-  /** Whether the App View may read PDSes on this machine or a private network (`PDS_PRIVATE_READS`). */
+  /** Whether the App View may read PDSes on this machine or a private network (`APP_VIEW_PRIVATE_READS`). */
   var privateReads = false;
   records: RecordsChoice;
 
-  new(this.domain, this.serviceDid, this.publicUrl, this.rotationKey, this.reservedScopes, this.maxBlobSize,
-      this.records);
+  new(this.domain, this.serviceDid, this.rotationKey, this.reservedScopes, this.maxBlobSize, this.records);
 }
 
-/** What the server is to be. */
+/** What the server is to be: the PDS, and the App View that keeps its accounts on it. */
 export final class ServiceConfig {
-  port: u16;
-  storage: StorageChoice;
-  appView: AppViewSettings | null;
+  pds: PdsConfig;
+  appView: AppViewSettings;
   plcDirectory: String;
   dnsOverHttps: String;
-  clockId: i32;
   /**
    * Whether the server is a staging PLC directory itself, reading the DIDs
-   * it has not recorded from `plcDirectory` (`PDS_PLC=staging`).
+   * it has not recorded from `plcDirectory` (`APP_VIEW_PLC=staging`).
    */
   var plcStaging: boolean = false;
-  /** The secret sessions' tokens are signed with, or null to make one up at start. */
-  var jwtSecret: FixedArray<u8> | null = null;
   /** The web app's directory, or null to serve none. */
   var webDir: String | null = null;
 
-  new(this.port, this.storage, this.appView, this.plcDirectory, this.dnsOverHttps, this.clockId);
+  new(this.pds, this.appView, this.plcDirectory, this.dnsOverHttps);
 }
 
 /**
- * A built server, not yet listening: its application, PDS and host, where
- * the App View writes its handles' DNS records, and the staging PLC directory
- * it is, if it is one.
+ * A built server, not yet listening: its application, PDS and App View,
+ * where the App View writes its handles' DNS records, and the staging PLC
+ * directory it is, if it is one.
  */
 export final class Service {
   app: App;
   pds: Pds;
-  appView: AppView | null;
+  appView: AppView;
   records: HandleRecords;
   plc: PlcDirectory | null;
   sessions: Sessions;
@@ -227,227 +181,141 @@ export final class Service {
 }
 
 /**
- * The configuration the variables `env` gives (see the module comment).
- * Throws `ConfigError` naming every variable that is wrong.
+ * The configuration the variables `env` gives (see the module comment and
+ * `pds:service`'s). Throws `ConfigError` naming every variable that is
+ * wrong.
  */
 export function configFromEnv(env: (name: String) => String | null): ServiceConfig {
   let problems = new GrowableArray<String>();
-  let value = (name: String): String | null => {
-    let text = env(name);
-    return if (text == null || text.trim().length == 0) null else text.trim();
-  };
+  let value = valuesOf(env);
+  let pds = readPdsConfig(value, problems);
+  // As asked for, whether or not the rest of its configuration is usable.
+  let firestore = value('PDS_STORAGE') == 'firestore';
 
-  var port = 2583 as u16;
-  let portText = value('PORT');
-  if (portText != null) {
-    if (let (true, parsed) = parseI32(portText)) {
-      if (parsed >= 0 && parsed <= 65535) {
-        port = parsed as u16;
+  var domain = value('APP_VIEW_DOMAIN');
+  if (domain == null) {
+    problems.push('APP_VIEW_DOMAIN is required: the App View\'s domain, such as pkg.zena-lang.dev; a PDS alone starts from packages/pds/zena/main.zena');
+    domain = 'invalid';
+  }
+  let (rotationKey, kmsKey) = keyFrom(value, problems, 'APP_VIEW_ROTATION_KEY', 'APP_VIEW_ROTATION_KMS_KEY');
+  if (value('APP_VIEW_ROTATION_KEY') == null && kmsKey == null && firestore) {
+    problems.push('PDS_STORAGE=firestore needs APP_VIEW_ROTATION_KEY or APP_VIEW_ROTATION_KMS_KEY');
+  }
+  let (signingKey, signingKmsKey) = keyFrom(value, problems, 'APP_VIEW_SIGNING_KEY', 'APP_VIEW_SIGNING_KMS_KEY');
+  var offlineKey: PublicKey | null = null;
+  let offlineText = value('APP_VIEW_OFFLINE_ROTATION_KEY');
+  if (offlineText != null) {
+    try {
+      offlineKey = parseDidKey(offlineText);
+    } catch (e) {
+      problems.push('APP_VIEW_OFFLINE_ROTATION_KEY is not a did:key');
+    }
+  }
+  var maxBlobSize: Option<i64> = none;
+  let maxText = value('APP_VIEW_MAX_BLOB_BYTES');
+  if (maxText != null) {
+    if (let (true, parsed) = parseI32(maxText)) {
+      if (parsed > 0) {
+        maxBlobSize = some(parsed as i64);
       } else {
-        problems.push(`PORT is out of range: ${portText}`);
+        problems.push(`APP_VIEW_MAX_BLOB_BYTES must be positive: ${maxText}`);
       }
     } else {
-      problems.push(`PORT is not a number: ${portText}`);
+      problems.push(`APP_VIEW_MAX_BLOB_BYTES is not a number: ${maxText}`);
     }
   }
-
-  var storage: StorageChoice = new InMemory();
-  let storageKind = value('PDS_STORAGE') ?? 'memory';
-  let bucket = value('PDS_BLOB_BUCKET');
-  let blobDir = value('PDS_BLOB_DIR');
-  let keyEncryptionKey = value('PDS_KEY_ENCRYPTION_KMS_KEY');
-  if (keyEncryptionKey != null && (!keyEncryptionKey.contains('/cryptoKeys/') ||
-      keyEncryptionKey.contains('/cryptoKeyVersions/'))) {
-    problems.push(`PDS_KEY_ENCRYPTION_KMS_KEY is a key, projects/…/cryptoKeys/<key>, not ${keyEncryptionKey}`);
+  let reserved = new GrowableArray<String>();
+  let reservedText = value('APP_VIEW_RESERVED_SCOPES');
+  if (reservedText != null) {
+    for (let name in reservedText.split(',')) {
+      let trimmed = name.trim();
+      if (trimmed.length > 0) {
+        reserved.push(trimmed);
+      }
+    }
   }
-  if (storageKind == 'firestore') {
-    let tenant = value('PDS_TENANT');
-    if (tenant == null) {
-      problems.push('PDS_STORAGE=firestore needs PDS_TENANT');
+  let admins = new GrowableArray<String>();
+  let adminText = value('APP_VIEW_ADMIN_DIDS');
+  if (adminText != null) {
+    for (let part in adminText.split(',')) {
+      for (let did in part.split(' ')) {
+        let trimmed = did.trim();
+        if (trimmed.length == 0) {
+          continue;
+        }
+        if (!trimmed.startsWith('did:')) {
+          problems.push(`APP_VIEW_ADMIN_DIDS has '${trimmed}', which is not a DID`);
+        }
+        admins.push(trimmed);
+      }
     }
-    if (bucket != null && blobDir != null) {
-      problems.push('give PDS_BLOB_BUCKET or PDS_BLOB_DIR, not both');
-    } else if (bucket == null && blobDir == null) {
-      problems.push('PDS_STORAGE=firestore needs PDS_BLOB_BUCKET or PDS_BLOB_DIR');
+  }
+  let privateReads = value('APP_VIEW_PRIVATE_READS');
+  if (privateReads != null && privateReads != '1' && privateReads != '0') {
+    problems.push(`APP_VIEW_PRIVATE_READS is 1 or 0, not ${privateReads}`);
+  }
+  var records: RecordsChoice = new RecordsInMemory();
+  let recordsKind = value('APP_VIEW_HANDLE_RECORDS');
+  let zone = value('APP_VIEW_DNS_ZONE');
+  let project = value('APP_VIEW_DNS_PROJECT');
+  if (recordsKind == 'cloud-dns') {
+    if (zone == null) {
+      problems.push('APP_VIEW_HANDLE_RECORDS=cloud-dns needs APP_VIEW_DNS_ZONE');
+    } else {
+      records = new InCloudDns(project, zone);
     }
-    if (tenant != null && (bucket == null) != (blobDir == null)) {
-      let blobs: BlobChoice = if (bucket != null) new InBucket(bucket) else new InDirectory(blobDir as String);
-      storage = new InFirestore(tenant, blobs, value('PDS_FIRESTORE_DATABASE'), keyEncryptionKey);
+  } else if (recordsKind == null || recordsKind == 'memory') {
+    if (recordsKind == null && firestore) {
+      problems.push('PDS_STORAGE=firestore needs APP_VIEW_HANDLE_RECORDS: cloud-dns, or memory');
     }
-  } else if (storageKind == 'memory') {
-    if (bucket != null || blobDir != null || value('PDS_FIRESTORE_DATABASE') != null) {
-      problems.push('PDS_BLOB_BUCKET, PDS_BLOB_DIR and PDS_FIRESTORE_DATABASE need PDS_STORAGE=firestore');
-    }
-    if (keyEncryptionKey != null) {
-      problems.push('PDS_KEY_ENCRYPTION_KMS_KEY needs PDS_STORAGE=firestore: memory keeps signing keys as they are');
+    if (zone != null || project != null) {
+      problems.push('APP_VIEW_DNS_ZONE and APP_VIEW_DNS_PROJECT need APP_VIEW_HANDLE_RECORDS=cloud-dns');
     }
   } else {
-    problems.push(`PDS_STORAGE is memory or firestore, not ${storageKind}`);
+    problems.push(`APP_VIEW_HANDLE_RECORDS is cloud-dns or memory, not ${recordsKind}`);
   }
-
-  var appView: AppViewSettings | null = null;
-  let domain = value('PDS_APP_VIEW_DOMAIN');
-  if (domain != null) {
-    let (rotationKey, kmsKey) = keyFrom(value, problems, 'PDS_ROTATION_KEY', 'PDS_ROTATION_KMS_KEY');
-    if (value('PDS_ROTATION_KEY') == null && kmsKey == null && storageKind == 'firestore') {
-      problems.push('PDS_APP_VIEW_DOMAIN with PDS_STORAGE=firestore needs PDS_ROTATION_KEY or PDS_ROTATION_KMS_KEY');
-    }
-    let (signingKey, signingKmsKey) = keyFrom(value, problems, 'PDS_APP_VIEW_SIGNING_KEY', 'PDS_APP_VIEW_SIGNING_KMS_KEY');
-    var offlineKey: PublicKey | null = null;
-    let offlineText = value('PDS_OFFLINE_ROTATION_KEY');
-    if (offlineText != null) {
-      try {
-        offlineKey = parseDidKey(offlineText);
-      } catch (e) {
-        problems.push('PDS_OFFLINE_ROTATION_KEY is not a did:key');
-      }
-    }
-    var maxBlobSize: Option<i64> = none;
-    let maxText = value('PDS_MAX_BLOB_BYTES');
-    if (maxText != null) {
-      if (let (true, parsed) = parseI32(maxText)) {
-        if (parsed > 0) {
-          maxBlobSize = some(parsed as i64);
-        } else {
-          problems.push(`PDS_MAX_BLOB_BYTES must be positive: ${maxText}`);
-        }
-      } else {
-        problems.push(`PDS_MAX_BLOB_BYTES is not a number: ${maxText}`);
-      }
-    }
-    let reserved = new GrowableArray<String>();
-    let reservedText = value('PDS_RESERVED_SCOPES');
-    if (reservedText != null) {
-      for (let name in reservedText.split(',')) {
-        let trimmed = name.trim();
-        if (trimmed.length > 0) {
-          reserved.push(trimmed);
-        }
-      }
-    }
-    let admins = new GrowableArray<String>();
-    let adminText = value('PDS_ADMIN_DIDS');
-    if (adminText != null) {
-      for (let part in adminText.split(',')) {
-        for (let did in part.split(' ')) {
-          let trimmed = did.trim();
-          if (trimmed.length == 0) {
-            continue;
-          }
-          if (!trimmed.startsWith('did:')) {
-            problems.push(`PDS_ADMIN_DIDS has '${trimmed}', which is not a DID`);
-          }
-          admins.push(trimmed);
-        }
-      }
-    }
-    let privateReads = value('PDS_PRIVATE_READS');
-    if (privateReads != null && privateReads != '1' && privateReads != '0') {
-      problems.push(`PDS_PRIVATE_READS is 1 or 0, not ${privateReads}`);
-    }
-    var records: RecordsChoice = new RecordsInMemory();
-    let recordsKind = value('PDS_HANDLE_RECORDS');
-    let zone = value('PDS_DNS_ZONE');
-    let project = value('PDS_DNS_PROJECT');
-    if (recordsKind == 'cloud-dns') {
-      if (zone == null) {
-        problems.push('PDS_HANDLE_RECORDS=cloud-dns needs PDS_DNS_ZONE');
-      } else {
-        records = new InCloudDns(project, zone);
-      }
-    } else if (recordsKind == null || recordsKind == 'memory') {
-      if (recordsKind == null && storageKind == 'firestore') {
-        problems.push('PDS_APP_VIEW_DOMAIN with PDS_STORAGE=firestore needs PDS_HANDLE_RECORDS: cloud-dns, or memory');
-      }
-      if (zone != null || project != null) {
-        problems.push('PDS_DNS_ZONE and PDS_DNS_PROJECT need PDS_HANDLE_RECORDS=cloud-dns');
-      }
+  // The App View's methods are served at the PDS's name, so by default the
+  // PDS's origin is the App View's domain.
+  if (pds.publicUrl == null) {
+    pds.publicUrl = `https://${domain}`;
+  }
+  let publicUrl = pds.publicUrl as String;
+  let pdsOrigin = originOf(publicUrl);
+  var siteUrl: String | null = null;
+  let siteText = value('APP_VIEW_SITE_URL');
+  if (siteText != null) {
+    let site = originOf(siteText);
+    if (site == null) {
+      problems.push(`APP_VIEW_SITE_URL is an origin, such as https://pkg.zena-lang.dev, not ${siteText}`);
+    } else if (pdsOrigin != null && site.host() == pdsOrigin.host()) {
+      problems.push(`APP_VIEW_SITE_URL names the PDS's own App View, ${site.host()}: leave it out to serve the site and the PDS there, or give PDS_PUBLIC_URL another name`);
     } else {
-      problems.push(`PDS_HANDLE_RECORDS is cloud-dns or memory, not ${recordsKind}`);
-    }
-    let publicUrl = value('PDS_PUBLIC_URL') ?? `https://${domain}`;
-    let pdsOrigin = originOf(publicUrl);
-    if (pdsOrigin == null) {
-      problems.push(`PDS_PUBLIC_URL is an origin, such as https://padstone.zena-lang.dev, not ${publicUrl}`);
-    }
-    var siteUrl: String | null = null;
-    let siteText = value('PDS_SITE_URL');
-    if (siteText != null) {
-      let site = originOf(siteText);
-      if (site == null) {
-        problems.push(`PDS_SITE_URL is an origin, such as https://pkg.zena-lang.dev, not ${siteText}`);
-      } else if (pdsOrigin != null && site.host() == pdsOrigin.host()) {
-        problems.push(`PDS_SITE_URL names the PDS's own App View, ${site.host()}: leave it out to serve the site and the PDS there, or give PDS_PUBLIC_URL another name`);
-      } else {
-        siteUrl = site.origin();
-      }
-    }
-    let serviceDid = value('PDS_SERVICE_DID') ?? (if (pdsOrigin != null) didWebOfOrigin(publicUrl) else null);
-    let settings = new AppViewSettings(domain, serviceDid, publicUrl, rotationKey, reserved, maxBlobSize, records);
-    settings.siteUrl = siteUrl;
-    settings.rotationKmsKey = kmsKey;
-    settings.signingKey = signingKey;
-    settings.signingKmsKey = signingKmsKey;
-    settings.admins = admins;
-    settings.offlineRotationKey = offlineKey;
-    settings.privateReads = privateReads == '1';
-    appView = settings;
-  } else {
-    for (let name in ['PDS_ROTATION_KEY', 'PDS_ROTATION_KMS_KEY', 'PDS_APP_VIEW_SIGNING_KEY', 'PDS_APP_VIEW_SIGNING_KMS_KEY',
-        'PDS_OFFLINE_ROTATION_KEY', 'PDS_SERVICE_DID',
-        'PDS_PUBLIC_URL', 'PDS_SITE_URL', 'PDS_RESERVED_SCOPES', 'PDS_ADMIN_DIDS',
-        'PDS_MAX_BLOB_BYTES', 'PDS_PRIVATE_READS', 'PDS_HANDLE_RECORDS', 'PDS_DNS_ZONE', 'PDS_DNS_PROJECT']) {
-      if (value(name) != null) {
-        problems.push(`${name} needs PDS_APP_VIEW_DOMAIN`);
-      }
+      siteUrl = site.origin();
     }
   }
-
-  var jwtSecret: FixedArray<u8> | null = null;
-  let secretText = value('PDS_JWT_SECRET');
-  if (secretText != null) {
-    jwtSecret = decodeKey(secretText);
-    if (jwtSecret == null) {
-      problems.push('PDS_JWT_SECRET is not 32 bytes of hex');
-    }
-  } else if (storageKind == 'firestore') {
-    problems.push('PDS_STORAGE=firestore needs PDS_JWT_SECRET');
-  }
-
-  var clockId = randomInt(1024);
-  let clockText = value('PDS_CLOCK_ID');
-  if (clockText != null) {
-    if (let (true, parsed) = parseI32(clockText)) {
-      if (parsed >= 0 && parsed < 1024) {
-        clockId = parsed;
-      } else {
-        problems.push(`PDS_CLOCK_ID is 0 to 1023, not ${clockText}`);
-      }
-    } else {
-      problems.push(`PDS_CLOCK_ID is not a number: ${clockText}`);
-    }
-  }
+  let serviceDid = value('APP_VIEW_DID') ?? (if (pdsOrigin != null) didWebOfOrigin(publicUrl) else null);
+  let settings = new AppViewSettings(domain, serviceDid, rotationKey, reserved, maxBlobSize, records);
+  settings.siteUrl = siteUrl;
+  settings.rotationKmsKey = kmsKey;
+  settings.signingKey = signingKey;
+  settings.signingKmsKey = signingKmsKey;
+  settings.admins = admins;
+  settings.offlineRotationKey = offlineKey;
+  settings.privateReads = privateReads == '1';
 
   var plcStaging = false;
-  let plcMode = value('PDS_PLC') ?? 'public';
+  let plcMode = value('APP_VIEW_PLC') ?? 'public';
   if (plcMode == 'staging') {
     plcStaging = true;
   } else if (plcMode != 'public') {
-    problems.push(`PDS_PLC is public or staging, not ${plcMode}`);
+    problems.push(`APP_VIEW_PLC is public or staging, not ${plcMode}`);
   }
 
-  if (problems.length > 0) {
-    var message = 'the configuration is not usable:';
-    for (let problem in problems) {
-      message = `${message}\n  ${problem}`;
-    }
-    throw new ConfigError(message);
-  }
-  let config = new ServiceConfig(port, storage, appView, value('PDS_PLC_DIRECTORY') ?? 'https://plc.directory',
-      value('PDS_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query', clockId);
+  refuseProblems(problems);
+  let config = new ServiceConfig(pds, settings, value('APP_VIEW_PLC_DIRECTORY') ?? 'https://plc.directory',
+      value('APP_VIEW_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
   config.plcStaging = plcStaging;
-  config.jwtSecret = jwtSecret;
-  config.webDir = value('PDS_WEB_DIR');
+  config.webDir = value('APP_VIEW_WEB_DIR');
   return config;
 }
 
@@ -478,48 +346,24 @@ function keyFrom(value: (name: String) => String | null, problems: GrowableArray
   return (key, kmsKey);
 }
 
-/** The 32 bytes `text` spells in hex, or null. */
-function decodeKey(text: String): FixedArray<u8> | null {
-  if (text.length != 64) {
-    return null;
-  }
-  try {
-    return hex.decode(text);
-  } catch (e) {
-    return null;
-  }
-}
-
 /**
  * The server `config` describes, not yet listening, with `endpoint` as
- * the App View's PDS endpoint when the configuration leaves it to the
- * server.
+ * the PDS's origin when the configuration leaves it to the server.
  */
 export async function buildService(config: ServiceConfig, endpoint: String): Future<Service> {
-  var storage: Storage = new MemoryStorage();
   var appViewStore: AppViewStore = new MemoryAppViewStore();
   var plcLog: PlcLog = new MemoryPlcLog();
-  var credentials: CredentialStore = new MemoryCredentialStore();
-  match (config.storage) {
+  // The App View's stores are beside the PDS's, under its tenant.
+  match (config.pds.storage) {
     case InMemory {}: {}
-    case InFirestore {tenant, blobs, database, keyEncryptionKey}: {
+    case InFirestore {tenant, database}: {
       let db = if (database != null) await Firestore.connect({databaseId: database}) else await Firestore.connect();
-      let keys = if (keyEncryptionKey != null) new KmsKeyEncryption(CloudKms.connect(keyEncryptionKey)) else null;
-      storage = new FirestoreStorage(db, tenant, blobBytes(blobs), keys);
       appViewStore = new FirestoreAppViewStore(db, tenant);
       plcLog = new FirestorePlcLog(db, tenant);
-      credentials = new FirestoreCredentialStore(db, tenant);
     }
   }
   let plc = if (config.plcStaging) new PlcDirectory(plcLog, config.plcDirectory) else null;
-  let pds = new Pds(storage, config.clockId);
-  let sessions = new Sessions(storage, credentials, config.jwtSecret ?? randomBytes(32),
-      (count: i32) => randomBytes(count));
   let settings = config.appView;
-  if (settings == null) {
-    return new Service(withAssets(withPlc(createPdsApp(pds, sessions), plc), config.webDir), pds, null,
-        new MemoryHandleRecords(), plc, sessions);
-  }
   var records: HandleRecords = new MemoryHandleRecords();
   match (settings.records) {
     case RecordsInMemory {}: {}
@@ -529,7 +373,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     }
   }
   let rotationKey = await signerOf(settings.rotationKey, settings.rotationKmsKey);
-  let appViewEndpoint = settings.publicUrl ?? endpoint;
+  let appViewEndpoint = config.pds.publicUrl ?? endpoint;
   let serviceDid = settings.serviceDid ?? didWebOfOrigin(appViewEndpoint);
   let appViewConfig = new AppViewConfig(serviceDid, settings.domain, appViewEndpoint, rotationKey);
   appViewConfig.signingKey = await signerOf(settings.signingKey, settings.signingKmsKey);
@@ -571,14 +415,17 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     dependencies.plcDirectory = `${appViewConfig.endpoint}/plc`;
     dependencies.dnsOverHttps = config.dnsOverHttps;
   }
+  // The PDS keeps managed accounts for the App View it runs with
+  // (package-manager.md, "Managed accounts"), which for now writes to its
+  // accounts in process instead (#851), reading their operations as the
+  // App View does.
+  let pdsService = await buildPds(config.pds, endpoint, [new TrustedAppView(serviceDid, [rotationKey.publicKey()])],
+      operations, keys);
+  let pds = pdsService.pds;
+  let sessions = pdsService.sessions;
   let appView = new AppView(new InProcessPds(pds, serviceDid), appViewConfig, appViewStore, records, keys, submit,
       (count: i32) => randomBytes(count), dependencies);
   appView.sessions = sessions;
-  // The PDS keeps managed accounts for the App View it runs with
-  // (package-manager.md, "Managed accounts"), which for now writes to its
-  // accounts in process instead (#851).
-  pds.managed = new ManagedAccounts(serviceDid, appViewEndpoint,
-      [new TrustedAppView(serviceDid, [rotationKey.publicKey()])], operations, keys);
   // A DID document is written by whoever controls the DID, so the PDS it
   // names is read only where the App View may read (`AppView.mayRead`):
   // anywhere else, the document resolves with no PDS.
@@ -669,13 +516,6 @@ function keysThrough(plc: PlcDirectory, others: SigningKeyLookup): SigningKeyLoo
   };
 }
 
-function blobBytes(choice: BlobChoice): BlobBytes {
-  return match (choice) {
-    case InBucket {bucket}: new CloudStorageBlobs(CloudStorage.connect().bucket(bucket)) as BlobBytes
-    case InDirectory {path}: new DirectoryBlobs(path) as BlobBytes
-  };
-}
-
 /** A listening server, and the service it serves. */
 export final class Running {
   /** Kept open: it runs until `close()`, or until its scope is cancelled. */
@@ -689,54 +529,15 @@ export final class Running {
 
 /**
  * Builds the server `config` describes and listens on its port. When the
- * configuration leaves the App View's endpoint to the server, it is the
- * listening origin, known once the port is: the application then serves
- * through one built after it listens.
+ * configuration leaves the PDS's origin to the server, it is the
+ * listening origin, known once the port is.
  */
 export async function serve(config: ServiceConfig): Future<Running> {
-  var inner: App | null = null;
-  let outer = new App();
-  outer.use(async (req, res, next): Future<void> => {
-    let app = inner;
-    if (app == null) {
-      res.statusCode = 503;
-      res.type = 'application/json';
-      res.body = '{"error": "Unavailable", "message": "the server is starting"}';
-      return;
-    }
-    await app.handleRequest(req, res);
+  var built: Service | null = null;
+  let listening = await listen(config.pds.port, async (origin): Future<App> => {
+    let service = await buildService(config, origin);
+    built = service;
+    return service.app;
   });
-  let server = new Server(outer, config.port);
-  server.start();
-  let origin = `http://127.0.0.1:${server.port as i32}`;
-  // Held until the service is built: a failure closes the server.
-  let service = await buildService(config, origin);
-  inner = service.app;
-  return new Running(server.keepOpen(), service, origin);
-}
-
-/**
- * `text` as an `http` or `https` origin, such as `https://pkg.zena-lang.dev`,
- * or null when it is not one: a URL with a path, a query or credentials.
- */
-function originOf(text: String): URL | null {
-  let url = URL.parse(text);
-  if (url == null) {
-    return null;
-  }
-  let parsed = url;
-  let web = parsed.protocol == 'https:' || parsed.protocol == 'http:';
-  let bare = parsed.pathname == '/' && parsed.search == '' && parsed.hash == '' && parsed.username == '' &&
-      parsed.password == '';
-  return if (web && bare) parsed else null;
-}
-
-/** The `did:web` of the server at `origin`, with its port, if it has one, percent-encoded. */
-function didWebOfOrigin(origin: String): String {
-  let url = URL.parse(origin);
-  if (url == null) {
-    throw new Error(`the App View's endpoint is not a URL: ${origin}`);
-  }
-  let parsed = url;
-  return didWebFor(if (parsed.port == '') parsed.hostname else `${parsed.hostname}:${parsed.port}`);
+  return new Running(listening.server, built as Service, listening.origin);
 }

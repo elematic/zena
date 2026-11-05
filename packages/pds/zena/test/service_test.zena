@@ -1,0 +1,121 @@
+/**
+ * `pds:service`: the PDS alone, as the environment configures it, and the
+ * App Views it keeps managed accounts for.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {App, Request, Response} from 'zena:http';
+import {KeyType, formatDidKey, publicKeyFor} from 'atproto:didkey';
+import {ConfigError, InFirestore, InMemory, buildPds, configFromEnv} from 'pds:service';
+
+let KEY = 'c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721';
+
+/** The environment `pairs` make. */
+function envOf(pairs: Array<(String, String)>): (name: String) => String | null {
+  let values = new HashMap<String, String>();
+  for (let (name, value) in pairs) {
+    values[name] = value;
+  }
+  // TODO(#520): the return type is only for the compiler.
+  return (name: String): String | null => {
+    if (let (true, value) = values.get(name)) {
+      return value;
+    }
+    return null;
+  };
+}
+
+/** The message `configFromEnv` refuses `pairs` with, or '' when it accepts them. */
+function refusal(pairs: Array<(String, String)>) {
+  try {
+    configFromEnv(envOf(pairs));
+  } catch (e) {
+    return if (e is ConfigError) e.message else `another error: ${e.message}`;
+  }
+  return '';
+}
+
+function get(app: App, path: String) {
+  let res = new Response();
+  runFuture((async () => {
+    await app.handleRequest(new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>()), res);
+  })());
+  return res;
+}
+
+/** The `did:key` of the secp256k1 key whose bytes are all `seed`. */
+function didKey(seed: i32) {
+  return formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, seed as u8)));
+}
+
+export let tests = suite('pds:service', () => {
+  test('defaults to a PDS in memory on 2583, for no App Views', (ctx) => {
+    let config = configFromEnv(envOf([]));
+    equal(config.port as i32, 2583);
+    isTrue(config.storage is InMemory, 'in memory');
+    equal(config.plcDirectory, 'https://plc.directory');
+    isTrue(config.clockId >= 0 && config.clockId < 1024, `clock ${config.clockId}`);
+    isNull(config.publicUrl);
+    isNull(config.did);
+    equal(config.trustedAppViews.length, 0);
+  });
+
+  test('reads its storage, its name and the App Views it trusts', (ctx) => {
+    let config = configFromEnv(envOf([
+      ('PORT', '8080'),
+      ('PDS_STORAGE', 'firestore'),
+      ('PDS_JWT_SECRET', KEY),
+      ('PDS_TENANT', 'pkg'),
+      ('PDS_BLOB_BUCKET', 'zena-blobs'),
+      ('PDS_PUBLIC_URL', 'https://padstone.example.dev'),
+      ('PDS_DID', 'did:web:padstone.example.dev'),
+      ('PDS_TRUSTED_APP_VIEWS',
+          `did:web:pkg.example.dev=${didKey(1)}  did:web:other.example.dev=${didKey(2)} did:web:pkg.example.dev=${didKey(3)}`),
+      ('PDS_PLC_DIRECTORY', 'http://plc.test'),
+    ]));
+    equal(config.port as i32, 8080);
+    isTrue(config.storage is InFirestore, 'in Firestore');
+    equal(config.publicUrl as String, 'https://padstone.example.dev');
+    equal(config.did as String, 'did:web:padstone.example.dev');
+    equal(config.plcDirectory, 'http://plc.test');
+    // An App View given twice has both its keys.
+    equal(config.trustedAppViews.length, 2);
+    equal(config.trustedAppViews[0].did, 'did:web:pkg.example.dev');
+    equal(config.trustedAppViews[0].rotationKeys.length, 2);
+    equal(formatDidKey(config.trustedAppViews[0].rotationKeys[1]), didKey(3));
+    equal(config.trustedAppViews[1].did, 'did:web:other.example.dev');
+
+    let wrong = refusal([
+      ('PDS_PUBLIC_URL', 'https://padstone.example.dev/pds'),
+      ('PDS_DID', 'padstone.example.dev'),
+      ('PDS_TRUSTED_APP_VIEWS', `pkg.example.dev=${didKey(1)} did:web:pkg.example.dev=zQ3sh did:web:alone`),
+    ]);
+    for (let expected in ['PDS_PUBLIC_URL is an origin', 'PDS_DID is a DID',
+        "PDS_TRUSTED_APP_VIEWS has 'pkg.example.dev=", 'which is not a did:key',
+        "PDS_TRUSTED_APP_VIEWS has 'did:web:alone'"]) {
+      isTrue(wrong.contains(expected), `${expected} in: ${wrong}`);
+    }
+    let firestore = refusal([('PDS_STORAGE', 'firestore')]);
+    isTrue(firestore.contains('needs PDS_TENANT') && firestore.contains('needs PDS_JWT_SECRET'), firestore);
+  });
+
+  test('builds a PDS alone, which keeps managed accounts only for the App Views it trusts', (ctx) => {
+    let plain = runFuture(buildPds(configFromEnv(envOf([])), 'http://127.0.0.1:1'));
+    isTrue((get(plain.app, '/').body as String).contains('PDS'), 'the banner');
+    equal(get(plain.app, '/xrpc/_health').statusCode, 200);
+    // The App View's methods are the App View's.
+    equal(get(plain.app, '/xrpc/com.atproto.server.describeServer').statusCode, 404);
+    isTrue(plain.pds.managed == null, 'no managed accounts');
+    equal(plain.did, 'did:web:127.0.0.1%3A1');
+
+    let trusting = runFuture(buildPds(configFromEnv(envOf([('PDS_PUBLIC_URL', 'https://padstone.test'),
+        ('PDS_TRUSTED_APP_VIEWS', `did:web:pkg.test=${didKey(1)}`)])), 'http://127.0.0.1:1'));
+    equal(trusting.did, 'did:web:padstone.test');
+    let managed = trusting.pds.managed;
+    isTrue(managed != null && managed.serviceDid == 'did:web:padstone.test' && managed.endpoint == 'https://padstone.test',
+        'managed accounts for the App View, addressed to the PDS');
+  });
+});
