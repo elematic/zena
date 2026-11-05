@@ -104,9 +104,10 @@ export function tupleElementPatternType(element: Node, t: Type): Type {
  * inline comes back unchanged.
  */
 export function boxedFormOf(t: Type): Type {
-  // `unwrapAliases` reads through an inline record to its record.
+  // `unwrapAliases` reads through an inline record to its record, and an
+  // inline field of it is boxed too: a stored value holds no inline part.
   if (let InlineRecordType {record} = t) {
-    return record;
+    return boxedRecordOf(record);
   }
   return match (unwrapAliases(t)) {
     case InlineTupleT {elementTypes}: {
@@ -191,8 +192,45 @@ function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
       }
       unionOfInlineMembers(ctx, members, ann.loc)
     }
+    // A field of an inline record may be inline itself, its values the
+    // outer record's (the record arm of `resolveTypeAnnotationInner`).
+    case RecordTypeAnnotation {}: {
+      ctx.inlineRecordFields = true;
+      let resolved = resolveTypeAnnotation(ctx, ann, true);
+      ctx.inlineRecordFields = false;
+      inlineFormOf(ctx, resolved, ann.loc)
+    }
     case _: inlineFormOf(ctx, resolveTypeAnnotation(ctx, ann, true), ann.loc)
   };
+}
+
+/**
+ * Reports what an inline field of an inline record cannot be yet: an
+ * optional field, which an inline value cannot be absent from; a union,
+ * whose slots do not fit one list of positions; and a record with
+ * optional fields, whose presence words have no position.
+ */
+function checkInlineRecordField(ctx: CheckerContext, t: Type, optional: boolean,
+    loc: SourceLocation | null) {
+  if (optional) {
+    ctx.error("An inline field cannot be optional: an inline value has no absent form.",
+        DiagnosticCode.TypeMismatch, loc);
+    return;
+  }
+  let nestedRecord = inlineRecordOf(t);
+  if (nestedRecord != null) {
+    let {optionalProperties} = nestedRecord;
+    if (optionalProperties != null && optionalProperties.size > 0) {
+      ctx.error("An inline record with optional fields inside an inline record is not supported yet.",
+          DiagnosticCode.TypeMismatch, loc);
+    }
+    return;
+  }
+  let unwrapped = unwrapAliases(t);
+  if (!(unwrapped is InlineTupleT) && !(unwrapped is InlineParamType)) {
+    ctx.error("An inline union inside an inline record is not supported yet.",
+        DiagnosticCode.TypeMismatch, loc);
+  }
 }
 
 /**
@@ -505,6 +543,23 @@ export function resolveTypeAnnotation(ctx: CheckerContext, ann: TypeAnnotation, 
     }
   }
   return t;
+}
+
+/** `record` with each inline field boxed, or `record` itself when it has none. */
+export function boxedRecordOf(record: RecordT): RecordT {
+  var changed = false;
+  let props = new Map<String, Type>();
+  for (let pair in record.properties) {
+    let boxed = if (isInlineType(pair.value)) boxedFormOf(pair.value) else pair.value;
+    if (boxed !== pair.value) {
+      changed = true;
+    }
+    props[pair.key] = boxed;
+  }
+  if (!changed) {
+    return record;
+  }
+  return new RecordT(props, record.optionalProperties, record.row, record.isExistential);
 }
 
 /** Whether `t` is an inline record, through aliases. */
@@ -822,8 +877,15 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
     // Spreading an existential type makes this one existential too: its
     // values have fields neither type names.
     var existential = isExistential;
+    // The record `inline` applies to may have inline fields; a record
+    // inside one of them may not, unless `inline` applies to it too.
+    let inlineFields = ctx.inlineRecordFields;
+    ctx.inlineRecordFields = false;
     for (let prop in properties) {
-      let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation);
+      let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, inlineFields);
+      if (inlineFields && isInlineType(resolved)) {
+        checkInlineRecordField(ctx, resolved, prop.optional, prop.typeAnnotation.loc);
+      }
       rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
       rejectAffineStructuralMember(ctx, resolved, "a record member", prop.typeAnnotation.loc);
       if (props.has(prop.name.name)) {

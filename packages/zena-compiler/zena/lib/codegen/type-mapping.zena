@@ -2326,6 +2326,64 @@ export function nestedInlineTuple(t: Type): InlineTupleType | null {
   return if (u is InlineTupleType) u else null;
 }
 
+/**
+ * The boxed form of a record field's type: an inline record's record and
+ * an inline tuple's tuple, with their own inline parts boxed too. A stored
+ * record holds no inline part, so its dispatch has these field types.
+ */
+export function boxedFieldType(t: Type): Type {
+  let record = inlineRecordParamOf(t);
+  if (record != null) {
+    return boxedRecordWithFields(record);
+  }
+  var u = t;
+  while (u is TypeAliasType) {
+    u = u.target;
+  }
+  if (u is InlineTupleType) {
+    let elements = new Array<Type>();
+    for (let el in u.elementTypes) {
+      elements.push(boxedFieldType(el));
+    }
+    return new TupleType(elements, null, 0);
+  }
+  return t;
+}
+
+/** `record` with its inline fields boxed, or `record` when it has none. */
+export function boxedRecordWithFields(record: RecordType): RecordType {
+  if (!recordHasInlineFields(record)) {
+    return record;
+  }
+  let props = new Map<String, Type>();
+  for (let pair in record.properties) {
+    props[pair.key] = boxedFieldType(pair.value);
+  }
+  return new RecordType(props, record.optionalProperties, record.row, record.isExistential);
+}
+
+/** Whether a field of `record` is inline (#371, "depth"). */
+export function recordHasInlineFields(record: RecordType): boolean {
+  for (let pair in record.properties) {
+    if (nestedInlineTuple(pair.value) != null) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The slots of an inline record with inline fields: its fields' leaves
+ * in order, an inline field's own leaves in its place. Null for a record
+ * without inline fields, which is passed as its dispatch's fields.
+ */
+export function inlineRecordFieldsLayout(wasm: WasmModule, record: RecordType): InlineLayout | null {
+  if (!recordHasInlineFields(record)) {
+    return null;
+  }
+  return inlineLayoutOf(wasm, recordFieldsTuple(record));
+}
+
 /** The record an element of an inline tuple is inline, or null. */
 export function nestedInlineRecord(t: Type): RecordType | null {
   return inlineRecordParamOf(t);
@@ -2338,6 +2396,15 @@ export function nestedInlineRecord(t: Type): RecordType | null {
  * optional fields, whose presence words have no position here.
  */
 export function recordFieldsTuple(record: RecordType): InlineTupleType {
+  let types = new Array<Type>();
+  for (let name in recordFieldNames(record)) {
+    types.push(record.properties[name]);
+  }
+  return new InlineTupleType(types);
+}
+
+/** A record's field names in the order its dispatch keeps its fields. */
+export function recordFieldNames(record: RecordType): GrowableArray<String> {
   let names = new Array<String>();
   for (let pair in record.properties) {
     names.push(pair.key);
@@ -2352,11 +2419,7 @@ export function recordFieldsTuple(record: RecordType): InlineTupleType {
     }
     names[j + 1] = key;
   }
-  let types = new Array<Type>();
-  for (let name in names) {
-    types.push(record.properties[name]);
-  }
-  return new InlineTupleType(types);
+  return names;
 }
 
 /** How many positions a nested element takes once flattened: 1 for an
@@ -2441,6 +2504,13 @@ export function mapParamTypeToWasmParams(wasm: WasmModule, type: Type, params: G
   // An inline record is its fields, in its dispatch's order.
   let record = inlineRecordParamOf(type);
   if (record != null) {
+    let leaves = inlineRecordFieldsLayout(wasm, record);
+    if (leaves != null) {
+      for (let vt in leaves.slots) {
+        params.push(vt);
+      }
+      return;
+    }
     for (let field in recordWasmFields(wasm, record, null)) {
       params.push(field.type);
     }
@@ -2503,6 +2573,13 @@ export function mapReturnTypeToWasmResults(wasm: WasmModule, type: Type, returns
   // An inline record result is its record's fields, as a parameter is.
   let record = inlineRecordParamOf(type);
   if (record != null) {
+    let leaves = inlineRecordFieldsLayout(wasm, record);
+    if (leaves != null) {
+      for (let vt in leaves.slots) {
+        returns.push(vt);
+      }
+      return;
+    }
     for (let field in recordWasmFields(wasm, record, null)) {
       returns.push(field.type);
     }
@@ -2602,7 +2679,7 @@ export function recordWasmFields(wasm: WasmModule, recIn: RecordType,
   }
   let fields = new Array<WasmField>();
   for (let pair in rec.properties) {
-    var vt = typeToValTypeWithSub(wasm, pair.value, subFunc);
+    var vt = typeToValTypeWithSub(wasm, boxedFieldType(pair.value), subFunc);
     if (rec.isOptional(pair.key)) {
       vt = optionalSlotValType(vt);
     }

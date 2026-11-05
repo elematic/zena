@@ -185,3 +185,35 @@ A nested inline record with optional fields is an error, since its
 presence words have no position in a tuple of the fields' types. An
 inline union inside an inline tuple is not supported yet: its slots
 and discriminant do not fit one list of positions.
+
+## Inline fields of inline records
+
+A field of an inline record may be inline itself (#371's depth rule:
+shallow, chosen per level): `inline {pos: inline Vec, id: i32}` is three
+values. `inline` on a field is allowed only in the record an `inline`
+applies to (`CheckerContext.inlineRecordFields`), as on an element only
+inside an inline tuple. The record's boxed form boxes the field
+(`boxedFormOf`, codegen's `boxedFieldType`), so its dispatch is the
+boxed record's (`recordWasmFields`).
+
+Such a record is not passed as its dispatch's fields, since an inline
+field is several values. It is laid out as the tuple of its fields
+(`inlineRecordFieldsLayout`, through `recordFieldsTuple`), flattened,
+so its slots are its leaves:
+
+- **Writing** a record lowers it leaf by leaf (`#recordExprLeaves`): a
+  literal's properties in written order, an inline field's value into
+  that field's leaves, and any other record read field by field
+  (`#recordValueLeaves`), an inline field's boxed value read on into its
+  leaves.
+- **Reading:** a parameter, a `let` and a call's result are a record
+  built from the leaves and held as them (`#heldRecordFromLeaves`), with
+  an inline record field held the same way and an inline tuple field a
+  boxed tuple built from its leaves. `s.pos.x` reads through both and
+  takes the leaf; dead code elimination deletes what nothing stores. A
+  field read gives the field's boxed form (`#fieldReadValType`), and a
+  name a pattern binds to an inline field holds it boxed.
+
+An inline field cannot be optional, since an inline value has no absent
+form, nor a union, nor a record with optional fields, for the reasons a
+nested one cannot.
