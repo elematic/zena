@@ -22,7 +22,8 @@ import {
   typeContainsTypeParameter, representsRestricted,
 } from '../../types.zena';
 import {
-  TemplateAbandon, TemplateFamilies, TemplateRecorder, internedCopy,
+  TemplateAbandon, TemplateFamilies, TemplateRecorder, internedCopy, memberProvidedIn, vtableSlotIn,
+  accessorOverriddenIn,
 } from './template.zena';
 import { nowMs } from '../../time.zena';
 import {
@@ -571,11 +572,80 @@ function castToConcreteRef(b: IrBuilder, value: i32, targetVt: ValType) {
 }
 
 /**
+ * The class whose vtable an interface trampoline dispatches through, or
+ * null when it calls its target directly. A value packed as the
+ * trampoline's class may be an instance of any subclass, so when some
+ * subclass provides its own version of the target, the call goes
+ * through the slot, as a virtual call on the class does. For a field's
+ * synthesized accessor that means a subclass accessor reading something
+ * else, as for a property read on the class (`accessorOverriddenIn`). A
+ * slot that pruning dropped has no reached override, and the direct
+ * call is right.
+ */
+function trampolineDispatchClass(wasm: WasmModule, func: WasmFunction): ClassCodegenInfo | null {
+  let {interfaceTrampolineClass, interfaceTrampolineSlot, interfaceTrampolineTarget} = func;
+  if (interfaceTrampolineClass == null || interfaceTrampolineSlot == null ||
+      interfaceTrampolineTarget == null || interfaceTrampolineClass.isExtension) {
+    return null;
+  }
+  if (let (true, info) = wasm.classInfos.get(getClassKey(interfaceTrampolineClass))) {
+    if (vtableSlotIn(info, interfaceTrampolineSlot) < 0) {
+      return null;
+    }
+    let fieldName = synthesizedAccessorField(interfaceTrampolineTarget, interfaceTrampolineSlot);
+    let overridden = if (fieldName != null) {
+      accessorOverriddenIn(wasm, info, interfaceTrampolineSlot, fieldName)
+    } else {
+      memberProvidedIn(wasm, info, interfaceTrampolineSlot)
+    };
+    if (overridden) {
+      return info;
+    }
+  }
+  return null;
+}
+
+/** The field `f` reads or writes when it is a synthesized accessor for `slot`, or null. */
+function synthesizedAccessorField(f: WasmFunction, slot: String): String | null {
+  let isGetter = slot.startsWith('get#');
+  if (f.node != null || (!isGetter && !slot.startsWith('set#'))) {
+    return null;
+  }
+  let st = if (isGetter) f.getterStruct else f.setterStruct;
+  let idx = if (isGetter) f.getterFieldIndex else f.setterFieldIndex;
+  if (st == null || idx < 0 || idx >= st.fields.length) {
+    return null;
+  }
+  return st.fields[idx].name;
+}
+
+/**
+ * The `slot` function of `receiver`'s class vtable, cast to `sig`: the
+ * callee of a call_ref (`LoweringContext.vtableSlotCallee`).
+ */
+function trampolineSlotCallee(b: IrBuilder, receiver: i32, info: ClassCodegenInfo,
+    slot: String, sig: WasmSignature) {
+  let {structType} = info;
+  let vtStruct = info.vtableStructType as WasmStruct;
+  let vtField = structType.fields[structType.fieldIndexByName('<vtable>')].type;
+  let vtRaw = b.emit(IrOp.struct_get, vtField, receiver,
+      b.addRef(new IrRefField(structType, '<vtable>')));
+  let vtVt: ValType = new ValTypeRef(vtStruct);
+  let vt = b.emit(IrOp.ref_cast, vtVt, vtRaw, b.internType(vtVt));
+  let slotField = vtStruct.fields[vtStruct.fieldIndexByName(slot)].type;
+  let slotRaw = b.emit(IrOp.struct_get, slotField, vt,
+      b.addRef(new IrRefField(vtStruct, slot)));
+  let sigVt: ValType = new ValTypeRef(sig);
+  return b.emit(IrOp.ref_cast, sigVt, slotRaw, b.internType(sigVt));
+}
+
+/**
  * Interface trampoline: cast the erased receiver to the target's
  * concrete type, cast any erased params likewise, and tail-call the
- * target (docs: FunctionGenerator's interfaceTrampolineTarget arm).
- * The tail call is what keeps the adapter out of the stack; see
- * requireForwardableResults.
+ * target (docs: FunctionGenerator's interfaceTrampolineTarget arm), or
+ * dispatch to it through the class vtable when a subclass overrides it
+ * (`trampolineDispatchClass`). The tail call is what keeps the adapter
+ * out of the stack; see requireForwardableResults.
  */
 function synthesizeInterfaceTrampoline(wasm: WasmModule, func: WasmFunction) {
   let target = func.interfaceTrampolineTarget as WasmFunction;
@@ -632,9 +702,15 @@ function synthesizeInterfaceTrampoline(wasm: WasmModule, func: WasmFunction) {
     throw new ZirUnsupported('trampoline shape');
   }
   let wraps = func.trampolineParamWraps;
-  let args = growable<i32>([
-    castToConcreteRef(b, params[0], target.signature.params[0]),
-  ]);
+  let dispatch = trampolineDispatchClass(wasm, func);
+  // Dispatching reads the vtable off the trampoline's own class, which
+  // is the target's class or a subclass of it.
+  let receiver = if (dispatch != null) {
+    castToConcreteRef(b, params[0], new ValTypeRef(dispatch.structType))
+  } else {
+    castToConcreteRef(b, params[0], target.signature.params[0])
+  };
+  let args = growable<i32>([receiver]);
   for (var i = 1; i < params.length; i += 1) {
     var v = params[i];
     var wrapped = false;
@@ -664,12 +740,22 @@ function synthesizeInterfaceTrampoline(wasm: WasmModule, func: WasmFunction) {
     }
     args.push(v);
   }
+  let callee = if (dispatch != null) {
+    trampolineSlotCallee(b, receiver, dispatch, func.interfaceTrampolineSlot as String,
+        target.signature)
+  } else {
+    -1
+  };
   let funcRef = b.addRef(new IrRefFunc(target));
   let packPair = func.trampolineResultPackPair;
   let packIface = func.trampolineResultPackIface;
   if (packPair == null || packIface == null) {
     requireForwardableResults(func, target, 'interface trampoline');
-    b.retCall(funcRef, args);
+    if (callee >= 0) {
+      b.retCallRef(callee, args);
+    } else {
+      b.retCall(funcRef, args);
+    }
     return b.finish();
   }
   // A covariant class-typed result: call, pack into the interface fat
@@ -678,7 +764,11 @@ function synthesizeInterfaceTrampoline(wasm: WasmModule, func: WasmFunction) {
   if (target.signature.returns.length != 1 || func.signature.returns.length != 1) {
     throw new ZirUnsupported('generic trampoline result shape');
   }
-  let raw = b.callFunc(funcRef, args, target.signature.returns[0]);
+  let raw = if (callee >= 0) {
+    b.callRef(callee, args, target.signature.returns[0])
+  } else {
+    b.callFunc(funcRef, args, target.signature.returns[0])
+  };
   if (!wasm.classInterfaceVTables.has(packPair)) {
     throw new ZirUnsupported('generic trampoline pack vtable missing');
   }

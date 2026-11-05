@@ -1,0 +1,127 @@
+// @mode: run
+// @result: 0
+// A class that implements an interface through its superclass, called
+// through the interface while held as the superclass, runs its own
+// override (#797). The value is packed with the superclass's interface
+// vtable, so its trampoline has to dispatch through the class vtable.
+// A getter over an inherited field is an override too, read through
+// the interface or through the superclass.
+
+interface Indexer {
+  index(n: i32): i32;
+}
+
+class Grid implements Indexer {
+  index(n: i32): i32 {
+    return n;
+  }
+}
+
+class Transposed extends Grid {
+  index(n: i32): i32 {
+    return n + 10;
+  }
+}
+
+// A middle class with no version of its own, and one below it that has.
+class Plain extends Grid {}
+
+class Shifted extends Plain {
+  index(n: i32): i32 {
+    return n + 100;
+  }
+}
+
+let through = (i: Indexer): i32 => i.index(2);
+
+// A property: a field on the base, a getter on the subclass.
+interface Named {
+  name: String;
+}
+
+class Animal implements Named {
+  name: String;
+  new(this.name);
+}
+
+class Dog extends Animal {
+  new() : super('animal');
+  name: String {
+    get {
+      return 'dog';
+    }
+  }
+}
+
+let nameOf = (n: Named): String => n.name;
+let readName = (a: Animal): String => a.name;
+
+// A covariant result: the interface returns itself, the class itself.
+interface Node {
+  next(): Node;
+  depth(): i32;
+}
+
+class Leaf implements Node {
+  next(): Leaf {
+    return this;
+  }
+  depth(): i32 {
+    return 1;
+  }
+}
+
+class Branch extends Leaf {
+  next(): Leaf {
+    return new Leaf();
+  }
+  depth(): i32 {
+    return 2;
+  }
+}
+
+let nextDepth = (n: Node): i32 => n.depth() * 10 + n.next().depth();
+
+// Overloads: each has its own slot.
+interface Shows {
+  show(n: i32): i32;
+  show(s: String): i32;
+}
+
+class Shower implements Shows {
+  show(n: i32): i32 {
+    return n;
+  }
+  show(s: String): i32 {
+    return s.length;
+  }
+}
+
+class Louder extends Shower {
+  show(n: i32): i32 {
+    return n * 2;
+  }
+  show(s: String): i32 {
+    return s.length * 2;
+  }
+}
+
+let showBoth = (s: Shows): i32 => s.show(3) + s.show('ab');
+
+export let main = (): i32 => {
+  var failures = 0;
+  let transposed: Grid = new Transposed();
+  if (through(transposed) != 12) { failures += 1; }
+  let grid = new Grid();
+  if (through(grid) != 2) { failures += 2; }
+  let shifted: Plain = new Shifted();
+  if (through(shifted) != 102) { failures += 4; }
+  let dog: Animal = new Dog();
+  if (nameOf(dog) != 'dog' || nameOf(new Animal('cat')) != 'cat') { failures += 8; }
+  if (readName(dog) != 'dog' || readName(new Animal('cat')) != 'cat') { failures += 64; }
+  let branch: Leaf = new Branch();
+  if (nextDepth(branch) != 21 || nextDepth(new Leaf()) != 11) { failures += 16; }
+  let louder: Shower = new Louder();
+  if (showBoth(louder) != 10 || showBoth(new Shower()) != 5) { failures += 32; }
+  return failures;
+};
