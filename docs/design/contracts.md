@@ -237,16 +237,16 @@ The condition's own tests narrow as usual:
 
 The checker reports each of these:
 
-- Any clause on a generator.
+- Any clause on a generator (#930).
 - Any clause on a method without a body: an interface method, or an
-  `abstract` or `declare` method.
-- An `ensures` clause on an `async` function. Its `requires` clauses
-  run.
-- An `ensures` clause on a function whose return type is `inline`.
-  Such a result is returned as several values, and `result` has no one
-  value to be.
-- An `ensures` clause on an extension class's constructor.
-- `old` in a constructor's `ensures` condition.
+  `abstract` or `declare` method (#929).
+- An `ensures` clause on an `async` function (#931). Its `requires`
+  clauses run.
+- An `ensures` clause on a function whose return type is `inline`
+  (#932). Such a result is returned as several values, and `result` has
+  no one value to be.
+- An `ensures` clause on an extension class's constructor (#933).
+- `old` in a constructor's `ensures` condition (#934).
 
 What the first three would mean is under
 [Open questions](#open-questions).
@@ -352,20 +352,44 @@ runs, one that runs only in tests, and one that is proved statically.
 matches checked casts and bounds checks: a condition the author wrote
 is enforced.
 
-**A clause too expensive to run in production needs a marker on the
-clause.** A precondition such as `isSorted(items)` on a binary search
-costs more than the function it guards. Only the author knows that, so
-it cannot be left to a build flag, which could only turn every clause
-on or off together. The plan is a modifier in front of the keyword, in
-the style of `tail return`:
+**A clause too expensive to run in production is marked `debug`.** A
+precondition such as `isSorted(items)` on a binary search costs more
+than the function it guards. Only the author knows that, so it cannot
+be left to a build flag, which could only turn every clause on or off
+together. The marker is a modifier in front of the keyword, in the
+style of `tail return`, on any of the three kinds:
 
 ```zena
-debug requires (isSorted(items))
+function search(items: FixedArray<i32>, target: i32): i32
+  requires (items.length > 0)
+  debug requires (isSorted(items))
+  debug ensures (result < items.length)
+{
+  while (lo < hi) debug invariant (isSorted(items)) { ... }
+}
 ```
 
-A `debug` clause would run under `zena test` and in builds that ask for
-it, and be left out otherwise. The word `debug` is a placeholder; the
-position of the modifier is the decision.
+`debug` is contextual, like the clause keywords: it is the modifier only
+directly in front of one of them.
+
+- **Which builds check it.** A test build and a debug build: `zena
+test`, and `zena -g build` or `zena -g run`. Every other build leaves
+  it out. The compile cache already keys on both.
+- **What leaving it out means.** Nothing is emitted for the clause: no
+  condition, no call, no message. Reachability and lowering ask the same
+  question (`WasmModule.runsContractClause`), so a function the
+  condition alone calls is not reached either.
+- **Checking.** A `debug` clause is type-checked in every build, by the
+  same rules, so it cannot rot in the builds that leave it out. This is
+  also why a condition cannot assign or `await`.
+- **Narrowing.** A `debug requires` narrows nothing. An unmarked one
+  narrows because it always runs; code after a `debug` one may run
+  without the check, so it cannot rely on it.
+- **The message** is the clause as written, with the modifier:
+  `debug requires (isSorted(items)) does not hold`.
+
+The word was chosen for the `--debug` flag that turns it on. `test` and
+`audit` were the alternatives (#935).
 
 **Static verification is a second way to discharge the same clauses,
 and needs no syntax on the clause.** Ada and SPARK work this way: `Pre`
@@ -379,9 +403,7 @@ still has to be checked for callers the verifier did not see.
 quantifier over every `i32` or a call to a specification-only function.
 Those need a marker on the clause too, so that the compiler knows never
 to emit them. formal-verification.md writes it `ghost invariant (...)`,
-and it takes the same position as `debug`.
-
-Neither modifier is parsed yet.
+and it takes the same position as `debug`. It is not parsed yet (#936).
 
 ## Alternatives considered
 

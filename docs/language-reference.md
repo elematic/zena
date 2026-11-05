@@ -1715,8 +1715,28 @@ would discard the frame the clauses run in. `ensures` is not supported
 yet on an `async` function or on a function whose return type is
 `inline`.
 
-`requires`, `ensures` and `invariant` are contextual keywords and stay
-available as identifiers. See `docs/design/contracts.md`.
+#### Clauses for test and debug builds: `debug`
+
+A condition can cost more than the code it guards. Marking a clause
+`debug` keeps it out of ordinary builds:
+
+```zena
+function search(items: FixedArray<i32>, target: i32): i32
+  requires (items.length > 0)
+  debug requires (isSorted(items))   // O(n) on an O(log n) function
+{ ... }
+```
+
+A `debug` clause is checked under `zena test` and in a build made with
+`-g` (`zena -g run`, `zena -g build`). Any other build emits nothing for
+it. The modifier goes on `requires`, `ensures` and `invariant` alike.
+
+The compiler type-checks a `debug` clause in every build. A
+`debug requires` narrows nothing in the body, since the body may run
+without the check.
+
+`requires`, `ensures`, `invariant` and `debug` are contextual keywords
+and stay available as identifiers. See `docs/design/contracts.md`.
 
 ## 5. Expressions & Operators
 

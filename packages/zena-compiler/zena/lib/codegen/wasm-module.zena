@@ -1,6 +1,7 @@
 import { Set, HashMap, HashSet } from 'zena:collections';
 import {
   Node, Expression, NodeId, ImportSpecifier, FunctionExpression, MethodDefinition, DeclareFunction, VariableDeclaration, FunctionDeclaration, IdentifierPattern,
+  ContractClause, ContractKind,
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
@@ -1362,6 +1363,31 @@ export final class WasmModule {
    * emitted bytes and the speed, not the values.
    */
   var wideArithmetic: boolean = false;
+
+  /**
+   * Whether `debug` contract clauses are compiled
+   * (docs/design/contracts.md). On for a test build and a debug build;
+   * otherwise a `debug requires (c)` is type-checked and emits nothing.
+   * Reachability and lowering both ask `runsContractClause`, since one
+   * registers what the other emits a call to.
+   */
+  var debugContracts: boolean = false;
+
+  /** Whether `clause` is checked at run time in this build. */
+  runsContractClause(clause: ContractClause): boolean {
+    return !clause.isDebug || this.debugContracts;
+  }
+
+  /** Whether `contracts` holds an `ensures` clause this build checks. */
+  runsEnsuresClause(contracts: GrowableArray<ContractClause> | null): boolean {
+    if (contracts == null) { return false; }
+    for (let clause in contracts) {
+      if (clause.kind == ContractKind.Ensures && this.runsContractClause(clause)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   var types = new Array<WasmType>();
   tags = new Array<WasmTag>();

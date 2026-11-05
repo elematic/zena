@@ -75,7 +75,8 @@ function compileWithZirStdlib(source: String) {
   return compileWithZirStdlibAt(source, 1);
 }
 
-function compileWithZirStdlibAt(source: String, optLevel: i32): String {
+function compileWithZirStdlibAt(source: String, optLevel: i32,
+    debugContracts: boolean = false): String {
   let host = new PlainHost();
   host.addFile("test.zena", source);
 
@@ -105,6 +106,7 @@ function compileWithZirStdlibAt(source: String, optLevel: i32): String {
   let program = new Program(units, entryUnit);
   let generator = new WatGenerator("freestanding", false, optLevel);
   generator.interner = checkRes.sharedState.interner;
+  generator.debugContracts = debugContracts;
   return generator.generate(program);
 }
 
@@ -2305,5 +2307,32 @@ export let tests = suite('zir backend', () => {
     let result = compileWithZirStdlib(
         'export let main = (): i32 => \'ab\'.length;');
     isTrue(result.contains('(func $main'));
+  });
+
+  test('a debug contract clause is compiled only when the build asks for it', (ctx) => {
+    // One clause of each kind in `half`, and a loop with one of each.
+    // A build that leaves `debug` clauses out emits the unmarked checks
+    // and nothing for the marked ones.
+    let source = dedentRaw`
+        function half(n: i32): i32
+          requires (n >= 0)
+          debug requires (n % 2 == 0)
+          debug ensures (result * 2 == n)
+        {
+          var i = 0;
+          while (i < n) invariant (i >= 0) debug invariant (i <= n) {
+            i += 2;
+          }
+          return n >> 1;
+        }
+        export let main = (): i32 => half(4);
+    `;
+    let without = compileWithZirStdlibAt(source, 1, false);
+    assertFunctionUsesTimes(without, '$half', 'contractFailed', 2,
+        'the two unmarked clauses, and none of the three `debug` ones');
+
+    let withDebug = compileWithZirStdlibAt(source, 1, true);
+    assertFunctionUsesTimes(withDebug, '$half', 'contractFailed', 5,
+        'every clause is checked in a debug build');
   });
 });

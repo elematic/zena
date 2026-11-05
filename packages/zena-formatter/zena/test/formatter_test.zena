@@ -147,6 +147,30 @@ let tests = suite('formatter', () => {
     `);
   });
 
+  test('keeps the `debug` modifier on a contract clause', (t) => {
+    checkFormat('debug clauses', dedentRaw`
+      function first(items: FixedArray<i32>): i32 debug   requires(isSorted(items)) { return items[0]; }
+    `, dedentRaw`
+      function first(items: FixedArray<i32>): i32 debug requires (isSorted(items)) {
+        return items[0];
+      }
+    `);
+    checkStable('debug clauses on lines of their own', dedentRaw`
+      function search(items: FixedArray<i32>, target: i32): i32
+        requires (items.length > 0)
+        debug requires (isSorted(items))
+        debug ensures (result < items.length)
+      {
+        while (true) debug invariant (isSorted(items)) {}
+      }
+    `);
+    checkStable('debug as a name', dedentRaw`
+      function f(debug: Check, n: i32) {
+        while (n > 0) debug(n);
+      }
+    `);
+  });
+
   test('leaves `requires`, `ensures` and `invariant` alone as names', (t) => {
     checkStable('names', dedentRaw`
       function f(requires: i32, ensures: i32, invariant: Check) {

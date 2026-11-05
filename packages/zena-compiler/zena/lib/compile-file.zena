@@ -877,9 +877,15 @@ export final class CompileSession {
       // `-o out.wat` emits the WAT text directly — the readable form of
       // exactly what the binary build would contain, for inspecting a
       // program's emitted shape (`zena build hello.zena -o hello.wat`).
+      // `debug` contract clauses are compiled for a test build and for a
+      // debug build (`-g`), and left out of every other
+      // (docs/design/contracts.md).
+      let debugContracts = testMode || debugNames;
+
       if (outPath.endsWith(".wat")) {
         let watOnly = new WatGenerator(target, zirStats, optLevel);
         watOnly.wideArithmetic = wideArithmetic;
+        watOnly.debugContracts = debugContracts;
         watOnly.importedStringConstants = importedStringConstants;
         watOnly.compactImports = compactImports;
         watOnly.templates = templates;
@@ -895,6 +901,7 @@ export final class CompileSession {
 
       let generator = new BinaryGenerator(target, zirStats, debugNames, optLevel);
       generator.wideArithmetic = wideArithmetic;
+      generator.debugContracts = debugContracts;
       generator.importedStringConstants = importedStringConstants;
       generator.compactImports = compactImports;
       generator.templates = templates;
@@ -942,6 +949,7 @@ export final class CompileSession {
       // so it is opt-in for debugging.
       if (getEnv("ZENA_EMIT_WAT") != null) {
         let watGenerator = new WatGenerator(target, false, optLevel);
+        watGenerator.debugContracts = debugContracts;
         watGenerator.importedStringConstants = importedStringConstants;
         watGenerator.compactImports = compactImports;
         let watString = watGenerator.generate(program);
