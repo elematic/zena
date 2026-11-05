@@ -213,6 +213,7 @@ fn cli_module(repo_root: Option<&Path>) -> Result<PathBuf> {
 
 fn main() -> Result<()> {
     zena_runtime::init_logging();
+    zena_runtime::init_signals();
     let cwd = std::env::current_dir()?;
     let checkout = build_checkout();
     let repo_root = repo_root_for(

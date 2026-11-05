@@ -184,8 +184,8 @@ service account needs no `run.admin` or `iam.serviceAccountUser`.
 Ctrl-C stops `docker:run`. If a container is ever orphaned, the escape hatch is
 `docker stop zena-website` — that's what `--name` is for.
 
-`zena-runtime`'s HTTP server handles `SIGTERM` and `SIGINT` explicitly so PID 1
-in the container shuts down cleanly on Cloud Run or Ctrl-C. `docker:run` also
+`zena-run` installs `SIGTERM` and `SIGINT` handlers when running as PID 1 so the
+container shuts down cleanly on Cloud Run or Ctrl-C. `docker:run` also
 passes `--init` so tini reaps zombies.
 
 The build context for `Dockerfile` and `cloudbuild.yaml` is this package directory

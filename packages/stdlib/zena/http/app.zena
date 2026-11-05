@@ -7,8 +7,9 @@ import { Response } from './response.zena';
 import { Middleware, NextFunction, compose } from './middleware.zena';
 import { HttpError } from './error.zena';
 import { Server } from './server.zena';
+import { WireRequest, WireResponse, ErrorCode, handleWireRequest } from './wasi.zena';
 import { checkCancellation } from 'zena:async';
-import { Own, unit } from 'zena:core';
+import { Own, Result, unit } from 'zena:core';
 
 /**
  * Configuration options for the HTTP App.
@@ -88,6 +89,14 @@ export class App {
     } catch (e) {
       this.#handleError(res, e);
     }
+  }
+
+  /**
+   * Dispatches a WASI `wasi:http/types` request through the application
+   * pipeline and returns the wire response.
+   */
+  handle(wireRequest: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
+    return handleWireRequest(this, wireRequest);
   }
 
   /**

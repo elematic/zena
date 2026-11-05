@@ -59,6 +59,35 @@ pub fn init_logging() {
     }
 }
 
+/// Installs `SIGTERM` and `SIGINT` handlers when the process runs as PID 1 on
+/// Unix.
+///
+/// Linux ignores unhandled signals whose action is `SIG_DFL` on PID 1, so a
+/// container running `zena-run` or `zena` without an init process would ignore
+/// `docker stop` or Cloud Run shutdown signals unless a handler is installed.
+pub fn init_signals() {
+    #[cfg(unix)]
+    if std::process::id() == 1 {
+        extern "C" fn exit_on_signal(_sig: libc::c_int) {
+            // SAFETY: `_exit` is async-signal-safe (POSIX.1-2008).
+            unsafe {
+                libc::_exit(0);
+            }
+        }
+        // SAFETY: `exit_on_signal` only invokes async-signal-safe `_exit`.
+        unsafe {
+            libc::signal(
+                libc::SIGTERM,
+                exit_on_signal as *const () as libc::sighandler_t,
+            );
+            libc::signal(
+                libc::SIGINT,
+                exit_on_signal as *const () as libc::sighandler_t,
+            );
+        }
+    }
+}
+
 /// Whether this invocation may spawn processes and run components. The
 /// `--allow-spawn` flag comes through here so that ZENA_ALLOW_SPAWN=1
 /// grants it too.

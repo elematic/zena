@@ -37,7 +37,7 @@ pub(crate) mod bindings {
         imports: {
             default: trappable,
             "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
-            "zena-cli:host/http-server.[method]response-writer.respond": trappable | store,
+            "zena-cli:host/http-server.[static]response-writer.respond": trappable | store,
             "zena-cli:host/extensions.load": async | trappable | store,
             "zena-cli:host/extensions.load-trusted": async | trappable | store,
             "zena-cli:host/extensions.drop": trappable | store,
@@ -1161,19 +1161,21 @@ impl Drop for ResponseWriterState {
 /// Host-side state for a bound `zena:http-server/server` resource.
 pub struct ServerState {
     port: u16,
-    request_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<IncomingRequest>>>,
+    request_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<IncomingRequest>>>,
     shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
     /// Oneshot sender paired with the accept loop's `tokio::select!`.
-    /// Dropping it wakes the accept loop so it drops the `TcpListener` and exits.
+    /// Dropping it wakes the accept loop so it drops the `TcpListener`, aborts
+    /// active connection tasks, and exits.
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    /// Handle to the background thread running the Tokio accept loop.
-    accept_thread: Option<std::thread::JoinHandle<()>>,
+    /// Signals once the accept task has dropped the listener and joined its
+    /// connection tasks on the shared HTTP runtime.
+    closed_rx: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 impl ServerState {
     /// Stops the accept loop, closes the request channel, and waits for the
-    /// background accept thread to exit so the OS listener socket is released
-    /// before `server.close()` or `drop` returns.
+    /// accept task to drop the listener and abort its connections so the OS
+    /// port is unbound before `server.close()` or `drop` returns.
     fn shutdown(&mut self) {
         self.shutdown_flag
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1183,16 +1185,14 @@ impl ServerState {
         if let Ok(mut rx) = self.request_rx.lock() {
             rx.close();
         }
-        // Join the accept thread so the port is guaranteed to be unbound in
-        // the OS by the time `shutdown()` returns.
-        if let Some(handle) = self.accept_thread.take() {
-            let _ = handle.join();
+        if let Some(rx) = self.closed_rx.take() {
+            let _ = rx.recv();
         }
     }
 }
 
 struct RequestStreamProducer {
-    rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<IncomingRequest>>>,
+    rx: Arc<Mutex<tokio::sync::mpsc::Receiver<IncomingRequest>>>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -1353,16 +1353,12 @@ fn read_hidden(_prompt: &str) -> std::io::Result<String> {
 impl http_server::HostResponseWriterWithStore<ComponentState> for HasSelf<ComponentState> {
     fn respond(
         mut host: wasmtime::component::Access<'_, ComponentState, Self>,
-        self_: Resource<ResponseWriterState>,
+        writer: Resource<ResponseWriterState>,
         response: Resource<wasmtime_wasi_http::p3::Response>,
     ) -> Result<()> {
-        let tx = {
-            let mut store = host.as_context_mut();
-            let writer = store.data_mut().table.get_mut(&self_)?;
-            writer.tx.take()
-        };
+        let mut writer_state = host.as_context_mut().data_mut().table.delete(writer)?;
         let resp = host.as_context_mut().data_mut().table.delete(response)?;
-        if let Some(sender) = tx {
+        if let Some(sender) = writer_state.tx.take() {
             let http_res = resp.into_http(&mut host, async { Ok(()) })?;
             let _ = sender.send(http_res);
         }
@@ -1473,27 +1469,6 @@ impl http_server::HostResponseWriter for ComponentState {
             )
             .unwrap_or_else(internal_error_response);
             let _ = sender.send(resp);
-        }
-        Ok(())
-    }
-
-    fn respond_error(
-        &mut self,
-        self_: Resource<ResponseWriterState>,
-        _error: bindings::wasi::http::types::ErrorCode,
-    ) -> Result<()> {
-        let writer = self.table.get_mut(&self_)?;
-        if let Some(sender) = writer.tx.take() {
-            use http_body_util::BodyExt as _;
-            let err_resp = http::Response::builder()
-                .status(http::StatusCode::BAD_GATEWAY)
-                .body(
-                    http_body_util::Full::new(bytes::Bytes::from_static(b"gateway error"))
-                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
-                        .boxed_unsync(),
-                )
-                .unwrap();
-            let _ = sender.send(err_resp);
         }
         Ok(())
     }
@@ -1636,25 +1611,34 @@ fn populate_http1_uri(
 async fn accept_connections(
     listener: tokio::net::TcpListener,
     limits: ServerLimits,
-    request_tx: tokio::sync::mpsc::UnboundedSender<IncomingRequest>,
+    request_tx: tokio::sync::mpsc::Sender<IncomingRequest>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let permits = Arc::new(tokio::sync::Semaphore::new(limits.max_connections));
+    let mut connections = tokio::task::JoinSet::new();
     loop {
+        while connections.try_join_next().is_some() {}
         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
         // A connection past the cap waits, unaccepted, for one to close.
-        let permit = tokio::select! {
-            permit = permits.clone().acquire_owned() => permit,
-            _ = &mut shutdown_rx => break,
+        let permit = loop {
+            tokio::select! {
+                permit = permits.clone().acquire_owned() => break Some(permit),
+                Some(_) = connections.join_next(), if !connections.is_empty() => {}
+                _ = &mut shutdown_rx => break None,
+            }
         };
-        let Ok(permit) = permit else { break };
-        let accept_res = tokio::select! {
-            res = listener.accept() => res,
-            _ = &mut shutdown_rx => break,
+        let Some(Ok(permit)) = permit else { break };
+        let accept_res = loop {
+            tokio::select! {
+                res = listener.accept() => break Some(res),
+                Some(_) = connections.join_next(), if !connections.is_empty() => {}
+                _ = &mut shutdown_rx => break None,
+            }
         };
+        let Some(accept_res) = accept_res else { break };
         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
@@ -1665,7 +1649,7 @@ async fn accept_connections(
         let _ = stream.set_nodelay(true);
         let req_tx = request_tx.clone();
 
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let _permit = permit;
             use http_body_util::BodyExt as _;
             let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1710,6 +1694,7 @@ async fn accept_connections(
                                 authority,
                                 res_tx,
                             })
+                            .await
                             .is_err()
                         {
                             shared_body.release();
@@ -1797,6 +1782,9 @@ async fn accept_connections(
             }
         });
     }
+    drop(listener);
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
 }
 
 impl http_server::HostServer for ComponentState {
@@ -1819,66 +1807,33 @@ impl http_server::HostServer for ComponentState {
         if let Err(e) = std_listener.set_nonblocking(true) {
             return Ok(Err(format!("failed to set nonblocking: {e}")));
         }
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(Err(format!(
-                    "failed to create tokio runtime for http-server: {e}"
-                )));
+
+        let rt = crate::http_client::background();
+        let listener = {
+            let _guard = rt.enter();
+            match tokio::net::TcpListener::from_std(std_listener) {
+                Ok(l) => l,
+                Err(e) => return Ok(Err(format!("failed to wrap TcpListener in tokio: {e}"))),
             }
         };
 
-        let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let limits = ServerLimits::from_env();
+        let (request_tx, request_rx) = tokio::sync::mpsc::channel(limits.max_connections.max(1));
         let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let s_shutdown = shutdown_flag.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel::<()>(1);
 
-        let accept_thread = std::thread::spawn(move || {
-            rt.block_on(async move {
-                // When zena-run is PID 1 in a container, Linux suppresses
-                // SIGTERM and SIGINT unless a signal handler is installed.
-                #[cfg(unix)]
-                tokio::spawn(async move {
-                    use tokio::signal::unix::{SignalKind, signal};
-                    let mut sigterm = signal(SignalKind::terminate()).ok();
-                    let mut sigint = signal(SignalKind::interrupt()).ok();
-                    tokio::select! {
-                        Some(_) = async {
-                            match &mut sigterm {
-                                Some(s) => s.recv().await,
-                                None => std::future::pending().await,
-                            }
-                        } => {}
-                        Some(_) = async {
-                            match &mut sigint {
-                                Some(s) => s.recv().await,
-                                None => std::future::pending().await,
-                            }
-                        } => {}
-                    }
-                    std::process::exit(0);
-                });
-
-                let listener = match tokio::net::TcpListener::from_std(std_listener) {
-                    Ok(l) => l,
-                    Err(e) => {
-                        eprintln!("failed to wrap TcpListener in tokio: {e}");
-                        return;
-                    }
-                };
-
-                accept_connections(
-                    listener,
-                    ServerLimits::from_env(),
-                    request_tx,
-                    shutdown_rx,
-                    s_shutdown,
-                )
-                .await;
-            });
+        rt.spawn(async move {
+            accept_connections(
+                listener,
+                limits,
+                request_tx,
+                shutdown_rx,
+                s_shutdown,
+            )
+            .await;
+            let _ = closed_tx.send(());
         });
 
         let res = self.table.push(ServerState {
@@ -1886,7 +1841,7 @@ impl http_server::HostServer for ComponentState {
             request_rx: Arc::new(Mutex::new(request_rx)),
             shutdown_flag,
             shutdown_tx: Some(shutdown_tx),
-            accept_thread: Some(accept_thread),
+            closed_rx: Some(closed_rx),
         })?;
         Ok(Ok(res))
     }
@@ -1922,7 +1877,7 @@ mod server_tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (request_tx, mut request_rx) =
-            tokio::sync::mpsc::unbounded_channel::<IncomingRequest>();
+            tokio::sync::mpsc::channel::<IncomingRequest>(limits.max_connections.max(1));
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         // Kept alive as long as the server runs.
         std::mem::forget(shutdown_tx);
@@ -2192,5 +2147,87 @@ mod server_tests {
                 String::from_utf8_lossy(&answer)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn pipelined_requests_complete_across_a_bounded_channel() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::channel::<IncomingRequest>(1);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(accept_connections(
+            listener,
+            ServerLimits {
+                header_read_timeout: Duration::from_secs(5),
+                max_connections: 1,
+            },
+            request_tx,
+            shutdown_rx,
+            Arc::new(AtomicBool::new(false)),
+        ));
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(
+                b"GET /1 HTTP/1.1\r\nhost: localhost\r\n\r\n\
+                  GET /2 HTTP/1.1\r\nhost: localhost\r\n\r\n\
+                  GET /3 HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            while let Some(incoming) = request_rx.recv().await {
+                let path = incoming.req.uri().path().to_string();
+                let body = http_body_util::Full::new(bytes::Bytes::from(path))
+                    .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
+                        match e {}
+                    })
+                    .boxed_unsync();
+                let resp = http::Response::builder()
+                    .status(http::StatusCode::OK)
+                    .header(http::header::CONTENT_LENGTH, "2")
+                    .body(body)
+                    .unwrap();
+                let _ = incoming.res_tx.send(resp);
+            }
+        });
+
+        let raw = until_closed(&mut client, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&raw);
+        assert_eq!(text.matches("HTTP/1.1 200 OK").count(), 3, "{text}");
+        assert!(text.contains("\r\n\r\n/1") && text.contains("\r\n\r\n/2") && text.contains("\r\n\r\n/3"), "{text}");
+    }
+
+    #[test]
+    fn shutdown_releases_the_port_and_aborts_open_connections() {
+        let engine = crate::engine::shared_component_engine(false).unwrap();
+        let wasi = WasiCtxBuilder::new().build();
+        let mut state = ComponentState::new(&engine, wasi, None);
+        let server_res = http_server::HostServer::create(&mut state, 0)
+            .unwrap()
+            .unwrap();
+        let rep = server_res.rep();
+        let port = http_server::HostServer::port(&mut state, Resource::new_borrow(rep)).unwrap();
+
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        http_server::HostServer::close(&mut state, Resource::new_borrow(rep)).unwrap();
+
+        // The port is synchronously unbound before `close` returns.
+        let rebound = std::net::TcpListener::bind(("127.0.0.1", port));
+        assert!(rebound.is_ok(), "port {port} remained bound after close: {rebound:?}");
+        drop(rebound);
+
+        // The idle connection spawned for that server is aborted on close.
+        use std::io::Read as _;
+        let mut buf = [0u8; 16];
+        assert!(matches!(client.read(&mut buf), Ok(0) | Err(_)));
     }
 }

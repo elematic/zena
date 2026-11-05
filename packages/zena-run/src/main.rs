@@ -68,6 +68,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     zena_runtime::init_logging();
+    zena_runtime::init_signals();
     let cli = Cli::parse();
     let path = Path::new(&cli.file);
     if path.extension().is_some_and(|e| e == "zena") {
