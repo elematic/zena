@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 12112
+// Clauses run in the order written, each once per call, and the first
+// one that fails ends the call: later clauses do not run.
+
+var trace = 0;
+
+function note(digit: i32, holds: boolean): boolean {
+  trace = trace * 10 + digit;
+  return holds;
+}
+
+function guarded(first: boolean, second: boolean): i32
+  requires (note(1, first))
+  requires (note(2, second))
+{
+  return 0;
+}
+
+export function main(): i32 {
+  guarded(true, true); // 1, 2
+  try {
+    guarded(false, true); // 1, and the call ends
+  } catch (e) {
+  }
+  try {
+    guarded(true, false); // 1, 2
+  } catch (e) {
+  }
+  return trace;
+}

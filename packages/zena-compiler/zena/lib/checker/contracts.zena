@@ -9,8 +9,8 @@
 import { HashSet } from 'zena:collections';
 import {
   AssignmentExpression, AwaitExpression, CallExpression, ContractClause,
-  ContractKind, Expression, Identifier, Node, Parameter, contractKeyword,
-  isOldCallee,
+  ContractKind, Expression, Identifier, Node, Parameter, ThisExpression,
+  contractKeyword, isOldCallee,
 } from '../ast.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { FlowNode } from '../analysis/flow.zena';
@@ -94,6 +94,27 @@ export function checkRequiresClauses(
   let ensuresFlow = ctx.currentFlow;
   ctx.setFlow(bodyFlow);
   return ensuresFlow;
+}
+
+/**
+ * Reports `this` in a constructor's `requires` conditions. They run
+ * ahead of the field initializers, before the object exists.
+ */
+export function rejectThisInRequires(
+  ctx: CheckerContext,
+  contracts: GrowableArray<ContractClause> | null
+): void {
+  if (contracts == null) { return; }
+  for (let clause in contracts) {
+    if (clause.kind != ContractKind.Requires) { continue; }
+    walkEnter(clause.condition, (n) => {
+      if (n is ThisExpression) {
+        ctx.error(
+          "A constructor's 'requires' condition cannot use 'this': it runs before the object exists.",
+          DiagnosticCode.TypeMismatch, n.loc);
+      }
+    });
+  }
 }
 
 /**

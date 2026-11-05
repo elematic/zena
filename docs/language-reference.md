@@ -1595,6 +1595,101 @@ The keywords `gen`, `yield`, `async`, and `await` are reserved words in
 the self-hosted compiler (`async`/`await` are reserved for future async
 functions).
 
+### Contracts
+
+A contract clause is a condition the program is expected to keep,
+written on a function or a loop and checked when the program runs.
+
+```zena
+function withdraw(balance: i32, amount: i32): i32
+  requires (amount > 0)
+  requires (balance >= amount)
+{
+  return balance - amount;
+}
+
+withdraw(10, 0);   // throws ContractError: requires (amount > 0) does not hold
+```
+
+#### Preconditions: `requires`
+
+A `requires` clause follows a function's parameters and return type, and
+comes before its body, or before the `=>` of an arrow function. A
+function can have several; they are checked in order on every call,
+before the body runs. A call that fails one throws a `ContractError`
+whose message is the clause as written, and does not reach the body.
+
+```zena
+let half = (n: i32) requires (n % 2 == 0) => n >> 1;
+
+class Stack<T> {
+  // On a constructor the clauses come before the initializer list,
+  // and run before it.
+  new(capacity: i32) requires (capacity > 0) : #items = new Array<T>(capacity) {}
+
+  pop(): T requires (this.length > 0) { ... }
+}
+```
+
+The condition is a boolean expression over the parameters, `this` in a
+method, and the names around the function. It cannot assign or `await`.
+A constructor's condition cannot use `this`, because the object does not
+exist yet.
+
+What a condition narrows holds in the clauses after it and in the body,
+as the test of an `if` does in its consequent:
+
+```zena
+function length(text: String | null): i32 requires (text != null) {
+  return text.length;   // text is a String here
+}
+
+function adopt(a: Animal): void requires (a is Cat || a is Dog) {
+  let pet: Cat | Dog = a;
+}
+```
+
+An `async` function's preconditions run when it is called, before its
+first `await`. A generator cannot have contract clauses yet, and neither
+can a method without a body (an interface method, or an `abstract` or
+`declare` method).
+
+#### Loop invariants: `invariant`
+
+An `invariant` clause follows a loop's header and comes before its
+body, which must then be a block. It is checked each time the loop is
+about to test whether to run again: before the first iteration, after
+each one, and after a `continue`.
+
+```zena
+while (lo < hi) invariant (0 <= lo && lo <= hi) {
+  ...
+}
+
+for (var i = 0; i < n; i += 1) invariant (total >= 0) { ... }
+
+for (let item in items) invariant (total >= 0) { ... }
+```
+
+The condition sees what the loop's condition sees, including the
+variable a `for` loop declares, and not the variable of a `for`-in loop.
+
+#### Postconditions: `ensures`
+
+An `ensures` clause is written beside `requires`. Its condition can also
+name `result`, the value the function returned, and `old(e)`, the value
+`e` had when the function was entered.
+
+```zena
+function abs(x: i32): i32 ensures (result >= 0) { ... }
+```
+
+The compiler checks `ensures` conditions and cannot compile them yet: a
+program that has one fails to build.
+
+`requires`, `ensures` and `invariant` are contextual keywords and stay
+available as identifiers. See `docs/design/contracts.md`.
+
 ## 5. Expressions & Operators
 
 ### Literals

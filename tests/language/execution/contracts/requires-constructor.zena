@@ -1,0 +1,51 @@
+// @mode: run
+// @result: 37
+// A constructor's `requires` run before its field initializers, whether
+// the class is constructed directly or as a superclass.
+
+var initialized = 0;
+
+function counted(value: i32): i32 {
+  initialized += 1;
+  return value;
+}
+
+class Account {
+  balance: i32;
+  doubled: i32;
+
+  new(balance: i32) requires (balance >= 0) : balance = balance, doubled = counted(balance * 2) {}
+
+  new overdrawn(by: i32) requires (by > 0) : balance = 0 - by, doubled = 0 {}
+}
+
+class Savings extends Account {
+  rate: i32;
+  new(balance: i32, rate: i32) requires (rate > 0) : rate = rate, super(balance) {}
+}
+
+function violates(run: () => void): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+export function main(): i32 {
+  var score = new Account(5).doubled; // 10
+  score += violates(() => { new Account(-1); }); // +1
+  // The failing construction never ran an initializer.
+  score += initialized * 10; // +10
+  score += new Account.overdrawn(3).balance + 3; // +0
+  score += violates(() => { new Account.overdrawn(0); }); // +1
+
+  score += new Savings(4, 2).doubled + 4; // +12
+  // The subclass's own precondition, then the superclass's.
+  score += violates(() => { new Savings(4, 0); }); // +1
+  score += violates(() => { new Savings(-4, 2); }); // +1
+  score += violates(() => { new Savings(4, 2); }); // +0
+  score += initialized - 2; // +1
+  return score;
+}

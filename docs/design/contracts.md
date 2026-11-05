@@ -1,6 +1,6 @@
 # Contracts
 
-Status: **Syntax and checking implemented; runtime checks not yet**
+Status: **`requires` and `invariant` run; `ensures` is checked and not yet compiled**
 
 A contract is a condition written on a function or a loop that the
 program is expected to keep: a precondition (`requires`), a
@@ -22,9 +22,11 @@ checked when the program runs, in a form a static verifier can later
 prove.
 
 The parser accepts the syntax in this document and the checker applies
-the rules under [Checking](#checking). Nothing runs a clause yet, so
-code generation refuses a program that has one: a program cannot
-contain a contract that is silently ignored.
+the rules under [Checking](#checking). `requires` and `invariant`
+clauses are compiled to the checks under
+[Running a clause](#running-a-clause). Nothing runs an `ensures` clause
+yet, so code generation refuses a program that has one: a program
+cannot contain a contract that is silently ignored.
 
 ## Syntax
 
@@ -141,7 +143,9 @@ effects; nothing checks for that yet.
 
 A `requires` condition sees what the body sees on entry: the
 parameters, `this` in a method, and the names around the function. The
-body's own variables do not exist yet.
+body's own variables do not exist yet. A constructor's `requires`
+condition cannot use `this`: it runs before the field initializers,
+when there is no object.
 
 An `ensures` condition sees the same names and `result`. Each `ensures`
 clause has a scope of its own that declares `result`, so the name
@@ -234,6 +238,60 @@ The condition's own tests narrow as usual:
 The checker reports clauses on a generator, and on a method without a
 body (an interface method, or an `abstract` or `declare` method). What
 each would mean is under [Open questions](#open-questions).
+
+## Running a clause
+
+### The check
+
+A clause compiles to its condition, a branch, and on the false side a
+call to `$contractFailed` in `zena:core` with a message:
+
+```zena
+export function $contractFailed(message: String): never {
+  throw new ContractError(message);
+}
+```
+
+`ContractError` extends `Error` and is in the prelude. The message is
+the clause as written followed by "does not hold":
+`requires (amount > 0) does not hold`. It carries no file or line; the
+error's stack trace has those where the host provides one.
+
+The compiler emits only the call, so what a violated contract does is
+that one function's body. A check costs the function it sits in a
+branch and a call, and the message is one string constant per clause. A
+program without clauses pays nothing: reachability roots
+`$contractFailed` and registers a message when it walks a clause
+(`noteContractClause`), and not otherwise.
+
+### Preconditions
+
+A function's `requires` clauses run in order at the start of each call,
+after the parameters are bound and before anything else the function
+does. The first that fails ends the call.
+
+- **Closures.** The conditions run in the closure's frame, so a
+  variable they name from the enclosing function is captured, whether
+  or not the body mentions it (`analyzeCaptures`).
+- **Constructors.** The clauses run before the field initializers, the
+  initializer list and the `super(...)` arguments. Constructing a
+  subclass runs its own preconditions, then its initializers, then the
+  superclass's preconditions. A class's constructor is compiled as a
+  factory, used by `new`, and as phases a subclass's factory calls; the
+  checks are in the factory and in the first phase, so each
+  construction runs them once.
+- **`async` functions.** The clauses run when the function is called,
+  in the part of the body before its first `await`. A failure completes
+  the returned future with the error, as a `throw` there does.
+
+### Loop invariants
+
+A loop's `invariant` clauses run at the loop's header, ahead of its
+condition: before the first iteration, after each one, and after a
+`continue`. A `for` loop's update runs before them. A `for`-in loop
+has three compiled forms, over a range, over an array by index, and
+through an iterator, and each checks at its header, before it takes the
+next element.
 
 ## Kinds of clause
 
@@ -337,11 +395,16 @@ loop optimizer uses.
 
 ## Open questions
 
-These are decided when the lowering is written.
-
-- **What a violation does.** The likely answer is to throw an error
-  that names the clause's text and location, as `zena:assert` does for
-  a failed assertion. A trap would be cheaper and could not be caught.
+- **Throw or trap.** A violation throws a `ContractError`, which a
+  caller can catch and a test can assert on, and whose message names
+  the clause. A trap would be cheaper and could not be caught. Changing
+  it means changing the body of `$contractFailed`.
+- **Compiling `ensures`.** A postcondition runs at every return, with
+  `result` bound to the returned value and each `old(e)` evaluated on
+  entry. A function returns from about fifteen places in the lowering
+  (statements, value-block tails, finally replays, multi-value and
+  exploded results), and a `tail return` leaves nothing to check
+  afterwards.
 - **Inheritance.** A method that overrides another, or implements an
   interface method, takes on its contracts. Whether it may add
   `requires` clauses of its own, which would break callers that hold
@@ -350,9 +413,8 @@ These are decided when the lowering is written.
 - **Generators.** A generator's body runs when it is first stepped, and
   it has no single result. A `requires` clause could run at the call or
   at the first step.
-- **`async` functions.** `ensures` holds when the future completes. A
-  `requires` clause would run in the part of the body before its first
-  `await`.
+- **`ensures` on `async` functions.** It holds when the future
+  completes, with `result` the value it completes with.
 - **Calls with effects in a condition.** Assignments and `await` are
   rejected. A function the condition calls can still change state.
 - **Narrowing from `invariant`.** An invariant that held at the test

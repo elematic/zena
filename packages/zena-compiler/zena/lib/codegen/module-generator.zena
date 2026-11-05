@@ -24,7 +24,7 @@ import { ClassType, TypeInterner, markTypes } from '../types.zena';
 import { Program } from '../program.zena';
 import {
   NumberLiteral, StringLiteral, BooleanLiteral, EnumDeclaration, ImportDeclaration, Module,
-  VariableDeclaration, IdentifierPattern, FunctionDeclaration,
+  VariableDeclaration, IdentifierPattern, FunctionDeclaration, ContractKind,
 } from '../ast.zena';
 import { isWebUiProtocolLibrary } from '../stdlib-manifest.zena';
 import { Symbol } from '../scope/symbol.zena';
@@ -384,13 +384,17 @@ export final class ModuleGenerator {
   }
 
   compile(): void {
-    // Contract clauses are checked, and nothing lowers them yet. A
-    // program that has one does not compile, so that a contract is never
-    // accepted and then not enforced (docs/design/contracts.md).
+    // `ensures` clauses are checked, and nothing lowers them yet. A
+    // program that has one does not compile, so that a postcondition
+    // is never accepted and then not enforced
+    // (docs/design/contracts.md).
     for (let unit in this.program.units) {
-      if (unit.ast.contractClauses != null) {
-        throw new Error(
-            `${unit.ast.path}: contract clauses ('requires', 'ensures', 'invariant') cannot be compiled yet.`);
+      let clauses = unit.ast.contractClauses;
+      if (clauses == null) { continue; }
+      for (let clause in clauses) {
+        if (clause.kind == ContractKind.Ensures) {
+          throw new Error(`${unit.ast.path}: '${clause.text}' cannot be compiled yet.`);
+        }
       }
     }
 
