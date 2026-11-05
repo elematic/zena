@@ -878,7 +878,7 @@ happen frequently.
           <td><span class="badge info">Planned</span></td>
         </tr>
         <tr>
-          <td>Multithreading</td>
+          <td>Concurrency</td>
           <td><span class="badge info">Planned</span></td>
         </tr>
         <tr>
@@ -943,27 +943,23 @@ happen frequently.
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
+          <td>Streams</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>File system</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
           <td>Crypto &amp; random</td>
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
-          <td>Streams</td>
-          <td><span class="badge warning">In progress</span></td>
-        </tr>
-        <tr>
-          <td>File system</td>
-          <td><span class="badge warning">In progress</span></td>
-        </tr>
-        <tr>
-          <td>URL</td>
+          <td>URL &amp; URLPattern</td>
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
           <td>HTTP &amp; Fetch</td>
-          <td><span class="badge warning">In progress</span></td>
-        </tr>
-        <tr>
-          <td>JavaScript interop</td>
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
@@ -973,6 +969,10 @@ happen frequently.
         <tr>
           <td>Web UI (templates &amp; elements)</td>
           <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>JavaScript interop</td>
+          <td><span class="badge info">Planned</span></td>
         </tr>
       </tbody>
     </table>
