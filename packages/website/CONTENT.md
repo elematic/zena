@@ -221,8 +221,10 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Cheat sheet
 - **Targets and Interop**
   - 📝 [Compile Targets](src/guide/targets.md) — `/guide/targets/`
-    - host
-    - wasi
+    - js
+    - component
+    - zena-cli
+    - freestanding
     - Choosing a target
     - Feature differences
   - 📝 [JavaScript Interop](src/guide/javascript-interop.md) — `/guide/javascript-interop/`
@@ -283,7 +285,7 @@ To add a page: add it to the sidebar with an `outline`, then run
   - Operator precedence and associativity
 - ✅ [Comments](src/reference/comments.md) — `/reference/comments/`
   - Line comments (//)
-  - Block comments (/\* \*/)
+  - Block comments (/* */)
   - Doc comments
 - **Data Types**
   - ✅ [Numbers](src/reference/numbers.md) — `/reference/numbers/`
@@ -526,8 +528,10 @@ To add a page: add it to the sidebar with an `outline`, then run
     - zena lsp
     - Global options
   - 📝 [Compile Targets](src/reference/compile-targets.md) — `/reference/compile-targets/`
-    - host
-    - wasi
+    - js
+    - component
+    - zena-cli
+    - freestanding
     - Target-specific behaviour
   - 📝 [Compiler Flags](src/reference/compiler-flags.md) — `/reference/compiler-flags/`
     - Output
@@ -550,19 +554,31 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 - ✅ [Overview](src/api/index.md) — `/api/`
   - Libraries
+- ⚙️ zena:args — `/api/args/`
 - ⚙️ zena:assert — `/api/assert/`
 - ⚙️ zena:async — `/api/async/`
 - ⚙️ zena:bench — `/api/bench/`
+- ⚙️ zena:bigint — `/api/bigint/`
 - ⚙️ zena:cli — `/api/cli/`
 - ⚙️ zena:collections — `/api/collections/`
 - ⚙️ zena:console — `/api/console/`
 - ⚙️ zena:core — `/api/core/`
+- ⚙️ zena:crypto — `/api/crypto/`
+- ⚙️ zena:encoding — `/api/encoding/`
+- ⚙️ zena:extensions — `/api/extensions/`
+- ⚙️ zena:fetch — `/api/fetch/`
 - ⚙️ zena:fs — `/api/fs/`
+- ⚙️ zena:glob — `/api/glob/`
+- ⚙️ zena:host-setup — `/api/host-setup/`
+- ⚙️ zena:http — `/api/http/`
 - ⚙️ zena:json — `/api/json/`
 - ⚙️ zena:math — `/api/math/`
 - ⚙️ zena:memory — `/api/memory/`
+- ⚙️ zena:path — `/api/path/`
 - ⚙️ zena:process — `/api/process/`
+- ⚙️ zena:random — `/api/random/`
 - ⚙️ zena:regex — `/api/regex/`
+- ⚙️ zena:signals — `/api/signals/`
 - ⚙️ zena:simd — `/api/simd/`
 - ⚙️ zena:stream — `/api/stream/`
 - ⚙️ zena:task — `/api/task/`
@@ -570,6 +586,9 @@ To add a page: add it to the sidebar with an `outline`, then run
 - ⚙️ zena:time — `/api/time/`
 - ⚙️ zena:url — `/api/url/`
 - ⚙️ zena:wasi — `/api/wasi/`
+- ⚙️ zena:wasm — `/api/wasm/`
+- ⚙️ zena:web-elements — `/api/web-elements/`
+- ⚙️ zena:web-templates — `/api/web-templates/`
 
 ## Development
 
@@ -649,7 +668,14 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Linear-time matching
     - Compile-time specialization
     - Patterns as strings
+  - ✅ [WebAssembly alignment](src/development/design/wasm-alignment.md) — `/development/design/wasm-alignment/`
+    - Design premise
+    - Type system and primitives
+    - Object model and memory layout
+    - Functions and calling conventions
+    - Memory management and runtime footprint
+    - Host interoperability and component model
 
 ---
 
-74 of 99 pages written; 25 still placeholders.
+75 of 100 pages written; 25 still placeholders.

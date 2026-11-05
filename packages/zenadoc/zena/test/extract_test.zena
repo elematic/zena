@@ -95,7 +95,7 @@ let tests = suite('extract', () => {
 
   test('renders methods, constructors and operators', (t) => {
     let module = extract(
-        'export class C {\n  new(x: i32);\n  static of(x: i32): C { return new C(x); }\n  operator [](i: i32): i32 { return i; }\n  #hidden(): void {}\n}\n');
+        'export class C {\n  new(x: i32);\n  static of(x: i32): C { return new C(x); }\n  operator [](i: i32): i32 { return i; }\n  operator **(e: i32): C { return this; }\n  operator &(o: C): C { return this; }\n  #hidden(): void {}\n}\n');
     let c = declaration(module, 'C');
     equal(member(c, 'new').kind == MemberKind.Constructor, true);
     equal(member(c, 'new').signature, 'new(x: i32)');
@@ -105,7 +105,9 @@ let tests = suite('extract', () => {
     equal(index.kind == MemberKind.Operator, true);
     equal(index.signature, 'operator [](i: i32): i32');
     equal(index.anchor, 'c-operator-index');
-    equal(c.members.length, 3);
+    equal(member(c, '**').anchor, 'c-operator-power');
+    equal(member(c, '&').anchor, 'c-operator-and');
+    equal(c.members.length, 5);
   });
 
   test('renders named constructors, on classes and interfaces', (t) => {

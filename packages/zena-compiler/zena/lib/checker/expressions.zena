@@ -2219,9 +2219,46 @@ function checkBinaryExpression(
   if (operator == "&" || operator == "|" || operator == "^" ||
       operator == "<<" || operator == ">>" || operator == ">>>") {
     let leftType = checkExpression(ctx, left, null);
-    let rightType = checkExpression(ctx, right, leftType);
+    if (!isIntegerType(leftType)) {
+      let leftClass = baseType(leftType);
+      if (leftClass is ClassType && leftClass.members.has(operator)) {
+        ctx.referenceClassMethod(leftClass, operator);
+        let methodInfo = leftClass.members[operator];
+        let method = methodInfo.type as FunctionType;
+        if (method.parameters.length != 1) {
+          ctx.error(
+            `Operator '${operator}' must take exactly one argument.`,
+            DiagnosticCode.ArgumentCountMismatch,
+            loc
+          );
+          return new ErrorType();
+        }
+        let paramType = method.parameters[0];
+        let rightContext = if (isNumericType(paramType)) { paramType } else { null };
+        let rightType = checkExpression(ctx, right, rightContext);
+        if (!isAssignableTo(ctx, rightType, paramType)) {
+          ctx.error(
+            "Type mismatch in operator '" + operator + "': expected '" +
+            typeToString(paramType) + "', got '" + typeToString(rightType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+          return new ErrorType();
+        }
+        return method.returnType;
+      }
+      let rightType = checkExpression(ctx, right, null);
+      ctx.error(
+        "Operator '" + operator + "' cannot be applied to type '" +
+        typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",
+        DiagnosticCode.InvalidOperator,
+        loc
+      );
+      return leftType;
+    }
 
-    if (!isIntegerType(leftType) || !isIntegerType(rightType)) {
+    let rightType = checkExpression(ctx, right, leftType);
+    if (!isIntegerType(rightType)) {
       ctx.error(
         "Operator '" + operator + "' cannot be applied to type '" +
         typeToString(leftType) + "' and '" + typeToString(rightType) + "'.",

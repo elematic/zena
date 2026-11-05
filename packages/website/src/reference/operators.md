@@ -80,9 +80,9 @@ counter += 1;
 
 ### Operator overloading
 
-Classes can overload `+` and `**` by defining `operator +` and `operator **` methods.
-Extension classes over primitives can similarly define `+`, `-`, and `*` (such as
-lane-wise SIMD vector operations). See [Operator Overloads](/reference/classes/methods/#operator-overloads).
+Classes can overload `+`, `-`, `*`, `/`, `%`, and `**` by defining `operator` methods.
+Extension classes over primitives can do the same (such as lane-wise SIMD vector
+operations). See [Operator Overloads](/reference/classes/methods/#operator-overloads).
 
 ## Comparison and equality
 
@@ -326,8 +326,11 @@ let signExtended = negative >> 1; // -4 (sign bit preserved)
 let zeroFilled = negative >>> 1; // 2147483644 (zero-filled)
 ```
 
-Zena does not provide a unary bitwise NOT operator (`~`). To invert all bits, XOR
-with all-ones (e.g. `x ^ -1` or `x ^ 0xffff_ffff`).
+Zena does not provide a unary bitwise NOT operator (`~`). To invert all bits on
+a fixed-width integer, XOR with all-ones (e.g. `x ^ -1` or `x ^ 0xffff_ffff`).
+
+Classes and extension classes can overload `&`, `|`, `^`, `<<`, `>>`, and `>>>`
+with `operator` methods; see [Operator Overloads](/reference/classes/methods/#operator-overloads).
 
 ## Assignment and compound assignment
 

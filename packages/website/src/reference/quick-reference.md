@@ -1801,6 +1801,26 @@ class Rectangle(width: f64, height: f64) extends Shape
 
 Classes can overload operators to provide custom behavior for built-in syntax.
 
+#### Binary arithmetic and bitwise operators
+
+Classes and extension classes can overload `+`, `-`, `*`, `/`, `%`, `**`, `&`,
+`|`, `^`, `<<`, `>>`, and `>>>`:
+
+```zena
+class Mask {
+  bits: u64;
+  new(this.bits);
+
+  operator |(other: Mask): Mask {
+    return new Mask(this.bits | other.bits);
+  }
+
+  operator <<(count: i32): Mask {
+    return new Mask(this.bits << (count as u64));
+  }
+}
+```
+
 #### operator ==
 
 Define custom equality. Called by `==` and the `eq` intrinsic.
@@ -2484,6 +2504,24 @@ import {sin, pow, atan2, PI} from 'zena:math';
 sin(PI / 6.0); // 0.49999999999999994
 pow(2.0, 0.5); // 1.4142135623730951
 atan2(1.0, -1.0); // 2.356194490192345
+```
+
+### zena:bigint
+
+Arbitrary-precision signed integers (`BigInt`). Values are immutable, support
+`+`, `-`, `*`, `%`, `**`, `==`, `&`, `|`, `^`, `<<`, and `>>` directly, and
+provide named methods for truncating division (`div`, `divRem`), comparison
+(`compareTo`, `min`, `max`), unary operations (`neg`, `abs`, `bitNot`), number
+theory (`gcd`, `modPow`), radix formatting/parsing (`2..36`), and checked
+conversions to `i64` and `u64`.
+
+```zena
+import {BigInt} from 'zena:bigint';
+
+let a = BigInt.from('0x1_0000_0000_0000_0000_0001');
+let b = BigInt.from(1000000007);
+let (q, r) = a.divRem(b);
+let p = a.modPow(BigInt.from(65537), b);
 ```
 
 ### zena:simd

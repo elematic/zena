@@ -550,7 +550,7 @@ class SpecialDog extends Dog {
 
 ## Operator overloading
 
-Classes can define custom behaviors for arithmetic, comparison, and index
+Classes can define custom behaviors for arithmetic, bitwise, equality, and index
 operators using `operator` methods:
 
 ```zena

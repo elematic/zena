@@ -1,0 +1,1086 @@
+/**
+ * Unsigned magnitude arithmetic over normalized little-endian `u64` limbs.
+ *
+ * Every magnitude `a` satisfies:
+ * - `a[0]` is the least significant `u64` limb and `a[a.length - 1]` the most.
+ * - Zero is the empty array (`a.length == 0`).
+ * - A non-zero magnitude has `a[a.length - 1] != 0`.
+ */
+
+import { StringBuilder } from 'zena:core';
+import { add128, clz, ctz, div, mulWide, U64_MAX } from 'zena:math';
+
+/** Limb count at and above which multiplication switches to Karatsuba. */
+let KARATSUBA_THRESHOLD = 32;
+
+let B32 = (1 as u64) << 32;
+let MASK32: u64 = 0xffffffff;
+
+export let EMPTY_LIMBS = new FixedArray<u64>(0, 0);
+export let ONE_LIMBS: FixedArray<u64> = [1];
+
+/** Single-limb magnitude for `w`, or `EMPTY_LIMBS` when `w == 0`. */
+export function limbOf(w: u64): FixedArray<u64> {
+  if (w == 0) {
+    return EMPTY_LIMBS;
+  }
+  if (w == 1) {
+    return ONE_LIMBS;
+  }
+  return [w];
+}
+
+/** Strips trailing zero limbs above the highest non-zero limb below `used`. */
+export function trimLimbs(limbs: FixedArray<u64>, used: i32): FixedArray<u64> {
+  var len = used;
+  while (len > 0 && limbs[len - 1] == 0) {
+    len -= 1;
+  }
+  if (len == 0) {
+    return EMPTY_LIMBS;
+  }
+  if (len == limbs.length) {
+    return limbs;
+  }
+  return limbs.slice(0, len);
+}
+
+/** Slice `limbs[start..end]` normalized with high zero limbs stripped. */
+function sliceTrim(limbs: FixedArray<u64>, start: i32, end: i32) {
+  var e = if (end > limbs.length) limbs.length else end;
+  while (e > start && limbs[e - 1] == 0) {
+    e -= 1;
+  }
+  if (e <= start) {
+    return EMPTY_LIMBS;
+  }
+  return limbs.slice(start, e);
+}
+
+/** Compares two normalized magnitudes: -1, 0, or 1. */
+export function cmpMag(a: FixedArray<u64>, b: FixedArray<u64>): i32 {
+  if (a.length != b.length) {
+    return if (a.length < b.length) -1 else 1;
+  }
+  var i = a.length - 1;
+  while (i >= 0) {
+    let ai = a[i];
+    let bi = b[i];
+    if (ai != bi) {
+      return if (ai < bi) -1 else 1;
+    }
+    i -= 1;
+  }
+  return 0;
+}
+
+function cmpSlice(
+  a: FixedArray<u64>, aLen: i32,
+  b: FixedArray<u64>, bLen: i32,
+): i32 {
+  if (aLen != bLen) {
+    return if (aLen < bLen) -1 else 1;
+  }
+  var i = aLen - 1;
+  while (i >= 0) {
+    let ai = a[i];
+    let bi = b[i];
+    if (ai != bi) {
+      return if (ai < bi) -1 else 1;
+    }
+    i -= 1;
+  }
+  return 0;
+}
+
+/** Minimum number of bits needed to represent `a` (0 for zero). */
+export function bitLengthMag(a: FixedArray<u64>): i32 {
+  let n = a.length;
+  if (n == 0) {
+    return 0;
+  }
+  let top = a[n - 1];
+  return (n - 1) * 64 + (64 - (clz(top) as i32));
+}
+
+// ---------------------------------------------------------------------------
+// Addition and subtraction
+// ---------------------------------------------------------------------------
+
+/** Unsigned `a + b`. */
+export function addMag(a: FixedArray<u64>, b: FixedArray<u64>): FixedArray<u64> {
+  if (a.length < b.length) {
+    return addMag(b, a);
+  }
+  if (b.length == 0) {
+    return a;
+  }
+  let aLen = a.length;
+  let bLen = b.length;
+  let out = new FixedArray<u64>(aLen + 1, 0);
+  var carry: u64 = 0;
+  for (var i = 0; i < bLen; i += 1) {
+    let (s1Lo, s1Hi) = add128(a[i], 0, b[i], 0);
+    let (s2Lo, s2Hi) = add128(s1Lo, s1Hi, carry, 0);
+    out[i] = s2Lo;
+    carry = s2Hi;
+  }
+  for (var i = bLen; i < aLen; i += 1) {
+    let (sLo, sHi) = add128(a[i], 0, carry, 0);
+    out[i] = sLo;
+    carry = sHi;
+  }
+  if (carry != 0) {
+    out[aLen] = carry;
+    return out;
+  }
+  return out.slice(0, aLen);
+}
+
+/** Unsigned `a + 1`. */
+export function addOneMag(a: FixedArray<u64>): FixedArray<u64> {
+  let n = a.length;
+  if (n == 0) {
+    return ONE_LIMBS;
+  }
+  let out = new FixedArray<u64>(n + 1, 0);
+  var carry: u64 = 1;
+  for (var i = 0; i < n; i += 1) {
+    let (sLo, sHi) = add128(a[i], 0, carry, 0);
+    out[i] = sLo;
+    carry = sHi;
+  }
+  if (carry != 0) {
+    out[n] = carry;
+    return out;
+  }
+  return out.slice(0, n);
+}
+
+/** Unsigned `a - b`. Requires `a >= b`. */
+export function subMag(a: FixedArray<u64>, b: FixedArray<u64>): FixedArray<u64> {
+  if (b.length == 0) {
+    return a;
+  }
+  let aLen = a.length;
+  let bLen = b.length;
+  let out = new FixedArray<u64>(aLen, 0);
+  var borrow: u64 = 0;
+  for (var i = 0; i < aLen; i += 1) {
+    let ai = a[i];
+    let bi: u64 = if (i < bLen) b[i] else 0;
+    let d1 = ai - bi;
+    let b1: u64 = if (ai < bi) 1 else 0;
+    let d2 = d1 - borrow;
+    let b2: u64 = if (d1 < borrow) 1 else 0;
+    out[i] = d2;
+    borrow = b1 + b2;
+  }
+  return trimLimbs(out, aLen);
+}
+
+/** Unsigned `a - 1`. Requires `a.length > 0`. */
+export function subOneMag(a: FixedArray<u64>): FixedArray<u64> {
+  let n = a.length;
+  let out = new FixedArray<u64>(n, 0);
+  var borrow: u64 = 1;
+  for (var i = 0; i < n; i += 1) {
+    let ai = a[i];
+    out[i] = ai - borrow;
+    borrow = if (ai < borrow) 1 else 0;
+  }
+  return trimLimbs(out, n);
+}
+
+// ---------------------------------------------------------------------------
+// Multiplication: single-limb, schoolbook, and Karatsuba
+// ---------------------------------------------------------------------------
+
+/** Unsigned `a * k` for a single limb `k`. */
+export function mulLimb(a: FixedArray<u64>, k: u64): FixedArray<u64> {
+  let n = a.length;
+  if (n == 0 || k == 0) {
+    return EMPTY_LIMBS;
+  }
+  if (k == 1) {
+    return a;
+  }
+  let out = new FixedArray<u64>(n + 1, 0);
+  var carry: u64 = 0;
+  for (var i = 0; i < n; i += 1) {
+    let (pLo, pHi) = mulWide(a[i], k);
+    let (sLo, sHi) = add128(pLo, pHi, carry, 0);
+    out[i] = sLo;
+    carry = sHi;
+  }
+  if (carry != 0) {
+    out[n] = carry;
+    return out;
+  }
+  return out.slice(0, n);
+}
+
+/** O(n * m) schoolbook product using 64x64 -> 128-bit `mulWide` and `add128`. */
+function mulSchoolbook(a: FixedArray<u64>, b: FixedArray<u64>) {
+  let aLen = a.length;
+  let bLen = b.length;
+  if (aLen == 0 || bLen == 0) {
+    return EMPTY_LIMBS;
+  }
+  let outLen = aLen + bLen;
+  let out = new FixedArray<u64>(outLen, 0);
+  for (var i = 0; i < aLen; i += 1) {
+    let ai = a[i];
+    if (ai == 0) {
+      continue;
+    }
+    var carry: u64 = 0;
+    for (var j = 0; j < bLen; j += 1) {
+      let (pLo, pHi) = mulWide(ai, b[j]);
+      let (s1Lo, s1Hi) = add128(pLo, pHi, out[i + j], 0);
+      let (s2Lo, s2Hi) = add128(s1Lo, s1Hi, carry, 0);
+      out[i + j] = s2Lo;
+      carry = s2Hi;
+    }
+    out[i + bLen] = carry;
+  }
+  return trimLimbs(out, outLen);
+}
+
+/** Adds `src` into `dst` starting at `dst[offset]`. */
+function addAtOffset(dst: FixedArray<u64>, src: FixedArray<u64>, offset: i32) {
+  let srcLen = src.length;
+  if (srcLen == 0) {
+    return;
+  }
+  var carry: u64 = 0;
+  for (var i = 0; i < srcLen; i += 1) {
+    let (s1Lo, s1Hi) = add128(dst[offset + i], 0, src[i], 0);
+    let (s2Lo, s2Hi) = add128(s1Lo, s1Hi, carry, 0);
+    dst[offset + i] = s2Lo;
+    carry = s2Hi;
+  }
+  var k = offset + srcLen;
+  while (carry != 0) {
+    let (sLo, sHi) = add128(dst[k], 0, carry, 0);
+    dst[k] = sLo;
+    carry = sHi;
+    k += 1;
+  }
+}
+
+/**
+ * Unsigned `a * b`. Uses schoolbook below `KARATSUBA_THRESHOLD` limbs and
+ * Karatsuba recursion at and above it.
+ */
+export function mulMag(a: FixedArray<u64>, b: FixedArray<u64>): FixedArray<u64> {
+  if (a.length < b.length) {
+    return mulMag(b, a);
+  }
+  let bLen = b.length;
+  if (bLen == 0) {
+    return EMPTY_LIMBS;
+  }
+  if (bLen == 1) {
+    return mulLimb(a, b[0]);
+  }
+  if (bLen < KARATSUBA_THRESHOLD) {
+    return mulSchoolbook(a, b);
+  }
+
+  let aLen = a.length;
+  let half = (aLen + 1) >> 1;
+  let a0 = sliceTrim(a, 0, half);
+  let a1 = sliceTrim(a, half, aLen);
+
+  // When `b` fits entirely in the lower half, `b1` is zero and two products
+  // suffice instead of three.
+  if (bLen <= half) {
+    let p0 = mulMag(a0, b);
+    let p1 = mulMag(a1, b);
+    let outLen = aLen + bLen;
+    let out = new FixedArray<u64>(outLen, 0);
+    addAtOffset(out, p0, 0);
+    addAtOffset(out, p1, half);
+    return trimLimbs(out, outLen);
+  }
+
+  let b0 = sliceTrim(b, 0, half);
+  let b1 = sliceTrim(b, half, bLen);
+
+  let z0 = mulMag(a0, b0);
+  let z2 = mulMag(a1, b1);
+  let z1 = subMag(subMag(mulMag(addMag(a0, a1), addMag(b0, b1)), z0), z2);
+
+  let outLen = aLen + bLen;
+  let out = new FixedArray<u64>(outLen, 0);
+  addAtOffset(out, z0, 0);
+  addAtOffset(out, z1, half);
+  addAtOffset(out, z2, half * 2);
+  return trimLimbs(out, outLen);
+}
+
+// ---------------------------------------------------------------------------
+// Division: 128-by-64 normalized helper, 1-limb fast path, Knuth Algorithm D
+// ---------------------------------------------------------------------------
+
+/**
+ * Unsigned division of `(u1 * 2^64 + u0)` by normalized `v` (`v >= 2^63` and
+ * `u1 < v`), returning `(quotient, remainder)`. Splits `v` and `u0` into
+ * 32-bit halves (Hacker's Delight `divlu`).
+ */
+function divlu(u1: u64, u0: u64, v: u64): inline (u64, u64) {
+  let vHi = v >>> 32;
+  let vLo = v & MASK32;
+  let u0Hi = u0 >>> 32;
+  let u0Lo = u0 & MASK32;
+
+  var q1 = div(u1, vHi);
+  var rhat = u1 - q1 * vHi;
+  while (q1 >= B32 || q1 * vLo > (rhat << 32) + u0Hi) {
+    q1 -= 1;
+    rhat += vHi;
+    if (rhat >= B32) {
+      break;
+    }
+  }
+
+  let un21 = (u1 << 32) + u0Hi - q1 * v;
+  var q0 = div(un21, vHi);
+  rhat = un21 - q0 * vHi;
+  while (q0 >= B32 || q0 * vLo > (rhat << 32) + u0Lo) {
+    q0 -= 1;
+    rhat += vHi;
+    if (rhat >= B32) {
+      break;
+    }
+  }
+
+  let q = (q1 << 32) | q0;
+  let r = (un21 << 32) + u0Lo - q0 * v;
+  return (q, r);
+}
+
+/** Divides `u` by non-zero single limb `d`, returning `(quotient, remainder)`. */
+export function divRemLimb(
+  u: FixedArray<u64>, d: u64,
+): inline (FixedArray<u64>, u64) {
+  let m = u.length;
+  if (m == 0) {
+    return (EMPTY_LIMBS, 0);
+  }
+  if (d == 1) {
+    return (u, 0);
+  }
+  if (m == 1) {
+    let u0 = u[0];
+    let q0 = div(u0, d);
+    let r0 = u0 - q0 * d;
+    return (limbOf(q0), r0);
+  }
+
+  let s = clz(d);
+  let q = new FixedArray<u64>(m, 0);
+  if (s == 0) {
+    var rem: u64 = 0;
+    var i = m - 1;
+    while (i >= 0) {
+      let (qi, ri) = divlu(rem, u[i], d);
+      q[i] = qi;
+      rem = ri;
+      i -= 1;
+    }
+    return (trimLimbs(q, m), rem);
+  }
+
+  let rShift = 64 - s;
+  let dn = d << s;
+  var rem = u[m - 1] >>> rShift;
+  var i = m - 1;
+  while (i >= 1) {
+    let ui = (u[i] << s) | (u[i - 1] >>> rShift);
+    let (qi, ri) = divlu(rem, ui, dn);
+    q[i] = qi;
+    rem = ri;
+    i -= 1;
+  }
+  let (q0, r0) = divlu(rem, u[0] << s, dn);
+  q[0] = q0;
+  return (trimLimbs(q, m), r0 >>> s);
+}
+
+/** Remainder `u % d` for non-zero single limb `d`, without allocating quotient. */
+export function remLimb(u: FixedArray<u64>, d: u64): u64 {
+  let m = u.length;
+  if (m == 0 || d == 1) {
+    return 0;
+  }
+  if (m == 1) {
+    let u0 = u[0];
+    return u0 - div(u0, d) * d;
+  }
+
+  let s = clz(d);
+  if (s == 0) {
+    var rem: u64 = 0;
+    var i = m - 1;
+    while (i >= 0) {
+      let (_, ri) = divlu(rem, u[i], d);
+      rem = ri;
+      i -= 1;
+    }
+    return rem;
+  }
+
+  let rShift = 64 - s;
+  let dn = d << s;
+  var rem = u[m - 1] >>> rShift;
+  var i = m - 1;
+  while (i >= 1) {
+    let ui = (u[i] << s) | (u[i - 1] >>> rShift);
+    let (_, ri) = divlu(rem, ui, dn);
+    rem = ri;
+    i -= 1;
+  }
+  let (_, r0) = divlu(rem, u[0] << s, dn);
+  return r0 >>> s;
+}
+
+/**
+ * Knuth's Algorithm D (TAOCP Vol. 2, 4.3.1) over base 2^64.
+ * Requires `v.length >= 2` and `u.length >= v.length`.
+ */
+function divRemKnuth(
+  u: FixedArray<u64>, v: FixedArray<u64>,
+): inline (FixedArray<u64>, FixedArray<u64>) {
+  let m = u.length;
+  let n = v.length;
+
+  // D1: Normalize so the top bit of `vn[n - 1]` is 1.
+  let s = clz(v[n - 1]);
+  let vn = new FixedArray<u64>(n, 0);
+  let un = new FixedArray<u64>(m + 1, 0);
+  if (s == 0) {
+    for (var i = 0; i < n; i += 1) {
+      vn[i] = v[i];
+    }
+    for (var i = 0; i < m; i += 1) {
+      un[i] = u[i];
+    }
+  } else {
+    let rShift = 64 - s;
+    vn[0] = v[0] << s;
+    for (var i = 1; i < n; i += 1) {
+      vn[i] = (v[i] << s) | (v[i - 1] >>> rShift);
+    }
+    un[0] = u[0] << s;
+    for (var i = 1; i < m; i += 1) {
+      un[i] = (u[i] << s) | (u[i - 1] >>> rShift);
+    }
+    un[m] = u[m - 1] >>> rShift;
+  }
+
+  let qLen = m - n + 1;
+  let q = new FixedArray<u64>(qLen, 0);
+  let vn1 = vn[n - 1];
+  let vn2 = vn[n - 2];
+
+  // D2: Loop j from m - n down to 0.
+  var j = m - n;
+  while (j >= 0) {
+    // D3: Estimate qhat and rhat.
+    let uHi = un[j + n];
+    let uLo = un[j + n - 1];
+    var qhat: u64 = 0;
+    var rhat: u64 = 0;
+    var rhatHi: u64 = 0;
+    if (uHi == vn1) {
+      qhat = U64_MAX;
+      let (rLo, rHi) = add128(uLo, 0, vn1, 0);
+      rhat = rLo;
+      rhatHi = rHi;
+    } else {
+      let (qh, rh) = divlu(uHi, uLo, vn1);
+      qhat = qh;
+      rhat = rh;
+    }
+
+    let u2 = un[j + n - 2];
+    while (rhatHi == 0) {
+      let (pLo, pHi) = mulWide(qhat, vn2);
+      if (pHi > rhat || (pHi == rhat && pLo > u2)) {
+        qhat -= 1;
+        let (nrLo, nrHi) = add128(rhat, 0, vn1, 0);
+        rhat = nrLo;
+        rhatHi = nrHi;
+      } else {
+        break;
+      }
+    }
+
+    // D4: Multiply and subtract `qhat * vn` from `un[j .. j + n]`.
+    var borrow: u64 = 0;
+    for (var i = 0; i < n; i += 1) {
+      let (pLo, pHi) = mulWide(qhat, vn[i]);
+      let (subLo, subHi) = add128(pLo, pHi, borrow, 0);
+      let uij = un[j + i];
+      let stepBorrow: u64 = if (uij < subLo) 1 else 0;
+      un[j + i] = uij - subLo;
+      borrow = subHi + stepBorrow;
+    }
+    let topBefore = un[j + n];
+    let underflow = topBefore < borrow;
+    un[j + n] = topBefore - borrow;
+
+    // D5 & D6: If `qhat` was 1 too large, decrement and add `vn` back.
+    if (underflow) {
+      qhat -= 1;
+      var carry: u64 = 0;
+      for (var i = 0; i < n; i += 1) {
+        let (s1Lo, s1Hi) = add128(un[j + i], 0, vn[i], 0);
+        let (s2Lo, s2Hi) = add128(s1Lo, s1Hi, carry, 0);
+        un[j + i] = s2Lo;
+        carry = s2Hi;
+      }
+      un[j + n] = un[j + n] + carry;
+    }
+
+    q[j] = qhat;
+    j -= 1;
+  }
+
+  // D8: Unnormalize remainder in `un[0 .. n - 1]`.
+  let rem = new FixedArray<u64>(n, 0);
+  if (s == 0) {
+    for (var i = 0; i < n; i += 1) {
+      rem[i] = un[i];
+    }
+  } else {
+    let lShift = 64 - s;
+    for (var i = 0; i < n - 1; i += 1) {
+      rem[i] = (un[i] >>> s) | (un[i + 1] << lShift);
+    }
+    rem[n - 1] = un[n - 1] >>> s;
+  }
+  return (trimLimbs(q, qLen), trimLimbs(rem, n));
+}
+
+/** Unsigned division `u / v` and `u % v`. Requires `v.length > 0`. */
+export function divRemMag(
+  u: FixedArray<u64>, v: FixedArray<u64>,
+): inline (FixedArray<u64>, FixedArray<u64>) {
+  let cmp = cmpMag(u, v);
+  if (cmp < 0) {
+    return (EMPTY_LIMBS, u);
+  }
+  if (cmp == 0) {
+    return (ONE_LIMBS, EMPTY_LIMBS);
+  }
+  if (v.length == 1) {
+    let (q, r) = divRemLimb(u, v[0]);
+    return (q, limbOf(r));
+  }
+  return divRemKnuth(u, v);
+}
+
+// ---------------------------------------------------------------------------
+// Shifts and bitwise helpers
+// ---------------------------------------------------------------------------
+
+/** Shifts magnitude `a` left by `bits >= 0`. */
+export function shlMag(a: FixedArray<u64>, bits: i32): FixedArray<u64> {
+  let n = a.length;
+  if (n == 0 || bits == 0) {
+    return a;
+  }
+  let wordShift = bits >> 6;
+  let bitShift = bits & 63;
+  if (bitShift == 0) {
+    let out = new FixedArray<u64>(n + wordShift, 0);
+    for (var i = 0; i < n; i += 1) {
+      out[i + wordShift] = a[i];
+    }
+    return out;
+  }
+
+  let lShift = bitShift as u64;
+  let rShift = (64 - bitShift) as u64;
+  let topCarry = a[n - 1] >>> rShift;
+  let outLen = n + wordShift + (if (topCarry != 0) 1 else 0);
+  let out = new FixedArray<u64>(outLen, 0);
+  out[wordShift] = a[0] << lShift;
+  for (var i = 1; i < n; i += 1) {
+    out[i + wordShift] = (a[i] << lShift) | (a[i - 1] >>> rShift);
+  }
+  if (topCarry != 0) {
+    out[n + wordShift] = topCarry;
+  }
+  return out;
+}
+
+/** Shifts magnitude `a` right by `bits >= 0` (flooring toward zero). */
+export function shrMag(a: FixedArray<u64>, bits: i32): FixedArray<u64> {
+  let n = a.length;
+  if (n == 0 || bits == 0) {
+    return a;
+  }
+  let wordShift = bits >> 6;
+  if (wordShift >= n) {
+    return EMPTY_LIMBS;
+  }
+  let bitShift = bits & 63;
+  let remLen = n - wordShift;
+  if (bitShift == 0) {
+    return a.slice(wordShift, n);
+  }
+
+  let rShift = bitShift as u64;
+  let lShift = (64 - bitShift) as u64;
+  let out = new FixedArray<u64>(remLen, 0);
+  for (var i = 0; i < remLen - 1; i += 1) {
+    out[i] = (a[i + wordShift] >>> rShift) | (a[i + wordShift + 1] << lShift);
+  }
+  out[remLen - 1] = a[n - 1] >>> rShift;
+  return trimLimbs(out, remLen);
+}
+
+/** Whether any bit of `a` at index `< bits` is 1. */
+export function hasNonZeroLowBits(a: FixedArray<u64>, bits: i32): boolean {
+  let n = a.length;
+  if (n == 0 || bits <= 0) {
+    return false;
+  }
+  let wordShift = bits >> 6;
+  let fullWords = if (wordShift < n) wordShift else n;
+  for (var i = 0; i < fullWords; i += 1) {
+    if (a[i] != 0) {
+      return true;
+    }
+  }
+  let bitShift = bits & 63;
+  if (bitShift > 0 && wordShift < n) {
+    let mask = ((1 as u64) << (bitShift as u64)) - 1;
+    if ((a[wordShift] & mask) != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Unsigned limb-wise `a & b`. */
+export function andMag(a: FixedArray<u64>, b: FixedArray<u64>): FixedArray<u64> {
+  let minLen = if (a.length < b.length) a.length else b.length;
+  if (minLen == 0) {
+    return EMPTY_LIMBS;
+  }
+  let out = new FixedArray<u64>(minLen, 0);
+  for (var i = 0; i < minLen; i += 1) {
+    out[i] = a[i] & b[i];
+  }
+  return trimLimbs(out, minLen);
+}
+
+/** Unsigned limb-wise `a | b`. */
+export function orMag(a: FixedArray<u64>, b: FixedArray<u64>): FixedArray<u64> {
+  if (a.length < b.length) {
+    return orMag(b, a);
+  }
+  if (b.length == 0) {
+    return a;
+  }
+  let aLen = a.length;
+  let bLen = b.length;
+  let out = new FixedArray<u64>(aLen, 0);
+  for (var i = 0; i < bLen; i += 1) {
+    out[i] = a[i] | b[i];
+  }
+  for (var i = bLen; i < aLen; i += 1) {
+    out[i] = a[i];
+  }
+  return out;
+}
+
+/** Unsigned limb-wise `a ^ b`. */
+export function xorMag(a: FixedArray<u64>, b: FixedArray<u64>): FixedArray<u64> {
+  if (a.length < b.length) {
+    return xorMag(b, a);
+  }
+  if (b.length == 0) {
+    return a;
+  }
+  let aLen = a.length;
+  let bLen = b.length;
+  let out = new FixedArray<u64>(aLen, 0);
+  for (var i = 0; i < bLen; i += 1) {
+    out[i] = a[i] ^ b[i];
+  }
+  for (var i = bLen; i < aLen; i += 1) {
+    out[i] = a[i];
+  }
+  return trimLimbs(out, aLen);
+}
+
+/** Unsigned limb-wise `a & ~b`. */
+export function andNotMag(a: FixedArray<u64>, b: FixedArray<u64>): FixedArray<u64> {
+  let aLen = a.length;
+  if (aLen == 0) {
+    return EMPTY_LIMBS;
+  }
+  let bLen = b.length;
+  let common = if (aLen < bLen) aLen else bLen;
+  let out = new FixedArray<u64>(aLen, 0);
+  for (var i = 0; i < common; i += 1) {
+    out[i] = a[i] ^ (a[i] & b[i]);
+  }
+  for (var i = common; i < aLen; i += 1) {
+    out[i] = a[i];
+  }
+  return trimLimbs(out, aLen);
+}
+
+// ---------------------------------------------------------------------------
+// Greatest common divisor (hybrid Euclidean reduction + binary Stein's GCD)
+// ---------------------------------------------------------------------------
+
+function gcdU64(a: u64, b: u64) {
+  if (a == 0) {
+    return b;
+  }
+  if (b == 0) {
+    return a;
+  }
+  let za = ctz(a);
+  let zb = ctz(b);
+  let k = if (za < zb) za else zb;
+  var u = a >>> za;
+  var v = b;
+  while (true) {
+    v = v >>> ctz(v);
+    if (u == v) {
+      return u << k;
+    }
+    if (u > v) {
+      let tmp = u;
+      u = v;
+      v = tmp;
+    }
+    v = v - u;
+  }
+}
+
+function tzZerosSlice(a: FixedArray<u64>, len: i32) {
+  var i = 0;
+  while (i < len && a[i] == 0) {
+    i += 1;
+  }
+  return i * 64 + (ctz(a[i]) as i32);
+}
+
+function shrInPlace(a: FixedArray<u64>, len: i32, bits: i32) {
+  if (bits == 0) {
+    return len;
+  }
+  let wordShift = bits >> 6;
+  let bitShift = bits & 63;
+  let newLen = len - wordShift;
+  if (bitShift == 0) {
+    for (var i = 0; i < newLen; i += 1) {
+      a[i] = a[i + wordShift];
+    }
+    return newLen;
+  }
+  let rShift = bitShift as u64;
+  let lShift = (64 - bitShift) as u64;
+  for (var i = 0; i < newLen - 1; i += 1) {
+    a[i] = (a[i + wordShift] >>> rShift) | (a[i + wordShift + 1] << lShift);
+  }
+  let top = a[len - 1] >>> rShift;
+  a[newLen - 1] = top;
+  return if (top == 0) newLen - 1 else newLen;
+}
+
+function subInPlace(
+  a: FixedArray<u64>, aLen: i32,
+  b: FixedArray<u64>, bLen: i32,
+) {
+  var borrow: u64 = 0;
+  for (var i = 0; i < aLen; i += 1) {
+    let ai = a[i];
+    let bi: u64 = if (i < bLen) b[i] else 0;
+    let d1 = ai - bi;
+    let b1: u64 = if (ai < bi) 1 else 0;
+    let d2 = d1 - borrow;
+    let b2: u64 = if (d1 < borrow) 1 else 0;
+    a[i] = d2;
+    borrow = b1 + b2;
+  }
+  var len = aLen;
+  while (len > 0 && a[len - 1] == 0) {
+    len -= 1;
+  }
+  return len;
+}
+
+/** Greatest common divisor of unsigned magnitudes `a` and `b`. */
+export function gcdMag(a: FixedArray<u64>, b: FixedArray<u64>): FixedArray<u64> {
+  if (a.length == 0) {
+    return b;
+  }
+  if (b.length == 0) {
+    return a;
+  }
+
+  var u = a;
+  var v = b;
+  if (cmpMag(u, v) < 0) {
+    u = b;
+    v = a;
+  }
+
+  if (v.length == 1) {
+    let d = v[0];
+    return limbOf(gcdU64(d, remLimb(u, d)));
+  }
+
+  // One division step brings imbalanced operands down to the smaller width.
+  if (u.length > v.length) {
+    let (_, rem) = divRemMag(u, v);
+    if (rem.length == 0) {
+      return v;
+    }
+    u = v;
+    v = rem;
+    if (v.length == 1) {
+      let d = v[0];
+      return limbOf(gcdU64(d, remLimb(u, d)));
+    }
+  }
+
+  var uLen = u.length;
+  var vLen = v.length;
+  var ua = u.slice(0, uLen);
+  var va = v.slice(0, vLen);
+
+  let za = tzZerosSlice(ua, uLen);
+  let zb = tzZerosSlice(va, vLen);
+  let commonShift = if (za < zb) za else zb;
+  uLen = shrInPlace(ua, uLen, za);
+
+  while (true) {
+    let zv = tzZerosSlice(va, vLen);
+    vLen = shrInPlace(va, vLen, zv);
+    if (uLen == 1 && vLen == 1) {
+      return shlMag(limbOf(gcdU64(ua[0], va[0])), commonShift);
+    }
+    let cmp = cmpSlice(ua, uLen, va, vLen);
+    if (cmp == 0) {
+      return shlMag(trimLimbs(ua, uLen), commonShift);
+    }
+    if (cmp > 0) {
+      let tmpArr = ua;
+      ua = va;
+      va = tmpArr;
+      let tmpLen = uLen;
+      uLen = vLen;
+      vLen = tmpLen;
+    }
+    vLen = subInPlace(va, vLen, ua, uLen);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parsing and radix formatting
+// ---------------------------------------------------------------------------
+
+function charDigit(b: i32): i32 {
+  if (b >= 48 && b <= 57) {
+    return b - 48;
+  }
+  if (b >= 65 && b <= 90) {
+    return b - 55;
+  }
+  if (b >= 97 && b <= 122) {
+    return b - 87;
+  }
+  return -1;
+}
+
+function digitByte(d: i32) {
+  return if (d < 10) 48 + d else 87 + d;
+}
+
+/** Largest `(radix^k, k)` whose power fits in `u64`. */
+function radixChunk(radix: i32): inline (u64, i32) {
+  let radU = radix as u64;
+  let limit = div(U64_MAX, radU);
+  var base = radU;
+  var digits = 1;
+  while (base <= limit) {
+    base = base * radU;
+    digits += 1;
+  }
+  return (base, digits);
+}
+
+function mulAddGrowable(acc: GrowableArray<u64>, mult: u64, addend: u64) {
+  let n = acc.length;
+  if (n == 0) {
+    if (addend != 0) {
+      acc.push(addend);
+    }
+    return;
+  }
+  var carry = addend;
+  for (var i = 0; i < n; i += 1) {
+    let (pLo, pHi) = mulWide(acc[i], mult);
+    let (sLo, sHi) = add128(pLo, pHi, carry, 0);
+    acc[i] = sLo;
+    carry = sHi;
+  }
+  if (carry != 0) {
+    acc.push(carry);
+  }
+}
+
+/**
+ * Parses `text[start..end)` as an unsigned base-`radix` integer (`2..36`),
+ * or returns `null` if the slice is empty or contains an invalid digit.
+ */
+export function parseMag(
+  text: String, start: i32, end: i32, radix: i32,
+): FixedArray<u64> | null {
+  if (start >= end || radix < 2 || radix > 36) {
+    return null;
+  }
+  let radU = radix as u64;
+  let (chunkBase, chunkDigits) = radixChunk(radix);
+  let acc = new Array<u64>();
+  var chunkVal: u64 = 0;
+  var count = 0;
+
+  for (var i = start; i < end; i += 1) {
+    let d = charDigit(text.getByteAt(i));
+    if (d < 0 || d >= radix) {
+      return null;
+    }
+    chunkVal = chunkVal * radU + (d as u64);
+    count += 1;
+    if (count == chunkDigits) {
+      mulAddGrowable(acc, chunkBase, chunkVal);
+      chunkVal = 0;
+      count = 0;
+    }
+  }
+
+  if (count > 0) {
+    var mult: u64 = 1;
+    for (var k = 0; k < count; k += 1) {
+      mult = mult * radU;
+    }
+    mulAddGrowable(acc, mult, chunkVal);
+  }
+
+  let len = acc.length;
+  if (len == 0) {
+    return EMPTY_LIMBS;
+  }
+  let out = new FixedArray<u64>(len, 0);
+  for (var i = 0; i < len; i += 1) {
+    out[i] = acc[i];
+  }
+  return out;
+}
+
+function pow2Shift(radix: i32): i32 {
+  if (radix == 2) { return 1; }
+  if (radix == 4) { return 2; }
+  if (radix == 8) { return 3; }
+  if (radix == 16) { return 4; }
+  if (radix == 32) { return 5; }
+  return 0;
+}
+
+function appendChunkDigits(
+  sb: StringBuilder, value: u64, radU: u64, padWidth: i32,
+) {
+  let buf = new FixedArray<i32>(64, 48);
+  var v = value;
+  var pos = 0;
+  if (v == 0) {
+    buf[0] = 48;
+    pos = 1;
+  } else {
+    while (v > 0) {
+      let q = div(v, radU);
+      let d = (v - q * radU) as i32;
+      buf[pos] = digitByte(d);
+      pos += 1;
+      v = q;
+    }
+  }
+  while (pos < padWidth) {
+    buf[pos] = 48;
+    pos += 1;
+  }
+  var i = pos - 1;
+  while (i >= 0) {
+    sb.appendByte(buf[i]);
+    i -= 1;
+  }
+}
+
+/** Formats `(sign, limbs)` in `radix` (`2..36`) with lowercase letters. */
+export function formatMag(
+  sign: i32, limbs: FixedArray<u64>, radix: i32,
+): String {
+  if (limbs.length == 0 || sign == 0) {
+    return '0';
+  }
+
+  let shift = pow2Shift(radix);
+  if (shift > 0) {
+    let totalBits = bitLengthMag(limbs);
+    let numDigits = div(totalBits + shift - 1, shift);
+    let sb = new StringBuilder(numDigits + (if (sign < 0) 1 else 0));
+    if (sign < 0) {
+      sb.appendByte(45);
+    }
+    let mask = ((1 as u64) << (shift as u64)) - 1;
+    var d = numDigits - 1;
+    while (d >= 0) {
+      let bitPos = d * shift;
+      let limbIdx = bitPos >> 6;
+      let bitOff = bitPos & 63;
+      var word = limbs[limbIdx] >>> (bitOff as u64);
+      if (bitOff + shift > 64 && limbIdx + 1 < limbs.length) {
+        word = word | (limbs[limbIdx + 1] << ((64 - bitOff) as u64));
+      }
+      sb.appendByte(digitByte((word & mask) as i32));
+      d -= 1;
+    }
+    return sb.toString();
+  }
+
+  let radU = radix as u64;
+  let (chunkBase, chunkDigits) = radixChunk(radix);
+  let chunks = new Array<u64>();
+  var cur = limbs;
+  while (cur.length > 0) {
+    let (q, rem) = divRemLimb(cur, chunkBase);
+    chunks.push(rem);
+    cur = q;
+  }
+
+  let sb = new StringBuilder(chunks.length * chunkDigits + 1);
+  if (sign < 0) {
+    sb.appendByte(45);
+  }
+  let topIdx = chunks.length - 1;
+  appendChunkDigits(sb, chunks[topIdx], radU, 0);
+  var idx = topIdx - 1;
+  while (idx >= 0) {
+    appendChunkDigits(sb, chunks[idx], radU, chunkDigits);
+    idx -= 1;
+  }
+  return sb.toString();
+}

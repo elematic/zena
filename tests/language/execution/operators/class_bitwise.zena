@@ -1,0 +1,69 @@
+// @mode: run
+// @result: 127
+// Bitwise and shift operators on classes and extension classes dispatch to
+// `operator &`, `|`, `^`, `<<`, `>>`, `>>>` methods.
+
+class Bits {
+  val: i32;
+  new(this.val);
+
+  operator &(other: Bits): Bits {
+    return new Bits(this.val & other.val);
+  }
+
+  operator |(other: Bits): Bits {
+    return new Bits(this.val | other.val);
+  }
+
+  operator ^(other: Bits): Bits {
+    return new Bits(this.val ^ other.val);
+  }
+
+  operator <<(shift: i32): Bits {
+    return new Bits(this.val << shift);
+  }
+
+  operator >>(shift: i32): Bits {
+    return new Bits(this.val >> shift);
+  }
+
+  operator >>>(shift: u64): Bits {
+    return new Bits(this.val >>> (shift as i32));
+  }
+}
+
+class InvertedAndBits extends Bits {
+  new(val: i32) : super(val);
+
+  operator &(other: Bits): Bits {
+    return new Bits((this.val & other.val) ^ 0xff);
+  }
+}
+
+final extension class Mask on u32 {
+  operator &(other: Mask): Mask {
+    return ((this as u32) & (other as u32)) as Mask;
+  }
+}
+
+export let main = (): i32 => {
+  var ok = 0;
+  let a = new Bits(0x0c);
+  let b = new Bits(0x0a);
+
+  if ((a & b).val == 0x08) { ok += 1; }
+  if ((a | b).val == 0x0e) { ok += 2; }
+  if ((a ^ b).val == 0x06) { ok += 4; }
+  if ((a << 2).val == 0x30) { ok += 8; }
+  if ((new Bits(-16) >> 2).val == -4) { ok += 16; }
+  // Contextual typing adapts `2` to the `u64` parameter of `operator >>>`.
+  if ((new Bits(-16) >>> 2).val == 1073741820) { ok += 32; }
+
+  let poly: Bits = new InvertedAndBits(0x0c);
+  let m = (0x0c as u32 as Mask) & (0x06 as u32 as Mask);
+  if ((poly & b).val == (0x08 ^ 0xff) && (m as u32) == (0x04 as u32)) {
+    ok += 64;
+  }
+
+  return ok;
+};
