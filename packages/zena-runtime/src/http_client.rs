@@ -351,8 +351,8 @@ fn is_cleartext_grpc<B>(request: &Request<B>) -> bool {
         || content_type.starts_with("application/grpc;")
 }
 
-/// The runtime every connection lives on; see the module documentation.
-fn background() -> &'static tokio::runtime::Handle {
+/// The background runtime shared by outbound HTTP connections and inbound HTTP servers.
+pub(crate) fn background() -> &'static tokio::runtime::Handle {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME
         .get_or_init(|| {
@@ -361,7 +361,7 @@ fn background() -> &'static tokio::runtime::Handle {
                 .thread_name("zena-http")
                 .enable_all()
                 .build()
-                .expect("failed to start the HTTP client runtime")
+                .expect("failed to start the HTTP runtime")
         })
         .handle()
 }

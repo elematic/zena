@@ -28,11 +28,10 @@ import { Borrow, Option, Own, Result, parseI64, unit } from 'zena:core';
 import { Stream, bytesStream, textStream, readAllText } from 'zena:stream';
 import { Request } from './request.zena';
 import { Response } from './response.zena';
-import { App as BaseApp, AppOptions } from './app.zena';
+import { App } from './app.zena';
 import { HTMLPartial, htmlStream } from './html.zena';
 
 export { Request as WireRequest, Response as WireResponse, ErrorCode, Fields } from 'wasi:http/types';
-export { AppOptions } from './app.zena';
 
 /** A trailers future for a body with no trailers. */
 function noTrailers() {
@@ -200,7 +199,7 @@ export function toWireResponse(res: Response): Own<WireResponse> {
 /**
  * Dispatches an incoming WASI wire request through an App's middleware pipeline.
  */
-export async function handleWireRequest(app: BaseApp, wire: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
+export async function handleWireRequest(app: App, wire: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
   let res = new Response();
   await app.handleRequest(new Request.fromWire(wire), res);
   return try {
@@ -208,15 +207,6 @@ export async function handleWireRequest(app: BaseApp, wire: Own<WireRequest>): F
   } catch (e) {
     (true, textResponse('Internal Server Error\n', 500))
   };
-}
-
-/**
- * An HTTP application with native WASI handler integration.
- */
-export class App extends BaseApp {
-  handle(wireRequest: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
-    return handleWireRequest(this, wireRequest);
-  }
 }
 
 /**
