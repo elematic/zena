@@ -14,14 +14,18 @@ Modern language design narrowed that trade-off. Languages like Rust and
 TypeScript showed that mainstream developers value strong static guarantees, and
 ergonomic features—optional type annotations backed by heavy type inference,
 compact closure and class syntax, algebraic data types, destructuring, and
-pattern matching—make fully static types much easier to read and write. Zena
-builds on those ideas so sound static types feel lightweight in everyday code.
+pattern matching—make fully static types much easier to read and write.
 
-AI-assisted coding pushes in the same direction. When code is generated or
+AI-assisted coding points in the same direction. When code is generated or
 refactored with AI, automated checks from the compiler, runtime, and test runner
 help changes meet a real quality bar even with light review. What is good for
 humans is good for AI, and vice versa—and strictness feels even less annoying
 when an agent writes the extra checks or deals with the hoops of immutability.
+
+Zena aims to take a familiar, light-feeling language and push its safety and
+correctness checks much further—because developers and programming languages
+have gravitated toward stronger guarantees, and because modern workflows need
+them.
 
 ## Layers of safety
 
