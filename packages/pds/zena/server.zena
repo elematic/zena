@@ -58,15 +58,7 @@ export function limitedApp(): App {
  * when it has any (`Pds.managed`).
  */
 export function pdsRoutes(router: Router, pds: Pds, sessions: Sessions | null): void {
-  router.get('/xrpc/_health', async (req, res, next, params) => {
-    res.type = 'application/json';
-    res.body = new JsonBuilder()
-      .beginObject()
-      .key('version').string(version)
-      .endObject()
-      .toString();
-  });
-
+  healthRoute(router);
   syncRoutes(router, pds);
   repoRoutes(router, pds, sessions);
   if (sessions != null) {
@@ -76,4 +68,16 @@ export function pdsRoutes(router: Router, pds: Pds, sessions: Sessions | null): 
   if (managed != null) {
     managedRoutes(router, pds, managed);
   }
+}
+
+/** Adds `/xrpc/_health`, which answers with the server's version. */
+export function healthRoute(router: Router): void {
+  router.get('/xrpc/_health', async (req, res, next, params) => {
+    res.type = 'application/json';
+    res.body = new JsonBuilder()
+      .beginObject()
+      .key('version').string(version)
+      .endObject()
+      .toString();
+  });
 }

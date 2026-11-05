@@ -60,4 +60,34 @@ export let tests = suite('Firestore App View stores', () => {
     equal(res.statusCode, 200);
     equal(((parseJson(res.body as String) as JsonObject)['scopes'] as JsonArray).length, 0);
   });
+
+  test('serves the App View on Firestore, in a tenant of its own, with its PDS elsewhere', (ctx) => {
+    let env: HashMap<String, String> = {
+      'APP_VIEW_PDS_URL' => 'https://padstone.test',
+      'APP_VIEW_STORAGE' => 'firestore',
+      'APP_VIEW_TENANT' => `app-view-${getRandomU64() % (1000000000 as u64)}`,
+      'APP_VIEW_SESSION_SECRET' => '0101010101010101010101010101010101010101010101010101010101010101',
+      'APP_VIEW_DOMAIN' => 'pkg.test',
+      'APP_VIEW_ROTATION_KEY' => '0202020202020202020202020202020202020202020202020202020202020202',
+      'APP_VIEW_SIGNING_KEY' => '0303030303030303030303030303030303030303030303030303030303030303',
+      'APP_VIEW_HANDLE_RECORDS' => 'memory',
+    };
+    // TODO(#520): the return type is only for the compiler.
+    let config = configFromEnv((name): String | null => {
+      if (let (true, value) = env.get(name)) {
+        return value;
+      }
+      return null;
+    });
+    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    isTrue(service.pds == null, 'no PDS of its own');
+    let res = new Response();
+    let app = service.app;
+    runFuture((async () => {
+      await app.handleRequest(new Request.fromUrl('http://localhost/xrpc/dev.zena-lang.registry.listScopes', 'GET',
+          new HashMap<String, String>()), res);
+    })());
+    equal(res.statusCode, 200);
+    equal(((parseJson(res.body as String) as JsonObject)['scopes'] as JsonArray).length, 0);
+  });
 });

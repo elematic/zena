@@ -5,7 +5,8 @@ ported from [pds.js](https://tangled.org/chadtmiller.com/pds.js). It is
 padstone, the PDS the Zena project's App View keeps its accounts on
 ([docs/design/package-manager.md](../../docs/design/package-manager.md),
 "Managed accounts"). The App View, its site, and the service that runs
-the two in one process are in [`packages/registry`](../registry).
+it, with this PDS in the same process or reaching one elsewhere, are in
+[`packages/registry`](../registry).
 
 It holds many accounts, with its data in memory, or in Firestore with blob
 bytes in Cloud Storage or a directory. Each account's
@@ -61,7 +62,7 @@ PDS_TRUSTED_APP_VIEWS="did:web:pkg.zena-lang.dev=did:key:zQ3sh..." \
 ```
 
 The App View can also run a PDS in the same process, from the same
-variables: that is how it is deployed for now. See
+variables, as it is deployed for now, or reach this one over XRPC. See
 [`packages/registry`](../registry/README.md).
 
 ## Layout
@@ -78,7 +79,7 @@ variables: that is how it is deployed for now. See
   - `managed`: managed accounts, and the checks on their App Views'
     tokens;
   - `sessions`: password sessions, for the accounts that sign in with an
-    app password;
+    app password, and `HmacTokens`, the tokens they are made of;
   - `signer`: the keys an App View signs with, held here or in Cloud KMS,
     which `XrpcPds` signs its tokens with;
   - `pds-client`: the PDS as an App View reaches it;

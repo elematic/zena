@@ -1,38 +1,60 @@
 /**
- * The App View as a server, with the PDS it keeps its accounts on in the
- * same process: its configuration, read from the environment by
- * `configFromEnv`, and `serve`, which builds the PDS (`pds:service`), the
- * App View's stores and the App View the configuration names, and
- * listens. `main.zena` is the two together.
+ * The App View as a server: its configuration, read from the environment
+ * by `configFromEnv`, and `serve`, which builds the App View's stores, the
+ * App View, and the PDS it keeps its accounts on when that runs in the
+ * same process (`pds:service`), and listens. `main.zena` is the two
+ * together.
  *
- * The PDS reads its own variables, `PDS_*` (see `pds:service`): its
+ * The App View keeps its accounts on a PDS in the same process, by
+ * default, or on one elsewhere, which it reaches with its own tokens
+ * (`APP_VIEW_PDS_URL`, `pds:pds-client`'s `XrpcPds`). A PDS in the same
+ * process reads its own variables, `PDS_*` (see `pds:service`): its
  * storage, which the App View keeps its stores beside, under the same
- * tenant, its origin, which the accounts' DID documents name
- * (`PDS_PUBLIC_URL`, `https://<APP_VIEW_DOMAIN>` by default), and the rest.
- * It trusts the App View it runs with, beside any `PDS_TRUSTED_APP_VIEWS`.
- * The App View's:
+ * tenant; its origin, which the accounts' DID documents name and where
+ * the App View's methods are served too (`PDS_PUBLIC_URL`,
+ * `https://<APP_VIEW_DOMAIN>` by default); and the rest. It trusts the App
+ * View it runs with, beside any `PDS_TRUSTED_APP_VIEWS`. The App View's:
  *
  * - `APP_VIEW_DOMAIN`, required: the App View's domain, such as
  *   `pkg.zena-lang.dev`. A PDS with no App View starts from
  *   `packages/pds/zena/main.zena`.
+ * - `APP_VIEW_PDS_URL`: the origin of a PDS elsewhere that keeps the App
+ *   View's accounts, such as `https://padstone.zena-lang.dev`, which must
+ *   trust the App View (`PDS_TRUSTED_APP_VIEWS`). The server then runs no
+ *   PDS of its own, and takes no `PDS_*` variable. With it:
+ *   - `APP_VIEW_PDS_DID`: that PDS's DID, which the App View's tokens are
+ *     addressed to, by default the `did:web` of its host.
+ *   - `APP_VIEW_PUBLIC_URL`: the App View's own origin, where its methods
+ *     are served, `https://<APP_VIEW_DOMAIN>` by default.
+ *   - `APP_VIEW_STORAGE`: `memory` (the default) or `firestore`, where the
+ *     App View keeps its stores; with `firestore`, `APP_VIEW_TENANT` and
+ *     `APP_VIEW_FIRESTORE_DATABASE`, as `pds:service`'s `PDS_TENANT` and
+ *     `PDS_FIRESTORE_DATABASE`.
+ * - `APP_VIEW_SESSION_SECRET`: 32 bytes in hex, which signs the site's web
+ *   sessions and the URLs of its avatars (`registry:web-sessions`). By
+ *   default the PDS's `PDS_JWT_SECRET` in the same process; required with
+ *   `APP_VIEW_PDS_URL` and `APP_VIEW_STORAGE=firestore`, and otherwise made
+ *   up at start.
  * - `APP_VIEW_ROTATION_KEY`: the App View's online PLC rotation key, a
  *   secp256k1 private key in hex; or `APP_VIEW_ROTATION_KMS_KEY`, a Cloud
  *   KMS key version, `projects/…/cryptoKeyVersions/<n>`, on secp256k1 or
  *   P-256, which signs without the key leaving Cloud KMS (`pds:signer`).
- *   One of them is required with `PDS_STORAGE=firestore`, since the
- *   accounts it creates outlive the server. With `memory`, a missing key
- *   is made up at start.
+ *   One of them is required with Firestore (`PDS_STORAGE` or
+ *   `APP_VIEW_STORAGE`), since the accounts it creates outlive the server.
+ *   In memory, a missing key is made up at start.
  * - `APP_VIEW_SIGNING_KEY` or `APP_VIEW_SIGNING_KMS_KEY`: the App View's own
  *   signing key, given as the rotation key is, which signs its
  *   service-auth tokens to the PDSes of its accounts and which its DID
- *   document lists. A missing key is made up at start: the App View
- *   reaches the PDS in the same process, with no tokens, until the two are
- *   services of their own (#851).
+ *   document lists. Required with `APP_VIEW_PDS_URL` and
+ *   `APP_VIEW_STORAGE=firestore`, since every server of a deployment signs
+ *   with the one key its DID document lists. Otherwise a missing key is
+ *   made up at start: a PDS in the same process needs no tokens.
  * - `APP_VIEW_OFFLINE_ROTATION_KEY`: the operator's offline rotation key,
  *   as a `did:key`, which every new account ranks above the online key, so
  *   that the operator can undo what a stolen online key signs.
- * - `APP_VIEW_DID`: the App View's DID, by default the `did:web` of
- *   `PDS_PUBLIC_URL`'s host, where its methods are served.
+ * - `APP_VIEW_DID`: the App View's DID, by default the `did:web` of the
+ *   host where its methods are served: `APP_VIEW_PUBLIC_URL`'s with a PDS
+ *   elsewhere, `PDS_PUBLIC_URL`'s otherwise.
  * - `APP_VIEW_SITE_URL`: the origin of the site, the App View's web pages,
  *   when it has a name of its own (docs/design/package-manager.md, "Names
  *   and addresses"). A request for the site's host name then gets the
@@ -53,8 +75,8 @@
  * - `APP_VIEW_HANDLE_RECORDS`: where the App View writes its handles' DNS
  *   records (`registry:handles`): `cloud-dns`, a Cloud DNS managed zone,
  *   or `memory`, for local runs. `memory` by default, but required with
- *   `PDS_STORAGE=firestore`, so that no deployment keeps them in memory by
- *   leaving it out. With `cloud-dns`, `APP_VIEW_DNS_ZONE` names the zone,
+ *   Firestore, so that no deployment keeps them in memory by leaving it
+ *   out. With `cloud-dns`, `APP_VIEW_DNS_ZONE` names the zone,
  *   and `APP_VIEW_DNS_PROJECT` its project, by default the one the server
  *   runs in.
  * - `APP_VIEW_PLC_DIRECTORY` and `APP_VIEW_DNS_OVER_HTTPS`: where DIDs and
@@ -88,10 +110,10 @@ import {PlcOperation, fetchOperations, submitPlcOperation} from 'atproto:plc';
 import {SigningKeyLookup} from 'atproto:service-auth';
 import {PlcLogLookup, TrustedAppView} from 'pds:managed';
 import {Pds} from 'pds:pds';
-import {InProcessPds} from 'pds:pds-client';
+import {InProcessPds, PdsClient, XrpcPds} from 'pds:pds-client';
 import {
-  InFirestore, InMemory, PdsConfig, buildPds, decodeKey, didWebOfOrigin, listen, originOf, readPdsConfig,
-  refuseProblems, valuesOf
+  InFirestore, PDS_VARIABLES, PdsConfig, buildPds, decodeKey, didWebOfOrigin, listen, originOf,
+  readPdsConfig, readPort, refuseProblems, valuesOf
 } from 'pds:service';
 import {Sessions} from 'pds:sessions';
 import {KmsSigner, LocalSigner, Signer} from 'pds:signer';
@@ -102,6 +124,7 @@ import {FirestoreAppViewStore, FirestorePlcLog} from './firestore.zena';
 import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
 import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
 import {AppPart, createApp} from './server.zena';
+import {WebSessions} from './web-sessions.zena';
 
 /** Where the App View writes its handles' DNS records. */
 export sealed class RecordsChoice {
@@ -147,9 +170,37 @@ export final class AppViewSettings {
   new(this.domain, this.serviceDid, this.rotationKey, this.reservedScopes, this.maxBlobSize, this.records);
 }
 
-/** What the server is to be: the PDS, and the App View that keeps its accounts on it. */
+/** A PDS elsewhere, which keeps the App View's accounts: its origin, and its DID (`APP_VIEW_PDS_URL`). */
+export final class RemotePds {
+  url: String;
+  did: String;
+
+  new(this.url, this.did);
+}
+
+/** Where the App View keeps its stores when its PDS is elsewhere (`APP_VIEW_STORAGE`). */
+export sealed class StoreChoice {
+  case StoresInMemory
+  /** Firestore, for `tenant`, in the database `database`, or the project's default one when null. */
+  case StoresInFirestore(tenant: String, database: String | null)
+}
+
+/** What the server is to be: the App View, and the PDS that keeps its accounts. */
 export final class ServiceConfig {
-  pds: PdsConfig;
+  var port: u16;
+  /** The PDS in the same process, or null for one elsewhere (`remotePds`). */
+  pds: PdsConfig | null;
+  /** The PDS elsewhere, when there is no PDS in the same process. */
+  var remotePds: RemotePds | null = null;
+  /** Where the App View keeps its stores, or null to keep them beside the PDS's in the same process. */
+  var stores: StoreChoice | null = null;
+  /**
+   * The App View's own origin, where its methods are served, or null for
+   * the PDS's in the same process, or else the server's own.
+   */
+  var publicUrl: String | null = null;
+  /** The secret of the site's sessions, or null for the PDS's in the same process, or one made up at start. */
+  var sessionSecret: FixedArray<u8> | null = null;
   appView: AppViewSettings;
   plcDirectory: String;
   dnsOverHttps: String;
@@ -161,21 +212,24 @@ export final class ServiceConfig {
   /** The web app's directory, or null to serve none. */
   var webDir: String | null = null;
 
-  new(this.pds, this.appView, this.plcDirectory, this.dnsOverHttps);
+  new(pds: PdsConfig | null, appView: AppViewSettings, plcDirectory: String, dnsOverHttps: String)
+      : port = pds?.port ?? 2583 as u16, pds = pds, appView = appView,
+        plcDirectory = plcDirectory, dnsOverHttps = dnsOverHttps;
 }
 
 /**
- * A built server, not yet listening: its application, PDS and App View,
- * where the App View writes its handles' DNS records, and the staging PLC
+ * A built server, not yet listening: its application, the App View, the
+ * PDS in the same process and its password sessions if there is one, where
+ * the App View writes its handles' DNS records, and the staging PLC
  * directory it is, if it is one.
  */
 export final class Service {
   app: App;
-  pds: Pds;
+  pds: Pds | null;
   appView: AppView;
   records: HandleRecords;
   plc: PlcDirectory | null;
-  sessions: Sessions;
+  sessions: Sessions | null;
 
   new(this.app, this.pds, this.appView, this.records, this.plc, this.sessions);
 }
@@ -188,20 +242,104 @@ export final class Service {
 export function configFromEnv(env: (name: String) => String | null): ServiceConfig {
   let problems = new GrowableArray<String>();
   let value = valuesOf(env);
-  let pds = readPdsConfig(value, problems);
-  // As asked for, whether or not the rest of its configuration is usable.
-  let firestore = value('PDS_STORAGE') == 'firestore';
 
   var domain = value('APP_VIEW_DOMAIN');
   if (domain == null) {
     problems.push('APP_VIEW_DOMAIN is required: the App View\'s domain, such as pkg.zena-lang.dev; a PDS alone starts from packages/pds/zena/main.zena');
     domain = 'invalid';
   }
+  var sessionSecret: FixedArray<u8> | null = null;
+  let secretText = value('APP_VIEW_SESSION_SECRET');
+  if (secretText != null) {
+    sessionSecret = decodeKey(secretText);
+    if (sessionSecret == null) {
+      problems.push('APP_VIEW_SESSION_SECRET is not 32 bytes of hex');
+    }
+  }
+
+  // The PDS that keeps the App View's accounts: one elsewhere, or one in
+  // the same process, which reads its own variables.
+  var pds: PdsConfig | null = null;
+  var remote: RemotePds | null = null;
+  var stores: StoreChoice | null = null;
+  var port = 2583 as u16;
+  // The variable that keeps the App View's data in Firestore, as asked
+  // for, whether or not the rest of its configuration is usable.
+  var firestore: String | null = null;
+  // The App View's own origin, and the variable it comes from.
+  var appViewUrl = `https://${domain}`;
+  var appViewUrlName = 'PDS_PUBLIC_URL';
+  let pdsUrl = value('APP_VIEW_PDS_URL');
+  if (pdsUrl != null) {
+    port = readPort(value, problems);
+    if (originOf(pdsUrl) == null) {
+      problems.push(`APP_VIEW_PDS_URL is an origin, such as https://padstone.zena-lang.dev, not ${pdsUrl}`);
+    } else {
+      remote = new RemotePds(pdsUrl, value('APP_VIEW_PDS_DID') ?? didWebOfOrigin(pdsUrl));
+    }
+    for (let name in PDS_VARIABLES) {
+      if (value(name) != null) {
+        problems.push(`${name} is the PDS's, and APP_VIEW_PDS_URL keeps the App View's accounts on a PDS elsewhere`);
+      }
+    }
+    let storageKind = value('APP_VIEW_STORAGE') ?? 'memory';
+    if (storageKind == 'firestore') {
+      firestore = 'APP_VIEW_STORAGE';
+      let tenant = value('APP_VIEW_TENANT');
+      if (tenant == null) {
+        problems.push('APP_VIEW_STORAGE=firestore needs APP_VIEW_TENANT');
+      } else {
+        stores = new StoresInFirestore(tenant, value('APP_VIEW_FIRESTORE_DATABASE'));
+      }
+      if (secretText == null) {
+        problems.push('APP_VIEW_STORAGE=firestore needs APP_VIEW_SESSION_SECRET');
+      }
+    } else if (storageKind == 'memory') {
+      stores = new StoresInMemory();
+      if (value('APP_VIEW_TENANT') != null || value('APP_VIEW_FIRESTORE_DATABASE') != null) {
+        problems.push('APP_VIEW_TENANT and APP_VIEW_FIRESTORE_DATABASE need APP_VIEW_STORAGE=firestore');
+      }
+    } else {
+      problems.push(`APP_VIEW_STORAGE is memory or firestore, not ${storageKind}`);
+    }
+    let given = value('APP_VIEW_PUBLIC_URL');
+    if (given != null) {
+      if (originOf(given) == null) {
+        problems.push(`APP_VIEW_PUBLIC_URL is an origin, such as https://pkg.zena-lang.dev, not ${given}`);
+      } else {
+        appViewUrl = given;
+      }
+    }
+    appViewUrlName = 'APP_VIEW_PUBLIC_URL';
+  } else {
+    let inProcess = readPdsConfig(value, problems);
+    port = inProcess.port;
+    if (value('PDS_STORAGE') == 'firestore') {
+      firestore = 'PDS_STORAGE';
+    }
+    for (let name in ['APP_VIEW_PDS_DID', 'APP_VIEW_PUBLIC_URL', 'APP_VIEW_STORAGE', 'APP_VIEW_TENANT',
+        'APP_VIEW_FIRESTORE_DATABASE']) {
+      if (value(name) != null) {
+        problems.push(`${name} needs APP_VIEW_PDS_URL: with the PDS in the same process, the App View is served at its name and keeps its stores beside its`);
+      }
+    }
+    // The App View's methods are served at the PDS's name, so by default the
+    // PDS's origin is the App View's domain.
+    if (inProcess.publicUrl == null) {
+      inProcess.publicUrl = appViewUrl;
+    }
+    appViewUrl = inProcess.publicUrl as String;
+    pds = inProcess;
+  }
+
   let (rotationKey, kmsKey) = keyFrom(value, problems, 'APP_VIEW_ROTATION_KEY', 'APP_VIEW_ROTATION_KMS_KEY');
-  if (value('APP_VIEW_ROTATION_KEY') == null && kmsKey == null && firestore) {
-    problems.push('PDS_STORAGE=firestore needs APP_VIEW_ROTATION_KEY or APP_VIEW_ROTATION_KMS_KEY');
+  if (value('APP_VIEW_ROTATION_KEY') == null && kmsKey == null && firestore != null) {
+    problems.push(`${firestore}=firestore needs APP_VIEW_ROTATION_KEY or APP_VIEW_ROTATION_KMS_KEY`);
   }
   let (signingKey, signingKmsKey) = keyFrom(value, problems, 'APP_VIEW_SIGNING_KEY', 'APP_VIEW_SIGNING_KMS_KEY');
+  if (value('APP_VIEW_SIGNING_KEY') == null && signingKmsKey == null && pdsUrl != null && firestore != null) {
+    problems.push('APP_VIEW_PDS_URL with APP_VIEW_STORAGE=firestore needs APP_VIEW_SIGNING_KEY or APP_VIEW_SIGNING_KMS_KEY, which the PDS checks its tokens with');
+  }
   var offlineKey: PublicKey | null = null;
   let offlineText = value('APP_VIEW_OFFLINE_ROTATION_KEY');
   if (offlineText != null) {
@@ -265,8 +403,8 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       records = new InCloudDns(project, zone);
     }
   } else if (recordsKind == null || recordsKind == 'memory') {
-    if (recordsKind == null && firestore) {
-      problems.push('PDS_STORAGE=firestore needs APP_VIEW_HANDLE_RECORDS: cloud-dns, or memory');
+    if (recordsKind == null && firestore != null) {
+      problems.push(`${firestore}=firestore needs APP_VIEW_HANDLE_RECORDS: cloud-dns, or memory`);
     }
     if (zone != null || project != null) {
       problems.push('APP_VIEW_DNS_ZONE and APP_VIEW_DNS_PROJECT need APP_VIEW_HANDLE_RECORDS=cloud-dns');
@@ -274,26 +412,20 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   } else {
     problems.push(`APP_VIEW_HANDLE_RECORDS is cloud-dns or memory, not ${recordsKind}`);
   }
-  // The App View's methods are served at the PDS's name, so by default the
-  // PDS's origin is the App View's domain.
-  if (pds.publicUrl == null) {
-    pds.publicUrl = `https://${domain}`;
-  }
-  let publicUrl = pds.publicUrl as String;
-  let pdsOrigin = originOf(publicUrl);
+  let appViewOrigin = originOf(appViewUrl);
   var siteUrl: String | null = null;
   let siteText = value('APP_VIEW_SITE_URL');
   if (siteText != null) {
     let site = originOf(siteText);
     if (site == null) {
       problems.push(`APP_VIEW_SITE_URL is an origin, such as https://pkg.zena-lang.dev, not ${siteText}`);
-    } else if (pdsOrigin != null && site.host() == pdsOrigin.host()) {
-      problems.push(`APP_VIEW_SITE_URL names the PDS's own App View, ${site.host()}: leave it out to serve the site and the PDS there, or give PDS_PUBLIC_URL another name`);
+    } else if (appViewOrigin != null && site.host() == appViewOrigin.host()) {
+      problems.push(`APP_VIEW_SITE_URL names the App View's own host, ${site.host()}: leave it out to serve the site there too, or give ${appViewUrlName} another name`);
     } else {
       siteUrl = site.origin();
     }
   }
-  let serviceDid = value('APP_VIEW_DID') ?? (if (pdsOrigin != null) didWebOfOrigin(publicUrl) else null);
+  let serviceDid = value('APP_VIEW_DID') ?? (if (appViewOrigin != null) didWebOfOrigin(appViewUrl) else null);
   let settings = new AppViewSettings(domain, serviceDid, rotationKey, reserved, maxBlobSize, records);
   settings.siteUrl = siteUrl;
   settings.rotationKmsKey = kmsKey;
@@ -314,6 +446,13 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   refuseProblems(problems);
   let config = new ServiceConfig(pds, settings, value('APP_VIEW_PLC_DIRECTORY') ?? 'https://plc.directory',
       value('APP_VIEW_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
+  config.port = port;
+  config.remotePds = remote;
+  config.stores = stores;
+  if (remote != null) {
+    config.publicUrl = appViewUrl;
+  }
+  config.sessionSecret = sessionSecret;
   config.plcStaging = plcStaging;
   config.webDir = value('APP_VIEW_WEB_DIR');
   return config;
@@ -348,19 +487,33 @@ function keyFrom(value: (name: String) => String | null, problems: GrowableArray
 
 /**
  * The server `config` describes, not yet listening, with `endpoint` as
- * the PDS's origin when the configuration leaves it to the server.
+ * its origin when the configuration leaves it to the server: the PDS's
+ * in the same process, or else the App View's.
  */
 export async function buildService(config: ServiceConfig, endpoint: String): Future<Service> {
   var appViewStore: AppViewStore = new MemoryAppViewStore();
   var plcLog: PlcLog = new MemoryPlcLog();
-  // The App View's stores are beside the PDS's, under its tenant.
-  match (config.pds.storage) {
-    case InMemory {}: {}
-    case InFirestore {tenant, database}: {
-      let db = if (database != null) await Firestore.connect({databaseId: database}) else await Firestore.connect();
-      appViewStore = new FirestoreAppViewStore(db, tenant);
-      plcLog = new FirestorePlcLog(db, tenant);
+  // The App View's stores are its own with a PDS elsewhere, and otherwise
+  // beside the PDS's, under its tenant.
+  let inProcess = config.pds;
+  var tenant: String | null = null;
+  var database: String | null = null;
+  let stores = config.stores;
+  if (stores != null) {
+    if (let StoresInFirestore {tenant: given, database: givenDatabase} = stores) {
+      tenant = given;
+      database = givenDatabase;
     }
+  } else if (inProcess != null) {
+    if (let InFirestore {tenant: given, database: givenDatabase} = inProcess.storage) {
+      tenant = given;
+      database = givenDatabase;
+    }
+  }
+  if (tenant != null) {
+    let db = if (database != null) await Firestore.connect({databaseId: database}) else await Firestore.connect();
+    appViewStore = new FirestoreAppViewStore(db, tenant);
+    plcLog = new FirestorePlcLog(db, tenant);
   }
   let plc = if (config.plcStaging) new PlcDirectory(plcLog, config.plcDirectory) else null;
   let settings = config.appView;
@@ -373,10 +526,11 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     }
   }
   let rotationKey = await signerOf(settings.rotationKey, settings.rotationKmsKey);
-  let appViewEndpoint = config.pds.publicUrl ?? endpoint;
+  let appViewEndpoint = (if (inProcess != null) inProcess.publicUrl else config.publicUrl) ?? endpoint;
   let serviceDid = settings.serviceDid ?? didWebOfOrigin(appViewEndpoint);
   let appViewConfig = new AppViewConfig(serviceDid, settings.domain, appViewEndpoint, rotationKey);
-  appViewConfig.signingKey = await signerOf(settings.signingKey, settings.signingKmsKey);
+  let signingKey = await signerOf(settings.signingKey, settings.signingKmsKey);
+  appViewConfig.signingKey = signingKey;
   appViewConfig.siteUrl = settings.siteUrl;
   appViewConfig.offlineRotationKey = settings.offlineRotationKey;
   appViewConfig.privateReads = settings.privateReads;
@@ -415,17 +569,31 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     dependencies.plcDirectory = `${appViewConfig.endpoint}/plc`;
     dependencies.dnsOverHttps = config.dnsOverHttps;
   }
-  // The PDS keeps managed accounts for the App View it runs with
-  // (package-manager.md, "Managed accounts"), which for now writes to its
-  // accounts in process instead (#851), reading their operations as the
-  // App View does.
-  let pdsService = await buildPds(config.pds, endpoint, [new TrustedAppView(serviceDid, [rotationKey.publicKey()])],
-      operations, keys);
-  let pds = pdsService.pds;
-  let sessions = pdsService.sessions;
-  let appView = new AppView(new InProcessPds(pds, serviceDid), appViewConfig, appViewStore, records, keys, submit,
+  var pds: Pds | null = null;
+  var sessions: Sessions | null = null;
+  var client: PdsClient | null = null;
+  if (inProcess != null) {
+    // The PDS keeps managed accounts for the App View it runs with
+    // (package-manager.md, "Managed accounts"), which writes to them in
+    // process, reading their operations as the App View does.
+    let pdsService = await buildPds(inProcess, endpoint, [new TrustedAppView(serviceDid, [rotationKey.publicKey()])],
+        operations, keys);
+    pds = pdsService.pds;
+    sessions = pdsService.sessions;
+    client = new InProcessPds(pdsService.pds, serviceDid);
+  } else {
+    // Without one, the configuration names a PDS elsewhere, which checks
+    // the App View's tokens with the key its DID document lists.
+    let remote = config.remotePds as RemotePds;
+    appViewConfig.pdsEndpoint = remote.url;
+    client = new XrpcPds(remote.url, remote.did, serviceDid, signingKey);
+  }
+  let appView = new AppView(client as PdsClient, appViewConfig, appViewStore, records, keys, submit,
       (count: i32) => randomBytes(count), dependencies);
-  appView.sessions = sessions;
+  // By default the site's sessions are signed with the secret the PDS in
+  // the same process is given, so that one server needs one secret.
+  let sessionSecret = config.sessionSecret ?? inProcess?.jwtSecret ?? randomBytes(32);
+  appView.sessions = new WebSessions(sessionSecret);
   // A DID document is written by whoever controls the DID, so the PDS it
   // names is read only where the App View may read (`AppView.mayRead`):
   // anywhere else, the document resolves with no PDS.
@@ -529,12 +697,12 @@ export final class Running {
 
 /**
  * Builds the server `config` describes and listens on its port. When the
- * configuration leaves the PDS's origin to the server, it is the
- * listening origin, known once the port is.
+ * configuration leaves the server's origin to it, it is the listening
+ * origin, known once the port is.
  */
 export async function serve(config: ServiceConfig): Future<Running> {
   var built: Service | null = null;
-  let listening = await listen(config.pds.port, async (origin): Future<App> => {
+  let listening = await listen(config.port, async (origin): Future<App> => {
     let service = await buildService(config, origin);
     built = service;
     return service.app;
