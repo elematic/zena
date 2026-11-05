@@ -14,8 +14,9 @@
  *   `releases`, and `rev`, the revision of the commit it was made from;
  *   `mentions/{subject}/by/{account}`: `account`, for each account whose
  *   records or entries mention a person's DID or a team, `<org DID> <team>`;
- *   and
- *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR.
+ *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR;
+ *   and `automationTokens/{did}`: `hash`, the SHA-256 of the token an
+ *   automation account calls with, in hex.
  */
 
 import {Future} from 'zena:async';
@@ -277,6 +278,18 @@ export final class FirestoreAppViewStore implements AppViewStore {
       batch.set(list.doc(entry.commitment().toString()), new Fields().set('cbor', bytesValue(bytes as ByteArray)));
     }
     await batch.commit();
+  }
+
+  async setAutomationToken(did: String, hash: String): Future<void> {
+    await this.#root.collection('automationTokens').doc(did).set(new Fields().string('hash', hash));
+  }
+
+  async automationAccountOf(hash: String): Future<String | null> {
+    let found = await this.#root.collection('automationTokens').where('hash', Operator.Equal, stringValue(hash)).get();
+    for (let snapshot in found) {
+      return snapshot.id;
+    }
+    return null;
   }
 }
 

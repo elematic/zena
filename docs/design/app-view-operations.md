@@ -113,7 +113,7 @@ session, because the App View holds nothing that can write there
 | Rename a scope                                       | owners, App View admins                    | no                                                                               |
 | Dissolve a scope                                     | owners, App View admins                    | no                                                                               |
 | Create an automation account                         | admins                                     | `zena ci create`; `createAutomationAccount`                                      |
-| Reset or revoke an automation account's token        | admins                                     | no                                                                               |
+| Reset or revoke an automation account's token        | admins                                     | `zena ci token`; `issueAutomationToken`, which replaces it                       |
 
 ## Packages
 

@@ -82,7 +82,7 @@ To publish from GitHub Actions or another CI pipeline without giving CI a human 
 zena ci create acme/release-bot
 ```
 
-`zena ci create` creates a dedicated automation account under `@acme` (`release-bot.acme.pkg.zena-lang.dev`) and prints an app password for CI. You can then add the automation account as a `publisher` on specific packages:
+`zena ci create` creates a dedicated automation account under `@acme` (`release-bot.acme.pkg.zena-lang.dev`) and prints its token once. CI keeps the token as the secret `ZENA_REGISTRY_TOKEN` and runs `zena publish`; `zena ci token acme/release-bot` gives it a new one if it leaks, and the old one stops working. The registry writes the automation account's attestations itself. You can then add the automation account as a `publisher` on specific packages:
 
 ```sh
 zena owner add @acme/router release-bot.acme.pkg.zena-lang.dev --role publisher

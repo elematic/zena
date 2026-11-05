@@ -1,9 +1,9 @@
 /**
  * Publishing from CI, from end to end, against
  * `tests/fixtures/publish-stack.zena`: Alice creates an automation account
- * in her scope and adds it to a package, and the account signs in with its
- * app password, as CI would, and publishes. The registry holds the account's
- * keys, so its release waits until Alice approves it.
+ * in her scope and adds it to a package, and CI publishes with the
+ * account's token. The registry holds the account and writes its
+ * attestation, so its release waits until Alice approves it.
  */
 
 import {suite, test} from 'zena:test';
@@ -26,7 +26,7 @@ function after(text: String, label: String): String {
 }
 
 export let tests = suite('zena ci', () => {
-  test('creates an automation account that CI signs in as and publishes with', (ctx) => {
+  test('creates an automation account that CI publishes as with its token', (ctx) => {
     let scratch = Scratch.create('ci');
     let stack = startFakePds(scratch, 'publish-stack.zena');
     try {
@@ -49,16 +49,16 @@ export let tests = suite('zena ci', () => {
       let created = alice.run(['ci', 'create', 'acme/ci']);
       isTrue(created.succeeded() && created.stdout.contains('Created the automation account ci.acme.pkg.test'),
           described(created));
-      let password = after(created.stdout, 'Its app password, which is not shown again:');
-      isTrue(password.length == 19, described(created));
+      let token = after(created.stdout, 'Its token, which is not shown again:');
+      isTrue(token.startsWith('zena_ci_'), described(created));
       let again = alice.run(['ci', 'create', 'acme/ci']);
       isTrue(!again.succeeded() && again.stderr.contains('NameTaken'), described(again));
 
-      // CI signs in with the password from its secrets, and can publish
-      // nothing until an owner adds it, marked as automation.
-      let bot = person('bot').set('ZENA_APP_PASSWORD', password);
-      let login = bot.run(['login', 'ci.acme.pkg.test']);
-      isTrue(login.succeeded(), described(login));
+      // CI publishes with the token from its secrets, signed in to nothing,
+      // and can publish nothing until an owner adds it, marked as
+      // automation.
+      let ci = (given: String) => person('bot').set('ZENA_REGISTRY_TOKEN', given);
+      let bot = ci(token);
       let did = (parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
       write(scratch.at('lib/zena-package.json'),
           `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "1.1.0"}\n`);
@@ -84,11 +84,23 @@ export let tests = suite('zena ci', () => {
       let done = alice.run(['approve', '1.1.0']);
       isTrue(!done.succeeded() && done.stderr.contains('is waiting for approval'), described(done));
 
-      // Its attestation of the release is in its own repository, on the registry.
+      // Its attestation of the release is in its own repository, on the
+      // registry, which wrote it.
       let listed = runFuture(fetch(
           `${addresses['registry'] as String}/xrpc/com.atproto.repo.listRecords?repo=ci.acme.pkg.test&collection=dev.zena-lang.package.attestation`));
       let records = (parseJson(runFuture(listed.text())) as JsonObject)['records'] as JsonArray;
       isTrue(records.length == 1, `${records.length} attestations`);
+
+      // Alice replaces a token that leaked: the old one stops working.
+      let replaced = alice.run(['ci', 'token', 'acme/ci']);
+      let next = after(replaced.stdout, 'Its new token, which is not shown again:');
+      isTrue(replaced.succeeded() && next.startsWith('zena_ci_') && next != token, described(replaced));
+      write(scratch.at('lib/zena-package.json'),
+          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "1.2.0"}\n`);
+      let revoked = bot.run(['publish']);
+      isTrue(!revoked.succeeded() && revoked.stderr.contains('InvalidToken'), described(revoked));
+      let renewed = ci(next).run(['publish']);
+      isTrue(renewed.succeeded() && renewed.stdout.contains('greet 1.2.0 is waiting for approval'), described(renewed));
     } finally {
       stack.waitFor(1 as i64);
       scratch.remove();

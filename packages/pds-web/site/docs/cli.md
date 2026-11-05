@@ -96,7 +96,15 @@ Publishes a `dev.zena-lang.package.retraction` record for `<version>` so version
 zena ci create <scope>/<name>
 ```
 
-Creates an automation account in `<scope>` for CI pipelines to authenticate and publish with.
+Creates an automation account in `<scope>` for CI pipelines to publish as, and prints its token once. CI keeps the token as the secret `ZENA_REGISTRY_TOKEN` and runs `zena publish`, signed in to nothing.
+
+### `zena ci token`
+
+```sh
+zena ci token <scope>/<name>
+```
+
+Gives the automation account a new token, for one that leaked or was lost. The old token stops working.
 
 ---
 
@@ -152,5 +160,6 @@ Lists and modifies a package's maintainers (`owner` and `publisher` roles) and r
 | `ZENA_CACHE_DIR`      | `~/.cache/zena`                        | Base directory for the unpacked package cache (`packages/sources/<cid>`)    |
 | `ZENA_PROJECT_CACHE`  | _(unset)_                              | When set, stores the package cache in `.zena/packages` inside the workspace |
 | `ZENA_APP_PASSWORD`   | _(unset)_                              | App password used by `zena login` when not reading from terminal or stdin   |
+| `ZENA_REGISTRY_TOKEN` | _(unset)_                              | An automation account's token, which `zena publish` uses in CI              |
 | `ZENA_PLC_DIRECTORY`  | `https://plc.directory`                | PLC directory URL used to resolve `did:plc:` identities                     |
 | `ZENA_DNS_OVER_HTTPS` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS endpoint used to resolve `_atproto.<handle>` TXT records     |

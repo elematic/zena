@@ -340,7 +340,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   **`package create`** only creates it. **`retract <version> [--reason]`**
   marks a release so that choosing a version skips it.
   **`ci create <scope>/<name>`** makes an automation account for CI to
-  publish as.
+  publish as, and prints its token, which `publish` calls the registry
+  with from `ZENA_REGISTRY_TOKEN`; **`ci token <scope>/<name>`** replaces
+  it.
 - **`scope create <name> [--yes]`**, **`scope info <scope>`**: Create a
   scope on a registry, with you as its owner, or describe one.
   Publishing never creates a scope. **`scope add|remove <scope> <person>`**,

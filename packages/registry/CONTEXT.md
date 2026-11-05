@@ -37,7 +37,9 @@ When a pull request closes an item there, tick its box.
   (`pds:pds-client`), in `com.atproto`'s terms, and keeps its own record
   of its accounts, their kinds, scopes and names, in `AppViewStore`. It does
   not read `Pds` or `Storage`; `InProcessPds` is the PDS in the same
-  process. Creating automation accounts is the one exception, until #853.
+  process. Automation accounts are managed accounts too: CI calls with a
+  token the App View issued (`AppView.authenticate`), and the App View
+  writes their attestations.
 
 ## Storage
 

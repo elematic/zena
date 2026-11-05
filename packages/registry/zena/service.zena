@@ -112,12 +112,12 @@ import {ManagedAccounts, PlcLogLookup, TrustedAppView} from 'pds:managed';
 import {Pds} from 'pds:pds';
 import {InProcessPds} from 'pds:pds-client';
 import {createApp as createPdsApp} from 'pds:server';
-import {REQUEST_BODY_LIMIT, nowMicros} from 'pds:xrpc/common';
+import {REQUEST_BODY_LIMIT} from 'pds:xrpc/common';
 import {CredentialStore, MemoryCredentialStore, Sessions} from 'pds:sessions';
 import {KmsSigner, LocalSigner, Signer} from 'pds:signer';
 import {CloudKms} from 'google-cloud:kms';
 import {KmsKeyEncryption} from 'pds:key-encryption';
-import {AccountKind, MemoryStorage, SigningKey, Storage} from 'pds:storage';
+import {MemoryStorage, SigningKey, Storage} from 'pds:storage';
 
 /** A configuration `configFromEnv` refuses, with every problem it found. */
 export class ConfigError extends Error {
@@ -574,9 +574,6 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let appView = new AppView(new InProcessPds(pds, serviceDid), appViewConfig, appViewStore, records, keys, submit,
       (count: i32) => randomBytes(count), dependencies);
   appView.sessions = sessions;
-  appView.makeAutomationAccount = async (did: String, handle: String, key: SigningKey): Future<void> => {
-    await pds.createAccount(did, handle, key, nowMicros(), AccountKind.Automation);
-  };
   // The PDS keeps managed accounts for the App View it runs with
   // (package-manager.md, "Managed accounts"), which for now writes to its
   // accounts in process instead (#851).
