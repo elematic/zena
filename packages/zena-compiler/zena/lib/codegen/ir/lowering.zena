@@ -5103,22 +5103,24 @@ export final class FunctionLowerer {
     }
     let sourceRec = substituteTypeParamsInFunctionContext(this.wasm, this.func, ra.source);
     let targetRec = substituteTypeParamsInFunctionContext(this.wasm, this.func, ra.target);
-    if (sourceRec is RecordType && targetRec is RecordType) {
-      if (sourceRec.isExistential || targetRec.isExistential) {
-        return this.#convertExistential(sourceRec, targetRec, value);
-      }
+    if (!(sourceRec is RecordType) || !(targetRec is RecordType)) {
+      return this.#bailValue('record adaptation shape');
     }
-    let inFields = recordWasmFields(this.wasm, ra.source, this.func);
-    let inOptionals = sortedOptionalNames(ra.source);
-    let inInfo = this.wasm.getRecordDispatch(
-        this.func.model, inFields, inOptionals);
-    let outFields = recordWasmFields(this.wasm, ra.target, this.func);
-    let outInfo = this.wasm.getAdaptedRecordDispatch(
-        this.func.model, inFields, inOptionals,
-        outFields, sortedOptionalNames(ra.target));
-    if (outInfo.vtableGlobal.index < 0) {
-      this.#bail('record adaptation vtable unregistered');
+    if (sourceRec.isExistential || targetRec.isExistential) {
+      return this.#convertExistential(sourceRec, targetRec, value);
     }
+    let inInfo = this.#cx().recordDispatchOf(sourceRec);
+    let outFields = recordWasmFields(this.wasm, targetRec, this.func);
+    // Look up the registered dispatch directly: the generator and async
+    // split passes lower bodies before layout() assigns global indices,
+    // so vtableGlobal.index is still -1 there.
+    let outInfoOpt = this.wasm.findAdaptedDispatch(
+        inInfo.fields, inInfo.optionalNames,
+        outFields, sortedOptionalNames(targetRec));
+    if (outInfoOpt == null) {
+      return this.#bailValue('record adaptation vtable unregistered');
+    }
+    let outInfo = outInfoOpt;
     let inVt = new ValTypeRef(inInfo.fatPtrType) as ValType;
     var src = value;
     if (!isValSubtype(this.#valueType(src), inVt)) {
@@ -5160,24 +5162,28 @@ export final class FunctionLowerer {
     }
     // The dispatches before any block: the join's type comes from them,
     // and the null guard that precedes the chain branches to the join.
-    let outOptionals = sortedOptionalNames(ra.target);
+    let targetRec = substituteTypeParamsInFunctionContext(this.wasm, this.func, ra.target);
+    if (!(targetRec is RecordType)) {
+      return this.#bailValue('record union adaptation shape');
+    }
+    let outFields = recordWasmFields(this.wasm, targetRec, this.func);
+    let outOptionals = sortedOptionalNames(targetRec);
     let inInfos = new Array<RecordDispatchInfo>();
     let outInfos = new Array<RecordDispatchInfo>();
     for (let member in ra.members) {
-      let inFields = recordWasmFields(this.wasm, member, this.func);
-      let inOptionals = sortedOptionalNames(member);
-      inInfos.push(this.wasm.getRecordDispatch(
-          this.func.model, inFields, inOptionals));
-      // A fresh field list per member: getAdaptedRecordDispatch keeps
-      // the one it is handed in the dispatch it records.
-      let outFields = recordWasmFields(this.wasm, ra.target, this.func);
-      let outInfo = this.wasm.getAdaptedRecordDispatch(
-          this.func.model, inFields, inOptionals,
-          outFields, outOptionals);
-      if (outInfo.vtableGlobal.index < 0) {
-        this.#bail('record union adaptation vtable unregistered');
+      let memberRec = substituteTypeParamsInFunctionContext(this.wasm, this.func, member);
+      if (!(memberRec is RecordType)) {
+        return this.#bailValue('record union adaptation shape');
       }
-      outInfos.push(outInfo);
+      let inInfo = this.#cx().recordDispatchOf(memberRec);
+      inInfos.push(inInfo);
+      let outInfoOpt = this.wasm.findAdaptedDispatch(
+          inInfo.fields, inInfo.optionalNames,
+          outFields, outOptionals);
+      if (outInfoOpt == null) {
+        return this.#bailValue('record union adaptation vtable unregistered');
+      }
+      outInfos.push(outInfoOpt);
     }
     if (outInfos.length == 0) {
       return this.#bailValue('record union adaptation without members');

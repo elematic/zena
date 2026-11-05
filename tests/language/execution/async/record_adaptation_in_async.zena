@@ -1,24 +1,111 @@
 // @mode: run
-// @result: 2
-// @skip: record adaptation inside an async function fails in ZIR, "record adaptation vtable unregistered" (#633)
-// Passing a record where a wider record type is expected (an optional
-// field the argument's type lacks) adapts the record. The adapter is
-// registered for a synchronous function and not for an async one.
-import { Future } from 'zena:async';
+// @result: 42
+// Record adaptation and record-union adaptation inside `async` and
+// `async gen` functions, arrows, and methods (#633).
+//
+// The async split pass lowers bodies before WasmModule.layout() assigns
+// global indices, while vtableGlobal.index is still -1.
+import {
+  Future, Completer, AsyncIterator, scheduleMicrotask,
+} from 'zena:async';
 
 type Opts = {a?: i64, b?: i64, c?: boolean};
 
-function take(o: Opts): i64 {
-  if (let {a} = o) {
-    return a;
-  }
-  return 0 as i64;
+function delay<T>(value: T) {
+  let c = new Completer<T>();
+  scheduleMicrotask(() => {
+    c.complete(value);
+  });
+  return c.future;
 }
 
+function take(o: Opts) {
+  var sum = 0 as i64;
+  if (let {a} = o) {
+    sum += a;
+  }
+  if (let {b} = o) {
+    sum += b;
+  }
+  if (let {c} = o) {
+    if (c) {
+      sum += 100 as i64;
+    }
+  }
+  return sum;
+}
+
+// Original #633 repro: async function with default `{}` adapting a
+// narrower optional-field record to `Opts`.
 async function f(options: {a?: i64, b?: i64} = {}): Future<i64> {
   return take(options);
 }
 
+// Async method adapting both an expression and a record union.
+class Runner {
+  #base: i64;
+  new(base: i64) : #base = base;
+
+  async run(flag: boolean): Future<i64> {
+    let u = if (flag) {
+      {x: 4 as i64, extra: 'yes'}
+    } else {
+      {x: 9 as i64}
+    };
+    let waited = await delay(this.#base);
+    let {x, extra = 'no'} = u;
+    let narrowed: {x: i64} = u;
+    return waited + x + narrowed.x + (extra.length as i64);
+  }
+
+  async adaptGeneric<T>(r: {a: i64, extra: T}): Future<i64> {
+    let bonus = await delay(this.#base);
+    return bonus + take(r);
+  }
+}
+
+// Async generator adapting records before and after awaiting.
+async gen function steps(seed: {a: i64}): AsyncIterator<i64> {
+  yield take(seed);
+  let nextB = await delay(5 as i64);
+  let pair: {a: i64, b: i64} = {a: seed.a, b: nextB};
+  yield take(pair);
+}
+
 export async function main(): Future<i32> {
-  return (await f({a: 2 as i64})) as i32;
+  // 1. Async function with explicit arg and default arg: 2 + 0 = 2.
+  let r1 = (await f({a: 2 as i64})) + (await f());
+  if (r1 != (2 as i64)) { return 1; }
+
+  // 2. Async arrow across suspension + rest pattern + expression adaptation:
+  //    1 + 3 + (4 + 5) + (4 + 5) = 22.
+  let arrowAdapt = async (full: {tag: i32, a: i64, b: i64}): Future<i64> => {
+    let bonus = await delay(3 as i64);
+    let {tag, ...rest} = full;
+    return (tag as i64) + bonus + rest.a + rest.b + take(full);
+  };
+  let r2 = await arrowAdapt({tag: 1, a: 4 as i64, b: 5 as i64});
+  if (r2 != (22 as i64)) { return 2; }
+
+  // 3. Async method with record union destructure & expression adaptation:
+  //    flag=true:  1 + 4 + 4 + 3 = 12
+  //    flag=false: 1 + 9 + 9 + 2 = 21  (sum = 33)
+  let runner = new Runner(1 as i64);
+  let r3 = (await runner.run(true)) + (await runner.run(false));
+  if (r3 != (33 as i64)) { return 3; }
+
+  // 4. Generic async method adapting specialized record shapes:
+  //    (1 + 7) + (1 + 8) = 17.
+  let r4 = (await runner.adaptGeneric({a: 7 as i64, extra: 'ok'})) +
+      (await runner.adaptGeneric({a: 8 as i64, extra: true}));
+  if (r4 != (17 as i64)) { return 4; }
+
+  // 5. Async generator: yields 6, then 6 + 5 = 11 (sum = 17).
+  var r5 = 0 as i64;
+  for await (let v in steps({a: 6 as i64})) {
+    r5 += v;
+  }
+  if (r5 != (17 as i64)) { return 5; }
+
+  return 42;
 }
