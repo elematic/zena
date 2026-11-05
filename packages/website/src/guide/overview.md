@@ -69,8 +69,9 @@ let pair = (1, 'hello');
 let {x, y} = origin;
 ```
 
-Primitives are real machine types — `i32`, `i64`, `u32`, `f32`, `f64`,
-`boolean`, `String`. References are non-nullable unless the type says otherwise.
+Primitives are real machine types — `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, and
+`boolean` — while `String` and `BigInt` (`zena:bigint`) are immutable reference
+types. References are non-nullable unless the type says otherwise.
 
 ## Classes
 
@@ -166,9 +167,10 @@ imports that are always available, such as `console`, `String`, `Array`, `Map`,
 and `FixedArray`.
 
 ```zena
-import { min, max } from 'zena:math';
+import { min, max, sin, PI } from 'zena:math';
+import { BigInt } from 'zena:bigint';
 
-export let pi = 3.14159;
+export let tau = 2.0 * PI;
 ```
 
 ## Borrowed from other languages

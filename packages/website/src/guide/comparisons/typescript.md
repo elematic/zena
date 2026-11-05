@@ -53,10 +53,10 @@ point;`.
 
 ### Core
 
-- **Numeric primitives**: Zena supports the core Wasm primitive types of `i32`,
-  `i64`, `f32`, and `f64`, plus additional unsigned integer types that select
-  unsigned arithmetic and narrow integer types that pack tightly into Wasm
-  arrays.
+- **Numeric types**: Zena supports the core Wasm primitive types (`i32`, `i64`,
+  `f32`, and `f64`), unsigned integer types (`u32`, `u64`) that select unsigned
+  arithmetic, narrow integer types (`i8`, `u8`, `i16`, `u16`) that pack into Wasm
+  arrays, and arbitrary-precision signed integers via `BigInt` in `zena:bigint`.
 
 - **No `undefined`**: Zena uses a single `null` value for absent reference
   values.
@@ -192,7 +192,7 @@ Point(x: f64, y: f64)`), and **extension classes** that allow you to add new
 | :------------------------ | :-------------------------------------- | :------------------------------------------------------------------- |
 | **Immutable variable**    | `const x = 10;`                         | `let x = 10;`                                                        |
 | **Mutable variable**      | `let x = 10;`                           | `var x = 10;`                                                        |
-| **Numeric types**         | `number` / `bigint`                     | `i32`, `i64`, `u32`, `u64`, `f32`, `f64`                             |
+| **Numeric types**         | `number` / `bigint`                     | `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `BigInt` (`zena:bigint`)   |
 | **String type**           | `string`                                | `String`                                                             |
 | **Nullable reference**    | `string \| null \| undefined`           | `String \| null` or `String?`\_                                      |
 | **Top type**              | `any` / `unknown`                       | None. _(`anyref` for references only; use `Box<T>` for primitives)_  |

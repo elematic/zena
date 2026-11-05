@@ -490,7 +490,8 @@ Control flow like `if`, `match`, `try-catch`, `return`, `throw`, `continue`, and
   references are never possible.
 - **Immutable-by-default fields**: Fields are immutable by default. They can be
   marked as mutable with the `var` keyword.
-- **Operator overloading**
+- **Operator overloading**: Classes and extension classes can define arithmetic,
+  bitwise, equality, and indexing operators with static dispatch and no boxing.
 - **Lexical private fields**: Private fields are lexical, and cannot be accessed
   from outside the class. The JavaScript-style `#` prefix means they never collide with public fields, and direct dispatch means they're always fast.
 - **Sealed and case classes (sum types)** Sealed class hierarchies enable
@@ -916,6 +917,10 @@ happen frequently.
         </tr>
         <tr>
           <td>Math: Trigonometry, etc</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>BigInt</td>
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>

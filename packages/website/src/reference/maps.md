@@ -537,6 +537,9 @@ grid[new Point(1, 2)] = 'target';
 let name = grid[new Point(0, 0)]; // 'origin'
 ```
 
+Standard library value classes such as [`BigInt`](/api/bigint/) (`zena:bigint`) also
+implement `Hashable` and `operator ==`.
+
 ### Implementing `Hashable` on custom classes
 
 To use a custom class as a key in a map or set, implement `Hashable` and

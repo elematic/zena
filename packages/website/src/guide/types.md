@@ -91,6 +91,9 @@ packed into arrays:
 - **Booleans**: `boolean` (`true` or `false`).
 - **SIMD**: `v128` (128-bit vector).
 
+See [Numbers](/reference/numbers/) for integer promotion, division, and `zena:math`
+functions.
+
 Conversions between different primitive types must be explicit using `as`:
 
 ```zena
@@ -104,6 +107,7 @@ let c: u8 = (a & 0xFF) as u8;
 References point to heap-allocated objects managed by the WebAssembly GC:
 
 - `String` (UTF-8 string instances).
+- `BigInt` from [`zena:bigint`](/api/bigint/) (immutable arbitrary-precision signed integers).
 - Class instances and closures.
 - Arrays (`ImmutableArray<T>`, `FixedArray<T>`, `GrowableArray<T>`).
 - Records and boxed tuples.
