@@ -3341,10 +3341,7 @@ export final class FunctionLowerer {
         } else {
           this.#lowerExpressionCtx(el, expected)
         };
-        if (!isValSubtype(this.#valueType(v), expected)) {
-          this.#failConformance(v, expected, 'multi-value return type');
-        }
-        values[slot] = v;
+        values[slot] = this.#conformToSlot(v, expected, 'multi-value return type');
       }
       // The slots this member does not use hold their defaults.
       for (var s = 0; s < values.length; s += 1) {
@@ -3366,10 +3363,7 @@ export final class FunctionLowerer {
       } else {
         this.#lowerExpressionCtx(el, expected)
       };
-      if (!isValSubtype(this.#valueType(v), expected)) {
-        this.#failConformance(v, expected, 'multi-value return type');
-      }
-      values.push(v);
+      values.push(this.#conformToSlot(v, expected, 'multi-value return type'));
     }
     return values;
   }
@@ -7973,7 +7967,7 @@ export final class FunctionLowerer {
         this.b.addRef(new IrRefGlobal(g)));
     let want = this.#exprValType(member);
     if (valTypeEquals(g.type, want)) {
-      return raw;
+      return this.#reassertNonNull(raw, want);
     }
     if (isRefValType(want) && isRefValType(g.type)) {
       if (isValSubtype(g.type, want)) {

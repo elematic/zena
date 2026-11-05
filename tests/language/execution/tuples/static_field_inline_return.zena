@@ -1,0 +1,26 @@
+// @mode: run
+// @result: 10
+// Returning non-null static class fields inside an `inline` multi-value tuple
+// reasserts non-nullness on the backing nullable Wasm global.
+
+final class Num {
+  v: i32;
+  new(this.v);
+
+  static ZERO: Num = new Num(0);
+  static FIVE: Num = new Num(5);
+
+  pair(zero: boolean): inline (Num, Num) {
+    if (zero) {
+      return (Num.ZERO, Num.ZERO);
+    }
+    return (Num.FIVE, this);
+  }
+}
+
+export let main = (): i32 => {
+  let n = new Num(5);
+  let (z1, z2) = n.pair(true);
+  let (a, b) = n.pair(false);
+  return z1.v + z2.v + a.v + b.v;
+};
