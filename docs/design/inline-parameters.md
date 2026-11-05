@@ -30,10 +30,10 @@ result does:
 
 - a tuple, or an alias of one;
 - a union of tuples with a discriminant (the rule from #481);
-- a closed record, or an alias of one, as a parameter or a `let`. An
-  inline record result, and an inline record as an element of an
-  inline tuple, are not supported yet. A record whose fields are not
-  known (existential, or spreading a row parameter) cannot be inline.
+- a closed record, or an alias of one. An inline record as an element
+  of an inline tuple is not supported yet. A record whose fields are
+  not known (existential, or spreading a row parameter) cannot be
+  inline.
 
 Allowed positions in this round:
 
@@ -143,8 +143,18 @@ signature takes them, and explosion skips the function.
   held as fields (an inline binding, or an exploded one) passes its
   own, an `if` or `match` merges its arms' fields (`MergeState.fields`),
   and a boxed record is read through its dispatch.
+- **Results:** an inline record result is the fields as wasm results
+  (`mapReturnTypeToWasmResults`), the convention of explosion's
+  field-returning core, so the function's returns take that core's
+  path: `#explodedResult` answers with the record's dispatch, and
+  `#returnFields` lowers each return, merging an `if` or `match` arm by
+  arm (`MergeState.fields`). A call holds the fields as the record it
+  reads (`explodedRecords`), whatever kind of call it is, and builds the
+  record only where a use stores it. The callee's signature says the
+  result is inline: the call expression has the record's type, as a
+  reference to an inline binding does.
+- **Expected types:** an inline record slot expects its record, so a
+  literal for it adapts to the record, and the slot is not an erased one
+  for `==` (`noteRecordErasure`).
 
-An inline record result would return the fields as wasm results, as
-explosion's field-returning core does. It needs the return-path
-machinery inline tuples have (`#lowerMultiReturnValues`), and is left
-for a later round, as is an inline record inside an inline tuple.
+An inline record inside an inline tuple is not supported yet.

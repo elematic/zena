@@ -1,0 +1,122 @@
+// @mode: run
+// @result: 0
+// An inline record result is returned as its record's fields, one wasm
+// result each (docs/design/inline-parameters.md). The caller holds them
+// as the record, so a field read takes the field, and the record is
+// built only where a use stores it.
+
+type Point = {x: i32, y: i32};
+
+function origin(): inline Point {
+  return {x: 0, y: 0};
+}
+
+function swap(p: inline Point): inline Point {
+  return {x: p.y, y: p.x};
+}
+
+// A forwarded parameter, an `if`, a boxed record and a forwarded call.
+function same(p: inline Point): inline Point {
+  return p;
+}
+
+function pick(c: boolean, p: inline Point, q: inline Point): inline Point {
+  return if (c) p else q;
+}
+
+function fromBoxed(p: Point): inline Point {
+  return p;
+}
+
+function twice(p: inline Point): inline Point {
+  return swap(swap(p));
+}
+
+// An expression body, and a one-field record, which is one result.
+let shifted = (p: inline Point, by: i32): inline Point => ({x: p.x + by, y: p.y + by});
+
+type Count = {n: i32};
+
+function counted(n: i32): inline Count {
+  return {n: n};
+}
+
+// An optional field takes a presence word.
+type Opts = {size: i32, scale?: i32};
+
+function opts(scaled: boolean): inline Opts {
+  return if (scaled) ({size: 2, scale: 5}) else ({size: 3});
+}
+
+class Grid {
+  cols: i32;
+  new(this.cols);
+  cell(i: i32): inline Point {
+    return {x: i % this.cols, y: i / this.cols as i32};
+  }
+  static corner(): inline Point {
+    return {x: 9, y: 9};
+  }
+}
+
+class Wide extends Grid {
+  new() : super(100);
+  cell(i: i32): inline Point {
+    return {x: i, y: 0};
+  }
+}
+
+interface Locates {
+  locate(): inline Point;
+}
+
+class Here implements Locates {
+  locate(): inline Point {
+    return {x: 4, y: 5};
+  }
+}
+
+let through = (l: Locates): i32 => l.locate().x * 10 + l.locate().y;
+
+// A function value, and a generic function per instantiation.
+function apply(f: (n: i32) => inline Point): i32 {
+  return f(3).x + f(4).y;
+}
+
+type Box<T> = {value: T, count: i32};
+
+function wrap<T>(v: T): inline Box<T> {
+  return {value: v, count: 1};
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  let o = origin();
+  if (o.x != 0 || o.y != 0) { failures += 1; }
+  if (swap({x: 1, y: 2}).x != 2) { failures += 2; }
+  let {x, y} = twice({x: 3, y: 4});
+  if (x != 3 || y != 4) { failures += 4; }
+  if (same({x: 5, y: 6}).y != 6 || pick(false, {x: 1, y: 1}, {x: 7, y: 8}).x != 7) {
+    failures += 8;
+  }
+  let boxed: Point = {x: 10, y: 20};
+  if (fromBoxed(boxed).y != 20) { failures += 16; }
+  // Stored: the record is built from the fields.
+  let kept: Point = shifted({x: 1, y: 2}, 10);
+  let all = [kept, swap(kept)];
+  if (all[1].x != 12 || counted(42).n != 42) { failures += 32; }
+  let {size, scale = 1} = opts(true);
+  let {scale: unscaled = 1} = opts(false);
+  if (size * scale != 10 || unscaled != 1) { failures += 64; }
+  let grid = new Grid(10);
+  if (grid.cell(23).x != 3 || grid.cell(23).y != 2 || Grid.corner().x != 9) {
+    failures += 128;
+  }
+  let wide: Grid = new Wide();
+  if (wide.cell(23).x != 23) { failures += 256; }
+  if (through(new Here()) != 45) { failures += 512; }
+  let make = (n: i32): inline Point => ({x: n, y: n * 2});
+  if (apply(make) != 11 || make(5).y != 10) { failures += 1024; }
+  if (wrap<String>('hi').value.length != 2 || wrap(7).value != 7) { failures += 2048; }
+  return failures;
+};

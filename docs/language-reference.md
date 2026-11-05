@@ -4877,9 +4877,10 @@ let s = sum({x: 1, y: 2}); // passed as two i32s
 ```
 
 The rule is the same as for a tuple, with a field read where a tuple has an
-index. An inline record cannot be a function's result or an element of an
-inline tuple yet, and the record's fields must be known, so it cannot be
-existential or spread a row parameter.
+index. A function can return an inline record too, as its fields; a call's
+result is read through them, and boxed only where it is stored. An inline
+record cannot be an element of an inline tuple yet, and the record's fields
+must be known, so it cannot be existential or spread a row parameter.
 
 A function with an inline parameter is a top-level function or arrow, a
 method, or a constructor, and it is called rather than used as a value. An

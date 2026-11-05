@@ -452,8 +452,8 @@ function width(s: inline (i32, i32)): i32 {
 }
 ```
 
-A record parameter or `let` can be inline the same way, passed as its fields
-(`p: inline {x: i32, y: i32}`); an inline record result is not supported yet.
+A record parameter, `let` or result can be inline the same way, passed as its
+fields (`p: inline {x: i32, y: i32}`).
 
 #### Use Case: Iterators
 

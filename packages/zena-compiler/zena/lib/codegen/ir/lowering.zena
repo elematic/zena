@@ -44,7 +44,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -3765,22 +3765,47 @@ export final class FunctionLowerer {
       return this.presplitAsyncValueVt;
     }
     // A core returning its record's fields still returns that record in
-    // the source: the slot is the forwarder's.
-    if (this.#explodedResult() != null) {
-      return (this.func.explosion as ExplosionSpec).forwarder.signature.returns[0];
+    // the source: the slot is the forwarder's, or the boxed record's for
+    // a function returning it inline.
+    let spec = this.func.explosion;
+    if (spec != null && spec.core === this.func && spec.result != null) {
+      return spec.forwarder.signature.returns[0];
+    }
+    let inlineRecord = inlineRecordResultOf(this.wasm, this.func);
+    if (inlineRecord != null) {
+      return typeToValTypeWithSub(this.wasm, inlineRecord, this.func);
     }
     let sig = this.func.signature;
     return if (sig.returns.length == 1) sig.returns[0] else null;
   }
 
-  /** In a core that returns its record's fields, that record's dispatch. */
+  /**
+   * The dispatch of the record this function returns as its fields: in a
+   * core explosion made, or in a function whose result is an inline
+   * record (docs/design/inline-parameters.md). Its returns go through
+   * `#returnFields`.
+   */
   #explodedResult(): RecordDispatchInfo | null {
     let spec = this.func.explosion;
     if (spec != null && spec.core === this.func) {
       return spec.result;
     }
-    return null;
+    if (!this.#inlineResultKnown) {
+      this.#inlineResultKnown = true;
+      let record = inlineRecordResultOf(this.wasm, this.func);
+      if (record != null) {
+        this.#inlineResult = this.wasm.findRecordDispatch(
+            recordWasmFields(this.wasm, record, this.func), sortedOptionalNames(record));
+        if (this.#inlineResult == null) {
+          this.#bail('inline record result without a dispatch');
+        }
+      }
+    }
+    return this.#inlineResult;
   }
+
+  var #inlineResultKnown: boolean = false;
+  var #inlineResult: RecordDispatchInfo | null = null;
 
   /**
    * Returns the record `expr` evaluates to as its fields, from a core
@@ -4999,6 +5024,23 @@ export final class FunctionLowerer {
       if (t != null && inlineLayoutOf(this.wasm, t) != null) {
         let source = this.#lowerMultiSource(expr);
         return this.#applyAdaptations(expr, this.#boxInline(source));
+      }
+      // An inline record result: its fields, held as the record, so reads
+      // answer from them and the record dies unless a use needs it whole.
+      let d = this.#inlineRecordResultOfCall(expr);
+      if (d != null) {
+        let source = this.#lowerMultiSourceValues(expr);
+        let fields = new Array<i32>();
+        for (var i = 0; i < source.values.length; i += 1) {
+          fields.push(this.#conformToSlot(source.values[i], d.fields[i].type,
+              'inline record result field type'));
+        }
+        if (fields.length != d.fields.length) {
+          this.#bail('inline record result width');
+        }
+        let record = this.#packRecord(d, fields);
+        this.#cx().explodedRecords[record] = new ExplodedRecord(d, fields);
+        return this.#applyAdaptations(expr, record);
       }
     }
     let value = this.#lowerExpressionDispatch(expr);
@@ -10156,7 +10198,7 @@ export final class FunctionLowerer {
       if (this.func.model.getUnionCallCalleeType(call.callee) != null) {
         return this.#lowerUnionCall(call);
       }
-      return this.#lowerClosureCall(call);
+      return this.#lowerClosureCall(call, multiOut);
     }
     if (call.optional) {
       // `fn?()`: a null closure value short-circuits to a null result.
@@ -10182,7 +10224,7 @@ export final class FunctionLowerer {
     let resolved = sym.resolveTarget();
     if (this.#cx().env.has(resolved.id)) {
       // A local variable holding a function value: closure call.
-      return this.#lowerClosureCall(call);
+      return this.#lowerClosureCall(call, multiOut);
     }
     // Calls to @intrinsic declare functions (equals/hash from
     // zena:map and friends) never become compiled functions —
@@ -10236,7 +10278,7 @@ export final class FunctionLowerer {
     if (targetOpt == null) {
       // Not a compiled function: a binding holding a closure value
       // (global function values still bail when the callee lowers).
-      return this.#lowerClosureCall(call);
+      return this.#lowerClosureCall(call, multiOut);
     }
     return this.#lowerDirectCallTo(call, targetOpt, multiOut);
   }
@@ -10675,13 +10717,18 @@ export final class FunctionLowerer {
     return this.b.constI32(0, new ValTypeI32());
   }
 
-  #lowerClosureCall(call: CallExpression): i32 {
+  #lowerClosureCall(call: CallExpression, multiOut: GrowableArray<i32> | null = null): i32 {
     let callee = this.#lowerExpression(call.callee);
-    return this.#lowerClosureCallOn(call, callee);
+    return this.#lowerClosureCallOn(call, callee, multiOut);
   }
 
-  /** The callee-value core of a closure call. */
-  #lowerClosureCallOn(call: CallExpression, callee: i32): i32 {
+  /**
+   * The callee-value core of a closure call. A function value with an
+   * inline result returns several values, which go to `multiOut` as a
+   * direct call's do.
+   */
+  #lowerClosureCallOn(call: CallExpression, callee: i32,
+      multiOut: GrowableArray<i32> | null = null): i32 {
     // The callee value's OWN type carries the authoritative closure
     // struct; recomputing it from the checked node type drifted
     // whenever substitution or nullability normalization disagreed
@@ -10698,7 +10745,7 @@ export final class FunctionLowerer {
     if (sig == null) {
       this.#bail('closure callee shape');
     }
-    if (sig.returns.length > 1) {
+    if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('closure multi-value return');
     }
     if (sig.params.length != this.#liveArgCount(call.args) + 1) {
@@ -10723,6 +10770,14 @@ export final class FunctionLowerer {
     let funcRef = this.b.addRef(new IrRefField(closureStruct, 'func'));
     let funcVal = this.b.emit(IrOp.struct_get,
         closureStruct.fields[0].type, callee, funcRef);
+    if (sig.returns.length > 1) {
+      for (let r in sig.returns) {
+        this.#requireSupported(r, 'closure result type');
+      }
+      let projs = this.b.callRefMulti(funcVal, args, sig.returns);
+      this.#pushMultiResults(call, projs, multiOut as GrowableArray<i32>);
+      return projs[0];
+    }
     var resultType: ValType | null = null;
     if (sig.returns.length == 1) {
       this.#requireSupported(sig.returns[0], 'closure result type');
@@ -11116,6 +11171,26 @@ export final class FunctionLowerer {
   }
 
   #bailInline(reason: String): InlineParam | null {
+    this.#bail(reason);
+  }
+
+  /** The dispatch of the record `call` returns inline, or null. */
+  #inlineRecordResultOfCall(call: CallExpression): RecordDispatchInfo | null {
+    let calleeType = this.#calleeTypeOf(call);
+    if (!(calleeType is FunctionType)) {
+      return null;
+    }
+    let record = inlineRecordParamOf(substituteTypeParamsInFunctionContext(
+        this.wasm, this.func, calleeType.returnType));
+    if (record == null) {
+      return null;
+    }
+    return this.wasm.findRecordDispatch(recordWasmFields(this.wasm, record, this.func),
+        sortedOptionalNames(record)) ??
+        this.#bailDispatch('inline record result without a dispatch');
+  }
+
+  #bailDispatch(reason: String): RecordDispatchInfo | null {
     this.#bail(reason);
   }
 

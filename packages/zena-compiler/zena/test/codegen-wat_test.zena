@@ -603,6 +603,27 @@ export let tests = suite('WatGenerator', () => {
     assertNoAllocation(result, '$choose', 'an inline record if merges its fields');
   });
 
+  // An inline record result is returned as its fields, and the caller
+  // holds them as the record it reads, so neither side builds it.
+  test('inline record results allocate nothing', (ctx) => {
+    let result = compileAndGenerateWat(`
+      type Point = {x: i32, y: i32};
+      function swap(p: inline Point): inline Point {
+        return {x: p.y, y: p.x};
+      }
+      function pick(c: boolean, p: inline Point): inline Point {
+        return if (c) p else swap(p);
+      }
+      export let main = (): i32 => {
+        let {x, y} = pick(false, {x: 1, y: 9});
+        return x + swap({x: 2, y: 4}).y + y;
+      };
+    `);
+    assertNoAllocation(result, '$swap', 'a record literal result is returned as fields');
+    assertNoAllocation(result, '$pick', 'an if returns each arm as fields');
+    assertNoAllocation(result, '$main', 'a call result is read from its fields');
+  });
+
   // The shaped vector types (`I32x4` and friends in `zena:simd`) are
   // extension classes over `v128`, and their whole value proposition is
   // that the shape is a compile-time view: no wrapper object, so no

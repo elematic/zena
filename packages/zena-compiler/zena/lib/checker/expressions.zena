@@ -30,7 +30,7 @@ import { WellKnown, isWellKnown, wellKnownName } from '../well-known.zena';
 import {
   adaptArmToContext, adaptCoalescedArm, adaptJoinedArm, adaptToExpected, armValueNode, boxForTemplateValue, checkAndRegisterInterfaceAdaptation, noteExistentialComparison
 } from './adaptation.zena';
-import { noteFieldsBesideRow, reportTwoRows, resolveTypeAnnotation } from './annotations.zena';
+import { inlineRecordOf, noteFieldsBesideRow, reportTwoRows, resolveTypeAnnotation } from './annotations.zena';
 import { checkCallExpression, checkNewExpression } from './calls.zena';
 import { CheckerContext } from './context.zena';
 import { checkFunctionExpression } from './functions.zena';
@@ -119,7 +119,10 @@ export function checkExpression(ctx: CheckerContext, expr: Expression, expectedT
   // The callee marker belongs to this expression, not to its operands.
   let callee = ctx.directCallee;
   ctx.directCallee = null;
-  var t = checkExpressionInner(ctx, expr, expectedType);
+  // An inline record is wanted as a record: a literal for it adapts to
+  // the record, as it would to a boxed one.
+  let expectedRecord = if (expectedType != null) inlineRecordOf(expectedType) else null;
+  var t = checkExpressionInner(ctx, expr, expectedRecord ?? expectedType);
   // Inline-ness is the binding's, not the value's: a reference to an
   // inline record reads as the record (docs/design/inline-parameters.md).
   if (let InlineRecordType {record} = t) {
