@@ -159,7 +159,7 @@ without contracts emit zero extra code or data.
 Not every useful contract belongs in a production binary:
 
 1. **Expensive runtime checks (`debug`, implemented)**: A precondition like
-   `isSorted(items)` takes $O(n)$ work to guard an $O(\log n)$ binary search. A
+   `isSorted(items)` takes `O(n)` work to guard an `O(log n)` binary search. A
    global compiler flag that strips _all_ contracts in release builds is too
    coarse—cheap guards like `amount > 0` should stay on, and only the author of a
    clause knows its algorithmic cost. Zena places the contextual `debug` modifier

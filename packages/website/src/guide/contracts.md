@@ -250,7 +250,7 @@ the function body runs without those checks in ordinary builds.
 
 Unmarked clauses run in every build, just like array bounds checks and checked
 `as` casts. Some conditions, however, cost more than the operation they guard—for
-example, verifying in $O(n)$ time that an array is sorted before an $O(\log n)$
+example, verifying in `O(n)` time that an array is sorted before an `O(log n)`
 binary search.
 
 Prefixing `requires`, `ensures`, or `invariant` with `debug` enables the check

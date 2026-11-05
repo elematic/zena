@@ -148,12 +148,12 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Variance
     - What Zena deliberately leaves out
   - ✅ [Correctness and Safety](src/guide/correctness.md) — `/guide/correctness/`
-    - What "sound" means
-    - Where TypeScript gives up soundness
-    - What Zena does instead
-    - Contracts and the verification spectrum
-    - Memory safety without a borrow checker
-    - The cost of soundness
+    - Layers of safety
+    - Isolation and memory safety
+    - Type safety
+    - State, data shapes, and exhaustiveness
+    - Explicit absence and errors
+    - Runtime contracts and testing
   - ✅ [WebAssembly](src/guide/web-assembly.md) — `/guide/web-assembly/`
     - Targeting Wasm GC
     - Type mapping and representation
@@ -193,7 +193,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Editor integration
   - ✅ [Working with AI Agents](src/guide/ai-agents.md) — `/guide/ai-agents/`
     - Why Zena is designed for agent feedback loops
-    - Contracts and machine-checked intent
+    - Checking behavior with contracts
     - Diagnostics agents can act on
     - Tooling hooks
     - Practical tips
@@ -693,7 +693,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Parenthesized conditions and contextual keywords
     - Narrowing from preconditions
     - Gathering returns and entry values
-    - Test-only and ghost clauses
+    - Debug and ghost clauses
     - Open questions and current gaps
   - ✅ [Regular expressions](src/development/design/regex.md) — `/development/design/regex/`
     - Engine size

@@ -8,10 +8,9 @@ and verifying that generated code is actually right becomes the bottleneck. Code
 also makes repeated round-trips through models—what an agent commits today
 becomes the surrounding context future sessions imitate tomorrow.
 
-Zena is designed around that reality. Its syntax stays close to TypeScript so
-models can write it immediately, while its compiler, contracts, formatter, and
-linter shift correctness checks from human eyes onto fast, deterministic tools.
-(Zena's own self-hosted compiler and standard library are built using this exact
+Zena keeps TypeScript-like syntax so models can write it immediately, while its
+compiler, contracts, formatter, and linter check generated code automatically.
+(Zena's own self-hosted compiler and standard library are built using this
 workflow; see [Built with AI](/development/built-with-ai/).)
 
 ## Why Zena is designed for agent feedback loops
@@ -37,13 +36,13 @@ iterates on Zena code:
   command line. Running agent-generated tests does not expose the host machine by
   default.
 
-## Contracts and machine-checked intent
+## Checking behavior with contracts
 
-The hardest agent mistakes to spot in code review are semantic bugs in code that
+The hardest agent mistakes to spot in code review are bugs in code that
 type-checks cleanly—off-by-one bounds, inverted comparisons, or methods that
-update one field while forgetting another. [Contracts](/guide/contracts/) turn
-those domain assumptions into executable specifications attached directly to
-function signatures and loops:
+update one field while forgetting another. [Contracts](/guide/contracts/) put
+those domain assumptions directly on function signatures and loops as executable
+checks:
 
 ```zena
 import {div} from 'zena:math';
@@ -82,7 +81,7 @@ Contracts improve human-agent collaboration in four concrete ways:
    `ensures (this.count == old(this.count) + 1) does not hold`) at the boundary
    where the bug occurred, rather than corrupting state that surfaces much later.
 3. **Thorough test-time checks with `debug`**: Agents run `zena test`
-   continuously, so marking expensive $O(n)$ checks with `debug requires`,
+   continuously, so marking expensive `O(n)` checks with `debug requires`,
    `debug ensures`, or `debug invariant` (such as `debug requires (isSorted(items))`)
    catches subtle algorithmic bugs during agent iteration while emitting zero
    code in ordinary production builds.
@@ -164,6 +163,6 @@ without assembling third-party plugins:
 ## Next
 
 - [Contracts](/guide/contracts/) — preconditions, postconditions, `old()`, and loop invariants
-- [Correctness and Safety](/guide/correctness/) — how sound types and contracts prevent bug classes
+- [Correctness and Safety](/guide/correctness/) — how Zena layers isolation, memory safety, types, contracts, and tests
 - [Built with AI](/development/built-with-ai/) — lessons from building Zena itself with coding agents
 - [Quick Reference](/reference/quick-reference/) — compact syntax summary ideal for agent context
