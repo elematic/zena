@@ -59,7 +59,7 @@ import {
 import { lowerComponentAdapter } from './component-adapters.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import {
-  ExplodedRecord, LetCondBinds, LoweringContext, MergeState, ZirUnsupported,
+  ExplodedRecord, LetCondBinds, LoweringContext, MergeState, ResultSlots, ZirUnsupported,
   noValues, oneValue, repackInterfaceValue,
 } from './lowering-context.zena';
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
@@ -3209,6 +3209,25 @@ export final class FunctionLowerer {
    */
   #lowerIntoSlots(arg: Expression, layout: InlineLayout | null,
       slotVts: GrowableArray<ValType>): GrowableArray<i32> {
+    if (arg is IfExpression || arg is MatchExpression) {
+      // Each arm is lowered into the slots, and the merge takes them
+      // (MergeState.slots).
+      this.#cx().resultSlots = new ResultSlots(layout, slotVts);
+      this.#cx().mergedSlots = null;
+      this.#lowerExpression(arg);
+      this.#cx().resultSlots = null;
+      let merged = this.#cx().mergedSlots;
+      this.#cx().mergedSlots = null;
+      if (merged != null) {
+        return merged;
+      }
+      // Every arm ended unreachable, so nothing reads these.
+      let none = new Array<i32>();
+      for (var i = 0; i < slotVts.length; i += 1) {
+        none.push(-1);
+      }
+      return none;
+    }
     let held = this.#heldInline(arg);
     if (held != null) {
       if (layout == null || this.#slotsForwardDirectly(held.values, slotVts)) {
@@ -4966,6 +4985,11 @@ export final class FunctionLowerer {
 
   hostBoxInline(source: MultiValues): i32 {
     return this.#boxInline(source);
+  }
+
+  hostLowerIntoSlots(e: Expression, layout: InlineLayout | null,
+      slotVts: GrowableArray<ValType>): GrowableArray<i32> {
+    return this.#lowerIntoSlots(e, layout, slotVts);
   }
 
   hostReturnInline(e: Expression): void {
@@ -11062,6 +11086,11 @@ export final class FunctionLowerer {
     if (this.#isExactRecordLiteral(arg, d)) {
       return this.#lowerRecordLiteralFields(arg as RecordLiteral, d);
     }
+    if (arg is IfExpression || arg is MatchExpression) {
+      // The arms merge their fields, and the record the merge rebuilds
+      // is held as them (MergeState.fields).
+      this.#cx().resultFields = d;
+    }
     let exploded = this.#explodedRecordOf(arg, d);
     if (exploded != null) {
       return exploded.values;
@@ -11583,6 +11612,15 @@ function tupleParts(node: Node | null): GrowableArray<Node | null> | null {
 /** An inline value boxed: the struct (or union) of its boxed form. */
 export function boxInline(cx: LoweringContext, source: MultiValues): i32 {
   return hostOf(cx).hostBoxInline(source);
+}
+
+/**
+ * The values of `e` in the slots `slotVts` of the inline layout `layout`
+ * (`FunctionLowerer.#lowerIntoSlots`).
+ */
+export function lowerIntoSlots(cx: LoweringContext, e: Expression, layout: InlineLayout | null,
+    slotVts: GrowableArray<ValType>): GrowableArray<i32> {
+  return hostOf(cx).hostLowerIntoSlots(e, layout, slotVts);
 }
 
 /**

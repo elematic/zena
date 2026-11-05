@@ -565,6 +565,44 @@ export let tests = suite('WatGenerator', () => {
     assertNoAllocation(result, '$main', 'a record literal argument is written as fields');
   });
 
+  // An inline `if` or `match` in a `let` or as an inline argument merges
+  // its arms' slots at the join (#810), one block parameter per slot, so
+  // neither the arms nor the join box the value.
+  test('an inline if or match merges slots without allocating', (ctx) => {
+    let result = compileAndGenerateWat(`
+      type Span = (i32, i32);
+      type Point = {x: i32, y: i32};
+      function width(s: inline Span): i32 {
+        let (a, b) = s;
+        return b - a;
+      }
+      function norm(p: inline Point): i32 {
+        return p.x + p.y;
+      }
+      function pick(c: boolean, s: inline Span, t: inline Span): i32 {
+        let chosen = if (c) s else t;
+        let literal: inline Span = if (c) (1, 7) else (0, 0);
+        return width(chosen) + width(literal);
+      }
+      function classify(n: i32, s: inline Span): i32 {
+        return width(match (n) {
+          case 0: s
+          case _: if (n > 5) (0, 50) else (0, 5)
+        });
+      }
+      function choose(c: boolean, p: inline Point, q: inline Point): i32 {
+        let r = if (c) p else q;
+        return norm(r) + norm(if (c) ({x: 1, y: 1}) else ({x: 2, y: 2}));
+      }
+      export let main = (): i32 =>
+        pick(true, (3, 9), (0, 1)) + classify(3, (1, 2)) +
+        choose(true, {x: 1, y: 2}, {x: 3, y: 4});
+    `);
+    assertNoAllocation(result, '$pick', 'an inline if in a let merges its slots');
+    assertNoAllocation(result, '$classify', 'an inline match as an argument merges its slots');
+    assertNoAllocation(result, '$choose', 'an inline record if merges its fields');
+  });
+
   // The shaped vector types (`I32x4` and friends in `zena:simd`) are
   // extension classes over `v128`, and their whole value proposition is
   // that the shape is a compile-time view: no wrapper object, so no

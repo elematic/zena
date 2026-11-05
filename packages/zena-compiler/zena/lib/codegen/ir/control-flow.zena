@@ -35,9 +35,9 @@ import {
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
-import { boxInline, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
+import { boxInline, lowerIntoSlots, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
-  FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported, noValues,
+  FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ResultSlots, ZirUnsupported, noValues,
 } from './lowering-context.zena';
 import {
   branchUnless, lowerPatternBindings, lowerPatternTest, maskBitTest,
@@ -590,12 +590,14 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
   let armFields = cx.takeResultFields();
   // A returned inline value: each arm returns its own (returnInlineTail).
   let returnTail = cx.takeReturnTail();
+  // An inline value in slots: each arm passes its slots to the merge.
+  let armSlots = cx.takeResultSlots();
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped match');
   }
   let isVoid = isVoidOrNeverType(nodeType);
-  let resultVt = if (!isVoid && !returnTail) {
+  let resultVt = if (!isVoid && !returnTail && armSlots == null) {
     let vt = typeToValTypeWithSub(cx.wasm, nodeType, cx.func);
     cx.requireSupported(vt, 'match result type');
     vt
@@ -623,6 +625,7 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
   m.returnTail = returnTail;
   if (!isVoid) {
     m.fields = armFields;
+    m.slots = armSlots;
   }
   let saved = cx.copyEnv();
 
@@ -663,12 +666,20 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
       emitArmOwnerDrops(cx, lanes, mc.pattern);
     }
     let fieldsMode = m.fields;
+    let slotsMode = m.slots;
     if (fieldsMode != null) {
       let values = lowerArmFields(cx, mc.body, fieldsMode, resultVt);
       if (cx.reachable) {
         emitPlainBranchDrops(cx, mc.pattern);
         emitMatchArmDrops(cx, expr, i);
         cx.mergeArmFields(m, values);
+      }
+    } else if (slotsMode != null) {
+      let values = lowerArmSlots(cx, mc.body, slotsMode);
+      if (cx.reachable) {
+        emitPlainBranchDrops(cx, mc.pattern);
+        emitMatchArmDrops(cx, expr, i);
+        cx.mergeArmSlots(m, values);
       }
     } else {
       let value = lowerBranchValue(cx, mc.pattern, mc.body, isVoid, resultVt,
@@ -878,12 +889,14 @@ export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 
   // A returned inline value: each arm returns its own (returnInlineTail),
   // so there is no value to merge.
   let returnTail = cx.takeReturnTail();
+  // An inline value in slots: each arm passes its slots to the merge.
+  let armSlots = cx.takeResultSlots();
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped if expression');
   }
   let isVoid = baseType(nodeType) is VoidType;
-  let resultVt = if (!isVoid && !returnTail) cx.exprVt(expr) else null;
+  let resultVt = if (!isVoid && !returnTail && armSlots == null) cx.exprVt(expr) else null;
   if (expr.alternate == null && !isVoid) {
     bail(cx, 'value if without else');
   }
@@ -915,6 +928,7 @@ export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 
   m.returnTail = returnTail;
   if (!isVoid) {
     m.fields = armFields;
+    m.slots = armSlots;
   }
 
   let saved = cx.copyEnv();
@@ -1092,6 +1106,17 @@ function mergeBranchArm(cx: LoweringContext, m: MergeState, pattern: Node | null
     }
     return;
   }
+  let slotsMode = m.slots;
+  if (slotsMode != null) {
+    let values = lowerArmSlots(cx, node, slotsMode);
+    if (cx.reachable) {
+      if (pattern != null) {
+        emitPlainBranchDrops(cx, pattern);
+      }
+      cx.mergeArmSlots(m, values);
+    }
+    return;
+  }
   let value = lowerBranchValue(cx, pattern, node, isVoid, resultVt, m.returnTail);
   if (cx.reachable) {
     cx.mergeArm(m, value, armKind);
@@ -1105,6 +1130,14 @@ function mergeValueArm(cx: LoweringContext, m: MergeState, node: Node,
     let values = lowerArmFields(cx, node, fieldsMode, resultVt);
     if (cx.reachable) {
       cx.mergeArmFields(m, values);
+    }
+    return;
+  }
+  let slotsMode = m.slots;
+  if (slotsMode != null) {
+    let values = lowerArmSlots(cx, node, slotsMode);
+    if (cx.reachable) {
+      cx.mergeArmSlots(m, values);
     }
     return;
   }
@@ -1140,9 +1173,67 @@ function lowerArmFields(cx: LoweringContext, node: Node, d: RecordDispatchInfo,
 }
 
 /**
+ * One arm of an inline `if` or `match` lowered into slots
+ * (MergeState.slots): an expression is lowered into them, which merges a
+ * nested `if` or `match` the same way, and a block runs its statements
+ * and lowers its tail into them. Empty when the arm ends unreachable.
+ */
+function lowerArmSlots(cx: LoweringContext, node: Node,
+    slots: ResultSlots): GrowableArray<i32> {
+  if (node is BlockStatement) {
+    let body = node.body;
+    if (body.length == 0) {
+      bail(cx, 'empty inline arm block');
+    }
+    cx.precellBindings(body);
+    // A release region carries one value out of the block, and an
+    // inline value has several.
+    if (varDropPlans(cx, body).length > 0) {
+      bail(cx, 'inline arm block releasing a var');
+    }
+    for (var i = 0; i < body.length - 1; i += 1) {
+      if (!cx.reachable) {
+        return new Array<i32>();
+      }
+      if (opensScope(cx, body[i])) {
+        bail(cx, 'inline arm block with a release region');
+      }
+      lowerStmt(cx, body[i]);
+    }
+    if (!cx.reachable) {
+      return new Array<i32>();
+    }
+    let last = body[body.length - 1];
+    if (let ExpressionStatement {expression} = last) {
+      return lowerArmSlots(cx, expression, slots);
+    }
+    lowerStmt(cx, last);
+    if (cx.reachable) {
+      bail(cx, 'inline arm block tail');
+    }
+    return new Array<i32>();
+  }
+  if (node is ThrowExpression) {
+    throwStmt(cx, node);
+    return new Array<i32>();
+  }
+  if (node is CallExpression) {
+    let t = cx.func.model.getNodeType(node);
+    if (t != null && t is NeverType) {
+      lowerStmt(cx, new ExpressionStatement(node, node.loc));
+      return new Array<i32>();
+    }
+  }
+  if (!(node is Expression)) {
+    cx.fail('inline arm kind');
+  }
+  return lowerIntoSlots(cx, node, slots.layout, slots.slotVts);
+}
+
+/**
  * finishMerge, and in fields mode the record rebuilt from the merged
  * fields and held as them, so the core returns the fields and the record
- * dies.
+ * dies. In slots mode the merged slots are left in `cx.mergedSlots`.
  */
 function finishArmsMerge(cx: LoweringContext, m: MergeState,
     saved: HashMap<SymbolId, i32>): i32 {
@@ -1150,6 +1241,9 @@ function finishArmsMerge(cx: LoweringContext, m: MergeState,
   let fieldsMode = m.fields;
   if (fieldsMode != null && m.block >= 0) {
     return packHeldRecord(cx, fieldsMode, m.fieldParams as GrowableArray<i32>);
+  }
+  if (m.slots != null && m.block >= 0) {
+    cx.mergedSlots = m.slotParams;
   }
   return result;
 }
