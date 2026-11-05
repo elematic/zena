@@ -1,6 +1,6 @@
 // @mode: check
 
-// Where a clause parses and what it would mean is undecided
+// Where a clause parses and cannot be used yet
 // (docs/design/contracts.md).
 
 interface Shape {
@@ -13,4 +13,34 @@ abstract class Base {
 
 gen function count(n: i32): Iterator<i32> requires (n >= 0) { // @error: 'requires' clauses on a generator are not supported yet.
   yield n;
+}
+
+// An async function's preconditions run; its postconditions do not yet.
+let load = async (id: i32): Future<i32>
+  requires (id > 0)
+  ensures (result >= id) // @error: 'ensures' clauses on an async function are not supported yet.
+=> id;
+
+// An inline result is returned as several values.
+function divide(a: i32, b: i32): inline (i32, i32)
+  requires (b != 0)
+  ensures (a >= 0) // @error: 'ensures' clauses on a function that returns an inline value are not supported yet.
+{
+  return (a, b);
+}
+
+class Counter {
+  var count: i32;
+
+  new(count: i32)
+    ensures (this.count == old(count)) // @error: 'old' in a constructor's 'ensures' condition is not supported yet.
+    : count = count {}
+}
+
+// A tail call discards the frame its postconditions would run in.
+function countdown(n: i32): i32 ensures (result == 0) {
+  if (n == 0) {
+    return 0;
+  }
+  tail return countdown(n - 1); // @error: 'tail return' is not allowed in a function with 'ensures' clauses: the frame it would discard still owes the postconditions.
 }

@@ -4,7 +4,7 @@ import {
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, FunctionDeclInfo, AnyRefType, RecordType, releaseMemberOf, synthesizedRelease } from '../../types.zena';
 import {
-  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, decoratorStringArg, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
+  Node, ClassDeclaration, FieldDefinition, MethodDefinition, hasEnsuresClause, AccessorDeclaration, SetterInfo, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, decoratorStringArg, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
 } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
 import {
@@ -2493,13 +2493,17 @@ function getMethodName(model: SemanticModel, md: MethodDefinition) {
 /**
  * Whether a constructor has body statements to run post-allocation.
  * Synthesized constructors (node-less) never do; a written `new(...);`
- * or an empty block has nothing to run either.
+ * or an empty block has nothing to run either, unless the constructor
+ * has postconditions, which run after the body in that phase.
  */
 function ctorHasRunnableBody(factory: WasmFunction): boolean {
   if (!(factory.node is MethodDefinition)) {
     return false;
   }
   let md = factory.node as MethodDefinition;
+  if (hasEnsuresClause(md.contracts)) {
+    return true;
+  }
   let b = md.body;
   if (b == null) {
     return false;

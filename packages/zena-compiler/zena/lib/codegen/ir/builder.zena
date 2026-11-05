@@ -51,6 +51,13 @@ export final class IrBuilder {
    * otherwise.
    */
   var recorder: TemplateRecorder | null = null;
+  /**
+   * The result types of the function, while its returns are redirected
+   * to one block (`redirectReturns`); null otherwise.
+   */
+  var #redirectedReturnTypes: GrowableArray<ValType> | null = null;
+  /** The block redirected returns go to, or -1 until one is emitted. */
+  var #redirectedReturnBlock: i32 = -1;
 
   /** Total blocks created so far. */
   numBlocks(): i32 {
@@ -267,6 +274,10 @@ export final class IrBuilder {
 
   /** Multi-value return. */
   retMulti(values: GrowableArray<i32>): void {
+    if (this.#redirectedReturnTypes != null) {
+      this.br(this.#returnTarget(), values);
+      return;
+    }
     let idx = this.body.extra.length;
     this.body.extra.push(values.length);
     for (let v in values) {
@@ -368,7 +379,43 @@ export final class IrBuilder {
   }
 
   ret(value: i32): i32 {
+    if (this.#redirectedReturnTypes != null) {
+      this.br(this.#returnTarget(), growable<i32>([value]));
+      return -1;
+    }
     return this.#emitInCurrent(IrOp.ret, -1, value, -1);
+  }
+
+  /**
+   * From here on, a return branches to one block that takes the
+   * returned values as its parameters, of the function's result
+   * `types`. A function with postconditions checks them there and then
+   * returns (docs/design/contracts.md). The block is made by the first
+   * return to reach it, so a function that never returns has none.
+   */
+  redirectReturns(types: GrowableArray<ValType>): void {
+    this.#redirectedReturnTypes = types;
+    this.#redirectedReturnBlock = -1;
+  }
+
+  /**
+   * Stops redirecting returns. Answers the block they went to, or -1
+   * when none was emitted.
+   */
+  endReturnRedirect(): i32 {
+    this.#redirectedReturnTypes = null;
+    return this.#redirectedReturnBlock;
+  }
+
+  #returnTarget(): i32 {
+    if (this.#redirectedReturnBlock < 0) {
+      let block = this.newBlock();
+      for (let type in this.#redirectedReturnTypes as GrowableArray<ValType>) {
+        this.blockParam(block, type);
+      }
+      this.#redirectedReturnBlock = block;
+    }
+    return this.#redirectedReturnBlock;
   }
 
   /**
@@ -422,6 +469,10 @@ export final class IrBuilder {
   }
 
   retVoid(): void {
+    if (this.#redirectedReturnTypes != null) {
+      this.br(this.#returnTarget(), new Array<i32>(0));
+      return;
+    }
     this.#emitInCurrent(IrOp.ret, -1, -1, -1);
   }
 

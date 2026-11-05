@@ -1,0 +1,40 @@
+// @mode: run
+// @stdout: 3 1 ensures (this.count == old(this.count) + by) does not hold
+// `old(e)` is the value `e` had when the function was entered, read at
+// the return after the body has changed what `e` reads.
+
+class Counter {
+  var count: i32 = 0;
+  var skip: boolean = false;
+
+  add(by: i32): i32
+    ensures (this.count == old(this.count) + by)
+    ensures (result == old(this.count))
+  {
+    let before = this.count;
+    if (!this.skip) {
+      this.count += by;
+    }
+    return before;
+  }
+}
+
+var total = 0;
+
+// `old` of a module variable, on a function that returns nothing.
+function bump(by: i32): void ensures (total == old(total) + by) {
+  total += by;
+}
+
+export function main(): void {
+  let counter = new Counter();
+  counter.add(1);
+  counter.add(2);
+  bump(1);
+  counter.skip = true;
+  try {
+    counter.add(5);
+  } catch (e) {
+    console.log(`${counter.count} ${total} ${e.message}`);
+  }
+}

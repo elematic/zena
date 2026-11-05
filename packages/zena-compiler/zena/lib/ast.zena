@@ -138,14 +138,6 @@ export final class Module(
    * structures keep a hash map for it.
    */
   var lastNodeId: NodeId = 0 as NodeId;
-
-  /**
-   * Every contract clause in the module, or null when it has none.
-   * Nothing lowers clauses yet, and code generation refuses a program
-   * that has any, so that a contract is never accepted and then not
-   * enforced.
-   */
-  var contractClauses: GrowableArray<ContractClause> | null = null;
 }
 
 // ============================================================================
@@ -887,6 +879,15 @@ export final class ContractClause(
   /** The clause as written, `requires (n > 0)`, for the failure's message. */
   text: String,
   loc: SourceLocation | null) extends Node
+
+/** Whether `contracts` holds an `ensures` clause. */
+export function hasEnsuresClause(contracts: GrowableArray<ContractClause> | null): boolean {
+  if (contracts == null) { return false; }
+  for (let clause in contracts) {
+    if (clause.kind == ContractKind.Ensures) { return true; }
+  }
+  return false;
+}
 
 /**
  * The message of the error thrown when `clause` does not hold.

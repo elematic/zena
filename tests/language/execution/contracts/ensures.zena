@@ -1,0 +1,59 @@
+// @mode: run
+// @result: 59
+// An `ensures` clause is checked at every return, with `result` the
+// value being returned. A return that fails it throws a ContractError.
+
+// 1 when `run` fails a contract, 0 when it returns, 2 on any other error.
+function violates(run: () => i32): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+// Returns from several places: a `return` statement in a branch, one
+// in a loop, and the value at the end of the body.
+function clamp(value: i32, low: i32, high: i32): i32
+  ensures (low <= result && result <= high)
+{
+  if (value < low) {
+    return low;
+  }
+  for (var i = 0; i < 1; i += 1) {
+    if (value > high) {
+      return high;
+    }
+  }
+  value
+}
+
+// Wrong on purpose for odd numbers.
+function half(n: i32): i32 ensures (result * 2 == n) {
+  return n >> 1;
+}
+
+let double = (n: i32): i32 ensures (result >= n) => n * 2;
+
+var written = 0;
+
+// A function that returns nothing still checks on the way out.
+function write(n: i32): void ensures (written == n) {
+  if (n < 0) {
+    return;
+  }
+  written = n;
+}
+
+export function main(): i32 {
+  var score = clamp(5, 0, 10) + clamp(-5, 0, 10) + clamp(50, 0, 10); // 15
+  score += half(80); // +40
+  score += violates(() => half(3)); // +1
+  score += double(1); // +2
+  score += violates(() => double(-1)); // +1
+  write(7);
+  score += violates(() => { write(-1); return 0; }); // +1, since written stays 7
+  score += written - 8; // -1
+  return score;
+}

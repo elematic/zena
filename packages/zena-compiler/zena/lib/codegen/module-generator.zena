@@ -24,7 +24,7 @@ import { ClassType, TypeInterner, markTypes } from '../types.zena';
 import { Program } from '../program.zena';
 import {
   NumberLiteral, StringLiteral, BooleanLiteral, EnumDeclaration, ImportDeclaration, Module,
-  VariableDeclaration, IdentifierPattern, FunctionDeclaration, ContractKind,
+  VariableDeclaration, IdentifierPattern, FunctionDeclaration,
 } from '../ast.zena';
 import { isWebUiProtocolLibrary } from '../stdlib-manifest.zena';
 import { Symbol } from '../scope/symbol.zena';
@@ -384,20 +384,6 @@ export final class ModuleGenerator {
   }
 
   compile(): void {
-    // `ensures` clauses are checked, and nothing lowers them yet. A
-    // program that has one does not compile, so that a postcondition
-    // is never accepted and then not enforced
-    // (docs/design/contracts.md).
-    for (let unit in this.program.units) {
-      let clauses = unit.ast.contractClauses;
-      if (clauses == null) { continue; }
-      for (let clause in clauses) {
-        if (clause.kind == ContractKind.Ensures) {
-          throw new Error(`${unit.ast.path}: '${clause.text}' cannot be compiled yet.`);
-        }
-      }
-    }
-
     // Uids are hashCode for WasmType and WasmFunction, so they order
     // every hash container keyed by one, and that order reaches the
     // emitted bytes. Restart the sequence per module so a module is
