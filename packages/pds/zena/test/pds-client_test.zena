@@ -69,8 +69,6 @@ final class Harness {
   /** Each DID's operations, oldest first. */
   logs = new HashMap<String, Array<PlcOperation>>();
   var #server: Unmanaged<Server> | null = null;
-  /** Whether the client reaches the PDS over the network. */
-  var overNetwork = false;
 
   /** A harness over `pds`, in the same process. */
   new(pds: Pds = new Pds(new MemoryStorage())) : pds = pds, client = new InProcessPds(pds, APP_VIEW);
@@ -98,7 +96,6 @@ final class Harness {
     harness.client = new XrpcPds(`http://127.0.0.1:${server.port as i32}`, PDS_DID, APP_VIEW,
         new LocalSigner(appViewSigning));
     harness.#server = server.keepOpen();
-    harness.overNetwork = true;
     return harness;
   }
 
@@ -230,13 +227,9 @@ function clientConformance(make: () => Harness) {
       let held = runFuture(harness.client.getBlob(did, blob.cid));
       isTrue(held != null && held.mimeType == 'application/wasm' && held.bytes.length == bytes.length, 'the blob');
       // Only what the PDS's limits on managed accounts allow.
-      // TODO(#875): check it over the network too, where the refusal now
-      // hangs until the client's timeout.
-      if (!harness.overNetwork) {
-        equal(refusal(() => {
-          runFuture(harness.client.uploadBlob(did, 'text/html', '<script></script>'.toBytes()));
-        }), 'InvalidRequest');
-      }
+      equal(refusal(() => {
+        runFuture(harness.client.uploadBlob(did, 'text/html', '<script></script>'.toBytes()));
+      }), 'InvalidRequest');
       isNull(runFuture(harness.client.getBlob(did, Cid.forBlob('another'.toBytes()))));
       isTrue(refusal(() => {
         runFuture(harness.client.applyWrites(NOBODY, [new CreateRecord(NOTE, 'x', note('x')) as Write]));
