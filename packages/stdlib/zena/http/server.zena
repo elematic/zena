@@ -211,18 +211,34 @@ async function serve(app: App, state: ServerState): Future<void> {
 /** Runs one request through `app` and answers it. */
 async function dispatch(app: App, wire: Own<WireRequest>, writer: Own<ResponseWriter>): Future<void> {
   let res = new Response();
+  var sent = false;
   try {
-    await app.handleRequest(new Request.fromWire(wire), res);
-  } catch (e) {
-    writer.respond(textResponse('Internal Server Error\n', 500));
-    return;
-  }
-  let b = res.body;
-  if (b is String) {
-    completeTextResponse(writer, res, b, 'text/plain; charset=utf-8');
-  } else if (b == null) {
-    completeTextResponse(writer, res, '', '');
-  } else {
-    writer.respond(toWireResponse(res));
+    try {
+      await app.handleRequest(new Request.fromWire(wire), res);
+    } catch (e) {
+      writer.respond(textResponse('Internal Server Error\n', 500));
+      sent = true;
+      return;
+    }
+    let b = res.body;
+    if (b is String) {
+      completeTextResponse(writer, res, b, 'text/plain; charset=utf-8');
+      sent = true;
+    } else if (b == null) {
+      completeTextResponse(writer, res, '', '');
+      sent = true;
+    } else {
+      let wireRes = try {
+        toWireResponse(res)
+      } catch (e) {
+        textResponse('Internal Server Error\n', 500)
+      };
+      writer.respond(wireRes);
+      sent = true;
+    }
+  } finally {
+    if (!sent) {
+      res.body = null;
+    }
   }
 }

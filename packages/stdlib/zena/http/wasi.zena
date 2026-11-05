@@ -9,7 +9,7 @@ import {
   ErrorCode
 } from 'wasi:http/types';
 import { Completer, release } from 'zena:async';
-import { Option, Own, Result, unit } from 'zena:core';
+import { Borrow, Option, Own, Result, unit } from 'zena:core';
 import { Stream, bytesStream, textStream, readAllText } from 'zena:stream';
 import { Request } from './request.zena';
 import { Response } from './response.zena';
@@ -64,15 +64,33 @@ export function fromWireRequest(wire: Own<WireRequest>): Own<Request> {
   return new Request.fromWire(wire);
 }
 
+function appendHeaderField(
+  fields: Borrow<Fields>,
+  res: Response,
+  name: String,
+  value: FixedArray<u8>
+) {
+  if (let (false, err) = fields.append(name, value)) {
+    // Release any stream body attached to `res` before unwinding.
+    res.body = null;
+    throw new Error(`zena:http: invalid header: ${name}`);
+  }
+}
+
 /**
  * Converts a Response into a low-level WASI WireResponse resource along with its transmitted future.
  */
 export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>, Future<Result<void, ErrorCode>>) {
+  let status = res.statusCode;
+  if (status < 100 || status > 999) {
+    res.body = null;
+    throw new Error(`zena:http: invalid status code: ${status}`);
+  }
   let fields = Fields.create();
   let ct = res.contentTypeHeader;
   var hasCt = ct != null;
   if (hasCt) {
-    fields.append('content-type', contentTypeToBytes(ct as String));
+    appendHeaderField(fields, res, 'content-type', contentTypeToBytes(ct as String));
   }
   var hasCl = false;
   if (res.hasCustomHeaders) {
@@ -84,40 +102,45 @@ export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>
     for (let (name, val) in custom) {
       if (name == 'content-type') {
         hasCt = true;
-        fields.append(name, contentTypeToBytes(val));
+        appendHeaderField(fields, res, name, contentTypeToBytes(val));
       } else {
         if (name == 'content-length') {
+          if (status < 200 || status == 204) {
+            res.body = null;
+            throw new Error('zena:http: content-length is not allowed on 1xx or 204 responses');
+          }
           hasCl = true;
         }
-        fields.append(name, val.toBytes());
+        appendHeaderField(fields, res, name, val.toBytes());
       }
     }
   }
 
+  let mayHaveContentLength = status >= 200 && status != 204 && status != 304;
   let b = res.body;
   var streamOpt: Option<Stream<u8>> = none;
 
   if (b is String) {
     let s = b;
     if (!hasCt) {
-      fields.append('content-type', bytesTextPlain);
+      appendHeaderField(fields, res, 'content-type', bytesTextPlain);
     }
-    if (!hasCl) {
-      fields.append('content-length', lengthToBytes(s.length));
+    if (!hasCl && mayHaveContentLength) {
+      appendHeaderField(fields, res, 'content-length', lengthToBytes(s.length));
     }
     streamOpt = some(textStream(s));
   } else if (b is HTMLPartial) {
     if (!hasCt) {
-      fields.append('content-type', bytesTextHtml);
+      appendHeaderField(fields, res, 'content-type', bytesTextHtml);
     }
     streamOpt = some(htmlStream(b, 1024));
   } else if (b is FixedArray<u8>) {
     let bytes = b;
     if (!hasCt) {
-      fields.append('content-type', bytesOctetStream);
+      appendHeaderField(fields, res, 'content-type', bytesOctetStream);
     }
-    if (!hasCl) {
-      fields.append('content-length', lengthToBytes(bytes.length));
+    if (!hasCl && mayHaveContentLength) {
+      appendHeaderField(fields, res, 'content-length', lengthToBytes(bytes.length));
     }
     streamOpt = some(bytesStream(bytes));
   } else if (b is Stream<u8>) {
@@ -125,7 +148,6 @@ export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>
   }
 
   let (wireResp, transmitted) = WireResponse.new_(fields, streamOpt, noTrailers());
-  let status = res.statusCode;
   if (status != 200) {
     wireResp.setStatusCode(status as u16);
   }
@@ -149,14 +171,18 @@ export function toWireResponse(res: Response): Own<WireResponse> {
 export async function handleWireRequest(app: BaseApp, wire: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
   let res = new Response();
   await app.handleRequest(new Request.fromWire(wire), res);
-  return (true, toWireResponse(res));
+  return try {
+    (true, toWireResponse(res))
+  } catch (e) {
+    (true, textResponse('Internal Server Error\n', 500))
+  };
 }
 
 /**
  * An HTTP application with native WASI handler integration.
  */
 export class App extends BaseApp {
-  async handle(wireRequest: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
+  handle(wireRequest: Own<WireRequest>): Future<Result<Own<WireResponse>, ErrorCode>> {
     return handleWireRequest(this, wireRequest);
   }
 }

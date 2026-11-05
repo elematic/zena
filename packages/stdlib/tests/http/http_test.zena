@@ -2,11 +2,11 @@ import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { runFuture, TaskGroup, drainMicrotasks, release } from 'zena:async';
 import { Some, None, Option, Own, Unmanaged, none, Result } from 'zena:core';
-import { bytesStream } from 'zena:stream';
+import { StreamWriter, bytesStream } from 'zena:stream';
 import {
   App, AppOptions, Request, Response, Router, Server,
   compose, mount, matchPath, HttpError, statusText, Middleware, NextFunction,
-  Fields, WireRequest, ErrorCode, fromWireRequest
+  Fields, WireRequest, ErrorCode, fromWireRequest, toWireResponse
 } from 'zena:http';
 
 /** A wire request for `path` at 127.0.0.1:8080, with `headers`. */
@@ -462,6 +462,62 @@ export let tests = suite('zena:http', () => {
     for (var i = 0; i < 3; i += 1) {
       let req = fromWireRequest(wireRequest('/', Fields.create()));
       equal(req.path, '/');
+    }
+  });
+
+  test('replacing a stream response body stops the previous stream', (ctx) => {
+    let writer = new StreamWriter<u8>();
+    var stopped = false;
+    writer.write(1 as u8).then((result) => {
+      if (let (false, _) = result) {
+        stopped = true;
+      }
+    });
+    let res = new Response();
+    let stream = writer.stream;
+    res.body = stream;
+    // Assigning the same stream instance does not stop it.
+    res.body = stream;
+    drainMicrotasks();
+    isTrue(!stopped, 'assigning the same stream keeps it open');
+
+    res.body = 'replaced';
+    drainMicrotasks();
+    isTrue(stopped, 'replacing a stream body stops the previous stream');
+  });
+
+  test('toWireResponse rejects invalid headers and stops an attached stream body', (ctx) => {
+    let writer = new StreamWriter<u8>();
+    var stopped = false;
+    writer.write(1 as u8).then((result) => {
+      if (let (false, _) = result) {
+        stopped = true;
+      }
+    });
+    let res = new Response();
+    res.setHeader('transfer-encoding', 'chunked');
+    res.body = writer.stream;
+
+    var threw = false;
+    try {
+      let _ = toWireResponse(res);
+    } catch (e) {
+      threw = true;
+    }
+    drainMicrotasks();
+    isTrue(threw, 'toWireResponse throws on forbidden header');
+    isTrue(stopped, 'stream body is stopped when header serialization fails');
+
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      res.setHeader('transfer-encoding', 'chunked');
+      res.body = 'bad';
+    });
+    let result = runFuture(app.handle(wireRequest('/', Fields.create())));
+    if (let (true, wireRes) = result) {
+      equal(wireRes.getStatusCode() as i32, 500);
+    } else {
+      isTrue(false, 'expected 500 WireResponse');
     }
   });
 });

@@ -965,6 +965,7 @@ type PendingResponseSender = tokio::sync::oneshot::Sender<http::Response<Respons
 struct SharedIncomingState {
     body: Option<hyper::body::Incoming>,
     polled: bool,
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Shares a non-empty `hyper::body::Incoming` between the WASI request
@@ -976,13 +977,14 @@ struct SharedIncomingState {
 struct SharedIncomingBody(Option<Arc<Mutex<SharedIncomingState>>>);
 
 impl SharedIncomingBody {
-    fn new(body: hyper::body::Incoming) -> Self {
+    fn new(body: hyper::body::Incoming, abandoned: Arc<std::sync::atomic::AtomicBool>) -> Self {
         if http_body::Body::is_end_stream(&body) {
             Self(None)
         } else {
             Self(Some(Arc::new(Mutex::new(SharedIncomingState {
                 body: Some(body),
                 polled: false,
+                abandoned,
             }))))
         }
     }
@@ -991,7 +993,19 @@ impl SharedIncomingBody {
         let Some(state) = &self.0 else {
             return;
         };
-        let body = state.lock().unwrap().body.take();
+        let body = {
+            let mut guard = state.lock().unwrap();
+            let taken = guard.body.take();
+            if taken
+                .as_ref()
+                .is_some_and(|b| !http_body::Body::is_end_stream(b))
+            {
+                guard
+                    .abandoned
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            taken
+        };
         drop(body);
     }
 
@@ -1002,7 +1016,16 @@ impl SharedIncomingBody {
         let body = {
             let mut guard = state.lock().unwrap();
             if !guard.polled {
-                guard.body.take()
+                let taken = guard.body.take();
+                if taken
+                    .as_ref()
+                    .is_some_and(|b| !http_body::Body::is_end_stream(b))
+                {
+                    guard
+                        .abandoned
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                taken
             } else {
                 None
             }
@@ -1110,6 +1133,7 @@ impl Drop for ReleaseIncomingOnFinish {
 
 struct IncomingRequest {
     req: http::Request<SharedIncomingBody>,
+    authority: Option<http::uri::Authority>,
     res_tx: PendingResponseSender,
 }
 
@@ -1202,12 +1226,22 @@ impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProduc
         };
         let mut batch = Vec::with_capacity(max_items.min(16));
         let push_item = |store: &mut StoreContextMut<'_, ComponentState>,
-                         IncomingRequest { req, res_tx }|
+                         IncomingRequest {
+                             req,
+                             authority,
+                             res_tx,
+                         }|
          -> Result<Self::Item> {
-            let (wasi_req, _body_fut) = wasmtime_wasi_http::p3::Request::from_http(
+            let (mut wasi_req, _body_fut) = wasmtime_wasi_http::p3::Request::from_http(
                 &mut store.data_mut().http_hooks,
                 req,
             );
+            if wasi_req.scheme.is_none() {
+                wasi_req.scheme = Some(http::uri::Scheme::HTTP);
+            }
+            if wasi_req.authority.is_none() {
+                wasi_req.authority = authority;
+            }
             let req_res = store.data_mut().table.push(wasi_req)?;
             let writer_res = store.data_mut().table.push(ResponseWriterState {
                 tx: Some(res_tx),
@@ -1336,6 +1370,95 @@ impl http_server::HostResponseWriterWithStore<ComponentState> for HasSelf<Compon
     }
 }
 
+fn internal_error_response() -> http::Response<ResponseBody> {
+    use http_body_util::BodyExt as _;
+    http::Response::builder()
+        .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+        .header(http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(
+            http_body_util::Full::new(bytes::Bytes::from_static(b"Internal Server Error\n"))
+                .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                .boxed_unsync(),
+        )
+        .unwrap()
+}
+
+fn build_text_response(
+    hooks: &mut dyn wasmtime_wasi_http::WasiHttpHooks,
+    status: u16,
+    content_type: String,
+    headers: Vec<(String, String)>,
+    body: String,
+) -> Option<http::Response<ResponseBody>> {
+    use http_body_util::BodyExt as _;
+    let status_code = http::StatusCode::from_u16(status).ok()?;
+    let is_forbidden = hooks.forbidden_header_filter();
+    let body_bytes = bytes::Bytes::from(body.into_bytes());
+    let body_len = body_bytes.len();
+    let mut resp = http::Response::new(
+        http_body_util::Full::new(body_bytes)
+            .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+            .boxed_unsync(),
+    );
+    *resp.status_mut() = status_code;
+    let hmap = resp.headers_mut();
+    if !content_type.is_empty() {
+        let ct_val = match content_type.as_str() {
+            "application/json; charset=utf-8" => {
+                http::HeaderValue::from_static("application/json; charset=utf-8")
+            }
+            "application/json" => http::HeaderValue::from_static("application/json"),
+            "text/plain; charset=utf-8" => {
+                http::HeaderValue::from_static("text/plain; charset=utf-8")
+            }
+            "text/html; charset=utf-8" => {
+                http::HeaderValue::from_static("text/html; charset=utf-8")
+            }
+            _ => http::HeaderValue::try_from(content_type).ok()?,
+        };
+        hmap.insert(http::header::CONTENT_TYPE, ct_val);
+    }
+    let mut explicit_cl: Option<u64> = None;
+    for (k, v) in headers {
+        let name = http::header::HeaderName::try_from(k.as_str()).ok()?;
+        if (is_forbidden)(&name) {
+            return None;
+        }
+        if name == http::header::CONTENT_LENGTH {
+            if explicit_cl.is_some()
+                || status_code.is_informational()
+                || status_code == http::StatusCode::NO_CONTENT
+            {
+                return None;
+            }
+            if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let cl: u64 = v.parse().ok()?;
+            if body_len > 0 && cl != body_len as u64 {
+                return None;
+            }
+            explicit_cl = Some(cl);
+            hmap.insert(http::header::CONTENT_LENGTH, http::HeaderValue::from(cl));
+        } else {
+            let val = http::HeaderValue::try_from(v).ok()?;
+            hmap.append(name, val);
+        }
+    }
+    if explicit_cl.is_none()
+        && body_len > 0
+        && !status_code.is_informational()
+        && status_code != http::StatusCode::NO_CONTENT
+        && status_code != http::StatusCode::NOT_MODIFIED
+    {
+        hmap.insert(
+            http::header::CONTENT_LENGTH,
+            http::HeaderValue::from(body_len),
+        );
+    }
+    Some(resp)
+}
+
 impl http_server::HostResponseWriter for ComponentState {
     fn complete_text(
         &mut self,
@@ -1347,58 +1470,14 @@ impl http_server::HostResponseWriter for ComponentState {
     ) -> Result<()> {
         let mut writer_state = self.table.delete(writer)?;
         if let Some(sender) = writer_state.tx.take() {
-            use http_body_util::BodyExt as _;
-            let status_code =
-                http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::OK);
-            let body_bytes = bytes::Bytes::from(body.into_bytes());
-            let body_len = body_bytes.len();
-            let mut resp = http::Response::new(
-                http_body_util::Full::new(body_bytes)
-                    .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
-                        match e {}
-                    })
-                    .boxed_unsync(),
-            );
-            *resp.status_mut() = status_code;
-            let hmap = resp.headers_mut();
-            if !content_type.is_empty() {
-                let ct_val = match content_type.as_str() {
-                    "application/json; charset=utf-8" => Some(http::HeaderValue::from_static(
-                        "application/json; charset=utf-8",
-                    )),
-                    "application/json" => {
-                        Some(http::HeaderValue::from_static("application/json"))
-                    }
-                    "text/plain; charset=utf-8" => {
-                        Some(http::HeaderValue::from_static("text/plain; charset=utf-8"))
-                    }
-                    "text/html; charset=utf-8" => {
-                        Some(http::HeaderValue::from_static("text/html; charset=utf-8"))
-                    }
-                    _ => http::HeaderValue::try_from(content_type).ok(),
-                };
-                if let Some(val) = ct_val {
-                    hmap.insert(http::header::CONTENT_TYPE, val);
-                }
-            }
-            let mut has_cl = false;
-            for (k, v) in headers {
-                if k.eq_ignore_ascii_case("content-length") {
-                    has_cl = true;
-                }
-                if let (Ok(name), Ok(val)) = (
-                    http::header::HeaderName::try_from(k),
-                    http::HeaderValue::try_from(v),
-                ) {
-                    hmap.append(name, val);
-                }
-            }
-            if !has_cl {
-                hmap.insert(
-                    http::header::CONTENT_LENGTH,
-                    http::HeaderValue::from(body_len),
-                );
-            }
+            let resp = build_text_response(
+                &mut self.http_hooks,
+                status,
+                content_type,
+                headers,
+                body,
+            )
+            .unwrap_or_else(internal_error_response);
             let _ = sender.send(resp);
         }
         Ok(())
@@ -1499,6 +1578,52 @@ impl ServerLimits {
     }
 }
 
+fn parse_authority(authority: &str) -> Option<http::uri::Authority> {
+    let authority = authority.trim();
+    if authority.is_empty() {
+        return None;
+    }
+    let has_port = match authority.rfind(']') {
+        Some(i) => authority[i..].contains(':'),
+        None => authority.contains(':'),
+    };
+    let parsed = http::uri::Authority::try_from(authority).ok()?;
+    if has_port && parsed.port_u16().is_none() {
+        return None;
+    }
+    Some(parsed)
+}
+
+/// Populates the `http` scheme and `Host` authority on incoming HTTP/1.x
+/// requests before `Request::from_http` strips `Host` from the header map.
+/// Returns the resolved authority so request targets whose URI form cannot
+/// hold an authority in `http::Uri` (such as `OPTIONS *`) still carry it onto
+/// `wasmtime_wasi_http::p3::Request`.
+fn populate_http1_uri(parts: &mut http::request::Parts) -> Option<http::uri::Authority> {
+    let authority = parts.uri.authority().cloned().or_else(|| {
+        parts
+            .headers
+            .get(http::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .and_then(parse_authority)
+    });
+    if parts.uri.scheme().is_none()
+        && parts.uri.path() != "*"
+        && let Some(ref auth) = authority
+    {
+        let mut uri_parts = parts.uri.clone().into_parts();
+        uri_parts.scheme = Some(http::uri::Scheme::HTTP);
+        uri_parts.authority = Some(auth.clone());
+        if uri_parts.path_and_query.is_none() {
+            uri_parts.path_and_query = Some(http::uri::PathAndQuery::from_static("/"));
+        }
+        if let Ok(uri) = http::Uri::from_parts(uri_parts) {
+            parts.uri = uri;
+        }
+    }
+    authority
+}
+
 /// Accepts connections on `listener` within `limits`, and sends each
 /// request they carry to `request_tx`, until `shutdown_rx` fires or
 /// `shutdown` is set.
@@ -1527,27 +1652,37 @@ async fn accept_connections(
         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
-        let (stream, _) = match accept_res {
+        let (mut stream, _) = match accept_res {
             Ok(conn) => conn,
             Err(_) => continue,
         };
         let _ = stream.set_nodelay(true);
-        let io = wasmtime_wasi_http::io::TokioIo::new(stream);
         let req_tx = request_tx.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
             use http_body_util::BodyExt as _;
+            let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let service_abandoned = abandoned.clone();
             let service = hyper::service::service_fn(
                 move |req: http::Request<hyper::body::Incoming>| {
                     let req_tx = req_tx.clone();
-                    let (parts, body) = req.into_parts();
-                    let shared_body = SharedIncomingBody::new(body);
+                    service_abandoned.store(false, std::sync::atomic::Ordering::Relaxed);
+                    let (mut parts, body) = req.into_parts();
+                    let authority = populate_http1_uri(&mut parts);
+                    let shared_body = SharedIncomingBody::new(body, service_abandoned.clone());
                     let req = http::Request::from_parts(parts, shared_body.clone());
                     async move {
                         let (res_tx, res_rx) = tokio::sync::oneshot::channel();
 
-                        if req_tx.send(IncomingRequest { req, res_tx }).is_err() {
+                        if req_tx
+                            .send(IncomingRequest {
+                                req,
+                                authority,
+                                res_tx,
+                            })
+                            .is_err()
+                        {
                             shared_body.release();
                             let err_resp = http::Response::builder()
                                 .status(http::StatusCode::INTERNAL_SERVER_ERROR)
@@ -1606,8 +1741,31 @@ async fn accept_connections(
             let _ = hyper::server::conn::http1::Builder::new()
                 .timer(hyper_util::rt::TokioTimer::new())
                 .header_read_timeout(limits.header_read_timeout)
-                .serve_connection(io, service)
+                .serve_connection(wasmtime_wasi_http::io::TokioIo::new(&mut stream), service)
                 .await;
+
+            // RFC 9112 §9.6: when the server answered early and dropped an
+            // unread request body, closing the socket immediately while client
+            // body bytes are still arriving makes the kernel send a TCP RST
+            // that can wipe out the response in flight. Half-close the write
+            // side first so the client sees the response and EOF, then drain
+            // remaining in-flight bytes briefly until the client closes.
+            if abandoned.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream).await;
+                let _ = tokio::time::timeout(Duration::from_millis(250), async {
+                    use tokio::io::AsyncReadExt as _;
+                    let mut buf = [0u8; 8192];
+                    let mut remaining = 512 * 1024usize;
+                    while remaining > 0 {
+                        let chunk = buf.len().min(remaining);
+                        match stream.read(&mut buf[..chunk]).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => remaining -= n,
+                        }
+                    }
+                })
+                .await;
+            }
         });
     }
 }
@@ -1849,5 +2007,103 @@ mod server_tests {
         let bad = ServerLimits::from_vars(Some("0".into()), Some("many".into()));
         assert_eq!(bad.header_read_timeout, Duration::from_secs(30));
         assert_eq!(bad.max_connections, 1024);
+    }
+
+    #[test]
+    fn populate_http1_uri_reads_host_and_handles_ipv6_and_asterisk() {
+        let (mut parts, ()) = http::Request::builder()
+            .uri("/items?page=2")
+            .header(http::header::HOST, "example.test:9090")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let auth = populate_http1_uri(&mut parts);
+        assert_eq!(auth.unwrap().as_str(), "example.test:9090");
+        assert_eq!(parts.uri.to_string(), "http://example.test:9090/items?page=2");
+
+        let (mut ipv6_parts, ()) = http::Request::builder()
+            .uri("/v6")
+            .header(http::header::HOST, "[::1]:8080")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let ipv6_auth = populate_http1_uri(&mut ipv6_parts);
+        assert_eq!(ipv6_auth.unwrap().as_str(), "[::1]:8080");
+        assert_eq!(ipv6_parts.uri.to_string(), "http://[::1]:8080/v6");
+
+        let (mut star_parts, ()) = http::Request::builder()
+            .method(http::Method::OPTIONS)
+            .uri("*")
+            .header(http::header::HOST, "example.test:9090")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let star_auth = populate_http1_uri(&mut star_parts);
+        assert_eq!(star_auth.unwrap().as_str(), "example.test:9090");
+        assert_eq!(star_parts.uri.to_string(), "*");
+
+        let (mut bad_port_parts, ()) = http::Request::builder()
+            .uri("/bad")
+            .header(http::header::HOST, "example.test:abc")
+            .body(())
+            .unwrap()
+            .into_parts();
+        assert!(populate_http1_uri(&mut bad_port_parts).is_none());
+    }
+
+    #[test]
+    fn build_text_response_validates_headers_and_bodyless_statuses() {
+        let mut hooks = crate::http_client::HttpHooks::default();
+
+        let ok = build_text_response(
+            &mut hooks,
+            200,
+            "text/plain; charset=utf-8".into(),
+            vec![("x-ok".into(), "yes".into())],
+            "hello".into(),
+        )
+        .unwrap();
+        assert_eq!(ok.headers().get(http::header::CONTENT_LENGTH).unwrap(), "5");
+
+        let r204 = build_text_response(&mut hooks, 204, String::new(), vec![], String::new()).unwrap();
+        assert!(r204.headers().get(http::header::CONTENT_LENGTH).is_none());
+
+        let r304 = build_text_response(&mut hooks, 304, String::new(), vec![], String::new()).unwrap();
+        assert!(r304.headers().get(http::header::CONTENT_LENGTH).is_none());
+
+        // Forbidden headers, CRLF values, duplicate or mismatched Content-Length,
+        // and Content-Length on 204 all fail validation.
+        assert!(build_text_response(
+            &mut hooks,
+            200,
+            "text/plain".into(),
+            vec![("transfer-encoding".into(), "chunked".into())],
+            "bad".into(),
+        )
+        .is_none());
+        assert!(build_text_response(
+            &mut hooks,
+            200,
+            "text/plain".into(),
+            vec![("x-bad".into(), "a\r\nb".into())],
+            "bad".into(),
+        )
+        .is_none());
+        assert!(build_text_response(
+            &mut hooks,
+            200,
+            "text/plain".into(),
+            vec![("content-length".into(), "99".into())],
+            "bad".into(),
+        )
+        .is_none());
+        assert!(build_text_response(
+            &mut hooks,
+            204,
+            String::new(),
+            vec![("content-length".into(), "0".into())],
+            String::new(),
+        )
+        .is_none());
     }
 }
