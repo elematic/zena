@@ -149,6 +149,20 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     }
   });
 
+  test("keeps each automation account's one token hash", (ctx) => {
+    let store = make();
+    isNull(runFuture(store.automationAccountOf('aa')));
+    runFuture(store.setAutomationToken(ALICE, 'aa'));
+    runFuture(store.setAutomationToken(BOB, 'bb'));
+    equal(runFuture(store.automationAccountOf('aa')) as String, ALICE);
+    equal(runFuture(store.automationAccountOf('bb')) as String, BOB);
+    // A new one replaces the account's old one.
+    runFuture(store.setAutomationToken(ALICE, 'cc'));
+    isNull(runFuture(store.automationAccountOf('aa')));
+    equal(runFuture(store.automationAccountOf('cc')) as String, ALICE);
+    equal(runFuture(store.automationAccountOf('bb')) as String, BOB);
+  });
+
   test('keeps member entries', (ctx) => {
     let store = make();
     equal(runFuture(store.entries(ALICE)).length, 0);

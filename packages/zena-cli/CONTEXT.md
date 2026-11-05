@@ -32,7 +32,7 @@ the `zena` command. The design is in
      through the registry's `put*` methods, `retract.zena`, for
      `zena retract`, `approve.zena`, for `zena approve`, which attests a
      release waiting for its maintainers and asks the registry to complete
-     it, and `ci.zena`, for `zena ci create`.
+     it, and `ci.zena`, for `zena ci create` and `zena ci token`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked

@@ -11,7 +11,8 @@ import {JsonArray, JsonObject} from 'zena:json';
 import {fromJson} from 'atproto:data';
 import {xrpcPath} from 'atproto:methods';
 import {
-  CREATE_AUTOMATION_ACCOUNT, CREATE_ORGANIZATION, CREATE_PACKAGE, LIST_PACKAGES, LIST_SCOPES, PUT_SCOPE_PROFILE
+  CREATE_AUTOMATION_ACCOUNT, CREATE_ORGANIZATION, CREATE_PACKAGE, ISSUE_AUTOMATION_TOKEN, LIST_PACKAGES, LIST_SCOPES,
+  PUT_SCOPE_PROFILE
 } from 'package-manager:registry-methods';
 import {Created, AppView} from '../app-view.zena';
 import {fail, json, jsonBody, nowMicros, strings} from 'pds:xrpc/common';
@@ -66,7 +67,21 @@ export function accountRoutes(router: Router, appView: AppView): void {
     let answer = new JsonObject();
     answer['did'] = made.did;
     answer['handle'] = made.handle;
-    answer['appPassword'] = made.appPassword;
+    answer['token'] = made.token;
+    return answer;
+  });
+
+  registryProcedure(router, appView, ISSUE_AUTOMATION_TOKEN, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['account'] is String)) {
+      fail(res, 400, 'InvalidRequest', 'account is required');
+      return null;
+    }
+    let answer = new JsonObject();
+    answer['token'] = await appView.issueAutomationToken(caller, input['account'] as String);
     return answer;
   });
 

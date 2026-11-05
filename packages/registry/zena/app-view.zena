@@ -26,6 +26,8 @@
 import {Future} from 'zena:async';
 import {join} from 'zena:core';
 import {HashMap, HashSet} from 'zena:collections';
+import {sha256} from 'zena:crypto';
+import {base64Url, hex} from 'zena:encoding';
 import {cidForValue, decodeCbor, encodeCbor} from 'atproto:cbor';
 import {readCar} from 'atproto:car';
 import {verifyRecordProof} from 'atproto:repo';
@@ -33,7 +35,7 @@ import {fetch} from 'zena:fetch';
 import {timeout} from 'zena:task';
 import {BlobRef, MapValue, Value} from 'atproto:data';
 import {Cid} from 'atproto:cid';
-import {KeyType, PublicKey, parseDidKey, verifySignature} from 'atproto:didkey';
+import {PublicKey, parseDidKey, verifySignature} from 'atproto:didkey';
 import {PlcOperation, PlcService, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {REGISTRY_SERVICE, REGISTRY_TYPE} from 'package-manager:registry-methods';
 import {Identity, IdentityResolver} from 'atproto:identity';
@@ -78,12 +80,18 @@ import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from '
 import {Sessions} from 'pds:sessions';
 import {Signer} from 'pds:signer';
 import {formatTimestamp, milliseconds} from 'zena:time';
-import {AccountKind, Head, SigningKey} from 'pds:storage';
+import {AccountKind, Head} from 'pds:storage';
 import {compareKeys} from 'atproto:mst';
 import {SYNC_GET_RECORD, xrpcPath} from 'atproto:methods';
 
 /** The most recovery keys an account's genesis operation ranks above the App View's keys. */
 let MAX_RECOVERY_KEYS = 3;
+
+/**
+ * How every automation account's token starts, so that one is told from a
+ * service-auth token, and found by secret scanners.
+ */
+export let AUTOMATION_TOKEN_PREFIX = 'zena_ci_';
 
 /** How long a release waits for approval before its version is free again: seven days. */
 export let PENDING_MICROS = ((7 * 24 * 60 * 60) as i64) * (1000000 as i64);
@@ -184,6 +192,13 @@ export interface AppViewStore {
    * since in its place.
    */
   dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void>;
+  /**
+   * Keeps `hash`, the SHA-256 of the token an automation account calls
+   * with, in hex, as `did`'s only one: a token kept before stops working.
+   */
+  setAutomationToken(did: String, hash: String): Future<void>;
+  /** The automation account whose token's SHA-256, in hex, is `hash`, or null. */
+  automationAccountOf(hash: String): Future<String | null>;
 }
 
 /**
@@ -254,6 +269,9 @@ export final class MemoryAppViewStore implements AppViewStore {
   #summaries = new HashMap<String, KeptSummary>();
   /** The accounts that mention each subject. */
   #mentions = new HashMap<String, HashSet<String>>();
+  /** Each automation account's token hash, and whose each hash is. */
+  #tokenHashes = new HashMap<String, String>();
+  #tokenAccounts = new HashMap<String, String>();
 
   async putAccount(account: AppViewAccount): Future<void> {
     this.#accounts[account.did] = account;
@@ -464,6 +482,21 @@ export final class MemoryAppViewStore implements AppViewStore {
     }
     this.#entries[account] = list;
   }
+
+  async setAutomationToken(did: String, hash: String): Future<void> {
+    if (let (true, old) = this.#tokenHashes.get(did)) {
+      this.#tokenAccounts.delete(old);
+    }
+    this.#tokenHashes[did] = hash;
+    this.#tokenAccounts[hash] = did;
+  }
+
+  async automationAccountOf(hash: String): Future<String | null> {
+    if (let (true, did) = this.#tokenAccounts.get(hash)) {
+      return did;
+    }
+    return null;
+  }
 }
 
 /** An account `#prepareAccount` made ready, with the DID it will have. */
@@ -543,13 +576,6 @@ export final class AppViewConfig {
 /** Sends a signed operation for a DID to the PLC directory. */
 export type PlcSubmitter = (did: String, operation: PlcOperation) => Future<void>;
 
-/**
- * Makes the automation account `did`, named `handle`, on the PDS, as an
- * account that signs in and writes its own repository with `key`
- * (`AppView.makeAutomationAccount`).
- */
-export type AutomationAccountMaker = (did: String, handle: String, key: SigningKey) => Future<void>;
-
 /** `count` random bytes. */
 export type RandomBytes = (count: i32) => FixedArray<u8>;
 
@@ -565,19 +591,8 @@ export final class Created {
 
 /** The `dev.zena-lang.registry.*` methods, over a PDS's accounts. */
 export final class AppView {
-  /**
-   * Signs accounts in, and gives automation accounts their app passwords;
-   * without it, `createAutomationAccount` is not offered.
-   */
+  /** Signs the site's web sessions and the URLs of its avatars. */
   var sessions: Sessions | null = null;
-  /**
-   * Makes an automation account on the PDS, one that signs in with an app
-   * password and writes its own attestations; without it, as without
-   * `sessions`, `createAutomationAccount` is not offered.
-   */
-  // TODO(#853): make automation accounts managed accounts, which the App View
-  // writes for with a token it issues, and drop this and `sessions`.
-  var makeAutomationAccount: AutomationAccountMaker | null = null;
   /** Reads other PDSes' records in place of the App View's own reading, as tests do; null reads them. */
   var remoteRecords: RemoteRecords | null = null;
   config: AppViewConfig;
@@ -755,7 +770,8 @@ export final class AppView {
   /**
    * The DID of the account a call to `method` comes from, read from its
    * `authorization` header: a service-auth token for this App View and that
-   * method, not seen before. Throws `AppViewError`.
+   * method, not seen before; or an automation account's token, which this
+   * App View issued and has not revoked. Throws `AppViewError`.
    */
   async authenticate(authorization: String | null, method: String, nowSeconds: i64): Future<String> {
     if (authorization == null || !authorization.startsWith('Bearer ')) {
@@ -763,6 +779,13 @@ export final class AppView {
     }
     let header = authorization;
     let token = header.sliceBytes(7, header.length);
+    if (token.startsWith(AUTOMATION_TOKEN_PREFIX)) {
+      let did = await this.#store.automationAccountOf(tokenHash(token));
+      if (did == null) {
+        throw new AppViewError(401, 'InvalidToken', 'the token is not an automation token this App View holds');
+      }
+      return did;
+    }
     try {
       let claims = await verifyServiceAuth(token, this.config.serviceDid, method, nowSeconds, this.#keys);
       this.#replays.accept(claims, nowSeconds);
@@ -828,20 +851,17 @@ export final class AppView {
 
   /**
    * `createAutomationAccount`: an account named `name` in `org`'s scope,
-   * for CI to publish as, with an app password, which is returned and
-   * never shown again. The caller must be an owner or admin of `org`. The
-   * account is a maintainer of nothing until a package's owners add it,
-   * marked `automation`; it can sign in, write attestations to its own
-   * repository, and call the App View's methods, and nothing else. Its name
-   * is taken in the scope as a package's would be. It has no recovery
-   * keys: the App View holds it, as it holds the organization.
+   * for CI to publish as, with a token, which is returned and never shown
+   * again. The caller must be an owner or admin of `org`. The account is a
+   * maintainer of nothing until a package's owners add it, marked
+   * `automation`. It is a managed account like the others, which no one
+   * signs in to: CI calls the App View's methods with its token, and the
+   * App View writes its attestations of what it publishes
+   * (package-manager.md, "Publishing a release"). Its name is taken in the
+   * scope as a package's would be. It has no recovery keys: the App View
+   * holds it, as it holds the organization.
    */
   async createAutomationAccount(caller: String, org: String, name: String, nowMicros: i64): Future<Automation> {
-    let sessions = this.sessions;
-    let make = this.makeAutomationAccount;
-    if (sessions == null || make == null) {
-      throw new AppViewError(501, 'MethodNotImplemented', 'this App View has no sessions to sign automation accounts in');
-    }
     let organization = await this.#account(org, AccountKind.Organization, 'an organization');
     if (!isAdmin(await this.#orgRole(org, caller))) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
@@ -854,20 +874,42 @@ export final class AppView {
       throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
     let handle = `${name}.${scope}.${this.config.domain}`;
-    let key = new SigningKey(KeyType.Secp256k1, this.#random(32));
-    let prepared = await this.#prepareAccount(handle, [], key);
+    let prepared = await this.#prepareAccount(handle, []);
     let did = prepared.did;
     if (!(await this.#store.claimName(scope, name, did))) {
       throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
     let store = this.#store;
     let account = await this.#createAccount(prepared, new AppViewAccount(did, handle, AccountKind.Automation, scope, name),
-        async (): Future<void> => { await store.releaseName(scope, name, did); },
-        async (): Future<void> => { await make(did, handle, key); });
-    let password = await sessions.addAppPassword(account.did, 'ci',
-        formatTimestamp(nowMicros * (1000 as i64)));
+        async (): Future<void> => { await store.releaseName(scope, name, did); });
+    let token = await this.#issueToken(account.did);
     await this.#records.set(handle, account.did);
-    return new Automation(account.did, handle, password);
+    return new Automation(account.did, handle, token);
+  }
+
+  /**
+   * `issueAutomationToken`: a new token for the automation account
+   * `account`, which is returned and never shown again, in place of the
+   * one it had, which stops working. The caller must be an owner or admin
+   * of its organization.
+   */
+  async issueAutomationToken(caller: String, account: String): Future<String> {
+    let held = await this.#store.account(account);
+    if (held == null || held.kind != AccountKind.Automation) {
+      throw new AppViewError(400, 'InvalidRequest', `${account} is not an automation account on this App View`);
+    }
+    let org = await this.#store.scopeOwner(held.scope);
+    if (org == null || !isAdmin(await this.#orgRole(org, caller))) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${held.scope}`);
+    }
+    return await this.#issueToken(account);
+  }
+
+  /** A new token for the automation account `did`, kept as its only one. */
+  async #issueToken(did: String): Future<String> {
+    let token = `${AUTOMATION_TOKEN_PREFIX}${base64Url.encode(this.#random(32), false)}`;
+    await this.#store.setAutomationToken(did, tokenHash(token));
+    return token;
   }
 
   /**
@@ -1021,17 +1063,37 @@ export final class AppView {
     let cid = Cid.forDagCbor(record);
     let created = new Created(account.did, account.handle, `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
     var held = await this.#held(pkg, version, nowMicros);
-    if (held == null) {
-      if (await this.#store.holdRelease(pkg, new PendingRelease(version, record, cid, caller, nowMicros))) {
-        return created;
-      }
-      // Another publish of the version holds it.
-      held = await this.#held(pkg, version, nowMicros);
+    if (held == null && await this.#store.holdRelease(pkg, new PendingRelease(version, record, cid, caller, nowMicros))) {
+      await this.#attestForAutomation(caller, created, nowMicros);
+      return created;
     }
+    // Another publish of the version holds it.
+    held = held ?? await this.#held(pkg, version, nowMicros);
     if (held != null && held.cid.equals(cid)) {
+      await this.#attestForAutomation(caller, created, nowMicros);
       return created;
     }
     throw new AppViewError(400, 'VersionExists', `${pkg} has a release ${version} waiting for approval`);
+  }
+
+  /**
+   * Writes the attestation of `created` to `caller`'s repository when the
+   * caller is an automation account this App View holds, which calls with
+   * a token and has no session of its own to write with
+   * (package-manager.md, "Publishing a release"). `#tally` counts it only
+   * together with a person's.
+   */
+  async #attestForAutomation(caller: String, created: Created, nowMicros: i64): Future<void> {
+    let held = await this.#store.account(caller);
+    if (held == null || held.kind != AccountKind.Automation) {
+      return;
+    }
+    let rkey = attestationKey(created.uri, created.cid);
+    if ((await this.#current(caller, ATTESTATION_TYPE, rkey)) != null) {
+      return;
+    }
+    let attestation = new Attestation(created.uri, created.cid, formatTimestamp(nowMicros * (1000 as i64)));
+    await this.#write(held, ATTESTATION_TYPE, rkey, attestation.toValue());
   }
 
   /**
@@ -1596,11 +1658,9 @@ export final class AppView {
    * "Creating a package"). It ranks `recoveryKeys` first, then the
    * operator's offline key, then the online rotation key, which signs it.
    * A PLC operation lists at most five rotation keys, and the App View
-   * keeps two of them for its own. An automation account names `local`,
-   * the key it signs in with, in place of a reserved one.
+   * keeps two of them for its own.
    */
-  async #prepareAccount(handle: String, recoveryKeys: Array<String>, local: SigningKey | null = null)
-      : Future<PreparedAccount> {
+  async #prepareAccount(handle: String, recoveryKeys: Array<String>): Future<PreparedAccount> {
     if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
       throw new AppViewError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
     }
@@ -1617,7 +1677,7 @@ export final class AppView {
       rotation.push(offline);
     }
     rotation.push(this.config.rotationKey.publicKey());
-    let signingKey = if (local != null) local.publicKey() else await this.#pds.reserveSigningKey();
+    let signingKey = await this.#pds.reserveSigningKey();
     let unsigned = genesisOperation(signingKey, rotation, handle, this.config.endpoint);
     unsigned.services[REGISTRY_SERVICE] = new PlcService(REGISTRY_TYPE, this.config.endpoint);
     let operation = unsigned.withSignature(await this.config.rotationKey.sign(unsigned.signingBytes()));
@@ -1626,21 +1686,16 @@ export final class AppView {
 
   /**
    * Sends `prepared`'s genesis operation to the PLC directory, has the PDS
-   * make the account, with `make` in place of `PdsClient.createAccount`
-   * when it is given, and records the account as `account`. When any of
+   * make the account, and records the account as `account`. When any of
    * these fails, runs `release`, to give up the name taken for it, and
    * throws. An account the PDS made is left there, with no name on this
    * App View.
    */
-  async #createAccount(prepared: PreparedAccount, account: AppViewAccount, release: () => Future<void>,
-      make: (() => Future<void>) | null = null): Future<AppViewAccount> {
+  async #createAccount(prepared: PreparedAccount, account: AppViewAccount, release: () => Future<void>)
+      : Future<AppViewAccount> {
     try {
       await this.#submit(prepared.did, prepared.operation);
-      if (make != null) {
-        await make();
-      } else {
-        await this.#pds.createAccount(prepared.did, prepared.handle, prepared.signingKey);
-      }
+      await this.#pds.createAccount(prepared.did, prepared.handle, prepared.signingKey);
       await this.#store.putAccount(account);
       return account;
     } catch (e) {
@@ -2672,13 +2727,18 @@ export final class PackageDetail {
   new(this.did, this.handle, this.scope);
 }
 
-/** An automation account `createAutomationAccount` made, with its app password. */
+/** An automation account `createAutomationAccount` made, with its token. */
 export final class Automation {
   did: String;
   handle: String;
-  appPassword: String;
+  token: String;
 
-  new(this.did, this.handle, this.appPassword);
+  new(this.did, this.handle, this.token);
+}
+
+/** What the store keeps of an automation account's `token`: its SHA-256, in hex. */
+function tokenHash(token: String): String {
+  return hex.encode(sha256(token.toBytes()));
 }
 
 /** A record as it is now, and its CID. */

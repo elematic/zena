@@ -99,19 +99,19 @@ export function publishCommand(args: ParsedArgs, options: Options): i32 {
       let draft = writeDid(manifestText, STAND_IN_DID, null);
       prepareRelease(target, readManifest(draft), STAND_IN_DID, draft);
     }
-    let session = signedIn();
+    let caller = currentCaller();
     let registry = findRegistry(args);
     if (target.manifest.did == null) {
-      manifestText = createPackage(args, session, registry, target);
+      manifestText = createPackage(args, personOf(caller, 'create a package'), registry, target);
     } else {
       checkScope(args, registry, target);
     }
     let manifest = readManifest(manifestText);
     let scope = scopeOf(args, target);
     let approveAs = if (scope != null) `@${scope}/${manifest.name as String}` else manifest.did as String;
-    publish(session, registry, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText),
+    publish(caller, registry, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText),
         approveAs);
-    saveIfRefreshed(session);
+    saveCaller(caller);
   });
 }
 
@@ -201,6 +201,53 @@ export function saveIfRefreshed(session: Session): void {
   if (session.refreshed) {
     saveSession(session);
   }
+}
+
+/**
+ * Who calls the registry: a maintainer signed in at their own PDS, which
+ * signs their tokens, or CI with an automation account's token, which the
+ * registry issued (docs/design/package-manager.md, "Publishing a release").
+ */
+export sealed class Caller {
+  case SignedIn(session: Session)
+  case AutomationToken(token: String)
+}
+
+/**
+ * The caller of `zena publish`: CI, when `ZENA_REGISTRY_TOKEN` holds an
+ * automation account's token, or else the signed-in maintainer.
+ */
+export function currentCaller(): Caller {
+  let token = getEnv('ZENA_REGISTRY_TOKEN');
+  if (token != null && token.length > 0) {
+    return new AutomationToken(token);
+  }
+  return new SignedIn(signedIn());
+}
+
+/** The session of `caller`, who must be a person: an automation token does only what CI publishes. */
+function personOf(caller: Caller, doing: String): Session {
+  if (let SignedIn {session} = caller) {
+    return session;
+  }
+  throw new PublishError(`an automation token cannot ${doing}; a maintainer does it, signed in with zena login`);
+}
+
+/** Saves `caller`'s session when it was refreshed. */
+function saveCaller(caller: Caller): void {
+  if (let SignedIn {session} = caller) {
+    saveIfRefreshed(session);
+  }
+}
+
+/** A client for `registry` that calls `method` as `caller`. */
+export function callerClient(caller: Caller, registry: Registry, method: String): XrpcClient {
+  if (let AutomationToken {token} = caller) {
+    let client = new XrpcClient(registry.origin);
+    client.authorization = `Bearer ${token}`;
+    return client;
+  }
+  return registryClient(personOf(caller, 'call the registry'), registry, method);
 }
 
 export function findRegistry(args: ParsedArgs): Registry {
@@ -465,9 +512,10 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
 /**
  * Uploads and publishes `prepared`, `manifest`'s version of `target`,
  * attests it, and completes it, unless it waits for other maintainers to
- * approve it, as `zena approve <approveAs>@<version>`.
+ * approve it, as `zena approve <approveAs>@<version>`. The registry
+ * attests it itself for an automation token.
  */
-function publish(session: Session, registry: Registry, target: WorkspacePackage, manifest: Manifest,
+function publish(caller: Caller, registry: Registry, target: WorkspacePackage, manifest: Manifest,
     prepared: PreparedRelease, approveAs: String): void {
   let name = manifest.name as String;
   let did = manifest.did as String;
@@ -476,7 +524,7 @@ function publish(session: Session, registry: Registry, target: WorkspacePackage,
   let release = prepared.release;
   let blob = release.artifact(SOURCE) as Artifact;
 
-  let uploaded = runFuture(registryClient(session, registry, UPLOAD_ARTIFACT)
+  let uploaded = runFuture(callerClient(caller, registry, UPLOAD_ARTIFACT)
     .upload(UPLOAD_ARTIFACT, SOURCE_MIME_TYPE, archive, [('package', did)]))
     as JsonObject;
   if (!BlobRef.fromValue(fromJson(uploaded['blob'])).cid.equals(blob.cid)) {
@@ -485,10 +533,12 @@ function publish(session: Session, registry: Registry, target: WorkspacePackage,
   let input = new JsonObject();
   input['package'] = did;
   input['release'] = toJson(release.toValue());
-  let published = runFuture(registryClient(session, registry, PUBLISH)
+  let published = runFuture(callerClient(caller, registry, PUBLISH)
     .procedure(PUBLISH, input)) as JsonObject;
-  attest(session, published['uri'] as String, Cid.parse(published['cid'] as String));
-  completeRelease(session, registry, did, version.toString(), `${name} ${version.toString()}`, approveAs);
+  if (let SignedIn {session} = caller) {
+    attest(session, published['uri'] as String, Cid.parse(published['cid'] as String));
+  }
+  completeRelease(caller, registry, did, version.toString(), `${name} ${version.toString()}`, approveAs);
 }
 
 /**
@@ -497,12 +547,12 @@ function publish(session: Session, registry: Registry, target: WorkspacePackage,
  * or what the release waits for. `label` names the release, and
  * `approveAs` the package, for `zena approve`.
  */
-export function completeRelease(session: Session, registry: Registry, pkg: String, version: String, label: String,
+export function completeRelease(caller: Caller, registry: Registry, pkg: String, version: String, label: String,
     approveAs: String): void {
   let input = new JsonObject();
   input['package'] = pkg;
   input['version'] = version;
-  let answer = runFuture(registryClient(session, registry, COMPLETE_RELEASE)
+  let answer = runFuture(callerClient(caller, registry, COMPLETE_RELEASE)
     .procedure(COMPLETE_RELEASE, input)) as JsonObject;
   if ((answer['state'] as String) == 'published') {
     console.log(`Published ${label}: ${answer['uri'] as String}`);

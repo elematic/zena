@@ -1,23 +1,29 @@
 /**
  * `zena ci create <scope>/<name>`: an automation account for CI to publish
  * as (docs/design/package-manager.md, "Publishing a release"). The registry
- * creates it in the scope and gives it an app password, which this prints
- * once: CI keeps it as a secret and signs in with it. The account
- * publishes a package once the package's owners add it, with
- * `zena owner add <handle> --automation`.
+ * creates it in the scope and gives it a token, which this prints once: CI
+ * keeps it as the secret `ZENA_REGISTRY_TOKEN`, and `zena publish` calls
+ * the registry with it. The account publishes a package once the
+ * package's owners add it, with `zena owner add <handle> --automation`.
+ *
+ * `zena ci token <scope>/<name>` gives the account a new token, for one
+ * that leaked or was lost, and the old one stops working.
  */
 
 import { ParsedArgs } from 'zena:args';
 import { runFuture } from 'zena:async';
 import { JsonObject } from 'zena:json';
 import { Options } from './env.zena';
-import { PublishError, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn } from './publish.zena';
-import { CREATE_AUTOMATION_ACCOUNT } from 'package-manager:registry-methods';
+import { packageResolver } from './fetch.zena';
+import {
+  PublishError, Registry, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+} from './publish.zena';
+import { CREATE_AUTOMATION_ACCOUNT, ISSUE_AUTOMATION_TOKEN } from 'package-manager:registry-methods';
 
 export function ciCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
-    if (args.rest.length != 2 || args.rest[0] != 'create') {
-      throw new PublishError('usage: zena ci create <scope>/<name>');
+    if (args.rest.length != 2 || (args.rest[0] != 'create' && args.rest[0] != 'token')) {
+      throw new PublishError('usage: zena ci create <scope>/<name>, or zena ci token <scope>/<name>');
     }
     let parts = args.rest[1].split('/');
     if (parts.length != 2 || parts[0] == '' || parts[1] == '') {
@@ -27,6 +33,19 @@ export function ciCommand(args: ParsedArgs, options: Options): i32 {
     let name = parts[1];
     let session = signedIn();
     let registry = findRegistry(args);
+    if (args.rest[0] == 'token') {
+      let handle = `${name}.${scope}.${registry.domain}`;
+      let did = accountOf(handle, registry);
+      let input = new JsonObject();
+      input['account'] = did;
+      let issued = runFuture(registryClient(session, registry, ISSUE_AUTOMATION_TOKEN)
+        .procedure(ISSUE_AUTOMATION_TOKEN, input)) as JsonObject;
+      console.log(`Its new token, which is not shown again: ${issued['token'] as String}`);
+      console.log('');
+      console.log(`The old token of ${handle} no longer works: replace ZENA_REGISTRY_TOKEN in CI's secrets with this one.`);
+      saveIfRefreshed(session);
+      return;
+    }
     let org = scopeOrganization(`${scope}.${registry.domain}`);
     if (org == null) {
       throw new PublishError(`${registry.origin} has no scope ${scope}`);
@@ -39,13 +58,26 @@ export function ciCommand(args: ParsedArgs, options: Options): i32 {
     let handle = made['handle'] as String;
     console.log(`Created the automation account ${handle} (${made['did'] as String}).`);
     console.log('');
-    console.log(`Its app password, which is not shown again: ${made['appPassword'] as String}`);
+    console.log(`Its token, which is not shown again: ${made['token'] as String}`);
     console.log('');
-    console.log('Keep it as a CI secret, ZENA_APP_PASSWORD, and in CI run:');
-    console.log(`  zena login ${handle}`);
+    console.log('Keep it as a CI secret, ZENA_REGISTRY_TOKEN, and in CI run:');
     console.log('  zena publish');
     console.log('In each package it publishes, an owner runs:');
     console.log(`  zena owner add ${handle} --automation`);
     saveIfRefreshed(session);
   });
+}
+
+/** The DID of the automation account `handle` on `registry`. */
+function accountOf(handle: String, registry: Registry): String {
+  var did: String | null = null;
+  try {
+    did = runFuture(packageResolver().resolveHandle(handle));
+  } catch (e) {
+    did = null;
+  }
+  if (did == null) {
+    throw new PublishError(`${registry.origin} has no automation account ${handle}`);
+  }
+  return did;
 }

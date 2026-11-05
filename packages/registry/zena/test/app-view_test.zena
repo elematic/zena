@@ -35,7 +35,7 @@ import {
   PackageSummary, PendingChange, PendingRelease
 } from 'registry:app-view';
 import {createApp} from 'registry:server';
-import {MemberEntry} from 'package-manager:records';
+import {MemberEntry, attestationKey} from 'package-manager:records';
 import {Pds} from 'pds:pds';
 import {InProcessPds, PdsClient, XrpcPds} from 'pds:pds-client';
 import {ManagedAccounts, TrustedAppView} from 'pds:managed';
@@ -179,9 +179,6 @@ final class Fixture {
       return new FixedArray<u8>(count, (counter + 100) as u8);
     });
     appView.sessions = sessions;
-    appView.makeAutomationAccount = async (did: String, handle: String, key: SigningKey): Future<void> => {
-      await pds.createAccount(did, handle, key, 0 as i64, AccountKind.Automation);
-    };
     this.app = createApp(this.pds, appView, sessions);
   }
 
@@ -341,6 +338,8 @@ final class StaleAppViewStore implements AppViewStore {
   async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
     await this.#inner.addEntries(account, entries);
   }
+  async setAutomationToken(did: String, hash: String): Future<void> { await this.#inner.setAutomationToken(did, hash); }
+  async automationAccountOf(hash: String): Future<String | null> { return await this.#inner.automationAccountOf(hash); }
   async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
     return await this.#inner.holdRelease(pkg, release);
   }
@@ -1166,7 +1165,7 @@ export let tests = suite('registry:app-view', () => {
         profile}, "maintainers": ${withTeam}}`));
   });
 
-  test('creates an automation account that signs in and publishes, as a publisher only', (ctx) => {
+  test('creates an automation account that publishes with a token the App View issues, as a publisher only', (ctx) => {
     let fixture = new Fixture();
     let org = ok(createOrganization(fixture, ALICE, 'acme'));
     let orgDid = org['did'] as String;
@@ -1181,21 +1180,22 @@ export let tests = suite('registry:app-view', () => {
     equal(bot['handle'] as String, 'ci.acme.pkg.test');
     equal(fixture.records.lookup('ci.acme.pkg.test') as String, botDid);
     equal(fixture.genesisOf(botDid).rotationKeys.length, 1);
-    equal((runFuture(fixture.pds.storage.getAccount(botDid)) as Account).kind, AccountKind.Automation);
+    // A managed account like the App View's others, which no one signs in to.
+    equal((runFuture(fixture.pds.storage.getAccount(botDid)) as Account).manager as String, APP_VIEW);
+    isTrue(bot['appPassword'] == null, 'no app password');
+    let token = bot['token'] as String;
+    isTrue(token.startsWith('zena_ci_'), token);
     // Its name is taken in the scope, as a package's would be.
     equal(errorOf(fixture.call(ALICE, 'createAutomationAccount', body)), 'NameTaken');
     equal(errorOf(createPackage(fixture, ALICE, orgDid, 'ci')), 'NameTaken');
 
-    // It signs in with its app password, and gets a token for the App View
-    // from its PDS, which is this one.
-    let session = ok(fixture.post('/xrpc/com.atproto.server.createSession',
-        `{"identifier": "ci.acme.pkg.test", "password": "${bot['appPassword'] as String}"}`, null));
-    let access = session['accessJwt'] as String;
-    let serviceAuth = (method: String) => ok(fixture.getWith(
-        `/xrpc/com.atproto.server.getServiceAuth?aud=${APP_VIEW}&lxm=${method}`, access))['token'] as String;
-    let upload = 'dev.zena-lang.registry.uploadArtifact';
-    equal(errorOf(fixture.call(null, 'uploadArtifact', new FixedArray<u8>(4, 1 as u8), `?package=${pkgDid}`,
-        'application/octet-stream', `Bearer ${serviceAuth(upload)}`)), 'Forbidden');
+    // CI calls the App View's methods with the token, as the account.
+    let withToken = (name: String, input: String | FixedArray<u8>, query: String, contentType: String, given: String) =>
+        fixture.call(null, name, input, query, contentType, `Bearer ${given}`);
+    let archive = archiveOf(pkgDid, '1.0.0');
+    let car = 'application/vnd.ipld.car';
+    equal(errorOf(withToken('uploadArtifact', archive, `?package=${pkgDid}`, car, token)), 'Forbidden');
+    equal(errorOf(withToken('uploadArtifact', archive, `?package=${pkgDid}`, car, 'zena_ci_forged')), 'InvalidToken');
 
     // A package's owners add it as a publisher, marked as automation.
     let entry = new MemberEntry(botDid, PUBLISHER, filled(180), true);
@@ -1208,16 +1208,32 @@ export let tests = suite('registry:app-view', () => {
     equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, asBot(OWNER, true, ownerEntry), [ownerEntry], swap)),
         'InvalidRequest');
     swap = ok(putMaintainers(fixture, ALICE, pkgDid, asBot(PUBLISHER, true, entry), [entry], swap))['cid'] as String;
-    ok(fixture.call(null, 'uploadArtifact', new FixedArray<u8>(4, 1 as u8), `?package=${pkgDid}`,
-        'application/octet-stream', `Bearer ${serviceAuth(upload)}`));
-    // It writes attestations to its own repository, and nothing else.
-    let attestation = `{"$type": "dev.zena-lang.package.attestation", "subject": {"uri": "at://${pkgDid}/dev.zena-lang.package.release/1.0.0", "cid": "${swap}"}, "createdAt": "2026-10-27T00:00:00.000Z"}`;
-    ok(fixture.post('/xrpc/com.atproto.repo.putRecord',
-        `{"repo": "${botDid}", "collection": "dev.zena-lang.package.attestation", "rkey": "one", "record": ${attestation}}`,
-        access));
-    equal(errorOf(fixture.post('/xrpc/com.atproto.repo.putRecord',
-        `{"repo": "${botDid}", "collection": "app.bsky.feed.post", "rkey": "x", "record": {"$type": "app.bsky.feed.post"}}`,
-        access)), 'InvalidRequest');
+    let blob = BlobRef.fromValue(fromJson(ok(withToken('uploadArtifact', archive, `?package=${pkgDid}`, car,
+        token))['blob'] as JsonObject));
+    let held = ok(withToken('publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`, '',
+        'application/json', token));
+    // The App View writes the account's attestation of the release itself,
+    // which counts only together with a person's.
+    let uri = held['uri'] as String;
+    let cid = Cid.parse(held['cid'] as String);
+    isTrue(runFuture(fixture.pds.storage.store(botDid).getRecord(ATTESTATION_TYPE, attestationKey(uri, cid))) != null,
+        'its attestation');
+    let completion = `{"package": "${pkgDid}", "version": "1.0.0"}`;
+    let waiting = ok(withToken('completeRelease', completion, '', 'application/json', token));
+    equal(waiting['state'] as String, 'pending');
+    equal(approvedBy(waiting), botDid);
+    fixture.attest(ALICE, uri, cid.toString());
+    equal(complete(fixture, ALICE, pkgDid, '1.0.0')['state'] as String, 'published');
+
+    // An admin of its organization replaces its token, and the old one
+    // stops working.
+    let account = `{"account": "${botDid}"}`;
+    equal(errorOf(fixture.call(BOB, 'issueAutomationToken', account)), 'Forbidden');
+    equal(errorOf(fixture.call(ALICE, 'issueAutomationToken', `{"account": "${pkgDid}"}`)), 'InvalidRequest');
+    let next = ok(fixture.call(ALICE, 'issueAutomationToken', account))['token'] as String;
+    isTrue(next != token && next.startsWith('zena_ci_'), next);
+    equal(errorOf(withToken('completeRelease', completion, '', 'application/json', token)), 'InvalidToken');
+    equal(ok(withToken('completeRelease', completion, '', 'application/json', next))['state'] as String, 'published');
   });
 
   test('lists the scopes and packages a visitor can browse, with their latest releases', (ctx) => {
