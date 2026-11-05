@@ -5,21 +5,23 @@ description: 'Why Zena prioritizes automated safety checks—from WebAssembly is
 
 Safety and correctness are key goals of Zena. Software safety has always
 mattered, though many languages—especially scripting languages—trade safety for
-convenience so people can get code running quickly. Languages focused on
-correctness existed long before generative AI, and they were sometimes seen as
-pedantic or annoying when programmers had to write every extra check and type
-annotation by hand.
+convenience so people can get code running quickly. Strictly typed,
+correctness-focused languages existed too, and for a long time they were
+sometimes seen as pedantic or annoying when programmers had to write every type
+annotation and boilerplate check by hand.
 
-AI-generated code changes that trade-off. When AI generates code, you want more
-safety checks, not fewer, so that generated code can pass a real quality bar
-even with light review. We want as many automated correctness checks as
-possible—from the compiler, the runtime, and the test runner—catching mistakes
-before a person has to hunt for them in a diff.
+Modern language design narrowed that trade-off. Languages like Rust and
+TypeScript showed that mainstream developers value strong static guarantees, and
+ergonomic features—optional type annotations backed by heavy type inference,
+compact closure and class syntax, algebraic data types, destructuring, and
+pattern matching—make fully static types much easier to read and write. Zena
+builds on those ideas so sound static types feel lightweight in everyday code.
 
-What is good for humans is good for AI, and vice versa. Clear types, immutable
-data, and explicit invariants make a codebase easier for both people and models
-to reason about, and strict rules feel far less annoying when an AI writes the
-extra checks or deals with the hoops of immutability.
+AI-assisted coding pushes in the same direction. When code is generated or
+refactored with AI, automated checks from the compiler, runtime, and test runner
+help changes meet a real quality bar even with light review. What is good for
+humans is good for AI, and vice versa—and strictness feels even less annoying
+when an agent writes the extra checks or deals with the hoops of immutability.
 
 ## Layers of safety
 
