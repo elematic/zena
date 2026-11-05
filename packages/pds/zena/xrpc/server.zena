@@ -25,7 +25,7 @@ import {fail, jsonBody, nowSeconds, sessionCall} from './common.zena';
 /** Adds the routes of password sessions, and of the service-auth tokens they ask for. */
 export function serverRoutes(router: Router, sessions: Sessions): void {
   router.post(xrpcPath(SERVER_CREATE_SESSION), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       let input = await jsonBody(req, res);
       if (input == null) {
         return null;
@@ -40,13 +40,13 @@ export function serverRoutes(router: Router, sessions: Sessions): void {
   });
 
   router.post(xrpcPath(SERVER_REFRESH_SESSION), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       return sessionJson(await sessions.refresh(req.getHeader('authorization'), nowSeconds()));
     });
   });
 
   router.get(xrpcPath(SERVER_GET_SESSION), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
       let answer = new JsonObject();
       answer['did'] = caller.account.did;
@@ -57,7 +57,7 @@ export function serverRoutes(router: Router, sessions: Sessions): void {
   });
 
   router.post(xrpcPath(SERVER_DELETE_SESSION), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       await sessions.delete(req.getHeader('authorization'), nowSeconds());
       return new JsonObject();
     });
@@ -68,7 +68,7 @@ export function serverRoutes(router: Router, sessions: Sessions): void {
   // method lasts at most an hour, and one that is not, a minute, as the
   // reference PDS allows.
   router.get(xrpcPath(SERVER_GET_SERVICE_AUTH), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
       let query = req.url.searchParams();
       let aud = query.get('aud');

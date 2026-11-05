@@ -134,7 +134,7 @@ export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null):
  */
 function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void {
   router.post(xrpcPath(REPO_PUT_RECORD), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       let authorization = req.getHeader('authorization');
       let input = await jsonBody(req, res);
       if (input == null) {
@@ -171,7 +171,7 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
   });
 
   router.post(xrpcPath(REPO_DELETE_RECORD), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       let authorization = req.getHeader('authorization');
       let input = await jsonBody(req, res);
       if (input == null) {
@@ -196,7 +196,7 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
   });
 
   router.post(xrpcPath(REPO_APPLY_WRITES), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       let authorization = req.getHeader('authorization');
       let input = await jsonBody(req, res);
       if (input == null) {
@@ -239,16 +239,25 @@ function writeRoutes(router: Router, pds: Pds, sessions: Sessions | null): void 
   // PDS does. An App View's token names no account, so the upload names it in
   // `repo`, a parameter the lexicon does not have.
   router.post(xrpcPath(REPO_UPLOAD_BLOB), async (req, res, next, params) => {
-    await sessionCall(res, async (): Future<JsonObject | null> => {
+    await sessionCall(req, res, async (req, res): Future<JsonObject | null> => {
       let given = required(req, res, ['repo']);
       if (given == null) {
         return null;
       }
       let named = await pds.findAccount(given[0]);
       if (named == null || named.manager == null) {
-        throw new SessionError(403, 'Forbidden', 'only managed accounts take blobs here');
+        fail(res, 403, 'Forbidden', 'only managed accounts take blobs here');
+        return null;
       }
-      let account = await writable(pds, sessions, req.getHeader('authorization'), named.did, REPO_UPLOAD_BLOB);
+      let account = try {
+        await writable(pds, sessions, req.getHeader('authorization'), named.did, REPO_UPLOAD_BLOB)
+      } catch (e) {
+        if (e is SessionError) {
+          fail(res, e.status, e.error, e.message);
+          return null;
+        }
+        throw e;
+      };
       // Reading the body consumes the request: its type is read first, and
       // a managed account takes only the types its limits allow.
       let limits = pds.managedLimits;

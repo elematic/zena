@@ -2957,6 +2957,35 @@ export final class CheckerContext {
         this.rootReleases(c.resources, true);
       }
     }
+    let priorScopeExits = this.model.exitDropsOfDirect(scopeNode);
+    if (priorScopeExits != null) {
+      let keptScopeExits = new Array<SymbolId>();
+      for (let d in priorScopeExits) {
+        if (!ids.has(d as i32)) {
+          keptScopeExits.push(d);
+        }
+      }
+      this.model.setExitDrops(scopeNode, keptScopeExits);
+    }
+    // When a diverging branch moved the binding (`if (take) { consume(r);
+    // return; }`), its scope gets no release region, yet the path that
+    // reaches the scope's normal end still holds it: release it there, in
+    // reverse declaration order, like an early exit.
+    if (!(this.#currentFlow is FlowUnreachable)) {
+      var fi = frame.length - 1;
+      while (fi >= 0) {
+        let c = frame[fi];
+        let id = c.sym.id as i32;
+        if (!c.isVar &&
+            this.#everMovedSymbols.has(id) &&
+            !this.#everAssignedSymbols.has(id) &&
+            !this.#undroppableSymbols.has(id) &&
+            this.findLiveMove(c.sym.id, this.#currentFlow, c.declFlowId) == null) {
+          this.#addExitDrop(scopeNode, c.sym.id, c.resources);
+        }
+        fi -= 1;
+      }
+    }
   }
 
   /**

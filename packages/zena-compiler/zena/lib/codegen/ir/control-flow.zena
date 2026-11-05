@@ -328,22 +328,26 @@ export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean,
       }
     }
     if (tail) {
+      cx.tailExitScopes.push(node);
       returnInlineTail(cx, node);
+      cx.tailExitScopes.pop();
       return -1;
     }
     let value = lowerExpr(cx, node, ctxVt);
+    emitNodeExitDrops(cx, node);
     return if (isVoid) -1 else value;
   }
   if (node is BlockStatement) {
     let body = node.body;
     if (body.length == 0) {
       if (isVoid) {
+        emitNodeExitDrops(cx, node);
         return -1;
       }
       bail(cx, 'empty value block');
     }
     cx.precellBindings(body);
-    return lowerBlockValueFrom(cx, body, 0, isVoid, ctxVt, tail);
+    return lowerBlockValueFrom(cx, body, 0, isVoid, ctxVt, tail, node);
   }
   cx.fail('value arm kind');
 }
@@ -357,11 +361,12 @@ export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean,
  * exactly as a valued try/finally does.
  */
 function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>,
-    start: i32, isVoid: boolean, ctxVt: ValType | null, tail: boolean = false): i32 {
+    start: i32, isVoid: boolean, ctxVt: ValType | null, tail: boolean = false,
+    scopeExit: Node | null = null): i32 {
   if (isVoid) {
     // A void block (a try body, a statement arm) is a statement list
     // like any other, tail included.
-    lowerStatementRange(cx, body, start, body.length);
+    lowerStatementRange(cx, body, start, body.length, scopeExit);
     return -1;
   }
   let plans = varDropPlans(cx, body);
@@ -379,7 +384,7 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
       let raw = varDropIntervalEnd(plan, i, body.length);
       if (raw == -2) { continue; }
       if (raw < 0) {
-        return lowerValueRegionRestVar(cx, plan, body, i, ctxVt, tail);
+        return lowerValueRegionRestVar(cx, plan, body, i, ctxVt, tail, scopeExit);
       }
       // As in lowerRangeAcquiring: the interval closes after the
       // acquisition of a statement in it that scopes the rest of the
@@ -389,7 +394,7 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
         let acquired = lowerVarDropRegion(cx, plan, body, i, opener, false, true);
         if (acquired == null) { return -1; }
         return lowerValueRegionRest(cx, acquired.values, acquired.plans, 0, body,
-            opener + 1, ctxVt, tail);
+            opener + 1, ctxVt, tail, scopeExit);
       }
       lowerVarDropRegion(cx, plan, body, i, raw, false, false);
       openedEnd = raw;
@@ -404,7 +409,7 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
       // region.
       let acquired = acquireScope(cx, body[i]);
       return lowerValueRegionRest(cx, acquired.values, acquired.plans, 0, body,
-          i + 1, ctxVt, tail);
+          i + 1, ctxVt, tail, scopeExit);
     }
     lowerStmt(cx, body[i]);
     i += 1;
@@ -430,10 +435,19 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
       }
     }
     if (tail) {
+      if (scopeExit != null) {
+        cx.tailExitScopes.push(scopeExit);
+      }
       returnInlineTail(cx, lastExpr);
+      if (scopeExit != null) {
+        cx.tailExitScopes.pop();
+      }
       return -1;
     }
     let value = lowerExpr(cx, lastExpr, ctxVt);
+    if (scopeExit != null) {
+      emitNodeExitDrops(cx, scopeExit);
+    }
     return if (isVoid) -1 else value;
   }
   // A non-expression tail supplies no value. That is fine when the
@@ -457,7 +471,8 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
  */
 function lowerValueRegionRest(cx: LoweringContext, values: GrowableArray<i32>,
     plans: GrowableArray<DropPlan>, idx: i32, body: GrowableArray<Statement>, start: i32,
-    ctxVt: ValType | null, tail: boolean = false): i32 {
+    ctxVt: ValType | null, tail: boolean = false,
+    scopeExit: Node | null = null): i32 {
   // A tail that returns carries no value out of the region.
   if (ctxVt == null && !tail) {
     bail(cx, 'value region result type');
@@ -471,9 +486,9 @@ function lowerValueRegionRest(cx: LoweringContext, values: GrowableArray<i32>,
   return lowerFinallyRegion(cx, mirrored, tail, if (tail) null else ctxVt,
       (scope, resultVar, saved) => {
         let v = if (idx + 1 < values.length) {
-          lowerValueRegionRest(cx, values, plans, idx + 1, body, start, ctxVt, tail)
+          lowerValueRegionRest(cx, values, plans, idx + 1, body, start, ctxVt, tail, scopeExit)
         } else {
-          lowerBlockValueFrom(cx, body, start, false, ctxVt, tail)
+          lowerBlockValueFrom(cx, body, start, false, ctxVt, tail, scopeExit)
         };
         finishProtectedArm(cx, scope, resultVar, if (tail) -1 else v);
       },
@@ -487,7 +502,7 @@ function lowerValueRegionRest(cx: LoweringContext, values: GrowableArray<i32>,
  */
 function lowerValueRegionRestVar(cx: LoweringContext, plan: VarDropPlan,
     body: GrowableArray<Statement>, start: i32, ctxVt: ValType | null,
-    tail: boolean = false): i32 {
+    tail: boolean = false, scopeExit: Node | null = null): i32 {
   if (ctxVt == null && !tail) {
     bail(cx, 'value region result type');
   }
@@ -498,7 +513,7 @@ function lowerValueRegionRestVar(cx: LoweringContext, plan: VarDropPlan,
   cx.openVarDrops.add(plan.symId as i32);
   let result = lowerFinallyRegion(cx, mirrored, tail, if (tail) null else ctxVt,
       (scope, resultVar, saved) => {
-        let v = lowerBlockValueFrom(cx, body, start, false, ctxVt, tail);
+        let v = lowerBlockValueFrom(cx, body, start, false, ctxVt, tail, scopeExit);
         finishProtectedArm(cx, scope, resultVar, if (tail) -1 else v);
       },
       (fscope) => { emitVarDropRelease(cx, plan); });
@@ -761,6 +776,16 @@ export function emitExitDrops(cx: LoweringContext, drops: GrowableArray<SymbolId
     let plan = dropPlanOf(cx, declType);
     let value = cx.envValues(growable<SymbolId>([symId]))[0];
     emitDrop(cx, value, plan);
+  }
+}
+
+export function emitNodeExitDrops(cx: LoweringContext, node: Node): void {
+  if (!cx.reachable) {
+    return;
+  }
+  let drops = cx.func.model.exitDropsOf(node);
+  if (drops != null) {
+    emitExitDrops(cx, drops);
   }
 }
 
@@ -1027,6 +1052,9 @@ function lowerBranchStmt(cx: LoweringContext, pattern: Node | null, body: Statem
   let drops = patternBranchDrops(cx, pattern);
   if (drops.syms.length == 0) {
     lowerStmt(cx, body);
+    if (!(body is BlockStatement)) {
+      emitNodeExitDrops(cx, body as Node);
+    }
     return;
   }
   lowerBranchStmtDrops(cx, cx.envValues(drops.syms), drops.plans, 0, body);
@@ -1036,6 +1064,9 @@ function lowerBranchStmtDrops(cx: LoweringContext, values: GrowableArray<i32>,
     plans: GrowableArray<DropPlan>, idx: i32, body: Statement): void {
   if (idx >= values.length) {
     lowerStmt(cx, body);
+    if (!(body is BlockStatement)) {
+      emitNodeExitDrops(cx, body as Node);
+    }
     return;
   }
   let value = values[idx];
@@ -1158,6 +1189,7 @@ function lowerArmFields(cx: LoweringContext, node: Node, d: RecordDispatchInfo,
   if (node is Expression) {
     let literal = exactLiteralFields(cx, node, d);
     if (literal != null) {
+      emitNodeExitDrops(cx, node);
       return literal;
     }
     if (node is IfExpression || node is MatchExpression) {
@@ -1205,7 +1237,9 @@ function lowerArmSlots(cx: LoweringContext, node: Node,
     }
     let last = body[body.length - 1];
     if (let ExpressionStatement {expression} = last) {
-      return lowerArmSlots(cx, expression, slots);
+      let values = lowerArmSlots(cx, expression, slots);
+      emitNodeExitDrops(cx, node);
+      return values;
     }
     lowerStmt(cx, last);
     if (cx.reachable) {
@@ -1227,7 +1261,9 @@ function lowerArmSlots(cx: LoweringContext, node: Node,
   if (!(node is Expression)) {
     cx.fail('inline arm kind');
   }
-  return lowerIntoSlots(cx, node, slots.layout, slots.slotVts);
+  let values = lowerIntoSlots(cx, node, slots.layout, slots.slotVts);
+  emitNodeExitDrops(cx, node);
+  return values;
 }
 
 /**
@@ -2595,7 +2631,7 @@ function emitVarDropRelease(cx: LoweringContext, plan: VarDropPlan): void {
  */
 function lowerVarDropRegion(cx: LoweringContext, plan: VarDropPlan,
     body: GrowableArray<Statement>, start: i32, end: i32, toBlockEnd: boolean,
-    acquire: boolean): ScopeAcquisition | null {
+    acquire: boolean, scopeExit: Node | null = null): ScopeAcquisition | null {
   let covered = if (acquire) end + 1 else end;
   let mirrored = new Array<SymbolId>();
   for (var k = start; k < covered; k += 1) {
@@ -2627,7 +2663,7 @@ function lowerVarDropRegion(cx: LoweringContext, plan: VarDropPlan,
   cx.openVarDrops.add(plan.symId as i32);
   lowerFinallyRegion(cx, mirrored, true, null,
       (scope, resultVar, saved) => {
-        let acquired = lowerRangeAcquiring(cx, body, start, end, acquire);
+        let acquired = lowerRangeAcquiring(cx, body, start, end, acquire, scopeExit);
         if (cx.reachable) {
           for (let sym in declared) {
             if (let (true, value) = cx.env.get(sym.id)) {
@@ -2724,8 +2760,8 @@ function collectDeclaredSyms(cx: LoweringContext, pattern: Node, out: GrowableAr
  * `using` region's rest) opens no second region for one.
  */
 export function lowerStatementRange(cx: LoweringContext, body: GrowableArray<Statement>,
-    start: i32, end: i32): void {
-  lowerRangeAcquiring(cx, body, start, end, false);
+    start: i32, end: i32, scopeExit: Node | null = null): void {
+  lowerRangeAcquiring(cx, body, start, end, false, scopeExit);
 }
 
 /**
@@ -2742,8 +2778,10 @@ export function lowerStatementRange(cx: LoweringContext, body: GrowableArray<Sta
  * lowers inside that statement's region, where the interval reopens.
  */
 function lowerRangeAcquiring(cx: LoweringContext, body: GrowableArray<Statement>,
-    start: i32, end: i32, acquire: boolean): ScopeAcquisition | null {
+    start: i32, end: i32, acquire: boolean,
+    scopeExit: Node | null = null): ScopeAcquisition | null {
   let plans = varDropPlans(cx, body);
+  var remainingExit = scopeExit;
   var i = start;
   while (i < end) {
     if (!cx.reachable) { return null; }
@@ -2758,14 +2796,20 @@ function lowerRangeAcquiring(cx: LoweringContext, body: GrowableArray<Statement>
       if (opener >= 0) {
         let acquired = lowerVarDropRegion(cx, plan, body, i, opener, false, true);
         if (acquired == null) { return null; }
-        lowerScopeDrops(cx, acquired.values, acquired.plans, 0, body, opener + 1, end);
+        lowerScopeDrops(cx, acquired.values, acquired.plans, 0, body, opener + 1, end,
+            remainingExit);
         return null;
       }
       // An interval that covers the acquisition takes it in; one closing
       // at it, before a statement that moves the binding, does not.
       let acquiresHere = acquire && regionEnd == end && b > end;
+      let atRangeEnd = !acquire && regionEnd == end;
+      let regionExit = if (atRangeEnd) remainingExit else null;
+      if (atRangeEnd) {
+        remainingExit = null;
+      }
       let acquired = lowerVarDropRegion(cx, plan, body, i, regionEnd,
-          raw < 0 && regionEnd == b, acquiresHere);
+          raw < 0 && regionEnd == b, acquiresHere, regionExit);
       if (acquiresHere) { return acquired; }
       openedEnd = regionEnd;
       break;
@@ -2779,13 +2823,20 @@ function lowerRangeAcquiring(cx: LoweringContext, body: GrowableArray<Statement>
       // A `using`, or an implicit-drop binding, which scopes the rest of
       // its block the way `using` does (ownership.md §Implicit drop).
       let acquired = acquireScope(cx, s);
-      lowerScopeDrops(cx, acquired.values, acquired.plans, 0, body, i + 1, end);
+      lowerScopeDrops(cx, acquired.values, acquired.plans, 0, body, i + 1, end,
+          remainingExit);
       return null;
     }
     lowerStmt(cx, s);
     i += 1;
   }
-  if (!acquire || !cx.reachable) { return null; }
+  if (!acquire) {
+    if (remainingExit != null) {
+      emitNodeExitDrops(cx, remainingExit);
+    }
+    return null;
+  }
+  if (!cx.reachable) { return null; }
   return acquireScope(cx, body[end]);
 }
 
@@ -3084,9 +3135,10 @@ export function lowerSyntheticDispose(cx: LoweringContext): IrBody {
 export function lowerFieldDropRegions(cx: LoweringContext,
     names: GrowableArray<String>, types: Array<Type>, idx: i32,
     paramSyms: GrowableArray<Symbol>,
-    body: GrowableArray<Statement>, start: i32, end: i32): void {
+    body: GrowableArray<Statement>, start: i32, end: i32,
+    scopeExit: Node | null = null): void {
   if (idx >= names.length) {
-    lowerParamDropRegions(cx, paramSyms, 0, body, start, end);
+    lowerParamDropRegions(cx, paramSyms, 0, body, start, end, scopeExit);
     return;
   }
   let ctOpt = cx.func.classType;
@@ -3116,7 +3168,7 @@ export function lowerFieldDropRegions(cx: LoweringContext,
   lowerFinallyRegion(cx, mirrored, true, null,
       (scope, resultVar, saved) => {
         lowerFieldDropRegions(cx, names, types, idx + 1, paramSyms,
-            body, start, end);
+            body, start, end, scopeExit);
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       () => {
@@ -3136,9 +3188,10 @@ export function lowerFieldDropRegions(cx: LoweringContext,
  */
 export function lowerParamDropRegions(cx: LoweringContext,
     dropSyms: GrowableArray<Symbol>, idx: i32,
-    body: GrowableArray<Statement>, start: i32, end: i32): void {
+    body: GrowableArray<Statement>, start: i32, end: i32,
+    scopeExit: Node | null = null): void {
   if (idx >= dropSyms.length) {
-    lowerStatementRange(cx, body, start, end);
+    lowerStatementRange(cx, body, start, end, scopeExit);
     return;
   }
   let declType = cx.bindingTypeOf(dropSyms[idx].id);
@@ -3156,7 +3209,7 @@ export function lowerParamDropRegions(cx: LoweringContext,
 
   lowerFinallyRegion(cx, mirrored, true, null,
       (scope, resultVar, saved) => {
-        lowerParamDropRegions(cx, dropSyms, idx + 1, body, start, end);
+        lowerParamDropRegions(cx, dropSyms, idx + 1, body, start, end, scopeExit);
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       (fscope) => { emitDrop(cx, value, plan); });
@@ -3177,9 +3230,10 @@ export function lowerParamDropRegions(cx: LoweringContext,
  */
 function lowerScopeDrops(cx: LoweringContext, values: GrowableArray<i32>,
     plans: GrowableArray<DropPlan>, idx: i32,
-    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void {
+    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32,
+    scopeExit: Node | null = null): void {
   if (idx >= values.length) {
-    lowerStatementRange(cx, rest, restStart, restEnd);
+    lowerStatementRange(cx, rest, restStart, restEnd, scopeExit);
     return;
   }
   let mirrored = new Array<SymbolId>();
@@ -3190,7 +3244,7 @@ function lowerScopeDrops(cx: LoweringContext, values: GrowableArray<i32>,
   let plan = plans[idx];
   lowerFinallyRegion(cx, mirrored, true, null,
       (scope, resultVar, saved) => {
-        lowerScopeDrops(cx, values, plans, idx + 1, rest, restStart, restEnd);
+        lowerScopeDrops(cx, values, plans, idx + 1, rest, restStart, restEnd, scopeExit);
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       (fscope) => { emitDrop(cx, value, plan); });
