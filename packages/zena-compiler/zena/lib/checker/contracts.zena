@@ -6,6 +6,7 @@
  * between the kinds is where on the flow graph the condition is checked,
  * and that an `ensures` condition can name `result` and call `old`.
  */
+import { HashSet } from 'zena:collections';
 import {
   AssignmentExpression, AwaitExpression, CallExpression, ContractClause,
   ContractKind, Expression, Identifier, Node, Parameter, contractKeyword,
@@ -13,10 +14,12 @@ import {
 } from '../ast.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { FlowNode } from '../analysis/flow.zena';
+import { SymbolId } from '../scope/symbol.zena';
 import { ErrorType, Type, VoidType } from '../types.zena';
 import { walkEnter } from '../visitor.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression, validateConditionType } from './expressions.zena';
+import { ConditionNarrowings, conditionNarrowings } from './narrowing.zena';
 
 /** Checks one condition as a boolean, and that evaluating it changes nothing. */
 function checkCondition(ctx: CheckerContext, clause: ContractClause) {
@@ -46,17 +49,51 @@ function checkCondition(ctx: CheckerContext, clause: ContractClause) {
  * Checks a function's `requires` clauses. Called at the start of the
  * body's flow, with the parameters bound: a precondition sees what the
  * body sees on entry.
+ *
+ * A precondition is checked on every call, and a call that fails it
+ * does not reach the body. So what a condition narrows when it is true
+ * holds from there on: each clause leaves its narrowings on the flow
+ * for the clauses after it and for the body, as the test of an `if`
+ * does for its consequent.
+ *
+ * Returns the flow position to check the function's postconditions
+ * from (checkEnsuresClauses). That is the entry plus the narrowings on
+ * parameters, which cannot be reassigned, so those still hold on the
+ * way out. Narrowings on member paths are left out: a path can start
+ * at a variable the body assigns.
  */
 export function checkRequiresClauses(
   ctx: CheckerContext,
-  contracts: GrowableArray<ContractClause> | null
-): void {
-  if (contracts == null) { return; }
+  contracts: GrowableArray<ContractClause> | null,
+  params: GrowableArray<Parameter>
+): FlowNode {
+  let entryFlow = ctx.currentFlow;
+  if (contracts == null) { return entryFlow; }
+  let parameterIds = new HashSet<SymbolId>();
+  for (let param in params) {
+    let parameter = ctx.model.resolveDeclaration(param);
+    if (parameter != null) { parameterIds.add(parameter.id); }
+  }
+  let onParameters = new ConditionNarrowings();
   for (let clause in contracts) {
-    if (clause.kind == ContractKind.Requires) {
-      checkCondition(ctx, clause);
+    if (clause.kind != ContractKind.Requires) { continue; }
+    checkCondition(ctx, clause);
+    let narrowings = conditionNarrowings(ctx, clause.condition).whenTrue;
+    ctx.pushFlowNarrowings(narrowings);
+    // A later clause narrows what an earlier one left, so its type for
+    // a parameter replaces the earlier one.
+    for (let id in narrowings.bindings.keys()) {
+      if (parameterIds.has(id)) {
+        onParameters.bindings[id] = narrowings.bindings[id];
+      }
     }
   }
+  let bodyFlow = ctx.currentFlow;
+  ctx.setFlow(entryFlow);
+  ctx.pushFlowNarrowings(onParameters);
+  let ensuresFlow = ctx.currentFlow;
+  ctx.setFlow(bodyFlow);
+  return ensuresFlow;
 }
 
 /**
@@ -65,7 +102,7 @@ export function checkRequiresClauses(
  * `return` hands back: for an `async` function, the value its future
  * completes with.
  *
- * `entryFlow` is the flow position the body started from. A
+ * `entryFlow` is the flow position checkRequiresClauses returned. A
  * postcondition holds on every path out of the body, so nothing one of
  * those paths narrowed is known in it, and it is checked from the
  * entry.

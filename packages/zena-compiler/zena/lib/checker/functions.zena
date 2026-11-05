@@ -345,12 +345,12 @@ export function checkFunctionExpression(
 
   // A generator's body runs when it is first stepped, and it has no
   // single result, so what its clauses would mean is undecided.
+  var ensuresFlow = ctx.currentFlow;
   if (isGenerator) {
     rejectContracts(ctx, fe.contracts, 'a generator');
   } else {
-    checkRequiresClauses(ctx, fe.contracts);
+    ensuresFlow = checkRequiresClauses(ctx, fe.contracts, params);
   }
-  let bodyEntryFlow = ctx.currentFlow;
 
   // Check the body.
   match (body) {
@@ -468,7 +468,7 @@ export function checkFunctionExpression(
   }
 
   if (!isGenerator) {
-    checkEnsuresClauses(ctx, fe.contracts, params, retType, bodyEntryFlow);
+    checkEnsuresClauses(ctx, fe.contracts, params, retType, ensuresFlow);
   }
 
   // Generators: the declared Iterator<T> (or AsyncIterator<T> for
