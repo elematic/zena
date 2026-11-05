@@ -109,7 +109,7 @@ cookie, when the browser still has an OAuth session, makes a new one.
 
 ## Admins
 
-The App View's admins are the DIDs in `PDS_ADMIN_DIDS` (`ZENA_ADMIN_DIDS` for
+The App View's admins are the DIDs in `APP_VIEW_ADMIN_DIDS` (`ZENA_ADMIN_DIDS` for
 `deploy`). An admin signs in as their own account, as anyone does, and the
 header links them to `/admin`; there is no separate admin password. The
 App View shows them every account it made (`AppView.listAccounts`) and
@@ -125,7 +125,7 @@ account (`zena login <handle or DID>`, with an app password), then
 `zena scope create <name> --yes`, and reload `/me`. That writes nothing to
 your repository; `zena publish` does, since it writes your attestation of
 the release there. To see `/admin`, start the demo with your DID as an admin:
-`PDS_ADMIN_DIDS=did:plc:… npm run demo -w @zena-lang/registry`.
+`APP_VIEW_ADMIN_DIDS=did:plc:… npm run demo -w @zena-lang/registry`.
 
 ## Commands
 
@@ -142,9 +142,9 @@ serves the assets from its image (`packages/registry/deploy`).
 
 ## How the App View serves them
 
-`PDS_WEB_DIR` names `out/`, and the App View serves its files at `/assets/` and
+`APP_VIEW_WEB_DIR` names `out/`, and the App View serves its files at `/assets/` and
 `out/docs/` at `/docs/` (`registry:service`). A program run by `zena run` or
 `zena-run` sees only the directories it is given, so the directory is given
 with `--dir`: `npm run demo` passes `--dir packages/pds-web/out::/web` with
-`PDS_WEB_DIR=/web`, and the image passes `--dir /app/web::/web`. Without
+`APP_VIEW_WEB_DIR=/web`, and the image passes `--dir /app/web::/web`. Without
 it, the dynamic pages still render, unstyled.

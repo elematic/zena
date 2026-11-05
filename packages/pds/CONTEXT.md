@@ -33,6 +33,10 @@ first. When a pull request closes an item there, tick its box.
   does: storage, accounts, serving repositories, and managed accounts.
   What only the App View does goes in `packages/registry`, which depends
   on this package; nothing here imports `registry:`.
+- The PDS's configuration is `pds:service`'s, read from `PDS_*`
+  variables; the App View's are `APP_VIEW_*`. A PDS variable goes here,
+  and `registry:service` reads it through `readPdsConfig` for the PDS it
+  runs in the same process.
 - When Zena itself is missing something, the fix goes in the compiler or
   the standard library, in the same change if it is small.
 - XRPC routes go in `zena/xrpc/`, one module per `com.atproto` namespace

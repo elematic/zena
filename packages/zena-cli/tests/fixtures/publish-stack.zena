@@ -24,7 +24,8 @@ import {Server} from 'zena:http';
 import {JsonObject, stringify} from 'zena:json';
 import {MemoryHandleRecords, dnsOverHttpsApp} from 'registry:handles';
 import {FakePds} from 'package-manager:testing/fake-pds';
-import {AppViewSettings, InMemory, RecordsInMemory, ServiceConfig, serve} from 'registry:service';
+import {InMemory, PdsConfig} from 'pds:service';
+import {AppViewSettings, RecordsInMemory, ServiceConfig, serve} from 'registry:service';
 
 export async function main(): Future<i32> {
   let world = new FakePds();
@@ -38,12 +39,12 @@ export async function main(): Future<i32> {
   // with its own origin as the registry's endpoint and a rotation key made
   // up at start.
   // Its DID is the did:web of its origin, which `zena` checks it against.
-  let registry = new AppViewSettings('pkg.test', null, null, null, new GrowableArray<String>(), none,
-      new RecordsInMemory());
+  let registry = new AppViewSettings('pkg.test', null, null, new GrowableArray<String>(), none, new RecordsInMemory());
   // The maintainers' PDS is on this machine.
   registry.privateReads = true;
-  let running = await serve(new ServiceConfig(0 as u16, new InMemory(), registry, world.plcDirectory,
-      world.dnsOverHttps, 0));
+  let pds = new PdsConfig(0 as u16, new InMemory(), 0);
+  pds.plcDirectory = world.plcDirectory;
+  let running = await serve(new ServiceConfig(pds, registry, world.plcDirectory, world.dnsOverHttps));
   let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords), 0 as u16);
   dns.start();
 

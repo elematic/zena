@@ -1,6 +1,6 @@
 /**
  * Builds the web app's assets into out/, which the PDS serves at /assets/
- * as PDS_WEB_DIR: app.css, Radica's design tokens and the pages' own
+ * as APP_VIEW_WEB_DIR: app.css, Radica's design tokens and the pages' own
  * styles; app.js, the Radica elements the pages use and their sign-in;
  * and chunks/, what app.js loads only when it needs it.
  */

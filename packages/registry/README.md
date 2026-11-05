@@ -8,7 +8,7 @@ PDS ([`packages/pds`](../pds), padstone), and serves the
 service-auth token from the caller's PDS, and
 `com.atproto.server.describeServer`, which tells `zena` its service DID and
 handle domain. `zena` refuses an App View whose DID does not name its
-origin, so `PDS_SERVICE_DID` defaults to `did:web:<domain>`, and the
+origin, so `APP_VIEW_DID` defaults to `did:web:<domain>`, and the
 demo's to the `did:web` of `127.0.0.1` and its port.
 
 It serves web pages, rendered on the server (`zena/web/`), beside its
@@ -18,16 +18,16 @@ For that, the App View serves the pages' OAuth client metadata at
 `/oauth/client-metadata.json`, resolves handles
 (`com.atproto.identity.resolveHandle`), and trades a service-auth token
 for a web session cookie (`dev.zena-lang.registry.createWebSession`).
-The DIDs in `PDS_ADMIN_DIDS` are the App View's admins, who sign in as anyone
+The DIDs in `APP_VIEW_ADMIN_DIDS` are the App View's admins, who sign in as anyone
 does and see every account it holds, at `/admin`, and every private entry.
-`PDS_WEB_DIR` names the build of the pages' stylesheet and script
+`APP_VIEW_WEB_DIR` names the build of the pages' stylesheet and script
 (`packages/pds-web`), which it serves at `/assets/`.
 
 The App View reads other PDSes, for maintainers' attestations, profiles and
 the dependencies of the releases it is given, only at public HTTPS names:
 a DID document that names any other PDS resolves as naming none, and a
 release whose dependency cannot be found is refused without the error
-behind it. `PDS_PRIVATE_READS=1` lifts that, for a stack
+behind it. `APP_VIEW_PRIVATE_READS=1` lifts that, for a stack
 on one machine, such as the demo's. A public name can still point at a
 private address, which only the runtime sees: the image sets
 `ZENA_DENY_PRIVATE_EGRESS=1`, so `zena-run` connects only to public
@@ -48,7 +48,7 @@ npm test -w @zena-lang/registry                  # its tests, through wireit
 npm run test:emulator -w @zena-lang/registry     # the store tests against the Firestore emulator
 npm run demo -w @zena-lang/registry              # an App View to try zena against, on this machine
 ./target/release/zena-cli test "packages/registry/zena/test/*_test.zena"
-./target/release/zena-cli run packages/registry/zena/main.zena   # serve on $PORT, default 2583
+APP_VIEW_DOMAIN=pkg.test ./target/release/zena-cli run packages/registry/zena/main.zena   # serve on $PORT, default 2583
 ```
 
 ## The demo
@@ -65,9 +65,11 @@ the Firestore emulator too, with `PDS_STORAGE=firestore` and the rest.
 
 ## Configuration
 
-`main.zena` reads its configuration from the environment (`registry:service`
-lists every variable). With none, it is a PDS in memory on port 2583, with
-no App View.
+`main.zena` reads its configuration from the environment: the App View's
+variables are `APP_VIEW_*` (`registry:service` lists them), and the PDS it
+runs reads its own, `PDS_*`, as padstone alone does (`pds:service`). It
+needs `APP_VIEW_DOMAIN`; with nothing else, it keeps everything in memory
+on port 2583. A PDS alone starts from `packages/pds/zena/main.zena`.
 
 A deployment keeps its data in Firestore, for a tenant, with blob bytes in
 a Cloud Storage bucket, writes its handles' TXT records to the Cloud DNS
@@ -77,12 +79,12 @@ secp256k1 private key in hex, and the secret that signs sessions' tokens,
 
 ```sh
 PDS_STORAGE=firestore PDS_TENANT=pkg PDS_BLOB_BUCKET=<bucket> PDS_JWT_SECRET=<hex> \
-PDS_APP_VIEW_DOMAIN=pkg.zena-lang.dev PDS_ROTATION_KEY=<hex> \
-PDS_HANDLE_RECORDS=cloud-dns PDS_DNS_ZONE=<managed zone> \
+APP_VIEW_DOMAIN=pkg.zena-lang.dev APP_VIEW_ROTATION_KEY=<hex> \
+APP_VIEW_HANDLE_RECORDS=cloud-dns APP_VIEW_DNS_ZONE=<managed zone> \
   ./target/release/zena-cli run packages/registry/zena/main.zena
 ```
 
-A staging App View adds `PDS_PLC=staging`: the server is then a PLC directory
+A staging App View adds `APP_VIEW_PLC=staging`: the server is then a PLC directory
 itself, at `/plc`, that records the DIDs the App View makes and reads every
 other DID from the public directory, so nothing it makes reaches the
 public one (docs/design/pds.md, "Staging").
@@ -106,7 +108,7 @@ whose indexes could not be written, which the server logs.
 With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`, it
 creates a scope owned by that DID and exits. This is how the operator
 takes a name the App View reserves (`www`, `api`, `admin`, `zena`, `pkg`,
-`mail`, and `PDS_RESERVED_SCOPES`), which no `zena scope create` can.
+`mail`, and `APP_VIEW_RESERVED_SCOPES`), which no `zena scope create` can.
 
 `PDS_BLOB_DIR=<dir>` keeps blob bytes in a directory instead, for a server
 on one machine. `FIRESTORE_EMULATOR_HOST` points the server at the
@@ -173,10 +175,10 @@ keys its owners gave, the operator's offline key, and the App View's online
 key, which signs its operations (docs/design/package-manager.md, "Keys").
 
 - **The online key** is in Cloud KMS for production
-  (`PDS_ROTATION_KMS_KEY`): an HSM-protected secp256k1 key that
+  (`APP_VIEW_ROTATION_KMS_KEY`): an HSM-protected secp256k1 key that
   `deploy:setup` makes and the service account may only sign with. It
   cannot be read or backed up. Staging keeps the secret
-  `zena-pkg-staging-rotation-key` (`PDS_ROTATION_KEY`), which its accounts
+  `zena-pkg-staging-rotation-key` (`APP_VIEW_ROTATION_KEY`), which its accounts
   were made with; `ZENA_ROTATION_KMS=1` moves it to Cloud KMS, which
   leaves the App View unable to sign for the accounts it already has, so do
   that only for a staging whose data was reset.
@@ -189,7 +191,7 @@ key, which signs its operations (docs/design/package-manager.md, "Keys").
 
   It prints the private key, to keep offline (on paper, or in a password
   manager you trust), and its `did:key`, which deploys as
-  `PDS_OFFLINE_ROTATION_KEY` from `ZENA_OFFLINE_ROTATION_KEY`. `deploy`
+  `APP_VIEW_OFFLINE_ROTATION_KEY` from `ZENA_OFFLINE_ROTATION_KEY`. `deploy`
   refuses production without it. Only accounts created after it is set
   list it.
 

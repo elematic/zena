@@ -1,8 +1,8 @@
 /**
- * Starts the PDS, and the App View when `PDS_APP_VIEW_DOMAIN` is set, as
- * the environment configures them (see `registry:service`). With no
- * configuration it is a PDS on port 2583, the reference PDS's port, with
- * its data in memory.
+ * Starts the App View for `APP_VIEW_DOMAIN`, with the PDS it keeps its
+ * accounts on in the same process, as the environment configures them
+ * (see `registry:service`). A PDS alone starts from
+ * `packages/pds/zena/main.zena`.
  *
  * With the argument `sync-handles`, it writes the DNS record of every
  * handle the App View has given out instead, from its store, and exits: for
@@ -14,10 +14,10 @@
  *
  * Two commands are for the operator's offline rotation key, on the
  * operator's own machine, and read no configuration but
- * `PDS_PLC_DIRECTORY`:
+ * `APP_VIEW_PLC_DIRECTORY`:
  *
  * - `generate-key` prints a new secp256k1 private key in hex and its
- *   `did:key`, for `PDS_OFFLINE_ROTATION_KEY`. Keep the private key
+ *   `did:key`, for `APP_VIEW_OFFLINE_ROTATION_KEY`. Keep the private key
  *   offline.
  * - `plc-restore <did> <cid> [--yes]` undoes every operation of `<did>`
  *   after the one whose CID is `<cid>`, as after the online key was
@@ -42,7 +42,8 @@ import {PlcError, fetchOperations, submitPlcOperation, undoOperation} from 'atpr
 import {SigningKey} from 'pds:storage';
 import {AppViewError} from './app-view.zena';
 import {nowMicros} from 'pds:xrpc/common';
-import {ConfigError, ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
+import {ConfigError} from 'pds:service';
+import {ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
 
 /** The configuration the environment gives, or null, having said why. */
 function readConfig(): ServiceConfig | null {
@@ -84,12 +85,7 @@ export async function main(): Future<void> {
     return;
   }
   let running = await serve(config);
-  let appView = running.service.appView;
-  if (appView != null) {
-    console.log(`PDS and App View for ${appView.config.domain} listening on ${running.origin}`);
-  } else {
-    console.log(`PDS listening on ${running.origin}`);
-  }
+  console.log(`PDS and App View for ${running.service.appView.config.domain} listening on ${running.origin}`);
   await running.server.done;
 }
 
@@ -154,13 +150,7 @@ async function createScope(config: ServiceConfig): Future<void> {
     exit(2);
     return;
   }
-  let service = await buildService(config, '');
-  let appView = service.appView;
-  if (appView == null) {
-    console.error('create-scope needs an App View: set PDS_APP_VIEW_DOMAIN');
-    exit(2);
-    return;
-  }
+  let appView = (await buildService(config, '')).appView;
   try {
     let created = await appView.createScopeAsOperator(owner, name, recoveryKeys, nowMicros());
     console.log(`created the scope ${created.handle} (${created.did}), owned by ${owner}`);
@@ -179,7 +169,7 @@ async function createScope(config: ServiceConfig): Future<void> {
 function generateKey(): void {
   let key = new SigningKey(KeyType.Secp256k1, randomBytes(32));
   console.log(`private key (keep it offline): ${hex.encode(key.privateKey)}`);
-  console.log(`did:key (PDS_OFFLINE_ROTATION_KEY): ${formatDidKey(key.publicKey())}`);
+  console.log(`did:key (APP_VIEW_OFFLINE_ROTATION_KEY): ${formatDidKey(key.publicKey())}`);
   exit(0);
 }
 
@@ -206,7 +196,7 @@ async function plcRestore(): Future<void> {
   }
   let did = positional[0];
   let cid = positional[1];
-  let directory = getEnv('PDS_PLC_DIRECTORY') ?? 'https://plc.directory';
+  let directory = getEnv('APP_VIEW_PLC_DIRECTORY') ?? 'https://plc.directory';
   let keyText = (await readStdin()).trim();
   var key: SigningKey | null = null;
   try {
@@ -242,13 +232,7 @@ async function plcRestore(): Future<void> {
 
 /** Writes the App View's indexes from the repositories, and exits. */
 async function syncIndexes(config: ServiceConfig): Future<void> {
-  let service = await buildService(config, '');
-  let appView = service.appView;
-  if (appView == null) {
-    console.error('sync-indexes needs an App View: set PDS_APP_VIEW_DOMAIN');
-    exit(2);
-    return;
-  }
+  let appView = (await buildService(config, '')).appView;
   let written = await appView.syncIndexes();
   console.log(`indexed ${written} organizations and packages for ${appView.config.domain}`);
   exit(0);
@@ -256,13 +240,7 @@ async function syncIndexes(config: ServiceConfig): Future<void> {
 
 /** Writes every handle record from the App View's store, and exits. */
 async function syncHandles(config: ServiceConfig): Future<void> {
-  let service = await buildService(config, '');
-  let appView = service.appView;
-  if (appView == null) {
-    console.error('sync-handles needs an App View: set PDS_APP_VIEW_DOMAIN');
-    exit(2);
-    return;
-  }
+  let appView = (await buildService(config, '')).appView;
   let written = await appView.syncHandles();
   console.log(`wrote ${written} handle records for ${appView.config.domain}`);
   exit(0);

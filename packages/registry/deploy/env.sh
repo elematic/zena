@@ -7,7 +7,7 @@
 #
 #   staging      the site and handles at pkg-staging.zena-lang.dev, the
 #                PDS at padstone-staging.zena-lang.dev, with its own PLC
-#                directory at /plc (PDS_PLC=staging), so nothing it makes
+#                directory at /plc (APP_VIEW_PLC=staging), so nothing it makes
 #                reaches plc.directory
 #   production   the site and handles at pkg.zena-lang.dev, the PDS at
 #                padstone.zena-lang.dev, sending its accounts' operations
