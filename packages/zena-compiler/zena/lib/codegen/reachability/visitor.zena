@@ -862,6 +862,50 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * tuple's function, or a class's `hashCode`.
    */
   /**
+   * Registers the adapted record dispatches and existential conversions
+   * recorded on `n`. Both `discoverNodeTypes` and `registerInstantiations`
+   * run this: checker dependency records carry symbols only, and record
+   * adaptations attach to expressions as well as `RecordPattern` and
+   * `RestPattern` nodes.
+   */
+  #registerRecordAdaptations(n: Node, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    let typeLowerer = this.pass.typeLowerer;
+    let unionAdaptation = model.getRecordUnionAdaptation(n);
+    if (unionAdaptation != null) {
+      // Every member needs both its own dispatch, to test the value
+      // against, and a dispatch adapted to the target shape.
+      let tgtRec = resolveType(unionAdaptation.target) as RecordType;
+      typeLowerer.discoverType(tgtRec, model);
+      for (let member in unionAdaptation.members) {
+        let srcRec = resolveType(member) as RecordType;
+        typeLowerer.discoverType(srcRec, model);
+        let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
+        let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
+        this.pass.wasm.getAdaptedRecordDispatch(model,
+            inFields, sortedOptionalNames(srcRec),
+            outFields, sortedOptionalNames(tgtRec));
+      }
+    }
+    let adaptation = model.getRecordAdaptation(n);
+    if (adaptation != null) {
+      let srcRec = resolveType(adaptation.source) as RecordType;
+      let tgtRec = resolveType(adaptation.target) as RecordType;
+      typeLowerer.discoverType(tgtRec, model);
+      typeLowerer.discoverType(srcRec, model);
+      if (srcRec.isExistential || tgtRec.isExistential) {
+        this.#registerExistentialConversion(srcRec, tgtRec, model);
+      } else {
+        let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
+        let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
+        this.pass.wasm.getAdaptedRecordDispatch(model,
+            inFields, sortedOptionalNames(srcRec),
+            outFields, sortedOptionalNames(tgtRec));
+      }
+    }
+  }
+
+  /**
    * The tables a conversion involving an existential record type needs
    * (ir/existential.zena): a pack into an existential, from a closed
    * record (whose hash its `<hash>` slot calls) or from another
@@ -1082,6 +1126,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           }
         }
       }
+      this.#registerRecordAdaptations(n, model, resolveType);
       // Cast/test targets and local binding types are the types a
       // BODY names without any signature or dependency record naming
       // them — a lowered `as` is a ref.cast to the target's struct,
@@ -2880,44 +2925,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.queueExplicitCtor(rangeCt);
         }
       }
-      // A record union's repack is recorded on an expression, and on a
-      // record PATTERN for the destructuring that repacks before it
-      // matches, so this is not under the `n is Expression` guard.
-      let unionAdaptation = model.getRecordUnionAdaptation(n);
-      if (unionAdaptation != null) {
-        // Every member needs both its own dispatch, to test the value
-        // against, and a dispatch adapted to the target shape.
-        let tgtRec = resolveType(unionAdaptation.target) as RecordType;
-        typeLowerer.discoverType(tgtRec, model);
-        for (let member in unionAdaptation.members) {
-          let srcRec = resolveType(member) as RecordType;
-          typeLowerer.discoverType(srcRec, model);
-          let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
-          let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
-          this.pass.wasm.getAdaptedRecordDispatch(model,
-              inFields, sortedOptionalNames(srcRec),
-              outFields, sortedOptionalNames(tgtRec));
-        }
-      }
-      // A record conversion is recorded on an expression, and on a
-      // record pattern's `...rest`, whose value is the matched record
-      // converted to the rest's type.
-      let adaptation = model.getRecordAdaptation(n);
-      if (adaptation != null) {
-        let srcRec = resolveType(adaptation.source) as RecordType;
-        let tgtRec = resolveType(adaptation.target) as RecordType;
-        typeLowerer.discoverType(tgtRec, model);
-        typeLowerer.discoverType(srcRec, model);
-        if (srcRec.isExistential || tgtRec.isExistential) {
-          this.#registerExistentialConversion(srcRec, tgtRec, model);
-        } else {
-          let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
-          let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
-          this.pass.wasm.getAdaptedRecordDispatch(model,
-              inFields, sortedOptionalNames(srcRec),
-              outFields, sortedOptionalNames(tgtRec));
-        }
-      }
+      this.#registerRecordAdaptations(n, model, resolveType);
       if (n is Expression) {
         let ifaceAdaptation = model.getInterfaceAdaptation(n);
         if (ifaceAdaptation != null) {

@@ -1355,7 +1355,14 @@ export final class LoweringContext {
    * shape. Discovery registers every checked record shape, so a miss
    * means the type never reached discovery — bail.
    */
-  recordDispatchOf(rt: RecordType): RecordDispatchInfo {
+  recordDispatchOf(rtIn: RecordType): RecordDispatchInfo {
+    var rt = rtIn;
+    if (rtIn.row != null && this.func != null) {
+      let whole = substituteTypeParamsInFunctionContext(this.wasm, this.func, rtIn);
+      if (whole is RecordType) {
+        rt = whole;
+      }
+    }
     let fields = recordWasmFields(this.wasm, rt, this.func);
     let infoOpt = if (rt.isExistential)
         this.wasm.findExistentialDispatch(fields, sortedOptionalNames(rt))

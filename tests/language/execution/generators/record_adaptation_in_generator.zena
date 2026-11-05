@@ -1,0 +1,104 @@
+// @mode: run
+// @result: 42
+// Record adaptation and record-union adaptation inside synchronous
+// `gen` functions, arrows, and methods (#633).
+//
+// Like `prepareAsyncFunctions`, `prepareGenerators` lowers bodies before
+// WasmModule.layout() assigns global indices.
+
+type Opts = {a?: i32, b?: i32, c?: boolean};
+
+function take(o: Opts) {
+  var sum = 0;
+  if (let {a} = o) {
+    sum += a;
+  }
+  if (let {b} = o) {
+    sum += b;
+  }
+  if (let {c} = o) {
+    if (c) {
+      sum += 100;
+    }
+  }
+  return sum;
+}
+
+gen function fromOptions(options: {a?: i32, b?: i32} = {}): Iterator<i32> {
+  yield take(options);
+  let wider: {tag: i32, a: i32, b: i32} = {tag: 10, a: 3, b: 4};
+  let {tag, ...rest} = wider;
+  yield tag + rest.a + rest.b + take(wider);
+}
+
+class AdapterGen {
+  #offset: i32;
+  new(offset: i32) : #offset = offset;
+
+  gen unionItems(): Iterator<i32> {
+    var i = 0;
+    while (i < 2) {
+      let u = if (i == 0) {
+        {x: 5, label: 'abc'}
+      } else {
+        {x: 8}
+      };
+      let {x, label = 'z'} = u;
+      let narrowed: {x: i32} = u;
+      yield this.#offset + x + narrowed.x + label.length;
+      i += 1;
+    }
+  }
+
+  gen adaptGeneric<T>(r: {a: i32, extra: T}): Iterator<i32> {
+    yield this.#offset + take(r);
+  }
+}
+
+export function main(): i32 {
+  // 1. Generator function with adapted optional-field record and rest pattern:
+  //    explicit {a: 2}: yields 2, then 10 + 7 + 7 = 24 (sum = 26)
+  //    default {}:      yields 0, then 10 + 7 + 7 = 24 (sum = 24)
+  var s1 = 0;
+  for (let v in fromOptions({a: 2})) {
+    s1 += v;
+  }
+  for (let v in fromOptions()) {
+    s1 += v;
+  }
+  if (s1 != 50) { return 1; }
+
+  // 2. Generator arrow adapting a live record across `yield`.
+  let genArrow = gen (r: {a: i32}): Iterator<i32> => {
+    yield take(r);
+    yield take(r) + 1;
+  };
+  var s2 = 0;
+  for (let v in genArrow({a: 4})) {
+    s2 += v;
+  }
+  if (s2 != 9) { return 2; }
+
+  // 3. Generator method adapting a record union across loop yields:
+  //    i=0: 1 + 5 + 5 + 3 = 14
+  //    i=1: 1 + 8 + 8 + 1 = 18  (sum = 32)
+  var s3 = 0;
+  let ag = new AdapterGen(1);
+  for (let v in ag.unionItems()) {
+    s3 += v;
+  }
+  if (s3 != 32) { return 3; }
+
+  // 4. Generic generator method adapting specialized record shapes:
+  //    (1 + 7) + (1 + 8) = 17.
+  var s4 = 0;
+  for (let v in ag.adaptGeneric({a: 7, extra: 'ok'})) {
+    s4 += v;
+  }
+  for (let v in ag.adaptGeneric({a: 8, extra: true})) {
+    s4 += v;
+  }
+  if (s4 != 17) { return 4; }
+
+  return 42;
+}
