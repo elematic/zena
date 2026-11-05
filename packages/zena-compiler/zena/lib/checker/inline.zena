@@ -17,7 +17,7 @@ import {
   VariableDeclaration,
 } from '../ast.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
-import { ClassType, FunctionType, Type } from '../types.zena';
+import { ClassType, FunctionType, InlineTupleType, Type } from '../types.zena';
 import { walk } from '../visitor.zena';
 import { isInlineType } from './annotations.zena';
 import { CheckerContext } from './context.zena';
@@ -216,11 +216,33 @@ function boxingUse(ctx: CheckerContext, node: Node, result: Type | null): String
     }
     case AsExpression {}: "converting it with 'as'"
     case ArrayLiteral {}: "putting it in an array"
-    case TupleLiteral {}: "putting it in a tuple"
+    case TupleLiteral {}: tupleElementUse(ctx, parent, node, result)
     case PropertyAssignment {}: "putting it in a record"
     case AssignmentExpression {}: "assigning it"
     case _: "this use"
   };
+}
+
+/**
+ * An element of a tuple literal is passed on when the literal is an inline
+ * tuple used without boxing and the element's position is inline itself:
+ * its slots or fields are the literal's (#515, #811).
+ */
+function tupleElementUse(ctx: CheckerContext, literal: TupleLiteral, node: Node,
+    result: Type | null): String | null {
+  let t = ctx.model.getNodeType(literal);
+  if (t != null && t is InlineTupleType) {
+    var index = -1;
+    for (var i = 0; i < literal.elements.length; i += 1) {
+      if (literal.elements[i] === node) {
+        index = i;
+      }
+    }
+    if (index >= 0 && index < t.elementTypes.length && isInlineType(t.elementTypes[index])) {
+      return boxingUse(ctx, literal, result);
+    }
+  }
+  return "putting it in a tuple";
 }
 
 /**

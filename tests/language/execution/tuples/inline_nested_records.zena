@@ -1,0 +1,63 @@
+// @mode: run
+// @result: 0
+// An inline record inside an inline tuple: its fields are slots of the
+// tuple, as a nested inline tuple's elements are (#811). A name bound to
+// it holds the fields, and only storing the tuple builds the record.
+
+type Point = {x: i32, y: i32};
+
+function labelled(n: i32): inline (i32, inline Point) {
+  return (n, {x: n, y: n * 2});
+}
+
+function sum(t: inline (i32, inline Point)): i32 {
+  let (n, p) = t;
+  return n + p.x + p.y;
+}
+
+function fields(t: inline (i32, inline Point)): i32 {
+  let (n, {x, y}) = t;
+  return n * 100 + x * 10 + y;
+}
+
+function indexed(t: inline (i32, inline Point)): i32 {
+  return t[1].y;
+}
+
+// A record forwarded into a nested position, and a tuple the same way.
+function wrap(p: inline Point): inline (inline Point, i32) {
+  return (p, 7);
+}
+
+function wrapSpan(s: inline (i32, i32)): inline (inline (i32, i32), i32) {
+  return (s, 7);
+}
+
+// A union: one member holds the record's fields, the other holes.
+function find(ok: boolean): inline (true, inline Point) | (false, _) {
+  return if (ok) (true, {x: 1, y: 2}) else (false, _);
+}
+
+function found(ok: boolean): i32 {
+  if (let (true, p) = find(ok)) {
+    return p.x * 10 + p.y;
+  }
+  return -1;
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (sum(labelled(2)) != 8) { failures += 1; }
+  if (fields(labelled(3)) != 336) { failures += 2; }
+  if (indexed((1, {x: 5, y: 9})) != 9) { failures += 4; }
+  let (p, n) = wrap({x: 1, y: 2});
+  let ((a, b), m) = wrapSpan((1, 2));
+  if (p.x + p.y + n != 10 || a + b + m != 10) { failures += 8; }
+  // Stored: the tuple and the record inside it are built.
+  let boxed: (i32, Point) = labelled(4);
+  if (boxed[1].y != 8) { failures += 16; }
+  // A boxed tuple passed inline reads the record's fields.
+  if (sum(boxed) != 16) { failures += 32; }
+  if (found(true) != 12 || found(false) != -1) { failures += 64; }
+  return failures;
+};

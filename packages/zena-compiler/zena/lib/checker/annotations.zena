@@ -159,12 +159,18 @@ function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
           // union cannot be spliced into one list of positions, so a
           // nested inline union is not supported yet.
           let unwrapped = unwrapAliases(elType);
-          if (isInlineRecordType(elType)) {
-            ctx.error(
-              "An inline record inside an inline tuple is not supported yet.",
-              DiagnosticCode.TypeMismatch,
-              element.loc,
-            );
+          // An inline record nests the same way, its fields in order; a
+          // field's presence word has no position to go in yet.
+          let nestedRecord = inlineRecordOf(elType);
+          if (nestedRecord != null) {
+            let {optionalProperties} = nestedRecord;
+            if (optionalProperties != null && optionalProperties.size > 0) {
+              ctx.error(
+                "An inline record with optional fields inside an inline tuple is not supported yet.",
+                DiagnosticCode.TypeMismatch,
+                element.loc,
+              );
+            }
           } else if (isInlineType(elType) && !(unwrapped is InlineTupleT) &&
               !(unwrapped is InlineParamType)) {
             ctx.error(
