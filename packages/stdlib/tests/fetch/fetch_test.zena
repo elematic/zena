@@ -295,4 +295,97 @@ export let tests = suite('zena:fetch', () => {
       server.close();
     }
   });
+
+  test('server populates request host, protocol, and origin from Host header', () => {
+    runFuture((async (): Future<void> => {
+      let app = new App();
+      app.use(async (req, res, next): Future<void> => {
+        res.setHeader('x-proto', req.protocol);
+        res.setHeader('x-host', req.host);
+        res.setHeader('x-origin', req.origin);
+        res.body = req.url.href;
+      });
+      let server = new Server(app, 0 as u16);
+      server.start();
+      let expectedHost = `127.0.0.1:${server.port as i32}`;
+      let expectedOrigin = `http://${expectedHost}`;
+      try {
+        let resp = await fetch(`${expectedOrigin}/where?q=1`);
+        equal(resp.status, 200);
+        equal(resp.header('x-proto') as String, 'http');
+        equal(resp.header('x-host') as String, expectedHost);
+        equal(resp.header('x-origin') as String, expectedOrigin);
+        equal(await resp.text(), `${expectedOrigin}/where?q=1`);
+      } finally {
+        server.close();
+      }
+    })());
+  });
+
+  test('204 and 304 omit content-length and invalid response headers answer 500', () => {
+    runFuture((async (): Future<void> => {
+      let app = new App();
+      app.use(async (req, res, next): Future<void> => {
+        let p = req.path;
+        if (p == '/204-text') {
+          res.statusCode = 204;
+          res.body = '';
+        } else if (p == '/204-bytes') {
+          res.statusCode = 204;
+          res.body = new FixedArray<u8>(0, 0 as u8);
+        } else if (p == '/304') {
+          res.statusCode = 304;
+        } else if (p == '/forbidden-text') {
+          res.setHeader('transfer-encoding', 'chunked');
+          res.body = 'bad';
+        } else if (p == '/invalid-text') {
+          res.setHeader('x-bad', 'a\r\nb');
+          res.body = 'bad';
+        } else if (p == '/forbidden-bytes') {
+          res.setHeader('transfer-encoding', 'chunked');
+          res.body = 'bad'.toBytes();
+        } else if (p == '/invalid-bytes') {
+          res.setHeader('x-bad', 'a\r\nb');
+          res.body = 'bad'.toBytes();
+        }
+      });
+      let server = new Server(app, 0 as u16);
+      server.start();
+      let origin = originOf(server);
+      try {
+        let r204Text = await fetch(`${origin}/204-text`);
+        equal(r204Text.status, 204);
+        isNull(r204Text.header('content-length'));
+        equal(await r204Text.text(), '');
+
+        let r204Bytes = await fetch(`${origin}/204-bytes`);
+        equal(r204Bytes.status, 204);
+        isNull(r204Bytes.header('content-length'));
+        equal(await r204Bytes.text(), '');
+
+        let r304 = await fetch(`${origin}/304`);
+        equal(r304.status, 304);
+        isNull(r304.header('content-length'));
+        equal(await r304.text(), '');
+
+        let rForbiddenText = await fetch(`${origin}/forbidden-text`);
+        equal(rForbiddenText.status, 500);
+        await rForbiddenText.text();
+
+        let rInvalidText = await fetch(`${origin}/invalid-text`);
+        equal(rInvalidText.status, 500);
+        await rInvalidText.text();
+
+        let rForbiddenBytes = await fetch(`${origin}/forbidden-bytes`);
+        equal(rForbiddenBytes.status, 500);
+        await rForbiddenBytes.text();
+
+        let rInvalidBytes = await fetch(`${origin}/invalid-bytes`);
+        equal(rInvalidBytes.status, 500);
+        await rInvalidBytes.text();
+      } finally {
+        server.close();
+      }
+    })());
+  });
 });
