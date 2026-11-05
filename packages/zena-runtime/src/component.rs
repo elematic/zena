@@ -962,71 +962,154 @@ type ResponseBody =
 
 type PendingResponseSender = tokio::sync::oneshot::Sender<http::Response<ResponseBody>>;
 
-/// Wraps an incoming request body so that if the guest drops the request
-/// without consuming its body (e.g., returning an early 404 or 401 response),
-/// the remaining body is drained in the background rather than dropping
-/// `hyper::body::Incoming` mid-stream, which would cause Hyper's HTTP/1.1
-/// server to close the TCP socket with unread client bytes and trigger a TCP RST.
-struct DrainOnDropBody {
-    inner: Option<hyper::body::Incoming>,
-    rt: tokio::runtime::Handle,
+struct SharedIncomingState {
+    body: Option<hyper::body::Incoming>,
+    polled: bool,
 }
 
-impl http_body::Body for DrainOnDropBody {
+/// Shares a non-empty `hyper::body::Incoming` between the WASI request
+/// resource and the Hyper response lifecycle so dropping either one drops the
+/// unread body. Hyper's `poll_drain_or_close_read` then drains a buffered body
+/// in place to keep HTTP/1.1 keep-alive open, or disables keep-alive and
+/// writes `Connection: close` when unread bytes remain.
+#[derive(Clone, Default)]
+struct SharedIncomingBody(Option<Arc<Mutex<SharedIncomingState>>>);
+
+impl SharedIncomingBody {
+    fn new(body: hyper::body::Incoming) -> Self {
+        if http_body::Body::is_end_stream(&body) {
+            Self(None)
+        } else {
+            Self(Some(Arc::new(Mutex::new(SharedIncomingState {
+                body: Some(body),
+                polled: false,
+            }))))
+        }
+    }
+
+    fn release(&self) {
+        let Some(state) = &self.0 else {
+            return;
+        };
+        let body = state.lock().unwrap().body.take();
+        drop(body);
+    }
+
+    fn release_if_unpolled(&self) {
+        let Some(state) = &self.0 else {
+            return;
+        };
+        let body = {
+            let mut guard = state.lock().unwrap();
+            if !guard.polled {
+                guard.body.take()
+            } else {
+                None
+            }
+        };
+        drop(body);
+    }
+}
+
+impl http_body::Body for SharedIncomingBody {
     type Data = bytes::Bytes;
     type Error = hyper::Error;
 
     fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<std::result::Result<http_body::Frame<Self::Data>, Self::Error>>>
     {
-        match self.inner.as_mut() {
-            Some(inner) => std::pin::Pin::new(inner).poll_frame(cx),
-            None => std::task::Poll::Ready(None),
+        let Some(state) = &self.0 else {
+            return std::task::Poll::Ready(None);
+        };
+        let mut guard = state.lock().unwrap();
+        guard.polled = true;
+        let Some(inner) = guard.body.as_mut() else {
+            return std::task::Poll::Ready(None);
+        };
+        let poll = std::pin::Pin::new(&mut *inner).poll_frame(cx);
+        match &poll {
+            std::task::Poll::Ready(None) => guard.body = None,
+            std::task::Poll::Ready(Some(Ok(_))) if http_body::Body::is_end_stream(inner) => {
+                guard.body = None;
+            }
+            _ => {}
         }
+        poll
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner
+        let Some(state) = &self.0 else {
+            return true;
+        };
+        state
+            .lock()
+            .unwrap()
+            .body
             .as_ref()
-            .map_or(true, |b| http_body::Body::is_end_stream(b))
+            .is_none_or(http_body::Body::is_end_stream)
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
-        match self.inner.as_ref() {
+        let Some(state) = &self.0 else {
+            return http_body::SizeHint::with_exact(0);
+        };
+        match state.lock().unwrap().body.as_ref() {
             Some(inner) => http_body::Body::size_hint(inner),
             None => http_body::SizeHint::with_exact(0),
         }
     }
 }
 
-impl Drop for DrainOnDropBody {
+impl Drop for SharedIncomingBody {
     fn drop(&mut self) {
-        if let Some(mut body) = self.inner.take() {
-            if !http_body::Body::is_end_stream(&body) {
-                self.rt.spawn(async move {
-                    use http_body_util::BodyExt as _;
-                    let mut remaining = 64 * 1024usize;
-                    let _ = tokio::time::timeout(Duration::from_secs(1), async move {
-                        while let Some(Ok(frame)) = body.frame().await {
-                            if let Some(data) = frame.data_ref() {
-                                if data.len() >= remaining {
-                                    break;
-                                }
-                                remaining -= data.len();
-                            }
-                        }
-                    })
-                    .await;
-                });
+        self.release();
+    }
+}
+
+struct ReleaseIncomingOnFinish {
+    inner: ResponseBody,
+    req_body: SharedIncomingBody,
+}
+
+impl http_body::Body for ReleaseIncomingOnFinish {
+    type Data = bytes::Bytes;
+    type Error = wasmtime_wasi_http::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<std::result::Result<http_body::Frame<Self::Data>, Self::Error>>>
+    {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_frame(cx);
+        match &poll {
+            std::task::Poll::Ready(None) => self.req_body.release(),
+            std::task::Poll::Ready(Some(Ok(_))) if http_body::Body::is_end_stream(&self.inner) => {
+                self.req_body.release();
             }
+            _ => {}
         }
+        poll
+    }
+
+    fn is_end_stream(&self) -> bool {
+        http_body::Body::is_end_stream(&self.inner)
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        http_body::Body::size_hint(&self.inner)
+    }
+}
+
+impl Drop for ReleaseIncomingOnFinish {
+    fn drop(&mut self) {
+        self.req_body.release();
     }
 }
 
 struct IncomingRequest {
-    req: http::Request<DrainOnDropBody>,
+    req: http::Request<SharedIncomingBody>,
     res_tx: PendingResponseSender,
 }
 
@@ -1458,19 +1541,19 @@ async fn accept_connections(
             let service = hyper::service::service_fn(
                 move |req: http::Request<hyper::body::Incoming>| {
                     let req_tx = req_tx.clone();
-                    let rt = tokio::runtime::Handle::current();
-                    let req = req.map(move |body| DrainOnDropBody {
-                        inner: Some(body),
-                        rt,
-                    });
+                    let (parts, body) = req.into_parts();
+                    let shared_body = SharedIncomingBody::new(body);
+                    let req = http::Request::from_parts(parts, shared_body.clone());
                     async move {
                         let (res_tx, res_rx) = tokio::sync::oneshot::channel();
 
                         if req_tx.send(IncomingRequest { req, res_tx }).is_err() {
+                            shared_body.release();
                             let err_resp = http::Response::builder()
                                 .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(
-                                    http_body_util::Full::new(bytes::Bytes::from_static(
+                                .header(http::header::CONNECTION, "close")
+                                .body(ReleaseIncomingOnFinish {
+                                    inner: http_body_util::Full::new(bytes::Bytes::from_static(
                                         b"server closed",
                                     ))
                                     .map_err(
@@ -1479,22 +1562,40 @@ async fn accept_connections(
                                         },
                                     )
                                     .boxed_unsync(),
-                                )
+                                    req_body: SharedIncomingBody::default(),
+                                })
                                 .unwrap();
                             return Ok::<_, std::convert::Infallible>(err_resp);
                         }
 
                         match res_rx.await {
-                            Ok(resp) => Ok(resp),
+                            Ok(resp) => {
+                                if !resp.status().is_informational() {
+                                    shared_body.release_if_unpolled();
+                                }
+                                Ok(resp.map(|inner| ReleaseIncomingOnFinish {
+                                    inner,
+                                    req_body: shared_body,
+                                }))
+                            }
                             Err(_) => {
+                                shared_body.release();
                                 let err_resp = http::Response::builder()
-                                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(
-                                    http_body_util::Full::new(bytes::Bytes::from_static(b"response cancelled"))
-                                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
-                                        .boxed_unsync()
-                                )
-                                .unwrap();
+                                    .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                                    .header(http::header::CONNECTION, "close")
+                                    .body(ReleaseIncomingOnFinish {
+                                        inner: http_body_util::Full::new(
+                                            bytes::Bytes::from_static(b"response cancelled"),
+                                        )
+                                        .map_err(
+                                            |e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
+                                                match e {}
+                                            },
+                                        )
+                                        .boxed_unsync(),
+                                        req_body: SharedIncomingBody::default(),
+                                    })
+                                    .unwrap();
                                 Ok(err_resp)
                             }
                         }
@@ -1505,7 +1606,6 @@ async fn accept_connections(
             let _ = hyper::server::conn::http1::Builder::new()
                 .timer(hyper_util::rt::TokioTimer::new())
                 .header_read_timeout(limits.header_read_timeout)
-                .pipeline_flush(true)
                 .serve_connection(io, service)
                 .await;
         });
@@ -1621,9 +1721,6 @@ impl http_server::HostServer for ComponentState {
         Ok(())
     }
 }
-
-
-
 
 #[cfg(test)]
 mod server_tests {

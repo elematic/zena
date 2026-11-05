@@ -221,4 +221,78 @@ export let tests = suite('zena:fetch', () => {
     isTrue(((monotonic() - start) - milliseconds(1000)).isNegative(), 'stopped waiting');
     server.close();
   });
+
+  test('a request with a body answered unread on a reused connection resolves', () => {
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      if (req.path == '/accept') {
+        let body = await req.bytes();
+        res.statusCode = 200;
+        res.body = `took ${body.length}`;
+        return;
+      }
+      if (req.path == '/limit') {
+        req.bodyLimit = 10 as i64;
+        try {
+          await req.bytes();
+        } catch (e) {
+          res.statusCode = 413;
+          res.body = 'too large';
+          return;
+        }
+      }
+      res.statusCode = 400;
+      res.body = 'refused';
+    });
+    let server = new Server(app, 0 as u16);
+    server.start();
+    let origin = originOf(server);
+    try {
+      runFuture(timeout<void>(milliseconds(500), async (): Future<void> => {
+        let first = await fetch(`${origin}/accept`, {
+          method: 'POST',
+          body: '<script></script>'.toBytes(),
+        });
+        equal(first.status, 200);
+        equal(await first.text(), 'took 17');
+
+        let refused = await fetch(`${origin}/refuse`, {
+          method: 'POST',
+          body: '<script></script>'.toBytes(),
+        });
+        equal(refused.status, 400);
+        equal(await refused.text(), 'refused');
+
+        let after = await fetch(`${origin}/accept`, {
+          method: 'POST',
+          body: 'after',
+        });
+        equal(after.status, 200);
+        equal(await after.text(), 'took 5');
+
+        let largeRefused = await fetch(`${origin}/refuse`, {
+          method: 'POST',
+          body: new FixedArray<u8>(128 * 1024, 0x61 as u8),
+        });
+        equal(largeRefused.status, 400);
+        equal(await largeRefused.text(), 'refused');
+
+        let tooLarge = await fetch(`${origin}/limit`, {
+          method: 'POST',
+          body: new FixedArray<u8>(128 * 1024, 0x61 as u8),
+        });
+        equal(tooLarge.status, 413);
+        equal(await tooLarge.text(), 'too large');
+
+        let final = await fetch(`${origin}/accept`, {
+          method: 'POST',
+          body: 'still works',
+        });
+        equal(final.status, 200);
+        equal(await final.text(), 'took 11');
+      })());
+    } finally {
+      server.close();
+    }
+  });
 });

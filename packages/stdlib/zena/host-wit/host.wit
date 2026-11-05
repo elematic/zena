@@ -232,7 +232,16 @@ interface http-server {
     /// Sends the HTTP response for this request.
     respond: func(response: response);
 
-    /// Sends an in-memory text response and disposes the writer.
+    /// Sends an in-memory text response and disposes `writer` in one host
+    /// call.
+    ///
+    /// Building a `wasi:http/types` `response` for a string body crosses
+    /// the component boundary for `fields`, header appends, the body
+    /// `stream`, the trailers `future`, `response.new`, `respond`, and
+    /// dropping `writer`, and spawns host tasks to pump the stream and
+    /// trailers (`benchmarks/http/json-server.zena`). Taking `writer` by
+    /// value with plain status, headers, and body strings builds a
+    /// `Full<Bytes>` response directly on the host.
     complete-text: static func(
       writer: response-writer,
       status: u16,
