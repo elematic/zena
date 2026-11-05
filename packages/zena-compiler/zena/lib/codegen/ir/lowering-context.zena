@@ -23,7 +23,7 @@ import {
 } from '../wasm.zena';
 import {
   substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
-  recordWasmFields, sortedOptionalNames,
+  recordWasmFields, sortedOptionalNames, InlineLayout,
 } from '../type-mapping.zena';
 import { IrOp } from './ir.zena';
 import {
@@ -135,7 +135,24 @@ export final class MergeState {
    * merge with one.
    */
   var returnTail = false;
+  /**
+   * Set when the merged value is an inline value held in slots: the
+   * arms pass their slots (mergeArmSlots), one parameter each.
+   */
+  var slots: ResultSlots | null = null;
+  var slotParams: GrowableArray<i32> | null = null;
   new(this.syms, this.isVoid, this.resultVt);
+}
+
+/**
+ * The slots an inline `if` or `match` is lowered into, in a `let` or as
+ * an argument (docs/design/inline-parameters.md): `slotVts` of the
+ * inline layout `layout`, null for a positional multi-value.
+ */
+export final class ResultSlots {
+  layout: InlineLayout | null;
+  slotVts: GrowableArray<ValType>;
+  new(this.layout, this.slotVts);
 }
 
 /** A lowered let-condition: the flag plus bindings to apply in the
@@ -1822,6 +1839,42 @@ export final class LoweringContext {
       args.push(this.conformToSlot(values[i], d.fields[i].type, 'record arm field type'));
     }
     this.b.br(m.block, args);
+  }
+
+  /**
+   * Like mergeArm, for a merge in slots mode (MergeState.slots): the arm
+   * passes its inline value's slots.
+   */
+  mergeArmSlots(m: MergeState, values: GrowableArray<i32>): void {
+    let slots = m.slots as ResultSlots;
+    if (m.block < 0) {
+      m.block = this.b.newBlock();
+      m.params = this.addParams(m.block, m.syms);
+      let slotParams = new Array<i32>();
+      for (let vt in slots.slotVts) {
+        slotParams.push(this.b.blockParam(m.block, vt));
+      }
+      m.slotParams = slotParams;
+    }
+    let args = this.envValues(m.syms);
+    for (var i = 0; i < values.length; i += 1) {
+      args.push(this.conformToSlot(values[i], slots.slotVts[i], 'inline arm slot type'));
+    }
+    this.b.br(m.block, args);
+  }
+
+  /**
+   * Set just before lowering an inline `if` or `match` into slots, which
+   * takes it (takeResultSlots), merges its arms' slots, and leaves the
+   * merged slots in `mergedSlots`.
+   */
+  var resultSlots: ResultSlots | null = null;
+  var mergedSlots: GrowableArray<i32> | null = null;
+
+  takeResultSlots(): ResultSlots | null {
+    let slots = this.resultSlots;
+    this.resultSlots = null;
+    return slots;
   }
 
   /**

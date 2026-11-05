@@ -41,6 +41,18 @@ function forwards(s: inline Span): inline Span {
 
 let pick = (c: boolean, s: inline Span, t: inline Span): inline Span => if (c) s else t;
 
+// A `let` that an `if` or `match` arm forwards an inline binding to is
+// inline too, so the rule follows it.
+function chooses(c: boolean, s: inline Span, t: inline Span): i32 {
+  let either = if (c) s else t;
+  let kept = match (c) {
+    case true: s
+    case false: t
+  };
+  width(kept);
+  return boxed(either); // @error: 'either' is inline, so it is only read or passed on: passing it for a parameter that is not inline would box it.
+}
+
 // A boxed value is read into slots, without allocating.
 let fromBoxed = (s: Span): i32 => width(s);
 

@@ -27,6 +27,50 @@ export function isInlineBindingReference(ctx: CheckerContext, e: Expression): bo
   return inlineBindingTypeOf(ctx, e) != null;
 }
 
+/**
+ * The inline type `e` forwards, or null: the type of the inline binding
+ * it names, or that an arm of it names when it is an `if` or `match`. A
+ * `let` it initializes is inline too, since the rule counts the arm as a
+ * forward and boxing it is what the binding's `inline` rules out.
+ */
+export function forwardedInlineTypeOf(ctx: CheckerContext, e: Expression): Type | null {
+  let named = inlineBindingTypeOf(ctx, e);
+  if (named != null) {
+    return named;
+  }
+  if (e is IfExpression) {
+    let fromThen = armForwardedInlineType(ctx, e.consequent);
+    if (fromThen != null) {
+      return fromThen;
+    }
+    let alternate = e.alternate;
+    return if (alternate != null) armForwardedInlineType(ctx, alternate) else null;
+  }
+  if (e is MatchExpression) {
+    for (let mc in e.cases) {
+      let fromArm = armForwardedInlineType(ctx, mc.body);
+      if (fromArm != null) {
+        return fromArm;
+      }
+    }
+  }
+  return null;
+}
+
+/** `forwardedInlineTypeOf` for an arm: an expression, or a block's tail. */
+function armForwardedInlineType(ctx: CheckerContext, arm: Node): Type | null {
+  if (arm is Expression) {
+    return forwardedInlineTypeOf(ctx, arm);
+  }
+  if (arm is BlockStatement && arm.body.length > 0) {
+    let last = arm.body[arm.body.length - 1];
+    if (last is ExpressionStatement) {
+      return forwardedInlineTypeOf(ctx, last.expression);
+    }
+  }
+  return null;
+}
+
 /** The inline type of the parameter or `let` `e` names, or null. */
 export function inlineBindingTypeOf(ctx: CheckerContext, e: Expression): Type | null {
   if (!(e is Identifier)) {

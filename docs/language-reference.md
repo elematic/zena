@@ -4855,7 +4855,9 @@ let w = width(clamp((0, 50), 10)); // nothing is allocated
 
 An inline parameter or `let` is never put in a heap object. It can be
 destructured, matched, indexed with a literal, passed for another inline
-parameter, held by another `let`, and returned as an inline result. Anything
+parameter, held by another `let`, and returned as an inline result. A `let`
+initialized from one, directly or through an `if` or `match` arm, is inline
+too. Anything
 that would box it is an error at that use: storing it, passing it for a
 parameter that is not inline, capturing it in a closure, `==`, `is` and `as`.
 A boxed value may be passed for an inline parameter, which reads it without

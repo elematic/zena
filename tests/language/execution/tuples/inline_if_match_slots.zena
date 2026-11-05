@@ -1,0 +1,84 @@
+// @mode: run
+// @result: 0
+// An `if` or `match` whose value is inline, in a `let` or as the argument
+// for an inline parameter, merges its arms' slots (#810): each arm is
+// lowered into the slots, and the join takes one value per slot.
+
+type Span = (i32, i32);
+
+function width(s: inline Span): i32 {
+  let (a, b) = s;
+  return b - a;
+}
+
+// Arms forwarding inline bindings, and arms writing tuple literals.
+function pick(c: boolean, s: inline Span, t: inline Span): i32 {
+  let chosen = if (c) s else t;
+  let literal: inline Span = if (c) (1, 7) else (0, 0);
+  return width(chosen) * 100 + width(literal);
+}
+
+// As an argument, a match with block arms, and a nested if.
+function classify(n: i32, s: inline Span): i32 {
+  return width(match (n) {
+    case 0: s
+    case 1: {
+      let doubled = n * 10;
+      (0, doubled)
+    }
+    case _: if (n > 5) (0, 50) else (0, 5)
+  });
+}
+
+// A union: each member writes its own slots.
+type Reply = (true, i32) | (false, String);
+
+function describe(r: inline Reply): i32 {
+  return match (r) {
+    case (true, let v): v
+    case (false, let why): why.length
+  };
+}
+
+function reply(ok: boolean): i32 {
+  let r: inline Reply = if (ok) (true, 42) else (false, 'nope');
+  return describe(r);
+}
+
+// Destructured straight away.
+function sum(c: boolean): i32 {
+  let (a, b) = if (c) (2, 3) else (4, 5);
+  return a + b;
+}
+
+// An arm that never produces a value.
+function guarded(c: boolean, s: inline Span): i32 {
+  let kept = if (c) s else { throw new Error('no'); };
+  return width(kept);
+}
+
+// A record: the arms merge their fields.
+type Point = {x: i32, y: i32};
+
+function norm(p: inline Point): i32 {
+  return p.x + p.y;
+}
+
+function choose(c: boolean, p: inline Point, q: inline Point): i32 {
+  let r = if (c) p else q;
+  return norm(r) + norm(if (c) ({x: 1, y: 1}) else ({x: 2, y: 2}));
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (pick(true, (3, 9), (0, 1)) != 606) { failures += 1; }
+  if (pick(false, (3, 9), (0, 1)) != 100) { failures += 2; }
+  if (classify(0, (1, 4)) != 3 || classify(1, (0, 0)) != 10 ||
+      classify(7, (0, 0)) != 50 || classify(3, (0, 0)) != 5) { failures += 4; }
+  if (reply(true) != 42 || reply(false) != 4) { failures += 8; }
+  if (sum(true) != 5 || sum(false) != 9) { failures += 16; }
+  if (guarded(true, (2, 7)) != 5) { failures += 32; }
+  if (choose(true, {x: 1, y: 2}, {x: 3, y: 4}) != 5 ||
+      choose(false, {x: 1, y: 2}, {x: 3, y: 4}) != 11) { failures += 64; }
+  return failures;
+};

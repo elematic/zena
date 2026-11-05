@@ -41,7 +41,8 @@ Allowed positions in this round:
   top-level `let`, of a method, of a constructor, and of an interface
   method signature;
 - a `let` local, written `let q: inline Span = ...`, or initialized from
-  another inline binding (`let q = s` keeps `q` inline).
+  another inline binding (`let q = s` keeps `q` inline), directly or
+  from an arm of an `if` or `match` (`let q = if (c) s else t`).
 
 Not in this round, each an error that says so:
 
@@ -107,6 +108,14 @@ parameters, the same slots an inline result of that type returns.
   (`#convertInlineSlots`): a tuple literal writes its slots, an inline
   result or binding forwards its own, and a boxed tuple is read field by
   field. The arity gates count wasm values, not arguments.
+- **`if` and `match`:** an inline `if` or `match` in a `let` or as an
+  argument is lowered into the slots it fills. `#lowerIntoSlots` asks
+  for that (`LoweringContext.resultSlots`), each arm is lowered into the
+  slots, and the merge takes one block parameter per slot
+  (`MergeState.slots`). A returned one instead returns from each arm
+  (`returnInlineTail`). An arm block that opens a release region is not
+  supported yet: the region carries one value out, and the arm has
+  several.
 
 ## Lowering records
 
@@ -132,7 +141,8 @@ signature takes them, and explosion skips the function.
 - **Calls:** an argument for an inline record parameter is lowered as
   fields (`#recordArgFields`): a record literal writes them, a record
   held as fields (an inline binding, or an exploded one) passes its
-  own, and a boxed record is read through its dispatch.
+  own, an `if` or `match` merges its arms' fields (`MergeState.fields`),
+  and a boxed record is read through its dispatch.
 
 An inline record result would return the fields as wasm results, as
 explosion's field-returning core does. It needs the return-path

@@ -25,7 +25,7 @@ import { WellKnown } from '../well-known.zena';
 import { Symbol } from '../scope/symbol.zena';
 import { adaptToExpected, checkAndRegisterInterfaceAdaptation } from './adaptation.zena';
 import { boxedFormOf, isInlineType, resolveTypeAnnotation } from './annotations.zena';
-import { inlineBindingTypeOf, isInlineBindingReference } from './inline.zena';
+import { forwardedInlineTypeOf } from './inline.zena';
 import { checkClassBodies, registerClassDeclaration } from './classes.zena';
 import { CheckerContext, lookupBindingTypeInDeps } from './context.zena';
 import {
@@ -935,20 +935,18 @@ function checkVariableDeclaration(
     initType
   };
   // A name holds a stored value, so an inline initializer is boxed. A
-  // tuple pattern takes the inline value apart instead, and a `let` of an
-  // inline binding is inline itself: boxing it is what the binding's
-  // `inline` rules out.
-  let keepsInline = inlineAllowed && isInlineBindingReference(ctx, init);
+  // tuple pattern takes the inline value apart instead, and a `let` that
+  // forwards an inline binding, itself or from an `if` or `match` arm,
+  // is inline itself: boxing it is what the binding's `inline` rules out.
+  let forwarded = if (inlineAllowed) forwardedInlineTypeOf(ctx, init) else null;
+  let keepsInline = forwarded != null;
   if (typeAnnotation == null && !(pattern is TuplePattern) && !keepsInline) {
     declType = boxedFormOf(declType);
   }
-  if (keepsInline && typeAnnotation == null) {
+  if (forwarded != null && typeAnnotation == null && !isInlineType(declType)) {
     // The binding's own type: a reference to an inline record reads as
     // the record.
-    let initBinding = inlineBindingTypeOf(ctx, init);
-    if (initBinding != null) {
-      declType = initBinding;
-    }
+    declType = forwarded;
   }
   if ((keepsInline && isInlineType(declType)) ||
       (expectedType != null && isInlineType(expectedType))) {
