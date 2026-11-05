@@ -114,6 +114,9 @@ import {
   ExportFromDeclaration,
   Decorator,
   decoratorStringArg,
+  ContractClause,
+  ContractKind,
+  contractKeyword,
   DeclareFunction,
   SymbolDeclaration,
   SymbolPropertyName
@@ -185,6 +188,8 @@ export final class Parser {
   var #extraGreaters: i32;
   var #destructParamCounter: i32;
   var #combinedTypeAnnotation: RecordTypeAnnotation | null;
+  /** Every contract clause parsed so far, for `Module.contractClauses`. */
+  var #contractClauses: GrowableArray<ContractClause> | null = null;
   #errors: GrowableArray<Diagnostic>;
   var #completeness: ParseCompleteness;
   #recover: boolean;
@@ -248,7 +253,9 @@ export final class Parser {
       body.push(stmt);
     }
 
-    return new Module(body, this.#path, this.#source, this.#comments, null);
+    let mod = new Module(body, this.#path, this.#source, this.#comments, null);
+    mod.contractClauses = this.#contractClauses;
+    return mod;
   }
   
   // ==========================================================================
@@ -905,13 +912,113 @@ export final class Parser {
       null
     };
 
+    let contracts = this.#parseFunctionContracts();
+
     let braceToken = this.#consume(TokenType.LBrace, "Expected '{' before function body");
     let body = this.#parseBlockStatement(braceToken);
 
     let func = new FunctionExpression(
-      typeParameters, params, returnType, body, isGenerator, isAsync,
+      typeParameters, params, returnType, body, isGenerator, isAsync, contracts,
       this.#makeLocation(startToken));
     return new FunctionDeclaration(name, func, exported, this.#makeLocation(startToken));
+  }
+
+  /**
+   * Whether the token `offset` past the current one is `requires` or
+   * `ensures`. Both words are contextual: a signature is never followed
+   * by a name, so after one they can only start a clause, and nothing
+   * named `requires` or `ensures` is disturbed. See
+   * docs/design/contracts.md.
+   */
+  #isFunctionContractAt(offset: i32): boolean {
+    let token = this.#tokens[this.#current + offset];
+    return token.kind == TokenType.Identifier &&
+        (token.value == 'requires' || token.value == 'ensures');
+  }
+
+  /**
+   * The `requires` and `ensures` clauses that follow a signature, or null
+   * when there are none.
+   */
+  #parseFunctionContracts(): GrowableArray<ContractClause> | null {
+    if (!this.#isFunctionContractAt(0)) { return null; }
+    let clauses = new Array<ContractClause>(2);
+    while (this.#isFunctionContractAt(0)) {
+      let kind = if (this.#peek().value == 'requires') ContractKind.Requires else ContractKind.Ensures;
+      clauses.push(this.#parseContractClause(kind));
+    }
+    return clauses;
+  }
+
+  /**
+   * Whether an `invariant` clause starts at the current token. A loop's
+   * body can be any statement, so `while (c) invariant(x);` is a loop
+   * that calls a function. The word is a clause keyword only when its
+   * parenthesized condition is followed by `{` or by another clause,
+   * which a call statement never is.
+   */
+  #isLoopInvariantAhead(): boolean {
+    if (!this.#check(TokenType.Identifier) || this.#peek().value != 'invariant') { return false; }
+    if (this.#peek2().kind != TokenType.LParen) { return false; }
+    var depth = 0;
+    var i = 1;
+    while (true) {
+      let token = this.#tokens[this.#current + i];
+      if (token.kind == TokenType.EOF) { return false; }
+      if (token.kind == TokenType.LParen) {
+        depth += 1;
+      } else if (token.kind == TokenType.RParen) {
+        depth -= 1;
+      }
+      i += 1;
+      if (depth == 0) { break; }
+    }
+    let after = this.#tokens[this.#current + i];
+    if (after.kind == TokenType.LBrace) { return true; }
+    return after.kind == TokenType.Identifier && after.value == 'invariant' &&
+        this.#tokens[this.#current + i + 1].kind == TokenType.LParen;
+  }
+
+  /**
+   * The `invariant` clauses that follow a loop's header, or null when
+   * there are none.
+   */
+  #parseLoopInvariants(): GrowableArray<ContractClause> | null {
+    if (!this.#isLoopInvariantAhead()) { return null; }
+    let clauses = new Array<ContractClause>(2);
+    while (this.#isLoopInvariantAhead()) {
+      clauses.push(this.#parseContractClause(ContractKind.Invariant));
+    }
+    return clauses;
+  }
+
+  /**
+   * A loop's body. A loop with `invariant` clauses takes a block, which
+   * is what lets `invariant` stay an ordinary name everywhere else.
+   */
+  #parseLoopBody(invariants: GrowableArray<ContractClause> | null): Statement {
+    if (invariants != null && !this.#check(TokenType.LBrace)) {
+      throw this.#error("Expected '{': a loop with 'invariant' clauses needs a block body");
+    }
+    return this.#parseStatement();
+  }
+
+  /** One clause, `keyword (condition)`, with the current token at the keyword. */
+  #parseContractClause(kind: ContractKind): ContractClause {
+    let startToken = this.#advance();
+    let keyword = contractKeyword(kind);
+    this.#consume(TokenType.LParen,
+        `Expected '(' after '${keyword}': the condition is written in parentheses, as in '${keyword} (x > 0)'`);
+    let condition = this.#parseExpression();
+    this.#consume(TokenType.RParen, `Expected ')' after the '${keyword}' condition`);
+    let clause = new ContractClause(kind, condition, this.#makeLocation(startToken));
+    var clauses = this.#contractClauses;
+    if (clauses == null) {
+      clauses = new Array<ContractClause>(4);
+      this.#contractClauses = clauses;
+    }
+    clauses.push(clause);
+    return clause;
   }
 
   #parseReturnStatement(startToken: Token, isTail: boolean): ReturnStatement {
@@ -950,10 +1057,11 @@ export final class Parser {
     this.#consume(TokenType.LParen, "Expected '(' after 'while'");
     let test = this.#parseCondition();
     this.#consume(TokenType.RParen, "Expected ')' after condition");
-    
-    let body = this.#parseStatement();
-    
-    return new WhileStatement(test, body, this.#makeLocation(startToken));
+
+    let invariants = this.#parseLoopInvariants();
+    let body = this.#parseLoopBody(invariants);
+
+    return new WhileStatement(test, body, invariants, this.#makeLocation(startToken));
   }
   
   #parseCondition(): Node {
@@ -995,8 +1103,9 @@ export final class Parser {
         // for-in loop
         let iterable = this.#parseExpression();
         this.#consume(TokenType.RParen, "Expected ')' after for-in iterable");
-        let body = this.#parseStatement();
-        return new ForInStatement(pattern, iterable, body, isAwait, this.#makeLocation(startToken));
+        let invariants = this.#parseLoopInvariants();
+        let body = this.#parseLoopBody(invariants);
+        return new ForInStatement(pattern, iterable, body, isAwait, invariants, this.#makeLocation(startToken));
       }
       
       // C-style for with let declaration
@@ -1056,10 +1165,11 @@ export final class Parser {
       null
     };
     this.#consume(TokenType.RParen, "Expected ')' after for clauses");
-    
-    let body = this.#parseStatement();
-    
-    return new ForStatement(init, test, update, body, this.#makeLocation(startToken));
+
+    let invariants = this.#parseLoopInvariants();
+    let body = this.#parseLoopBody(invariants);
+
+    return new ForStatement(init, test, update, body, invariants, this.#makeLocation(startToken));
   }
   
   /**
@@ -2525,6 +2635,12 @@ export final class Parser {
     if (nextToken.kind == TokenType.Arrow) {
       return true;
     }
+    // (...) requires (c) => — a parenthesized expression is never
+    // followed by a name, so this can only be an arrow's contract.
+    if (this.#isFunctionContractAt(i) &&
+        this.#tokens[this.#current + i + 1].kind == TokenType.LParen) {
+      return true;
+    }
     if (nextToken.kind == TokenType.Colon) {
       // Could be return type annotation: (...): Type =>
       // Skip past the type to find =>
@@ -2722,13 +2838,15 @@ export final class Parser {
       null
     };
 
+    let contracts = this.#parseFunctionContracts();
+
     this.#consume(TokenType.Arrow, "Expected '=>' after parameters");
 
     // Body: expression or block
     if (this.#check(TokenType.LBrace)) {
       let blockStart = this.#advance();
       let body = this.#parseBlockStatement(blockStart);
-      return new FunctionExpression(typeParameters, params, returnType, body, isGenerator, isAsync, this.#makeLocation(startToken));
+      return new FunctionExpression(typeParameters, params, returnType, body, isGenerator, isAsync, contracts, this.#makeLocation(startToken));
     } else {
       if (isGenerator) {
         throw this.#error("Generator functions require a block body");
@@ -2736,7 +2854,7 @@ export final class Parser {
       // Async expression bodies are fine: await is an expression, and
       // an awaitless async body still runs eagerly to completion.
       let body = this.#parseExpression();
-      return new FunctionExpression(typeParameters, params, returnType, body, false, isAsync, this.#makeLocation(startToken));
+      return new FunctionExpression(typeParameters, params, returnType, body, false, isAsync, contracts, this.#makeLocation(startToken));
     }
   }
   
@@ -3957,6 +4075,14 @@ export final class Parser {
       }
     }
     
+    // A class constructor has no return type, so its clauses follow the
+    // parameters, ahead of the initializer list they guard.
+    let constructorContracts = if (isConstructor && !inInterface) {
+      this.#parseFunctionContracts()
+    } else {
+      null
+    };
+
     var returnType: TypeAnnotation | null = null;
     if (this.#match(TokenType.Colon)) {
       // Check for initializer list (: field = value, ...) vs return type
@@ -4016,12 +4142,14 @@ export final class Parser {
           null
         };
         
-        return new MethodDefinition(name, typeParameters, receiver, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, true, isShared, this.#makeLocation(startToken));
+        return new MethodDefinition(name, typeParameters, receiver, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, true, isShared, constructorContracts, this.#makeLocation(startToken));
       } else {
         returnType = this.#parseTypeAnnotation();
       }
     }
-    
+
+    let contracts = if (isConstructor) constructorContracts else this.#parseFunctionContracts();
+
     // Method body
     var body: Node | null = null;
     if (this.#check(TokenType.LBrace)) {
@@ -4041,7 +4169,7 @@ export final class Parser {
       null
     };
     
-    return new MethodDefinition(name, typeParameters, receiver, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, isConstructor, isShared, this.#makeLocation(startToken));
+    return new MethodDefinition(name, typeParameters, receiver, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, isConstructor, isShared, contracts, this.#makeLocation(startToken));
   }
   
   #parseFieldInitializer(): FieldInitializer {
@@ -4283,8 +4411,9 @@ export final class Parser {
       } else {
         null
       };
+      let contracts = this.#parseFunctionContracts();
       this.#consume(TokenType.Semi, "Expected ';' after operator signature");
-      return new MethodSignature(operatorName, null, params, returnType, this.#makeLocation(startToken));
+      return new MethodSignature(operatorName, null, params, returnType, contracts, this.#makeLocation(startToken));
     }
     
     // Symbol-keyed method: [symbolName](params): ReturnType;
@@ -4305,8 +4434,9 @@ export final class Parser {
       } else {
         null
       };
+      let symContracts = this.#parseFunctionContracts();
       this.#consume(TokenType.Semi, "Expected ';' after method signature");
-      return new MethodSignature(symPropName, null, symParams, symReturnType, this.#makeLocation(startToken));
+      return new MethodSignature(symPropName, null, symParams, symReturnType, symContracts, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();
@@ -4332,9 +4462,11 @@ export final class Parser {
         null
       };
       
+      let contracts = this.#parseFunctionContracts();
+
       this.#consume(TokenType.Semi, "Expected ';' after method signature");
-      
-      return new MethodSignature(name, typeParameters, params, returnType, this.#makeLocation(startToken));
+
+      return new MethodSignature(name, typeParameters, params, returnType, contracts, this.#makeLocation(startToken));
     }
     
     if (typeParameters != null) {

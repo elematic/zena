@@ -39,7 +39,7 @@ import {
   CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition,
   AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer,
   MethodSignature, AccessorSignature, EnumMember, CatchClause,
-  PropertySignature, ImportSpecifier, Decorator,
+  PropertySignature, ImportSpecifier, Decorator, ContractClause,
   SymbolPropertyName
 } from './ast.zena';
 
@@ -102,10 +102,11 @@ export function walkChildren(node: Node, enter: (n: Node) => boolean, leave: (n:
       }
 
       // -- Functions & Calls --
-      case FunctionExpression {typeParameters, params, returnType, body}: {
+      case FunctionExpression {typeParameters, params, returnType, body, contracts}: {
         if (typeParameters != null) { for (let t in typeParameters) { walk(t, enter, leave); } }
         for (let p in params) { walk(p, enter, leave); }
         if (returnType != null) { walk(returnType, enter, leave); }
+        if (contracts != null) { for (let c in contracts) { walk(c, enter, leave); } }
         walk(body, enter, leave);
       }
       case CallExpression {callee, args, typeArguments}: {
@@ -217,19 +218,22 @@ export function walkChildren(node: Node, enter: (n: Node) => boolean, leave: (n:
         walk(consequent, enter, leave);
         if (alternate != null) { walk(alternate, enter, leave); }
       }
-      case WhileStatement {test, body}: {
+      case WhileStatement {test, body, invariants}: {
         walk(test, enter, leave);
+        if (invariants != null) { for (let c in invariants) { walk(c, enter, leave); } }
         walk(body, enter, leave);
       }
-      case ForStatement {init, test, update, body}: {
+      case ForStatement {init, test, update, body, invariants}: {
         if (init != null) { walk(init, enter, leave); }
         if (test != null) { walk(test, enter, leave); }
         if (update != null) { walk(update, enter, leave); }
+        if (invariants != null) { for (let c in invariants) { walk(c, enter, leave); } }
         walk(body, enter, leave);
       }
-      case ForInStatement {pattern, iterable, body}: {
+      case ForInStatement {pattern, iterable, body, invariants}: {
         walk(pattern, enter, leave);
         walk(iterable, enter, leave);
+        if (invariants != null) { for (let c in invariants) { walk(c, enter, leave); } }
         walk(body, enter, leave);
       }
       case ClassDeclaration {name, typeParameters, caseParams, superClass, mixins, implementsList, body, sealedVariants, onType}: {
@@ -414,12 +418,13 @@ export function walkChildren(node: Node, enter: (n: Node) => boolean, leave: (n:
         if (typeAnnotation !== null) { walk(typeAnnotation, enter, leave); }
         if (value !== null) { walk(value, enter, leave); }
       }
-      case MethodDefinition {name, typeParameters, receiver, params, returnType, body, initializerList, superInitializer}: {
+      case MethodDefinition {name, typeParameters, receiver, params, returnType, body, initializerList, superInitializer, contracts}: {
         walk(name, enter, leave);
         if (typeParameters !== null) { for (let t in typeParameters) { walk(t, enter, leave); } }
         if (receiver !== null) { walk(receiver as Node, enter, leave); }
         for (let p in params) { walk(p, enter, leave); }
         if (returnType !== null) { walk(returnType, enter, leave); }
+        if (contracts !== null) { for (let c in contracts) { walk(c, enter, leave); } }
         if (body !== null) { walk(body, enter, leave); }
         if (initializerList !== null) { for (let i in initializerList) { walk(i, enter, leave); } }
         if (superInitializer !== null) { walk(superInitializer, enter, leave); }
@@ -442,11 +447,12 @@ export function walkChildren(node: Node, enter: (n: Node) => boolean, leave: (n:
         if (constructorName != null) { walk(constructorName as Node, enter, leave); }
         for (let a in args) { walk(a, enter, leave); }
       }
-      case MethodSignature {name, typeParameters, params, returnType}: {
+      case MethodSignature {name, typeParameters, params, returnType, contracts}: {
         walk(name, enter, leave);
         if (typeParameters !== null) { for (let t in typeParameters) { walk(t, enter, leave); } }
         for (let p in params) { walk(p, enter, leave); }
         if (returnType !== null) { walk(returnType, enter, leave); }
+        if (contracts !== null) { for (let c in contracts) { walk(c, enter, leave); } }
       }
       case AccessorSignature {name, typeAnnotation}: {
         walk(name, enter, leave);
@@ -473,6 +479,9 @@ export function walkChildren(node: Node, enter: (n: Node) => boolean, leave: (n:
       // `@external("env", "print")` register "env" and "print" as string
       // constants of every program that declared an import.
       case Decorator {}: {}
+      case ContractClause {condition}: {
+        walk(condition, enter, leave);
+      }
       case SymbolPropertyName {symbolRef}: {
         walk(symbolRef, enter, leave);
       }

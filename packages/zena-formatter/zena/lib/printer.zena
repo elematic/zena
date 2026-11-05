@@ -14,7 +14,7 @@ import {
   Statement, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, Decorator, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, isSymbolFieldDeclaration, // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
-  TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, SymbolPropertyName,
+  TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, SymbolPropertyName, ContractClause, contractKeyword,
 } from 'zena-compiler:ast';
 import {
   Doc, text, concat, group, indent, line, softline, hardline, join, lineSuffix,
@@ -495,7 +495,7 @@ function printFunctionDeclaration(decl: FunctionDeclaration): Doc {
     parts.push(text(': '));
     parts.push(printTypeAnnotation(fn.returnType as TypeAnnotation));
   }
-  parts.push(text(' '));
+  parts.push(printContractClauses(fn.contracts, true));
   // The parser guarantees a block body.
   parts.push(printBlockStatement(fn.body as BlockStatement));
   return group(concat(parts));
@@ -574,10 +574,46 @@ function printWhileStatement(stmt: WhileStatement): Doc {
   let parts = growable<Doc>([
     text('while ('),
     printCondition(stmt.test),
-    text(') '),
+    text(')'),
+    printContractClauses(stmt.invariants, true),
     printStatement(stmt.body),
   ]);
   return concat(parts);
+}
+
+// ============================================================================
+// Contract Clauses
+// ============================================================================
+
+/**
+ * The clauses that follow a signature or a loop header, with what
+ * separates the header from its body when `beforeBody` is set. Clauses
+ * that fit stay on the header's line:
+ *
+ *     function half(n: i32): i32 requires (n % 2 == 0) {
+ *
+ * Otherwise each takes a line of its own, and so does the body's `{` or
+ * `=>`:
+ *
+ *     function withdraw(account: Account, amount: i32): Account
+ *       requires (amount > 0)
+ *       requires (account.balance >= amount)
+ *     {
+ */
+function printContractClauses(clauses: GrowableArray<ContractClause> | null, beforeBody: boolean): Doc {
+  if (clauses == null) {
+    return text(if (beforeBody) ' ' else '');
+  }
+  let lines = new Array<Doc>();
+  for (let clause in clauses) {
+    lines.push(line);
+    lines.push(text(`${contractKeyword(clause.kind)} (`));
+    lines.push(printExpression(clause.condition));
+    lines.push(text(')'));
+  }
+  let parts = growable<Doc>([indent(concat(lines))]);
+  if (beforeBody) { parts.push(line); }
+  return group(concat(parts));
 }
 
 // ============================================================================
@@ -606,7 +642,8 @@ function printForStatement(stmt: ForStatement): Doc {
     parts.push(text(' '));
     parts.push(printExpression(stmt.update as Expression));
   }
-  parts.push(text(') '));
+  parts.push(text(')'));
+  parts.push(printContractClauses(stmt.invariants, true));
   parts.push(printStatement(stmt.body));
   return concat(parts);
 }
@@ -621,7 +658,8 @@ function printForInStatement(stmt: ForInStatement): Doc {
     printPattern(stmt.pattern),
     text(' in '),
     printExpression(stmt.iterable),
-    text(') '),
+    text(')'),
+    printContractClauses(stmt.invariants, true),
     printStatement(stmt.body),
   ]);
   return concat(parts);
@@ -916,6 +954,13 @@ function printMethodDefinition(method: MethodDefinition): Doc {
     parts.push(printTypeAnnotation(method.returnType as TypeAnnotation));
   }
 
+  // A constructor's clauses come before its initializer list, which
+  // stays on the last clause's line. A method's are printed with its body.
+  let contractsBeforeBody = !method.isConstructor && method.body is BlockStatement;
+  if (!contractsBeforeBody) {
+    parts.push(printContractClauses(method.contracts, false));
+  }
+
   // Initializer list, less the entries synthesized for `this.` parameters —
   // those are printed as part of the parameter.
   var printedInitializer = false;
@@ -958,7 +1003,7 @@ function printMethodDefinition(method: MethodDefinition): Doc {
   if (method.body != null) {
     let body = method.body as Node;
     if (body is BlockStatement) {
-      parts.push(text(' '));
+      parts.push(if (contractsBeforeBody) printContractClauses(method.contracts, true) else text(' '));
       parts.push(printBlockStatement(body));
     } else {
       parts.push(text(' '));
@@ -1060,7 +1105,7 @@ function printInterfaceMember(member: Node): Doc {
   let doc = match (member) {
     // An interface constructor: the same node a class constructor is.
     case MethodDefinition {}: printMethodDefinition(member)
-    case MethodSignature {name, typeParameters, params, returnType}: {
+    case MethodSignature {name, typeParameters, params, returnType, contracts}: {
       let parts = new Array<Doc>();
       // Not always an Identifier: a symbol-keyed signature such as
       // `[Disposable.dispose](): void;` carries a SymbolPropertyName.
@@ -1075,6 +1120,7 @@ function printInterfaceMember(member: Node): Doc {
         parts.push(text(': '));
         parts.push(printTypeAnnotation(returnType));
       }
+      parts.push(printContractClauses(contracts, false));
       parts.push(text(';'));
       concat(parts)
     }
@@ -1794,7 +1840,8 @@ function printFunctionExpression(fn: FunctionExpression): Doc {
     parts.push(printTypeAnnotation(fn.returnType as TypeAnnotation));
   }
 
-  parts.push(text(' => '));
+  parts.push(printContractClauses(fn.contracts, true));
+  parts.push(text('=> '));
 
   if (fn.body is BlockStatement) {
     parts.push(printBlockStatement(fn.body as BlockStatement));

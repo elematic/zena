@@ -85,6 +85,76 @@ let tests = suite('formatter', () => {
     `);
   });
 
+  test('keeps contract clauses that fit on the signature line', (t) => {
+    checkFormat('one clause', 'function half(n:i32):i32 requires(n%2==0){return n;}', dedentRaw`
+      function half(n: i32): i32 requires (n % 2 == 0) {
+        return n;
+      }
+    `);
+    checkStable('arrow clause', 'let abs = (x: i32): i32 ensures (result >= 0) => if (x >= 0) x else -x;');
+    checkStable('method clauses', dedentRaw`
+      class Stack {
+        new(this.size) requires (size >= 0) {}
+        new filled(count: i32) requires (count > 0) : size = count {}
+        pop(): i32 requires (this.size > 0) {
+          return 0;
+        }
+        abstract peek(): i32 requires (this.size > 0);
+      }
+    `);
+    checkStable('interface clause', dedentRaw`
+      interface Shape {
+        area(): f64 ensures (result >= 0.0);
+      }
+    `);
+  });
+
+  test('gives contract clauses that do not fit a line each', (t) => {
+    checkStable('function clauses', dedentRaw`
+      function withdraw(account: Account, amount: i32): Account
+        requires (amount > 0)
+        requires (account.balance >= amount)
+        ensures (result.balance == account.balance - amount)
+      {
+        return account;
+      }
+    `);
+    checkStable('arrow clauses', dedentRaw`
+      let withdraw = (account: Account, amount: i32): Account
+        requires (amount > 0 && account.balance >= amount)
+        ensures (result.balance == account.balance - amount)
+      => account;
+    `);
+  });
+
+  test('formats loop invariants', (t) => {
+    checkFormat('loops', dedentRaw`
+      function f(xs: FixedArray<i32>) {
+        var lo = 0;
+        while (lo < 10) invariant(lo >= 0) { lo += 1; }
+        for (var i = 0; i < 10; i += 1) invariant (i >= 0) invariant (i <= 10) {}
+        for (let x in xs) invariant (lo >= 0) {}
+      }
+    `, dedentRaw`
+      function f(xs: FixedArray<i32>) {
+        var lo = 0;
+        while (lo < 10) invariant (lo >= 0) {
+          lo += 1;
+        }
+        for (var i = 0; i < 10; i += 1) invariant (i >= 0) invariant (i <= 10) {}
+        for (let x in xs) invariant (lo >= 0) {}
+      }
+    `);
+  });
+
+  test('leaves `requires`, `ensures` and `invariant` alone as names', (t) => {
+    checkStable('names', dedentRaw`
+      function f(requires: i32, ensures: i32, invariant: Check) {
+        while (requires < ensures) invariant(requires);
+      }
+    `);
+  });
+
   test('formats exported function declaration', (t) => {
     checkFormat('exported function decl', 'export function main():i32{return 0;}', dedentRaw`
       export function main(): i32 {
