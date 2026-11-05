@@ -1,0 +1,706 @@
+/**
+ * Arbitrary-precision signed integers (`BigInt`).
+ *
+ * Values are immutable and represented in sign-and-magnitude form over
+ * normalized little-endian `u64` limbs. Multiplication switches from
+ * schoolbook to Karatsuba at 32 limbs, division uses a single-limb fast path
+ * and Knuth's Algorithm D over `u64` limbs, and bitwise operations follow
+ * infinite two's-complement semantics.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { BigInt } from 'zena:bigint';
+ *
+ * let a = BigInt.from('123456789012345678901234567890');
+ * let b = BigInt.from(1000000007);
+ * let (q, r) = a.divRem(b);
+ * let p = a.modPow(BigInt.from(65537), b);
+ * ```
+ */
+
+import { Error, Hashable, Stringable } from 'zena:core';
+import { I64_MIN } from 'zena:math';
+import {
+  EMPTY_LIMBS, ONE_LIMBS, limbOf, cmpMag, bitLengthMag,
+  addMag, addOneMag, subMag, subOneMag, mulMag, divRemMag, remLimb,
+  shlMag, shrMag, hasNonZeroLowBits, andMag, orMag, xorMag, andNotMag,
+  gcdMag, parseMag, formatMag,
+} from './limbs.zena';
+
+/**
+ * An immutable arbitrary-precision signed integer.
+ */
+export final class BigInt implements Hashable, Stringable {
+  /** `-1` for negative, `0` for zero, `1` for positive. */
+  #sign: i32;
+  /** Little-endian `u64` magnitude limbs; empty iff `#sign == 0`. */
+  #limbs: FixedArray<u64>;
+
+  new #raw(sign: i32, limbs: FixedArray<u64>)
+    : #sign = sign, #limbs = limbs;
+
+  /** The additive identity `0`. */
+  static ZERO: BigInt = new BigInt.#raw(0, EMPTY_LIMBS);
+
+  /** The multiplicative identity `1`. */
+  static ONE: BigInt = new BigInt.#raw(1, ONE_LIMBS);
+
+  static #NEG_ONE: BigInt = new BigInt.#raw(-1, ONE_LIMBS);
+
+  static #fromMag(sign: i32, limbs: FixedArray<u64>): BigInt {
+    if (limbs.length == 0 || sign == 0) {
+      return BigInt.ZERO;
+    }
+    if (limbs.length == 1 && limbs[0] == 1) {
+      return if (sign > 0) BigInt.ONE else BigInt.#NEG_ONE;
+    }
+    return new BigInt.#raw(if (sign > 0) 1 else -1, limbs);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Construction and parsing
+  // ---------------------------------------------------------------------------
+
+  /** Converts a signed 32-bit integer to `BigInt`. */
+  static from(value: i32): BigInt {
+    return BigInt.fromI64(value as i64);
+  }
+
+  /** Converts a signed 64-bit integer to `BigInt`. */
+  static from(value: i64): BigInt {
+    return BigInt.fromI64(value);
+  }
+
+  /** Converts an unsigned 64-bit integer to `BigInt`. */
+  static from(value: u64): BigInt {
+    return BigInt.fromU64(value);
+  }
+
+  /**
+   * Parses `text` in `radix` (`2..36`, or `0` to detect `0x`, `0b`, `0o`
+   * prefixes and otherwise default to base 10). Throws `Error` if `radix` is
+   * out of range or `text` is invalid.
+   */
+  static from(text: String, radix: i32 = 0): BigInt {
+    if (radix != 0 && (radix < 2 || radix > 36)) {
+      throw new Error('Radix out of range (2..36)');
+    }
+    let parsed = BigInt.parse(text, radix);
+    if (parsed == null) {
+      throw new Error(`Invalid BigInt literal: ${text}`);
+    }
+    return parsed;
+  }
+
+  /** Converts a signed 64-bit integer to `BigInt`. */
+  static fromI64(value: i64): BigInt {
+    if (value == 0) {
+      return BigInt.ZERO;
+    }
+    if (value > 0) {
+      return BigInt.#fromMag(1, limbOf(value as u64));
+    }
+    let mag = (0 as u64) - (value as u64);
+    return BigInt.#fromMag(-1, limbOf(mag));
+  }
+
+  /** Converts an unsigned 64-bit integer to `BigInt`. */
+  static fromU64(value: u64): BigInt {
+    if (value == 0) {
+      return BigInt.ZERO;
+    }
+    return BigInt.#fromMag(1, limbOf(value));
+  }
+
+  /**
+   * Parses `text` in `radix` (`2..36`, or `0` to auto-detect `0x`/`0X`,
+   * `0b`/`0B`, and `0o`/`0O` prefixes with base-10 fallback), returning `null`
+   * when `text` is empty, `radix` is invalid, or any character is out of range.
+   */
+  static parse(text: String, radix: i32 = 0): BigInt | null {
+    let len = text.length;
+    if (len == 0) {
+      return null;
+    }
+    if (radix != 0 && (radix < 2 || radix > 36)) {
+      return null;
+    }
+
+    var pos = 0;
+    var sign = 1;
+    let first = text.getByteAt(0);
+    if (first == 45) {
+      sign = -1;
+      pos = 1;
+    } else if (first == 43) {
+      pos = 1;
+    }
+    if (pos >= len) {
+      return null;
+    }
+
+    var actualRadix = radix;
+    if (radix == 0) {
+      actualRadix = 10;
+      if (pos + 2 <= len && text.getByteAt(pos) == 48) {
+        let p = text.getByteAt(pos + 1);
+        if (p == 120 || p == 88) {
+          actualRadix = 16;
+          pos += 2;
+        } else if (p == 98 || p == 66) {
+          actualRadix = 2;
+          pos += 2;
+        } else if (p == 111 || p == 79) {
+          actualRadix = 8;
+          pos += 2;
+        }
+      }
+    } else if (pos + 2 <= len && text.getByteAt(pos) == 48) {
+      let p = text.getByteAt(pos + 1);
+      if (radix == 16 && (p == 120 || p == 88)) {
+        pos += 2;
+      } else if (radix == 2 && (p == 98 || p == 66)) {
+        pos += 2;
+      } else if (radix == 8 && (p == 111 || p == 79)) {
+        pos += 2;
+      }
+    }
+
+    let limbs = parseMag(text, pos, len, actualRadix);
+    if (limbs == null) {
+      return null;
+    }
+    return BigInt.#fromMag(sign, limbs);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sign and bit queries
+  // ---------------------------------------------------------------------------
+
+  /** `-1` if negative, `0` if zero, `1` if positive. */
+  sign: i32 {
+    get {
+      return this.#sign;
+    }
+  }
+
+  /** Whether this value equals `0`. */
+  isZero: boolean {
+    get {
+      return this.#sign == 0;
+    }
+  }
+
+  /** Whether this value is strictly less than `0`. */
+  isNegative: boolean {
+    get {
+      return this.#sign < 0;
+    }
+  }
+
+  /** Whether this value is strictly greater than `0`. */
+  isPositive: boolean {
+    get {
+      return this.#sign > 0;
+    }
+  }
+
+  /** Whether this value is divisible by `2`. */
+  isEven: boolean {
+    get {
+      return this.#sign == 0 || (this.#limbs[0] & 1) == 0;
+    }
+  }
+
+  /** Whether this value leaves remainder `1` or `-1` modulo `2`. */
+  isOdd: boolean {
+    get {
+      return this.#sign != 0 && (this.#limbs[0] & 1) != 0;
+    }
+  }
+
+  /** Minimum number of bits needed to represent the magnitude (`0` for zero). */
+  bitLength(): i32 {
+    return bitLengthMag(this.#limbs);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Arithmetic
+  // ---------------------------------------------------------------------------
+
+  /** Returns `-this`. */
+  neg(): BigInt {
+    if (this.#sign == 0) {
+      return BigInt.ZERO;
+    }
+    return BigInt.#fromMag(-this.#sign, this.#limbs);
+  }
+
+  /** Returns `|this|`. */
+  abs(): BigInt {
+    if (this.#sign >= 0) {
+      return this;
+    }
+    return BigInt.#fromMag(1, this.#limbs);
+  }
+
+  /** Sum `this + other`. */
+  operator +(other: BigInt): BigInt {
+    if (this.#sign == 0) {
+      return other;
+    }
+    if (other.#sign == 0) {
+      return this;
+    }
+    if (this.#sign == other.#sign) {
+      return BigInt.#fromMag(this.#sign, addMag(this.#limbs, other.#limbs));
+    }
+    let cmp = cmpMag(this.#limbs, other.#limbs);
+    if (cmp == 0) {
+      return BigInt.ZERO;
+    }
+    if (cmp > 0) {
+      return BigInt.#fromMag(this.#sign, subMag(this.#limbs, other.#limbs));
+    }
+    return BigInt.#fromMag(other.#sign, subMag(other.#limbs, this.#limbs));
+  }
+
+  /** Difference `this - other`. */
+  operator -(other: BigInt): BigInt {
+    if (other.#sign == 0) {
+      return this;
+    }
+    if (this.#sign == 0) {
+      return other.neg();
+    }
+    if (this.#sign != other.#sign) {
+      return BigInt.#fromMag(this.#sign, addMag(this.#limbs, other.#limbs));
+    }
+    let cmp = cmpMag(this.#limbs, other.#limbs);
+    if (cmp == 0) {
+      return BigInt.ZERO;
+    }
+    if (cmp > 0) {
+      return BigInt.#fromMag(this.#sign, subMag(this.#limbs, other.#limbs));
+    }
+    return BigInt.#fromMag(-this.#sign, subMag(other.#limbs, this.#limbs));
+  }
+
+  /** Product `this * other`. */
+  operator *(other: BigInt): BigInt {
+    if (this.#sign == 0 || other.#sign == 0) {
+      return BigInt.ZERO;
+    }
+    let sign = if (this.#sign == other.#sign) 1 else -1;
+    return BigInt.#fromMag(sign, mulMag(this.#limbs, other.#limbs));
+  }
+
+  /**
+   * Truncating integer division and remainder `(quotient, remainder)` satisfying
+   * `quotient * other + remainder == this`, with `remainder` carrying the sign
+   * of `this`. Throws `Error` when `other == 0`.
+   */
+  divRem(other: BigInt): inline (BigInt, BigInt) {
+    if (other.#sign == 0) {
+      throw new Error('Division by zero');
+    }
+    if (this.#sign == 0) {
+      return (BigInt.ZERO, BigInt.ZERO);
+    }
+    let (qMag, rMag) = divRemMag(this.#limbs, other.#limbs);
+    let qSign = if (this.#sign == other.#sign) 1 else -1;
+    return (BigInt.#fromMag(qSign, qMag), BigInt.#fromMag(this.#sign, rMag));
+  }
+
+  /**
+   * Truncating integer quotient of `this` divided by `other` (rounded toward
+   * zero). Throws `Error` when `other == 0`.
+   */
+  div(other: BigInt): BigInt {
+    let (q, _) = this.divRem(other);
+    return q;
+  }
+
+  /**
+   * Remainder of truncating division `this - this.div(other) * other`, carrying
+   * the sign of `this`. Throws `Error` when `other == 0`.
+   */
+  operator %(other: BigInt): BigInt {
+    if (other.#sign == 0) {
+      throw new Error('Division by zero');
+    }
+    if (this.#sign == 0) {
+      return BigInt.ZERO;
+    }
+    if (other.#limbs.length == 1) {
+      let r = remLimb(this.#limbs, other.#limbs[0]);
+      return BigInt.#fromMag(this.#sign, limbOf(r));
+    }
+    let (_, rMag) = divRemMag(this.#limbs, other.#limbs);
+    return BigInt.#fromMag(this.#sign, rMag);
+  }
+
+  /**
+   * Raises `this` to non-negative exponent `exp` (`0 ** 0 == 1`).
+   * Throws `Error` when `exp < 0`.
+   */
+  operator **(exp: i32): BigInt {
+    return this.pow(exp as i64);
+  }
+
+  /**
+   * Raises `this` to non-negative 64-bit exponent `exp` (`0 ** 0 == 1`).
+   * Throws `Error` when `exp < 0`.
+   */
+  pow(exp: i64): BigInt {
+    if (exp < 0) {
+      throw new Error('Negative exponent');
+    }
+    if (exp == 0) {
+      return BigInt.ONE;
+    }
+    if (this.#sign == 0) {
+      return BigInt.ZERO;
+    }
+    if (this.#limbs.length == 1 && this.#limbs[0] == 1) {
+      if (this.#sign > 0) {
+        return BigInt.ONE;
+      }
+      return if ((exp & (1 as i64)) == 0) BigInt.ONE else BigInt.#NEG_ONE;
+    }
+    if (exp == 1) {
+      return this;
+    }
+
+    let resSign = if (this.#sign < 0 && (exp & (1 as i64)) != 0) -1 else 1;
+    var base = this.#limbs;
+    var result = ONE_LIMBS;
+    var e = exp;
+    while (e > 0) {
+      if ((e & (1 as i64)) != 0) {
+        result = mulMag(result, base);
+      }
+      e = e >> (1 as i64);
+      if (e > 0) {
+        base = mulMag(base, base);
+      }
+    }
+    return BigInt.#fromMag(resSign, result);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ordering, equality, and hashing
+  // ---------------------------------------------------------------------------
+
+  /** Returns `-1` if `this < other`, `0` if equal, or `1` if `this > other`. */
+  compareTo(other: BigInt): i32 {
+    if (this === other) {
+      return 0;
+    }
+    if (this.#sign != other.#sign) {
+      return if (this.#sign < other.#sign) -1 else 1;
+    }
+    if (this.#sign == 0) {
+      return 0;
+    }
+    let cmp = cmpMag(this.#limbs, other.#limbs);
+    return if (this.#sign > 0) cmp else -cmp;
+  }
+
+  /** Returns the smaller of `this` and `other`. */
+  min(other: BigInt): BigInt {
+    return if (this.compareTo(other) <= 0) this else other;
+  }
+
+  /** Returns the larger of `this` and `other`. */
+  max(other: BigInt): BigInt {
+    return if (this.compareTo(other) >= 0) this else other;
+  }
+
+  /** Value equality. */
+  operator ==(other: BigInt): boolean {
+    if (this === other) {
+      return true;
+    }
+    if (this.#sign != other.#sign) {
+      return false;
+    }
+    let a = this.#limbs;
+    let b = other.#limbs;
+    if (a.length != b.length) {
+      return false;
+    }
+    for (var i = 0; i < a.length; i += 1) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Content hash consistent with `operator ==`. */
+  hashCode(): i32 {
+    if (this.#sign == 0) {
+      return 0;
+    }
+    var h: i32 = if (this.#sign > 0) 0x811c9dc5 else 0x517cc1b7;
+    let limbs = this.#limbs;
+    for (let w in limbs) {
+      let lo = (w & 0xffffffff) as i32;
+      let hi = (w >>> 32) as i32;
+      h = (h ^ lo) * 0x01000193;
+      h = (h ^ hi) * 0x01000193;
+    }
+    return h;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Infinite two's-complement bitwise operations and shifts
+  // ---------------------------------------------------------------------------
+
+  /** Infinite two's-complement bitwise NOT (`-(this + 1)`). */
+  bitNot(): BigInt {
+    if (this.#sign == 0) {
+      return BigInt.#NEG_ONE;
+    }
+    if (this.#sign > 0) {
+      return BigInt.#fromMag(-1, addOneMag(this.#limbs));
+    }
+    return BigInt.#fromMag(1, subOneMag(this.#limbs));
+  }
+
+  /** Infinite two's-complement bitwise AND. */
+  operator &(other: BigInt): BigInt {
+    if (this.#sign == 0 || other.#sign == 0) {
+      return BigInt.ZERO;
+    }
+    let a = this.#limbs;
+    let b = other.#limbs;
+    if (this.#sign > 0 && other.#sign > 0) {
+      return BigInt.#fromMag(1, andMag(a, b));
+    }
+    if (this.#sign > 0 && other.#sign < 0) {
+      return BigInt.#fromMag(1, andNotMag(a, subOneMag(b)));
+    }
+    if (this.#sign < 0 && other.#sign > 0) {
+      return BigInt.#fromMag(1, andNotMag(b, subOneMag(a)));
+    }
+    return BigInt.#fromMag(-1, addOneMag(orMag(subOneMag(a), subOneMag(b))));
+  }
+
+  /** Infinite two's-complement bitwise OR. */
+  operator |(other: BigInt): BigInt {
+    if (this.#sign == 0) {
+      return other;
+    }
+    if (other.#sign == 0) {
+      return this;
+    }
+    let a = this.#limbs;
+    let b = other.#limbs;
+    if (this.#sign > 0 && other.#sign > 0) {
+      return BigInt.#fromMag(1, orMag(a, b));
+    }
+    if (this.#sign > 0 && other.#sign < 0) {
+      return BigInt.#fromMag(-1, addOneMag(andNotMag(subOneMag(b), a)));
+    }
+    if (this.#sign < 0 && other.#sign > 0) {
+      return BigInt.#fromMag(-1, addOneMag(andNotMag(subOneMag(a), b)));
+    }
+    return BigInt.#fromMag(-1, addOneMag(andMag(subOneMag(a), subOneMag(b))));
+  }
+
+  /** Infinite two's-complement bitwise XOR. */
+  operator ^(other: BigInt): BigInt {
+    if (this.#sign == 0) {
+      return other;
+    }
+    if (other.#sign == 0) {
+      return this;
+    }
+    let a = this.#limbs;
+    let b = other.#limbs;
+    if (this.#sign > 0 && other.#sign > 0) {
+      return BigInt.#fromMag(1, xorMag(a, b));
+    }
+    if (this.#sign > 0 && other.#sign < 0) {
+      return BigInt.#fromMag(-1, addOneMag(xorMag(a, subOneMag(b))));
+    }
+    if (this.#sign < 0 && other.#sign > 0) {
+      return BigInt.#fromMag(-1, addOneMag(xorMag(subOneMag(a), b)));
+    }
+    return BigInt.#fromMag(1, xorMag(subOneMag(a), subOneMag(b)));
+  }
+
+  /**
+   * Shifts left by `bits` (`this * 2^bits`). Throws `Error` when `bits < 0`.
+   */
+  operator <<(bits: i32): BigInt {
+    if (bits < 0) {
+      throw new Error('Negative shift count');
+    }
+    if (bits == 0 || this.#sign == 0) {
+      return this;
+    }
+    return BigInt.#fromMag(this.#sign, shlMag(this.#limbs, bits));
+  }
+
+  /**
+   * Arithmetic right shift by `bits` (`floor(this / 2^bits)`).
+   * Throws `Error` when `bits < 0`.
+   */
+  operator >>(bits: i32): BigInt {
+    if (bits < 0) {
+      throw new Error('Negative shift count');
+    }
+    if (bits == 0 || this.#sign == 0) {
+      return this;
+    }
+    let shifted = shrMag(this.#limbs, bits);
+    if (this.#sign > 0) {
+      return BigInt.#fromMag(1, shifted);
+    }
+    if (hasNonZeroLowBits(this.#limbs, bits)) {
+      return BigInt.#fromMag(-1, addOneMag(shifted));
+    }
+    return BigInt.#fromMag(-1, shifted);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Number theory
+  // ---------------------------------------------------------------------------
+
+  /** Non-negative greatest common divisor of `this` and `other`. */
+  gcd(other: BigInt): BigInt {
+    if (this.#sign == 0) {
+      return other.abs();
+    }
+    if (other.#sign == 0) {
+      return this.abs();
+    }
+    return BigInt.#fromMag(1, gcdMag(this.#limbs, other.#limbs));
+  }
+
+  /**
+   * Modular exponentiation `this^exp mod mod` in `[0, mod)`.
+   * Throws `Error` if `exp < 0` or `mod <= 0`.
+   */
+  modPow(exp: BigInt, mod: BigInt): BigInt {
+    if (mod.#sign <= 0) {
+      throw new Error('Modulus must be positive');
+    }
+    if (exp.#sign < 0) {
+      throw new Error('Negative exponent');
+    }
+    let m = mod.#limbs;
+    if (m.length == 1 && m[0] == 1) {
+      return BigInt.ZERO;
+    }
+    if (exp.#sign == 0) {
+      return BigInt.ONE;
+    }
+
+    let (_, rem) = divRemMag(this.#limbs, m);
+    if (rem.length == 0) {
+      return BigInt.ZERO;
+    }
+    let base = if (this.#sign < 0) subMag(m, rem) else rem;
+
+    let expLimbs = exp.#limbs;
+    let totalBits = bitLengthMag(expLimbs);
+    var acc = base;
+    var bit = totalBits - 2;
+    while (bit >= 0) {
+      let (_, sqRem) = divRemMag(mulMag(acc, acc), m);
+      acc = sqRem;
+      let word = expLimbs[bit >> 6];
+      if (((word >>> ((bit & 63) as u64)) & 1) != 0) {
+        let (_, prodRem) = divRemMag(mulMag(acc, base), m);
+        acc = prodRem;
+      }
+      bit -= 1;
+    }
+    return BigInt.#fromMag(1, acc);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Conversions and string formatting
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Converts to `i64` if within `[I64_MIN, I64_MAX]`, returning `(true, value)`
+   * or `(false, _)` on overflow.
+   */
+  tryToI64(): inline (true, i64) | inline (false, _) {
+    if (this.#sign == 0) {
+      return (true, 0 as i64);
+    }
+    if (this.#limbs.length > 1) {
+      return (false, _);
+    }
+    let w = this.#limbs[0];
+    if (this.#sign > 0) {
+      if (w <= 0x7fffffffffffffff) {
+        return (true, w as i64);
+      }
+      return (false, _);
+    }
+    let minMag = (1 as u64) << 63;
+    if (w < minMag) {
+      return (true, -(w as i64));
+    }
+    if (w == minMag) {
+      return (true, I64_MIN);
+    }
+    return (false, _);
+  }
+
+  /** Converts to `i64`, throwing `Error` if out of `[I64_MIN, I64_MAX]`. */
+  toI64(): i64 {
+    if (let (true, v) = this.tryToI64()) {
+      return v;
+    }
+    throw new Error('BigInt out of i64 range');
+  }
+
+  /**
+   * Converts to `u64` if within `[0, U64_MAX]`, returning `(true, value)` or
+   * `(false, _)` on negative values or overflow.
+   */
+  tryToU64(): inline (true, u64) | inline (false, _) {
+    if (this.#sign < 0) {
+      return (false, _);
+    }
+    if (this.#sign == 0) {
+      return (true, 0 as u64);
+    }
+    if (this.#limbs.length > 1) {
+      return (false, _);
+    }
+    return (true, this.#limbs[0]);
+  }
+
+  /** Converts to `u64`, throwing `Error` if negative or greater than `U64_MAX`. */
+  toU64(): u64 {
+    if (let (true, v) = this.tryToU64()) {
+      return v;
+    }
+    throw new Error('BigInt out of u64 range');
+  }
+
+  /**
+   * Formats this value in `radix` (`2..36`) using lowercase digits `a..z`.
+   * Throws `Error` when `radix` is outside `2..36`.
+   */
+  toString(radix: i32 = 10): String {
+    if (radix < 2 || radix > 36) {
+      throw new Error('Radix out of range (2..36)');
+    }
+    return formatMag(this.#sign, this.#limbs, radix);
+  }
+
+  [Stringable.toString](): String {
+    return formatMag(this.#sign, this.#limbs, 10);
+  }
+}

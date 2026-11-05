@@ -313,6 +313,9 @@ let max: i32 = 2147483647;
 let wrapped = max + 1; // -2147483648
 ```
 
+For exact signed integer arithmetic beyond 64 bits, import `BigInt` from
+[`zena:bigint`](/api/bigint/).
+
 ### Integer division by zero
 
 Dividing an integer by zero using `div` or `%` traps at runtime with a WebAssembly

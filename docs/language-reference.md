@@ -1768,7 +1768,7 @@ Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`, `f64`, `i
 - `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
 - `**` (Exponentiation) - Right-associative (`2 ** 3 ** 2` is `2 ** (3 ** 2) = 512`), with higher precedence than multiplication.
 
-Classes can define custom behavior for `+` and `**` via `operator +` and `operator **`. See [Operator
+Classes can define custom behavior for `+`, `-`, `*`, `/`, `%`, and `**` via `operator` methods. See [Operator
 Overloading](#operator-overloading). Extension classes over a primitive may do
 the same: the vector types in `zena:simd` define `+`, `-` and `*` as
 elementwise operations over a `v128`, where `a * b` multiplies lane i by lane
@@ -1783,6 +1783,8 @@ Supported bitwise operators for integer types (`i32`, `u32`, `i64`, `u64`):
 - `>>` (Right Shift) - Arithmetic shift (sign-extends for signed types,
   zero-fills for unsigned types)
 - `>>>` (Unsigned Right Shift) - Always zero-fills (logical shift)
+
+Classes and extension classes can also define custom behavior for `&`, `|`, `^`, `<<`, `>>`, and `>>>` via `operator` methods.
 
 **Examples:**
 
@@ -3762,12 +3764,14 @@ class Calculator {
 
 #### Operator Overloading
 
-Classes can define custom behavior for operators like `+`, `==`, `[]`, and
-`[]=`.
+Classes can define custom behavior for arithmetic (`+`, `-`, `*`, `/`, `%`,
+`**`), bitwise and shift (`&`, `|`, `^`, `<<`, `>>`, `>>>`), equality (`==`),
+and subscript (`[]`, `[]=`) operators.
 
 ##### Binary Operators
 
-The `operator +` method enables custom addition behavior:
+Binary arithmetic and bitwise operators dispatch to an `operator` method on the
+left operand (`operator +`, `operator &`, `operator <<`, and so on):
 
 ```zena
 class Vector {

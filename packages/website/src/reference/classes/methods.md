@@ -513,6 +513,7 @@ let v3 = v1 + v2; // Calls v1.operator +(v2)
 Zena allows overloading the following binary and subscript operators:
 
 - **Arithmetic operators**: `+`, `-`, `*`, `/`, `%`, `**`
+- **Bitwise and shift operators**: `&`, `|`, `^`, `<<`, `>>`, `>>>`
 - **Equality operator**: `==`
 - **Subscript index operators**: `[]` (read) and `[]=` (write)
 

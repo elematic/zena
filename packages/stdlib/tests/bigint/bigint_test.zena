@@ -1,0 +1,438 @@
+import { suite, test } from 'zena:test';
+import {
+  equal, equalText, notEqual, isTrue, isFalse, isNull, isNotNull, throws, fail,
+} from 'zena:assert';
+import { BigInt } from 'zena:bigint';
+import { HashMap, HashSet } from 'zena:collections';
+import { parseI64 } from 'zena:core';
+import { I64_MIN, I64_MAX, U64_MAX } from 'zena:math';
+import {
+  ADD_SUB, MUL, DIV_REM, POW, BITWISE, SHIFTS, GCD, MOD_POW, RADIX,
+} from './bigint-reference.zena';
+
+function parseI32Strict(s: String): i32 {
+  if (let (true, v) = parseI64(s)) {
+    return v as i32;
+  }
+  fail(`Invalid integer in test table: ${s}`);
+}
+
+function assertBigEq(actual: BigInt, expected: BigInt, ctx: String) {
+  if (actual != expected) {
+    fail(`${ctx}: got ${actual.toString(16)}, expected ${expected.toString(16)}`);
+  }
+}
+
+/** Deterministic xorshift64* PRNG for property tests. */
+class Rng {
+  var state: u64;
+
+  new(seed: u64) : state = seed;
+
+  nextU64(): u64 {
+    var x = this.state;
+    x = x ^ (x >>> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >>> 27);
+    this.state = x;
+    return x * (0x2545f4914f6cdd1d as u64);
+  }
+
+  nextRange(bound: i32): i32 {
+    let w = (this.nextU64() >>> 33) as i32;
+    return w % bound;
+  }
+
+  nextBigInt(maxLimbs: i32): BigInt {
+    let n = this.nextRange(maxLimbs + 1);
+    if (n == 0) {
+      return BigInt.ZERO;
+    }
+    var acc = BigInt.ZERO;
+    for (var i = 0; i < n; i += 1) {
+      var limb = this.nextU64();
+      if (i == n - 1 && limb == 0) {
+        limb = 1;
+      }
+      acc = (acc << 64) | BigInt.fromU64(limb);
+    }
+    return if ((this.nextU64() & 1) == 0) acc else acc.neg();
+  }
+}
+
+export let tests = suite('BigInt', () => {
+  suite('reference vectors (Python int)', () => {
+    test('addition and subtraction', () => {
+      var count = 0;
+      for (let line in ADD_SUB.split('\n')) {
+        let p = line.split(' ');
+        let a = BigInt.from(p[0]);
+        let b = BigInt.from(p[1]);
+        let sum = BigInt.from(p[2]);
+        let diff = BigInt.from(p[3]);
+        assertBigEq(a + b, sum, `add(${line})`);
+        assertBigEq(a - b, diff, `sub(${line})`);
+        count += 1;
+      }
+      isTrue(count > 100);
+    });
+
+    test('multiplication (schoolbook and Karatsuba)', () => {
+      var count = 0;
+      for (let line in MUL.split('\n')) {
+        let p = line.split(' ');
+        let a = BigInt.from(p[0]);
+        let b = BigInt.from(p[1]);
+        let prod = BigInt.from(p[2]);
+        assertBigEq(a * b, prod, `mul(${line})`);
+        count += 1;
+      }
+      isTrue(count > 40);
+    });
+
+    test('div, %, and divRem (single-limb and Knuth Algorithm D)', () => {
+      var count = 0;
+      for (let line in DIV_REM.split('\n')) {
+        let p = line.split(' ');
+        let a = BigInt.from(p[0]);
+        let b = BigInt.from(p[1]);
+        let expectedQ = BigInt.from(p[2]);
+        let expectedR = BigInt.from(p[3]);
+        let (q, r) = a.divRem(b);
+        assertBigEq(q, expectedQ, `divRem.q(${line})`);
+        assertBigEq(r, expectedR, `divRem.r(${line})`);
+        assertBigEq(a.div(b), expectedQ, `div(${line})`);
+        assertBigEq(a % b, expectedR, `rem(${line})`);
+        assertBigEq(q * b + r, a, `identity(${line})`);
+        count += 1;
+      }
+      isTrue(count > 50);
+    });
+
+    test('exponentiation (** and pow)', () => {
+      var count = 0;
+      for (let line in POW.split('\n')) {
+        let p = line.split(' ');
+        let base = BigInt.from(p[0]);
+        let exp = parseI32Strict(p[1]);
+        let expected = BigInt.from(p[2]);
+        assertBigEq(base ** exp, expected, `pow(${line})`);
+        assertBigEq(base.pow(exp as i64), expected, `pow64(${line})`);
+        count += 1;
+      }
+      isTrue(count >= 20);
+    });
+
+    test('bitwise AND, OR, XOR, and bitNot', () => {
+      var count = 0;
+      for (let line in BITWISE.split('\n')) {
+        let p = line.split(' ');
+        let a = BigInt.from(p[0]);
+        let b = BigInt.from(p[1]);
+        assertBigEq(a & b, BigInt.from(p[2]), `and(${line})`);
+        assertBigEq(a | b, BigInt.from(p[3]), `or(${line})`);
+        assertBigEq(a ^ b, BigInt.from(p[4]), `xor(${line})`);
+        assertBigEq(a.bitNot(), BigInt.from(p[5]), `bitNot(${line})`);
+        count += 1;
+      }
+      isTrue(count > 100);
+    });
+
+    test('left and arithmetic right shifts', () => {
+      var count = 0;
+      for (let line in SHIFTS.split('\n')) {
+        let p = line.split(' ');
+        let a = BigInt.from(p[0]);
+        let bits = parseI32Strict(p[1]);
+        assertBigEq(a << bits, BigInt.from(p[2]), `shl(${line})`);
+        assertBigEq(a >> bits, BigInt.from(p[3]), `shr(${line})`);
+        count += 1;
+      }
+      isTrue(count > 150);
+    });
+
+    test('gcd', () => {
+      var count = 0;
+      for (let line in GCD.split('\n')) {
+        let p = line.split(' ');
+        let a = BigInt.from(p[0]);
+        let b = BigInt.from(p[1]);
+        let expected = BigInt.from(p[2]);
+        assertBigEq(a.gcd(b), expected, `gcd(${line})`);
+        assertBigEq(b.gcd(a), expected, `gcd_sym(${line})`);
+        count += 1;
+      }
+      isTrue(count > 35);
+    });
+
+    test('modPow', () => {
+      var count = 0;
+      for (let line in MOD_POW.split('\n')) {
+        let p = line.split(' ');
+        let base = BigInt.from(p[0]);
+        let exp = BigInt.from(p[1]);
+        let mod = BigInt.from(p[2]);
+        let expected = BigInt.from(p[3]);
+        assertBigEq(base.modPow(exp, mod), expected, `modPow(${line})`);
+        count += 1;
+      }
+      isTrue(count >= 15);
+    });
+
+    test('radix formatting and parsing', () => {
+      var count = 0;
+      for (let line in RADIX.split('\n')) {
+        let p = line.split(' ');
+        let radix = parseI32Strict(p[0]);
+        let v = BigInt.from(p[1]);
+        let expected = p[2];
+        equalText(v.toString(radix), expected);
+        assertBigEq(BigInt.from(expected, radix), v, `parse(${line})`);
+        assertBigEq(BigInt.from(expected.toUpperCase(), radix), v, `parseUpper(${line})`);
+        count += 1;
+      }
+      isTrue(count >= 150);
+    });
+  });
+
+  suite('construction, queries, and conversions', () => {
+    test('zero, one, signs, parity, and bitLength', () => {
+      let z = BigInt.ZERO;
+      equal(z.sign, 0);
+      isTrue(z.isZero);
+      isFalse(z.isPositive);
+      isFalse(z.isNegative);
+      isTrue(z.isEven);
+      isFalse(z.isOdd);
+      equal(z.bitLength(), 0);
+      equalText(`${z}`, '0');
+
+      let one = BigInt.ONE;
+      equal(one.sign, 1);
+      isFalse(one.isZero);
+      isTrue(one.isPositive);
+      isFalse(one.isNegative);
+      isFalse(one.isEven);
+      isTrue(one.isOdd);
+      equal(one.bitLength(), 1);
+
+      let negOne = one.neg();
+      equal(negOne.sign, -1);
+      isTrue(negOne.isNegative);
+      isFalse(negOne.isEven);
+      isTrue(negOne.isOdd);
+      equal(negOne.bitLength(), 1);
+      equal(negOne.abs(), one);
+      equal(z.neg(), z);
+      equal(z.abs(), z);
+
+      let p64 = BigInt.ONE << 64;
+      equal(p64.bitLength(), 65);
+      isTrue(p64.isEven);
+      equal(p64.neg().bitLength(), 65);
+      isTrue(p64.neg().isEven);
+    });
+
+    test('i32, i64, and u64 round-trips and overflow checks', () => {
+      equal(BigInt.from(0).toI64(), 0 as i64);
+      equal(BigInt.from(-42).toI64(), -42 as i64);
+      equal(BigInt.fromI64(I64_MAX).toI64(), I64_MAX);
+      equal(BigInt.fromI64(I64_MIN).toI64(), I64_MIN);
+      equalText(BigInt.fromI64(I64_MIN).toString(), '-9223372036854775808');
+      equalText(BigInt.fromI64(I64_MAX).toString(), '9223372036854775807');
+
+      let umax = BigInt.fromU64(U64_MAX);
+      equal(umax.toU64(), U64_MAX);
+      equalText(umax.toString(), '18446744073709551615');
+      if (let (true, _) = umax.tryToI64()) {
+        fail('U64_MAX must overflow i64');
+      }
+      throws(() => { umax.toI64(); });
+
+      let overMax = BigInt.fromI64(I64_MAX) + BigInt.ONE;
+      let underMin = BigInt.fromI64(I64_MIN) - BigInt.ONE;
+      if (let (true, _) = overMax.tryToI64()) {
+        fail('I64_MAX + 1 must overflow i64');
+      }
+      if (let (true, _) = underMin.tryToI64()) {
+        fail('I64_MIN - 1 must underflow i64');
+      }
+      throws(() => { overMax.toI64(); });
+      throws(() => { underMin.toI64(); });
+
+      if (let (true, _) = BigInt.from(-1).tryToU64()) {
+        fail('-1 must fail tryToU64');
+      }
+      if (let (true, _) = (umax + BigInt.ONE).tryToU64()) {
+        fail('U64_MAX + 1 must fail tryToU64');
+      }
+      throws(() => { BigInt.from(-1).toU64(); });
+      throws(() => { (umax + BigInt.ONE).toU64(); });
+    });
+
+    test('parse prefixes, normalization, and invalid inputs', () => {
+      equal(BigInt.from('+0'), BigInt.ZERO);
+      equal(BigInt.from('-0'), BigInt.ZERO);
+      equal(BigInt.from('-0000000000000000000000000'), BigInt.ZERO);
+      equal(BigInt.from('0x0'), BigInt.ZERO);
+      equal(BigInt.from('-0x00'), BigInt.ZERO);
+      equal(BigInt.from('0b101101'), BigInt.from(45));
+      equal(BigInt.from('-0B101101'), BigInt.from(-45));
+      equal(BigInt.from('0o755'), BigInt.from(493));
+      equal(BigInt.from('+0O755'), BigInt.from(493));
+      equal(BigInt.from('0xdeadBEEF', 16), BigInt.fromI64(0xdeadbeef as i64));
+      equal(BigInt.from('0b1101', 2), BigInt.from(13));
+      equal(BigInt.from('0o17', 8), BigInt.from(15));
+      // In base 36, '0x' spells digit 0 followed by digit 33.
+      equal(BigInt.from('0x', 36), BigInt.from(33));
+
+      isNull(BigInt.parse(''));
+      isNull(BigInt.parse('+'));
+      isNull(BigInt.parse('-'));
+      isNull(BigInt.parse('0x'));
+      isNull(BigInt.parse('-0x'));
+      isNull(BigInt.parse('0b'));
+      isNull(BigInt.parse('0o'));
+      isNull(BigInt.parse('0x', 16));
+      isNull(BigInt.parse(' 123'));
+      isNull(BigInt.parse('123 '));
+      isNull(BigInt.parse('12_34'));
+      isNull(BigInt.parse('102', 2));
+      isNull(BigInt.parse('18', 8));
+      isNull(BigInt.parse('1g', 16));
+      isNull(BigInt.parse('10', 1));
+      isNull(BigInt.parse('10', 37));
+      isNull(BigInt.parse('10', -2));
+
+      throws(() => { BigInt.from(''); });
+      throws(() => { BigInt.from('not-a-number'); });
+      throws(() => { BigInt.from('10', 1); });
+      throws(() => { BigInt.from('10', 37); });
+      throws(() => { BigInt.ONE.toString(1); });
+      throws(() => { BigInt.ONE.toString(37); });
+    });
+
+    test('domain errors on division, shifts, pow, and modPow', () => {
+      let x = BigInt.from(12345);
+      throws(() => { x.div(BigInt.ZERO); });
+      throws(() => { let _ = x % BigInt.ZERO; });
+      throws(() => { let (_, _) = x.divRem(BigInt.ZERO); });
+      throws(() => { let _ = x ** -1; });
+      throws(() => { x.pow(-5 as i64); });
+      throws(() => { let _ = x << -1; });
+      throws(() => { let _ = x >> -1; });
+      throws(() => { x.modPow(BigInt.from(-1), BigInt.from(7)); });
+      throws(() => { x.modPow(BigInt.from(2), BigInt.ZERO); });
+      throws(() => { x.modPow(BigInt.from(2), BigInt.from(-7)); });
+    });
+  });
+
+  suite('algorithmic corner cases, ordering, and hashing', () => {
+    test('Knuth Algorithm D step D6 add-back trigger', () => {
+      // U = 2^192, V = 2^191 + 1 => qhat = 2 in D3 (vn2 = 0), underflows in D4,
+      // triggers D6 add-back to yield q = 1, r = 2^191 - 1.
+      let u = BigInt.ONE << 192;
+      let v = (BigInt.ONE << 191) + BigInt.ONE;
+      let (q, r) = u.divRem(v);
+      equal(q, BigInt.ONE);
+      equal(r, (BigInt.ONE << 191) - BigInt.ONE);
+    });
+
+    test('compareTo, min, max, HashMap, HashSet, and Stringable', () => {
+      let a = (BigInt.ONE << 200) + BigInt.from(99);
+      let b = BigInt.from(a.toString(10));
+      let c = a + BigInt.ONE;
+      let negA = a.neg();
+
+      equal(a, b);
+      equal(a.hashCode(), b.hashCode());
+      notEqual(a, c);
+      equal(a.compareTo(b), 0);
+      equal(a.compareTo(c), -1);
+      equal(c.compareTo(a), 1);
+      equal(negA.compareTo(a), -1);
+      equal(negA.compareTo(c.neg()), 1);
+      equal(a.min(c), a);
+      equal(a.max(c), c);
+      equal(a.min(negA), negA);
+      equal(a.max(negA), a);
+
+      let map: HashMap<BigInt, String> = {
+        a => 'two-hundred-bits',
+        BigInt.ZERO => 'zero',
+        negA => 'negative',
+      };
+      equalText(map[b], 'two-hundred-bits');
+      equalText(map[BigInt.from('-0')], 'zero');
+      equalText(map[BigInt.from(negA.toString(16), 16)], 'negative');
+
+      let set = new HashSet<BigInt>();
+      set.add(a);
+      isTrue(set.has(b));
+      isFalse(set.has(c));
+
+      let huge = BigInt.from('-987654321098765432109876543210');
+      equalText(`value=${huge}`, 'value=-987654321098765432109876543210');
+    });
+
+    test('randomized algebraic identities across multi-limb values', () => {
+      let rng = new Rng(0x5eed0882cafebabe as u64);
+      for (var iter = 0; iter < 150; iter += 1) {
+        let maxLimbs = if (iter < 120) 6 else 36;
+        let a = rng.nextBigInt(maxLimbs);
+        let b = rng.nextBigInt(maxLimbs);
+        let c = rng.nextBigInt(4);
+
+        // Ring identities
+        assertBigEq((a + b) - b, a, 'add-sub');
+        assertBigEq(a + b, b + a, 'add-comm');
+        assertBigEq(a * b, b * a, 'mul-comm');
+        assertBigEq(a * (b + c), a * b + a * c, 'distrib');
+
+        // Division identity
+        if (!b.isZero) {
+          let (q, r) = a.divRem(b);
+          assertBigEq(q * b + r, a, 'divRem');
+          isTrue(r.abs().compareTo(b.abs()) < 0, 'rem bound');
+          isTrue(r.isZero || r.sign == a.sign, 'rem sign');
+          assertBigEq(a % b, r, 'mod matches divRem');
+        }
+
+        // Two's-complement bitwise identities
+        assertBigEq(a + a.bitNot(), BigInt.from(-1), 'x + ~x == -1');
+        assertBigEq((a & b).bitNot(), a.bitNot() | b.bitNot(), 'De Morgan AND');
+        assertBigEq((a | b).bitNot(), a.bitNot() & b.bitNot(), 'De Morgan OR');
+        assertBigEq((a ^ b) ^ b, a, 'xor round-trip');
+
+        // Shifts
+        let sh = rng.nextRange(140);
+        assertBigEq((a << sh) >> sh, a, 'shl-shr');
+        assertBigEq(a << sh, a * (BigInt.ONE << sh), 'shl-mul');
+
+        // GCD divisibility and coprime quotient
+        if (maxLimbs <= 6) {
+          let g = a.gcd(b);
+          isTrue(g.sign >= 0, 'gcd non-negative');
+          if (!g.isZero) {
+            isTrue((a % g).isZero, 'gcd divides a');
+            isTrue((b % g).isZero, 'gcd divides b');
+            assertBigEq(a.div(g).gcd(b.div(g)), BigInt.ONE, 'coprime quotients');
+          }
+
+          // modPow consistency with (a ** e) mod m
+          let m = b.abs() + BigInt.from(2);
+          let expSmall = rng.nextRange(6);
+          var naive = (a ** expSmall) % m;
+          if (naive.isNegative) {
+            naive = naive + m;
+          }
+          assertBigEq(a.modPow(BigInt.from(expSmall), m), naive, 'modPow vs pow%m');
+
+          // Radix round-trip
+          let radix = 2 + rng.nextRange(35);
+          assertBigEq(BigInt.from(a.toString(radix), radix), a, 'radix round-trip');
+        }
+      }
+    });
+  });
+});
