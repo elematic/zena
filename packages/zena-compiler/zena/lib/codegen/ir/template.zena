@@ -1341,6 +1341,12 @@ export function accessorOverriddenIn(wasm: WasmModule, classInfo: ClassCodegenIn
     if (subClassType != null) {
       let key = new ClassMethodKey(getClassKey(subClassType), slotName);
       if (let (true, f) = wasm.classMethodMap.get(key)) {
+        // A written accessor carries a struct and index too (reachability
+        // records them for every `get#` method), but its body is its own:
+        // only a synthesized one, which has no node, reads the field.
+        if (f.node != null) {
+          return true;
+        }
         let isGetter = slotName.startsWith("get#");
         let st = if (isGetter) f.getterStruct else f.setterStruct;
         let idx = if (isGetter) f.getterFieldIndex else f.setterFieldIndex;

@@ -4079,6 +4079,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     var foundFunc: WasmFunction | null = null;
+    // The name the class registers it under, which names its class
+    // vtable slot.
+    var foundName = fName;
     var currClass: ClassType | null = cType;
     // A slot for one overload of an overloaded interface method: the class
     // registers each of its overloads under the name plus its signature
@@ -4091,9 +4094,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         if (let (true, method) = this.wasm.classMethodMap.get(
             getClassMethodKey(classKey, overloadName))) {
           foundFunc = method;
+          foundName = overloadName;
         } else if (let (true, method) = this.wasm.classMethodMap.get(
             getClassMethodKey(classKey, slotOverload.methodName))) {
           foundFunc = method;
+          foundName = slotOverload.methodName;
         }
         currClass = currClass.superType;
       }
@@ -4118,6 +4123,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             let mKeyWithSig = getClassMethodKey(getClassKey(currClass), fName + sigKey);
             if (this.wasm.classMethodMap.has(mKeyWithSig)) {
               foundFunc = this.wasm.classMethodMap[mKeyWithSig];
+              foundName = fName + sigKey;
               break;
             }
           }
@@ -4150,6 +4156,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
     trampFunc.name = getInterfaceTrampolineName(cName, iName, fName);
     trampFunc.interfaceTrampolineTarget = foundFunc;
+    trampFunc.interfaceTrampolineClass = cType;
+    trampFunc.interfaceTrampolineSlot = foundName;
     if (demand != null) {
       this.#computeGenericTrampolineAdaptations(trampFunc, cType, iface, demand);
     } else {
