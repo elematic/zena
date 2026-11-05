@@ -1464,6 +1464,8 @@ export final class FunctionLowerer {
    */
   var #ctorLevelFields: HashMap<String, i32> | null = null;
   var #ctorLevelScope = '';
+  var #syntheticTailReturn: Node | null = null;
+  var #syntheticTailScope: Node | null = null;
 
   /**
    * Presplit-async mode (async.md §3): `await` lowers to an await_
@@ -1945,8 +1947,10 @@ export final class FunctionLowerer {
         for (var si = 0; si < bodyCount; si += 1) {
           withReturn.push(stmts[si]);
         }
-        withReturn.push(new ReturnStatement(tailExpr, false,
-            tailExpr.loc) as Statement);
+        let synRet = new ReturnStatement(tailExpr, false, tailExpr.loc);
+        this.#syntheticTailReturn = synRet as Node;
+        this.#syntheticTailScope = body;
+        withReturn.push(synRet as Statement);
         if (dropFieldNames.length > 0) {
           lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
               0, dropParamSyms, withReturn, 0, withReturn.length);
@@ -1957,21 +1961,25 @@ export final class FunctionLowerer {
           this.#lowerStatementList(withReturn, 0);
         }
         tailExpr = null;
-      } else if (dropFieldNames.length > 0) {
-        lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
-            0, dropParamSyms, stmts, 0, bodyCount);
-      } else if (dropParamSyms.length > 0) {
-        lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
-            stmts, 0, bodyCount);
       } else {
-        this.#lowerStatementList(stmts, 0, bodyCount);
+        let normalExit = if (tailExpr == null) body else null;
+        if (dropFieldNames.length > 0) {
+          lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
+              0, dropParamSyms, stmts, 0, bodyCount, normalExit);
+        } else if (dropParamSyms.length > 0) {
+          lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
+              stmts, 0, bodyCount, normalExit);
+        } else {
+          this.#lowerStatementList(stmts, 0, bodyCount, normalExit);
+        }
       }
       if (tailExpr != null && this.#cx().reachable &&
           this.#explodedResult() != null) {
-        this.#returnFields(tailExpr);
+        this.#returnFields(tailExpr, body);
       } else if (tailExpr != null && this.#cx().reachable) {
         let tailValue = this.#lowerExpressionCtx(
             tailExpr, this.#returnSlotVt());
+        this.#emitExitDrops(body);
         this.#emitCheckedRet(tailValue);
       } else if (this.#cx().reachable) {
         // A `Future<void>` async body falls off the end like a void
@@ -1994,12 +2002,14 @@ export final class FunctionLowerer {
         // frame's future completes with (or a void body's effects).
         if (this.presplitAsyncValueVt == null) {
           this.#lowerExpression(body as Expression);
+          this.#emitExitDrops(body);
           if (this.#cx().reachable) {
             this.b.retVoid();
           }
         } else {
           let value = this.#lowerExpressionCtx(
               body as Expression, this.presplitAsyncValueVt);
+          this.#emitExitDrops(body);
           this.#emitCheckedRet(value);
         }
         return this.b.finish();
@@ -2015,15 +2025,19 @@ export final class FunctionLowerer {
         }
         let bodyExpr = body as Expression;
         let synthesized = new Array<Statement>();
+        var normalExit: Node | null = null;
         if (sig.returns.length == 1 || fieldsResult) {
-          synthesized.push(
-              new ReturnStatement(bodyExpr, false, bodyExpr.loc) as Statement);
+          let synRet = new ReturnStatement(bodyExpr, false, bodyExpr.loc);
+          this.#syntheticTailReturn = synRet as Node;
+          this.#syntheticTailScope = body;
+          synthesized.push(synRet as Statement);
         } else {
+          normalExit = body;
           synthesized.push(
               new ExpressionStatement(bodyExpr, bodyExpr.loc) as Statement);
         }
         lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
-            0, dropParamSyms, synthesized, 0, synthesized.length);
+            0, dropParamSyms, synthesized, 0, synthesized.length, normalExit);
         if (this.#cx().reachable) {
           if (sig.returns.length == 0) {
             this.b.retVoid();
@@ -2038,17 +2052,19 @@ export final class FunctionLowerer {
         // Void body: evaluate for effects; any produced value is
         // simply never used (SSA has no stack to pop).
         this.#lowerExpression(body as Expression);
+        this.#emitExitDrops(body);
         if (this.#cx().reachable) {
           this.b.retVoid();
         }
         return this.b.finish();
       }
       if (this.#explodedResult() != null) {
-        this.#returnFields(body as Expression);
+        this.#returnFields(body as Expression, body);
       } else if (sig.returns.length > 1) {
-        this.#lowerMultiReturn(body as Expression);
+        this.#lowerMultiReturn(body as Expression, body);
       } else {
         let value = this.#lowerExpressionCtx(body as Expression, sig.returns[0]);
+        this.#emitExitDrops(body);
         this.#emitCheckedRet(value);
       }
     }
@@ -3257,8 +3273,15 @@ export final class FunctionLowerer {
    * the slot's default, mirroring streaming). Boxed tuples and call
    * forwarding still bail.
    */
-  #lowerMultiReturn(arg: Expression): void {
+  #lowerMultiReturn(arg: Expression, scopeExit: Node | null = null): void {
+    if (scopeExit != null) {
+      this.#cx().tailExitScopes.push(scopeExit);
+    }
     let values = this.#lowerMultiReturnValues(arg);
+    if (scopeExit != null) {
+      this.#cx().tailExitScopes.pop();
+      this.#emitExitDrops(scopeExit);
+    }
     if (this.#cx().reachable) {
       this.b.retMulti(values);
     }
@@ -3851,6 +3874,12 @@ export final class FunctionLowerer {
     if (drops != null) {
       emitExitDrops(this.#cx(), drops);
     }
+    if (exit === this.#syntheticTailReturn && this.#syntheticTailScope != null) {
+      let scopeDrops = this.func.model.exitDropsOf(this.#syntheticTailScope as Node);
+      if (scopeDrops != null) {
+        emitExitDrops(this.#cx(), scopeDrops);
+      }
+    }
   }
 
   /**
@@ -3966,9 +3995,10 @@ export final class FunctionLowerer {
    * its region rather than to this loop — which is why this returns as
    * soon as it hands one over.
    */
-  #lowerStatementList(body: GrowableArray<Statement>, start: i32, end: i32 = -1): void {
+  #lowerStatementList(body: GrowableArray<Statement>, start: i32, end: i32 = -1,
+      scopeExit: Node | null = null): void {
     let last = if (end < 0) body.length else end;
-    lowerStatementRange(this.#cx(), body, start, last);
+    lowerStatementRange(this.#cx(), body, start, last, scopeExit);
   }
 
   #lowerStatement(stmt: Statement): void {
@@ -3981,7 +4011,7 @@ export final class FunctionLowerer {
         // Cells for self/forward-referencing closure bindings exist
         // before any statement runs (see precellBindings).
         this.#cx().precellBindings(body);
-        this.#lowerStatementList(body, 0);
+        this.#lowerStatementList(body, 0, -1, stmt as Node);
       }
       case UsingStatement as us: {
         // A `using` outside a block — `if (c) using acquire(l);` — scopes
@@ -4082,7 +4112,9 @@ export final class FunctionLowerer {
           // their effects; the value-position lowering has no lanes to
           // consult and bails, for a tuple literal and for a call that
           // returns another function's inline result alike.
+          this.#cx().tailExitScopes.push(stmt as Node);
           let values = this.#lowerMultiReturnValues(argument);
+          this.#cx().tailExitScopes.pop();
           this.#emitExitDrops(stmt as Node);
           if (this.#cx().reachable &&
               !returnMultiThroughFinally(this.#cx(), values)) {
@@ -5084,6 +5116,14 @@ export final class FunctionLowerer {
 
   hostReturnInline(e: Expression): void {
     let values = this.#lowerMultiReturnValues(e);
+    if (!(e is IfExpression || e is MatchExpression)) {
+      let scopes = this.#cx().tailExitScopes;
+      var si = scopes.length - 1;
+      while (si >= 0) {
+        this.#emitExitDrops(scopes[si]);
+        si -= 1;
+      }
+    }
     if (this.#cx().reachable && !returnMultiThroughFinally(this.#cx(), values)) {
       this.b.retMulti(values);
     }

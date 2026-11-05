@@ -136,10 +136,18 @@ export function strings(json: JsonObject, name: String): GrowableArray<String> |
   return out;
 }
 
-/** Answers with `call`'s JSON, or with the error a session or repository refused with. */
-export async function sessionCall(res: Response, call: () => Future<JsonObject | null>): Future<void> {
+/**
+ * Answers with `call`'s JSON, or with the error a session or repository
+ * refused with. Passing `req` into `call` keeps it out of a closure capture,
+ * so `call` releases it when it returns without reading the body.
+ */
+export async function sessionCall(
+  req: Own<Request>,
+  res: Response,
+  call: (req: Own<Request>, res: Response) => Future<JsonObject | null>
+): Future<void> {
   try {
-    let answer = await call();
+    let answer = await call(req, res);
     if (answer != null) {
       json(res, answer);
     }

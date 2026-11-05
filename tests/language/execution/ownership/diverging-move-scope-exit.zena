@@ -1,0 +1,211 @@
+// @mode: run
+// @result: 1
+// A binding moved on a diverging branch (`if (take) { consume(r); return; }`)
+// has no region to its scope's end, yet remains live on the path that
+// completes the scope normally. Falling off the scope's end releases it
+// there — after any tail value is computed, and in reverse declaration
+// order — while a path that moves it later releases nothing.
+import { Own, Disposable, Unmanaged, disown } from 'zena:core';
+
+var log = 0;
+var releasedCount = 0;
+var consumedCount = 0;
+
+resource class Res {
+  id: i32;
+  new(this.id);
+
+  [Disposable.dispose](this: Own<this>): void {
+    log = log * 100 + this.id;
+    releasedCount += 1;
+  }
+}
+
+let sink = new GrowableArray<Unmanaged<Res>>();
+
+function consume(r: Own<Res>): void {
+  sink.push(disown(r));
+  consumedCount += 1;
+}
+
+function reset(): void {
+  log = 0;
+  releasedCount = 0;
+  consumedCount = 0;
+}
+
+// 1. Owned parameter in a void function falling off the end.
+function handleSync(r: Own<Res>, serve: boolean): void {
+  if (serve) {
+    consume(r);
+    return;
+  }
+}
+
+// 2. Owned parameter in an async Future<void> function falling off the end.
+async function tick(): Future<i32> {
+  return 1;
+}
+
+async function handleAsync(r: Own<Res>, serve: boolean): Future<void> {
+  await tick();
+  if (serve) {
+    consume(r);
+    return;
+  }
+}
+
+// 3. Local `let` owners in an inner block: reverse declaration order on fallthrough.
+function innerBlock(take: boolean): void {
+  {
+    let a = new Res(11);
+    let b = new Res(22);
+    if (take) {
+      consume(a);
+      consume(b);
+      return;
+    }
+  }
+}
+
+// 4. Loop body with diverging `continue` vs normal iteration end.
+function loopFallthrough(): void {
+  var i = 0;
+  while (i < 3) {
+    let r = new Res(i + 1);
+    i += 1;
+    if (i == 2) {
+      consume(r);
+      continue;
+    }
+  }
+}
+
+// 5. Value-block function: tail reads `r` before `r` is released.
+function valueFn(r: Own<Res>, take: boolean): i32 {
+  if (take) {
+    consume(r);
+    return 99;
+  }
+  let v = if (releasedCount == 0) r.id else -100;
+  v + 5
+}
+
+// 6. Match case block with pattern owner and diverging `return`.
+function matchArm(opt: Option<Own<Res>>, take: boolean): i32 {
+  return match (opt) {
+    case Some {value: let r}: {
+      if (take) {
+        consume(r);
+        return 77;
+      }
+      let v = if (releasedCount == 0) r.id else -100;
+      v + 1
+    }
+    case None {}: 0
+  };
+}
+
+// 7. Single-statement `if (let ...)` body with diverging `return`.
+function singleStmtIfLet(opt: Option<Own<Res>>, take: boolean): void {
+  if (let Some {value: let r} = opt)
+    if (take) {
+      consume(r);
+      return;
+    }
+}
+
+// 8. Diverging move followed by fallthrough move: never released at scope end.
+function bothMove(r: Own<Res>, early: boolean): void {
+  if (early) {
+    consume(r);
+    return;
+  }
+  consume(r);
+}
+
+// 9. Mixed `using` region and diverging-move `let`: tail reads both, then
+// `b` releases before `a`'s region closes.
+function mixedRegionAndExit(take: boolean): i32 {
+  using a = new Res(14);
+  let b = new Res(25);
+  if (take) {
+    consume(b);
+    return 44;
+  }
+  let v = if (releasedCount == 0) a.id + b.id else -100;
+  v
+}
+
+// 10. Expression-bodied function with owned parameter and diverging `throw`.
+let exprBodyFn = (r: Own<Res>, take: boolean): i32 =>
+  if (take) {
+    consume(r);
+    throw new Error('took')
+  } else {
+    let v = if (releasedCount == 0) r.id else -100;
+    v + 2
+  };
+
+export async function main(): Future<i32> {
+  reset();
+  handleSync(new Res(1), true);
+  if (consumedCount != 1 || releasedCount != 0) { return 10; }
+  handleSync(new Res(2), false);
+  if (consumedCount != 1 || releasedCount != 1 || log != 2) { return 11; }
+
+  reset();
+  await handleAsync(new Res(3), true);
+  if (consumedCount != 1 || releasedCount != 0) { return 20; }
+  await handleAsync(new Res(4), false);
+  if (consumedCount != 1 || releasedCount != 1 || log != 4) { return 21; }
+
+  reset();
+  innerBlock(true);
+  if (consumedCount != 2 || releasedCount != 0) { return 30; }
+  innerBlock(false);
+  if (consumedCount != 2 || releasedCount != 2 || log != 2211) { return 31; }
+
+  reset();
+  loopFallthrough();
+  if (consumedCount != 1 || releasedCount != 2 || log != 103) { return 40; }
+
+  reset();
+  if (valueFn(new Res(7), true) != 99 || consumedCount != 1 || releasedCount != 0) { return 50; }
+  reset();
+  if (valueFn(new Res(8), false) != 13 || releasedCount != 1 || log != 8) { return 51; }
+
+  reset();
+  if (matchArm(some(new Res(9)), true) != 77 || consumedCount != 1 || releasedCount != 0) { return 60; }
+  reset();
+  if (matchArm(some(new Res(9)), false) != 10 || releasedCount != 1 || log != 9) { return 61; }
+
+  reset();
+  singleStmtIfLet(some(new Res(5)), true);
+  if (consumedCount != 1 || releasedCount != 0) { return 70; }
+  singleStmtIfLet(some(new Res(6)), false);
+  if (consumedCount != 1 || releasedCount != 1 || log != 6) { return 71; }
+
+  reset();
+  bothMove(new Res(12), true);
+  bothMove(new Res(13), false);
+  if (consumedCount != 2 || releasedCount != 0) { return 80; }
+
+  reset();
+  if (mixedRegionAndExit(true) != 44 || consumedCount != 1 || releasedCount != 1 || log != 14) { return 90; }
+  reset();
+  if (mixedRegionAndExit(false) != 39 || releasedCount != 2 || log != 2514) { return 91; }
+
+  reset();
+  var threw = false;
+  try {
+    exprBodyFn(new Res(15), true);
+  } catch (e) {
+    threw = true;
+  }
+  if (!threw || consumedCount != 1 || releasedCount != 0) { return 100; }
+  reset();
+  if (exprBodyFn(new Res(16), false) != 18 || releasedCount != 1 || log != 16) { return 101; }
+
+  return 1;
+}
