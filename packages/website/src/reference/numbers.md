@@ -1,12 +1,12 @@
 ---
 title: 'Numbers'
-description: 'Integer, narrow integer, and floating-point numeric types in Zena.'
+description: 'Integer, narrow integer, BigInt, and floating-point numeric types in Zena.'
 ---
 
-Zena provides a complete set of primitive numeric types covering signed integers,
-unsigned integers, narrow storage integers, and IEEE 754 floating-point numbers.
-All numeric types in Zena are unboxed WebAssembly primitives that execute with zero
-allocation overhead.
+Zena provides primitive numeric types covering signed integers, unsigned integers,
+narrow storage integers, and IEEE 754 floating-point numbers, plus
+[`BigInt`](/api/bigint/) in `zena:bigint` for arbitrary-precision signed integers.
+The primitive numeric types are unboxed WebAssembly values with no heap allocation.
 
 ## Integers
 
@@ -115,6 +115,72 @@ byte = (byte + 1) as u8; // Explicit truncation and normalization
 This prevents unexpected truncation bugs (e.g. `200 + 100` silently wrapping to `44`)
 while ensuring that byte arithmetic is efficient and easy to reason about.
 
+## Arbitrary-precision integers
+
+[`BigInt`](/api/bigint/) in `zena:bigint` represents immutable signed integers of
+arbitrary size. Each value stores a sign (`-1`, `0`, or `1`) and a normalized
+little-endian `FixedArray<u64>` of magnitude limbs, with `BigInt.ZERO` and
+`BigInt.ONE` as shared constants.
+
+### Construction and parsing
+
+`BigInt.from` accepts `i32`, `i64`, `u64`, or `String` (with an optional `radix` in
+`2..36`, or `0` to detect `0x`, `0b`, and `0o` prefixes with base-10 fallback),
+throwing `Error` on malformed strings. String inputs accept an optional `+` or `-`
+sign and `_` digit separators. `BigInt.parse(text, radix)` accepts the same string
+forms and returns `BigInt | null` without throwing.
+
+```zena
+import {BigInt} from 'zena:bigint';
+
+let a = BigInt.from(42);
+let b = BigInt.from('0x1_0000_0000_0000_0000_0001');
+let c = BigInt.from('-zz', 36); // -1295
+let maybe = BigInt.parse('not-a-number'); // null
+```
+
+### Arithmetic, bitwise, and number-theoretic operations
+
+`BigInt` overloads the binary arithmetic, equality, and bitwise operators:
+
+- **Arithmetic**: `+`, `-`, `*`, `%` (truncating remainder with the dividend's sign),
+  and `**` (non-negative `i32` exponent; `a.pow(exp)` accepts non-negative `i64`).
+- **Equality**: `==` and `!=` compare values structurally.
+- **Bitwise**: `&`, `|`, `^`, `<<`, and `>>` (non-negative `i32` shift counts; negative
+  counts throw `Error`). Bitwise operations on negative values follow infinite
+  two's-complement semantics, matching Python and JavaScript `BigInt`, and `>>`
+  sign-extends (`floor(a / 2^bits)`).
+
+Operations whose operator syntax is reserved or not yet overloadable on classes are
+exposed as methods:
+
+- **Truncating division**: `a.div(b)` returns the quotient truncated toward zero, and
+  `a.divRem(b)` returns `inline (quotient, remainder)` (`/` in Zena always performs
+  floating-point division).
+- **Unary operations**: `a.neg()`, `a.abs()`, and `a.bitNot()` (`-(a + 1)`).
+- **Ordering**: `a.compareTo(b)` returns `-1`, `0`, or `1`; `a.min(b)` and `a.max(b)`
+  select the smaller or larger value.
+- **Number theory**: `a.gcd(b)` returns the non-negative greatest common divisor, and
+  `a.modPow(exp, mod)` computes `(a ** exp) % mod` with a non-negative residue in
+  `0 .. mod - 1`.
+
+```zena
+import {BigInt} from 'zena:bigint';
+
+let base = BigInt.from('123456789012345678901234567890');
+let mod = BigInt.from(1000000007);
+let (q, r) = base.divRem(mod);
+let residue = base.modPow(BigInt.from(65537), mod);
+```
+
+### Conversions, formatting, and collections
+
+`tryToI64()` and `tryToU64()` return `inline (true, value)` when the value fits in 64
+bits and `(false, _)` otherwise; `toI64()` and `toU64()` throw `Error` on overflow.
+`toString(radix)` formats in any radix from `2` to `36` (default `10`). `BigInt`
+implements `Stringable` and `Hashable`, so values interpolate directly in template
+literals and work as keys in `Map` and `Set`.
+
 ## Floats
 
 Zena supports IEEE 754 floating-point numbers in single and double precision:
@@ -189,15 +255,26 @@ let quotient = div(7, 2); // 3 (i32)
 
 ### Mathematical functions
 
-`zena:math` has the operations WebAssembly has instructions for (`sqrt`,
-`abs`, `floor`, `ceil`, `trunc`, `nearest`, `min`, `max`, `copysign`), and
-the exponential, logarithmic, trigonometric and hyperbolic functions, `pow`,
-`cbrt`, `hypot` and `fma`, which it computes in software. Each is overloaded
-over `f64` and `f32`, and the result is within 1 ulp of the true value (`fma`
-is exact).
+[`zena:math`](/api/math/) provides floating-point and integer math utilities:
+
+- **WebAssembly float intrinsics**: `sqrt`, `abs`, `neg`, `floor`, `ceil`, `trunc`,
+  `nearest`, `min`, `max`, and `copysign`, overloaded over `f64` and `f32`.
+- **Elementary functions**: `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`,
+  `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`,
+  `asinh`, `acosh`, `atanh`, `pow`, `cbrt`, `hypot`, and `fma`, overloaded over `f64`
+  and `f32` and accurate to within 1 ulp (`fma` is exact). Constants `PI`, `TAU`, `E`,
+  `LN2`, `LN10`, and `SQRT2` are exported as `f64`, and `isNaN` tests for `NaN`.
+- **Integer division, bit counting, bounds, and 128-bit arithmetic**: `div` (`i32`,
+  `i64`, `u32`, `u64`), bit-counting intrinsics (`clz`, `ctz`, `popcnt` over `i32`,
+  `i64`, `u64`), integer limit constants (`I32_MIN`..`U64_MAX`), 128-bit wide
+  operations (`mulWide`, `mulWideSigned`, `add128`, `sub128`) returning `inline (low,
+high)` tuples, saturating float-to-integer truncations (`i32_trunc_s`,
+  `i32_trunc_u`, `i64_trunc_s`, `i64_trunc_u`), and bit reinterpretations
+  (`i32_reinterpret_f32`, `i64_reinterpret_f64`, `f32_reinterpret_i32`,
+  `f64_reinterpret_i64`).
 
 ```zena
-import {exp, log, sin, atan2, hypot, pow, PI} from 'zena:math';
+import {exp, log, sin, atan2, hypot, pow, clz, mulWide, PI} from 'zena:math';
 
 let growth = exp(0.05); // 1.0512710963760241
 let halfLife = log(2.0) / 0.1; // 6.931471805599452
@@ -205,6 +282,8 @@ let height = 10.0 * sin(PI / 4.0); // 7.071067811865475
 let angle = atan2(3.0, 4.0); // 0.6435011087932844
 let distance = hypot(3.0, 4.0); // 5.0
 let root = pow(27.0, 1.0 / 3.0); // 3.0
+let leading = clz(16); // 27
+let (lo, hi) = mulWide(1000000000000 as u64, 1000000000000 as u64);
 ```
 
 `**` on floats lowers to a squaring loop that truncates a non-integer
@@ -313,8 +392,8 @@ let max: i32 = 2147483647;
 let wrapped = max + 1; // -2147483648
 ```
 
-For exact signed integer arithmetic beyond 64 bits, import `BigInt` from
-[`zena:bigint`](/api/bigint/).
+For exact signed integer arithmetic beyond 64 bits, see
+[Arbitrary-precision integers](#arbitrary-precision-integers).
 
 ### Integer division by zero
 

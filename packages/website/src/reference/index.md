@@ -60,7 +60,7 @@ still open to change — nothing in Zena is frozen yet.
 - [Comments](/reference/comments/) — comments and documentation syntax
 - [Libraries](/reference/libraries/) — source files, entry points, imports, and packages
 - [Type system overview](/reference/types/) — how the type system fits together
-- [Numbers](/reference/numbers/) — integers, floats, and numeric semantics
+- [Numbers](/reference/numbers/) — integers, floats, BigInt, and numeric semantics
 - [Strings](/reference/strings/) — string literals, template interpolation, and encodings
 - [Pattern matching](/reference/pattern-matching/) — `match`, patterns, exhaustiveness
 - [Classes](/reference/classes/) — nominal classes and object orientation

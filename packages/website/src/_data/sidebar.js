@@ -552,6 +552,7 @@ const reference = [
         outline: [
           'Integers',
           'Narrow integers',
+          'Arbitrary-precision integers',
           'Floats',
           'Number literals',
           'Unsigned semantics',

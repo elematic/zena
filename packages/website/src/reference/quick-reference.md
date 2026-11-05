@@ -2488,8 +2488,9 @@ min(3.0, 7.0); // 3.0
 max(3.0, 7.0); // 7.0
 ```
 
-Also includes bit manipulation: `clz` (count leading zeros), `ctz` (count
-trailing zeros), `popcnt` (population count).
+Also includes truncating integer division (`div`), bit-counting intrinsics (`clz`,
+`ctz`, `popcnt`), integer limit constants (`I32_MIN`..`U64_MAX`), and 128-bit wide
+arithmetic (`mulWide`, `mulWideSigned`, `add128`, `sub128`).
 
 The functions WASM has no instruction for are a port of musl's libm, each
 over `f64` and `f32`, accurate to under 1 ulp: `exp`, `exp2`, `expm1`,

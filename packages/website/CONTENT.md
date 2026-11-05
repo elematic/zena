@@ -291,6 +291,7 @@ To add a page: add it to the sidebar with an `outline`, then run
   - ✅ [Numbers](src/reference/numbers.md) — `/reference/numbers/`
     - Integers
     - Narrow integers
+    - Arbitrary-precision integers
     - Floats
     - Number literals
     - Unsigned semantics
