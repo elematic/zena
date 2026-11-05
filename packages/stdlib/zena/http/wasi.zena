@@ -1,5 +1,20 @@
 /**
- * WASI HTTP wire adapter for WebAssembly components (wasi:http/types@0.3.0).
+ * WASI HTTP wire adapter for WebAssembly components (`wasi:http/types@0.3.0`).
+ *
+ * `App.handle` (`wasi:http/handler`) and `Server` (`zena-cli:host/http-server`)
+ * share `Request.fromWire` and the response rules implemented here and mirrored
+ * in `complete-text`:
+ * - Default `Content-Type` (`text/plain; charset=utf-8` for `String`,
+ *   `text/html; charset=utf-8` for `HTMLPartial`, `application/octet-stream`
+ *   for `FixedArray<u8>`) and `Content-Length` on `String` and `FixedArray<u8>`
+ *   bodies when status is 200 or higher (excluding 204 and 304).
+ * - Upfront rejection of `Content-Length` on `1xx` and 204 responses, and of
+ *   mismatched `Content-Length` on `String` and `FixedArray<u8>` bodies before
+ *   headers are sent (`Stream<u8>` bodies are checked as bytes flow by
+ *   `wasmtime-wasi-http`).
+ * - Unhandled middleware errors and invalid response status or header values
+ *   turn into `500 Internal Server Error` HTTP responses, and any attached
+ *   `Stream<u8>` body is stopped when replaced or when serialization fails.
  */
 
 import {
@@ -9,7 +24,7 @@ import {
   ErrorCode
 } from 'wasi:http/types';
 import { Completer, release } from 'zena:async';
-import { Borrow, Option, Own, Result, unit } from 'zena:core';
+import { Borrow, Option, Own, Result, parseI64, unit } from 'zena:core';
 import { Stream, bytesStream, textStream, readAllText } from 'zena:stream';
 import { Request } from './request.zena';
 import { Response } from './response.zena';
@@ -77,12 +92,24 @@ function appendHeaderField(
   }
 }
 
+function checkKnownBodyLength(explicitCl: String | null, actualLength: i32) {
+  if (explicitCl == null) {
+    return;
+  }
+  if (let (true, cl) = parseI64(explicitCl)) {
+    if (cl == (actualLength as i64)) {
+      return;
+    }
+  }
+  throw new Error('zena:http: content-length does not match body length');
+}
+
 /**
  * Converts a Response into a low-level WASI WireResponse resource along with its transmitted future.
  */
 export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>, Future<Result<void, ErrorCode>>) {
   let status = res.statusCode;
-  if (status < 100 || status > 999) {
+  if (status < 100 || status > 599) {
     res.body = null;
     throw new Error(`zena:http: invalid status code: ${status}`);
   }
@@ -92,7 +119,7 @@ export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>
   if (hasCt) {
     appendHeaderField(fields, res, 'content-type', contentTypeToBytes(ct as String));
   }
-  var hasCl = false;
+  var explicitCl: String | null = null;
   if (res.hasCustomHeaders) {
     // Gathered first: a callback cannot capture the owned fields.
     let custom = new GrowableArray<(String, String)>();
@@ -109,7 +136,7 @@ export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>
             res.body = null;
             throw new Error('zena:http: content-length is not allowed on 1xx or 204 responses');
           }
-          hasCl = true;
+          explicitCl = val;
         }
         appendHeaderField(fields, res, name, val.toBytes());
       }
@@ -122,10 +149,11 @@ export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>
 
   if (b is String) {
     let s = b;
+    checkKnownBodyLength(explicitCl, s.length);
     if (!hasCt) {
       appendHeaderField(fields, res, 'content-type', bytesTextPlain);
     }
-    if (!hasCl && mayHaveContentLength) {
+    if (explicitCl == null && mayHaveContentLength) {
       appendHeaderField(fields, res, 'content-length', lengthToBytes(s.length));
     }
     streamOpt = some(textStream(s));
@@ -136,10 +164,11 @@ export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>
     streamOpt = some(htmlStream(b, 1024));
   } else if (b is FixedArray<u8>) {
     let bytes = b;
+    checkKnownBodyLength(explicitCl, bytes.length);
     if (!hasCt) {
       appendHeaderField(fields, res, 'content-type', bytesOctetStream);
     }
-    if (!hasCl && mayHaveContentLength) {
+    if (explicitCl == null && mayHaveContentLength) {
       appendHeaderField(fields, res, 'content-length', lengthToBytes(bytes.length));
     }
     streamOpt = some(bytesStream(bytes));
@@ -149,7 +178,10 @@ export function toWireResponseWithTransmitted(res: Response): (Own<WireResponse>
 
   let (wireResp, transmitted) = WireResponse.new_(fields, streamOpt, noTrailers());
   if (status != 200) {
-    wireResp.setStatusCode(status as u16);
+    if (!wireResp.setStatusCode(status as u16)) {
+      transmitted.[release]();
+      throw new Error(`zena:http: invalid status code: ${status}`);
+    }
   }
   return (wireResp, transmitted);
 }
@@ -204,7 +236,9 @@ export function textResponse(
   // As in toWireResponse (TODO(#831)).
   transmitted.[release]();
   if (status != 200) {
-    response.setStatusCode(status as u16);
+    if (!response.setStatusCode(status as u16)) {
+      throw new Error(`zena:http: invalid status code: ${status}`);
+    }
   }
   return response;
 }

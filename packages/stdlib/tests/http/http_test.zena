@@ -520,6 +520,80 @@ export let tests = suite('zena:http', () => {
       isTrue(false, 'expected 500 WireResponse');
     }
   });
+
+  test('toWireResponse and App.handle reject out-of-range status and mismatched fixed-body content-length', (ctx) => {
+    let badStatus = new Response();
+    badStatus.statusCode = 700;
+    badStatus.body = 'bad';
+    var statusThrew = false;
+    try {
+      let _ = toWireResponse(badStatus);
+    } catch (e) {
+      statusThrew = true;
+    }
+    isTrue(statusThrew, 'status 700 is outside wasi:http 100..=599');
+
+    let badTextLen = new Response();
+    badTextLen.body = 'hello';
+    badTextLen.setHeader('content-length', '99');
+    var textLenThrew = false;
+    try {
+      let _ = toWireResponse(badTextLen);
+    } catch (e) {
+      textLenThrew = true;
+    }
+    isTrue(textLenThrew, 'mismatched content-length on String body throws');
+
+    let badEmptyTextLen = new Response();
+    badEmptyTextLen.body = '';
+    badEmptyTextLen.setHeader('content-length', '99');
+    var emptyTextLenThrew = false;
+    try {
+      let _ = toWireResponse(badEmptyTextLen);
+    } catch (e) {
+      emptyTextLenThrew = true;
+    }
+    isTrue(emptyTextLenThrew, 'mismatched content-length on empty String body throws');
+
+    let badBytesLen = new Response();
+    badBytesLen.body = 'hello'.toBytes();
+    badBytesLen.setHeader('content-length', '99');
+    var bytesLenThrew = false;
+    try {
+      let _ = toWireResponse(badBytesLen);
+    } catch (e) {
+      bytesLenThrew = true;
+    }
+    isTrue(bytesLenThrew, 'mismatched content-length on FixedArray<u8> body throws');
+
+    // Null body with an explicit Content-Length (e.g. HEAD or 304 metadata) remains valid.
+    let headRes = new Response();
+    headRes.statusCode = 200;
+    headRes.setHeader('content-length', '99');
+    let headWire = toWireResponse(headRes);
+    equal(headWire.getStatusCode() as i32, 200);
+
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      if (req.path == '/status-700') {
+        res.statusCode = 700;
+        res.body = 'bad';
+      } else if (req.path == '/bad-cl-text') {
+        res.body = 'hello';
+        res.setHeader('content-length', '99');
+      } else if (req.path == '/bad-cl-bytes') {
+        res.body = 'hello'.toBytes();
+        res.setHeader('content-length', '99');
+      }
+    });
+    for (let p in ['/status-700', '/bad-cl-text', '/bad-cl-bytes']) {
+      if (let (true, wireRes) = runFuture(app.handle(wireRequest(p, Fields.create())))) {
+        equal(wireRes.getStatusCode() as i32, 500);
+      } else {
+        isTrue(false, `expected 500 WireResponse on ${p}`);
+      }
+    }
+  });
 });
 
 

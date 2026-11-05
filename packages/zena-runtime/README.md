@@ -76,7 +76,22 @@ it:
     at most `ZENA_HTTP_MAX_CONNECTIONS` (1024) are open at once, the next
     waiting, unaccepted, for one to close (`ServerLimits`), so slow or
     many clients cannot hold the server. How large a body may be is the
-    program's to say (`Request.bodyLimit`).
+    program's to say (`Request.bodyLimit`). Incoming requests turn into
+    `wasmtime_wasi_http::p3::Request` values with `http` as the scheme and
+    the authority taken from the request URI or `Host` header; HTTP/1.1
+    requests with a missing, duplicate or malformed `Host` header get `400
+Bad Request` before reaching the guest. Binary and streaming responses
+    cross back as `wasmtime_wasi_http::p3::Response` (`respond`), while
+    string and empty responses cross in one call (`complete-text`) and run
+    through `wasmtime_wasi_http::FieldMap` on the host so both paths apply
+    the same status (`100..=599`), header syntax, forbidden-header and
+    128 KiB field-map rules as `wasi:http/handler`. Three host behaviors
+    differ from `wasmtime serve`: `http-server` speaks HTTP/1.1 only,
+    `complete-text` builds `Full<Bytes>` directly without guest `fields` or
+    `stream` resources, and an unread request body is detached once a
+    non-`1xx` response arrives (with a TCP write half-close and bounded
+    250 ms / 512 KiB read drain when closing the connection) so early
+    responses do not stall HTTP/1.1 keep-alive or race with a TCP `RST`.
 
 A component's `main` is lifted async with a callback, so calling it goes
 through wasmtime's concurrent machinery: `component::run_main` builds a
