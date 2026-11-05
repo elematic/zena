@@ -40,13 +40,6 @@ export let ACCESS_SECONDS = 7200 as i64;
 /** How long a refresh token lasts, in seconds. */
 export let REFRESH_SECONDS = (90 * 24 * 60 * 60) as i64;
 
-/**
- * How long a web session lasts, in seconds. A token in a cookie cannot be
- * revoked, so it is short; the page renews it from the person's own OAuth
- * session, which their PDS can revoke.
- */
-export let WEB_SECONDS = (24 * 60 * 60) as i64;
-
 /** A call refused, with the XRPC error and HTTP status to answer with. */
 export class SessionError extends Error {
   status: i32;
@@ -164,23 +157,6 @@ export final class Caller {
   new(this.account, this.scope);
 }
 
-/**
- * Who a web session is for: anyone with an atproto account, signed in to
- * the App View's pages (`createWebSession`), not an account of this PDS.
- */
-export final class WebCaller {
-  did: String;
-  /** The handle their DID document claims and that resolves back to it, when there is one. */
-  handle: String | null;
-
-  new(this.did, this.handle);
-
-  /** What a page calls them: their handle, or their DID. */
-  name(): String {
-    return this.handle ?? this.did;
-  }
-}
-
 /** A session's tokens, and the account they are for. */
 export final class Tokens {
   account: Account;
@@ -190,15 +166,73 @@ export final class Tokens {
   new(this.account, this.accessJwt, this.refreshJwt);
 }
 
+/**
+ * JWTs a server signs for itself, with HMAC-SHA256 under `secret`, and
+ * checks: the PDS's access and refresh tokens (`Sessions`), and the App
+ * View's web sessions (`registry:web-sessions`). Each kind has a `typ` of
+ * its own, so that one never passes for another.
+ */
+export final class HmacTokens {
+  #secret: FixedArray<u8>;
+
+  new(secret: FixedArray<u8>) : #secret = secret;
+
+  /** `payload`, signed as a JWT of type `type`. */
+  sign(type: String, payload: JsonObject): String {
+    let header = new JsonObject();
+    header['typ'] = type;
+    header['alg'] = 'HS256';
+    let input = `${encodePart(stringify(header))}.${encodePart(stringify(payload))}`;
+    return `${input}.${base64Url.encode(hmacSha256(this.#secret, input.toBytes()), false)}`;
+  }
+
+  /**
+   * The claims of `token`, a JWT of type `type` signed with this secret,
+   * that has not expired. Throws `SessionError`.
+   */
+  verify(token: String, type: String, nowSeconds: i64): JsonObject {
+    let invalid = new SessionError(400, 'InvalidToken', 'the token is not one this server issued');
+    let parts = token.split('.');
+    if (parts.length != 3) {
+      throw invalid;
+    }
+    let input = `${parts[0]}.${parts[1]}`;
+    var signature = new FixedArray<u8>(0, 0 as u8);
+    try {
+      signature = base64Url.decode(parts[2]);
+    } catch (e) {
+      throw invalid;
+    }
+    if (!constantTimeEquals(hmacSha256(this.#secret, input.toBytes()), signature)) {
+      throw invalid;
+    }
+    let header = decodePart(parts[0]);
+    let claims = decodePart(parts[1]);
+    if (header == null || claims == null || header['typ'] != type) {
+      throw invalid;
+    }
+    let exp = claims['exp'];
+    if (!(exp is Box<f64>) || (exp.value as i64) < nowSeconds) {
+      throw new SessionError(400, 'ExpiredToken', 'the token has expired');
+    }
+    return claims;
+  }
+
+  /** The HMAC-SHA256 of `bytes` under the secret. */
+  mac(bytes: FixedArray<u8>): FixedArray<u8> {
+    return hmacSha256(this.#secret, bytes);
+  }
+}
+
 /** Opens, refreshes and checks sessions for the accounts in `storage`. */
 export final class Sessions {
   #storage: Storage;
   #credentials: CredentialStore;
-  #secret: FixedArray<u8>;
+  #tokens: HmacTokens;
   #random: (count: i32) => FixedArray<u8>;
 
   new(storage: Storage, credentials: CredentialStore, secret: FixedArray<u8>, random: (count: i32) => FixedArray<u8>)
-      : #storage = storage, #credentials = credentials, #secret = secret, #random = random;
+      : #storage = storage, #credentials = credentials, #tokens = new HmacTokens(secret), #random = random;
 
   /**
    * Gives `did` a new app password named `name`, and returns it: the
@@ -240,7 +274,7 @@ export final class Sessions {
    * tokens. A token already spent, or deleted, is refused.
    */
   async refresh(authorization: String | null, nowSeconds: i64): Future<Tokens> {
-    let claims = this.#verify(bearer(authorization), 'refresh+jwt', nowSeconds);
+    let claims = this.#tokens.verify(bearer(authorization), 'refresh+jwt', nowSeconds);
     let session = await this.#credentials.takeSession(stringClaim(claims, 'jti'));
     if (session == null) {
       throw new SessionError(400, 'ExpiredToken', 'the refresh token was spent or ended');
@@ -255,13 +289,13 @@ export final class Sessions {
 
   /** `deleteSession`: ends the session whose refresh token is in `authorization`. */
   async delete(authorization: String | null, nowSeconds: i64): Future<void> {
-    let claims = this.#verify(bearer(authorization), 'refresh+jwt', nowSeconds);
+    let claims = this.#tokens.verify(bearer(authorization), 'refresh+jwt', nowSeconds);
     await this.#credentials.takeSession(stringClaim(claims, 'jti'));
   }
 
   /** The account whose access token is in `authorization`. */
   async authenticate(authorization: String | null, nowSeconds: i64): Future<Caller> {
-    let claims = this.#verify(bearer(authorization), 'at+jwt', nowSeconds);
+    let claims = this.#tokens.verify(bearer(authorization), 'at+jwt', nowSeconds);
     let account = await this.#storage.getAccount(stringClaim(claims, 'sub'));
     if (account == null) {
       throw new SessionError(401, 'InvalidToken', 'the account is gone');
@@ -286,98 +320,7 @@ export final class Sessions {
     refresh['exp'] = new Box<f64>((nowSeconds + REFRESH_SECONDS) as f64);
     await this.#credentials.putSession(
         new RefreshSession(jti, account.did, scope, nowSeconds + REFRESH_SECONDS, appPassword));
-    return new Tokens(account, this.#sign('at+jwt', access), this.#sign('refresh+jwt', refresh));
-  }
-
-  /**
-   * The token of a web session for `did`, shown as `handle`: what the
-   * cookie that keeps them signed in to the App View's pages holds, for
-   * `WEB_SECONDS`. Only `webCaller` accepts it, and it accepts nothing
-   * else, so it never stands for an account of this PDS.
-   */
-  webSession(did: String, handle: String | null, nowSeconds: i64): String {
-    let claims = new JsonObject();
-    claims['sub'] = did;
-    if (handle != null) {
-      claims['handle'] = handle;
-    }
-    claims['iat'] = new Box<f64>(nowSeconds as f64);
-    claims['exp'] = new Box<f64>((nowSeconds + WEB_SECONDS) as f64);
-    return this.#sign('web+jwt', claims);
-  }
-
-  /** Who `token` is a web session for; null when it is none, or has expired. */
-  webCaller(token: String | null, nowSeconds: i64): WebCaller | null {
-    if (token == null) {
-      return null;
-    }
-    try {
-      let claims = this.#verify(token, 'web+jwt', nowSeconds);
-      let handle = claims['handle'];
-      return new WebCaller(stringClaim(claims, 'sub'), if (handle is String) handle else null);
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /**
-   * A signature of `value` for a URL this server makes, such as an
-   * avatar's: 16 bytes of an HMAC with the sessions' secret, so that only
-   * URLs this server wrote check (`checkUrlSignature`).
-   */
-  urlSignature(value: String): String {
-    let mac = hmacSha256(this.#secret, `url ${value}`.toBytes());
-    let short = new FixedArray<u8>(16, 0 as u8);
-    for (var i = 0; i < 16; i += 1) {
-      short[i] = mac[i];
-    }
-    return base64Url.encode(short, false);
-  }
-
-  /** Whether `signature` is `urlSignature(value)`. */
-  checkUrlSignature(value: String, signature: String | null): boolean {
-    if (signature == null) {
-      return false;
-    }
-    return constantTimeEquals(this.urlSignature(value).toBytes(),
-        signature.toBytes());
-  }
-
-  #sign(type: String, payload: JsonObject): String {
-    let header = new JsonObject();
-    header['typ'] = type;
-    header['alg'] = 'HS256';
-    let input = `${encodePart(stringify(header))}.${encodePart(stringify(payload))}`;
-    return `${input}.${base64Url.encode(hmacSha256(this.#secret, input.toBytes()), false)}`;
-  }
-
-  /** The claims of `token`, a JWT of type `type` this server signed, that has not expired. */
-  #verify(token: String, type: String, nowSeconds: i64): JsonObject {
-    let invalid = new SessionError(400, 'InvalidToken', 'the token is not one this server issued');
-    let parts = token.split('.');
-    if (parts.length != 3) {
-      throw invalid;
-    }
-    let input = `${parts[0]}.${parts[1]}`;
-    var signature = new FixedArray<u8>(0, 0 as u8);
-    try {
-      signature = base64Url.decode(parts[2]);
-    } catch (e) {
-      throw invalid;
-    }
-    if (!constantTimeEquals(hmacSha256(this.#secret, input.toBytes()), signature)) {
-      throw invalid;
-    }
-    let header = decodePart(parts[0]);
-    let claims = decodePart(parts[1]);
-    if (header == null || claims == null || header['typ'] != type) {
-      throw invalid;
-    }
-    let exp = claims['exp'];
-    if (!(exp is Box<f64>) || (exp.value as i64) < nowSeconds) {
-      throw new SessionError(400, 'ExpiredToken', 'the token has expired');
-    }
-    return claims;
+    return new Tokens(account, this.#tokens.sign('at+jwt', access), this.#tokens.sign('refresh+jwt', refresh));
   }
 }
 

@@ -2,7 +2,8 @@
 
 `packages/registry` is the Zena App View: the package manager's service,
 its `dev.zena-lang.registry.*` methods, its site, and the service that
-runs it with its PDS (`packages/pds`) in one process. Its protocol is in
+runs it, with its PDS (`packages/pds`) in the same process or reaching one
+elsewhere. Its protocol is in
 [docs/design/package-manager.md](../../docs/design/package-manager.md),
 "Hosting, keys and maintainers" and "Abuse and moderation", and its
 lexicons are in `packages/package-manager/lexicons`.
@@ -37,14 +38,15 @@ When a pull request closes an item there, tick its box.
   (`pds:pds-client`), in `com.atproto`'s terms, and keeps its own record
   of its accounts, their kinds, scopes and names, in `AppViewStore`. It does
   not read `Pds` or `Storage`; `InProcessPds` is the PDS in the same
-  process. Automation accounts are managed accounts too: CI calls with a
+  process, and `XrpcPds` one elsewhere (`APP_VIEW_PDS_URL`). Automation accounts are managed accounts too: CI calls with a
   token the App View issued (`AppView.authenticate`), and the App View
   writes their attestations.
 
 ## Storage
 
 - `registry:app-view` declares `AppViewStore` and keeps it in memory;
-  `registry:firestore` keeps it in Firestore, under the PDS's tenant. Both
+  `registry:firestore` keeps it in Firestore, under the PDS's tenant, or
+  under its own (`APP_VIEW_TENANT`) when the PDS is elsewhere. Both
   pass `zena/test/store-conformance.zena`; add a test there for anything a
   store must do.
 - The package listings read `AppViewStore.summaries`, and memberships and

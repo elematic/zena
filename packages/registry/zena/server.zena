@@ -1,18 +1,18 @@
 /**
- * The App View's HTTP application, with the PDS it keeps its accounts on
- * in the same process: the PDS's routes (`pds:server`), the registry
- * methods (`xrpc/`), and the site: the web pages (`web/`) and what their
- * sign-in calls.
+ * The App View's HTTP application: the registry methods (`xrpc/`), the
+ * site, its web pages (`web/`) and what their sign-in calls, and, when it
+ * keeps its accounts on a PDS in the same process, the PDS's routes
+ * (`pds:server`).
  *
- * The PDS and the site can each have a host name of their own
- * (docs/design/package-manager.md, "Names and addresses"), so an
+ * The App View's methods and the site can each have a host name of their
+ * own (docs/design/package-manager.md, "Names and addresses"), so an
  * application serves one part, `AppPart`, or both, as on one machine.
  */
 
 import {Future} from 'zena:async';
 import {App, Router} from 'zena:http';
 import {Pds} from 'pds:pds';
-import {limitedApp, pdsRoutes} from 'pds:server';
+import {healthRoute, limitedApp, pdsRoutes} from 'pds:server';
 import {Sessions} from 'pds:sessions';
 import {AppView} from './app-view.zena';
 import {notFound} from './web/pages/not-found.zena';
@@ -25,7 +25,7 @@ import {webSessionRoutes} from './xrpc/web.zena';
 
 /** Which of the server's parts an application serves. */
 export enum AppPart {
-  /** The PDS, with the App View's methods: what its own host name serves. */
+  /** The App View's methods, and the PDS in the same process if there is one: what its own host name serves. */
   Pds,
   /** The site: the pages, and what their sign-in calls, under the site's name. */
   Site,
@@ -33,21 +33,29 @@ export enum AppPart {
   Both
 }
 
-/** Returns the application that serves `part`, for `appView` and the accounts in `pds`. */
-export function createApp(pds: Pds, appView: AppView, sessions: Sessions | null = null,
+/**
+ * Returns the application that serves `part` for `appView`, with the
+ * routes of `pds`, the PDS in the same process, and its password
+ * `sessions`, when there is one.
+ */
+export function createApp(pds: Pds | null, appView: AppView, sessions: Sessions | null = null,
     part: AppPart = AppPart.Both): App {
   let app = limitedApp();
   let router = new Router();
   if (part != AppPart.Site) {
     // The site's home page is `/` wherever the site is served.
     if (part == AppPart.Pds) {
-      let text = pdsBanner(appView);
+      let text = banner(appView, pds != null);
       router.get('/', async (req, res, next, params) => {
         res.type = 'text/plain; charset=utf-8';
         res.body = text;
       });
     }
-    pdsRoutes(router, pds, sessions);
+    if (pds != null) {
+      pdsRoutes(router, pds, sessions);
+    } else {
+      healthRoute(router);
+    }
     registryRoutes(router, appView);
   }
   if (part == AppPart.Pds) {
@@ -74,9 +82,10 @@ export function createApp(pds: Pds, appView: AppView, sessions: Sessions | null 
   return app;
 }
 
-/** What `/` answers under the PDS's own name: what it is, and where its pages are. */
-function pdsBanner(appView: AppView): String {
-  return `The PDS of the Zena App View for ${appView.config.domain}, written in Zena.\nIts pages are at ${appView.config.siteOrigin}\n`;
+/** What `/` answers apart from the site: what the server is, and where its pages are. */
+function banner(appView: AppView, withPds: boolean): String {
+  let what = if (withPds) 'The PDS of the Zena App View' else 'The Zena App View';
+  return `${what} for ${appView.config.domain}, written in Zena.\nIts pages are at ${appView.config.siteOrigin}\n`;
 }
 
 /** Whether `path` is one of the server's APIs', which answer in JSON rather than with pages. */

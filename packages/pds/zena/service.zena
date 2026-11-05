@@ -145,25 +145,35 @@ export function refuseProblems(problems: Array<String>): void {
   throw new ConfigError(message);
 }
 
+/** The variables of the PDS's configuration, every one `readPdsConfig` reads but `PORT`. */
+export let PDS_VARIABLES: Array<String> = [
+  'PDS_STORAGE', 'PDS_TENANT', 'PDS_BLOB_BUCKET', 'PDS_BLOB_DIR', 'PDS_FIRESTORE_DATABASE', 'PDS_KEY_ENCRYPTION_KMS_KEY',
+  'PDS_PUBLIC_URL', 'PDS_DID', 'PDS_TRUSTED_APP_VIEWS', 'PDS_PLC_DIRECTORY', 'PDS_JWT_SECRET', 'PDS_CLOCK_ID'
+];
+
+/** The port `PORT` gives, 2583 by default, with what is wrong with it added to `problems`. */
+export function readPort(value: (name: String) => String | null, problems: GrowableArray<String>): u16 {
+  let portText = value('PORT');
+  if (portText == null) {
+    return 2583 as u16;
+  }
+  if (let (true, parsed) = parseI32(portText)) {
+    if (parsed >= 0 && parsed <= 65535) {
+      return parsed as u16;
+    }
+    problems.push(`PORT is out of range: ${portText}`);
+  } else {
+    problems.push(`PORT is not a number: ${portText}`);
+  }
+  return 2583 as u16;
+}
+
 /**
  * The PDS's configuration the trimmed `value`s give, with what is wrong
  * with them added to `problems`.
  */
 export function readPdsConfig(value: (name: String) => String | null, problems: GrowableArray<String>): PdsConfig {
-  var port = 2583 as u16;
-  let portText = value('PORT');
-  if (portText != null) {
-    if (let (true, parsed) = parseI32(portText)) {
-      if (parsed >= 0 && parsed <= 65535) {
-        port = parsed as u16;
-      } else {
-        problems.push(`PORT is out of range: ${portText}`);
-      }
-    } else {
-      problems.push(`PORT is not a number: ${portText}`);
-    }
-  }
-
+  let port = readPort(value, problems);
   var storage: StorageChoice = new InMemory();
   let storageKind = value('PDS_STORAGE') ?? 'memory';
   let bucket = value('PDS_BLOB_BUCKET');

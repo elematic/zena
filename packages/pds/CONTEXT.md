@@ -35,8 +35,9 @@ first. When a pull request closes an item there, tick its box.
   on this package; nothing here imports `registry:`.
 - The PDS's configuration is `pds:service`'s, read from `PDS_*`
   variables; the App View's are `APP_VIEW_*`. A PDS variable goes here,
-  and `registry:service` reads it through `readPdsConfig` for the PDS it
-  runs in the same process.
+  and in `PDS_VARIABLES`. `registry:service` reads it through
+  `readPdsConfig` for the PDS it runs in the same process, and refuses
+  every one in `PDS_VARIABLES` when its PDS is elsewhere.
 - When Zena itself is missing something, the fix goes in the compiler or
   the standard library, in the same change if it is small.
 - XRPC routes go in `zena/xrpc/`, one module per `com.atproto` namespace

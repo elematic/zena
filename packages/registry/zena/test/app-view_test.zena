@@ -35,6 +35,7 @@ import {
   PackageSummary, PendingChange, PendingRelease
 } from 'registry:app-view';
 import {createApp} from 'registry:server';
+import {WebSessions} from 'registry:web-sessions';
 import {MemberEntry, attestationKey} from 'package-manager:records';
 import {Pds} from 'pds:pds';
 import {InProcessPds, PdsClient, XrpcPds} from 'pds:pds-client';
@@ -178,7 +179,7 @@ final class Fixture {
       counter += 1;
       return new FixedArray<u8>(count, (counter + 100) as u8);
     });
-    appView.sessions = sessions;
+    appView.sessions = new WebSessions(filled(77));
     this.app = createApp(this.pds, appView, sessions);
   }
 
@@ -1552,7 +1553,7 @@ export let tests = suite('registry:app-view', () => {
     // Avatars only at URLs a page signed; Alice has none here anyway.
     equal(fixture.get(`/people/${ALICE}/avatar`).statusCode, 404, 'unsigned');
     equal(fixture.get(`/people/${ALICE}/avatar?s=forged`).statusCode, 404, 'forged');
-    let signature = ((fixture.appView as AppView).sessions as Sessions).urlSignature(ALICE);
+    let signature = ((fixture.appView as AppView).sessions as WebSessions).urlSignature(ALICE);
     equal(fixture.get(`/people/${ALICE}/avatar?s=${signature}`).statusCode, 404, 'no avatar');
   });
 

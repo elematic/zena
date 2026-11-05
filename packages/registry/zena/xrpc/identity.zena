@@ -4,9 +4,10 @@
  * methods as `#zena_registry`; `dev.zena-lang.registry.describeRegistry`,
  * which gives that DID, which tokens are addressed to, the domain its
  * handles are under, and what it serves (package-manager.md, "Finding an
- * App View"); `com.atproto.server.describeServer`, the PDS's; and
- * `com.atproto.identity.resolveHandle`, which the web app's sign-in
- * resolves handles with, since a browser cannot look DNS up itself.
+ * App View"); `com.atproto.server.describeServer`, the PDS's, when the PDS
+ * is in the same process; and `com.atproto.identity.resolveHandle`, which
+ * the web app's sign-in resolves handles with, since a browser cannot look
+ * DNS up itself.
  */
 
 import {Router} from 'zena:http';
@@ -19,25 +20,29 @@ import {fail, json} from 'pds:xrpc/common';
 
 /** Adds the App View's DID document, `describeRegistry`, `describeServer` and `resolveHandle` to `router`. */
 export function identityRoutes(router: Router, appView: AppView): void {
+  // Whether the PDS that keeps the App View's accounts is this server.
+  let withPds = appView.config.pdsEndpoint == appView.config.endpoint;
   // A `did:web` resolves to `https://<host>/.well-known/did.json`. It names
-  // the server as a PDS, and its App View methods, and lists the App View's
-  // signing key, which its tokens to the PDSes of its accounts are
-  // checked with.
+  // the App View's methods, and the server as a PDS when the PDS is in the
+  // same process, and lists the App View's signing key, which its tokens
+  // to the PDSes of its accounts are checked with.
   if (appView.config.serviceDid.startsWith('did:web:')) {
     router.get('/.well-known/did.json', async (req, res, next, params) => {
       let context = new JsonArray();
       context.push('https://www.w3.org/ns/did/v1');
       context.push('https://w3id.org/security/multikey/v1');
-      let pds = new JsonObject();
-      pds['id'] = '#atproto_pds';
-      pds['type'] = 'AtprotoPersonalDataServer';
-      pds['serviceEndpoint'] = appView.config.endpoint;
+      let services = new JsonArray();
+      if (withPds) {
+        let pds = new JsonObject();
+        pds['id'] = '#atproto_pds';
+        pds['type'] = 'AtprotoPersonalDataServer';
+        pds['serviceEndpoint'] = appView.config.pdsEndpoint;
+        services.push(pds);
+      }
       let registryService = new JsonObject();
       registryService['id'] = `#${REGISTRY_SERVICE}`;
       registryService['type'] = REGISTRY_TYPE;
       registryService['serviceEndpoint'] = appView.config.endpoint;
-      let services = new JsonArray();
-      services.push(pds);
       services.push(registryService);
       let body = new JsonObject();
       body['@context'] = context;
@@ -80,14 +85,16 @@ export function identityRoutes(router: Router, appView: AppView): void {
     json(res, body);
   });
 
-  router.get(xrpcPath(SERVER_DESCRIBE_SERVER), async (req, res, next, params) => {
-    let domains = new JsonArray();
-    domains.push(`.${appView.config.domain}`);
-    let body = new JsonObject();
-    body['did'] = appView.config.serviceDid;
-    body['availableUserDomains'] = domains;
-    json(res, body);
-  });
+  if (withPds) {
+    router.get(xrpcPath(SERVER_DESCRIBE_SERVER), async (req, res, next, params) => {
+      let domains = new JsonArray();
+      domains.push(`.${appView.config.domain}`);
+      let body = new JsonObject();
+      body['did'] = appView.config.serviceDid;
+      body['availableUserDomains'] = domains;
+      json(res, body);
+    });
+  }
 
   resolveHandleRoute(router, appView);
 }

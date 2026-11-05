@@ -6,8 +6,8 @@ It mints its packages' and organizations' DIDs, keeps their accounts on a
 PDS ([`packages/pds`](../pds), padstone), and serves the
 `dev.zena-lang.registry.*` methods `zena` calls, each checked with a
 service-auth token from the caller's PDS, and
-`com.atproto.server.describeServer`, which tells `zena` its service DID and
-handle domain. `zena` refuses an App View whose DID does not name its
+`dev.zena-lang.registry.describeRegistry`, which tells `zena` its service
+DID and handle domain. `zena` refuses an App View whose DID does not name its
 origin, so `APP_VIEW_DID` defaults to `did:web:<domain>`, and the
 demo's to the `did:web` of `127.0.0.1` and its port.
 
@@ -35,9 +35,12 @@ addresses, with `ZENA_ALLOW_EGRESS=metadata.google.internal` for the
 metadata server that gives the service its Google credentials
 (`packages/zena-runtime`).
 
-For now one service runs the App View and its PDS in one process
-(`registry:service`), and the App View reaches the PDS through
-`InProcessPds`.
+The App View keeps its accounts on a PDS in the same process by default
+(`registry:service`), and reaches it through `InProcessPds`. With
+`APP_VIEW_PDS_URL`, it keeps them on a PDS elsewhere instead, which trusts
+it (`PDS_TRUSTED_APP_VIEWS`), and reaches it through `XrpcPds`, with
+service-auth tokens signed by its own signing key, which its DID document
+lists.
 
 ## Commands
 
@@ -66,10 +69,11 @@ the Firestore emulator too, with `PDS_STORAGE=firestore` and the rest.
 ## Configuration
 
 `main.zena` reads its configuration from the environment: the App View's
-variables are `APP_VIEW_*` (`registry:service` lists them), and the PDS it
-runs reads its own, `PDS_*`, as padstone alone does (`pds:service`). It
-needs `APP_VIEW_DOMAIN`; with nothing else, it keeps everything in memory
-on port 2583. A PDS alone starts from `packages/pds/zena/main.zena`.
+variables are `APP_VIEW_*` (`registry:service` lists them), and a PDS it
+runs in the same process reads its own, `PDS_*`, as padstone alone does
+(`pds:service`). It needs `APP_VIEW_DOMAIN`; with nothing else, it keeps
+everything in memory on port 2583. A PDS alone starts from
+`packages/pds/zena/main.zena`.
 
 A deployment keeps its data in Firestore, for a tenant, with blob bytes in
 a Cloud Storage bucket, writes its handles' TXT records to the Cloud DNS
@@ -80,6 +84,19 @@ secp256k1 private key in hex, and the secret that signs sessions' tokens,
 ```sh
 PDS_STORAGE=firestore PDS_TENANT=pkg PDS_BLOB_BUCKET=<bucket> PDS_JWT_SECRET=<hex> \
 APP_VIEW_DOMAIN=pkg.zena-lang.dev APP_VIEW_ROTATION_KEY=<hex> \
+APP_VIEW_HANDLE_RECORDS=cloud-dns APP_VIEW_DNS_ZONE=<managed zone> \
+  ./target/release/zena-cli run packages/registry/zena/main.zena
+```
+
+With its PDS elsewhere, the App View takes no `PDS_*` variable. It keeps
+its own stores in Firestore under a tenant of its own, signs the site's
+sessions with a secret of its own, and gives the signing key its tokens
+to the PDS are checked with:
+
+```sh
+APP_VIEW_PDS_URL=https://padstone.zena-lang.dev \
+APP_VIEW_STORAGE=firestore APP_VIEW_TENANT=pkg APP_VIEW_SESSION_SECRET=<hex> \
+APP_VIEW_DOMAIN=pkg.zena-lang.dev APP_VIEW_ROTATION_KEY=<hex> APP_VIEW_SIGNING_KEY=<hex> \
 APP_VIEW_HANDLE_RECORDS=cloud-dns APP_VIEW_DNS_ZONE=<managed zone> \
   ./target/release/zena-cli run packages/registry/zena/main.zena
 ```
@@ -235,15 +252,19 @@ fails.
 - `zena/`: the Zena package `registry`, imported as `registry:<library>`:
   - `app-view`: the App View's methods, and what it keeps beside the
     accounts: scopes, names in them, and private membership entries;
-  - `firestore`: the App View's stores in Firestore, beside the PDS's;
+  - `firestore`: the App View's stores in Firestore, beside the PDS's or
+    under a tenant of their own;
   - `handles`: the DNS records that make the App View's handles resolve, in
     memory, and a DNS-over-HTTPS resolver that answers from them;
   - `plc-directory`: the PLC directory a staging App View is, which records
     the DIDs it makes and reads the rest from the public directory;
   - `egress`: what the App View may reach when it reads another server
     for someone;
-  - `server`: the HTTP application: the PDS's routes (`pds:server`), the
-    registry methods (`xrpc/`), and the site (`web/`);
+  - `web-sessions`: the site's sessions and the signatures of the URLs its
+    pages make, under the App View's own secret;
+  - `server`: the HTTP application: the PDS's routes (`pds:server`) when the
+    PDS is in the same process, the registry methods (`xrpc/`), and the
+    site (`web/`);
   - `service`: the configuration, read from the environment, and the
     server it describes; `main` is the two together.
 - `zena/test/`: its tests.
