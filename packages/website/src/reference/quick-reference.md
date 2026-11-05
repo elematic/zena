@@ -436,8 +436,23 @@ while (lo < hi) invariant (0 <= lo && lo <= hi) {
 }
 ```
 
-A postcondition, `ensures (result >= 0)`, is checked by the compiler but
-cannot be compiled yet.
+An `ensures` clause is a postcondition, checked each time the function
+returns. `result` is the value being returned, and `old(e)` is the value
+`e` had when the function was entered.
+
+```zena
+function abs(x: i32): i32 ensures (result >= 0) {
+  return if (x >= 0) x else -x;
+}
+
+class Counter {
+  var count: i32 = 0;
+
+  add(by: i32): void ensures (this.count == old(this.count) + by) {
+    this.count += by;
+  }
+}
+```
 
 ### Multi-Value Returns
 

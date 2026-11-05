@@ -1,0 +1,34 @@
+// @mode: run
+// @stdout: 5 1 10 1 1
+// A constructor's `ensures` run after its body, whether the class is
+// constructed directly or as a superclass. It has no `result`; the new
+// object is `this`.
+
+class Account {
+  var balance: i32;
+  new(balance: i32) ensures (this.balance >= 0) : balance = balance {}
+}
+
+class Savings extends Account {
+  rate: i32;
+  new(balance: i32, rate: i32) ensures (this.rate > 0) : rate = rate, super(balance) {}
+}
+
+function violates(run: () => void): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+export function main(): void {
+  let direct = new Account(5).balance;
+  let directFails = violates(() => { new Account(-1); });
+  let derived = new Savings(10, 2).balance;
+  // The superclass's postcondition, then the subclass's.
+  let superFails = violates(() => { new Savings(-1, 2); });
+  let ownFails = violates(() => { new Savings(1, 0); });
+  console.log(`${direct} ${directFails} ${derived} ${superFails} ${ownFails}`);
+}

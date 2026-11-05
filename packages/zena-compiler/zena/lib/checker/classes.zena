@@ -3,7 +3,7 @@ import { growable } from 'zena:core';
 import { FlowUnreachable } from '../analysis/flow.zena';
 import { walkEnter } from '../visitor.zena';
 import {
-  AccessorDeclaration, BlockStatement, CaseClassParam, ClassDeclaration, Decorator, Expression, FieldDefinition, FieldInitializer, Identifier, MethodDefinition, MethodSignature, MixinDeclaration, Node, SealedVariant, SetterInfo, SourceLocation, SuperInitializer, TypeAnnotation, isBuiltinDecoratorName, isSymbolFieldDeclaration, syntacticMemberName
+  AccessorDeclaration, BlockStatement, CaseClassParam, ClassDeclaration, Decorator, Expression, FieldDefinition, FieldInitializer, Identifier, MethodDefinition, MethodSignature, MixinDeclaration, Node, SealedVariant, SetterInfo, SourceLocation, SuperInitializer, TypeAnnotation, hasEnsuresClause, isBuiltinDecoratorName, isSymbolFieldDeclaration, syntacticMemberName
 } from '../ast.zena';
 import {
   BooleanType, ClassType, DecoratedField, ErrorType, FieldInfo, FunctionDeclInfo, FunctionType, I32Type, InterfaceType, MethodInfo, MixinType, OwnershipHandle, ReceiverKind, Type, TypeParameterType, VoidType, instantiateClassType, isNullableType, isScopedType, mentionsTypeParams, ownershipHandleInner, ownershipHandleOf, requiredParameterCount, scopedFieldNames, scopedInner, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner, typeToString
@@ -17,7 +17,8 @@ import { checkInlineBindingUses, inlineParamsMatch } from './inline.zena';
 import { spliceDefaultArguments } from './calls.zena';
 import { BodyContext, CheckerContext } from './context.zena';
 import {
-  checkEnsuresClauses, checkRequiresClauses, rejectContracts, rejectThisInRequires
+  checkEnsuresClauses, checkRequiresClauses, rejectContracts, rejectEnsuresClauses,
+  rejectThisInRequires
 } from './contracts.zena';
 import { validateFunctionDecorators } from './declarations.zena';
 import { checkExpression } from './expressions.zena';
@@ -3168,8 +3169,17 @@ export function checkMethodBody(
     rejectContracts(ctx, md.contracts, 'a generator');
   } else {
     ensuresFlow = checkRequiresClauses(ctx, md.contracts, md.params);
+    body.hasEnsures = hasEnsuresClause(md.contracts);
     if (isCtor) {
       rejectThisInRequires(ctx, md.contracts);
+    }
+    if (md.isAsync) {
+      rejectEnsuresClauses(ctx, md.contracts, 'an async function');
+    }
+    // An extension class's constructor produces the underlying value
+    // through `super(...)` and has no body phase to check after.
+    if (isCtor && classType.isExtension) {
+      rejectEnsuresClauses(ctx, md.contracts, "an extension class's constructor");
     }
   }
 

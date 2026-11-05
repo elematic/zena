@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 28
+// `result` for the kinds of value a function returns whole: a record
+// whose callers read only its fields, a tuple, a nullable reference,
+// and a class instance behind an interface.
+
+type Point = {x: i32, y: i32};
+
+// Every caller reads only the fields, so without the postcondition the
+// function could return them as two values and never build the record.
+function shift(p: Point, by: i32): Point ensures (result.x == p.x + by && result.y == p.y) {
+  return {x: p.x + by, y: p.y};
+}
+
+function swap(pair: (i32, i32)): (i32, i32) ensures (result[0] == pair[1] && result[1] == pair[0]) {
+  return (pair[1], pair[0]);
+}
+
+function find(text: String, wanted: String): String | null
+  ensures (result == null || result.length == wanted.length)
+{
+  return if (text.contains(wanted)) wanted else null;
+}
+
+interface Shape {
+  area(): i32;
+}
+
+class Square implements Shape {
+  side: i32;
+  new(this.side);
+  area(): i32 { return this.side * this.side; }
+}
+
+function square(side: i32): Shape ensures (result.area() == side * side) {
+  return new Square(side);
+}
+
+export function main(): i32 {
+  let moved = shift({x: 1, y: 2}, 3);
+  var score = moved.x + moved.y; // 6
+  let (a, b) = swap((1, 2));
+  score += a * 10 + b; // +21
+  score += if (find('contract', 'tract') != null) 1 else 0; // +1
+  score += if (find('contract', 'zzz') == null) 0 else 5; // +0
+  score += square(3).area() - 9; // +0
+  return score;
+}

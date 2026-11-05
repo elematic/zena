@@ -45,7 +45,7 @@ import {
   MatchExpression, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
   MethodDefinition, Parameter, RecordLiteral, RecordPattern,
-  SpreadElement, SuperInitializer, Node,
+  SpreadElement, SuperInitializer, Node, hasEnsuresClause,
 } from '../../ast.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Symbol, SymbolId, noSymbolId } from '../../scope/symbol.zena';
@@ -1457,8 +1457,9 @@ function candidateFor(wasm: WasmModule, pass: ReachabilityAnalysis,
   }
   let roots = growable<Node>([fn.body as Node]);
   // A generator or async function returns its iterator or future: its
-  // `return` operands are not its result.
-  var result = if (fn.isAsync || fn.isGenerator) null
+  // `return` operands are not its result. A function with postconditions
+  // returns its result whole, for them to read as `result`.
+  var result = if (fn.isAsync || fn.isGenerator || hasEnsuresClause(fn.contracts)) null
       else resultDispatchOf(wasm, f, self);
   let returns = new Array<Expression>();
   if (result != null && !collectReturns(fn, model, returns)) {
@@ -1538,8 +1539,9 @@ function methodCandidateFor(wasm: WasmModule, pass: ReachabilityAnalysis,
     ft = info.type;
   }
   // As for functions, a generator or async method's result is its
-  // iterator or future.
-  var result = if (md.isAsync || md.isGenerator) null
+  // iterator or future, and a method with postconditions returns its
+  // result whole.
+  var result = if (md.isAsync || md.isGenerator || hasEnsuresClause(md.contracts)) null
       else resultDispatchOfType(wasm, f, ft);
   let returns = new Array<Expression>();
   if (result != null && !collectReturns(md, f.model, returns)) {

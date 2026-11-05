@@ -1,0 +1,66 @@
+// @mode: run
+// @result: 36
+// `ensures` on methods, closures, generic classes and constructors.
+
+class Box<T> {
+  var value: T;
+  var writes: i32 = 0;
+  new(this.value);
+
+  swap(value: T): T ensures (this.writes == old(this.writes) + 1) {
+    let before = this.value;
+    this.value = value;
+    this.writes += 1;
+    return before;
+  }
+}
+
+class Account {
+  var balance: i32;
+
+  // A constructor has no `result`; the new object is `this`.
+  new(balance: i32) ensures (this.balance >= 0) : balance = balance {}
+
+  static empty(): Account ensures (result.balance == 0) {
+    return new Account(0);
+  }
+}
+
+class Savings extends Account {
+  rate: i32;
+  new(balance: i32, rate: i32) ensures (this.rate > 0) : rate = rate, super(balance) {}
+}
+
+function violates(run: () => void): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+function makeAbove(floor: i32): (n: i32) => i32 {
+  // The postcondition reads a variable of the enclosing function.
+  return (n: i32): i32 ensures (result > floor) => n;
+}
+
+export function main(): i32 {
+  let numbers = new Box<i32>(1);
+  var score = numbers.swap(2) + numbers.value; // 3
+  let names = new Box<String>('a');
+  score += names.swap('bc').length + names.value.length + names.writes; // +4
+
+  score += Account.empty().balance; // +0
+  score += new Account(5).balance; // +5
+  score += violates(() => { new Account(-1); }); // +1
+  score += new Savings(10, 2).balance; // +10
+  // The superclass's postcondition, then the subclass's.
+  score += violates(() => { new Savings(-1, 2); }); // +1
+  score += violates(() => { new Savings(1, 0); }); // +1
+
+  let above = makeAbove(10);
+  score += above(11); // +11
+  score += violates(() => { above(10); }); // +1
+  return score - 1;
+}

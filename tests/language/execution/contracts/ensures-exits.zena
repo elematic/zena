@@ -1,0 +1,62 @@
+// @mode: run
+// @result: 123
+// The ways out of a function that a postcondition has to see, and the
+// one it does not: an exception leaves without checking it.
+
+import { Error } from 'zena:core';
+
+var cleanups = 0;
+
+// A return from inside a `try` whose `finally` runs first.
+function throughFinally(n: i32): i32 ensures (result > 0 && cleanups > old(cleanups)) {
+  try {
+    return n;
+  } finally {
+    cleanups += 1;
+  }
+}
+
+// A return from a `catch` handler.
+function fromHandler(n: i32): i32 ensures (result == 0 - n) {
+  try {
+    if (n > 0) {
+      throw new Error('no');
+    }
+    return 0 - n;
+  } catch (e) {
+    return 0 - n;
+  }
+}
+
+// A thrown error is not a return: the postcondition would fail here.
+function throws(): i32 ensures (false) {
+  throw new Error('thrown');
+}
+
+// A postcondition's failure is not caught by the function's own handler.
+function ownHandler(): i32 ensures (result > 0) {
+  try {
+    return 0;
+  } catch (e) {
+    return 1;
+  }
+}
+
+function violates(run: () => i32): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+export function main(): i32 {
+  var score = throughFinally(100); // 100
+  score += violates(() => throughFinally(0)); // +1
+  score += fromHandler(5) + 5; // +0
+  score += violates(() => throws()) * 10; // +20: an Error, not a ContractError
+  score += violates(() => ownHandler()); // +1
+  score += cleanups - 1; // +1
+  return score;
+}

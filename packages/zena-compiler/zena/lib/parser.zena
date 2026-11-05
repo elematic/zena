@@ -188,8 +188,6 @@ export final class Parser {
   var #extraGreaters: i32;
   var #destructParamCounter: i32;
   var #combinedTypeAnnotation: RecordTypeAnnotation | null;
-  /** Every contract clause parsed so far, for `Module.contractClauses`. */
-  var #contractClauses: GrowableArray<ContractClause> | null = null;
   #errors: GrowableArray<Diagnostic>;
   var #completeness: ParseCompleteness;
   #recover: boolean;
@@ -253,9 +251,7 @@ export final class Parser {
       body.push(stmt);
     }
 
-    let mod = new Module(body, this.#path, this.#source, this.#comments, null);
-    mod.contractClauses = this.#contractClauses;
-    return mod;
+    return new Module(body, this.#path, this.#source, this.#comments, null);
   }
   
   // ==========================================================================
@@ -1013,14 +1009,7 @@ export final class Parser {
     this.#consume(TokenType.RParen, `Expected ')' after the '${keyword}' condition`);
     let loc = this.#makeLocation(startToken);
     let text = this.#source.sliceBytes(loc.start, loc.end);
-    let clause = new ContractClause(kind, condition, text, loc);
-    var clauses = this.#contractClauses;
-    if (clauses == null) {
-      clauses = new Array<ContractClause>(4);
-      this.#contractClauses = clauses;
-    }
-    clauses.push(clause);
-    return clause;
+    return new ContractClause(kind, condition, text, loc);
   }
 
   #parseReturnStatement(startToken: Token, isTail: boolean): ReturnStatement {

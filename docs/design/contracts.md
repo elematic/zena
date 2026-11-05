@@ -1,6 +1,7 @@
 # Contracts
 
-Status: **`requires` and `invariant` run; `ensures` is checked and not yet compiled**
+Status: **Implemented**, with the gaps listed under
+[Where clauses are not supported yet](#where-clauses-are-not-supported-yet)
 
 A contract is a condition written on a function or a loop that the
 program is expected to keep: a precondition (`requires`), a
@@ -21,12 +22,11 @@ Contracts are the first step of the plan in
 checked when the program runs, in a form a static verifier can later
 prove.
 
-The parser accepts the syntax in this document and the checker applies
-the rules under [Checking](#checking). `requires` and `invariant`
-clauses are compiled to the checks under
-[Running a clause](#running-a-clause). Nothing runs an `ensures` clause
-yet, so code generation refuses a program that has one: a program
-cannot contain a contract that is silently ignored.
+The parser accepts the syntax in this document, the checker applies the
+rules under [Checking](#checking), and every clause the checker accepts
+is compiled to the check under [Running a clause](#running-a-clause).
+Where a clause cannot be compiled yet, the checker reports it: a
+program cannot contain a contract that is silently ignored.
 
 ## Syntax
 
@@ -235,9 +235,25 @@ The condition's own tests narrow as usual:
 
 ### Where clauses are not supported yet
 
-The checker reports clauses on a generator, and on a method without a
-body (an interface method, or an `abstract` or `declare` method). What
-each would mean is under [Open questions](#open-questions).
+The checker reports each of these:
+
+- Any clause on a generator.
+- Any clause on a method without a body: an interface method, or an
+  `abstract` or `declare` method.
+- An `ensures` clause on an `async` function. Its `requires` clauses
+  run.
+- An `ensures` clause on a function whose return type is `inline`.
+  Such a result is returned as several values, and `result` has no one
+  value to be.
+- An `ensures` clause on an extension class's constructor.
+- `old` in a constructor's `ensures` condition.
+
+What the first three would mean is under
+[Open questions](#open-questions).
+
+A function with `ensures` clauses cannot `tail return`. That is a rule
+and not a gap: a tail call discards the frame the postconditions would
+run in.
 
 ## Running a clause
 
@@ -292,6 +308,40 @@ condition: before the first iteration, after each one, and after a
 has three compiled forms, over a range, over an array by index, and
 through an iterator, and each checks at its header, before it takes the
 next element.
+
+### Postconditions
+
+A function's `ensures` clauses run in order each time it returns, after
+the returned value is computed and after any `finally` block the return
+passes through. A thrown error is not a return, so
+the clauses do not run for it. A clause that fails throws from outside
+the function's own `try` blocks, so the function's handlers do not
+catch it.
+
+A function returns from many places: `return` statements, the value at
+the end of a block body, an arrow's expression body, and the replay of
+a return that a `finally` held back. All of them emit their return
+through the ZIR builder, so the builder is where they are gathered:
+while a function with `ensures` clauses is lowered, a return becomes a
+branch to one block whose parameters are the returned values
+(`IrBuilder.redirectReturns`). After the body, that block gets the
+checks, with `result` bound to its parameter, and then the return
+itself. A function that never returns normally gets no block.
+
+`old(e)` is evaluated on entry, after the preconditions. The entry
+block comes before every other block on any path, so the value is
+simply kept and read at the return. For a reference this keeps the
+object, whose fields the body may have changed by then: `old(this.items)`
+is the same array, and `old(this.items.length)` is the earlier length.
+
+- **Constructors.** A constructor's `ensures` run after its body, with
+  the object as `this`. When the class is a superclass, they run after
+  its body and before the subclass's. A constructor with an empty body
+  and postconditions is compiled with a body phase to hold them.
+- **Results kept whole.** One optimization returns a record's fields as
+  separate values when every caller only reads the fields. A function
+  with postconditions is left out of it, because `result` is the
+  record.
 
 ## Kinds of clause
 
@@ -399,12 +449,6 @@ loop optimizer uses.
   caller can catch and a test can assert on, and whose message names
   the clause. A trap would be cheaper and could not be caught. Changing
   it means changing the body of `$contractFailed`.
-- **Compiling `ensures`.** A postcondition runs at every return, with
-  `result` bound to the returned value and each `old(e)` evaluated on
-  entry. A function returns from about fifteen places in the lowering
-  (statements, value-block tails, finally replays, multi-value and
-  exploded results), and a `tail return` leaves nothing to check
-  afterwards.
 - **Inheritance.** A method that overrides another, or implements an
   interface method, takes on its contracts. Whether it may add
   `requires` clauses of its own, which would break callers that hold
@@ -414,12 +458,14 @@ loop optimizer uses.
   it has no single result. A `requires` clause could run at the call or
   at the first step.
 - **`ensures` on `async` functions.** It holds when the future
-  completes, with `result` the value it completes with.
+  completes, with `result` the value it completes with. The body is
+  split into a state machine after lowering, and the redirected return
+  and the values kept for `old` have not been taken through that
+  split.
 - **Calls with effects in a condition.** Assignments and `await` are
   rejected. A function the condition calls can still change state.
 - **Narrowing from `invariant`.** An invariant that held at the test
   could narrow in the loop's body until the body assigns what it
   names. It does not today.
-- **Capturing `old`.** `old(e)` has to evaluate `e` on entry and keep
-  the value. For a reference this keeps the object, whose fields the
-  body can still change.
+- **A deep `old`.** `old(e)` keeps a reference, so a postcondition
+  about the earlier contents of a collection has to copy them itself.

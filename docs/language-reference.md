@@ -1676,16 +1676,44 @@ variable a `for` loop declares, and not the variable of a `for`-in loop.
 
 #### Postconditions: `ensures`
 
-An `ensures` clause is written beside `requires`. Its condition can also
-name `result`, the value the function returned, and `old(e)`, the value
-`e` had when the function was entered.
+An `ensures` clause is written beside `requires` and checked each time
+the function returns. Its condition can also name `result`, the value
+being returned, and `old(e)`, the value `e` had when the function was
+entered.
 
 ```zena
-function abs(x: i32): i32 ensures (result >= 0) { ... }
+function abs(x: i32): i32 ensures (result >= 0) {
+  return if (x >= 0) x else -x;
+}
+
+class Counter {
+  var count: i32 = 0;
+
+  add(by: i32): void ensures (this.count == old(this.count) + by) {
+    this.count += by;
+  }
+}
 ```
 
-The compiler checks `ensures` conditions and cannot compile them yet: a
-program that has one fails to build.
+`result` has the function's return type. A function that returns
+nothing has no `result`, and neither has a constructor, where the new
+object is `this`. A function with an `ensures` clause cannot have a
+parameter named `result`.
+
+`old(e)` keeps a reference: `old(this.items)` is the same array the
+body went on to change, and `old(this.items.length)` is the earlier
+length.
+
+A postcondition is checked on every way of returning, and after any
+`finally` block the return passes through. It is not checked when the
+function throws. It knows what the function knew on entry, plus what
+its `requires` clauses narrowed on parameters; what the body narrowed on
+one path does not hold on the others.
+
+A function with `ensures` clauses cannot `tail return`, since the call
+would discard the frame the clauses run in. `ensures` is not supported
+yet on an `async` function or on a function whose return type is
+`inline`.
 
 `requires`, `ensures` and `invariant` are contextual keywords and stay
 available as identifiers. See `docs/design/contracts.md`.

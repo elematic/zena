@@ -4,7 +4,7 @@ import { walkEnter } from '../visitor.zena';
 import {
   BlockStatement, Expression, ExpressionStatement, FunctionDeclaration,
   FunctionExpression, Identifier, Node, SourceLocation, TypeAnnotation,
-  VariableDeclaration
+  VariableDeclaration, hasEnsuresClause
 } from '../ast.zena';
 import {
   ClassType, ErrorType, FunctionDeclInfo, FunctionType, Type, TypeParameterType, UnionType as UnionT, VoidType, isScopedType, scopedInner, typeContainsSecondClass, typeToString, unwrapAliases
@@ -15,7 +15,9 @@ import { adaptToExpected } from './adaptation.zena';
 import { checkInlineParameterType, isInlineType, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
 import { checkInlineBindingUses } from './inline.zena';
 import { BodyContext, CheckerContext } from './context.zena';
-import { checkEnsuresClauses, checkRequiresClauses, rejectContracts } from './contracts.zena';
+import {
+  checkEnsuresClauses, checkRequiresClauses, rejectContracts, rejectEnsuresClauses
+} from './contracts.zena';
 import { checkExpression } from './expressions.zena';
 
 import { prescanPendingFunctions } from './module.zena';
@@ -350,6 +352,12 @@ export function checkFunctionExpression(
     rejectContracts(ctx, fe.contracts, 'a generator');
   } else {
     ensuresFlow = checkRequiresClauses(ctx, fe.contracts, params);
+    bodyCtx.hasEnsures = hasEnsuresClause(fe.contracts);
+    // An async function's postconditions would run when its future
+    // completes, which the split of its body does not arrange yet.
+    if (isAsync) {
+      rejectEnsuresClauses(ctx, fe.contracts, 'an async function');
+    }
   }
 
   // Check the body.
