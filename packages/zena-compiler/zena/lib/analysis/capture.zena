@@ -226,8 +226,10 @@ export function analyzeCaptures(func: FunctionExpression, model: SemanticModel):
   let info = new CaptureInfo();
   let seen = new Set<SymbolId>();
 
-  // Traverse the body and collect referenced variables that are declared outside
-  walkEnter(func.body, (n) => {
+  // Collect the referenced variables that are declared outside, from
+  // the body and from the conditions of the function's contract
+  // clauses, which run in its frame too.
+  let visit = (n: Node) => {
     match (n) {
       case Identifier as ident: {
         let sym = model.resolve(ident);
@@ -263,7 +265,14 @@ export function analyzeCaptures(func: FunctionExpression, model: SemanticModel):
       }
       case _: {}
     }
-  });
+  };
+  walkEnter(func.body, visit);
+  let {contracts} = func;
+  if (contracts != null) {
+    for (let clause in contracts) {
+      walkEnter(clause, visit);
+    }
+  }
 
   return info;
 }

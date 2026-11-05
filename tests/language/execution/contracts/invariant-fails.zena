@@ -1,0 +1,26 @@
+// @mode: run
+// @stdout: 3 invariant (total <= 3) does not hold
+// A loop whose invariant stops holding throws at the next test, with
+// the iterations before it done.
+
+gen function upTo(n: i32): Iterator<i32> {
+  var i = 1;
+  while (i <= n) {
+    yield i;
+    i += 1;
+  }
+}
+
+export function main(): void {
+  var total = 0;
+  var iterations = 0;
+  try {
+    // 1, then 1 + 2 = 3, then 3 + 3 = 6 breaks it.
+    for (let item in upTo(10)) invariant (total <= 3) {
+      total += item;
+      iterations += 1;
+    }
+  } catch (e) {
+    console.log(`${iterations} ${e.message}`);
+  }
+}

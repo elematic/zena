@@ -1,0 +1,41 @@
+// @mode: run
+// @result: 7
+// What a `requires` condition narrows is true in the body at run time:
+// a call that would break it never gets there.
+
+class Animal {
+  name: String = '';
+}
+
+class Cat extends Animal {
+  meow(): i32 { return 1; }
+}
+
+class Dog extends Animal {
+  bark(): i32 { return 2; }
+}
+
+function meow(a: Animal): i32 requires (a is Cat) {
+  return a.meow();
+}
+
+function length(text: String | null): i32 requires (text != null) {
+  return text.length;
+}
+
+function violates(run: () => i32): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+export function main(): i32 {
+  var score = meow(new Cat()); // 1
+  score += violates(() => meow(new Dog())); // +1
+  score += length('four'); // +4
+  score += violates(() => length(null)); // +1
+  return score;
+}

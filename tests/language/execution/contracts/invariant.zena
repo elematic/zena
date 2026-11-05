@@ -1,0 +1,53 @@
+// @mode: run
+// @result: 4567
+// A loop's `invariant` clauses are checked each time the loop is about
+// to test whether to run again: before the first iteration, after each
+// one, and after a `continue`.
+
+var checks = 0;
+
+function note(holds: boolean): boolean {
+  checks += 1;
+  return holds;
+}
+
+function whileLoop(): i32 {
+  checks = 0;
+  var i = 0;
+  while (i < 3) invariant (note(i <= 3)) {
+    i += 1;
+  }
+  return checks; // tests at i = 0, 1, 2, 3
+}
+
+function forLoop(): i32 {
+  checks = 0;
+  var skipped = 0;
+  for (var i = 0; i < 4; i += 1) invariant (note(i >= 0)) {
+    if (i == 1) { continue; }
+    skipped += 1;
+  }
+  return checks; // 5
+}
+
+function overArray(): i32 {
+  checks = 0;
+  var total = 0;
+  for (let item in [1, 2, 3, 4, 5]) invariant (note(total >= 0)) {
+    total += item;
+  }
+  return checks; // 6
+}
+
+function overRange(): i32 {
+  checks = 0;
+  var total = 0;
+  for (let i in 0..6) invariant (note(total >= 0)) {
+    total += i;
+  }
+  return checks; // 7
+}
+
+export function main(): i32 {
+  return whileLoop() * 1000 + forLoop() * 100 + overArray() * 10 + overRange();
+}

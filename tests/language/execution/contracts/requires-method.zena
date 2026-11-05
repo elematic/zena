@@ -1,0 +1,56 @@
+// @mode: run
+// @result: 23
+// `requires` on methods: an instance method reading `this`, a static
+// method, and a method of a generic class.
+
+class Stack {
+  var size: i32;
+  new(this.size);
+
+  pop(): i32 requires (this.size > 0) {
+    this.size -= 1;
+    return this.size;
+  }
+
+  static sized(size: i32): Stack requires (size >= 0) {
+    return new Stack(size);
+  }
+}
+
+class Slot<T> {
+  var value: T;
+  var writes: i32 = 0;
+  new(this.value);
+
+  set(value: T, token: i32): void requires (token == this.writes) {
+    this.value = value;
+    this.writes += 1;
+  }
+}
+
+function violates(run: () => void): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+export function main(): i32 {
+  let stack = Stack.sized(2);
+  var score = stack.pop() * 10; // 10
+  score += stack.pop(); // +0
+  score += violates(() => { stack.pop(); }); // +1
+  score += violates(() => { Stack.sized(-1); }); // +1
+
+  let numbers = new Slot<i32>(0);
+  numbers.set(7, 0);
+  score += numbers.value; // +7
+  score += violates(() => { numbers.set(8, 0); }); // +1
+  let names = new Slot<String>('a');
+  names.set('b', 0);
+  score += violates(() => { names.set('c', 0); }); // +1
+  score += names.value.length + numbers.writes; // +2
+  return score;
+}

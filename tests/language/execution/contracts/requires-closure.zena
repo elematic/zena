@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 12
+// A closure's `requires` conditions run in its frame, so a variable
+// they name from the enclosing function is captured even when the body
+// does not mention it.
+
+function violates(run: () => i32): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+function makeBelow(limit: i32): (n: i32) => i32 {
+  return (n: i32) requires (n < limit) => n;
+}
+
+export function main(): i32 {
+  let below = makeBelow(10);
+  var score = below(9); // 9
+  score += violates(() => below(10)); // +1
+
+  // A captured variable the enclosing function goes on assigning.
+  var floor = 0;
+  let above = (n: i32) requires (n > floor) => n;
+  score += above(1); // +1
+  floor = 5;
+  score += violates(() => above(1)); // +1
+  return score;
+}

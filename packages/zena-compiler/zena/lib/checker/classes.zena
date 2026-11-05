@@ -16,7 +16,9 @@ import { checkInlineParameterType, isInlineType, resolveTypeAnnotation, resolveT
 import { checkInlineBindingUses, inlineParamsMatch } from './inline.zena';
 import { spliceDefaultArguments } from './calls.zena';
 import { BodyContext, CheckerContext } from './context.zena';
-import { checkEnsuresClauses, checkRequiresClauses, rejectContracts } from './contracts.zena';
+import {
+  checkEnsuresClauses, checkRequiresClauses, rejectContracts, rejectThisInRequires
+} from './contracts.zena';
 import { validateFunctionDecorators } from './declarations.zena';
 import { checkExpression } from './expressions.zena';
 import {
@@ -3166,6 +3168,9 @@ export function checkMethodBody(
     rejectContracts(ctx, md.contracts, 'a generator');
   } else {
     ensuresFlow = checkRequiresClauses(ctx, md.contracts, md.params);
+    if (isCtor) {
+      rejectThisInRequires(ctx, md.contracts);
+    }
   }
 
   if (isCtor) {

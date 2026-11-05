@@ -1,0 +1,51 @@
+/**
+ * Contract clauses (docs/design/contracts.md): the check a `requires`
+ * or `invariant` clause runs.
+ *
+ * A check evaluates the clause's condition and, when it is false, calls
+ * the standard library's `$contractFailed` with a message naming the
+ * clause. That function does not return, so what a violated contract
+ * does is the library's to decide, and a check costs the function it
+ * sits in one branch and one call.
+ */
+import { ContractClause, StringLiteral, contractFailureMessage } from '../../ast.zena';
+import { IrRefFunc } from './ir.zena';
+import { lowerExpr } from './lowering.zena';
+import { LoweringContext, noValues, oneValue } from './lowering-context.zena';
+import { lowerStringLiteral } from './templates.zena';
+
+/** Emits the check for one clause at the current position. */
+export function lowerContractClause(cx: LoweringContext, clause: ContractClause): void {
+  if (!cx.reachable) { return; }
+  let condition = lowerExpr(cx, clause.condition, null);
+  if (!cx.reachable) { return; }
+
+  let holds = cx.b.newBlock();
+  let fails = cx.b.newBlock();
+  cx.b.brIf(condition, holds, noValues(), fails, noValues());
+
+  cx.b.switchTo(fails);
+  // Reachability roots the function and registers the message for
+  // every clause it walks (`noteContractClause`).
+  let failed = cx.wasm.getStdlibFunc('core', '$contractFailed');
+  if (failed == null) {
+    cx.fail('contract clause: $contractFailed was not reached');
+  }
+  let message = lowerStringLiteral(cx,
+      new StringLiteral(contractFailureMessage(clause), clause.loc));
+  cx.b.callFunc(cx.b.addRef(new IrRefFunc(failed)), oneValue(message), null);
+  cx.b.unreachable();
+
+  cx.b.switchTo(holds);
+}
+
+/** Emits the checks for a function's or a loop's clauses, in source order. */
+export function lowerContractClauses(
+  cx: LoweringContext,
+  clauses: GrowableArray<ContractClause> | null
+): void {
+  if (clauses == null) { return; }
+  for (let clause in clauses) {
+    lowerContractClause(cx, clause);
+  }
+}

@@ -34,6 +34,7 @@ import {
   stepInlineValue, scopedFieldTypesAt, getCellStruct,
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
+import { lowerContractClauses } from './contracts.zena';
 import { emitGeneratorDispose } from './generators.zena';
 import { boxInline, lowerIntoSlots, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
@@ -3303,6 +3304,8 @@ export function lowerWhile(cx: LoweringContext, stmt: WhileStatement): void {
 
   cx.b.switchTo(header);
   cx.applyParams(carried, headerParams);
+  // The loop's invariants hold each time it is about to test.
+  lowerContractClauses(cx, stmt.invariants);
   // while-let re-evaluates the pattern source and rebinds its
   // elements every iteration, exactly like the expression form
   // re-evaluates the condition.
@@ -3418,6 +3421,7 @@ export function lowerFor(cx: LoweringContext, stmt: ForStatement): void {
 
   cx.b.switchTo(header);
   cx.applyParams(carried, headerParams);
+  lowerContractClauses(cx, stmt.invariants);
   let cond = if (stmt.test != null) {
     lowerExpr(cx, stmt.test as Expression, null)
   } else {
@@ -3940,6 +3944,7 @@ function lowerForInIteratorLoop(cx: LoweringContext, stmt: ForInStatement,
 
   cx.b.switchTo(header);
   cx.applyParams(carried, headerParams);
+  lowerContractClauses(cx, stmt.invariants);
   let results = cx.slotCallMulti(iter, 'next');
   // A zero-width element drops its `next()` value lane. Two protocols:
   // the boolean two-arm form `inline (true, T) | inline (false, _)` has
@@ -4152,6 +4157,7 @@ function lowerForInRange(cx: LoweringContext, stmt: ForInStatement,
 
   cx.b.switchTo(header);
   cx.applyParams(carried, headerParams);
+  lowerContractClauses(cx, stmt.invariants);
   let exitB = cx.b.newBlock();
   let exitParams = cx.addParams(exitB, carried);
   if (bounded) {
@@ -4367,6 +4373,7 @@ export function lowerForIn(cx: LoweringContext, stmt: ForInStatement): void {
 
   cx.b.switchTo(header);
   cx.applyParams(carried, headerParams);
+  lowerContractClauses(cx, stmt.invariants);
   let done = cx.b.binary(IrOp.i32_ge_s, new ValTypeI32(), idxParam, len);
 
   let bodyB = cx.b.newBlock();

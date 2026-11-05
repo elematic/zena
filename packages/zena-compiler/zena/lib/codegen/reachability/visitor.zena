@@ -15,7 +15,7 @@ import {
   isScopedType, scopedInner, internFunctionType, forInLowersToIndexLoop,
   isIterableRangeClass } from '../../types.zena';
 import {
-  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral,
+  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral,
 } from '../../ast.zena';
 import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo, TypeTestSite,
@@ -1035,6 +1035,17 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     this.pass.notePendingMemberReach(getClassMethodKey(getClassKey(ct), "hashCode"));
   }
 
+  /**
+   * What a contract clause's check needs when its condition is false
+   * (`lowerContractClause`): the message, and the standard library
+   * function the check calls with it. Both body walks come here, since
+   * the checker's dependency records hold neither.
+   */
+  noteContractClause(clause: ContractClause): void {
+    this.noteStringLiteral(contractFailureMessage(clause));
+    this.queueStdlibFunction('core', '$contractFailed');
+  }
+
   registerLiterals(root: Node): void {
     walkEnter(root, (n) => {
       if (n is StringLiteral) {
@@ -1104,6 +1115,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is TemplateLiteral) {
         this.registerTemplateLiteral(n, model, resolveType);
+      }
+      if (n is ContractClause) {
+        this.noteContractClause(n);
       }
       // A `for await`'s Pending arm is a node-level fact too: the
       // records say a body iterates, and nothing about what future
@@ -2722,6 +2736,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.#nodes += 1;
       if (n is ThrowExpression || n is TryExpression) {
         this.pass.noteExceptionInfra(model);
+      }
+      if (n is ContractClause) {
+        this.noteContractClause(n);
       }
       if (n is BinaryExpression) {
         this.noteEqualityUse(n, model, resolveType);

@@ -401,6 +401,44 @@ function's declared return type. `tail return` is rejected in an `async`
 function, a generator or a constructor, and inside a `try` or while a
 `using` binding is live — in each case the frame still has work to do.
 
+### Contracts
+
+A `requires` clause is a precondition, checked on every call before the
+body runs. It follows the parameters and return type.
+
+```zena
+function withdraw(balance: i32, amount: i32): i32
+  requires (amount > 0)
+  requires (balance >= amount)
+{
+  return balance - amount;
+}
+
+let half = (n: i32) requires (n % 2 == 0) => n >> 1;
+
+withdraw(10, 0);  // throws ContractError: requires (amount > 0) does not hold
+```
+
+What the condition narrows holds in the body:
+
+```zena
+function length(text: String | null): i32 requires (text != null) {
+  return text.length;  // text is a String here
+}
+```
+
+An `invariant` clause on a loop is checked each time the loop is about
+to test whether to run again. The loop's body must be a block.
+
+```zena
+while (lo < hi) invariant (0 <= lo && lo <= hi) {
+  // ...
+}
+```
+
+A postcondition, `ensures (result >= 0)`, is checked by the compiler but
+cannot be compiled yet.
+
 ### Multi-Value Returns
 
 Functions can return multiple values using unboxed tuples. Unlike regular tuples

@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 8
+// An `async` function's `requires` run when it is called, in the part
+// of the body before its first `await`.
+
+let double = async (n: i32): Future<i32> requires (n >= 0) => n * 2;
+
+let twice = async (n: i32): Future<i32> requires (n < 100) => {
+  let once = await double(n);
+  return await double(once);
+};
+
+export let main = async (): Future<i32> => {
+  var score = await twice(1); // 4
+  score += await double(1); // +2
+  try {
+    await double(-1);
+  } catch (e) {
+    if (e is ContractError) { score += 1; } // +1
+  }
+  try {
+    await twice(100);
+  } catch (e) {
+    if (e is ContractError) { score += 1; } // +1
+  }
+  return score;
+};
