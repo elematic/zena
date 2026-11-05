@@ -1,0 +1,84 @@
+// @mode: check
+
+// A precondition is checked on every call, so what its condition
+// narrows when true holds in the clauses after it and in the body, as
+// the test of an `if` does in its consequent.
+
+class Animal {
+  name: String = '';
+}
+
+class Cat extends Animal {
+  meow(): i32 { return 1; }
+  purrs(): boolean { return true; }
+}
+
+class Dog extends Animal {
+  bark(): i32 { return 2; }
+}
+
+function laterClause(a: Animal): i32 requires (a is Cat) requires (a.meow() > 0) {
+  return 1;
+}
+
+function body(a: Animal): i32 requires (a is Cat) {
+  return a.meow();
+}
+
+function union(a: Animal): i32 requires (a is Cat || a is Dog) {
+  let pet: Cat | Dog = a;
+  return 1;
+}
+
+function nullable(text: String | null): i32 requires (text != null) {
+  return text.length;
+}
+
+let arrow = (text: String | null) requires (text != null) => text.length;
+
+// A clause does not narrow the ones before it.
+function earlierClause(a: Animal): i32
+  requires (a.purrs()) // @error: Property 'purrs' does not exist on type 'Animal'.
+  requires (a is Cat)
+{
+  return 1;
+}
+
+// A parameter cannot be reassigned, so its narrowing still holds when
+// the function returns, and a postcondition sees it.
+function postcondition(a: Animal): i32 requires (a is Cat) ensures (result == a.meow()) {
+  return a.meow();
+}
+
+// An `ensures` condition narrows nothing outside itself.
+function fromEnsures(text: String | null): i32 ensures (text != null) {
+  return text.length; // @error: Object may be null when accessing 'length'.
+}
+
+class Holder {
+  label: String | null;
+  var cache: String | null = null;
+  new(this.label);
+
+  // A field that cannot be assigned narrows, as it does under an `if`.
+  labelSize(): i32 requires (this.label != null) {
+    return this.label.length;
+  }
+
+  // A `var` field does not, under either.
+  cacheSize(): i32 requires (this.cache != null) {
+    return this.cache.length; // @error: Object may be null when accessing 'length'.
+  }
+
+  // A postcondition sees the narrowings on parameters only.
+  labelSizeAfter(): i32
+    requires (this.label != null)
+    ensures (result == this.label.length) // @error: Object may be null when accessing 'length'.
+  {
+    return this.label.length;
+  }
+
+  pet(a: Animal): i32 requires (a is Dog) {
+    return a.bark();
+  }
+}

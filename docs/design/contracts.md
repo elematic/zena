@@ -169,13 +169,53 @@ directly in an `ensures` condition, where it hides any function named
 name, because `e` would be evaluated on entry, before that function's
 parameters exist. `e` cannot name `result` or contain another `old`.
 
+### What a precondition narrows
+
+A precondition is checked on every call, and a call that fails it does
+not reach the body. So what its condition narrows when it is true holds
+in the clauses after it and in the body, exactly as the test of an `if`
+narrows in its consequent:
+
+```zena
+function adopt(a: Animal): i32
+  requires (a is Cat || a is Dog)   // a is a Cat | Dog from here on
+{
+  let pet: Cat | Dog = a;
+  ...
+}
+
+function purr(a: Animal): i32
+  requires (a is Cat)
+  requires (a.purrs())              // a later clause sees it too
+{
+  return a.meow();
+}
+
+let size = (text: String | null) requires (text != null) => text.length;
+```
+
+The condition engine is the one `if` uses, so the same things narrow: a
+binding, and a member path through fields that cannot be assigned. A
+`var` field does not narrow under either.
+
+This depends on the clause always running. A clause that a build can
+leave out (see [Kinds of clause](#kinds-of-clause)) must not narrow.
+
 ### What a postcondition knows
 
 The checker narrows types along the paths of a body: after
 `if (text == null) { return 0; }`, `text` is a `String`. A
 postcondition holds on every path out of the body, including the one
 that returned while `text` was null, so its condition is checked with
-what was known on entry and nothing a path narrowed:
+what was known on entry and nothing a path of the body narrowed.
+
+What was known on entry includes what the preconditions narrowed on
+parameters: a parameter cannot be reassigned, so after
+`requires (a is Cat)`, `ensures (result == a.meow())` is accepted. A
+narrowing on a member path is left out, because the path can start at a
+variable the body assigns.
+
+Without a precondition, nothing is narrowed:
 
 ```zena
 function length(text: String | null): i32
@@ -315,9 +355,9 @@ These are decided when the lowering is written.
   `await`.
 - **Calls with effects in a condition.** Assignments and `await` are
   rejected. A function the condition calls can still change state.
-- **Narrowing from `requires`.** While an unmarked clause always runs,
-  `requires (text != null)` could narrow `text` in the body. It does
-  not today.
+- **Narrowing from `invariant`.** An invariant that held at the test
+  could narrow in the loop's body until the body assigns what it
+  names. It does not today.
 - **Capturing `old`.** `old(e)` has to evaluate `e` on entry and keep
   the value. For a reference this keeps the object, whose fields the
   body can still change.

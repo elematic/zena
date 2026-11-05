@@ -3161,12 +3161,12 @@ export function checkMethodBody(
 
   // As for a function (checkFunctionExpression). A constructor's
   // `requires` come ahead of its prologue, which they guard.
+  var ensuresFlow = ctx.currentFlow;
   if (md.isGenerator) {
     rejectContracts(ctx, md.contracts, 'a generator');
   } else {
-    checkRequiresClauses(ctx, md.contracts);
+    ensuresFlow = checkRequiresClauses(ctx, md.contracts, md.params);
   }
-  let bodyEntryFlow = ctx.currentFlow;
 
   if (isCtor) {
     // The constructor prologue evaluates before the body: field
@@ -3364,7 +3364,7 @@ export function checkMethodBody(
   // object is `this`.
   if (!md.isGenerator) {
     let resultType: Type = if (isCtor) new VoidType() else (body.returnType ?? new VoidType());
-    checkEnsuresClauses(ctx, md.contracts, md.params, resultType, bodyEntryFlow);
+    checkEnsuresClauses(ctx, md.contracts, md.params, resultType, ensuresFlow);
   }
 
   let methodBody = md.body;
