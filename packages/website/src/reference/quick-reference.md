@@ -466,6 +466,12 @@ function search(items: FixedArray<i32>, target: i32): i32
 }
 ```
 
+A `debug requires` clause does not narrow types in the body because ordinary
+builds run without it. Clauses are not yet supported on `gen` functions or
+bodyless (`interface`, `abstract`, `declare`) methods, and `ensures` is not yet
+supported on `async` functions or `inline` returns. See
+[Contracts](/reference/contracts/).
+
 ### Multi-Value Returns
 
 Functions can return multiple values using unboxed tuples. Unlike regular tuples

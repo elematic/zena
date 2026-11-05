@@ -58,6 +58,11 @@ code checkable:
   compile errors.
 - **Exhaustive `match`.** Adding a case to a sealed hierarchy breaks every
   incomplete match, so the compiler produces the to-do list.
+- **Runtime and debug contracts (`requires`, `ensures`, `invariant`, `debug`).**
+  Domain assumptions live on the signature instead of in prose comments: a
+  reviewer can check what a function promises while runtime checks (including
+  expensive `debug` clauses active under `zena test` and `-g`) catch semantic
+  bugs in agent-generated bodies with an explicit `ContractError`.
 - **One obvious way to do things.** Ambiguity a person resolves from context
   becomes a wrong guess and a wasted iteration.
 - **A conventional surface syntax.** Models write usable Zena from a short
@@ -66,8 +71,9 @@ code checkable:
 - **Fast compiles.** The loop is only as good as its slowest step.
 
 The through-line: _do as much correctness checking with computers as possible,
-because the human is the scarce resource._ Contracts and numeric unit types are
-on the [roadmap](/development/roadmap/) for the same reason.
+because the human is the scarce resource._ Static contract verification and
+numeric unit types are on the [roadmap](/development/roadmap/) for the same
+reason. See [Working with AI Agents](/guide/ai-agents/).
 
 ## What has gone wrong
 

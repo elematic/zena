@@ -27,7 +27,8 @@ repository; this is a summary.
 Working today: arrow functions and closures, records and tuples with unboxed
 multi-value returns, fixed and growable arrays, monomorphized generics with no
 auto-boxing, single inheritance with abstract classes, mixins and interfaces,
-exhaustive pattern matching with guards and pattern conditions, Wasm GC exception
+exhaustive pattern matching with guards and pattern conditions, runtime
+contracts (`requires`, `ensures`, and loop `invariant`), Wasm GC exception
 handling, dead-code elimination over functions and types, and a standard library
 covering strings, collections, JSON, regex, and file I/O.
 
@@ -62,9 +63,11 @@ TypeScript:
 
 - **Numeric unit types** — statically verified units of measure, so adding meters
   to feet is a compile error. → [Scientific computing](https://github.com/elematic/zena/blob/main/docs/design/scientific-computing.md)
-- **Contracts** — `requires` and `ensures`, checked at runtime now and
-  candidates for static verification with SMT solvers later.
-  → [Formal verification](https://github.com/elematic/zena/blob/main/docs/design/formal-verification.md)
+- **Contracts** — runtime `requires`, `ensures` (`result`, `old()`), and loop
+  `invariant` clauses—along with `debug` clauses for `zena test` and `-g`
+  builds—are implemented; coverage for generators and async postconditions is in
+  progress, with SMT-backed static verification planned later.
+  → [Contracts guide](/guide/contracts/) · [Contracts design](/development/design/contracts/) · [Formal verification](https://github.com/elematic/zena/blob/main/docs/design/formal-verification.md)
 - **SIMD** — native Wasm vector instructions.
 - **Decorators and macros** — compile-time code generation.
   → [Macros](https://github.com/elematic/zena/blob/main/docs/design/macros.md) · [Decorators](https://github.com/elematic/zena/blob/main/docs/design/decorators.md)

@@ -768,3 +768,24 @@ function process(c: MutableContainer): i32 {
   return 0;
 }
 ```
+
+### Narrowing from `requires` clauses
+
+An unmarked `requires (condition)` precondition on a function, arrow, method, or
+constructor narrows types using the same flow rules as `if (condition)`. Any
+refinement established in a `requires` clause holds in subsequent clauses and
+throughout the function body:
+
+```zena
+function firstChar(text: String | null): i32
+  requires (text != null && text.length > 0)
+{
+  // `text` is narrowed to `String` here
+  return text.getByteAt(0);
+}
+```
+
+As with `if`, immutable parameters, `let` bindings, and immutable field paths
+narrow, while mutable `var` fields do not. Clauses marked `debug requires` never
+narrow types because they are omitted outside `zena test` and `--debug` (`-g`)
+builds. See [Contracts](/reference/contracts/#type-checking-and-narrowing).

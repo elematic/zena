@@ -48,6 +48,13 @@ Every `Error` instance exposes:
 - `cause?: Error`: An optional reference to an underlying error that triggered
   this failure, enabling error chaining.
 
+### Built-in Error subclasses
+
+The standard prelude also exports specialized `Error` subclasses from `zena:core`,
+such as `ContractError`, which is thrown at runtime whenever a
+[`requires`, `ensures`, or `invariant`](/reference/contracts/) contract clause
+evaluates to `false`.
+
 ## throw
 
 The `throw` statement raises an exception and halts sequential execution:

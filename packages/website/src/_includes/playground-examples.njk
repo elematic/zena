@@ -66,6 +66,59 @@ export let main = () => {
 
 </figure>
 
+<figure id="example-contracts" category="Basics">
+<figcaption>Contracts</figcaption>
+
+```zena
+class Account {
+  var balance: i32;
+
+  new(this.balance) requires (balance >= 0);
+
+  withdraw(amount: i32): i32
+    requires (amount > 0)
+    requires (this.balance >= amount)
+    ensures (this.balance == old(this.balance) - amount)
+    ensures (result == this.balance)
+  {
+    this.balance -= amount;
+    return this.balance;
+  }
+}
+
+// `requires` narrows types in the body (`text` is `String` here);
+// `debug` clauses run in `zena test` and `-g` builds without narrowing:
+function nonEmptyLength(text: String | null)
+  requires (text != null)
+  debug ensures (result == text.trim().length)
+  ensures (result >= 0)
+{
+  return text.trim().length;
+}
+
+export function main() {
+  let acct = new Account(100);
+  console.log(`After withdrawal: ${acct.withdraw(35)}`);
+  console.log(`Trimmed length: ${nonEmptyLength('  Zena  ')}`);
+
+  var sum = 0;
+  for (var i = 1; i <= 4; i += 1) invariant (sum >= 0) {
+    sum += i;
+  }
+  console.log(`Sum: ${sum}`);
+
+  try {
+    acct.withdraw(500);
+  } catch (e) {
+    if (e is ContractError) {
+      console.log(`Caught: ${e.message}`);
+    }
+  }
+}
+```
+
+</figure>
+
 <figure id="example-expression-oriented" category="Basics">
 <figcaption>Expression Oriented</figcaption>
 

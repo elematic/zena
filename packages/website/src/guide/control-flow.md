@@ -244,6 +244,28 @@ for (var i = 0; i < 10; i += 1) {
 }
 ```
 
+### Loop invariants
+
+Any `while`, `for`, or `for-in` loop with a `{ ... }` block body can carry one or
+more `invariant (condition)` clauses between the loop header and `{`. Each
+invariant is checked at runtime before the first iteration, after every
+completed iteration, and after `continue`, throwing `ContractError` if violated:
+
+```zena
+var sum = 0;
+for (var i = 0; i < items.length; i += 1)
+  invariant (0 <= i && i <= items.length)
+  invariant (sum >= 0)
+{
+  if (items[i] > 0) {
+    sum += items[i];
+  }
+}
+```
+
+See [Contracts](/guide/contracts/#loop-invariants-with-invariant) for scoping
+details.
+
 ## Multi-branch selection with match
 
 The `match` expression replaces traditional `switch` statements found in C,

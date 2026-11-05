@@ -19,7 +19,7 @@ to write code, they're safe to skip.
 
 Pages are grouped by what they describe:
 
-- **Core language** — libraries, variables, functions, expressions, operators, comments
+- **Core language** — libraries, variables, functions, contracts, expressions, operators, comments
 - **Data types** — numbers, booleans, strings, records, tuples, arrays, maps, sets, ranges, enums
 - **Types** — the sound type system, inference, aliases, distinct types, unions, generics, and narrowing
 - **Control flow** — conditionals, loops, pattern matching, destructuring, exceptions, and cancellation
@@ -59,6 +59,7 @@ still open to change — nothing in Zena is frozen yet.
 
 - [Comments](/reference/comments/) — comments and documentation syntax
 - [Libraries](/reference/libraries/) — source files, entry points, imports, and packages
+- [Contracts](/reference/contracts/) — `requires`, `ensures`, `old()`, loop `invariant`, and narrowing
 - [Type system overview](/reference/types/) — how the type system fits together
 - [Numbers](/reference/numbers/) — integers, floats, BigInt, and numeric semantics
 - [Strings](/reference/strings/) — string literals, template interpolation, and encodings

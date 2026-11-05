@@ -140,6 +140,13 @@ Point(x: f64, y: f64)`), and **extension classes** that allow you to add new
   are currently no rest parameters. They may be added in the future, by heap
   allocating a list.
 
+- **Contracts (`requires` and `ensures`)**: Functions, closures, methods, and
+  constructors can declare runtime preconditions and postconditions directly on
+  their signatures (`requires (amount > 0)`, `ensures (result >= 0)`,
+  `old(this.balance)`), and loops can declare `invariant (...)` clauses.
+  Preconditions also narrow static types in the function body. See
+  [Contracts](/guide/contracts/).
+
 ### Type system
 
 - **Reified, monomorphized generics**: Zena generics are reified via
@@ -210,6 +217,7 @@ Point(x: f64, y: f64)`), and **extension classes** that allow you to add new
 | **Type assertion**        | `x as string` _(erased at runtime)_     | `x as String` _(checked downcast)_                                   |
 | **Type test**             | `x instanceof MyClass`                  | `x is MyClass` _(also `x is Array<i32>`)_                            |
 | **Multi-value return**    | `return [val, true];` _(heap array)_    | `return (val, true);` _(unboxed stack tuple)_                        |
+| **Pre/post-conditions**   | Manual `if (...) throw` checks          | `requires (x > 0)` / `ensures (result >= 0)`                         |
 | **Resource disposal**     | `using res = getResource();`            | `using let res = getResource();`                                     |
 
 ## Next

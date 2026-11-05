@@ -178,9 +178,13 @@ Zena tries to make as many mistakes as possible into compile errors.
   compile everywhere that needs attention.
 - **Distinct types** keep a user ID from being an order ID, and a customer name
   from being a file path.
+- **Contracts (`requires`, `ensures`, `invariant`, and `debug` clauses)** check
+  preconditions, postconditions, and loop invariants at runtime (or in
+  `zena test` / `-g` builds when marked `debug`), narrow types from unmarked
+  preconditions, and lay the groundwork for SMT-backed static verification.
 
-Contracts — pre- and post-conditions — and numeric unit types are next, so that
-adding meters to feet is a compile error rather than a post-mortem.
+Numeric unit types are next on that path, so that adding meters to feet is a
+compile error rather than a post-mortem.
 
 Soundness also pays for itself in the output. The compiler can trust the types,
 which is what makes unboxed generics and devirtualization safe.
@@ -195,6 +199,8 @@ Zena is deliberately unoriginal about syntax. It borrows what already works:
 - **Scala** — sealed hierarchies, case classes, expression orientation
 - **Swift** — immutability by default, `let`/`var`, no `++`/`--`
 - **Rust** — exhaustive matching, ranges, distinct types
+- **Eiffel & Dafny** — `requires`, `ensures`, `old()`, and loop `invariant`
+  clauses on signatures and loops
 - **Go** — a small language you can hold in your head; one obvious way to do
   things
 
@@ -209,10 +215,11 @@ models write usable Zena from a short description of the language, because most
 of it is a language they have seen a great deal of — which matters, since Zena
 is being built almost entirely by generative AI under human review.
 
-That is also why the corrections are worth their cost. Generated code needs
-review, and review is expensive and unreliable when done only by people. Every
-mistake the type system can catch is one a reviewer doesn't have to. The goal is
-to check as much as possible with computers rather than with attention.
+That is also why the corrections and [contracts](/guide/contracts/) are worth
+their cost. Generated code needs review, and review is expensive and unreliable
+when done only by people. Every mistake the type system or a `requires`/`ensures`
+clause can catch automatically is one a reviewer doesn't have to. The goal is to
+check as much as possible with computers rather than with attention.
 
 ## Why WebAssembly at all
 

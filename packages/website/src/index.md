@@ -167,6 +167,33 @@ console.log(
 </div>
 </figure>
 
+<figure>
+<figcaption>Contracts</figcaption>
+
+```zena
+class Account {
+  var balance: i32;
+  new(this.balance) requires (balance >= 0);
+
+  withdraw(amount: i32): i32
+    requires (amount > 0 && this.balance >= amount)
+    ensures (this.balance == old(this.balance) - amount)
+  {
+    this.balance -= amount;
+    return this.balance;
+  }
+}
+
+let acct = new Account(100);
+console.log(`Remaining: ${acct.withdraw(35)}`);
+```
+
+<div class="carousel-output">
+  <div class="output-label">Output</div>
+  <pre><code>&rarr; Remaining: 65</code></pre>
+</div>
+</figure>
+
         </zena-code-carousel>
       </div>
     </div>
@@ -228,7 +255,7 @@ console.log(
               <div class="icon">🔐</div>
               <h2 class="title">Safe and Sound</h2>
             </div>
-            <p class="details">Correctness is anchored by a sound type system, non-nullable types, guaranteed class initialization, exhaustive pattern matching, and checked casts.</p>
+            <p class="details">Correctness is anchored by a sound type system, runtime contracts, non-nullable types, guaranteed class initialization, exhaustive pattern matching, and checked casts.</p>
             <div class="link-text">
               <p class="link-text-value">Correctness <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
@@ -329,6 +356,17 @@ that elevate everyday safety, performance, and developer ergonomics:
       </div>
       <p class="differentiator-contrast">Eliminate heap allocation overhead for composite data.</p>
       <p class="differentiator-desc">Multi-value returns like <code>Map.get()</code> return unboxed inline tuples on the stack with zero GC pressure. Expanding to first-class unboxed composite types and Struct-of-Arrays (SoA) layouts for cache-friendly, data-oriented performance. <a href="#value-types">Learn more &darr;</a></p>
+    </div>
+  </div>
+  <div class="differentiator-item">
+    <div class="differentiator-icon" aria-hidden="true">📜</div>
+    <div class="differentiator-content">
+      <div class="differentiator-header">
+        <h3 class="differentiator-title">First-Class Contracts &amp; Executable Specs</h3>
+        <span class="badge warning">In progress</span>
+      </div>
+      <p class="differentiator-contrast">Machine-checked preconditions, postconditions, and loop invariants built into signatures.</p>
+      <p class="differentiator-desc"><code>requires()</code>, <code>ensures()</code> (with <code>result</code> and <code>old()</code>), and <code>invariant()</code> run at runtime today (with <code>debug</code> clauses enabled in <code>--debug</code>/<code>-g</code> and <code>zena test</code>), narrow static types, and give humans and AI coding agents explicit correctness boundaries—laying the groundwork for SMT-backed static verification. <a href="#contracts">Learn more &darr;</a></p>
     </div>
   </div>
 </div>
@@ -628,15 +666,28 @@ Units are opaque types over primitives, so there's no runtime performance penalt
 </details>
 
 <details id="contracts">
-  <summary>Contracts <span class="badge info">Planned</span></summary>
+  <summary>Contracts <span class="badge warning">In progress</span></summary>
 
-Zena plans to introduce first-class Design-by-Contract capabilities, including
-function pre-conditions (`requires`), post-conditions (`ensures`), and class
-invariants.
+Zena includes first-class Design-by-Contract clauses on functions, closures,
+methods, constructors, and loops:
 
-The goal is to extend contracts into the type system to incrementally add formal
-methods to support automated verification. Provable contracts can be checked at
-compile time and remaining conditions can be checked at runtime when enabled.
+- **Preconditions (`requires`)** check caller obligations on entry and narrow
+  types in subsequent clauses and in the function body.
+- **Postconditions (`ensures`)** check return guarantees on every normal exit,
+  with `result` bound to the return value and `old(expr)` capturing entry-time
+  values before mutation.
+- **Loop invariants (`invariant`)** check loop conditions before the first
+  iteration and after every completed iteration.
+- **Test/debug clauses (`debug`)** prefix `requires`, `ensures`, or `invariant`
+  so expensive checks run in `zena test` and `--debug` (`-g`) builds while
+  emitting nothing in ordinary builds (without narrowing types in the body).
+
+Unmarked clauses run in every build and throw `ContractError` when violated,
+giving human reviewers and AI coding agents executable specifications directly on
+signatures. Support on generators, bodyless interface/abstract methods, and
+`ensures` on `async` functions and `inline` returns is in progress, alongside
+planned SMT-backed static verification (`@verify`). See the
+[Contracts guide](/guide/contracts/).
 
 </details>
 
@@ -859,6 +910,10 @@ happen frequently.
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>
+          <td>Contracts &amp; pre/post-conditions</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
           <td>F-bounded polymorphism</td>
           <td><span class="badge info">Planned</span></td>
         </tr>
@@ -868,10 +923,6 @@ happen frequently.
         </tr>
         <tr>
           <td>Units of measure</td>
-          <td><span class="badge info">Planned</span></td>
-        </tr>
-        <tr>
-          <td>Contracts &amp; pre/post-conditions</td>
           <td><span class="badge info">Planned</span></td>
         </tr>
         <tr>

@@ -391,8 +391,38 @@ async function fetchUser(id: i32): Future<String> {
 }
 ```
 
+## Contracts
+
+Functions and arrow expressions can attach preconditions (`requires`) and
+postconditions (`ensures`) between the signature and the body:
+
+```zena
+function clamp(value: i32, low: i32, high: i32): i32
+  requires (low <= high)
+  ensures (low <= result && result <= high)
+{
+  if (value < low) return low;
+  if (value > high) return high;
+  return value;
+}
+
+let nonEmpty = (text: String | null): String
+  requires (text != null)
+  ensures (result.length > 0)
+=> if (text.length > 0) text else 'untitled';
+```
+
+Unmarked clauses run in every build (throwing `ContractError` when `false`) and
+`requires` clauses narrow parameter types in later clauses and in the body;
+clauses prefixed with `debug` (`debug requires`, `debug ensures`) run only in
+`zena test` and `--debug` (`-g`) builds and do not narrow types. Clauses are not
+yet supported on `gen` functions, and `ensures` is not yet supported on `async`
+functions or `inline` returns. See [Contracts](/guide/contracts/) for `old()`,
+loop invariants, `debug` clauses, and planned static verification.
+
 ## Next
 
+- [Contracts](/guide/contracts/) — preconditions, postconditions, `old()`, and loop invariants
 - [Classes](/guide/classes/) — class declarations, constructors, methods, and interfaces
 - [Control Flow](/guide/control-flow/) — pattern matching, expressions, and loops
 - [Types](/guide/types/) — primitive types, nominal types, unions, and generics
