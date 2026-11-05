@@ -30,9 +30,9 @@ result does:
 
 - a tuple, or an alias of one;
 - a union of tuples with a discriminant (the rule from #481);
-- a closed record, or an alias of one. An inline record as an element
-  of an inline tuple is not supported yet. A record whose fields are
-  not known (existential, or spreading a row parameter) cannot be
+- a closed record, or an alias of one, also as an element of an inline
+  tuple, unless it has optional fields there. A record whose fields
+  are not known (existential, or spreading a row parameter) cannot be
   inline.
 
 Allowed positions in this round:
@@ -157,4 +157,31 @@ signature takes them, and explosion skips the function.
   literal for it adapts to the record, and the slot is not an erased one
   for `==` (`noteRecordErasure`).
 
-An inline record inside an inline tuple is not supported yet.
+## Nested inline records
+
+An inline record inside an inline tuple is its fields, as the tuple's
+slots, the way a nested inline tuple is its elements (#515).
+`nestedInlineTuple` answers for an inline record with the tuple of its
+fields' types in name order (`recordFieldsTuple`), which is the order
+its dispatch keeps them, so layouts, paths and conversions treat it as
+a nested tuple: field `k` of the record at position `p` is the leaf
+`p.k`. The places that read or write the element whole ask
+`nestedInlineRecord` first:
+
+- **Writing:** a tuple literal's element at the position is lowered as
+  the record's fields (`#writeRecordLeaves`, through `#recordArgFields`).
+- **Reading:** a name or a pattern bound to it, and an index with a
+  literal, get a record built from the leaves and held as them
+  (`boxInlineRecordAt`), so field reads take the leaves.
+- **Boxing:** the boxed form of the tuple holds the boxed record
+  (`boxedTupleOf`, `#buildBoxedAt`), and reading a boxed tuple into the
+  inline form reads the record's fields through its dispatch
+  (`#boxedLeaf`).
+
+A tuple literal passes an inline binding on when its element's position
+is inline (`tupleElementUse`), for a nested inline tuple too.
+
+A nested inline record with optional fields is an error, since its
+presence words have no position in a tuple of the fields' types. An
+inline union inside an inline tuple is not supported yet: its slots
+and discriminant do not fit one list of positions.

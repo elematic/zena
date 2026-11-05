@@ -50,10 +50,22 @@ function escapesAsResult(p: inline Point): Point {
   return p; // @error: 'p' is inline, so it is only read or passed on: returning it as a boxed result would box it.
 }
 
-// Not yet: an inline record inside an inline tuple, and a record whose
-// fields are not known.
+// Inside an inline tuple, its fields are the tuple's. A tuple literal
+// passes it on to an inline position, and boxes it in a boxed one.
+function nested(t: inline (inline Point, i32), p: inline Point): inline (inline Point, i32) {
+  let (q, n) = t;
+  return (p, q.x + n);
+}
 
-function nested(t: inline (inline Point, i32)): i32 { // @error: An inline record inside an inline tuple is not supported yet.
+function nestedBoxed(p: inline Point): inline (Point, i32) {
+  return (p, 1); // @error: 'p' is inline, so it is only read or passed on: putting it in a tuple would box it.
+}
+
+// Not yet: a nested inline record with optional fields, and a record
+// whose fields are not known.
+type Opts = {size: i32, scale?: i32};
+
+function nestedOptional(t: inline (inline Opts, i32)): i32 { // @error: An inline record with optional fields inside an inline tuple is not supported yet.
   return t[1];
 }
 

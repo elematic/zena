@@ -44,7 +44,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, nestedInlineRecord, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -3426,6 +3426,11 @@ export final class FunctionLowerer {
       for (let entry in entries) {
         let el = entry.node as Expression;
         let nested = entry.nested;
+        let record = entry.record;
+        if (record != null) {
+          this.#writeRecordLeaves(el, record, entry.path, shape, candidates, values);
+          continue;
+        }
         if (nested != null) {
           this.#writeNestedLeaves(el, nested, entry.path, shape, candidates, values);
           continue;
@@ -3475,6 +3480,33 @@ export final class FunctionLowerer {
       values.push(this.#conformToSlot(v, expected, 'multi-value return type'));
     }
     return values;
+  }
+
+  /**
+   * The fields of `el`, a value of the nested inline record `record` at
+   * `path`, written into their slots of `shape` (`#recordArgFields`): a
+   * record literal writes them, a record held as fields passes its own,
+   * and any other record is read through its dispatch.
+   */
+  #writeRecordLeaves(el: Expression, record: RecordType, path: String,
+      shape: InlineLayout, candidates: GrowableArray<boolean>,
+      values: GrowableArray<i32>): void {
+    let d = this.wasm.findRecordDispatch(recordWasmFields(this.wasm, record, this.func),
+        sortedOptionalNames(record));
+    if (d == null) {
+      this.#bail('nested inline record without a dispatch');
+    }
+    let fields = this.#recordArgFields(el, d, record);
+    for (var k = 0; k < fields.length; k += 1) {
+      let slot = shape.pathSlot(`${path}.${k}`, candidates);
+      if (slot == -2) {
+        this.#bail('inline union member of a returned tuple');
+      }
+      if (slot < 0) {
+        continue;
+      }
+      values[slot] = this.#conformToSlot(fields[k], shape.slots[slot], 'multi-value return type');
+    }
   }
 
   /**
@@ -3663,6 +3695,19 @@ export final class FunctionLowerer {
         return this.#bailValue('nested inline leaf of a non-tuple');
       }
       let name = segments[i];
+      // A boxed record where the inline form nests its fields: leaf k is
+      // its k-th field in dispatch order. Dispatches that share a fat
+      // pointer share their table's layout, so any of them reads it.
+      let recordDispatch = this.wasm.recordDispatchOfFatPointer(st);
+      if (recordDispatch != null) {
+        let k = if (let (true, n) = parseI32(name)) n else -1;
+        if (k < 0 || k >= recordDispatch.fields.length) {
+          return this.#bailValue('nested inline record leaf');
+        }
+        current = this.#cx().recordDispatchRead(recordDispatch,
+            recordDispatch.fields[k].name as String, current);
+        continue;
+      }
       if (st.fieldIndexByName(name) < 0) {
         return this.#defaultValueOf(slotVt);
       }
@@ -5139,6 +5184,39 @@ export final class FunctionLowerer {
         (leaf) => source.valueAt(cx, leaf, allowed));
   }
 
+  hostBoxInlineRecordAt(source: MultiValues, path: String, record: RecordType,
+      allowed: GrowableArray<boolean> | null): i32 {
+    let cx = this.#cx();
+    return this.#heldRecordFromLeaves(record, `${path}.`,
+        (leaf) => source.valueAt(cx, leaf, allowed));
+  }
+
+  /**
+   * The record `record` built from leaf values, `leaf(prefix + k)` for its
+   * k-th field in dispatch order, and held as them (`explodedRecords`).
+   */
+  #heldRecordFromLeaves(record: RecordType, prefix: String,
+      leaf: (path: String) => i32): i32 {
+    let d = this.wasm.findRecordDispatch(recordWasmFields(this.wasm, record, this.func),
+        sortedOptionalNames(record));
+    if (d == null) {
+      return this.#bailValue('nested inline record without a dispatch');
+    }
+    let fields = new Array<i32>();
+    for (var k = 0; k < d.fields.length; k += 1) {
+      let fieldVt = d.fields[k].type;
+      let found = leaf(`${prefix}${k}`);
+      fields.push(if (found == NO_VALUE) {
+        this.#defaultValueOf(fieldVt)
+      } else {
+        this.#conformToSlot(found, fieldVt, 'nested inline record field type')
+      });
+    }
+    let value = this.#packRecord(d, fields);
+    this.#cx().explodedRecords[value] = new ExplodedRecord(d, fields);
+    return value;
+  }
+
   /**
    * The boxed tuple `tuple`, the boxed form of the inline tuple `shape`,
    * built from leaf values: `leaf(path)` gives the value at `path`
@@ -5159,7 +5237,10 @@ export final class FunctionLowerer {
       let fieldVt = this.#fieldValType(st, name);
       let inner = if (k < shape.elementTypes.length) nestedInlineTuple(shape.elementTypes[k]) else null;
       let element = if (k < shape.elementTypes.length) shape.elementTypes[k] else null;
-      let v = if (inner != null) {
+      let record = if (element != null) nestedInlineRecord(element) else null;
+      let v = if (record != null) {
+        this.#heldRecordFromLeaves(record, `${prefix}${k}.`, leaf)
+      } else if (inner != null) {
         this.#buildBoxedAt(inner, `${prefix}${k}.`, tuple.elementTypes[k] as TupleType, leaf)
       } else if (element is HoleType) {
         // A `_` holds nothing; its slot, if it has one, is a `nullref`
@@ -8836,6 +8917,10 @@ export final class FunctionLowerer {
       return this.#bailValue('inline tuple index literal');
     }
     let path = i32ToString(k);
+    let record = nestedInlineRecord(shape.elementTypes[k]);
+    if (record != null) {
+      return boxInlineRecordAt(this.#cx(), source, path, record, null);
+    }
     let inner = nestedInlineTuple(shape.elementTypes[k]);
     if (inner != null) {
       return boxInlineAt(this.#cx(), source, path, inner, null);
@@ -11638,7 +11723,10 @@ export final class MultiValues {
     for (let entry in entries) {
       nodes.push(entry.node);
       let nested = entry.nested;
-      out.push(if (nested != null) {
+      let record = entry.record;
+      out.push(if (record != null) {
+        boxInlineRecordAt(cx, this, entry.path, record, allowed)
+      } else if (nested != null) {
         boxInlineAt(cx, this, entry.path, nested, allowed)
       } else {
         this.valueAt(cx, entry.path, allowed)
@@ -11692,8 +11780,13 @@ export final class PathElement {
    * it stands for one leaf.
    */
   nested: InlineTupleType | null;
+  /**
+   * The record the element stands for when its position is an inline
+   * record, whose fields are the leaves of `nested`.
+   */
+  record: RecordType | null;
 
-  new(this.node, this.path, this.nested);
+  new(this.node, this.path, this.nested, this.record);
 }
 
 /**
@@ -11716,14 +11809,17 @@ function appendPathElements(types: Array<Type>, elements: GrowableArray<Node | n
     let path = `${prefix}${p}`;
     let inner = if (p < types.length) nestedInlineTuple(types[p]) else null;
     if (inner == null) {
-      out.push(new PathElement(el, path, null));
+      out.push(new PathElement(el, path, null, null));
       continue;
     }
-    let parts = tupleParts(el);
+    // A record stands for its fields whole: a pattern or literal for it
+    // is not a tuple to splice.
+    let record = nestedInlineRecord(types[p]);
+    let parts = if (record == null) tupleParts(el) else null;
     if (parts != null && parts.length == inner.elementTypes.length) {
       appendPathElements(inner.elementTypes, parts, `${path}.`, out);
     } else {
-      out.push(new PathElement(el, path, inner));
+      out.push(new PathElement(el, path, inner, record));
     }
   }
 }
@@ -11732,8 +11828,15 @@ function appendPathElements(types: Array<Type>, elements: GrowableArray<Node | n
 function boxedTupleOf(t: InlineTupleType): TupleType {
   let elements = new Array<Type>();
   for (let el in t.elementTypes) {
+    let record = nestedInlineRecord(el);
     let inner = nestedInlineTuple(el);
-    elements.push(if (inner != null) boxedTupleOf(inner) as Type else el);
+    elements.push(if (record != null) {
+      record as Type
+    } else if (inner != null) {
+      boxedTupleOf(inner) as Type
+    } else {
+      el
+    });
   }
   return new TupleType(elements, null, 0);
 }
@@ -11804,6 +11907,16 @@ export function returnInlineTail(cx: LoweringContext, e: Expression): void {
 export function boxInlineAt(cx: LoweringContext, source: MultiValues, path: String,
     inner: InlineTupleType, allowed: GrowableArray<boolean> | null): i32 {
   return hostOf(cx).hostBoxInlineAt(source, path, inner, allowed);
+}
+
+/**
+ * The nested inline record at `path` of `source`: a record built from its
+ * leaves and held as them, so reads take the leaves and it dies unless a
+ * use needs it whole.
+ */
+export function boxInlineRecordAt(cx: LoweringContext, source: MultiValues, path: String,
+    record: RecordType, allowed: GrowableArray<boolean> | null): i32 {
+  return hostOf(cx).hostBoxInlineRecordAt(source, path, record, allowed);
 }
 
 /** Bail with the lowering-side message shape (reason @function). */

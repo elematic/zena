@@ -4879,8 +4879,9 @@ let s = sum({x: 1, y: 2}); // passed as two i32s
 The rule is the same as for a tuple, with a field read where a tuple has an
 index. A function can return an inline record too, as its fields; a call's
 result is read through them, and boxed only where it is stored. An inline
-record cannot be an element of an inline tuple yet, and the record's fields
-must be known, so it cannot be existential or spread a row parameter.
+record can be an element of an inline tuple, whose slots then hold its
+fields, unless it has optional fields. The record's fields must be known, so it
+cannot be existential or spread a row parameter.
 
 A function with an inline parameter is a top-level function or arrow, a
 method, or a constructor, and it is called rather than used as a value. An
@@ -4901,7 +4902,9 @@ let (_, span) = spans(3);            // span holds the boxed (i32, i32)
 ```
 
 A nested tuple pattern reads the inner values one by one, and a name binding
-the inner tuple whole holds it boxed. The element may not be an inline union
+the inner tuple whole holds it boxed. An element may be an inline record too:
+`inline (i32, inline Point)` holds the point's fields, and a name bound to it
+reads them without building the record. The element may not be an inline union
 yet.
 
 The members of an inline union may put different types at the same position.
