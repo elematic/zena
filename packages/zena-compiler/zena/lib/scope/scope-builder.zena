@@ -20,6 +20,7 @@ import {
   ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration,
   DeclareFunction, SymbolDeclaration, ImportSpecifier,
   Decorator, isBuiltinDecoratorName,
+  ContractClause, ContractKind, isOldCallee,
   // Patterns
   BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern,
@@ -265,6 +266,8 @@ export final class ScopeBuilder {
   #isRead = new Map<SymbolId, boolean>();
   #isWritten = new Map<SymbolId, boolean>();
   #allVariables = new Array<Symbol>();
+  /** Whether the expression being processed is directly in an `ensures` condition. */
+  var #inEnsures = false;
   #allImportDeclarations = new Array<ImportDeclaration>();
 
   /**
@@ -774,27 +777,33 @@ export final class ScopeBuilder {
           }
         }
       }
-      case WhileStatement {test, body}: {
+      // A loop's invariants hold before each test of its condition, so
+      // they see what the condition sees: a `for` loop's own variable,
+      // and nothing the condition or a `for`-in pattern binds.
+      case WhileStatement {test, body, invariants}: {
         if (let LetPatternCondition {pattern, init} = test) {
           this.#processExpression(init);
+          this.#processLoopInvariants(invariants);
           this.#enterScope(ScopeKind.Block);
           this.#declarePattern(pattern, "let", test);
           this.#processStatement(body);
           this.#exitScope();
         } else {
           this.#processNode(test);
+          this.#processLoopInvariants(invariants);
           this.#processStatement(body);
         }
       }
-      case ForStatement {init, test, update, body}: {
+      case ForStatement {init, test, update, body, invariants}: {
         this.#enterScope(ScopeKind.Block);
         if (init != null) { this.#processNode(init); }
         if (test != null) { this.#processExpression(test); }
         if (update != null) { this.#processExpression(update); }
+        this.#processLoopInvariants(invariants);
         this.#processStatement(body);
         this.#exitScope();
       }
-      case ForInStatement {pattern, iterable, body, isAwait}: {
+      case ForInStatement {pattern, iterable, body, isAwait, invariants}: {
         if (isAwait) {
           // A `for await` steps with futures of options.
           this.#imply(WellKnown.AsyncIterableInterface);
@@ -805,6 +814,7 @@ export final class ScopeBuilder {
         this.#imply(WellKnown.IterableInterface);
         this.#imply(WellKnown.IteratorInterface);
         this.#processExpression(iterable);
+        this.#processLoopInvariants(invariants);
         this.#enterScope(ScopeKind.Block);
         this.#declarePattern(pattern, "let", stmt);
         this.#processStatement(body);
@@ -1008,10 +1018,14 @@ export final class ScopeBuilder {
           this.#isRead[info.id] = true;
         }
       }
-      case FunctionExpression {typeParameters, params, returnType, body, isAsync}: {
+      case FunctionExpression {typeParameters, params, returnType, body, isAsync, contracts}: {
         if (isAsync) {
           this.#imply(WellKnown.FutureClass);
         }
+        // `old` is the entry-value operator only directly in an
+        // `ensures` condition, not in a function written inside one.
+        let inEnsures = this.#inEnsures;
+        this.#inEnsures = false;
         this.#enterScope(ScopeKind.Function);
         if (typeParameters != null) {
           this.#declareTypeParameters(typeParameters);
@@ -1029,8 +1043,10 @@ export final class ScopeBuilder {
         if (returnType != null) {
           this.#processTypeAnnotation(returnType);
         }
+        this.#processFunctionContracts(contracts);
         this.#processNode(body);
         this.#exitScope();
+        this.#inEnsures = inEnsures;
       }
       case BinaryExpression {left, right}: {
         this.#processExpression(left);
@@ -1060,7 +1076,12 @@ export final class ScopeBuilder {
         this.#processExpression(value);
       }
       case CallExpression {callee, args, typeArguments}: {
-        this.#processExpression(callee);
+        // `old(e)` in an `ensures` condition is `e`'s value on entry,
+        // whatever else `old` names there, so its callee resolves to
+        // nothing.
+        if (!(this.#inEnsures && isOldCallee(callee))) {
+          this.#processExpression(callee);
+        }
         if (typeArguments != null) {
           for (let typeArgument in typeArguments) {
             this.#processTypeAnnotation(typeArgument);
@@ -1330,6 +1351,7 @@ export final class ScopeBuilder {
           if (md.returnType != null) {
             this.#processTypeAnnotation(md.returnType);
           }
+          this.#processFunctionContracts(md.contracts);
           let {initializerList} = md;
           if (initializerList != null) {
             for (let init in initializerList) {
@@ -1456,6 +1478,38 @@ export final class ScopeBuilder {
         }
         case _: {}
       }
+    }
+  }
+
+  /**
+   * The names a function's clauses mention. The caller has declared the
+   * parameters, so a `requires` condition sees what the body sees on
+   * entry. An `ensures` condition also sees `result`: each clause gets
+   * a scope holding that one name, declared on the clause, so the
+   * checker finds the symbol through the clause and gives it the
+   * function's return type. See docs/design/contracts.md.
+   */
+  #processFunctionContracts(contracts: GrowableArray<ContractClause> | null): void {
+    if (contracts == null) { return; }
+    for (let clause in contracts) {
+      if (clause.kind != ContractKind.Ensures) {
+        this.#processExpression(clause.condition);
+        continue;
+      }
+      this.#enterScope(ScopeKind.Block);
+      this.#current.declare('result', false, clause, this.#modulePath);
+      this.#symbols.record(clause, this.#current.getLocal('result') as Symbol);
+      this.#inEnsures = true;
+      this.#processExpression(clause.condition);
+      this.#inEnsures = false;
+      this.#exitScope();
+    }
+  }
+
+  #processLoopInvariants(invariants: GrowableArray<ContractClause> | null): void {
+    if (invariants == null) { return; }
+    for (let clause in invariants) {
+      this.#processExpression(clause.condition);
     }
   }
 

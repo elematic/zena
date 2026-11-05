@@ -1,0 +1,42 @@
+// @mode: check
+
+// A loop's invariants are boolean expressions that see what the loop's
+// condition sees.
+
+function search(items: FixedArray<i32>, target: i32): i32 {
+  var lo = 0;
+  var hi = items.length;
+  while (lo < hi)
+    invariant (0 <= lo && lo <= hi)
+    invariant (hi <= items.length)
+  {
+    lo += 1;
+  }
+
+  var total = 0;
+  // A `for` loop's own variable is in scope.
+  for (var i = 0; i < hi; i += 1) invariant (0 <= i && i <= hi) {
+    total += items[i];
+  }
+
+  for (let item in items) invariant (total >= 0) {
+    total += item;
+  }
+
+  while (lo < hi) invariant (lo) { // @error: Condition must be a boolean type, got 'i32'.
+    lo += 1;
+  }
+
+  // A `for`-in loop's variable is bound after the invariant holds.
+  let flags = [true, false];
+  for (let flag in flags) invariant (flag) { // @error: Variable 'flag' not found.
+    total += 1;
+  }
+
+  // So is a variable the body declares.
+  while (lo < hi) invariant (stepping) { // @error: Variable 'stepping' not found.
+    let stepping = true;
+    lo += 1;
+  }
+  return total;
+}

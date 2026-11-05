@@ -1,0 +1,50 @@
+// @mode: check
+
+// Clauses on every kind of function that takes them, and on each loop,
+// with nothing to report.
+
+class Account {
+  var balance: i32;
+
+  new(this.balance) requires (balance >= 0) ensures (this.balance >= 0);
+
+  withdraw(amount: i32): i32
+    requires (amount > 0)
+    requires (this.balance >= amount)
+    ensures (this.balance == old(this.balance) - amount)
+    ensures (result == this.balance)
+  {
+    this.balance -= amount;
+    return this.balance;
+  }
+}
+
+function sum(items: FixedArray<i32>): i32
+  requires (items.length > 0)
+  ensures (result >= old(items.length) - items.length)
+{
+  var total = 0;
+  for (var i = 0; i < items.length; i += 1)
+    invariant (0 <= i && i <= items.length)
+  {
+    total += items[i];
+  }
+  for (let item in items) invariant (total == total) {
+    total += item;
+  }
+  var remaining = items.length;
+  while (remaining > 0) invariant (remaining >= 0) {
+    remaining -= 1;
+  }
+  return total;
+}
+
+let clamp = (value: i32, low: i32, high: i32): i32
+  requires (low <= high)
+  ensures (low <= result && result <= high)
+=> if (value < low) low else if (value > high) high else value;
+
+// A clause's condition can hold a function of its own.
+let apply = (f: (x: i32) => i32, x: i32): i32
+  requires (((y: i32) => y >= 0)(x))
+=> f(x);

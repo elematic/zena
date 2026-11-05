@@ -140,9 +140,10 @@ export final class Module(
   var lastNodeId: NodeId = 0 as NodeId;
 
   /**
-   * Every contract clause in the module, or null when it has none. The
-   * checker does not check clauses yet, and reports each one from this
-   * list so that a contract is never accepted and then not enforced.
+   * Every contract clause in the module, or null when it has none.
+   * Nothing lowers clauses yet, and code generation refuses a program
+   * that has any, so that a contract is never accepted and then not
+   * enforced.
    */
   var contractClauses: GrowableArray<ContractClause> | null = null;
 }
@@ -862,6 +863,16 @@ export function contractKeyword(kind: ContractKind): String {
     case ContractKind.Ensures: 'ensures'
     case ContractKind.Invariant: 'invariant'
   };
+}
+
+/**
+ * Whether `callee` is the name `old`. Directly in an `ensures`
+ * condition, `old(e)` is the value `e` had when the function was
+ * entered, and not a call; the scope builder and the checker decide
+ * where that is.
+ */
+export function isOldCallee(callee: Expression): boolean {
+  return if (let Identifier {name} = callee) name == 'old' else false;
 }
 
 /**

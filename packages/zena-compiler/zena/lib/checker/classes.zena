@@ -16,6 +16,7 @@ import { checkInlineParameterType, isInlineType, resolveTypeAnnotation, resolveT
 import { checkInlineBindingUses, inlineParamsMatch } from './inline.zena';
 import { spliceDefaultArguments } from './calls.zena';
 import { BodyContext, CheckerContext } from './context.zena';
+import { checkEnsuresClauses, checkRequiresClauses, rejectContracts } from './contracts.zena';
 import { validateFunctionDecorators } from './declarations.zena';
 import { checkExpression } from './expressions.zena';
 import {
@@ -2637,6 +2638,12 @@ export function checkMethodSignature(
     // Check decorators
     validateFunctionDecorators(ctx, md.decorators, false, md.loc);
 
+  // What an abstract or declared method's clauses bind its
+  // implementations to is undecided (docs/design/contracts.md).
+  if (md.body == null) {
+    rejectContracts(ctx, md.contracts, 'a method without a body');
+  }
+
   ctx.enterScope();
   let resolvedTypeParams = resolveTypeParameters(ctx, md.typeParameters);
 
@@ -3151,6 +3158,16 @@ export function checkMethodBody(
   let methodName = if (let Identifier {name} = md.name) name else "";
   let isCtor = md.isConstructor || methodName == "<constructor>";
   body.inConstructor = isCtor;
+
+  // As for a function (checkFunctionExpression). A constructor's
+  // `requires` come ahead of its prologue, which they guard.
+  if (md.isGenerator) {
+    rejectContracts(ctx, md.contracts, 'a generator');
+  } else {
+    checkRequiresClauses(ctx, md.contracts);
+  }
+  let bodyEntryFlow = ctx.currentFlow;
+
   if (isCtor) {
     // The constructor prologue evaluates before the body: field
     // defaults, then the initializer list, then the super call. It is
@@ -3341,6 +3358,13 @@ export function checkMethodBody(
   let movedOut = ctx.finishBodyPathMoves(!(ctx.currentFlow is FlowUnreachable));
   if (movedOut.length > 0) {
     ctx.model.setMovedOutFields(md as Node, movedOut);
+  }
+
+  // A constructor returns nothing its `ensures` could name; the new
+  // object is `this`.
+  if (!md.isGenerator) {
+    let resultType: Type = if (isCtor) new VoidType() else (body.returnType ?? new VoidType());
+    checkEnsuresClauses(ctx, md.contracts, md.params, resultType, bodyEntryFlow);
   }
 
   let methodBody = md.body;
