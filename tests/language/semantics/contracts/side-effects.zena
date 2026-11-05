@@ -1,0 +1,25 @@
+// @mode: check
+
+// A clause can be left out of a build, so its condition cannot change
+// what the program does.
+
+var calls = 0;
+
+function assigns(n: i32): i32 requires ((calls = calls + 1) > 0) { // @error: A 'requires' condition cannot assign.
+  return n;
+}
+
+function compound(n: i32): i32 ensures ((calls += 1) > 0) { // @error: A 'ensures' condition cannot assign.
+  return n;
+}
+
+function loop(n: i32): void {
+  var i = 0;
+  while (i < n) invariant ((i = i + 1) > 0) { // @error: A 'invariant' condition cannot assign.
+    i += 1;
+  }
+}
+
+let ready = async (): Future<boolean> => true;
+
+let waits = async (n: i32): Future<i32> requires (await ready()) => n; // @error: A 'requires' condition cannot await.

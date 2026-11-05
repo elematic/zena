@@ -1,0 +1,53 @@
+// @mode: check
+
+// In an `ensures` condition `result` is the returned value, with the
+// function's return type, declared or inferred.
+
+function abs(x: i32): i32 ensures (result >= 0) {
+  return if (x >= 0) x else -x;
+}
+
+let name = (first: String): String ensures (result.length >= first.length) => first;
+
+// The return type is inferred from the body, and `result` has it.
+let inferred = (x: i32) ensures (result.length > 0) => `${x}`;
+
+function wrongType(x: i32): String ensures (result > 0) { // @error: cannot apply operator '>' to String and i32
+  return `${x}`;
+}
+
+function notBoolean(x: i32): i32 ensures (result) { // @error: Condition must be a boolean type, got 'i32'.
+  return x;
+}
+
+// A local named `result` is the body's own, and unrelated.
+function localResult(x: i32): i32 ensures (result == x + 1) {
+  let result = x + 1;
+  return result;
+}
+
+function nothing(x: i32): void ensures (result) { // @error: 'result' has no value here: the function returns nothing.
+}
+
+let inferredNothing = (x: i32) ensures (result == x) => {}; // @error: 'result' has no value here: the function returns nothing.
+
+function parameterNamedResult(result: i32): i32 ensures (result > 0) { // @error: A parameter named 'result' cannot be read in an 'ensures' condition
+  return result;
+}
+
+// An async function's result is the value its future completes with.
+let load = async (id: i32): Future<i32> ensures (result >= id) => id;
+
+class Counter {
+  var count: i32 = 0;
+
+  increment(): i32 ensures (result == this.count) {
+    this.count += 1;
+    return this.count;
+  }
+
+  // A constructor returns nothing to name; the new object is `this`.
+  new() ensures (this.count == 0) {}
+
+  new from(start: i32) ensures (result.count == start) : count = start {} // @error: 'result' has no value here: the function returns nothing.
+}

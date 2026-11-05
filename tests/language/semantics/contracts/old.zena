@@ -1,0 +1,52 @@
+// @mode: check
+
+// Directly in an `ensures` condition, `old(e)` is the value `e` had when
+// the function was entered, and has `e`'s type.
+
+class Counter {
+  var count: i32 = 0;
+  var label: String = '';
+
+  increment(by: i32): void ensures (this.count == old(this.count) + by) {
+    this.count += by;
+  }
+
+  rename(label: String): void ensures (old(this.label).length >= 0) {
+    this.label = label;
+  }
+
+  wrongType(): void ensures (old(this.label) > 0) { // @error: cannot apply operator '>' to String and i32
+  }
+
+  twoArguments(): void ensures (old(this.count, 1) == 0) { // @error: 'old' takes one expression
+  }
+
+  nested(): void ensures (old(old(this.count)) == 0) { // @error: 'old' cannot be used inside another 'old'.
+  }
+
+  resultInside(): i32 ensures (old(result) == 0) { // @error: 'result' cannot be used inside 'old'
+    return this.count;
+  }
+}
+
+// A function named `old` is hidden there, and is itself everywhere else.
+function old(x: i32): String {
+  return `${x}`;
+}
+
+function shadowed(x: i32): i32 ensures (old(x) == result) {
+  let text: String = old(x);
+  return x;
+}
+
+function holds(test: (x: i32) => boolean): boolean {
+  return test(0);
+}
+
+// A function written inside the condition is not directly in it, so
+// `old` there is the function above.
+function inClosure(floor: i32): i32
+  ensures (holds((x) => x >= old(floor))) // @error: cannot apply operator '>=' to i32 and String
+{
+  return floor;
+}

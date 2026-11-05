@@ -1,6 +1,6 @@
 # Contracts
 
-Status: **Syntax implemented; checking and runtime checks not yet**
+Status: **Syntax and checking implemented; runtime checks not yet**
 
 A contract is a condition written on a function or a loop that the
 program is expected to keep: a precondition (`requires`), a
@@ -21,9 +21,10 @@ Contracts are the first step of the plan in
 checked when the program runs, in a form a static verifier can later
 prove.
 
-The parser accepts the syntax in this document. The checker reports
-every clause as not implemented, so a program cannot contain a contract
-that is silently ignored.
+The parser accepts the syntax in this document and the checker applies
+the rules under [Checking](#checking). Nothing runs a clause yet, so
+code generation refuses a program that has one: a program cannot
+contain a contract that is silently ignored.
 
 ## Syntax
 
@@ -93,16 +94,14 @@ A loop with `invariant` clauses takes a block as its body.
 
 Inside an `ensures` condition, `result` is the value the function
 returned. It is a name only there: a function can still have a local
-variable called `result`. A parameter called `result` cannot be named
-in an `ensures` condition, where the word means the returned value, and
-the checker will report that.
+variable called `result`.
 
 `old(e)` is the value `e` had when the function was entered. A
 postcondition on a method that changes its object needs it:
 `ensures (this.length == old(this.length) - 1)`.
 
-Both parse as an ordinary identifier and an ordinary call. The checker
-gives them their meaning.
+Both parse as an ordinary identifier and an ordinary call. The scope
+builder and the checker give them their meaning.
 
 ### Contextual keywords
 
@@ -126,6 +125,75 @@ formatter keeps them there. Otherwise each clause takes its own line,
 indented, and the `{` or `=>` that starts the body takes a line of its
 own, as in the `withdraw` example at the top of this document. Line
 breaks carry no meaning.
+
+## Checking
+
+### Conditions
+
+A condition is checked as a boolean expression, like the condition of
+an `if`. It cannot contain an assignment or an `await`: a clause can be
+left out of a build (see [Kinds of clause](#kinds-of-clause)), and a
+condition that assigns or suspends would make the program behave
+differently without it. A condition can still call a function that has
+effects; nothing checks for that yet.
+
+### Names in scope
+
+A `requires` condition sees what the body sees on entry: the
+parameters, `this` in a method, and the names around the function. The
+body's own variables do not exist yet.
+
+An `ensures` condition sees the same names and `result`. Each `ensures`
+clause has a scope of its own that declares `result`, so the name
+exists nowhere else, and a local variable called `result` in the body
+is unrelated to it. A parameter called `result` would be hidden in the
+condition, so a function with an `ensures` clause cannot have one.
+
+An `invariant` condition sees what the loop's condition sees. That
+includes the variable a `for` loop declares in its header. It excludes
+the variable of a `for`-in loop and anything a `while (let ...)`
+condition binds, because the invariant holds before those are bound.
+
+### The type of `result`
+
+`result` has the function's return type, whether declared or inferred
+from the body. An `async` function's `result` is the value its future
+completes with. A function that returns nothing has no `result`, and
+neither has a constructor, whose new object is `this`.
+
+### `old`
+
+`old(e)` has the type of `e`. It is the entry-value operator only
+directly in an `ensures` condition, where it hides any function named
+`old`. In a function written inside the condition, `old` is an ordinary
+name, because `e` would be evaluated on entry, before that function's
+parameters exist. `e` cannot name `result` or contain another `old`.
+
+### What a postcondition knows
+
+The checker narrows types along the paths of a body: after
+`if (text == null) { return 0; }`, `text` is a `String`. A
+postcondition holds on every path out of the body, including the one
+that returned while `text` was null, so its condition is checked with
+what was known on entry and nothing a path narrowed:
+
+```zena
+function length(text: String | null): i32
+  ensures (result == text.length)   // Error: text may be null
+{
+  if (text == null) { return 0; }
+  return text.length;
+}
+```
+
+The condition's own tests narrow as usual:
+`ensures (text == null || result == text.length)` is accepted.
+
+### Where clauses are not supported yet
+
+The checker reports clauses on a generator, and on a method without a
+body (an interface method, or an `abstract` or `declare` method). What
+each would mean is under [Open questions](#open-questions).
 
 ## Kinds of clause
 
@@ -217,7 +285,8 @@ signature.
 
 D and C++26 let the author name the returned value (`out (r; r > 0)`).
 The implicit `result` is shorter, is what Eiffel, JML and SPARK do, and
-conflicts only with a parameter of that name.
+conflicts only with a parameter of that name, which the checker
+reports.
 
 ### Reserved words
 
@@ -228,7 +297,7 @@ loop optimizer uses.
 
 ## Open questions
 
-These are decided when the checker and the lowering are written.
+These are decided when the lowering is written.
 
 - **What a violation does.** The likely answer is to throw an error
   that names the clause's text and location, as `zena:assert` does for
@@ -236,12 +305,19 @@ These are decided when the checker and the lowering are written.
 - **Inheritance.** A method that overrides another, or implements an
   interface method, takes on its contracts. Whether it may add
   `requires` clauses of its own, which would break callers that hold
-  the supertype, is open.
-- **`async` functions and generators.** For an `async` function,
-  `ensures` would hold when the future completes, and `result` would be
-  the value it completes with. A generator has no single result.
-- **What a condition may do.** A condition with side effects would
-  make a program behave differently when a clause is left out.
+  the supertype, is open. Until it is decided, a method without a body
+  cannot have clauses.
+- **Generators.** A generator's body runs when it is first stepped, and
+  it has no single result. A `requires` clause could run at the call or
+  at the first step.
+- **`async` functions.** `ensures` holds when the future completes. A
+  `requires` clause would run in the part of the body before its first
+  `await`.
+- **Calls with effects in a condition.** Assignments and `await` are
+  rejected. A function the condition calls can still change state.
+- **Narrowing from `requires`.** While an unmarked clause always runs,
+  `requires (text != null)` could narrow `text` in the body. It does
+  not today.
 - **Capturing `old`.** `old(e)` has to evaluate `e` on entry and keep
   the value. For a reference this keeps the object, whose fields the
   body can still change.

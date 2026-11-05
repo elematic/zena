@@ -1,0 +1,45 @@
+// @mode: check
+
+// A `requires` condition is a boolean expression over what the function
+// sees on entry: its parameters, `this`, and the names around it.
+
+let limit = 100;
+
+function half(n: i32): i32 requires (n % 2 == 0) requires (n <= limit) {
+  return n;
+}
+
+let twice = (n: i32) requires (n >= 0) => n * 2;
+
+class Stack {
+  var size: i32;
+  new(this.size) requires (size >= 0);
+
+  pop(): i32 requires (this.size > 0) {
+    this.size -= 1;
+    return this.size;
+  }
+
+  static sized(size: i32): Stack requires (size >= 0) {
+    return new Stack(size);
+  }
+}
+
+function notBoolean(n: i32): i32 requires (n + 1) { // @error: Condition must be a boolean type, got 'i32'.
+  return n;
+}
+
+// The body's variables do not exist yet.
+function bodyLocal(n: i32): boolean requires (ready) { // @error: Variable 'ready' not found.
+  let ready = n > 0;
+  return ready;
+}
+
+// `result` and `old` belong to `ensures`.
+function noResult(n: i32): boolean requires (result) { // @error: Variable 'result' not found.
+  return n > 0;
+}
+
+function noOld(n: boolean): boolean requires (old(n)) { // @error: Variable 'old' not found.
+  return n;
+}

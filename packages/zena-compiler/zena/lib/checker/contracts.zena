@@ -1,0 +1,179 @@
+/**
+ * The rules for contract clauses (docs/design/contracts.md): `requires`
+ * and `ensures` on a function, `invariant` on a loop.
+ *
+ * A clause's condition is an ordinary boolean expression. What differs
+ * between the kinds is where on the flow graph the condition is checked,
+ * and that an `ensures` condition can name `result` and call `old`.
+ */
+import {
+  AssignmentExpression, AwaitExpression, CallExpression, ContractClause,
+  ContractKind, Expression, Identifier, Node, Parameter, contractKeyword,
+  isOldCallee,
+} from '../ast.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { FlowNode } from '../analysis/flow.zena';
+import { ErrorType, Type, VoidType } from '../types.zena';
+import { walkEnter } from '../visitor.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression, validateConditionType } from './expressions.zena';
+
+/** Checks one condition as a boolean, and that evaluating it changes nothing. */
+function checkCondition(ctx: CheckerContext, clause: ContractClause) {
+  let {condition} = clause;
+  let conditionType = checkExpression(ctx, condition, null);
+  // An error type has been reported where it arose.
+  if (!(conditionType is ErrorType)) {
+    validateConditionType(ctx, conditionType, condition);
+  }
+  // A clause can be left out of a build, so a condition that assigns or
+  // suspends would make the program behave differently without it.
+  let keyword = contractKeyword(clause.kind);
+  walkEnter(condition, (n) => {
+    if (n is AssignmentExpression) {
+      ctx.error(
+        `A '${keyword}' condition cannot assign.`,
+        DiagnosticCode.InvalidAssignment, n.loc);
+    } else if (n is AwaitExpression) {
+      ctx.error(
+        `A '${keyword}' condition cannot await.`,
+        DiagnosticCode.TypeMismatch, n.loc);
+    }
+  });
+}
+
+/**
+ * Checks a function's `requires` clauses. Called at the start of the
+ * body's flow, with the parameters bound: a precondition sees what the
+ * body sees on entry.
+ */
+export function checkRequiresClauses(
+  ctx: CheckerContext,
+  contracts: GrowableArray<ContractClause> | null
+): void {
+  if (contracts == null) { return; }
+  for (let clause in contracts) {
+    if (clause.kind == ContractKind.Requires) {
+      checkCondition(ctx, clause);
+    }
+  }
+}
+
+/**
+ * Checks a function's `ensures` clauses. Called after the body, when
+ * an inferred return type is known, with `resultType` the type a
+ * `return` hands back: for an `async` function, the value its future
+ * completes with.
+ *
+ * `entryFlow` is the flow position the body started from. A
+ * postcondition holds on every path out of the body, so nothing one of
+ * those paths narrowed is known in it, and it is checked from the
+ * entry.
+ */
+export function checkEnsuresClauses(
+  ctx: CheckerContext,
+  contracts: GrowableArray<ContractClause> | null,
+  params: GrowableArray<Parameter>,
+  resultType: Type,
+  entryFlow: FlowNode
+): void {
+  if (contracts == null) { return; }
+  var reportedParameter = false;
+  for (let clause in contracts) {
+    if (clause.kind != ContractKind.Ensures) { continue; }
+    if (!reportedParameter) {
+      reportedParameter = true;
+      for (let param in params) {
+        if (param.name.name == 'result') {
+          ctx.error(
+            "A parameter named 'result' cannot be read in an 'ensures' condition, " +
+            "where 'result' is the returned value. Rename the parameter.",
+            DiagnosticCode.DuplicateDeclaration, param.name.loc);
+        }
+      }
+    }
+    let resultSymbol = ctx.model.resolveDeclaration(clause);
+    let returnsNothing = resultType is VoidType;
+    if (resultSymbol != null) {
+      ctx.declareBinding(resultSymbol, if (returnsNothing) new ErrorType() else resultType);
+      if (returnsNothing) {
+        walkEnter(clause.condition, (n) => {
+          if (n is Identifier && ctx.model.resolve(n) === resultSymbol) {
+            ctx.error(
+              "'result' has no value here: the function returns nothing.",
+              DiagnosticCode.TypeMismatch, n.loc);
+          }
+        });
+      }
+    }
+    ctx.setFlow(entryFlow);
+    ctx.setInEnsures(true);
+    checkCondition(ctx, clause);
+    ctx.setInEnsures(false);
+  }
+}
+
+/**
+ * Checks a loop's `invariant` clauses. Called inside the loop's flow,
+ * ahead of its condition: an invariant holds each time the loop is
+ * about to test whether to run again.
+ */
+export function checkLoopInvariants(
+  ctx: CheckerContext,
+  invariants: GrowableArray<ContractClause> | null
+): void {
+  if (invariants == null) { return; }
+  for (let clause in invariants) {
+    checkCondition(ctx, clause);
+  }
+}
+
+/** Reports the clauses of a function that cannot have any yet. */
+export function rejectContracts(
+  ctx: CheckerContext,
+  contracts: GrowableArray<ContractClause> | null,
+  where: String
+): void {
+  if (contracts == null) { return; }
+  for (let clause in contracts) {
+    ctx.errorOnceAt(
+      `'${contractKeyword(clause.kind)}' clauses on ${where} are not supported yet.`,
+      DiagnosticCode.TypeMismatch, clause.loc);
+  }
+}
+
+/**
+ * The type of `old(e)`, or null when `call` is an ordinary call.
+ * `old(e)` is `e`'s value when the function was entered, so it has
+ * `e`'s type, and `e` can name only what exists on entry.
+ */
+export function checkOldExpression(ctx: CheckerContext, call: CallExpression): Type | null {
+  if (!isOldCallee(call.callee) || !(ctx.inEnsures || ctx.inOld)) { return null; }
+  if (ctx.inOld) {
+    ctx.error("'old' cannot be used inside another 'old'.", DiagnosticCode.TypeMismatch, call.loc);
+    return new ErrorType();
+  }
+  if (call.args.length != 1 || call.typeArguments != null) {
+    ctx.error(
+      "'old' takes one expression: 'old(e)' is the value 'e' had when the function was entered.",
+      DiagnosticCode.ArgumentCountMismatch, call.loc);
+    return new ErrorType();
+  }
+  let argument = call.args[0];
+  ctx.setInEnsures(false);
+  ctx.setInOld(true);
+  let argumentType = checkExpression(ctx, argument, null);
+  ctx.setInOld(false);
+  ctx.setInEnsures(true);
+  walkEnter(argument, (n) => {
+    if (n is Identifier) {
+      let named = ctx.model.resolve(n);
+      if (named != null && named.declaration is ContractClause) {
+        ctx.error(
+          "'result' cannot be used inside 'old': it has no value when the function is entered.",
+          DiagnosticCode.TypeMismatch, n.loc);
+      }
+    }
+  });
+  return argumentType;
+}

@@ -28,6 +28,7 @@ import { boxedFormOf, isInlineType, resolveTypeAnnotation } from './annotations.
 import { forwardedInlineTypeOf } from './inline.zena';
 import { checkClassBodies, registerClassDeclaration } from './classes.zena';
 import { CheckerContext, lookupBindingTypeInDeps } from './context.zena';
+import { checkLoopInvariants } from './contracts.zena';
 import {
   checkDeclareFunction, checkEnumDeclaration,
   checkInterfaceConstructorBodies, checkInterfaceDeclaration,
@@ -419,13 +420,14 @@ case _: {
         }
       }
     }
-    case WhileStatement {test, body, loc}: {
+    case WhileStatement {test, body, invariants, loc}: {
       match (test) {
         case LetPatternCondition as lpc: {
           // The condition re-runs every iteration, so it sits between
           // the loop header and the body on the flow graph.
           ctx.enterFlowLoop();
           recordLoopAssignments(ctx, stmt);
+          checkLoopInvariants(ctx, invariants);
           let initType = checkExpression(ctx, lpc.init, null);
           moveDestructured(ctx, lpc.init, initType);
           let afterTest = ctx.currentFlow;
@@ -444,6 +446,7 @@ case _: {
         case _: {
           ctx.enterFlowLoop();
           recordLoopAssignments(ctx, stmt);
+          checkLoopInvariants(ctx, invariants);
           let testExpr = test as Expression;
           let testType = checkExpression(ctx, testExpr, null);
           let afterTest = ctx.currentFlow;
@@ -471,7 +474,7 @@ case _: {
         }
       }
     }
-    case ForStatement {init, test, update, body, loc}: {
+    case ForStatement {init, test, update, body, invariants, loc}: {
       ctx.enterScope();
       if (init != null) {
         match (init) {
@@ -490,6 +493,7 @@ case _: {
       // after the first" — conservative for narrowing.
       ctx.enterFlowLoop();
       recordLoopAssignments(ctx, stmt);
+      checkLoopInvariants(ctx, invariants);
       var afterTest = ctx.currentFlow;
       var falseExit = ctx.currentFlow;
       if (test != null) {
@@ -800,7 +804,7 @@ case _: {
     case SymbolDeclaration as sd: {
       checkSymbolDeclaration(ctx, sd);
     }
-    case ForInStatement {pattern, iterable, body, isAwait, loc}: {
+    case ForInStatement {pattern, iterable, body, isAwait, invariants, loc}: {
       if (isAwait && ctx.asyncValueType == null) {
         ctx.error(
           "'for await' is only valid inside the body of an 'async' function or 'async gen'.",
@@ -879,6 +883,7 @@ case _: {
       }
       let loopHead = ctx.enterFlowLoop();
       recordLoopAssignments(ctx, stmt);
+      checkLoopInvariants(ctx, invariants);
       ctx.enterScope();
       ctx.enterLoop();
       if (isRefutableDeclarationPattern(pattern)) {

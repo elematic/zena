@@ -15,6 +15,7 @@ import { adaptToExpected } from './adaptation.zena';
 import { checkInlineParameterType, isInlineType, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
 import { checkInlineBindingUses } from './inline.zena';
 import { BodyContext, CheckerContext } from './context.zena';
+import { checkEnsuresClauses, checkRequiresClauses, rejectContracts } from './contracts.zena';
 import { checkExpression } from './expressions.zena';
 
 import { prescanPendingFunctions } from './module.zena';
@@ -342,6 +343,15 @@ export function checkFunctionExpression(
   // Arrows share `this` with the body they were written in.
   let prevFlowState = ctx.enterBodyFlow(true);
 
+  // A generator's body runs when it is first stepped, and it has no
+  // single result, so what its clauses would mean is undecided.
+  if (isGenerator) {
+    rejectContracts(ctx, fe.contracts, 'a generator');
+  } else {
+    checkRequiresClauses(ctx, fe.contracts);
+  }
+  let bodyEntryFlow = ctx.currentFlow;
+
   // Check the body.
   match (body) {
     case BlockStatement as block: {
@@ -455,6 +465,10 @@ export function checkFunctionExpression(
       }
       ctx.exitOwnScope(bodyExpr as Node);
     }
+  }
+
+  if (!isGenerator) {
+    checkEnsuresClauses(ctx, fe.contracts, params, retType, bodyEntryFlow);
   }
 
   // Generators: the declared Iterator<T> (or AsyncIterator<T> for
