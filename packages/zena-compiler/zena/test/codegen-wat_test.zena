@@ -645,6 +645,26 @@ export let tests = suite('WatGenerator', () => {
     assertNoAllocation(result, '$main', 'a record literal written into nested slots');
   });
 
+  // An inline field of an inline record is its own leaves, so a record
+  // with one is passed, read and returned as all of them (#811).
+  test('inline fields of inline records allocate nothing', (ctx) => {
+    let result = compileAndGenerateWat(`
+      type Vec = {x: i32, y: i32};
+      type Sprite = inline {pos: inline Vec, id: i32};
+      function reach(s: Sprite): i32 {
+        let {pos} = s;
+        return s.pos.x + pos.y + s.id;
+      }
+      function moved(s: Sprite, by: i32): Sprite {
+        return {pos: {x: s.pos.x + by, y: s.pos.y}, id: s.id};
+      }
+      export let main = (): i32 => reach(moved({pos: {x: 1, y: 2}, id: 3}, 4));
+    `);
+    assertNoAllocation(result, '$reach', 'an inline field is read from its leaves');
+    assertNoAllocation(result, '$moved', 'a literal with an inline field returns leaves');
+    assertNoAllocation(result, '$main', 'a literal with an inline field is passed as leaves');
+  });
+
   // The shaped vector types (`I32x4` and friends in `zena:simd`) are
   // extension classes over `v128`, and their whole value proposition is
   // that the shape is a compile-time view: no wrapper object, so no

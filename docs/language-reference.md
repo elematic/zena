@@ -4883,6 +4883,21 @@ record can be an element of an inline tuple, whose slots then hold its
 fields, unless it has optional fields. The record's fields must be known, so it
 cannot be existential or spread a row parameter.
 
+A field of an inline record can be inline too, a record or a tuple, and its
+values are then the outer record's. Other fields stay references:
+
+```zena
+type Vec = {x: i32, y: i32};
+type Sprite = inline {pos: inline Vec, id: i32}; // three values
+
+let reach = (s: Sprite): i32 => s.pos.x + s.id; // nothing allocated
+```
+
+`inline` on a field is allowed only inside an inline record, as on an element
+only inside an inline tuple. A stored `Sprite` holds `pos` boxed, and a name
+bound to the field, as in `let {pos} = s`, holds it boxed too. An inline field
+cannot be optional or a union yet.
+
 A function with an inline parameter is a top-level function or arrow, a
 method, or a constructor, and it is called rather than used as a value. An
 override keeps the inline-ness of each parameter it overrides. An inline

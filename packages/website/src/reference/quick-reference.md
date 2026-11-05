@@ -441,7 +441,8 @@ T` is the type parameter form: unboxed when `T` is a tuple, and `T` otherwise.
 shallow: in `inline (i32, (i32, i32))` the inner tuple is still boxed, and
 `inline (i32, inline (i32, i32))` unboxes both, so
 `let (a, (b, c)) = f()` allocates nothing. An inline record nests the same way:
-`inline (i32, inline {x: i32, y: i32})`.
+`inline (i32, inline {x: i32, y: i32})`, and so does an inline field of an
+inline record: `inline {pos: inline {x: i32, y: i32}, id: i32}`.
 
 A parameter or a `let` in a function body can be inline too. It is passed as
 its slots and can only be read or passed on to another inline position:

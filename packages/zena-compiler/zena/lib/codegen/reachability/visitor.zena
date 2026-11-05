@@ -11,7 +11,7 @@ import {
 } from './context.zena';
 import { SemanticModel, memberKeyOf, accessKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, InlineRecordType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
   isScopedType, scopedInner, internFunctionType, forInLowersToIndexLoop,
   isIterableRangeClass } from '../../types.zena';
 import {
@@ -28,7 +28,7 @@ import {
   getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedWellKnownInterface, findImplementedInterfaceType, findExtendedWellKnownInterface, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType,
+  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedWellKnownInterface, findImplementedInterfaceType, findExtendedWellKnownInterface, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType, boxedRecordWithFields,
 } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -94,6 +94,9 @@ export final class TypeLowerer implements TypeLowererInterface {
       for (let e in t.elementTypes) {
         this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, e), model, depth + 1);
       }
+    } else if (t is InlineRecordType) {
+      // Its fields are read through its boxed form's dispatch.
+      this.#recordTypeEvidence(boxedRecordWithFields(t.record), model, depth + 1);
     } else if (t is UnionType) {
       for (let m in t.types) {
         this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, m), model, depth + 1);
@@ -192,6 +195,8 @@ export final class TypeLowerer implements TypeLowererInterface {
       for (var i = 0; i < t.elementTypes.length; i += 1) {
         this.discoverType(t.elementTypes[i], model);
       }
+    } else if (t is InlineRecordType) {
+      this.discoverType(boxedRecordWithFields(t.record), model);
     } else if (t is UnionType) {
       for (let member in t.types) {
         this.discoverType(member, model);

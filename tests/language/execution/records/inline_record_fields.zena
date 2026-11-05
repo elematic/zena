@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 0
+// A field of an inline record can be inline itself, a record or a tuple:
+// its values are then the outer record's (#371, "depth: shallow, chosen
+// per level"). `inline {pos: inline Vec, id: i32}` is passed as three
+// values, and a field that is not inline stays a reference.
+
+type Vec = {x: i32, y: i32};
+type Sprite = inline {pos: inline Vec, id: i32};
+type Tagged = inline {span: inline (i32, i32), label: String};
+
+function reach(s: Sprite): i32 {
+  return s.pos.x * 100 + s.pos.y * 10 + s.id;
+}
+
+function moved(s: Sprite, by: i32): Sprite {
+  return {pos: {x: s.pos.x + by, y: s.pos.y}, id: s.id};
+}
+
+function width(t: Tagged): i32 {
+  let (a, b) = t.span;
+  return b - a + t.label.length;
+}
+
+function forward(s: Sprite): i32 {
+  let kept = s;
+  let {pos, id} = kept;
+  return reach(kept) + pos.x + id;
+}
+
+// An `if` returning one, a `let` holding one, and one inside an inline
+// tuple.
+function pick(c: boolean, s: Sprite): Sprite {
+  return if (c) s else ({pos: {x: 9, y: 9}, id: 0});
+}
+
+function chosen(c: boolean, s: Sprite): i32 {
+  let kept: Sprite = if (c) s else ({pos: {x: 0, y: 0}, id: 7});
+  return kept.pos.y + kept.id;
+}
+
+function counted(n: i32, s: Sprite): inline (i32, Sprite) {
+  return (n, s);
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (reach({pos: {x: 1, y: 2}, id: 3}) != 123) { failures += 1; }
+  if (reach(moved({pos: {x: 1, y: 2}, id: 3}, 4)) != 523) { failures += 2; }
+  if (width({span: (2, 9), label: 'ab'}) != 9) { failures += 4; }
+  if (forward({pos: {x: 1, y: 0}, id: 5}) != 111) { failures += 8; }
+  // Stored, the record holds its fields boxed.
+  let stored: {pos: Vec, id: i32} = moved({pos: {x: 0, y: 0}, id: 1}, 2);
+  if (stored.pos.x != 2 || reach(stored) != 201) { failures += 16; }
+  if (reach(pick(false, {pos: {x: 1, y: 1}, id: 1})) != 990) { failures += 32; }
+  if (chosen(true, {pos: {x: 1, y: 4}, id: 2}) != 6 ||
+      chosen(false, {pos: {x: 1, y: 4}, id: 2}) != 7) { failures += 64; }
+  let (n, s) = counted(4, {pos: {x: 1, y: 2}, id: 3});
+  if (n + reach(s) != 127) { failures += 128; }
+  return failures;
+};

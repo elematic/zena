@@ -76,3 +76,24 @@ function existential(p: inline {x: i32, ...}): i32 { // @error: 'inline' cannot 
 function rowed<R extends record>(p: inline {x: i32, ...R}): i32 { // @error: 'inline' cannot apply to a record with a row: its fields are not known.
   return p.x;
 }
+
+// A field of an inline record may be inline too, and only there.
+type Vec = {x: i32, y: i32};
+type Sprite = inline {pos: inline Vec, span: inline (i32, i32), id: i32};
+type Stored = {pos: inline Vec}; // @error: An inline type can only be a function's result, a parameter or a 'let', not here.
+
+function readsFields(s: Sprite): i32 {
+  let {pos} = s;
+  let held: Vec = pos;
+  return held.x + s.span[0] + s.id;
+}
+
+type Reply = (true, i32) | (false, String);
+
+function badFields(
+  a: inline {pos?: inline Vec}, // @error: An inline field cannot be optional: an inline value has no absent form.
+  b: inline {r: inline Reply}, // @error: An inline union inside an inline record is not supported yet.
+  c: inline {o: inline Opts}, // @error: An inline record with optional fields inside an inline record is not supported yet.
+): i32 {
+  return 0;
+}

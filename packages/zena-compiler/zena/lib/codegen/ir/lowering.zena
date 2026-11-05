@@ -44,7 +44,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, nestedInlineRecord, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, nestedInlineRecord, flattenInlineTuple, recordFieldsTuple, recordFieldNames, inlineRecordFieldsLayout, boxedRecordWithFields, boxedFieldType, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -1653,6 +1653,11 @@ export final class FunctionLowerer {
     // For an inline record parameter among them, its dispatch; an
     // exploded one's is the core's ExplosionSpec's.
     let inlineRecordDispatches = new Array<RecordDispatchInfo>();
+    // An inline record parameter with inline fields: held as its leaves
+    // once instructions can emit.
+    let leafRecordIndexes = new Array<i32>();
+    let leafRecordSlots = new Array<GrowableArray<i32>>();
+    let leafRecordParams = new Array<InlineParam>();
     for (var i = 0; i < params.length; i += 1) {
       let p = params[i];
       // this-params bind like plain params — the parser already
@@ -1686,6 +1691,12 @@ export final class FunctionLowerer {
         }
         if (p.pattern != null) {
           this.#bail('destructuring an inline parameter');
+        }
+        if (inlineParam.record != null && inlineParam.layout != null) {
+          leafRecordIndexes.push(i);
+          leafRecordSlots.push(slots);
+          leafRecordParams.push(inlineParam);
+          continue;
         }
         let inlineLayout = inlineParam.layout;
         if (inlineLayout == null) {
@@ -1746,6 +1757,19 @@ export final class FunctionLowerer {
       this.#cx().symbols[sym.id] = sym;
     }
     this.b.switchTo(entry);
+    for (var r = 0; r < leafRecordIndexes.length; r += 1) {
+      let leafParam = leafRecordParams[r];
+      let value = this.#heldRecordFromSlots(leafParam.record as RecordType,
+          leafParam.layout as InlineLayout, leafRecordSlots[r]);
+      let sym = this.func.model.resolveDeclaration(params[leafRecordIndexes[r]].name);
+      if (sym != null) {
+        if (this.#isCelled(sym.id)) {
+          this.#bail('inline parameter is celled');
+        }
+        this.#cx().env[sym.id] = value;
+        this.#cx().symbols[sym.id] = sym;
+      }
+    }
     // An exploded parameter binds to a record rebuilt from its fields.
     // Every read of it answers from the fields (`explodedRecords`), so
     // the record itself is dead unless some use needs it whole.
@@ -3514,21 +3538,18 @@ export final class FunctionLowerer {
   #writeRecordLeaves(el: Expression, record: RecordType, path: String,
       shape: InlineLayout, candidates: GrowableArray<boolean>,
       values: GrowableArray<i32>): void {
-    let d = this.wasm.findRecordDispatch(recordWasmFields(this.wasm, record, this.func),
-        sortedOptionalNames(record));
-    if (d == null) {
-      this.#bail('nested inline record without a dispatch');
-    }
-    let fields = this.#recordArgFields(el, d, record);
-    for (var k = 0; k < fields.length; k += 1) {
-      let slot = shape.pathSlot(`${path}.${k}`, candidates);
+    let leaves = this.#recordExprLeaves(el, record);
+    let relative = new Array<String>();
+    collectLeafPaths(recordFieldsTuple(record), '', relative);
+    for (var k = 0; k < leaves.length && k < relative.length; k += 1) {
+      let slot = shape.pathSlot(`${path}.${relative[k]}`, candidates);
       if (slot == -2) {
         this.#bail('inline union member of a returned tuple');
       }
-      if (slot < 0) {
+      if (slot < 0 || leaves[k] == NO_VALUE) {
         continue;
       }
-      values[slot] = this.#conformToSlot(fields[k], shape.slots[slot], 'multi-value return type');
+      values[slot] = this.#conformToSlot(leaves[k], shape.slots[slot], 'multi-value return type');
     }
   }
 
@@ -3885,7 +3906,13 @@ export final class FunctionLowerer {
     let d = this.#explodedResult() as RecordDispatchInfo;
     let coreReturns = this.func.signature.returns;
     var values = new Array<i32>();
-    if (this.#isExactRecordLiteral(expr, d)) {
+    // An inline record with inline fields returns its leaves.
+    let leafRecord = if (this.func.explosion == null) inlineRecordResultOf(this.wasm, this.func) else null;
+    let leafLayout = if (leafRecord != null) inlineRecordFieldsLayout(this.wasm, leafRecord) else null;
+    if (leafRecord != null && leafLayout != null) {
+      values = this.#leavesToSlots(leafRecord, leafLayout,
+          this.#recordExprLeaves(expr, leafRecord));
+    } else if (this.#isExactRecordLiteral(expr, d)) {
       values = this.#lowerRecordLiteralFields(expr as RecordLiteral, d);
     } else {
       // A returned `if` or `match` merges its arms' fields instead of
@@ -4309,12 +4336,20 @@ export final class FunctionLowerer {
     if (inlineRecord != null) {
       let param = this.#inlineParamOf(bindingType, this.func) as InlineParam;
       let d = param.dispatch as RecordDispatchInfo;
-      let fields = this.#recordArgFields(vd.init, d, inlineRecord);
       if (this.#isCelled(sym.id)) {
         this.#bail('inline let is celled');
       }
-      let record = this.#packRecord(d, fields);
-      this.#cx().explodedRecords[record] = new ExplodedRecord(d, fields);
+      let leafLayout = param.layout;
+      let record = if (leafLayout != null) {
+        this.#heldRecordFromSlots(inlineRecord, leafLayout,
+            this.#leavesToSlots(inlineRecord, leafLayout,
+                this.#recordExprLeaves(vd.init, inlineRecord)))
+      } else {
+        let fields = this.#recordArgFields(vd.init, d, inlineRecord);
+        let packed = this.#packRecord(d, fields);
+        this.#cx().explodedRecords[packed] = new ExplodedRecord(d, fields);
+        packed
+      };
       this.#cx().env[sym.id] = record;
       this.#cx().symbols[sym.id] = sym;
       return;
@@ -5107,6 +5142,12 @@ export final class FunctionLowerer {
       let d = this.#inlineRecordResultOfCall(expr);
       if (d != null) {
         let source = this.#lowerMultiSourceValues(expr);
+        let callRecord = this.#inlineRecordOfCall(expr) as RecordType;
+        let leafLayout = inlineRecordFieldsLayout(this.wasm, callRecord);
+        if (leafLayout != null) {
+          return this.#applyAdaptations(expr,
+              this.#heldRecordFromSlots(callRecord, leafLayout, source.values));
+        }
         let fields = new Array<i32>();
         for (var i = 0; i < source.values.length; i += 1) {
           fields.push(this.#conformToSlot(source.values[i], d.fields[i].type,
@@ -5231,21 +5272,171 @@ export final class FunctionLowerer {
         (leaf) => source.valueAt(cx, leaf, allowed));
   }
 
+  /** The dispatch of `record`'s boxed form, which its fields are read through. */
+  #recordDispatchFor(record: RecordType): RecordDispatchInfo {
+    return this.wasm.findRecordDispatch(recordWasmFields(this.wasm, record, this.func),
+        sortedOptionalNames(record)) ??
+        this.#bailDispatch('inline record without a dispatch') as RecordDispatchInfo;
+  }
+
+  /**
+   * The leaves of `e`, a record of type `record`, in the order of
+   * `collectLeafPaths(recordFieldsTuple(record))`: each field's value, an
+   * inline field's own leaves in its place. A record literal is lowered
+   * leaf by leaf, its properties in written order; any other record is
+   * lowered whole and read field by field (`#recordValueLeaves`).
+   */
+  #recordExprLeaves(e: Expression, record: RecordType): GrowableArray<i32> {
+    if (e is RecordLiteral && this.func.model.getRecordAdaptation(e) == null) {
+      let literal = e;
+      var plain = true;
+      for (let prop in literal.properties) {
+        if (!(prop is PropertyAssignment)) {
+          plain = false;
+        }
+      }
+      if (plain) {
+        let byName = new Map<String, GrowableArray<i32>>();
+        for (let prop in literal.properties) {
+          let assignment = prop as PropertyAssignment;
+          let name = assignment.name.name;
+          if (record.properties.has(name)) {
+            byName[name] = this.#fieldExprLeaves(assignment.value, record.properties[name]);
+          }
+        }
+        let out = new Array<i32>();
+        for (let name in recordFieldNames(record)) {
+          if (let (true, leaves) = byName.get(name)) {
+            for (let v in leaves) {
+              out.push(v);
+            }
+          }
+        }
+        return out;
+      }
+    }
+    let d = this.#recordDispatchFor(record);
+    if (e is IfExpression || e is MatchExpression) {
+      this.#cx().resultFields = d;
+    }
+    let value = this.#lowerExpressionCtx(e,
+        typeToValTypeWithSub(this.wasm, boxedRecordWithFields(record), this.func));
+    this.#cx().resultFields = null;
+    return this.#recordValueLeaves(value, record);
+  }
+
+  /** The leaves of `e` as a field of type `t`: its own, when `t` is inline. */
+  #fieldExprLeaves(e: Expression, t: Type): GrowableArray<i32> {
+    let sub = nestedInlineRecord(t);
+    if (sub != null) {
+      return this.#recordExprLeaves(e, sub);
+    }
+    let inner = nestedInlineTuple(t);
+    if (inner != null) {
+      let layout = inlineLayoutOf(this.wasm, inner) as InlineLayout;
+      let slots = this.#lowerIntoSlots(e, layout, layout.slots);
+      let out = new Array<i32>();
+      let relative = new Array<String>();
+      collectLeafPaths(inner, '', relative);
+      for (let rel in relative) {
+        let slot = layout.pathSlot(rel, null);
+        out.push(if (slot >= 0) slots[slot] else NO_VALUE);
+      }
+      return out;
+    }
+    return growable<i32>([this.#lowerExpressionCtx(e, typeToValTypeWithSub(this.wasm, t, this.func))]);
+  }
+
+  /** The leaves of `value`, a record of type `record`, read field by field. */
+  #recordValueLeaves(value: i32, record: RecordType): GrowableArray<i32> {
+    let d = this.#recordDispatchFor(record);
+    let fields = this.#cx().recordFieldsOf(d, value);
+    let types = recordFieldsTuple(record).elementTypes;
+    let out = new Array<i32>();
+    for (var k = 0; k < fields.length; k += 1) {
+      let fieldType = if (k < types.length) types[k] else null;
+      let sub = if (fieldType != null) nestedInlineRecord(fieldType) else null;
+      let inner = if (fieldType != null) nestedInlineTuple(fieldType) else null;
+      if (sub != null) {
+        for (let v in this.#recordValueLeaves(fields[k], sub)) {
+          out.push(v);
+        }
+      } else if (inner != null) {
+        let source = this.#unboxTuples(fields[k], boxedFieldType(fieldType as Type)) ??
+            this.#bailMulti('inline tuple field of a record');
+        let relative = new Array<String>();
+        collectLeafPaths(inner, '', relative);
+        for (let rel in relative) {
+          out.push(this.#leafOf(source as MultiValues, rel));
+        }
+      } else {
+        out.push(fields[k]);
+      }
+    }
+    return out;
+  }
+
+  #bailMulti(reason: String): MultiValues | null {
+    this.#bail(reason);
+  }
+
+  /**
+   * `leaves`, in the order of `collectLeafPaths(recordFieldsTuple(record))`,
+   * in the order of `layout`'s slots and conformed to them; a leaf with no
+   * value takes its slot's default.
+   */
+  #leavesToSlots(record: RecordType, layout: InlineLayout,
+      leaves: GrowableArray<i32>): GrowableArray<i32> {
+    let relative = new Array<String>();
+    collectLeafPaths(recordFieldsTuple(record), '', relative);
+    let out = new Array<i32>();
+    for (var slot = 0; slot < layout.slots.length; slot += 1) {
+      let i = pathIndex(relative, layout.slotPaths[slot]);
+      let v = if (i >= 0 && i < leaves.length) leaves[i] else NO_VALUE;
+      out.push(if (v == NO_VALUE || !this.#cx().reachable) {
+        this.#defaultValueOf(layout.slots[slot])
+      } else {
+        this.#conformToSlot(v, layout.slots[slot], 'inline record leaf type')
+      });
+    }
+    return out;
+  }
+
+  /**
+   * The record of type `record` held as `leaves`, values in the order of
+   * `layout`'s slots, which is an inline record's with inline fields.
+   */
+  #heldRecordFromSlots(record: RecordType, layout: InlineLayout,
+      leaves: GrowableArray<i32>): i32 {
+    return this.#heldRecordFromLeaves(record, '', (path) => {
+      let slot = layout.pathSlot(path, null);
+      return if (slot >= 0 && slot < leaves.length) leaves[slot] else NO_VALUE;
+    });
+  }
+
   /**
    * The record `record` built from leaf values, `leaf(prefix + k)` for its
    * k-th field in dispatch order, and held as them (`explodedRecords`).
    */
   #heldRecordFromLeaves(record: RecordType, prefix: String,
       leaf: (path: String) => i32): i32 {
-    let d = this.wasm.findRecordDispatch(recordWasmFields(this.wasm, record, this.func),
-        sortedOptionalNames(record));
-    if (d == null) {
-      return this.#bailValue('nested inline record without a dispatch');
-    }
+    let d = this.#recordDispatchFor(record);
+    // An inline field is its own leaves: a record built and held as them,
+    // or a boxed tuple built from them.
+    let types = recordFieldsTuple(record).elementTypes;
     let fields = new Array<i32>();
     for (var k = 0; k < d.fields.length; k += 1) {
       let fieldVt = d.fields[k].type;
-      let found = leaf(`${prefix}${k}`);
+      let fieldType = if (k < types.length) types[k] else null;
+      let sub = if (fieldType != null) nestedInlineRecord(fieldType) else null;
+      let inner = if (fieldType != null) nestedInlineTuple(fieldType) else null;
+      let found = if (sub != null) {
+        this.#heldRecordFromLeaves(sub, `${prefix}${k}.`, leaf)
+      } else if (inner != null) {
+        this.#buildBoxedAt(inner, `${prefix}${k}.`, boxedTupleOf(inner), leaf)
+      } else {
+        leaf(`${prefix}${k}`)
+      };
       fields.push(if (found == NO_VALUE) {
         this.#defaultValueOf(fieldVt)
       } else {
@@ -6594,7 +6785,7 @@ export final class FunctionLowerer {
       this.#bail('record union read receiver');
     }
     let mergeB = this.b.newBlock();
-    let resultParam = this.b.blockParam(mergeB, this.#exprValType(member));
+    let resultParam = this.b.blockParam(mergeB, this.#fieldReadValType(member));
     for (let rt in members) {
       let dispatch = this.#cx().recordDispatchOf(rt);
       let fatVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
@@ -6624,7 +6815,7 @@ export final class FunctionLowerer {
     let propName = accessKeyOf(this.func.model, member);
     let recv = this.#conformRecordReceiver(dispatch, recvIn);
     let result = this.#recordDispatchRead(dispatch, propName, recv);
-    return this.#reassertNonNull(result, this.#exprValType(member));
+    return this.#reassertNonNull(result, this.#fieldReadValType(member));
   }
 
   /**
@@ -11157,6 +11348,19 @@ export final class FunctionLowerer {
   }
 
   /**
+   * The value a record field read gives: the field's type, or for an
+   * inline field of an inline record, its boxed form, which is what the
+   * record holds (`#heldRecordFromLeaves`).
+   */
+  #fieldReadValType(member: MemberExpression): ValType {
+    let t = this.#substitutedNodeType(member);
+    if (t != null && nestedInlineTuple(t) != null) {
+      return typeToValTypeWithSub(this.wasm, boxedFieldType(t), this.func);
+    }
+    return this.#exprValType(member);
+  }
+
+  /**
    * Whether this expression is zero-width in THIS specialization — a
    * `void`/`never` value, which occupies no wasm slot.
    *
@@ -11292,21 +11496,28 @@ export final class FunctionLowerer {
     if (d == null) {
       return this.#bailInline('inline record parameter without a dispatch');
     }
-    return new InlineParam(null, d, record);
+    // With inline fields, its values are its leaves (`inlineRecordFieldsLayout`).
+    let leaves = inlineRecordFieldsLayout(this.wasm, record);
+    return new InlineParam(leaves, d, record);
   }
 
   #bailInline(reason: String): InlineParam | null {
     this.#bail(reason);
   }
 
-  /** The dispatch of the record `call` returns inline, or null. */
-  #inlineRecordResultOfCall(call: CallExpression): RecordDispatchInfo | null {
+  /** The record `call` returns inline, or null. */
+  #inlineRecordOfCall(call: CallExpression): RecordType | null {
     let calleeType = this.#calleeTypeOf(call);
     if (!(calleeType is FunctionType)) {
       return null;
     }
-    let record = inlineRecordParamOf(substituteTypeParamsInFunctionContext(
+    return inlineRecordParamOf(substituteTypeParamsInFunctionContext(
         this.wasm, this.func, calleeType.returnType));
+  }
+
+  /** The dispatch of the record `call` returns inline, or null. */
+  #inlineRecordResultOfCall(call: CallExpression): RecordDispatchInfo | null {
+    let record = this.#inlineRecordOfCall(call);
     if (record == null) {
       return null;
     }
@@ -11359,6 +11570,14 @@ export final class FunctionLowerer {
    */
   #pushInlineArg(arg: Expression, param: InlineParam, args: GrowableArray<i32>): void {
     let layout = param.layout;
+    let leafRecord = param.record;
+    if (layout != null && leafRecord != null) {
+      for (let v in this.#leavesToSlots(leafRecord, layout,
+          this.#recordExprLeaves(arg, leafRecord))) {
+        args.push(v);
+      }
+      return;
+    }
     if (layout != null) {
       for (let v in this.#lowerIntoSlots(arg, layout, layout.slots)) {
         args.push(v);
