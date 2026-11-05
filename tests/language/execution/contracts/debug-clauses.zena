@@ -1,0 +1,55 @@
+// @mode: run
+// @stdout: 1 1 1 debug requires (isSorted(items)) does not hold
+// `debug` clauses are compiled in a test build, which this is, and
+// behave as unmarked ones do. (That a build without them emits nothing
+// for one is a unit test, in zir-backend_test.zena.)
+
+function isSorted(items: FixedArray<i32>): boolean {
+  for (var i = 1; i < items.length; i += 1) {
+    if (items[i - 1] > items[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function first(items: FixedArray<i32>): i32
+  requires (items.length > 0)
+  debug requires (isSorted(items))
+{
+  return items[0];
+}
+
+function negate(n: i32): i32 debug ensures (result <= 0) {
+  return 0 - n;
+}
+
+function countTo(limit: i32, cap: i32): i32 {
+  var i = 0;
+  while (i < limit) debug invariant (i <= cap) {
+    i += 1;
+  }
+  return i;
+}
+
+function violates(run: () => i32): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+export function main(): void {
+  let requires = violates(() => first([3, 1, 2]));
+  let ensures = violates(() => negate(-1));
+  let invariant = violates(() => countTo(5, 2));
+  var message = '';
+  try {
+    first([3, 1, 2]);
+  } catch (e) {
+    message = e.message;
+  }
+  console.log(`${requires} ${ensures} ${invariant} ${message}`);
+}

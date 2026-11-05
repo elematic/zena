@@ -1,0 +1,34 @@
+// `ContractError` is what a contract clause throws when it does not
+// hold. These tests run under `zena test`, which is a test build, so
+// `debug` clauses are checked here too.
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+
+function half(n: i32) requires (n >= 0) debug requires (n % 2 == 0) {
+  return n >> 1;
+}
+
+/** The message of the error `run` throws, or '' when it returns. */
+function failure(run: () => void): String {
+  try {
+    run();
+    return '';
+  } catch (e) {
+    isTrue(e is ContractError, 'a violated contract throws a ContractError');
+    return e.message;
+  }
+}
+
+export let tests = suite('contract errors', () => {
+  test('a clause that holds throws nothing', () => {
+    equal(failure(() => { half(4); }), '');
+  });
+
+  test('the message is the clause as written', () => {
+    equal(failure(() => { half(-2); }), 'requires (n >= 0) does not hold');
+  });
+
+  test('a debug clause is checked in a test build', () => {
+    equal(failure(() => { half(3); }), 'debug requires (n % 2 == 0) does not hold');
+  });
+});

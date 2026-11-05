@@ -37,7 +37,8 @@ zena-cli <command> --help
 ```
 
 Global flags go before the command: `-g` / `--debug` names functions in
-compiled modules and turns off inlining, so traps name them; `-O <0|1|2|s>`
+compiled modules and turns off inlining, so traps name them, and compiles
+`debug` contract clauses; `-O <0|1|2|s>`
 sets the optimization level (default `1`); `-v` / `--verbose` prints more
 of what the command does.
 

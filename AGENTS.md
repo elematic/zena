@@ -296,9 +296,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
     `--experimental-wasm-compact-imports`, and wasmtime does not, so
     component targets reject it.
   - `--time`: Print compiler phase timings.
-  - Global flags before subcommand: `-g` / `--debug` (emit WASM name section
-    and disable inlining on run), `-O <0|1|2|s>` (optimization level; default
-    `1`).
+  - Global flags before subcommand: `-g` / `--debug` (emit WASM name section,
+    disable inlining on run, and compile `debug` contract clauses),
+    `-O <0|1|2|s>` (optimization level; default `1`).
 - **`build [target]`**: Run a Wireit build target using `zb` (e.g.,
   `zena-cli build`, `zena-cli build test`, or
   `zena-cli build ./packages/zb:test`).

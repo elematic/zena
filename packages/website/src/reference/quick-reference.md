@@ -454,6 +454,18 @@ class Counter {
 }
 ```
 
+A clause marked `debug` is checked under `zena test` and in builds made
+with `-g`, and left out of every other build. It suits a condition that
+costs more than the code it guards.
+
+```zena
+function search(items: FixedArray<i32>, target: i32): i32
+  debug requires (isSorted(items))
+{
+  // ...
+}
+```
+
 ### Multi-Value Returns
 
 Functions can return multiple values using unboxed tuples. Unlike regular tuples
