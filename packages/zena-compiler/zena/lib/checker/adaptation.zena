@@ -10,6 +10,7 @@ import { tryInstantiateGenericFunction } from './generics.zena';
 import { recordUnionMembersOf } from './members.zena';
 import { isAssignableTo, typesEqual } from './relations.zena';
 import { subtractNullFromType } from './unions.zena';
+import { inlineRecordOf } from './annotations.zena';
 import { growable } from 'zena:core';
 
 /**
@@ -22,7 +23,8 @@ import { growable } from 'zena:core';
  * A type parameter is not: its code is specialized per argument.
  */
 function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type) {
-  let targetBase = baseType(subtractNullFromType(target));
+  // An inline record slot is its record's fields: it knows the shape.
+  let targetBase = baseType(subtractNullFromType(inlineRecordOf(target) ?? target));
   if (targetBase is RecordT) {
     let targetRecord = targetBase;
     if (!targetRecord.isExistential) {

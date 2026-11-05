@@ -1,0 +1,26 @@
+// @mode: run
+// @result: 0
+// A function value whose result is inline returns its slots, and a call
+// through it takes them as a call to a function does.
+
+type Span = (i32, i32);
+
+function apply(f: (n: i32) => inline Span): i32 {
+  let (a, b) = f(3);
+  return a + b;
+}
+
+function first(f: () => inline (true, i32) | (false, String)): i32 {
+  if (let (true, n) = f()) {
+    return n;
+  }
+  return -1;
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (apply((n) => (n, n * 2)) != 9) { failures += 1; }
+  let found = (): inline (true, i32) | (false, String) => (true, 7);
+  if (first(found) != 7) { failures += 2; }
+  return failures;
+};

@@ -57,7 +57,7 @@ import {
   ClassCodegenInfo, WasmModule, WasmFunction, RecordDispatchInfo, ExplosionSpec,
 } from '../wasm-module.zena';
 import {
-  inlineParamLayoutOf, recordWasmFields, sortedOptionalNames,
+  inlineParamLayoutOf, inlineRecordResultOf, recordWasmFields, sortedOptionalNames,
   substituteTypeParamsInFunctionContext,
 } from '../type-mapping.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
@@ -1387,7 +1387,8 @@ function takesInlineParameter(wasm: WasmModule, f: WasmFunction): boolean {
 
 function candidateFor(wasm: WasmModule, pass: ReachabilityAnalysis,
     f: WasmFunction): Candidate | null {
-  if (takesInlineParameter(wasm, f)) {
+  // An inline record result is the fields already, for every caller.
+  if (takesInlineParameter(wasm, f) || inlineRecordResultOf(wasm, f) != null) {
     return null;
   }
   if (f.classType != null) {

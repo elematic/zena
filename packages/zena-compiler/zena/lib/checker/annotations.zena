@@ -501,29 +501,20 @@ export function resolveTypeAnnotation(ctx: CheckerContext, ann: TypeAnnotation, 
   return t;
 }
 
-/**
- * A function's result type annotation: it may be inline, but an inline
- * record result is not supported yet (#371, stage 5); a record result is
- * returned boxed, or its fields as an inline tuple.
- */
-export function resolveResultAnnotation(ctx: CheckerContext, ann: TypeAnnotation): Type {
-  let t = resolveTypeAnnotation(ctx, ann, true);
-  if (isInlineRecordType(t)) {
-    ctx.error("An inline record result is not supported yet: return the record, or its fields as an inline tuple.",
-        DiagnosticCode.TypeMismatch, ann.loc);
-  }
-  return t;
-}
-
 /** Whether `t` is an inline record, through aliases. */
 export function isInlineRecordType(t: Type): boolean {
+  return inlineRecordOf(t) != null;
+}
+
+/** The record an inline record type is, through aliases, or null. */
+export function inlineRecordOf(t: Type): RecordT | null {
   var curr = t;
   var hops = 0;
   while (curr is TypeAliasType && hops < maxAliasHops) {
     curr = curr.target;
     hops += 1;
   }
-  return curr is InlineRecordType;
+  return if (let InlineRecordType {record} = curr) record else null;
 }
 
 /**
@@ -803,7 +794,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
       let paramType = resolveTypeAnnotation(ctx, param);
             paramTypes.push(paramType);
     }
-    let retType = resolveResultAnnotation(ctx, returnType);
+    let retType = resolveTypeAnnotation(ctx, returnType, true);
     new FunctionType(paramTypes, retType)
   }
   case LiteralTypeAnnotation {value}: {
