@@ -74,37 +74,37 @@ export let tests = suite('Test Framework', () => {
   });
 
   suite('suite.run()', () => {
-    test('run() returns SuiteResult with correct name', (ctx) => {
+    test('run() returns SuiteResult with correct name', async (ctx) => {
       let s = suite('my suite', () => {
         test('a test', (ctx) => {});
       });
-      let result = s.run();
+      let result = await s.run();
       equal(result.name, 'my suite');
     });
 
-    test('passing test increments passed count', (ctx) => {
+    test('passing test increments passed count', async (ctx) => {
       let s = suite('passing suite', () => {
         test('passes', (ctx) => {
           equal(1, 1);
         });
       });
-      let result = s.run();
+      let result = await s.run();
       equal(result.passed, 1);
       equal(result.failed, 0);
     });
 
-    test('failing test increments failed count', (ctx) => {
+    test('failing test increments failed count', async (ctx) => {
       let s = suite('failing suite', () => {
         test('fails', (ctx) => {
           fail('intentional failure');
         });
       });
-      let result = s.run();
+      let result = await s.run();
       equal(result.passed, 0);
       equal(result.failed, 1);
     });
 
-    test('mixed passing and failing tests', (ctx) => {
+    test('mixed passing and failing tests', async (ctx) => {
       let s = suite('mixed suite', () => {
         test('passes 1', (ctx) => {
           equal(1, 1);
@@ -116,36 +116,36 @@ export let tests = suite('Test Framework', () => {
           isTrue(true);
         });
       });
-      let result = s.run();
+      let result = await s.run();
       equal(result.passed, 2);
       equal(result.failed, 1);
     });
 
-    test('test results contain correct pass/fail status', (ctx) => {
+    test('test results contain correct pass/fail status', async (ctx) => {
       let s = suite('status suite', () => {
         test('passes', (ctx) => {});
         test('fails', (ctx) => {
           fail();
         });
       });
-      let result = s.run();
+      let result = await s.run();
       equal(result.tests.length, 2);
       isTrue(result.tests[0].passed);
       isFalse(result.tests[1].passed);
     });
 
-    test('failing test result contains error message', (ctx) => {
+    test('failing test result contains error message', async (ctx) => {
       let s = suite('error suite', () => {
         test('fails with message', (ctx) => {
           fail('custom error message');
         });
       });
-      let result = s.run();
+      let result = await s.run();
       isFalse(result.tests[0].passed);
       isNotNull<String>(result.tests[0].error);
     });
 
-    test('nested suite results are aggregated', (ctx) => {
+    test('nested suite results are aggregated', async (ctx) => {
       let s = suite('outer', () => {
         test('outer passes', (ctx) => {});
         suite('inner', () => {
@@ -155,7 +155,7 @@ export let tests = suite('Test Framework', () => {
           });
         });
       });
-      let result = s.run();
+      let result = await s.run();
       // outer: 1 pass, inner: 1 pass + 1 fail = total 2 pass, 1 fail
       equal(result.passed, 2);
       equal(result.failed, 1);
@@ -173,7 +173,7 @@ export let tests = suite('Test Framework', () => {
       equal(s.tests.length, 1);
     });
 
-    test('skipped tests do not run', (ctx) => {
+    test('skipped tests do not run', async (ctx) => {
       let s = suite('skip suite', () => {
         test('runs', (ctx) => {});
         testSkip('skipped', (ctx) => {
@@ -181,7 +181,7 @@ export let tests = suite('Test Framework', () => {
         });
         test('also runs', (ctx) => {});
       });
-      let result = s.run();
+      let result = await s.run();
       // Only 2 tests run (the skipped one doesn't)
       equal(result.tests.length, 2);
       equal(result.passed, 2);
@@ -190,19 +190,19 @@ export let tests = suite('Test Framework', () => {
   });
 
   suite('testOnly', () => {
-    test('testOnly() filters to only that test', (ctx) => {
+    test('testOnly() filters to only that test', async (ctx) => {
       let s = suite('only suite', () => {
         test('skipped', (ctx) => {});
         testOnly('only this', (ctx) => {});
         test('also skipped', (ctx) => {});
       });
-      let result = s.run();
+      let result = await s.run();
       // Only 1 test runs
       equal(result.tests.length, 1);
       equal(result.passed, 1);
     });
 
-    test('testOnly() in nested suite filters parent tests', (ctx) => {
+    test('testOnly() in nested suite filters parent tests', async (ctx) => {
       let s = suite('outer', () => {
         test('outer test - should be skipped', (ctx) => {});
         suite('inner', () => {
@@ -211,7 +211,7 @@ export let tests = suite('Test Framework', () => {
         });
         test('another outer - should be skipped', (ctx) => {});
       });
-      let result = s.run();
+      let result = await s.run();
       // Outer tests are skipped, only the testOnly runs
       equal(result.tests.length, 0);
       equal(result.suites.length, 1);

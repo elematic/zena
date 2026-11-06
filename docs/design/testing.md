@@ -615,15 +615,30 @@ export let run = () => {
 
 ## Design Decisions
 
-### 1. Synchronous-First Design
+### 1. Synchronous and Asynchronous Test Bodies
 
-Since Zena doesn't yet have async/await, the initial implementation is purely
-synchronous. When async is added, we can extend the API:
+`test`, `testOnly` and `testSkip` each have two signatures, one for a
+synchronous body and one for a body that returns `Future<void>`:
 
 ```zena
-// Future async support
-export let test: (name: String, fn: (ctx: TestContext) => void | Promise<void>) => void;
+test('addition', (ctx) => {
+  equal(1 + 1, 2);
+});
+
+test('a file', async (ctx) => {
+  equal(await readFile('two.txt'), '2');
+});
 ```
+
+The runner awaits an asynchronous body before it starts the next test, so
+tests run one at a time in registration order. A failure before or after an
+`await` is the test's failure. `Suite.run` returns `Future<SuiteResult>` and
+`runAndReport` returns `Future<i32>`, and the `main` that `zena test` appends
+to a test file is `async`.
+
+A `Sync` form from `zena:fs` still works in a synchronous body that runs
+after an asynchronous one has suspended:
+`packages/stdlib/tests/test/async_test.zena` covers it.
 
 ### 2. Global Test Registry vs Explicit Runner
 
@@ -763,18 +778,7 @@ suite('Stdlib: assert', () => {
 
 ## Future Enhancements
 
-### 1. Async Test Support
-
-When async/await is implemented:
-
-```zena
-test('async operation', async (ctx) => {
-  let result = await fetchData();
-  equal(result.status, 200);
-});
-```
-
-### 2. Parameterized Tests
+### 1. Parameterized Tests
 
 ```zena
 testEach([
@@ -786,7 +790,7 @@ testEach([
 });
 ```
 
-### 3. Snapshot Testing
+### 2. Snapshot Testing
 
 ```zena
 test('renders correctly', (ctx) => {
@@ -795,15 +799,15 @@ test('renders correctly', (ctx) => {
 });
 ```
 
-### 4. Test Isolation
+### 3. Test Isolation
 
 Run tests in isolated contexts to prevent state leakage.
 
-### 5. Parallel Execution
+### 4. Parallel Execution
 
 When threading/workers are available.
 
-### 6. Custom Matchers
+### 5. Custom Matchers
 
 ```zena
 assert.register('toBeWithinRange', (actual, min, max) => {

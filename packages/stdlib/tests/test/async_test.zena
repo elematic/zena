@@ -1,0 +1,118 @@
+// Asynchronous test bodies: a body that returns a `Future` is awaited
+// before the next test starts, and its failure is the test's.
+import {suite, test, testOnly, testSkip} from 'zena:test';
+import {equal, isTrue, isNotNull, fail} from 'zena:assert';
+import {Completer, scheduleMicrotask} from 'zena:async';
+import {sleep, milliseconds} from 'zena:time';
+import {readFileSync, writeFileSync, readFile} from 'zena:fs';
+
+var log = '';
+var afterSuspension = '';
+
+/** Settles once the microtask queue has run. */
+function nextTick() {
+  let done = new Completer<void>();
+  scheduleMicrotask(() => {
+    done.complete();
+  });
+  return done.future;
+}
+
+export let tests = suite('Asynchronous tests', () => {
+  test('an async body runs to its end before the test passes', async (ctx) => {
+    var steps = 0;
+    await nextTick();
+    steps += 1;
+    await sleep(milliseconds(1));
+    steps += 1;
+    equal(steps, 2);
+    afterSuspension = 'ran';
+  });
+
+  // The test above returned to the host while it slept, so this body
+  // runs in a task the host resumed. A `Sync` read waits in `blockOn`
+  // there.
+  test('a synchronous test after a suspended one can block on a read', (ctx) => {
+    equal(afterSuspension, 'ran');
+    writeFileSync('/tmp/async-test-bodies.txt', 'written');
+    equal(readFileSync('/tmp/async-test-bodies.txt'), 'written');
+  });
+
+  test('an async body can await a file read', async (ctx) => {
+    equal(await readFile('/tmp/async-test-bodies.txt'), 'written');
+  });
+
+  test('tests run in order, each after the one before has settled', async (ctx) => {
+    log = '';
+    let s = suite('ordered', () => {
+      test('a', async (ctx) => {
+        await sleep(milliseconds(2));
+        log = log + 'a';
+      });
+      test('b', (ctx) => {
+        log = log + 'b';
+      });
+      test('c', async (ctx) => {
+        await nextTick();
+        log = log + 'c';
+      });
+      suite('nested', () => {
+        test('d', async (ctx) => {
+          await nextTick();
+          log = log + 'd';
+        });
+      });
+    });
+    let result = await s.run();
+    equal(log, 'abcd');
+    equal(result.passed, 4);
+    equal(result.failed, 0);
+  });
+
+  test('a failure after an await fails the test', async (ctx) => {
+    let s = suite('failing', () => {
+      test('fails late', async (ctx) => {
+        await nextTick();
+        fail('after the await');
+      });
+      test('still runs', (ctx) => {});
+    });
+    let result = await s.run();
+    equal(result.failed, 1);
+    equal(result.passed, 1);
+    let failed = result.tests[0];
+    equal(failed.name, 'fails late');
+    isNotNull<String>(failed.error);
+    isTrue((failed.error as String).contains('after the await'));
+  });
+
+  test('a failure before the first await fails the test', async (ctx) => {
+    let s = suite('failing early', () => {
+      test('fails early', async (ctx) => {
+        fail('before any await');
+      });
+    });
+    let result = await s.run();
+    equal(result.failed, 1);
+    equal(result.passed, 0);
+  });
+
+  test('testOnly and testSkip take async bodies', async (ctx) => {
+    log = '';
+    let s = suite('selected', () => {
+      test('not selected', async (ctx) => {
+        log = log + 'x';
+      });
+      testOnly('selected', async (ctx) => {
+        await nextTick();
+        log = log + 'o';
+      });
+      testSkip('skipped', async (ctx) => {
+        log = log + 's';
+      });
+    });
+    let result = await s.run();
+    equal(log, 'o');
+    equal(result.passed, 1);
+  });
+});
