@@ -22,30 +22,41 @@ Commands run through `sh -c` in the package directory with
 
 Working today:
 
-- wireit script configs: `command`, `files`, `output`, string
-  `dependencies` (including `../pkg:script` and dependency-only scripts),
+- wireit script configs: `command`, `files`, `output`, `dependencies`
+  (strings, `../pkg:script`, dependency-only scripts, and `{script,
+cascade}` objects), `env` (literal values and `{external: true,
+default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
   `clean` (`true`/`false`/`if-file-deleted`), comment keys
-- wireit's tracking rules: a script with a command is only fresh or
+- wireit's tracking rules: a task script with a command is fresh or
   cacheable when both `files` and `output` are declared (an explicit
   `[]` counts); omitting either means unknown inputs or outputs, so the
-  script always runs and so do its dependents. Command-less scripts are
-  dependency groups.
-- bare npm scripts as always-run commands (with the same dependent
-  poisoning)
+  script always runs and its cascading dependents rerun too. Services
+  track their identity when `files` is declared, and command-less
+  scripts forward their resolved inputs as dependency/fileset groups.
+- lazy per-step input expansion and an in-run `(mtime, size)` hash memo:
+  a step's `files` globs expand after its dependencies finish, so
+  `cascade: false` fileset bridges hash generated artifacts accurately
+  while warm builds hash each shared input once
+- one-shot services: started on demand when a dependent executes, gated
+  on `readyWhen.lineMatches` when configured, shared across dependents,
+  skipped when all dependents are fresh or cached, and stopped as a Unix
+  process group (`SIGTERM` then `SIGKILL`). Invoking a service directly
+  as the top-level target runs its dependencies and streams the service
+  in the foreground.
+- bare npm scripts as always-run commands (with dependent poisoning)
 - content-addressed local cache under `.zb/` (state file, per-key
   manifests, blob store); lost state restores from cache instead of
   rebuilding
 - bounded parallel command execution (`-j <jobs>`, defaulting to
   `ZENA_AVAILABLE_PARALLELISM`)
-- precise cleaning: exactly the previous run's outputs are deleted, not a
-  glob guess
+- precise cleaning: the previous run's recorded file outputs are deleted
 
 Not yet (see the design doc's milestones):
 
-- services and watch mode
-- `packageLocks` fingerprinting; wireit's `env` and object-form
-  dependencies are rejected loudly
-- an mtime memo for input hashing — every run rehashes all inputs
+- watch mode (re-running on file edits with pinned long-lived services)
+- `packageLocks` fingerprinting
+- cross-run persistent mtime memo — each invocation hashes referenced
+  inputs once per run
 - output freshness trusts the disk: deleting an output file by hand does
   not make its step stale
 - remote caches, per-output incremental deltas to commands
@@ -57,8 +68,10 @@ Prerequisite: a built checkout (`npm run build`), so
 root:
 
 ```sh
+./target/release/zena-cli build [-j <jobs>] [<target>]
+# or directly:
 ./target/release/zena-cli run --dir . --allow-spawn packages/zb/zena/main.zena \
-  [-C <workspace-root>] [<package-dir>] <script>
+  [-C <workspace-root>] [-j <jobs>] [<package-dir>] <script>
 ```
 
 `--dir .` grants filesystem access and `--allow-spawn` process spawning;

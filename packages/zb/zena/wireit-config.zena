@@ -6,6 +6,7 @@ import {
   JsonValue,
   parseJson,
 } from 'zena:json';
+import {compareStrings, sortBy} from 'workflow:canonical';
 import {joinWorkspace} from './fs-util.zena';
 
 /** Raised for malformed or unsupported build configuration. */
@@ -21,6 +22,29 @@ export function refKey(ref: ScriptRef): String {
   return `${ref.packageDir}:${ref.script}`;
 }
 
+/** A resolved dependency edge, with wireit's `cascade` flag (default true). */
+export class DependencySpec(ref: ScriptRef, cascade: boolean)
+
+/**
+ * Service configuration: `readyWhenLineMatches` is null for `service: true`
+ * (ready on spawn) or a regex pattern string for `readyWhen.lineMatches`.
+ */
+export class ServiceConfig(readyWhenLineMatches: String?)
+
+/** One entry in a script's `env` map. */
+export sealed class EnvBinding {
+  case EnvLiteral, EnvExternal
+}
+
+/** Sets the environment variable to a fixed string value. */
+export final class EnvLiteral(value: String) extends EnvBinding
+
+/**
+ * Fingerprints an environment variable from the caller's environment,
+ * optionally falling back to `defaultValue` when unset.
+ */
+export final class EnvExternal(defaultValue: String?) extends EnvBinding
+
 /**
  * One script's configuration. For a wireit script the fields come from
  * the wireit block; a bare npm script has only a command and always
@@ -35,27 +59,34 @@ export class ScriptConfig {
   output: Array<String>;
   /**
    * Whether the config declared the key at all. Omitting `files` or
-   * `output` means the inputs or outputs are unknown (wireit
-   * semantics): the script is never fresh, never cached, and its
-   * dependents cannot be either. An explicit empty array means
-   * "declared none" and tracks fully.
+   * `output` on a task script means the inputs or outputs are unknown
+   * (wireit semantics): the script is never fresh, never cached, and
+   * its cascading dependents cannot be either. An explicit empty array
+   * means "declared none" and tracks fully. Services forbid `output`
+   * and track their identity whenever `files` is declared.
    */
   filesDeclared: boolean;
   outputDeclared: boolean;
-  dependencies: Array<ScriptRef>;
+  dependencies: Array<DependencySpec>;
   /** 'true', 'false', or 'if-file-deleted'. */
   clean: String;
-  service: boolean;
+  service: ServiceConfig?;
+  /** Sorted by variable name. */
+  env: Array<(String, EnvBinding)>;
 
   /**
    * True when freshness and caching apply to this script at all. A
-   * command-less script is a dependency group and always tracks; one
-   * with a command needs both `files` and `output` declared.
+   * command-less script is a dependency group and always tracks; a
+   * service tracks when `files` is declared; a command task needs both
+   * `files` and `output` declared.
    */
   fingerprintable: boolean {
     get {
       if (!this.isWireit) {
         return false;
+      }
+      if (this.service != null) {
+        return this.filesDeclared;
       }
       if (this.command == null) {
         return true;
@@ -75,14 +106,18 @@ export class ScriptConfig {
     this.dependencies,
     this.clean,
     this.service,
+    this.env,
   );
 }
 
+function isCommentKey(key: String) {
+  return key == '//' || key.startsWith('#');
+}
+
 function isRecognizedKey(key: String) {
-  // Keys starting with '#' are comments by convention, like '//'.
   return key == 'command' || key == 'files' || key == 'output' ||
     key == 'dependencies' || key == 'clean' || key == 'service' ||
-    key == 'packageLocks' || key == '//' || key.startsWith('#');
+    key == 'env' || key == 'packageLocks' || isCommentKey(key);
 }
 
 function stringList(value: JsonValue, what: String): Array<String> {
@@ -133,6 +168,146 @@ export function resolveDependency(from: String, dep: String): ScriptRef {
     return new ScriptRef(target, dep.sliceBytes(colon + 1, dep.length));
   }
   return new ScriptRef(from, dep);
+}
+
+function parseDependency(
+  packageDir: String,
+  where: String,
+  dep: JsonValue,
+): DependencySpec {
+  if (dep is String) {
+    return new DependencySpec(resolveDependency(packageDir, dep), true);
+  }
+  if (dep is JsonObject) {
+    dep.forEach((key, value) => {
+      if (key != 'script' && key != 'cascade' && !isCommentKey(key)) {
+        throw new ConfigError(
+          `script "${where}": dependency object has unsupported key "${key}"`,
+        );
+      }
+    });
+    let rawScript = dep['script'];
+    if (!(rawScript is String)) {
+      throw new ConfigError(
+        `script "${where}": dependency object requires a string "script"`,
+      );
+    }
+    var cascade = true;
+    let rawCascade = dep['cascade'];
+    if (rawCascade != null) {
+      if (rawCascade is Box<boolean>) {
+        cascade = rawCascade.value;
+      } else {
+        throw new ConfigError(
+          `script "${where}": dependency "cascade" must be a boolean`,
+        );
+      }
+    }
+    return new DependencySpec(resolveDependency(packageDir, rawScript), cascade);
+  }
+  throw new ConfigError(
+    `script "${where}": dependencies entries must be strings or {script, cascade} objects`,
+  );
+}
+
+function parseService(where: String, rawService: JsonValue): ServiceConfig? {
+  if (rawService == null) {
+    return null;
+  }
+  if (rawService is Box<boolean>) {
+    return if (rawService.value) new ServiceConfig(null) else null;
+  }
+  if (rawService is JsonObject) {
+    rawService.forEach((key, value) => {
+      if (key != 'readyWhen' && !isCommentKey(key)) {
+        throw new ConfigError(
+          `script "${where}": service has unsupported key "${key}"`,
+        );
+      }
+    });
+    let rawReady = rawService['readyWhen'];
+    if (rawReady == null) {
+      return new ServiceConfig(null);
+    }
+    if (!(rawReady is JsonObject)) {
+      throw new ConfigError(
+        `script "${where}": service.readyWhen must be an object`,
+      );
+    }
+    rawReady.forEach((key, value) => {
+      if (key != 'lineMatches' && !isCommentKey(key)) {
+        throw new ConfigError(
+          `script "${where}": service.readyWhen has unsupported key "${key}"`,
+        );
+      }
+    });
+    let lineMatches = rawReady['lineMatches'];
+    if (!(lineMatches is String) || lineMatches == '') {
+      throw new ConfigError(
+        `script "${where}": service.readyWhen.lineMatches must be a non-empty string`,
+      );
+    }
+    return new ServiceConfig(lineMatches);
+  }
+  throw new ConfigError(
+    `script "${where}": service must be a boolean or an object`,
+  );
+}
+
+function parseEnv(
+  where: String,
+  rawEnv: JsonValue,
+): Array<(String, EnvBinding)> {
+  let out = new GrowableArray<(String, EnvBinding)>();
+  if (rawEnv == null) {
+    return out;
+  }
+  if (!(rawEnv is JsonObject)) {
+    throw new ConfigError(`script "${where}": env must be an object`);
+  }
+  rawEnv.forEach((name, value) => {
+    if (isCommentKey(name)) {
+      return;
+    }
+    if (value is String) {
+      out.push((name, new EnvLiteral(value)));
+    } else if (value is JsonObject) {
+      value.forEach((key, v) => {
+        if (key != 'external' && key != 'default' && !isCommentKey(key)) {
+          throw new ConfigError(
+            `script "${where}": env.${name} has unsupported key "${key}"`,
+          );
+        }
+      });
+      let ext = value['external'];
+      if (!(ext is Box<boolean>) || !ext.value) {
+        throw new ConfigError(
+          `script "${where}": env.${name} object must specify "external": true`,
+        );
+      }
+      var defaultValue: String? = null;
+      let rawDefault = value['default'];
+      if (rawDefault != null) {
+        if (rawDefault is String) {
+          defaultValue = rawDefault;
+        } else {
+          throw new ConfigError(
+            `script "${where}": env.${name}.default must be a string`,
+          );
+        }
+      }
+      out.push((name, new EnvExternal(defaultValue)));
+    } else {
+      throw new ConfigError(
+        `script "${where}": env.${name} must be a string or {"external": true}`,
+      );
+    }
+  });
+  sortBy(
+    out,
+    (a: (String, EnvBinding), b: (String, EnvBinding)) => compareStrings(a[0], b[0]),
+  );
+  return out;
 }
 
 /**
@@ -206,21 +381,14 @@ export class WireitWorkspace {
         }
       }
 
-      let deps = new GrowableArray<ScriptRef>();
+      let deps = new GrowableArray<DependencySpec>();
       let rawDeps = wireitEntry['dependencies'];
       if (rawDeps != null) {
         if (!(rawDeps is JsonArray)) {
           throw new ConfigError(`script "${where}": dependencies must be an array`);
         }
         for (var i = 0; i < rawDeps.length; i += 1) {
-          let dep = rawDeps[i];
-          if (dep is String) {
-            deps.push(resolveDependency(ref.packageDir, dep));
-          } else {
-            throw new ConfigError(
-              `script "${where}": only string dependencies are supported`,
-            );
-          }
+          deps.push(parseDependency(ref.packageDir, where, rawDeps[i]));
         }
       }
 
@@ -241,20 +409,12 @@ export class WireitWorkspace {
         }
       }
 
-      var service = false;
-      let rawService = wireitEntry['service'];
-      if (rawService != null) {
-        if (rawService is Box<boolean>) {
-          service = rawService.value;
-        } else {
-          throw new ConfigError(
-            `script "${where}": only boolean service is supported`,
-          );
-        }
-      }
-
-      if (command == null && service) {
+      let service = parseService(where, wireitEntry['service']);
+      if (command == null && service != null) {
         throw new ConfigError(`script "${where}": a service needs a command`);
+      }
+      if (service != null && wireitEntry['output'] != null) {
+        throw new ConfigError(`script "${where}": a service cannot declare output`);
       }
 
       return new ScriptConfig(
@@ -268,6 +428,7 @@ export class WireitWorkspace {
         deps,
         clean,
         service,
+        parseEnv(where, wireitEntry['env']),
       );
     }
 
@@ -286,9 +447,10 @@ export class WireitWorkspace {
         new GrowableArray<String>(),
         false,
         false,
-        new GrowableArray<ScriptRef>(),
+        new GrowableArray<DependencySpec>(),
         'false',
-        false,
+        null,
+        new GrowableArray<(String, EnvBinding)>(),
       );
     }
 
@@ -314,7 +476,7 @@ export class WireitWorkspace {
       let config = this.scriptConfig(ref);
       out.push(config);
       for (let dep in config.dependencies) {
-        queue.push(dep);
+        queue.push(dep.ref);
       }
     }
     return out;

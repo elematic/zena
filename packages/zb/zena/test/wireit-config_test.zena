@@ -1,8 +1,11 @@
 import {suite, test} from 'zena:test';
-import {equal, isFalse, isNull, isTrue, throws} from 'zena:assert';
+import {equal, isFalse, isNotNull, isNull, isTrue, throws} from 'zena:assert';
 import {joinWorkspace} from '../fs-util.zena';
 import {
+  EnvExternal,
+  EnvLiteral,
   ScriptRef,
+  ServiceConfig,
   WireitWorkspace,
   refKey,
   resolveDependency,
@@ -26,7 +29,14 @@ function fixture() {
         "files": ["src/**/*.ts", "tsconfig.json"],
         "output": ["lib/**"],
         "clean": "if-file-deleted",
-        "dependencies": ["../lib:build", "build:codegen"]
+        "env": {
+          "NODE_ENV": "production",
+          "OPT_LEVEL": {"external": true, "default": "2"}
+        },
+        "dependencies": [
+          "../lib:build",
+          {"script": "build:codegen", "cascade": false}
+        ]
       },
       "build:codegen": {
         "command": "node gen.js",
@@ -39,7 +49,7 @@ function fixture() {
     }
   }`,
     'packages/lib/package.json' => `{
-    "scripts": {"build": "wireit", "serve": "wireit"},
+    "scripts": {"build": "wireit", "serve": "wireit", "emulate": "wireit"},
     "wireit": {
       "build": {
         "command": "tsc",
@@ -50,7 +60,12 @@ function fixture() {
       "serve": {
         "command": "node server.js",
         "service": true,
+        "files": ["server.js"],
         "dependencies": ["build"]
+      },
+      "emulate": {
+        "command": "node emu.js",
+        "service": {"readyWhen": {"lineMatches": "Ready on [0-9]+"}}
       }
     }
   }`,
@@ -100,7 +115,7 @@ export let tests = suite('wireit-config', () => {
     });
   });
 
-  test('wireit scripts parse fully', () => {
+  test('wireit scripts, cascade flags, and env bindings parse', () => {
     let ws = fixture();
     let config = ws.scriptConfig(new ScriptRef('packages/app', 'build'));
     isTrue(config.isWireit);
@@ -109,19 +124,50 @@ export let tests = suite('wireit-config', () => {
     equal(config.files[0], 'src/**/*.ts');
     equal(config.output.length, 1);
     equal(config.clean, 'if-file-deleted');
-    isFalse(config.service);
+    isNull(config.service);
     equal(config.dependencies.length, 2);
-    equal(refKey(config.dependencies[0]), 'packages/lib:build');
-    equal(refKey(config.dependencies[1]), 'packages/app:build:codegen');
+    equal(refKey(config.dependencies[0].ref), 'packages/lib:build');
+    isTrue(config.dependencies[0].cascade);
+    equal(refKey(config.dependencies[1].ref), 'packages/app:build:codegen');
+    isFalse(config.dependencies[1].cascade);
+
+    // Env bindings are sorted by variable name.
+    equal(config.env.length, 2);
+    equal(config.env[0][0], 'NODE_ENV');
+    let firstEnv = config.env[0][1];
+    if (firstEnv is EnvLiteral) {
+      equal(firstEnv.value, 'production');
+    } else {
+      throws(() => { throw new Error('expected EnvLiteral'); });
+    }
+    equal(config.env[1][0], 'OPT_LEVEL');
+    let secondEnv = config.env[1][1];
+    if (secondEnv is EnvExternal) {
+      equal(secondEnv.defaultValue, '2');
+    } else {
+      throws(() => { throw new Error('expected EnvExternal'); });
+    }
   });
 
   test('clean and service forms parse', () => {
     let ws = fixture();
     let lib = ws.scriptConfig(new ScriptRef('packages/lib', 'build'));
     equal(lib.clean, 'false');
+
     let serve = ws.scriptConfig(new ScriptRef('packages/lib', 'serve'));
-    isTrue(serve.service);
+    let serveSvc = serve.service;
+    isNotNull(serveSvc);
+    if (serveSvc != null) {
+      isNull(serveSvc.readyWhenLineMatches);
+    }
     equal(serve.dependencies.length, 1);
+
+    let emulate = ws.scriptConfig(new ScriptRef('packages/lib', 'emulate'));
+    let emuSvc = emulate.service;
+    isNotNull(emuSvc);
+    if (emuSvc != null) {
+      equal(emuSvc.readyWhenLineMatches, 'Ready on [0-9]+');
+    }
   });
 
   test('dependency-only wireit scripts need no scripts entry', () => {
@@ -131,12 +177,16 @@ export let tests = suite('wireit-config', () => {
     equal(config.command, 'true');
   });
 
-  test('fingerprintability follows declared files and output', () => {
+  test('fingerprintability follows declared files and output (and files for services)', () => {
     let ws = fixture();
     // Command with files and output declared: fully tracked.
     isTrue(ws.scriptConfig(new ScriptRef('packages/app', 'build')).fingerprintable);
     // Command without files/output keys: unknown inputs, never fresh.
     isFalse(ws.scriptConfig(new ScriptRef('packages/app', 'build:dep-only')).fingerprintable);
+    // Service with files declared: tracked identity.
+    isTrue(ws.scriptConfig(new ScriptRef('packages/lib', 'serve')).fingerprintable);
+    // Service without files declared: untracked identity.
+    isFalse(ws.scriptConfig(new ScriptRef('packages/lib', 'emulate')).fingerprintable);
     // No command at all: a dependency group, always tracked.
     isTrue(ws.scriptConfig(new ScriptRef('', 'build')).fingerprintable);
     // Bare npm script: always runs.
@@ -173,21 +223,27 @@ export let tests = suite('wireit-config', () => {
     });
   });
 
-  test('unsupported keys fail loudly', () => {
-    let files = {
-      'package.json' => `{
-        "scripts": {"x": "wireit"},
-        "wireit": {"x": {"command": "true", "cascade": false}}
-      }`,
+  test('unsupported keys and invalid service/dependency/env shapes fail loudly', () => {
+    let checkThrows = (json: String) => {
+      let ws = new WireitWorkspace((path: String): String? => {
+        return if (path == 'package.json') json else null;
+      });
+      throws(() => {
+        ws.scriptConfig(new ScriptRef('', 'x'));
+      });
     };
-    let ws = new WireitWorkspace((path: String): String? => {
-      if (let (true, content) = files.get(path)) {
-        return content;
-      }
-      return null;
-    });
-    throws(() => {
-      ws.scriptConfig(new ScriptRef('', 'x'));
-    });
+
+    // Unknown top-level wireit key.
+    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "bogus": 1}}}`);
+    // Service declaring output.
+    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "service": true, "output": []}}}`);
+    // Service without command.
+    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"service": true}}}`);
+    // Invalid readyWhen key.
+    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "service": {"readyWhen": {"port": 8080}}}}}`);
+    // Invalid dependency object key.
+    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"dependencies": [{"script": "y", "extra": 1}]}}}`);
+    // Invalid env external: false.
+    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "env": {"FOO": {"external": false}}}}}`);
   });
 });

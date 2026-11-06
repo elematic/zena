@@ -17,7 +17,7 @@
  */
 
 import { Future } from 'zena:async';
-import { Own } from 'zena:core';
+import { Own, Some } from 'zena:core';
 import { Command, Process as HostProcess, Finished } from 'zena-cli:host/process';
 
 /** How a process ended, and what it wrote. */
@@ -82,6 +82,43 @@ export resource class Process {
     this.#result = result;
     return result;
   }
+
+  /** Whether the process has already exited. */
+  hasExited(): boolean {
+    if (this.#result != null) {
+      return true;
+    }
+    return this.#proc.hasExited();
+  }
+
+  /**
+   * Reads the next line written to stdout or stderr (without its `\n` or
+   * `\r\n`), or `null` once both streams close. Returns `null` immediately
+   * when stdio is inherited. Lines read here are still included in the
+   * final `ProcessResult`.
+   */
+  async readLine(): Future<String | null> {
+    let next = await this.#proc.readLine();
+    if (next is Some<String>) {
+      return next.value;
+    }
+    return null;
+  }
+
+  /**
+   * Asks the process to stop (`SIGTERM` on Unix, sent to its process group
+   * when started with `processGroup: true`), waits up to `graceMillis`
+   * for it to exit, and force-kills it if it is still running.
+   */
+  async stop(graceMillis: i64 = 2000): Future<ProcessResult> {
+    let cached = this.#result;
+    if (cached != null) {
+      return cached;
+    }
+    let result = resultOf(await this.#proc.stop(graceMillis));
+    this.#result = result;
+    return result;
+  }
 }
 
 /** How to start a process. Every field may be left out. */
@@ -97,6 +134,11 @@ export type SpawnOptions = {
    * into the result if absent.
    */
   inheritStdio?: boolean,
+  /**
+   * Start the process in a new process group of its own on Unix, so
+   * `stop` and timeouts reach any child processes it spawns too.
+   */
+  processGroup?: boolean,
   /**
    * Written to the process's stdin, which is then closed. The process
    * reads end of input straight away if absent.
@@ -126,6 +168,10 @@ export function spawnWith(argv: Array<String>, options: SpawnOptions): Own<Proce
   let {inheritStdio = false} = options;
   if (inheritStdio) {
     cmd.inheritStdio();
+  }
+  let {processGroup = false} = options;
+  if (processGroup) {
+    cmd.processGroup();
   }
   if (let {input} = options) {
     cmd.input(input.toBytes());

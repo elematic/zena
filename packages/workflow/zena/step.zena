@@ -1,3 +1,4 @@
+import {ResolvedInput} from './canonical.zena';
 import {InputDelta} from './delta.zena';
 import {Fingerprint} from './fingerprint.zena';
 import {OutputManifest} from './manifest.zena';
@@ -5,9 +6,9 @@ import {OutputManifest} from './manifest.zena';
 /** The stable identity of a step across runs. */
 export class StepKey(value: String)
 
-/** A step input: a named leaf value or a dependency on another step. */
+/** A step input: a named leaf value, a lazy leaf set, or a dependency on another step. */
 export sealed class InputRef {
-  case LeafInput, StepOutputs
+  case LeafInput, LeafSet, StepOutputs, StepOrder
 }
 
 /**
@@ -18,6 +19,18 @@ export sealed class InputRef {
 export final class LeafInput(name: String) extends InputRef
 
 /**
+ * A named set of leaf inputs resolved lazily once this step's
+ * dependencies have settled. For a build system, this expands and
+ * hashes input globs after upstream steps have written generated files
+ * into the workspace. Each `(name, fingerprint)` pair enters the cache
+ * key in the `leaf:` namespace, just like `LeafInput`.
+ */
+export final class LeafSet(
+  name: String,
+  resolve: () => Future<Array<(String, Fingerprint)>>,
+) extends InputRef
+
+/**
  * A dependency on another step: an ordering edge in the graph. For a
  * task dependency this contributes the producing step's output
  * manifest to the cache key; for a service dependency it contributes
@@ -25,6 +38,16 @@ export final class LeafInput(name: String) extends InputRef
  * ready while the dependent runs.
  */
 export final class StepOutputs(step: StepKey) extends InputRef
+
+/**
+ * An ordering-only dependency on another step (such as wireit's
+ * `"cascade": false`). Like `StepOutputs`, the engine waits for a task
+ * dependency to succeed (or skips on failure) and starts and holds a
+ * service dependency while this step executes, without adding the
+ * upstream step's manifest or identity fingerprint to this step's
+ * cache key.
+ */
+export final class StepOrder(step: StepKey) extends InputRef
 
 /**
  * What a task step's run callback receives. When the last recorded run
@@ -50,11 +73,21 @@ export class RunContext {
    */
   staleOutputs: Array<String>?;
 
+  /**
+   * This run's resolved inputs (`leaf:`, `step:`, `service:`),
+   * allowing group or fileset steps to forward input fingerprints.
+   */
+  inputs: Array<ResolvedInput>;
+
   new(
     delta: InputDelta? = null,
     previous: OutputManifest? = null,
     staleOutputs: Array<String>? = null,
-  ) : delta = delta, previous = previous, staleOutputs = staleOutputs;
+    inputs: Array<ResolvedInput>? = null,
+  ) : delta = delta,
+      previous = previous,
+      staleOutputs = staleOutputs,
+      inputs = inputs ?? new GrowableArray<ResolvedInput>();
 }
 
 /** What a service step's start callback receives. */

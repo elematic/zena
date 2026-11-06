@@ -6,9 +6,11 @@ import {OutputManifest} from '../manifest.zena';
 import {
   InputRef,
   LeafInput,
+  LeafSet,
   RunContext,
   Step,
   StepKey,
+  StepOrder,
   StepOutputs,
   TaskStep,
 } from '../step.zena';
@@ -120,5 +122,32 @@ export let tests = suite('graph', () => {
     let g = new Graph([step('a', none)]);
     isNotNull(g.get(new StepKey('a')));
     isNull(g.get(new StepKey('missing')));
+  });
+
+  test('StepOrder orders steps and shares duplicate checking with StepOutputs', () => {
+    let bInputs = new GrowableArray<InputRef>();
+    bInputs.push(new StepOrder(new StepKey('a')));
+    let b: Step = new TaskStep(new StepKey('b'), new Fingerprint('cfg'), bInputs, noRun);
+    let g = new Graph([b, step('a', none)]);
+    less(positionOf(g, 'a'), positionOf(g, 'b'));
+
+    let dupInputs = new GrowableArray<InputRef>();
+    dupInputs.push(new StepOutputs(new StepKey('a')));
+    dupInputs.push(new StepOrder(new StepKey('a')));
+    let bad: Step = new TaskStep(new StepKey('b'), new Fingerprint('cfg'), dupInputs, noRun);
+    throws(() => {
+      new Graph([step('a', none), bad]);
+    });
+  });
+
+  test('LeafSet rejects duplicate set names', () => {
+    let empty = () => Future.of<Array<(String, Fingerprint)>>(new GrowableArray<(String, Fingerprint)>());
+    let inputs = new GrowableArray<InputRef>();
+    inputs.push(new LeafSet('files', empty));
+    inputs.push(new LeafSet('files', empty));
+    let s: Step = new TaskStep(new StepKey('build'), new Fingerprint('cfg'), inputs, noRun);
+    throws(() => {
+      new Graph([s]);
+    });
   });
 });

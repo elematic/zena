@@ -18,9 +18,11 @@ import {EngineState} from '../state.zena';
 import {
   InputRef,
   LeafInput,
+  LeafSet,
   RunContext,
   Step,
   StepKey,
+  StepOrder,
   StepOutputs,
   TaskStep,
 } from '../step.zena';
@@ -338,5 +340,103 @@ export let tests = suite('engine', () => {
     let result = runFuture(running);
     isTrue(result.allSucceeded);
     equal(maxSeen, 2);
+  });
+
+  test('StepOrder orders execution without contributing to cache keys, and LeafSet resolves after upstream runs', () => {
+    let runs = new Runs();
+    var generatedFp = 'missing';
+    var producerRun = 0;
+
+    let mkGraph = () => {
+      let producer: Step = new TaskStep(
+        new StepKey('cargo'),
+        // Changing config every run forces cargo to rerun with a new output manifest.
+        new Fingerprint('cfg:' + i32ToString(producerRun)),
+        new GrowableArray<InputRef>(),
+        (ctx) => {
+          producerRun += 1;
+          runs.record('cargo');
+          if (generatedFp == 'missing') {
+            generatedFp = 'bin-v1';
+          }
+          return Future.of(new OutputManifest([
+            new OutputEntry('$volatile', new Fingerprint('vol:' + i32ToString(producerRun))),
+          ]));
+        },
+      );
+      let bridgeInputs = new GrowableArray<InputRef>();
+      bridgeInputs.push(new StepOrder(new StepKey('cargo')));
+      bridgeInputs.push(new LeafSet('files', async (): Future<Array<(String, Fingerprint)>> => {
+        let pairs = new GrowableArray<(String, Fingerprint)>();
+        pairs.push(('target/bin', new Fingerprint(generatedFp)));
+        return pairs;
+      }));
+      let bridge: Step = new TaskStep(
+        new StepKey('binary'),
+        new Fingerprint('cfg:binary'),
+        bridgeInputs,
+        (ctx) => {
+          runs.record('binary');
+          let out = new GrowableArray<OutputEntry>();
+          for (let inp in ctx.inputs) {
+            out.push(new OutputEntry('$in:' + inp.name, new Fingerprint('ref:' + inp.fingerprint.value)));
+          }
+          return Future.of(new OutputManifest(out));
+        },
+      );
+      return new Graph([bridge, producer]);
+    };
+
+    let engine = new Engine(digest, new NullCache());
+    let first = runFuture(engine.run(mkGraph(), new HashMap<String, Fingerprint>(), EngineState.empty()));
+    isTrue(first.allSucceeded);
+    equal(runs.log[0], 'cargo');
+    equal(runs.log[1], 'binary');
+
+    // Second run: cargo reruns and produces a new manifest, but binary's
+    // StepOrder ignores cargo's manifest and sees target/bin still at bin-v1.
+    let second = runFuture(engine.run(mkGraph(), new HashMap<String, Fingerprint>(), first.state));
+    isTrue(second.allSucceeded);
+    equal(runs.count('cargo'), 2);
+    equal(runs.count('binary'), 1);
+    isTrue(sourceOf(second, 'binary') == StepSource.Fresh);
+
+    // Third run: target/bin changes to bin-v2, so binary reruns.
+    generatedFp = 'bin-v2';
+    let third = runFuture(engine.run(mkGraph(), new HashMap<String, Fingerprint>(), second.state));
+    isTrue(third.allSucceeded);
+    equal(runs.count('binary'), 2);
+    isTrue(sourceOf(third, 'binary') == StepSource.Ran);
+  });
+
+  test('StepOrder skips dependents without running LeafSet when upstream fails', () => {
+    var leafSetCalled = false;
+    let bad: Step = new TaskStep(
+      new StepKey('bad'),
+      new Fingerprint('cfg:bad'),
+      new GrowableArray<InputRef>(),
+      async (ctx): Future<OutputManifest> => {
+        throw new Error('compile failed');
+      },
+    );
+    let childInputs = new GrowableArray<InputRef>();
+    childInputs.push(new StepOrder(new StepKey('bad')));
+    childInputs.push(new LeafSet('files', async (): Future<Array<(String, Fingerprint)>> => {
+      leafSetCalled = true;
+      return new GrowableArray<(String, Fingerprint)>();
+    }));
+    let child: Step = new TaskStep(
+      new StepKey('child'),
+      new Fingerprint('cfg:child'),
+      childInputs,
+      (ctx) => Future.of(OutputManifest.empty()),
+    );
+    let engine = new Engine(digest, new NullCache());
+    let result = runFuture(
+      engine.run(new Graph([bad, child]), new HashMap<String, Fingerprint>(), EngineState.empty()),
+    );
+    isTrue(result.outcomeOf(new StepKey('bad')) is Failed);
+    isTrue(result.outcomeOf(new StepKey('child')) is Skipped);
+    isFalse(leafSetCalled);
   });
 });

@@ -7,7 +7,7 @@ import {
   listDir,
   listDirSync,
   readFileBytes,
-  readFileBytesSync,
+  stat,
 } from 'zena:fs';
 import { HashSet } from 'zena:collections';
 import {compareStrings, sortBy} from 'workflow:canonical';
@@ -201,19 +201,73 @@ export async function hashFile(root: String, path: String): Future<Fingerprint> 
   return new Fingerprint('sha256:' + sha256Hex(await readFileBytes(withRoot(root, path))));
 }
 
-export function hashFileSync(root: String, path: String): Fingerprint {
-  return new Fingerprint('sha256:' + sha256Hex(readFileBytesSync(withRoot(root, path))));
+/** Validates glob patterns up front so escaping globs fail at plan time. */
+export function validateGlobs(packageDir: String, globs: Array<String>): void {
+  for (let raw in globs) {
+    var pattern = raw;
+    if (pattern.startsWith('!')) {
+      pattern = pattern.sliceBytes(1, pattern.length);
+    }
+    let workspaceRelative = joinWorkspace(packageDir, pattern);
+    if (workspaceRelative.startsWith('..') || isAbsolute(workspaceRelative)) {
+      throw new ConfigError(
+        `glob "${raw}" in ${packageDir} escapes the workspace`,
+      );
+    }
+  }
 }
 
-/** Hashes files into the snapshot map, skipping already-hashed paths. */
-export function hashFilesIntoSync(
-  root: String,
-  files: Array<String>,
-  into: HashMap<String, Fingerprint>,
-): void {
-  for (let path in files) {
-    if (!into.has(path)) {
-      into[path] = hashFileSync(root, path);
+class MemoEntry(modified: i64, size: i64, fingerprint: Fingerprint)
+
+/**
+ * Per-run file hash memo. Before any step executes or restores outputs
+ * into the workspace, repeated references to the same path reuse its
+ * first hash with no extra syscalls; once workspace mutations are
+ * possible, `stat` checks `(modified, size)` before re-reading bytes.
+ */
+export class FileHasher {
+  #root: String;
+  #memo = new HashMap<String, MemoEntry>();
+  var #mutationsPossible = false;
+
+  new(root: String) : #root = root;
+
+  markMutated(): void {
+    this.#mutationsPossible = true;
+  }
+
+  async hash(path: String): Future<Fingerprint> {
+    let full = withRoot(this.#root, path);
+    if (let (true, cached) = this.#memo.get(path)) {
+      if (!this.#mutationsPossible) {
+        return cached.fingerprint;
+      }
+      let info = await stat(full);
+      if (info.modified == cached.modified && info.size == cached.size) {
+        return cached.fingerprint;
+      }
+      let fp = await hashFile(this.#root, path);
+      this.#memo[path] = new MemoEntry(info.modified, info.size, fp);
+      return fp;
     }
+    let info = await stat(full);
+    let fp = await hashFile(this.#root, path);
+    this.#memo[path] = new MemoEntry(info.modified, info.size, fp);
+    return fp;
+  }
+
+  async hashGlobs(
+    packageDir: String,
+    globs: Array<String>,
+  ): Future<Array<(String, Fingerprint)>> {
+    if (globs.length == 0) {
+      return new GrowableArray<(String, Fingerprint)>();
+    }
+    let files = await expandGlobs(this.#root, packageDir, globs);
+    let pairs = new GrowableArray<(String, Fingerprint)>();
+    for (let path in files) {
+      pairs.push((path, await this.hash(path)));
+    }
+    return pairs;
   }
 }

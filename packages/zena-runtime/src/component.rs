@@ -37,6 +37,8 @@ pub(crate) mod bindings {
         imports: {
             default: trappable,
             "zena-cli:host/process.[method]process.wait": async | trappable | store,
+            "zena-cli:host/process.[method]process.read-line": async | trappable | store,
+            "zena-cli:host/process.[method]process.stop": async | trappable | store,
             "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
             "zena-cli:host/http-server.[static]response-writer.respond": trappable | store,
             "zena-cli:host/extensions.load": async | trappable | store,
@@ -234,6 +236,7 @@ pub struct CommandState {
     argv: Vec<String>,
     cwd: Option<String>,
     inherit_stdio: bool,
+    process_group: bool,
     /// Written to the child's stdin, which is then closed.
     input: Option<Vec<u8>>,
     /// Changes to the inherited environment, in order: a variable set to
@@ -275,11 +278,30 @@ fn withheld_timeout(dur: Duration) -> Finished {
     }
 }
 
+/// Maximum bytes of unread lines buffered for `read_line` so processes
+/// whose lines are never read do not accumulate unbounded duplicate buffers.
+const LINE_QUEUE_LIMIT: usize = 8 << 20;
+
+type LineFeed = (
+    tokio::sync::mpsc::UnboundedSender<(String, usize)>,
+    Arc<std::sync::atomic::AtomicUsize>,
+);
+
+enum ChildSlot {
+    Running(std::process::Child),
+    Exited(std::io::Result<std::process::ExitStatus>),
+    Taken,
+}
+
 /// Shared state between the reap worker thread and async waiters.
 struct ProcessInner {
-    child: Mutex<Option<std::process::Child>>,
+    pid: u32,
+    process_group: bool,
+    child: Mutex<ChildSlot>,
     reaped_watch: tokio::sync::watch::Receiver<Option<ReapResult>>,
     done: Mutex<Option<ReapResult>>,
+    line_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<(String, usize)>>,
+    unread_line_bytes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// A running process, then its result.
@@ -287,15 +309,65 @@ pub struct ProcessState {
     inner: Arc<ProcessInner>,
 }
 
+fn push_line(raw: &[u8], feed: &LineFeed) {
+    let trimmed = raw.strip_suffix(b"\r").unwrap_or(raw);
+    let (tx, unread) = feed;
+    if unread.load(std::sync::atomic::Ordering::Relaxed) >= LINE_QUEUE_LIMIT {
+        return;
+    }
+    let line = String::from_utf8_lossy(trimmed).into_owned();
+    let credit = line.len() + 1;
+    unread.fetch_add(credit, std::sync::atomic::Ordering::Relaxed);
+    if tx.send((line, credit)).is_err() {
+        unread.fetch_sub(credit, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Drains one of a child's pipes on its own thread. Reading them
 /// sequentially would deadlock on a child that fills the other first.
 fn drain<R: std::io::Read + Send + 'static>(
     mut pipe: Option<R>,
+    lines: Option<LineFeed>,
 ) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
+        let mut pending_line = Vec::new();
         if let Some(pipe) = pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut buf);
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let slice = &chunk[..n];
+                        buf.extend_from_slice(slice);
+                        if let Some(feed) = &lines {
+                            let mut start = 0;
+                            for (i, &b) in slice.iter().enumerate() {
+                                if b == b'\n' {
+                                    if pending_line.is_empty() {
+                                        push_line(&slice[start..i], feed);
+                                    } else {
+                                        pending_line.extend_from_slice(&slice[start..i]);
+                                        push_line(&pending_line, feed);
+                                        pending_line.clear();
+                                    }
+                                    start = i + 1;
+                                }
+                            }
+                            if start < slice.len() {
+                                pending_line.extend_from_slice(&slice[start..]);
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+        if let Some(feed) = &lines
+            && !pending_line.is_empty()
+        {
+            push_line(&pending_line, feed);
         }
         buf
     })
@@ -361,6 +433,7 @@ impl process::HostCommand for ComponentState {
                 argv,
                 cwd: None,
                 inherit_stdio: false,
+                process_group: false,
                 input: None,
                 env: Vec::new(),
             })
@@ -379,6 +452,11 @@ impl process::HostCommand for ComponentState {
 
     fn inherit_stdio(&mut self, this: Resource<CommandState>) -> Result<()> {
         self.table.get_mut(&this).context("command")?.inherit_stdio = true;
+        Ok(())
+    }
+
+    fn process_group(&mut self, this: Resource<CommandState>) -> Result<()> {
+        self.table.get_mut(&this).context("command")?.process_group = true;
         Ok(())
     }
 
@@ -403,6 +481,7 @@ impl process::HostCommand for ComponentState {
         let argv = cmd.argv.clone();
         let cwd = cmd.cwd.clone();
         let inherit_stdio = cmd.inherit_stdio;
+        let process_group = cmd.process_group;
         let input = cmd.input.clone();
         let env = cmd.env.clone();
         // The child is spawned here rather than inside the worker
@@ -412,6 +491,11 @@ impl process::HostCommand for ComponentState {
         let t0 = Instant::now();
         let mut command = std::process::Command::new(&argv[0]);
         command.args(&argv[1..]);
+        #[cfg(unix)]
+        if process_group {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         if inherit_stdio {
             command
                 .stdin(std::process::Stdio::inherit())
@@ -441,6 +525,7 @@ impl process::HostCommand for ComponentState {
             Ok(child) => child,
             Err(e) => return Ok(Err(format!("{}: {e}", argv[0]))),
         };
+        let pid = child.id();
         // The input is written on its own thread, like the output is
         // read: a child that fills its stdout before reading all of its
         // stdin would otherwise deadlock. Dropping the pipe closes it.
@@ -453,27 +538,39 @@ impl process::HostCommand for ComponentState {
         let out = child.stdout.take();
         let err = child.stderr.take();
         let (watch_tx, watch_rx) = tokio::sync::watch::channel(None);
+        let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel();
+        let unread_line_bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (out_feed, err_feed) = if inherit_stdio {
+            drop(line_tx);
+            (None, None)
+        } else {
+            let out_f = out.as_ref().map(|_| (line_tx.clone(), unread_line_bytes.clone()));
+            let err_f = err.as_ref().map(|_| (line_tx, unread_line_bytes.clone()));
+            (out_f, err_f)
+        };
         let inner = Arc::new(ProcessInner {
-            child: Mutex::new(Some(child)),
+            pid,
+            process_group,
+            child: Mutex::new(ChildSlot::Running(child)),
             reaped_watch: watch_rx,
             done: Mutex::new(None),
+            line_rx: tokio::sync::Mutex::new(line_rx),
+            unread_line_bytes,
         });
         let worker_inner = inner.clone();
         std::thread::spawn(move || {
-            let out_t = drain(out);
-            let err_t = drain(err);
+            let out_t = drain(out, out_feed);
+            let err_t = drain(err, err_feed);
             // Poll rather than block in `wait()`: the lock has to be
             // free between polls, or a deadline could never acquire it
             // to kill the child it is waiting on.
             let status = loop {
-                {
+                if worker_inner.has_exited() {
                     let mut guard = worker_inner.child.lock().unwrap();
-                    match guard.as_mut().map(|c| c.try_wait()) {
-                        Some(Ok(Some(status))) => break Some(Ok(status)),
-                        Some(Err(e)) => break Some(Err(e)),
-                        Some(Ok(None)) => {}
-                        None => break None,
-                    }
+                    break match std::mem::replace(&mut *guard, ChildSlot::Taken) {
+                        ChildSlot::Exited(res) => Some(res),
+                        _ => None,
+                    };
                 }
                 std::thread::sleep(Duration::from_millis(2));
             };
@@ -506,9 +603,103 @@ impl process::HostCommand for ComponentState {
 }
 
 impl ProcessInner {
+    fn has_exited(&self) -> bool {
+        if self.reaped_watch.borrow().is_some() {
+            return true;
+        }
+        let mut guard = self.child.lock().unwrap();
+        match &mut *guard {
+            ChildSlot::Running(child) => match child.try_wait() {
+                Ok(Some(status)) => {
+                    *guard = ChildSlot::Exited(Ok(status));
+                    true
+                }
+                Err(e) => {
+                    *guard = ChildSlot::Exited(Err(e));
+                    true
+                }
+                Ok(None) => false,
+            },
+            ChildSlot::Exited(_) | ChildSlot::Taken => true,
+        }
+    }
+
+    fn terminate_child(&self) {
+        #[cfg(unix)]
+        {
+            let guard = self.child.lock().unwrap();
+            if self.reaped_watch.borrow().is_some() {
+                return;
+            }
+            let pid = self.pid as libc::pid_t;
+            if self.process_group {
+                unsafe {
+                    libc::kill(-pid, libc::SIGTERM);
+                }
+            } else if matches!(&*guard, ChildSlot::Running(_)) {
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            self.kill_child();
+        }
+    }
+
     fn kill_child(&self) {
-        if let Some(child) = self.child.lock().unwrap().as_mut() {
+        let mut guard = self.child.lock().unwrap();
+        if self.reaped_watch.borrow().is_some() {
+            return;
+        }
+        #[cfg(unix)]
+        if self.process_group {
+            let pid = self.pid as libc::pid_t;
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+            return;
+        }
+        if let ChildSlot::Running(child) = &mut *guard {
             let _ = child.kill();
+        }
+    }
+
+    async fn read_line(&self) -> Option<String> {
+        let mut rx = self.line_rx.lock().await;
+        let (line, credit) = rx.recv().await?;
+        self.unread_line_bytes
+            .fetch_sub(credit, std::sync::atomic::Ordering::Relaxed);
+        Some(line)
+    }
+
+    async fn stop(&self, grace_millis: i64) -> ReapResult {
+        if let Some(res) = self.done.lock().unwrap().clone() {
+            return res;
+        }
+        let mut rx = self.reaped_watch.clone();
+        if let Some(res) = rx.borrow_and_update().clone() {
+            return self.record_done(res, false);
+        }
+        self.terminate_child();
+        let grace = if grace_millis > 0 {
+            Duration::from_millis(grace_millis as u64)
+        } else {
+            Duration::ZERO
+        };
+        match tokio::time::timeout(grace, Self::recv_reaped(&mut rx)).await {
+            Ok(res) => self.record_done(res, false),
+            Err(_) => {
+                self.kill_child();
+                let reaped = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    Self::recv_reaped(&mut rx),
+                )
+                .await
+                .unwrap_or_else(|_| Ok(withheld_timeout(grace)));
+                self.record_done(reaped, false)
+            }
         }
     }
 
@@ -579,6 +770,11 @@ fn timeout_from_millis(millis: i64) -> Option<Duration> {
 }
 
 impl process::HostProcess for ComponentState {
+    fn has_exited(&mut self, this: Resource<ProcessState>) -> Result<bool> {
+        let inner = self.table.get(&this).context("process")?.inner.clone();
+        Ok(inner.has_exited())
+    }
+
     fn drop(&mut self, rep: Resource<ProcessState>) -> Result<()> {
         self.table.delete(rep).context("process")?;
         Ok(())
@@ -598,6 +794,31 @@ impl process::HostProcessWithStore<ComponentState> for HasSelf<ComponentState> {
             .finish(timeout_from_millis(millis))
             .await
             .map_err(|msg| format_err!("wait: {msg}"))?;
+        Ok(fin.into())
+    }
+
+    async fn read_line(
+        accessor: &wasmtime::component::Accessor<ComponentState, Self>,
+        this: Resource<ProcessState>,
+    ) -> Result<Option<String>> {
+        let inner = accessor.with(|mut access| -> Result<Arc<ProcessInner>> {
+            Ok(access.get().table.get(&this).context("process")?.inner.clone())
+        })?;
+        Ok(inner.read_line().await)
+    }
+
+    async fn stop(
+        accessor: &wasmtime::component::Accessor<ComponentState, Self>,
+        this: Resource<ProcessState>,
+        grace_millis: i64,
+    ) -> Result<process::Finished> {
+        let inner = accessor.with(|mut access| -> Result<Arc<ProcessInner>> {
+            Ok(access.get().table.get(&this).context("process")?.inner.clone())
+        })?;
+        let fin = inner
+            .stop(grace_millis)
+            .await
+            .map_err(|msg| format_err!("stop: {msg}"))?;
         Ok(fin.into())
     }
 }

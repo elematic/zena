@@ -93,6 +93,10 @@ function describe() {
             type: OptionType.Flag,
             help: 'Group imports by module and type (experimental: the compact import section proposal)',
           },
+          'jobs' => {
+            abbr: 'j',
+            help: 'Maximum concurrent target scripts to run',
+          },
           'time' => time,
           'no-cache' => noCache,
         },
@@ -489,7 +493,21 @@ function build(args: ParsedArgs, options: Options): i32 {
   if (extname(argument) == '.zena' || isFileSync(path.value)) {
     return buildFile(args, options, argument, path);
   }
-  return buildScript(argument);
+  var jobs = 0;
+  if (let (true, rawJobs) = args.getOption('jobs')) {
+    if (let (true, parsed) = parseI32(rawJobs)) {
+      if (parsed >= 1) {
+        jobs = parsed;
+      } else {
+        console.error(`Error: invalid job count "${rawJobs}"`);
+        return 2;
+      }
+    } else {
+      console.error(`Error: invalid job count "${rawJobs}"`);
+      return 2;
+    }
+  }
+  return buildScript(argument, jobs);
 }
 
 /**
@@ -543,12 +561,12 @@ function buildFile(
  * directory, from where the user is, whose package.json declares
  * `workspaces`.
  */
-function buildScript(argument: String): i32 {
+function buildScript(argument: String, jobs: i32 = 0): i32 {
   var packagePath = '.';
   var script = argument;
   if (argument.startsWith('.')) {
     var colon = -1;
-    for (var i = argument.length - 1; i >= 0; i -= 1) {
+    for (var i = 0; i < argument.length; i += 1) {
       if (argument.getByteAt(i) == 58) {
         colon = i;
         break;
@@ -569,7 +587,7 @@ function buildScript(argument: String): i32 {
   let root = workspaceRoot(packageDir);
   let relative = packageDir.stripPrefix(root);
   let packageRef = if (relative == null) '' else relative.value;
-  let outcome = buildTarget(root.value, new ScriptRef(packageRef, script));
+  let outcome = buildTarget(root.value, new ScriptRef(packageRef, script), jobs);
   return reportBuild(outcome);
 }
 

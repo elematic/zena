@@ -1,23 +1,37 @@
-import {runIn} from 'zena:process';
-import {StringBuilder} from 'zena:core';
+import {getEnv} from 'zena:cli';
+import { HashSet } from 'zena:collections';
+import {Process, runWith, spawnWith} from 'zena:process';
+import {Regex} from 'zena:regex';
+import {StringBuilder, Unmanaged, adopt, disown} from 'zena:core';
 import {Fingerprint} from 'workflow:fingerprint';
 import {Graph} from 'workflow:graph';
 import {OutputEntry, OutputManifest} from 'workflow:manifest';
 import {
   InputRef,
-  LeafInput,
+  LeafSet,
   RunContext,
+  ServiceHandle,
+  ServiceStep,
   Step,
   StepKey,
+  StepOrder,
   StepOutputs,
   TaskStep,
 } from 'workflow:step';
 import {deleteIfExists, withRoot} from './fs-util.zena';
-import {expandGlobs, expandGlobsSync, hashFile, hashFilesIntoSync} from './fs-walk.zena';
+import {FileHasher, expandGlobs, hashFile, validateGlobs} from './fs-walk.zena';
 import {sha256HexOfString} from 'zena:crypto';
-import {ConfigError, ScriptConfig, refKey} from './wireit-config.zena';
+import {
+  ConfigError,
+  DependencySpec,
+  EnvBinding,
+  EnvExternal,
+  EnvLiteral,
+  ScriptConfig,
+  refKey,
+} from './wireit-config.zena';
 
-/** A planned build: the step graph and the hashed leaf snapshot. */
+/** A planned build: the step graph and the initial leaf map. */
 export class Plan {
   graph: Graph;
   leaves: HashMap<String, Fingerprint>;
@@ -31,23 +45,83 @@ function appendSegment(sb: StringBuilder, s: String) {
   sb.append(s);
 }
 
-function configFingerprint(config: ScriptConfig, salt: String) {
+function appendEnvSegments(
+  sb: StringBuilder,
+  env: Array<(String, EnvBinding)>,
+) {
+  for (let (name, binding) in env) {
+    match (binding) {
+      case EnvLiteral as lit: {
+        appendSegment(sb, 'env:' + name);
+        appendSegment(sb, lit.value);
+      }
+      case EnvExternal as ext: {
+        let effective = getEnv(name) ?? ext.defaultValue;
+        if (effective != null) {
+          appendSegment(sb, 'env-ext:' + name);
+          appendSegment(sb, effective);
+        } else {
+          appendSegment(sb, 'env-unset:' + name);
+        }
+      }
+    }
+  }
+}
+
+/** Concrete `(name, value)` pairs to pass in `SpawnOptions.env`. */
+function resolveEnvOverrides(
+  env: Array<(String, EnvBinding)>,
+): Array<(String, String)> {
+  let overrides = new GrowableArray<(String, String)>();
+  for (let (name, binding) in env) {
+    match (binding) {
+      case EnvLiteral as lit: {
+        overrides.push((name, lit.value));
+      }
+      case EnvExternal as ext: {
+        if (getEnv(name) == null) {
+          let def = ext.defaultValue;
+          if (def != null) {
+            overrides.push((name, def));
+          }
+        }
+      }
+    }
+  }
+  return overrides;
+}
+
+function configFingerprint(
+  config: ScriptConfig,
+  salt: String,
+  forceSalted: boolean = false,
+) {
   let sb = new StringBuilder();
-  appendSegment(sb, 'zb-config-v1');
+  appendSegment(sb, 'zb-config-v2');
   let command = config.command;
   appendSegment(sb, command ?? '');
   appendSegment(sb, config.clean);
   appendSegment(sb, if (config.isWireit) 'wireit' else 'bare');
+  let svc = config.service;
+  if (svc != null) {
+    let pattern = svc.readyWhenLineMatches;
+    appendSegment(
+      sb,
+      if (pattern != null) 'service:line:' + pattern else 'service:ready',
+    );
+  } else {
+    appendSegment(sb, 'service:none');
+  }
   for (let glob in config.files) {
     appendSegment(sb, 'file:' + glob);
   }
   for (let glob in config.output) {
     appendSegment(sb, 'out:' + glob);
   }
-  if (!config.fingerprintable) {
-    // Bare npm scripts and wireit scripts that omit `files` or
-    // `output` have unknown inputs or outputs: salt the config so no
-    // run is ever fresh or served from the cache.
+  appendEnvSegments(sb, config.env);
+  if (forceSalted || !config.fingerprintable) {
+    // Bare npm scripts, scripts with undeclared inputs/outputs, and
+    // foreground top-level services must never go fresh or hit cache.
     appendSegment(sb, 'salt:' + salt);
   }
   return new Fingerprint('sha256:' + sha256HexOfString(sb.toString()));
@@ -70,7 +144,9 @@ async function cleanOutputs(
   let previous = ctx.previous;
   if (previous != null) {
     for (let entry in previous.outputs) {
-      await deleteIfExists(withRoot(root, entry.name));
+      if (entry.fingerprint.value.startsWith('sha256:')) {
+        await deleteIfExists(withRoot(root, entry.name));
+      }
     }
   } else {
     for (let path in await expandGlobs(root, config.ref.packageDir, config.output)) {
@@ -108,14 +184,34 @@ export async function runScript(
   config: ScriptConfig,
   ctx: RunContext,
   volatileMark: String?,
+  hasher: FileHasher?,
 ): Future<OutputManifest> {
-  await cleanOutputs(root, config, ctx);
   let command = config.command;
+  if (command == null && config.output.length == 0) {
+    // Command-less group or fileset scripts forward their resolved
+    // inputs as virtual entries so upstream manifest changes (and
+    // $volatile markers) propagate to downstream dependents.
+    let forwarded = new GrowableArray<OutputEntry>();
+    for (let inp in ctx.inputs) {
+      forwarded.push(new OutputEntry(
+        '$in:' + inp.name,
+        new Fingerprint('ref:' + inp.fingerprint.value),
+      ));
+    }
+    return new OutputManifest(forwarded);
+  }
   if (command != null) {
+    if (hasher != null) {
+      hasher.markMutated();
+    }
+    await cleanOutputs(root, config, ctx);
     let cwd = withRoot(root, config.ref.packageDir);
     let wrapped =
       `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${command}`;
-    let result = await runIn(['sh', '-c', wrapped], cwd);
+    let result = await runWith(['sh', '-c', wrapped], {
+      cwd: cwd,
+      env: resolveEnvOverrides(config.env),
+    });
     if (!result.succeeded()) {
       throw new Error(
         `script "${refKey(config.ref)}" failed (exit ${i32ToString(result.exitCode)}): ${command}\n` +
@@ -142,45 +238,227 @@ export async function runScript(
   return new OutputManifest(outputs);
 }
 
+class ZbServiceHandle implements ServiceHandle {
+  #key: String;
+  #command: String;
+  #proc: Unmanaged<Process>;
+  var #stopped = false;
+
+  new(key: String, command: String, proc: Unmanaged<Process>)
+      : #key = key,
+        #command = command,
+        #proc = proc;
+
+  async stop(): Future<void> {
+    if (this.#stopped) {
+      return;
+    }
+    this.#stopped = true;
+    let proc = adopt(this.#proc);
+    if (proc.hasExited()) {
+      let res = await proc.wait();
+      throw new Error(
+        `service "${this.#key}" exited unexpectedly (exit ${i32ToString(res.exitCode)}): ${this.#command}\n` +
+        res.stdout + res.stderr,
+      );
+    }
+    await proc.stop(2000 as i64);
+  }
+}
+
+function compileReadyRegex(config: ScriptConfig): Regex? {
+  let svc = config.service;
+  if (svc == null) {
+    return null;
+  }
+  let pattern = svc.readyWhenLineMatches;
+  if (pattern == null) {
+    return null;
+  }
+  try {
+    return new Regex(pattern);
+  } catch (e) {
+    throw new ConfigError(
+      `script "${refKey(config.ref)}": invalid readyWhen.lineMatches regex "${pattern}": ${e.message}`,
+    );
+  }
+}
+
+async function startService(
+  root: String,
+  config: ScriptConfig,
+  readyRegex: Regex?,
+  hasher: FileHasher,
+): Future<ServiceHandle> {
+  hasher.markMutated();
+  let command = config.command ?? '';
+  let cwd = withRoot(root, config.ref.packageDir);
+  let wrapped =
+    `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${command}`;
+  let proc = spawnWith(['sh', '-c', wrapped], {
+    cwd: cwd,
+    env: resolveEnvOverrides(config.env),
+    processGroup: true,
+  });
+  if (readyRegex != null) {
+    var matched = false;
+    while (true) {
+      let line = await proc.readLine();
+      if (line == null) {
+        break;
+      }
+      if (readyRegex.test(line)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      let res = await proc.stop(500 as i64);
+      throw new Error(
+        `service "${refKey(config.ref)}" exited before readyWhen.lineMatches matched (exit ${i32ToString(res.exitCode)}): ${command}\n` +
+        res.stdout + res.stderr,
+      );
+    }
+  } else if (proc.hasExited()) {
+    let res = await proc.wait();
+    throw new Error(
+      `service "${refKey(config.ref)}" exited immediately (exit ${i32ToString(res.exitCode)}): ${command}\n` +
+      res.stdout + res.stderr,
+    );
+  }
+  return new ZbServiceHandle(refKey(config.ref), command, disown(proc));
+}
+
+async function runForegroundService(
+  root: String,
+  config: ScriptConfig,
+  readyRegex: Regex?,
+  salt: String,
+  hasher: FileHasher,
+): Future<OutputManifest> {
+  hasher.markMutated();
+  let command = config.command ?? '';
+  let cwd = withRoot(root, config.ref.packageDir);
+  let wrapped =
+    `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${command}`;
+  let proc = spawnWith(['sh', '-c', wrapped], {
+    cwd: cwd,
+    env: resolveEnvOverrides(config.env),
+  });
+  var matched = readyRegex == null;
+  while (true) {
+    let line = await proc.readLine();
+    if (line == null) {
+      break;
+    }
+    console.log(line);
+    if (!matched && readyRegex != null && readyRegex.test(line)) {
+      matched = true;
+    }
+  }
+  let res = await proc.wait();
+  if (!matched) {
+    throw new Error(
+      `service "${refKey(config.ref)}" exited before readyWhen.lineMatches matched (exit ${i32ToString(res.exitCode)}): ${command}\n` +
+      res.stdout + res.stderr,
+    );
+  }
+  if (!res.succeeded()) {
+    throw new Error(
+      `service "${refKey(config.ref)}" failed (exit ${i32ToString(res.exitCode)}): ${command}\n` +
+      res.stdout + res.stderr,
+    );
+  }
+  return new OutputManifest([
+    new OutputEntry('$volatile', new Fingerprint('volatile:' + salt)),
+  ]);
+}
+
+function buildStepInputs(
+  config: ScriptConfig,
+  hasher: FileHasher,
+): Array<InputRef> {
+  validateGlobs(config.ref.packageDir, config.files);
+  validateGlobs(config.ref.packageDir, config.output);
+  let inputs = new GrowableArray<InputRef>();
+  if (config.files.length > 0) {
+    let pkgDir = config.ref.packageDir;
+    let globs = config.files;
+    inputs.push(new LeafSet('files', () => hasher.hashGlobs(pkgDir, globs)));
+  }
+  // Deduplicate dependency edges, letting `cascade: true` win if listed both ways.
+  let order = new GrowableArray<String>();
+  let cascadeByKey = new HashMap<String, boolean>();
+  let seen = new HashSet<String>();
+  for (let dep in config.dependencies) {
+    let key = refKey(dep.ref);
+    if (seen.add(key)) {
+      order.push(key);
+      cascadeByKey[key] = dep.cascade;
+    } else if (dep.cascade) {
+      cascadeByKey[key] = true;
+    }
+  }
+  for (let key in order) {
+    if (cascadeByKey.getOr(key, true)) {
+      inputs.push(new StepOutputs(new StepKey(key)));
+    } else {
+      inputs.push(new StepOrder(new StepKey(key)));
+    }
+  }
+  return inputs;
+}
+
 /**
- * Turns collected script configs into a step graph and hashes every
- * matched input file into the leaf snapshot. `salt` is any per-run
- * unique string; it only reaches bare (non-wireit) scripts, which
- * must never be treated as fresh.
+ * Turns collected script configs into a step graph with lazy per-step
+ * input glob expansion backed by `hasher`. `foregroundServiceKey` names
+ * a service invoked directly as the top-level target so it runs in the
+ * foreground instead of sitting idle with zero dependents.
  */
 export function planScripts(
   root: String,
   configs: Array<ScriptConfig>,
   salt: String,
+  hasher: FileHasher? = null,
+  foregroundServiceKey: String? = null,
 ): Plan {
+  let fileHasher = hasher ?? new FileHasher(root);
   let leaves = new HashMap<String, Fingerprint>();
   let steps = new GrowableArray<Step>();
   for (let config in configs) {
-    if (config.service) {
-      throw new ConfigError(
-        `script "${refKey(config.ref)}" is a service; services are not supported yet`,
-      );
+    let key = refKey(config.ref);
+    let inputs = buildStepInputs(config, fileHasher);
+    if (config.service != null) {
+      let readyRegex = compileReadyRegex(config);
+      if (foregroundServiceKey != null && key == foregroundServiceKey) {
+        steps.push(new TaskStep(
+          new StepKey(key),
+          configFingerprint(config, salt, true),
+          inputs,
+          (ctx) => runForegroundService(root, config, readyRegex, salt, fileHasher),
+        ));
+      } else {
+        steps.push(new ServiceStep(
+          new StepKey(key),
+          configFingerprint(config, salt),
+          inputs,
+          (svcCtx) => startService(root, config, readyRegex, fileHasher),
+        ));
+      }
+    } else {
+      steps.push(new TaskStep(
+        new StepKey(key),
+        configFingerprint(config, salt),
+        inputs,
+        (ctx) => runScript(
+          root,
+          config,
+          ctx,
+          if (config.fingerprintable) null else salt,
+          fileHasher,
+        ),
+      ));
     }
-    let inputs = new GrowableArray<InputRef>();
-    let files = expandGlobsSync(root, config.ref.packageDir, config.files);
-    hashFilesIntoSync(root, files, leaves);
-    for (let path in files) {
-      inputs.push(new LeafInput(path));
-    }
-    for (let dep in config.dependencies) {
-      inputs.push(new StepOutputs(new StepKey(refKey(dep))));
-    }
-    steps.push(new TaskStep(
-      new StepKey(refKey(config.ref)),
-      configFingerprint(config, salt),
-      inputs,
-      (ctx) => runScript(
-        root,
-        config,
-        ctx,
-        if (config.fingerprintable) null else salt,
-      ),
-    ));
   }
   return new Plan(new Graph(steps), leaves);
 }
