@@ -6,19 +6,19 @@ Packages on `pkg.zena-lang.dev` do not have separate registry usernames or packa
 
 ## 1. Sign in to the CLI
 
-Create an app password in your Atmosphere account settings and sign in with `zena login`:
+Create an app password in your Atmosphere account settings and sign in with `zena pkg login`:
 
 ```sh
-zena login alice.bsky.social
+zena pkg login alice.bsky.social
 ```
 
 For scripts or non-interactive shells, pipe the app password over standard input or set `ZENA_APP_PASSWORD`:
 
 ```sh
-echo "$APP_PASSWORD" | zena login alice.bsky.social --password-stdin
+echo "$APP_PASSWORD" | zena pkg login alice.bsky.social --password-stdin
 ```
 
-`zena login` stores the session in `$ZENA_CONFIG_DIR/session.json` (default `~/.config/zena/session.json`) with owner-only file permissions (`0600`). Run `zena logout` at any time to end the session and remove the file.
+`zena pkg login` stores the session in `$ZENA_CONFIG_DIR/session.json` (default `~/.config/zena/session.json`) with owner-only file permissions (`0600`). Run `zena pkg logout` at any time to end the session and remove the file.
 
 ## 2. Create a scope
 
@@ -27,13 +27,13 @@ Every package hosted on `pkg.zena-lang.dev` belongs to a scope, such as `@acme`.
 Create a scope before publishing your first package to it:
 
 ```sh
-zena scope create acme
+zena pkg scope create acme
 ```
 
 You can also set a display name, description, and website for the scope's public page:
 
 ```sh
-zena scope profile acme \
+zena pkg scope profile acme \
   --display-name "Acme Corp" \
   --description "HTTP and routing libraries for Zena" \
   --website "https://acme.example.com"
@@ -62,19 +62,19 @@ Defining `exports` makes the package closed: dependents can only import the libr
 
 ## 4. Publish a release
 
-From the package directory, run `zena publish`:
+From the package directory, run `zena pkg publish`:
 
 ```sh
-zena publish
+zena pkg publish
 ```
 
 If `scope` is not set in `zena-package.json`, pass `--scope <name>` on the command line:
 
 ```sh
-zena publish --scope acme
+zena pkg publish --scope acme
 ```
 
-When `zena publish` runs:
+When `zena pkg publish` runs:
 
 1. **Account creation (first publish only)**: When `zena-package.json` has no `did` field, the CLI asks the registry to create a new package account (`router.acme.pkg.zena-lang.dev`) and writes the resulting `did` into `zena-package.json`. Commit this updated `zena-package.json` so future releases publish to the same DID.
 2. **Archive packing and upload**: The CLI packs the package's source files and manifest into a deterministic IPLD CAR archive and uploads it as a blob to the registry.
@@ -83,16 +83,16 @@ When `zena publish` runs:
 
 ## 5. Approving multi-maintainer releases
 
-When a package is configured to require more than one maintainer approval (for example, 2 of 3 maintainers, or human approval of a CI publish), `zena publish` holds the release in a pending state on the registry.
+When a package is configured to require more than one maintainer approval (for example, 2 of 3 maintainers, or human approval of a CI publish), `zena pkg publish` holds the release in a pending state on the registry.
 
-Other maintainers can inspect the pending release and its diff or metadata with `zena approve`:
+Other maintainers can inspect the pending release and its diff or metadata with `zena pkg approve`:
 
 ```sh
 # Inspect what is waiting for approval
-zena approve router.acme.pkg.zena-lang.dev@1.0.0
+zena pkg approve router.acme.pkg.zena-lang.dev@1.0.0
 
 # Write your attestation and complete the release once the threshold is met
-zena approve router.acme.pkg.zena-lang.dev@1.0.0 --yes
+zena pkg approve router.acme.pkg.zena-lang.dev@1.0.0 --yes
 ```
 
 Pending releases also appear on the package's web page and on `/me` when signed in to `pkg.zena-lang.dev`.
@@ -102,7 +102,7 @@ Pending releases also appear on the package's web page and on `/me` when signed 
 Published versions are immutable and cannot be overwritten. If a release has a critical bug or security issue, mark it as retracted so version selection skips it:
 
 ```sh
-zena retract 1.0.0 --reason "Broken header parsing on empty values; upgrade to 1.0.1"
+zena pkg retract 1.0.0 --reason "Broken header parsing on empty values; upgrade to 1.0.1"
 ```
 
-Existing workspaces that already pinned `1.0.0` in `zena-lock.json` continue to build reproducibly, while `zena add` and `zena update` skip retracted versions and the web UI marks the version as retracted.
+Existing workspaces that already pinned `1.0.0` in `zena-lock.json` continue to build reproducibly, while `zena pkg add` and `zena pkg update` skip retracted versions and the web UI marks the version as retracted.

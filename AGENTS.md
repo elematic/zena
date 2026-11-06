@@ -316,47 +316,50 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   `path:line:column: message [rule]`, exiting 1 when there are findings;
   `--fix` rewrites the files, keeping each fix the type checker accepts.
   `--list-rules` prints the rules.
-- **`add <package>[@version] [--name <local>]`**: Add a published package,
-  by DID, handle or `@scope/name`, to `zena-package.json`; select versions
-  for everything it leads to, pin them in `zena-lock.json`, and fetch
-  them. It prints what changed in the lockfile, and refuses a pinned
-  release whose CIDs changed at the same version unless given
-  `--allow-changed`.
-- **`update [names...]`**: Raise dependencies to the latest version of their
-  major version that is not retracted, then pin and fetch as `add` does.
-- **`login <handle or DID> [--password-stdin]`**: Sign in to an atproto
-  account with an app password, from stdin, `ZENA_APP_PASSWORD` or the
-  terminal, keeping the session in `$ZENA_CONFIG_DIR/session.json` (default
-  `~/.config/zena`), readable only by its owner. **`logout`** ends it.
-- **`publish [--scope <name> --yes] [--registry <url>]`**: Publish the
-  package you are in at its manifest's `version` to a registry
-  (`ZENA_REGISTRY`), creating its account first when it has no `did`,
-  in the scope its manifest's `scope` or `--scope` names, with the files
-  its `files` patterns name (by default, all but tests). The registry holds
-  the release until enough maintainers attest it.
-  **`approve [<package>@]<version> | @<scope> | <package> [--yes]`** shows a
-  release, or changes to who belongs, waiting for approval and, with
-  `--yes`, approves them.
-  **`package create`** only creates it. **`retract <version> [--reason]`**
-  marks a release so that choosing a version skips it.
-  **`ci create <scope>/<name>`** makes an automation account for CI to
-  publish as, and prints its token, which `publish` calls the registry
-  with from `ZENA_REGISTRY_TOKEN`; **`ci token <scope>/<name>`** replaces
-  it.
-- **`scope create <name> [--yes]`**, **`scope info <scope>`**: Create a
-  scope on a registry, with you as its owner, or describe one.
-  Publishing never creates a scope. **`scope add|remove <scope> <person>`**,
-  **`scope members`**, **`team create|add|remove|delete|members`** and
-  **`owner add|remove|list`** change and show who belongs to a scope, a
-  team and a package. **`scope settings`**, **`team settings`** and
-  **`owner settings`** show and change their thresholds, and
-  **`scope policy`** the minimums, defaults and creators of a scope's
-  packages. **`scope profile`** sets a scope's display name, description
-  and website.
-- **`fetch`**: Fetch the published packages `zena-lock.json` pins into
-  the package cache, checking each against its pins. `ZENA_PLC_DIRECTORY`
-  and `ZENA_DNS_OVER_HTTPS` replace the PLC directory and the DNS resolver
-  handles are looked up with.
+- **`pkg <command>`**: The package commands, under one noun.
+  - **`pkg add <package>[@version] [--name <local>]`**: Add a published
+    package, by DID, handle or `@scope/name`, to `zena-package.json`;
+    select versions for everything it leads to, pin them in
+    `zena-lock.json`, and fetch them. It prints what changed in the
+    lockfile, and refuses a pinned release whose CIDs changed at the same
+    version unless given `--allow-changed`.
+  - **`pkg update [names...]`**: Raise dependencies to the latest version of
+    their major version that is not retracted, then pin and fetch as `add`
+    does.
+  - **`pkg fetch`**: Fetch the published packages `zena-lock.json` pins
+    into the package cache, checking each against its pins.
+    `ZENA_PLC_DIRECTORY` and `ZENA_DNS_OVER_HTTPS` replace the PLC
+    directory and the DNS resolver handles are looked up with.
+  - **`pkg login <handle or DID> [--password-stdin]`**: Sign in to an
+    atproto account with an app password, from stdin, `ZENA_APP_PASSWORD`
+    or the terminal, keeping the session in `$ZENA_CONFIG_DIR/session.json`
+    (default `~/.config/zena`), readable only by its owner. **`pkg logout`**
+    ends it.
+  - **`pkg publish [--scope <name> --yes] [--registry <url>]`**: Publish the
+    package you are in at its manifest's `version` to a registry
+    (`ZENA_REGISTRY`), creating its account first when it has no `did`, in
+    the scope its manifest's `scope` or `--scope` names, with the files its
+    `files` patterns name (by default, all but tests). The registry holds
+    the release until enough maintainers attest it. **`pkg create`** only
+    creates it.
+  - **`pkg approve [<package>@]<version> | @<scope> | <package> [--yes]`**
+    shows a release, or changes to who belongs, waiting for approval and,
+    with `--yes`, approves them. **`pkg retract <version> [--reason]`**
+    marks a release so that choosing a version skips it.
+  - **`pkg ci create <scope>/<name>`** makes an automation account for CI
+    to publish as, and prints its token, which `pkg publish` calls the
+    registry with from `ZENA_REGISTRY_TOKEN`; **`pkg ci token
+<scope>/<name>`** replaces it.
+  - **`pkg scope create <name> [--yes]`**, **`pkg scope info <scope>`**:
+    Create a scope on a registry, with you as its owner, or describe one.
+    Publishing never creates a scope. **`pkg scope add|remove <scope>
+<person>`**, **`pkg scope members`**, **`pkg team
+create|add|remove|delete|members`** and **`pkg owner add|remove|list`**
+    change and show who belongs to a scope, a team and a package. **`pkg
+scope settings`**, **`pkg team settings`** and **`pkg owner settings`**
+    show and change their thresholds, and **`pkg scope policy`** the
+    minimums, defaults and creators of a scope's packages. **`pkg scope
+profile`** sets a scope's display name, description and website.
 - **`doc <path> [-o <out.json>]`**: Extract a package's public API as JSON.
 - **`bench <suite.json> [-o <out.json>]`**: Run a benchmark suite.
 - **`lsp`**: Run the Zena language server over stdin/stdout.

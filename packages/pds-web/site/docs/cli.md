@@ -6,10 +6,10 @@ The `zena` CLI includes all package manager commands alongside the compiler, tes
 
 ## Dependency management
 
-### `zena add`
+### `zena pkg add`
 
 ```sh
-zena add <package>[@<version>] [--name <local-name>]
+zena pkg add <package>[@<version>] [--name <local-name>]
 ```
 
 Adds a published package to the current package's `zena-package.json`, runs minimal version selection across the workspace, updates `zena-lock.json`, and fetches the resolved archives into the package cache.
@@ -18,18 +18,18 @@ Adds a published package to the current package's `zena-package.json`, runs mini
 - `@<version>`: Optional minimum version to require (defaults to the package's latest non-retracted release).
 - `--name <local-name>`: Local import alias in `zena-package.json` (defaults to the name in the package's profile).
 
-### `zena update`
+### `zena pkg update`
 
 ```sh
-zena update [<local-name>...]
+zena pkg update [<local-name>...]
 ```
 
 Raises the specified dependencies (or all dependencies when none are named) to the latest non-retracted version within their current major version, updates `zena-lock.json`, and fetches any new archives.
 
-### `zena fetch`
+### `zena pkg fetch`
 
 ```sh
-zena fetch
+zena pkg fetch
 ```
 
 Downloads and unpacks every package archive pinned in `zena-lock.json` into the local package cache, verifying every release record and source archive against its pinned CID. Modifies no workspace files.
@@ -38,18 +38,18 @@ Downloads and unpacks every package archive pinned in `zena-lock.json` into the 
 
 ## Authentication
 
-### `zena login`
+### `zena pkg login`
 
 ```sh
-zena login <handle-or-did> [--password-stdin]
+zena pkg login <handle-or-did> [--password-stdin]
 ```
 
 Signs in to an AT Protocol account using an app password (prompted on the terminal, read from stdin with `--password-stdin`, or read from `ZENA_APP_PASSWORD`). Saves the session to `$ZENA_CONFIG_DIR/session.json`.
 
-### `zena logout`
+### `zena pkg logout`
 
 ```sh
-zena logout
+zena pkg logout
 ```
 
 Ends the current session and removes `$ZENA_CONFIG_DIR/session.json`.
@@ -58,50 +58,50 @@ Ends the current session and removes `$ZENA_CONFIG_DIR/session.json`.
 
 ## Publishing & releases
 
-### `zena publish`
+### `zena pkg publish`
 
 ```sh
-zena publish [--scope <name>] [--registry <url>] [--yes]
+zena pkg publish [--scope <name>] [--registry <url>] [--yes]
 ```
 
 Packs and publishes the package in the current directory at the `version` in `zena-package.json`. Creates the package account on first publish when `zena-package.json` has no `did`.
 
-### `zena package create`
+### `zena pkg create`
 
 ```sh
-zena package create [--scope <name>] [--registry <url>] [--yes]
+zena pkg create [--scope <name>] [--registry <url>] [--yes]
 ```
 
 Creates the package's account on the registry and writes its `did` into `zena-package.json` without publishing a release.
 
-### `zena approve`
+### `zena pkg approve`
 
 ```sh
-zena approve [<package>@]<version> | @<scope> | <package> [--yes]
+zena pkg approve [<package>@]<version> | @<scope> | <package> [--yes]
 ```
 
 Without `--yes`, displays the pending release or pending membership/settings change waiting for maintainer attestations. With `--yes`, writes your attestation record to your repository and submits it to the registry.
 
-### `zena retract`
+### `zena pkg retract`
 
 ```sh
-zena retract <version> [--reason <text>]
+zena pkg retract <version> [--reason <text>]
 ```
 
 Publishes a `dev.zena-lang.package.retraction` record for `<version>` so version selection skips it.
 
-### `zena ci create`
+### `zena pkg ci create`
 
 ```sh
-zena ci create <scope>/<name>
+zena pkg ci create <scope>/<name>
 ```
 
-Creates an automation account in `<scope>` for CI pipelines to publish as, and prints its token once. CI keeps the token as the secret `ZENA_REGISTRY_TOKEN` and runs `zena publish`, signed in to nothing.
+Creates an automation account in `<scope>` for CI pipelines to publish as, and prints its token once. CI keeps the token as the secret `ZENA_REGISTRY_TOKEN` and runs `zena pkg publish`, signed in to nothing.
 
-### `zena ci token`
+### `zena pkg ci token`
 
 ```sh
-zena ci token <scope>/<name>
+zena pkg ci token <scope>/<name>
 ```
 
 Gives the automation account a new token, for one that leaked or was lost. The old token stops working.
@@ -110,41 +110,41 @@ Gives the automation account a new token, for one that leaked or was lost. The o
 
 ## Scopes, teams & maintainers
 
-### `zena scope`
+### `zena pkg scope`
 
 ```sh
-zena scope create <scope> [--yes]
-zena scope info <scope>
-zena scope profile <scope> [--display-name <text>] [--description <text>] [--website <url>]
-zena scope members <scope>
-zena scope add <scope> <person> [--role <owner|admin|member>] [--public]
-zena scope remove <scope> <person>
-zena scope settings <scope> [--owner-threshold <n>]
-zena scope policy <scope> [--min-release-threshold <n>] [--default-release-threshold <n>] [--min-owner-threshold <n>] [--package-creators <admin|member>]
+zena pkg scope create <scope> [--yes]
+zena pkg scope info <scope>
+zena pkg scope profile <scope> [--display-name <text>] [--description <text>] [--website <url>]
+zena pkg scope members <scope>
+zena pkg scope add <scope> <person> [--role <owner|admin|member>] [--public]
+zena pkg scope remove <scope> <person>
+zena pkg scope settings <scope> [--owner-threshold <n>]
+zena pkg scope policy <scope> [--min-release-threshold <n>] [--default-release-threshold <n>] [--min-owner-threshold <n>] [--package-creators <admin|member>]
 ```
 
 Creates and manages organization scopes, their public profile, members, approval thresholds, and package security policies.
 
-### `zena team`
+### `zena pkg team`
 
 ```sh
-zena team create <scope> <team>
-zena team delete <scope> <team>
-zena team members <scope> <team>
-zena team add <scope> <team> <person> [--role <maintainer|member>]
-zena team remove <scope> <team> <person>
-zena team settings <scope> <team> [--threshold <n>]
+zena pkg team create <scope> <team>
+zena pkg team delete <scope> <team>
+zena pkg team members <scope> <team>
+zena pkg team add <scope> <team> <person> [--role <maintainer|member>]
+zena pkg team remove <scope> <team> <person>
+zena pkg team settings <scope> <team> [--threshold <n>]
 ```
 
 Creates and manages teams within an organization scope.
 
-### `zena owner`
+### `zena pkg owner`
 
 ```sh
-zena owner list [<package>]
-zena owner add [<package>] <person-or-team> [--role <owner|publisher>] [--public]
-zena owner remove [<package>] <person-or-team>
-zena owner settings [<package>] [--threshold <n>] [--owner-threshold <n>]
+zena pkg owner list [<package>]
+zena pkg owner add [<package>] <person-or-team> [--role <owner|publisher>] [--public]
+zena pkg owner remove [<package>] <person-or-team>
+zena pkg owner settings [<package>] [--threshold <n>] [--owner-threshold <n>]
 ```
 
 Lists and modifies a package's maintainers (`owner` and `publisher` roles) and release/owner approval thresholds.
@@ -153,13 +153,13 @@ Lists and modifies a package's maintainers (`owner` and `publisher` roles) and r
 
 ## Environment variables
 
-| Variable              | Default                                | Description                                                                 |
-| --------------------- | -------------------------------------- | --------------------------------------------------------------------------- |
-| `ZENA_REGISTRY`       | `https://padstone.zena-lang.dev`       | The registry `publish`, `scope`, `team` and `owner` call                    |
-| `ZENA_CONFIG_DIR`     | `~/.config/zena`                       | Directory where `session.json` is stored                                    |
-| `ZENA_CACHE_DIR`      | `~/.cache/zena`                        | Base directory for the unpacked package cache (`packages/sources/<cid>`)    |
-| `ZENA_PROJECT_CACHE`  | _(unset)_                              | When set, stores the package cache in `.zena/packages` inside the workspace |
-| `ZENA_APP_PASSWORD`   | _(unset)_                              | App password used by `zena login` when not reading from terminal or stdin   |
-| `ZENA_REGISTRY_TOKEN` | _(unset)_                              | An automation account's token, which `zena publish` uses in CI              |
-| `ZENA_PLC_DIRECTORY`  | `https://plc.directory`                | PLC directory URL used to resolve `did:plc:` identities                     |
-| `ZENA_DNS_OVER_HTTPS` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS endpoint used to resolve `_atproto.<handle>` TXT records     |
+| Variable              | Default                                | Description                                                                   |
+| --------------------- | -------------------------------------- | ----------------------------------------------------------------------------- |
+| `ZENA_REGISTRY`       | `https://padstone.zena-lang.dev`       | The registry `publish`, `scope`, `team` and `owner` call                      |
+| `ZENA_CONFIG_DIR`     | `~/.config/zena`                       | Directory where `session.json` is stored                                      |
+| `ZENA_CACHE_DIR`      | `~/.cache/zena`                        | Base directory for the unpacked package cache (`packages/sources/<cid>`)      |
+| `ZENA_PROJECT_CACHE`  | _(unset)_                              | When set, stores the package cache in `.zena/packages` inside the workspace   |
+| `ZENA_APP_PASSWORD`   | _(unset)_                              | App password used by `zena pkg login` when not reading from terminal or stdin |
+| `ZENA_REGISTRY_TOKEN` | _(unset)_                              | An automation account's token, which `zena pkg publish` uses in CI            |
+| `ZENA_PLC_DIRECTORY`  | `https://plc.directory`                | PLC directory URL used to resolve `did:plc:` identities                       |
+| `ZENA_DNS_OVER_HTTPS` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS endpoint used to resolve `_atproto.<handle>` TXT records       |

@@ -18,21 +18,21 @@ the `zena` command. The design is in
      which runs zena-lint's rules (`zena-lint:lint`) over files and
      prints the findings or, with `--fix`, applies them, `fetch.zena`,
      which fetches the packages `zena-lock.json` pins into the package
-     cache with `package-manager:fetch`, and `add.zena`, for `zena add`
-     and `zena update`, which change the dependencies in
+     cache with `package-manager:fetch`, and `add.zena`, for `zena pkg add`
+     and `zena pkg update`, which change the dependencies in
      `zena-package.json`, select versions (`package-manager:resolve`), pin
-     them and fetch them, and `login.zena`, for `zena login` and
-     `zena logout`, which keep the maintainer's atproto session
+     them and fetch them, and `login.zena`, for `zena pkg login` and
+     `zena pkg logout`, which keep the maintainer's atproto session
      (`atproto:session`) in the configuration directory, and
-     `publish.zena`, for `zena publish` and `zena package create`, which
+     `publish.zena`, for `zena pkg publish` and `zena pkg create`, which
      call a registry's `dev.zena-lang.registry.*` methods with service-auth
-     tokens from that session, `scope.zena`, for `zena scope create` and
-     `zena scope info`, and `members.zena`, for `zena scope add`, `remove`
-     and `members`, `zena team` and `zena owner`, which change who belongs
+     tokens from that session, `scope.zena`, for `zena pkg scope create` and
+     `zena pkg scope info`, and `members.zena`, for `zena pkg scope add`, `remove`
+     and `members`, `zena pkg team` and `zena pkg owner`, which change who belongs
      through the registry's `put*` methods, `retract.zena`, for
-     `zena retract`, `approve.zena`, for `zena approve`, which attests a
+     `zena pkg retract`, `approve.zena`, for `zena pkg approve`, which attests a
      release waiting for its maintainers and asks the registry to complete
-     it, and `ci.zena`, for `zena ci create` and `zena ci token`.
+     it, and `ci.zena`, for `zena pkg ci create` and `zena pkg ci token`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked

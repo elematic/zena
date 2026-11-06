@@ -7,8 +7,8 @@ packages a workspace uses. [package-manager.md](package-manager.md)
 designs publishing and fetching packages.
 
 > **Current status**: The compiler reads a workspace from its manifests
-> and `zena-lock.json`. `zena add` and `zena update` write the manifests
-> and the lockfile, and `zena fetch` fetches what the lockfile pins.
+> and `zena-lock.json`. `zena pkg add` and `zena pkg update` write the manifests
+> and the lockfile, and `zena pkg fetch` fetches what the lockfile pins.
 
 ## Terms
 
@@ -54,7 +54,7 @@ else moved.
 | `scope`        | `string`                        | any package    | The scope on an App View the package is created in                     |
 | `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish            |
 | `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish         |
-| `version`      | `string`                        | any package    | The version `zena publish` publishes next                              |
+| `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                          |
 | `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                |
 | `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                       |
 | `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name            |
@@ -74,35 +74,35 @@ unless they choose another name.
 
 ### `did`
 
-`zena publish` writes the DID when it creates the package's account (see
+`zena pkg publish` writes the DID when it creates the package's account (see
 package-manager.md, "Creating a package"), so that later releases are
 published to the same package.
 
 ### `scope`
 
-The scope on an App View that the package's first `zena publish` creates
+The scope on an App View that the package's first `zena pkg publish` creates
 it in, such as `acme` for `router.acme.pkg.zena-lang.dev`
 (package-manager.md, "Scopes"). The scope must exist on the App View. Once
-the package has a `did`, `zena publish` refuses when the package's handle
+the package has a `did`, `zena pkg publish` refuses when the package's handle
 is not in this scope, since the manifest and the package then disagree
 about where it is. A workspace root's `scope` is also the scope of each
 workspace package that has none of its own. A package whose handle is on
 its maintainers' own domain has no `scope`. The compiler does not read it.
 
-`scope` is unrelated to `scopes`, below, which says where `zena add`
+`scope` is unrelated to `scopes`, below, which says where `zena pkg add`
 looks up the packages of other scopes.
 
 ### `description` and `license`
 
 What the package is for, in a sentence, and the terms it may be used on,
 as an SPDX license expression: `MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`,
-or `LicenseRef-…` for a license SPDX does not list. `zena publish` refuses
+or `LicenseRef-…` for a license SPDX does not list. `zena pkg publish` refuses
 a package without both, and its profile carries them (package-manager.md,
 "Validating releases"). The compiler does not read them.
 
 ### `version`
 
-The semantic version, without build metadata, that `zena publish` gives
+The semantic version, without build metadata, that `zena pkg publish` gives
 the next release: `1.4.2` or `2.0.0-rc.1`. Raising it is part of the change
 a release publishes, so it shows in review, and the source archive says
 which version it is. A version that has been published cannot be published
@@ -154,7 +154,7 @@ reachable only through relative imports from the package's own files.
 
 ### `files`
 
-The files `zena publish` puts in the package's source archive: patterns
+The files `zena pkg publish` puts in the package's source archive: patterns
 relative to the package's root, read as `.gitignore` reads its own (and
 as `zena:glob`'s `GlobSet` does). The last pattern that matches a path
 decides, a `!` excludes, and a pattern that names a directory takes
@@ -201,7 +201,7 @@ dependency in their imports (`import {Router} from 'router:server'`). A
 dependency is one of two kinds:
 
 - **A published package**, by DID and the lowest version this package
-  needs: `{"did": "did:plc:...", "version": "1.4.2"}`. `zena add` writes
+  needs: `{"did": "did:plc:...", "version": "1.4.2"}`. `zena pkg add` writes
   these.
 - **A package on disk**, by its directory: `{"path": "./packages/lib"}`.
   This is how workspace packages depend on each other, and it can also
@@ -239,13 +239,13 @@ nothing else besides the standard library.
 ### `scopes`
 
 Only the manifest at a workspace's root has `scopes`. It maps a scope in
-`@scope/name` to the domain its handles are under, for `zena add`. See
+`@scope/name` to the domain its handles are under, for `zena pkg add`. See
 package-manager.md, "Names and scopes".
 
 ## `zena-lock.json`
 
-The lockfile sits beside the workspace root's manifest. `zena add` and
-`zena update` write it, and no one edits it. It pins every published
+The lockfile sits beside the workspace root's manifest. `zena pkg add` and
+`zena pkg update` write it, and no one edits it. It pins every published
 package any workspace package needs, directly or through other packages,
 with the versions minimal version selection chose across the whole
 workspace (package-manager.md, "Version selection"):
@@ -292,7 +292,7 @@ entry `<did>@<major>`.
    - a WIT dependency is the package whose libraries the compiler
      synthesizes from that WIT;
    - a published dependency is the pinned package `<did>@<major>`, found
-     in the package cache, where `zena fetch` unpacks each source archive
+     in the package cache, where `zena pkg fetch` unpacks each source archive
      into `sources/<source CID>`.
 4. A published package's libraries resolve names through the
    `dependencies` of its lockfile entry, which come from its release, and
@@ -307,9 +307,9 @@ anything is resolved:
 
 - a manifest that is not valid JSON, by its path, line and column;
 - two workspace packages with the same name, by their directories;
-- a published dependency the lockfile does not pin, which `zena add` or
-  `zena update` fixes;
-- a pinned package that is not in the cache, which `zena fetch` fixes;
+- a published dependency the lockfile does not pin, which `zena pkg add` or
+  `zena pkg update` fixes;
+- a pinned package that is not in the cache, which `zena pkg fetch` fixes;
 - a `source` that is not a CID string, since it becomes a directory name;
 - two pinned packages with the same source archive, since the compiler
   tells packages apart by their directories;
@@ -320,7 +320,7 @@ only the workspace's own packages.
 
 ## Publishing a workspace package
 
-`zena publish` publishes one workspace package at a time. Its release
+`zena pkg publish` publishes one workspace package at a time. Its release
 lists the dependencies in its manifest, with each path dependency
 replaced by the depended-on package's DID and the version of it the
 workspace uses, so a workspace package that others depend on is published
@@ -339,7 +339,7 @@ imported as `zena:<library>`, as in `import { HashMap } from 'zena:map'`.
 ```
 my-app/
   zena-package.json        # name "app", workspace {packages: ["packages/*"]}
-  zena-lock.json           # pins, written by zena add
+  zena-lock.json           # pins, written by zena pkg add
   main.zena
   packages/
     lib/

@@ -33,7 +33,7 @@ package in this repository's workspace or from a package that lists it in its
 - `package-manager:cache`: the package cache, where each source archive is
   unpacked into `sources/<CID>` for the compiler to read.
 - `package-manager:fetch`: fetching pinned packages into the cache, which
-  `zena fetch` does. The release record's proof is checked against the
+  `zena pkg fetch` does. The release record's proof is checked against the
   account's signing key, the record and the source archive against the
   CIDs the lockfile pins, and the release's dependencies against
   the names it maps.
@@ -67,7 +67,7 @@ package in this repository's workspace or from a package that lists it in its
 - `registry/`: the App View's methods, the registry's
   ([docs/design/package-manager.md](../../docs/design/package-manager.md),
   "The App View's methods").
-- `authPublish.json`: the OAuth permission set `zena login` asks for:
+- `authPublish.json`: the OAuth permission set `zena pkg login` asks for:
   writing attestations and calling the App View's methods.
 
 `zena/test/lexicons_test.zena` checks that each file is named by its NSID,

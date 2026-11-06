@@ -1,13 +1,13 @@
 /**
- * `zena publish` and `zena package create`: publishing the package the
+ * `zena pkg publish` and `zena pkg create`: publishing the package the
  * command is run in to a registry (docs/design/package-manager.md,
  * "Creating a package" and "Publishing a release").
  *
- * Both act as the signed-in maintainer (`zena login`): each call to the
+ * Both act as the signed-in maintainer (`zena pkg login`): each call to the
  * registry carries a service-auth token from the maintainer's own PDS. A
  * package whose manifest has no `did` yet is created first, once `--yes`
  * says to, in the scope its manifest names, else its workspace root's,
- * else `--scope`. The scope must exist: `zena scope create` makes one
+ * else `--scope`. The scope must exist: `zena pkg scope create` makes one
  * (`scope.zena`), and publishing never does. The new package's DID is
  * written into `zena-package.json`, with the scope when `--scope` gave it.
  * A package that has a DID is checked against its scope: its handle must
@@ -192,7 +192,7 @@ function refuseProblems(problems: Array<String>): void {
 export function signedIn(): Session {
   let session = currentSession();
   if (session == null) {
-    throw new PublishError('sign in first, with zena login');
+    throw new PublishError('sign in first, with zena pkg login');
   }
   return session;
 }
@@ -214,7 +214,7 @@ export sealed class Caller {
 }
 
 /**
- * The caller of `zena publish`: CI, when `ZENA_REGISTRY_TOKEN` holds an
+ * The caller of `zena pkg publish`: CI, when `ZENA_REGISTRY_TOKEN` holds an
  * automation account's token, or else the signed-in maintainer.
  */
 export function currentCaller(): Caller {
@@ -230,7 +230,7 @@ function personOf(caller: Caller, doing: String): Session {
   if (let SignedIn {session} = caller) {
     return session;
   }
-  throw new PublishError(`an automation token cannot ${doing}; a maintainer does it, signed in with zena login`);
+  throw new PublishError(`an automation token cannot ${doing}; a maintainer does it, signed in with zena pkg login`);
 }
 
 /** Saves `caller`'s session when it was refreshed. */
@@ -368,7 +368,7 @@ function createPackage(args: ParsedArgs, session: Session, registry: Registry, t
   let scope = found;
   let org = scopeOrganization(`${scope}.${registry.domain}`);
   if (org == null) {
-    throw new PublishError(`${registry.origin} has no scope ${scope}; create it with zena scope create ${scope}`);
+    throw new PublishError(`${registry.origin} has no scope ${scope}; create it with zena pkg scope create ${scope}`);
   }
   let handle = `${name}.${scope}.${registry.domain}`;
   if (!args.getFlag('yes')) {
@@ -512,7 +512,7 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
 /**
  * Uploads and publishes `prepared`, `manifest`'s version of `target`,
  * attests it, and completes it, unless it waits for other maintainers to
- * approve it, as `zena approve <approveAs>@<version>`. The registry
+ * approve it, as `zena pkg approve <approveAs>@<version>`. The registry
  * attests it itself for an automation token.
  */
 function publish(caller: Caller, registry: Registry, target: WorkspacePackage, manifest: Manifest,
@@ -545,7 +545,7 @@ function publish(caller: Caller, registry: Registry, target: WorkspacePackage, m
  * Asks the registry to write the release of `pkg` at `version`, which it holds
  * until its maintainers' attestations are enough, and says whether it did
  * or what the release waits for. `label` names the release, and
- * `approveAs` the package, for `zena approve`.
+ * `approveAs` the package, for `zena pkg approve`.
  */
 export function completeRelease(caller: Caller, registry: Registry, pkg: String, version: String, label: String,
     approveAs: String): void {
@@ -559,7 +559,7 @@ export function completeRelease(caller: Caller, registry: Registry, pkg: String,
     return;
   }
   console.log(`${label} is waiting for approval: ${approvals(answer)}.`);
-  console.log(`Another maintainer approves it with: zena approve ${approveAs}@${version}`);
+  console.log(`Another maintainer approves it with: zena pkg approve ${approveAs}@${version}`);
 }
 
 /**

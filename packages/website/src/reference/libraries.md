@@ -335,7 +335,7 @@ package's choosing.
 - `dependencies`: Each one is one of three kinds:
   - **A package on disk**, `{"path": "../utils"}`, a directory with a
     `zena-package.json` of its own.
-  - **A published package**, by DID and the lowest version needed. `zena add`
+  - **A published package**, by DID and the lowest version needed. `zena pkg add`
     writes these, and the versions chosen are pinned in `zena-lock.json`.
   - **A WIT-backed package**, `{"wit": "./path"}`. The compiler synthesizes
     declarations directly from the WebAssembly Component Model WIT

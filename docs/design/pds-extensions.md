@@ -123,7 +123,7 @@ installations, with separate storage, and neither sees the other's data.
 An extension is a published Zena package whose release carries a Wasm
 component as an artifact ([package-manager.md](./package-manager.md),
 "Artifacts"). Installing one names its DID and version. The core fetches
-and checks the release as `zena fetch` does, and compiles the component
+and checks the release as `zena pkg fetch` does, and compiles the component
 once, caching the result.
 
 ## Extension points

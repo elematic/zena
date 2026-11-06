@@ -3,8 +3,8 @@
 Status: **Proposed**, and partly built: the AT Protocol libraries
 (`packages/atproto`), the package records, source archives and fetching
 (`packages/package-manager`), the compiler's reading of pinned packages,
-`zena add`, `zena update` and `zena fetch`, `zena login` with app
-passwords, `zena publish`, `zena package create` and `zena scope`, and an
+`zena pkg add`, `zena pkg update` and `zena pkg fetch`, `zena pkg login` with app
+passwords, `zena pkg publish`, `zena pkg create` and `zena pkg scope`, and an
 App View with the methods for publishing and for changing members,
 teams and maintainers, each held until its threshold has attested it. The
 App View (`packages/registry`) is a service of its own, which keeps its
@@ -219,7 +219,7 @@ A package has three kinds of name:
   (`import {Router} from 'router:server'`). Each package chooses its own,
   starting from the name the package's profile suggests, so two packages
   that both suggest `router` can be used side by side.
-- **A handle** is for finding a package. `zena add` resolves it to a DID
+- **A handle** is for finding a package. `zena pkg add` resolves it to a DID
   once and records the DID, so a handle that later points elsewhere
   changes nothing that depends on the package. The index shows handles.
 
@@ -247,7 +247,7 @@ and they stay with the package when it moves to another App View. An
 organization with a domain should use it; an App View's scopes are for those
 without one.
 
-**The `@scope/name` shorthand.** `zena add @acme/router` means
+**The `@scope/name` shorthand.** `zena pkg add @acme/router` means
 `router.acme.pkg.zena-lang.dev`: the name in the scope on the default
 domain, which a user or a workspace can change. A scope on another domain
 is mapped to it by name, in `zena-package.json` or the user's
@@ -258,15 +258,15 @@ configuration:
 ```
 
 `@widgets/foo` then means `foo.widgets.alt-pkg.org`, and never anything
-on another domain. A full handle, as in `zena add router.acme.com`, needs
-no scope. `zena add` prints the DID, handle and maintainers it resolved
+on another domain. A full handle, as in `zena pkg add router.acme.com`, needs
+no scope. `zena pkg add` prints the DID, handle and maintainers it resolved
 before it writes anything.
 
 The shorthand does not try several domains in turn. If it did, someone
 who registered `widgets` on a domain tried before the scope's own would
-take over every new `zena add @widgets/foo`, and nothing would fail to
+take over every new `zena pkg add @widgets/foo`, and nothing would fail to
 show it. This is the dependency confusion that pip's `--extra-index-url`
-allows. If several default domains are ever needed, `zena add` should
+allows. If several default domains are ever needed, `zena pkg add` should
 resolve a scoped name on all of them and stop with an error when more
 than one answers. A scope that appears on a second domain then turns
 working adds into errors, and not into adds of another package.
@@ -385,7 +385,7 @@ imports.
 
 ### Retraction
 
-A retracted version stays available. `zena add` and `zena update` skip it
+A retracted version stays available. `zena pkg add` and `zena pkg update` skip it
 when they pick the newest version, and a build whose dependencies require
 it still uses it, with a warning. Retracting writes a record:
 
@@ -498,7 +498,7 @@ its directory ([package-manifest.md](package-manifest.md#dependencies)):
 }
 ```
 
-`zena add` takes a DID, a handle or `@scope/name` (see
+`zena pkg add` takes a DID, a handle or `@scope/name` (see
 [Names and scopes](#names-and-scopes)) and adds an entry to the manifest of
 the package in the current directory, with the name the added package's
 profile suggests unless one is given.
@@ -511,7 +511,7 @@ packages and their dependencies require. Suppose a workspace package
 needs `router` 1.4.2 and `json` 2.0.1, and `router` 1.4.2 needs `json`
 2.1.0. Then `json` 2.1.0 is
 selected, even if 2.3.0 exists. Nothing newer than someone asked for is
-used until someone asks, by running `zena update`.
+used until someone asks, by running `zena pkg update`.
 
 A program contains at most one version of a package per major version.
 Zena compiles a whole program, so two versions of one package would be two
@@ -528,7 +528,7 @@ releases the dependency graph names.
 ### The lockfile
 
 The workspace's lockfile, `zena-lock.json`, records the selection and
-every CID needed to reproduce it. `zena add` and `zena update` write it:
+every CID needed to reproduce it. `zena pkg add` and `zena pkg update` write it:
 
 ```json
 {
@@ -578,7 +578,7 @@ To fetch a release, the client:
 ### Validating releases
 
 A release is checked in three places, by one set of rules
-(`package-manager:validate`). `zena publish` checks before it uploads
+(`package-manager:validate`). `zena pkg publish` checks before it uploads
 anything. The App View checks before it records a release, since it
 trusts no client. A fetch checks too, since a package can be kept on any
 PDS, where nothing checked what was written. The rules:
@@ -599,7 +599,7 @@ PDS, where nothing checked what was written. The rules:
 - **When publishing, the manifest has a description and a license**, an
   SPDX expression such as `MIT` or `(MIT OR Apache-2.0)`, as crates.io
   requires: every package states what it is for and on what terms it may
-  be used. `zena publish` checks this before it creates a package, whose
+  be used. `zena pkg publish` checks this before it creates a package, whose
   profile then carries both. A fetch does not, so releases published
   before the rule stay usable.
 
@@ -619,7 +619,7 @@ log. There are four layers.
 The lockfile pins the CID of each release record and artifact. A build
 from an existing lockfile gets those bytes or fails.
 
-`zena add` and `zena update` select versions again, from the network, so
+`zena pkg add` and `zena pkg update` select versions again, from the network, so
 they compare the new pins with the old. A package pinned at the version
 it was before, with another release or source CID, was changed in place,
 and the command refuses, writing nothing and naming the old and the new
@@ -641,7 +641,7 @@ did:plc:routerrouterrouterrouter 1.4.2 release=bafyrei... source=bafkrei... comp
 - **Recording a release.** Asked about a version it has not recorded, the
   log fetches and verifies the release from the package's PDS and appends
   it. Whatever the release held at that first lookup is what the log
-  keeps. `zena publish` looks up the new version, so the log records the
+  keeps. `zena pkg publish` looks up the new version, so the log records the
   content its publisher just uploaded.
 - **Checking a release.** For every release not already pinned, the client
   looks it up and compares the CIDs with the ones it fetched. A
@@ -830,7 +830,7 @@ as they do for every package.
 | Key or credential                                            | Created by                                               | Held by                                                                                                             | Controls                                                            |
 | ------------------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | A maintainer's account keys                                  | the maintainer's PDS                                     | the maintainer's PDS                                                                                                | the maintainer's repository, where their attestations are           |
-| A maintainer's OAuth session: a refresh token and a DPoP key | `zena login`                                             | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                           |
+| A maintainer's OAuth session: a refresh token and a DPoP key | `zena pkg login`                                         | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                           |
 | The package's signing key                                    | the package's PDS, when the App View creates the account | the PDS; padstone keeps it encrypted at rest by a key in its key management service                                 | commits to the package's repository                                 |
 | The App View's online rotation key                           | the App View, once                                       | the App View, in a key management service apart from its database                                                   | PLC operations for every account it creates, ranked last            |
 | The App View's own signing key, which its DID document lists | the App View, once                                       | the App View, in its key management service                                                                         | its service-auth tokens to the PDSes of its managed accounts        |
@@ -882,7 +882,7 @@ design does not add one.
 
 ### Scopes
 
-`zena scope create`, `zena scope info`, the manifest's `scope` and the
+`zena pkg scope create`, `zena pkg scope info`, the manifest's `scope` and the
 operator's `create-scope` are built (#575), and so are the membership
 commands below (#576).
 
@@ -892,14 +892,14 @@ label below the App View's domain (see
 with them as its only owner, and an organization's packages in a scope its
 owners share.
 
-**Creating a scope.** `zena scope create acme` asks the App View for the
+**Creating a scope.** `zena pkg scope create acme` asks the App View for the
 organization, with `dev.zena-lang.registry.createOrganization`, with the
-caller as its only owner. Like `zena publish`, it names the handle it
+caller as its only owner. Like `zena pkg publish`, it names the handle it
 would create, `acme.pkg.zena-lang.dev`, and stops, and `--yes` creates
 it. It prints the scope's DID and handle.
 
 Publishing does not create scopes. A publish that names a scope the App View
-does not have stops, and says to create it with `zena scope create`. If
+does not have stops, and says to create it with `zena pkg scope create`. If
 publishing created it, a mistyped `--scope` would make a scope no one
 meant to have, and take its name.
 
@@ -915,18 +915,18 @@ for its workspace packages (see
 [package-manifest.md](package-manifest.md#scope)). The manifest's `name`
 stays the package's own name, without the scope, since it is also the
 name dependents import it by, and a DNS label. `@acme/router` is only
-`zena add`'s shorthand for a handle.
+`zena pkg add`'s shorthand for a handle.
 
 Once the package exists, its DID decides where it is, and `scope` is a
-check. `zena publish` resolves the DID's handle, and refuses when it is
+check. `zena pkg publish` resolves the DID's handle, and refuses when it is
 not `<name>.<scope>.<domain>`, naming both. That catches a manifest
 copied from another package, and a package renamed or moved without its
 manifest following. A package whose handle is on a domain its maintainers
 control has no `scope`.
 
-**Seeing a scope.** `zena scope info <scope>` takes the scope's name,
+**Seeing a scope.** `zena pkg scope info <scope>` takes the scope's name,
 handle or DID, and prints its DID, its handle, the thresholds of its
-members record, and the caller's role in it. `zena scope members` prints
+members record, and the caller's role in it. `zena pkg scope members` prints
 the members the caller may see (see
 [Adding and removing people](#adding-and-removing-people)). The index
 lists the packages in a scope, by their handles.
@@ -950,10 +950,10 @@ is still open.
 
 ### Creating a package
 
-The first `zena publish` of a package creates its account, after asking:
+The first `zena pkg publish` of a package creates its account, after asking:
 it names the handle it would create and stops, and `--yes` creates it.
 The package is created in the scope the manifest's `scope` or `--scope`
-names, which must exist (see [Scopes](#scopes)). `zena package create`
+names, which must exist (see [Scopes](#scopes)). `zena pkg create`
 does only this, for scripts.
 
 The App View is `--registry`, else `ZENA_REGISTRY`, else the Zena
@@ -966,13 +966,13 @@ document must name the origin as its `#zena_registry`. Otherwise a
 server at any origin could answer with the real App View's DID, and replay
 the tokens it was given to the real App View.
 
-1. **Sign in.** Once per machine, `zena login` signs the maintainer in to
+1. **Sign in.** Once per machine, `zena pkg login` signs the maintainer in to
    their own PDS with atproto OAuth, through the browser and a redirect to
    a port on localhost. It asks for one permission set,
    `dev.zena-lang.authPublish`, which allows writing attestation records
    and calling the App View's methods. The App View's methods are `rpc`
    permissions, which cover `com.atproto.server.getServiceAuth`. Until
-   the command implements OAuth, `zena login` signs in with an app
+   the command implements OAuth, `zena pkg login` signs in with an app
    password instead, which allows the same calls and can be revoked on
    its own.
 2. **Recovery keys, if any.** When the maintainer keeps a recovery key,
@@ -1040,7 +1040,7 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
 
 ### Publishing a release
 
-1. `zena publish` builds the artifacts and the release record. The
+1. `zena pkg publish` builds the artifacts and the release record. The
    release's dependencies are those in the package's manifest, with each
    path dependency replaced by the depended-on package's DID and the
    version the workspace uses
@@ -1056,7 +1056,7 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
    release as **pending**, outside the package's repository, which
    reserves the version, and answers with the AT-URI and CID its record
    will have.
-3. `zena publish` writes an attestation of that AT-URI and CID to the
+3. `zena pkg publish` writes an attestation of that AT-URI and CID to the
    maintainer's own repository. An attestation names a record by its hash,
    so it can be made before the record exists.
 4. It calls `dev.zena-lang.registry.completeRelease`. The App View reads the
@@ -1066,26 +1066,26 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
    [Thresholds](#thresholds)). Once they are enough, it writes the release
    record through the package's PDS, and only then is the release in the
    package's repository, its PDS's firehose, the index, and what
-   `zena add` and `zena update` choose from.
+   `zena pkg add` and `zena pkg update` choose from.
 5. Otherwise the release waits. The other maintainers see it on the
    package's page and their `/me` page, and with
-   `zena approve <package>@<version>`, which shows the release
+   `zena pkg approve <package>@<version>`, which shows the release
    (`dev.zena-lang.registry.getPendingReleases`), writes the maintainer's
    attestation, and calls `completeRelease` again. A pending release
    expires after seven days, which frees its version, and its publisher
    or an owner can withdraw it sooner
    (`dev.zena-lang.registry.withdrawRelease`).
-6. `zena publish` looks the version up in the checksum log, which records
+6. `zena pkg publish` looks the version up in the checksum log, which records
    it.
 
 With the usual single maintainer and a threshold of 1, steps 2 to 4
-happen within one `zena publish`. Holding a release back, rather than
+happen within one `zena pkg publish`. Holding a release back, rather than
 writing a record that says it is pending and changing it later, keeps
 release records unchanged once written, so nothing that reads them needs
 to know a release can be pending, and the checksum log's
 `release-mutated` label keeps its meaning.
 
-`zena retract <version>` writes a retraction record, by any one
+`zena pkg retract <version>` writes a retraction record, by any one
 maintainer, without waiting: a retraction stops new builds from choosing
 a release and changes no one's existing builds.
 
@@ -1096,7 +1096,7 @@ keys are added or removed. Each of these is a PLC operation, signed with a
 rotation key.
 
 CI publishes as an automation account: a maintainer marked `automation`,
-which an organization's App View creates on request, from `zena ci create`
+which an organization's App View creates on request, from `zena pkg ci create`
 or the management interface. It is a managed account like the package's,
 so no one signs in to it at its PDS. Its credential is a token the App
 View issues once, which the CI system keeps as a secret, and with which
@@ -1107,7 +1107,7 @@ therefore counts an automation account it holds only together with at
 least one person's attestation, and so does the log; an automation account
 on another PDS, whose owner writes its attestations, counts like any
 maintainer. A package's owners add it with
-`zena owner add <handle> --automation`, as a publisher: the App View
+`zena pkg owner add <handle> --automation`, as a publisher: the App View
 refuses an automation account that is not marked as one, or that is an
 owner, since an owner chooses the maintainers. Since the App View verifies
 the token itself, it could also take a CI system's own identity token in
@@ -1286,7 +1286,7 @@ A package's repository has a maintainers record at record key `self`:
   - `dev.zena-lang.org.profile`, at `self`: how the scope presents
     itself, with a display name, a description and a website. It decides
     no one's role, so its admins write it at once, with
-    `zena scope profile`.
+    `zena pkg scope profile`.
 
   The members and team records list their members privately, as
   [Private membership](#private-membership) describes. An organization's
@@ -1391,21 +1391,21 @@ in particular.
 Each command names a person by handle or DID, and changes one record
 through the App View:
 
-| Command                                                                   | Record                    | App View method  |
-| ------------------------------------------------------------------------- | ------------------------- | ---------------- |
-| `zena scope add <scope> <person> --role <role>`                           | the scope's members       | `putMembers`     |
-| `zena scope remove <scope> <person>`                                      | the scope's members       | `putMembers`     |
-| `zena team create <scope>/<team>`                                         | a new team                | `putTeam`        |
-| `zena team add <scope>/<team> <person> --role <role>`                     | the team                  | `putTeam`        |
-| `zena team remove <scope>/<team> <person>`                                | the team                  | `putTeam`        |
-| `zena team delete <scope>/<team>`                                         | the team                  | `deleteTeam`     |
-| `zena owner add <person> --role <role>`                                   | the package's maintainers | `putMaintainers` |
-| `zena owner add --team <scope>/<team> --role publisher`                   | the package's maintainers | `putMaintainers` |
-| `zena owner remove <person>`                                              | the package's maintainers | `putMaintainers` |
-| `zena scope settings <scope> --owner-threshold <n> --admin-threshold <n>` | the scope's members       | `putMembers`     |
-| `zena team settings <scope>/<team> --threshold <n>`                       | the team                  | `putTeam`        |
-| `zena scope policy <scope> --minimum-threshold <n> ...`                   | the scope's policy        | `putPolicy`      |
-| `zena owner settings --threshold <n> --owner-threshold <n> --humans <n>`  | the package's maintainers | `putMaintainers` |
+| Command                                                                       | Record                    | App View method  |
+| ----------------------------------------------------------------------------- | ------------------------- | ---------------- |
+| `zena pkg scope add <scope> <person> --role <role>`                           | the scope's members       | `putMembers`     |
+| `zena pkg scope remove <scope> <person>`                                      | the scope's members       | `putMembers`     |
+| `zena pkg team create <scope>/<team>`                                         | a new team                | `putTeam`        |
+| `zena pkg team add <scope>/<team> <person> --role <role>`                     | the team                  | `putTeam`        |
+| `zena pkg team remove <scope>/<team> <person>`                                | the team                  | `putTeam`        |
+| `zena pkg team delete <scope>/<team>`                                         | the team                  | `deleteTeam`     |
+| `zena pkg owner add <person> --role <role>`                                   | the package's maintainers | `putMaintainers` |
+| `zena pkg owner add --team <scope>/<team> --role publisher`                   | the package's maintainers | `putMaintainers` |
+| `zena pkg owner remove <person>`                                              | the package's maintainers | `putMaintainers` |
+| `zena pkg scope settings <scope> --owner-threshold <n> --admin-threshold <n>` | the scope's members       | `putMembers`     |
+| `zena pkg team settings <scope>/<team> --threshold <n>`                       | the team                  | `putTeam`        |
+| `zena pkg scope policy <scope> --minimum-threshold <n> ...`                   | the scope's policy        | `putPolicy`      |
+| `zena pkg owner settings --threshold <n> --owner-threshold <n> --humans <n>`  | the package's maintainers | `putMaintainers` |
 
 The roles are those of [Roles](#roles), and `member` or `publisher` when
 `--role` is left out. The `settings` commands change a record's
@@ -1415,8 +1415,8 @@ threshold is approved under the thresholds it replaces, so raising
 `ownerThreshold` from 1 to 2 needs one owner, and lowering it back needs
 two. The `owner` commands act on the package in the
 current directory, or on the one `--package` names by DID, handle or
-`@scope/name`. `zena scope members <scope>`, `zena team members` and
-`zena owner list` print the entries the caller may see.
+`@scope/name`. `zena pkg scope members <scope>`, `zena pkg team members` and
+`zena pkg owner list` print the entries the caller may see.
 
 Each change takes the same steps:
 
@@ -1457,8 +1457,8 @@ have attested it. Only people count; automation chooses no one's roles.
 So one owner of a package whose `ownerThreshold` is 2 cannot replace the
 others, and until the others approve, the record before the change
 decides every role: the owner being removed is still an owner. The
-others see a waiting change with `zena approve @acme` or
-`zena approve <package>` (`dev.zena-lang.registry.getPendingChanges`), which
+others see a waiting change with `zena pkg approve @acme` or
+`zena pkg approve <package>` (`dev.zena-lang.registry.getPendingChanges`), which
 shows the entries added and removed and the thresholds changed first,
 and with `--yes` writes their attestations and calls `completeChange`.
 
@@ -1490,8 +1490,8 @@ key ranked above the departing one, not with the App View's key, which ranks
 last. The first rotation key should be the one trusted most, such as an
 organization's offline key.
 
-Nothing records which rotation key is whose, so `zena scope remove` and
-`zena owner remove` cannot yet tell whether the person removed holds one.
+Nothing records which rotation key is whose, so `zena pkg scope remove` and
+`zena pkg owner remove` cannot yet tell whether the person removed holds one.
 Recording the holder's recovery key in their private entry would let the
 command find it, and prepare the PLC operation for each DID it is on, for
 a holder ranked above it to sign. `zena` signs it with that holder's key
@@ -1510,7 +1510,7 @@ recovery key.
   1 unless the scope sets others, so the publisher's own attestation
   meets them. A
   release with fewer attestations waits, pending on the App View and outside
-  the package's repository, until `zena approve <package>@<version>` adds
+  the package's repository, until `zena pkg approve <package>@<version>` adds
   enough; then the App View writes its record, and the log records it.
 - **Control of the DID** cannot. PLC accepts an operation signed by any
   one rotation key, with rank deciding conflicts for 72 hours, and has no
@@ -1567,7 +1567,7 @@ and the settings of each record: thresholds, `humans`, and approval keys.
 How it handles keys:
 
 - **Approval keys** are registered and used here, since passkeys are a
-  browser feature, and `zena approve` opens the same page. The page's
+  browser feature, and `zena pkg approve` opens the same page. The page's
   domain is the passkeys' relying party, and must never change: a passkey
   made for one domain cannot sign for another.
 - **Recovery keys** never enter the browser. WebAuthn signs only its own
@@ -1582,7 +1582,7 @@ How it handles keys:
 
 People approve what the interface shows them, so its code is what they
 trust. It is served as static, versioned files built from open source,
-with Subresource Integrity on its scripts, and `zena approve` remains a
+with Subresource Integrity on its scripts, and `zena pkg approve` remains a
 way to inspect and approve releases without it. Settings only an App View
 holds, such as claims on scope names, are its operators' to review, on
 the App View's `/admin` ([Finding an App View](#finding-an-app-view)).
@@ -1747,7 +1747,7 @@ migration. Signing keys do not move: the new PDS generates one of its own.
    PDS's endpoint and signing key.
 
 The Zena project's App View moves a package once its owners' threshold has
-attested the move, with `zena package move --to <pds>`. So an
+attested the move, with `zena pkg move --to <pds>`. So an
 organization can keep its packages on a PDS it runs, and still have the
 Zena project's App View manage them.
 
@@ -1784,7 +1784,7 @@ against the log.
   package's PDS. A package that trusts no PDS but its owners' keeps its
   account on a PDS they run, with the Zena project's App View or another
   managing it. A package that trusts no App View runs its own, with
-  `zena package create --registry <url>`, or leaves every App View for an
+  `zena pkg create --registry <url>`, or leaves every App View for an
   ordinary account ([Moving to another PDS](#moving-to-another-pds)). A
   key on a laptop that is usually offline cannot serve the repository, so
   this is not supported.
@@ -1924,7 +1924,7 @@ dependencies:
 3. **Nothing new arrives unasked.** Minimal version selection uses the
    lowest version anyone in the graph asks for, so a new release,
    malicious or not, reaches a workspace only when someone raises a
-   minimum, usually with `zena update`. Nothing in a package runs when it
+   minimum, usually with `zena pkg update`. Nothing in a package runs when it
    is added, fetched or compiled: Zena packages have no install or build
    scripts. The macros Zena may add ([macros.md](macros.md)) would run at
    compile time, in the compiler's Wasm sandbox and without its access to
@@ -1999,14 +1999,14 @@ Three fields of the maintainers record control this:
   the same way.
 - **`humans`** is how many of a release's attestations must come from
   maintainers that are not automation. With CI attesting and `humans` at
-  1, a release CI publishes waits until a person runs `zena approve`,
+  1, a release CI publishes waits until a person runs `zena pkg approve`,
   which shows what they are approving: the version, the artifacts' CIDs,
   and the changes to the source since the previous release. A release
   made with a stolen CI secret reaches the log only if a person approves
   it.
 - **`approvalKeys`** are a maintainer's passkeys or security keys. When a
   maintainer has some, their attestations count only with a signature
-  from one: `zena approve` asks for a WebAuthn assertion over the
+  from one: `zena pkg approve` asks for a WebAuthn assertion over the
   release's CID, through a page at `zena-lang.dev` opened in the browser,
   and includes it in the attestation, where the log checks it against the
   key. With `approvalKeysRequired`, every person's attestation needs one.
@@ -2071,10 +2071,10 @@ DID, so dependents can move.
 ### Confusion
 
 - **Typosquatting**, as in `@acme/routr` beside `@acme/router`. Handles
-  are ASCII, which rules out look-alike Unicode. `zena add` shows the DID,
+  are ASCII, which rules out look-alike Unicode. `zena pkg add` shows the DID,
   handle, maintainers, and how many packages depend on the package before
   it writes anything, and the index can label handles that look like
-  those of popular packages. After `zena add`, the depending package
+  those of popular packages. After `zena pkg add`, the depending package
   refers to the package by DID and by its own local name, so a typo can do harm only at
   that moment.
 - **Dependency confusion**, where a public package shadows a private one
@@ -2083,15 +2083,15 @@ DID, so dependents can move.
   [Names and scopes](#names-and-scopes)).
 - **Expired domains.** Whoever registers a domain a package's handle was
   on can point the handle at their own DID, which affects only new
-  `zena add`s by that handle. For a `did:web` package the DID itself
+  `zena pkg add`s by that handle. For a `did:web` package the DID itself
   becomes theirs, but the log still holds the old maintainers record, so
   it records no release they make.
 - **Manifest confusion**, where what a registry shows about a package
   differs from what the package contains. A release lists its
   dependencies, and its source archive holds `zena-package.json`, which
-  lists them too. The log and `zena fetch` check that the two agree.
+  lists them too. The log and `zena pkg fetch` check that the two agree.
 - **Lockfile injection**, where a pull request changes `zena-lock.json`
-  to pin another DID or CID. `zena fetch --check` recomputes the selection
+  to pin another DID or CID. `zena pkg fetch --check` recomputes the selection
   from the `zena-package.json` files and checks each pin against the log,
   and fails when the lockfile differs,
   so CI can refuse such a change.
@@ -2269,8 +2269,8 @@ throttled. The App View therefore limits who creates accounts and how many:
   servers. The log also checks attestations, approval-key signatures and
   recovery resets. The App View's index watches PLC operations, publishes
   and changes of maintainers, and tells maintainers about them.
-- **Approvals**: `zena approve`, and the management interface's page that
-  asks a passkey or security key for a WebAuthn assertion. `zena fetch --check`
+- **Approvals**: `zena pkg approve`, and the management interface's page that
+  asks a passkey or security key for a WebAuthn assertion. `zena pkg fetch --check`
   and `zena verify-source`.
 
 ## Alternatives considered

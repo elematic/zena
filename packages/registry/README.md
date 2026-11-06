@@ -60,7 +60,7 @@ APP_VIEW_DOMAIN=pkg.test ./target/release/zena-cli run packages/registry/zena/ma
 stand-in PLC directory with a maintainer who has an app password, and a
 DNS-over-HTTPS resolver that answers from the App View's handle records, all
 on this machine (`dev/demo.zena`). It prints the environment to give
-`zena`, and the commands of a first `zena login` and `zena publish`; a
+`zena`, and the commands of a first `zena pkg login` and `zena pkg publish`; a
 package it publishes can then be added by its handle and run from another
 workspace. Nothing goes to the public PLC directory or to real DNS. It
 builds the App View from the environment as `main.zena` does, so it runs on
@@ -125,7 +125,7 @@ whose indexes could not be written, which the server logs.
 With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`, it
 creates a scope owned by that DID and exits. This is how the operator
 takes a name the App View reserves (`www`, `api`, `admin`, `zena`, `pkg`,
-`mail`, and `APP_VIEW_RESERVED_SCOPES`), which no `zena scope create` can.
+`mail`, and `APP_VIEW_RESERVED_SCOPES`), which no `zena pkg scope create` can.
 
 `PDS_BLOB_DIR=<dir>` keeps blob bytes in a directory instead, for a server
 on one machine. `FIRESTORE_EMULATOR_HOST` points the server at the
@@ -186,8 +186,8 @@ source packages/registry/deploy/staging.env   # ZENA_REGISTRY and ZENA_PLC_DIREC
 export ZENA_CONFIG_DIR=$(mktemp -d)           # optional: a staging sign-in apart from your usual one
 ```
 
-Every shell that runs `zena` against staging needs them, `zena add` and
-`zena fetch` included: without `ZENA_PLC_DIRECTORY`, a staging package's
+Every shell that runs `zena` against staging needs them, `zena pkg add` and
+`zena pkg fetch` included: without `ZENA_PLC_DIRECTORY`, a staging package's
 DID is looked up in `plc.directory`, which has never heard of it.
 
 ### Rotation keys

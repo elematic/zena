@@ -1,6 +1,6 @@
 /**
- * Who belongs: `zena scope add`, `remove` and `members` for an
- * organization's members, `zena team` for its teams, and `zena owner` for a
+ * Who belongs: `zena pkg scope add`, `remove` and `members` for an
+ * organization's members, `zena pkg team` for its teams, and `zena pkg owner` for a
  * package's maintainers (docs/design/package-manager.md, "Adding and
  * removing people").
  *
@@ -15,7 +15,7 @@
  * it: until enough of the owners, admins or team maintainers that record
  * names have attested it, which with thresholds of one is the caller.
  * Until then the command says what it waits for, and the others approve it
- * with `zena approve` (`approve.zena`).
+ * with `zena pkg approve` (`approve.zena`).
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -51,10 +51,10 @@ export final class Held {
   new(this.value, this.cid, this.uri);
 }
 
-/** `zena scope add <scope> <person> [--role member|admin|owner]`. */
+/** `zena pkg scope add <scope> <person> [--role member|admin|owner]`. */
 export function scopeAddCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
-    let (scope, person) = twoArguments(args, 'zena scope add <scope> <handle or DID> [--role member|admin|owner]');
+    let (scope, person) = twoArguments(args, 'zena pkg scope add <scope> <handle or DID> [--role member|admin|owner]');
     let role = roleOf(args, MEMBER, [MEMBER, ADMIN, OWNER]);
     let session = signedIn();
     let registry = findRegistry(args);
@@ -78,10 +78,10 @@ export function scopeAddCommand(args: ParsedArgs, options: Options): i32 {
   });
 }
 
-/** `zena scope remove <scope> <person>`. */
+/** `zena pkg scope remove <scope> <person>`. */
 export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
-    let (scope, person) = twoArguments(args, 'zena scope remove <scope> <handle or DID>');
+    let (scope, person) = twoArguments(args, 'zena pkg scope remove <scope> <handle or DID>');
     let session = signedIn();
     let registry = findRegistry(args);
     let org = scopeDid(registry, scope);
@@ -107,7 +107,7 @@ export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
 }
 
 /**
- * `zena scope settings <scope> [--owner-threshold <n>] [--admin-threshold <n>]`:
+ * `zena pkg scope settings <scope> [--owner-threshold <n>] [--admin-threshold <n>]`:
  * how many owners must approve a change to the scope's members, and how
  * many admins or owners a change to one of its teams. With neither, prints
  * them. A change to them is a change to the members record, which the
@@ -116,7 +116,7 @@ export function scopeRemoveCommand(args: ParsedArgs, options: Options): i32 {
 export function scopeSettingsCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
     if (args.rest.length != 2) {
-      throw new PublishError('give the scope: zena scope settings <scope> [--owner-threshold <n>] [--admin-threshold <n>]');
+      throw new PublishError('give the scope: zena pkg scope settings <scope> [--owner-threshold <n>] [--admin-threshold <n>]');
     }
     let scope = args.rest[1];
     let owners = countOption(args, 'owner-threshold', 1);
@@ -146,7 +146,7 @@ export function scopeSettingsCommand(args: ParsedArgs, options: Options): i32 {
 }
 
 /**
- * `zena scope policy <scope> [flags]`: the scope's policy for its
+ * `zena pkg scope policy <scope> [flags]`: the scope's policy for its
  * packages: the least a release needs, which applies to every package in
  * it at once (`--minimum-threshold`, `--minimum-humans`); what a new
  * package's maintainers record starts with (`--default-teams
@@ -159,7 +159,7 @@ export function scopeSettingsCommand(args: ParsedArgs, options: Options): i32 {
 export function scopePolicyCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
     if (args.rest.length != 2) {
-      throw new PublishError('give the scope: zena scope policy <scope> [--minimum-threshold <n>] ...');
+      throw new PublishError('give the scope: zena pkg scope policy <scope> [--minimum-threshold <n>] ...');
     }
     let scope = args.rest[1];
     let session = signedIn();
@@ -253,11 +253,11 @@ function scopeSettings(scope: String, members: Members): String {
       count(members.adminThreshold, 'admin or owner', 'admins or owners')}, or a team's own threshold of its maintainers.`;
 }
 
-/** `zena scope members <scope>`: the members the caller may see. */
+/** `zena pkg scope members <scope>`: the members the caller may see. */
 export function scopeMembersCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
     if (args.rest.length != 2) {
-      throw new PublishError('give the scope: zena scope members <scope>');
+      throw new PublishError('give the scope: zena pkg scope members <scope>');
     }
     let session = signedIn();
     let registry = findRegistry(args);
@@ -269,13 +269,13 @@ export function scopeMembersCommand(args: ParsedArgs, options: Options): i32 {
 }
 
 /**
- * `zena team create|add|remove|delete|members <scope>/<team> ...`: an
+ * `zena pkg team create|add|remove|delete|members <scope>/<team> ...`: an
  * organization's teams. A team is created empty, and its members must be
  * members of the organization.
  */
 export function teamCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
-    let usage = 'zena team create|delete|members <scope>/<team>, zena team add|remove <scope>/<team> <handle or DID>, or zena team settings <scope>/<team> [--threshold <n>]';
+    let usage = 'zena pkg team create|delete|members <scope>/<team>, zena pkg team add|remove <scope>/<team> <handle or DID>, or zena pkg team settings <scope>/<team> [--threshold <n>]';
     if (args.rest.length < 2) {
       throw new PublishError(`give a subcommand and a team: ${usage}`);
     }
@@ -290,7 +290,7 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
         throw new PublishError(`${scope} already has the team ${name}`);
       }
       if (putTeam(session, registry, scope, org, name, new Team([]), [], null)) {
-        console.log(`Created the team ${scope}/${name}. Add its members with zena team add ${scope}/${name} <person>.`);
+        console.log(`Created the team ${scope}/${name}. Add its members with zena pkg team add ${scope}/${name} <person>.`);
       }
     } else {
       if (held == null) {
@@ -345,15 +345,15 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
 }
 
 /**
- * `zena owner add|remove|list`: a package's maintainers, for the package
+ * `zena pkg owner add|remove|list`: a package's maintainers, for the package
  * in the current directory or the one `--package` names. A person is added
  * by commitment, so the record does not name them; `--team <scope>/<team>`
  * adds or removes a team, and `--automation` marks an automation account
- * (`zena ci create`), which the registry requires of one, as a publisher.
+ * (`zena pkg ci create`), which the registry requires of one, as a publisher.
  */
 export function ownerCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
-    let usage = 'zena owner add|remove <handle or DID> [--role publisher|owner] [--automation], zena owner add|remove --team <scope>/<team>, zena owner list, or zena owner settings [--threshold <n>] [--owner-threshold <n>] [--humans <n>]';
+    let usage = 'zena pkg owner add|remove <handle or DID> [--role publisher|owner] [--automation], zena pkg owner add|remove --team <scope>/<team>, zena pkg owner list, or zena pkg owner settings [--threshold <n>] [--owner-threshold <n>] [--humans <n>]';
     if (args.rest.length == 0) {
       throw new PublishError(usage);
     }
@@ -486,7 +486,7 @@ function write(session: Session, registry: Registry, method: String, input: Json
  * Asks the registry to write the change to the record at `uri`, whose new
  * record's CID is `cid`, once the record before it allows it. Returns
  * whether it did; otherwise says what the change to `what` waits for, and
- * the command that approves it, `zena approve <approveAs>`.
+ * the command that approves it, `zena pkg approve <approveAs>`.
  */
 export function completeChange(session: Session, registry: Registry, uri: String, cid: String, what: String,
     approveAs: String): boolean {
@@ -499,7 +499,7 @@ export function completeChange(session: Session, registry: Registry, uri: String
     return true;
   }
   console.log(`The change to ${what} is waiting for approval: ${changeApprovals(answer)}.`);
-  console.log(`Another approves it with: zena approve ${approveAs}`);
+  console.log(`Another approves it with: zena pkg approve ${approveAs}`);
   return false;
 }
 
@@ -550,7 +550,7 @@ function packageSettings(record: Maintainers): String {
 }
 
 /**
- * How `zena approve` names the package: as `--package` did, else as
+ * How `zena pkg approve` names the package: as `--package` did, else as
  * `@scope/name` from the manifest of the package in the current directory,
  * else by DID.
  */
@@ -790,7 +790,7 @@ function maintainerDid(maintainer: Maintainer, entries: Array<MemberEntry>): Str
   return null;
 }
 
-/** A maintainer as `zena owner list` shows them. */
+/** A maintainer as `zena pkg owner list` shows them. */
 export function describeMaintainer(maintainer: Maintainer, entries: Array<MemberEntry>): String {
   if (maintainer.org != null) {
     return `the team ${maintainer.team as String} of ${maintainer.org as String}`;

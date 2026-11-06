@@ -16,56 +16,56 @@ Because each maintainer's attestation lives in their own PDS repository and is s
 
 ## Reviewing and approving changes
 
-Use `zena approve` to inspect pending releases or membership changes and write your attestation:
+Use `zena pkg approve` to inspect pending releases or membership changes and write your attestation:
 
 ```sh
 # Inspect a held release
-zena approve @acme/router@2.0.0
+zena pkg approve @acme/router@2.0.0
 
 # Approve the release (writes an attestation to your repository and notifies the registry)
-zena approve @acme/router@2.0.0 --yes
+zena pkg approve @acme/router@2.0.0 --yes
 
 # Inspect and approve pending membership or team changes on a scope or package
-zena approve @acme
-zena approve @acme --yes
-zena approve @acme/router --yes
+zena pkg approve @acme
+zena pkg approve @acme --yes
+zena pkg approve @acme/router --yes
 ```
 
-When signed in to `pkg.zena-lang.dev`, your `/me` page and each package's page also list all releases waiting for your approval, along with the exact `zena approve` command to run.
+When signed in to `pkg.zena-lang.dev`, your `/me` page and each package's page also list all releases waiting for your approval, along with the exact `zena pkg approve` command to run.
 
 ## Configuring thresholds
 
 Every package, scope, and team has configurable approval thresholds:
 
-### Package thresholds (`zena owner settings`)
+### Package thresholds (`zena pkg owner settings`)
 
 - **`--threshold <n>`**: How many maintainers (`owner` or `publisher`) must attest a release before it takes effect.
 - **`--owner-threshold <n>`**: How many `owner`s must attest a change to the package's maintainers list or thresholds.
 
 ```sh
 # Show current thresholds for a package
-zena owner settings @acme/router
+zena pkg owner settings @acme/router
 
 # Require 2 maintainer approvals for every release, and 2 owners to change maintainers
-zena owner settings @acme/router --threshold 2 --owner-threshold 2
+zena pkg owner settings @acme/router --threshold 2 --owner-threshold 2
 ```
 
 ### Scope and team thresholds
 
-- **`zena scope settings <scope> [--owner-threshold <n>]`**: How many organization owners must approve changes to the scope's members or policies.
-- **`zena team settings <scope> <team> [--threshold <n>]`**: How many team maintainers must approve changes to the team's membership.
+- **`zena pkg scope settings <scope> [--owner-threshold <n>]`**: How many organization owners must approve changes to the scope's members or policies.
+- **`zena pkg team settings <scope> <team> [--threshold <n>]`**: How many team maintainers must approve changes to the team's membership.
 
-## Scope policies (`zena scope policy`)
+## Scope policies (`zena pkg scope policy`)
 
 Organization owners can set a `dev.zena-lang.org.policy` record on a scope to enforce minimum security requirements across every package in the scope:
 
 ```sh
 # View the scope's current policy
-zena scope policy acme
+zena pkg scope policy acme
 
 # Require at least 2 maintainer approvals on every package in @acme,
 # and allow any organization member to create new packages
-zena scope policy acme \
+zena pkg scope policy acme \
   --min-release-threshold 2 \
   --default-release-threshold 2 \
   --min-owner-threshold 2 \
@@ -74,18 +74,18 @@ zena scope policy acme \
 
 A package in `@acme` cannot set its `threshold` below the scope's `minReleaseThreshold`, and the registry refuses any release that does not meet the higher of the package's threshold and the scope's minimum.
 
-## CI automation accounts (`zena ci create`)
+## CI automation accounts (`zena pkg ci create`)
 
 To publish from GitHub Actions or another CI pipeline without giving CI a human maintainer's app password:
 
 ```sh
-zena ci create acme/release-bot
+zena pkg ci create acme/release-bot
 ```
 
-`zena ci create` creates a dedicated automation account under `@acme` (`release-bot.acme.pkg.zena-lang.dev`) and prints its token once. CI keeps the token as the secret `ZENA_REGISTRY_TOKEN` and runs `zena publish`; `zena ci token acme/release-bot` gives it a new one if it leaks, and the old one stops working. The registry writes the automation account's attestations itself. You can then add the automation account as a `publisher` on specific packages:
+`zena pkg ci create` creates a dedicated automation account under `@acme` (`release-bot.acme.pkg.zena-lang.dev`) and prints its token once. CI keeps the token as the secret `ZENA_REGISTRY_TOKEN` and runs `zena pkg publish`; `zena pkg ci token acme/release-bot` gives it a new one if it leaks, and the old one stops working. The registry writes the automation account's attestations itself. You can then add the automation account as a `publisher` on specific packages:
 
 ```sh
-zena owner add @acme/router release-bot.acme.pkg.zena-lang.dev --role publisher
+zena pkg owner add @acme/router release-bot.acme.pkg.zena-lang.dev --role publisher
 ```
 
-Combined with a release threshold or human-approval requirement, CI can build and upload release candidates automatically while a human maintainer gives the final `zena approve` from their workstation.
+Combined with a release threshold or human-approval requirement, CI can build and upload release candidates automatically while a human maintainer gives the final `zena pkg approve` from their workstation.

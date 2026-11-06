@@ -121,9 +121,9 @@ demo keeps what it makes to itself, but reads real identities through:
 its PLC directory reads DIDs it does not hold from `plc.directory`, and
 its DNS resolver asks Cloudflare's about names it does not hold. You have
 no role in anything there until you make one: sign `zena` in as the same
-account (`zena login <handle or DID>`, with an app password), then
-`zena scope create <name> --yes`, and reload `/me`. That writes nothing to
-your repository; `zena publish` does, since it writes your attestation of
+account (`zena pkg login <handle or DID>`, with an app password), then
+`zena pkg scope create <name> --yes`, and reload `/me`. That writes nothing to
+your repository; `zena pkg publish` does, since it writes your attestation of
 the release there. To see `/admin`, start the demo with your DID as an admin:
 `APP_VIEW_ADMIN_DIDS=did:plc:… npm run demo -w @zena-lang/registry`.
 
