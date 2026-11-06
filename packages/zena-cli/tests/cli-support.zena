@@ -96,7 +96,7 @@ export final class Scratch {
   }
 
   remove(): void {
-    run(['rm', '-rf', this.host()]);
+    runFuture(run(['rm', '-rf', this.host()]));
   }
 }
 
@@ -133,7 +133,8 @@ export final class ZenaCommand {
 
   /** Runs `args` and returns what the command printed and its status. */
   run(args: Array<String>, input: String | null = null): ProcessResult {
-    return this.spawn(args, input).wait();
+    let proc = this.spawn(args, input);
+    return runFuture(proc.wait());
   }
 
   spawn(args: Array<String>, input: String | null = null): Own<Process> {
@@ -175,7 +176,7 @@ function fixtureCache(): String {
 /**
  * Starts `tests/fixtures/<fixture>` with `zena run` as the PLC directory
  * and PDS, writing into `pds/` of `scratch`. Pass the process to
- * `fakePdsOrigin`, and stop it with `waitFor(1)` when the test is done.
+ * `fakePdsOrigin`, and stop it with `stopFakePds` when the test is done.
  * The test holds the process itself: a resource class wrapping it fails
  * to lower (elematic/zena#493).
  */
@@ -184,6 +185,11 @@ export function startFakePds(scratch: Scratch, fixture: String): Own<Process> {
   let command = new ZenaCommand(repoRoot(), '.', fixtureCache());
   return command.spawn(['run', '--dir', `${scratch.host('pds')}::/out`,
       `packages/zena-cli/tests/fixtures/${fixture}`]);
+}
+
+/** Stops a `startFakePds` fixture process. */
+export function stopFakePds(process: Borrow<Process>): void {
+  runFuture(process.waitFor(1 as i64));
 }
 
 /**
@@ -203,7 +209,7 @@ export function fakePdsOrigin(scratch: Scratch, process: Borrow<Process>): Strin
     }
     runFuture(sleep(milliseconds(200 as i64)));
   }
-  let result = process.waitFor(1 as i64);
+  let result = runFuture(process.waitFor(1 as i64));
   throw new Error(`the fake PDS did not start:\n${described(result)}`);
 }
 

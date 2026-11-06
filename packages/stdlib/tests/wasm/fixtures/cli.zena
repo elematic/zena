@@ -1,18 +1,24 @@
 // Exercises what a run passes through WASI, compiled to a component by
 // the stdlib package's `build:fixtures` script:
-// - main writes "hello\n" to stdout and returns its argument count;
+// - main writes "hello\n" to stdout and returns its argument count, or
+//   with first argument `spawn` runs a host process and returns its exit
+//   code (which needs the grant);
 // - `preopen` returns how many directories were handed over;
 // - `env` returns how many environment variables it sees;
-// - `exits` ends the component with exit(3);
-// - `spawns` runs a host process and returns its exit code, which needs
-//   the grant.
+// - `exits` ends the component with exit(3).
+import { Future } from 'zena:async';
 import { exit, getArguments, getEnvironment } from 'zena:cli';
 import { getPreopens } from 'zena:fs';
 import { run } from 'zena:process';
 
-export function main(): i32 {
+export async function main(): Future<i32> {
+  let args = getArguments();
+  if (args.length > 1 && args[1] == 'spawn') {
+    let res = await run(['/bin/sh', '-c', 'exit 5']);
+    return res.exitCode;
+  }
   console.log('hello');
-  return getArguments().length;
+  return args.length;
 }
 
 export function preopen(): i32 {
@@ -26,8 +32,4 @@ export function env(): i32 {
 export function exits(): i32 {
   exit(3);
   return 0;
-}
-
-export function spawns(): i32 {
-  return run(['/bin/sh', '-c', 'exit 5']).exitCode;
 }

@@ -35,14 +35,14 @@ Working today:
 - content-addressed local cache under `.zb/` (state file, per-key
   manifests, blob store); lost state restores from cache instead of
   rebuilding
+- bounded parallel command execution (`-j <jobs>`, defaulting to
+  `ZENA_AVAILABLE_PARALLELISM`)
 - precise cleaning: exactly the previous run's outputs are deleted, not a
   glob guess
 
 Not yet (see the design doc's milestones):
 
 - services and watch mode
-- parallel command execution (process waiting is synchronous, so scripts
-  run one at a time)
 - `packageLocks` fingerprinting; wireit's `env` and object-form
   dependencies are rejected loudly
 - an mtime memo for input hashing — every run rehashes all inputs

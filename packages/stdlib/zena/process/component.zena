@@ -9,13 +9,14 @@
  * ```zena
  * import { run } from 'zena:process';
  *
- * let result = run(['git', 'status']);
+ * let result = await run(['git', 'status']);
  * if (result.succeeded()) {
  *   console.log(result.stdout);
  * }
  * ```
  */
 
+import { Future } from 'zena:async';
 import { Own } from 'zena:core';
 import { Command, Process as HostProcess, Finished } from 'zena-cli:host/process';
 
@@ -60,8 +61,9 @@ export resource class Process {
 
   new(proc: Own<HostProcess>) : #proc = proc;
 
-  wait(): ProcessResult {
-    return this.waitFor(0 as i64);
+  /** Waits for the process to exit without blocking this program's other tasks. */
+  async wait(): Future<ProcessResult> {
+    return await this.waitFor(0 as i64);
   }
 
   /**
@@ -71,12 +73,12 @@ export resource class Process {
    * so a caller can disable its timeout without branching. Waiting
    * again returns the same result.
    */
-  waitFor(millis: i64): ProcessResult {
+  async waitFor(millis: i64): Future<ProcessResult> {
     let cached = this.#result;
     if (cached != null) {
       return cached;
     }
-    let result = resultOf(this.#proc.wait(millis));
+    let result = resultOf(await this.#proc.wait(millis));
     this.#result = result;
     return result;
   }
@@ -113,7 +115,7 @@ export type SpawnOptions = {
  * Start a process from an argument vector, the program first.
  *
  * ```zena
- * let sorted = runWith(['sort'], {input: 'b\na\n'});
+ * let sorted = await runWith(['sort'], {input: 'b\na\n'});
  * ```
  */
 export function spawnWith(argv: Array<String>, options: SpawnOptions): Own<Process> {
@@ -147,8 +149,12 @@ export function spawnWith(argv: Array<String>, options: SpawnOptions): Own<Proce
 }
 
 /** Runs a process to completion; see `spawnWith`. */
-export function runWith(argv: Array<String>, options: SpawnOptions): ProcessResult {
-  return spawnWith(argv, options).wait();
+export async function runWith(
+  argv: Array<String>,
+  options: SpawnOptions,
+): Future<ProcessResult> {
+  let proc = spawnWith(argv, options);
+  return await proc.wait();
 }
 
 /**
@@ -172,12 +178,17 @@ export function spawn(argv: Array<String>): Own<Process> {
   return spawnIn(argv, null);
 }
 
-export function runIn(argv: Array<String>, cwd: String | null): ProcessResult {
-  return spawnIn(argv, cwd).wait();
+export async function runIn(
+  argv: Array<String>,
+  cwd: String | null,
+): Future<ProcessResult> {
+  let proc = spawnIn(argv, cwd);
+  return await proc.wait();
 }
 
-export function run(argv: Array<String>): ProcessResult {
-  return spawnIn(argv, null).wait();
+export async function run(argv: Array<String>): Future<ProcessResult> {
+  let proc = spawnIn(argv, null);
+  return await proc.wait();
 }
 
 /**
@@ -185,9 +196,10 @@ export function run(argv: Array<String>): ProcessResult {
  * appears as it is written; the result's `stdout` and `stderr` are
  * empty.
  */
-export function runInheriting(
+export async function runInheriting(
   argv: Array<String>,
   cwd: String | null = null,
-): ProcessResult {
-  return spawnIn(argv, cwd, true).wait();
+): Future<ProcessResult> {
+  let proc = spawnIn(argv, cwd, true);
+  return await proc.wait();
 }

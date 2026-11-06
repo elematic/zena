@@ -1,4 +1,15 @@
-import {existsSync, isFileSync, mkdirSync, readFileSync, unlinkSync} from 'zena:fs';
+import {
+  FsError,
+  FsErrorCode,
+  exists,
+  existsSync,
+  isFile,
+  isFileSync,
+  mkdir,
+  mkdirSync,
+  readFileSync,
+  unlink,
+} from 'zena:fs';
 import {dirname, join2} from 'zena:path';
 
 /**
@@ -29,29 +40,54 @@ export function withRoot(root: String, path: String): String {
   return `${root}/${path}`;
 }
 
-export function readFileOrNull(path: String): String? {
+/** Creates a directory and its ancestors; safe under concurrent mkdirs. */
+export async function ensureDir(path: String): Future<void> {
+  if (path == '' || path == '.' || await exists(path)) {
+    return;
+  }
+  await ensureDir(dirname(path));
+  try {
+    await mkdir(path);
+  } catch (e) {
+    if (!(e is FsError) || e.code != FsErrorCode.Exist) {
+      throw e;
+    }
+  }
+}
+
+/** Creates the directory a file will be written into. */
+export async function ensureParentDir(path: String): Future<void> {
+  await ensureDir(dirname(path));
+}
+
+export async function deleteIfExists(path: String): Future<void> {
+  if (!(await isFile(path))) {
+    return;
+  }
+  try {
+    await unlink(path);
+  } catch (e) {
+    if (!(e is FsError) || e.code != FsErrorCode.NotFound) {
+      throw e;
+    }
+  }
+}
+
+export function readFileOrNullSync(path: String): String? {
   if (!isFileSync(path)) {
     return null;
   }
   return readFileSync(path);
 }
 
-/** Creates a directory and its ancestors; existing ones are fine. */
-export function ensureDir(path: String): void {
+export function ensureDirSync(path: String): void {
   if (path == '' || path == '.' || existsSync(path)) {
     return;
   }
-  ensureDir(dirname(path));
+  ensureDirSync(dirname(path));
   mkdirSync(path);
 }
 
-/** Creates the directory a file will be written into. */
-export function ensureParentDir(path: String): void {
-  ensureDir(dirname(path));
-}
-
-export function deleteIfExists(path: String): void {
-  if (isFileSync(path)) {
-    unlinkSync(path);
-  }
+export function ensureParentDirSync(path: String): void {
+  ensureDirSync(dirname(path));
 }

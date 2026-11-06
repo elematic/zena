@@ -36,6 +36,7 @@ pub(crate) mod bindings {
         world: "zena:runtime/command",
         imports: {
             default: trappable,
+            "zena-cli:host/process.[method]process.wait": async | trappable | store,
             "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
             "zena-cli:host/http-server.[static]response-writer.respond": trappable | store,
             "zena-cli:host/extensions.load": async | trappable | store,
@@ -241,6 +242,7 @@ pub struct CommandState {
 }
 
 /// How a child ended, and what it wrote; the host side of `finished`.
+#[derive(Clone)]
 struct Finished {
     exit_code: i32,
     stdout: Vec<u8>,
@@ -261,17 +263,28 @@ impl From<Finished> for process::Finished {
     }
 }
 
-/// A child being waited on: the result arrives on `rx` when the worker
-/// thread finishes, and `child` is kept so a deadline can kill it.
-struct Pending {
-    rx: std::sync::mpsc::Receiver<std::result::Result<Finished, String>>,
-    child: Arc<Mutex<Option<std::process::Child>>>,
+type ReapResult = std::result::Result<Finished, String>;
+
+fn withheld_timeout(dur: Duration) -> Finished {
+    Finished {
+        exit_code: -1,
+        stdout: Vec::new(),
+        stderr: b"(killed on timeout; output withheld by a surviving child)".to_vec(),
+        wall_nanos: dur.as_nanos() as i64,
+        timed_out: true,
+    }
+}
+
+/// Shared state between the reap worker thread and async waiters.
+struct ProcessInner {
+    child: Mutex<Option<std::process::Child>>,
+    reaped_watch: tokio::sync::watch::Receiver<Option<ReapResult>>,
+    done: Mutex<Option<ReapResult>>,
 }
 
 /// A running process, then its result.
 pub struct ProcessState {
-    pending: Option<Pending>,
-    done: Option<std::result::Result<Finished, String>>,
+    inner: Arc<ProcessInner>,
 }
 
 /// Drains one of a child's pipes on its own thread. Reading them
@@ -439,9 +452,13 @@ impl process::HostCommand for ComponentState {
         }
         let out = child.stdout.take();
         let err = child.stderr.take();
-        let shared = Arc::new(Mutex::new(Some(child)));
-        let worker_child = shared.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (watch_tx, watch_rx) = tokio::sync::watch::channel(None);
+        let inner = Arc::new(ProcessInner {
+            child: Mutex::new(Some(child)),
+            reaped_watch: watch_rx,
+            done: Mutex::new(None),
+        });
+        let worker_inner = inner.clone();
         std::thread::spawn(move || {
             let out_t = drain(out);
             let err_t = drain(err);
@@ -450,7 +467,7 @@ impl process::HostCommand for ComponentState {
             // to kill the child it is waiting on.
             let status = loop {
                 {
-                    let mut guard = worker_child.lock().unwrap();
+                    let mut guard = worker_inner.child.lock().unwrap();
                     match guard.as_mut().map(|c| c.try_wait()) {
                         Some(Ok(Some(status))) => break Some(Ok(status)),
                         Some(Err(e)) => break Some(Err(e)),
@@ -462,7 +479,7 @@ impl process::HostCommand for ComponentState {
             };
             let stdout = out_t.join().unwrap_or_default();
             let stderr = err_t.join().unwrap_or_default();
-            let _ = tx.send(match status {
+            let result = match status {
                 Some(Ok(status)) => Ok(Finished {
                     exit_code: status.code().unwrap_or(-1),
                     stdout,
@@ -472,14 +489,12 @@ impl process::HostCommand for ComponentState {
                 }),
                 Some(Err(e)) => Err(format!("waiting for the process: {e}")),
                 None => Err("the process handle was taken".to_string()),
-            });
+            };
+            let _ = watch_tx.send(Some(result));
         });
         let proc = self
             .table
-            .push(ProcessState {
-                pending: Some(Pending { rx, child: shared }),
-                done: None,
-            })
+            .push(ProcessState { inner })
             .context("failed to push the process resource")?;
         Ok(Ok(proc))
     }
@@ -490,92 +505,100 @@ impl process::HostCommand for ComponentState {
     }
 }
 
-impl ProcessState {
-    /// Waits (once), killing the child when `timeout` elapses; the
-    /// result it then produces is flagged `timed_out`. Waiting again
-    /// returns the same cached result.
-    fn finish(&mut self, timeout: Option<Duration>) -> std::result::Result<&Finished, String> {
-        if let Some(pending) = self.pending.take() {
-            let (result, killed) = match timeout {
-                Some(dur) => match pending.rx.recv_timeout(dur) {
-                    Ok(r) => (r, false),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // Kill, then take the result the worker sends
-                        // once the child is reaped, so stdout and stderr
-                        // captured before the deadline are preserved.
-                        if let Some(child) = pending.child.lock().unwrap().as_mut() {
-                            let _ = child.kill();
-                        }
-                        // The worker still has to reap the child and
-                        // drain its pipes. That is normally instant, but
-                        // a grandchild the kill did not reach can hold a
-                        // pipe open, so give up after a grace period and
-                        // report the timeout without the output rather
-                        // than hanging on it.
-                        let reaped = pending
-                            .rx
-                            .recv_timeout(Duration::from_secs(2))
-                            .unwrap_or_else(|_| {
-                                Ok(Finished {
-                                    exit_code: -1,
-                                    stdout: Vec::new(),
-                                    stderr: b"(killed on timeout; \
-                                              output withheld by a surviving child)"
-                                        .to_vec(),
-                                    wall_nanos: dur.as_nanos() as i64,
-                                    timed_out: true,
-                                })
-                            });
-                        (reaped, true)
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        (Err("process wait thread vanished".to_string()), false)
-                    }
-                },
-                None => (
-                    pending
-                        .rx
-                        .recv()
-                        .unwrap_or_else(|_| Err("process wait thread vanished".to_string())),
-                    false,
-                ),
-            };
-            self.done = Some(result.map(|mut fin| {
-                fin.timed_out = killed;
-                fin
-            }));
+impl ProcessInner {
+    fn kill_child(&self) {
+        if let Some(child) = self.child.lock().unwrap().as_mut() {
+            let _ = child.kill();
         }
-        match &self.done {
-            Some(Ok(fin)) => Ok(fin),
-            Some(Err(msg)) => Err(msg.clone()),
-            None => Err("process in invalid state".to_string()),
+    }
+
+    fn record_done(&self, result: ReapResult, killed: bool) -> ReapResult {
+        let mut done = self.done.lock().unwrap();
+        done.get_or_insert_with(|| {
+            result.map(|mut fin| {
+                fin.timed_out = fin.timed_out || killed;
+                fin
+            })
+        })
+        .clone()
+    }
+
+    async fn recv_reaped(
+        rx: &mut tokio::sync::watch::Receiver<Option<ReapResult>>,
+    ) -> ReapResult {
+        loop {
+            if let Some(res) = rx.borrow_and_update().clone() {
+                return res;
+            }
+            if rx.changed().await.is_err() {
+                return Err("process wait thread vanished".to_string());
+            }
+        }
+    }
+
+    async fn finish(&self, timeout: Option<Duration>) -> ReapResult {
+        if let Some(res) = self.done.lock().unwrap().clone() {
+            return res;
+        }
+        let mut rx = self.reaped_watch.clone();
+        match timeout {
+            None => {
+                let res = Self::recv_reaped(&mut rx).await;
+                self.record_done(res, false)
+            }
+            Some(dur) => match tokio::time::timeout(dur, Self::recv_reaped(&mut rx)).await {
+                Ok(res) => self.record_done(res, false),
+                Err(_) => {
+                    // Kill, then take the result the worker sends once the
+                    // child is reaped, so stdout and stderr captured before
+                    // the deadline are preserved. A grandchild the kill did
+                    // not reach can hold a pipe open, so give up after a
+                    // grace period rather than hanging on it.
+                    self.kill_child();
+                    let reaped = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        Self::recv_reaped(&mut rx),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Ok(withheld_timeout(dur)));
+                    self.record_done(reaped, true)
+                }
+            },
         }
     }
 }
 
-impl process::HostProcess for ComponentState {
-    fn wait(&mut self, this: Resource<ProcessState>, millis: i64) -> Result<process::Finished> {
-        // A non-positive deadline means "no deadline", so a caller can
-        // disable its timeout without branching.
-        let timeout = if millis > 0 {
-            Some(Duration::from_millis(millis as u64))
-        } else {
-            None
-        };
-        let state = self.table.get_mut(&this).context("process")?;
-        let fin = state.finish(timeout).map_err(|msg| format_err!("wait: {msg}"))?;
-        Ok(process::Finished {
-            exit_code: fin.exit_code,
-            stdout: fin.stdout.clone(),
-            stderr: fin.stderr.clone(),
-            wall_nanos: fin.wall_nanos,
-            timed_out: fin.timed_out,
-        })
+fn timeout_from_millis(millis: i64) -> Option<Duration> {
+    // A non-positive deadline means "no deadline", so a caller can
+    // disable its timeout without branching.
+    if millis > 0 {
+        Some(Duration::from_millis(millis as u64))
+    } else {
+        None
     }
+}
 
+impl process::HostProcess for ComponentState {
     fn drop(&mut self, rep: Resource<ProcessState>) -> Result<()> {
         self.table.delete(rep).context("process")?;
         Ok(())
+    }
+}
+
+impl process::HostProcessWithStore<ComponentState> for HasSelf<ComponentState> {
+    async fn wait(
+        accessor: &wasmtime::component::Accessor<ComponentState, Self>,
+        this: Resource<ProcessState>,
+        millis: i64,
+    ) -> Result<process::Finished> {
+        let inner = accessor.with(|mut access| -> Result<Arc<ProcessInner>> {
+            Ok(access.get().table.get(&this).context("process")?.inner.clone())
+        })?;
+        let fin = inner
+            .finish(timeout_from_millis(millis))
+            .await
+            .map_err(|msg| format_err!("wait: {msg}"))?;
+        Ok(fin.into())
     }
 }
 

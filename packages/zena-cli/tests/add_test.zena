@@ -8,7 +8,7 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {ProcessResult} from 'zena:process';
 import {
-  MAIN, Scratch, ZenaCommand, described, dnsBeside, ensureDir, fakePdsOrigin, read, startFakePds, write
+  MAIN, Scratch, ZenaCommand, described, dnsBeside, ensureDir, fakePdsOrigin, read, startFakePds, stopFakePds, write
 } from './cli-support.zena';
 
 let JSON_KEY = 'did:plc:jsonjsonjsonjsonjsonjson@2';
@@ -78,7 +78,7 @@ export let tests = suite('zena add and zena update', () => {
           'zena add accepted a package that does not exist');
       equal(read(manifest), root);
     } finally {
-      pds.waitFor(1 as i64);
+      stopFakePds(pds);
       scratch.remove();
     }
   });
@@ -103,7 +103,7 @@ export let tests = suite('zena add and zena update', () => {
       isTrue(!taken.succeeded() && taken.stderr.contains('the WIT in ./wit'), described(taken));
       equal(read(manifest), text);
     } finally {
-      pds.waitFor(1 as i64);
+      stopFakePds(pds);
       scratch.remove();
     }
   });
@@ -123,7 +123,7 @@ export let tests = suite('zena add and zena update', () => {
         let add = zenaWith(fakePdsOrigin(scratch, first)).run(['add', '@acme/router@1.5.0']);
         isTrue(add.succeeded() && add.stdout.contains(`Added ${JSON_KEY} 2.1.0`), described(add));
       } finally {
-        first.waitFor(1 as i64);
+        stopFakePds(first);
       }
 
       // The PDS serves json 2.1.0 again, with other bytes.
@@ -154,7 +154,7 @@ export let tests = suite('zena add and zena update', () => {
         let again = zena.run(['update']);
         isTrue(again.succeeded() && again.stdout.contains('zena-lock.json is unchanged'), described(again));
       } finally {
-        second.waitFor(1 as i64);
+        stopFakePds(second);
       }
     } finally {
       scratch.remove();
