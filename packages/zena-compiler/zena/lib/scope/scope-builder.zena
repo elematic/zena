@@ -37,6 +37,7 @@ import {
 import { walkChildren } from '../visitor.zena';
 import { Symbol, SymbolId, makeSymbolIdGenerator } from './symbol.zena';
 import {Scope, ScopeKind} from './scope.zena';
+import { isBigIntLiteralRaw } from '../types.zena';
 import { WellKnown } from '../well-known.zena';
 
 
@@ -1244,7 +1245,11 @@ export final class ScopeBuilder {
       }
       case ThisExpression: {}
       case SuperExpression: {}
-      case NumberLiteral: {}
+      case NumberLiteral {raw}: {
+        if (isBigIntLiteralRaw(raw)) {
+          this.#imply(WellKnown.BigIntClass);
+        }
+      }
       case StringLiteral: {
         this.#imply(WellKnown.StringClass);
       }
@@ -1601,8 +1606,9 @@ export final class ScopeBuilder {
       case AssignmentPattern {left}: {
         this.#declarePatternNode(left, kind, declaration);
       }
-      case LiteralPattern: {
-        // Literal patterns introduce no bindings.
+      case LiteralPattern {value}: {
+        // Literal patterns introduce no bindings, but may imply stdlib types (e.g., BigInt).
+        this.#processExpression(value);
       }
       case AbsencePattern: {
         // Absence tests introduce no bindings.

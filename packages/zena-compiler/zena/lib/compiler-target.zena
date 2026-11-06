@@ -200,9 +200,10 @@ export final class CompilerTarget {
     }
 
     // Run scope analysis on every loaded file. This gives each file's
-    // implicit prelude imports their edges, so it comes first.
+    // implicit prelude imports and implied syntax modules their edges,
+    // so it comes first.
     let tScope = performance.start("scope");
-    this.#resolveScopes(this.#loader.computeGraph(entries).files);
+    this.#resolveScopes(entries);
     performance.end(tScope);
 
     // Compute topological order, over explicit and implicit imports alike.
@@ -238,19 +239,68 @@ export final class CompilerTarget {
    * added to its AST, but wiring still runs — a changed dependency may
    * carry fresh symbols.
    */
-  #resolveScopes(files: GrowableArray<SourceFile>): void {
+  #resolveScopes(entries: GrowableArray<SourceFile>): void {
     let preludeNames = this.#preludeNames();
     let withImplicit = new Array<SourceFile>();
-    for (let lib in files) {
-      if (lib.scopeResult == null) {
-        let builder = new ScopeBuilder(lib.path, preludeNames, this.#symbolIdGenerator,
-            this.#loader.nodeIdGenerator);
-        let scopeResult = builder.build(lib.ast);
-        lib.scopeResult = scopeResult;
-        this.#snapshotLocalExports(lib);
-        if (scopeResult.implicitImports.length > 0) {
-          withImplicit.push(lib);
+    let scopeUnscoped = (list: GrowableArray<SourceFile>) => {
+      for (let lib in list) {
+        if (lib.scopeResult == null) {
+          let builder = new ScopeBuilder(lib.path, preludeNames, this.#symbolIdGenerator,
+              this.#loader.nodeIdGenerator);
+          let scopeResult = builder.build(lib.ast);
+          lib.scopeResult = scopeResult;
+          this.#snapshotLocalExports(lib);
+          if (scopeResult.implicitImports.length > 0) {
+            withImplicit.push(lib);
+          }
         }
+      }
+    };
+
+    var files = this.#loader.computeGraph(entries).files;
+    scopeUnscoped(files);
+
+    // Syntax may imply a well-known declaration outside the prelude (such as
+    // `42n` implying `BigInt` in `zena:bigint`). Load and scope those
+    // libraries after the initial graph so entry symbol ids stay unchanged.
+    let filePaths = new HashSet<String>();
+    for (let f in files) {
+      filePaths.add(f.path);
+    }
+    let checkedLibraries = new HashSet<String>();
+    var scopeEntries = entries;
+    var addedImplied = true;
+    while (addedImplied) {
+      addedImplied = false;
+      let nextEntries = new Array<SourceFile>();
+      for (let e in scopeEntries) {
+        nextEntries.push(e);
+      }
+      for (let lib in files) {
+        let {scopeResult} = lib;
+        if (scopeResult == null) { continue; }
+        for (let w in scopeResult.impliedDeclarations) {
+          let libName = wellKnownLibrary(w);
+          if (!checkedLibraries.add(libName)) { continue; }
+          var facadePath = "";
+          try {
+            facadePath = this.#resolver.resolve(`zena:${libName}`, "").path;
+          } catch (e) {
+            facadePath = "";
+          }
+          if (facadePath != "" && !filePaths.has(facadePath)) {
+            nextEntries.push(this.#loader.load(facadePath, null));
+            addedImplied = true;
+          }
+        }
+      }
+      if (addedImplied) {
+        scopeEntries = nextEntries;
+        files = this.#loader.computeGraph(scopeEntries).files;
+        for (let f in files) {
+          filePaths.add(f.path);
+        }
+        scopeUnscoped(files);
       }
     }
 

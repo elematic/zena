@@ -15,7 +15,7 @@ import {
   StringLiteralType, ThisType, TupleType as TupleT, Type, TypeAliasType,
   TypeParameterType, UnionType as UnionT, applyTypeIntrinsic, baseType,
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
-  instantiateTypeAliasType, isNumericType, isOwnershipWrapper,
+  instantiateTypeAliasType, isBigIntLiteralRaw, isNumericType, isOwnershipWrapper,
   recursiveAliasKey, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
@@ -861,10 +861,17 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
   case LiteralTypeAnnotation {value}: {
     match (value) {
       case BooleanLiteral {value}: new BoolLiteralType(value)
-      case NumberLiteral {raw}: {
-        // Number literal type — check for decimal point to decide base type.
-        // Or rather, instantiate NumLiteralType.
-        new NumLiteralType(raw)
+      case NumberLiteral {raw, loc}: {
+        if (isBigIntLiteralRaw(raw)) {
+          ctx.error(
+            `BigInt literal '${raw}' cannot be used as a literal type.`,
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+          new ErrorType()
+        } else {
+          new NumLiteralType(raw)
+        }
       }
       case StringLiteral {value}: new StringLiteralType(value)
       case NullLiteral {}: new NullType()

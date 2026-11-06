@@ -11,11 +11,11 @@ import {
 } from './context.zena';
 import { SemanticModel, memberKeyOf, accessKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, InlineRecordType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
-  isScopedType, scopedInner, internFunctionType, forInLowersToIndexLoop,
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, InlineRecordType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, U64Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
+  isBigIntLiteralRaw, isScopedType, scopedInner, soleNonNullMember, internFunctionType, forInLowersToIndexLoop,
   isIterableRangeClass } from '../../types.zena';
 import {
-  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral,
+  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, NumberLiteral, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral, UnaryExpression,
 } from '../../ast.zena';
 import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo, TypeTestSite,
@@ -25,7 +25,7 @@ import {
 } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
+  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass, parseBigIntLiteralLimbs, bigIntLiteralCacheKey,
 } from '../codegen-utils.zena';
 import {
   typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedWellKnownInterface, findImplementedInterfaceType, findExtendedWellKnownInterface, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType, boxedRecordWithFields,
@@ -312,6 +312,9 @@ export final class TypeLowerer implements TypeLowererInterface {
       } else if (isWellKnown(WellKnown.TemplateStringsArrayClass, t.name,
           t.sourcePath)) {
         this.pass.wasm.templateStringsArrayClass = t;
+      } else if (isWellKnown(WellKnown.BigIntClass, t.name,
+          t.sourcePath)) {
+        this.pass.wasm.bigIntClass = t;
       } else if (isWellKnown(WellKnown.ErrorClass, t.name, t.sourcePath)) {
         this.pass.wasm.errorClass = t;
       }
@@ -697,6 +700,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             getClassMethodKey(getClassKey(bsc), "=="));
       }
     }
+    if (p is NumberLiteral) {
+      this.#reachBigIntPatternLiteral(p, model, resolveType);
+    }
     if (p is LiteralPattern) {
       // `case "lit":` lowers to a DIRECT call to String.== resolved by
       // name (ir/patterns.zena stringPatternEq) — no call node for RTA.
@@ -713,6 +719,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         // plumbing; the key lookup is what the lowering itself uses.
         this.pass.notePendingMemberReach(
             getClassMethodKey(getClassKey(sc), "=="));
+      } else if (p.value is NumberLiteral) {
+        this.#reachBigIntPatternLiteral(
+            p.value as NumberLiteral, model, resolveType);
       }
     }
     if (p is ClassPattern) {
@@ -1117,6 +1126,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is TemplateLiteral) {
         this.registerTemplateLiteral(n, model, resolveType);
       }
+      this.maybeRegisterBigIntNode(n, model, resolveType);
       if (n is ContractClause) {
         this.noteContractClause(n);
       }
@@ -2725,6 +2735,95 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
   }
 
+  #isBigIntType(t: Type): boolean {
+    let core = baseType(soleNonNullMember(t) ?? t);
+    return core is ClassType &&
+        isWellKnown(WellKnown.BigIntClass, core.name, core.sourcePath);
+  }
+
+  #reachBigIntPatternLiteral(num: NumberLiteral, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (this.pass.wasm.bigIntClass == null) {
+      return;
+    }
+    let t = model.getNodeType(num);
+    if (!isBigIntLiteralRaw(num.raw) &&
+        (t == null || !this.#isBigIntType(resolveType(t)))) {
+      return;
+    }
+    this.registerBigIntLiteral(num.raw, false, model);
+    let bc = this.pass.wasm.bigIntClass as ClassType;
+    let bcModel = this.pass.getClassModel(bc);
+    for (let md in this.pass.cha.findImplementingMethods(bc, "==")) {
+      this.pass.queueReferrer(new Referrer(false, noSymbolId,
+          (md as Node).id as i32,
+          this.pass.getNodeModel(md as Node, bcModel), bc, true));
+    }
+    this.pass.notePendingMemberReach(
+        getClassMethodKey(getClassKey(bc), "=="));
+  }
+
+  maybeRegisterBigIntNode(n: Node, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (n is UnaryExpression && n.operator == "-" && n.argument is NumberLiteral) {
+      let t = model.getNodeType(n);
+      if (t != null && this.#isBigIntType(resolveType(t))) {
+        this.registerBigIntLiteral((n.argument as NumberLiteral).raw, true, model);
+      }
+      return;
+    }
+    if (n is NumberLiteral) {
+      let parent = model.getParent(n);
+      if (parent != null && parent is UnaryExpression &&
+          parent.operator == "-") {
+        let pt = model.getNodeType(parent);
+        if (pt != null && this.#isBigIntType(resolveType(pt))) {
+          return;
+        }
+      }
+      let t = model.getNodeType(n);
+      if (isBigIntLiteralRaw(n.raw) ||
+          (t != null && this.#isBigIntType(resolveType(t)))) {
+        this.registerBigIntLiteral(n.raw, false, model);
+      }
+    }
+  }
+
+  registerBigIntLiteral(raw: String, negative: boolean, model: SemanticModel): void {
+    let bc = this.pass.wasm.bigIntClass;
+    if (bc == null) {
+      return;
+    }
+    this.pass.specializer.instantiateClassType(bc, this.pass.getClassModel(bc));
+    this.pass.typeLowerer.discoverType(bc, model);
+    this.pass.typeLowerer.discoverType(new ArrayType(new U64Type(), true), model);
+    this.queuePrivateMethod(bc, '#fromMag');
+
+    let (sign, limbs) = parseBigIntLiteralLimbs(raw, negative);
+    let cacheKey = bigIntLiteralCacheKey(sign, limbs);
+    if (!this.pass.wasm.bigIntLiteralGlobals.has(cacheKey)) {
+      var bigIntStruct: WasmStruct | null = null;
+      if (let (true, info) = this.pass.wasm.classInfos.get(getClassKey(bc))) {
+        bigIntStruct = info.structType;
+      }
+      if (bigIntStruct == null) {
+        throw new Error("BigInt class struct not found during literal discovery!");
+      }
+      let globalName = "bigint_lit_" + i32ToString(this.pass.wasm.bigIntLiteralGlobals.size);
+      let g = new WasmGlobal(
+        globalName,
+        globalName,
+        new ValTypeRefNull(bigIntStruct),
+        true,
+        null,
+        null,
+        model
+      );
+      this.pass.wasm.globals.push(g);
+      this.pass.wasm.bigIntLiteralGlobals[cacheKey] = g;
+    }
+  }
+
   discoverNodeTypes(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void {
     // The body's own mixin scope, if it was written in a mixin: it
     // decides which member a private name in this body refers to.
@@ -2971,6 +3070,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is TemplateLiteral) {
         this.registerTemplateLiteral(n, model, resolveType);
       }
+      this.maybeRegisterBigIntNode(n, model, resolveType);
       if (n is ForInStatement) {
         this.registerForInPendingArm(n, model, resolveType);
         let iterableType = model.getNodeType(n.iterable);

@@ -122,20 +122,33 @@ arbitrary size. Each value stores a sign (`-1`, `0`, or `1`) and a normalized
 little-endian `FixedArray<u64>` of magnitude limbs, with `BigInt.ZERO` and
 `BigInt.ONE` as shared constants.
 
-### Construction and parsing
+### Literals, construction, and parsing
 
-`BigInt.from` accepts `i32`, `i64`, `u64`, or `String` (with an optional `radix` in
-`2..36`, or `0` to detect `0x`, `0b`, and `0o` prefixes with base-10 fallback),
-throwing `Error` on malformed strings. String inputs accept an optional `+` or `-`
-sign and `_` digit separators. `BigInt.parse(text, radix)` accepts the same string
-forms and returns `BigInt | null` without throwing.
+Integer literals with a trailing `n` (or `_n`) suffix evaluate to `BigInt` directly,
+in decimal, hexadecimal (`0x`), binary (`0b`), or octal (`0o`) notation of any bit
+width, without requiring an explicit import. Unsuffixed integer literals also adapt to
+`BigInt` when `BigInt` is expected by a type annotation, union, operator, call
+parameter, or `match` arm:
+
+```zena
+let a = 42n;
+let b = 0x1_0000_0000_0000_0000_0001n;
+let c = -0b1010_0001_n;
+let next = b + 1; // 1 adapts contextually to BigInt
+```
+
+To convert runtime integers or strings (including radixes outside `10`, `16`, `2`, and
+`8`), import `BigInt` from `zena:bigint`. `BigInt.from` accepts `i32`, `i64`, `u64`, or
+`String` (with an optional `radix` in `2..36`, or `0` to detect `0x`, `0b`, and `0o`
+prefixes with base-10 fallback), throwing `Error` on malformed strings. String inputs
+accept an optional `+` or `-` sign and `_` digit separators. `BigInt.parse(text, radix)`
+accepts the same string forms and returns `BigInt | null` without throwing.
 
 ```zena
 import {BigInt} from 'zena:bigint';
 
-let a = BigInt.from(42);
-let b = BigInt.from('0x1_0000_0000_0000_0000_0001');
-let c = BigInt.from('-zz', 36); // -1295
+let fromInt = BigInt.from(42);
+let base36 = BigInt.from('-zz', 36); // -1295n
 let maybe = BigInt.parse('not-a-number'); // null
 ```
 
@@ -165,12 +178,10 @@ exposed as methods:
   `0 .. mod - 1`.
 
 ```zena
-import {BigInt} from 'zena:bigint';
-
-let base = BigInt.from('123456789012345678901234567890');
-let mod = BigInt.from(1000000007);
+let base = 123_456_789_012_345_678_901_234_567_890n;
+let mod = 1_000_000_007n;
 let (q, r) = base.divRem(mod);
-let residue = base.modPow(BigInt.from(65537), mod);
+let residue = base.modPow(65_537n, mod);
 ```
 
 ### Conversions, formatting, and collections
@@ -293,14 +304,16 @@ exponent, so write `pow(x, y)` for a non-integer `y` until it lowers to
 ## Number literals
 
 Zena supports decimal, hexadecimal (`0x`/`0X`), binary (`0b`/`0B`), and octal
-(`0o`/`0O`) integer literals, as well as decimal floating-point literals. Single `_`
-digit separators may appear between adjacent digits in any numeric literal:
+(`0o`/`0O`) integer literals, `BigInt` integer literals suffixed with `n` (or `_n`),
+and decimal floating-point literals. Single `_` digit separators may appear between
+adjacent digits in any numeric literal:
 
 ```zena
 let decimal = 1_000_000;
 let hex = 0xff_00; // 65280
 let binary = 0b1010_0001; // 161
 let octal = 0o755; // 493
+let big = 100_000_000_000_000_000_000_000n; // BigInt
 let floatVal = 3.1415_9265;
 ```
 
@@ -318,6 +331,7 @@ Number literals in Zena infer their type contextually from surrounding code:
    let a: i64 = 100; // Literal 100 is typed as i64
    let b: u8 = 255;  // Literal 255 is typed as u8
    let c: f64 = 1.0; // Literal 1.0 is typed as f64
+   let d: BigInt = 100_000_000_000_000_000_000_000; // Adapts directly to BigInt
    ```
 2. **Binary expressions**: In binary operations, an untyped literal adopts the type of
    the other operand:

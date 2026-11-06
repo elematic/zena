@@ -189,6 +189,7 @@ let n: i64 = 5_000_000_000;
 let hex: u32 = 0xff_00;
 let bits: i32 = 0b1010_0001;
 let mode: i32 = 0o755;
+let big = 100_000_000_000_000_000_000_000n; // BigInt (zena:bigint)
 let f: f32 = 3.14;
 let d: f64 = 3.14_1592 as f64;
 let b: boolean = true;
@@ -2584,9 +2585,11 @@ atan2(1.0, -1.0); // 2.356194490192345
 
 ### zena:bigint
 
-Arbitrary-precision signed integers (`BigInt`). Values are immutable, support
-`+`, `-`, `*`, `%`, `**`, `==`, `&`, `|`, `^`, `<<`, and `>>` directly, and
-provide named methods for truncating division (`div`, `divRem`), comparison
+Arbitrary-precision signed integers (`BigInt`). Integer literals suffixed with
+`n` (or `_n`) produce `BigInt` values without an import, and unsuffixed integer
+literals adapt contextually when `BigInt` is expected. Values are immutable,
+support `+`, `-`, `*`, `%`, `**`, `==`, `&`, `|`, `^`, `<<`, and `>>` directly,
+and provide named methods for truncating division (`div`, `divRem`), comparison
 (`compareTo`, `min`, `max`), unary operations (`neg`, `abs`, `bitNot`), number
 theory (`gcd`, `modPow`), radix formatting/parsing (`2..36`), and checked
 conversions to `i64` and `u64`.
@@ -2594,10 +2597,11 @@ conversions to `i64` and `u64`.
 ```zena
 import {BigInt} from 'zena:bigint';
 
-let a = BigInt.from('0x1_0000_0000_0000_0000_0001');
-let b = BigInt.from(1000000007);
+let a = 0x1_0000_0000_0000_0000_0001n;
+let b = 1_000_000_007n;
 let (q, r) = a.divRem(b);
-let p = a.modPow(BigInt.from(65537), b);
+let p = a.modPow(65_537n, b);
+let parsed = BigInt.from('-zz', 36); // -1295n
 ```
 
 ### zena:simd

@@ -14,7 +14,7 @@ import {
   AnyRefType, ClassType, EnumType, ErrorType, FieldInfo, FunctionDeclInfo,
   FunctionType, HoleType, I32Type, InterfaceType, MethodInfo, MixinType,
   RecordType as RecordT, Type, TypeAliasType, TypeParameterType, VoidType,
-  baseType, instantiateInterfaceType, typeToString
+  baseType, instantiateInterfaceType, isBigIntLiteralRaw, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { noSymbolId } from '../scope/symbol.zena';
@@ -194,10 +194,10 @@ export function checkTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasDecl
  */
 function isEnumNumberLiteral(initializer: Expression): boolean {
   if (initializer is NumberLiteral) {
-    return true;
+    return !isBigIntLiteralRaw(initializer.raw);
   }
   if (let UnaryExpression {operator, argument} = initializer) {
-    return operator == '-' && argument is NumberLiteral;
+    return operator == '-' && argument is NumberLiteral && !isBigIntLiteralRaw(argument.raw);
   }
   return false;
 }

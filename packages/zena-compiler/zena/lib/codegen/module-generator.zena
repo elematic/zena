@@ -3,7 +3,7 @@ import {
   ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRefNull, ValTypeStructRef,
   ValTypeRef, ValTypeI8, ValTypeI16, ValTypeFuncRef, ValTypeExternRef, ValTypeAnyRef,
   ValTypeEqRef, ValTypeOptRef, ValTypeVoid, ValTypeFunc, ValTypeNullRef,
-  heapTypeToSigned, HeapType,
+  heapTypeToSigned, HeapType, isRefValType,
 } from './wasm.zena';
 import { simdInstruction } from '../simd.zena';
 import {
@@ -579,7 +579,7 @@ export final class ModuleGenerator {
       let {initExpr} = g;
       if (initExpr != null) {
         let isLiteral = match (initExpr) {
-          case NumberLiteral: true
+          case NumberLiteral: !isRefValType(g.type)
           case BooleanLiteral: true
           case _: false
         };
@@ -1219,31 +1219,33 @@ export final class ModuleGenerator {
         match (initExpr) {
           case NumberLiteral {raw}: {
              let {type} = g;
-             // A literal initializer is baked into the global's own const
-             // expression, so it is re-parsed from the raw source text here.
-             // That text can be hex, and a parser that does not know it
-             // would quietly hand back 0 — the constant would simply be
-             // wrong at runtime with nothing failing to compile.
-             if (type is ValTypeI32 ) {
-                let (ok, val) = parseI32WithHex(raw);
-                if (!ok) {
-                  throw new Error('global initializer is not a valid i32 literal: ' + raw);
-                }
-                this.emitter.emitI32Const(val);
-             } else if (type is ValTypeI64 ) {
-                let (ok, val) = parseI64OrU64Literal(raw);
-                if (!ok) {
-                  throw new Error('global initializer is not a valid i64 literal: ' + raw);
-                }
-                this.emitter.emitI64Const(val);
-             } else if (type is ValTypeF64 ) {
-                this.emitter.emitF64Const(parseFloatLiteral(raw));
-             } else if (type is ValTypeF32 ) {
-                this.emitter.emitF32Const(parseFloatLiteral(raw)); // f32 requires casting
-             } else {
-                this.emitter.emitI32Const(0);
-              }
-             emitted = true;
+             if (!isRefValType(type)) {
+               // A literal initializer is baked into the global's own const
+               // expression, so it is re-parsed from the raw source text here.
+               // That text can be hex, and a parser that does not know it
+               // would quietly hand back 0 — the constant would simply be
+               // wrong at runtime with nothing failing to compile.
+               if (type is ValTypeI32 ) {
+                  let (ok, val) = parseI32WithHex(raw);
+                  if (!ok) {
+                    throw new Error('global initializer is not a valid i32 literal: ' + raw);
+                  }
+                  this.emitter.emitI32Const(val);
+               } else if (type is ValTypeI64 ) {
+                  let (ok, val) = parseI64OrU64Literal(raw);
+                  if (!ok) {
+                    throw new Error('global initializer is not a valid i64 literal: ' + raw);
+                  }
+                  this.emitter.emitI64Const(val);
+               } else if (type is ValTypeF64 ) {
+                  this.emitter.emitF64Const(parseFloatLiteral(raw));
+               } else if (type is ValTypeF32 ) {
+                  this.emitter.emitF32Const(parseFloatLiteral(raw)); // f32 requires casting
+               } else {
+                  this.emitter.emitI32Const(0);
+               }
+               emitted = true;
+             }
           }
           case BooleanLiteral {value}: {
             this.emitter.emitBooleanConst(value);

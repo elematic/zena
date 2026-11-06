@@ -315,6 +315,20 @@ let perm = 0o755;        // OK: 493
 let d: i64 = 5_000_000_000; // OK
 ```
 
+Appending `n` (or `_n`) to any decimal, `0x`, `0b`, or `0o` integer literal
+produces a `BigInt` (`zena:bigint`) of arbitrary magnitude with no import
+required. Unsuffixed integer literals of any magnitude also adapt when the
+expected type is `BigInt` (including nullable `BigInt?` and unions such as
+`BigInt | String`), and in `BigInt` arithmetic, bitwise, equality, and `match`
+expressions:
+
+```zena
+let big = 100_000_000_000_000_000_000_000n; // BigInt (no import needed)
+let hexBig = 0x1_0000_0000_0000_0000_0001_n; // BigInt
+let count: BigInt = 0;                       // Unsuffixed literal adapts to BigInt
+let next = count + 1;                        // 1 adapts to BigInt
+```
+
 A negated literal is measured as a whole, so `let low: i8 = -128;` and
 `let min = -2147483648;` are accepted even though `128` and `2147483648` alone
 would not fit.

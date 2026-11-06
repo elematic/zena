@@ -35,7 +35,7 @@ import { IrOp, IrRefField, IrRefFunc, IrRefType } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
-import { lowerStringLiteral } from './templates.zena';
+import { lowerBigIntLiteral, lowerStringLiteral } from './templates.zena';
 import { bindTupleWithRest, lowerExpr, recordRestValue, repackRecordUnion, tupleRestIndexOf } from './lowering.zena';
 
 
@@ -153,12 +153,13 @@ let tupleFieldRead = (cx: LoweringContext, value: i32, index: i32): i32 => {
 
 /** `case "lit":` — a direct call to String.==, mirroring streaming. */
 let stringPatternEq = (cx: LoweringContext, value: i32,
-    sl: StringLiteral): i32 => {
+    sl: StringLiteral, failB: i32): i32 => {
   if (cx.wasm.stringClass == null) {
     bail(cx, 'string pattern without String class');
   }
-  let key = getClassMethodKey(
-      getClassKey(cx.wasm.stringClass as ClassType), "==");
+  let sc = cx.wasm.stringClass as ClassType;
+  let st = classStructOf(cx, sc);
+  let key = getClassMethodKey(getClassKey(sc), "==");
   let eqFunc = if (let (true, f) = cx.wasm.classMethodMap.get(key)) f else null;
   if (eqFunc == null) {
     bail(cx, 'string pattern without String.==');
@@ -167,14 +168,54 @@ let stringPatternEq = (cx: LoweringContext, value: i32,
   if (sig.returns.length != 1 || sig.params.length != 2) {
     bail(cx, 'String.== shape');
   }
+  let have = cx.valueTypeOf(value);
+  var rawRecv = value;
+  if (!(have is ValTypeRef && have.target == st)) {
+    emitRefTest(cx, value, st, failB);
+    let nonNullVt = new ValTypeRef(st) as ValType;
+    rawRecv = cx.b.emit(IrOp.ref_cast, nonNullVt, value,
+        cx.b.internType(nonNullVt));
+  }
   let lit = lowerStringLiteral(cx, sl);
-  let recv = cx.conformReceiver(value, sig.params[0], 'string pattern operand');
+  let recv = cx.conformReceiver(rawRecv, sig.params[0], 'string pattern operand');
   if (!isValSubtype(cx.valueTypeOf(lit), sig.params[1])) {
     bail(cx, 'string pattern operand');
   }
   let funcRef = cx.b.addRef(new IrRefFunc(eqFunc));
   return cx.b.callFunc(funcRef, twoValues(recv, lit), sig.returns[0]);
 };
+
+/** `case 0:` / `case 42n:` against a BigInt (or nullable/any) scrutinee. */
+function lowerBigIntPatternTest(cx: LoweringContext, value: i32,
+    num: NumberLiteral, failB: i32) {
+  if (cx.wasm.bigIntClass == null) {
+    bail(cx, 'bigint pattern without BigInt class');
+  }
+  let bc = cx.wasm.bigIntClass as ClassType;
+  let st = classStructOf(cx, bc);
+  let key = getClassMethodKey(getClassKey(bc), "==");
+  let eqFunc = if (let (true, f) = cx.wasm.classMethodMap.get(key)) f else null;
+  if (eqFunc == null) {
+    bail(cx, 'bigint pattern without BigInt.==');
+  }
+  let sig = eqFunc.signature;
+  if (sig.returns.length != 1 || sig.params.length != 2) {
+    bail(cx, 'BigInt.== shape');
+  }
+  let have = cx.valueTypeOf(value);
+  var recv = value;
+  if (!(have is ValTypeRef && have.target == st)) {
+    emitRefTest(cx, value, st, failB);
+    let nonNullVt = new ValTypeRef(st) as ValType;
+    recv = cx.b.emit(IrOp.ref_cast, nonNullVt, value,
+        cx.b.internType(nonNullVt));
+  }
+  let recvArg = cx.conformReceiver(recv, sig.params[0], 'bigint pattern operand');
+  let lit = cx.coerceTo(lowerBigIntLiteral(cx, num.raw, false), sig.params[1]);
+  let funcRef = cx.b.addRef(new IrRefFunc(eqFunc));
+  let cond = cx.b.callFunc(funcRef, twoValues(recvArg, lit), sig.returns[0]);
+  branchUnless(cx, cond, failB);
+}
 
 /** The length of an array (wasm array or struct with #length / get:length). */
 export let arrayLengthRead = (cx: LoweringContext, value: i32): i32 => {
@@ -709,31 +750,35 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
     }
     case NumberLiteral as num: {
       let vt = cx.valueTypeOf(value);
-      var cond = -1;
-      if (vt is ValTypeI32) {
-        if (let (true, parsed) = parseI64OrU64Literal(num.raw)) {
-          let lit = cx.b.constI32(parsed as i32, vt);
-          cond = cx.b.binary(IrOp.i32_eq, new ValTypeI32(), value, lit);
-        } else {
-          bail(cx, 'unparseable pattern literal');
-        }
-      } else if (vt is ValTypeI64) {
-        if (let (true, parsed) = parseI64OrU64Literal(num.raw)) {
-          let lit = cx.b.constI64(parsed, vt);
-          cond = cx.b.binary(IrOp.i64_eq, new ValTypeI32(), value, lit);
-        } else {
-          bail(cx, 'unparseable pattern literal');
-        }
-      } else if (vt is ValTypeF64) {
-        let lit = cx.b.constF64(parseFloatLiteral(num.raw), vt);
-        cond = cx.b.binary(IrOp.f64_eq, new ValTypeI32(), value, lit);
-      } else if (vt is ValTypeF32) {
-        let lit = cx.b.constF32(parseFloatLiteral(num.raw), vt);
-        cond = cx.b.binary(IrOp.f32_eq, new ValTypeI32(), value, lit);
+      if (isRefValType(vt)) {
+        lowerBigIntPatternTest(cx, value, num, failB);
       } else {
-        bail(cx, 'number pattern operand');
+        var cond = -1;
+        if (vt is ValTypeI32) {
+          if (let (true, parsed) = parseI64OrU64Literal(num.raw)) {
+            let lit = cx.b.constI32(parsed as i32, vt);
+            cond = cx.b.binary(IrOp.i32_eq, new ValTypeI32(), value, lit);
+          } else {
+            bail(cx, 'unparseable pattern literal');
+          }
+        } else if (vt is ValTypeI64) {
+          if (let (true, parsed) = parseI64OrU64Literal(num.raw)) {
+            let lit = cx.b.constI64(parsed, vt);
+            cond = cx.b.binary(IrOp.i64_eq, new ValTypeI32(), value, lit);
+          } else {
+            bail(cx, 'unparseable pattern literal');
+          }
+        } else if (vt is ValTypeF64) {
+          let lit = cx.b.constF64(parseFloatLiteral(num.raw), vt);
+          cond = cx.b.binary(IrOp.f64_eq, new ValTypeI32(), value, lit);
+        } else if (vt is ValTypeF32) {
+          let lit = cx.b.constF32(parseFloatLiteral(num.raw), vt);
+          cond = cx.b.binary(IrOp.f32_eq, new ValTypeI32(), value, lit);
+        } else {
+          bail(cx, 'number pattern operand');
+        }
+        branchUnless(cx, cond, failB);
       }
-      branchUnless(cx, cond, failB);
     }
     case BooleanLiteral as bl: {
       let vt = cx.valueTypeOf(value);
@@ -755,7 +800,7 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
       branchUnless(cx, cond, failB);
     }
     case StringLiteral as sl: {
-      let cond = stringPatternEq(cx, value, sl);
+      let cond = stringPatternEq(cx, value, sl, failB);
       branchUnless(cx, cond, failB);
     }
     case MemberExpression as me: {

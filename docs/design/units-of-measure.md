@@ -26,7 +26,7 @@ temperature work — see [Conversion](#conversion).
 ## Terms
 
 **Representation** — the numeric type holding the value: `f64`, `f32`, `i32`,
-`i64`. Independent of the unit.
+`i64`, `u32`, `u64`, `BigInt`. Independent of the unit.
 
 **Base dimension** — an independent axis of measurement. SI has seven: length,
 mass, time, electric current, thermodynamic temperature, amount of substance,
@@ -39,7 +39,8 @@ written `1`.
 **Unit** — a named measure on a dimension. `m`, `ft`, and `mi` are three units
 on the dimension Length. `m/s` is a unit on the dimension `Length · Time⁻¹`.
 
-**Quantity** — a representation paired with a unit: `f64<m>`, `i64<ns>`.
+**Quantity** — a representation paired with a unit: `f64<m>`, `i64<ns>`,
+`BigInt<m>`.
 
 ## What today's types can express
 
@@ -446,48 +447,61 @@ and should keep doing so.
 
 ### Suffixes
 
-A numeric literal may be followed, with no intervening whitespace, by an
-identifier:
+A numeric literal may be followed, with no intervening whitespace, by a
+representation suffix, a unit suffix, or both joined with `_`:
 
 ```zena
+let big = 42n;            // BigInt
 let n = 42_u32;           // u32
-let big = 42_i64;         // i64
-let d = 3.0m;             // f64<m> — the default for an unannotated float literal
-let d2: f32<m> = 3.0m;    // f32<m> — the annotation picks the representation
-let d3 = 3.0m as f32<m>;  // f32<m> — the cast does the same job
+let wide = 42_i64;        // i64
+let d = 3.0m;             // f64<m> — default float representation
+let d2: f32<m> = 3.0m;    // f32<m> — annotation picks the representation
+let d3: BigInt<m> = 10m;  // BigInt<m> — contextual BigInt representation
 let t = 30s;              // i32<s>
+let bm = 10n_m;           // BigInt<m> — explicit representation + unit
+let bft = 5n_ft;          // BigInt<ft>
+let d4 = 3.0f32_m;        // f32<m>
+let dt = 500i64_ns;       // i64<ns>
 ```
 
-A literal takes one suffix, naming either a representation or a unit. Saying
-both at once — `3.0f32m` — is not a spelling this proposes; an annotation or a
-cast covers it, as above.
+A single suffix names one representation (`n` for `BigInt`, `i32`, `i64`, `u32`,
+`u64`, `f32`, `f64`) or one unit (`m`, `ft`, `nm`, `ns`). Writing both on one
+literal requires `_` between the representation and the unit (`<rep>_<unit>`):
+
+- `10n_m` is `BigInt<m>`, `5n_ft` is `BigInt<ft>`, and `10n_nm` is `BigInt<nm>`.
+- `10nm` and `10ns` have no `_` inside the suffix, so they parse as single-part
+  unit suffixes (`i32<nm>` for nanometers and `i32<ns>` for nanoseconds).
+- The `<rep>_<unit>` split applies uniformly to every representation suffix,
+  including primitive widths (`3.0f32_m`, `500i64_ns`) and `Decimal` once
+  [#883](https://github.com/elematic/zena/issues/883) lands (`19.99_dec_USD` →
+  `Decimal<USD>`).
 
 ### Separators before a suffix
 
-`42u32` is hard to read, and the fix is the one Rust uses: a digit separator may
-sit between the number and the suffix, so `42_u32` and `3.0_m` are the readable
-spellings and `42u32` and `3.0m` remain legal. Nothing new is needed in the
-lexer beyond digit separators themselves — the numeric literal consumes digits
-and underscores greedily, and whatever identifier remains is the suffix.
+An optional `_` may also separate the digits from the suffix, so `42_n`,
+`42_u32`, `3.0_m`, and `10_n_m` are equivalent to `42n`, `42u32`, `3.0m`, and
+`10n_m`. Digit separators (`1_000_000`) and the `n` suffix for `BigInt`
+(`42n`, `42_n`, `0xff_ffn`) already ship on this lexer rule: the tokenizer scans
+digits and trailing identifier characters (including `_`) into one `Number`
+token, and the parser validates digit separators before splitting any trailing
+suffix.
 
-Zena has no digit separators today: `1_000` is a parse error. They should land
-in the same step as suffixes rather than after, because the readable spelling
-of a suffixed literal depends on them, and because deciding the interaction
-once is cheaper than deciding it twice.
+Short unit names rarely use a leading separator — `3.0m` reads clearly while
+`42_u32` benefits from one — so in practice `_` appears before multi-character
+representation suffixes and between `<rep>` and `<unit>`.
 
-Short unit names rarely need the separator — `3.0m` reads fine, `42_u32` does
-not — so in practice the separator shows up on representation suffixes and
-disappears on unit suffixes. That is a style question a formatter can settle.
+After stripping an optional leading `_`, suffix resolution checks:
 
-Resolution order for the suffix: a primitive type name first, then a unit name
-in scope. One mechanism covers the representation suffixes the language wants
-anyway and the unit suffixes this feature needs.
+1. If the suffix has no `_`, match a representation suffix first (`n`, `i32`,
+   `i64`, `u32`, `u64`, `i8`, `u8`, `i16`, `u16`, `f32`, `f64`), otherwise
+   resolve a unit name in scope.
+2. If the suffix contains `_` and the prefix before `_` is a representation
+   suffix, split `<rep>_<unit>` and resolve `<unit>` as a unit name in scope.
 
-The suffix names only the unit. The representation comes from Zena's existing
-rules for numeric literals, which already adapt to an annotation: both
-`let x: f64 = 3.0;` and `let x: i64 = 3;` compile today. So `3.0m` in an
-`f64<m>` context is an `f64`, and the suffix never has to spell the
-representation and the unit at once.
+When a literal carries only a unit suffix (`3.0m`, `10m`), the representation
+follows Zena's contextual typing rules for numeric literals: `let x: f64 = 3.0;`,
+`let x: i64 = 3;`, and `let x: BigInt = 3;` all compile today, so `3.0m` in an
+`f32<m>` context is `f32<m>` and `10m` in a `BigInt<m>` context is `BigInt<m>`.
 
 Two lexer constraints:
 
@@ -522,11 +536,10 @@ spellings.
 
 ### Juxtaposition
 
-`3 m`, with a space, is Frink's spelling. It is not an alternative to suffixes
-but an addition to them — the language wants `42_u32` regardless — so the
-question is whether to have a second literal syntax, and what it buys is
-`3u64 m`: a representation and a unit on one literal, without an annotation or
-a cast.
+`3 m`, with a space, is Frink's spelling. Since suffixes (`42_u32`, `10n_m`)
+already cover representations, units, and `<rep>_<unit>` pairs on a single
+token, the question is whether to add a whitespace-separated form (`3u64 m`) as
+well.
 
 Two objections that look good and are not:
 
@@ -548,9 +561,9 @@ parser cannot tell those apart without knowing which names are units.
 What is left is one objection, and it carries the decision: **whitespace
 becomes significant in expressions**, which it is not anywhere in Zena today.
 The concrete cost is that a missing operator becomes valid code — `let x = 3 m`
-is a unit literal rather than the `3 * m` or `3 + m` the author meant, with no
-diagnostic. That failure mode is worse than typing `3.0m as f32<m>` in the rare
-case a literal needs both a representation and a unit.
+is a unit literal where the author meant `3 * m` or `3 + m`, with no
+diagnostic. Writing `3.0f32_m` or `3.0m as f32<m>` keeps whitespace
+insignificant in expressions.
 
 ### Composite units in literals
 
