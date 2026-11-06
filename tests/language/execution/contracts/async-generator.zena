@@ -1,0 +1,51 @@
+// @mode: run
+// @result: 18
+// An `async gen` function is a generator: its `requires` run at the
+// first step and its `ensures` when its body returns.
+
+import { Future, Completer, AsyncIterator, scheduleMicrotask } from 'zena:async';
+
+let later = <T>(value: T): Future<T> => {
+  let c = new Completer<T>();
+  scheduleMicrotask(() => {
+    c.complete(value);
+  });
+  return c.future;
+};
+
+var produced = 0;
+
+async gen function ticks(n: i32, claim: i32): AsyncIterator<i32>
+  requires (n >= 0)
+  ensures (produced == old(produced) + claim)
+{
+  var i = 0;
+  while (i < n) invariant (i >= 0) {
+    produced += 1;
+    yield await later(i);
+    i += 1;
+  }
+}
+
+export let main = async (): Future<i32> => {
+  var score = 0;
+  for await (let tick in ticks(4, 4)) {
+    score += tick; // 0 + 1 + 2 + 3
+  }
+  try {
+    for await (let tick in ticks(-1, 0)) {
+      score += 100;
+    }
+  } catch (e) {
+    if (e is ContractError) { score += 1; } // +1
+  }
+  // Two elements arrive before the postcondition fails at the end.
+  try {
+    for await (let tick in ticks(2, 5)) {
+      score += 5; // +10
+    }
+  } catch (e) {
+    if (e is ContractError) { score += 1; } // +1
+  }
+  return score;
+};

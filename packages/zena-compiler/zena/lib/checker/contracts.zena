@@ -125,7 +125,7 @@ export function rejectThisInRequires(
  * Checks a function's `ensures` clauses. Called after the body, when
  * an inferred return type is known, with `resultType` the type a
  * `return` hands back: for an `async` function, the value its future
- * completes with.
+ * completes with, and for a generator, nothing.
  *
  * `entryFlow` is the flow position checkRequiresClauses returned. A
  * postcondition holds on every path out of the body, so nothing one of
@@ -137,7 +137,8 @@ export function checkEnsuresClauses(
   contracts: GrowableArray<ContractClause> | null,
   params: GrowableArray<Parameter>,
   resultType: Type,
-  entryFlow: FlowNode
+  entryFlow: FlowNode,
+  isGenerator: boolean = false
 ): void {
   if (contracts == null) { return; }
   // An inline result is returned as several values, and there is no one
@@ -167,8 +168,14 @@ export function checkEnsuresClauses(
       if (returnsNothing) {
         walkEnter(clause.condition, (n) => {
           if (n is Identifier && ctx.model.resolve(n) === resultSymbol) {
+            // A generator's call returns its iterator; its body, which
+            // the postcondition follows, returns nothing.
             ctx.error(
-              "'result' has no value here: the function returns nothing.",
+              if (isGenerator) {
+                "'result' has no value here: a generator's body returns nothing."
+              } else {
+                "'result' has no value here: the function returns nothing."
+              },
               DiagnosticCode.TypeMismatch, n.loc);
           }
         });

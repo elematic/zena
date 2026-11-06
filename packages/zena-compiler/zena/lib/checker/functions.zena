@@ -15,9 +15,7 @@ import { adaptToExpected } from './adaptation.zena';
 import { checkInlineParameterType, isInlineType, resolveTypeAnnotation, resolveTypeParameters } from './annotations.zena';
 import { checkInlineBindingUses } from './inline.zena';
 import { BodyContext, CheckerContext } from './context.zena';
-import {
-  checkEnsuresClauses, checkRequiresClauses, rejectContracts, rejectEnsuresClauses
-} from './contracts.zena';
+import { checkEnsuresClauses, checkRequiresClauses } from './contracts.zena';
 import { checkExpression } from './expressions.zena';
 
 import { prescanPendingFunctions } from './module.zena';
@@ -345,20 +343,12 @@ export function checkFunctionExpression(
   // Arrows share `this` with the body they were written in.
   let prevFlowState = ctx.enterBodyFlow(true);
 
-  // A generator's body runs when it is first stepped, and it has no
-  // single result, so what its clauses would mean is undecided.
-  var ensuresFlow = ctx.currentFlow;
-  if (isGenerator) {
-    rejectContracts(ctx, fe.contracts, 'a generator');
-  } else {
-    ensuresFlow = checkRequiresClauses(ctx, fe.contracts, params);
-    bodyCtx.hasEnsures = hasEnsuresClause(fe.contracts);
-    // An async function's postconditions would run when its future
-    // completes, which the split of its body does not arrange yet.
-    if (isAsync) {
-      rejectEnsuresClauses(ctx, fe.contracts, 'an async function');
-    }
-  }
+  // A generator's and an async function's clauses are checked as any
+  // other's. Their bodies are what the clauses are about: `retType` is
+  // nothing for a generator and the future's value for an async
+  // function, and that is what `result` is.
+  let ensuresFlow = checkRequiresClauses(ctx, fe.contracts, params);
+  bodyCtx.hasEnsures = hasEnsuresClause(fe.contracts);
 
   // Check the body.
   match (body) {
@@ -475,9 +465,7 @@ export function checkFunctionExpression(
     }
   }
 
-  if (!isGenerator) {
-    checkEnsuresClauses(ctx, fe.contracts, params, retType, ensuresFlow);
-  }
+  checkEnsuresClauses(ctx, fe.contracts, params, retType, ensuresFlow, isGenerator);
 
   // Generators: the declared Iterator<T> (or AsyncIterator<T> for
   // `async gen`) is the return type; with no annotation, infer the
