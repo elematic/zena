@@ -1,5 +1,6 @@
 /**
- * The `com.atproto.server` methods of password sessions: `createSession`,
+ * The `com.atproto.server` methods: `describeServer`, which names the
+ * server's DID; and those of password sessions, `createSession`,
  * `refreshSession`, `getSession` and `deleteSession`, and
  * `getServiceAuth`, which signs a token for another service with the
  * account's key. Ported from pds.js's
@@ -11,16 +12,33 @@ import {Future} from 'zena:async';
 import {parseI32} from 'zena:core';
 import {hex} from 'zena:encoding';
 import {Router} from 'zena:http';
-import {JsonObject} from 'zena:json';
+import {JsonArray, JsonObject} from 'zena:json';
 import {randomBytes} from 'zena:random';
+import {didWebFor} from 'atproto:identity';
 import {
-  SERVER_CREATE_SESSION, SERVER_DELETE_SESSION, SERVER_GET_SERVICE_AUTH, SERVER_GET_SESSION, SERVER_REFRESH_SESSION,
-  xrpcPath
+  SERVER_CREATE_SESSION, SERVER_DELETE_SESSION, SERVER_DESCRIBE_SERVER, SERVER_GET_SERVICE_AUTH, SERVER_GET_SESSION,
+  SERVER_REFRESH_SESSION, xrpcPath
 } from 'atproto:methods';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {isValidDid} from 'atproto:syntax';
+import {Pds} from '../pds.zena';
 import {Sessions, Tokens} from '../sessions.zena';
-import {fail, jsonBody, nowSeconds, sessionCall} from './common.zena';
+import {fail, json, jsonBody, nowSeconds, sessionCall} from './common.zena';
+
+/**
+ * Adds `describeServer`: the server's DID, which a client addresses its
+ * tokens for the server to, and the domains it offers handles under, none:
+ * a managed account's handle is under its App View's domain, and no one
+ * signs up here for one of the server's own.
+ */
+export function describeServerRoute(router: Router, pds: Pds): void {
+  router.get(xrpcPath(SERVER_DESCRIBE_SERVER), async (req, res, next, params) => {
+    let body = new JsonObject();
+    body['did'] = pds.did ?? didWebFor(req.url.host());
+    body['availableUserDomains'] = new JsonArray();
+    json(res, body);
+  });
+}
 
 /** Adds the routes of password sessions, and of the service-auth tokens they ask for. */
 export function serverRoutes(router: Router, sessions: Sessions): void {

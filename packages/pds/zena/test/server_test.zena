@@ -86,6 +86,21 @@ export let tests = suite('pds:server', () => {
     equal(get('/xrpc/com.example.nothing').statusCode, 404);
   });
 
+  test('server.describeServer names the DID App Views address their tokens to', (ctx) => {
+    // Until it is configured, as pds.js does, the did:web of the host asked.
+    let res = get('/xrpc/com.atproto.server.describeServer');
+    equal(res.statusCode, 200);
+    let body = jsonOf(res);
+    equal(body['did'] as String, 'did:web:localhost');
+    // Its accounts' handles are their App Views', so it offers none.
+    equal((body['availableUserDomains'] as JsonArray).length, 0);
+
+    let pds = new Pds(new MemoryStorage());
+    pds.did = 'did:web:padstone.test';
+    equal(jsonOf(getFrom(createApp(pds), '/xrpc/com.atproto.server.describeServer'))['did'] as String,
+        'did:web:padstone.test');
+  });
+
   test('sync.getRecord answers with a proof a client verifies', (ctx) => {
     let app = aliceApp();
     let res = getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}&rkey=post3`);
