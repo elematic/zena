@@ -570,6 +570,9 @@ function inTry(): i32 {
 
 - **Not allowed with live `using` bindings**: Any active resource acquired with
   `using` must have its disposer run before the frame is destroyed.
+- **Not allowed in functions with `ensures` clauses**: Postconditions must inspect
+  the returned value after the callee completes, so the caller's stack frame
+  cannot be retired early.
 - **Not allowed in constructors or generators**: Constructors return newly
   allocated instances, and generators return lazy iterators. (Async functions
   support tail calls through future adoption, described below).
@@ -852,3 +855,43 @@ loop:
   standalone WebAssembly run under `zena-cli` or `wasmtime`), the runtime drains the
   microtask queue to completion before the program exits. On JavaScript hosts and
   browsers, the queue integrates with the host microtask loop.
+
+## Contracts
+
+Function declarations and arrow functions can attach preconditions (`requires`)
+and postconditions (`ensures`) between the signature and the body (or `=>`):
+
+```zena
+import {div} from 'zena:math';
+
+function exactDivide(a: i32, b: i32): i32
+  requires (b != 0 && a % b == 0)
+  ensures (result * b == a)
+{
+  return div(a, b);
+}
+
+let nonNullLength = (text: String | null): i32
+  requires (text != null)
+  ensures (result >= 0)
+=> text.length;
+```
+
+- **Runtime and `debug` checking**: Unmarked clauses run unconditionally at
+  runtime and throw `ContractError` when `false`; clauses prefixed with `debug`
+  run only under `zena test` and `--debug` (`-g`) builds and emit nothing in
+  ordinary builds.
+- **Precondition narrowing**: Type refinements established in an unmarked
+  `requires` hold in subsequent clauses and in the function body (`debug requires`
+  does not narrow because ordinary builds omit the check).
+- **`result` and `old()`**: Inside `ensures`, `result` names the return value on
+  non-`void` functions and `old(expr)` evaluates `expr` on entry after
+  preconditions pass.
+- **Current restrictions**: Clauses are not yet supported on `gen` functions, and
+  `ensures` is not yet supported on `async` functions or functions returning
+  `inline` types. On `async` functions, `requires` clauses run eagerly before the
+  first `await` and reject the returned `Future<T>` with `ContractError` when
+  violated.
+
+See [Contracts](/reference/contracts/) for complete grammar, scoping, and
+diagnostic rules.

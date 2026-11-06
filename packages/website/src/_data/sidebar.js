@@ -84,6 +84,7 @@ const guide = [
           'Pattern matching',
           'Collections',
           'Errors',
+          'Contracts',
           'Libraries',
           'Borrowed from other languages',
         ],
@@ -161,6 +162,7 @@ const guide = [
           'Function types and compatibility',
           'Function and method overloading',
           'Generators and async functions',
+          'Contracts',
         ],
       },
       {
@@ -220,6 +222,19 @@ const guide = [
         ],
       },
       {
+        text: 'Contracts',
+        link: '/guide/contracts/',
+        outline: [
+          'Preconditions with requires',
+          'Postconditions with ensures',
+          'Loop invariants with invariant',
+          'Type narrowing from preconditions',
+          'Test and debug clauses with debug',
+          'Runtime checks and ContractError',
+          'Current limitations and roadmap',
+        ],
+      },
+      {
         text: 'Async Programming',
         link: '/guide/async/',
         outline: [
@@ -274,11 +289,12 @@ const guide = [
         text: 'Correctness and Safety',
         link: '/guide/correctness/',
         outline: [
-          'What "sound" means',
-          'Where TypeScript gives up soundness',
-          'What Zena does instead',
-          'Memory safety without a borrow checker',
-          'The cost of soundness',
+          'Layers of safety',
+          'Isolation and memory safety',
+          'Type safety',
+          'State, data shapes, and exhaustiveness',
+          'Explicit absence and errors',
+          'Runtime contracts and testing',
         ],
       },
       {
@@ -352,6 +368,7 @@ const guide = [
         link: '/guide/ai-agents/',
         outline: [
           'Why Zena is designed for agent feedback loops',
+          'Checking behavior with contracts',
           'Diagnostics agents can act on',
           'Tooling hooks',
           'Practical tips',
@@ -511,6 +528,23 @@ const reference = [
       'Tail calls',
       'Generator functions',
       'Async functions',
+      'Contracts',
+    ],
+  },
+  {
+    text: 'Contracts',
+    link: '/reference/contracts/',
+    outline: [
+      'Clause syntax and placement',
+      'Preconditions (requires)',
+      'Postconditions (ensures)',
+      'Entry values with old()',
+      'Loop invariants (invariant)',
+      'Debug clauses (debug)',
+      'Type checking and narrowing',
+      'Runtime evaluation and ContractError',
+      'Unsupported positions and restrictions',
+      'Planned static verification and ghost clauses',
     ],
   },
   {
@@ -764,6 +798,7 @@ const reference = [
           'for await',
           'break and continue',
           'while let',
+          'Loop invariants',
         ],
       },
       {
@@ -1169,6 +1204,18 @@ const development = [
         text: 'Automatic boxing',
         link: '/development/design/automatic-boxing/',
         outline: ['Why it is rejected', 'No any', 'anyref is a different type'],
+      },
+      {
+        text: 'Contracts',
+        link: '/development/design/contracts/',
+        outline: [
+          'Runtime checks first, static proofs later',
+          'Parenthesized conditions and contextual keywords',
+          'Narrowing from preconditions',
+          'Gathering returns and entry values',
+          'Debug and ghost clauses',
+          'Open questions and current gaps',
+        ],
       },
       {
         text: 'Regular expressions',

@@ -155,12 +155,22 @@ left-to-right data transformations. Combined with lightweight arrow functions,
 lexical closures, and collection operations (`map`, `filter`, `fold`),
 functional patterns fit naturally into everyday code.
 
-### Contracts and units of measure <span class="badge info">Planned</span>
+### Contracts <span class="badge warning">In progress</span>
 
-Planned extensions include static dimensional analysis (units of measure like
-`Meters` or `Seconds` checked at compile time with zero runtime overhead) and
-first-class contract annotations (`requires`, `ensures`) to catch domain bugs
-before code runs.
+First-class contract clauses (`requires`, `ensures` with `result` and `old()`,
+and loop `invariant`) attach preconditions, postconditions, and invariants
+directly to signatures and loops. Unmarked clauses run at runtime in all builds
+(throwing `ContractError` on failure) and narrow types in function bodies, while
+`debug` clauses run in `zena test` and `--debug` (`-g`) builds for expensive
+checks, giving human reviewers and AI coding agents executable correctness specs.
+Coverage for generators and async postconditions, along with SMT-backed static
+verification, is in progress or planned. See [Contracts](/guide/contracts/).
+
+### Units of measure <span class="badge info">Planned</span>
+
+Planned dimensional analysis tracks physical and logical units (such as `Meters`,
+`Seconds`, or `Pixels`) at compile time with zero runtime overhead, turning
+dimensional mismatches into compile errors.
 
 ## Where the project stands
 

@@ -160,11 +160,27 @@ let value = try { parseJson(input) } catch (e) { defaultConfig };
 let checked = if (ok) result else throw new Error('failed');
 ```
 
+## Contracts
+
+Functions, methods, constructors, and loops can declare `requires`, `ensures`,
+and `invariant` clauses that run at runtime and narrow types in the body:
+
+```zena
+function withdraw(balance: i32, amount: i32): i32
+  requires (amount > 0 && balance >= amount)
+  ensures (result == balance - amount)
+{
+  return balance - amount;
+}
+```
+
+See [Contracts](/guide/contracts/).
+
 ## Libraries
 
 ES-style imports. There are no globals in Zena, but every module has "prelude"
 imports that are always available, such as `console`, `String`, `Array`, `Map`,
-and `FixedArray`.
+`FixedArray`, and `ContractError`.
 
 ```zena
 import { min, max, sin, PI } from 'zena:math';
@@ -178,15 +194,16 @@ export let tau = 2.0 * PI;
 Zena is deliberately unoriginal. Nearly every feature is something that already
 proved itself somewhere else:
 
-| From           | What Zena took                                                                             |
-| -------------- | ------------------------------------------------------------------------------------------ |
-| **TypeScript** | Type annotation syntax, arrow functions, structural records, ES modules, template literals |
-| **Dart**       | `this.` constructor parameters, initializer lists, mixins with `on` constraints            |
-| **Scala**      | Sealed hierarchies, case classes, expression orientation, `match` as an expression         |
-| **Swift**      | Immutability by default, `let`/`var`, no `++`/`--`, compound assignment only               |
-| **Rust**       | Exhaustive matching, ranges, distinct newtypes, explicit numeric conversion                |
-| **Kotlin**     | Non-nullable references by default, expression bodies, extension-style APIs                |
-| **Go**         | A small surface you can hold in your head; one obvious way to do things                    |
+| From               | What Zena took                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------ |
+| **TypeScript**     | Type annotation syntax, arrow functions, structural records, ES modules, template literals |
+| **Dart**           | `this.` constructor parameters, initializer lists, mixins with `on` constraints            |
+| **Scala**          | Sealed hierarchies, case classes, expression orientation, `match` as an expression         |
+| **Swift**          | Immutability by default, `let`/`var`, no `++`/`--`, compound assignment only               |
+| **Rust**           | Exhaustive matching, ranges, distinct newtypes, explicit numeric conversion                |
+| **Kotlin**         | Non-nullable references by default, expression bodies, extension-style APIs                |
+| **Eiffel / Dafny** | `requires`, `ensures`, `old()`, and loop `invariant` clauses                               |
+| **Go**             | A small surface you can hold in your head; one obvious way to do things                    |
 
 What Zena changed on purpose, rather than inherited:
 

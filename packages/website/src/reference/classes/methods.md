@@ -80,6 +80,30 @@ class FileHandle {
 The receiver is not a normal parameter; it defines the ownership capability
 required of the caller when invoking the method.
 
+### Method contracts
+
+Instance and static methods with bodies can attach `requires` and `ensures`
+clauses after the parameter list and return type:
+
+```zena
+class Counter {
+  var count: i32 = 0;
+
+  add(delta: i32): i32
+    requires (delta > 0)
+    ensures (this.count == old(this.count) + delta)
+    ensures (result == this.count)
+  {
+    this.count += delta;
+    return this.count;
+  }
+}
+```
+
+Clauses are not yet accepted on methods without a body (`interface`, `abstract`,
+or `declare` methods) or on getters and setters. See
+[Contracts](/reference/contracts/).
+
 ### Private and symbol methods
 
 Methods can be encapsulated using private names or unique symbols.

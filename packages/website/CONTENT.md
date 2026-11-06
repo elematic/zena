@@ -37,6 +37,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Pattern matching
     - Collections
     - Errors
+    - Contracts
     - Libraries
     - Borrowed from other languages
   - ✅ [Getting Started](src/guide/getting-started.md) — `/guide/getting-started/`
@@ -80,6 +81,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Function types and compatibility
     - Function and method overloading
     - Generators and async functions
+    - Contracts
   - ✅ [Classes](src/guide/classes.md) — `/guide/classes/`
     - Declaring a class and fields
     - Constructors and initialization
@@ -111,6 +113,14 @@ To add a page: add it to the sidebar with an `outline`, then run
     - try as an expression
     - Errors versus result values
     - When to use which
+  - ✅ [Contracts](src/guide/contracts.md) — `/guide/contracts/`
+    - Preconditions with requires
+    - Postconditions with ensures
+    - Loop invariants with invariant
+    - Type narrowing from preconditions
+    - Test and debug clauses with debug
+    - Runtime checks and ContractError
+    - Current limitations and roadmap
   - ✅ [Async Programming](src/guide/async.md) — `/guide/async/`
     - The async/await model
     - Execution model: Eager start and concurrency
@@ -137,12 +147,13 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Narrowing
     - Variance
     - What Zena deliberately leaves out
-  - 📝 [Correctness and Safety](src/guide/correctness.md) — `/guide/correctness/`
-    - What "sound" means
-    - Where TypeScript gives up soundness
-    - What Zena does instead
-    - Memory safety without a borrow checker
-    - The cost of soundness
+  - ✅ [Correctness and Safety](src/guide/correctness.md) — `/guide/correctness/`
+    - Layers of safety
+    - Isolation and memory safety
+    - Type safety
+    - State, data shapes, and exhaustiveness
+    - Explicit absence and errors
+    - Runtime contracts and testing
   - ✅ [WebAssembly](src/guide/web-assembly.md) — `/guide/web-assembly/`
     - Targeting Wasm GC
     - Type mapping and representation
@@ -180,8 +191,9 @@ To add a page: add it to the sidebar with an `outline`, then run
     - zena fmt
     - Style decisions
     - Editor integration
-  - 📝 [Working with AI Agents](src/guide/ai-agents.md) — `/guide/ai-agents/`
+  - ✅ [Working with AI Agents](src/guide/ai-agents.md) — `/guide/ai-agents/`
     - Why Zena is designed for agent feedback loops
+    - Checking behavior with contracts
     - Diagnostics agents can act on
     - Tooling hooks
     - Practical tips
@@ -268,6 +280,18 @@ To add a page: add it to the sidebar with an `outline`, then run
   - Tail calls
   - Generator functions
   - Async functions
+  - Contracts
+- ✅ [Contracts](src/reference/contracts.md) — `/reference/contracts/`
+  - Clause syntax and placement
+  - Preconditions (requires)
+  - Postconditions (ensures)
+  - Entry values with old()
+  - Loop invariants (invariant)
+  - Debug clauses (debug)
+  - Type checking and narrowing
+  - Runtime evaluation and ContractError
+  - Unsupported positions and restrictions
+  - Planned static verification and ghost clauses
 - ✅ [Expressions](src/reference/expressions.md) — `/reference/expressions/`
   - Expression-oriented syntax
   - Literals
@@ -410,6 +434,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - for await
     - break and continue
     - while let
+    - Loop invariants
   - ✅ [Pattern Matching](src/reference/pattern-matching.md) — `/reference/pattern-matching/`
     - match expressions
     - Pattern forms and destructuring
@@ -663,6 +688,13 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Why it is rejected
     - No any
     - anyref is a different type
+  - ✅ [Contracts](src/development/design/contracts.md) — `/development/design/contracts/`
+    - Runtime checks first, static proofs later
+    - Parenthesized conditions and contextual keywords
+    - Narrowing from preconditions
+    - Gathering returns and entry values
+    - Debug and ghost clauses
+    - Open questions and current gaps
   - ✅ [Regular expressions](src/development/design/regex.md) — `/development/design/regex/`
     - Engine size
     - No JIT in Wasm
@@ -679,4 +711,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-75 of 100 pages written; 25 still placeholders.
+80 of 103 pages written; 23 still placeholders.

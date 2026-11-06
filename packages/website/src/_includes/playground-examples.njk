@@ -66,6 +66,77 @@ export let main = () => {
 
 </figure>
 
+<figure id="example-contracts" category="Basics">
+<figcaption>Contracts</figcaption>
+
+```zena
+import {growable, join} from 'zena:core';
+
+function insert<T>(array: GrowableArray<T>, index: i32, item: T)
+  requires (index >= 0)
+  requires (index <= array.length)
+  ensures (array.length == old(array.length) + 1)
+  ensures (array[index] == item)
+{
+  array.push(item);
+  if (index == array.length - 1) {
+    return;
+  }
+  for (var i = array.length - 1; i > index; i -= 1) {
+    array[i] = array[i - 1];
+  }
+  array[index] = item;
+}
+
+function isSorted(array: GrowableArray<i32>) {
+  for (var i = 1; i < array.length; i += 1) {
+    if (array[i - 1] > array[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// `debug` clauses run in `zena test` and `--debug` (`-g`) builds:
+function insertSorted(array: GrowableArray<i32>, item: i32)
+  debug requires (isSorted(array))
+  ensures (array.length == old(array.length) + 1)
+  ensures (array[result] == item)
+  debug ensures (isSorted(array))
+{
+  array.push(item);
+  var i = array.length - 1;
+  while (i > 0 && array[i - 1] > item)
+    invariant (0 <= i && i < array.length)
+  {
+    array[i] = array[i - 1];
+    i -= 1;
+  }
+  array[i] = item;
+  return i;
+}
+
+export function main() {
+  let items = growable(['a', 'b', 'c']);
+  insert(items, 2, 'd');
+  console.log(join(items, ', '));
+
+  let scores = growable([10, 20, 40]);
+  let at = insertSorted(scores, 30);
+  console.log(`Inserted 30 at index ${at}: ${join(scores.map((n) => `${n}`), ', ')}`);
+
+  try {
+    insert(items, 99, 'z');
+  } catch (e) {
+    if (e is ContractError) {
+      console.log(`Caught: ${e.message}`);
+    }
+  }
+}
+```
+
+</figure>
+
 <figure id="example-expression-oriented" category="Basics">
 <figcaption>Expression Oriented</figcaption>
 

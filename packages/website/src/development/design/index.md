@@ -29,6 +29,9 @@ alternatives were, and why this one won.
   that erases to its base type and costs nothing.
 - [**Automatic boxing**](/development/design/automatic-boxing/) — why
   primitives are never boxed implicitly, and why `any` was removed.
+- [**Contracts**](/development/design/contracts/) — parenthesized `requires`,
+  `ensures`, and `invariant` clauses that run today, narrow types, and prepare
+  for test-only checks and static verification.
 - [**Regular expressions**](/development/design/regex/) — a regex engine written
   in Zena, with no `/pattern/` literal.
 - [**WebAssembly alignment**](/development/design/wasm-alignment/) — a catalog

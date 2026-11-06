@@ -352,3 +352,36 @@ function processEvents(source: EventSource): void {
 
 For the complete taxonomy of supported pattern forms (including record, class,
 tuple, and or-patterns), see [Pattern Matching](/reference/pattern-matching/).
+
+## Loop invariants
+
+`while`, `for`, and synchronous `for-in` loops can declare one or more
+`invariant (condition)` clauses between the loop header and a `{ ... }` block
+body:
+
+```zena
+var total = 0;
+for (var i = 0; i < items.length; i += 1)
+  invariant (0 <= i && i <= items.length)
+  invariant (total >= 0)
+{
+  if (items[i] > 0) {
+    total += items[i];
+  }
+}
+```
+
+- **Evaluation timing**: Invariants run at runtime every time control reaches the
+  loop test—before the first iteration, after each completed iteration, and after
+  `continue` (following the `update` step of a `for` loop). A failed check throws
+  `ContractError`.
+- **Block body requirement**: A loop carrying `invariant` clauses must use a
+  `{ ... }` block body so `invariant (...)` is disambiguated from a single-statement
+  call to a function named `invariant`.
+- **Scope**: In a C-style `for` loop, variables declared in the `init` clause are
+  in scope inside `invariant`. In `for-in` and `while let` loops, pattern-bound
+  variables are bound only after an iteration matches, so `invariant` sees the
+  enclosing scope rather than the loop pattern bindings.
+
+See [Contracts](/reference/contracts/#loop-invariants-invariant) for full
+details.

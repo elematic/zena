@@ -335,3 +335,28 @@ class Point3D extends Point {
 all subclass fields are initialized before the superclass constructor executes,
 preventing subclasses from being observed in an uninitialized state if the
 superclass constructor invokes virtual methods.
+
+### Constructor contracts
+
+Constructors accept `requires` and `ensures` clauses after the parameter list and
+before `: initializerList` or the body:
+
+```zena
+class BoundedRange {
+  low: i32;
+  high: i32;
+
+  new(low: i32, high: i32)
+    requires (low <= high)
+    ensures (this.low <= this.high)
+    : low = low, high = high {}
+}
+```
+
+- `requires` clauses run before `this.` assignments, initializer list entries,
+  and `super(...)` calls, and cannot reference `this`.
+- `ensures` clauses run after the constructor body with `this` bound to the
+  constructed instance (constructors have no `result`, and `old()` in constructor
+  `ensures` is not yet supported).
+
+See [Contracts](/reference/contracts/).
