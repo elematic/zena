@@ -556,6 +556,15 @@ export final class Parser {
     ));
   }
 
+  #parseNumberLiteral(token: Token, startToken: Token): NumberLiteral {
+    let err = validateNumberLiteral(token.value);
+    if (err != null) {
+      this.#recoverableError(err, DiagnosticCode.UnexpectedToken, token);
+      return new NumberLiteral("0", this.#makeLocation(startToken));
+    }
+    return new NumberLiteral(token.value, this.#makeLocation(startToken));
+  }
+
 
   /**
    * A node from `startToken` to the last token consumed. While some `>` of
@@ -1348,7 +1357,7 @@ export final class Parser {
     // Number literal pattern
     if (this.#match(TokenType.Number)) {
       let token = this.#previous();
-      return new NumberLiteral(token.value, this.#makeLocation(startToken));
+      return this.#parseNumberLiteral(token, startToken);
     }
     
     // String literal pattern
@@ -1651,7 +1660,7 @@ export final class Parser {
     // report them as refutable in variable declarations.
     if (this.#match(TokenType.Number)) {
       let token = this.#previous();
-      return new LiteralPattern(new NumberLiteral(token.value, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+      return new LiteralPattern(this.#parseNumberLiteral(token, startToken), this.#makeLocation(startToken));
     }
     if (this.#match(TokenType.String)) {
       let token = this.#previous();
@@ -2405,7 +2414,7 @@ export final class Parser {
     // Number literal
     if (this.#match(TokenType.Number)) {
       let token = this.#previous();
-      return new NumberLiteral(token.value, this.#makeLocation(startToken));
+      return this.#parseNumberLiteral(token, startToken);
     }
     
     // String literal
@@ -3184,7 +3193,7 @@ export final class Parser {
     // Number literal type
     if (this.#check(TokenType.Number)) {
       let token = this.#advance();
-      return new LiteralTypeAnnotation(new NumberLiteral(token.value, this.#makeLocation(startToken)), this.#makeLocation(startToken));
+      return new LiteralTypeAnnotation(this.#parseNumberLiteral(token, startToken), this.#makeLocation(startToken));
     }
     
     // String literal type
@@ -4729,4 +4738,73 @@ export function parseRecovering(source: String, path: String, nodeIdGenerator: I
     completeness: parser.completeness,
     diagnostics: parser.recoveredErrors
   };
+}
+
+function isValidRadixDigit(c: i32, base: i32) {
+  if (base == 2) {
+    return c == 48 || c == 49;
+  }
+  if (base == 8) {
+    return c >= 48 && c <= 55;
+  }
+  if (base == 16) {
+    return (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
+  }
+  return c >= 48 && c <= 57;
+}
+
+function validateNumberLiteral(raw: String): String | null {
+  var base = 10;
+  var start = 0;
+  if (raw.length >= 2 && raw.getByteAt(0) == 48) {
+    let c1 = raw.getByteAt(1);
+    if (c1 == 120 || c1 == 88) {
+      base = 16;
+      start = 2;
+    } else if (c1 == 98 || c1 == 66) {
+      base = 2;
+      start = 2;
+    } else if (c1 == 111 || c1 == 79) {
+      base = 8;
+      start = 2;
+    }
+  }
+
+  if (start >= raw.length) {
+    return `Unexpected end of numeric literal '${raw}': expected digits after prefix.`;
+  }
+
+  var prevWasDigit = false;
+  var sawDot = false;
+  var sawDigitAfterDot = false;
+  for (var i = start; i < raw.length; i += 1) {
+    let c = raw.getByteAt(i);
+    if (c == 95) {
+      if (!prevWasDigit || i + 1 >= raw.length) {
+        return `Unexpected numeric separator '_' in '${raw}': '_' is only allowed between digits.`;
+      }
+      prevWasDigit = false;
+      continue;
+    }
+    if (c == 46 && base == 10 && !sawDot) {
+      if (!prevWasDigit) {
+        return `Unexpected numeric separator '_' before '.' in '${raw}'.`;
+      }
+      sawDot = true;
+      prevWasDigit = false;
+      continue;
+    }
+    if (!isValidRadixDigit(c, base)) {
+      return `Unexpected character in numeric literal '${raw}'.`;
+    }
+    prevWasDigit = true;
+    if (sawDot) {
+      sawDigitAfterDot = true;
+    }
+  }
+
+  if (sawDot && !sawDigitAfterDot) {
+    return `Unexpected end of floating-point literal '${raw}'.`;
+  }
+  return null;
 }

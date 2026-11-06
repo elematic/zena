@@ -292,13 +292,21 @@ exponent, so write `pow(x, y)` for a non-integer `y` until it lowers to
 
 ## Number literals
 
-Zena supports decimal and hexadecimal number literals:
+Zena supports decimal, hexadecimal (`0x`/`0X`), binary (`0b`/`0B`), and octal
+(`0o`/`0O`) integer literals, as well as decimal floating-point literals. Single `_`
+digit separators may appear between adjacent digits in any numeric literal:
 
 ```zena
-let decimal = 42;
-let hex = 0xff; // 255
-let floatVal = 3.14;
+let decimal = 1_000_000;
+let hex = 0xff_00; // 65280
+let binary = 0b1010_0001; // 161
+let octal = 0o755; // 493
+let floatVal = 3.1415_9265;
 ```
+
+Hexadecimal, binary, and octal literals targeting signed `i32` or `i64` may use every
+bit as a two's-complement bit pattern (`0xffff_ffff` is `-1` as `i32`, and
+`0b1111_1111_1111_1111_1111_1111_1111_1111` is `-1` as `i32`).
 
 ### Contextual typing
 

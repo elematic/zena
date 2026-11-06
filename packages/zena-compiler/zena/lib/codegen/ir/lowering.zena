@@ -19,7 +19,7 @@ import {
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, InlineRecordType, TypeAliasType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
   ownershipHandleOf, OwnershipHandle, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType, isIntegerType,
-  typeContainsTypeParameter, representsRestricted,
+  typeContainsTypeParameter, representsRestricted, parseTupleIndexLiteral, sameNumericLiteralRaw,
 } from '../../types.zena';
 import {
   TemplateAbandon, TemplateFamilies, TemplateRecorder, internedCopy, memberProvidedIn, vtableSlotIn,
@@ -49,7 +49,7 @@ import {
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, InterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, parseI32WithHex, parseI64OrU64Literal, unwrapAliases, isPresentWordName, presentWordCount, presentWordName,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, InterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, parseFloatLiteral, parseI32WithHex, parseI64OrU64Literal, unwrapAliases, isPresentWordName, presentWordCount, presentWordName,
 } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
@@ -7055,21 +7055,11 @@ export final class FunctionLowerer {
       if (let (true, value) = parseI32(lit.raw)) {
         return this.b.constI32(value, vt);
       }
-      // 0x literals only: parseI32WithHex does not guard overflow, so
-      // it must never see huge DECIMAL literals (an i64-range literal
-      // wrapped to -1 instead of bailing when it did).
       // Destructure-then-if: the bootstrap rejects this call inside an
       // if-let tuple pattern.
-      if (lit.raw.startsWith('0x')) {
-        let (hexOk, hexValue) = parseI32WithHex(lit.raw);
-        if (hexOk) {
-          return this.b.constI32(hexValue, vt);
-        }
-      }
-      if (let (true, wide) = parseI64OrU64Literal(lit.raw)) {
-        if (wide >= (0 as i64) && wide <= (4294967295 as i64)) {
-          return this.b.constI32(wide as i32, vt);
-        }
+      let (intOk, intValue) = parseI32WithHex(lit.raw);
+      if (intOk) {
+        return this.b.constI32(intValue, vt);
       }
       this.#bail('unparseable i32 literal');
     }
@@ -7080,10 +7070,10 @@ export final class FunctionLowerer {
       this.#bail('unparseable i64 literal');
     }
     if (vt is ValTypeF64) {
-      return this.b.constF64(parseF64(lit.raw), vt);
+      return this.b.constF64(parseFloatLiteral(lit.raw), vt);
     }
     if (vt is ValTypeF32) {
-      return this.b.constF32(parseF64(lit.raw), vt);
+      return this.b.constF32(parseFloatLiteral(lit.raw), vt);
     }
     return this.#bailValue('literal type');
   }
@@ -9254,7 +9244,7 @@ export final class FunctionLowerer {
     if (!(idx.index is NumberLiteral)) {
       return this.#bailValue('dynamic inline tuple index');
     }
-    let k = if (let (true, n) = parseI32((idx.index as NumberLiteral).raw)) n else -1;
+    let k = if (let (true, n) = parseTupleIndexLiteral((idx.index as NumberLiteral).raw)) n else -1;
     if (k < 0 || k >= shape.elementTypes.length) {
       return this.#bailValue('inline tuple index literal');
     }
@@ -9292,7 +9282,7 @@ export final class FunctionLowerer {
       if (!(idx.index is NumberLiteral)) {
         this.#bail('dynamic tuple index');
       }
-      let elemIdx = if (let (true, n) = parseI32((idx.index as NumberLiteral).raw)) n else -1;
+      let elemIdx = if (let (true, n) = parseTupleIndexLiteral((idx.index as NumberLiteral).raw)) n else -1;
       if (elemIdx < 0) {
         this.#bail('tuple index literal');
       }
@@ -12450,12 +12440,7 @@ export function inlineMembersLike(layout: InlineLayout,
 }
 
 function sameNumberLiteral(a: String, b: String): boolean {
-  if (let (true, x) = parseI64OrU64Literal(a)) {
-    if (let (true, y) = parseI64OrU64Literal(b)) {
-      return x == y;
-    }
-  }
-  return a == b;
+  return sameNumericLiteralRaw(a, b);
 }
 
 /** Optional-chain hit arm (member machinery). */

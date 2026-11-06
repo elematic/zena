@@ -303,13 +303,16 @@ A literal that cannot be represented in the type it takes is rejected,
 whatever that type is. With no context an integer literal is an `i32`, so
 `let big = 3000000000;` is an error; write `let big: i64 = 3000000000;`. For
 `i32` and `i64`, a decimal literal must fit the signed range, while a hex
-literal may use every bit, as a bit pattern: `0xFFFFFFFF` is the `i32` -1.
+(`0x`), binary (`0b`), or octal (`0o`) literal may use every bit as a bit
+pattern: `0xFFFFFFFF` is the `i32` -1.
 
 ```zena
-let a = 2147483647;      // OK
-let b = 2147483648;      // Error: Integer literal 2147483648 is out of range for type 'i32'
-let c = 0xFFFFFFFF;      // OK: the i32 -1
-let d: i64 = 5000000000; // OK
+let a = 2_147_483_647;   // OK
+let b = 2_147_483_648;   // Error: Integer literal 2_147_483_648 is out of range for type 'i32'
+let c = 0xFFFF_FFFF;     // OK: the i32 -1
+let mask = 0b1111_0000;  // OK: 240
+let perm = 0o755;        // OK: 493
+let d: i64 = 5_000_000_000; // OK
 ```
 
 A negated literal is measured as a whole, so `let low: i8 = -128;` and
@@ -1742,7 +1745,10 @@ and stay available as identifiers. See `docs/design/contracts.md`.
 
 ### Literals
 
-- **Numbers**: `123`, `0`, `-5`, `0x1A`, `0xFF` (Parsed as `i32` by default).
+- **Numbers**: Decimal (`123`, `1_000_000`, `3.14_15`), hexadecimal (`0x1A`,
+  `0xFF_FF`), binary (`0b1010_0001`), and octal (`0o755`). Single `_`
+  separators may appear between adjacent digits in any numeric literal. Integer
+  literals default to `i32` and floating-point literals to `f64`.
 - **Strings**: `"text"` or `'text'`.
 - **Template Literals**: `` `text ${expression}` `` (Backtick-delimited with
   interpolation).

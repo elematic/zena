@@ -185,10 +185,12 @@ contextual type or an `as` cast selects another numeric type.
 
 ```zena
 let i: i32 = 42;
-let n: i64 = 100 as i64;
-let u: u32 = 255;
+let n: i64 = 5_000_000_000;
+let hex: u32 = 0xff_00;
+let bits: i32 = 0b1010_0001;
+let mode: i32 = 0o755;
 let f: f32 = 3.14;
-let d: f64 = 3.14 as f64;
+let d: f64 = 3.14_1592 as f64;
 let b: boolean = true;
 let s: String = 'hello';
 
