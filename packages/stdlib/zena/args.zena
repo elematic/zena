@@ -243,7 +243,10 @@ export class ParsedArgs {
      attached `-oval`
  * - **Delimiter**: `--` treats all subsequent arguments as positional rest
      values
- * - **Subcommands**: Dispatched to the matching subcommand's parser
+ * - **Subcommands**: Dispatched to the matching subcommand's parser. A
+ *   subcommand has subcommands of its own when they are added to the parser
+ *   `addCommand` returns (`zena pkg add`), and `command(name)` gives a
+ *   subcommand's parser, for its help.
  *
  * Call `parser.parse(args, startIndex)` to produce a `ParsedArgs` instance, or
  * `parser.formatHelp()` to generate usage documentation.
@@ -302,17 +305,28 @@ export class ArgParser {
   }
 
   /**
-   * Adds a subcommand with its own parser.
+   * Adds a subcommand with its own parser, and returns that parser, to
+   * which subcommands of its own can be added. Its help names it after
+   * this parser's program: `zena pkg`.
    */
   addCommand(name: String, config: CommandConfig = {}): ArgParser {
     let desc = config.help ?? (config.description ?? '');
-    let commandParser = new ArgParser(name, desc);
+    let fullName = if (this.programName.length > 0) `${this.programName} ${name}` else name;
+    let commandParser = new ArgParser(fullName, desc);
     if (let {options} = config) {
       commandParser.addOptions(options);
     }
     commandParser.stopAtPositional = config.stopAtPositional ?? false;
     this.#commands[name] = commandParser;
     return commandParser;
+  }
+
+  /** The parser of the subcommand `name`, for its help, or null when there is none. */
+  command(name: String): ArgParser | null {
+    if (let (true, parser) = this.#commands.get(name)) {
+      return parser;
+    }
+    return null;
   }
 
   /**

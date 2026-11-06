@@ -28,7 +28,7 @@ reaches, but it reads all of them, so:
   workspace, including compiles that never reach that package.
 - The compile cache (`compileCached` in `zena-cli/zena/compile.zena`)
   records every manifest in a module's `.deps`, so an edit to any
-  manifest invalidates every cached module. `zena add` and `zena update`
+  manifest invalidates every cached module. `zena pkg add` and `zena pkg update`
   edit a manifest and the lockfile each time they run.
 - Nothing can check a wireit script's declared manifests against what
   its compiles read, since every compile reads everything.
@@ -157,5 +157,5 @@ already.
 
 Worth doing when manifest edits become frequent enough that the compile cache's
 invalidation costs something: in a workspace with many packages that
-runs `zena add` and `zena update` often, or when the hand-kept lists in
+runs `zena pkg add` and `zena pkg update` often, or when the hand-kept lists in
 the build drift more than once.

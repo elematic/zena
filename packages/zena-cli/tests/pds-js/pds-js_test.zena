@@ -1,5 +1,5 @@
 /**
- * `zena login`, service auth and `zena logout` against pds.js, at the
+ * `zena pkg login`, service auth and `zena pkg logout` against pds.js, at the
  * revision docs/design/pds.md pins: a PDS someone else wrote, with real app
  * passwords. `setup.mjs` fetches and installs it, and `server.mjs` runs it
  * with one account and a PLC directory and DNS resolver for it.
@@ -51,11 +51,11 @@ export let tests = suite('zena against pds.js', () => {
         .set('ZENA_CONFIG_DIR', scratch.host('config'));
       let session = scratch.at('config/session.json');
 
-      let wrong = zena.run(['login', handle, '--password-stdin'], 'aaaa-bbbb-cccc-dddd\n');
+      let wrong = zena.run(['pkg', 'login', handle, '--password-stdin'], 'aaaa-bbbb-cccc-dddd\n');
       isTrue(!wrong.succeeded(), 'a wrong app password was accepted');
       isTrue(!existsSync(session), 'a refused login stored a session');
 
-      let login = zena.run(['login', handle, '--password-stdin'],
+      let login = zena.run(['pkg', 'login', handle, '--password-stdin'],
           `${field(details, 'appPassword')}\n`);
       isTrue(login.succeeded() && login.stdout.contains(`Signed in as ${handle} (${did})`),
           described(login));
@@ -70,9 +70,9 @@ export let tests = suite('zena against pds.js', () => {
           auth.stdout.contains(`verified ${did} did:web:pkg.zena-lang.dev dev.zena-lang.registry.publish`),
           described(auth));
 
-      let logout = zena.run(['logout']);
+      let logout = zena.run(['pkg', 'logout']);
       isTrue(logout.succeeded() && logout.stdout.contains(`Signed out ${handle}`), described(logout));
-      isTrue(!existsSync(session), 'zena logout kept the session');
+      isTrue(!existsSync(session), 'zena pkg logout kept the session');
     } finally {
       server.waitFor(1 as i64);
       scratch.remove();

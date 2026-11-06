@@ -44,9 +44,9 @@ A package's metadata and releases are stored as DAG-CBOR records in its atproto 
 
 ## Source archives and verification
 
-When `zena publish` publishes a version, it packs the package's `.zena` files and `zena-package.json` into a deterministic IPLD CAR archive (`application/vnd.ipld.car`) and uploads it as a blob to the package's repository.
+When `zena pkg publish` publishes a version, it packs the package's `.zena` files and `zena-package.json` into a deterministic IPLD CAR archive (`application/vnd.ipld.car`) and uploads it as a blob to the package's repository.
 
-When `zena fetch` downloads a pinned dependency:
+When `zena pkg fetch` downloads a pinned dependency:
 
 1. It resolves the package's DID document to locate its PDS and public signing key.
 2. It fetches the `dev.zena-lang.package.release` record via `com.atproto.sync.getRecord`, which returns the signed repository commit and the Merkle proof path to the record, and verifies that the record's CID matches `zena-lock.json`.
@@ -67,5 +67,5 @@ Because both the record proof and the blob hash are verified by the client, mirr
 
 In atproto, an account holder can technically rewrite their own repository. The Zena package manager prevents retroactive tampering in two ways:
 
-1. **Lockfile CID pins**: `zena-lock.json` pins the exact CID of every release record and source archive. Any modification produces a different CID and is rejected by `zena fetch`.
+1. **Lockfile CID pins**: `zena-lock.json` pins the exact CID of every release record and source archive. Any modification produces a different CID and is rejected by `zena pkg fetch`.
 2. **Checksum and attestation verification**: The registry refuses to overwrite an existing release key (`VersionExists`), checks maintainer attestations from each maintainer's independent PDS, and pairs with an append-only checksum log that records the first CID seen for each `<did>@<version>` alongside its maintainer attestations.

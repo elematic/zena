@@ -18,18 +18,18 @@ Each member of a scope has one of three roles:
 
 ```sh
 # Create a new scope (you become its initial owner)
-zena scope create acme
+zena pkg scope create acme
 
 # Inspect a scope's profile, policies, and visible members
-zena scope info acme
-zena scope members acme
+zena pkg scope info acme
+zena pkg scope members acme
 
 # Add or change a person's role in the scope
-zena scope add acme bob.bsky.social --role admin
-zena scope add acme carol.bsky.social --role member
+zena pkg scope add acme bob.bsky.social --role admin
+zena pkg scope add acme carol.bsky.social --role member
 
 # Remove a member from the scope
-zena scope remove acme carol.bsky.social
+zena pkg scope remove acme carol.bsky.social
 ```
 
 ## Teams
@@ -43,15 +43,15 @@ Each member of a team has one of two roles within the team:
 
 ```sh
 # Create a team inside @acme
-zena team create acme core
+zena pkg team create acme core
 
 # Add members to the team
-zena team add acme core bob.bsky.social --role maintainer
-zena team add acme core carol.bsky.social --role member
+zena pkg team add acme core bob.bsky.social --role maintainer
+zena pkg team add acme core carol.bsky.social --role member
 
 # List team members or delete a team
-zena team members acme core
-zena team delete acme core
+zena pkg team members acme core
+zena pkg team delete acme core
 ```
 
 ## Package maintainers
@@ -65,17 +65,17 @@ Each package has its own `dev.zena-lang.package.maintainers` record listing who 
 
 ```sh
 # List a package's maintainers
-zena owner list @acme/router
+zena pkg owner list @acme/router
 
 # Add an individual publisher or owner
-zena owner add @acme/router bob.bsky.social --role publisher
-zena owner add @acme/router dave.bsky.social --role owner
+zena pkg owner add @acme/router bob.bsky.social --role publisher
+zena pkg owner add @acme/router dave.bsky.social --role owner
 
 # Grant a team publishing rights on a package
-zena owner add @acme/router @acme/core --role publisher
+zena pkg owner add @acme/router @acme/core --role publisher
 
 # Remove a maintainer
-zena owner remove @acme/router bob.bsky.social
+zena pkg owner remove @acme/router bob.bsky.social
 ```
 
 ## Private membership commitments

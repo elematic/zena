@@ -4,7 +4,7 @@ permalink: /home.html
 hero:
   name: Packages for Zena
   title: Find and share packages for the Zena programming language.
-  tagline: Explore community libraries, tools, and official packages — or publish your own with <code>zena publish</code>.
+  tagline: Explore community libraries, tools, and official packages — or publish your own with <code>zena pkg publish</code>.
   actions:
     - theme: brand
       text: Get Started
@@ -18,7 +18,7 @@ hero:
 features:
   - icon: 🚀
     title: Getting Started
-    details: Add dependencies with <code>zena add</code>, pin versions reproducibly in <code>zena-lock.json</code>, and import libraries by local alias.
+    details: Add dependencies with <code>zena pkg add</code>, pin versions reproducibly in <code>zena-lock.json</code>, and import libraries by local alias.
     link: /docs/getting-started/
     linkText: Quickstart guide
   - icon: 🛡️

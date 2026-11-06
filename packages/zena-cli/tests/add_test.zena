@@ -1,5 +1,5 @@
 /**
- * `zena add` and `zena update` against `tests/fixtures/add-pds.zena`, which
+ * `zena pkg add` and `zena pkg update` against `tests/fixtures/add-pds.zena`, which
  * serves `@acme/router` (1.4.2 and 1.5.0, which need json 2.1.0, and a
  * retracted 1.6.0), `@acme/json` (2.0.0 and 2.1.0) and `@acme/log` (1.0.0).
  */
@@ -14,7 +14,7 @@ import {
 let JSON_KEY = 'did:plc:jsonjsonjsonjsonjsonjson@2';
 let LOG_KEY = 'did:plc:loglogloglogloglogloglog@1';
 
-export let tests = suite('zena add and zena update', () => {
+export let tests = suite('zena pkg add and zena pkg update', () => {
   test('select versions for the whole workspace, pin them, and fetch them', (ctx) => {
     let scratch = Scratch.create('add');
     let pds = startFakePds(scratch, 'add-pds.zena');
@@ -35,8 +35,8 @@ export let tests = suite('zena add and zena update', () => {
 
       // Add router at a version, by its scoped name, to a workspace with no
       // manifest yet. Its dependency, json, is selected and fetched with it.
-      let add = zena.run(['add', '@acme/router@1.4.2']);
-      succeeds('zena add', add);
+      let add = zena.run(['pkg', 'add', '@acme/router@1.4.2']);
+      succeeds('zena pkg add', add);
       isTrue(add.stdout.contains('2 fetched'), described(add));
       let text = read(manifest);
       isTrue(text.contains('"router"') && text.contains('1.4.2'), text);
@@ -46,8 +46,8 @@ export let tests = suite('zena add and zena update', () => {
       succeeds('zena run', zena.run(['run', 'prog.zena']));
 
       // Update to the latest version that is not retracted: 1.5.0, not 1.6.0.
-      let update = zena.run(['update']);
-      succeeds('zena update', update);
+      let update = zena.run(['pkg', 'update']);
+      succeeds('zena pkg update', update);
       isTrue(update.stdout.contains('1.4.2 -> 1.5.0'), described(update));
       let updated = read(manifest);
       isTrue(updated.contains('1.5.0') && !updated.contains('1.6.0'), updated);
@@ -59,8 +59,8 @@ export let tests = suite('zena add and zena update', () => {
       write(manifest, `{"workspace": {"packages": ["packages/*"]},${updated.sliceBytes(1, updated.length)}`);
       write(scratch.at('workspace/packages/lib/zena-package.json'), '{"name": "lib"}');
       let before = read(manifest);
-      succeeds('zena add in a workspace package',
-          zenaFrom('workspace/packages/lib').run(['add', '@acme/json@2.0.0']));
+      succeeds('zena pkg add in a workspace package',
+          zenaFrom('workspace/packages/lib').run(['pkg', 'add', '@acme/json@2.0.0']));
       let lib = read(scratch.at('workspace/packages/lib/zena-package.json'));
       isTrue(lib.contains('"json"') && lib.contains('2.0.0'), lib);
       equal(read(manifest), before);
@@ -69,13 +69,13 @@ export let tests = suite('zena add and zena update', () => {
 
       // Add json to the root without a version: its latest, under the name
       // its profile suggests.
-      succeeds('zena add without a version', zena.run(['add', '@acme/json']));
+      succeeds('zena pkg add without a version', zena.run(['pkg', 'add', '@acme/json']));
       let root = read(manifest);
       isTrue(root.contains('"json"') && root.contains('2.1.0'), root);
 
       // A name that does not resolve is an error, and changes nothing.
-      isTrue(!zena.run(['add', '@acme/nothing']).succeeded(),
-          'zena add accepted a package that does not exist');
+      isTrue(!zena.run(['pkg', 'add', '@acme/nothing']).succeeded(),
+          'zena pkg add accepted a package that does not exist');
       equal(read(manifest), root);
     } finally {
       pds.waitFor(1 as i64);
@@ -94,12 +94,12 @@ export let tests = suite('zena add and zena update', () => {
       let manifest = scratch.at('workspace/zena-package.json');
       write(manifest, '{"dependencies": {"gfx": {"wit": "./wit"}}}\n');
 
-      let add = zena.run(['add', '@acme/router@1.4.2']);
+      let add = zena.run(['pkg', 'add', '@acme/router@1.4.2']);
       isTrue(add.succeeded(), described(add));
       let text = read(manifest);
       isTrue(text.contains('"gfx"') && text.contains('"wit": "./wit"') && text.contains('"router"'), text);
 
-      let taken = zena.run(['add', '@acme/json', '--name', 'gfx']);
+      let taken = zena.run(['pkg', 'add', '@acme/json', '--name', 'gfx']);
       isTrue(!taken.succeeded() && taken.stderr.contains('the WIT in ./wit'), described(taken));
       equal(read(manifest), text);
     } finally {
@@ -120,7 +120,7 @@ export let tests = suite('zena add and zena update', () => {
       ensureDir(scratch.at('workspace'));
       let first = startFakePds(scratch, 'add-pds.zena');
       try {
-        let add = zenaWith(fakePdsOrigin(scratch, first)).run(['add', '@acme/router@1.5.0']);
+        let add = zenaWith(fakePdsOrigin(scratch, first)).run(['pkg', 'add', '@acme/router@1.5.0']);
         isTrue(add.succeeded() && add.stdout.contains(`Added ${JSON_KEY} 2.1.0`), described(add));
       } finally {
         first.waitFor(1 as i64);
@@ -137,21 +137,21 @@ export let tests = suite('zena add and zena update', () => {
 
         // Adding a package that does not need json selects json again, and
         // is refused, with nothing written; so is updating.
-        let refused = zena.run(['add', '@acme/log']);
+        let refused = zena.run(['pkg', 'add', '@acme/log']);
         isTrue(!refused.succeeded() && refused.stderr.contains(`${JSON_KEY} 2.1.0`) &&
             refused.stderr.contains('--allow-changed'), described(refused));
         equal(read(manifest), text);
         equal(read(lockfile), pins);
-        let update = zena.run(['update']);
+        let update = zena.run(['pkg', 'update']);
         isTrue(!update.succeeded() && update.stderr.contains(`${JSON_KEY} 2.1.0`), described(update));
         equal(read(lockfile), pins);
 
         // Allowed, the new pins replace the old.
-        let allowed = zena.run(['add', '@acme/log', '--allow-changed']);
+        let allowed = zena.run(['pkg', 'add', '@acme/log', '--allow-changed']);
         isTrue(allowed.succeeded() && allowed.stdout.contains(`Changed ${JSON_KEY} 2.1.0 in place`) &&
             allowed.stdout.contains(`Added ${LOG_KEY} 1.0.0`), described(allowed));
         isTrue(read(lockfile) != pins && read(manifest).contains('"log"'), read(lockfile));
-        let again = zena.run(['update']);
+        let again = zena.run(['pkg', 'update']);
         isTrue(again.succeeded() && again.stdout.contains('zena-lock.json is unchanged'), described(again));
       } finally {
         second.waitFor(1 as i64);

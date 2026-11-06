@@ -13,7 +13,7 @@ import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, writ
 let ALICE = 'did:plc:alicealicealicealicealic';
 let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 
-export let tests = suite('zena scope, team and owner', () => {
+export let tests = suite('zena pkg scope, team and owner', () => {
   test('adds people to a scope, a team and a package, and takes them away', (ctx) => {
     let scratch = Scratch.create('membership');
     let stack = startFakePds(scratch, 'publish-stack.zena');
@@ -32,11 +32,11 @@ export let tests = suite('zena scope, team and owner', () => {
       write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       let alice = person('alice', 'lib');
       let bob = person('bob', 'lib');
-      isTrue(alice.run(['login', ALICE, '--password-stdin'], 'app-password\n').succeeded(), 'alice signs in');
-      isTrue(bob.run(['login', BOB, '--password-stdin'], 'bob-password\n').succeeded(), 'bob signs in');
-      let scope = alice.run(['scope', 'create', 'acme', '--yes']);
+      isTrue(alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n').succeeded(), 'alice signs in');
+      isTrue(bob.run(['pkg', 'login', BOB, '--password-stdin'], 'bob-password\n').succeeded(), 'bob signs in');
+      let scope = alice.run(['pkg', 'scope', 'create', 'acme', '--yes']);
       isTrue(scope.succeeded(), described(scope));
-      let published = alice.run(['publish', '--yes']);
+      let published = alice.run(['pkg', 'publish', '--yes']);
       isTrue(published.succeeded(), described(published));
       let did = (parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
       let manifestAt = (version: String) => write(scratch.at('lib/zena-package.json'),
@@ -44,72 +44,72 @@ export let tests = suite('zena scope, team and owner', () => {
 
       // Alice is the only member; Bob, who is none, sees no one and can
       // change nothing.
-      let members = alice.run(['scope', 'members', 'acme']);
+      let members = alice.run(['pkg', 'scope', 'members', 'acme']);
       isTrue(members.succeeded() && members.stdout.contains(`${ALICE}  owner`), described(members));
-      let outsider = bob.run(['scope', 'add', 'acme', BOB, '--role', 'owner']);
+      let outsider = bob.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'owner']);
       isTrue(!outsider.succeeded() && outsider.stderr.contains('cannot change it'), described(outsider));
-      let badRole = alice.run(['scope', 'add', 'acme', BOB, '--role', 'pope']);
+      let badRole = alice.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'pope']);
       isTrue(!badRole.succeeded() && badRole.stderr.contains('not a role'), described(badRole));
 
       // Alice says how the scope presents itself; Bob, no admin, cannot.
-      let profile = alice.run(['scope', 'profile', 'acme', '--name', 'Acme Corp', '--website', 'https://acme.example/']);
+      let profile = alice.run(['pkg', 'scope', 'profile', 'acme', '--name', 'Acme Corp', '--website', 'https://acme.example/']);
       isTrue(profile.succeeded() && profile.stdout.contains('Changed the profile of acme'), described(profile));
-      let info = alice.run(['scope', 'info', 'acme']);
+      let info = alice.run(['pkg', 'scope', 'info', 'acme']);
       isTrue(info.succeeded() && info.stdout.contains('Name: Acme Corp') &&
           info.stdout.contains('Website: https://acme.example/'), described(info));
-      let badSite = alice.run(['scope', 'profile', 'acme', '--website', 'javascript:alert(1)']);
+      let badSite = alice.run(['pkg', 'scope', 'profile', 'acme', '--website', 'javascript:alert(1)']);
       isTrue(!badSite.succeeded() && badSite.stderr.contains('not an http: or https: URL') &&
           !badSite.stderr.contains('backtrace'), described(badSite));
-      let notAdmin = bob.run(['scope', 'profile', 'acme', '--name', 'Bob Corp']);
+      let notAdmin = bob.run(['pkg', 'scope', 'profile', 'acme', '--name', 'Bob Corp']);
       isTrue(!notAdmin.succeeded() && notAdmin.stderr.contains('Forbidden'), described(notAdmin));
 
       // Alice adds Bob as an admin, who then sees every member.
-      let added = alice.run(['scope', 'add', 'acme', BOB, '--role', 'admin']);
+      let added = alice.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'admin']);
       isTrue(added.succeeded() && added.stdout.contains('as admin'), described(added));
-      let seen = bob.run(['scope', 'members', 'acme']);
+      let seen = bob.run(['pkg', 'scope', 'members', 'acme']);
       isTrue(seen.succeeded() && seen.stdout.contains(`${ALICE}  owner`) && seen.stdout.contains(`${BOB}  admin`),
           described(seen));
       // Alice's own attestation was enough, so nothing waits.
-      let nothing = alice.run(['approve', '@acme']);
+      let nothing = alice.run(['pkg', 'approve', '@acme']);
       isTrue(!nothing.succeeded() && nothing.stderr.contains('no change to @acme is waiting for approval'),
           described(nothing));
 
       // A team, with Bob on it, publishes the package.
-      let team = alice.run(['team', 'create', 'acme/core']);
+      let team = alice.run(['pkg', 'team', 'create', 'acme/core']);
       isTrue(team.succeeded() && team.stdout.contains('Created the team acme/core'), described(team));
-      let onTeam = alice.run(['team', 'add', 'acme/core', BOB]);
+      let onTeam = alice.run(['pkg', 'team', 'add', 'acme/core', BOB]);
       isTrue(onTeam.succeeded(), described(onTeam));
-      let teamMembers = bob.run(['team', 'members', 'acme/core']);
+      let teamMembers = bob.run(['pkg', 'team', 'members', 'acme/core']);
       isTrue(teamMembers.succeeded() && teamMembers.stdout.contains(`${BOB}  member`), described(teamMembers));
-      let notYet = bob.run(['publish']);
+      let notYet = bob.run(['pkg', 'publish']);
       isTrue(!notYet.succeeded(), described(notYet));
-      let given = alice.run(['owner', 'add', '--team', 'acme/core']);
+      let given = alice.run(['pkg', 'owner', 'add', '--team', 'acme/core']);
       isTrue(given.succeeded() && given.stdout.contains('Added the team acme/core'), described(given));
-      let owners = alice.run(['owner', 'list']);
+      let owners = alice.run(['pkg', 'owner', 'list']);
       isTrue(owners.succeeded() && owners.stdout.contains(`${ALICE}  owner`) &&
           owners.stdout.contains('the team core of did:plc:') && owners.stdout.contains('publisher'), described(owners));
 
       manifestAt('1.1.0');
-      let byBob = bob.run(['publish']);
+      let byBob = bob.run(['pkg', 'publish']);
       isTrue(byBob.succeeded() && byBob.stdout.contains('Published greet 1.1.0'), described(byBob));
       // As a publisher, Bob does not choose the package's maintainers.
-      let notOwner = bob.run(['owner', 'add', ALICE, '--role', 'owner']);
+      let notOwner = bob.run(['pkg', 'owner', 'add', ALICE, '--role', 'owner']);
       isTrue(!notOwner.succeeded() && notOwner.stderr.contains('Forbidden'), described(notOwner));
 
       // Taken away: the team loses the package, and Bob the scope.
-      let taken = alice.run(['owner', 'remove', '--team', 'acme/core']);
+      let taken = alice.run(['pkg', 'owner', 'remove', '--team', 'acme/core']);
       isTrue(taken.succeeded(), described(taken));
       manifestAt('1.2.0');
-      let refused = bob.run(['publish']);
+      let refused = bob.run(['pkg', 'publish']);
       isTrue(!refused.succeeded() && refused.stderr.contains('Forbidden'), described(refused));
-      let deleted = alice.run(['team', 'delete', 'acme/core']);
+      let deleted = alice.run(['pkg', 'team', 'delete', 'acme/core']);
       isTrue(deleted.succeeded(), described(deleted));
-      let removed = alice.run(['scope', 'remove', 'acme', BOB]);
+      let removed = alice.run(['pkg', 'scope', 'remove', 'acme', BOB]);
       isTrue(removed.succeeded(), described(removed));
-      let gone = bob.run(['scope', 'members', 'acme']);
+      let gone = bob.run(['pkg', 'scope', 'members', 'acme']);
       isTrue(gone.succeeded() && gone.stdout.contains('none you can see'), described(gone));
       // The last owner stays: the registry refuses a record with none.
-      let lastOwner = alice.run(['scope', 'remove', 'acme', ALICE]);
+      let lastOwner = alice.run(['pkg', 'scope', 'remove', 'acme', ALICE]);
       isTrue(!lastOwner.succeeded() && lastOwner.stderr.contains('InvalidRequest'), described(lastOwner));
     } finally {
       stack.waitFor(1 as i64);

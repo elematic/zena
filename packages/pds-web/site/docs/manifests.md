@@ -36,9 +36,9 @@ Every Zena package has a `zena-package.json` manifest at its root. The manifest 
 | Field          | Type                         | Where          | Description                                                                                          |
 | -------------- | ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
 | `name`         | `string`                     | Any package    | The package's name (a single lowercase DNS label), suggested as the default local name to dependents |
-| `did`          | `string`                     | Any package    | The package's AT Protocol DID, written by `zena publish` or `zena package create`                    |
+| `did`          | `string`                     | Any package    | The package's AT Protocol DID, written by `zena pkg publish` or `zena pkg create`                    |
 | `scope`        | `string`                     | Any package    | The scope on the registry where the package is created (e.g., `acme`)                                |
-| `version`      | `string`                     | Any package    | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena publish`                        |
+| `version`      | `string`                     | Any package    | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena pkg publish`                    |
 | `description`  | `string`                     | Any package    | One-sentence summary of the package; required to publish                                             |
 | `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish            |
 | `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>:<library>`                                      |
@@ -100,7 +100,7 @@ Each key in `dependencies` is the **local name** used by imports inside this pac
 }
 ```
 
-Written automatically by `zena add`. Names a published package by its DID and the minimum version this package requires.
+Written automatically by `zena pkg add`. Names a published package by its DID and the minimum version this package requires.
 
 ### 2. Path dependency (`path`)
 
@@ -110,7 +110,7 @@ Written automatically by `zena add`. Names a published package by its DID and th
 }
 ```
 
-Points to another package directory on disk containing a `zena-package.json`. Used for sibling packages in a workspace or local checkout testing. When a workspace package is published with `zena publish`, its path dependencies are automatically converted into `{did, version}` entries in the published release record.
+Points to another package directory on disk containing a `zena-package.json`. Used for sibling packages in a workspace or local checkout testing. When a workspace package is published with `zena pkg publish`, its path dependencies are automatically converted into `{did, version}` entries in the published release record.
 
 ### 3. WIT dependency (`wit`)
 
@@ -124,7 +124,7 @@ Synthesizes Zena interface declarations from a `.wit` file or directory for WebA
 
 ## Custom scope domains (`scopes`)
 
-By default, `zena add @scope/name` resolves `<name>.<scope>.pkg.zena-lang.dev` (or the registry in `ZENA_REGISTRY`). If an organization hosts packages under its own domain, map the scope in the workspace root's `zena-package.json`:
+By default, `zena pkg add @scope/name` resolves `<name>.<scope>.pkg.zena-lang.dev` (or the registry in `ZENA_REGISTRY`). If an organization hosts packages under its own domain, map the scope in the workspace root's `zena-package.json`:
 
 ```json
 {
@@ -134,4 +134,4 @@ By default, `zena add @scope/name` resolves `<name>.<scope>.pkg.zena-lang.dev` (
 }
 ```
 
-With that mapping, `zena add @widgets/button` resolves `button.pkg.widgets.example.com`.
+With that mapping, `zena pkg add @widgets/button` resolves `button.pkg.widgets.example.com`.

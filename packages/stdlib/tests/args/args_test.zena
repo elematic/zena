@@ -160,6 +160,33 @@ export let tests = suite('Args', () => {
     equal(buildArgs.rest[0], 'main.zena');
   });
 
+  test('subcommands of subcommands, with help under their full name', (ctx) => {
+    let root = new ArgParser('zena', 'The Zena toolchain');
+    root.addCommand('pkg', {description: 'Packages'}).addCommands({
+      'add' => {
+        description: 'Add a package',
+        options: {'name' => {help: 'Its local name'}},
+      },
+      'fetch' => {description: 'Fetch them'},
+    });
+    let res = root.parse(['pkg', 'add', 'acme.pkg.test', '--name', 'acme']);
+    equal(res.commandName, 'pkg');
+    let pkgArgs = res.commandArgs as ParsedArgs;
+    equal(pkgArgs.commandName, 'add');
+    let addArgs = pkgArgs.commandArgs as ParsedArgs;
+    equal(addArgs.getOption('name') ?? null, 'acme');
+    equal(addArgs.rest.length, 1);
+    equal(addArgs.rest[0], 'acme.pkg.test');
+
+    let pkg = root.command('pkg');
+    isNotNull(pkg);
+    let help = (pkg as ArgParser).formatHelp();
+    isTrue(help.contains('Usage: zena pkg'), help);
+    isTrue(help.contains('add') && help.contains('Fetch them'), help);
+    isTrue(((pkg as ArgParser).command('add') as ArgParser).formatHelp().contains('Usage: zena pkg add'));
+    isTrue(root.command('nothing') == null, 'no such command');
+  });
+
   test('help formatting', (ctx) => {
     let parser = new ArgParser('mytool', 'A helpful tool')
       .addOption('verbose', {type: OptionType.Flag, abbr: 'v', help: 'Verbose logging'})

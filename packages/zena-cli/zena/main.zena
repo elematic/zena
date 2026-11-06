@@ -52,7 +52,7 @@ function describe() {
     help: 'Pin releases whose CIDs changed at the same version, instead of refusing',
   };
   let time = {type: OptionType.Flag, help: "Print the compiler's phase timings"};
-  return new ArgParser.fromConfig({
+  let parser = new ArgParser.fromConfig({
     name: 'zena',
     help: 'The Zena compiler and toolchain',
     options: {
@@ -172,122 +172,6 @@ function describe() {
           'list-rules' => {type: OptionType.Flag, help: 'Print the rules'},
         },
       },
-      'add' => {
-        help: 'Add a package to the dependencies, pin it, and fetch it',
-        options: {
-          'help' => help,
-          'name' => {help: 'The local name for the package, instead of the one it suggests'},
-          'allow-changed' => allowChanged,
-        },
-      },
-      'update' => {
-        help: 'Raise dependencies to their latest versions, pin them, and fetch them',
-        options: {'help' => help, 'allow-changed' => allowChanged},
-      },
-      'fetch' => {
-        help: 'Fetch the packages zena-lock.json pins into the package cache',
-        options: {'help' => help},
-      },
-      'login' => {
-        help: 'Sign in to your atproto account with an app password, to publish',
-        options: {
-          'help' => help,
-          'password-stdin' => {
-            type: OptionType.Flag,
-            help: 'Read the app password from stdin',
-          },
-        },
-      },
-      'logout' => {
-        help: 'End the session zena login started',
-        options: {'help' => help},
-      },
-      'publish' => {
-        help: "Publish the package you are in, at its manifest's version, as you, or as CI with $ZENA_REGISTRY_TOKEN",
-        options: {
-          'help' => help,
-          'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
-          'scope' => {help: 'The scope to create a new package in, when its manifest names none'},
-          'yes' => {type: OptionType.Flag, help: 'Create the package if it has no DID yet'},
-        },
-      },
-      'scope' => {
-        help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope>',
-        options: {
-          'help' => help,
-          'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
-          'yes' => {type: OptionType.Flag, help: 'Create it'},
-          'role' => {help: 'With add: member (the default), admin or owner'},
-          'owner-threshold' => {help: "With settings: how many owners must approve a change to the scope's members"},
-          'admin-threshold' => {help: "With settings: how many admins or owners must approve a change to one of its teams"},
-          'minimum-threshold' => {help: 'With policy: the fewest approvals a release of any package in the scope needs'},
-          'minimum-humans' => {help: "With policy: the fewest of a release's approvals that must come from people"},
-          'default-teams' => {help: 'With policy: the teams new packages start maintained by, as <team>:<role>,...'},
-          'default-threshold' => {help: 'With policy: the release threshold new packages start with'},
-          'default-owner-threshold' => {help: 'With policy: the owner threshold new packages start with'},
-          'default-humans' => {help: 'With policy: the humans new packages start with'},
-          'creators' => {help: 'With policy: the teams whose members may create packages, as <team>,...'},
-          'name' => {help: "With profile: the scope's display name (empty clears it)"},
-          'description' => {help: 'With profile: what the scope is (empty clears it)'},
-          'website' => {help: "With profile: the scope's website, an http: or https: URL (empty clears it)"},
-        },
-      },
-      'team' => {
-        help: 'team create|delete|members|settings <scope>/<team> | add|remove <scope>/<team> <person>',
-        options: {
-          'help' => help,
-          'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
-          'role' => {help: 'With add: member (the default) or maintainer'},
-          'threshold' => {help: "With settings: how many of the team's maintainers must approve a change to it"},
-        },
-      },
-      'owner' => {
-        help: "owner add|remove <person> | add|remove --team <scope>/<team> | list | settings: a package's maintainers",
-        options: {
-          'help' => help,
-          'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
-          'role' => {help: 'With add: publisher (the default) or owner'},
-          'team' => {help: 'A team, <scope>/<team>, in place of a person'},
-          'package' => {help: 'The package, by DID, handle or @scope/name (default: the one you are in)'},
-          'automation' => {type: OptionType.Flag, help: 'With add: the person is an automation account, from zena ci create'},
-          'threshold' => {help: 'With settings: how many maintainers must approve a release'},
-          'owner-threshold' => {help: 'With settings: how many owners must approve a change to the maintainers'},
-          'humans' => {help: "With settings: how many of a release's approvals must come from people, not automation"},
-        },
-      },
-      'ci' => {
-        help: 'ci create <scope>/<name>: an automation account for CI to publish as, and its token; ci token <scope>/<name>: a new token for it',
-        options: {
-          'help' => help,
-          'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
-        },
-      },
-      'approve' => {
-        help: 'approve [<package>@]<version> | @<scope> | <package>: show a release, or changes to who belongs, waiting for approval, and with --yes, approve them',
-        options: {
-          'help' => help,
-          'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
-          'yes' => {type: OptionType.Flag, help: 'Approve it'},
-        },
-      },
-      'retract' => {
-        help: 'Retract a published version: builds that pin it keep it, and choosing a version skips it',
-        options: {
-          'help' => help,
-          'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
-          'reason' => {help: 'Why, for those who depend on it'},
-          'package' => {help: 'The package, by DID, handle or @scope/name (default: the one you are in)'},
-        },
-      },
-      'package' => {
-        help: 'package create: create the package you are in on a registry, without publishing',
-        options: {
-          'help' => help,
-          'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
-          'scope' => {help: 'The scope to create the package in, when its manifest names none'},
-          'yes' => {type: OptionType.Flag, help: 'Create it'},
-        },
-      },
       'fmt' => {
         help: 'Format Zena files',
         options: {
@@ -320,6 +204,130 @@ function describe() {
       },
     },
   });
+  // The commands about packages, which come up less often than building
+  // and testing, under one noun: `zena pkg add`.
+  parser.addCommand('pkg', {
+    help: 'Add, fetch and publish packages, and change who maintains them',
+    options: {'help' => help},
+  }).addCommands({
+    'add' => {
+      help: 'Add a package to the dependencies, pin it, and fetch it',
+      options: {
+        'help' => help,
+        'name' => {help: 'The local name for the package, instead of the one it suggests'},
+        'allow-changed' => allowChanged,
+      },
+    },
+    'update' => {
+      help: 'Raise dependencies to their latest versions, pin them, and fetch them',
+      options: {'help' => help, 'allow-changed' => allowChanged},
+    },
+    'fetch' => {
+      help: 'Fetch the packages zena-lock.json pins into the package cache',
+      options: {'help' => help},
+    },
+    'login' => {
+      help: 'Sign in to your atproto account with an app password, to publish',
+      options: {
+        'help' => help,
+        'password-stdin' => {
+          type: OptionType.Flag,
+          help: 'Read the app password from stdin',
+        },
+      },
+    },
+    'logout' => {
+      help: 'End the session zena pkg login started',
+      options: {'help' => help},
+    },
+    'publish' => {
+      help: "Publish the package you are in, at its manifest's version, as you, or as CI with $ZENA_REGISTRY_TOKEN",
+      options: {
+        'help' => help,
+        'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
+        'scope' => {help: 'The scope to create a new package in, when its manifest names none'},
+        'yes' => {type: OptionType.Flag, help: 'Create the package if it has no DID yet'},
+      },
+    },
+    'scope' => {
+      help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope>',
+      options: {
+        'help' => help,
+        'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
+        'yes' => {type: OptionType.Flag, help: 'Create it'},
+        'role' => {help: 'With add: member (the default), admin or owner'},
+        'owner-threshold' => {help: "With settings: how many owners must approve a change to the scope's members"},
+        'admin-threshold' => {help: "With settings: how many admins or owners must approve a change to one of its teams"},
+        'minimum-threshold' => {help: 'With policy: the fewest approvals a release of any package in the scope needs'},
+        'minimum-humans' => {help: "With policy: the fewest of a release's approvals that must come from people"},
+        'default-teams' => {help: 'With policy: the teams new packages start maintained by, as <team>:<role>,...'},
+        'default-threshold' => {help: 'With policy: the release threshold new packages start with'},
+        'default-owner-threshold' => {help: 'With policy: the owner threshold new packages start with'},
+        'default-humans' => {help: 'With policy: the humans new packages start with'},
+        'creators' => {help: 'With policy: the teams whose members may create packages, as <team>,...'},
+        'name' => {help: "With profile: the scope's display name (empty clears it)"},
+        'description' => {help: 'With profile: what the scope is (empty clears it)'},
+        'website' => {help: "With profile: the scope's website, an http: or https: URL (empty clears it)"},
+      },
+    },
+    'team' => {
+      help: 'team create|delete|members|settings <scope>/<team> | add|remove <scope>/<team> <person>',
+      options: {
+        'help' => help,
+        'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
+        'role' => {help: 'With add: member (the default) or maintainer'},
+        'threshold' => {help: "With settings: how many of the team's maintainers must approve a change to it"},
+      },
+    },
+    'owner' => {
+      help: "owner add|remove <person> | add|remove --team <scope>/<team> | list | settings: a package's maintainers",
+      options: {
+        'help' => help,
+        'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
+        'role' => {help: 'With add: publisher (the default) or owner'},
+        'team' => {help: 'A team, <scope>/<team>, in place of a person'},
+        'package' => {help: 'The package, by DID, handle or @scope/name (default: the one you are in)'},
+        'automation' => {type: OptionType.Flag, help: 'With add: the person is an automation account, from zena pkg ci create'},
+        'threshold' => {help: 'With settings: how many maintainers must approve a release'},
+        'owner-threshold' => {help: 'With settings: how many owners must approve a change to the maintainers'},
+        'humans' => {help: "With settings: how many of a release's approvals must come from people, not automation"},
+      },
+    },
+    'ci' => {
+      help: 'ci create <scope>/<name>: an automation account for CI to publish as, and its token; ci token <scope>/<name>: a new token for it',
+      options: {
+        'help' => help,
+        'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
+      },
+    },
+    'approve' => {
+      help: 'approve [<package>@]<version> | @<scope> | <package>: show a release, or changes to who belongs, waiting for approval, and with --yes, approve them',
+      options: {
+        'help' => help,
+        'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
+        'yes' => {type: OptionType.Flag, help: 'Approve it'},
+      },
+    },
+    'retract' => {
+      help: 'Retract a published version: builds that pin it keep it, and choosing a version skips it',
+      options: {
+        'help' => help,
+        'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
+        'reason' => {help: 'Why, for those who depend on it'},
+        'package' => {help: 'The package, by DID, handle or @scope/name (default: the one you are in)'},
+      },
+    },
+    'create' => {
+      help: 'Create the package you are in on a registry, without publishing',
+      options: {
+        'help' => help,
+        'registry' => {help: 'The package registry (default $ZENA_REGISTRY, else https://padstone.zena-lang.dev)'},
+        'scope' => {help: 'The scope to create the package in, when its manifest names none'},
+        'yes' => {type: OptionType.Flag, help: 'Create it'},
+      },
+    },
+  });
+  return parser;
 }
 
 export function main(): i32 {
@@ -362,13 +370,23 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
       console.log(parser.formatHelp());
       return 0;
     }
-    console.error('Error: a subcommand is required');
+    if (args.rest.length > 0) {
+      let unknown = args.rest[0];
+      let pkg = parser.command('pkg') as ArgParser;
+      if (pkg.command(unknown) != null) {
+        console.error(`Error: no such command: ${unknown}. The package commands are under zena pkg: zena pkg ${unknown}`);
+      } else {
+        console.error(`Error: no such command: ${unknown}`);
+      }
+      return 2;
+    }
+    console.error('Error: a command is required');
     console.error('');
     console.error(parser.formatHelp());
     return 2;
   }
   if (sub.getFlag('help')) {
-    console.log(parser.formatHelp());
+    console.log((parser.command(name) ?? parser).formatHelp());
     return 0;
   }
   var optLevel: String | null = null;
@@ -394,6 +412,41 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
   if (name == 'lint') {
     return lintCommand(sub, options);
   }
+  if (name == 'pkg') {
+    return pkgCommand(parser.command('pkg') as ArgParser, sub, options);
+  }
+  if (name == 'bench') {
+    return benchCommand(sub, options);
+  }
+  if (name == 'lsp') {
+    return lspCommand(sub, options);
+  }
+  if (name == 'precompile') {
+    return precompile(sub, options);
+  }
+  console.error('Error: no such command: ' + name);
+  return 2;
+}
+
+/** `zena pkg <command>`: the commands about packages, which `pkg` parses. */
+function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): i32 {
+  let name = args.commandName;
+  let sub = args.commandArgs;
+  if (name == null || sub == null) {
+    if (args.rest.length > 0) {
+      console.error(`Error: no such command: zena pkg ${args.rest[0]}`);
+      console.error('');
+    } else {
+      console.error('Error: zena pkg takes a command');
+      console.error('');
+    }
+    console.error(pkg.formatHelp());
+    return 2;
+  }
+  if (sub.getFlag('help')) {
+    console.log((pkg.command(name) ?? pkg).formatHelp());
+    return 0;
+  }
   if (name == 'fetch') {
     return fetchCommand(sub, options);
   }
@@ -412,9 +465,9 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
   if (name == 'publish') {
     return publishCommand(sub, options);
   }
-  if (name == 'package') {
-    if (sub.rest.length != 1 || sub.rest[0] != 'create') {
-      console.error('Error: the package command has one subcommand: zena package create');
+  if (name == 'create') {
+    if (sub.rest.length != 0) {
+      console.error('Error: zena pkg create takes no arguments: it creates the package you are in');
       return 2;
     }
     return packageCreateCommand(sub, options);
@@ -444,7 +497,7 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
     if (sub.rest.length > 0 && sub.rest[0] == 'profile') {
       return scopeProfileCommand(sub, options);
     }
-    console.error('Error: zena scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope>');
+    console.error('Error: zena pkg scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope>');
     return 2;
   }
   if (name == 'team') {
@@ -462,16 +515,7 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
   if (name == 'owner') {
     return ownerCommand(sub, options);
   }
-  if (name == 'bench') {
-    return benchCommand(sub, options);
-  }
-  if (name == 'lsp') {
-    return lspCommand(sub, options);
-  }
-  if (name == 'precompile') {
-    return precompile(sub, options);
-  }
-  console.error('Error: no such subcommand: ' + name);
+  console.error(`Error: no such command: zena pkg ${name}`);
   return 2;
 }
 

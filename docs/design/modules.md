@@ -121,8 +121,8 @@ and those it names. No `node_modules`-style walking up directories.
 - **Familiar model**: Follows JavaScript import maps
   (`https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap`).
 - **Versions belong to the package manager**: The compiler resolves no
-  versions. It reads the pins `zena add` and `zena update` write to
-  `zena-lock.json`, and the packages `zena fetch` puts in the package cache.
+  versions. It reads the pins `zena pkg add` and `zena pkg update` write to
+  `zena-lock.json`, and the packages `zena pkg fetch` puts in the package cache.
 
 ## Compilation & Resolution
 

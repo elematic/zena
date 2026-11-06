@@ -33,26 +33,26 @@ zena run main.zena
 
 ## Adding a dependency
 
-Use `zena add` to add a published package to your project. You can refer to a package by `@scope/name`, by its full handle, or by its DID:
+Use `zena pkg add` to add a published package to your project. You can refer to a package by `@scope/name`, by its full handle, or by its DID:
 
 ```sh
 # By @scope/name on the default registry (pkg.zena-lang.dev)
-zena add @acme/router
+zena pkg add @acme/router
 
 # By full handle (including packages on custom domains)
-zena add router.acme.pkg.zena-lang.dev
+zena pkg add router.acme.pkg.zena-lang.dev
 
 # Pinning a specific minimum version
-zena add @acme/router@1.4.2
+zena pkg add @acme/router@1.4.2
 ```
 
-When you run `zena add`, the CLI performs three steps:
+When you run `zena pkg add`, the CLI performs three steps:
 
 1. Resolves the package's identity and records its DID and minimum version in `zena-package.json` under `dependencies`.
 2. Selects versions across your workspace using minimal version selection and writes the exact versions and content hashes (CIDs) to `zena-lock.json`.
 3. Fetches each package's source archive into the local package cache and verifies its CID against `zena-lock.json`.
 
-After running `zena add @acme/router`, your `zena-package.json` looks like this:
+After running `zena pkg add @acme/router`, your `zena-package.json` looks like this:
 
 ```json [zena-package.json]
 {
@@ -81,10 +81,10 @@ export function main(): void {
 
 ### Choosing a custom local name
 
-By default, `zena add` uses the name suggested by the dependency's profile. If that name collides with another dependency or you prefer a shorter alias, pass `--name`:
+By default, `zena pkg add` uses the name suggested by the dependency's profile. If that name collides with another dependency or you prefer a shorter alias, pass `--name`:
 
 ```sh
-zena add @acme/router --name http-router
+zena pkg add @acme/router --name http-router
 ```
 
 Your code then imports from `http-router:<library>` while other packages in the dependency graph continue using their own local names.
@@ -95,27 +95,27 @@ To raise dependencies to the latest non-retracted release within their current m
 
 ```sh
 # Update all dependencies
-zena update
+zena pkg update
 
 # Update specific dependencies by their local name
-zena update router
+zena pkg update router
 ```
 
-To upgrade a dependency to a new major version, pass the new version explicitly to `zena add`:
+To upgrade a dependency to a new major version, pass the new version explicitly to `zena pkg add`:
 
 ```sh
-zena add @acme/router@2.0.0
+zena pkg add @acme/router@2.0.0
 ```
 
 ## Fetching locked packages
 
-In CI or after cloning a repository that already has a `zena-lock.json`, run `zena fetch` to populate the local package cache without changing `zena-package.json` or `zena-lock.json`:
+In CI or after cloning a repository that already has a `zena-lock.json`, run `zena pkg fetch` to populate the local package cache without changing `zena-package.json` or `zena-lock.json`:
 
 ```sh
-zena fetch
+zena pkg fetch
 ```
 
-`zena fetch` downloads every archive pinned in `zena-lock.json` and checks that both the release record CID and source archive CID match the lockfile.
+`zena pkg fetch` downloads every archive pinned in `zena-lock.json` and checks that both the release record CID and source archive CID match the lockfile.
 
 ::: tip Package cache location
 Downloaded source archives are unpacked under `$ZENA_CACHE_DIR/packages` (or `$XDG_CACHE_HOME/zena/packages`, defaulting to `~/.cache/zena/packages`). Set `ZENA_PROJECT_CACHE=1` to store unpacked packages inside `.zena/packages` in the workspace instead.
