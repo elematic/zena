@@ -740,6 +740,34 @@ function typeArgumentsKey(typeArguments: Array<Type> | null) {
   return key + ">";
 }
 
+/** `a,b` for a list of types, keyed like `getTypeKey`. */
+function typeListKey(types: Array<Type>) {
+  var key = "";
+  for (var i = 0; i < types.length; i += 1) {
+    if (i > 0) {
+      key = key + ",";
+    }
+    key = key + getTypeKey(types[i]);
+  }
+  return key;
+}
+
+/** `rec{a:i32,b?:String}` for a record type, keyed like `getTypeKey`. */
+function recordTypeKey(rec: RecordType) {
+  // An existential lowers to a fat pointer of its own.
+  var key = if (rec.isExistential) "recx{" else "rec{";
+  var first = true;
+  for (let name in rec.properties.keys()) {
+    if (!first) {
+      key = key + ",";
+    }
+    first = false;
+    let optional = if (rec.isOptional(name)) "?" else "";
+    key = `${key}${name}${optional}:${getTypeKey(rec.properties[name])}`;
+  }
+  return key + "}";
+}
+
 export function getTypeKey(type: Type): String {
   return match (type) {
     case I32Type: "i32"
@@ -766,12 +794,18 @@ export function getTypeKey(type: Type): String {
     case EnumType as et: et.name
     case ArrayType {elementType, elementsMutable}:
       (if (elementsMutable) "arr_" else "arrimm_") + getTypeKey(elementType)
-    case RecordType: "rec"
-    case TupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
+    // A structural type keys by its parts, for the same reason:
+    // `visit(fn: (x: i32) => void)` and
+    // `visit(fn: (x: i32) => Future<void>)` are two overloads, as are
+    // two signatures taking different records, tuples or unions.
+    case RecordType as rec: recordTypeKey(rec)
+    case TupleType {elementTypes}: `tup(${typeListKey(elementTypes)})`
     case InlineParamType {param}: getTypeKey(param)
     case InlineRecordType {record}: `inline ${getTypeKey(record)}`
-    case InlineTupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
-    case UnionType: "union"
+    case InlineTupleType {elementTypes}: `tup(${typeListKey(elementTypes)})`
+    case UnionType {types}: `union(${typeListKey(types)})`
+    case FunctionType as ft:
+      `fn(${typeListKey(ft.parameters)})=>${getTypeKey(ft.returnType)}`
     // A type parameter and its erasure key the SAME — a specialization
     // named with `T` still standing and one named with `T` erased are
     // the same physical shape, a top-typed slot — and both key APART
