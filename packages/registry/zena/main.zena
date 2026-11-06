@@ -27,6 +27,13 @@
  *   `--yes`. The directory takes it within 72 hours of the first
  *   operation it undoes.
  *
+ * `did-key [--kms <key version>]` prints the `did:key` of the App View's
+ * online rotation key, for padstone's `PDS_TRUSTED_APP_VIEWS`, and reads
+ * no configuration: with `--kms`, a Cloud KMS key version's, read with the
+ * token in `GOOGLE_OAUTH_ACCESS_TOKEN` (`gcloud auth print-access-token`);
+ * otherwise the secp256k1 private key's, in hex on stdin. `deploy.sh` runs
+ * it.
+ *
  * With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`,
  * it creates a scope owned by `<did>` alone, as the App View's operator, and
  * exits. Unlike `zena scope create`, it may take a name the App View reserves
@@ -38,8 +45,10 @@ import {exit, getArguments, getEnv, readStdin} from 'zena:cli';
 import {hex} from 'zena:encoding';
 import {stringify} from 'zena:json';
 import {randomBytes} from 'zena:random';
-import {KeyType, formatDidKey} from 'atproto:didkey';
+import {CloudKms} from 'google-cloud:kms';
+import {KeyType, PublicKey, formatDidKey} from 'atproto:didkey';
 import {PlcError, fetchOperations, submitPlcOperation, undoOperation} from 'atproto:plc';
+import {KmsSigner} from 'pds:signer';
 import {SigningKey} from 'pds:storage';
 import {AppViewError} from './app-view.zena';
 import {nowMicros} from 'pds:xrpc/common';
@@ -66,6 +75,10 @@ export async function main(): Future<void> {
   }
   if (hasArgument('plc-restore')) {
     await plcRestore();
+    return;
+  }
+  if (hasArgument('did-key')) {
+    await didKey();
     return;
   }
   let config = readConfig();
@@ -172,6 +185,38 @@ function generateKey(): void {
   let key = new SigningKey(KeyType.Secp256k1, randomBytes(32));
   console.log(`private key (keep it offline): ${hex.encode(key.privateKey)}`);
   console.log(`did:key (APP_VIEW_OFFLINE_ROTATION_KEY): ${formatDidKey(key.publicKey())}`);
+  exit(0);
+}
+
+/**
+ * Prints the `did:key` of the Cloud KMS key version after `--kms`, or of
+ * the secp256k1 private key in hex on stdin, and exits.
+ */
+async function didKey(): Future<void> {
+  let args = argumentsAfter('did-key') as Array<String>;
+  var key: PublicKey | null = null;
+  if (args.length == 2 && args[0] == '--kms') {
+    try {
+      key = (await KmsSigner.connect(CloudKms.connect(args[1]))).publicKey();
+    } catch (e) {
+      console.error(`did-key: ${e.message}`);
+      exit(1);
+      return;
+    }
+  } else if (args.length == 0) {
+    try {
+      key = new SigningKey(KeyType.Secp256k1, hex.decode((await readStdin()).trim())).publicKey();
+    } catch (e) {
+      console.error('did-key: stdin does not hold a secp256k1 private key in hex');
+      exit(2);
+      return;
+    }
+  } else {
+    console.error('usage: did-key [--kms <projects/…/cryptoKeyVersions/n>], with the private key in hex on stdin without --kms');
+    exit(2);
+    return;
+  }
+  console.log(formatDidKey(key));
   exit(0);
 }
 

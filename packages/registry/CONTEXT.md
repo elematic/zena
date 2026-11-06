@@ -26,9 +26,9 @@ When a pull request closes an item there, tick its box.
   in `zena`. A new method needs its lexicon and its constant; the lexicon
   test fails without either. Tests keep the literals, since they check the
   wire.
-- The pages in `zena/web/` are the site's (`pkg.zena-lang.dev`), and the
-  XRPC routes the PDS's (`padstone.zena-lang.dev`); they run in one
-  service for now. A page reaches the App View only with calls it could
+- The pages in `zena/web/` are the site's (`pkg.zena-lang.dev`), served
+  with the App View's methods; the PDS is padstone
+  (`padstone.zena-lang.dev`), a service of its own. A page reaches the App View only with calls it could
   make over the network: an App View method, or a public atproto read.
   Changes go through registry methods with the person's token, never on
   the strength of the site's cookie (package-manager.md, "Names and
