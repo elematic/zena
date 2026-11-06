@@ -803,9 +803,15 @@ export function prepareGenerators(
  * cancellation channel, the raise unwinds through the re-entered user
  * regions — the finalizers the suspended yield was under run — and
  * next()'s cancellation capture marks the frame DONE and returns
- * exhausted. RUNNING means this loop is somehow inside the generator
- * it is disposing; that is the reentrancy poison next() traps on, and
- * this traps the same way.
+ * exhausted.
+ *
+ * A RUNNING frame is one whose step threw: next() sets RUNNING on the
+ * way in and nothing resets it when an exception leaves, and this
+ * finalizer is where that exception passes next. It is left as it is.
+ * The throw already unwound through the body's own regions, so its
+ * finalizers have run and there is no suspended yield to resume, and
+ * RUNNING stays the poison a later next() traps on (generators.md
+ * §5.2).
  */
 export function emitGeneratorDispose(cx: LoweringContext, iter: i32): void {
   let supOpt = cx.wasm.generatorFrameSuper;
@@ -842,12 +848,9 @@ export function emitGeneratorDispose(cx: LoweringContext, iter: i32): void {
 
   cx.b.switchTo(idleB);
   let markB = cx.b.newBlock();
-  let trapB = cx.b.newBlock();
   let isRunning = cx.b.binary(IrOp.i32_eq, i32vt, s,
       cx.b.constI32(STATE_RUNNING, i32vt));
-  cx.b.brIf(isRunning, trapB, none, markB, none);
-  cx.b.switchTo(trapB);
-  cx.b.unreachable();
+  cx.b.brIf(isRunning, contB, none, markB, none);
   cx.b.switchTo(markB);
   let setDone = growable<i32>([g, cx.b.constI32(STATE_DONE, i32vt)]);
   cx.b.emitVoid(IrOp.struct_set, cx.b.pushExtra(setDone), stateRef);

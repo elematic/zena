@@ -430,7 +430,10 @@ still has one member, and plain iterators pay nothing. The pieces:
   — exhaustion, `break`, `return`, a throw, a cancellation — runs a
   finalizer that checks the instance against `$GenFrame`. A suspended
   frame gets `$disposing` set and one `next()` call; anything already
-  finished, and any non-generator iterator, is left alone.
+  finished, and any non-generator iterator, is left alone. So is a
+  `RUNNING` frame, which is one whose own step threw (§5.2): the throw
+  is what ended the loop, it already ran the body's finalizers as it
+  unwound, and the frame stays poisoned for a later `next()`.
 - Inside `next()`, each resume head tests `$disposing` and raises on
   the cancellation channel — inside the re-entered user regions, so
   the `finally`/`using` regions the suspended yield was under run —
