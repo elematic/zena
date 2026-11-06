@@ -46,6 +46,7 @@
  * the host lifted async may block on a read.
  */
 
+import { Future } from 'zena:async';
 import { Set } from 'zena:collections';
 import { ByteBuffer, StringBuilder, Unmanaged, disown, growable, i32ToString } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
@@ -290,13 +291,13 @@ function failureOf(e: Expectation, res: ProcessResult): String | null {
 }
 
 /** Waits on a started test and prints its outcome. Returns whether it passed. */
-function report(running: RunningTest): boolean {
+async function report(running: RunningTest): Future<boolean> {
   let {compileError} = running;
   let process = running.process;
   let failure = if (compileError != null) {
     `did not compile:\n${compileError}`
   } else if (process != null) {
-    failureOf(running.expectation, process.waitFor(testTimeoutMs))
+    failureOf(running.expectation, await process.waitFor(testTimeoutMs))
   } else {
     'neither a process nor a compile error was recorded'
   };
@@ -600,12 +601,12 @@ function compileSlice(args: Array<String>): i32 {
  * dies is not fatal on its own, since each of its tests then reports
  * its own missing artifact, but it is worth saying so once.
  */
-function runCompilePhase(
+async function runCompilePhase(
   zenaCli: String,
   selfWasm: String,
   workers: i32,
   filter: String
-) {
+): Future<boolean> {
   if (!existsSync(outRoot)) {
     mkdirSync(outRoot);
   }
@@ -633,7 +634,7 @@ function runCompilePhase(
   var allOk = true;
   var slowestNanos = 0 as i64;
   for (let p in running) {
-    let res = p.waitFor(compileTimeoutMs);
+    let res = await p.waitFor(compileTimeoutMs);
     if (res.wallNanos > slowestNanos) {
       slowestNanos = res.wallNanos;
     }
@@ -658,7 +659,7 @@ function runCompilePhase(
  * runner already removed, so `args[1]` is either `compile-slice` or the
  * `zena-cli` path, exactly as when this was its own program.
  */
-export function runPortableExecution(args: Array<String>): i32 {
+export async function runPortableExecution(args: Array<String>): Future<i32> {
   if (args.length > 1 && args[1] == compileSliceCommand) {
     return compileSlice(args);
   }
@@ -717,7 +718,7 @@ export function runPortableExecution(args: Array<String>): i32 {
   // best (see the header).
   let selfWasm = args[0];
   let compileWorkers = if (parallelism < files.length) { parallelism } else { files.length };
-  runCompilePhase(zenaCli, selfWasm, compileWorkers, filter);
+  await runCompilePhase(zenaCli, selfWasm, compileWorkers, filter);
   console.log('');
 
   // Sliding-window pool: at most `parallelism` `zena-cli run` workers in
@@ -731,7 +732,7 @@ export function runPortableExecution(args: Array<String>): i32 {
     if (running.length - reported >= parallelism || next >= files.length) {
       let oldest = running[reported];
       reported += 1;
-      if (report(oldest)) {
+      if (await report(oldest)) {
         passed += 1;
       } else {
         failed += 1;

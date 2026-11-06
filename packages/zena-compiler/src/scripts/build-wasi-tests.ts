@@ -65,6 +65,7 @@ const generateWrapper = (testFileNames: string[]): string => {
 
   return `\
 ${imports}
+import { Future } from 'zena:async';
 import { getArguments } from 'zena:cli';
 import { Suite, runAndReport } from 'zena:test';
 import { runPortableSyntax } from './portable_syntax.zena';
@@ -78,7 +79,7 @@ ${pushes}
   return runAndReport(root, (s: String): void => { console.log(s); });
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let args = getArguments();
   let command = if (args.length > 1) { args[1] } else { 'unit' };
   if (command == 'syntax') {
@@ -90,7 +91,7 @@ export let main = (): i32 => {
   if (command == 'compile-slice') {
     // The execution runner's own re-invocation, which reads the vector
     // from args[1] onwards: pass it through untouched.
-    return runPortableExecution(args);
+    return await runPortableExecution(args);
   }
   if (command == 'execution') {
     // Drop the subcommand so the runner sees the vector it always has:
@@ -102,10 +103,10 @@ export let main = (): i32 => {
       forwarded.push(args[i]);
       i += 1;
     }
-    return runPortableExecution(forwarded);
+    return await runPortableExecution(forwarded);
   }
   return runUnitSuites();
-};
+}
 `;
 };
 

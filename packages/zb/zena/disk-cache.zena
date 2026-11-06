@@ -1,4 +1,12 @@
-import {existsSync, isFileSync, readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync} from 'zena:fs';
+import {
+  exists,
+  isFile,
+  readFile,
+  readFileBytes,
+  rename,
+  writeFile,
+  writeFileBytes,
+} from 'zena:fs';
 import {StepCache} from 'workflow:cache';
 import {CacheKey, Fingerprint} from 'workflow:fingerprint';
 import {OutputManifest} from 'workflow:manifest';
@@ -54,8 +62,15 @@ function blobName(fp: Fingerprint) {
  */
 export class DiskCache implements StepCache {
   #root: String;
+  var #nextTempId = 0;
 
   new(root: String) : #root = root;
+
+  #tempSuffix(): String {
+    let id = this.#nextTempId;
+    this.#nextTempId = id + 1;
+    return `.tmp-${i32ToString(id)}`;
+  }
 
   #manifestPath(step: StepKey, key: CacheKey): String {
     return withRoot(this.#root, `${stateDirOf(step.value)}/cache/${key.value}.json`);
@@ -67,12 +82,12 @@ export class DiskCache implements StepCache {
 
   async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
     let manifestPath = this.#manifestPath(step, key);
-    if (!isFileSync(manifestPath)) {
+    if (!(await isFile(manifestPath))) {
       return null;
     }
-    let manifest = manifestFromJson(readFileSync(manifestPath));
+    let manifest = manifestFromJson(await readFile(manifestPath));
     for (let entry in manifest.outputs) {
-      if (isFileEntry(entry.fingerprint) && !isFileSync(this.#blobPath(step, entry.fingerprint))) {
+      if (isFileEntry(entry.fingerprint) && !(await isFile(this.#blobPath(step, entry.fingerprint)))) {
         return null;
       }
     }
@@ -81,25 +96,30 @@ export class DiskCache implements StepCache {
         continue;
       }
       let target = withRoot(this.#root, entry.name);
-      ensureParentDir(target);
-      writeFileBytesSync(target, readFileBytesSync(this.#blobPath(step, entry.fingerprint)));
+      await ensureParentDir(target);
+      await writeFileBytes(target, await readFileBytes(this.#blobPath(step, entry.fingerprint)));
     }
     return manifest;
   }
 
   async put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void> {
     let stateDir = withRoot(this.#root, stateDirOf(step.value));
-    ensureDir(stateDir + '/blobs');
-    ensureDir(stateDir + '/cache');
+    await ensureDir(stateDir + '/blobs');
+    await ensureDir(stateDir + '/cache');
     for (let entry in manifest.outputs) {
       if (!isFileEntry(entry.fingerprint)) {
         continue;
       }
       let blob = this.#blobPath(step, entry.fingerprint);
-      if (!existsSync(blob)) {
-        writeFileBytesSync(blob, readFileBytesSync(withRoot(this.#root, entry.name)));
+      if (!(await exists(blob))) {
+        let tmp = blob + this.#tempSuffix();
+        await writeFileBytes(tmp, await readFileBytes(withRoot(this.#root, entry.name)));
+        await rename(tmp, blob);
       }
     }
-    writeFileSync(this.#manifestPath(step, key), manifestToJson(manifest));
+    let manifestPath = this.#manifestPath(step, key);
+    let tmpManifest = manifestPath + this.#tempSuffix();
+    await writeFile(tmpManifest, manifestToJson(manifest));
+    await rename(tmpManifest, manifestPath);
   }
 }

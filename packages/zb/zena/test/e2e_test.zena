@@ -1,5 +1,5 @@
 import {suite, test} from 'zena:test';
-import {equal, fail, isTrue} from 'zena:assert';
+import {equal, fail, isFalse, isTrue} from 'zena:assert';
 import {readFileSync, unlinkSync} from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {
@@ -8,7 +8,7 @@ import {
   Succeeded,
 } from 'workflow:engine';
 import {StepKey} from 'workflow:step';
-import {ensureDir, ensureParentDir, withRoot} from '../fs-util.zena';
+import {ensureDirSync, ensureParentDirSync, withRoot} from '../fs-util.zena';
 import {buildTarget} from '../runner.zena';
 import {ScriptRef} from '../wireit-config.zena';
 import {writeFileSync} from 'zena:fs';
@@ -20,12 +20,12 @@ import {writeFileSync} from 'zena:fs';
 
 function write(root: String, path: String, content: String) {
   let full = withRoot(root, path);
-  ensureParentDir(full);
+  ensureParentDirSync(full);
   writeFileSync(full, content);
 }
 
 function mkFixture(root: String) {
-  ensureDir(root);
+  ensureDirSync(root);
   write(root, 'package.json', `{
     "scripts": {"build": "wireit"},
     "wireit": {
@@ -157,5 +157,57 @@ export let tests = suite('zb end to end', () => {
     isTrue(sourceOf(second.result, 'gen:build') == StepSource.Ran);
     isTrue(sourceOf(second.result, 'use:build') == StepSource.Ran);
     isTrue(sourceOf(second.result, 'steady:build') == StepSource.Fresh);
+  });
+
+  test('independent scripts run concurrently and -j 1 serializes them', () => {
+    let root = '/tmp/zb-parallel-' + i64ToString(monotonic() as i64);
+    ensureDirSync(root);
+    // Two independent scripts write their own start marker and wait up
+    // to ~2s for the peer's marker: they succeed iff both are in flight
+    // at the same time.
+    write(root, 'package.json', `{
+      "scripts": {"both": "wireit", "a": "wireit", "b": "wireit"},
+      "wireit": {
+        "both": {"dependencies": ["a", "b"]},
+        "a": {
+          "command": "touch a.started; i=0; while [ ! -f b.started ] && [ $i -lt 100 ]; do sleep 0.02; i=$((i+1)); done; [ -f b.started ]",
+          "files": [],
+          "output": ["a.started"]
+        },
+        "b": {
+          "command": "touch b.started; i=0; while [ ! -f a.started ] && [ $i -lt 100 ]; do sleep 0.02; i=$((i+1)); done; [ -f a.started ]",
+          "files": [],
+          "output": ["b.started"]
+        }
+      }
+    }`);
+    let entry = new ScriptRef('', 'both');
+
+    let parallel = buildTarget(root, entry, 2);
+    isTrue(parallel.result.allSucceeded, 'a and b should overlap under -j 2');
+
+    // Under -j 1 on a fresh workspace, the first script cannot see the
+    // second start while it is still running.
+    let serialRoot = '/tmp/zb-serial-' + i64ToString(monotonic() as i64);
+    ensureDirSync(serialRoot);
+    write(serialRoot, 'package.json', `{
+      "scripts": {"both": "wireit", "a": "wireit", "b": "wireit"},
+      "wireit": {
+        "both": {"dependencies": ["a", "b"]},
+        "a": {
+          "command": "touch a.started; sleep 0.1; [ ! -f b.started ]",
+          "files": [],
+          "output": ["a.started"]
+        },
+        "b": {
+          "command": "touch b.started",
+          "files": [],
+          "output": ["b.started"]
+        }
+      }
+    }`);
+    let serial = buildTarget(serialRoot, entry, 1);
+    isTrue(serial.result.allSucceeded, 'a should finish before b starts under -j 1');
+    isFalse(sourceOf(serial.result, ':a') == StepSource.Fresh);
   });
 });

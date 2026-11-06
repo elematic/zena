@@ -13,7 +13,7 @@ import {
   TaskStep,
 } from 'workflow:step';
 import {deleteIfExists, withRoot} from './fs-util.zena';
-import {expandGlobs, hashFile, hashFilesInto} from './fs-walk.zena';
+import {expandGlobs, expandGlobsSync, hashFile, hashFilesIntoSync} from './fs-walk.zena';
 import {sha256HexOfString} from 'zena:crypto';
 import {ConfigError, ScriptConfig, refKey} from './wireit-config.zena';
 
@@ -53,7 +53,11 @@ function configFingerprint(config: ScriptConfig, salt: String) {
   return new Fingerprint('sha256:' + sha256HexOfString(sb.toString()));
 }
 
-function cleanOutputs(root: String, config: ScriptConfig, ctx: RunContext) {
+async function cleanOutputs(
+  root: String,
+  config: ScriptConfig,
+  ctx: RunContext,
+): Future<void> {
   if (config.clean == 'false') {
     return;
   }
@@ -66,11 +70,11 @@ function cleanOutputs(root: String, config: ScriptConfig, ctx: RunContext) {
   let previous = ctx.previous;
   if (previous != null) {
     for (let entry in previous.outputs) {
-      deleteIfExists(withRoot(root, entry.name));
+      await deleteIfExists(withRoot(root, entry.name));
     }
   } else {
-    for (let path in expandGlobs(root, config.ref.packageDir, config.output)) {
-      deleteIfExists(withRoot(root, path));
+    for (let path in await expandGlobs(root, config.ref.packageDir, config.output)) {
+      await deleteIfExists(withRoot(root, path));
     }
   }
 }
@@ -96,8 +100,8 @@ function binPathPrefix(packageDir: String) {
 /**
  * Runs one script's command and collects its outputs. The child runs
  * through `sh -c` in the package directory with node_modules/.bin on
- * PATH, like wireit through npm. Waiting is synchronous, so scripts
- * execute one at a time for now.
+ * PATH, like wireit through npm, and awaits exit asynchronously so
+ * independent steps run in parallel.
  */
 export async function runScript(
   root: String,
@@ -105,13 +109,13 @@ export async function runScript(
   ctx: RunContext,
   volatileMark: String?,
 ): Future<OutputManifest> {
-  cleanOutputs(root, config, ctx);
+  await cleanOutputs(root, config, ctx);
   let command = config.command;
   if (command != null) {
     let cwd = withRoot(root, config.ref.packageDir);
     let wrapped =
       `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${command}`;
-    let result = runIn(['sh', '-c', wrapped], cwd);
+    let result = await runIn(['sh', '-c', wrapped], cwd);
     if (!result.succeeded()) {
       throw new Error(
         `script "${refKey(config.ref)}" failed (exit ${i32ToString(result.exitCode)}): ${command}\n` +
@@ -119,10 +123,10 @@ export async function runScript(
       );
     }
   }
-  let outFiles = expandGlobs(root, config.ref.packageDir, config.output);
+  let outFiles = await expandGlobs(root, config.ref.packageDir, config.output);
   let outputs = new GrowableArray<OutputEntry>();
   for (let path in outFiles) {
-    outputs.push(new OutputEntry(path, hashFile(root, path)));
+    outputs.push(new OutputEntry(path, await hashFile(root, path)));
   }
   if (volatileMark != null) {
     // An unfingerprintable script's true outputs are unknown, so its
@@ -158,8 +162,8 @@ export function planScripts(
       );
     }
     let inputs = new GrowableArray<InputRef>();
-    let files = expandGlobs(root, config.ref.packageDir, config.files);
-    hashFilesInto(root, files, leaves);
+    let files = expandGlobsSync(root, config.ref.packageDir, config.files);
+    hashFilesIntoSync(root, files, leaves);
     for (let path in files) {
       inputs.push(new LeafInput(path));
     }

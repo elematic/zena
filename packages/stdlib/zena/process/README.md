@@ -10,7 +10,7 @@ argv.push('git');
 argv.push('status');
 
 // Run to completion (optionally in a working directory with runIn).
-let res = run(argv);
+let res = await run(argv);
 res.exitCode;   // i32 (-1 if killed by a signal)
 res.stdout;     // String, fully captured
 res.stderr;     // String, fully captured
@@ -19,19 +19,21 @@ res.timedOut;   // boolean, true if killed for overrunning a deadline
 
 // Bound how long a child may take. On the deadline it is killed, and
 // the result carries timedOut with whatever it wrote beforehand.
-let bounded = spawn(argv).waitFor(30000 as i64);
+let p = spawn(argv);
+let bounded = await p.waitFor(30000 as i64);
 
 // Or start several and wait on each — this is how callers run work in
 // parallel.
 let a = spawn(argvA);
 let b = spawn(argvB);
-let ra = a.wait();
-let rb = b.wait();
+let ra = await a.wait();
+let rb = await b.wait();
 
 // Options: a working directory, this program's own stdio, and text
 // for the child's stdin, which is closed after it.
-let sorted = runWith(['sort'], {input: 'b\na\n'});
-let inTmp = spawnWith(['ls'], {cwd: '/tmp'}).wait();
+let sorted = await runWith(['sort'], {input: 'b\na\n'});
+let ls = spawnWith(['ls'], {cwd: '/tmp'});
+let inTmp = await ls.wait();
 ```
 
 ## Capability model
@@ -67,13 +69,13 @@ stdlib module:
 - Both output streams are fully captured (no streaming in v1) and read
   on their own host threads, so a child that fills one pipe while the
   parent is reading the other cannot deadlock.
-- `wait()` blocks; calling it again returns the same result. A process
-  that could not be started at all (executable missing) traps with a
-  descriptive message from `wait()`.
+- `wait()` returns a `Future<ProcessResult>` so other tasks in the
+  program keep running while the child executes. Waiting again returns
+  the same result. A synchronous caller inside `main` or a test body can
+  wait on it with `runFuture` from `zena:async`.
 - `waitFor(millis)` bounds the wait: on the deadline the child is
-  killed, and the result carries `timedOut` along with whatever it
-  wrote first. This needs no async — the concurrency comes from real
-  processes, and the host does the waiting.
+  killed, and the result carries `timedOut` along with whatever it wrote
+  first.
   - The kill reaches the child, not a process group. A child that
     forked a grandchild of its own can leave that grandchild holding
     the output pipes open; the host waits two seconds for them to

@@ -2,13 +2,15 @@
 // Tests for zena:process. These spawn real host processes, so they need
 // the zena-cli host with the spawn capability granted (repo tests get it;
 // standalone runs need --allow-spawn / ZENA_ALLOW_SPAWN=1).
-import {suite, test, TestContext} from 'zena:test';
+import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {milliseconds, sleep} from 'zena:time';
 import {run, runIn, runInheriting, runWith, spawn} from 'zena:process';
 
 export let tests = suite('zena:process', () => {
   test('run captures stdout, stderr, and the exit code', (ctx) => {
-    let res = run(['/bin/sh', '-c', 'printf out; printf err >&2; exit 3']);
+    let res = runFuture(run(['/bin/sh', '-c', 'printf out; printf err >&2; exit 3']));
     equal(res.exitCode, 3);
     equal(res.stdout, 'out');
     equal(res.stderr, 'err');
@@ -20,49 +22,49 @@ export let tests = suite('zena:process', () => {
     // What the child prints goes to this process's own stdout, which the
     // test cannot read back; what it can check is that none of it was
     // captured and the status still arrives.
-    let res = runInheriting(['sh', '-c', 'echo inherited; exit 3']);
+    let res = runFuture(runInheriting(['sh', '-c', 'echo inherited; exit 3']));
     equal(res.exitCode, 3);
     equal(res.stdout, '');
     equal(res.stderr, '');
   });
 
   test('succeeded on a zero exit', (ctx) => {
-    let res = run(['/bin/sh', '-c', 'true']);
+    let res = runFuture(run(['/bin/sh', '-c', 'true']));
     equal(res.exitCode, 0);
     isTrue(res.succeeded());
   });
 
   test('runIn sets the working directory', (ctx) => {
-    let res = runIn(['/bin/sh', '-c', 'pwd'], '/tmp');
+    let res = runFuture(runIn(['/bin/sh', '-c', 'pwd'], '/tmp'));
     equal(res.exitCode, 0);
     // /tmp may be a symlink (e.g. to /private/tmp); accept a suffix match.
     isTrue(res.stdout.contains('tmp'), `pwd printed ${res.stdout}`);
   });
 
   test('runWith writes input to stdin and closes it', (ctx) => {
-    let res = runWith(['cat'], {input: 'one\ntwo\n'});
+    let res = runFuture(runWith(['cat'], {input: 'one\ntwo\n'}));
     equal(res.exitCode, 0);
     equal(res.stdout, 'one\ntwo\n');
   });
 
   test('without input, stdin is at end of input', (ctx) => {
-    let res = runWith(['cat'], {});
+    let res = runFuture(runWith(['cat'], {}));
     equal(res.exitCode, 0);
     equal(res.stdout, '');
   });
 
   test('runWith combines input with a working directory', (ctx) => {
-    let res = runWith(['/bin/sh', '-c', 'pwd; cat'], {cwd: '/tmp', input: 'piped'});
+    let res = runFuture(runWith(['/bin/sh', '-c', 'pwd; cat'], {cwd: '/tmp', input: 'piped'}));
     isTrue(res.stdout.contains('tmp'), `pwd printed ${res.stdout}`);
     isTrue(res.stdout.endsWith('piped'), `cat printed ${res.stdout}`);
   });
 
   test('runWith sets and removes environment variables', (ctx) => {
-    let res = runWith(['/bin/sh', '-c', 'printf "%s|%s" "$ZENA_TEST_SET" "${HOME-unset}"'],
-        {env: [('ZENA_TEST_SET', 'a value')], envRemove: ['HOME']});
+    let res = runFuture(runWith(['/bin/sh', '-c', 'printf "%s|%s" "$ZENA_TEST_SET" "${HOME-unset}"'],
+        {env: [('ZENA_TEST_SET', 'a value')], envRemove: ['HOME']}));
     equal(res.stdout, 'a value|unset');
     // Without either, the host's environment comes through.
-    let inherited = runWith(['/bin/sh', '-c', 'printf "%s" "${HOME-unset}"'], {});
+    let inherited = runFuture(runWith(['/bin/sh', '-c', 'printf "%s" "${HOME-unset}"'], {}));
     isTrue(inherited.stdout != 'unset', 'HOME is inherited');
   });
 
@@ -70,63 +72,122 @@ export let tests = suite('zena:process', () => {
     // Two 0.2s sleeps in parallel should finish well under 0.4s of
     // combined wall time each; mostly this asserts both complete and
     // report independently.
-    let a = spawn(['/bin/sh', '-c', 'sleep 0.2; printf a']);
-    let b = spawn(['/bin/sh', '-c', 'sleep 0.2; printf b']);
-    let ra = a.wait();
-    let rb = b.wait();
-    equal(ra.stdout, 'a');
-    equal(rb.stdout, 'b');
-    equal(ra.exitCode, 0);
-    equal(rb.exitCode, 0);
+    runFuture((async (): Future<void> => {
+      let a = spawn(['/bin/sh', '-c', 'sleep 0.2; printf a']);
+      let b = spawn(['/bin/sh', '-c', 'sleep 0.2; printf b']);
+      let ra = await a.wait();
+      let rb = await b.wait();
+      equal(ra.stdout, 'a');
+      equal(rb.stdout, 'b');
+      equal(ra.exitCode, 0);
+      equal(rb.exitCode, 0);
+    })());
   });
 
   test('wait() twice returns the same result', (ctx) => {
-    let p = spawn(['/bin/sh', '-c', 'printf once']);
-    let first = p.wait();
-    let second = p.wait();
-    equal(first.stdout, 'once');
-    equal(second.stdout, 'once');
-    equal(second.exitCode, 0);
+    runFuture((async (): Future<void> => {
+      let p = spawn(['/bin/sh', '-c', 'printf once']);
+      let first = await p.wait();
+      let second = await p.wait();
+      equal(first.stdout, 'once');
+      equal(second.stdout, 'once');
+      equal(second.exitCode, 0);
+    })());
   });
 
   test('a process that finishes in time is not flagged as timed out', (ctx) => {
-    let res = spawn(['/bin/sh', '-c', 'printf quick']).waitFor(30000 as i64);
-    equal(res.exitCode, 0);
-    equal(res.stdout, 'quick');
-    isFalse(res.timedOut);
-    isTrue(res.succeeded());
+    runFuture((async (): Future<void> => {
+      let p = spawn(['/bin/sh', '-c', 'printf quick']);
+      let res = await p.waitFor(30000 as i64);
+      equal(res.exitCode, 0);
+      equal(res.stdout, 'quick');
+      isFalse(res.timedOut);
+      isTrue(res.succeeded());
+    })());
   });
 
   test('waitFor kills a process that overruns its deadline', (ctx) => {
     // Would sleep for 30s; the deadline must cut it far shorter.
-    let p = spawn(['/bin/sh', '-c', 'exec sleep 30']);
-    let res = p.waitFor(200 as i64);
-    isTrue(res.timedOut, 'expected timedOut');
-    isFalse(res.succeeded(), 'a killed process has not succeeded');
-    isTrue(
-      res.wallNanos < 20000000000 as i64,
-      `expected to be killed promptly, took ${res.wallNanos}ns`);
+    runFuture((async (): Future<void> => {
+      let p = spawn(['/bin/sh', '-c', 'exec sleep 30']);
+      let res = await p.waitFor(200 as i64);
+      isTrue(res.timedOut, 'expected timedOut');
+      isFalse(res.succeeded(), 'a killed process has not succeeded');
+      isTrue(
+        res.wallNanos < 20000000000 as i64,
+        `expected to be killed promptly, took ${res.wallNanos}ns`);
+    })());
   });
 
   test('output written before the deadline survives the kill', (ctx) => {
-    let p = spawn(['/bin/sh', '-c', 'printf early; exec sleep 30']);
-    let res = p.waitFor(400 as i64);
-    isTrue(res.timedOut, 'expected timedOut');
-    equal(res.stdout, 'early');
+    runFuture((async (): Future<void> => {
+      let p = spawn(['/bin/sh', '-c', 'printf early; exec sleep 30']);
+      let res = await p.waitFor(400 as i64);
+      isTrue(res.timedOut, 'expected timedOut');
+      equal(res.stdout, 'early');
+    })());
   });
 
   test('a non-positive deadline waits indefinitely', (ctx) => {
-    let res = spawn(['/bin/sh', '-c', 'sleep 0.2; printf done']).waitFor(0 as i64);
-    equal(res.stdout, 'done');
-    isFalse(res.timedOut);
+    runFuture((async (): Future<void> => {
+      let p = spawn(['/bin/sh', '-c', 'sleep 0.2; printf done']);
+      let res = await p.waitFor(0 as i64);
+      equal(res.stdout, 'done');
+      isFalse(res.timedOut);
+    })());
   });
 
   test('waitFor twice returns the same result', (ctx) => {
-    let p = spawn(['/bin/sh', '-c', 'exec sleep 30']);
-    let first = p.waitFor(200 as i64);
-    let second = p.waitFor(200 as i64);
-    isTrue(first.timedOut);
-    isTrue(second.timedOut, 'the cached result keeps the timed-out flag');
+    runFuture((async (): Future<void> => {
+      let p = spawn(['/bin/sh', '-c', 'exec sleep 30']);
+      let first = await p.waitFor(200 as i64);
+      let second = await p.waitFor(200 as i64);
+      isTrue(first.timedOut);
+      isTrue(second.timedOut, 'the cached result keeps the timed-out flag');
+    })());
+  });
+
+  test('wait lets other tasks run while the child executes', (ctx) => {
+    let events = new GrowableArray<String>();
+    runFuture((async (): Future<void> => {
+      let procTask = (async (): Future<void> => {
+        let res = await run(['/bin/sh', '-c', 'sleep 0.25; printf async-done']);
+        equal(res.stdout, 'async-done');
+        equal(res.exitCode, 0);
+        events.push('proc');
+      })();
+      let timerTask = (async (): Future<void> => {
+        await sleep(milliseconds(40));
+        events.push('timer');
+      })();
+      await procTask;
+      await timerTask;
+    })());
+    equal(events.length, 2);
+    equal(events[0], 'timer');
+    equal(events[1], 'proc');
+  });
+
+  test('waitFor kills an overrunning process without blocking other tasks', (ctx) => {
+    let events = new GrowableArray<String>();
+    runFuture((async (): Future<void> => {
+      let procTask = (async (): Future<void> => {
+        let p = spawn(['/bin/sh', '-c', 'printf before; exec sleep 30']);
+        let res = await p.waitFor(250 as i64);
+        isTrue(res.timedOut, 'expected timedOut');
+        equal(res.stdout, 'before');
+        let cached = await p.wait();
+        isTrue(cached.timedOut, 'cached result keeps timedOut');
+        events.push('proc');
+      })();
+      let timerTask = (async (): Future<void> => {
+        await sleep(milliseconds(40));
+        events.push('timer');
+      })();
+      await procTask;
+      await timerTask;
+    })());
+    equal(events[0], 'timer');
+    equal(events[1], 'proc');
   });
 });
-

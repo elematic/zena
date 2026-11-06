@@ -1,10 +1,12 @@
 import {runFuture} from 'zena:async';
+import {getEnv} from 'zena:cli';
 import { HashSet } from 'zena:collections';
 import {isFileSync, readFileSync, writeFileSync} from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {
   Engine,
   Failed,
+  RunOptions,
   RunResult,
   Skipped,
   StepSource,
@@ -15,7 +17,7 @@ import {EngineState} from 'workflow:state';
 import {StepKey} from 'workflow:step';
 import {DiskCache, stateDirOf} from './disk-cache.zena';
 import {planScripts} from './builder.zena';
-import {ensureParentDir, readFileOrNull, withRoot} from './fs-util.zena';
+import {ensureParentDirSync, readFileOrNullSync, withRoot} from './fs-util.zena';
 import {sha256HexOfString} from 'zena:crypto';
 import {stateFromJson, stateToJson} from './state-json.zena';
 import {ScriptRef, WireitWorkspace, refKey} from './wireit-config.zena';
@@ -67,7 +69,7 @@ function saveState(root: String, result: RunResult) {
   for (let stateDir in dirs) {
     if (let (true, packageState) = byDir.get(stateDir)) {
       let path = packageStatePath(root, stateDir);
-      ensureParentDir(path);
+      ensureParentDirSync(path);
       writeFileSync(path, stateToJson(packageState));
     }
   }
@@ -120,14 +122,32 @@ export class BuildOutcome {
   new(this.result, this.stepKeys);
 }
 
+/** Default max concurrent script executions: ZENA_AVAILABLE_PARALLELISM, or 8. */
+export function defaultParallelism(): i32 {
+  let raw = getEnv('ZENA_AVAILABLE_PARALLELISM');
+  if (raw != null) {
+    if (let (true, n) = parseI32(raw)) {
+      if (n >= 1) {
+        return n;
+      }
+    }
+  }
+  return 8;
+}
+
 /**
  * One full build of a script and its transitive dependencies: load
  * config and prior state, snapshot inputs, run the engine with the
  * local disk cache, persist the new state.
  */
-export function buildTarget(root: String, entry: ScriptRef): BuildOutcome {
+export function buildTarget(
+  root: String,
+  entry: ScriptRef,
+  parallelism: i32 = 0,
+): BuildOutcome {
+  let jobs = if (parallelism > 0) parallelism else defaultParallelism();
   let workspace = new WireitWorkspace(
-    (path: String) => readFileOrNull(withRoot(root, path)),
+    (path: String) => readFileOrNullSync(withRoot(root, path)),
   );
   let configs = workspace.collect([entry]);
   let plan = planScripts(root, configs, i64ToString(monotonic() as i64));
@@ -143,7 +163,14 @@ export function buildTarget(root: String, entry: ScriptRef): BuildOutcome {
     (data: String) => new Fingerprint('sha256:' + sha256HexOfString(data)),
     new DiskCache(root),
   );
-  let result = runFuture(engine.run(plan.graph, plan.leaves, loadState(root, stateDirs)));
+  let result = runFuture(
+    engine.run(
+      plan.graph,
+      plan.leaves,
+      loadState(root, stateDirs),
+      new RunOptions(jobs),
+    ),
+  );
   saveState(root, result);
   let stepKeys = new GrowableArray<String>();
   for (let config in configs) {
