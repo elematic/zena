@@ -65,7 +65,7 @@ import {
   ExplodedRecord, LetCondBinds, LoweringContext, MergeState, ResultSlots, ZirUnsupported,
   noValues, oneValue, repackInterfaceValue,
 } from './lowering-context.zena';
-import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
+import { lowerBigIntLiteral, lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
   exactClassTest, lowerCaseClassEq, lowerCaseClassHash, lowerErasedEq,
   lowerErasedEqDispatch, lowerEqIntrinsic, lowerHashIntrinsic,
@@ -2440,7 +2440,7 @@ export final class FunctionLowerer {
           if (sym != null) {
             if (let (true, g) = this.wasm.globalMap.get(sym.id)) {
               if (g.initExpr != null &&
-                  !this.#isLiteralInit(g.initExpr as Expression)) {
+                  !this.#isLiteralInit(g.initExpr as Expression, g.type)) {
                 this.#lowerGlobalInit(g);
               }
             }
@@ -2449,12 +2449,12 @@ export final class FunctionLowerer {
       } else if (stmt is ClassDeclaration) {
         for (let member in stmt.body) {
           if (member is FieldDefinition) {
-            if (member.isStatic && member.value != null &&
-                !this.#isLiteralInit(member.value as Expression)) {
+            if (member.isStatic && member.value != null) {
               if (member.name is Identifier) {
                 let expected = `${stmt.name.name}_${(member.name as Identifier).name}`;
                 for (let g in this.wasm.globals) {
-                  if (g.name == expected) {
+                  if (g.name == expected &&
+                      !this.#isLiteralInit(member.value as Expression, g.type)) {
                     this.#lowerGlobalInit(g);
                   }
                 }
@@ -2466,9 +2466,12 @@ export final class FunctionLowerer {
     }
   }
 
-  /** Numeric/boolean literals init in the global's own initializer. */
-  #isLiteralInit(e: Expression): boolean {
-    return e is NumberLiteral || e is BooleanLiteral;
+  /** Numeric/boolean scalar literals init in the global's own initializer. */
+  #isLiteralInit(e: Expression, globalType: ValType): boolean {
+    if (e is NumberLiteral) {
+      return !isRefValType(globalType);
+    }
+    return e is BooleanLiteral;
   }
 
   /**
@@ -7051,6 +7054,9 @@ export final class FunctionLowerer {
 
   #lowerNumberLiteral(lit: NumberLiteral): i32 {
     let vt = this.#exprValType(lit);
+    if (isRefValType(vt)) {
+      return lowerBigIntLiteral(this.#cx(), lit.raw, false);
+    }
     if (vt is ValTypeI32) {
       if (let (true, value) = parseI32(lit.raw)) {
         return this.b.constI32(value, vt);

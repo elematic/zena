@@ -435,4 +435,39 @@ export let tests = suite('BigInt', () => {
       }
     });
   });
+
+  suite('literals and contextual typing', () => {
+    test('n and _n suffixes across bases and sizes', () => {
+      isTrue(0n === BigInt.ZERO);
+      isTrue(-0n === BigInt.ZERO);
+      isTrue(1n === BigInt.ONE);
+      equal(42n, BigInt.from(42));
+      equal(-42_n, BigInt.from(-42));
+      equal(0xff_ffn, BigInt.from(65535));
+      equal(0b1010_0101n, BigInt.from(165));
+      equal(0o755_n, BigInt.from(493));
+      equal(
+        340_282_366_920_938_463_463_374_607_431_768_211_456n,
+        1n << 128
+      );
+      equal(
+        -0x1_0000_0000_0000_0000_0000_0000_0000_0001n,
+        ((1n << 128) + 1).neg()
+      );
+    });
+
+    test('contextual integer literals and match patterns', () => {
+      let x: BigInt = 100_000_000_000_000_000_000_000;
+      equal(x, 100_000_000_000_000_000_000_000n);
+      equal(x + 1, 1 + x);
+      equal(x * 2, 2 * x);
+      equal(x & 0xff, 0);
+      let label = match (x - x) {
+        case 0: 'zero'
+        case 1n: 'one'
+        case _: 'other'
+      };
+      equalText(label, 'zero');
+    });
+  });
 });

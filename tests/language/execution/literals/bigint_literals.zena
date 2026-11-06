@@ -1,0 +1,142 @@
+// @mode: run
+// @result: 1
+
+import { BigInt } from 'zena:bigint';
+
+let TOP_ZERO = 0n;
+let TOP_POS = 1_000_000_000_000_000_000_000n;
+let TOP_NEG = -0x1_0000_0000_0000_0000_0001n;
+let TOP_CTX: BigInt = 999_999_999_999_999_999_999_999;
+
+class Holder {
+  static K = 0xdead_beef_cafe_babe_1234n;
+}
+
+class Over {
+  tag(v: i32): i32 {
+    return 10 + v;
+  }
+  tag(v: BigInt): i32 {
+    return if (v.sign > 0) 20 else 30;
+  }
+}
+
+function cachedLiteral(): BigInt {
+  return 123_456_789_012_345_678_901_234_567_890n;
+}
+
+function takeBig(x: BigInt): BigInt {
+  return x + 1;
+}
+
+function matchBig(x: BigInt): i32 {
+  return match (x) {
+    case 0: 10
+    case 42n: 20
+    case 0x1_0000_0000_0000_0000n: 30
+    case _: 40
+  };
+}
+
+function matchNullable(x: BigInt?): i32 {
+  return match (x) {
+    case null: 1
+    case 0: 2
+    case 99n: 3
+    case _: 4
+  };
+}
+
+function matchUnion(x: BigInt | String): i32 {
+  return match (x) {
+    case 0: 1
+    case 7n: 2
+    case 'ok': 3
+    case _: 4
+  };
+}
+
+export function main(): i32 {
+  // Canonical zero, negative-zero, and one literals.
+  if (0n != BigInt.ZERO || 0n !== BigInt.ZERO) { return 10; }
+  if (-0n != BigInt.ZERO || -0n !== BigInt.ZERO) { return 11; }
+  if (TOP_ZERO !== BigInt.ZERO || 1n !== BigInt.ONE) { return 12; }
+
+  // Arbitrary-precision radices and `_n` separator.
+  if (42_n != BigInt.from(42)) { return 13; }
+  if (-42n != BigInt.from(-42)) { return 14; }
+  if (0b1010_0101n != BigInt.from(165)) { return 15; }
+  if (0o755_n != BigInt.from(493)) { return 16; }
+  if (0xff_ffn != BigInt.from(65535)) { return 17; }
+  if (TOP_POS.toString() != '1000000000000000000000') { return 18; }
+  if (TOP_NEG.toString(16) != '-100000000000000000001') { return 19; }
+  if (TOP_CTX.toString() != '999999999999999999999999') { return 20; }
+  if (Holder.K.toString(16) != 'deadbeefcafebabe1234') { return 21; }
+
+  // Multi-limb (>128-bit) decimal and hex consistency.
+  let dec3 = 340_282_366_920_938_463_463_374_607_431_768_211_456n; // 2^128
+  let hex3 = 0x1_0000_0000_0000_0000_0000_0000_0000_0000n;
+  if (dec3 != hex3 || dec3 != (1n << 128)) { return 22; }
+
+  // Lazy global caching: repeated evaluation and equal canonical values share identity.
+  if (cachedLiteral() !== cachedLiteral()) { return 23; }
+  let ctxSame: BigInt = 123_456_789_012_345_678_901_234_567_890;
+  if (ctxSame !== cachedLiteral()) { return 24; }
+
+  // Contextual typing in bindings, calls, arrays, and operators.
+  let zero: BigInt = 0;
+  var acc: BigInt = -10;
+  acc += 15;
+  acc *= 4;
+  acc -= 2;
+  acc %= 11; // 18 % 11 == 7
+  acc **= 3; // 343
+  if (acc != 343) { return 25; }
+  if (0 == acc) { return 26; }
+  if (343 != acc) { return 27; }
+  if (zero != 0) { return 28; }
+
+  if (takeBig(99) != 100n) { return 29; }
+  if ((1 + 2n) != 3n || (10 - 3n) != 7n || (6 * 7n) != 42n || (100 % 30n) != 10n) {
+    return 30;
+  }
+  if (((0xf0 & 0xffn) != 0xf0n) || ((0x0fn | 0xf0) != 0xffn) || ((0xff ^ 0x0fn) != 0xf0n)) {
+    return 31;
+  }
+  let powCtx: BigInt = 2 ** 100;
+  if (powCtx != (1n << 100)) { return 32; }
+
+  let arr: FixedArray<BigInt> = [1, 2, 100_000_000_000_000_000_000_000];
+  if (arr[0] + arr[1] != 3n || arr[2] != 100_000_000_000_000_000_000_000n) {
+    return 33;
+  }
+
+  // Nullable BigInt equality and contextual typing.
+  var maybe: BigInt? = 0;
+  if (maybe != 0 || !(0 == maybe)) { return 34; }
+  let eqZeroNullable = (m: BigInt?): boolean => m == 0 && 0 == m && !(m != 0);
+  let neqZeroNullable = (m: BigInt?): boolean => !(m == 0) && !(0 == m) && m != 0;
+  if (!eqZeroNullable(0) || !neqZeroNullable(null) || !neqZeroNullable(5)) { return 35; }
+
+  // Overload selection.
+  let over = new Over();
+  if (over.tag(5) != 15) { return 36; }
+  if (over.tag(5n) != 20) { return 37; }
+  if (over.tag(-100_000_000_000_000_000_000_000) != 30) { return 38; }
+
+  // Match patterns on BigInt, BigInt?, and BigInt | String.
+  if (matchBig(0n) != 10 || matchBig(42n) != 20 ||
+      matchBig(1n << 64) != 30 || matchBig(7n) != 40) {
+    return 39;
+  }
+  if (matchNullable(null) != 1 || matchNullable(0n) != 2 ||
+      matchNullable(99n) != 3 || matchNullable(5n) != 4) {
+    return 40;
+  }
+  if (matchUnion(0n) != 1 || matchUnion(7n) != 2 ||
+      matchUnion('ok') != 3 || matchUnion('no') != 4 || matchUnion(8n) != 4) {
+    return 41;
+  }
+
+  return 1;
+}

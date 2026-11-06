@@ -1632,3 +1632,86 @@ export function pendingNoneClass(pendingFuture: ClassType): ClassType | null {
   }
   return null;
 }
+
+/**
+ * Parse an unsigned integer literal source string (`raw`, with optional `'_'`
+ * separators, `0x`/`0b`/`0o` radix prefix, and `'n'` suffix) together with
+ * `negative` into `BigInt`'s normalized `(sign, limbs)` representation:
+ * `sign` is `0` for zero (`limbs` empty) or `1`/`-1` for non-zero with
+ * little-endian 64-bit limbs and a non-zero highest limb.
+ */
+export function parseBigIntLiteralLimbs(raw: String, negative: boolean): inline (i32, FixedArray<u64>) {
+  var end = raw.length;
+  if (end > 0 && raw.getByteAt(end - 1) == 110) {
+    end -= 1;
+  }
+  let (radix, start) = integerLiteralRadix(raw);
+  let base = radix as u64;
+  let words32 = new Array<u64>();
+  for (var i = start; i < end; i += 1) {
+    let c = raw.getByteAt(i);
+    if (c == 95) {
+      continue;
+    }
+    let digit = if (c >= 48 && c <= 57) {
+      (c - 48) as u64
+    } else if (c >= 97 && c <= 102) {
+      (c - 87) as u64
+    } else {
+      (c - 55) as u64
+    };
+    var carry = digit;
+    for (var j = 0; j < words32.length; j += 1) {
+      let prod = words32[j] * base + carry;
+      words32[j] = prod & (4294967295 as u64);
+      carry = prod >>> (32 as u64);
+    }
+    if (carry != (0 as u64)) {
+      words32.push(carry);
+    }
+  }
+  if (words32.length == 0) {
+    return (0, new Array<u64>.fixed(0, 0 as u64));
+  }
+  let limbCount = (words32.length + 1) >> 1;
+  let limbs = new Array<u64>.fixed(limbCount, 0 as u64);
+  for (var k = 0; k < limbCount; k += 1) {
+    let lo = words32[k * 2];
+    let hi = if (k * 2 + 1 < words32.length) words32[k * 2 + 1] else (0 as u64);
+    limbs[k] = lo | (hi << (32 as u64));
+  }
+  let sign = if (negative) -1 else 1;
+  return (sign, limbs);
+}
+
+/**
+ * Canonical module-wide cache key for a normalized `(sign, limbs)` `BigInt`
+ * literal so equivalent spellings (`42n`, `42_n`, `0x2an`, contextual `42`)
+ * share one cached global.
+ */
+export function bigIntLiteralCacheKey(sign: i32, limbs: FixedArray<u64>): String {
+  if (sign == 0 || limbs.length == 0) {
+    return "0";
+  }
+  let prefixLen = if (sign < 0) 1 else 0;
+  let parts = new Array<String>.fixed(prefixLen + 4 * limbs.length - 1, "");
+  var idx = 0;
+  if (sign < 0) {
+    parts[0] = "-";
+    idx = 1;
+  }
+  for (var i = 0; i < limbs.length; i += 1) {
+    if (i > 0) {
+      parts[idx] = ":";
+      idx += 1;
+    }
+    let w = limbs[i];
+    let lo = (w & (4294967295 as u64)) as i32;
+    let hi = (w >>> (32 as u64)) as i32;
+    parts[idx] = i32ToString(lo);
+    parts[idx + 1] = ",";
+    parts[idx + 2] = i32ToString(hi);
+    idx += 3;
+  }
+  return String.fromParts(parts);
+}

@@ -7,7 +7,7 @@ import {
   StringLiteral, TuplePattern
 } from '../ast.zena';
 import {
-  ArrayType, BoolLiteralType, BooleanType, ClassType, ErrorType, FieldInfo, FunctionType, HoleType, InlineTupleType as InlineTupleT, InterfaceType, NeverType, NumLiteralType, RecordType as RecordT, StringLiteralType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, instantiateInterfaceType, isNumericType, sameNumericLiteralRaw, typeToString, unwrapAliases
+  ArrayType, BoolLiteralType, BooleanType, ClassType, ErrorType, FieldInfo, FunctionType, HoleType, InlineTupleType as InlineTupleT, InterfaceType, NeverType, NumLiteralType, RecordType as RecordT, StringLiteralType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, instantiateInterfaceType, isBigIntLiteralRaw, isNumericType, sameNumericLiteralRaw, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
@@ -22,7 +22,7 @@ import { displayMemberName, recordPatternMatchedType, recordRestType } from './m
 import { rejectConcreteSecondClassStorage } from './ownership.zena';
 import { syncElementType } from './protocols.zena';
 import { fixedArrayType, isAssignableTo } from './relations.zena';
-import { createUnionType } from './unions.zena';
+import { createUnionType, widenType } from './unions.zena';
 
 export function isRefutableDeclarationPattern(pattern: Pattern): boolean {
   match (pattern) {
@@ -390,8 +390,10 @@ function literalPatternCanMatchType(value: Expression, t: Type): boolean {
       return value is StringLiteral && value.value == expected;
     }
     case ClassType {name, sourcePath}: {
-      return isWellKnown(WellKnown.StringClass, name, sourcePath) &&
-          value is StringLiteral;
+      return (isWellKnown(WellKnown.StringClass, name, sourcePath) &&
+          value is StringLiteral) ||
+          (isWellKnown(WellKnown.BigIntClass, name, sourcePath) &&
+          value is NumberLiteral && !value.raw.contains('.'));
     }
     case NumLiteralType {raw as expected}: {
       return value is NumberLiteral && sameNumericLiteralRaw(value.raw, expected);
@@ -406,7 +408,7 @@ function literalPatternCanMatchType(value: Expression, t: Type): boolean {
     }
     case _: {
       if (isNumericType(t)) {
-        return value is NumberLiteral;
+        return value is NumberLiteral && !isBigIntLiteralRaw(value.raw);
       }
       return false;
     }
@@ -1441,13 +1443,17 @@ export function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: T
       }
     }
     case LiteralPattern {value}: {
-      checkExpression(ctx, value, expectedType);
+      let litType = checkExpression(ctx, value, expectedType);
+      if (value is NumberLiteral) {
+        checkNumberPatternCompatible(ctx, value, litType, expectedType);
+      }
     }
     case MemberExpression as me: {
       checkExpression(ctx, me as Expression, expectedType);
     }
     case NumberLiteral as lit: {
-      checkExpression(ctx, lit as Expression, expectedType);
+      let litType = checkExpression(ctx, lit as Expression, expectedType);
+      checkNumberPatternCompatible(ctx, lit, litType, expectedType);
     }
     case StringLiteral as lit: {
       checkExpression(ctx, lit as Expression, expectedType);
@@ -1461,5 +1467,22 @@ export function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: T
     case _: {
       // Wildcard, etc. - no bindings needed.
     }
+  }
+}
+
+function checkNumberPatternCompatible(
+  ctx: CheckerContext,
+  lit: NumberLiteral,
+  litType: Type,
+  expectedType: Type
+): void {
+  if (!(expectedType is NeverType || expectedType is ErrorType || expectedType is UnknownType) &&
+      !(litType is ErrorType) &&
+      !isAssignableTo(ctx, litType, widenType(ctx, expectedType))) {
+    ctx.error(
+      `Type mismatch: pattern of type '${typeToString(litType)}' cannot match '${typeToString(expectedType)}'.`,
+      DiagnosticCode.TypeMismatch,
+      lit.loc
+    );
   }
 }

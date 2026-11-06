@@ -169,6 +169,32 @@ let tests = suite('lint', () => {
     check(t, source, source, 'unnecessary-cast');
   });
 
+  test('BigInt literals drop redundant casts and annotations, while contextual ints keep annotations', (t) => {
+    check(t, dedentRaw`
+      import { BigInt } from 'zena:bigint';
+
+      export function run(): i32 {
+        let a: BigInt = 42n;
+        let b: BigInt = -42n;
+        let c: BigInt = 42;
+        var d: BigInt = 0;
+        d += 1;
+        return (a as BigInt).sign + b.sign + c.sign + d.sign;
+      }
+    `, dedentRaw`
+      import { BigInt } from 'zena:bigint';
+
+      export function run(): i32 {
+        let a = 42n;
+        let b = -42n;
+        let c: BigInt = 42;
+        var d: BigInt = 0;
+        d += 1;
+        return a.sign + b.sign + c.sign + d.sign;
+      }
+    `);
+  });
+
   test('redundant local annotations go', (t) => {
     check(t, dedentRaw`
       function name(): String {

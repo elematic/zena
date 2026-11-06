@@ -33,6 +33,7 @@ import {
 import { lowerClassEquality, lowerErasedEq, lowerValueEq } from './equality.zena';
 import { valueEqOperand } from '../value-equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
+import { lowerBigIntLiteral } from './templates.zena';
 import { exactLiteralFields, isTupleTag, lowerExpr, tupleTagTest } from './lowering.zena';
 import { growable } from 'zena:core';
 
@@ -766,6 +767,10 @@ export function lowerFloatPow(cx: LoweringContext, baseVal: i32, expVal: i32,
 }
 
 export function lowerUnary(cx: LoweringContext, un: UnaryExpression): i32 {
+  if (un.operator == "-" && un.argument is NumberLiteral &&
+      isRefValType(cx.exprVt(un))) {
+    return lowerBigIntLiteral(cx, (un.argument as NumberLiteral).raw, true);
+  }
   let value = lowerExpr(cx, un.argument, null);
   let vt = cx.valueTypeOf(value);
   if (un.operator == "!") {

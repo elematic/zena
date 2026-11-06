@@ -13,14 +13,14 @@ import {
 } from '../../types.zena';
 import { Symbol } from '../../scope/symbol.zena';
 import {
-  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeI32, ValTypeRef, ValTypeRefNull,
+  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeI32, ValTypeI64, ValTypeRef, ValTypeRefNull,
   ValTypeStructRef,
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, WasmFunction, WasmGlobal, WasmSignature, WasmStruct,
   asWasmSignature, asWasmStruct, isValSubtype,
 } from '../wasm-module.zena';
-import { getClassKey, getClassMethodKey, templateConvertHelperName } from '../codegen-utils.zena';
+import { bigIntLiteralCacheKey, getClassKey, getClassMethodKey, parseBigIntLiteralLimbs, templateConvertHelperName } from '../codegen-utils.zena';
 import {
   eraseTypeParameters, findExtendedWellKnownInterface, findImplementedWellKnownInterface,
   getNonNullableType, substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
@@ -106,6 +106,75 @@ export function lowerStringLiteral(cx: LoweringContext, lit: StringLiteral): i32
     return cx.stripNonNull(call);
   }
   return cx.reassertNonNull(call, cx.exprVt(lit));
+}
+
+/**
+ * A `BigInt` literal (either `42n` or an integer literal contextually typed
+ * as `BigInt`): loads the pre-registered cache global, and on first evaluation
+ * materializes its compile-time `(sign, limbs)` array via `BigInt.#fromMag`
+ * and caches the instance in the global.
+ */
+export function lowerBigIntLiteral(cx: LoweringContext, raw: String,
+    negative: boolean): i32 {
+  let bcOpt = cx.wasm.bigIntClass;
+  if (bcOpt == null) {
+    cx.fail('bigint class missing');
+  }
+  let bc = bcOpt;
+  let cKey = getClassKey(bc);
+  let infoOpt = if (let (true, info) = cx.wasm.classInfos.get(cKey)) info else null;
+  if (infoOpt == null) {
+    cx.fail('bigint struct missing');
+  }
+  let bigIntStruct = infoOpt.structType;
+  let (sign, limbs) = parseBigIntLiteralLimbs(raw, negative);
+  let cacheKey = bigIntLiteralCacheKey(sign, limbs);
+  let gOpt = if (let (true, g) = cx.wasm.bigIntLiteralGlobals.get(cacheKey)) g else null;
+  if (gOpt == null) {
+    cx.fail('bigint literal global missing');
+  }
+  let g = gOpt;
+
+  let fromMagKey = getClassMethodKey(cKey, '#fromMag');
+  let fromMagOpt = if (let (true, f) = cx.wasm.staticMethodMap.get(fromMagKey)) f else null;
+  if (fromMagOpt == null) {
+    cx.fail('BigInt.#fromMag missing');
+  }
+  let fromMag = fromMagOpt;
+  if (fromMag.signature.params.length != 2 || fromMag.signature.returns.length != 1) {
+    cx.fail('BigInt.#fromMag shape');
+  }
+
+  let globalRef = cx.b.addRef(new IrRefGlobal(g));
+  let cached = cx.b.emit(IrOp.global_get, g.type, -1, globalRef);
+  let isNull = cx.b.emit(IrOp.ref_is_null, new ValTypeI32(), cached, -1);
+  let initB = cx.b.newBlock();
+  let doneB = cx.b.newBlock();
+  cx.b.brIf(isNull, initB, noValues(), doneB, noValues());
+
+  cx.b.switchTo(initB);
+  let u64Arr = cx.wasm.getArray(new ValTypeI64() as ValType, true);
+  let limbIds = new Array<i32>(limbs.length);
+  let i64Vt = new ValTypeI64() as ValType;
+  for (var i = 0; i < limbs.length; i += 1) {
+    limbIds.push(cx.b.constI64(limbs[i] as i64, i64Vt));
+  }
+  let arrVal = cx.b.emit(IrOp.array_new_fixed,
+      new ValTypeRef(u64Arr) as ValType,
+      cx.b.pushArgList(limbIds),
+      cx.b.addRef(new IrRefType(u64Arr)));
+  let signVal = cx.b.constI32(sign, new ValTypeI32());
+  let limbsArg = cx.coerceTo(arrVal, fromMag.signature.params[1]);
+  let created = cx.b.callFunc(cx.b.addRef(new IrRefFunc(fromMag)),
+      twoValues(signVal, limbsArg), fromMag.signature.returns[0]);
+  let stored = cx.coerceTo(created, g.type);
+  cx.b.emitVoid(IrOp.global_set, stored, globalRef);
+  cx.b.br(doneB, noValues());
+
+  cx.b.switchTo(doneB);
+  let loaded = cx.b.emit(IrOp.global_get, g.type, -1, globalRef);
+  return cx.b.emit(IrOp.ref_as_non_null,
+      new ValTypeRef(bigIntStruct) as ValType, loaded, -1);
 }
 
 /**

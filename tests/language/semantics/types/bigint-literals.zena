@@ -1,0 +1,121 @@
+// @mode: check
+// BigInt literals (`42n`) and contextual typing of integer literals as `BigInt`.
+
+import { BigInt } from 'zena:bigint';
+
+// Explicit `n` / `_n` suffix produces `BigInt` across all integer radices.
+let a: BigInt = 0n;
+let b: BigInt = 42n;
+let c: BigInt = -42_n;
+let d: BigInt = 0xff_ffn;
+let e: BigInt = 0b1010_0101n;
+let f: BigInt = 0o755_n;
+let huge: BigInt = 100_000_000_000_000_000_000_000n;
+let hugeNeg: BigInt = -0x1_0000_0000_0000_0000_0001n;
+
+// Contextual typing adapts unsuffixed integer literals (including >64-bit) to BigInt.
+let ctxZero: BigInt = 0;
+let ctxNeg: BigInt = -42;
+let ctxHuge: BigInt = 100_000_000_000_000_000_000_000;
+let ctxNullable: BigInt? = 0;
+let ctxUnion: BigInt | String = 42;
+
+type TransparentBig = BigInt;
+let ctxAlias: TransparentBig = 123;
+
+distinct type DistinctBig = BigInt;
+let badDistinct: DistinctBig = 123; // @error: Type mismatch
+let badDistinctN: DistinctBig = 123n; // @error: Type mismatch
+
+// Unannotated unsuffixed literals exceeding i32 remain out-of-range errors.
+let unannotatedHuge = 100_000_000_000_000_000_000_000; // @error: is out of range for type 'i32'
+
+// `n`-suffixed literals do not adapt to primitive numeric types, literal types, or enums.
+let badI32: i32 = 42n; // @error: Type mismatch
+let badI64: i64 = 42n; // @error: Type mismatch
+let badF64: f64 = -42n; // @error: Type mismatch
+let badFloatCtx: BigInt = 3.14; // @error: Type mismatch
+
+type BadLitType = 42n; // @error: cannot be used as a literal type
+
+enum BadEnum {
+  A = 1n, // @error: Enum member initializer must be an i32 literal
+}
+
+// Overload resolution: tier 0 picks i32 for `42` and BigInt for `42n`;
+// tier 1 picks BigInt when an unsuffixed literal exceeds i32.
+class Over {
+  pick(v: i32): i32 {
+    return 1;
+  }
+  pick(v: BigInt): i32 {
+    return 2;
+  }
+}
+
+function testOverloads(o: Over): i32 {
+  return o.pick(42) + o.pick(42n) + o.pick(100_000_000_000_000_000_000_000);
+}
+
+// Binary, bitwise, equality, and compound assignment contextual typing.
+function testOps(x: BigInt, maybeX: BigInt?): BigInt {
+  var acc = x + 1;
+  acc = 1 + acc;
+  acc = acc - 2;
+  acc = 2 - acc;
+  acc = acc * 10;
+  acc = 10 * acc;
+  acc = acc % 7;
+  acc = 100 % acc;
+  acc = acc & 0xff;
+  acc = 0xff & acc;
+  acc = acc | 1;
+  acc = 1 ^ acc;
+  acc = acc << 4;
+  acc = acc >> 2;
+  acc = acc ** 3;
+  acc += 100_000_000_000_000_000_000_000;
+  acc **= 2;
+  let eq1: boolean = acc == 0;
+  let eq2: boolean = 0 != acc;
+  let eq3: boolean = maybeX == 0;
+  let eq4: boolean = 0 == maybeX;
+  if (eq1 || eq2 || eq3 || eq4) {
+    return acc;
+  }
+  return 0;
+}
+
+// Disallowed mixed operators: `/` has no BigInt overload, and `**` / shifts
+// require an i32 right-hand operand rather than BigInt.
+let badDiv = 42n / 2; // @error: cannot apply operator '/'
+let badDivLeft = 2 / 42n; // @error: cannot apply operator '/'
+let badPowExp = 2 ** 3n; // @error: cannot apply operator '**'
+let badShiftAmt = 42n << 2n; // @error: Type mismatch in operator '<<'
+let badIdent = 42n === 0; // @error: cannot apply operator '==='
+
+// Match patterns.
+function testMatch(x: BigInt, m: BigInt?, u: BigInt | String, n: i32): i32 {
+  let r1 = match (x) {
+    case 0: 1
+    case 42n: 2
+    case _: 3
+  };
+  let r2 = match (m) {
+    case null: 0
+    case 0: 1
+    case 100_000_000_000_000_000_000_000n: 2
+    case _: 3
+  };
+  let r3 = match (u) {
+    case 0: 1
+    case 42n: 2
+    case 'hi': 3
+    case _: 4
+  };
+  let badMatch = match (n) {
+    case 42n: 1 // @error: pattern of type 'BigInt' cannot match 'i32'
+    case _: 0
+  };
+  return r1 + r2 + r3 + badMatch;
+}

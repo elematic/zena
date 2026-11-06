@@ -3,7 +3,7 @@ import {
   UnaryExpression
 } from '../ast.zena';
 import {
-  BoolLiteralType, ClassType, F32Type, F64Type, HoleType, I16Type, I32Type, I64Type, I8Type, NumLiteralType, StringLiteralType, Type, TypeParameterType, U16Type, U32Type, U64Type, U8Type, UnionType as UnionT, baseType, integerLiteralFits, integerLiteralMagnitude, isNumericType, sameNumericLiteralRaw, signedLiteralFits, typeToString, unwrapAliases
+  BoolLiteralType, ClassType, ErrorType, F32Type, F64Type, HoleType, I16Type, I32Type, I64Type, I8Type, NumLiteralType, StringLiteralType, Type, TypeParameterType, U16Type, U32Type, U64Type, U8Type, UnionType as UnionT, baseType, integerLiteralFits, integerLiteralMagnitude, isBigIntLiteralRaw, isNumericType, sameNumericLiteralRaw, signedLiteralFits, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown, isWellKnown } from '../well-known.zena';
@@ -53,6 +53,38 @@ function isRangeCheckedIntType(t: Type) {
 }
 
 /**
+ * If `t` (through transparent aliases or a reference union such as
+ * `BigInt | null` or `BigInt | String`) names the standard library `BigInt`
+ * class, return that `ClassType`. `distinct type` aliases stay opaque because
+ * `unwrapAliases` stops at them.
+ */
+export function unwrapBigIntTarget(t: Type | null): ClassType | null {
+  if (t == null) {
+    return null;
+  }
+  let unwrapped = unwrapAliases(t);
+  if (unwrapped is ClassType &&
+      isWellKnown(WellKnown.BigIntClass, unwrapped.name, unwrapped.sourcePath)) {
+    return unwrapped;
+  }
+  if (let UnionT {types} = unwrapped) {
+    var found: ClassType | null = null;
+    for (let member in types) {
+      let m = unwrapAliases(member);
+      if (isNumericType(m)) {
+        return null;
+      }
+      if (m is ClassType &&
+          isWellKnown(WellKnown.BigIntClass, m.name, m.sourcePath)) {
+        found = m;
+      }
+    }
+    return found;
+  }
+  return null;
+}
+
+/**
  * Type an integer literal against its context. The literal adopts a
  * numeric expected type when there is one, and for the types whose range
  * the checker enforces — the narrow types and the unsigned types — it
@@ -70,6 +102,24 @@ export function checkIntegerLiteral(
   expectedType: Type | null,
   loc: SourceLocation | null
 ): Type {
+  if (isBigIntLiteralRaw(raw)) {
+    let bigIntType = ctx.tryResolveWellKnownType(WellKnown.BigIntClass);
+    if (bigIntType != null) {
+      return bigIntType;
+    }
+    ctx.error(
+      "Built-in type 'BigInt' is not available. Ensure 'zena:bigint' is available.",
+      DiagnosticCode.SymbolNotFound,
+      loc
+    );
+    return new ErrorType();
+  }
+  if (ctx.castLiteralTarget == null) {
+    let bigIntTarget = unwrapBigIntTarget(expectedType);
+    if (bigIntTarget != null) {
+      return bigIntTarget;
+    }
+  }
   if (expectedType == null) {
     if (ctx.diagnosticsSuppressed && !signedLiteralFits(raw, negative, false)) {
       return new HoleType();
@@ -174,9 +224,15 @@ function literalFitsCastWidth(raw: String, negative: boolean, target: Type): boo
  * the signature that won.
  */
 function numericLiteralAdaptsTo(raw: String, negative: boolean, target: Type): boolean {
+  if (isBigIntLiteralRaw(raw)) {
+    return false;
+  }
   if (raw.contains('.')) {
     // A float literal takes its type from the float types only.
     return target is F32Type || target is F64Type;
+  }
+  if (unwrapBigIntTarget(target) != null) {
+    return true;
   }
   if (target is I32Type || target is I64Type) {
     return signedLiteralFits(raw, negative, target is I64Type);
@@ -197,8 +253,9 @@ function numericLiteralAdaptsTo(raw: String, negative: boolean, target: Type): b
  */
 export function isContextTypedNumber(e: Expression): boolean {
   return match (e) {
-  case NumberLiteral {}: true
-  case UnaryExpression {operator, argument}: operator == "-" && argument is NumberLiteral
+  case NumberLiteral {raw}: !isBigIntLiteralRaw(raw)
+  case UnaryExpression {operator, argument}:
+    operator == "-" && argument is NumberLiteral && !isBigIntLiteralRaw(argument.raw)
   case _: false
 };
 }
@@ -215,9 +272,10 @@ export function isNumericOrNumericTypeParam(t: Type): boolean {
 
 export function isIntLiteralExpr(e: Expression): boolean {
   return match (e) {
-    case NumberLiteral {raw}: !raw.contains('.')
+    case NumberLiteral {raw}: !raw.contains('.') && !isBigIntLiteralRaw(raw)
     case UnaryExpression {operator, argument}:
-      operator == "-" && argument is NumberLiteral && !argument.raw.contains('.')
+      operator == "-" && argument is NumberLiteral &&
+      !argument.raw.contains('.') && !isBigIntLiteralRaw(argument.raw)
     case _: false
   };
 }
@@ -267,10 +325,20 @@ export function checkLiteralBeside(
   ctx: CheckerContext,
   literal: Expression,
   other: Expression,
-  context: Type | null
+  context: Type | null,
+  allowBigInt: boolean = false
 ): inline (Type, Type) {
   let otherType = checkExpression(ctx, other, context);
-  let literalType = checkExpression(ctx, literal, if (isNumericOrNumericTypeParam(otherType)) otherType else context);
+  var litContext = context;
+  if (isNumericOrNumericTypeParam(otherType)) {
+    litContext = otherType;
+  } else if (allowBigInt) {
+    let bigIntType = unwrapBigIntTarget(otherType);
+    if (bigIntType != null) {
+      litContext = bigIntType;
+    }
+  }
+  let literalType = checkExpression(ctx, literal, litContext);
   return (literalType, otherType);
 }
 
