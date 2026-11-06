@@ -11,12 +11,14 @@ import {OutputManifest} from './manifest.zena';
 import {EngineState, StepRecord} from './state.zena';
 import {
   LeafInput,
+  LeafSet,
   RunContext,
   ServiceContext,
   ServiceHandle,
   ServiceStep,
   Step,
   StepKey,
+  StepOrder,
   StepOutputs,
   TaskStep,
 } from './step.zena';
@@ -240,6 +242,11 @@ export class Engine {
               svc.pending += 1;
             }
           }
+          case StepOrder as dep: {
+            if (let (true, svc) = rs.services.get(dep.step.value)) {
+              svc.pending += 1;
+            }
+          }
           case _: {}
         }
       }
@@ -252,6 +259,11 @@ export class Engine {
     for (let input in step.inputs) {
       match (input) {
         case StepOutputs as dep: {
+          if (let (true, completer) = rs.done.get(dep.step.value)) {
+            completers.push(completer);
+          }
+        }
+        case StepOrder as dep: {
           if (let (true, completer) = rs.done.get(dep.step.value)) {
             completers.push(completer);
           }
@@ -272,14 +284,35 @@ export class Engine {
             deps.push(svc);
           }
         }
+        case StepOrder as dep: {
+          if (let (true, svc) = rs.services.get(dep.step.value)) {
+            deps.push(svc);
+          }
+        }
         case _: {}
       }
     }
     return deps;
   }
 
+  /** Callbacks for the step's lazy leaf sets, extracted without async narrowing. */
+  #leafSetResolvers(
+    step: Step,
+  ): GrowableArray<() => Future<Array<(String, Fingerprint)>>> {
+    let resolvers = new GrowableArray<() => Future<Array<(String, Fingerprint)>>>();
+    for (let input in step.inputs) {
+      match (input) {
+        case LeafSet as leafSet: {
+          resolvers.push(leafSet.resolve);
+        }
+        case _: {}
+      }
+    }
+    return resolvers;
+  }
+
   /**
-   * Resolves the step's inputs to fingerprints, filling `resolved`.
+   * Resolves the step's static inputs to fingerprints, filling `resolved`.
    * Returns an outcome to short-circuit with (unknown leaf, unsucceeded
    * dependency), or null to proceed. Leaf, task, and service namespaces
    * are disjoint in the encoding, so names cannot collide across kinds.
@@ -300,6 +333,7 @@ export class Engine {
             ));
           }
         }
+        case LeafSet: {}
         case StepOutputs as dep: {
           let depKey = dep.step.value;
           if (let (true, svc) = rs.services.get(depKey)) {
@@ -322,6 +356,24 @@ export class Engine {
               'step:' + depKey,
               manifestFingerprint(manifest, this.#digest),
             ));
+          }
+        }
+        case StepOrder as dep: {
+          let depKey = dep.step.value;
+          if (let (true, svc) = rs.services.get(depKey)) {
+            if (svc.identityFp == null) {
+              return new Skipped(`service "${depKey}" could not be resolved`);
+            }
+          } else {
+            var succeeded = false;
+            if (let (true, depOutcome) = rs.outcomes.get(depKey)) {
+              if (depOutcome is Succeeded) {
+                succeeded = true;
+              }
+            }
+            if (!succeeded) {
+              return new Skipped(`dependency "${depKey}" did not succeed`);
+            }
           }
         }
       }
@@ -379,6 +431,11 @@ export class Engine {
     let shortCircuit = this.#resolveInputs(step, rs, resolved);
     if (shortCircuit != null) {
       return shortCircuit;
+    }
+    for (let resolve in this.#leafSetResolvers(step)) {
+      for (let (name, fp) in await resolve()) {
+        resolved.push(new ResolvedInput('leaf:' + name, fp));
+      }
     }
 
     let cacheKey = cacheKeyFor(step.config, resolved, this.#digest);
@@ -439,13 +496,14 @@ export class Engine {
     resolved: GrowableArray<ResolvedInput>,
   ): RunContext {
     if (prior == null || prior.config.value != step.config.value) {
-      return new RunContext();
+      return new RunContext(null, null, null, resolved);
     }
     let delta = computeDelta(prior.inputs, resolved);
     return new RunContext(
       delta,
       prior.manifest,
       staleOutputNames(prior.manifest, delta),
+      resolved,
     );
   }
 
@@ -504,9 +562,18 @@ export class Engine {
     let resolved = new GrowableArray<ResolvedInput>();
     let shortCircuit = this.#resolveInputs(svc.step, rs, resolved);
     if (shortCircuit == null) {
-      svc.identityFp = new Fingerprint(
-        cacheKeyFor(svc.step.config, resolved, this.#digest).value,
-      );
+      try {
+        for (let resolve in this.#leafSetResolvers(svc.step)) {
+          for (let (name, fp) in await resolve()) {
+            resolved.push(new ResolvedInput('leaf:' + name, fp));
+          }
+        }
+        svc.identityFp = new Fingerprint(
+          cacheKeyFor(svc.step.config, resolved, this.#digest).value,
+        );
+      } catch (e) {
+        svc.failure = e;
+      }
     } else {
       svc.failure = new WorkflowError(
         `service "${svc.step.key.value}" has unresolved inputs`,

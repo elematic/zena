@@ -66,22 +66,30 @@ stdlib module:
 - The child's stdin is empty unless an `input` option gives it text; the
   host writes the text on a thread of its own and then closes stdin, so
   a child that writes before it has read everything cannot deadlock.
-- Both output streams are fully captured (no streaming in v1) and read
-  on their own host threads, so a child that fills one pipe while the
-  parent is reading the other cannot deadlock.
+- Both output streams are captured on their own host threads, so a child
+  that fills one pipe while the parent is reading the other cannot
+  deadlock. `readLine()` streams lines from stdout and stderr as they
+  arrive (without their trailing `\n` or `\r\n`, returning `null` once
+  both pipes close), while still accumulating the full output in
+  `ProcessResult`.
 - `wait()` returns a `Future<ProcessResult>` so other tasks in the
   program keep running while the child executes. Waiting again returns
   the same result. A synchronous caller inside `main` or a test body can
-  wait on it with `runFuture` from `zena:async`.
+  wait on it with `runFuture` from `zena:async`. `hasExited()` checks
+  without blocking whether the child has already exited.
+- `stop(graceMillis)` sends `SIGTERM` on Unix, waits up to `graceMillis`
+  (default 2000ms) for the process to exit, and sends `SIGKILL` if it is
+  still running.
 - `waitFor(millis)` bounds the wait: on the deadline the child is
   killed, and the result carries `timedOut` along with whatever it wrote
   first.
-  - The kill reaches the child, not a process group. A child that
-    forked a grandchild of its own can leave that grandchild holding
-    the output pipes open; the host waits two seconds for them to
-    close, then reports the timeout with the output withheld rather
-    than blocking. `sh -c 'a; exec b'` avoids this by leaving one
-    process to kill.
+  - By default, kills reach the direct child process. Passing
+    `processGroup: true` in `SpawnOptions` places the child in a new
+    Unix process group so `stop` and timeouts signal the whole group
+    (including grandchildren started via `sh -c`). Without
+    `processGroup`, a surviving grandchild can hold output pipes open;
+    the host waits two seconds for them to close, then reports the
+    timeout with the output withheld rather than blocking.
 - Handles are opaque host references — the guest GC owns their
   lifetime; there is nothing to close.
 

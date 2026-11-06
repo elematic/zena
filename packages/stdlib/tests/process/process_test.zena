@@ -6,7 +6,7 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {Future, runFuture} from 'zena:async';
 import {milliseconds, sleep} from 'zena:time';
-import {run, runIn, runInheriting, runWith, spawn} from 'zena:process';
+import {run, runIn, runInheriting, runWith, spawn, spawnWith} from 'zena:process';
 
 export let tests = suite('zena:process', () => {
   test('run captures stdout, stderr, and the exit code', (ctx) => {
@@ -189,5 +189,31 @@ export let tests = suite('zena:process', () => {
     })());
     equal(events[0], 'timer');
     equal(events[1], 'proc');
+  });
+
+  test('readLine streams stdout and stderr lines and stop tears down process groups', (ctx) => {
+    runFuture((async (): Future<void> => {
+      // Spawns a background sleep grandchild holding stdout/stderr open,
+      // prints two lines, and waits. Without processGroup, killing sh
+      // would leave sleep holding the pipes for the 2s grace timeout.
+      let p = spawnWith(
+        ['/bin/sh', '-c', 'sleep 30 & printf "booting\\r\\n"; printf "ready!\\n" >&2; wait'],
+        {processGroup: true},
+      );
+      isFalse(p.hasExited(), 'service should still be running');
+      let first = await p.readLine();
+      let second = await p.readLine();
+      isTrue(
+        (first == 'booting' && second == 'ready!') ||
+        (first == 'ready!' && second == 'booting'),
+        `unexpected lines: ${first ?? 'null'}, ${second ?? 'null'}`,
+      );
+      let stopped = await p.stop(1000 as i64);
+      isFalse(stopped.timedOut, 'stop is an intentional stop, not a timeout');
+      isTrue(stopped.wallNanos < 1500000000 as i64, `expected prompt group stop, took ${stopped.wallNanos}ns`);
+      isTrue(p.hasExited(), 'hasExited is true after stop');
+      let eof = await p.readLine();
+      equal(eof, null);
+    })());
   });
 });

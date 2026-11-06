@@ -41,6 +41,9 @@ interface process {
     /// Leave the environment variable `name` out of the process's
     /// environment.
     env-remove: func(name: string);
+    /// Put the process in a new process group of its own on Unix, so
+    /// stopping or timing it out reaches children it starts too.
+    process-group: func();
     /// Start it. An error is why it could not start.
     spawn: func() -> result<process, string>;
   }
@@ -51,6 +54,19 @@ interface process {
     /// overrun; a non-positive limit waits forever. Waiting again
     /// returns the same result.
     wait: async func(millis: s64) -> finished;
+
+    /// Whether the process has already exited.
+    has-exited: func() -> bool;
+
+    /// The next line written to stdout or stderr, without its `\n` or
+    /// `\r\n`, or `none` once both pipes close (straight away when
+    /// stdio is inherited). Lines still count toward `finished`.
+    read-line: async func() -> option<string>;
+
+    /// Ask the process to stop (`SIGTERM` on Unix, reaching its process
+    /// group when started in one), wait up to `grace-millis` for it to
+    /// exit, then force-kill it if it is still running.
+    stop: async func(grace-millis: s64) -> finished;
   }
 }
 

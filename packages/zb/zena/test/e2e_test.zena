@@ -3,6 +3,7 @@ import {equal, fail, isFalse, isTrue} from 'zena:assert';
 import {readFileSync, unlinkSync} from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {
+  Failed,
   RunResult,
   StepSource,
   Succeeded,
@@ -209,5 +210,258 @@ export let tests = suite('zb end to end', () => {
     let serial = buildTarget(serialRoot, entry, 1);
     isTrue(serial.result.allSucceeded, 'a should finish before b starts under -j 1');
     isFalse(sourceOf(serial.result, ':a') == StepSource.Fresh);
+  });
+
+  test('services wait for readyWhen.lineMatches, share across dependents, skip when fresh, and tear down process groups', () => {
+    let root = '/tmp/zb-service-' + i64ToString(monotonic() as i64);
+    ensureDirSync(root);
+    write(root, 'svc.cfg', 'port=8080\n');
+    write(root, 'package.json', `{
+      "scripts": {"all": "wireit", "svc": "wireit", "a": "wireit", "b": "wireit"},
+      "wireit": {
+        "all": {"dependencies": ["a", "b"]},
+        "svc": {
+          "command": "echo start >> svc.starts; sleep 30 & sleep 0.05; touch svc.ready; echo 'booting...'; echo 'Server ready on 8080'; wait",
+          "service": {"readyWhen": {"lineMatches": "ready on [0-9]+"}},
+          "files": ["svc.cfg"]
+        },
+        "a": {
+          "command": "[ -f svc.ready ] && cat svc.cfg > a.out",
+          "files": [],
+          "output": ["a.out"],
+          "dependencies": ["svc"]
+        },
+        "b": {
+          "command": "[ -f svc.ready ] && cat svc.cfg > b.out",
+          "files": [],
+          "output": ["b.out"],
+          "dependencies": ["svc"]
+        }
+      }
+    }`);
+    let entry = new ScriptRef('', 'all');
+
+    let first = buildTarget(root, entry, 2);
+    isTrue(first.result.allSucceeded, 'first build with shared service succeeds');
+    isTrue(sourceOf(first.result, ':svc') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':a') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':b') == StepSource.Ran);
+    equal(readFileSync(withRoot(root, 'svc.starts')), 'start\n');
+    equal(readFileSync(withRoot(root, 'a.out')), 'port=8080\n');
+    equal(readFileSync(withRoot(root, 'b.out')), 'port=8080\n');
+
+    // Second build: dependents are fresh, so the service never starts.
+    let second = buildTarget(root, entry, 2);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, ':svc') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':a') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':b') == StepSource.Fresh);
+    equal(readFileSync(withRoot(root, 'svc.starts')), 'start\n');
+
+    // Changing the service's declared file invalidates dependents and restarts it.
+    write(root, 'svc.cfg', 'port=9090\n');
+    let third = buildTarget(root, entry, 2);
+    isTrue(third.result.allSucceeded);
+    isTrue(sourceOf(third.result, ':svc') == StepSource.Ran);
+    isTrue(sourceOf(third.result, ':a') == StepSource.Ran);
+    equal(readFileSync(withRoot(root, 'svc.starts')), 'start\nstart\n');
+    equal(readFileSync(withRoot(root, 'a.out')), 'port=9090\n');
+  });
+
+  test('services fail loudly when exiting before readyWhen or crashing mid-run', () => {
+    // 1. Exits before readyWhen.lineMatches ever matches.
+    let earlyEofRoot = '/tmp/zb-svc-eof-' + i64ToString(monotonic() as i64);
+    ensureDirSync(earlyEofRoot);
+    write(earlyEofRoot, 'package.json', `{
+      "scripts": {"all": "wireit", "svc": "wireit", "app": "wireit", "ok": "wireit"},
+      "wireit": {
+        "all": {"dependencies": ["app", "ok"]},
+        "svc": {
+          "command": "echo 'starting...'; exit 1",
+          "service": {"readyWhen": {"lineMatches": "never-printed"}},
+          "files": []
+        },
+        "app": {
+          "command": "echo ran > app.out",
+          "files": [],
+          "output": ["app.out"],
+          "dependencies": ["svc"]
+        },
+        "ok": {
+          "command": "echo fine > ok.out",
+          "files": [],
+          "output": ["ok.out"]
+        }
+      }
+    }`);
+    let eofRun = buildTarget(earlyEofRoot, new ScriptRef('', 'all'));
+    isFalse(eofRun.result.allSucceeded);
+    isTrue(eofRun.result.outcomeOf(new StepKey(':svc')) is Failed);
+    isTrue(eofRun.result.outcomeOf(new StepKey(':app')) is Failed);
+    isTrue(eofRun.result.outcomeOf(new StepKey(':ok')) is Succeeded);
+
+    // 2. service: true crashes while its dependent is running.
+    let crashRoot = '/tmp/zb-svc-crash-' + i64ToString(monotonic() as i64);
+    ensureDirSync(crashRoot);
+    write(crashRoot, 'package.json', `{
+      "scripts": {"app": "wireit", "svc": "wireit"},
+      "wireit": {
+        "svc": {
+          "command": "sleep 0.02; exit 2",
+          "service": true,
+          "files": []
+        },
+        "app": {
+          "command": "sleep 0.15; touch app.out",
+          "files": [],
+          "output": ["app.out"],
+          "dependencies": ["svc"]
+        }
+      }
+    }`);
+    let crashRun = buildTarget(crashRoot, new ScriptRef('', 'app'));
+    isFalse(crashRun.result.allSucceeded);
+    isTrue(crashRun.result.outcomeOf(new StepKey(':svc')) is Failed);
+  });
+
+  test('invoking a service as the top-level target runs its dependencies and executes it in the foreground', () => {
+    let root = '/tmp/zb-svc-fg-' + i64ToString(monotonic() as i64);
+    ensureDirSync(root);
+    write(root, 'src.txt', 'built-asset\n');
+    write(root, 'package.json', `{
+      "scripts": {"prep": "wireit", "serve": "wireit", "bad-serve": "wireit"},
+      "wireit": {
+        "prep": {
+          "command": "cp src.txt asset.txt",
+          "files": ["src.txt"],
+          "output": ["asset.txt"]
+        },
+        "serve": {
+          "command": "cat asset.txt >> served.log; echo 'server running'",
+          "service": {"readyWhen": {"lineMatches": "server running"}},
+          "files": ["asset.txt"],
+          "dependencies": ["prep"]
+        },
+        "bad-serve": {
+          "command": "echo 'wrong banner'",
+          "service": {"readyWhen": {"lineMatches": "server running"}},
+          "files": []
+        }
+      }
+    }`);
+
+    let first = buildTarget(root, new ScriptRef('', 'serve'));
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, ':prep') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':serve') == StepSource.Ran);
+
+    // Invoking the top-level service again leaves prep fresh, but runs serve again.
+    let second = buildTarget(root, new ScriptRef('', 'serve'));
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, ':prep') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':serve') == StepSource.Ran);
+    equal(readFileSync(withRoot(root, 'served.log')), 'built-asset\nbuilt-asset\n');
+
+    // Exiting 0 without matching readyWhen.lineMatches still fails.
+    let bad = buildTarget(root, new ScriptRef('', 'bad-serve'));
+    isFalse(bad.result.allSucceeded);
+  });
+
+  test('env sets literal and default external variables and invalidates on change', () => {
+    let root = '/tmp/zb-env-' + i64ToString(monotonic() as i64);
+    ensureDirSync(root);
+    let writePkg = (port: String) => {
+      write(root, 'package.json', `{
+        "scripts": {"run": "wireit"},
+        "wireit": {
+          "run": {
+            "command": "printf '%s|%s' \\"$API_PORT\\" \\"$ZB_UNSET_EXT_TEST\\" > out.txt",
+            "files": [],
+            "output": ["out.txt"],
+            "env": {
+              "API_PORT": "${port}",
+              "ZB_UNSET_EXT_TEST": {"external": true, "default": "fallback"}
+            }
+          }
+        }
+      }`);
+    };
+    writePkg('8080');
+    let entry = new ScriptRef('', 'run');
+
+    let first = buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    equal(readFileSync(withRoot(root, 'out.txt')), '8080|fallback');
+
+    let second = buildTarget(root, entry);
+    isTrue(sourceOf(second.result, ':run') == StepSource.Fresh);
+
+    writePkg('9090');
+    let third = buildTarget(root, entry);
+    isTrue(sourceOf(third.result, ':run') == StepSource.Ran);
+    equal(readFileSync(withRoot(root, 'out.txt')), '9090|fallback');
+  });
+
+  test('cascade: false orders untracked producers while fileset groups hash generated files lazily', () => {
+    let root = '/tmp/zb-cascade-' + i64ToString(monotonic() as i64);
+    ensureDirSync(root);
+    write(root, 'desired.txt', 'bin-v1\n');
+    // Mirrors zena-cli's build:cargo -> build:binary -> build -> app pattern:
+    // build:cargo omits `files` (always runs, emits $volatile) and only
+    // rewrites out/tool when desired.txt differs. build:binary names
+    // out/tool in `files` with `cascade: false` on build:cargo (and out/tool
+    // does not exist yet before the first run!).
+    write(root, 'package.json', `{
+      "scripts": {"app": "wireit", "build": "wireit", "build:binary": "wireit", "build:cargo": "wireit"},
+      "wireit": {
+        "build:cargo": {
+          "command": "mkdir -p out && if [ ! -f out/tool ] || ! cmp -s desired.txt out/tool; then cp desired.txt out/tool; fi",
+          "output": []
+        },
+        "build:binary": {
+          "files": ["out/tool"],
+          "dependencies": [{"script": "build:cargo", "cascade": false}]
+        },
+        "build": {
+          "dependencies": ["build:binary"]
+        },
+        "app": {
+          "command": "cat out/tool > app.out",
+          "files": [],
+          "output": ["app.out"],
+          "dependencies": ["build"]
+        }
+      }
+    }`);
+    let entry = new ScriptRef('', 'app');
+
+    // Clean run: out/tool is created by build:cargo, then hashed by build:binary.
+    let first = buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, ':build:cargo') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':build:binary') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':build') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':app') == StepSource.Ran);
+    equal(readFileSync(withRoot(root, 'app.out')), 'bin-v1\n');
+
+    // No-op cargo rerun: build:cargo runs again, but out/tool is unchanged,
+    // so build:binary, build, and app all stay fresh!
+    let second = buildTarget(root, entry);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, ':build:cargo') == StepSource.Ran);
+    isTrue(sourceOf(second.result, ':build:binary') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':app') == StepSource.Fresh);
+
+    // Real binary update: build:cargo rewrites out/tool, which cascades
+    // through build:binary and build to rerun app.
+    write(root, 'desired.txt', 'bin-v2\n');
+    let third = buildTarget(root, entry);
+    isTrue(third.result.allSucceeded);
+    isTrue(sourceOf(third.result, ':build:cargo') == StepSource.Ran);
+    isTrue(sourceOf(third.result, ':build:binary') == StepSource.Ran);
+    isTrue(sourceOf(third.result, ':build') == StepSource.Ran);
+    isTrue(sourceOf(third.result, ':app') == StepSource.Ran);
+    equal(readFileSync(withRoot(root, 'app.out')), 'bin-v2\n');
   });
 });

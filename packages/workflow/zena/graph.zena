@@ -1,7 +1,7 @@
 import { HashSet } from 'zena:collections';
 import {StringBuilder} from 'zena:core';
 import {WorkflowError} from './errors.zena';
-import {LeafInput, StepKey, StepOutputs, Step} from './step.zena';
+import {LeafInput, LeafSet, StepKey, StepOrder, StepOutputs, Step} from './step.zena';
 
 /**
  * A validated set of steps. Construction checks that step keys are
@@ -56,7 +56,28 @@ export class Graph {
               );
             }
           }
+          case LeafSet as leafSet: {
+            if (!seen.add('leafset:' + leafSet.name)) {
+              throw new WorkflowError(
+                `step "${step.key.value}" lists leaf set "${leafSet.name}" twice`,
+              );
+            }
+          }
           case StepOutputs as dep: {
+            let depKey = dep.step.value;
+            if (!this.#byKey.has(depKey)) {
+              throw new WorkflowError(
+                `step "${step.key.value}" depends on unknown step "${depKey}"`,
+              );
+            }
+            if (!seen.add('step:' + depKey)) {
+              throw new WorkflowError(
+                `step "${step.key.value}" depends on step "${depKey}" twice`,
+              );
+            }
+            deps.push(depKey);
+          }
+          case StepOrder as dep: {
             let depKey = dep.step.value;
             if (!this.#byKey.has(depKey)) {
               throw new WorkflowError(

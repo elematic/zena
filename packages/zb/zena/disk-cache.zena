@@ -62,9 +62,12 @@ function blobName(fp: Fingerprint) {
  */
 export class DiskCache implements StepCache {
   #root: String;
+  #onRestore: (() => void)?;
   var #nextTempId = 0;
 
-  new(root: String) : #root = root;
+  new(root: String, onRestore: (() => void)? = null)
+      : #root = root,
+        #onRestore = onRestore;
 
   #tempSuffix(): String {
     let id = this.#nextTempId;
@@ -98,6 +101,10 @@ export class DiskCache implements StepCache {
       let target = withRoot(this.#root, entry.name);
       await ensureParentDir(target);
       await writeFileBytes(target, await readFileBytes(this.#blobPath(step, entry.fingerprint)));
+    }
+    let onRestore = this.#onRestore;
+    if (onRestore != null) {
+      onRestore();
     }
     return manifest;
   }

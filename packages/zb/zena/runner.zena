@@ -18,6 +18,7 @@ import {StepKey} from 'workflow:step';
 import {DiskCache, stateDirOf} from './disk-cache.zena';
 import {planScripts} from './builder.zena';
 import {ensureParentDirSync, readFileOrNullSync, withRoot} from './fs-util.zena';
+import {FileHasher} from './fs-walk.zena';
 import {sha256HexOfString} from 'zena:crypto';
 import {stateFromJson, stateToJson} from './state-json.zena';
 import {ScriptRef, WireitWorkspace, refKey} from './wireit-config.zena';
@@ -49,10 +50,13 @@ function loadState(root: String, stateDirs: Array<String>) {
  * already holds — a run of one target must not drop a package's
  * records for scripts outside the run's closure.
  */
-function saveState(root: String, result: RunResult) {
+function saveState(root: String, result: RunResult, skipKey: String? = null) {
   let byDir = new HashMap<String, EngineState>();
   let dirs = new GrowableArray<String>();
   result.state.forEach((key, record) => {
+    if (skipKey != null && key == skipKey) {
+      return;
+    }
     let stateDir = stateDirOf(key);
     if (!byDir.has(stateDir)) {
       let path = packageStatePath(root, stateDir);
@@ -150,7 +154,18 @@ export function buildTarget(
     (path: String) => readFileOrNullSync(withRoot(root, path)),
   );
   let configs = workspace.collect([entry]);
-  let plan = planScripts(root, configs, i64ToString(monotonic() as i64));
+  let foregroundServiceKey = if (configs.length > 0 && configs[0].service != null)
+    refKey(entry)
+  else
+    null;
+  let hasher = new FileHasher(root);
+  let plan = planScripts(
+    root,
+    configs,
+    i64ToString(monotonic() as i64),
+    hasher,
+    foregroundServiceKey,
+  );
   let stateDirs = new GrowableArray<String>();
   let seenDirs = new HashSet<String>();
   for (let config in configs) {
@@ -161,7 +176,9 @@ export function buildTarget(
   }
   let engine = new Engine(
     (data: String) => new Fingerprint('sha256:' + sha256HexOfString(data)),
-    new DiskCache(root),
+    new DiskCache(root, () => {
+      hasher.markMutated();
+    }),
   );
   let result = runFuture(
     engine.run(
@@ -171,7 +188,7 @@ export function buildTarget(
       new RunOptions(jobs),
     ),
   );
-  saveState(root, result);
+  saveState(root, result, foregroundServiceKey);
   let stepKeys = new GrowableArray<String>();
   for (let config in configs) {
     stepKeys.push(refKey(config.ref));

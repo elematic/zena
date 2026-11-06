@@ -21,6 +21,7 @@ import {
   ServiceStep,
   Step,
   StepKey,
+  StepOrder,
   StepOutputs,
   TaskStep,
 } from '../step.zena';
@@ -287,5 +288,47 @@ export let tests = suite('services', () => {
     isTrue(result.outcomeOf(new StepKey('app')) is Skipped);
     isTrue(result.outcomeOf(new StepKey('db')) is Failed);
     equal(count(log, 'start:db'), 0);
+  });
+
+  test('StepOrder on a service starts and holds it without invalidating on service config changes', () => {
+    let log = new GrowableArray<String>();
+    let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
+    let mkGraph = (svcConfig: String) => {
+      let svc: Step = new ServiceStep(
+        new StepKey('db'),
+        new Fingerprint(svcConfig),
+        new GrowableArray<InputRef>(),
+        async (ctx): Future<ServiceHandle> => {
+          log.push('start:db');
+          return new TestHandle(log, 'db');
+        },
+      );
+      let appInputs = new GrowableArray<InputRef>();
+      appInputs.push(new LeafInput('src'));
+      appInputs.push(new StepOrder(new StepKey('db')));
+      let app: Step = new TaskStep(
+        new StepKey('app'),
+        new Fingerprint('cfg:app'),
+        appInputs,
+        (ctx) => {
+          log.push('run:app');
+          return Future.of(new OutputManifest([
+            new OutputEntry('out/app', new Fingerprint('fp-app')),
+          ]));
+        },
+      );
+      return new Graph([svc, app]);
+    };
+    let engine = new Engine(digest, new NullCache());
+    let first = runFuture(engine.run(mkGraph('c1'), leaves, EngineState.empty()));
+    isTrue(first.allSucceeded);
+    less(indexOf(log, 'start:db'), indexOf(log, 'run:app'));
+    less(indexOf(log, 'run:app'), indexOf(log, 'stop:db'));
+
+    // Service config changed from c1 to c2, but app uses StepOrder so app stays fresh.
+    let second = runFuture(engine.run(mkGraph('c2'), leaves, first.state));
+    isTrue(second.allSucceeded);
+    isTrue(sourceOf(second, 'app') == StepSource.Fresh);
+    equal(count(log, 'start:db'), 1);
   });
 });
