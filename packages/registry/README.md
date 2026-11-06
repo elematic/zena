@@ -134,43 +134,48 @@ the server cannot use stops it with every problem listed, and status 2.
 
 ## Deploying
 
-The App View runs on Cloud Run, in two environments that `PDS_ENV`
-picks: `staging`, the default, with its own PLC directory, so nothing it
-makes reaches `plc.directory`; and `production`. Each has two names,
-which one service serves (docs/design/package-manager.md, "Names and
-addresses"):
+The App View and padstone run on Cloud Run, in two environments that
+`PDS_ENV` picks: `staging`, the default, with its own PLC directory, so
+nothing it makes reaches `plc.directory`; and `production`. Each has two
+names, each a service of its own, both from one image
+(docs/design/package-manager.md, "Names and addresses"):
 
-| Environment  | The site and the handles    | The PDS                          |
-| ------------ | --------------------------- | -------------------------------- |
-| `staging`    | `pkg-staging.zena-lang.dev` | `padstone-staging.zena-lang.dev` |
-| `production` | `pkg.zena-lang.dev`         | `padstone.zena-lang.dev`         |
+| Environment  | The App View, its site and its handles | padstone                         |
+| ------------ | -------------------------------------- | -------------------------------- |
+| `staging`    | `pkg-staging.zena-lang.dev`            | `padstone-staging.zena-lang.dev` |
+| `production` | `pkg.zena-lang.dev`                    | `padstone.zena-lang.dev`         |
 
-`deploy/env.sh` names what each one owns: a service, a Firestore
-database, a bucket, a service account with roles on those alone, a
-rotation-key secret, a session secret, and a Cloud DNS zone delegated
-from `zena-lang.dev`'s for its handle records. With `gcloud` signed in to
-the project:
+The App View keeps its accounts on padstone (`APP_VIEW_PDS_URL`), which
+trusts it by its DID, `did:web:<domain>`, and its online rotation key.
+`deploy/env.sh` names what the two share: a Firestore database, under one
+tenant, a bucket, a service account with roles on those alone, a
+rotation key, a signing key, a session secret, and a Cloud DNS zone
+delegated from `zena-lang.dev`'s for its handle records. With `gcloud`
+signed in to the project:
 
 ```sh
 export ZENA_GCP_PROJECT=meta-garage-420114 PDS_ENV=staging
 npm run deploy:setup -w @zena-lang/registry    # once: the resources, the key and the zone
-npm run deploy -w @zena-lang/registry          # builds the image with Cloud Build, and deploys it
+npm run deploy -w @zena-lang/registry          # builds the image with Cloud Build, and deploys both services
 npm run deploy:domain -w @zena-lang/registry   # once: maps both names, with gcloud's beta component
 ```
 
-`deploy:setup` is idempotent, and makes the rotation key and the session
-secret only when there are none; run it again after pulling a change that
-adds a resource, such as the session secret, before `deploy`. When
+`deploy:setup` is idempotent, and makes the keys and the session secret
+only when there are none; run it again after pulling a change that adds a
+resource, such as the App View's signing key, before `deploy`. When
 `zena-lang.dev`'s DNS is not a Cloud DNS zone in the project, or in
 `ZENA_DNS_PARENT_PROJECT`, it prints the `NS` records that delegate the
 environment's domain, to add where that DNS is kept. Back up staging's
 key with
 `gcloud secrets versions access latest --secret zena-pkg-staging-rotation-key`.
-`deploy` checks that the new revision answers `describeServer`.
-`deploy:domain` writes the site's records into the environment's zone,
-and the PDS's `CNAME` into `zena-lang.dev`'s, or prints it when that zone
-is not in Cloud DNS. The certificates for the names can take a while
-after it.
+`deploy` gives padstone the `did:key` of the App View's rotation key
+(`PDS_TRUSTED_APP_VIEWS`), which the App View's module reads
+(`main.zena -- did-key`), and checks that padstone answers
+`describeServer` and the App View `describeRegistry`. `deploy:domain`
+writes the App View's records into the environment's zone, and padstone's
+`CNAME` into `zena-lang.dev`'s, or prints it when that zone is not in
+Cloud DNS. It maps a name again when it is mapped to the other service.
+The certificates for the names can take a while after it.
 
 `zena` uses staging with two variables, which `deploy/staging.env` sets;
 it also clears `ZENA_DNS_OVER_HTTPS`, which a shell that ran the demo still
@@ -246,6 +251,12 @@ encrypted. Without the variable, keys are kept in the clear, as in tests
 and on the emulator. Run `deploy:setup` before the first `deploy` that
 sets it: until the service account may use the key, creating an account
 fails.
+
+The App View's own signing key, which signs its tokens to padstone and
+which its DID document lists, is `signing` in the same key ring
+(`APP_VIEW_SIGNING_KMS_KEY`): an HSM-protected secp256k1 key in both
+environments. Replacing it changes only the App View's DID document,
+which padstone reads again when a token does not check.
 
 ## Layout
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 #
-# Maps the environment's two names, the site's (DOMAIN) and the PDS's
-# (PDS_DOMAIN), to its Cloud Run service, once, after the first deploy,
-# and writes the records the mappings ask for: the site's into the
-# environment's zone, and the PDS's into zena-lang.dev's.
+# Maps the environment's two names to their Cloud Run services, once,
+# after the first deploy: the App View's (DOMAIN) and padstone's
+# (PDS_DOMAIN). It writes the records the mappings ask for: the App View's
+# into the environment's zone, and padstone's into zena-lang.dev's. A name
+# mapped to another service, as padstone's was when one service ran both,
+# is mapped again, and answers nothing until its new certificate is
+# provisioned.
 #
 #   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:domain -w @zena-lang/registry
 #
@@ -18,16 +21,26 @@ cd "$(dirname "$0")"
 # shellcheck source=env.sh
 source ./env.sh
 
-for name in "$DOMAIN" "$PDS_DOMAIN"; do
-  echo "==> Mapping $name to $SERVICE"
-  if gcloud beta run domain-mappings describe --domain "$name" --project "$PROJECT" --region "$REGION" \
-    > /dev/null 2>&1; then
+# Maps the name $1 to the service $2. A mapping names one service and
+# cannot be changed, so one to another service is deleted and made again.
+map() {
+  local name="$1" service="$2" current
+  echo "==> Mapping $name to $service"
+  current="$(gcloud beta run domain-mappings describe --domain "$name" --project "$PROJECT" --region "$REGION" \
+    --format 'value(spec.routeName)' 2> /dev/null || true)"
+  if [ "$current" = "$service" ]; then
     echo "    exists"
-  else
-    gcloud beta run domain-mappings create --service "$SERVICE" --domain "$name" \
-      --project "$PROJECT" --region "$REGION" --quiet
+    return
   fi
-done
+  if [ -n "$current" ]; then
+    echo "    mapped to $current; mapping it again"
+    gcloud beta run domain-mappings delete --domain "$name" --project "$PROJECT" --region "$REGION" --quiet
+  fi
+  gcloud beta run domain-mappings create --service "$service" --domain "$name" \
+    --project "$PROJECT" --region "$REGION" --quiet
+}
+map "$DOMAIN" "$APP_VIEW_SERVICE"
+map "$PDS_DOMAIN" "$PDS_SERVICE"
 
 echo "==> Records for $DOMAIN in $ZONE"
 TYPES="$(gcloud beta run domain-mappings describe --domain "$DOMAIN" --project "$PROJECT" --region "$REGION" \

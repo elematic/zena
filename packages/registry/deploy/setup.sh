@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# One-time Google Cloud setup for one environment of the App View
-# (env.sh). Idempotent: safe to re-run, and re-running is the fix when a
+# One-time Google Cloud setup for one environment of the App View and
+# padstone (env.sh). Idempotent: safe to re-run, and re-running is the fix when a
 # step failed part way. It never replaces a key once made: the rotation
 # key, or the key that encrypts accounts' signing keys.
 #
@@ -124,6 +124,23 @@ if [ "$ROTATION_KMS" = 1 ]; then
   echo "    $SERVICE_ACCOUNT may sign with it"
 fi
 
+echo "==> Signing key $SIGNING_KMS_KEY"
+if gcloud kms keys describe "$SIGNING_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
+    --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists; left as it is"
+else
+  # The App View's own key, which signs its service-auth tokens to padstone
+  # and which its DID document lists. secp256k1, as every atproto key here
+  # is, which Cloud KMS offers only in an HSM.
+  gcloud kms keys create "$SIGNING_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
+    --project "$PROJECT" --purpose asymmetric-signing --default-algorithm ec-sign-secp256k1-sha256 \
+    --protection-level hsm --quiet
+  echo "    made"
+fi
+gcloud kms keys add-iam-policy-binding "$SIGNING_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
+  --project "$PROJECT" --member "$MEMBER" --role roles/cloudkms.signerVerifier --quiet > /dev/null
+echo "    $SERVICE_ACCOUNT may sign with it"
+
 if [ "$ROTATION_KMS" != 1 ]; then
 echo "==> Rotation key $SECRET"
 if gcloud secrets describe "$SECRET" --project "$PROJECT" > /dev/null 2>&1; then
@@ -145,8 +162,9 @@ echo "==> Session secret $JWT_SECRET"
 if gcloud secrets describe "$JWT_SECRET" --project "$PROJECT" > /dev/null 2>&1; then
   echo "    exists; left as it is"
 else
-  # 32 random bytes, which sign the access and refresh tokens of sessions,
-  # such as CI's. Replacing it signs every session out, and nothing else.
+  # 32 random bytes, which sign padstone's password sessions and the App
+  # View's web sessions. Replacing it signs every session out, and nothing
+  # else.
   od -An -tx1 -N32 /dev/urandom | tr -d ' \n' | gcloud secrets create "$JWT_SECRET" --project "$PROJECT" \
     --replication-policy automatic --data-file - --quiet
   echo "    made"

@@ -5,27 +5,30 @@
 # production. ZENA_GCP_PROJECT is the project; ZENA_GCP_REGION and
 # ZENA_GCP_REPO default as the website's scripts do.
 #
-#   staging      the site and handles at pkg-staging.zena-lang.dev, the
-#                PDS at padstone-staging.zena-lang.dev, with its own PLC
-#                directory at /plc (APP_VIEW_PLC=staging), so nothing it makes
-#                reaches plc.directory
-#   production   the site and handles at pkg.zena-lang.dev, the PDS at
-#                padstone.zena-lang.dev, sending its accounts' operations
-#                to plc.directory
+#   staging      the App View, its site and handles at
+#                pkg-staging.zena-lang.dev, with its own PLC directory at
+#                /plc (APP_VIEW_PLC=staging), so nothing it makes reaches
+#                plc.directory; padstone, the PDS of its accounts, at
+#                padstone-staging.zena-lang.dev
+#   production   the App View, its site and handles at pkg.zena-lang.dev,
+#                sending its accounts' operations to plc.directory;
+#                padstone at padstone.zena-lang.dev
 #
-# One Cloud Run service serves both names, the site's and the PDS's
-# (docs/design/package-manager.md, "Names and addresses").
-#
-# Everything an environment owns has its name: a Cloud Run service, a
-# Firestore database, a bucket, a service account, secrets, a Cloud KMS
-# key ring, and a Cloud DNS zone. Staging's are production's with -staging
-# after them.
+# Each name is a Cloud Run service of its own, both from one image
+# (docs/design/package-manager.md, "Names and addresses"): the App View
+# keeps its accounts on padstone, through com.atproto with its own tokens
+# (APP_VIEW_PDS_URL). The two share the rest: a Firestore database, under
+# one tenant, a bucket, a service account, secrets, a Cloud KMS key ring
+# and a Cloud DNS zone. Everything an environment owns has its name, and
+# staging's are production's with -staging after them.
 #
 # The App View's online rotation key (packages/pds/zena/signer.zena) is in
 # Cloud KMS for production, which signs with it and never lets it out.
 # Staging keeps the secret its accounts were made with, since an App View
 # whose key changed could no longer sign their operations; ZENA_ROTATION_KMS=1
-# moves it to Cloud KMS too, for a staging whose data was reset. The
+# moves it to Cloud KMS too, for a staging whose data was reset. The App
+# View's signing key, which its tokens to padstone are checked with, is in
+# Cloud KMS in both: replacing it only changes the App View's DID document. The
 # operator's offline rotation key, ranked above the online one, is
 # ZENA_OFFLINE_ROTATION_KEY: its did:key, from
 # `zena-cli run packages/registry/zena/main.zena -- generate-key`, whose private
@@ -62,7 +65,9 @@ esac
 # The image is the same for both environments.
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/zena-pkg"
 
-SERVICE="zena-pkg${SUFFIX}"
+# The App View's service keeps the name of the service that once ran both.
+APP_VIEW_SERVICE="zena-pkg${SUFFIX}"
+PDS_SERVICE="padstone${SUFFIX}"
 # Firestore database IDs are 4 to 63 lowercase letters, digits and hyphens.
 DATABASE="zena-pkg${SUFFIX}"
 FIRESTORE_LOCATION="${ZENA_FIRESTORE_LOCATION:-$REGION}"
@@ -71,6 +76,8 @@ BUCKET="${PROJECT}-zena-pkg${SUFFIX}"
 SERVICE_ACCOUNT="zena-pkg${SUFFIX}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com"
 SECRET="zena-pkg${SUFFIX}-rotation-key"
+# Signs padstone's password sessions and the App View's web sessions, each
+# kind of token with a type of its own.
 JWT_SECRET="zena-pkg${SUFFIX}-jwt-secret"
 # The online rotation key in Cloud KMS, when ROTATION_KMS is 1: an
 # asymmetric secp256k1 key, at HSM protection, the only level Cloud KMS
@@ -79,6 +86,9 @@ KMS_LOCATION="${ZENA_KMS_LOCATION:-$REGION}"
 KMS_KEYRING="zena-pkg${SUFFIX}"
 KMS_KEY=rotation
 KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_KEY}/cryptoKeyVersions/1"
+# The App View's signing key, in the same key ring, made as the rotation key is.
+SIGNING_KMS_KEY=signing
+SIGNING_KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${SIGNING_KMS_KEY}/cryptoKeyVersions/1"
 # The symmetric key in the same key ring that encrypts accounts' repository
 # signing keys in Firestore (PDS_KEY_ENCRYPTION_KMS_KEY), in both
 # environments.

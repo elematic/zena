@@ -7,10 +7,9 @@ Status: **Proposed**, and partly built: the AT Protocol libraries
 passwords, `zena publish`, `zena package create` and `zena scope`, and an
 App View with the methods for publishing and for changing members,
 teams and maintainers, each held until its threshold has attested it. The
-App View (`packages/registry`) runs today in one service with the PDS
-written in Zena that keeps its accounts (`packages/pds`); this design
-makes it a service of its own, which keeps its accounts on PDSes
-([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
+App View (`packages/registry`) is a service of its own, which keeps its
+accounts on the PDS written in Zena (`packages/pds`), and could keep them
+on other PDSes ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
 The checksum log is not built yet, so for now the App View's check of the
 attestations is the only one.
 
@@ -1669,17 +1668,16 @@ And the PDS and the App View can each move to a service of its own by
 changing where a name points, with no need to route one name's paths to
 two services.
 
-| Name                     | Paths                                                                                                                                                                                                                                                |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `padstone.zena-lang.dev` | `/xrpc/*`, for `com.atproto.*`; `/.well-known/did.json`; `/`, a page that names the PDS and links to the site; `/plc/*` on staging; later, `/oauth/*` for its authorization server, and account pages for the people whose atproto accounts it holds |
-| `pkg.zena-lang.dev`      | `/`, `/packages/:handle`, `/scopes/:name` and `/people/:id`; `/me`; `/admin`, for the App View's operators; `/sign-in/*`, the site's OAuth client; `/xrpc/*`, for the App View's methods; `/.well-known/did.json`; `/assets/*` and `/docs/*`         |
+| Name                     | Paths                                                                                                                                                                                                                                                             |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `padstone.zena-lang.dev` | `/xrpc/*`, for `com.atproto.*`; `/.well-known/did.json`; `/`, a page that names the PDS; later, `/oauth/*` for its authorization server, and account pages for the people whose atproto accounts it holds                                                         |
+| `pkg.zena-lang.dev`      | `/`, `/packages/:handle`, `/scopes/:name` and `/people/:id`; `/me`; `/admin`, for the App View's operators; `/sign-in/*`, the site's OAuth client; `/xrpc/*`, for the App View's methods; `/.well-known/did.json`; `/assets/*` and `/docs/*`; `/plc/*` on staging |
 
 A path asked for under the other name answers 404, so that no address
 works by accident and gets shared.
 
-Both names point at one service for now, which picks its routes by the
-name a request is for, and one store holds the data of both. Two
-boundaries stay in the code:
+Each name is a service of its own, and the two share one store, under
+one tenant. Two boundaries stay in the code:
 
 - **The App View reaches the PDS only through `com.atproto.*`**, as it
   would reach any PDS: `createAccount`, `applyWrites`, `uploadBlob` and

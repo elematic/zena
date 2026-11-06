@@ -62,8 +62,8 @@ PDS_TRUSTED_APP_VIEWS="did:web:pkg.zena-lang.dev=did:key:zQ3sh..." \
   ./target/release/zena-cli run packages/pds/zena/main.zena
 ```
 
-The App View can also run a PDS in the same process, from the same
-variables, as it is deployed for now, or reach this one over XRPC. See
+The App View reaches this PDS over XRPC, as it is deployed, or runs one
+in the same process from the same variables, as on one machine. See
 [`packages/registry`](../registry/README.md).
 
 ## Layout
