@@ -1,0 +1,67 @@
+// @mode: run
+// @stdout: created 6 requires (from <= to) does not hold | 3 3 ensures (finished) does not hold | broke 1
+// A generator's clauses follow its body. The body starts at the first
+// step, so `requires` run then and not at the call; `ensures` run when
+// the body returns, which is when the iteration ends.
+
+gen function range(from: i32, to: i32): Iterator<i32> requires (from <= to) {
+  var i = from;
+  while (i < to) invariant (from <= i && i <= to) {
+    yield i;
+    i += 1;
+  }
+}
+
+var finished = false;
+var steps = 0;
+
+// Wrong on purpose: it never sets `finished`.
+gen function countTo(n: i32): Iterator<i32>
+  ensures (finished)
+  ensures (steps == old(steps) + n)
+{
+  for (var i = 0; i < n; i += 1) {
+    steps += 1;
+    yield i;
+  }
+}
+
+export function main(): void {
+  var total = 0;
+  for (let i in range(0, 4)) {
+    total += i;
+  }
+
+  // The call makes the iterator and checks nothing.
+  let backwards = range(4, 0);
+  var first = 'created';
+  try {
+    for (let i in backwards) {
+      total += 100;
+    }
+  } catch (e) {
+    first = `${first} ${total} ${e.message}`;
+  }
+
+  // Every element arrives, and the step that ends the iteration throws.
+  var seen = 0;
+  var second = '';
+  try {
+    for (let i in countTo(3)) {
+      seen += 1;
+    }
+  } catch (e) {
+    second = `${seen} ${steps} ${e.message}`;
+  }
+
+  // Leaving early does not return from the body, so nothing is checked.
+  var third = 'broke';
+  var early = 0;
+  for (let i in countTo(3)) {
+    early += 1;
+    break;
+  }
+  third = `${third} ${early}`;
+
+  console.log(`${first} | ${second} | ${third}`);
+}

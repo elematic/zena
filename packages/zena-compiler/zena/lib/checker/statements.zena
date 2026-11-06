@@ -236,6 +236,14 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
                 extractFutureValueType(ctx, expectedReturn) == null &&
                 isAssignableTo(ctx, argType, adoptTarget)) {
               adopted = true;
+              // The postconditions run at this return, and `result` is
+              // the value the future completes with, which a future
+              // that is handed on has not produced yet.
+              if (ctx.hasEnsures) {
+                ctx.error(
+                  "An async function with 'ensures' clauses cannot return a future for its caller to wait on: 'result' is not known yet. 'await' it.",
+                  DiagnosticCode.TypeMismatch, loc);
+              }
             }
             if (!adopted) {
               ctx.error(

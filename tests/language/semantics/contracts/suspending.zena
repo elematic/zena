@@ -1,0 +1,51 @@
+// @mode: check
+
+// Clauses on generators and async functions follow the body. A
+// generator's body returns nothing; an async function's returns the
+// value its future completes with.
+
+var produced = 0;
+
+gen function count(n: i32): Iterator<i32>
+  requires (n >= 0)
+  ensures (produced == old(produced) + n)
+{
+  var i = 0;
+  while (i < n) invariant (i >= 0) {
+    produced += 1;
+    yield i;
+    i += 1;
+  }
+}
+
+// What a `requires` narrows holds in a generator's body too.
+gen function letters(text: String | null): Iterator<i32> requires (text != null) {
+  yield text.length;
+}
+
+gen function noResult(n: i32): Iterator<i32> ensures (result) { // @error: 'result' has no value here: a generator's body returns nothing.
+  yield n;
+}
+
+let load = async (id: i32): Future<i32>
+  requires (id > 0)
+  ensures (result >= id)
+=> id;
+
+let store = async (id: i32): Future<void> ensures (produced >= old(produced)) => {
+  produced += await load(id);
+};
+
+async function wrongType(id: i32): Future<String> ensures (result > 0) { // @error: cannot apply operator '>' to String and i32
+  return `${id}`;
+}
+
+// An async function may hand back a future for its caller to wait on,
+// but then `result` is not known at the return.
+async function forwards(id: i32): Future<i32> {
+  return load(id);
+}
+
+async function forwardsWithEnsures(id: i32): Future<i32> ensures (result > 0) {
+  return load(id); // @error: An async function with 'ensures' clauses cannot return a future for its caller to wait on: 'result' is not known yet. 'await' it.
+}

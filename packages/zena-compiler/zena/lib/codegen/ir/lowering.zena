@@ -1571,6 +1571,24 @@ export final class FunctionLowerer {
   }
 
   /**
+   * The types of the values a return in this body carries: the
+   * function's results, or in a suspending body what the split pass
+   * expects of a presplit return. A generator's is bare, and so is an
+   * `async gen`'s; an async function's carries the value its future
+   * completes with, when it has one.
+   */
+  #returnedValueTypes(sig: WasmSignature): GrowableArray<ValType> {
+    if (this.presplitGenerator) {
+      return new Array<ValType>(0);
+    }
+    if (this.presplitAsync) {
+      let valueVt = this.presplitAsyncValueVt;
+      return if (valueVt == null) new Array<ValType>(0) else growable<ValType>([valueVt]);
+    }
+    return sig.returns;
+  }
+
+  /**
    * Evaluates the operand of each `old(e)` in the function's `ensures`
    * clauses. The checker makes `old` the entry-value operator only
    * directly in a condition, so a function written inside one is not
@@ -1970,12 +1988,19 @@ export final class FunctionLowerer {
     // entry. A constructor's value phase is left out: it hands field
     // values to the factory that called it, before there is an object,
     // and the postconditions run after the body phase or the factory.
+    //
+    // A generator or async body is lowered here as ordinary control
+    // flow, with plain returns, and split into a state machine
+    // afterwards. So the same redirect serves it; what differs is what
+    // a return carries there: nothing in a generator, and in an async
+    // function the value its future completes with.
     if (contracts != null && this.wasm.runsEnsuresClause(contracts) &&
         this.ctorPhase != 1 && extCtorDef == null) {
+      let returned = this.#returnedValueTypes(sig);
       this.#ensures = contracts;
-      this.#bindsResult = ctorDef == null && sig.returns.length == 1;
+      this.#bindsResult = ctorDef == null && returned.length == 1;
       this.#lowerOldValues(contracts);
-      this.b.redirectReturns(sig.returns);
+      this.b.redirectReturns(returned);
     }
 
     if (extCtorDef != null) {

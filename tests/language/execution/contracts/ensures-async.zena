@@ -1,0 +1,72 @@
+// @mode: run
+// @result: 37
+// An `async` function's `ensures` run when its future completes, with
+// `result` the value it completes with. `old(e)` is evaluated at the
+// call and read after the awaits in between.
+
+import { Future, Completer, scheduleMicrotask } from 'zena:async';
+
+// A future that completes on a later turn of the queue.
+let later = <T>(value: T): Future<T> => {
+  let c = new Completer<T>();
+  scheduleMicrotask(() => {
+    c.complete(value);
+  });
+  return c.future;
+};
+
+class Counter {
+  var count: i32 = 0;
+}
+
+// An expression body.
+let double = async (n: i32): Future<i32> ensures (result == n * 2) => n * 2;
+
+let add = async (counter: Counter, by: i32): Future<i32>
+  ensures (counter.count == old(counter.count) + by)
+  ensures (result == counter.count)
+=> {
+  let twice = await later(by * 2);
+  counter.count += twice >> 1;
+  return counter.count;
+};
+
+// Wrong on purpose: adds two. It returns nothing, and has a `finally`
+// on the way out.
+let addOne = async (counter: Counter): Future<void>
+  ensures (counter.count == old(counter.count) + 1)
+=> {
+  try {
+    await later(0);
+    counter.count += 2;
+    return;
+  } finally {
+    counter.count += 0;
+  }
+};
+
+class Tally {
+  var total: i32 = 0;
+
+  async record(n: i32): Future<i32> requires (n > 0) ensures (result > old(this.total)) {
+    this.total += await later(n);
+    return this.total;
+  }
+}
+
+export let main = async (): Future<i32> => {
+  let counter = new Counter();
+  var score = await double(2); // 4
+  score += await add(counter, 3); // +3
+  score += await add(counter, 4); // +7
+  try {
+    await addOne(counter);
+  } catch (e) {
+    if (e is ContractError) { score += 1; } // +1
+  }
+  let tally = new Tally();
+  score += await tally.record(5); // +5
+  score += await tally.record(3); // +8
+  score += counter.count; // +9: the body ran before its postcondition failed
+  return score;
+};

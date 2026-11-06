@@ -163,7 +163,8 @@ condition binds, because the invariant holds before those are bound.
 `result` has the function's return type, whether declared or inferred
 from the body. An `async` function's `result` is the value its future
 completes with. A function that returns nothing has no `result`, and
-neither has a constructor, whose new object is `this`.
+neither has a constructor, whose new object is `this`, or a generator,
+whose body returns nothing.
 
 ### `old`
 
@@ -237,23 +238,25 @@ The condition's own tests narrow as usual:
 
 The checker reports each of these:
 
-- Any clause on a generator (#930).
 - Any clause on a method without a body: an interface method, or an
   `abstract` or `declare` method (#929).
-- An `ensures` clause on an `async` function (#931). Its `requires`
-  clauses run.
 - An `ensures` clause on a function whose return type is `inline`
   (#932). Such a result is returned as several values, and `result` has
   no one value to be.
 - An `ensures` clause on an extension class's constructor (#933).
 - `old` in a constructor's `ensures` condition (#934).
 
-What the first three would mean is under
-[Open questions](#open-questions).
+What the first would mean is under [Open questions](#open-questions).
 
-A function with `ensures` clauses cannot `tail return`. That is a rule
-and not a gap: a tail call discards the frame the postconditions would
-run in.
+Two things a function with `ensures` clauses cannot do are rules and
+not gaps:
+
+- `tail return`: a tail call discards the frame the postconditions
+  would run in.
+- In an `async` function, return a future for its caller to wait on in
+  place of a value. `result` is the value the future completes with,
+  which a future that is handed on has not produced yet. The function
+  can `await` it.
 
 ## Running a clause
 
@@ -299,6 +302,17 @@ does. The first that fails ends the call.
 - **`async` functions.** The clauses run when the function is called,
   in the part of the body before its first `await`. A failure completes
   the returned future with the error, as a `throw` there does.
+- **Generators.** A generator's body does not start at the call, which
+  only makes the iterator. It starts at the first step, and the
+  preconditions run then, as the first thing the body does. A call
+  with arguments that break a precondition returns an iterator, and
+  the first `next()`, or the `for`-in that drives it, throws. This
+  holds for an `async gen` function too.
+
+  A precondition is the caller's to keep, so reporting it at the call
+  would be better. It needs the check in the function the call
+  reaches, which allocates the frame and returns, and that function
+  is built by the generator split with none of the body's code in it.
 
 ### Loop invariants
 
@@ -338,6 +352,22 @@ is the same array, and `old(this.items.length)` is the earlier length.
   the object as `this`. When the class is a superclass, they run after
   its body and before the subclass's. A constructor with an empty body
   and postconditions is compiled with a body phase to hold them.
+- **`async` functions and generators.** Both are lowered as ordinary
+  control flow, with plain returns, and split into a state machine
+  afterwards, so the same redirect serves them. What a return carries
+  there differs: in an `async` function, the value its future
+  completes with, which is `result`; in a generator, nothing.
+  - An `async` function's postconditions run when its body returns,
+    just before its future completes. A failure completes the future
+    with the error.
+  - A generator's run when its body returns, which is when the
+    iteration ends: the step that would report the end throws. A loop
+    that leaves early disposes the generator without returning from
+    its body, so nothing is checked.
+  - `old(e)` is evaluated where the preconditions run: at the call
+    for an `async` function, at the first step for a generator. The
+    value is live across the suspensions in between, and the split
+    keeps it in the frame like any other.
 - **Results kept whole.** One optimization returns a record's fields as
   separate values when every caller only reads the fields. A function
   with postconditions is left out of it, because `result` is the
@@ -476,14 +506,12 @@ loop optimizer uses.
   `requires` clauses of its own, which would break callers that hold
   the supertype, is open. Until it is decided, a method without a body
   cannot have clauses.
-- **Generators.** A generator's body runs when it is first stepped, and
-  it has no single result. A `requires` clause could run at the call or
-  at the first step.
-- **`ensures` on `async` functions.** It holds when the future
-  completes, with `result` the value it completes with. The body is
-  split into a state machine after lowering, and the redirected return
-  and the values kept for `old` have not been taken through that
-  split.
+- **A generator's preconditions at the call.** They run at the first
+  step today (see [Preconditions](#preconditions)). Running them at the
+  call means lowering them into the generator's ramp.
+- **A condition on each value a generator yields.** A generator's
+  `ensures` is about its body returning. A condition every yielded
+  value satisfies would need a clause of its own.
 - **Calls with effects in a condition.** Assignments and `await` are
   rejected. A function the condition calls can still change state.
 - **Narrowing from `invariant`.** An invariant that held at the test

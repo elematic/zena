@@ -3164,23 +3164,15 @@ export function checkMethodBody(
 
   // As for a function (checkFunctionExpression). A constructor's
   // `requires` come ahead of its prologue, which they guard.
-  var ensuresFlow = ctx.currentFlow;
-  if (md.isGenerator) {
-    rejectContracts(ctx, md.contracts, 'a generator');
-  } else {
-    ensuresFlow = checkRequiresClauses(ctx, md.contracts, md.params);
-    body.hasEnsures = hasEnsuresClause(md.contracts);
-    if (isCtor) {
-      rejectThisInRequires(ctx, md.contracts);
-    }
-    if (md.isAsync) {
-      rejectEnsuresClauses(ctx, md.contracts, 'an async function');
-    }
-    // An extension class's constructor produces the underlying value
-    // through `super(...)` and has no body phase to check after.
-    if (isCtor && classType.isExtension) {
-      rejectEnsuresClauses(ctx, md.contracts, "an extension class's constructor");
-    }
+  let ensuresFlow = checkRequiresClauses(ctx, md.contracts, md.params);
+  body.hasEnsures = hasEnsuresClause(md.contracts);
+  if (isCtor) {
+    rejectThisInRequires(ctx, md.contracts);
+  }
+  // An extension class's constructor produces the underlying value
+  // through `super(...)` and has no body phase to check after.
+  if (isCtor && classType.isExtension) {
+    rejectEnsuresClauses(ctx, md.contracts, "an extension class's constructor");
   }
 
   if (isCtor) {
@@ -3377,10 +3369,8 @@ export function checkMethodBody(
 
   // A constructor returns nothing its `ensures` could name; the new
   // object is `this`.
-  if (!md.isGenerator) {
-    let resultType: Type = if (isCtor) new VoidType() else (body.returnType ?? new VoidType());
-    checkEnsuresClauses(ctx, md.contracts, md.params, resultType, ensuresFlow);
-  }
+  let resultType: Type = if (isCtor) new VoidType() else (body.returnType ?? new VoidType());
+  checkEnsuresClauses(ctx, md.contracts, md.params, resultType, ensuresFlow, md.isGenerator);
 
   let methodBody = md.body;
   if (methodBody != null &&

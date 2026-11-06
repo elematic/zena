@@ -1667,9 +1667,13 @@ function adopt(a: Animal): void requires (a is Cat || a is Dog) {
 ```
 
 An `async` function's preconditions run when it is called, before its
-first `await`. A generator cannot have contract clauses yet, and neither
-can a method without a body (an interface method, or an `abstract` or
-`declare` method).
+first `await`. A generator's body starts at its first step, and its
+preconditions run then: a call with arguments that break one returns
+an iterator, and the first `next()`, or the `for`-in that drives it,
+throws.
+
+A method without a body (an interface method, or an `abstract` or
+`declare` method) cannot have contract clauses yet.
 
 #### Loop invariants: `invariant`
 
@@ -1727,10 +1731,32 @@ function throws. It knows what the function knew on entry, plus what
 its `requires` clauses narrowed on parameters; what the body narrowed on
 one path does not hold on the others.
 
+An `async` function's postconditions run when its body returns, just
+before its future completes, and `result` is the value it completes
+with. A generator's run when its body returns, which is when the
+iteration ends; it has no `result`, and a loop that leaves early checks
+nothing.
+
+```zena
+let load = async (id: i32): Future<Record>
+  requires (id > 0)
+  ensures (result.id == id)
+=> {
+  return await fetchRecord(id);
+};
+
+gen function range(from: i32, to: i32): Iterator<i32> requires (from <= to) {
+  for (var i = from; i < to; i += 1) {
+    yield i;
+  }
+}
+```
+
 A function with `ensures` clauses cannot `tail return`, since the call
-would discard the frame the clauses run in. `ensures` is not supported
-yet on an `async` function or on a function whose return type is
-`inline`.
+would discard the frame the clauses run in. For the same reason an
+`async` function with `ensures` clauses cannot return a future for its
+caller to wait on; it can `await` it. `ensures` is not supported yet on
+a function whose return type is `inline`.
 
 #### Clauses for test and debug builds: `debug`
 
