@@ -228,22 +228,31 @@ clauses attach preconditions, postconditions, and loop invariants directly to
 function signatures and loop headers:
 
 ```zena
-class BoundedCounter {
-  var value: i32;
-  limit: i32;
-
-  new(this.value, this.limit)
-    requires (0 <= value && value <= limit);
-
-  add(delta: i32): i32
-    requires (delta > 0)
-    requires (this.value + delta <= this.limit)
-    ensures (this.value == old(this.value) + delta)
-    debug ensures (0 <= result && result <= this.limit)
-  {
-    this.value += delta;
-    return this.value;
+function isSorted(array: GrowableArray<i32>) {
+  for (var i = 1; i < array.length; i += 1) {
+    if (array[i - 1] > array[i]) {
+      return false;
+    }
   }
+  return true;
+}
+
+function insertSorted(array: GrowableArray<i32>, item: i32)
+  debug requires (isSorted(array))
+  ensures (array.length == old(array.length) + 1)
+  ensures (array[result] == item)
+  debug ensures (isSorted(array))
+{
+  array.push(item);
+  var i = array.length - 1;
+  while (i > 0 && array[i - 1] > item)
+    invariant (0 <= i && i < array.length)
+  {
+    array[i] = array[i - 1];
+    i -= 1;
+  }
+  array[i] = item;
+  return i;
 }
 ```
 

@@ -124,37 +124,40 @@ class Range {
 
 ### Comparing against entry state with `old()`
 
-Mutating methods often need to relate an object's state on return to the state it
-had when the call began. Inside an `ensures` condition, `old(expr)` evaluates
-`expr` on entry (after all `requires` clauses succeed) and keeps that value until
-the postcondition runs:
+Functions that mutate an argument or receiver often need to relate the state on
+return to the state when the call began. Inside an `ensures` condition,
+`old(expr)` evaluates `expr` on entry (after all `requires` clauses succeed) and
+keeps that value until the postcondition runs—including across early returns:
 
 ```zena
-class Stack<T> {
-  #items = new GrowableArray<T>();
+import {growable, join} from 'zena:core';
 
-  length(): i32 {
-    return this.#items.length;
+function insert<T>(array: GrowableArray<T>, index: i32, item: T)
+  requires (index >= 0)
+  requires (index <= array.length)
+  ensures (array.length == old(array.length) + 1)
+  ensures (array[index] == item)
+{
+  array.push(item);
+  if (index == array.length - 1) {
+    return;
   }
+  for (var i = array.length - 1; i > index; i -= 1) {
+    array[i] = array[i - 1];
+  }
+  array[index] = item;
+}
 
-  push(item: T): void
-    ensures (this.length() == old(this.length()) + 1)
-  {
-    this.#items.push(item);
-  }
-
-  pop(): T
-    requires (this.length() > 0)
-    ensures (this.length() == old(this.length()) - 1)
-  {
-    return this.#items.pop();
-  }
+export function main() {
+  let items = growable(['a', 'b', 'c']);
+  insert(items, 2, 'd');
+  console.log(join(items, ', ')); // a, b, d, c
 }
 ```
 
 `old(expr)` captures the value of `expr` without cloning heap objects. Capturing
-`old(this.#items.length)` records the `i32` length at entry, whereas
-`old(this.#items)` holds a reference to the same array instance that the method
+`old(array.length)` records the `i32` length at entry, whereas `old(array)`
+holds a reference to the same `GrowableArray` instance that `insert`
 subsequently mutates.
 
 ## Loop invariants with invariant
@@ -249,48 +252,40 @@ the function body runs without those checks in ordinary builds.
 ## Test and debug clauses with debug
 
 Unmarked clauses run in every build, just like array bounds checks and checked
-`as` casts. Some conditions, however, cost more than the operation they guard—for
-example, verifying in `O(n)` time that an array is sorted before an `O(log n)`
-binary search.
+`as` casts. Some conditions, however, scan an entire data structure—for example,
+checking that a `GrowableArray` is sorted before and after inserting an element,
+even when appending an already-ordered value at the end takes `O(1)` work.
 
 Prefixing `requires`, `ensures`, or `invariant` with `debug` enables the check
 only when running tests (`zena test`) or when compiling/running in debug mode
 with `--debug` / `-g` (`zena -g build`, `zena -g run`):
 
 ```zena
-import {div} from 'zena:math';
-
-function isSorted(items: FixedArray<i32>): boolean {
-  for (var i = 1; i < items.length; i += 1) {
-    if (items[i - 1] > items[i]) {
+function isSorted(array: GrowableArray<i32>) {
+  for (var i = 1; i < array.length; i += 1) {
+    if (array[i - 1] > array[i]) {
       return false;
     }
   }
   return true;
 }
 
-function findSorted(items: FixedArray<i32>, target: i32): i32
-  requires (items.length > 0)
-  debug requires (isSorted(items))
-  debug ensures (result == -1 || items[result] == target)
+function insertSorted(array: GrowableArray<i32>, item: i32)
+  debug requires (isSorted(array))
+  ensures (array.length == old(array.length) + 1)
+  ensures (array[result] == item)
+  debug ensures (isSorted(array))
 {
-  var lo = 0;
-  var hi = items.length;
-  while (lo < hi)
-    invariant (0 <= lo && lo <= hi && hi <= items.length)
-    debug invariant (isSorted(items))
+  array.push(item);
+  var i = array.length - 1;
+  while (i > 0 && array[i - 1] > item)
+    invariant (0 <= i && i < array.length)
   {
-    let mid = lo + div(hi - lo, 2);
-    if (items[mid] == target) {
-      return mid;
-    }
-    if (items[mid] < target) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
+    array[i] = array[i - 1];
+    i -= 1;
   }
-  return -1;
+  array[i] = item;
+  return i;
 }
 ```
 
