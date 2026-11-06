@@ -1,0 +1,47 @@
+// @mode: run
+// @stdout: caught negative 0 | caught late 2 F
+// A generator whose own step throws, driven by a for-in. The error
+// reaches the loop's caller. Leaving the loop disposes the generator,
+// which was left mid-step by the throw: there is nothing to resume, and
+// its `finally` ran once, while the error unwound through it.
+
+var log = '';
+
+gen function failsAtOnce(n: i32): Iterator<i32> {
+  if (n < 0) {
+    throw new Error('negative');
+  }
+  yield n;
+}
+
+gen function failsLate(): Iterator<i32> {
+  try {
+    yield 1;
+    yield 2;
+    throw new Error('late');
+  } finally {
+    log = log + 'F';
+  }
+}
+
+export function main(): void {
+  var seen = 0;
+  var first = '';
+  try {
+    for (let i in failsAtOnce(-1)) {
+      seen += 1;
+    }
+  } catch (e) {
+    first = `caught ${e.message} ${seen}`;
+  }
+
+  var second = '';
+  try {
+    for (let i in failsLate()) {
+      seen += 1;
+    }
+  } catch (e) {
+    second = `caught ${e.message} ${seen} ${log}`;
+  }
+  console.log(`${first} | ${second}`);
+}
