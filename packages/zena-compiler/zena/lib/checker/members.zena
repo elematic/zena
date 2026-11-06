@@ -9,7 +9,7 @@ import {
   isSymbolFieldDeclaration, syntacticMemberName
 } from '../ast.zena';
 import {
-  ArrayType, ClassType, EnumType, ErrorType, FieldInfo, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType, OwnershipHandle, RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, isAffineValue, isIntegerType, ownershipHandleInner, ownershipHandleOf, typeCarriesOwner, typeToString, unwrapAliases
+  ArrayType, ClassType, EnumType, ErrorType, FieldInfo, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType, OwnershipHandle, RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, isAffineValue, isIntegerType, ownershipHandleInner, ownershipHandleOf, parseTupleIndexLiteral, typeCarriesOwner, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { noSymbolId } from '../scope/symbol.zena';
@@ -1523,7 +1523,7 @@ function resolveIndexType(
       // it are known.
       if (row != null) {
         if (let NumberLiteral {raw} = index) {
-          while (let (true, idx) = parseI32(raw)) {
+          while (let (true, idx) = parseTupleIndexLiteral(raw)) {
             if (idx >= 0 && idx < rowIndex) {
               return tupleElementRead(ctx, elementTypes[idx], loc);
             }
@@ -1540,7 +1540,7 @@ function resolveIndexType(
       // Tuple indexing — return specific element type for literal index.
       match (index) {
         case NumberLiteral {raw}: {
-          while (let (true, idx) = parseI32(raw)) {
+          while (let (true, idx) = parseTupleIndexLiteral(raw)) {
             if (idx >= 0 && idx < elementTypes.length) {
               return tupleElementRead(ctx, elementTypes[idx], loc);
             }
@@ -1567,7 +1567,7 @@ function resolveIndexType(
       // An inline result's positions are separate values, so only a
       // literal names one. A nested inline tuple is read boxed.
       if (let NumberLiteral {raw} = index) {
-        while (let (true, idx) = parseI32(raw)) {
+        while (let (true, idx) = parseTupleIndexLiteral(raw)) {
           if (idx >= 0 && idx < elementTypes.length) {
             if (isAffineValue(objectType)) {
               // Reading one element of the temporary would leave its

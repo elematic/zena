@@ -166,13 +166,19 @@ export const zenaLanguage = StreamLanguage.define<ZenaState>({
     }
 
     // 4. Numbers
-    if (stream.match(/^0[xX][0-9a-fA-F]+/)) {
+    if (stream.match(/^0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*/)) {
       return 'number';
     }
-    if (stream.match(/^[0-9]+\.[0-9]+/)) {
+    if (stream.match(/^0[bB][01](?:_?[01])*/)) {
       return 'number';
     }
-    if (stream.match(/^[0-9]+/)) {
+    if (stream.match(/^0[oO][0-7](?:_?[0-7])*/)) {
+      return 'number';
+    }
+    if (stream.match(/^[0-9](?:_?[0-9])*\.[0-9](?:_?[0-9])*/)) {
+      return 'number';
+    }
+    if (stream.match(/^[0-9](?:_?[0-9])*/)) {
       return 'number';
     }
 

@@ -1,0 +1,63 @@
+// @mode: run
+// @result: 1
+
+enum Perm {
+  Read = 0b100,
+  Write = 0b010,
+  Exec = 0b001,
+  Default = 0o755,
+}
+
+let TOP_DEC = 1_000_000;
+let TOP_BIN = 0b1010_0101;
+let TOP_OCT = 0o755;
+let TOP_HEX = 0xdead_beef;
+let TOP_FLT = 3.141_592;
+let TOP_I64: i64 = 9_223_372_036_854_775_807;
+
+export let main = (): i32 => {
+  if (TOP_DEC != 1000000) { return 10; }
+  if (TOP_BIN != 165) { return 11; }
+  if (0B1111_0000 != 240) { return 12; }
+  if (TOP_OCT != 493) { return 13; }
+  if (0O644 != 420) { return 14; }
+  if (TOP_HEX != -559038737) { return 15; }
+  if (TOP_FLT != 3.141592) { return 16; }
+  if (TOP_I64 != 9223372036854775807) { return 17; }
+
+  // Full-width bit patterns on i32 and i64.
+  let minusOneBin = 0b11111111_11111111_11111111_11111111;
+  let minusOneOct = 0o377_7777_7777;
+  if (minusOneBin != -1 || minusOneOct != -1) { return 18; }
+
+  let minusOne64: i64 = 0xFFFF_FFFF_FFFF_FFFF;
+  if (minusOne64 != (-1 as i64)) { return 19; }
+
+  // Narrow, unsigned, and float contexts / casts.
+  let minI8: i8 = -0b1000_0000;
+  if ((minI8 as i32) != -128) { return 20; }
+  let maxU32: u32 = 4_294_967_295;
+  if ((maxU32 as i32) != -1) { return 21; }
+  let binF64: f64 = 0b1010_0101;
+  let octF32: f32 = 0o755;
+  if (binF64 != 165.0 || octF32 != (493.0 as f32)) { return 22; }
+  if ((1_000.5 as f32) != (1000.5 as f32)) { return 23; }
+
+  // Enum initializers, match patterns, and ranges with separators.
+  if (((Perm.Read as i32) | (Perm.Write as i32) | (Perm.Exec as i32)) != 7) { return 24; }
+  if ((Perm.Default as i32) != 493) { return 25; }
+
+  let matched = match (165) {
+    case 0b1010_0101: true
+    case _: false
+  };
+  if (!matched) { return 26; }
+
+  var sum = 0;
+  for (let x in 1_0..1_5) {
+    sum += x;
+  }
+  if (sum != 60) { return 27; }
+
+  return 1;
+};

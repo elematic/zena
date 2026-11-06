@@ -1,0 +1,35 @@
+// @mode: check
+// Digit separators (`_`) and binary/octal (`0b`, `0o`) integer literals.
+
+let dec = 2_147_483_647;
+let decNeg = -2_147_483_648;
+let decOverflow = 2_147_483_648; // @error: Integer literal 2_147_483_648 is out of range for type 'i32'.
+
+// Binary and octal act as bit patterns for i32/i64, just like hex.
+let binAllOnes = 0b11111111_11111111_11111111_11111111;
+let binOverflow = 0b1_00000000_00000000_00000000_00000000; // @error: Integer literal 0b1_00000000_00000000_00000000_00000000 is out of range for type 'i32'.
+let octAllOnes = 0o377_7777_7777;
+let octOverflow = 0o400_0000_0000; // @error: Integer literal 0o400_0000_0000 is out of range for type 'i32'.
+
+// Narrow and unsigned contextual checks.
+let b1: u8 = 0b1111_1111;
+let b2: u8 = 0b1_0000_0000; // @error: Integer literal 0b1_0000_0000 is out of range for type 'u8'.
+let b3: i8 = -0b1000_0000;
+let b4: i8 = -0b1000_0001; // @error: Integer literal -0b1000_0001 is out of range for type 'i8'.
+let o1: u16 = 0o177_777;
+let o2: u16 = 0o200_000; // @error: Integer literal 0o200_000 is out of range for type 'u16'.
+
+// 64-bit bit patterns and decimal bounds.
+let w1: i64 = 0b11111111_11111111_11111111_11111111_11111111_11111111_11111111_11111111;
+let w2: u64 = 18_446_744_073_709_551_615;
+let w3: u64 = 18_446_744_073_709_551_616; // @error: Integer literal 18_446_744_073_709_551_616 is out of range for type 'u64'.
+
+// Literal types normalize across separators and radices.
+type Thousand = 1_000;
+let k1: Thousand = 1000;
+let k2: Thousand = 0x3e8;
+
+type Mask = 0b1010;
+let m1: Mask = 10;
+let m2: Mask = 0o12;
+let mBad: Mask = 11; // @error: Type mismatch

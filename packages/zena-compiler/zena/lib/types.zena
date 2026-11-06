@@ -4011,30 +4011,116 @@ export function promoteNumeric(leftOrig: Type, rightOrig: Type): Type | null {
 }
 
 /**
- * Parse the magnitude of an integer literal, reporting overflow rather
- * than wrapping. `raw` is the literal's source text without a sign;
- * underscores are ignored and a `0x` prefix selects hex. Returns
- * `(false, _)` for a malformed literal or one that does not fit in 64
- * bits, which is the widest magnitude any Zena integer type can hold.
+ * Extract the radix (`2`, `8`, `10`, `16`) and digit start index of an
+ * unsigned integer literal source string (`0b`, `0o`, `0x`, or decimal).
  */
-export function integerLiteralMagnitude(raw: String): inline (boolean, u64) {
-  var start = 0;
-  var isHex = false;
-  if (start + 2 <= raw.length) {
-    let c0 = raw.getByteAt(start);
-    let c1 = raw.getByteAt(start + 1);
-    if (c0 == 48 && (c1 == 120 || c1 == 88)) { // '0' then 'x'/'X'
-      isHex = true;
-      start = start + 2;
+export function integerLiteralRadix(raw: String): inline (i32, i32) {
+  if (raw.length >= 2 && raw.getByteAt(0) == 48) {
+    let c1 = raw.getByteAt(1);
+    if (c1 == 120 || c1 == 88) { return (16, 2); }
+    if (c1 == 98 || c1 == 66) { return (2, 2); }
+    if (c1 == 111 || c1 == 79) { return (8, 2); }
+  }
+  return (10, 0);
+}
+
+/**
+ * Return `raw` with `'_'` separators removed, reusing `raw` unchanged when
+ * none are present.
+ */
+export function stripNumericUnderscores(raw: String): String {
+  if (!raw.contains('_')) {
+    return raw;
+  }
+  let sb = new StringBuilder();
+  for (var i = 0; i < raw.length; i += 1) {
+    let c = raw.getByteAt(i);
+    if (c != 95) {
+      sb.appendByte(c);
     }
   }
+  return sb.toString();
+}
+
+/**
+ * Parse a non-negative integer literal intended as a static tuple index.
+ */
+export function parseTupleIndexLiteral(raw: String): inline (boolean, i32) {
+  if (raw.contains('.')) {
+    return (false, 0);
+  }
+  if (let (true, mag) = integerLiteralMagnitude(raw)) {
+    if (mag <= (2147483647 as u64)) {
+      return (true, mag as i32);
+    }
+  }
+  return (false, 0);
+}
+
+/**
+ * Whether two numeric literal spellings denote the same literal-type value
+ * (`1_000` and `1000`, `0x10` and `16`, `3.14_15` and `3.1415`).
+ */
+export function sameNumericLiteralRaw(a: String, b: String): boolean {
+  if (a == b) {
+    return true;
+  }
+  let aFloat = a.contains('.');
+  let bFloat = b.contains('.');
+  if (aFloat != bFloat) {
+    return false;
+  }
+  if (aFloat) {
+    return stripNumericUnderscores(a) == stripNumericUnderscores(b);
+  }
+  let negA = a.length > 0 && a.getByteAt(0) == 45;
+  let negB = b.length > 0 && b.getByteAt(0) == 45;
+  let digitsA = if (negA) a.sliceBytes(1, a.length) else a;
+  let digitsB = if (negB) b.sliceBytes(1, b.length) else b;
+  if (let (true, magA) = integerLiteralMagnitude(digitsA)) {
+    if (let (true, magB) = integerLiteralMagnitude(digitsB)) {
+      if (magA == (0 as u64) && magB == (0 as u64)) {
+        return true;
+      }
+      return negA == negB && magA == magB;
+    }
+  }
+  return false;
+}
+
+/**
+ * Parse the magnitude of an integer literal, reporting overflow rather
+ * than wrapping. `raw` is the literal's source text without a sign;
+ * underscores are ignored and `0x`/`0b`/`0o` prefixes select hex, binary,
+ * or octal. Returns `(false, _)` for a malformed literal or one that does
+ * not fit in 64 bits, which is the widest magnitude any Zena primitive
+ * integer type can hold.
+ */
+export function integerLiteralMagnitude(raw: String): inline (boolean, u64) {
+  let (radix, start) = integerLiteralRadix(raw);
 
   // Largest value that can still absorb another digit, and the largest
   // digit it can absorb: u64Max / base and u64Max % base. Written as
   // constants because `/` on integers promotes to a float in Zena.
-  let limit = if (isHex) 1152921504606846975 as u64 else 1844674407370955161 as u64;
-  let lastDigit = if (isHex) 15 as u64 else 5 as u64;
-  let base = if (isHex) 16 as u64 else 10 as u64;
+  let limit = if (radix == 16) {
+    1152921504606846975 as u64
+  } else if (radix == 8) {
+    2305843009213693951 as u64
+  } else if (radix == 2) {
+    9223372036854775807 as u64
+  } else {
+    1844674407370955161 as u64
+  };
+  let lastDigit = if (radix == 16) {
+    15 as u64
+  } else if (radix == 8) {
+    7 as u64
+  } else if (radix == 2) {
+    1 as u64
+  } else {
+    5 as u64
+  };
+  let base = radix as u64;
 
   var res = 0 as u64;
   var i = start;
@@ -4046,11 +4132,23 @@ export function integerLiteralMagnitude(raw: String): inline (boolean, u64) {
       continue;
     }
     var digit = 0 as u64;
-    if (code >= 48 && code <= 57) { // '0'..'9'
+    if (radix == 2) {
+      if (code == 48 || code == 49) {
+        digit = (code - 48) as u64;
+      } else {
+        return (false, 0 as u64);
+      }
+    } else if (radix == 8) {
+      if (code >= 48 && code <= 55) {
+        digit = (code - 48) as u64;
+      } else {
+        return (false, 0 as u64);
+      }
+    } else if (code >= 48 && code <= 57) { // '0'..'9'
       digit = (code - 48) as u64;
-    } else if (isHex && code >= 97 && code <= 102) { // 'a'..'f'
+    } else if (radix == 16 && code >= 97 && code <= 102) { // 'a'..'f'
       digit = (code - 97 + 10) as u64;
-    } else if (isHex && code >= 65 && code <= 70) { // 'A'..'F'
+    } else if (radix == 16 && code >= 65 && code <= 70) { // 'A'..'F'
       digit = (code - 65 + 10) as u64;
     } else {
       return (false, 0 as u64);
@@ -4149,20 +4247,20 @@ export function integerLiteralFits(raw: String, negative: boolean, t: Type): boo
  * Whether an integer literal fits `i64` (`is64`) or `i32`, the types a
  * literal takes without a range-checked context. A decimal literal must
  * fit the signed range, with `negative` reporting a leading unary minus
- * as in `integerLiteralFits`. A hex literal may use every bit, as a bit
- * pattern, so `0xFFFFFFFF` is the i32 -1.
+ * as in `integerLiteralFits`. A radix literal (`0x`, `0b`, `0o`) may use
+ * every bit, as a bit pattern, so `0xFFFFFFFF` is the i32 -1.
  */
 export function signedLiteralFits(raw: String, negative: boolean, is64: boolean): boolean {
   if (let (true, mag) = integerLiteralMagnitude(raw)) {
-    let isHex = raw.length >= 2 && raw.getByteAt(0) == 48 &&
-        (raw.getByteAt(1) == 120 || raw.getByteAt(1) == 88); // '0' then 'x'/'X'
+    let (radix, _) = integerLiteralRadix(raw);
+    let isBitPattern = radix != 10;
     if (is64) {
       // Any magnitude that parsed at all is a 64-bit pattern.
-      if (isHex) { return true; }
+      if (isBitPattern) { return true; }
       return if (negative) mag <= (9223372036854775808 as u64)
         else mag <= (9223372036854775807 as u64);
     }
-    if (isHex) { return mag <= (4294967295 as u64); }
+    if (isBitPattern) { return mag <= (4294967295 as u64); }
     return if (negative) mag <= (2147483648 as u64) else mag <= (2147483647 as u64);
   }
   // Malformed, or wider than 64 bits: fits nothing.

@@ -461,35 +461,50 @@ export final class Tokenizer {
   // ============================================================================
 
   #scanNumber(startPos: i32, startCol: i32): void {
+    let start = this.#reader.mark();
     let c = this.#peek();
-    let builder = new StringBuilder();
+    let next = this.#peekNext();
 
-    // Check for hex literal (0x or 0X)
-    if (c == 48 && (this.#peekNext() == 120 || this.#peekNext() == 88)) {
-      // '0'=48, 'x'=120, 'X'=88
-      builder.appendByte(this.#advance()); // '0'
-      builder.appendByte(this.#advance()); // 'x' or 'X'
+    // Radix prefix: 0x/0X, 0b/0B, 0o/0O
+    if (c == 48 &&
+        (next == 120 || next == 88 ||
+         next == 98 || next == 66 ||
+         next == 111 || next == 79)) {
+      this.#advance(); // '0'
+      this.#advance(); // 'x'/'X'/'b'/'B'/'o'/'O'
 
-      while (!this.#reader.isAtEnd && isHexDigit(this.#peek())) {
-        builder.appendByte(this.#advance());
+      while (!this.#reader.isAtEnd && isIdentifierPart(this.#peek())) {
+        this.#advance();
       }
     } else {
-      // Decimal number
-      while (!this.#reader.isAtEnd && isDigit(this.#peek())) {
-        builder.appendByte(this.#advance());
+      // Decimal integer digits and '_' separators
+      while (!this.#reader.isAtEnd && (isDigit(this.#peek()) || this.#peek() == 95)) {
+        this.#advance();
       }
 
-      // Fractional part
-      if (this.#peek() == 46 && isDigit(this.#peekNext())) {
-        // '.'=46
-        builder.appendByte(this.#advance()); // '.'
-        while (!this.#reader.isAtEnd && isDigit(this.#peek())) {
-          builder.appendByte(this.#advance());
+      // Fractional part (including malformed '3._14' so the parser diagnoses '_' next to '.')
+      if (this.#peek() == 46) {
+        let afterDot = this.#peekNext();
+        let dotFollowedByDigitOrSepDigit = isDigit(afterDot) ||
+            (afterDot == 95 &&
+             this.#reader.position + 2 < this.#reader.source.length &&
+             isDigit(this.#reader.source.getByteAt(this.#reader.position + 2)));
+        if (dotFollowedByDigitOrSepDigit) {
+          this.#advance(); // '.'
+          while (!this.#reader.isAtEnd && (isDigit(this.#peek()) || this.#peek() == 95)) {
+            this.#advance();
+          }
         }
+      }
+
+      // Any trailing suffix or malformed identifier tail
+      while (!this.#reader.isAtEnd && isIdentifierPart(this.#peek())) {
+        this.#advance();
       }
     }
 
-    this.#addToken(TokenType.Number, builder.toString(), startPos, startCol);
+    let raw = this.#reader.source.sliceBytes(start, this.#reader.position);
+    this.#addToken(TokenType.Number, raw, startPos, startCol);
   }
 
   // ============================================================================
