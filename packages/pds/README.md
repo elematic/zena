@@ -13,7 +13,8 @@ bytes in Cloud Storage or a directory. Each account's
 repository takes writes, which sign a new commit, and the server answers the
 reads of `com.atproto.sync` (`getRecord`, `getRepo`, `getLatestCommit`,
 `getBlob`) and `com.atproto.repo` (`getRecord`, `listRecords`,
-`describeRepo`). An account with an app password signs in with
+`describeRepo`), and `com.atproto.server.describeServer`, which names its
+DID. An account with an app password signs in with
 `com.atproto.server.createSession`, and with its session refreshes it,
 gets service-auth tokens (`getServiceAuth`), and writes its own repository
 (`putRecord`, `deleteRecord`).

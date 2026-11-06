@@ -8,6 +8,7 @@ import {equal, isNull, isTrue} from 'zena:assert';
 import {runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {App, Request, Response} from 'zena:http';
+import {JsonObject, parseJson} from 'zena:json';
 import {KeyType, formatDidKey, publicKeyFor} from 'atproto:didkey';
 import {ConfigError, InFirestore, InMemory, buildPds, configFromEnv} from 'pds:service';
 
@@ -106,8 +107,10 @@ export let tests = suite('pds:service', () => {
     let plain = runFuture(buildPds(configFromEnv(envOf([])), 'http://127.0.0.1:1'));
     isTrue((get(plain.app, '/').body as String).contains('PDS'), 'the banner');
     equal(get(plain.app, '/xrpc/_health').statusCode, 200);
-    // The App View's methods are the App View's.
-    equal(get(plain.app, '/xrpc/com.atproto.server.describeServer').statusCode, 404);
+    // It describes itself as the DID App Views address their tokens to.
+    let described = get(plain.app, '/xrpc/com.atproto.server.describeServer');
+    equal(described.statusCode, 200);
+    equal((parseJson(described.body as String) as JsonObject)['did'] as String, 'did:web:127.0.0.1%3A1');
     isTrue(plain.pds.managed == null, 'no managed accounts');
     equal(plain.did, 'did:web:127.0.0.1%3A1');
 

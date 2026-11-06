@@ -50,7 +50,8 @@ otherwise built again, and the App View takes a scope or package name in one
 call that fails when it is taken. The server answers `/`,
 `/xrpc/_health`, the `com.atproto.sync` reads `getRecord`, `getRepo`,
 `getLatestCommit` and `getBlob`, and the `com.atproto.repo` reads
-`getRecord`, `listRecords` and `describeRepo`. Of milestone 5's sessions,
+`getRecord`, `listRecords` and `describeRepo`, and
+`com.atproto.server.describeServer`. Of milestone 5's sessions,
 it has app-password sign-in (`com.atproto.server.createSession`,
 `refreshSession`, `getSession`, `deleteSession`), `getServiceAuth`, and
 an account's writes to its own repository (`putRecord`, `deleteRecord`),
