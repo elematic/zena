@@ -4,15 +4,25 @@
  * Provides `suite` and `test` functions to define hierarchical test suites,
  * executed through the Zena CLI test runner (`zena test`).
  *
+ * A test's body is synchronous, or `async`: an asynchronous body is
+ * awaited before the next test starts, and a failure anywhere in it,
+ * before or after an `await`, is the test's failure. Tests run one at
+ * a time, in the order they were registered.
+ *
  * ## Examples
  *
  * ```zena
  * import { suite, test, TestContext } from 'zena:test';
  * import { equal } from 'zena:assert';
+ * import { readFile } from 'zena:fs';
  *
  * export let tests = suite('Math', () => {
  *   test('addition', (ctx: TestContext) => {
  *     equal(1 + 1, 2);
+ *   });
+ *
+ *   test('a file', async (ctx: TestContext) => {
+ *     equal(await readFile('two.txt'), '2');
  *   });
  * });
  * ```
@@ -66,40 +76,53 @@ export class SuiteResult {
   }
 }
 
+/** A test's body: synchronous, or asynchronous and awaited. */
+sealed class TestBody {
+  case Synchronous(fn: (ctx: TestContext) => void)
+  case Asynchronous(fn: (ctx: TestContext) => Future<void>)
+}
+
+/** What a failed test reports: the error's message and, when it has
+ * one, its stack trace. */
+function describeFailure(e: anyref) {
+  if (e is Error) {
+    let stack = e.getStackTrace();
+    if (stack != null) {
+      return `${e.message}\n${stack}`;
+    }
+    return e.message;
+  }
+  return "Unknown error";
+}
+
 /**
  * A single test case
  */
 class TestCase {
   name: String;
-  fn: (ctx: TestContext) => void;
+  body: TestBody;
   only: boolean;
   skip: boolean;
 
   new(
     this.name: String,
-    this.fn: (ctx: TestContext) => void,
+    this.body: TestBody,
     this.only: boolean,
     this.skip: boolean);
 
-  run(): TestResult {
+  async run(): Future<TestResult> {
     let ctx = new TestContext(this.name);
-    let result = try {
-      this.fn(ctx);
-      new TestResult(this.name, true, null)
+    let body = this.body;
+    try {
+      if (body is Asynchronous) {
+        await body.fn(ctx);
+      } else if (body is Synchronous) {
+        body.fn(ctx);
+      }
     } catch (e) {
-      let msg = if (e is Error) {
-        let stack = e.getStackTrace();
-        if (stack != null) {
-          `${e.message}\n${stack}`
-        } else {
-          e.message
-        }
-      } else {
-        "Unknown error"
-      };
-      new TestResult(this.name, false, msg)
-    };
-    return result;
+      return new TestResult(this.name, false, describeFailure(e));
+    }
+    return new TestResult(this.name, true, null);
   }
 }
 
@@ -114,8 +137,11 @@ export class Suite {
 
   new(this.name: String);
 
-  // Run all tests in this suite and return structured results
-  run(): SuiteResult {
+  /**
+   * Runs the suite's tests, then its nested suites, one at a time and
+   * in order, and returns what each did.
+   */
+  async run(): Future<SuiteResult> {
     let result = new SuiteResult(this.name);
     
     // Check if any test has .only
@@ -130,14 +156,14 @@ export class Suite {
       // Skip non-only tests if we have .only tests
       let shouldRun = !runOnlyTests || testCase.only;
       if (shouldRun) {
-        let testResult = testCase.run();
+        let testResult = await testCase.run();
         result.addTestResult(testResult);
       }
     }
     
     // Run nested suites
     for (let nestedSuite in this.suites) {
-      let suiteResult = nestedSuite.run();
+      let suiteResult = await nestedSuite.run();
       result.addSuiteResult(suiteResult);
     }
     
@@ -148,32 +174,50 @@ export class Suite {
 // Current suite for nested test/suite registration
 var currentSuite: Suite | null = null;
 
+function register(name: String, body: TestBody, only: boolean, skip: boolean) {
+  if (currentSuite !== null) {
+    currentSuite.tests.push(new TestCase(name, body, only, skip));
+    if (only) {
+      currentSuite.hasOnly = true;
+    }
+  }
+}
+
 /**
  * Register a test in the current suite
  */
 export function test(name: String, fn: (ctx: TestContext) => void): void {
-  if (currentSuite !== null) {
-    currentSuite.tests.push(new TestCase(name, fn, false, false));
-  }
+  register(name, new Synchronous(fn), false, false);
+}
+
+/**
+ * Register a test whose body is asynchronous. The next test starts
+ * once the body's future has settled.
+ */
+export function test(name: String, fn: (ctx: TestContext) => Future<void>): void {
+  register(name, new Asynchronous(fn), false, false);
 }
 
 /**
  * Register a test that will be the only one to run (for debugging)
  */
 export function testOnly(name: String, fn: (ctx: TestContext) => void): void {
-  if (currentSuite !== null) {
-    currentSuite.tests.push(new TestCase(name, fn, true, false));
-    currentSuite.hasOnly = true;
-  }
+  register(name, new Synchronous(fn), true, false);
+}
+
+export function testOnly(name: String, fn: (ctx: TestContext) => Future<void>): void {
+  register(name, new Asynchronous(fn), true, false);
 }
 
 /**
  * Register a test that will be skipped
  */
 export function testSkip(name: String, fn: (ctx: TestContext) => void): void {
-  if (currentSuite !== null) {
-    currentSuite.tests.push(new TestCase(name, fn, false, true));
-  }
+  register(name, new Synchronous(fn), false, true);
+}
+
+export function testSkip(name: String, fn: (ctx: TestContext) => Future<void>): void {
+  register(name, new Asynchronous(fn), false, true);
 }
 
 /**
@@ -295,10 +339,12 @@ function reportSummary(result: SuiteResult, write: (s: String) => void) {
  * Usage in a test wrapper:
  *   import { tests } from './my_test.zena';
  *   import { runAndReport } from 'zena:test';
- *   export let main = (): i32 => runAndReport(tests, console.log);
+ *   export async function main(): Future<i32> {
+ *     return await runAndReport(tests, console.log);
+ *   }
  */
-export function runAndReport(s: Suite, write: (s: String) => void): i32 {
-  let result = s.run();
+export async function runAndReport(s: Suite, write: (s: String) => void): Future<i32> {
+  let result = await s.run();
 
   // We only print the failures now instead of the full tree to avoid flooding
   reportSummary(result, write);

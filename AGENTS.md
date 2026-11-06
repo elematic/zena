@@ -674,7 +674,9 @@ more than once:
   `ast-visitor.zena` and the reachability pass (`zena/lib/codegen/reachability/`).
 - Zena unit tests (`*_test.zena`) use `suite`, `test`, and `expect` from
   `zena:test` and can be run directly during iteration with
-  `npm run test:quick -- <path>`.
+  `npm run test:quick -- <path>`. A test body may be `async`
+  (`test('name', async (ctx) => { ... })`); the runner awaits it before
+  the next test.
 - For TypeScript tests (`node:test`), isolate a single test with `--test-only`
   and `test.only()`.
 

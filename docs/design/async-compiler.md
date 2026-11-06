@@ -2,9 +2,9 @@
 
 ## Status
 
-Proposed 2026-11-04. Nothing here is implemented. It waits on two
-changes, described under "Prerequisites": asynchronous test bodies in
-`zena:test`, and elematic/zena#633.
+Proposed 2026-11-04. The compiler change is not implemented. The two
+changes it waited on, described under "Prerequisites", are done:
+asynchronous test bodies in `zena:test`, and elematic/zena#633.
 
 ## Overview
 
@@ -242,23 +242,26 @@ sources from `async` methods.
 
 ## Prerequisites
 
-**Asynchronous test bodies.** `zena:test` runs a test by calling
-`fn(ctx)` and treats its return as the end of the test. `test` has to
-accept a body that returns `Future<void>`, the runner has to await each
-test before the next, `runAndReport` has to return `Future<i32>`, and
-the `main` the compiler appends to a test file in test mode has to be
-asynchronous. Without this, each compiler test would wait in `blockOn`,
+Both are done.
+
+**Asynchronous test bodies.** `zena:test` ran a test by calling
+`fn(ctx)` and treated its return as the end of the test. `test` now
+accepts a body that returns `Future<void>`, the runner awaits each test
+before the next, `runAndReport` returns `Future<i32>`, and the `main`
+the compiler appends to a test file in test mode is asynchronous
+([testing.md](./testing.md), "Synchronous and Asynchronous Test
+Bodies"). Without this, each compiler test would wait in `blockOn`,
 which exists only on the component targets.
 
 **elematic/zena#633.** Passing a record to a parameter of a wider
-record type fails in code generation inside an `async` function.
+record type failed in code generation inside an `async` function.
 `compiler.compile({entry, target})` is that case once its caller is
 asynchronous: `CompileOptions` has optional fields the literal leaves
-out.
+out. Fixed in elematic/zena#905.
 
 ## Landing order
 
-1. The two prerequisites.
+1. The two prerequisites (done).
 2. A probe of the bootstrap. The compiler's own source has no `async`
    function today. The bootstrap already compiles the ones in `zena:fs`,
    which the `Sync` forms call, so asynchronous functions and `await`

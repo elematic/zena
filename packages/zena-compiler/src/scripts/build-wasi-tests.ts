@@ -72,21 +72,21 @@ import { runPortableSyntax } from './portable_syntax.zena';
 import { runPortableSemantics } from './portable_semantics.zena';
 import { runPortableExecution } from './portable_execution.zena';
 
-let runUnitSuites = (): i32 => {
+async function runUnitSuites(): Future<i32> {
   let root = new Suite('Compiler Tests');
 ${pushes}
 
-  return runAndReport(root, (s: String): void => { console.log(s); });
-};
+  return await runAndReport(root, (s: String): void => { console.log(s); });
+}
 
 export async function main(): Future<i32> {
   let args = getArguments();
   let command = if (args.length > 1) { args[1] } else { 'unit' };
   if (command == 'syntax') {
-    return runPortableSyntax();
+    return await runPortableSyntax();
   }
   if (command == 'semantics') {
-    return runPortableSemantics();
+    return await runPortableSemantics();
   }
   if (command == 'compile-slice') {
     // The execution runner's own re-invocation, which reads the vector
@@ -105,7 +105,7 @@ export async function main(): Future<i32> {
     }
     return await runPortableExecution(forwarded);
   }
-  return runUnitSuites();
+  return await runUnitSuites();
 }
 `;
 };
