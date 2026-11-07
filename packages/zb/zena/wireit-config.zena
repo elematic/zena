@@ -73,6 +73,12 @@ export class ScriptConfig {
   service: ServiceConfig?;
   /** Sorted by variable name. */
   env: Array<(String, EnvBinding)>;
+  /**
+   * Lockfile filenames searched upward from `ref.packageDir` to the
+   * workspace root (wireit defaults to `['package-lock.json']` when
+   * omitted; `[]` disables lockfile tracking).
+   */
+  packageLocks: Array<String>;
 
   /**
    * True when freshness and caching apply to this script at all. A
@@ -107,6 +113,7 @@ export class ScriptConfig {
     this.clean,
     this.service,
     this.env,
+    this.packageLocks,
   );
 }
 
@@ -417,6 +424,19 @@ export class WireitWorkspace {
         throw new ConfigError(`script "${where}": a service cannot declare output`);
       }
 
+      let rawLocks = wireitEntry['packageLocks'];
+      var packageLocks: Array<String> = ['package-lock.json'];
+      if (rawLocks != null) {
+        packageLocks = stringList(rawLocks, `script "${where}": packageLocks`);
+        for (let lock in packageLocks) {
+          if (lock == '' || lock.contains('/')) {
+            throw new ConfigError(
+              `script "${where}": packageLocks entries must be filenames, got "${lock}"`,
+            );
+          }
+        }
+      }
+
       return new ScriptConfig(
         ref,
         true,
@@ -429,6 +449,7 @@ export class WireitWorkspace {
         clean,
         service,
         parseEnv(where, wireitEntry['env']),
+        packageLocks,
       );
     }
 
@@ -451,6 +472,7 @@ export class WireitWorkspace {
         'false',
         null,
         new GrowableArray<(String, EnvBinding)>(),
+        new GrowableArray<String>(),
       );
     }
 

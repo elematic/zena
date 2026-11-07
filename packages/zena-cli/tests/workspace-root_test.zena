@@ -49,4 +49,41 @@ printf '%s\\n' "import { answer } from 'lib:answer';" '${MAIN} { return answer()
       runFuture(run(['rm', '-rf', outside]));
     }
   });
+
+  test('zena build supports --force and --no-cache on target scripts', (ctx) => {
+    let outside = runFuture(run(['mktemp', '-d'])).stdout.trim();
+    try {
+      let setUp = runFuture(run(['/bin/sh', '-c',
+          `printf '%s\\n' '{"workspaces":[],"scripts":{"build":"wireit"},"wireit":{"build":{"command":"echo ok > out.txt","files":[],"output":["out.txt"]}}}' > "$1/package.json"`,
+          'sh', outside]));
+      isTrue(setUp.succeeded(), described(setUp));
+      var unset = '';
+      for (let name in CHOOSERS) {
+        unset = `${unset} -u ${name}`;
+      }
+      let first = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build`,
+          'sh', outside, zenaBinary()]));
+      isTrue(first.succeeded(), described(first));
+      isTrue(first.stdout.contains(':build: ran'), first.stdout);
+
+      let warm = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build`,
+          'sh', outside, zenaBinary()]));
+      isTrue(warm.succeeded(), described(warm));
+      isTrue(warm.stdout.contains(':build: fresh'), warm.stdout);
+
+      let forced = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build --force`,
+          'sh', outside, zenaBinary()]));
+      isTrue(forced.succeeded(), described(forced));
+      isTrue(forced.stdout.contains(':build: ran'), forced.stdout);
+
+      let dropOut = runFuture(run(['rm', '-f', `${outside}/out.txt`]));
+      isTrue(dropOut.succeeded(), described(dropOut));
+      let noCache = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build --no-cache`,
+          'sh', outside, zenaBinary()]));
+      isTrue(noCache.succeeded(), described(noCache));
+      isTrue(noCache.stdout.contains(':build: ran'), noCache.stdout);
+    } finally {
+      runFuture(run(['rm', '-rf', outside]));
+    }
+  });
 });

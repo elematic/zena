@@ -1,5 +1,8 @@
 import {suite, test} from 'zena:test';
-import {throws} from 'zena:assert';
+import {equal, throws} from 'zena:assert';
+import {writeFileSync} from 'zena:fs';
+import {monotonic} from 'zena:time';
+import {ensureDirSync, ensureParentDirSync, withRoot} from '../fs-util.zena';
 import {expandGlobsSync} from '../fs-walk.zena';
 
 export let tests = suite('fs-walk', () => {
@@ -14,5 +17,28 @@ export let tests = suite('fs-walk', () => {
     throws(() => {
       expandGlobsSync('.', 'packages/app', ['/etc/**']);
     });
+  });
+
+  test('literal file patterns resolve directly at root and subpaths', () => {
+    let root = '/tmp/zb-fswalk-' + i64ToString(monotonic() as i64);
+    ensureDirSync(root);
+    let rootManifest = withRoot(root, 'zena-package.json');
+    ensureParentDirSync(rootManifest);
+    writeFileSync(rootManifest, '{}\n');
+    let sibling = withRoot(root, 'packages/other/ignore.txt');
+    ensureParentDirSync(sibling);
+    writeFileSync(sibling, 'unused\n');
+    let local = withRoot(root, 'packages/app/local.txt');
+    ensureParentDirSync(local);
+    writeFileSync(local, 'ok\n');
+
+    let matched = expandGlobsSync(root, 'packages/app', [
+      '../../zena-package.json',
+      'local.txt',
+      'missing.txt',
+    ]);
+    equal(matched.length, 2);
+    equal(matched[0], 'packages/app/local.txt');
+    equal(matched[1], 'zena-package.json');
   });
 });
