@@ -6,7 +6,7 @@
 
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { AsyncIterator, AsyncStep, Future, runFuture } from 'zena:async';
+import { AsyncIterator, AsyncStep, Future } from 'zena:async';
 import { HashMap } from 'zena:collections';
 import { Option, newByteArray } from 'zena:core';
 import { ProtoBytes, ProtoTransport, ProtoView, ProtoWriter, RpcMetadata, RpcMethod } from 'protobuf:runtime';
@@ -735,35 +735,35 @@ export let tests = suite('firestore', () => {
     equal(quoteFieldName(''), '``');
   });
 
-  test('sets and gets a document', () => {
-    equal(runFuture(writeAndRead(open(new FakeFirestore()))), 'true Hello 3 Ada - - -');
+  test('sets and gets a document', async () => {
+    equal(await writeAndRead(open(new FakeFirestore())), 'true Hello 3 Ada - - -');
   });
 
-  test('reads a missing document as not existing', () => {
-    equal(runFuture(missing(open(new FakeFirestore()))), 'false -');
+  test('reads a missing document as not existing', async () => {
+    equal(await missing(open(new FakeFirestore())), 'false -');
   });
 
-  test('updates some fields and keeps the others', () => {
-    equal(runFuture(updateKeepsOthers(open(new FakeFirestore()))), 'A 2');
+  test('updates some fields and keeps the others', async () => {
+    equal(await updateKeepsOthers(open(new FakeFirestore())), 'A 2');
   });
 
-  test('checks update and create preconditions, and deletes', () => {
-    equal(runFuture(preconditions(open(new FakeFirestore()))), '5 6 false');
+  test('checks update and create preconditions, and deletes', async () => {
+    equal(await preconditions(open(new FakeFirestore())), '5 6 false');
   });
 
-  test('adds documents and queries a collection', () => {
-    equal(runFuture(addAndQuery(open(new FakeFirestore()))), '20 x,y, y, 3 c, posts/x/comments/c');
+  test('adds documents and queries a collection', async () => {
+    equal(await addAndQuery(open(new FakeFirestore())), '20 x,y, y, 3 c, posts/x/comments/c');
   });
 
-  test('streams query results', () => {
-    equal(runFuture(streamQuery(open(new FakeFirestore()))), '1=1,2=2,');
+  test('streams query results', async () => {
+    equal(await streamQuery(open(new FakeFirestore())), '1=1,2=2,');
   });
 
-  test('streams query results that arrive later', () => {
+  test('streams query results that arrive later', async () => {
     let fake = new FakeFirestore();
     fake.deferred = true;
-    equal(runFuture(streamQuery(open(fake))), '1=1,2=2,');
-    equal(runFuture(addAndQuery(open(fake))), '20 x,y, y, 3 c, posts/x/comments/c');
+    equal(await streamQuery(open(fake)), '1=1,2=2,');
+    equal(await addAndQuery(open(fake)), '20 x,y, y, 3 c, posts/x/comments/c');
   });
 
   test('encodes a structured query', () => {
@@ -771,31 +771,31 @@ export let tests = suite('firestore', () => {
     equal(queryEncoding(fake, open(fake)), 'posts a.b true 5 `odd name` true a.b true 2 10');
   });
 
-  test('commits a batch in one call', () => {
+  test('commits a batch in one call', async () => {
     let fake = new FakeFirestore();
-    equal(runFuture(batch(fake, open(fake))), 'Commit: set posts/n1 create posts/n2 update posts/old delete posts/gone');
+    equal(await batch(fake, open(fake)), 'Commit: set posts/n1 create posts/n2 update posts/old delete posts/gone');
   });
 
-  test('runs a transaction and retries an aborted commit', () => {
+  test('runs a transaction and retries an aborted commit', async () => {
     let fake = new FakeFirestore();
-    equal(runFuture(transactions(fake, open(fake))), lines(['1 2', 'BeginTransaction', 'GetDocument counters/c in tx1', 'Commit in tx1: set counters/c', 'BeginTransaction', 'GetDocument counters/c in tx2', 'Commit aborted tx2', 'BeginTransaction retrying tx2', 'GetDocument counters/c in tx3', 'Commit in tx3: set counters/c']));
+    equal(await transactions(fake, open(fake)), lines(['1 2', 'BeginTransaction', 'GetDocument counters/c in tx1', 'Commit in tx1: set counters/c', 'BeginTransaction', 'GetDocument counters/c in tx2', 'Commit aborted tx2', 'BeginTransaction retrying tx2', 'GetDocument counters/c in tx3', 'Commit in tx3: set counters/c']));
   });
 
-  test('rolls back a transaction whose body throws', () => {
+  test('rolls back a transaction whose body throws', async () => {
     let fake = new FakeFirestore();
-    equal(runFuture(failingTransaction(fake, open(fake))), lines(['body failed', 'BeginTransaction', `RunQuery ${ROOT}/posts/ in tx1`, 'Rollback tx1']));
+    equal(await failingTransaction(fake, open(fake)), lines(['body failed', 'BeginTransaction', `RunQuery ${ROOT}/posts/ in tx1`, 'Rollback tx1']));
   });
 
-  test('retries a transaction whose read is aborted', () => {
+  test('retries a transaction whose read is aborted', async () => {
     let fake = new FakeFirestore();
     fake.abortReads = 1;
-    equal(runFuture(increment(open(fake))), 1 as i64);
+    equal(await increment(open(fake)), 1 as i64);
     equal(lines(fake.log), lines(['BeginTransaction', 'GetDocument aborted tx1', 'Rollback tx1', 'BeginTransaction retrying tx1', 'GetDocument counters/c in tx2', 'Commit in tx2: set counters/c']));
   });
 
-  test('writes transforms and deletes fields', () => {
+  test('writes transforms and deletes fields', async () => {
     let fake = new FakeFirestore();
-    equal(runFuture(transforms(fake, open(fake))), lines([
+    equal(await transforms(fake, open(fake)), lines([
       'T 1800000000 7 [b,c] 3 -',
       'Commit: set posts/t +2',
       'Commit: update posts/t +3',
@@ -804,15 +804,15 @@ export let tests = suite('firestore', () => {
     ]));
   });
 
-  test('refuses transforms in a map value', () => {
-    equal(runFuture(messageOf(async (): Future<void> => {
+  test('refuses transforms in a map value', async () => {
+    equal(await messageOf(async (): Future<void> => {
       mapValue(new Fields().increment('n', 1));
-    })), 'field transforms and deletions apply to top-level fields only');
+    }), 'field transforms and deletions apply to top-level fields only');
   });
 
-  test('reads several documents in one call, in order', () => {
+  test('reads several documents in one call, in order', async () => {
     let fake = new FakeFirestore();
-    equal(runFuture(getAll(fake, open(fake))), lines([
+    equal(await getAll(fake, open(fake)), lines([
       'c:C,b:-,a:A,c:C, 0 2',
       'BatchGetDocuments 4',
       'BeginTransaction',
@@ -821,20 +821,20 @@ export let tests = suite('firestore', () => {
     ]));
   });
 
-  test('counts documents on the server', () => {
-    equal(runFuture(counting(open(new FakeFirestore()))), '3 2 0');
+  test('counts documents on the server', async () => {
+    equal(await counting(open(new FakeFirestore())), '3 2 0');
   });
 
-  test('encodes cursors and projections', () => {
-    equal(runFuture(cursors(open(new FakeFirestore()))),
+  test('encodes cursors and projections', async () => {
+    equal(await cursors(open(new FakeFirestore())),
       'rank, start[2; end[9; | rank<,__name__<, start(3;posts/p1; select:kind;`odd name`; | ' +
       '__name__, end(posts/p1; select:__name__; | ' +
       "a query cursor's document has no field absent, which the query orders by | " +
       "a query cursor's document does not exist: posts/nope");
   });
 
-  test('gives up after the last attempt is aborted', () => {
+  test('gives up after the last attempt is aborted', async () => {
     let fake = new FakeFirestore();
-    equal(runFuture(exhaustedRetries(fake, open(fake))), lines(['10', 'BeginTransaction', 'Commit aborted tx1', 'BeginTransaction retrying tx1', 'Commit aborted tx2']));
+    equal(await exhaustedRetries(fake, open(fake)), lines(['10', 'BeginTransaction', 'Commit aborted tx1', 'BeginTransaction retrying tx1', 'Commit aborted tx2']));
   });
 });

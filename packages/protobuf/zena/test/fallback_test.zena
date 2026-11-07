@@ -6,7 +6,7 @@
 
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { AsyncIterable, AsyncIterator, Completer, Future, runFuture } from 'zena:async';
+import { AsyncIterable, AsyncIterator, Completer, Future } from 'zena:async';
 import { Borrow } from 'zena:core';
 import { StreamWriter } from 'zena:stream';
 import { App, Request, Response, Server } from 'zena:http';
@@ -189,44 +189,44 @@ async function failure(call: () => Future<String>): Future<String> {
 }
 
 export let tests = suite('fallback transport', () => {
-  test('calls a unary method, sending the headers set', () => {
+  test('calls a unary method, sending the headers set', async () => {
     let server = rpcServer();
-    equal(runFuture(unaryCall(originOf(server))), 'ping! Bearer t0k3n');
+    equal(await unaryCall(originOf(server)), 'ping! Bearer t0k3n');
     server.close();
   });
 
-  test('asks the credentials before each call and sends the routing header', () => {
+  test('asks the credentials before each call and sends the routing header', async () => {
     let server = rpcServer();
-    equal(runFuture(credentialedCalls(originOf(server))),
+    equal(await credentialedCalls(originOf(server)),
         'Bearer token-1 name=nodes%2Fa | Bearer token-2 name=nodes%2Fb');
     server.close();
   });
 
-  test('reads a server-streaming response as it arrives', () => {
+  test('reads a server-streaming response as it arrives', async () => {
     let server = rpcServer();
-    equal(runFuture(streamingCall(originOf(server))), 'n0,n1,n2,');
+    equal(await streamingCall(originOf(server)), 'n0,n1,n2,');
     server.close();
   });
 
-  test('hands out each streamed response once its bytes are in', () => {
-    equal(runFuture(incrementalRead()), 'first,second,');
+  test('hands out each streamed response once its bytes are in', async () => {
+    equal(await incrementalRead(), 'first,second,');
   });
 
-  test('throws the status of a failed unary call', () => {
+  test('throws the status of a failed unary call', async () => {
     let server = rpcServer();
     let transport = new FallbackTransport(originOf(server));
-    let result = runFuture(failure(async (): Future<String> => {
+    let result = await failure(async (): Future<String> => {
       await transport.unary(new RpcMethod('zena.test.v1.Things', 'Fail'), Node.of({name: 'x'}).protoView, new RpcMetadata());
       return 'ok';
-    }));
+    });
     equal(result, '7: permission denied');
     server.close();
   });
 
-  test('throws the status that ends a failed stream, after its responses', () => {
+  test('throws the status that ends a failed stream, after its responses', async () => {
     let server = rpcServer();
     let transport = new FallbackTransport(originOf(server));
-    let result = runFuture(failure(async (): Future<String> => {
+    let result = await failure(async (): Future<String> => {
       var seen = '';
       let stream = transport.serverStream(new RpcMethod('zena.test.v1.Things', 'FailStream'), Node.of({name: 'x'}).protoView, new RpcMetadata());
       let reader = new StreamIterable(stream);
@@ -234,18 +234,18 @@ export let tests = suite('fallback transport', () => {
         seen = `${seen}${Node.decode(view.toByteArray()).name}`;
       }
       return seen;
-    }));
+    });
     equal(result, '9: precondition failed');
     server.close();
   });
 
-  test('maps an error response without a status by its HTTP code', () => {
+  test('maps an error response without a status by its HTTP code', async () => {
     let server = rpcServer();
     let transport = new FallbackTransport(originOf(server));
-    let result = runFuture(failure(async (): Future<String> => {
+    let result = await failure(async (): Future<String> => {
       await transport.unary(new RpcMethod('zena.test.v1.Elsewhere', 'Get'), Node.of({name: 'x'}).protoView, new RpcMetadata());
       return 'ok';
-    }));
+    });
     equal(result, '5: the server answered with HTTP 404');
     server.close();
     equal(codeForHttpStatus(401), 16);

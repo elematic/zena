@@ -7,7 +7,7 @@
 
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { AsyncIterable, AsyncIterator, Completer, runFuture } from 'zena:async';
+import { AsyncIterable, AsyncIterator, Completer } from 'zena:async';
 import { Option, Result } from 'zena:core';
 import { StreamWriter } from 'zena:stream';
 import { ErrorCode } from 'wasi:http/types';
@@ -225,62 +225,62 @@ export let tests = suite('grpc transport', () => {
     equal(codeForGrpcHttpStatus(500), 2);
   });
 
-  test('reads messages and an OK status', () => {
-    equal(runFuture(readAll(respond(200, GRPC_HEADERS, framed(nodes(['a', 'b', 'c'])), trailersOf(OK)))),
+  test('reads messages and an OK status', async () => {
+    equal(await readAll(respond(200, GRPC_HEADERS, framed(nodes(['a', 'b', 'c'])), trailersOf(OK))),
         'a,b,c, | ok');
-    equal(runFuture(readAll(respond(200, GRPC_HEADERS, framed(nodes([])), trailersOf(OK)))), ' | ok');
+    equal(await readAll(respond(200, GRPC_HEADERS, framed(nodes([])), trailersOf(OK))), ' | ok');
   });
 
-  test('hands out each message as soon as its bytes are in', () => {
-    equal(runFuture(incrementalRead()), 'first,second,');
+  test('hands out each message as soon as its bytes are in', async () => {
+    equal(await incrementalRead(), 'first,second,');
   });
 
-  test('throws the status in the trailers after the messages', () => {
-    equal(runFuture(readAll(respond(200, GRPC_HEADERS, framed(nodes(['a'])),
-        trailersOf(['grpc-status', '9', 'grpc-message', 'precondition'])))),
+  test('throws the status in the trailers after the messages', async () => {
+    equal(await readAll(respond(200, GRPC_HEADERS, framed(nodes(['a'])),
+        trailersOf(['grpc-status', '9', 'grpc-message', 'precondition']))),
         'a, | 9: precondition');
   });
 
-  test('throws the status of a trailers-only response', () => {
-    equal(runFuture(readAll(respond(200, ['content-type', 'application/grpc', 'grpc-status', '7', 'grpc-message', 'denied'],
-        framed(nodes([])), noTrailers()))),
+  test('throws the status of a trailers-only response', async () => {
+    equal(await readAll(respond(200, ['content-type', 'application/grpc', 'grpc-status', '7', 'grpc-message', 'denied'],
+        framed(nodes([])), noTrailers())),
         ' | 7: denied');
-    equal(runFuture(readAll(respond(200, ['content-type', 'application/grpc', 'grpc-status', '0'],
-        framed(nodes([])), noTrailers()))),
+    equal(await readAll(respond(200, ['content-type', 'application/grpc', 'grpc-status', '0'],
+        framed(nodes([])), noTrailers())),
         ' | ok');
   });
 
-  test('fails a response that is not gRPC', () => {
-    equal(runFuture(readAll(respond(503, ['content-type', 'text/html'], 'busy'.toBytes(), noTrailers()))),
+  test('fails a response that is not gRPC', async () => {
+    equal(await readAll(respond(503, ['content-type', 'text/html'], 'busy'.toBytes(), noTrailers())),
         ' | 14: the server answered with HTTP 503');
-    equal(runFuture(readAll(respond(200, ['content-type', 'text/html'], '<html>'.toBytes(), noTrailers()))),
+    equal(await readAll(respond(200, ['content-type', 'text/html'], '<html>'.toBytes(), noTrailers())),
         ' | 2: the server answered with content-type text/html');
   });
 
-  test('fails a malformed body', () => {
+  test('fails a malformed body', async () => {
     let compressed = framed(nodes(['a']));
     compressed[0] = 1 as u8;
-    equal(runFuture(readAll(respond(200, GRPC_HEADERS, compressed, trailersOf(OK)))),
+    equal(await readAll(respond(200, GRPC_HEADERS, compressed, trailersOf(OK))),
         ' | 13: the server sent a compressed message, and no compression was offered');
     let bytes = framed(nodes(['abc']));
     let cut = new FixedArray<u8>(bytes.length - 1, 0);
     for (var i = 0; i < cut.length; i += 1) {
       cut[i] = bytes[i];
     }
-    equal(runFuture(readAll(respond(200, GRPC_HEADERS, cut, trailersOf(OK)))),
+    equal(await readAll(respond(200, GRPC_HEADERS, cut, trailersOf(OK))),
         ' | 13: the response ended inside a message');
-    equal(runFuture(readAll(respond(200, GRPC_HEADERS, framed(nodes(['a'])), noTrailers()))),
+    equal(await readAll(respond(200, GRPC_HEADERS, framed(nodes(['a'])), noTrailers())),
         'a, | 13: the response has no trailers');
   });
 
-  test('a unary call takes exactly one message', () => {
-    equal(runFuture(unaryOf(respond(200, GRPC_HEADERS, framed(nodes(['one'])), trailersOf(OK)))), 'one');
-    equal(runFuture(unaryOf(respond(200, GRPC_HEADERS, framed(nodes([])), trailersOf(OK)))),
+  test('a unary call takes exactly one message', async () => {
+    equal(await unaryOf(respond(200, GRPC_HEADERS, framed(nodes(['one'])), trailersOf(OK))), 'one');
+    equal(await unaryOf(respond(200, GRPC_HEADERS, framed(nodes([])), trailersOf(OK))),
         '13: zena.test.v1.Things/GetNode: no response to a unary call');
-    equal(runFuture(unaryOf(respond(200, GRPC_HEADERS, framed(nodes(['one', 'two'])), trailersOf(OK)))),
+    equal(await unaryOf(respond(200, GRPC_HEADERS, framed(nodes(['one', 'two'])), trailersOf(OK))),
         '13: zena.test.v1.Things/GetNode: more than one response to a unary call');
-    equal(runFuture(unaryOf(respond(200, GRPC_HEADERS, framed(nodes([])),
-        trailersOf(['grpc-status', '5', 'grpc-message', 'missing'])))),
+    equal(await unaryOf(respond(200, GRPC_HEADERS, framed(nodes([])),
+        trailersOf(['grpc-status', '5', 'grpc-message', 'missing']))),
         '5: missing');
   });
 });

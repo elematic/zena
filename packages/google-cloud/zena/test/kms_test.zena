@@ -5,7 +5,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {secp256k1, sha256} from 'zena:crypto';
 import {hex} from 'zena:encoding';
 import {AccessTokenCredentials} from '../auth.zena';
@@ -17,9 +17,9 @@ function bytesOf(text: String) {
 }
 
 /** The status of the `KmsError` `call` throws, or -1 when it throws none. */
-function refusedWith(call: () => void): i32 {
+async function refusedWith(call: () => Future<FixedArray<u8>>): Future<i32> {
   try {
-    call();
+    await call();
   } catch (e) {
     return if (e is KmsError) e.status else -2;
   }
@@ -27,14 +27,14 @@ function refusedWith(call: () => void): i32 {
 }
 
 export let tests = suite('google-cloud:kms', () => {
-  test('signs a digest, and reads the public key it verifies with', (ctx) => {
+  test('signs a digest, and reads the public key it verifies with', async (ctx): Future<void> => {
     let server = startFakeKms();
     try {
       let origin = `http://127.0.0.1:${server.port as i32}`;
       let kms = new CloudKms(FAKE_KMS_KEY, new AccessTokenCredentials('token'), origin);
       let message = 'a PLC operation'.toBytes();
-      let signature = secp256k1.signatureFromDer(runFuture(kms.asymmetricSign(sha256(message))));
-      let key = runFuture(kms.publicKey());
+      let signature = secp256k1.signatureFromDer(await kms.asymmetricSign(sha256(message)));
+      let key = await kms.publicKey();
       equal(key.algorithm, 'EC_SIGN_SECP256K1_SHA256');
       let point = ecPointFromPem(key.pem);
       equal(hex.encode(point), hex.encode(secp256k1.publicKey(FAKE_KMS_PRIVATE_KEY, false)));
@@ -44,7 +44,7 @@ export let tests = suite('google-cloud:kms', () => {
       let refused = new CloudKms(FAKE_KMS_KEY, new AccessTokenCredentials('wrong'), origin);
       var status = 0;
       try {
-        runFuture(refused.asymmetricSign(sha256(message)));
+        await refused.asymmetricSign(sha256(message));
       } catch (e) {
         status = if (e is KmsError) e.status else -1;
       }
@@ -54,26 +54,26 @@ export let tests = suite('google-cloud:kms', () => {
     }
   });
 
-  test('encrypts with a symmetric key, and decrypts with the same additional data', (ctx) => {
+  test('encrypts with a symmetric key, and decrypts with the same additional data', async (ctx): Future<void> => {
     let server = startFakeKms();
     try {
       let origin = `http://127.0.0.1:${server.port as i32}`;
       let kms = new CloudKms(FAKE_KMS_CRYPTO_KEY, new AccessTokenCredentials('token'), origin);
       let secret = bytesOf('a signing key, thirty-two bytes!');
-      let ciphertext = runFuture(kms.encrypt(secret, bytesOf('did:plc:alice')));
+      let ciphertext = await kms.encrypt(secret, bytesOf('did:plc:alice'));
       isTrue(hex.encode(ciphertext) != hex.encode(secret) && !hex.encode(ciphertext).contains(hex.encode(secret)),
           'the ciphertext does not hold the plaintext');
-      equal(hex.encode(runFuture(kms.decrypt(ciphertext, bytesOf('did:plc:alice')))), hex.encode(secret));
+      equal(hex.encode(await kms.decrypt(ciphertext, bytesOf('did:plc:alice'))), hex.encode(secret));
       // Other additional data, or another ciphertext, does not decrypt.
-      equal(refusedWith(() => { runFuture(kms.decrypt(ciphertext, bytesOf('did:plc:bob'))); }), 400);
+      equal(await refusedWith(() => kms.decrypt(ciphertext, bytesOf('did:plc:bob'))), 400);
       let tampered = new FixedArray<u8>(ciphertext.length, 0 as u8);
       for (var i = 0; i < ciphertext.length; i += 1) {
         tampered[i] = ciphertext[i];
       }
       tampered[ciphertext.length - 1] = (tampered[ciphertext.length - 1] ^ (1 as u8)) as u8;
-      equal(refusedWith(() => { runFuture(kms.decrypt(tampered, bytesOf('did:plc:alice'))); }), 400);
+      equal(await refusedWith(() => kms.decrypt(tampered, bytesOf('did:plc:alice'))), 400);
       let refused = new CloudKms(FAKE_KMS_CRYPTO_KEY, new AccessTokenCredentials('wrong'), origin);
-      equal(refusedWith(() => { runFuture(refused.encrypt(secret, bytesOf('did:plc:alice'))); }), 403);
+      equal(await refusedWith(() => refused.encrypt(secret, bytesOf('did:plc:alice'))), 403);
     } finally {
       server.close();
     }

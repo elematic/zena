@@ -5,8 +5,8 @@
  */
 
 import { suite, test } from 'zena:test';
-import { equal, isTrue, throws } from 'zena:assert';
-import { AsyncIterator, AsyncStep, Future, runFuture } from 'zena:async';
+import { equal, isTrue } from 'zena:assert';
+import { AsyncIterator, AsyncStep, Future } from 'zena:async';
 import { HashMap } from 'zena:collections';
 import { ByteBuffer, newByteArray } from 'zena:core';
 import { ProtoTransport, ProtoView, ProtoWriter, RpcError, RpcMetadata, RpcMethod } from 'protobuf:runtime';
@@ -204,52 +204,61 @@ final class FakeStorage implements ProtoTransport {
 }
 
 export let tests = suite('Cloud Storage', () => {
-  test('writes, reads, describes and deletes an object', () => {
+  test('writes, reads, describes and deletes an object', async () => {
     let fake = new FakeStorage();
     let bucket = new Storage(fake).bucket('blobs');
     equal(bucket.resource, 'projects/_/buckets/blobs');
     let data = bytesOf(10, 7);
-    let written = runFuture(bucket.write('a/b', data, 'image/png'));
+    let written = await bucket.write('a/b', data, 'image/png');
     equal(written.name, 'a/b');
     equal(written.contentType, 'image/png');
 
-    let read = runFuture(bucket.read('a/b'));
+    let read = await bucket.read('a/b');
     isTrue(read != null && sameBytes(read as ByteArray, data), 'the bytes read are the bytes written');
-    let stat = runFuture(bucket.stat('a/b'));
+    let stat = await bucket.stat('a/b');
     isTrue(stat != null && stat.generation == written.generation, 'stat');
 
-    isTrue(runFuture(bucket.delete('a/b')), 'deleted');
-    isTrue(runFuture(bucket.read('a/b')) == null, 'gone');
-    isTrue(runFuture(bucket.stat('a/b')) == null, 'no metadata');
-    isTrue(!runFuture(bucket.delete('a/b')), 'nothing to delete');
+    isTrue(await bucket.delete('a/b'), 'deleted');
+    isTrue(await bucket.read('a/b') == null, 'gone');
+    isTrue(await bucket.stat('a/b') == null, 'no metadata');
+    isTrue(!await bucket.delete('a/b'), 'nothing to delete');
     equal(fake.log[0], 'WriteObject a/b 10');
     equal(fake.log[3], 'DeleteObject a/b bucket=projects%2F_%2Fbuckets%2Fblobs');
   });
 
-  test('uploads in chunks of at most 2 MiB', () => {
+  test('uploads in chunks of at most 2 MiB', async () => {
     let fake = new FakeStorage();
     fake.readChunk = MAX_WRITE_CHUNK;
     let bucket = new Storage(fake).bucket('blobs');
     let data = bytesOf(MAX_WRITE_CHUNK * 2 + 5, 1);
-    runFuture(bucket.write('big', data));
+    await bucket.write('big', data);
     equal(fake.log[0], `WriteObject big ${MAX_WRITE_CHUNK},${MAX_WRITE_CHUNK},5`);
-    let read = runFuture(bucket.read('big'));
+    let read = await bucket.read('big');
     isTrue(read != null && sameBytes(read as ByteArray, data), 'the bytes read are the bytes written');
   });
 
-  test('writes an empty object in one request', () => {
+  test('writes an empty object in one request', async () => {
     let fake = new FakeStorage();
     let bucket = new Storage(fake).bucket('blobs');
-    let written = runFuture(bucket.write('empty', newByteArray(0)));
+    let written = await bucket.write('empty', newByteArray(0));
     equal(written.contentType, 'application/octet-stream');
     equal(fake.log[0], 'WriteObject empty 0');
-    equal((runFuture(bucket.read('empty')) as ByteArray).length, 0);
+    equal((await bucket.read('empty') as ByteArray).length, 0);
   });
 
-  test('passes on errors other than NOT_FOUND', () => {
+  test('passes on errors other than NOT_FOUND', async (): Future<void> => {
     let bucket = new Storage(new FakeStorage()).bucket('blobs');
-    throws(() => { runFuture(bucket.read(DENIED)); });
-    throws(() => { runFuture(bucket.stat(DENIED)); });
-    throws(() => { runFuture(bucket.delete(DENIED)); });
+    let check = async (f: () => Future<void>): Future<void> => {
+      var threw = false;
+      try {
+        await f();
+      } catch (e) {
+        threw = true;
+      }
+      isTrue(threw);
+    };
+    await check(async (): Future<void> => { await bucket.read(DENIED); });
+    await check(async (): Future<void> => { await bucket.stat(DENIED); });
+    await check(async (): Future<void> => { await bucket.delete(DENIED); });
   });
 });
