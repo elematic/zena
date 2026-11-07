@@ -8,7 +8,7 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { JsonObject } from 'zena:json';
 import { Cid } from 'atproto:cid';
 import { Version } from 'package-manager:version';
@@ -17,8 +17,8 @@ import { packageDid } from './members.zena';
 import { PublishError, attest, findRegistry, registryClient, runCommand, saveIfRefreshed, signedIn } from './publish.zena';
 import { RETRACT } from 'package-manager:registry-methods';
 
-export function retractCommand(args: ParsedArgs, options: Options): i32 {
-  return runCommand(() => {
+export async function retractCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
     if (args.rest.length != 1) {
       throw new PublishError('give the version: zena pkg retract <version> [--reason <why>] [--package <package>]');
     }
@@ -29,17 +29,17 @@ export function retractCommand(args: ParsedArgs, options: Options): i32 {
       throw new PublishError(`'${version}' is not a version`);
     }
     let session = signedIn();
-    let registry = findRegistry(args);
-    let pkg = packageDid(registry, args);
+    let registry = await findRegistry(args);
+    let pkg = await packageDid(registry, args);
     let input = new JsonObject();
     input['package'] = pkg;
     input['version'] = version;
     if (let (true, reason) = args.getOption('reason')) {
       input['reason'] = reason;
     }
-    let written = runFuture(registryClient(session, registry, RETRACT)
-      .procedure(RETRACT, input)) as JsonObject;
-    attest(session, written['uri'] as String, Cid.parse(written['cid'] as String));
+    let client = await registryClient(session, registry, RETRACT);
+    let written = (await client.procedure(RETRACT, input)) as JsonObject;
+    await attest(session, written['uri'] as String, Cid.parse(written['cid'] as String));
     console.log(`Retracted ${version} of ${pkg}. Builds that pin it still use it; choosing a version skips it.`);
     saveIfRefreshed(session);
   });

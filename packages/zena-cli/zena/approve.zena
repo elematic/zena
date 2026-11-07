@@ -20,7 +20,7 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { HashSet } from 'zena:collections';
 import { JsonArray, JsonObject } from 'zena:json';
 import { Cid } from 'atproto:cid';
@@ -44,8 +44,8 @@ import { Session } from 'atproto:session';
 
 let USAGE = 'zena pkg approve [<package>@]<version> | @<scope> | <package> [--yes]';
 
-export function approveCommand(args: ParsedArgs, options: Options): i32 {
-  return runCommand(() => {
+export async function approveCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
     if (args.rest.length != 1) {
       throw new PublishError(`give what to approve: ${USAGE}`);
     }
@@ -59,24 +59,24 @@ export function approveCommand(args: ParsedArgs, options: Options): i32 {
       isVersion = false;
     }
     let session = signedIn();
-    let registry = findRegistry(args);
+    let registry = await findRegistry(args);
     if (isVersion) {
-      approveRelease(args, session, registry, given, parts.length > 1, version);
+      await approveRelease(args, session, registry, given, parts.length > 1, version);
     } else {
-      approveChanges(args, session, registry, given);
+      await approveChanges(args, session, registry, given);
     }
     saveIfRefreshed(session);
   });
 }
 
 /** Shows, and with `--yes` approves, the release `version` of the package `given` names, or of this one. */
-function approveRelease(args: ParsedArgs, session: Session, registry: Registry, given: String, named: boolean,
-    version: String): void {
+async function approveRelease(args: ParsedArgs, session: Session, registry: Registry, given: String, named: boolean,
+    version: String): Future<void> {
   let name = given.sliceBytes(0, given.length - version.length - 1);
-  let pkg = if (named) namedPackage(registry, name) else currentPackageDid();
+  let pkg = if (named) await namedPackage(registry, name) else currentPackageDid();
   let label = if (named) name else pkg;
-  let pending = runFuture(registryClient(session, registry, GET_PENDING_RELEASES)
-    .query(GET_PENDING_RELEASES, [('package', pkg)])) as JsonObject;
+  let client = await registryClient(session, registry, GET_PENDING_RELEASES);
+  let pending = (await client.query(GET_PENDING_RELEASES, [('package', pkg)])) as JsonObject;
   let releases = pending['releases'] as JsonArray;
   var waiting: JsonObject | null = null;
   for (var i = 0; i < releases.length; i += 1) {
@@ -100,9 +100,9 @@ function approveRelease(args: ParsedArgs, session: Session, registry: Registry, 
     return;
   }
   if (!mine) {
-    attest(session, entry['uri'] as String, Cid.parse(entry['cid'] as String));
+    await attest(session, entry['uri'] as String, Cid.parse(entry['cid'] as String));
   }
-  completeRelease(new SignedIn(session), registry, pkg, version, `${label} ${version}`, label);
+  await completeRelease(new SignedIn(session), registry, pkg, version, `${label} ${version}`, label);
 }
 
 /** Prints what a maintainer approves: the release `entry` describes, of the package `label`. */
@@ -130,11 +130,11 @@ function describeRelease(entry: JsonObject, label: String): void {
  * Shows, and with `--yes` approves, the changes waiting to the records of
  * the organization `@<scope>` or the package `given` names.
  */
-function approveChanges(args: ParsedArgs, session: Session, registry: Registry, given: String): void {
-  let account = if (given.startsWith('@') && !given.contains('/')) scopeDid(registry, given.sliceBytes(1, given.length))
-      else namedPackage(registry, given);
-  let answer = runFuture(registryClient(session, registry, GET_PENDING_CHANGES)
-    .query(GET_PENDING_CHANGES, [('account', account)])) as JsonObject;
+async function approveChanges(args: ParsedArgs, session: Session, registry: Registry, given: String): Future<void> {
+  let account = if (given.startsWith('@') && !given.contains('/')) await scopeDid(registry, given.sliceBytes(1, given.length))
+      else await namedPackage(registry, given);
+  let client = await registryClient(session, registry, GET_PENDING_CHANGES);
+  let answer = (await client.query(GET_PENDING_CHANGES, [('account', account)])) as JsonObject;
   let changes = answer['changes'] as JsonArray;
   if (changes.length == 0) {
     throw new PublishError(`no change to ${given} is waiting for approval`);
@@ -142,7 +142,7 @@ function approveChanges(args: ParsedArgs, session: Session, registry: Registry, 
   var unapproved = 0;
   for (var i = 0; i < changes.length; i += 1) {
     let change = changes[i] as JsonObject;
-    describeChange(session, registry, account, given, change);
+    await describeChange(session, registry, account, given, change);
     if (!approvedByMe(change, session.did)) {
       unapproved += 1;
     }
@@ -160,10 +160,10 @@ function approveChanges(args: ParsedArgs, session: Session, registry: Registry, 
     let uri = change['uri'] as String;
     let cid = change['cid'] as String;
     if (!approvedByMe(change, session.did)) {
-      attest(session, uri, Cid.parse(cid));
+      await attest(session, uri, Cid.parse(cid));
     }
     let what = whatChanges(change, given);
-    if (completeChange(session, registry, uri, cid, what, given)) {
+    if (await completeChange(session, registry, uri, cid, what, given)) {
       console.log(`Changed ${what}.`);
     }
   }
@@ -185,14 +185,14 @@ function whatChanges(change: JsonObject, given: String): String {
 }
 
 /** Prints a change waiting to one of `account`'s records: who it adds and removes, and the thresholds it changes. */
-function describeChange(session: Session, registry: Registry, account: String, given: String, change: JsonObject): void {
+async function describeChange(session: Session, registry: Registry, account: String, given: String, change: JsonObject): Future<void> {
   let collection = change['collection'] as String;
   let rkey = change['rkey'] as String;
   console.log(`${whatChanges(change, given)}, asked for by ${change['proposer'] as String} at ${change['heldAt'] as String}`);
   console.log(`  record: ${change['uri'] as String} (${change['cid'] as String})`);
-  let held = current(account, collection, rkey);
+  let held = await current(account, collection, rkey);
   let before = if (held == null) new GrowableArray<MemberEntry>()
-      else visibleEntries(session, registry, account, if (collection == TEAM_TYPE) rkey else null);
+      else await visibleEntries(session, registry, account, if (collection == TEAM_TYPE) rkey else null);
   let after = new GrowableArray<MemberEntry>();
   let list = change['entries'] as JsonArray;
   for (var i = 0; i < list.length; i += 1) {

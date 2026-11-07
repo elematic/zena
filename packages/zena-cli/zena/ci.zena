@@ -11,7 +11,7 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { JsonObject } from 'zena:json';
 import { Options } from './env.zena';
 import { packageResolver } from './fetch.zena';
@@ -20,8 +20,8 @@ import {
 } from './publish.zena';
 import { CREATE_AUTOMATION_ACCOUNT, ISSUE_AUTOMATION_TOKEN } from 'package-manager:registry-methods';
 
-export function ciCommand(args: ParsedArgs, options: Options): i32 {
-  return runCommand(() => {
+export async function ciCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
     if (args.rest.length != 2 || (args.rest[0] != 'create' && args.rest[0] != 'token')) {
       throw new PublishError('usage: zena pkg ci create <scope>/<name>, or zena pkg ci token <scope>/<name>');
     }
@@ -32,29 +32,29 @@ export function ciCommand(args: ParsedArgs, options: Options): i32 {
     let scope = parts[0];
     let name = parts[1];
     let session = signedIn();
-    let registry = findRegistry(args);
+    let registry = await findRegistry(args);
     if (args.rest[0] == 'token') {
       let handle = `${name}.${scope}.${registry.domain}`;
-      let did = accountOf(handle, registry);
+      let did = await accountOf(handle, registry);
       let input = new JsonObject();
       input['account'] = did;
-      let issued = runFuture(registryClient(session, registry, ISSUE_AUTOMATION_TOKEN)
-        .procedure(ISSUE_AUTOMATION_TOKEN, input)) as JsonObject;
+      let client = await registryClient(session, registry, ISSUE_AUTOMATION_TOKEN);
+      let issued = (await client.procedure(ISSUE_AUTOMATION_TOKEN, input)) as JsonObject;
       console.log(`Its new token, which is not shown again: ${issued['token'] as String}`);
       console.log('');
       console.log(`The old token of ${handle} no longer works: replace ZENA_REGISTRY_TOKEN in CI's secrets with this one.`);
       saveIfRefreshed(session);
       return;
     }
-    let org = scopeOrganization(`${scope}.${registry.domain}`);
+    let org = await scopeOrganization(`${scope}.${registry.domain}`);
     if (org == null) {
       throw new PublishError(`${registry.origin} has no scope ${scope}`);
     }
     let input = new JsonObject();
     input['organization'] = org;
     input['name'] = name;
-    let made = runFuture(registryClient(session, registry, CREATE_AUTOMATION_ACCOUNT)
-      .procedure(CREATE_AUTOMATION_ACCOUNT, input)) as JsonObject;
+    let client = await registryClient(session, registry, CREATE_AUTOMATION_ACCOUNT);
+    let made = (await client.procedure(CREATE_AUTOMATION_ACCOUNT, input)) as JsonObject;
     let handle = made['handle'] as String;
     console.log(`Created the automation account ${handle} (${made['did'] as String}).`);
     console.log('');
@@ -69,10 +69,10 @@ export function ciCommand(args: ParsedArgs, options: Options): i32 {
 }
 
 /** The DID of the automation account `handle` on `registry`. */
-function accountOf(handle: String, registry: Registry): String {
+async function accountOf(handle: String, registry: Registry): Future<String> {
   var did: String | null = null;
   try {
-    did = runFuture(packageResolver().resolveHandle(handle));
+    did = await packageResolver().resolveHandle(handle);
   } catch (e) {
     did = null;
   }

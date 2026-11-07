@@ -9,6 +9,7 @@
  */
 
 import { ArgParser, OptionType, ParsedArgs } from 'zena:args';
+import { Future } from 'zena:async';
 import { getArguments, getEnv } from 'zena:cli';
 import { existsSync, isFileSync, readFileSync, writeFileSync } from 'zena:fs';
 import { AbsolutePath, extname } from 'zena:path';
@@ -339,7 +340,7 @@ function describe() {
   return parser;
 }
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   let parser = describe();
   var parsed: ParsedArgs | null = null;
   try {
@@ -355,7 +356,7 @@ export function main(): i32 {
     return 2;
   }
   try {
-    return dispatch(parser, args);
+    return await dispatch(parser, args);
   } catch (e) {
     if (e is CompileFailure) {
       // The compiler has already said what went wrong.
@@ -367,7 +368,7 @@ export function main(): i32 {
   }
 }
 
-function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
+async function dispatch(parser: ArgParser, args: ParsedArgs): Future<i32> {
   if (args.getFlag('version')) {
     console.log('zena ' + (getEnv('ZENA_VERSION') ?? 'dev'));
     return 0;
@@ -404,7 +405,7 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
   }
   let options = new Options(args.getFlag('verbose'), args.getFlag('debug'), optLevel);
   if (name == 'build') {
-    return build(sub, options);
+    return await build(sub, options);
   }
   if (name == 'run') {
     return runCommand(sub, options);
@@ -422,10 +423,10 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
     return lintCommand(sub, options);
   }
   if (name == 'pkg') {
-    return pkgCommand(parser.command('pkg') as ArgParser, sub, options);
+    return await pkgCommand(parser.command('pkg') as ArgParser, sub, options);
   }
   if (name == 'bench') {
-    return benchCommand(sub, options);
+    return await benchCommand(sub, options);
   }
   if (name == 'lsp') {
     return lspCommand(sub, options);
@@ -438,7 +439,7 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
 }
 
 /** `zena pkg <command>`: the commands about packages, which `pkg` parses. */
-function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): i32 {
+async function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): Future<i32> {
   let name = args.commandName;
   let sub = args.commandArgs;
   if (name == null || sub == null) {
@@ -457,72 +458,72 @@ function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): i32 {
     return 0;
   }
   if (name == 'fetch') {
-    return fetchCommand(sub, options);
+    return await fetchCommand(sub, options);
   }
   if (name == 'add') {
-    return addCommand(sub, options);
+    return await addCommand(sub, options);
   }
   if (name == 'update') {
-    return updateCommand(sub, options);
+    return await updateCommand(sub, options);
   }
   if (name == 'login') {
-    return loginCommand(sub, options);
+    return await loginCommand(sub, options);
   }
   if (name == 'logout') {
-    return logoutCommand(sub, options);
+    return await logoutCommand(sub, options);
   }
   if (name == 'publish') {
-    return publishCommand(sub, options);
+    return await publishCommand(sub, options);
   }
   if (name == 'create') {
     if (sub.rest.length != 0) {
       console.error('Error: zena pkg create takes no arguments: it creates the package you are in');
       return 2;
     }
-    return packageCreateCommand(sub, options);
+    return await packageCreateCommand(sub, options);
   }
   if (name == 'scope') {
     if (sub.rest.length > 0 && sub.rest[0] == 'create') {
-      return scopeCreateCommand(sub, options);
+      return await scopeCreateCommand(sub, options);
     }
     if (sub.rest.length > 0 && sub.rest[0] == 'info') {
-      return scopeInfoCommand(sub, options);
+      return await scopeInfoCommand(sub, options);
     }
     if (sub.rest.length > 0 && sub.rest[0] == 'members') {
-      return scopeMembersCommand(sub, options);
+      return await scopeMembersCommand(sub, options);
     }
     if (sub.rest.length > 0 && sub.rest[0] == 'add') {
-      return scopeAddCommand(sub, options);
+      return await scopeAddCommand(sub, options);
     }
     if (sub.rest.length > 0 && sub.rest[0] == 'remove') {
-      return scopeRemoveCommand(sub, options);
+      return await scopeRemoveCommand(sub, options);
     }
     if (sub.rest.length > 0 && sub.rest[0] == 'settings') {
-      return scopeSettingsCommand(sub, options);
+      return await scopeSettingsCommand(sub, options);
     }
     if (sub.rest.length > 0 && sub.rest[0] == 'policy') {
-      return scopePolicyCommand(sub, options);
+      return await scopePolicyCommand(sub, options);
     }
     if (sub.rest.length > 0 && sub.rest[0] == 'profile') {
-      return scopeProfileCommand(sub, options);
+      return await scopeProfileCommand(sub, options);
     }
     console.error('Error: zena pkg scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope>');
     return 2;
   }
   if (name == 'team') {
-    return teamCommand(sub, options);
+    return await teamCommand(sub, options);
   }
   if (name == 'retract') {
-    return retractCommand(sub, options);
+    return await retractCommand(sub, options);
   }
   if (name == 'approve') {
-    return approveCommand(sub, options);
+    return await approveCommand(sub, options);
   }
   if (name == 'ci') {
-    return ciCommand(sub, options);
+    return await ciCommand(sub, options);
   }
   if (name == 'owner') {
-    return ownerCommand(sub, options);
+    return await ownerCommand(sub, options);
   }
   console.error(`Error: no such command: zena pkg ${name}`);
   return 2;
@@ -532,7 +533,7 @@ function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): i32 {
  * `zena build`: an argument naming a `.zena` file compiles that file;
  * anything else is a build target, run with zb.
  */
-function build(args: ParsedArgs, options: Options): i32 {
+async function build(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length > 1) {
     console.error('Error: build takes one file or target');
     return 2;
@@ -556,7 +557,7 @@ function build(args: ParsedArgs, options: Options): i32 {
       return 2;
     }
   }
-  return buildScript(
+  return await buildScript(
     argument,
     jobs,
     args.getFlag('force'),
@@ -615,12 +616,12 @@ function buildFile(
  * directory, from where the user is, whose package.json declares
  * `workspaces`.
  */
-function buildScript(
+async function buildScript(
   argument: String,
   jobs: i32 = 0,
   force: boolean = false,
   useCache: boolean = true,
-): i32 {
+): Future<i32> {
   var packagePath = '.';
   var script = argument;
   if (argument.startsWith('.')) {
@@ -646,7 +647,7 @@ function buildScript(
   let root = workspaceRoot(packageDir);
   let relative = packageDir.stripPrefix(root);
   let packageRef = if (relative == null) '' else relative.value;
-  let outcome = buildTarget(
+  let outcome = await buildTarget(
     root.value,
     new ScriptRef(packageRef, script),
     jobs,

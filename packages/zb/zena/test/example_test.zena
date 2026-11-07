@@ -51,12 +51,12 @@ function sourceOf(result: RunResult, key: String): StepSource {
 }
 
 export let tests = suite('zb example workspace', () => {
-  test('the site builds, stays fresh, and rebuilds incrementally', () => {
+  test('the site builds, stays fresh, and rebuilds incrementally', async () => {
     let root = '/tmp/zb-example-' + i64ToString(monotonic() as i64);
     copyDir('packages/zb/example', root);
     let entry = new ScriptRef('site', 'build');
 
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded, 'first build succeeds');
     isTrue(sourceOf(first.result, 'greeting:build') == StepSource.Ran, 'first: greeting ran');
     isTrue(sourceOf(first.result, 'site:build') == StepSource.Ran, 'first: site ran');
@@ -68,12 +68,12 @@ export let tests = suite('zb example workspace', () => {
     equalText(readFileSync(withRoot(root, 'site/out/index.html')), expected);
     isTrue(readFileSync(withRoot(root, 'site/out/index.html')).contains('Hello from zb!'), 'greeting text present');
 
-    let second = buildTarget(root, entry);
+    let second = await buildTarget(root, entry);
     isTrue(sourceOf(second.result, 'greeting:build') == StepSource.Fresh, 'second: greeting fresh');
     isTrue(sourceOf(second.result, 'site:build') == StepSource.Fresh, 'second: site fresh');
 
     writeFileSync(withRoot(root, 'greeting/src/more.txt'), 'A second line.\n');
-    let third = buildTarget(root, entry);
+    let third = await buildTarget(root, entry);
     isTrue(third.result.allSucceeded, 'third build succeeds');
     isTrue(sourceOf(third.result, 'greeting:build') == StepSource.Ran, 'third: greeting ran');
     isTrue(sourceOf(third.result, 'site:build') == StepSource.Ran, 'third: site ran');

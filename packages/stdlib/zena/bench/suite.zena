@@ -34,7 +34,7 @@
  * program calling `runSuite` must itself be run with it.
  */
 
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { StringBuilder } from 'zena:core';
 import { readFileSync, writeFileSync } from 'zena:fs';
 import { parseJson, JsonObject, JsonArray, JsonValue } from 'zena:json';
@@ -228,7 +228,7 @@ function parseReportedMs(stdout: String): (boolean, f64) {
 }
 
 /** Takes one sample of a variant, in milliseconds. */
-function sampleVariant(v: BenchVariant, debug: boolean) {
+async function sampleVariant(v: BenchVariant, debug: boolean): Future<f64> {
   if (!v.isCommand) {
     // Measured variants are workloads, not tools: no grant, and their
     // output is captured and dropped.
@@ -244,7 +244,7 @@ function sampleVariant(v: BenchVariant, debug: boolean) {
     }
     return (result.callTime as i64 as f64) / 1000000.0;
   }
-  let res = runFuture(runIn(v.argv, v.cwd));
+  let res = await runIn(v.argv, v.cwd);
   if (res.exitCode != 0) {
     throw new SuiteError(
       `variant '${v.name}' failed (exit ${res.exitCode}):\n${res.stderr}`,
@@ -347,16 +347,16 @@ function readVariant(
  * the report JSON. Returns 0, or 1 after printing why the suite could
  * not run.
  */
-export function runSuite(configPath: String, options: SuiteOptions = {}): i32 {
+export async function runSuite(configPath: String, options: SuiteOptions = {}): Future<i32> {
   try {
-    return runSuiteOrThrow(configPath, options);
+    return await runSuiteOrThrow(configPath, options);
   } catch (e) {
     console.error(`bench: ${e.message}`);
     return 1;
   }
 }
 
-function runSuiteOrThrow(configPath: String, suiteOptions: SuiteOptions): i32 {
+async function runSuiteOrThrow(configPath: String, suiteOptions: SuiteOptions): Future<i32> {
   let {debug = false} = suiteOptions;
   let configDir = dirName(configPath);
   let parsed = parseJson(readFileSync(configPath));
@@ -405,11 +405,11 @@ function runSuiteOrThrow(configPath: String, suiteOptions: SuiteOptions): i32 {
     cases.push(new NamedSamples(v.name, v.samples));
   }
 
-  let rounds = (n: i32) => {
+  let rounds = async (n: i32): Future<void> => {
     var r = 0;
     while (r < n) {
       for (let v in variants) {
-        v.samples.push(sampleVariant(v, debug));
+        v.samples.push(await sampleVariant(v, debug));
       }
       r += 1;
     }
@@ -422,19 +422,19 @@ function runSuiteOrThrow(configPath: String, suiteOptions: SuiteOptions): i32 {
   var w = 0;
   while (w < options.warmupRuns) {
     for (let v in variants) {
-      sampleVariant(v, debug);
+      await sampleVariant(v, debug);
     }
     w += 1;
   }
 
-  rounds(options.minSamples);
+  await rounds(options.minSamples);
   var report = analyze(suite, cases, options, nowMs() - started);
   while (
     !report.resolved &&
     nowMs() - started < options.timeBudgetMs &&
     variants.length > 1
   ) {
-    rounds(options.extraSamples);
+    await rounds(options.extraSamples);
     report = analyze(suite, cases, options, nowMs() - started);
   }
 

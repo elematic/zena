@@ -21,7 +21,7 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { OrderedHashMap } from 'zena:collections';
 import { existsSync, readFileSync, writeFileSync } from 'zena:fs';
 import { Cid } from 'atproto:cid';
@@ -38,7 +38,7 @@ import { DiskFiles, Workspace, WorkspacePackage, readWorkspace } from 'package-m
 import { Options, repoRoot, userCwd } from './env.zena';
 import { fetchAndReport, packageResolver } from './fetch.zena';
 
-export function addCommand(args: ParsedArgs, options: Options): i32 {
+export async function addCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length != 1) {
     console.error('Error: zena pkg add takes one package: a DID, a handle or @scope/name, with @<version> if wanted.');
     return 2;
@@ -49,14 +49,15 @@ export function addCommand(args: ParsedArgs, options: Options): i32 {
   let manifest = target.manifest;
   let requirements = manifest.requirements;
   let resolver = packageResolver();
-  let did = runFuture(resolveIdentifier(identifier, workspace.root.manifest.scopes, resolver));
-  let document = runFuture(resolver.resolveDid(did));
+  let did = await resolveIdentifier(identifier, workspace.root.manifest.scopes, resolver);
+  let document = await resolver.resolveDid(did);
 
   var version: Version | null = null;
   if (versionText != null) {
     version = Version.parse(versionText);
   } else {
-    version = runFuture(listVersions(document)).latest();
+    let versions = await listVersions(document);
+    version = versions.latest();
     if (version == null) {
       console.error(`Error: ${identifier} (${did}) has no release that is not retracted.`);
       return 1;
@@ -68,7 +69,7 @@ export function addCommand(args: ParsedArgs, options: Options): i32 {
   if (let (true, given) = args.getOption('name')) {
     name = given;
   } else {
-    let profile = runFuture(fetchProfile(document));
+    let profile = await fetchProfile(document);
     if (profile == null) {
       console.error(`Error: ${identifier} has no profile to suggest a name; give one with --name.`);
       return 1;
@@ -87,10 +88,10 @@ export function addCommand(args: ParsedArgs, options: Options): i32 {
 
   requirements[name] = new Requirement(did, chosen);
   console.log(`Adding ${name} to ${target.manifestPath()}: ${did} ${chosen.toString()}`);
-  return resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
+  return await resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
 }
 
-export function updateCommand(args: ParsedArgs, options: Options): i32 {
+export async function updateCommand(args: ParsedArgs, options: Options): Future<i32> {
   let workspace = readWorkspace(repoRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
   let requirements = target.manifest.requirements;
@@ -106,23 +107,28 @@ export function updateCommand(args: ParsedArgs, options: Options): i32 {
   }
   let resolver = packageResolver();
   let updated = new OrderedHashMap<String, Requirement>();
+  let entries = new GrowableArray<(String, Requirement)>();
   requirements.forEach((name, requirement) => {
+    entries.push((name, requirement));
+  });
+  for (let (name, requirement) in entries) {
     if (args.rest.length == 0 || args.rest.contains(name)) {
-      let document = runFuture(resolver.resolveDid(requirement.did));
-      let latest = runFuture(listVersions(document)).latest(requirement.version.major);
+      let document = await resolver.resolveDid(requirement.did);
+      let versions = await listVersions(document);
+      let latest = versions.latest(requirement.version.major);
       if (latest != null && latest.compareTo(requirement.version) > 0) {
         console.log(`Updating ${name}: ${requirement.version.toString()} -> ${latest.toString()}`);
         updated[name] = new Requirement(requirement.did, latest);
       }
     }
-  });
+  }
   if (updated.size == 0) {
     console.log('Every dependency is at its latest version.');
   }
   updated.forEach((name, requirement) => {
     requirements[name] = requirement;
   });
-  return resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
+  return await resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
 }
 
 /**
@@ -163,12 +169,12 @@ function nameTaken(workspace: Workspace, target: WorkspacePackage, name: String,
  * selection fails, or when a pinned release changed in place and
  * `allowChanged` is false.
  */
-function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePackage,
-    resolver: IdentityResolver, allowChanged: boolean, options: Options): i32 {
+async function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePackage,
+    resolver: IdentityResolver, allowChanged: boolean, options: Options): Future<i32> {
   let requirements = target.manifest.requirements;
   let lockfilePath = workspace.lockfilePath();
   let before = if (existsSync(lockfilePath)) readPins(readFileSync(lockfilePath)) else new GrowableArray<Pin>();
-  let resolution = runFuture(resolve(workspace.requirements(), networkReleases(resolver)));
+  let resolution = await resolve(workspace.requirements(), networkReleases(resolver));
   let changes = diffPins(before, resolution);
   if (!allowChanged && refuseChangedInPlace(changes)) {
     return 1;
@@ -182,7 +188,7 @@ function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePackage,
   for (let change in changes) {
     console.log(describeChange(change));
   }
-  return fetchAndReport(readPins(lockfile), options);
+  return await fetchAndReport(readPins(lockfile), options);
 }
 
 /**

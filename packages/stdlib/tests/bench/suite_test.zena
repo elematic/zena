@@ -9,9 +9,9 @@ import { runSuite } from 'zena:bench';
 let fixtures = 'packages/stdlib/tests/bench/fixtures';
 
 export let tests = suite('bench suites', () => {
-  test('a module and a command are sampled and reported', () => {
+  test('a module and a command are sampled and reported', async () => {
     let out = '/tmp/zena-suite-test.results.json';
-    equal(runSuite(`${fixtures}/suite.json`, {out: out}), 0);
+    equal(await runSuite(`${fixtures}/suite.json`, {out: out}), 0);
     isTrue(existsSync(out));
     let json = readFileSync(out);
     isTrue(json.contains('"module"'));
@@ -22,22 +22,22 @@ export let tests = suite('bench suites', () => {
     unlinkSync(out);
   });
 
-  test('a path that climbs out of the config\'s directory is resolved', () => {
+  test('a path that climbs out of the config\'s directory is resolved', async () => {
     // `../sum.wat` from `fixtures/nested`: zena:wasm refuses a path with
     // a `..` segment, so the suite has to resolve it first.
     let out = '/tmp/zena-suite-nested.results.json';
-    equal(runSuite(`${fixtures}/nested/suite.json`, {out: out}), 0);
+    equal(await runSuite(`${fixtures}/nested/suite.json`, {out: out}), 0);
     unlinkSync(out);
   });
 
-  test('a zena variant without a compiler is an error', () => {
-    equal(runSuite(`${fixtures}/needs-compiler.json`, {out: '/tmp/unused.json'}), 1);
+  test('a zena variant without a compiler is an error', async () => {
+    equal(await runSuite(`${fixtures}/needs-compiler.json`, {out: '/tmp/unused.json'}), 1);
   });
 
-  test('a compiler compiles each zena variant once', () => {
+  test('a compiler compiles each zena variant once', async () => {
     var compiled = 0;
     let out = '/tmp/zena-suite-compile.results.json';
-    let status = runSuite(`${fixtures}/needs-compiler.json`, {
+    let status = await runSuite(`${fixtures}/needs-compiler.json`, {
       out: out,
       // Stands in for a compiler: hands back an existing module.
       compile: (source: String) => {

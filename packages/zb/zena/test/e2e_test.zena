@@ -67,27 +67,27 @@ function sourceOf(result: RunResult, key: String): StepSource {
 }
 
 export let tests = suite('zb end to end', () => {
-  test('build, rebuild fresh, incremental change, cache restore', () => {
+  test('build, rebuild fresh, incremental change, cache restore', async () => {
     let root = '/tmp/zb-e2e-' + i64ToString(monotonic() as i64);
     mkFixture(root);
     let entry = new ScriptRef('', 'build');
 
     // First build runs everything.
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded);
     isTrue(sourceOf(first.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(first.result, 'packages/app:build') == StepSource.Ran);
     equal(readFileSync(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v1\n');
 
     // An identical second build is fully fresh.
-    let second = buildTarget(root, entry);
+    let second = await buildTarget(root, entry);
     isTrue(second.result.allSucceeded);
     isTrue(sourceOf(second.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(second.result, 'packages/app:build') == StepSource.Fresh);
 
     // Changing app's input reruns app but not lib.
     write(root, 'packages/app/greeting.txt', 'hello-v2\n');
-    let third = buildTarget(root, entry);
+    let third = await buildTarget(root, entry);
     isTrue(third.result.allSucceeded);
     isTrue(sourceOf(third.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(third.result, 'packages/app:build') == StepSource.Ran);
@@ -96,7 +96,7 @@ export let tests = suite('zb end to end', () => {
     // Losing the state files falls back to the cache, not to running.
     unlinkSync(withRoot(root, 'packages/lib/.zb/state.json'));
     unlinkSync(withRoot(root, 'packages/app/.zb/state.json'));
-    let fourth = buildTarget(root, entry);
+    let fourth = await buildTarget(root, entry);
     isTrue(fourth.result.allSucceeded);
     isTrue(sourceOf(fourth.result, 'packages/lib:build') == StepSource.Cache);
     isTrue(sourceOf(fourth.result, 'packages/app:build') == StepSource.Cache);
@@ -104,14 +104,14 @@ export let tests = suite('zb end to end', () => {
 
     // A dependency change propagates: lib reruns, then app.
     write(root, 'packages/lib/src/in.txt', 'lib-v2\n');
-    let fifth = buildTarget(root, entry);
+    let fifth = await buildTarget(root, entry);
     isTrue(fifth.result.allSucceeded);
     isTrue(sourceOf(fifth.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(fifth.result, 'packages/app:build') == StepSource.Ran);
     equal(readFileSync(withRoot(root, 'packages/app/out/app.txt')), 'lib-v2\nhello-v2\n');
   });
 
-  test('untracked scripts always run and poison dependents', () => {
+  test('untracked scripts always run and poison dependents', async () => {
     let root = '/tmp/zb-untracked-' + i64ToString(monotonic() as i64);
     write(root, 'package.json', `{
       "scripts": {"all": "wireit"},
@@ -150,17 +150,17 @@ export let tests = suite('zb end to end', () => {
     }`);
     let entry = new ScriptRef('', 'all');
 
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded);
 
-    let second = buildTarget(root, entry);
+    let second = await buildTarget(root, entry);
     isTrue(second.result.allSucceeded);
     isTrue(sourceOf(second.result, 'gen:build') == StepSource.Ran);
     isTrue(sourceOf(second.result, 'use:build') == StepSource.Ran);
     isTrue(sourceOf(second.result, 'steady:build') == StepSource.Fresh);
   });
 
-  test('independent scripts run concurrently and -j 1 serializes them', () => {
+  test('independent scripts run concurrently and -j 1 serializes them', async () => {
     let root = '/tmp/zb-parallel-' + i64ToString(monotonic() as i64);
     ensureDirSync(root);
     // Two independent scripts write their own start marker and wait up
@@ -184,7 +184,7 @@ export let tests = suite('zb end to end', () => {
     }`);
     let entry = new ScriptRef('', 'both');
 
-    let parallel = buildTarget(root, entry, 2);
+    let parallel = await buildTarget(root, entry, 2);
     isTrue(parallel.result.allSucceeded, 'a and b should overlap under -j 2');
 
     // Under -j 1 on a fresh workspace, independent scripts never overlap:
@@ -207,7 +207,7 @@ export let tests = suite('zb end to end', () => {
         }
       }
     }`);
-    let serial = buildTarget(serialRoot, entry, 1);
+    let serial = await buildTarget(serialRoot, entry, 1);
     isTrue(serial.result.allSucceeded, 'serial build under -j 1 should succeed');
     let orderLog = readFileSync(withRoot(serialRoot, 'order.log'));
     isTrue(
@@ -218,7 +218,7 @@ export let tests = suite('zb end to end', () => {
     isFalse(sourceOf(serial.result, ':a') == StepSource.Fresh);
   });
 
-  test('services wait for readyWhen.lineMatches, share across dependents, skip when fresh, and tear down process groups', () => {
+  test('services wait for readyWhen.lineMatches, share across dependents, skip when fresh, and tear down process groups', async () => {
     let root = '/tmp/zb-service-' + i64ToString(monotonic() as i64);
     ensureDirSync(root);
     write(root, 'svc.cfg', 'port=8080\n');
@@ -247,7 +247,7 @@ export let tests = suite('zb end to end', () => {
     }`);
     let entry = new ScriptRef('', 'all');
 
-    let first = buildTarget(root, entry, 2);
+    let first = await buildTarget(root, entry, 2);
     isTrue(first.result.allSucceeded, 'first build with shared service succeeds');
     isTrue(sourceOf(first.result, ':svc') == StepSource.Ran);
     isTrue(sourceOf(first.result, ':a') == StepSource.Ran);
@@ -257,7 +257,7 @@ export let tests = suite('zb end to end', () => {
     equal(readFileSync(withRoot(root, 'b.out')), 'port=8080\n');
 
     // Second build: dependents are fresh, so the service never starts.
-    let second = buildTarget(root, entry, 2);
+    let second = await buildTarget(root, entry, 2);
     isTrue(second.result.allSucceeded);
     isTrue(sourceOf(second.result, ':svc') == StepSource.Fresh);
     isTrue(sourceOf(second.result, ':a') == StepSource.Fresh);
@@ -266,7 +266,7 @@ export let tests = suite('zb end to end', () => {
 
     // Changing the service's declared file invalidates dependents and restarts it.
     write(root, 'svc.cfg', 'port=9090\n');
-    let third = buildTarget(root, entry, 2);
+    let third = await buildTarget(root, entry, 2);
     isTrue(third.result.allSucceeded);
     isTrue(sourceOf(third.result, ':svc') == StepSource.Ran);
     isTrue(sourceOf(third.result, ':a') == StepSource.Ran);
@@ -274,7 +274,7 @@ export let tests = suite('zb end to end', () => {
     equal(readFileSync(withRoot(root, 'a.out')), 'port=9090\n');
   });
 
-  test('services fail loudly when exiting before readyWhen or crashing mid-run', () => {
+  test('services fail loudly when exiting before readyWhen or crashing mid-run', async () => {
     // 1. Exits before readyWhen.lineMatches ever matches.
     let earlyEofRoot = '/tmp/zb-svc-eof-' + i64ToString(monotonic() as i64);
     ensureDirSync(earlyEofRoot);
@@ -300,7 +300,7 @@ export let tests = suite('zb end to end', () => {
         }
       }
     }`);
-    let eofRun = buildTarget(earlyEofRoot, new ScriptRef('', 'all'));
+    let eofRun = await buildTarget(earlyEofRoot, new ScriptRef('', 'all'));
     isFalse(eofRun.result.allSucceeded);
     isTrue(eofRun.result.outcomeOf(new StepKey(':svc')) is Failed);
     isTrue(eofRun.result.outcomeOf(new StepKey(':app')) is Failed);
@@ -325,12 +325,12 @@ export let tests = suite('zb end to end', () => {
         }
       }
     }`);
-    let crashRun = buildTarget(crashRoot, new ScriptRef('', 'app'));
+    let crashRun = await buildTarget(crashRoot, new ScriptRef('', 'app'));
     isFalse(crashRun.result.allSucceeded);
     isTrue(crashRun.result.outcomeOf(new StepKey(':svc')) is Failed);
   });
 
-  test('invoking a service as the top-level target runs its dependencies and executes it in the foreground', () => {
+  test('invoking a service as the top-level target runs its dependencies and executes it in the foreground', async () => {
     let root = '/tmp/zb-svc-fg-' + i64ToString(monotonic() as i64);
     ensureDirSync(root);
     write(root, 'src.txt', 'built-asset\n');
@@ -356,24 +356,24 @@ export let tests = suite('zb end to end', () => {
       }
     }`);
 
-    let first = buildTarget(root, new ScriptRef('', 'serve'));
+    let first = await buildTarget(root, new ScriptRef('', 'serve'));
     isTrue(first.result.allSucceeded);
     isTrue(sourceOf(first.result, ':prep') == StepSource.Ran);
     isTrue(sourceOf(first.result, ':serve') == StepSource.Ran);
 
     // Invoking the top-level service again leaves prep fresh, but runs serve again.
-    let second = buildTarget(root, new ScriptRef('', 'serve'));
+    let second = await buildTarget(root, new ScriptRef('', 'serve'));
     isTrue(second.result.allSucceeded);
     isTrue(sourceOf(second.result, ':prep') == StepSource.Fresh);
     isTrue(sourceOf(second.result, ':serve') == StepSource.Ran);
     equal(readFileSync(withRoot(root, 'served.log')), 'built-asset\nbuilt-asset\n');
 
     // Exiting 0 without matching readyWhen.lineMatches still fails.
-    let bad = buildTarget(root, new ScriptRef('', 'bad-serve'));
+    let bad = await buildTarget(root, new ScriptRef('', 'bad-serve'));
     isFalse(bad.result.allSucceeded);
   });
 
-  test('env sets literal and default external variables and invalidates on change', () => {
+  test('env sets literal and default external variables and invalidates on change', async () => {
     let root = '/tmp/zb-env-' + i64ToString(monotonic() as i64);
     ensureDirSync(root);
     let writePkg = (port: String) => {
@@ -395,20 +395,20 @@ export let tests = suite('zb end to end', () => {
     writePkg('8080');
     let entry = new ScriptRef('', 'run');
 
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded);
     equal(readFileSync(withRoot(root, 'out.txt')), '8080|fallback');
 
-    let second = buildTarget(root, entry);
+    let second = await buildTarget(root, entry);
     isTrue(sourceOf(second.result, ':run') == StepSource.Fresh);
 
     writePkg('9090');
-    let third = buildTarget(root, entry);
+    let third = await buildTarget(root, entry);
     isTrue(sourceOf(third.result, ':run') == StepSource.Ran);
     equal(readFileSync(withRoot(root, 'out.txt')), '9090|fallback');
   });
 
-  test('cascade: false orders untracked producers while fileset groups hash generated files lazily', () => {
+  test('cascade: false orders untracked producers while fileset groups hash generated files lazily', async () => {
     let root = '/tmp/zb-cascade-' + i64ToString(monotonic() as i64);
     ensureDirSync(root);
     write(root, 'desired.txt', 'bin-v1\n');
@@ -442,7 +442,7 @@ export let tests = suite('zb end to end', () => {
     let entry = new ScriptRef('', 'app');
 
     // Clean run: out/tool is created by build:cargo, then hashed by build:binary.
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded);
     isTrue(sourceOf(first.result, ':build:cargo') == StepSource.Ran);
     isTrue(sourceOf(first.result, ':build:binary') == StepSource.Ran);
@@ -452,7 +452,7 @@ export let tests = suite('zb end to end', () => {
 
     // No-op cargo rerun: build:cargo runs again, but out/tool is unchanged,
     // so build:binary, build, and app all stay fresh!
-    let second = buildTarget(root, entry);
+    let second = await buildTarget(root, entry);
     isTrue(second.result.allSucceeded);
     isTrue(sourceOf(second.result, ':build:cargo') == StepSource.Ran);
     isTrue(sourceOf(second.result, ':build:binary') == StepSource.Fresh);
@@ -462,7 +462,7 @@ export let tests = suite('zb end to end', () => {
     // Real binary update: build:cargo rewrites out/tool, which cascades
     // through build:binary and build to rerun app.
     write(root, 'desired.txt', 'bin-v2\n');
-    let third = buildTarget(root, entry);
+    let third = await buildTarget(root, entry);
     isTrue(third.result.allSucceeded);
     isTrue(sourceOf(third.result, ':build:cargo') == StepSource.Ran);
     isTrue(sourceOf(third.result, ':build:binary') == StepSource.Ran);
@@ -477,14 +477,14 @@ export let tests = suite('zb end to end', () => {
     let entry = new ScriptRef('', 'build');
 
     // First build populates .zb/hashes.json.
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded);
 
     // Immediate sub-millisecond same-size edit ("lib-v1\n" -> "lib-v2\n",
     // both 7 bytes): the racy-timestamp guard forces a byte re-hash so it
     // cannot slip past as a false memo hit.
     write(root, 'packages/lib/src/in.txt', 'lib-v2\n');
-    let immediateEdit = buildTarget(root, entry);
+    let immediateEdit = await buildTarget(root, entry);
     isTrue(immediateEdit.result.allSucceeded);
     isTrue(sourceOf(immediateEdit.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(immediateEdit.result, 'packages/app:build') == StepSource.Ran);
@@ -493,13 +493,13 @@ export let tests = suite('zb end to end', () => {
     // Advance past the 20ms racy window, run once so .zb/hashes.json has a
     // post-window mtime, then verify the next warm run reads zero file bytes.
     await sleep(milliseconds(35));
-    let settle = buildTarget(root, entry);
+    let settle = await buildTarget(root, entry);
     isTrue(settle.result.allSucceeded);
     isTrue(sourceOf(settle.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(settle.result, 'packages/app:build') == StepSource.Fresh);
 
     let warmHasher = new FileHasher(root);
-    let warm = buildTarget(root, entry, 0, false, true, warmHasher);
+    let warm = await buildTarget(root, entry, 0, false, true, warmHasher);
     isTrue(warm.result.allSucceeded);
     isTrue(sourceOf(warm.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(warm.result, 'packages/app:build') == StepSource.Fresh);
@@ -509,7 +509,7 @@ export let tests = suite('zb end to end', () => {
     // Same-size edit after memo warm-up advances mtime and triggers rebuild.
     await sleep(milliseconds(10));
     write(root, 'packages/lib/src/in.txt', 'lib-v3\n');
-    let edited = buildTarget(root, entry);
+    let edited = await buildTarget(root, entry);
     isTrue(edited.result.allSucceeded);
     isTrue(sourceOf(edited.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(edited.result, 'packages/app:build') == StepSource.Ran);
@@ -521,13 +521,13 @@ export let tests = suite('zb end to end', () => {
     mkFixture(root);
     let entry = new ScriptRef('', 'build');
 
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded);
 
     // Deleting an upstream output file makes that step non-fresh; it
     // restores from the disk blob cache while downstream stays fresh.
     unlinkSync(withRoot(root, 'packages/lib/out/lib.txt'));
-    let afterDelete = buildTarget(root, entry);
+    let afterDelete = await buildTarget(root, entry);
     isTrue(afterDelete.result.allSucceeded);
     isTrue(sourceOf(afterDelete.result, 'packages/lib:build') == StepSource.Cache);
     isTrue(sourceOf(afterDelete.result, 'packages/app:build') == StepSource.Fresh);
@@ -536,7 +536,7 @@ export let tests = suite('zb end to end', () => {
     // Corrupting a downstream output file restores the clean bytes from cache.
     await sleep(milliseconds(10));
     write(root, 'packages/app/out/app.txt', 'corrupted-by-hand\n');
-    let afterCorrupt = buildTarget(root, entry);
+    let afterCorrupt = await buildTarget(root, entry);
     isTrue(afterCorrupt.result.allSucceeded);
     isTrue(sourceOf(afterCorrupt.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(afterCorrupt.result, 'packages/app:build') == StepSource.Cache);
@@ -544,14 +544,14 @@ export let tests = suite('zb end to end', () => {
 
     // Deleting the output with --no-cache (`useCache = false`) reruns the step.
     unlinkSync(withRoot(root, 'packages/app/out/app.txt'));
-    let rerunNoCache = buildTarget(root, entry, 0, false, false);
+    let rerunNoCache = await buildTarget(root, entry, 0, false, false);
     isTrue(rerunNoCache.result.allSucceeded);
     isTrue(sourceOf(rerunNoCache.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(rerunNoCache.result, 'packages/app:build') == StepSource.Ran);
     equal(readFileSync(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v1\n');
   });
 
-  test('packageLocks fingerprints ancestor lockfiles by default and respects overrides', () => {
+  test('packageLocks fingerprints ancestor lockfiles by default and respects overrides', async () => {
     let root = '/tmp/zb-locks-' + i64ToString(monotonic() as i64);
     ensureDirSync(root);
     write(root, 'package-lock.json', '{"lockfileVersion":3,"v":1}\n');
@@ -630,14 +630,14 @@ export let tests = suite('zb end to end', () => {
     }`);
     let entry = new ScriptRef('', 'build');
 
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded);
     isTrue(sourceOf(first.result, 'packages/default-lock:build') == StepSource.Ran);
     isTrue(sourceOf(first.result, 'packages/implicit-lock:build') == StepSource.Ran);
     isTrue(sourceOf(first.result, 'packages/no-lock:build') == StepSource.Ran);
     isTrue(sourceOf(first.result, 'packages/pnpm-lock:build') == StepSource.Ran);
 
-    let second = buildTarget(root, entry);
+    let second = await buildTarget(root, entry);
     isTrue(second.result.allSucceeded);
     isTrue(sourceOf(second.result, 'packages/default-lock:build') == StepSource.Fresh);
     isTrue(sourceOf(second.result, 'packages/implicit-lock:build') == StepSource.Fresh);
@@ -648,7 +648,7 @@ export let tests = suite('zb end to end', () => {
     // implicit default-lock packages (without duplicate-input collision),
     // while leaving packageLocks:[] and pnpm-lock packages fresh.
     write(root, 'package-lock.json', '{"lockfileVersion":3,"v":2}\n');
-    let third = buildTarget(root, entry);
+    let third = await buildTarget(root, entry);
     isTrue(third.result.allSucceeded);
     isTrue(sourceOf(third.result, 'packages/default-lock:build') == StepSource.Ran);
     isTrue(sourceOf(third.result, 'packages/implicit-lock:build') == StepSource.Ran);
@@ -657,7 +657,7 @@ export let tests = suite('zb end to end', () => {
 
     // Updating pnpm-lock.yaml invalidates only packages/pnpm-lock:build.
     write(root, 'pnpm-lock.yaml', 'lockfileVersion: 9.0\nv: 2\n');
-    let fourth = buildTarget(root, entry);
+    let fourth = await buildTarget(root, entry);
     isTrue(fourth.result.allSucceeded);
     isTrue(sourceOf(fourth.result, 'packages/default-lock:build') == StepSource.Fresh);
     isTrue(sourceOf(fourth.result, 'packages/implicit-lock:build') == StepSource.Fresh);
@@ -665,21 +665,21 @@ export let tests = suite('zb end to end', () => {
     isTrue(sourceOf(fourth.result, 'packages/pnpm-lock:build') == StepSource.Ran);
   });
 
-  test('force bypasses freshness and cache; no-cache skips disk cache restore', () => {
+  test('force bypasses freshness and cache; no-cache skips disk cache restore', async () => {
     let root = '/tmp/zb-force-' + i64ToString(monotonic() as i64);
     mkFixture(root);
     let entry = new ScriptRef('', 'build');
 
-    let first = buildTarget(root, entry);
+    let first = await buildTarget(root, entry);
     isTrue(first.result.allSucceeded);
 
-    let second = buildTarget(root, entry);
+    let second = await buildTarget(root, entry);
     isTrue(second.result.allSucceeded);
     isTrue(sourceOf(second.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(second.result, 'packages/app:build') == StepSource.Fresh);
 
     // force = true reruns every step even when fresh and cached.
-    let forced = buildTarget(root, entry, 0, true, true);
+    let forced = await buildTarget(root, entry, 0, true, true);
     isTrue(forced.result.allSucceeded);
     isTrue(sourceOf(forced.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(forced.result, 'packages/app:build') == StepSource.Ran);
@@ -687,7 +687,7 @@ export let tests = suite('zb end to end', () => {
     // Deleting lib's state.json with useCache = false reruns lib instead of
     // restoring from DiskCache, while app stays fresh via early cutoff.
     unlinkSync(withRoot(root, 'packages/lib/.zb/state.json'));
-    let noCache = buildTarget(root, entry, 0, false, false);
+    let noCache = await buildTarget(root, entry, 0, false, false);
     isTrue(noCache.result.allSucceeded);
     isTrue(sourceOf(noCache.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(noCache.result, 'packages/app:build') == StepSource.Fresh);
