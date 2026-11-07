@@ -5,7 +5,7 @@
 
 import { suite, test } from 'zena:test';
 import { equal } from 'zena:assert';
-import { Future, runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { Borrow } from 'zena:core';
 import { App, Request, Response, Server } from 'zena:http';
 import { AccessTokenCredentials, AuthError, MetadataServerCredentials, projectIdFrom } from '../auth.zena';
@@ -76,50 +76,50 @@ async function failure(call: () => Future<String>): Future<String> {
 }
 
 export let tests = suite('google-cloud auth', () => {
-  test('sends a fixed access token', () => {
-    let header = runFuture(new AccessTokenCredentials('abc').authorization());
+  test('sends a fixed access token', async () => {
+    let header = await new AccessTokenCredentials('abc').authorization();
     equal(header as String, 'Bearer abc');
   });
 
-  test('fetches a token from the metadata server and keeps it', () => {
+  test('fetches a token from the metadata server and keeps it', async () => {
     let state = new Metadata(3600);
     let server = metadataServer(state);
-    equal(runFuture(twoHeaders(new MetadataServerCredentials(originOf(server)))), 'Bearer token-1 Bearer token-1');
+    equal(await twoHeaders(new MetadataServerCredentials(originOf(server))), 'Bearer token-1 Bearer token-1');
     equal(state.tokens, 1);
     server.close();
   });
 
-  test('fetches a new token when the last is about to expire', () => {
+  test('fetches a new token when the last is about to expire', async () => {
     // Under a minute left: too close to expiry to use again.
     let server = metadataServer(new Metadata(30));
-    equal(runFuture(twoHeaders(new MetadataServerCredentials(originOf(server)))), 'Bearer token-1 Bearer token-2');
+    equal(await twoHeaders(new MetadataServerCredentials(originOf(server))), 'Bearer token-1 Bearer token-2');
     server.close();
   });
 
-  test('reads the project id', () => {
+  test('reads the project id', async () => {
     let server = metadataServer(new Metadata(3600));
-    equal(runFuture(projectIdFrom(originOf(server))), 'my-project');
+    equal(await projectIdFrom(originOf(server)), 'my-project');
     server.close();
   });
 
-  test('fails with an AuthError when the server answers an error', () => {
+  test('fails with an AuthError when the server answers an error', async () => {
     let state = new Metadata(3600);
     state.failing = true;
     let server = metadataServer(state);
     let origin = originOf(server);
-    equal(runFuture(failure(async (): Future<String> => await projectIdFrom(origin))),
+    equal(await failure(async (): Future<String> => await projectIdFrom(origin)),
         'AuthError: the metadata server answered /computeMetadata/v1/project/project-id with HTTP 500: down');
     let credentials = new MetadataServerCredentials(origin);
-    equal(runFuture(failure(async (): Future<String> => (await credentials.authorization()) as String)),
+    equal(await failure(async (): Future<String> => (await credentials.authorization()) as String),
         'AuthError: the metadata server answered /computeMetadata/v1/instance/service-accounts/default/token with HTTP 500: down');
     server.close();
   });
 
-  test('fails with an AuthError when the server cannot be reached', () => {
+  test('fails with an AuthError when the server cannot be reached', async () => {
     let server = metadataServer(new Metadata(3600));
     let origin = originOf(server);
     server.close();
-    equal(runFuture(failure(async (): Future<String> => await projectIdFrom(origin))),
+    equal(await failure(async (): Future<String> => await projectIdFrom(origin)),
         `AuthError: the metadata server at ${origin} could not be reached`);
   });
 });

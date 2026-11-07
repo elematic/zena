@@ -10,7 +10,7 @@
 
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { Future, runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { milliseconds, monotonic } from 'zena:time';
 import { randomInt } from 'zena:random';
@@ -339,59 +339,59 @@ async function fallbackRefused(): Future<String> {
 }
 
 export let tests = suite('firestore on the emulator', () => {
-  test('writes and reads every kind of value', () => {
-    equal(runFuture(writeAndRead(freshDatabase())), 'true Hello 3 2.5 true true 1700000000 false Ada true true');
+  test('writes and reads every kind of value', async () => {
+    equal(await writeAndRead(freshDatabase()), 'true Hello 3 2.5 true true 1700000000 false Ada true true');
   });
 
-  test('checks preconditions, updates and deletes', () => {
-    equal(runFuture(preconditions(freshDatabase())), 'false 5 6 B 2 false');
+  test('checks preconditions, updates and deletes', async () => {
+    equal(await preconditions(freshDatabase()), 'false 5 6 B 2 false');
   });
 
-  test('queries with filters, order, limits and offsets, collected and streamed', () => {
+  test('queries with filters, order, limits and offsets, collected and streamed', async () => {
     // Ties are ordered by document name, in the direction of the last
     // `orderBy`: `d` before `c` when ranking descending.
-    equal(runFuture(queries(freshDatabase())), 'a,b,d, d, a,d, c,d,a, c,d, x, 1,2,2,3, 20 5');
+    equal(await queries(freshDatabase()), 'a,b,d, d, a,d, c,d,a, c,d, x, 1,2,2,3, 20 5');
   });
 
-  test('streams many results', () => {
-    equal(runFuture(manyResults(freshDatabase())), '300 44850');
+  test('streams many results', async () => {
+    equal(await manyResults(freshDatabase()), '300 44850');
   });
 
-  test('commits a batch all or nothing', () => {
-    equal(runFuture(atomicBatch(freshDatabase())), '6 false');
+  test('commits a batch all or nothing', async () => {
+    equal(await atomicBatch(freshDatabase()), '6 false');
   });
 
-  test('runs transactions, concurrent ones too, and rolls back a failing one', () => {
-    equal(runFuture(transactions(freshDatabase())), '1 2 4 body failed 4');
+  test('runs transactions, concurrent ones too, and rolls back a failing one', async () => {
+    equal(await transactions(freshDatabase()), '1 2 4 body failed 4');
   });
 
-  test('throws the status the server answers', () => {
-    equal(runFuture(serverError(freshDatabase())), '3 true');
+  test('throws the status the server answers', async () => {
+    equal(await serverError(freshDatabase()), '3 true');
   });
 
-  test('applies transforms and deletes fields', () => {
-    equal(runFuture(transformsAndDeletes(freshDatabase())), 'T true 7 2 bc 3 true');
+  test('applies transforms and deletes fields', async () => {
+    equal(await transformsAndDeletes(freshDatabase()), 'T true 7 2 bc 3 true');
   });
 
-  test('reads several documents in one call, in a transaction too', () => {
-    equal(runFuture(readMany(freshDatabase())), 'c:true,b:false,a:true, ok AC');
+  test('reads several documents in one call, in a transaction too', async () => {
+    equal(await readMany(freshDatabase()), 'c:true,b:false,a:true, ok AC');
   });
 
-  test('pages with document cursors, and counts', () => {
-    equal(runFuture(pagesAndCounts(freshDatabase())),
+  test('pages with document cursors, and counts', async () => {
+    equal(await pagesAndCounts(freshDatabase()),
       'i0,i1,i2,|i3,i4,i5,|i6,| i2,i3,i4,i5, i3,i2, even- true 7 3 0');
   });
 
-  test('ends a call at its deadline', () => {
-    equal(runFuture(deadline()), '4 true');
+  test('ends a call at its deadline', async () => {
+    equal(await deadline(), '4 true');
   });
 
-  test('connects to the emulator from the environment', () => {
-    equal(runFuture(connectToEmulator()), 'demo-zena connect');
+  test('connects to the emulator from the environment', async () => {
+    equal(await connectToEmulator(), 'demo-zena connect');
   });
 
-  test('refuses the fallback protocol, which the emulator does not speak', () => {
-    equal(runFuture(fallbackRefused()),
+  test('refuses the fallback protocol, which the emulator does not speak', async () => {
+    equal(await fallbackRefused(),
         'FIRESTORE_EMULATOR_HOST is set, and the emulator does not speak the fallback protocol; use Firestore.connect()');
   });
 });
