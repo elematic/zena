@@ -22,7 +22,8 @@ Commands run through `sh -c` in the package directory with
 
 Working today:
 
-- wireit script configs: `command`, `files`, `output`, `dependencies`
+- wireit script configs: `command`, `files`, `output`, `packageLocks`
+  (`['package-lock.json']` by default, `[]` to disable), `dependencies`
   (strings, `../pkg:script`, dependency-only scripts, and `{script,
 cascade}` objects), `env` (literal values and `{external: true,
 default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
@@ -33,10 +34,15 @@ default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
   script always runs and its cascading dependents rerun too. Services
   track their identity when `files` is declared, and command-less
   scripts forward their resolved inputs as dependency/fileset groups.
-- lazy per-step input expansion and an in-run `(mtime, size)` hash memo:
-  a step's `files` globs expand after its dependencies finish, so
-  `cascade: false` fileset bridges hash generated artifacts accurately
-  while warm builds hash each shared input once
+- lazy per-step input expansion and a persistent `(mtime, size)` hash
+  memo (`.zb/hashes.json`, with a 20ms racy-timestamp guard): a step's
+  `files` globs expand after its dependencies finish, literal file
+  entries check only that path, and warm runs verify unchanged files by
+  `stat` without rereading bytes
+- on-disk output verification: before reporting a key-matched step
+  `fresh`, zb checks that its recorded file outputs still match on disk,
+  restoring from `.zb/blobs/` or rerunning the command if an output was
+  deleted or modified
 - one-shot services: started on demand when a dependent executes, gated
   on `readyWhen.lineMatches` when configured, shared across dependents,
   skipped when all dependents are fresh or cached, and stopped as a Unix
@@ -48,17 +54,13 @@ default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
   manifests, blob store); lost state restores from cache instead of
   rebuilding
 - bounded parallel command execution (`-j <jobs>`, defaulting to
-  `ZENA_AVAILABLE_PARALLELISM`)
+  `ZENA_AVAILABLE_PARALLELISM`) and cache flags (`-f` / `--force`,
+  `--no-cache`)
 - precise cleaning: the previous run's recorded file outputs are deleted
 
 Not yet (see the design doc's milestones):
 
 - watch mode (re-running on file edits with pinned long-lived services)
-- `packageLocks` fingerprinting
-- cross-run persistent mtime memo — each invocation hashes referenced
-  inputs once per run
-- output freshness trusts the disk: deleting an output file by hand does
-  not make its step stale
 - remote caches, per-output incremental deltas to commands
 
 ## Running
@@ -68,10 +70,10 @@ Prerequisite: a built checkout (`npm run build`), so
 root:
 
 ```sh
-./target/release/zena-cli build [-j <jobs>] [<target>]
+./target/release/zena-cli build [-j <jobs>] [-f|--force] [--no-cache] [<target>]
 # or directly:
 ./target/release/zena-cli run --dir . --allow-spawn packages/zb/zena/main.zena \
-  [-C <workspace-root>] [-j <jobs>] [<package-dir>] <script>
+  [-C <workspace-root>] [-j <jobs>] [-f|--force] [--no-cache] [<package-dir>] <script>
 ```
 
 `--dir .` grants filesystem access and `--allow-spawn` process spawning;
@@ -108,11 +110,14 @@ Build state lives per package, like wireit's `.wireit/`: each package's
 `<pkg>/.zb/` holds `state.json` (freshness records for that package's
 scripts: the last cache key and output manifest), `cache/<key>.json`
 (cache key → output manifest), and `blobs/` (output bytes,
-content-addressed). Because state sits next to each `package.json`, the
-cache location does not depend on the directory zb was invoked from.
-To bust it: deleting a package's `state.json` drops freshness but its
-steps restore from the cache; deleting the package's `.zb/` (or all of
-them) forces a rebuild. There is no `--force` flag yet.
+content-addressed). The workspace root's `.zb/hashes.json` stores the
+`(mtime, size)` → `sha256` file memo shared across packages. Because
+per-package state sits next to each `package.json`, the cache location
+does not depend on the directory zb was invoked from. Pass `-f` /
+`--force` to rerun scripts regardless of freshness or cached outputs, or
+`--no-cache` to disable restoring from `blobs/` when a step is not
+fresh. Deleting a package's `state.json` drops freshness while keeping
+cached blobs; deleting `.zb/` directories clears both.
 
 One semantic difference from wireit to know about: a dependency
 contributes the digest of its _outputs_ to dependents' cache keys, not
@@ -127,18 +132,18 @@ step produces but does not declare is invisible to dependents.
 zb builds real targets of this monorepo from its existing wireit
 configuration, measured on a warm checkout:
 
-| Command                                                                                                               | First run | Fresh rerun    |
-| --------------------------------------------------------------------------------------------------------------------- | --------- | -------------- |
-| `packages/stdlib build` (tsc)                                                                                         | ~8s       | <1s            |
-| `packages/zena-compiler build:cli` (the compiler, via the bootstrap, plus its cargo and stdlib dependencies)          | ~28s      | ~11s           |
-| `build` (the whole monorepo: every package, the self-hosted compiler rebuild, the language-service wasm, the website) | minutes   | ~30s, 24 steps |
+| Command                                                                                                      | First run | Fresh rerun |
+| ------------------------------------------------------------------------------------------------------------ | --------- | ----------- |
+| `packages/stdlib build` (tsc)                                                                                | ~8s       | ~0.05s      |
+| `packages/zena-compiler build:cli` (the compiler, via the bootstrap, plus its cargo and stdlib dependencies) | ~28s      | ~0.35s      |
 
 The root build converges over two runs: the first zb build regenerates
 some outputs with contents that differ from wireit's, so a handful of
 downstream steps rerun once, and from the third run on everything is
-fresh. Rerun time is dominated by rehashing the input closure (~4,600
-files for `build:cli` alone); the design doc's mtime-memo and
-configuration-snapshot milestones exist to cut exactly this.
+fresh. Warm rerun time on `build:cli` is mostly the untracked `cargo
+build --release -p zena-run` check (~0.25s); `.zb/hashes.json` and
+literal-path resolution avoid rereading unchanged source and output
+files across runs.
 
 zb keeps its own state in `.zb/` and never touches `.wireit/`, so it can
 run side by side with wireit on the same checkout. The two systems do

@@ -97,6 +97,11 @@ function describe() {
             abbr: 'j',
             help: 'Maximum concurrent target scripts to run',
           },
+          'force' => {
+            type: OptionType.Flag,
+            abbr: 'f',
+            help: 'Rebuild target scripts even when fresh or cached',
+          },
           'time' => time,
           'no-cache' => noCache,
         },
@@ -551,7 +556,12 @@ function build(args: ParsedArgs, options: Options): i32 {
       return 2;
     }
   }
-  return buildScript(argument, jobs);
+  return buildScript(
+    argument,
+    jobs,
+    args.getFlag('force'),
+    !args.getFlag('no-cache'),
+  );
 }
 
 /**
@@ -605,7 +615,12 @@ function buildFile(
  * directory, from where the user is, whose package.json declares
  * `workspaces`.
  */
-function buildScript(argument: String, jobs: i32 = 0): i32 {
+function buildScript(
+  argument: String,
+  jobs: i32 = 0,
+  force: boolean = false,
+  useCache: boolean = true,
+): i32 {
   var packagePath = '.';
   var script = argument;
   if (argument.startsWith('.')) {
@@ -631,7 +646,13 @@ function buildScript(argument: String, jobs: i32 = 0): i32 {
   let root = workspaceRoot(packageDir);
   let relative = packageDir.stripPrefix(root);
   let packageRef = if (relative == null) '' else relative.value;
-  let outcome = buildTarget(root.value, new ScriptRef(packageRef, script), jobs);
+  let outcome = buildTarget(
+    root.value,
+    new ScriptRef(packageRef, script),
+    jobs,
+    force,
+    useCache,
+  );
   return reportBuild(outcome);
 }
 
