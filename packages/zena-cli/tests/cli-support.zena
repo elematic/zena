@@ -11,8 +11,8 @@
  * names each path both ways.
  */
 
-import {runFuture} from 'zena:async';
-import {Borrow, Own} from 'zena:core';
+import {Future} from 'zena:async';
+import {Borrow, Own, Scoped} from 'zena:core';
 import {getEnv} from 'zena:cli';
 import {existsSync, isDirectorySync, mkdirSync, readFileSync, writeFileSync} from 'zena:fs';
 import {dirname} from 'zena:path';
@@ -95,8 +95,8 @@ export final class Scratch {
     return if (relative == '') base else `${base}/${relative}`;
   }
 
-  remove(): void {
-    runFuture(run(['rm', '-rf', this.host()]));
+  async remove(): Future<void> {
+    await run(['rm', '-rf', this.host()]);
   }
 }
 
@@ -132,9 +132,9 @@ export final class ZenaCommand {
   }
 
   /** Runs `args` and returns what the command printed and its status. */
-  run(args: Array<String>, input: String | null = null): ProcessResult {
+  async run(args: Array<String>, input: String | null = null): Future<ProcessResult> {
     let proc = this.spawn(args, input);
-    return runFuture(proc.wait());
+    return await proc.wait();
   }
 
   spawn(args: Array<String>, input: String | null = null): Own<Process> {
@@ -188,15 +188,15 @@ export function startFakePds(scratch: Scratch, fixture: String): Own<Process> {
 }
 
 /** Stops a `startFakePds` fixture process. */
-export function stopFakePds(process: Borrow<Process>): void {
-  runFuture(process.waitFor(1 as i64));
+export async function stopFakePds(process: Borrow<Process>): Future<void> {
+  await process.waitFor(1 as i64);
 }
 
 /**
  * The PLC directory's origin, for `ZENA_PLC_DIRECTORY`, once the fake PDS
  * in `scratch` has written it.
  */
-export function fakePdsOrigin(scratch: Scratch, process: Borrow<Process>): String {
+export async function fakePdsOrigin(scratch: Scratch, process: Borrow<Process>): Scoped<Future<String>> {
   let plc = scratch.at('pds/plc.txt');
   // The file can be read between its creation and the write, so wait for
   // the whole origin, which ends in "/plc".
@@ -207,9 +207,9 @@ export function fakePdsOrigin(scratch: Scratch, process: Borrow<Process>): Strin
         return origin;
       }
     }
-    runFuture(sleep(milliseconds(200 as i64)));
+    await sleep(milliseconds(200 as i64));
   }
-  let result = runFuture(process.waitFor(1 as i64));
+  let result = await process.waitFor(1 as i64);
   throw new Error(`the fake PDS did not start:\n${described(result)}`);
 }
 
