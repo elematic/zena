@@ -127,6 +127,16 @@ creates a scope owned by that DID and exits. This is how the operator
 takes a name the App View reserves (`www`, `api`, `admin`, `zena`, `pkg`,
 `mail`, and `APP_VIEW_RESERVED_SCOPES`), which no `zena pkg scope create` can.
 
+`deploy/operator.sh` runs `create-scope`, `sync-handles` and `sync-indexes`
+on your machine against a deployed environment, with its service's
+configuration: the variables `deploy` gives it, its secrets from Secret
+Manager, and an access token for its service account, which
+`deploy:setup` lets the gcloud account that ran it act as:
+
+```sh
+PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 packages/registry/deploy/operator.sh create-scope zena --owner did:plc:...
+```
+
 `PDS_BLOB_DIR=<dir>` keeps blob bytes in a directory instead, for a server
 on one machine. `FIRESTORE_EMULATOR_HOST` points the server at the
 emulator, and `GOOGLE_CLOUD_PROJECT` names the project. A configuration

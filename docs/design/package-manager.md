@@ -942,6 +942,9 @@ zena run packages/registry/zena/main.zena -- create-scope zena \
   --owner did:plc:... --recovery-key did:key:...
 ```
 
+`packages/registry/deploy/operator.sh` runs it so against a deployed
+environment.
+
 The command is not an XRPC method, so nothing a caller can send takes a
 reserved name, and it needs no credentials the server does not already
 have. The scope's owner then manages it as any other. Which reserved

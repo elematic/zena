@@ -54,31 +54,12 @@ if [ "$PLC_MODE" = staging ]; then
 fi
 PDS_SECRETS="PDS_JWT_SECRET=${JWT_SECRET}:latest"
 
-ENV_VARS="APP_VIEW_DOMAIN=${DOMAIN}"
-ENV_VARS+=",APP_VIEW_PDS_URL=${PDS_URL}"
-ENV_VARS+=",APP_VIEW_STORAGE=firestore"
-ENV_VARS+=",APP_VIEW_FIRESTORE_DATABASE=${DATABASE}"
-ENV_VARS+=",APP_VIEW_TENANT=${TENANT}"
-ENV_VARS+=",APP_VIEW_SIGNING_KMS_KEY=${SIGNING_KMS_KEY_VERSION}"
-ENV_VARS+=",APP_VIEW_HANDLE_RECORDS=cloud-dns"
-ENV_VARS+=",APP_VIEW_DNS_ZONE=${ZONE}"
-ENV_VARS+=",APP_VIEW_DNS_PROJECT=${PROJECT}"
-ENV_VARS+=",APP_VIEW_PLC=${PLC_MODE}"
-ENV_VARS+=",GOOGLE_CLOUD_PROJECT=${PROJECT}"
-# The web sessions' secret is the one padstone's sessions are signed with.
-SECRETS="APP_VIEW_SESSION_SECRET=${JWT_SECRET}:latest"
-if [ "$ROTATION_KMS" = 1 ]; then
-  ENV_VARS+=",APP_VIEW_ROTATION_KMS_KEY=${KMS_KEY_VERSION}"
-else
-  SECRETS+=",APP_VIEW_ROTATION_KEY=${SECRET}:latest"
-fi
-if [ -n "$ADMIN_DIDS" ]; then
-  # Spaces, since --set-env-vars splits on commas.
-  ENV_VARS+=",APP_VIEW_ADMIN_DIDS=${ADMIN_DIDS//,/ }"
-fi
-if [ -n "$OFFLINE_ROTATION_KEY" ]; then
-  ENV_VARS+=",APP_VIEW_OFFLINE_ROTATION_KEY=${OFFLINE_ROTATION_KEY}"
-fi
+# The App View's configuration, as env.sh gives it, in gcloud's form.
+ENV_VARS="$(IFS=,; echo "${APP_VIEW_VARS[*]}")"
+SECRETS=""
+for pair in "${APP_VIEW_SECRETS[@]}"; do
+  SECRETS+="${SECRETS:+,}${pair}:latest"
+done
 
 echo "services: $PDS_SERVICE, then $APP_VIEW_SERVICE"
 echo "image:    $IMAGE"
