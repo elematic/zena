@@ -5,7 +5,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {KeyType} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
 import {MemoryCredentialStore, SessionError, Sessions} from 'pds:sessions';
@@ -40,26 +40,26 @@ export let tests = suite('registry:web-sessions', () => {
     isTrue(sessions.webCaller(null, NOW) == null && sessions.webCaller('', NOW) == null, 'none');
   });
 
-  test("is not the PDS's session under the same secret, either way", (ctx) => {
+  test("is not the PDS's session under the same secret, either way", async (ctx): Future<void> => {
     // A PDS in the same process signs its sessions with the same secret by
     // default (`registry:service`).
     let pds = new Pds(new MemoryStorage());
-    runFuture(pds.createAccount(DID, 'ci.acme.pkg.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 9 as u8)),
-        NOW * (1000000 as i64)));
+    await pds.createAccount(DID, 'ci.acme.pkg.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 9 as u8)),
+        NOW * (1000000 as i64));
     var counter = 0;
     let accounts = new Sessions(pds.storage, new MemoryCredentialStore(), secret(1), (count: i32) => {
       counter += 1;
       return new FixedArray<u8>(count, counter as u8);
     });
-    let password = runFuture(accounts.addAppPassword(DID, 'ci', '2026-10-27T00:00:00.000Z'));
-    let tokens = runFuture(accounts.create(DID, password, NOW));
+    let password = await accounts.addAppPassword(DID, 'ci', '2026-10-27T00:00:00.000Z');
+    let tokens = await accounts.create(DID, password, NOW);
     let sessions = new WebSessions(secret(1));
     isTrue(sessions.webCaller(tokens.accessJwt, NOW) == null, 'an access token');
     isTrue(sessions.webCaller(tokens.refreshJwt, NOW) == null, 'a refresh token');
     let web = sessions.webSession(DID, null, NOW);
     var refused = '';
     try {
-      runFuture(accounts.authenticate(`Bearer ${web}`, NOW));
+      await accounts.authenticate(`Bearer ${web}`, NOW);
     } catch (e) {
       refused = if (e is SessionError) e.error else `another error: ${e.message}`;
     }

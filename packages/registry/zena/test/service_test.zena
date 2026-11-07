@@ -6,7 +6,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {App, HTMLPartial, Request, Response, Server} from 'zena:http';
 import {hex} from 'zena:encoding';
@@ -73,16 +73,14 @@ function contains(array: JsonArray, text: String): boolean {
   return false;
 }
 
-function get(app: App, path: String) {
-  return getUrl(app, `http://localhost${path}`);
+async function get(app: App, path: String): Future<Response> {
+  return await getUrl(app, `http://localhost${path}`);
 }
 
 /** `app`'s answer to a GET of `url`, whose host name is the one the request is for. */
-function getUrl(app: App, url: String) {
+async function getUrl(app: App, url: String): Future<Response> {
   let res = new Response();
-  runFuture((async () => {
-    await app.handleRequest(new Request.fromUrl(url, 'GET', new HashMap<String, String>()), res);
-  })());
+  await app.handleRequest(new Request.fromUrl(url, 'GET', new HashMap<String, String>()), res);
   return res;
 }
 
@@ -101,22 +99,22 @@ function didOf(res: Response) {
 }
 
 export let tests = suite('registry:service', () => {
-  test("serves the web app's assets and docs, beside its pages and APIs", (ctx) => {
-    let service = runFuture(buildService(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
-        ('APP_VIEW_WEB_DIR', 'packages/registry/zena/test/fixtures/web')])), 'http://127.0.0.1:1'));
-    let script = get(service.app, '/assets/app.js');
+  test("serves the web app's assets and docs, beside its pages and APIs", async (ctx) => {
+    let service = await buildService(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
+        ('APP_VIEW_WEB_DIR', 'packages/registry/zena/test/fixtures/web')])), 'http://127.0.0.1:1');
+    let script = await get(service.app, '/assets/app.js');
     equal(script.statusCode, 200, 'script');
     isTrue((script.type ?? '').contains('javascript'), script.type ?? 'no type');
-    equal(get(service.app, '/assets/missing.js').statusCode, 404, 'a missing asset');
-    let docs = get(service.app, '/docs/');
+    equal((await get(service.app, '/assets/missing.js')).statusCode, 404, 'a missing asset');
+    let docs = await get(service.app, '/docs/');
     equal(docs.statusCode, 200, 'docs index');
     isTrue((docs.type ?? '').contains('text/html'), docs.type ?? 'no type');
-    equal(get(service.app, '/docs/missing/').statusCode, 404, 'a missing doc page');
+    equal((await get(service.app, '/docs/missing/')).statusCode, 404, 'a missing doc page');
     // The pages are the App View's, rendered on the server.
-    let home = get(service.app, '/');
+    let home = await get(service.app, '/');
     equal(home.statusCode, 200, 'home');
     isTrue((home.type ?? '').contains('text/html'), home.type ?? 'no type');
-    let health = get(service.app, '/xrpc/_health');
+    let health = await get(service.app, '/xrpc/_health');
     equal(health.statusCode, 200, `health: ${health.statusCode}`);
     isTrue((health.body as String).contains('version'), health.body as String);
   });
@@ -256,7 +254,7 @@ export let tests = suite('registry:service', () => {
     isTrue(badOffline.contains('APP_VIEW_OFFLINE_ROTATION_KEY is not a did:key'), badOffline);
   });
 
-  test("reads the App View's own signing key, as the rotation key is read", (ctx) => {
+  test("reads the App View's own signing key, as the rotation key is read", async (ctx) => {
     let given = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_SIGNING_KEY', KEY)])).appView;
     equal(hex.encode((given.signingKey as SigningKey).privateKey), KEY);
     let inKms = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
@@ -267,9 +265,9 @@ export let tests = suite('registry:service', () => {
 
     // Its DID document lists the key, which the PDSes of its accounts
     // check its tokens with.
-    let hosted = runFuture(buildService(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
-        ('APP_VIEW_SIGNING_KEY', KEY)])), 'http://127.0.0.1:1'));
-    let document = parseDidDocument(parseJson(get(hosted.app, '/.well-known/did.json').body as String), 'did:web:pkg.test');
+    let hosted = await buildService(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
+        ('APP_VIEW_SIGNING_KEY', KEY)])), 'http://127.0.0.1:1');
+    let document = parseDidDocument(parseJson((await get(hosted.app, '/.well-known/did.json')).body as String), 'did:web:pkg.test');
     equal(formatDidKey(document.signingKey as PublicKey), formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode(KEY))));
   });
 
@@ -327,20 +325,20 @@ export let tests = suite('registry:service', () => {
     isTrue(both.contains('not both'), both);
   });
 
-  test('builds an App View, with the PDS it runs', (ctx) => {
+  test('builds an App View, with the PDS it runs', async (ctx) => {
     let config = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_RESERVED_SCOPES', 'std'),
         ('APP_VIEW_ADMIN_DIDS', 'did:plc:aaaa')]));
-    let hosted = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let hosted = await buildService(config, 'http://127.0.0.1:1');
     let appView = hosted.appView;
     equal(appView.config.endpoint, 'https://pkg.test');
     isTrue(appView.config.reservedScopes.has('std') && appView.config.reservedScopes.has('www'), 'the reserved scopes');
     isTrue(appView.isAppViewAdmin('did:plc:aaaa') && !appView.isAppViewAdmin('did:plc:bbbb'), 'the admins');
-    let res = get(hosted.app, '/xrpc/com.atproto.server.describeServer');
+    let res = await get(hosted.app, '/xrpc/com.atproto.server.describeServer');
     equal(res.statusCode, 200);
     equal((parseJson(res.body as String) as JsonObject)['did'] as String, 'did:web:pkg.test');
     // The service DID resolves, as atproto reads a did:web document, to the
     // App View as a PDS.
-    let document = get(hosted.app, '/.well-known/did.json');
+    let document = await get(hosted.app, '/.well-known/did.json');
     equal(document.statusCode, 200);
     let parsed = parseDidDocument(parseJson(document.body as String), 'did:web:pkg.test');
     equal(parsed.pds as String, 'https://pkg.test');
@@ -348,7 +346,7 @@ export let tests = suite('registry:service', () => {
     equal(parsed.serviceEndpoint('#zena_registry', 'ZenaRegistry') as String, 'https://pkg.test');
 
     // describeRegistry says what the App View is, to anyone.
-    let described = parseJson(get(hosted.app, '/xrpc/dev.zena-lang.registry.describeRegistry').body as String) as JsonObject;
+    let described = parseJson((await get(hosted.app, '/xrpc/dev.zena-lang.registry.describeRegistry')).body as String) as JsonObject;
     equal(described['did'] as String, 'did:web:pkg.test');
     equal(described['domain'] as String, 'pkg.test');
     isTrue(contains(described['reservedScopes'] as JsonArray, 'std'), 'its reserved scopes');
@@ -471,14 +469,14 @@ export let tests = suite('registry:service', () => {
     }
   });
 
-  test('keeps its accounts on a PDS elsewhere, over XRPC', (ctx) => {
+  test('keeps its accounts on a PDS elsewhere, over XRPC', async (ctx) => {
     let rotation = publicKeyFor(KeyType.Secp256k1, hex.decode(KEY));
     let signing = publicKeyFor(KeyType.Secp256k1, hex.decode(OTHER_KEY));
     // The PDS trusts the App View, and reads the operations of the
     // accounts it makes from the App View's staging PLC directory.
     var appViewService: Service | null = null;
     var padstone: PdsService | null = null;
-    let listening = runFuture(listen(0 as u16, async (origin): Future<App> => {
+    let listening = await listen(0 as u16, async (origin): Future<App> => {
       let built = await buildPds(new PdsConfig(0 as u16, new InMemory(), 0), origin,
           [new TrustedAppView('did:web:pkg.test', [rotation])],
           async (did: String): Future<Array<PlcOperation>> =>
@@ -487,7 +485,7 @@ export let tests = suite('registry:service', () => {
               if (did == 'did:web:pkg.test') signing else null);
       padstone = built;
       return built.app;
-    }));
+    });
     let pdsUrl = listening.origin;
     // Upstream, which the staging directory asks before it takes a new
     // DID, knows none.
@@ -499,84 +497,84 @@ export let tests = suite('registry:service', () => {
     });
     let upstream = new Server(api, 0 as u16);
     upstream.start();
-    let service = runFuture(buildService(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
+    let service = await buildService(configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'),
         ('APP_VIEW_PDS_URL', pdsUrl), ('APP_VIEW_PLC', 'staging'),
         ('APP_VIEW_PLC_DIRECTORY', `http://127.0.0.1:${upstream.port as i32}`), ('APP_VIEW_ROTATION_KEY', KEY),
-        ('APP_VIEW_SIGNING_KEY', OTHER_KEY)])), 'http://127.0.0.1:1'));
+        ('APP_VIEW_SIGNING_KEY', OTHER_KEY)])), 'http://127.0.0.1:1');
     appViewService = service;
     isTrue(service.pds == null && service.sessions == null, 'no PDS of its own');
 
     // The organization's account is on the PDS, managed by the App View,
     // and its DID document names the PDS.
     let alice = 'did:plc:alicealicealicealicealic';
-    let created = runFuture(service.appView.createOrganization(alice, 'acme',
-        [formatDidKey(publicKeyFor(KeyType.P256, hex.decode(KEY)))], 1792800000000000 as i64));
+    let created = await service.appView.createOrganization(alice, 'acme',
+        [formatDidKey(publicKeyFor(KeyType.P256, hex.decode(KEY)))], 1792800000000000 as i64);
     let pds = (padstone as PdsService).pds;
-    let account = runFuture(pds.storage.getAccount(created.did));
+    let account = await pds.storage.getAccount(created.did);
     isTrue(account != null, 'the account, on the PDS');
     equal(account?.manager as String, 'did:web:pkg.test');
-    let document = parseDidDocument(parseJson(get(service.app, `/plc/${created.did}`).body as String), created.did);
+    let document = parseDidDocument(parseJson((await get(service.app, `/plc/${created.did}`)).body as String), created.did);
     equal(document.pds as String, pdsUrl);
     equal(document.handle as String, 'acme.pkg.test');
 
     // The App View names its methods and its key, and is no PDS.
-    let own = get(service.app, '/.well-known/did.json');
+    let own = await get(service.app, '/.well-known/did.json');
     let ownJson = parseJson(own.body as String) as JsonObject;
     equal((ownJson['service'] as JsonArray).length, 1);
     let parsed = parseDidDocument(ownJson, 'did:web:pkg.test');
     isTrue(parsed.pds == null, 'no PDS in its DID document');
     equal(parsed.serviceEndpoint('#zena_registry', 'ZenaRegistry') as String, 'https://pkg.test');
     equal(formatDidKey(parsed.signingKey as PublicKey), formatDidKey(signing));
-    equal(get(service.app, '/xrpc/_health').statusCode, 200);
+    equal((await get(service.app, '/xrpc/_health')).statusCode, 200);
     for (let path in ['/xrpc/com.atproto.server.describeServer', '/xrpc/com.atproto.sync.listRepos',
         '/xrpc/com.atproto.server.getSession']) {
-      equal(get(service.app, path).statusCode, 404, path);
+      equal((await get(service.app, path)).statusCode, 404, path);
     }
-    let root = get(service.app, '/');
+    let root = await get(service.app, '/');
     equal(root.statusCode, 200);
     listening.server.close();
     upstream.close();
   });
 
-  test('serves the site and the PDS each under its own name', (ctx) => {
+  test('serves the site and the PDS each under its own name', async (ctx) => {
     let config = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('PDS_PUBLIC_URL', 'https://padstone.test'),
         ('APP_VIEW_SITE_URL', 'https://pkg.test')]));
-    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let service = await buildService(config, 'http://127.0.0.1:1');
     let app = service.app;
 
     // The PDS: its methods, its DID document, and a page that points at the site.
-    let described = getUrl(app, 'https://padstone.test/xrpc/com.atproto.server.describeServer');
+    let described = await getUrl(app, 'https://padstone.test/xrpc/com.atproto.server.describeServer');
     equal(described.statusCode, 200);
     equal(didOf(described), 'did:web:padstone.test');
-    let document = getUrl(app, 'https://padstone.test/.well-known/did.json');
+    let document = await getUrl(app, 'https://padstone.test/.well-known/did.json');
     equal(document.statusCode, 200);
     equal(parseDidDocument(parseJson(document.body as String), 'did:web:padstone.test').pds as String,
         'https://padstone.test');
-    let root = getUrl(app, 'https://padstone.test/');
+    let root = await getUrl(app, 'https://padstone.test/');
     isTrue(root.statusCode == 200 && textOf(root).contains('https://pkg.test'), textOf(root));
     for (let path in ['/me', '/packages/router.acme.pkg.test', '/scopes/acme', '/oauth/client-metadata.json',
         '/xrpc/dev.zena-lang.registry.createWebSession']) {
-      equal(getUrl(app, `https://padstone.test${path}`).statusCode, 404, `${path} on the PDS`);
+      equal((await getUrl(app, `https://padstone.test${path}`)).statusCode, 404, `${path} on the PDS`);
     }
 
     // The site: its pages, and what its sign-in calls on its own origin.
-    let home = getUrl(app, 'https://pkg.test/');
+    let home = await getUrl(app, 'https://pkg.test/');
     isTrue(home.statusCode == 200 && (home.type ?? '').contains('text/html'), 'the home page');
-    let metadata = getUrl(app, 'https://pkg.test/oauth/client-metadata.json');
+    let metadata = await getUrl(app, 'https://pkg.test/oauth/client-metadata.json');
     equal(metadata.statusCode, 200);
     let client = parseJson(metadata.body as String) as JsonObject;
     equal(client['client_id'] as String, 'https://pkg.test/oauth/client-metadata.json');
     equal(client['client_uri'] as String, 'https://pkg.test');
     let resolve = '/xrpc/com.atproto.identity.resolveHandle?handle=nobody.pkg.test';
-    equal(getUrl(app, `https://pkg.test${resolve}`).statusCode, getUrl(app, `https://padstone.test${resolve}`).statusCode,
+    equal((await getUrl(app, `https://pkg.test${resolve}`)).statusCode, (await getUrl(app, `https://padstone.test${resolve}`)).statusCode,
         'the handle resolver of the sign-in');
     for (let path in ['/xrpc/com.atproto.server.describeServer', '/.well-known/did.json', '/xrpc/_health']) {
-      equal(getUrl(app, `https://pkg.test${path}`).statusCode, 404, `${path} on the site`);
+      equal((await getUrl(app, `https://pkg.test${path}`)).statusCode, 404, `${path} on the site`);
     }
 
     // Any other name is the PDS's, as Cloud Run's own address is.
-    equal(getUrl(app, 'https://zena-pkg-abc.a.run.app/xrpc/_health').statusCode, 200);
-    equal(getUrl(app, 'https://zena-pkg-abc.a.run.app/me').statusCode, 404);
+    equal((await getUrl(app, 'https://zena-pkg-abc.a.run.app/xrpc/_health')).statusCode, 200);
+    equal((await getUrl(app, 'https://zena-pkg-abc.a.run.app/me')).statusCode, 404);
   });
 
   test('reads APP_VIEW_PLC', (ctx) => {
@@ -586,7 +584,7 @@ export let tests = suite('registry:service', () => {
     isTrue(wrong.contains('APP_VIEW_PLC is public or staging'), wrong);
   });
 
-  test('is a staging PLC directory, reading other DIDs from upstream', (ctx) => {
+  test('is a staging PLC directory, reading other DIDs from upstream', async (ctx) => {
     // Upstream knows Alice, whose account is elsewhere, and counts what it
     // is sent.
     let alice = 'did:plc:alicealicealicealicealic';
@@ -612,7 +610,7 @@ export let tests = suite('registry:service', () => {
     upstream.start();
     let config = configFromEnv(envOf([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PLC', 'staging'),
         ('APP_VIEW_PLC_DIRECTORY', `http://127.0.0.1:${upstream.port as i32}`)]));
-    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let service = await buildService(config, 'http://127.0.0.1:1');
     let appView = service.appView;
 
     // Alice's token is checked with her key, read through from upstream.
@@ -620,22 +618,22 @@ export let tests = suite('registry:service', () => {
     let method = 'dev.zena-lang.registry.createOrganization';
     let token = createServiceAuthToken(new ServiceAuthClaims(alice, 'did:web:pkg.test', seconds + 60, seconds,
         method, 'jti-1'), KeyType.P256, aliceKey);
-    equal(runFuture(appView.authenticate(`Bearer ${token}`, method, seconds)), alice);
+    equal(await appView.authenticate(`Bearer ${token}`, method, seconds), alice);
 
     // The organization the App View makes is recorded here, and served, and
     // never sent upstream.
-    let created = runFuture(appView.createOrganization(alice, 'acme',
-        [formatDidKey(publicKeyFor(KeyType.P256, aliceKey))], 1792800000000000 as i64));
-    let res = get(service.app, `/plc/${created.did}`);
+    let created = await appView.createOrganization(alice, 'acme',
+        [formatDidKey(publicKeyFor(KeyType.P256, aliceKey))], 1792800000000000 as i64);
+    let res = await get(service.app, `/plc/${created.did}`);
     equal(res.statusCode, 200);
     let document = parseDidDocument(parseJson(res.body as String), created.did);
     equal(document.handle as String, 'acme.pkg.test');
     equal(document.pds as String, 'https://pkg.test');
     equal(posted, 0);
     // Alice reads through, from upstream.
-    equal(get(service.app, `/plc/${alice}`).statusCode, 200);
+    equal((await get(service.app, `/plc/${alice}`)).statusCode, 200);
     // The rest of the server is still there.
-    equal(get(service.app, '/xrpc/_health').statusCode, 200);
+    equal((await get(service.app, '/xrpc/_health')).statusCode, 200);
     upstream.close();
   });
 });
