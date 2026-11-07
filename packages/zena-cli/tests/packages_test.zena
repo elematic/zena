@@ -13,7 +13,6 @@
 
 import {suite, test} from 'zena:test';
 import {isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
 import {run} from 'zena:process';
 import {MAIN, Scratch, described, write, zenaIn} from './cli-support.zena';
 
@@ -70,42 +69,42 @@ function publishedLayout(scratch: Scratch): void {
 }
 
 export let tests = suite('zena: packages outside the workspace', () => {
-  test('run and test read path dependencies outside the workspace and at absolute paths', (ctx) => {
+  test('run and test read path dependencies outside the workspace and at absolute paths', async (ctx) => {
     let scratch = Scratch.create('packages-paths');
     try {
       pathLayout(scratch);
       let zena = zenaIn(scratch, 'workspace');
-      let ran = zena.run(['run', 'prog.zena']);
+      let ran = await zena.run(['run', 'prog.zena']);
       isTrue(ran.succeeded(), described(ran));
-      let tested = zena.run(['test', 'numbers_test.zena']);
+      let tested = await zena.run(['test', 'numbers_test.zena']);
       isTrue(tested.succeeded(), described(tested));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 
-  test('run reads published packages from the package cache', (ctx) => {
+  test('run reads published packages from the package cache', async (ctx) => {
     let scratch = Scratch.create('packages-published');
     try {
       publishedLayout(scratch);
-      let ran = zenaIn(scratch, 'workspace').run(['run', 'prog.zena']);
+      let ran = await zenaIn(scratch, 'workspace').run(['run', 'prog.zena']);
       isTrue(ran.succeeded(), described(ran));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 
-  test('a package missing from the cache says to fetch it', (ctx) => {
+  test('a package missing from the cache says to fetch it', async (ctx) => {
     let scratch = Scratch.create('packages-missing');
     try {
       publishedLayout(scratch);
-      runFuture(run(['rm', '-r', scratch.host('cache/packages/sources/bafkreijson')]));
-      let compiled = zenaIn(scratch, 'workspace').run(['run', 'prog.zena']);
+      await run(['rm', '-r', scratch.host('cache/packages/sources/bafkreijson')]);
+      let compiled = await zenaIn(scratch, 'workspace').run(['run', 'prog.zena']);
       isTrue(!compiled.succeeded(), 'compiled without json in the cache');
       isTrue(compiled.stderr.contains('did:web:json.example.com@2') &&
           compiled.stderr.contains('zena pkg fetch'), described(compiled));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 });

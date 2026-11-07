@@ -6,7 +6,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {existsSync} from 'zena:fs';
 import {run} from 'zena:process';
 import {
@@ -16,17 +16,17 @@ import {
 let ALICE = 'did:plc:alicealicealicealicealic';
 
 /** The permission bits of the file at `hostPath`, such as `600`. */
-function modeOf(hostPath: String): String {
-  let result = runFuture(run(['/bin/sh', '-c', 'stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"', 'sh', hostPath]));
+async function modeOf(hostPath: String): Future<String> {
+  let result = await run(['/bin/sh', '-c', 'stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"', 'sh', hostPath]);
   return result.stdout.trim();
 }
 
 export let tests = suite('zena pkg login and zena pkg logout', () => {
-  test('keep a session only its owner can read, and end it', (ctx) => {
+  test('keep a session only its owner can read, and end it', async (ctx) => {
     let scratch = Scratch.create('login');
     let pds = startFakePds(scratch, 'login-pds.zena');
     try {
-      let plc = fakePdsOrigin(scratch, pds);
+      let plc = await fakePdsOrigin(scratch, pds);
       ensureDir(scratch.at('workspace'));
       let zena = new ZenaCommand(scratch.host('workspace'), scratch.at('workspace'), scratch.host('cache'))
         .set('ZENA_PLC_DIRECTORY', plc)
@@ -35,38 +35,38 @@ export let tests = suite('zena pkg login and zena pkg logout', () => {
       let session = scratch.at('config/session.json');
 
       // A wrong password is refused, and nothing is stored.
-      let wrong = zena.run(['pkg', 'login', 'alice.test', '--password-stdin'], 'not-it\n');
+      let wrong = await zena.run(['pkg', 'login', 'alice.test', '--password-stdin'], 'not-it\n');
       isTrue(!wrong.succeeded(), 'zena pkg login accepted a wrong password');
       isTrue(wrong.stderr.contains('AuthenticationRequired'), described(wrong));
       isTrue(!existsSync(session), 'a refused login stored a session');
 
       // A session file left readable by others is made private.
       write(session, '{}');
-      runFuture(run(['chmod', '644', scratch.host('config/session.json')]));
+      await run(['chmod', '644', scratch.host('config/session.json')]);
 
-      let login = zena.run(['pkg', 'login', 'alice.test', '--password-stdin'], 'app-password\n');
+      let login = await zena.run(['pkg', 'login', 'alice.test', '--password-stdin'], 'app-password\n');
       isTrue(login.succeeded(), described(login));
       isTrue(login.stdout.contains(`Signed in as alice.test (${ALICE})`), described(login));
       let stored = read(session);
       isTrue(stored.contains(ALICE) && stored.contains('refreshJwt'), stored);
-      equal(modeOf(scratch.host('config/session.json')), '600');
+      equal(await modeOf(scratch.host('config/session.json')), '600');
 
       // With no password given and no terminal, it says how to give one.
-      let noTerminal = zena.run(['pkg', 'login', 'alice.test'], '');
+      let noTerminal = await zena.run(['pkg', 'login', 'alice.test'], '');
       isTrue(!noTerminal.succeeded(), 'zena pkg login signed in with no password');
       isTrue(noTerminal.stderr.contains('--password-stdin') &&
           noTerminal.stderr.contains('ZENA_APP_PASSWORD'), described(noTerminal));
 
       // The password can come from the environment.
-      let fromEnv = zena.set('ZENA_APP_PASSWORD', 'app-password').run(['pkg', 'login', ALICE]);
+      let fromEnv = await zena.set('ZENA_APP_PASSWORD', 'app-password').run(['pkg', 'login', ALICE]);
       isTrue(fromEnv.succeeded(), described(fromEnv));
 
-      let logout = zena.run(['pkg', 'logout']);
+      let logout = await zena.run(['pkg', 'logout']);
       isTrue(logout.succeeded() && logout.stdout.contains('Signed out alice.test'), described(logout));
       isTrue(!existsSync(session), 'zena pkg logout kept the session');
     } finally {
-      stopFakePds(pds);
-      scratch.remove();
+      await stopFakePds(pds);
+      await scratch.remove();
     }
   });
 });

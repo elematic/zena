@@ -20,21 +20,21 @@ import {isTrue} from 'zena:assert';
 import {MAIN, Scratch, described, write, zenaIn} from './cli-support.zena';
 
 export let tests = suite("zena: the host's variables over the shell's", () => {
-  test('run compiles against the preopened standard library when the shell names one', (ctx) => {
+  test('run compiles against the preopened standard library when the shell names one', async (ctx) => {
     let scratch = Scratch.create('host-env-run');
     try {
       write(scratch.at('project/prog.zena'),
           `import { Response } from 'zena:http';\n${MAIN} {\n  return new Response().statusCode - 404;\n}\n`);
       // `zenaIn` sets ZENA_STDLIB_DIR to this repository's standard library,
       // as a shell in a repository outside this one does.
-      let ran = zenaIn(scratch, 'project').run(['run', 'prog.zena']);
+      let ran = await zenaIn(scratch, 'project').run(['run', 'prog.zena']);
       isTrue(ran.succeeded(), described(ran));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 
-  test("test's copies compile against the preopened standard library when the shell names one", (ctx) => {
+  test("test's copies compile against the preopened standard library when the shell names one", async (ctx) => {
     let scratch = Scratch.create('host-env-test');
     try {
       write(scratch.at('project/http_test.zena'),
@@ -42,10 +42,10 @@ export let tests = suite("zena: the host's variables over the shell's", () => {
           "import { Response } from 'zena:http';\n\n" +
           "export let tests = suite('zena:http', () => {\n" +
           "  test('a new Response is a 404', (ctx) => {\n    equal(new Response().statusCode, 404);\n  });\n});\n");
-      let tested = zenaIn(scratch, 'project').run(['test', 'http_test.zena']);
+      let tested = await zenaIn(scratch, 'project').run(['test', 'http_test.zena']);
       isTrue(tested.succeeded(), described(tested));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 });

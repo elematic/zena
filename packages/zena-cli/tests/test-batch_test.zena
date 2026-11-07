@@ -22,7 +22,7 @@ function valueTest(lib: String): String {
 }
 
 export let tests = suite('zena test: files compiled together', () => {
-  test('a test goes stale when a file an earlier compile read changes', (ctx) => {
+  test('a test goes stale when a file an earlier compile read changes', async (ctx) => {
     let scratch = Scratch.create('test-batch-shared');
     try {
       write(scratch.at('ws/shared.zena'), 'export function value(): i32 { return 1; }\n');
@@ -31,20 +31,20 @@ export let tests = suite('zena test: files compiled together', () => {
       // One copy compiles both, so the second compile finds shared.zena
       // already loaded and does not read it.
       let zena = zenaIn(scratch, 'ws').set('ZENA_TEST_PARALLELISM', '1');
-      let first = zena.run(['test', '*_test.zena']);
+      let first = await zena.run(['test', '*_test.zena']);
       isTrue(first.succeeded(), described(first));
       // A different size, so the edit shows even within the same second.
       write(scratch.at('ws/shared.zena'), 'export function value(): i32 { return 10; }\n');
-      let second = zena.run(['test', '*_test.zena']);
+      let second = await zena.run(['test', '*_test.zena']);
       isTrue(!second.succeeded(), described(second));
       isTrue(second.stdout.contains('a_test.zena') && second.stdout.contains('b_test.zena') &&
           !second.stdout.contains('PASS'), described(second));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 
-  test('a file that does not compile fails with its errors, and the rest pass', (ctx) => {
+  test('a file that does not compile fails with its errors, and the rest pass', async (ctx) => {
     let scratch = Scratch.create('test-batch-error');
     try {
       write(scratch.at('ws/one.zena'), 'export function value(): i32 { return 1; }\n');
@@ -52,14 +52,14 @@ export let tests = suite('zena test: files compiled together', () => {
       write(scratch.at('ws/b_test.zena'), valueTest('missing'));
       write(scratch.at('ws/c_test.zena'), valueTest('one'));
       let zena = zenaIn(scratch, 'ws').set('ZENA_TEST_PARALLELISM', '1');
-      let result = zena.run(['test', '*_test.zena']);
+      let result = await zena.run(['test', '*_test.zena']);
       isTrue(!result.succeeded(), described(result));
       isTrue(result.stdout.contains('PASS') && result.stdout.contains('a_test.zena') &&
           result.stdout.contains('c_test.zena'), described(result));
       isTrue(result.stdout.contains('FAIL') && result.stdout.contains('missing.zena'), described(result));
       isTrue(result.stdout.contains('Test Summary: 2 passed, 1 failed'), described(result));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 });

@@ -19,47 +19,47 @@ function twinLayout(scratch: Scratch): void {
 }
 
 export let tests = suite('zena: a workspace that does not load', () => {
-  test('build names the packages at fault and the program it was building', (ctx) => {
+  test('build names the packages at fault and the program it was building', async (ctx) => {
     let scratch = Scratch.create('workspace-twins');
     try {
       twinLayout(scratch);
-      let built = zenaIn(scratch, 'workspace').run(['build', 'prog.zena', '-o', 'prog.wasm']);
+      let built = await zenaIn(scratch, 'workspace').run(['build', 'prog.zena', '-o', 'prog.wasm']);
       isTrue(!built.succeeded(), 'built a workspace with two packages named twin');
       isTrue(built.stderr.contains("are both packages named 'twin'"), described(built));
       isTrue(built.stderr.contains('prog.zena did not compile'), described(built));
       isTrue(!built.stderr.contains('component-runtime'), described(built));
       isTrue(!built.stderr.contains('the compiler failed'), described(built));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 
-  test('a compiler module says what is wrong instead of trapping', (ctx) => {
+  test('a compiler module says what is wrong instead of trapping', async (ctx) => {
     let scratch = Scratch.create('workspace-twins-zc');
     try {
       twinLayout(scratch);
-      let built = zenaIn(scratch, 'workspace')
+      let built = await zenaIn(scratch, 'workspace')
           .set('ZENA_COMPILER_WASM', `${repoRoot()}/packages/zena-compiler/zena/out/cli.wasm`)
           .run(['build', 'prog.zena', '-o', 'prog.wasm']);
       isTrue(!built.succeeded(), 'built a workspace with two packages named twin');
       isTrue(built.stderr.contains("are both packages named 'twin'"), described(built));
       isTrue(!built.stderr.contains('thrown Wasm exception'), described(built));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 
-  test('malformed JSON names the manifest and where in it', (ctx) => {
+  test('malformed JSON names the manifest and where in it', async (ctx) => {
     let scratch = Scratch.create('workspace-malformed');
     try {
       write(scratch.at('workspace/zena-package.json'), '{"workspace": {"packages": ["a"]}}');
       write(scratch.at('workspace/a/zena-package.json'), '{\n  "name": "a",,\n}\n');
       write(scratch.at('workspace/prog.zena'), `${MAIN} {\n  return 0;\n}\n`);
-      let built = zenaIn(scratch, 'workspace').run(['build', 'prog.zena', '-o', 'prog.wasm']);
+      let built = await zenaIn(scratch, 'workspace').run(['build', 'prog.zena', '-o', 'prog.wasm']);
       isTrue(!built.succeeded(), 'built a workspace with a malformed manifest');
       isTrue(built.stderr.contains('a/zena-package.json:2:'), described(built));
     } finally {
-      scratch.remove();
+      await scratch.remove();
     }
   });
 });
