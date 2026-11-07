@@ -40,7 +40,7 @@
  *   from another's made in the same microsecond. Random by default.
  */
 
-import {Future} from 'zena:async';
+import {Completer, Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {Unmanaged} from 'zena:core';
 import {App, Server} from 'zena:http';
@@ -392,18 +392,27 @@ export final class Listening {
 
 /**
  * Listens on `port`, and serves the application `build` makes, given the
- * listening origin, which a configuration may leave to the server: until
- * it is built, requests are answered 503.
+ * listening origin, which a configuration may leave to the server. A
+ * request that comes while it is built waits for it, since Cloud Run sends
+ * a new instance its first request as soon as it listens; if the build
+ * fails, those requests are answered 503, and the server closes.
  */
 export async function listen(port: u16, build: (origin: String) => Future<App>): Future<Listening> {
   var inner: App | null = null;
+  var starting = true;
+  let waiting = new GrowableArray<Completer<void>>();
   let outer = new App();
   outer.use(async (req, res, next): Future<void> => {
+    if (starting) {
+      let ready = new Completer<void>();
+      waiting.push(ready);
+      await ready.future;
+    }
     let app = inner;
     if (app == null) {
       res.statusCode = 503;
       res.type = 'application/json';
-      res.body = '{"error": "Unavailable", "message": "the server is starting"}';
+      res.body = '{"error": "Unavailable", "message": "the server could not start"}';
       return;
     }
     await app.handleRequest(req, res);
@@ -412,7 +421,14 @@ export async function listen(port: u16, build: (origin: String) => Future<App>):
   server.start();
   let origin = `http://127.0.0.1:${server.port as i32}`;
   // Held until the application is built: a failure closes the server.
-  inner = await build(origin);
+  try {
+    inner = await build(origin);
+  } finally {
+    starting = false;
+    for (let ready in waiting) {
+      ready.complete();
+    }
+  }
   return new Listening(server.keepOpen(), origin);
 }
 

@@ -5,12 +5,14 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future, TaskGroup, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
+import {fetch} from 'zena:fetch';
 import {App, Request, Response} from 'zena:http';
 import {JsonObject, parseJson} from 'zena:json';
+import {milliseconds, sleep} from 'zena:time';
 import {KeyType, formatDidKey, publicKeyFor} from 'atproto:didkey';
-import {ConfigError, InFirestore, InMemory, buildPds, configFromEnv} from 'pds:service';
+import {ConfigError, InFirestore, InMemory, buildPds, configFromEnv, listen} from 'pds:service';
 
 let KEY = 'c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721';
 
@@ -120,5 +122,28 @@ export let tests = suite('pds:service', () => {
     let managed = trusting.pds.managed;
     isTrue(managed != null && managed.serviceDid == 'did:web:padstone.test' && managed.endpoint == 'https://padstone.test',
         'managed accounts for the App View, addressed to the PDS');
+  });
+
+  test('holds the requests that come while it builds the application, and then answers them', async (ctx) => {
+    let group = new TaskGroup();
+    var answered = '';
+    let running = await listen(0 as u16, async (origin): Future<App> => {
+      // A request as Cloud Run sends a new instance its first: as soon as
+      // it listens, before the application is built.
+      group.spawn(async (): Future<void> => {
+        let res = await fetch(`${origin}/xrpc/_health`);
+        let status = res.status;
+        answered = `${status} ${await res.text()}`;
+      });
+      await sleep(milliseconds(300));
+      let app = new App();
+      app.use(async (req, res, next): Future<void> => {
+        res.body = 'built';
+      });
+      return app;
+    });
+    await group.join();
+    equal(answered, '200 built', answered);
+    running.server.close();
   });
 });
