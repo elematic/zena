@@ -5,7 +5,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {App, Request, Response} from 'zena:http';
 import {JsonObject, parseJson} from 'zena:json';
@@ -29,24 +29,29 @@ final class Server {
   var alicePassword: String;
   var botPassword: String;
 
-  new() : pds = new Pds(new MemoryStorage()), app = new App(), alicePassword = '', botPassword = '' {
+  new() : pds = new Pds(new MemoryStorage()), app = new App(), alicePassword = '', botPassword = '';
+
+  static async create(): Future<Server> {
+    let server = new Server();
     let micros = now().seconds * (1000000 as i64);
-    runFuture(this.pds.createAccount(ALICE, 'alice.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8)),
-        micros));
-    runFuture(this.pds.createAccount(BOT, 'ci.acme.pkg.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 8 as u8)),
-        micros, AccountKind.Automation));
+    await server.pds.createAccount(ALICE, 'alice.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8)),
+        micros);
+    await server.pds.createAccount(BOT, 'ci.acme.pkg.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 8 as u8)),
+        micros, AccountKind.Automation);
     var counter = 0;
-    let sessions = new Sessions(this.pds.storage, new MemoryCredentialStore(), new FixedArray<u8>(32, 1 as u8),
+    let sessions = new Sessions(server.pds.storage, new MemoryCredentialStore(), new FixedArray<u8>(32, 1 as u8),
         (count: i32) => {
           counter += 1;
           return new FixedArray<u8>(count, counter as u8);
         });
-    this.alicePassword = runFuture(sessions.addAppPassword(ALICE, 'tests', '2026-10-27T00:00:00.000Z'));
-    this.botPassword = runFuture(sessions.addAppPassword(BOT, 'ci', '2026-10-27T00:00:00.000Z'));
-    this.app = createApp(this.pds, sessions);
+    server.alicePassword = await sessions.addAppPassword(ALICE, 'tests', '2026-10-27T00:00:00.000Z');
+    server.botPassword = await sessions.addAppPassword(BOT, 'ci', '2026-10-27T00:00:00.000Z');
+    server.app = createApp(server.pds, sessions);
+    return server;
   }
 
-  call(method: String, httpMethod: String, token: String | null, body: String | null, query: String = ''): Response {
+  async call(method: String, httpMethod: String, token: String | null, body: String | null,
+      query: String = ''): Future<Response> {
     let headers = new HashMap<String, String>();
     if (token != null) {
       headers['authorization'] = `Bearer ${token}`;
@@ -60,14 +65,12 @@ final class Server {
     let res = new Response();
     let app = this.app;
     let request = req;
-    runFuture((async () => {
-      await app.handleRequest(request, res);
-    })());
+    await app.handleRequest(request, res);
     return res;
   }
 
-  signIn(identifier: String, password: String): JsonObject {
-    return ok(this.call('com.atproto.server.createSession', 'POST', null,
+  async signIn(identifier: String, password: String): Future<JsonObject> {
+    return ok(await this.call('com.atproto.server.createSession', 'POST', null,
         `{"identifier": "${identifier}", "password": "${password}"}`));
   }
 }
@@ -87,77 +90,77 @@ function attestationJson() {
 }
 
 export let tests = suite('session routes', () => {
-  test('signs in, checks, refreshes and ends a session', (ctx) => {
-    let server = new Server();
-    equal(errorOf(server.call('com.atproto.server.createSession', 'POST', null,
+  test('signs in, checks, refreshes and ends a session', async (ctx) => {
+    let server = await Server.create();
+    equal(errorOf(await server.call('com.atproto.server.createSession', 'POST', null,
         `{"identifier": "${ALICE}", "password": "wrong-wrong-wrong-wron"}`)), 'AuthenticationRequired');
-    let session = server.signIn('alice.test', server.alicePassword);
+    let session = await server.signIn('alice.test', server.alicePassword);
     equal(session['did'] as String, ALICE);
     equal(session['handle'] as String, 'alice.test');
     let access = session['accessJwt'] as String;
     let refresh = session['refreshJwt'] as String;
 
-    equal(ok(server.call('com.atproto.server.getSession', 'GET', access, null))['did'] as String, ALICE);
-    equal(errorOf(server.call('com.atproto.server.getSession', 'GET', null, null)), 'AuthenticationRequired');
-    equal(errorOf(server.call('com.atproto.server.getSession', 'GET', refresh, null)), 'InvalidToken');
+    equal(ok(await server.call('com.atproto.server.getSession', 'GET', access, null))['did'] as String, ALICE);
+    equal(errorOf(await server.call('com.atproto.server.getSession', 'GET', null, null)), 'AuthenticationRequired');
+    equal(errorOf(await server.call('com.atproto.server.getSession', 'GET', refresh, null)), 'InvalidToken');
 
-    let fresh = ok(server.call('com.atproto.server.refreshSession', 'POST', refresh, null));
+    let fresh = ok(await server.call('com.atproto.server.refreshSession', 'POST', refresh, null));
     equal(fresh['did'] as String, ALICE);
-    equal(errorOf(server.call('com.atproto.server.refreshSession', 'POST', refresh, null)), 'ExpiredToken');
-    ok(server.call('com.atproto.server.deleteSession', 'POST', fresh['refreshJwt'] as String, null));
-    equal(errorOf(server.call('com.atproto.server.refreshSession', 'POST', fresh['refreshJwt'] as String, null)),
+    equal(errorOf(await server.call('com.atproto.server.refreshSession', 'POST', refresh, null)), 'ExpiredToken');
+    ok(await server.call('com.atproto.server.deleteSession', 'POST', fresh['refreshJwt'] as String, null));
+    equal(errorOf(await server.call('com.atproto.server.refreshSession', 'POST', fresh['refreshJwt'] as String, null)),
         'ExpiredToken');
   });
 
-  test("signs service-auth tokens with the account's own key", (ctx) => {
-    let server = new Server();
-    let access = server.signIn(ALICE, server.alicePassword)['accessJwt'] as String;
+  test("signs service-auth tokens with the account's own key", async (ctx) => {
+    let server = await Server.create();
+    let access = (await server.signIn(ALICE, server.alicePassword))['accessJwt'] as String;
     let method = 'dev.zena-lang.registry.publish';
-    let token = ok(server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
+    let token = ok(await server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
         `?aud=did:web:pkg.test&lxm=${method}`))['token'] as String;
     let key = new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8)).publicKey();
-    let claims = runFuture(verifyServiceAuth(token, 'did:web:pkg.test', method, now().seconds,
-        async (did, fresh): Future<PublicKey | null> => if (did == ALICE) key else null));
+    let claims = await verifyServiceAuth(token, 'did:web:pkg.test', method, now().seconds,
+        async (did, fresh): Future<PublicKey | null> => if (did == ALICE) key else null);
     equal(claims.iss, ALICE);
     // An hour at most with a method, a minute without, and an audience that
     // is a DID.
     let later = now().seconds + (7200 as i64);
-    equal(errorOf(server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
+    equal(errorOf(await server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
         `?aud=did:web:pkg.test&lxm=${method}&exp=${later}`)), 'BadExpiration');
-    equal(errorOf(server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
+    equal(errorOf(await server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
         `?aud=did:web:pkg.test&exp=${now().seconds + (600 as i64)}`)), 'BadExpiration');
-    equal(errorOf(server.call('com.atproto.server.getServiceAuth', 'GET', access, null, '?aud=pkg.test')),
+    equal(errorOf(await server.call('com.atproto.server.getServiceAuth', 'GET', access, null, '?aud=pkg.test')),
         'InvalidRequest');
   });
 
-  test("writes only to the caller's own repository, in the collections its account allows", (ctx) => {
-    let server = new Server();
-    let bot = server.signIn(BOT, server.botPassword)['accessJwt'] as String;
-    let written = ok(server.call('com.atproto.repo.putRecord', 'POST', bot,
+  test("writes only to the caller's own repository, in the collections its account allows", async (ctx) => {
+    let server = await Server.create();
+    let bot = (await server.signIn(BOT, server.botPassword))['accessJwt'] as String;
+    let written = ok(await server.call('com.atproto.repo.putRecord', 'POST', bot,
         `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one", "record": ${attestationJson()}}`));
     equal(written['uri'] as String, `at://${BOT}/${ATTESTATION}/one`);
     // Another account's repository, a collection the account may not hold,
     // and no token are refused.
-    equal(errorOf(server.call('com.atproto.repo.putRecord', 'POST', bot,
+    equal(errorOf(await server.call('com.atproto.repo.putRecord', 'POST', bot,
         `{"repo": "${ALICE}", "collection": "${ATTESTATION}", "rkey": "two", "record": ${attestationJson()}}`)),
         'Forbidden');
-    equal(errorOf(server.call('com.atproto.repo.putRecord', 'POST', bot,
+    equal(errorOf(await server.call('com.atproto.repo.putRecord', 'POST', bot,
         `{"repo": "${BOT}", "collection": "com.example.post", "rkey": "x", "record": {"$type": "com.example.post"}}`)),
         'InvalidRequest');
-    equal(errorOf(server.call('com.atproto.repo.putRecord', 'POST', null,
+    equal(errorOf(await server.call('com.atproto.repo.putRecord', 'POST', null,
         `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "two", "record": ${attestationJson()}}`)),
         'AuthenticationRequired');
     // A swap on a stale CID is refused; deleting works, and again does nothing.
     let cid = written['cid'] as String;
-    ok(server.call('com.atproto.repo.putRecord', 'POST', bot,
+    ok(await server.call('com.atproto.repo.putRecord', 'POST', bot,
         `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one", "record": ${attestationJson()}, "swapRecord": "${cid}"}`));
-    equal(errorOf(server.call('com.atproto.repo.putRecord', 'POST', bot,
+    equal(errorOf(await server.call('com.atproto.repo.putRecord', 'POST', bot,
         `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one", "record": ${attestationJson()}, "swapRecord": "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"}`)),
         'InvalidSwap');
-    ok(server.call('com.atproto.repo.deleteRecord', 'POST', bot,
+    ok(await server.call('com.atproto.repo.deleteRecord', 'POST', bot,
         `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one"}`));
-    isTrue(runFuture(server.pds.storage.store(BOT).getRecord(ATTESTATION, 'one')) == null, 'deleted');
-    ok(server.call('com.atproto.repo.deleteRecord', 'POST', bot,
+    isTrue(await server.pds.storage.store(BOT).getRecord(ATTESTATION, 'one') == null, 'deleted');
+    ok(await server.call('com.atproto.repo.deleteRecord', 'POST', bot,
         `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one"}`));
   });
 });

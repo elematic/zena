@@ -9,7 +9,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {App, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
@@ -78,9 +78,9 @@ final class Fixture {
   }
 
   /** A signing key the PDS reserves for the App View, or for `issuer`, the other one. */
-  reserve(issuer: String = APP_VIEW_DID): PublicKey {
+  async reserve(issuer: String = APP_VIEW_DID): Future<PublicKey> {
     let signer = if (issuer == APP_VIEW_DID) this.appViewSigning else this.otherSigning;
-    let reserved = ok(this.call('com.atproto.server.reserveSigningKey', 'POST',
+    let reserved = ok(await this.call('com.atproto.server.reserveSigningKey', 'POST',
         this.token(issuer, signer, 'com.atproto.server.reserveSigningKey'), '{}'));
     return parseDidKey(reserved['signingKey'] as String);
   }
@@ -109,8 +109,8 @@ final class Fixture {
         `jti-${this.#jti}`), KeyType.Secp256k1, signer.privateKey);
   }
 
-  call(method: String, httpMethod: String, token: String | null, body: String | FixedArray<u8> | null,
-      query: String = '', contentType: String = 'application/json'): Response {
+  async call(method: String, httpMethod: String, token: String | null, body: String | FixedArray<u8> | null,
+      query: String = '', contentType: String = 'application/json'): Future<Response> {
     let headers = new HashMap<String, String>();
     if (token != null) {
       headers['authorization'] = `Bearer ${token}`;
@@ -125,21 +125,19 @@ final class Fixture {
     let res = new Response();
     let app = this.app;
     let request = req;
-    runFuture((async () => {
-      await app.handleRequest(request, res);
-    })());
+    await app.handleRequest(request, res);
     return res;
   }
 
   /** `createAccount` for `did`, with `token`. */
-  create(did: String, token: String | null): Response {
-    return this.call('com.atproto.server.createAccount', 'POST', token, `{"did": "${did}", "handle": "${HANDLE}"}`);
+  async create(did: String, token: String | null): Future<Response> {
+    return await this.call('com.atproto.server.createAccount', 'POST', token, `{"did": "${did}", "handle": "${HANDLE}"}`);
   }
 
   /** Creates the managed account of a DID the App View mints, and returns the DID. */
-  created(): String {
-    let did = this.mint(this.appViewRotation, this.reserve());
-    ok(this.create(did, this.appViewToken('com.atproto.server.createAccount')));
+  async created(): Future<String> {
+    let did = this.mint(this.appViewRotation, await this.reserve());
+    ok(await this.create(did, this.appViewToken('com.atproto.server.createAccount')));
     return did;
   }
 
@@ -160,140 +158,140 @@ function errorOf(res: Response) {
 }
 
 export let tests = suite('pds:managed', () => {
-  test('creates an account for a DID a trusted App View made, with the key it reserved', (ctx) => {
+  test('creates an account for a DID a trusted App View made, with the key it reserved', async (ctx) => {
     let fixture = new Fixture();
-    let reserved = fixture.reserve();
+    let reserved = await fixture.reserve();
     let did = fixture.mint(fixture.appViewRotation, reserved);
-    let created = ok(fixture.create(did, fixture.appViewToken('com.atproto.server.createAccount')));
+    let created = ok(await fixture.create(did, fixture.appViewToken('com.atproto.server.createAccount')));
     equal(created['did'] as String, did);
     equal(created['handle'] as String, HANDLE);
-    let account = runFuture(fixture.pds.storage.getAccount(did)) as Account;
+    let account = (await fixture.pds.storage.getAccount(did)) as Account;
     equal(account.manager as String, APP_VIEW_DID);
     // The key the genesis operation names, which the PDS made and holds.
-    equal(formatDidKey(runFuture(account.signingKey()).publicKey()), formatDidKey(reserved));
+    equal(formatDidKey((await account.signingKey()).publicKey()), formatDidKey(reserved));
 
     // Once is enough.
-    equal(errorOf(fixture.create(did, fixture.appViewToken('com.atproto.server.createAccount'))), 'InvalidRequest');
+    equal(errorOf(await fixture.create(did, fixture.appViewToken('com.atproto.server.createAccount'))), 'InvalidRequest');
   });
 
-  test('reserves keys only for the App Views it trusts', (ctx) => {
+  test('reserves keys only for the App Views it trusts', async (ctx) => {
     let fixture = new Fixture();
     let method = 'com.atproto.server.reserveSigningKey';
-    equal(errorOf(fixture.call(method, 'POST', null, '{}')), 'AuthenticationRequired');
+    equal(errorOf(await fixture.call(method, 'POST', null, '{}')), 'AuthenticationRequired');
     let stranger = key(41);
     fixture.keys['did:web:stranger.test'] = stranger.publicKey();
-    equal(errorOf(fixture.call(method, 'POST', fixture.token('did:web:stranger.test', stranger, method), '{}')),
+    equal(errorOf(await fixture.call(method, 'POST', fixture.token('did:web:stranger.test', stranger, method), '{}')),
         'Forbidden');
-    equal(errorOf(fixture.call(method, 'POST', fixture.appViewToken('com.atproto.server.createAccount'), '{}')),
+    equal(errorOf(await fixture.call(method, 'POST', fixture.appViewToken('com.atproto.server.createAccount'), '{}')),
         'InvalidToken');
     // It reads its input, as its lexicon gives it one.
-    equal(errorOf(fixture.call(method, 'POST', fixture.appViewToken(method), 'a key, please')), 'InvalidRequest');
+    equal(errorOf(await fixture.call(method, 'POST', fixture.appViewToken(method), 'a key, please')), 'InvalidRequest');
   });
 
-  test('refuses an account no trusted App View made, or with a key it did not reserve', (ctx) => {
+  test('refuses an account no trusted App View made, or with a key it did not reserve', async (ctx) => {
     let fixture = new Fixture();
     let create = (did: String) => fixture.create(did, fixture.appViewToken('com.atproto.server.createAccount'));
 
     // Naming the App View's rotation key is not enough: the App View must have signed.
     let attacker = key(31);
-    let forged = fixture.mint(attacker, fixture.reserve(), PDS_URL,
+    let forged = fixture.mint(attacker, await fixture.reserve(), PDS_URL,
         [fixture.appViewRotation.publicKey(), attacker.publicKey()]);
-    equal(errorOf(create(forged)), 'IncompatibleDidDoc');
-    isTrue(runFuture(fixture.pds.storage.getAccount(forged)) == null, 'no account');
+    equal(errorOf(await create(forged)), 'IncompatibleDidDoc');
+    isTrue(await fixture.pds.storage.getAccount(forged) == null, 'no account');
 
     // A DID whose document names another PDS.
-    equal(errorOf(create(fixture.mint(fixture.appViewRotation, fixture.reserve(), 'https://other.test'))),
+    equal(errorOf(await create(fixture.mint(fixture.appViewRotation, await fixture.reserve(), 'https://other.test'))),
         'IncompatibleDidDoc');
 
     // A key the PDS did not reserve, or reserved for another App View, whose
     // reservation stays.
-    equal(errorOf(create(fixture.mint(fixture.appViewRotation, key(32).publicKey()))), 'InvalidRequest');
-    let others = fixture.reserve(OTHER_DID);
-    equal(errorOf(create(fixture.mint(fixture.appViewRotation, others))), 'InvalidRequest');
+    equal(errorOf(await create(fixture.mint(fixture.appViewRotation, key(32).publicKey()))), 'InvalidRequest');
+    let others = await fixture.reserve(OTHER_DID);
+    equal(errorOf(await create(fixture.mint(fixture.appViewRotation, others))), 'InvalidRequest');
     let theirs = fixture.mint(fixture.otherRotation, others, PDS_URL, [fixture.otherRotation.publicKey()]);
-    ok(fixture.create(theirs, fixture.token(OTHER_DID, fixture.otherSigning, 'com.atproto.server.createAccount')));
+    ok(await fixture.create(theirs, fixture.token(OTHER_DID, fixture.otherSigning, 'com.atproto.server.createAccount')));
 
     // Only the App View that made the DID asks for its account.
-    let did = fixture.mint(fixture.appViewRotation, fixture.reserve());
-    equal(errorOf(fixture.create(did, fixture.token(OTHER_DID, fixture.otherSigning,
+    let did = fixture.mint(fixture.appViewRotation, await fixture.reserve());
+    equal(errorOf(await fixture.create(did, fixture.token(OTHER_DID, fixture.otherSigning,
         'com.atproto.server.createAccount'))), 'Forbidden');
-    equal(errorOf(fixture.create(did, null)), 'AuthenticationRequired');
+    equal(errorOf(await fixture.create(did, null)), 'AuthenticationRequired');
 
     // An account of its own, with an email address and a password, is not one this PDS makes.
-    equal(errorOf(fixture.call('com.atproto.server.createAccount', 'POST', null,
+    equal(errorOf(await fixture.call('com.atproto.server.createAccount', 'POST', null,
         '{"handle": "alice.padstone.test", "email": "alice@example.com", "password": "secret"}')), 'InvalidRequest');
   });
 
-  test("takes a managed account's writes only from its App View", (ctx) => {
+  test("takes a managed account's writes only from its App View", async (ctx) => {
     let fixture = new Fixture();
-    let did = fixture.created();
+    let did = await fixture.created();
     let profile = `{"$type": "${PROFILE}", "name": "router"}`;
     let writes = `{"repo": "${did}", "writes": [{"$type": "com.atproto.repo.applyWrites#create", "collection": "${PROFILE}", "rkey": "self", "value": ${profile}}]}`;
 
     // Not without a token, nor with the account's own DID's token.
-    equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST', null, writes)), 'AuthenticationRequired');
-    let own = runFuture((runFuture(fixture.pds.storage.getAccount(did)) as Account).signingKey());
-    equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST',
+    equal(errorOf(await fixture.call('com.atproto.repo.applyWrites', 'POST', null, writes)), 'AuthenticationRequired');
+    let own = await ((await fixture.pds.storage.getAccount(did)) as Account).signingKey();
+    equal(errorOf(await fixture.call('com.atproto.repo.applyWrites', 'POST',
         fixture.token(did, own, 'com.atproto.repo.applyWrites'), writes)), 'Forbidden');
     // Nor with the App View's token for another method.
-    equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST',
+    equal(errorOf(await fixture.call('com.atproto.repo.applyWrites', 'POST',
         fixture.appViewToken('com.atproto.repo.putRecord'), writes)), 'InvalidToken');
 
-    let applied = ok(fixture.call('com.atproto.repo.applyWrites', 'POST',
+    let applied = ok(await fixture.call('com.atproto.repo.applyWrites', 'POST',
         fixture.appViewToken('com.atproto.repo.applyWrites'), writes));
     isTrue((applied['commit'] as JsonObject)['rev'] is String, 'a commit');
     let result = (applied['results'] as JsonArray)[0] as JsonObject;
     equal(result['uri'] as String, `at://${did}/${PROFILE}/self`);
-    let read = ok(fixture.call('com.atproto.repo.getRecord', 'GET', null, null,
+    let read = ok(await fixture.call('com.atproto.repo.getRecord', 'GET', null, null,
         `?repo=${did}&collection=${PROFILE}&rkey=self`));
     equal(read['cid'] as String, result['cid'] as String);
 
     // putRecord and deleteRecord take the App View's token too.
-    ok(fixture.call('com.atproto.repo.putRecord', 'POST', fixture.appViewToken('com.atproto.repo.putRecord'),
+    ok(await fixture.call('com.atproto.repo.putRecord', 'POST', fixture.appViewToken('com.atproto.repo.putRecord'),
         `{"repo": "${did}", "collection": "${PROFILE}", "rkey": "self", "record": {"$type": "${PROFILE}", "name": "routing"}}`));
-    ok(fixture.call('com.atproto.repo.deleteRecord', 'POST', fixture.appViewToken('com.atproto.repo.deleteRecord'),
+    ok(await fixture.call('com.atproto.repo.deleteRecord', 'POST', fixture.appViewToken('com.atproto.repo.deleteRecord'),
         `{"repo": "${did}", "collection": "${PROFILE}", "rkey": "self"}`));
-    equal(fixture.call('com.atproto.repo.getRecord', 'GET', null, null,
-        `?repo=${did}&collection=${PROFILE}&rkey=self`).statusCode, 404);
+    equal((await fixture.call('com.atproto.repo.getRecord', 'GET', null, null,
+        `?repo=${did}&collection=${PROFILE}&rkey=self`)).statusCode, 404);
 
     // A blob, for the account its `repo` names, since the App View's token names none.
     let bytes = 'an artifact'.toBytes();
-    let blob = ok(fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
+    let blob = ok(await fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
         bytes, `?repo=${did}`, 'application/octet-stream'))['blob'] as JsonObject;
     equal(blob['mimeType'] as String, 'application/octet-stream');
     equal((blob['size'] as Box<f64>).value as i32, bytes.length);
-    equal(errorOf(fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
+    equal(errorOf(await fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
         bytes, '', 'application/octet-stream')), 'InvalidRequest');
   });
 
-  test('limits a managed account to package records and artifacts, whoever writes', (ctx) => {
+  test('limits a managed account to package records and artifacts, whoever writes', async (ctx) => {
     let fixture = new Fixture();
-    let did = fixture.created();
+    let did = await fixture.created();
     // Even the App View's writes: the limits are the PDS operator's.
     let post = `{"repo": "${did}", "writes": [{"$type": "com.atproto.repo.applyWrites#create", "collection": "app.bsky.feed.post", "rkey": "x", "value": {"$type": "app.bsky.feed.post", "text": "hi"}}]}`;
-    equal(errorOf(fixture.call('com.atproto.repo.applyWrites', 'POST',
+    equal(errorOf(await fixture.call('com.atproto.repo.applyWrites', 'POST',
         fixture.appViewToken('com.atproto.repo.applyWrites'), post)), 'InvalidRequest');
-    equal(errorOf(fixture.call('com.atproto.repo.putRecord', 'POST', fixture.appViewToken('com.atproto.repo.putRecord'),
+    equal(errorOf(await fixture.call('com.atproto.repo.putRecord', 'POST', fixture.appViewToken('com.atproto.repo.putRecord'),
         `{"repo": "${did}", "collection": "app.bsky.feed.post", "rkey": "x", "record": {"$type": "app.bsky.feed.post"}}`)),
         'InvalidRequest');
     // A blob a browser would run as a page is refused, as is one too large.
-    equal(errorOf(fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
+    equal(errorOf(await fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
         '<script></script>'.toBytes(), `?repo=${did}`, 'text/html')), 'InvalidRequest');
     fixture.pds.managedLimits.maxBlobSize = 8 as i64;
-    let tooLarge = fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
+    let tooLarge = await fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
         'twelve bytes'.toBytes(), `?repo=${did}`, 'application/octet-stream');
     equal(tooLarge.statusCode, 413);
     equal(errorOf(tooLarge), 'BlobTooLarge');
   });
 
-  test('takes no writes to an account that is not managed, without sessions', (ctx) => {
+  test('takes no writes to an account that is not managed, without sessions', async (ctx) => {
     let fixture = new Fixture();
     let did = 'did:plc:ownownownownownownownownow';
-    runFuture(fixture.pds.createAccount(did, 'own.padstone.test', key(41), 0 as i64));
+    await fixture.pds.createAccount(did, 'own.padstone.test', key(41), 0 as i64);
     let profile = `{"$type": "${PROFILE}", "name": "own"}`;
-    equal(errorOf(fixture.call('com.atproto.repo.putRecord', 'POST', fixture.appViewToken('com.atproto.repo.putRecord'),
+    equal(errorOf(await fixture.call('com.atproto.repo.putRecord', 'POST', fixture.appViewToken('com.atproto.repo.putRecord'),
         `{"repo": "${did}", "collection": "${PROFILE}", "rkey": "self", "record": ${profile}}`)), 'Forbidden');
-    equal(errorOf(fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
+    equal(errorOf(await fixture.call('com.atproto.repo.uploadBlob', 'POST', fixture.appViewToken('com.atproto.repo.uploadBlob'),
         'bytes'.toBytes(), `?repo=${did}`, 'application/octet-stream')), 'Forbidden');
   });
 });

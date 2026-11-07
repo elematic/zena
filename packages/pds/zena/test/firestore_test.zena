@@ -6,7 +6,6 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
 import {randomU64} from 'zena:random';
 import {DirectoryBlobs, recordId} from 'pds:firestore';
 
@@ -22,18 +21,18 @@ export let tests = suite('pds:firestore', () => {
     equal(recordId('_x_'), '_x_');
   });
 
-  test('keeps blob bytes in a directory, making the directories it needs', (ctx) => {
+  test('keeps blob bytes in a directory, making the directories it needs', async (ctx) => {
     // `/tmp` outlives a run, so each run writes under a name of its own.
     let blobs = new DirectoryBlobs(`/tmp/pds-blobs-${randomU64()}`);
     let name = 'tenant/did:plc:alicealicealicealicealic/bafkreiexample';
-    isTrue(runFuture(blobs.read(name)) == null, 'nothing yet');
+    isTrue(await blobs.read(name) == null, 'nothing yet');
     let bytes = 'a blob'.toBytes();
-    runFuture(blobs.write(name, bytes, 'text/plain'));
-    let read = runFuture(blobs.read(name));
+    await blobs.write(name, bytes, 'text/plain');
+    let read = await blobs.read(name);
     isTrue(read != null, 'written');
     equal(String.fromBytes((read as FixedArray<u8>) as ByteArray), 'a blob');
     // A second write of the same object replaces it.
-    runFuture(blobs.write(name, 'again'.toBytes(), 'text/plain'));
-    equal(String.fromBytes((runFuture(blobs.read(name)) as FixedArray<u8>) as ByteArray), 'again');
+    await blobs.write(name, 'again'.toBytes(), 'text/plain');
+    equal(String.fromBytes(((await blobs.read(name)) as FixedArray<u8>) as ByteArray), 'again');
   });
 });

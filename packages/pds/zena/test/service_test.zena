@@ -5,7 +5,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
-import {Future, TaskGroup, runFuture} from 'zena:async';
+import {Future, TaskGroup} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {fetch} from 'zena:fetch';
 import {App, Request, Response} from 'zena:http';
@@ -41,11 +41,9 @@ function refusal(pairs: Array<(String, String)>) {
   return '';
 }
 
-function get(app: App, path: String) {
+async function get(app: App, path: String): Future<Response> {
   let res = new Response();
-  runFuture((async () => {
-    await app.handleRequest(new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>()), res);
-  })());
+  await app.handleRequest(new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>()), res);
   return res;
 }
 
@@ -105,19 +103,19 @@ export let tests = suite('pds:service', () => {
     isTrue(firestore.contains('needs PDS_TENANT') && firestore.contains('needs PDS_JWT_SECRET'), firestore);
   });
 
-  test('builds a PDS alone, which keeps managed accounts only for the App Views it trusts', (ctx) => {
-    let plain = runFuture(buildPds(configFromEnv(envOf([])), 'http://127.0.0.1:1'));
-    isTrue((get(plain.app, '/').body as String).contains('PDS'), 'the banner');
-    equal(get(plain.app, '/xrpc/_health').statusCode, 200);
+  test('builds a PDS alone, which keeps managed accounts only for the App Views it trusts', async (ctx) => {
+    let plain = await buildPds(configFromEnv(envOf([])), 'http://127.0.0.1:1');
+    isTrue(((await get(plain.app, '/')).body as String).contains('PDS'), 'the banner');
+    equal((await get(plain.app, '/xrpc/_health')).statusCode, 200);
     // It describes itself as the DID App Views address their tokens to.
-    let described = get(plain.app, '/xrpc/com.atproto.server.describeServer');
+    let described = await get(plain.app, '/xrpc/com.atproto.server.describeServer');
     equal(described.statusCode, 200);
     equal((parseJson(described.body as String) as JsonObject)['did'] as String, 'did:web:127.0.0.1%3A1');
     isTrue(plain.pds.managed == null, 'no managed accounts');
     equal(plain.did, 'did:web:127.0.0.1%3A1');
 
-    let trusting = runFuture(buildPds(configFromEnv(envOf([('PDS_PUBLIC_URL', 'https://padstone.test'),
-        ('PDS_TRUSTED_APP_VIEWS', `did:web:pkg.test=${didKey(1)}`)])), 'http://127.0.0.1:1'));
+    let trusting = await buildPds(configFromEnv(envOf([('PDS_PUBLIC_URL', 'https://padstone.test'),
+        ('PDS_TRUSTED_APP_VIEWS', `did:web:pkg.test=${didKey(1)}`)])), 'http://127.0.0.1:1');
     equal(trusting.did, 'did:web:padstone.test');
     let managed = trusting.pds.managed;
     isTrue(managed != null && managed.serviceDid == 'did:web:padstone.test' && managed.endpoint == 'https://padstone.test',

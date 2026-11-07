@@ -9,7 +9,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {Request, Response} from 'zena:http';
 import {getRandomU64} from 'wasi:random/random';
@@ -27,14 +27,14 @@ import {TestKeyEncryption, credentialStoreConformance, storageConformance} from 
 let ALICE = 'did:plc:alicealicealicealicealic';
 
 /** The account document of `did` in `db`'s tenant `test`. */
-function accountDocument(db: Firestore, did: String) {
-  return runFuture(db.collection('tenants').doc('test').collection('accounts').doc(did).get());
+async function accountDocument(db: Firestore, did: String) {
+  return await db.collection('tenants').doc('test').collection('accounts').doc(did).get();
 }
 
 /** Whether `call` throws. */
-function throws(call: () => void): boolean {
+async function throws<T>(call: () => Future<T>): Future<boolean> {
   try {
-    call();
+    await call();
   } catch (e) {
     return true;
   }
@@ -48,54 +48,54 @@ export let tests = suite('Firestore storage', () => {
       new FirestoreStorage(freshEmulatedDatabase(), 'test', new MemoryBlobs(), new TestKeyEncryption()));
   credentialStoreConformance((): CredentialStore => new FirestoreCredentialStore(freshEmulatedDatabase(), 'test'));
 
-  test('keeps tenants apart', (ctx) => {
+  test('keeps tenants apart', async (ctx) => {
     let db = freshEmulatedDatabase();
     let blobs = new MemoryBlobs();
     let one = new FirestoreStorage(db, 'one', blobs);
     let two = new FirestoreStorage(db, 'two', blobs);
     let did = 'did:plc:alicealicealicealicealic';
-    runFuture(one.putAccount(new Account(did, 'alice.test', new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8)))));
-    isTrue(runFuture(two.getAccount(did)) == null, 'no account in the other tenant');
-    isTrue(runFuture(two.accountByHandle('alice.test')) == null, 'no handle in the other tenant');
+    await one.putAccount(new Account(did, 'alice.test', new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8))));
+    isTrue(await two.getAccount(did) == null, 'no account in the other tenant');
+    isTrue(await two.accountByHandle('alice.test') == null, 'no handle in the other tenant');
     let cid = Cid.forBlob('x'.toBytes());
-    isTrue(runFuture(one.store(did).commit(null, new Head(cid, '3l3qo2vutsw2a'),
-        [new RecordChange('com.example.post', 'a', cid)])), 'committed');
-    isTrue(runFuture(two.store(did).getHead()) == null, 'no head in the other tenant');
-    isTrue(runFuture(two.store(did).getRecord('com.example.post', 'a')) == null, 'no record in the other tenant');
-    runFuture(one.store(did).putBlob(cid, new StoredBlob('text/plain', 'x'.toBytes())));
-    isTrue(runFuture(two.store(did).getBlob(cid)) == null, 'no blob in the other tenant');
+    isTrue(await one.store(did).commit(null, new Head(cid, '3l3qo2vutsw2a'),
+        [new RecordChange('com.example.post', 'a', cid)]), 'committed');
+    isTrue(await two.store(did).getHead() == null, 'no head in the other tenant');
+    isTrue(await two.store(did).getRecord('com.example.post', 'a') == null, 'no record in the other tenant');
+    await one.store(did).putBlob(cid, new StoredBlob('text/plain', 'x'.toBytes()));
+    isTrue(await two.store(did).getBlob(cid) == null, 'no blob in the other tenant');
   });
 
-  test('keeps signing keys encrypted, and decrypts one when it is first used', (ctx) => {
+  test('keeps signing keys encrypted, and decrypts one when it is first used', async (ctx) => {
     let db = freshEmulatedDatabase();
     let keys = new TestKeyEncryption();
     let storage = new FirestoreStorage(db, 'test', new MemoryBlobs(), keys);
     let key = new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8));
-    runFuture(storage.putAccount(new Account(ALICE, 'alice.test', key)));
-    let document = accountDocument(db, ALICE);
+    await storage.putAccount(new Account(ALICE, 'alice.test', key));
+    let document = await accountDocument(db, ALICE);
     isTrue(document.get('privateKey') == null, 'no key in the clear');
     isTrue(document.get('encryptedKey') != null, 'an encrypted key');
 
-    let read = runFuture(storage.getAccount(ALICE)) as Account;
+    let read = (await storage.getAccount(ALICE)) as Account;
     isTrue(read.encryptedKey != null, 'read encrypted');
     equal(keys.decrypted, 0);
-    equal(hex.encode(runFuture(read.signingKey()).privateKey), hex.encode(key.privateKey));
+    equal(hex.encode((await read.signingKey()).privateKey), hex.encode(key.privateKey));
     equal(keys.decrypted, 1);
 
     // Written again, with a new handle, it keeps its ciphertext.
     equal(keys.encrypted, 1);
     read.handle = 'alice2.test';
-    runFuture(storage.putAccount(read));
+    await storage.putAccount(read);
     equal(keys.encrypted, 1);
-    let again = runFuture(storage.accountByHandle('alice2.test')) as Account;
-    equal(hex.encode(runFuture(again.signingKey()).privateKey), hex.encode(key.privateKey));
+    let again = (await storage.accountByHandle('alice2.test')) as Account;
+    equal(hex.encode((await again.signingKey()).privateKey), hex.encode(key.privateKey));
 
     // A store with no key encryption cannot read it.
-    isTrue(throws(() => { runFuture(new FirestoreStorage(db, 'test', new MemoryBlobs()).getAccount(ALICE)); }),
+    isTrue(await throws(() => new FirestoreStorage(db, 'test', new MemoryBlobs()).getAccount(ALICE)),
         'read an encrypted key without key encryption');
   });
 
-  test('serves a PDS on Firestore, as PDS_STORAGE=firestore configures it', (ctx) => {
+  test('serves a PDS on Firestore, as PDS_STORAGE=firestore configures it', async (ctx) => {
     let env: HashMap<String, String> = {
       'PDS_STORAGE' => 'firestore',
       'PDS_TENANT' => `service-${getRandomU64() % (1000000000 as u64)}`,
@@ -109,16 +109,14 @@ export let tests = suite('Firestore storage', () => {
       }
       return null;
     });
-    let service = runFuture(buildPds(config, 'http://127.0.0.1:1'));
+    let service = await buildPds(config, 'http://127.0.0.1:1');
     let did = 'did:plc:alicealicealicealicealic';
-    runFuture(service.pds.createAccount(did, 'alice.test', new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8)),
-        1792800000000000 as i64));
+    await service.pds.createAccount(did, 'alice.test', new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8)),
+        1792800000000000 as i64);
     let res = new Response();
     let app = service.app;
-    runFuture((async () => {
-      await app.handleRequest(new Request.fromUrl(
-          `http://localhost/xrpc/com.atproto.repo.describeRepo?repo=${did}`, 'GET', new HashMap<String, String>()), res);
-    })());
+    await app.handleRequest(new Request.fromUrl(
+        `http://localhost/xrpc/com.atproto.repo.describeRepo?repo=${did}`, 'GET', new HashMap<String, String>()), res);
     equal(res.statusCode, 200);
     isTrue((res.body as String).contains('alice.test'), res.body as String);
   });
