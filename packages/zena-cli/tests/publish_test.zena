@@ -89,6 +89,10 @@ export let tests = suite('zena pkg publish', () => {
       let scopeAgain = lib.run(['pkg', 'scope', 'create', 'acme', '--yes']);
       isTrue(!scopeAgain.succeeded() && scopeAgain.stderr.contains('already has the scope acme'),
           described(scopeAgain));
+      // A handle record left behind, naming a DID that does not claim the
+      // handle, is no scope.
+      let ghost = lib.run(['pkg', 'scope', 'create', 'ghost', '--yes']);
+      isTrue(ghost.succeeded() && ghost.stdout.contains('Created the scope ghost.pkg.test'), described(ghost));
       let info = lib.run(['pkg', 'scope', 'info', 'acme']);
       isTrue(info.succeeded() && info.stdout.contains('acme.pkg.test') && info.stdout.contains('DID: did:plc:') &&
           info.stdout.contains('Members: 1'), described(info));
@@ -172,11 +176,12 @@ export let tests = suite('zena pkg publish', () => {
       isTrue(!read(scratch.at('uses/zena-package.json')).contains('"did"'), 'no DID was written');
       write(scratch.at('other/zena-package.json'), otherManifest);
 
-      // Alice attested the scope's members record and the three releases, in
-      // her own repository.
+      // Alice attested the members records of the two scopes she made, acme
+      // and ghost, and the three releases, in her own repository.
       let listed = runFuture(fetch(
           `${(addresses['plc'] as String).sliceBytes(0, (addresses['plc'] as String).length - 4)}/xrpc/com.atproto.repo.listRecords?repo=${ALICE}&collection=dev.zena-lang.package.attestation`));
-      equal(((parseJson(runFuture(listed.text())) as JsonObject)['records'] as JsonArray).length, 4);
+      equal(((parseJson(runFuture(listed.text())) as JsonObject)['records'] as JsonArray).length, 5,
+          'attestations of two members records and three releases');
 
       // Another workspace adds the package by its handle and runs it.
       write(scratch.at('app/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
