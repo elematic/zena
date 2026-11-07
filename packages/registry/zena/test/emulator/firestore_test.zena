@@ -8,7 +8,6 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
@@ -25,14 +24,14 @@ export let tests = suite('Firestore App View stores', () => {
   appViewStoreConformance((): AppViewStore => new FirestoreAppViewStore(freshEmulatedDatabase(), 'test'));
   plcLogConformance((): PlcLog => new FirestorePlcLog(freshEmulatedDatabase(), 'test'));
 
-  test('keeps tenants apart', (ctx) => {
+  test('keeps tenants apart', async (ctx) => {
     let db = freshEmulatedDatabase();
     let did = 'did:plc:alicealicealicealicealic';
-    isTrue(runFuture(new FirestoreAppViewStore(db, 'one').claimScope('acme', did)), 'claimed');
-    isTrue(runFuture(new FirestoreAppViewStore(db, 'two').claimScope('acme', did)), 'claimed in the other tenant');
+    isTrue(await new FirestoreAppViewStore(db, 'one').claimScope('acme', did), 'claimed');
+    isTrue(await new FirestoreAppViewStore(db, 'two').claimScope('acme', did), 'claimed in the other tenant');
   });
 
-  test('serves the App View on Firestore, with its PDS, as the environment configures them', (ctx) => {
+  test('serves the App View on Firestore, with its PDS, as the environment configures them', async (ctx) => {
     let env: HashMap<String, String> = {
       'PDS_STORAGE' => 'firestore',
       'PDS_TENANT' => `service-${getRandomU64() % (1000000000 as u64)}`,
@@ -49,19 +48,17 @@ export let tests = suite('Firestore App View stores', () => {
       }
       return null;
     });
-    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let service = await buildService(config, 'http://127.0.0.1:1');
     // Its listings read its store, in the PDS's tenant, which holds no scope yet.
     let res = new Response();
     let app = service.app;
-    runFuture((async () => {
-      await app.handleRequest(new Request.fromUrl('http://localhost/xrpc/dev.zena-lang.registry.listScopes', 'GET',
-          new HashMap<String, String>()), res);
-    })());
+    await app.handleRequest(new Request.fromUrl('http://localhost/xrpc/dev.zena-lang.registry.listScopes', 'GET',
+        new HashMap<String, String>()), res);
     equal(res.statusCode, 200);
     equal(((parseJson(res.body as String) as JsonObject)['scopes'] as JsonArray).length, 0);
   });
 
-  test('serves the App View on Firestore, in a tenant of its own, with its PDS elsewhere', (ctx) => {
+  test('serves the App View on Firestore, in a tenant of its own, with its PDS elsewhere', async (ctx) => {
     let env: HashMap<String, String> = {
       'APP_VIEW_PDS_URL' => 'https://padstone.test',
       'APP_VIEW_STORAGE' => 'firestore',
@@ -79,14 +76,12 @@ export let tests = suite('Firestore App View stores', () => {
       }
       return null;
     });
-    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let service = await buildService(config, 'http://127.0.0.1:1');
     isTrue(service.pds == null, 'no PDS of its own');
     let res = new Response();
     let app = service.app;
-    runFuture((async () => {
-      await app.handleRequest(new Request.fromUrl('http://localhost/xrpc/dev.zena-lang.registry.listScopes', 'GET',
-          new HashMap<String, String>()), res);
-    })());
+    await app.handleRequest(new Request.fromUrl('http://localhost/xrpc/dev.zena-lang.registry.listScopes', 'GET',
+        new HashMap<String, String>()), res);
     equal(res.statusCode, 200);
     equal(((parseJson(res.body as String) as JsonObject)['scopes'] as JsonArray).length, 0);
   });

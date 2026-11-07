@@ -5,7 +5,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {App, Request, Response, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
@@ -17,12 +17,10 @@ let DID = 'did:plc:alicealicealicealicealic';
 let OTHER = 'did:plc:bobbobbobbobbobbobbobbob';
 
 /** The JSON `app` answers a lookup of `name` and `type` with. */
-function query(app: App, name: String, type: String = 'TXT') {
+async function query(app: App, name: String, type: String = 'TXT'): Future<JsonObject> {
   let res = new Response();
-  runFuture((async () => {
-    await app.handleRequest(new Request.fromUrl(`http://localhost/dns-query?name=${name}&type=${type}`, 'GET',
-        new HashMap<String, String>()), res);
-  })());
+  await app.handleRequest(new Request.fromUrl(`http://localhost/dns-query?name=${name}&type=${type}`, 'GET',
+      new HashMap<String, String>()), res);
   equal(res.type as String, 'application/dns-json');
   return parseJson(res.body as String) as JsonObject;
 }
@@ -33,23 +31,23 @@ function numberAt(object: JsonObject, key: String) {
 }
 
 export let tests = suite('registry:handles', () => {
-  test('keeps one record per handle, case-insensitively', (ctx) => {
+  test('keeps one record per handle, case-insensitively', async (ctx) => {
     let records = new MemoryHandleRecords();
-    runFuture(records.set('Router.Acme.pkg.test', DID));
+    await records.set('Router.Acme.pkg.test', DID);
     equal(records.lookup('router.acme.pkg.test') as String, DID);
-    runFuture(records.set('router.acme.pkg.test', 'did:plc:bobbobbobbobbobbobbobbob'));
+    await records.set('router.acme.pkg.test', 'did:plc:bobbobbobbobbobbobbobbob');
     equal(records.lookup('ROUTER.acme.pkg.test') as String, 'did:plc:bobbobbobbobbobbobbobbob');
-    runFuture(records.remove('router.acme.pkg.test'));
+    await records.remove('router.acme.pkg.test');
     isTrue(records.lookup('router.acme.pkg.test') == null, 'removed');
-    runFuture(records.remove('router.acme.pkg.test'));
+    await records.remove('router.acme.pkg.test');
   });
 
-  test('answers TXT lookups as a DNS-over-HTTPS resolver does', (ctx) => {
+  test('answers TXT lookups as a DNS-over-HTTPS resolver does', async (ctx) => {
     let records = new MemoryHandleRecords();
-    runFuture(records.set('acme.pkg.test', DID));
+    await records.set('acme.pkg.test', DID);
     let app = dnsOverHttpsApp(records);
 
-    let found = query(app, '_atproto.acme.pkg.test');
+    let found = await query(app, '_atproto.acme.pkg.test');
     equal(numberAt(found, 'Status'), 0);
     let answers = found['Answer'] as JsonArray;
     equal(answers.length, 1);
@@ -58,20 +56,20 @@ export let tests = suite('registry:handles', () => {
     equal(numberAt(answer, 'type'), 16);
     equal(answer['data'] as String, `"did=${DID}"`);
     // A trailing dot, another case, and the type by number.
-    equal(((query(app, '_atproto.ACME.pkg.test.', '16')['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
+    equal((((await query(app, '_atproto.ACME.pkg.test.', '16'))['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
         `"did=${DID}"`);
 
-    equal(numberAt(query(app, '_atproto.other.pkg.test'), 'Status'), 3);
-    equal(numberAt(query(app, 'acme.pkg.test'), 'Status'), 3);
+    equal(numberAt(await query(app, '_atproto.other.pkg.test'), 'Status'), 3);
+    equal(numberAt(await query(app, 'acme.pkg.test'), 'Status'), 3);
     // The name exists, but has no record of another type.
-    let a = query(app, '_atproto.acme.pkg.test', 'A');
+    let a = await query(app, '_atproto.acme.pkg.test', 'A');
     equal(numberAt(a, 'Status'), 0);
     equal((a['Answer'] as JsonArray).length, 0);
   });
 
-  test('passes the names it does not hold to an upstream resolver', (ctx) => {
+  test('passes the names it does not hold to an upstream resolver', async (ctx) => {
     let records = new MemoryHandleRecords();
-    runFuture(records.set('acme.pkg.test', DID));
+    await records.set('acme.pkg.test', DID);
     let asked = new GrowableArray<String>();
     let app = dnsOverHttpsApp(records, async (name: String, type: String): Future<String | null> => {
       asked.push(`${name} ${type}`);
@@ -81,18 +79,18 @@ export let tests = suite('registry:handles', () => {
       return null;
     });
     // Its own names it answers itself.
-    equal(((query(app, '_atproto.acme.pkg.test')['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
+    equal((((await query(app, '_atproto.acme.pkg.test'))['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
         `"did=${DID}"`);
     equal(asked.length, 0);
     // Another name is the upstream's answer, and an upstream that cannot
     // be reached leaves the name not found.
-    equal(((query(app, '_atproto.example.com')['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
+    equal((((await query(app, '_atproto.example.com'))['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
         `"did=${OTHER}"`);
-    equal(numberAt(query(app, '_atproto.unreachable.example'), 'Status'), 3);
+    equal(numberAt(await query(app, '_atproto.unreachable.example'), 'Status'), 3);
     equal(asked[0], '_atproto.example.com TXT');
   });
 
-  test('writes a TXT record set to Cloud DNS for each handle', (ctx) => {
+  test('writes a TXT record set to Cloud DNS for each handle', async (ctx) => {
     // Answers every request with success, and keeps one line per request.
     let log = new GrowableArray<String>();
     let api = new App();
@@ -108,8 +106,8 @@ export let tests = suite('registry:handles', () => {
     server.start();
     let zone = new CloudDns('proj', 'zone', new AccessTokenCredentials('token'), `http://127.0.0.1:${server.port as i32}`);
     let records = new CloudDnsRecords(zone);
-    runFuture(records.set('Router.Acme.pkg.test', DID));
-    runFuture(records.remove('router.acme.pkg.test'));
+    await records.set('Router.Acme.pkg.test', DID);
+    await records.remove('router.acme.pkg.test');
     server.close();
     equal(log[0], `POST /dns/v1/projects/proj/managedZones/zone/rrsets {"name":"_atproto.router.acme.pkg.test.","type":"TXT","ttl":300,"rrdatas":["\\"did=${DID}\\""]}`);
     equal(log[1], 'DELETE /dns/v1/projects/proj/managedZones/zone/rrsets/_atproto.router.acme.pkg.test./TXT');

@@ -5,7 +5,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {GrowableArray} from 'zena:core';
 import {JsonObject, stringify} from 'zena:json';
 import {Cid} from 'atproto:cid';
@@ -56,13 +56,13 @@ final class World {
 }
 
 export let tests = suite('registry:web/approvals', () => {
-  test("finds the attesters whose repositories hold an attestation of the release, and remembers", (ctx) => {
+  test("finds the attesters whose repositories hold an attestation of the release, and remembers", async (ctx) => {
     let world = new World();
     let approvals = new Approvals(world.people(),
         async (did: String, collection: String, rkey: String): Future<Value | null> =>
             if (did == BOT && rkey == attestationKey(URI, CID)) new Attestation(URI, CID, '2026-10-29T00:00:00.000Z').toValue()
             else null);
-    let approved = runFuture(approvals.of(URI, CID, [ALICE, BOB, CAROL, BOT]));
+    let approved = await approvals.of(URI, CID, [ALICE, BOB, CAROL, BOT]);
     equal(approved.length, 2);
     equal(approved[0], ALICE);
     equal(approved[1], BOT);
@@ -70,7 +70,7 @@ export let tests = suite('registry:web/approvals', () => {
     equal(world.asked.length, 3);
     eachAsksFor(world.asked, attestationKey(URI, CID));
     // Asked again, nobody is asked again.
-    runFuture(approvals.of(URI, CID, [ALICE, BOB, CAROL, BOT]));
+    await approvals.of(URI, CID, [ALICE, BOB, CAROL, BOT]);
     equal(world.asked.length, 3);
   });
 });

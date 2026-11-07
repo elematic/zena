@@ -6,7 +6,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {GrowableArray} from 'zena:core';
 import {JsonObject} from 'zena:json';
 import {Cid} from 'atproto:cid';
@@ -71,20 +71,20 @@ function profileJson(): String {
 }
 
 export let tests = suite('registry:web/people', () => {
-  test("reads an account of this App View's handle, and nothing from the network", (ctx) => {
+  test("reads an account of this App View's handle, and nothing from the network", async (ctx) => {
     let world = new World();
     let people = new People(world.sources());
-    let person = runFuture(people.person(LOCAL));
+    let person = await people.person(LOCAL);
     equal(person.handle as String, 'router.acme.pkg.test');
     equal(person.name(), 'router.acme.pkg.test');
     equal(person.path(), '/people/router.acme.pkg.test');
     equal(world.asked.length, 0);
   });
 
-  test("reads someone else's handle and profile from their PDS, once", (ctx) => {
+  test("reads someone else's handle and profile from their PDS, once", async (ctx) => {
     let world = new World();
     let people = new People(world.sources());
-    let alice = runFuture(people.person(ALICE));
+    let alice = await people.person(ALICE);
     equal(alice.handle as String, 'alice.example.com');
     equal(alice.name(), 'Alice');
     equal(alice.description as String, 'Writes parsers.\nAnd routers.');
@@ -93,55 +93,55 @@ export let tests = suite('registry:web/people', () => {
     equal(alice.pds as String, PDS);
     equal(world.asked[1], `${PDS}/xrpc/com.atproto.repo.getRecord?repo=${ALICE}&collection=app.bsky.actor.profile&rkey=self`);
     // Cached: asked once.
-    runFuture(people.person(ALICE));
+    await people.person(ALICE);
     equal(world.asked.length, 2);
   });
 
-  test('stands for an account that does not resolve with its DID, and remembers that', (ctx) => {
+  test('stands for an account that does not resolve with its DID, and remembers that', async (ctx) => {
     let world = new World();
     let people = new People(world.sources());
-    let nobody = runFuture(people.person(NOWHERE));
+    let nobody = await people.person(NOWHERE);
     isTrue(nobody.handle == null && !nobody.hasProfile, 'nothing known');
     equal(nobody.name(), NOWHERE);
     equal(nobody.path(), `/people/${NOWHERE}`);
-    runFuture(people.person(NOWHERE));
+    await people.person(NOWHERE);
     equal(world.asked.length, 1);
   });
 
-  test('reads no profile from a PDS that is not a public HTTPS host, or has none', (ctx) => {
+  test('reads no profile from a PDS that is not a public HTTPS host, or has none', async (ctx) => {
     let world = new World();
     let people = new People(world.sources());
-    let loop = runFuture(people.person(LOOPBACK));
+    let loop = await people.person(LOOPBACK);
     equal(loop.handle as String, 'loop.example.com');
     isTrue(loop.pds == null && !loop.hasProfile, 'no profile read');
     equal(world.asked.length, 1);
-    let quiet = runFuture(people.person(QUIET));
+    let quiet = await people.person(QUIET);
     equal(quiet.name(), 'quiet.example.com');
     isTrue(!quiet.hasProfile, 'no profile record');
   });
 
-  test('serves an avatar that is an image within the size limit, and keeps it', (ctx) => {
+  test('serves an avatar that is an image within the size limit, and keeps it', async (ctx) => {
     let world = new World();
     let people = new People(world.sources());
-    let alice = runFuture(people.person(ALICE));
-    let avatar = runFuture(people.avatar(alice));
+    let alice = await people.person(ALICE);
+    let avatar = await people.avatar(alice);
     isTrue(avatar != null, 'an avatar');
     equal((avatar as Avatar).type, 'image/png');
     equal((avatar as Avatar).bytes.length, 3);
     equal(world.asked[2], `${PDS}/xrpc/com.atproto.sync.getBlob?did=${ALICE}&cid=${AVATAR.toString()}`);
-    runFuture(people.avatar(alice));
+    await people.avatar(alice);
     equal(world.asked.length, 3);
     // Someone with no avatar has none, and nothing is fetched.
-    isTrue(runFuture(people.avatar(runFuture(people.person(QUIET)))) == null, 'no avatar');
+    isTrue(await people.avatar(await people.person(QUIET)) == null, 'no avatar');
 
     let other = new World();
     other.avatarType = 'text/html';
     let fresh = new People(other.sources());
-    isTrue(runFuture(fresh.avatar(runFuture(fresh.person(ALICE)))) == null, 'not an image');
+    isTrue(await fresh.avatar(await fresh.person(ALICE)) == null, 'not an image');
     let huge = new World();
     huge.avatarBytes = new FixedArray<u8>(MAX_AVATAR_BYTES + 1, 0 as u8);
     let large = new People(huge.sources());
-    isTrue(runFuture(large.avatar(runFuture(large.person(ALICE)))) == null, 'too large');
+    isTrue(await large.avatar(await large.person(ALICE)) == null, 'too large');
   });
 
   test('reads only public HTTPS hosts', (ctx) => {

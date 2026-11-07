@@ -5,7 +5,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {hex} from 'zena:encoding';
 import {Unmanaged} from 'zena:core';
@@ -69,28 +69,26 @@ final class Upstream {
   }
 }
 
-function call(app: App, method: String, path: String, body: String = '') {
+async function call(app: App, method: String, path: String, body: String = ''): Future<Response> {
   let res = new Response();
-  runFuture((async () => {
-    let req = if (method == 'POST') {
-      new Request.fromUrl(`http://localhost${path}`, 'POST', new HashMap<String, String>(), bytesStream(body.toBytes()))
-    } else {
-      new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>())
-    };
-    await app.handleRequest(req, res);
-  })());
+  let req = if (method == 'POST') {
+    new Request.fromUrl(`http://localhost${path}`, 'POST', new HashMap<String, String>(), bytesStream(body.toBytes()))
+  } else {
+    new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>())
+  };
+  await app.handleRequest(req, res);
   return res;
 }
 
 export let tests = suite('registry:plc-directory', () => {
-  test('records a DID it is sent, and serves its document and log', (ctx) => {
+  test('records a DID it is sent, and serves its document and log', async (ctx) => {
     let upstream = new Upstream();
     let app = new PlcDirectory(new MemoryPlcLog(), upstream.start()).app();
     let first = genesis('router.acme.pkg.test');
     let did = didOfGenesis(first);
 
-    equal(call(app, 'POST', `/plc/${did}`, stringify(first.toJson())).statusCode, 200);
-    let document = call(app, 'GET', `/plc/${did}`);
+    equal((await call(app, 'POST', `/plc/${did}`, stringify(first.toJson()))).statusCode, 200);
+    let document = await call(app, 'GET', `/plc/${did}`);
     equal(document.statusCode, 200);
     let parsed = parseDidDocument(parseJson(document.body as String), did);
     equal(parsed.handle as String, 'router.acme.pkg.test');
@@ -101,51 +99,51 @@ export let tests = suite('registry:plc-directory', () => {
     aka.push('at://renamed.acme.pkg.test');
     let second = new PlcOperation(first.rotationKeys, first.verificationMethods, aka, first.services,
         first.cid().toString()).signedWith(sign);
-    equal(call(app, 'POST', `/plc/${did}`, stringify(second.toJson())).statusCode, 200);
-    equal(parseDidDocument(parseJson(call(app, 'GET', `/plc/${did}`).body as String), did).handle as String,
+    equal((await call(app, 'POST', `/plc/${did}`, stringify(second.toJson()))).statusCode, 200);
+    equal(parseDidDocument(parseJson((await call(app, 'GET', `/plc/${did}`)).body as String), did).handle as String,
         'renamed.acme.pkg.test');
-    equal((parseJson(call(app, 'GET', `/plc/${did}/log`).body as String) as JsonArray).length, 2);
-    equal(((parseJson(call(app, 'GET', `/plc/${did}/log/last`).body as String) as JsonObject)['prev'] as String),
+    equal((parseJson((await call(app, 'GET', `/plc/${did}/log`)).body as String) as JsonArray).length, 2);
+    equal(((parseJson((await call(app, 'GET', `/plc/${did}/log/last`)).body as String) as JsonObject)['prev'] as String),
         first.cid().toString());
 
     // The same operation again does not follow the last.
-    let again = call(app, 'POST', `/plc/${did}`, stringify(second.toJson()));
+    let again = await call(app, 'POST', `/plc/${did}`, stringify(second.toJson()));
     equal(again.statusCode, 400);
     isTrue((again.body as String).contains('must follow'), again.body as String);
     upstream.close();
   });
 
-  test('reads every other DID from upstream, and takes no operations for those', (ctx) => {
+  test('reads every other DID from upstream, and takes no operations for those', async (ctx) => {
     let upstream = new Upstream();
     let app = new PlcDirectory(new MemoryPlcLog(), upstream.start()).app();
-    let forwarded = call(app, 'GET', `/plc/${UPSTREAM_DID}`);
+    let forwarded = await call(app, 'GET', `/plc/${UPSTREAM_DID}`);
     equal(forwarded.statusCode, 200);
     isTrue((forwarded.body as String).contains('someone.example'), forwarded.body as String);
-    equal(call(app, 'GET', `/plc/${UPSTREAM_DID}/log/last`).statusCode, 200);
-    equal(call(app, 'GET', '/plc/did:plc:nowherenowherenowherenow').statusCode, 404);
+    equal((await call(app, 'GET', `/plc/${UPSTREAM_DID}/log/last`)).statusCode, 200);
+    equal((await call(app, 'GET', '/plc/did:plc:nowherenowherenowherenow')).statusCode, 404);
 
     // A genesis operation for a DID upstream has, as one copied from its
     // log would be, is refused.
-    let refused = call(app, 'POST', `/plc/${UPSTREAM_DID}`, stringify(genesis('a.pkg.test').toJson()));
+    let refused = await call(app, 'POST', `/plc/${UPSTREAM_DID}`, stringify(genesis('a.pkg.test').toJson()));
     equal(refused.statusCode, 400);
     isTrue((refused.body as String).contains('takes operations only'), refused.body as String);
     // An operation for a DID it does not make.
-    let made = call(app, 'POST', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', stringify(genesis('b.pkg.test').toJson()));
+    let made = await call(app, 'POST', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', stringify(genesis('b.pkg.test').toJson()));
     equal(made.statusCode, 400);
     isTrue((made.body as String).contains('makes'), made.body as String);
-    equal(call(app, 'POST', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', 'not json').statusCode, 400);
-    equal(call(app, 'GET', '/plc/did:web:example.com').statusCode, 404);
-    equal(call(app, 'GET', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/other').statusCode, 404);
+    equal((await call(app, 'POST', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', 'not json')).statusCode, 400);
+    equal((await call(app, 'GET', '/plc/did:web:example.com')).statusCode, 404);
+    equal((await call(app, 'GET', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/other')).statusCode, 404);
     upstream.close();
   });
 
-  test('appends to a log only at its end', (ctx) => {
+  test('appends to a log only at its end', async (ctx) => {
     let log = new MemoryPlcLog();
     let first = genesis('a.pkg.test');
     let did = didOfGenesis(first);
-    isTrue(runFuture(log.append(did, 0, first)), 'the first');
-    isTrue(!runFuture(log.append(did, 0, first)), 'a second at index 0');
-    isTrue(!runFuture(log.append(did, 2, first)), 'past the end');
-    equal(runFuture(log.operations(did)).length, 1);
+    isTrue(await log.append(did, 0, first), 'the first');
+    isTrue(!await log.append(did, 0, first), 'a second at index 0');
+    isTrue(!await log.append(did, 2, first), 'past the end');
+    equal((await log.operations(did)).length, 1);
   });
 });
