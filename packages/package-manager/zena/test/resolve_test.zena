@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {growable} from 'zena:core';
 import {encodeCbor} from 'atproto:cbor';
@@ -66,18 +66,18 @@ function requirements(entries: Array<(String, String)>) {
   return list;
 }
 
-function resolved(registry: Registry, entries: Array<(String, String)>): Resolution {
-  return runFuture(resolve(requirements(entries), registry.source()));
+async function resolved(registry: Registry, entries: Array<(String, String)>): Future<Resolution> {
+  return await resolve(requirements(entries), registry.source());
 }
 
 export let tests = suite('package-manager:resolve', () => {
-  test('selects the highest minimum anyone asks for, not the newest release', (ctx) => {
+  test('selects the highest minimum anyone asks for, not the newest release', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.add(ROUTER, '1.4.2', growable([needs(JSON, '2.1.0', 'json')]));
     registry.add(JSON, '2.0.1');
     registry.add(JSON, '2.1.0');
     registry.add(JSON, '2.3.0');
-    let resolution = resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.0.1')]);
+    let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.0.1')]);
 
     equal(resolution.packages.size, 2);
     let json = resolution.packages[`${JSON}@2`];
@@ -88,17 +88,17 @@ export let tests = suite('package-manager:resolve', () => {
     isTrue(router.release.equals(Cid.forDagCbor(encodeCbor(registry.releases[`${ROUTER} 1.4.2`].toValue()))));
   });
 
-  test('selects one version for the whole workspace', (ctx) => {
+  test('selects one version for the whole workspace', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.add(JSON, '2.0.1');
     registry.add(JSON, '2.1.0');
     // Two workspace packages need json 2, at different minimums.
-    let resolution = resolved(registry, [(JSON, '2.0.1'), (JSON, '2.1.0')]);
+    let resolution = await resolved(registry, [(JSON, '2.0.1'), (JSON, '2.1.0')]);
     equal(resolution.packages.size, 1);
     equal(resolution.packages[`${JSON}@2`].version.toString(), '2.1.0');
   });
 
-  test('keeps a version that a higher minimum overrides, for its dependencies', (ctx) => {
+  test('keeps a version that a higher minimum overrides, for its dependencies', async (ctx): Future<void> => {
     let registry = new Registry();
     // The package asks for router 1.4.2, which needs log 1.2.0; json asks
     // for router 1.5.0, which needs no log at all. Router 1.5.0 is
@@ -108,30 +108,30 @@ export let tests = suite('package-manager:resolve', () => {
     registry.add(ROUTER, '1.5.0');
     registry.add(JSON, '2.0.0', growable([needs(ROUTER, '1.5.0', 'router')]));
     registry.add(LOG, '1.2.0');
-    let resolution = resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.0.0')]);
+    let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.0.0')]);
     equal(resolution.packages[`${ROUTER}@1`].version.toString(), '1.5.0');
     equal(resolution.packages[`${LOG}@1`].version.toString(), '1.2.0');
   });
 
-  test('selects each major version of a package on its own', (ctx) => {
+  test('selects each major version of a package on its own', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.add(ROUTER, '1.4.2', growable([needs(JSON, '3.0.0', 'json3')]));
     registry.add(JSON, '2.1.0');
     registry.add(JSON, '3.0.0');
-    let resolution = resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.1.0')]);
+    let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.1.0')]);
     equal(resolution.packages.size, 3);
     equal(resolution.packages[`${JSON}@2`].version.toString(), '2.1.0');
     equal(resolution.packages[`${JSON}@3`].version.toString(), '3.0.0');
     equal(resolution.packages[`${ROUTER}@1`].dependencies['json3'], `${JSON}@3`);
   });
 
-  test('lists packages in key order', (ctx) => {
+  test('lists packages in key order', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.add(ROUTER, '1.0.0', growable([needs(LOG, '1.0.0', 'log'), needs(JSON, '2.0.0', 'json')]));
     registry.add(LOG, '1.0.0');
     registry.add(JSON, '2.0.0');
     let keys = new GrowableArray<String>();
-    for (let key in resolved(registry, [(ROUTER, '1.0.0')]).packages.keys()) {
+    for (let key in (await resolved(registry, [(ROUTER, '1.0.0')])).packages.keys()) {
       keys.push(key);
     }
     equal(keys.length, 3);
@@ -140,34 +140,34 @@ export let tests = suite('package-manager:resolve', () => {
     equal(keys[2], `${JSON}@2`);
   });
 
-  test('reads each release once', (ctx) => {
+  test('reads each release once', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.add(ROUTER, '1.0.0', growable([needs(JSON, '2.0.0', 'json')]));
     registry.add(LOG, '1.0.0', growable([needs(JSON, '2.0.0', 'json')]));
     registry.add(JSON, '2.0.0');
-    resolved(registry, [(ROUTER, '1.0.0'), (LOG, '1.0.0')]);
+    await resolved(registry, [(ROUTER, '1.0.0'), (LOG, '1.0.0')]);
     equal(registry.reads[`${JSON} 2.0.0`], 1);
     equal(registry.reads[`${ROUTER} 1.0.0`], 1);
   });
 
-  test('refuses a selected release with no source archive', (ctx) => {
+  test('refuses a selected release with no source archive', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.add(ROUTER, '1.0.0', new GrowableArray<Dependency>(), COMPONENT);
     var message = '';
     try {
-      resolved(registry, [(ROUTER, '1.0.0')]);
+      await resolved(registry, [(ROUTER, '1.0.0')]);
     } catch (e) {
       message = if (e is ResolutionError) e.message else 'another error';
     }
     isTrue(message.contains('no source artifact'), message);
   });
 
-  test('passes on a missing release', (ctx) => {
+  test('passes on a missing release', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.add(ROUTER, '1.0.0', growable([needs(JSON, '2.0.0', 'json')]));
     var message = '';
     try {
-      resolved(registry, [(ROUTER, '1.0.0')]);
+      await resolved(registry, [(ROUTER, '1.0.0')]);
     } catch (e) {
       message = e.message;
     }

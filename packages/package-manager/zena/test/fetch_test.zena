@@ -7,7 +7,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isNull, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {OrderedHashMap} from 'zena:collections';
 import {hex} from 'zena:encoding';
 import {existsSync, listDirSync, readFileSync} from 'zena:fs';
@@ -81,19 +81,17 @@ function freshCache() {
 }
 
 /** What fetching `pin` throws, as `FetchError: <message>` when it is a FetchError. */
-function failure(pin: Pin, cache: PackageCache, pds: FakePds): String {
-  return runFuture((async (): Future<String> => {
-    try {
-      await fetchPackage(pin, cache, pds.resolver());
-      return 'no error';
-    } catch (e) {
-      return if (e is FetchError) `FetchError: ${e.message}` else e.message;
-    }
-  })());
+async function failure(pin: Pin, cache: PackageCache, pds: FakePds): Future<String> {
+  try {
+    await fetchPackage(pin, cache, pds.resolver());
+    return 'no error';
+  } catch (e) {
+    return if (e is FetchError) `FetchError: ${e.message}` else e.message;
+  }
 }
 
 export let tests = suite('package-manager:fetch', () => {
-  test('fetches a release and unpacks its source into the cache', (ctx) => {
+  test('fetches a release and unpacks its source into the cache', async (ctx): Future<void> => {
     let pds = startedPds();
     let archive = packSource(sourceFiles());
     pds.addBlob(archive);
@@ -101,7 +99,7 @@ export let tests = suite('package-manager:fetch', () => {
     let pin = pinFor(recordCid, Cid.forBlob(archive));
     let cache = freshCache();
 
-    isTrue(runFuture(fetchPackage(pin, cache, pds.resolver())));
+    isTrue(await fetchPackage(pin, cache, pds.resolver()));
     let dir = cache.sourceDir(pin.source);
     equal(readFileSync(`${dir}/match.zena`), 'export function route(): i32 { return 42; }\n');
     equal(readFileSync(`${dir}/util/strings.zena`), "export let name = 'router';\n");
@@ -110,12 +108,12 @@ export let tests = suite('package-manager:fetch', () => {
 
     // A second fetch finds it in the cache and asks the network nothing.
     let requests = pds.requests;
-    isFalse(runFuture(fetchPackage(pin, cache, pds.resolver())));
+    isFalse(await fetchPackage(pin, cache, pds.resolver()));
     equal(pds.requests, requests);
     pds.close();
   });
 
-  test('fetches a source archive uploaded in parts', (ctx) => {
+  test('fetches a source archive uploaded in parts', async (ctx): Future<void> => {
     let pds = startedPds();
     let archive = packSource(sourceFiles());
     let half = archive.length >> 1;
@@ -129,12 +127,12 @@ export let tests = suite('package-manager:fetch', () => {
     let recordCid = pds.publish(release(new FixedArray<Artifact>(1, artifact)));
     let cache = freshCache();
 
-    isTrue(runFuture(fetchPackage(pinFor(recordCid, Cid.forBlob(archive)), cache, pds.resolver())));
+    isTrue(await fetchPackage(pinFor(recordCid, Cid.forBlob(archive)), cache, pds.resolver()));
     isTrue(existsSync(`${cache.sourceDir(Cid.forBlob(archive))}/match.zena`));
     pds.close();
   });
 
-  test('refuses a release that does not agree with its source archive', (ctx) => {
+  test('refuses a release that does not agree with its source archive', async (ctx): Future<void> => {
     let pds = startedPds();
     // The archive's manifest says 1.4.2 and no dependencies; the release
     // lists one, as a PDS that checks nothing would keep it.
@@ -145,7 +143,7 @@ export let tests = suite('package-manager:fetch', () => {
         new FixedArray<Dependency>(1, json)));
     let cache = freshCache();
 
-    let message = failure(pinFor(recordCid, Cid.forBlob(archive), '1.4.2',
+    let message = await failure(pinFor(recordCid, Cid.forBlob(archive), '1.4.2',
         ', "dependencies": {"json": "did:web:json.example.com@2"}'), cache, pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('does not agree with its source archive') &&
         message.contains('depends on json, which the archive'), message);
@@ -153,7 +151,7 @@ export let tests = suite('package-manager:fetch', () => {
     pds.close();
   });
 
-  test('refuses a release that changed after it was pinned', (ctx) => {
+  test('refuses a release that changed after it was pinned', async (ctx): Future<void> => {
     let pds = startedPds();
     let archive = packSource(sourceFiles());
     pds.addBlob(archive);
@@ -161,61 +159,61 @@ export let tests = suite('package-manager:fetch', () => {
     let pinned = Cid.forDagCbor(encodeCbor(newMap()));
     let cache = freshCache();
 
-    let message = failure(pinFor(pinned, Cid.forBlob(archive)), cache, pds);
+    let message = await failure(pinFor(pinned, Cid.forBlob(archive)), cache, pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('changed after it was pinned'), message);
     isFalse(existsSync(cache.sourceDir(Cid.forBlob(archive))));
     pds.close();
   });
 
-  test('refuses a release whose source is not the pinned one', (ctx) => {
+  test('refuses a release whose source is not the pinned one', async (ctx): Future<void> => {
     let pds = startedPds();
     let archive = packSource(sourceFiles());
     pds.addBlob(archive);
     let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
     let other = Cid.forBlob(bytesOf('another archive'));
 
-    let message = failure(pinFor(recordCid, other), freshCache(), pds);
+    let message = await failure(pinFor(recordCid, other), freshCache(), pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('pins'), message);
     pds.close();
   });
 
-  test('refuses a source archive that does not match its CID', (ctx) => {
+  test('refuses a source archive that does not match its CID', async (ctx): Future<void> => {
     let pds = startedPds();
     let archive = packSource(sourceFiles());
     pds.blobs[Cid.forBlob(archive).toString()] = packSource(new OrderedHashMap<String, FixedArray<u8>>());
     let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
     let cache = freshCache();
 
-    let message = failure(pinFor(recordCid, Cid.forBlob(archive)), cache, pds);
+    let message = await failure(pinFor(recordCid, Cid.forBlob(archive)), cache, pds);
     isTrue(message.contains('does not match its CID'), message);
     isFalse(existsSync(cache.sourceDir(Cid.forBlob(archive))));
     pds.close();
   });
 
-  test('refuses a release the account did not sign', (ctx) => {
+  test('refuses a release the account did not sign', async (ctx): Future<void> => {
     let pds = startedPds();
     pds.didDocument = didDocument(pds.origin, OTHER_KEY);
     let archive = packSource(sourceFiles());
     pds.addBlob(archive);
     let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
 
-    let message = failure(pinFor(recordCid, Cid.forBlob(archive)), freshCache(), pds);
+    let message = await failure(pinFor(recordCid, Cid.forBlob(archive)), freshCache(), pds);
     isFalse(message == 'no error', message);
     pds.close();
   });
 
-  test('refuses a version the repository does not have', (ctx) => {
+  test('refuses a version the repository does not have', async (ctx): Future<void> => {
     let pds = startedPds();
     let archive = packSource(sourceFiles());
     pds.addBlob(archive);
     let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
 
-    let message = failure(pinFor(recordCid, Cid.forBlob(archive), '1.4.3'), freshCache(), pds);
+    let message = await failure(pinFor(recordCid, Cid.forBlob(archive), '1.4.3'), freshCache(), pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('no release 1.4.3'), message);
     pds.close();
   });
 
-  test('refuses dependencies the lockfile maps differently', (ctx) => {
+  test('refuses dependencies the lockfile maps differently', async (ctx): Future<void> => {
     let pds = startedPds();
     let archive = packSource(sourceFiles(
         ', "dependencies": {"json": {"did": "did:web:json.example.com", "version": "2.1.0"}}'));
@@ -225,21 +223,21 @@ export let tests = suite('package-manager:fetch', () => {
         new FixedArray<Dependency>(1, json)));
     let source = Cid.forBlob(archive);
 
-    let wrongMajor = failure(pinFor(recordCid, source, '1.4.2',
+    let wrongMajor = await failure(pinFor(recordCid, source, '1.4.2',
         ', "dependencies": {"json": "did:web:json.example.com@3"}'), freshCache(), pds);
     isTrue(wrongMajor.startsWith('FetchError: ') && wrongMajor.contains('@3'), wrongMajor);
-    let missing = failure(pinFor(recordCid, source), freshCache(), pds);
+    let missing = await failure(pinFor(recordCid, source), freshCache(), pds);
     isTrue(missing.startsWith('FetchError: ') && missing.contains('not in zena-lock.json'), missing);
-    let extra = failure(pinFor(recordCid, source, '1.4.2',
+    let extra = await failure(pinFor(recordCid, source, '1.4.2',
         ', "dependencies": {"json": "did:web:json.example.com@2", "more": "did:web:more.example.com@1"}'),
         freshCache(), pds);
     isTrue(extra.startsWith('FetchError: '), extra);
-    isTrue(runFuture(fetchPackage(pinFor(recordCid, source, '1.4.2',
-        ', "dependencies": {"json": "did:web:json.example.com@2"}'), freshCache(), pds.resolver())));
+    isTrue(await fetchPackage(pinFor(recordCid, source, '1.4.2',
+        ', "dependencies": {"json": "did:web:json.example.com@2"}'), freshCache(), pds.resolver()));
     pds.close();
   });
 
-  test('fetches every pin, and reports each failure without stopping', (ctx) => {
+  test('fetches every pin, and reports each failure without stopping', async (ctx): Future<void> => {
     let pds = startedPds();
     let archive = packSource(sourceFiles());
     pds.addBlob(archive);
@@ -251,7 +249,7 @@ export let tests = suite('package-manager:fetch', () => {
     pins.push(good);
     pins.push(good);
 
-    let results = runFuture(fetchAll(pins, freshCache(), pds.resolver()));
+    let results = await fetchAll(pins, freshCache(), pds.resolver());
     equal(results.length, 3);
     isFalse(results[0].fetched);
     isTrue((results[0].error as String).contains('changed after it was pinned'));

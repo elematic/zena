@@ -1,6 +1,5 @@
 import {suite, test} from 'zena:test';
 import {equal, fail, isNull, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
 import {NullCache} from '../cache.zena';
 import {ResolvedInput} from '../canonical.zena';
 import {InputDelta, computeDelta, staleOutputNames} from '../delta.zena';
@@ -106,7 +105,7 @@ export let tests = suite('delta', () => {
     isTrue(contains(stale, 'index'));
   });
 
-  test('the first run sees no delta; the second sees the change', () => {
+  test('the first run sees no delta; the second sees the change', async () => {
     var seenDelta: InputDelta? = null;
     var deltaRuns = 0;
     let mkGraph = () => new Graph([
@@ -128,11 +127,11 @@ export let tests = suite('delta', () => {
       'b' => fp('v1'),
     };
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty());
     isNull(seenDelta);
 
     leaves['a'] = fp('v2');
-    let second = runFuture(engine.run(mkGraph(), leaves, first.state));
+    let second = await engine.run(mkGraph(), leaves, first.state);
     isTrue(second.allSucceeded);
     equal(deltaRuns, 2);
     let delta = seenDelta;
@@ -146,7 +145,7 @@ export let tests = suite('delta', () => {
     }
   });
 
-  test('a config change withholds the delta', () => {
+  test('a config change withholds the delta', async () => {
     let deltas = new GrowableArray<String>();
     let mkGraph = (config: String) => new Graph([
       asStep(new TaskStep(
@@ -163,14 +162,14 @@ export let tests = suite('delta', () => {
     ]);
     let leaves: HashMap<String, Fingerprint> = {'a' => fp('v1')};
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph('c1'), leaves, EngineState.empty()));
-    let second = runFuture(engine.run(mkGraph('c2'), leaves, first.state));
+    let first = await engine.run(mkGraph('c1'), leaves, EngineState.empty());
+    let second = await engine.run(mkGraph('c2'), leaves, first.state);
     equal(deltas.length, 2);
     equal(deltas[0], 'none');
     equal(deltas[1], 'none');
   });
 
-  test('an honest incremental step regenerates only stale outputs', () => {
+  test('an honest incremental step regenerates only stale outputs', async () => {
     var lastStale: Array<String>? = null;
     let mkGraph = () => new Graph([
       asStep(new TaskStep(
@@ -203,11 +202,11 @@ export let tests = suite('delta', () => {
       'b' => fp('v1'),
     };
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty());
     isTrue(first.allSucceeded);
 
     leaves['a'] = fp('v2');
-    let second = runFuture(engine.run(mkGraph(), leaves, first.state));
+    let second = await engine.run(mkGraph(), leaves, first.state);
     isTrue(second.allSucceeded);
     let stale = lastStale;
     if (stale != null) {
@@ -224,7 +223,7 @@ export let tests = suite('delta', () => {
     }
   });
 
-  test('a step contradicting its records fails before caching', () => {
+  test('a step contradicting its records fails before caching', async () => {
     let mkGraph = (secondFp: String) => new Graph([
       asStep(new TaskStep(
         new StepKey('site'),
@@ -245,11 +244,11 @@ export let tests = suite('delta', () => {
       'b' => fp('v1'),
     };
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph('b1'), leaves, EngineState.empty()));
+    let first = await engine.run(mkGraph('b1'), leaves, EngineState.empty());
     isTrue(first.allSucceeded);
 
     leaves['a'] = fp('v2');
-    let second = runFuture(engine.run(mkGraph('b2'), leaves, first.state));
+    let second = await engine.run(mkGraph('b2'), leaves, first.state);
     let outcome = second.outcomeOf(new StepKey('site'));
     if (outcome is Failed) {
       isTrue(outcome.error.message.contains('dependency records'));
@@ -258,7 +257,7 @@ export let tests = suite('delta', () => {
     }
   });
 
-  test('dependency manifests appear in the delta as step inputs', () => {
+  test('dependency manifests appear in the delta as step inputs', async () => {
     var seenDelta: InputDelta? = null;
     let mkGraph = (upstreamFp: String) => new Graph([
       asStep(new TaskStep(
@@ -283,10 +282,10 @@ export let tests = suite('delta', () => {
     ]);
     let leaves: HashMap<String, Fingerprint> = {'src' => fp('v1')};
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph('lib1'), leaves, EngineState.empty()));
+    let first = await engine.run(mkGraph('lib1'), leaves, EngineState.empty());
 
     leaves['src'] = fp('v2');
-    let second = runFuture(engine.run(mkGraph('lib2'), leaves, first.state));
+    let second = await engine.run(mkGraph('lib2'), leaves, first.state);
     isTrue(second.allSucceeded);
     let delta = seenDelta;
     if (delta != null) {

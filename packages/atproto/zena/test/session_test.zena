@@ -6,7 +6,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {Borrow} from 'zena:core';
 import {App, Server} from 'zena:http';
 import {JsonObject, parseJson, stringify} from 'zena:json';
@@ -127,10 +127,10 @@ async function failure(call: () => Future<Session>): Future<String> {
 }
 
 export let tests = suite('atproto:session', () => {
-  test('signs in by handle at the PDS the DID document names', (ctx) => {
+  test('signs in by handle at the PDS the DID document names', async (ctx): Future<void> => {
     let pds = new Pds();
     let server = startServer(pds);
-    let session = runFuture(createSession('alice.test', pds.password, resolverFor(server)));
+    let session = await createSession('alice.test', pds.password, resolverFor(server));
     equal(session.did, ALICE);
     equal(session.handle, 'alice.test');
     equal(session.pds, `http://127.0.0.1:${server.port as i32}`);
@@ -139,28 +139,28 @@ export let tests = suite('atproto:session', () => {
     server.close();
   });
 
-  test('refuses a wrong password, and a PDS that signs in someone else', (ctx) => {
+  test('refuses a wrong password, and a PDS that signs in someone else', async (ctx): Future<void> => {
     let pds = new Pds();
     let server = startServer(pds);
     let resolver = resolverFor(server);
-    equal(runFuture(failure(() => createSession(ALICE, 'wrong', resolver))), 'AuthenticationRequired');
+    equal(await failure(() => createSession(ALICE, 'wrong', resolver)), 'AuthenticationRequired');
     pds.signsIn = 'did:plc:bobbobbobbobbobbobbobbob';
-    isTrue(runFuture(failure(() => createSession(ALICE, pds.password, resolver)))
+    isTrue((await failure(() => createSession(ALICE, pds.password, resolver)))
         .startsWith('SessionError'));
     server.close();
   });
 
-  test('asks for a service-auth token, refreshing an expired session once', (ctx) => {
+  test('asks for a service-auth token, refreshing an expired session once', async (ctx): Future<void> => {
     let pds = new Pds();
     let server = startServer(pds);
-    let session = runFuture(createSession(ALICE, pds.password, resolverFor(server)));
-    equal(runFuture(getServiceAuth(session, HOST, PUBLISH, 1792800060 as i64)), 'service-token');
+    let session = await createSession(ALICE, pds.password, resolverFor(server));
+    equal(await getServiceAuth(session, HOST, PUBLISH, 1792800060 as i64), 'service-token');
     isTrue(pds.lastQuery.contains('aud=did%3Aweb%3Apkg.zena-lang.dev'), pds.lastQuery);
     isTrue(pds.lastQuery.contains('lxm=dev.zena-lang.registry.publish'), pds.lastQuery);
     isTrue(pds.lastQuery.contains('exp=1792800060'), pds.lastQuery);
 
     pds.expireNext = true;
-    equal(runFuture(getServiceAuth(session, HOST, PUBLISH)), 'service-token');
+    equal(await getServiceAuth(session, HOST, PUBLISH), 'service-token');
     isTrue(session.refreshed);
     equal(session.accessJwt, 'access-1');
     equal(session.refreshJwt, 'refresh-1');
@@ -168,17 +168,17 @@ export let tests = suite('atproto:session', () => {
     server.close();
   });
 
-  test('stores a session and reads it back, and ends it', (ctx) => {
+  test('stores a session and reads it back, and ends it', async (ctx): Future<void> => {
     let pds = new Pds();
     let server = startServer(pds);
-    let session = runFuture(createSession(ALICE, pds.password, resolverFor(server)));
+    let session = await createSession(ALICE, pds.password, resolverFor(server));
     let copy = Session.fromJson(parseJson(stringify(session.toJson())));
     equal(copy.did, ALICE);
     equal(copy.pds, session.pds);
     equal(copy.refreshJwt, 'refresh-0');
-    runFuture(refreshSession(copy));
+    await refreshSession(copy);
     equal(copy.accessJwt, 'access-1');
-    runFuture(deleteSession(copy));
+    await deleteSession(copy);
     isTrue(pds.deleted);
     var message = '';
     try {
