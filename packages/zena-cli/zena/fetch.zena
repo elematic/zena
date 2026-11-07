@@ -12,7 +12,7 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { existsSync, readFileSync } from 'zena:fs';
 import { IdentityResolver } from 'atproto:identity';
@@ -22,7 +22,7 @@ import { Pin, readPins } from 'package-manager:resolution';
 import { packageCacheDir } from './compile.zena';
 import { Options } from './env.zena';
 
-export function fetchCommand(args: ParsedArgs, options: Options): i32 {
+export async function fetchCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (!existsSync('zena-lock.json')) {
     console.log('Nothing to fetch: there is no zena-lock.json here.');
     return 0;
@@ -32,7 +32,7 @@ export function fetchCommand(args: ParsedArgs, options: Options): i32 {
     console.log('Nothing to fetch: zena-lock.json pins no packages.');
     return 0;
   }
-  return fetchAndReport(pins, options);
+  return await fetchAndReport(pins, options);
 }
 
 /**
@@ -57,9 +57,9 @@ export function packageResolver(): IdentityResolver {
  * Fetches `pins` into the package cache, prints what happened, and
  * returns the exit code: 1 when any failed.
  */
-export function fetchAndReport(pins: GrowableArray<Pin>, options: Options): i32 {
+export async function fetchAndReport(pins: GrowableArray<Pin>, options: Options): Future<i32> {
   let cache = new PackageCache(packageCacheDir());
-  let results = runFuture(fetchAll(pins, cache, packageResolver()));
+  let results = await fetchAll(pins, cache, packageResolver());
 
   var fetched = 0;
   var failed = 0;

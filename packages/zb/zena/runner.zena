@@ -1,4 +1,4 @@
-import {runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {getEnv} from 'zena:cli';
 import { HashSet } from 'zena:collections';
 import {isFileSync, readFileSync, writeFileSync} from 'zena:fs';
@@ -162,14 +162,14 @@ async function verifyManifestOutputs(
  * config and prior state, snapshot inputs, run the engine with the
  * local disk cache, persist the new state and hash memo.
  */
-export function buildTarget(
+export async function buildTarget(
   root: String,
   entry: ScriptRef,
   parallelism: i32 = 0,
   force: boolean = false,
   useCache: boolean = true,
   hasherOut: FileHasher? = null,
-): BuildOutcome {
+): Future<BuildOutcome> {
   let jobs = if (parallelism > 0) parallelism else defaultParallelism();
   let workspace = new WireitWorkspace(
     (path: String) => readFileOrNullSync(withRoot(root, path)),
@@ -210,16 +210,14 @@ export function buildTarget(
     (data: String) => new Fingerprint('sha256:' + sha256HexOfString(data)),
     cache,
   );
-  let result = runFuture(
-    engine.run(
-      plan.graph,
-      plan.leaves,
-      loadState(root, stateDirs),
-      new RunOptions(
-        jobs,
-        force,
-        (step, manifest) => verifyManifestOutputs(hasher, manifest),
-      ),
+  let result = await engine.run(
+    plan.graph,
+    plan.leaves,
+    loadState(root, stateDirs),
+    new RunOptions(
+      jobs,
+      force,
+      (step, manifest) => verifyManifestOutputs(hasher, manifest),
     ),
   );
   saveState(root, result, foregroundServiceKey);

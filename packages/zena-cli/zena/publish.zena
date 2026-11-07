@@ -28,7 +28,7 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { OrderedHashMap } from 'zena:collections';
 import { FileType, existsSync, listDirSync, readFileBytesSync, readFileSync, writeFileSync } from 'zena:fs';
@@ -83,12 +83,12 @@ export class PublishError extends Error {
   new(message: String) : super(message);
 }
 
-export function publishCommand(args: ParsedArgs, options: Options): i32 {
-  return runCommand(() => {
+export async function publishCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
     let target = currentPackage();
     refuseWitDependencies(target.manifest);
     refuseProblems(checkMetadata(target.manifest, target.manifestPath()));
-    requirePublished(dependenciesOf(target, target.manifest));
+    await requirePublished(dependenciesOf(target, target.manifest));
     var manifestText = target.text as String;
     if (target.manifest.did == null) {
       // Everything about the release is checked before anything is asked
@@ -97,33 +97,33 @@ export function publishCommand(args: ParsedArgs, options: Options): i32 {
       // writes the real one. Only the DID's value is left to check once
       // it exists.
       let draft = writeDid(manifestText, STAND_IN_DID, null);
-      prepareRelease(target, readManifest(draft), STAND_IN_DID, draft);
+      await prepareRelease(target, readManifest(draft), STAND_IN_DID, draft);
     }
     let caller = currentCaller();
-    let registry = findRegistry(args);
+    let registry = await findRegistry(args);
     if (target.manifest.did == null) {
-      manifestText = createPackage(args, personOf(caller, 'create a package'), registry, target);
+      manifestText = await createPackage(args, personOf(caller, 'create a package'), registry, target);
     } else {
-      checkScope(args, registry, target);
+      await checkScope(args, registry, target);
     }
     let manifest = readManifest(manifestText);
     let scope = scopeOf(args, target);
     let approveAs = if (scope != null) `@${scope}/${manifest.name as String}` else manifest.did as String;
-    publish(caller, registry, target, manifest, prepareRelease(target, manifest, manifest.did as String, manifestText),
+    await publish(caller, registry, target, manifest, await prepareRelease(target, manifest, manifest.did as String, manifestText),
         approveAs);
     saveCaller(caller);
   });
 }
 
-export function packageCreateCommand(args: ParsedArgs, options: Options): i32 {
-  return runCommand(() => {
+export async function packageCreateCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
     let target = currentPackage();
     if (target.manifest.did != null) {
       throw new PublishError(`${target.manifestPath()} already names its package: ${target.manifest.did as String}`);
     }
     refuseProblems(checkMetadata(target.manifest, target.manifestPath()));
     let session = signedIn();
-    createPackage(args, session, findRegistry(args), target);
+    await createPackage(args, session, await findRegistry(args), target);
     saveIfRefreshed(session);
   });
 }
@@ -132,9 +132,9 @@ export function packageCreateCommand(args: ParsedArgs, options: Options): i32 {
  * Runs `body`, printing the message alone for a `PublishError`, or for a
  * call the registry or a PDS refused (`XrpcError`, which names the error).
  */
-export function runCommand(body: () => void): i32 {
+export async function runCommand(body: () => Future<void>): Future<i32> {
   try {
-    body();
+    await body();
     return 0;
   } catch (e) {
     // TODO(#99): read `message` on the narrowed union.
@@ -173,8 +173,8 @@ function refuseWitDependencies(manifest: Manifest): void {
  * retracted: a release that names one that is not could never be resolved.
  * Checked before anything is created on the registry.
  */
-function requirePublished(dependencies: FixedArray<Dependency>): void {
-  refuseProblems(runFuture(checkDependencies(dependencies, packageResolver())));
+async function requirePublished(dependencies: FixedArray<Dependency>): Future<void> {
+  refuseProblems(await checkDependencies(dependencies, packageResolver()));
 }
 
 /** Throws the problems the checks found, when there are any. */
@@ -241,23 +241,23 @@ function saveCaller(caller: Caller): void {
 }
 
 /** A client for `registry` that calls `method` as `caller`. */
-export function callerClient(caller: Caller, registry: Registry, method: String): XrpcClient {
+export async function callerClient(caller: Caller, registry: Registry, method: String): Future<XrpcClient> {
   if (let AutomationToken {token} = caller) {
     let client = new XrpcClient(registry.origin);
     client.authorization = `Bearer ${token}`;
     return client;
   }
-  return registryClient(personOf(caller, 'call the registry'), registry, method);
+  return await registryClient(personOf(caller, 'call the registry'), registry, method);
 }
 
-export function findRegistry(args: ParsedArgs): Registry {
+export async function findRegistry(args: ParsedArgs): Future<Registry> {
   var origin = getEnv('ZENA_REGISTRY') ?? DEFAULT_HOST;
   if (let (true, given) = args.getOption('registry')) {
     origin = given;
   }
-  let described = runFuture(new XrpcClient(origin).query(DESCRIBE_REGISTRY)) as JsonObject;
+  let described = (await new XrpcClient(origin).query(DESCRIBE_REGISTRY)) as JsonObject;
   let did = described['did'] as String;
-  checkRegistryDid(origin, did);
+  await checkRegistryDid(origin, did);
   return new Registry(origin, did, described['domain'] as String);
 }
 
@@ -269,7 +269,7 @@ export function findRegistry(args: ParsedArgs): Registry {
  * answered with the real registry's DID would be given tokens it could replay
  * to the real registry, as whoever asked for them.
  */
-function checkRegistryDid(origin: String, did: String): void {
+async function checkRegistryDid(origin: String, did: String): Future<void> {
   let url = URL.parse(origin);
   if (url == null) {
     throw new PublishError(`the registry ${origin} is not a URL`);
@@ -288,7 +288,8 @@ function checkRegistryDid(origin: String, did: String): void {
     return;
   }
   if (did.startsWith('did:plc:')) {
-    let endpoint = runFuture(packageResolver().resolveDid(did)).pds;
+    let doc = await packageResolver().resolveDid(did);
+    let endpoint = doc.pds;
     if (endpoint == null || trimSlash(endpoint) != trimSlash(`${parsed.protocol}//${authority}`)) {
       throw new PublishError(`the registry ${origin} says it is ${did}, whose PDS is ${endpoint ?? 'none'}`);
     }
@@ -303,8 +304,8 @@ function trimSlash(url: String): String {
 }
 
 /** A client for `registry` that calls `method` as the signed-in maintainer. */
-export function registryClient(session: Session, registry: Registry, method: String): XrpcClient {
-  let token = runFuture(getServiceAuth(session, registry.did, method));
+export async function registryClient(session: Session, registry: Registry, method: String): Future<XrpcClient> {
+  let token = await getServiceAuth(session, registry.did, method);
   let client = new XrpcClient(registry.origin);
   client.authorization = `Bearer ${token}`;
   return client;
@@ -339,14 +340,15 @@ function rootScope(): String | null {
  * with no scope, such as one whose handle is on its maintainers' own
  * domain, is not checked.
  */
-function checkScope(args: ParsedArgs, registry: Registry, target: WorkspacePackage): void {
+async function checkScope(args: ParsedArgs, registry: Registry, target: WorkspacePackage): Future<void> {
   let scope = scopeOf(args, target);
   if (scope == null) {
     return;
   }
   let did = target.manifest.did as String;
   let expected = `${target.manifest.name as String}.${scope}.${registry.domain}`;
-  let handle = runFuture(packageResolver().resolveDid(did)).handle;
+  let doc = await packageResolver().resolveDid(did);
+  let handle = doc.handle;
   if (handle != expected) {
     throw new PublishError(
         `${did} is ${handle ?? 'a package with no handle'}, not ${expected}: ${target.manifestPath()} names the scope ${scope}`);
@@ -358,7 +360,7 @@ function checkScope(args: ParsedArgs, registry: Registry, target: WorkspacePacka
  * which must exist, and writes its DID into the manifest, with the scope
  * when only `--scope` named it. Returns the manifest's new text.
  */
-function createPackage(args: ParsedArgs, session: Session, registry: Registry, target: WorkspacePackage): String {
+async function createPackage(args: ParsedArgs, session: Session, registry: Registry, target: WorkspacePackage): Future<String> {
   let name = target.manifest.name as String;
   let found = scopeOf(args, target);
   if (found == null) {
@@ -366,7 +368,7 @@ function createPackage(args: ParsedArgs, session: Session, registry: Registry, t
         `${name} has no DID yet; name the scope to create it in, with "scope" in ${target.manifestPath()} or --scope <name>`);
   }
   let scope = found;
-  let org = scopeOrganization(`${scope}.${registry.domain}`);
+  let org = await scopeOrganization(`${scope}.${registry.domain}`);
   if (org == null) {
     throw new PublishError(`${registry.origin} has no scope ${scope}; create it with zena pkg scope create ${scope}`);
   }
@@ -382,9 +384,10 @@ function createPackage(args: ParsedArgs, session: Session, registry: Registry, t
   input['recoveryKeys'] = strings(recoveryKeys);
   // The profile says what the manifest says, for the index to show.
   input['profile'] = toJson(new Profile(name, target.manifest.description, target.manifest.license).toValue());
-  input['maintainers'] = toJson(initialMaintainers(session.did, org).toValue());
-  let created = runFuture(registryClient(session, registry, CREATE_PACKAGE)
-    .procedure(CREATE_PACKAGE, input)) as JsonObject;
+  let initial = await initialMaintainers(session.did, org);
+  input['maintainers'] = toJson(initial.toValue());
+  let client = await registryClient(session, registry, CREATE_PACKAGE);
+  let created = (await client.procedure(CREATE_PACKAGE, input)) as JsonObject;
   let did = created['did'] as String;
   let text = writeDid(target.text as String, did,
       if (target.manifest.scope == null && rootScope() != scope) scope else null);
@@ -398,8 +401,8 @@ function createPackage(args: ParsedArgs, session: Session, registry: Registry, t
  * start: `creator` as its owner, beside the policy's default teams, with
  * its default thresholds.
  */
-function initialMaintainers(creator: String, org: String): Maintainers {
-  let policy = scopePolicy(org);
+async function initialMaintainers(creator: String, org: String): Future<Maintainers> {
+  let policy = await scopePolicy(org);
   let maintainers = new GrowableArray<Maintainer>();
   maintainers.push(Maintainer.ofDid(creator, OWNER));
   for (let team in policy.defaultTeams) {
@@ -415,14 +418,14 @@ function initialMaintainers(creator: String, org: String): Maintainers {
 }
 
 /** `org`'s policy for the packages in its scope, from its repository, or the one that asks nothing. */
-export function scopePolicy(org: String): Policy {
-  let document = runFuture(packageResolver().resolveDid(org));
+export async function scopePolicy(org: String): Future<Policy> {
+  let document = await packageResolver().resolveDid(org);
   if (document.pds == null) {
     throw new PublishError(`${org} names no PDS`);
   }
   let params: Array<(String, String)> = [('repo', org), ('collection', POLICY_TYPE), ('rkey', 'self')];
   try {
-    let answer = runFuture(new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params)) as JsonObject;
+    let answer = (await new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params)) as JsonObject;
     return Policy.fromValue(fromJson(answer['value']));
   } catch (e) {
     if (e is XrpcError && e.error == 'RecordNotFound') {
@@ -436,15 +439,15 @@ export function scopePolicy(org: String): Policy {
  * Creates the scope `scope` on `registry`, owned by the signed-in maintainer,
  * and attests its members record. Returns the organization's DID.
  */
-export function createOrganization(session: Session, registry: Registry, scope: String): String {
+export async function createOrganization(session: Session, registry: Registry, scope: String): Future<String> {
   let input = new JsonObject();
   input['name'] = scope;
   input['recoveryKeys'] = strings(recoveryDidKeys());
-  let created = runFuture(registryClient(session, registry, CREATE_ORGANIZATION)
-    .procedure(CREATE_ORGANIZATION, input)) as JsonObject;
+  let client = await registryClient(session, registry, CREATE_ORGANIZATION);
+  let created = (await client.procedure(CREATE_ORGANIZATION, input)) as JsonObject;
   console.log(`Created the scope ${created['handle'] as String} (${created['did'] as String}), with you as its owner.`);
   let members = created['members'] as JsonObject;
-  attest(session, members['uri'] as String, Cid.parse(members['cid'] as String));
+  await attest(session, members['uri'] as String, Cid.parse(members['cid'] as String));
   return created['did'] as String;
 }
 
@@ -455,9 +458,10 @@ export function createOrganization(session: Session, registry: Registry, scope: 
  * registry refuses to create a scope that does exist (`NameTaken`), so a
  * lookup that fails for another reason does no harm.
  */
-export function scopeOrganization(handle: String): String | null {
+export async function scopeOrganization(handle: String): Future<String | null> {
   try {
-    return runFuture(packageResolver().resolve(handle)).did;
+    let resolved = await packageResolver().resolve(handle);
+    return resolved.did;
   } catch (e) {
     return null;
   }
@@ -492,8 +496,8 @@ final class PreparedRelease {
  * `manifestText` as its `zena-package.json`, and its release record.
  * Throws the problems found.
  */
-function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: String, manifestText: String)
-    : PreparedRelease {
+async function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: String, manifestText: String)
+    : Future<PreparedRelease> {
   if (manifest.version == null) {
     throw new PublishError(`${target.manifestPath()} has no version to publish`);
   }
@@ -506,7 +510,7 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
   let blob = new BlobRef(Cid.forBlob(archive), SOURCE_MIME_TYPE, archive.length as i64);
   let release = new Release(manifest.version as Version, formatTimestamp(nowNanos()),
       new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), dependenciesOf(target, manifest));
-  refuseProblems(runFuture(validateRelease(release, did, archive, manifest.name as String, packageResolver())));
+  refuseProblems(await validateRelease(release, did, archive, manifest.name as String, packageResolver()));
   return new PreparedRelease(release, archive);
 }
 
@@ -516,8 +520,8 @@ function prepareRelease(target: WorkspacePackage, manifest: Manifest, did: Strin
  * approve it, as `zena pkg approve <approveAs>@<version>`. The registry
  * attests it itself for an automation token.
  */
-function publish(caller: Caller, registry: Registry, target: WorkspacePackage, manifest: Manifest,
-    prepared: PreparedRelease, approveAs: String): void {
+async function publish(caller: Caller, registry: Registry, target: WorkspacePackage, manifest: Manifest,
+    prepared: PreparedRelease, approveAs: String): Future<void> {
   let name = manifest.name as String;
   let did = manifest.did as String;
   let version = manifest.version as Version;
@@ -525,7 +529,8 @@ function publish(caller: Caller, registry: Registry, target: WorkspacePackage, m
   let release = prepared.release;
   let blob = release.artifact(SOURCE) as Artifact;
 
-  let uploaded = runFuture(callerClient(caller, registry, UPLOAD_ARTIFACT)
+  let uploadClient = await callerClient(caller, registry, UPLOAD_ARTIFACT);
+  let uploaded = (await uploadClient
     .upload(UPLOAD_ARTIFACT, SOURCE_MIME_TYPE, archive, [('package', did)]))
     as JsonObject;
   if (!BlobRef.fromValue(fromJson(uploaded['blob'])).cid.equals(blob.cid)) {
@@ -534,12 +539,12 @@ function publish(caller: Caller, registry: Registry, target: WorkspacePackage, m
   let input = new JsonObject();
   input['package'] = did;
   input['release'] = toJson(release.toValue());
-  let published = runFuture(callerClient(caller, registry, PUBLISH)
-    .procedure(PUBLISH, input)) as JsonObject;
+  let publishClient = await callerClient(caller, registry, PUBLISH);
+  let published = (await publishClient.procedure(PUBLISH, input)) as JsonObject;
   if (let SignedIn {session} = caller) {
-    attest(session, published['uri'] as String, Cid.parse(published['cid'] as String));
+    await attest(session, published['uri'] as String, Cid.parse(published['cid'] as String));
   }
-  completeRelease(caller, registry, did, version.toString(), `${name} ${version.toString()}`, approveAs);
+  await completeRelease(caller, registry, did, version.toString(), `${name} ${version.toString()}`, approveAs);
 }
 
 /**
@@ -548,13 +553,13 @@ function publish(caller: Caller, registry: Registry, target: WorkspacePackage, m
  * or what the release waits for. `label` names the release, and
  * `approveAs` the package, for `zena pkg approve`.
  */
-export function completeRelease(caller: Caller, registry: Registry, pkg: String, version: String, label: String,
-    approveAs: String): void {
+export async function completeRelease(caller: Caller, registry: Registry, pkg: String, version: String, label: String,
+    approveAs: String): Future<void> {
   let input = new JsonObject();
   input['package'] = pkg;
   input['version'] = version;
-  let answer = runFuture(callerClient(caller, registry, COMPLETE_RELEASE)
-    .procedure(COMPLETE_RELEASE, input)) as JsonObject;
+  let client = await callerClient(caller, registry, COMPLETE_RELEASE);
+  let answer = (await client.procedure(COMPLETE_RELEASE, input)) as JsonObject;
   if ((answer['state'] as String) == 'published') {
     console.log(`Published ${label}: ${answer['uri'] as String}`);
     return;
@@ -582,14 +587,14 @@ export function approvals(answer: JsonObject): String {
 }
 
 /** Writes the maintainer's attestation of the record at `uri` to their own repository. */
-export function attest(session: Session, uri: String, cid: Cid): void {
+export async function attest(session: Session, uri: String, cid: Cid): Future<void> {
   let attestation = new Attestation(uri, cid, formatTimestamp(nowNanos()));
   let input = new JsonObject();
   input['repo'] = session.did;
   input['collection'] = ATTESTATION_TYPE;
   input['rkey'] = attestation.recordKey();
   input['record'] = toJson(attestation.toValue());
-  runFuture(session.client().procedure(REPO_PUT_RECORD, input));
+  await session.client().procedure(REPO_PUT_RECORD, input);
 }
 
 /**

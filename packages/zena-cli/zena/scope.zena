@@ -8,7 +8,7 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { JsonArray, JsonObject, JsonValue } from 'zena:json';
 import { fromJson, toJson } from 'atproto:data';
 import { XrpcClient, XrpcError } from 'atproto:xrpc';
@@ -25,8 +25,8 @@ import { REPO_GET_RECORD } from 'atproto:methods';
  * `zena pkg scope create <name>`: creates the scope on the registry, with the
  * signed-in maintainer as its only owner, once `--yes` says to.
  */
-export function scopeCreateCommand(args: ParsedArgs, options: Options): i32 {
-  return runCommand(() => {
+export async function scopeCreateCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
     if (args.rest.length != 2) {
       throw new PublishError('give the scope to create: zena pkg scope create <name>');
     }
@@ -36,16 +36,16 @@ export function scopeCreateCommand(args: ParsedArgs, options: Options): i32 {
           `'${name}' cannot be a scope: use lowercase letters, digits and -, starting with a letter`);
     }
     let session = signedIn();
-    let registry = findRegistry(args);
+    let registry = await findRegistry(args);
     let handle = `${name}.${registry.domain}`;
-    if (scopeOrganization(handle) != null) {
+    if ((await scopeOrganization(handle)) != null) {
       throw new PublishError(`${registry.origin} already has the scope ${name} (${handle})`);
     }
     if (!args.getFlag('yes')) {
       throw new PublishError(
           `Run again with --yes to create the scope ${handle} on ${registry.origin}, owned by ${session.handle}.`);
     }
-    createOrganization(session, registry, name);
+    await createOrganization(session, registry, name);
     saveIfRefreshed(session);
   });
 }
@@ -56,36 +56,39 @@ export function scopeCreateCommand(args: ParsedArgs, options: Options): i32 {
  * The scope is its name on the registry, its handle, or its DID. Who the
  * members are is private (package-manager.md, "Private membership").
  */
-export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
-  return runCommand(() => {
+export async function scopeInfoCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
     if (args.rest.length != 2) {
       throw new PublishError('give the scope: zena pkg scope info <name, handle or DID>');
     }
     let given = args.rest[1];
     var did = given;
     if (!given.startsWith('did:')) {
-      let handle = if (given.contains('.')) given else `${given}.${findRegistry(args).domain}`;
-      let found = scopeOrganization(handle);
+      let handle = if (given.contains('.')) given else {
+        let reg = await findRegistry(args);
+        `${given}.${reg.domain}`
+      };
+      let found = await scopeOrganization(handle);
       if (found == null) {
         throw new PublishError(`no scope has the handle ${handle}`);
       }
       did = found;
     }
-    let document = runFuture(packageResolver().resolveDid(did));
+    let document = await packageResolver().resolveDid(did);
     if (document.pds == null) {
       throw new PublishError(`${did} names no PDS`);
     }
     let params: Array<(String, String)> = [('repo', did), ('collection', MEMBERS_TYPE), ('rkey', 'self')];
     var record: JsonObject | null = null;
     try {
-      record = runFuture(new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params))
+      record = (await new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params))
         as JsonObject;
     } catch (e) {
       throw new PublishError(`${did} has no members record, so it is not a scope: ${e.message}`);
     }
     let members = record['value'] as JsonObject;
     console.log(document.handle ?? '(no handle)');
-    let profile = recordOf(did, SCOPE_PROFILE_TYPE);
+    let profile = await recordOf(did, SCOPE_PROFILE_TYPE);
     if (profile != null) {
       printProfile(ScopeProfile.fromValue(fromJson(profile['value'])));
     }
@@ -103,19 +106,19 @@ export function scopeInfoCommand(args: ParsedArgs, options: Options): i32 {
  * A flag given empty clears its field. With no flags, prints it. Its
  * admins write it at once: it decides no one's role.
  */
-export function scopeProfileCommand(args: ParsedArgs, options: Options): i32 {
-  return runCommand(() => {
+export async function scopeProfileCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
     if (args.rest.length != 2) {
       throw new PublishError('give the scope: zena pkg scope profile <scope> [--name <text>] [--description <text>] [--website <url>]');
     }
     let scope = args.rest[1];
     let session = signedIn();
-    let registry = findRegistry(args);
-    let org = scopeOrganization(`${scope}.${registry.domain}`);
+    let registry = await findRegistry(args);
+    let org = await scopeOrganization(`${scope}.${registry.domain}`);
     if (org == null) {
       throw new PublishError(`${registry.origin} has no scope ${scope}`);
     }
-    let held = recordOf(org, SCOPE_PROFILE_TYPE);
+    let held = await recordOf(org, SCOPE_PROFILE_TYPE);
     let profile = if (held == null) new ScopeProfile()
         else ScopeProfile.fromValue(fromJson(held['value']));
     var changed = false;
@@ -152,7 +155,8 @@ export function scopeProfileCommand(args: ParsedArgs, options: Options): i32 {
     if (held != null) {
       input['swapRecord'] = held['cid'] as String;
     }
-    runFuture(registryClient(session, registry, PUT_SCOPE_PROFILE).procedure(PUT_SCOPE_PROFILE, input));
+    let client = await registryClient(session, registry, PUT_SCOPE_PROFILE);
+    await client.procedure(PUT_SCOPE_PROFILE, input);
     console.log(`Changed the profile of ${scope}.`);
     printProfile(profile);
     saveIfRefreshed(session);
@@ -166,14 +170,14 @@ function printProfile(profile: ScopeProfile): void {
 }
 
 /** The `getRecord` answer for `did`'s record at `collection/self`, from its PDS, or null when it has none. */
-function recordOf(did: String, collection: String): JsonObject | null {
-  let document = runFuture(packageResolver().resolveDid(did));
+async function recordOf(did: String, collection: String): Future<JsonObject | null> {
+  let document = await packageResolver().resolveDid(did);
   if (document.pds == null) {
     throw new PublishError(`${did} names no PDS`);
   }
   let params: Array<(String, String)> = [('repo', did), ('collection', collection), ('rkey', 'self')];
   try {
-    return runFuture(new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params)) as JsonObject;
+    return (await new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params)) as JsonObject;
   } catch (e) {
     if (e is XrpcError && e.error == 'RecordNotFound') {
       return null;

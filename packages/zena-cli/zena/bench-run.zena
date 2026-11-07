@@ -7,13 +7,14 @@
  */
 
 import { ParsedArgs } from 'zena:args';
+import { Future } from 'zena:async';
 import { runSuite } from 'zena:bench';
 import { existsSync } from 'zena:fs';
 import { AbsolutePath, RelativePath, isAbsolute } from 'zena:path';
 import { CompileRequest, compileCached } from './compile.zena';
 import { Options, repoRelative, repoRoot, resolveUserPath } from './env.zena';
 
-export function benchCommand(args: ParsedArgs, options: Options): i32 {
+export async function benchCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length == 0) {
     console.error('Error: bench needs a config file');
     return 2;
@@ -40,11 +41,11 @@ export function benchCommand(args: ParsedArgs, options: Options): i32 {
   };
   let configPath = repoRelative(config);
   if (let (true, out) = args.getOption('out')) {
-    return runSuite(configPath, {
+    return await runSuite(configPath, {
       out: resolveUserPath(out).value,
       debug: options.debug,
       compile: compile,
     });
   }
-  return runSuite(configPath, {debug: options.debug, compile: compile});
+  return await runSuite(configPath, {debug: options.debug, compile: compile});
 }
