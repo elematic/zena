@@ -8,7 +8,7 @@
  *     zena-cli run packages/protobuf/examples/firestore-fallback-probe.zena
  */
 
-import { Future, runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { FallbackTransport, RpcError } from 'protobuf:fallback';
 import { FirestoreClient } from 'google-cloud:firestore-v1';
 
@@ -24,19 +24,19 @@ let describe = async (call: () => Future<String>): Future<String> => {
   }
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let client = new FirestoreClient(new FallbackTransport('https://firestore.googleapis.com'));
   let database = 'projects/zena-fallback-probe-does-not-exist/databases/(default)';
-  console.log(runFuture(describe(async (): Future<String> => {
+  console.log(await describe(async (): Future<String> => {
     let doc = await client.getDocument({name: `${database}/documents/posts/1`});
     return `got ${doc.name}`;
-  })));
-  console.log(runFuture(describe(async (): Future<String> => {
+  }));
+  console.log(await describe(async (): Future<String> => {
     var count = 0;
     for await (let response in client.runQuery({parent: `${database}/documents`})) {
       count += 1;
     }
     return `${count} responses`;
-  })));
+  }));
   return 0;
-};
+}
