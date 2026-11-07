@@ -2,7 +2,6 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
 import {secp256k1} from 'zena:crypto';
 import {hex} from 'zena:encoding';
 import {AccessTokenCredentials} from 'google-cloud:auth';
@@ -14,16 +13,16 @@ import {KmsSigner} from 'pds:signer';
 import {SigningKey} from 'pds:storage';
 
 export let tests = suite('pds:signer', () => {
-  test('signs a genesis operation with a key in Cloud KMS', (ctx) => {
+  test('signs a genesis operation with a key in Cloud KMS', async (ctx) => {
     let server = startFakeKms();
     try {
       let kms = new CloudKms(FAKE_KMS_KEY, new AccessTokenCredentials('token'), `http://127.0.0.1:${server.port as i32}`);
-      let key = runFuture(KmsSigner.connect(kms));
+      let key = await KmsSigner.connect(kms);
       equal(key.publicKey().type, KeyType.Secp256k1);
       equal(hex.encode(key.publicKey().bytes), hex.encode(secp256k1.publicKey(FAKE_KMS_PRIVATE_KEY)));
       let signing = new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 5 as u8)).publicKey();
       let unsigned = genesisOperation(signing, [key.publicKey()], 'acme.pkg.test', 'https://pkg.test');
-      let operation = unsigned.withSignature(runFuture(key.sign(unsigned.signingBytes())));
+      let operation = unsigned.withSignature(await key.sign(unsigned.signingBytes()));
       // Low-S, as PLC requires, though the service gave it high.
       isTrue(operation.isSignedBy(key.publicKey()), 'verifies');
     } finally {

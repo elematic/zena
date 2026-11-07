@@ -1,6 +1,6 @@
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { hex } from 'zena:encoding';
 import { App, Request, Response } from 'zena:http';
 import { JsonArray, JsonObject, parseJson } from 'zena:json';
@@ -29,9 +29,9 @@ function post(text: String) {
 }
 
 /** A server holding Alice's account: five posts, a profile and a blob. */
-function aliceApp() {
+async function aliceApp(): Future<App> {
   let pds = new Pds(new MemoryStorage());
-  let account = runFuture(pds.createAccount(DID, 'alice.test', KEY, NOW));
+  let account = await pds.createAccount(DID, 'alice.test', KEY, NOW);
   let writes = new GrowableArray<Write>();
   for (var i = 1; i <= 5; i += 1) {
     writes.push(new CreateRecord(POST, `post${i}`, post(`post ${i}`)));
@@ -39,23 +39,21 @@ function aliceApp() {
   let profile = newMap();
   profile.entries['$type'] = new StringValue('com.example.profile');
   writes.push(new CreateRecord('com.example.profile', 'self', profile));
-  runFuture(pds.repositoryOf(account).applyWrites(writes, NOW));
+  await pds.repositoryOf(account).applyWrites(writes, NOW);
   let bytes = 'hello'.toBytes();
-  runFuture(pds.storage.store(DID).putBlob(Cid.forBlob(bytes), new StoredBlob('text/plain', bytes)));
+  await pds.storage.store(DID).putBlob(Cid.forBlob(bytes), new StoredBlob('text/plain', bytes));
   return createApp(pds);
 }
 
-function getFrom(app: App, path: String) {
+async function getFrom(app: App, path: String): Future<Response> {
   let res = new Response();
-  runFuture((async () => {
-    let req = new Request.fromUrl(`http://localhost${path}`, 'GET', new Map<String, String>());
-    await app.handleRequest(req, res);
-  })());
+  let req = new Request.fromUrl(`http://localhost${path}`, 'GET', new Map<String, String>());
+  await app.handleRequest(req, res);
   return res;
 }
 
-function get(path: String) {
-  return getFrom(createApp(new Pds(new MemoryStorage())), path);
+async function get(path: String): Future<Response> {
+  return await getFrom(createApp(new Pds(new MemoryStorage())), path);
 }
 
 function jsonOf(res: Response) {
@@ -69,26 +67,26 @@ function errorOf(res: Response) {
 }
 
 export let tests = suite('pds:server', () => {
-  test('GET / answers with a plain-text banner', (ctx) => {
-    let res = get('/');
+  test('GET / answers with a plain-text banner', async (ctx) => {
+    let res = await get('/');
     equal(res.statusCode, 200);
     equal(res.type as String, 'text/plain; charset=utf-8');
   });
 
-  test('GET /xrpc/_health reports the version', (ctx) => {
-    let res = get('/xrpc/_health');
+  test('GET /xrpc/_health reports the version', async (ctx) => {
+    let res = await get('/xrpc/_health');
     equal(res.statusCode, 200);
     equal(res.type as String, 'application/json');
     equal(res.body as String, `{"version":"${version}"}`);
   });
 
-  test('an unknown route is a 404', (ctx) => {
-    equal(get('/xrpc/com.example.nothing').statusCode, 404);
+  test('an unknown route is a 404', async (ctx) => {
+    equal((await get('/xrpc/com.example.nothing')).statusCode, 404);
   });
 
-  test('server.describeServer names the DID App Views address their tokens to', (ctx) => {
+  test('server.describeServer names the DID App Views address their tokens to', async (ctx) => {
     // Until it is configured, as pds.js does, the did:web of the host asked.
-    let res = get('/xrpc/com.atproto.server.describeServer');
+    let res = await get('/xrpc/com.atproto.server.describeServer');
     equal(res.statusCode, 200);
     let body = jsonOf(res);
     equal(body['did'] as String, 'did:web:localhost');
@@ -97,13 +95,13 @@ export let tests = suite('pds:server', () => {
 
     let pds = new Pds(new MemoryStorage());
     pds.did = 'did:web:padstone.test';
-    equal(jsonOf(getFrom(createApp(pds), '/xrpc/com.atproto.server.describeServer'))['did'] as String,
+    equal(jsonOf(await getFrom(createApp(pds), '/xrpc/com.atproto.server.describeServer'))['did'] as String,
         'did:web:padstone.test');
   });
 
-  test('sync.getRecord answers with a proof a client verifies', (ctx) => {
-    let app = aliceApp();
-    let res = getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}&rkey=post3`);
+  test('sync.getRecord answers with a proof a client verifies', async (ctx) => {
+    let app = await aliceApp();
+    let res = await getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}&rkey=post3`);
     equal(res.statusCode, 200);
     equal(res.type as String, 'application/vnd.ipld.car');
     let publicKey = KEY.publicKey();
@@ -112,63 +110,63 @@ export let tests = suite('pds:server', () => {
         (signed, sig) => verifySignature(publicKey, signed, sig));
     equal(stringField(proof.record as MapValue, 'text') as String, 'post 3');
 
-    let latest = jsonOf(getFrom(app, `/xrpc/com.atproto.sync.getLatestCommit?did=${DID}`));
+    let latest = jsonOf(await getFrom(app, `/xrpc/com.atproto.sync.getLatestCommit?did=${DID}`));
     equal(latest['cid'] as String, car.roots[0].toString());
     equal(latest['rev'] as String, proof.commit.rev);
 
-    equal(errorOf(getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}&rkey=post9`)),
+    equal(errorOf(await getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}&rkey=post9`)),
         'RecordNotFound');
-    equal(errorOf(getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=did:plc:nobody&collection=${POST}&rkey=post1`)),
+    equal(errorOf(await getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=did:plc:nobody&collection=${POST}&rkey=post1`)),
         'RepoNotFound');
-    equal(errorOf(getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}`)),
+    equal(errorOf(await getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}`)),
         'InvalidRequest');
   });
 
-  test('sync.getRepo answers with the whole repository', (ctx) => {
-    let car = readCar(getFrom(aliceApp(), `/xrpc/com.atproto.sync.getRepo?did=${DID}`).body as FixedArray<u8>);
+  test('sync.getRepo answers with the whole repository', async (ctx) => {
+    let car = readCar((await getFrom(await aliceApp(), `/xrpc/com.atproto.sync.getRepo?did=${DID}`)).body as FixedArray<u8>);
     let commit = decodeCommit(car.blocks.get(car.roots[0]) as FixedArray<u8>);
     equal(commit.did, DID);
     isTrue(car.blocks.size >= 7, `${car.blocks.size} blocks`);
   });
 
-  test('sync.getBlob answers with the blob and its type', (ctx) => {
-    let app = aliceApp();
+  test('sync.getBlob answers with the blob and its type', async (ctx) => {
+    let app = await aliceApp();
     let cid = Cid.forBlob('hello'.toBytes()).toString();
-    let res = getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=${cid}`);
+    let res = await getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=${cid}`);
     equal(res.type as String, 'text/plain');
     equal(String.fromBytes(res.body as FixedArray<u8>), 'hello');
     let missing = Cid.forBlob('bye'.toBytes()).toString();
-    equal(errorOf(getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=${missing}`)), 'BlobNotFound');
-    equal(errorOf(getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=nonsense`)), 'InvalidRequest');
+    equal(errorOf(await getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=${missing}`)), 'BlobNotFound');
+    equal(errorOf(await getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=nonsense`)), 'InvalidRequest');
   });
 
-  test('repo.getRecord answers with the record as JSON, by DID or handle', (ctx) => {
-    let app = aliceApp();
-    let byHandle = jsonOf(getFrom(app, `/xrpc/com.atproto.repo.getRecord?repo=alice.test&collection=${POST}&rkey=post2`));
+  test('repo.getRecord answers with the record as JSON, by DID or handle', async (ctx) => {
+    let app = await aliceApp();
+    let byHandle = jsonOf(await getFrom(app, `/xrpc/com.atproto.repo.getRecord?repo=alice.test&collection=${POST}&rkey=post2`));
     equal(byHandle['uri'] as String, `at://${DID}/${POST}/post2`);
     equal((byHandle['value'] as JsonObject)['text'] as String, 'post 2');
-    let byDid = jsonOf(getFrom(app, `/xrpc/com.atproto.repo.getRecord?repo=${DID}&collection=${POST}&rkey=post2`));
+    let byDid = jsonOf(await getFrom(app, `/xrpc/com.atproto.repo.getRecord?repo=${DID}&collection=${POST}&rkey=post2`));
     equal(byDid['cid'] as String, byHandle['cid'] as String);
   });
 
-  test('repo.listRecords pages through a collection, newest key first unless reversed', (ctx) => {
-    let app = aliceApp();
-    let first = jsonOf(getFrom(app, `/xrpc/com.atproto.repo.listRecords?repo=${DID}&collection=${POST}&limit=2`));
+  test('repo.listRecords pages through a collection, newest key first unless reversed', async (ctx) => {
+    let app = await aliceApp();
+    let first = jsonOf(await getFrom(app, `/xrpc/com.atproto.repo.listRecords?repo=${DID}&collection=${POST}&limit=2`));
     let records = first['records'] as JsonArray;
     equal(records.length, 2);
     equal((records[0] as JsonObject)['uri'] as String, `at://${DID}/${POST}/post5`);
     equal(first['cursor'] as String, 'post4');
-    let rest = jsonOf(getFrom(app,
+    let rest = jsonOf(await getFrom(app,
         `/xrpc/com.atproto.repo.listRecords?repo=${DID}&collection=${POST}&limit=10&cursor=post4`));
     equal((rest['records'] as JsonArray).length, 3);
     isTrue(!rest.has('cursor'), 'a last page has no cursor');
-    let oldest = jsonOf(getFrom(app,
+    let oldest = jsonOf(await getFrom(app,
         `/xrpc/com.atproto.repo.listRecords?repo=${DID}&collection=${POST}&limit=1&reverse=true`));
     equal(((oldest['records'] as JsonArray)[0] as JsonObject)['uri'] as String, `at://${DID}/${POST}/post1`);
   });
 
-  test('repo.describeRepo lists the collections', (ctx) => {
-    let described = jsonOf(getFrom(aliceApp(), `/xrpc/com.atproto.repo.describeRepo?repo=${DID}`));
+  test('repo.describeRepo lists the collections', async (ctx) => {
+    let described = jsonOf(await getFrom(await aliceApp(), `/xrpc/com.atproto.repo.describeRepo?repo=${DID}`));
     equal(described['handle'] as String, 'alice.test');
     let collections = described['collections'] as JsonArray;
     equal(collections.length, 2);
