@@ -1,6 +1,5 @@
 import {suite, test} from 'zena:test';
 import {equal, fail, isTrue, less} from 'zena:assert';
-import {runFuture} from 'zena:async';
 import {NullCache} from '../cache.zena';
 import {
   Engine,
@@ -121,8 +120,28 @@ function sourceOf(result: RunResult, key: String): StepSource {
   fail('step did not succeed: ' + key);
 }
 
+function isFailed(result: RunResult, key: String) {
+  return result.outcomeOf(new StepKey(key)) is Failed;
+}
+
+function isSkipped(result: RunResult, key: String) {
+  return result.outcomeOf(new StepKey(key)) is Skipped;
+}
+
+function isSucceeded(result: RunResult, key: String) {
+  return result.outcomeOf(new StepKey(key)) is Succeeded;
+}
+
+function failureMessage(result: RunResult, key: String): String {
+  let outcome = result.outcomeOf(new StepKey(key));
+  if (outcome is Failed) {
+    return outcome.error.message;
+  }
+  fail('expected step to fail: ' + key);
+}
+
 export let tests = suite('services', () => {
-  test('a service starts before its dependent runs and stops after', () => {
+  test('a service starts before its dependent runs and stops after', async (ctx) => {
     let log = new GrowableArray<String>();
     let graph = new Graph([
       mkService(log, 'db', noStrings, ['db-cfg']),
@@ -133,14 +152,14 @@ export let tests = suite('services', () => {
       'src' => new Fingerprint('v1'),
     };
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(engine.run(graph, leaves, EngineState.empty()));
+    let result = await engine.run(graph, leaves, EngineState.empty());
     isTrue(result.allSucceeded);
     less(indexOf(log, 'start:db'), indexOf(log, 'run:app'));
     less(indexOf(log, 'run:app'), indexOf(log, 'stop:db'));
     isTrue(sourceOf(result, 'db') == StepSource.Ran);
   });
 
-  test('fresh dependents never demand the service', () => {
+  test('fresh dependents never demand the service', async (ctx) => {
     let log = new GrowableArray<String>();
     let mkGraph = () => new Graph([
       mkService(log, 'db', noStrings, ['db-cfg']),
@@ -151,15 +170,15 @@ export let tests = suite('services', () => {
       'src' => new Fingerprint('v1'),
     };
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
-    let second = runFuture(engine.run(mkGraph(), leaves, first.state));
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty());
+    let second = await engine.run(mkGraph(), leaves, first.state);
     isTrue(second.allSucceeded);
     equal(count(log, 'start:db'), 1);
     isTrue(sourceOf(second, 'app') == StepSource.Fresh);
     isTrue(sourceOf(second, 'db') == StepSource.Fresh);
   });
 
-  test('a shared service starts and stops once, after all dependents', () => {
+  test('a shared service starts and stops once, after all dependents', async (ctx) => {
     let log = new GrowableArray<String>();
     let graph = new Graph([
       mkService(log, 'db', noStrings, noStrings),
@@ -167,8 +186,10 @@ export let tests = suite('services', () => {
       mkTask(log, 'b', ['db'], noStrings),
     ]);
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(graph, new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
     isTrue(result.allSucceeded);
     equal(count(log, 'start:db'), 1);
@@ -177,7 +198,7 @@ export let tests = suite('services', () => {
     less(indexOf(log, 'run:b'), indexOf(log, 'stop:db'));
   });
 
-  test('a service that fails to start fails its dependents', () => {
+  test('a service that fails to start fails its dependents', async (ctx) => {
     let log = new GrowableArray<String>();
     let bad: Step = new ServiceStep(
       new StepKey('db'),
@@ -193,20 +214,17 @@ export let tests = suite('services', () => {
       mkTask(log, 'other', noStrings, noStrings),
     ]);
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(graph, new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
-    let outcome = result.outcomeOf(new StepKey('app'));
-    if (outcome is Failed) {
-      isTrue(outcome.error.message.contains('failed to start'));
-    } else {
-      fail('expected app to fail');
-    }
-    isTrue(result.outcomeOf(new StepKey('other')) is Succeeded);
-    isTrue(result.outcomeOf(new StepKey('db')) is Failed);
+    isTrue(failureMessage(result, 'app').contains('failed to start'));
+    isTrue(isSucceeded(result, 'other'));
+    isTrue(isFailed(result, 'db'));
   });
 
-  test('services stack: child starts after parent, stops before it', () => {
+  test('services stack: child starts after parent, stops before it', async (ctx) => {
     let log = new GrowableArray<String>();
     let graph = new Graph([
       mkService(log, 'db', noStrings, noStrings),
@@ -214,8 +232,10 @@ export let tests = suite('services', () => {
       mkTask(log, 'app', ['proxy'], noStrings),
     ]);
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(graph, new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
     isTrue(result.allSucceeded);
     less(indexOf(log, 'start:db'), indexOf(log, 'start:proxy'));
@@ -224,19 +244,21 @@ export let tests = suite('services', () => {
     less(indexOf(log, 'stop:proxy'), indexOf(log, 'stop:db'));
   });
 
-  test('a service with no dependents never starts', () => {
+  test('a service with no dependents never starts', async (ctx) => {
     let log = new GrowableArray<String>();
     let graph = new Graph([mkService(log, 'db', noStrings, noStrings)]);
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(graph, new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
     equal(count(log, 'start:db'), 0);
     equal(count(log, 'stop:db'), 0);
     isTrue(sourceOf(result, 'db') == StepSource.Fresh);
   });
 
-  test('a service config change invalidates dependents', () => {
+  test('a service config change invalidates dependents', async (ctx) => {
     let log = new GrowableArray<String>();
     let mkGraph = (svcConfig: String) => new Graph([
       asStep(new ServiceStep(
@@ -252,13 +274,13 @@ export let tests = suite('services', () => {
     ]);
     let leaves = new HashMap<String, Fingerprint>();
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph('c1'), leaves, EngineState.empty()));
-    let second = runFuture(engine.run(mkGraph('c2'), leaves, first.state));
+    let first = await engine.run(mkGraph('c1'), leaves, EngineState.empty());
+    let second = await engine.run(mkGraph('c2'), leaves, first.state);
     equal(count(log, 'run:app'), 2);
     isTrue(sourceOf(second, 'app') == StepSource.Ran);
   });
 
-  test('a service leaf change invalidates dependents', () => {
+  test('a service leaf change invalidates dependents', async (ctx) => {
     let log = new GrowableArray<String>();
     let mkGraph = () => new Graph([
       mkService(log, 'db', noStrings, ['db-cfg']),
@@ -268,29 +290,31 @@ export let tests = suite('services', () => {
       'db-cfg' => new Fingerprint('v1'),
     };
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty());
     leaves['db-cfg'] = new Fingerprint('v2');
-    let second = runFuture(engine.run(mkGraph(), leaves, first.state));
+    let second = await engine.run(mkGraph(), leaves, first.state);
     equal(count(log, 'run:app'), 2);
     isTrue(sourceOf(second, 'app') == StepSource.Ran);
   });
 
-  test('an unresolvable service skips dependents', () => {
+  test('an unresolvable service skips dependents', async (ctx) => {
     let log = new GrowableArray<String>();
     let graph = new Graph([
       mkService(log, 'db', noStrings, ['ghost']),
       mkTask(log, 'app', ['db'], noStrings),
     ]);
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(graph, new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
-    isTrue(result.outcomeOf(new StepKey('app')) is Skipped);
-    isTrue(result.outcomeOf(new StepKey('db')) is Failed);
+    isTrue(isSkipped(result, 'app'));
+    isTrue(isFailed(result, 'db'));
     equal(count(log, 'start:db'), 0);
   });
 
-  test('StepOrder on a service starts and holds it without invalidating on service config changes', () => {
+  test('StepOrder on a service starts and holds it without invalidating on service config changes', async (ctx) => {
     let log = new GrowableArray<String>();
     let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let mkGraph = (svcConfig: String) => {
@@ -320,13 +344,13 @@ export let tests = suite('services', () => {
       return new Graph([svc, app]);
     };
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph('c1'), leaves, EngineState.empty()));
+    let first = await engine.run(mkGraph('c1'), leaves, EngineState.empty());
     isTrue(first.allSucceeded);
     less(indexOf(log, 'start:db'), indexOf(log, 'run:app'));
     less(indexOf(log, 'run:app'), indexOf(log, 'stop:db'));
 
     // Service config changed from c1 to c2, but app uses StepOrder so app stays fresh.
-    let second = runFuture(engine.run(mkGraph('c2'), leaves, first.state));
+    let second = await engine.run(mkGraph('c2'), leaves, first.state);
     isTrue(second.allSucceeded);
     isTrue(sourceOf(second, 'app') == StepSource.Fresh);
     equal(count(log, 'start:db'), 1);

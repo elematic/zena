@@ -1,6 +1,5 @@
 import {suite, test} from 'zena:test';
 import {equal, fail, isFalse, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
 import {readFileSync, unlinkSync, writeFileSync} from 'zena:fs';
 import {milliseconds, monotonic, sleep} from 'zena:time';
 import {
@@ -472,7 +471,7 @@ export let tests = suite('zb end to end', () => {
     equal(readFileSync(withRoot(root, 'app.out')), 'bin-v2\n');
   });
 
-  test('persistent hash memo skips byte reads across runs and detects same-size edits', () => {
+  test('persistent hash memo skips byte reads across runs and detects same-size edits', async (ctx) => {
     let root = '/tmp/zb-memo-' + i64ToString(monotonic() as i64);
     mkFixture(root);
     let entry = new ScriptRef('', 'build');
@@ -493,7 +492,7 @@ export let tests = suite('zb end to end', () => {
 
     // Advance past the 20ms racy window, run once so .zb/hashes.json has a
     // post-window mtime, then verify the next warm run reads zero file bytes.
-    runFuture(sleep(milliseconds(35)));
+    await sleep(milliseconds(35));
     let settle = buildTarget(root, entry);
     isTrue(settle.result.allSucceeded);
     isTrue(sourceOf(settle.result, 'packages/lib:build') == StepSource.Fresh);
@@ -508,7 +507,7 @@ export let tests = suite('zb end to end', () => {
     isTrue(warmHasher.statHits > 0);
 
     // Same-size edit after memo warm-up advances mtime and triggers rebuild.
-    runFuture(sleep(milliseconds(10)));
+    await sleep(milliseconds(10));
     write(root, 'packages/lib/src/in.txt', 'lib-v3\n');
     let edited = buildTarget(root, entry);
     isTrue(edited.result.allSucceeded);
@@ -517,7 +516,7 @@ export let tests = suite('zb end to end', () => {
     equal(readFileSync(withRoot(root, 'packages/app/out/app.txt')), 'lib-v3\nhello-v1\n');
   });
 
-  test('deleted or modified output files invalidate freshness and restore or rerun', () => {
+  test('deleted or modified output files invalidate freshness and restore or rerun', async (ctx) => {
     let root = '/tmp/zb-outputs-' + i64ToString(monotonic() as i64);
     mkFixture(root);
     let entry = new ScriptRef('', 'build');
@@ -535,7 +534,7 @@ export let tests = suite('zb end to end', () => {
     equal(readFileSync(withRoot(root, 'packages/lib/out/lib.txt')), 'lib-v1\n');
 
     // Corrupting a downstream output file restores the clean bytes from cache.
-    runFuture(sleep(milliseconds(10)));
+    await sleep(milliseconds(10));
     write(root, 'packages/app/out/app.txt', 'corrupted-by-hand\n');
     let afterCorrupt = buildTarget(root, entry);
     isTrue(afterCorrupt.result.allSucceeded);

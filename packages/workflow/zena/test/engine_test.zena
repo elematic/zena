@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, fail, isFalse, isTrue} from 'zena:assert';
-import {Completer, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, drainMicrotasks} from 'zena:async';
 import {NullCache, StepCache} from '../cache.zena';
 import {
   Engine,
@@ -116,8 +116,28 @@ function sourceOf(result: RunResult, key: String): StepSource {
   fail('step did not succeed: ' + key);
 }
 
+function isFailed(result: RunResult, key: String) {
+  return result.outcomeOf(new StepKey(key)) is Failed;
+}
+
+function isSkipped(result: RunResult, key: String) {
+  return result.outcomeOf(new StepKey(key)) is Skipped;
+}
+
+function isSucceeded(result: RunResult, key: String) {
+  return result.outcomeOf(new StepKey(key)) is Succeeded;
+}
+
+function failureMessage(result: RunResult, key: String): String {
+  let outcome = result.outcomeOf(new StepKey(key));
+  if (outcome is Failed) {
+    return outcome.error.message;
+  }
+  fail('expected step to fail: ' + key);
+}
+
 export let tests = suite('engine', () => {
-  test('runs steps in dependency order', () => {
+  test('runs steps in dependency order', async (ctx) => {
     let runs = new Runs();
     let graph = new Graph([
       mkStep(runs, 'b', ['a'], noStrings, 'out-b'),
@@ -125,7 +145,7 @@ export let tests = suite('engine', () => {
     ]);
     let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(engine.run(graph, leaves, EngineState.empty()));
+    let result = await engine.run(graph, leaves, EngineState.empty());
     isTrue(result.allSucceeded);
     equal(runs.log.length, 2);
     equal(runs.log[0], 'a');
@@ -135,7 +155,7 @@ export let tests = suite('engine', () => {
     equal(result.state.size, 2);
   });
 
-  test('a second identical run is fresh and does nothing', () => {
+  test('a second identical run is fresh and does nothing', async (ctx) => {
     let runs = new Runs();
     let graph = new Graph([
       mkStep(runs, 'a', noStrings, ['src'], 'out-a'),
@@ -144,9 +164,9 @@ export let tests = suite('engine', () => {
     let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let cache = new InMemoryCache();
     let engine = new Engine(digest, cache);
-    let first = runFuture(engine.run(graph, leaves, EngineState.empty()));
+    let first = await engine.run(graph, leaves, EngineState.empty());
     let getsAfterFirst = cache.gets;
-    let second = runFuture(engine.run(graph, leaves, first.state));
+    let second = await engine.run(graph, leaves, first.state);
     isTrue(second.allSucceeded);
     equal(runs.count('a'), 1);
     equal(runs.count('b'), 1);
@@ -156,7 +176,7 @@ export let tests = suite('engine', () => {
     equal(cache.gets, getsAfterFirst);
   });
 
-  test('a leaf change reruns the reader; unchanged output cuts off there', () => {
+  test('a leaf change reruns the reader; unchanged output cuts off there', async (ctx) => {
     let runs = new Runs();
     let mkGraph = () => new Graph([
       mkStep(runs, 'a', noStrings, ['src-a'], 'out-a'),
@@ -168,11 +188,11 @@ export let tests = suite('engine', () => {
       'src-b' => new Fingerprint('v1'),
     };
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty());
     isTrue(first.allSucceeded);
 
     leaves['src-a'] = new Fingerprint('v2');
-    let second = runFuture(engine.run(mkGraph(), leaves, first.state));
+    let second = await engine.run(mkGraph(), leaves, first.state);
     isTrue(second.allSucceeded);
     equal(runs.count('a'), 2);
     equal(runs.count('b'), 1);
@@ -181,7 +201,7 @@ export let tests = suite('engine', () => {
     isTrue(sourceOf(second, 'c') == StepSource.Fresh);
   });
 
-  test('a changed dependency output reruns the dependent', () => {
+  test('a changed dependency output reruns the dependent', async (ctx) => {
     let runs = new Runs();
     let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let engine = new Engine(digest, new NullCache());
@@ -189,20 +209,20 @@ export let tests = suite('engine', () => {
       mkStep(runs, 'a', noStrings, ['src'], 'out-a-v1'),
       mkStep(runs, 'c', ['a'], noStrings, 'out-c'),
     ]);
-    let first = runFuture(engine.run(g1, leaves, EngineState.empty()));
+    let first = await engine.run(g1, leaves, EngineState.empty());
 
     leaves['src'] = new Fingerprint('v2');
     let g2 = new Graph([
       mkStep(runs, 'a', noStrings, ['src'], 'out-a-v2'),
       mkStep(runs, 'c', ['a'], noStrings, 'out-c'),
     ]);
-    let second = runFuture(engine.run(g2, leaves, first.state));
+    let second = await engine.run(g2, leaves, first.state);
     isTrue(second.allSucceeded);
     equal(runs.count('a'), 2);
     equal(runs.count('c'), 2);
   });
 
-  test('the cache restores results when state is lost', () => {
+  test('the cache restores results when state is lost', async (ctx) => {
     let runs = new Runs();
     let mkGraph = () => new Graph([
       mkStep(runs, 'a', noStrings, ['src'], 'out-a'),
@@ -210,15 +230,15 @@ export let tests = suite('engine', () => {
     let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let cache = new InMemoryCache();
     let engine = new Engine(digest, cache);
-    runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
+    await engine.run(mkGraph(), leaves, EngineState.empty());
     equal(cache.puts, 1);
 
-    let second = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
+    let second = await engine.run(mkGraph(), leaves, EngineState.empty());
     equal(runs.count('a'), 1);
     isTrue(sourceOf(second, 'a') == StepSource.Cache);
   });
 
-  test('a failure skips dependents and spares the rest', () => {
+  test('a failure skips dependents and spares the rest', async (ctx) => {
     let runs = new Runs();
     let bad: Step = new TaskStep(
       new StepKey('bad'),
@@ -234,37 +254,36 @@ export let tests = suite('engine', () => {
       mkStep(runs, 'other', noStrings, noStrings, 'out'),
     ]);
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(graph, new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
     isFalse(result.allSucceeded);
-    isTrue(result.outcomeOf(new StepKey('bad')) is Failed);
-    isTrue(result.outcomeOf(new StepKey('child')) is Skipped);
-    isTrue(result.outcomeOf(new StepKey('other')) is Succeeded);
+    isTrue(isFailed(result, 'bad'));
+    isTrue(isSkipped(result, 'child'));
+    isTrue(isSucceeded(result, 'other'));
     equal(runs.count('child'), 0);
     equal(runs.count('other'), 1);
   });
 
-  test('an unknown leaf fails the step', () => {
+  test('an unknown leaf fails the step', async (ctx) => {
     let runs = new Runs();
     let graph = new Graph([
       mkStep(runs, 'a', noStrings, ['ghost'], 'out'),
       mkStep(runs, 'b', ['a'], noStrings, 'out'),
     ]);
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(graph, new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
-    let outcome = result.outcomeOf(new StepKey('a'));
-    if (outcome is Failed) {
-      isTrue(outcome.error.message.contains('unknown leaf input "ghost"'));
-    } else {
-      fail('expected a failure');
-    }
-    isTrue(result.outcomeOf(new StepKey('b')) is Skipped);
+    isTrue(failureMessage(result, 'a').contains('unknown leaf input "ghost"'));
+    isTrue(isSkipped(result, 'b'));
   });
 
-  test('a config change alone reruns the step', () => {
+  test('a config change alone reruns the step', async (ctx) => {
     let runs = new Runs();
     let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let engine = new Engine(digest, new NullCache());
@@ -279,13 +298,13 @@ export let tests = suite('engine', () => {
         },
       )),
     ]);
-    let first = runFuture(engine.run(mkWithConfig('c1'), leaves, EngineState.empty()));
-    let second = runFuture(engine.run(mkWithConfig('c2'), leaves, first.state));
+    let first = await engine.run(mkWithConfig('c1'), leaves, EngineState.empty());
+    let second = await engine.run(mkWithConfig('c2'), leaves, first.state);
     equal(runs.count('a'), 2);
     isTrue(sourceOf(second, 'a') == StepSource.Ran);
   });
 
-  test('duplicate output names fail the producing step', () => {
+  test('duplicate output names fail the producing step', async (ctx) => {
     let bad: Step = new TaskStep(
       new StepKey('bad'),
       new Fingerprint('cfg'),
@@ -296,18 +315,15 @@ export let tests = suite('engine', () => {
       ])),
     );
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(new Graph([bad]), new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      new Graph([bad]),
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
-    let outcome = result.outcomeOf(new StepKey('bad'));
-    if (outcome is Failed) {
-      isTrue(outcome.error.message.contains('duplicate output name'));
-    } else {
-      fail('expected a failure');
-    }
+    isTrue(failureMessage(result, 'bad').contains('duplicate output name'));
   });
 
-  test('parallelism is bounded', () => {
+  test('parallelism is bounded', async (ctx) => {
     var current = 0;
     var maxSeen = 0;
     let gate = new Completer<void>();
@@ -336,13 +352,12 @@ export let tests = suite('engine', () => {
     drainMicrotasks();
     equal(current, 2);
     gate.complete();
-    drainMicrotasks();
-    let result = runFuture(running);
+    let result = await running;
     isTrue(result.allSucceeded);
     equal(maxSeen, 2);
   });
 
-  test('StepOrder orders execution without contributing to cache keys, and LeafSet resolves after upstream runs', () => {
+  test('StepOrder orders execution without contributing to cache keys, and LeafSet resolves after upstream runs', async (ctx) => {
     let runs = new Runs();
     var generatedFp = 'missing';
     var producerRun = 0;
@@ -388,14 +403,14 @@ export let tests = suite('engine', () => {
     };
 
     let engine = new Engine(digest, new NullCache());
-    let first = runFuture(engine.run(mkGraph(), new HashMap<String, Fingerprint>(), EngineState.empty()));
+    let first = await engine.run(mkGraph(), new HashMap<String, Fingerprint>(), EngineState.empty());
     isTrue(first.allSucceeded);
     equal(runs.log[0], 'cargo');
     equal(runs.log[1], 'binary');
 
     // Second run: cargo reruns and produces a new manifest, but binary's
     // StepOrder ignores cargo's manifest and sees target/bin still at bin-v1.
-    let second = runFuture(engine.run(mkGraph(), new HashMap<String, Fingerprint>(), first.state));
+    let second = await engine.run(mkGraph(), new HashMap<String, Fingerprint>(), first.state);
     isTrue(second.allSucceeded);
     equal(runs.count('cargo'), 2);
     equal(runs.count('binary'), 1);
@@ -403,13 +418,13 @@ export let tests = suite('engine', () => {
 
     // Third run: target/bin changes to bin-v2, so binary reruns.
     generatedFp = 'bin-v2';
-    let third = runFuture(engine.run(mkGraph(), new HashMap<String, Fingerprint>(), second.state));
+    let third = await engine.run(mkGraph(), new HashMap<String, Fingerprint>(), second.state);
     isTrue(third.allSucceeded);
     equal(runs.count('binary'), 2);
     isTrue(sourceOf(third, 'binary') == StepSource.Ran);
   });
 
-  test('StepOrder skips dependents without running LeafSet when upstream fails', () => {
+  test('StepOrder skips dependents without running LeafSet when upstream fails', async (ctx) => {
     var leafSetCalled = false;
     let bad: Step = new TaskStep(
       new StepKey('bad'),
@@ -432,15 +447,17 @@ export let tests = suite('engine', () => {
       (ctx) => Future.of(OutputManifest.empty()),
     );
     let engine = new Engine(digest, new NullCache());
-    let result = runFuture(
-      engine.run(new Graph([bad, child]), new HashMap<String, Fingerprint>(), EngineState.empty()),
+    let result = await engine.run(
+      new Graph([bad, child]),
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
     );
-    isTrue(result.outcomeOf(new StepKey('bad')) is Failed);
-    isTrue(result.outcomeOf(new StepKey('child')) is Skipped);
+    isTrue(isFailed(result, 'bad'));
+    isTrue(isSkipped(result, 'child'));
     isFalse(leafSetCalled);
   });
 
-  test('verifyOutputs falls back to cache or rerun while keeping prior manifest, and force bypasses both', () => {
+  test('verifyOutputs falls back to cache or rerun while keeping prior manifest, and force bypasses both', async (ctx) => {
     var sawPriorOnRerun = false;
     var stepRuns = 0;
     let step: Step = new TaskStep(
@@ -463,20 +480,20 @@ export let tests = suite('engine', () => {
     let engine = new Engine(digest, cache);
 
     // Run 1 populates state and cache.
-    let r1 = runFuture(engine.run(graph, leaves, EngineState.empty()));
+    let r1 = await engine.run(graph, leaves, EngineState.empty());
     isTrue(sourceOf(r1, 'compile') == StepSource.Ran);
     equal(stepRuns, 1);
 
     // Run 2 with verifyOutputs returning false restores from cache without rerunning.
     let optsMissing = new RunOptions(8, false, async (key, manifest): Future<boolean> => false);
-    let r2 = runFuture(engine.run(graph, leaves, r1.state, optsMissing));
+    let r2 = await engine.run(graph, leaves, r1.state, optsMissing);
     isTrue(sourceOf(r2, 'compile') == StepSource.Cache);
     equal(stepRuns, 1);
 
     // Run 3 against an empty cache with verifyOutputs returning false reruns
     // the callback and still passes prior.manifest on RunContext.
     let uncachedEngine = new Engine(digest, new NullCache());
-    let r3 = runFuture(uncachedEngine.run(graph, leaves, r2.state, optsMissing));
+    let r3 = await uncachedEngine.run(graph, leaves, r2.state, optsMissing);
     isTrue(sourceOf(r3, 'compile') == StepSource.Ran);
     equal(stepRuns, 2);
     isTrue(sawPriorOnRerun);
@@ -484,7 +501,7 @@ export let tests = suite('engine', () => {
     // Run 4 with force: true bypasses both Fresh and InMemoryCache.get,
     // executes the callback, and updates the cache.
     let putsBefore = cache.puts;
-    let r4 = runFuture(engine.run(graph, leaves, r2.state, new RunOptions(8, true)));
+    let r4 = await engine.run(graph, leaves, r2.state, new RunOptions(8, true));
     isTrue(sourceOf(r4, 'compile') == StepSource.Ran);
     equal(stepRuns, 3);
     equal(cache.puts, putsBefore + 1);
