@@ -8,7 +8,6 @@
 
 import {suite, test} from 'zena:test';
 import {isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
 import {run} from 'zena:process';
 import {MAIN, described, repoRoot, zenaBinary} from './cli-support.zena';
 
@@ -19,19 +18,19 @@ let CHOOSERS = [
 ];
 
 export let tests = suite('the workspace zena works in', () => {
-  test('is the directory it runs in, outside the checkout it was built in', (ctx) => {
+  test('is the directory it runs in, outside the checkout it was built in', async (ctx) => {
     // A directory outside the checkout, as the host names it. The test
     // module reaches only the repository and its own /tmp, so the shell
     // writes the project.
-    let outside = runFuture(run(['mktemp', '-d'])).stdout.trim();
+    let outside = (await run(['mktemp', '-d'])).stdout.trim();
     isTrue(!outside.startsWith(repoRoot()), outside);
     try {
-      let setUp = runFuture(run(['/bin/sh', '-c', `mkdir -p "$1/lib" &&
+      let setUp = await run(['/bin/sh', '-c', `mkdir -p "$1/lib" &&
 printf '%s\\n' '{"name": "app", "dependencies": {"lib": {"path": "./lib"}}}' > "$1/zena-package.json" &&
 printf '%s\\n' '{"name": "lib"}' > "$1/lib/zena-package.json" &&
 printf '%s\\n' 'export function answer(): i32 { return 42; }' > "$1/lib/answer.zena" &&
 printf '%s\\n' "import { answer } from 'lib:answer';" '${MAIN} { return answer() - 42; }' > "$1/prog.zena"`,
-          'sh', outside]));
+          'sh', outside]);
       isTrue(setUp.succeeded(), described(setUp));
       // The program imports lib by the path in the project's own
       // manifest, so it compiles only when the project is the workspace.
@@ -42,48 +41,48 @@ printf '%s\\n' "import { answer } from 'lib:answer';" '${MAIN} { return answer()
       for (let name in CHOOSERS) {
         unset = `${unset} -u ${name}`;
       }
-      let ran = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" run prog.zena`,
-          'sh', outside, zenaBinary()]));
+      let ran = await run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" run prog.zena`,
+          'sh', outside, zenaBinary()]);
       isTrue(ran.succeeded(), described(ran));
     } finally {
-      runFuture(run(['rm', '-rf', outside]));
+      await run(['rm', '-rf', outside]);
     }
   });
 
-  test('zena build supports --force and --no-cache on target scripts', (ctx) => {
-    let outside = runFuture(run(['mktemp', '-d'])).stdout.trim();
+  test('zena build supports --force and --no-cache on target scripts', async (ctx) => {
+    let outside = (await run(['mktemp', '-d'])).stdout.trim();
     try {
-      let setUp = runFuture(run(['/bin/sh', '-c',
+      let setUp = await run(['/bin/sh', '-c',
           `printf '%s\\n' '{"workspaces":[],"scripts":{"build":"wireit"},"wireit":{"build":{"command":"echo ok > out.txt","files":[],"output":["out.txt"]}}}' > "$1/package.json"`,
-          'sh', outside]));
+          'sh', outside]);
       isTrue(setUp.succeeded(), described(setUp));
       var unset = '';
       for (let name in CHOOSERS) {
         unset = `${unset} -u ${name}`;
       }
-      let first = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build`,
-          'sh', outside, zenaBinary()]));
+      let first = await run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build`,
+          'sh', outside, zenaBinary()]);
       isTrue(first.succeeded(), described(first));
       isTrue(first.stdout.contains(':build: ran'), first.stdout);
 
-      let warm = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build`,
-          'sh', outside, zenaBinary()]));
+      let warm = await run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build`,
+          'sh', outside, zenaBinary()]);
       isTrue(warm.succeeded(), described(warm));
       isTrue(warm.stdout.contains(':build: fresh'), warm.stdout);
 
-      let forced = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build --force`,
-          'sh', outside, zenaBinary()]));
+      let forced = await run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build --force`,
+          'sh', outside, zenaBinary()]);
       isTrue(forced.succeeded(), described(forced));
       isTrue(forced.stdout.contains(':build: ran'), forced.stdout);
 
-      let dropOut = runFuture(run(['rm', '-f', `${outside}/out.txt`]));
+      let dropOut = await run(['rm', '-f', `${outside}/out.txt`]);
       isTrue(dropOut.succeeded(), described(dropOut));
-      let noCache = runFuture(run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build --no-cache`,
-          'sh', outside, zenaBinary()]));
+      let noCache = await run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build --no-cache`,
+          'sh', outside, zenaBinary()]);
       isTrue(noCache.succeeded(), described(noCache));
       isTrue(noCache.stdout.contains(':build: ran'), noCache.stdout);
     } finally {
-      runFuture(run(['rm', '-rf', outside]));
+      await run(['rm', '-rf', outside]);
     }
   });
 });
