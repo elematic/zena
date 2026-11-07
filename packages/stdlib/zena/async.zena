@@ -455,14 +455,15 @@ class RaceGroupState<T> {
       return;
     }
     // A value or a failure. The first one settles the race; the rest
-    // lose. tryComplete/tryFail make the settle first-wins, and
-    // cancelling an already-cancelled group does nothing.
+    // lose. Cancel the group before settling `result` so losing frames
+    // are queued to unwind before `result`'s awaiters resume (matching
+    // the failure path where GroupWaiter cancels first).
+    this.group.cancel();
     if (let (true, v, _) = f.[result]()) {
       this.result.[tryComplete](v);
     } else if (let (false, _, e) = f.[result]()) {
       this.result.[tryFail](e);
     }
-    this.group.cancel();
   }
 }
 

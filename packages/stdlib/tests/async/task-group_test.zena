@@ -5,7 +5,7 @@
 // there was one, and normally otherwise.
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, TaskGroup, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, TaskGroup, drainMicrotasks} from 'zena:async';
 
 let doubled = async (gate: Future<i32>): Future<i32> => {
   let v = await gate;
@@ -35,7 +35,7 @@ let probe = async (f: Future<i32>): Future<void> => {
 };
 
 export let tests = suite('TaskGroup', () => {
-  test('children complete and join settles', (ctx) => {
+  test('children complete and join settles', async (ctx) => {
     let g1 = new Completer<i32>();
     let g2 = new Completer<i32>();
     let group = new TaskGroup();
@@ -49,11 +49,11 @@ export let tests = suite('TaskGroup', () => {
     g2.complete(2);
     drainMicrotasks();
     isTrue(j.isCompleted);
-    equal(runFuture(a), 2);
-    equal(runFuture(b), 4);
+    equal(await a, 2);
+    equal(await b, 4);
   });
 
-  test('a child failure cancels its siblings and surfaces at join', (ctx) => {
+  test('a child failure cancels its siblings and surfaces at join', async (ctx) => {
     let g1 = new Completer<i32>();
     let g2 = new Completer<i32>();
     let group = new TaskGroup();
@@ -75,14 +75,14 @@ export let tests = suite('TaskGroup', () => {
     isTrue(j.isCompleted);
     var msg = '';
     try {
-      runFuture(j);
+      await j;
     } catch (e) {
       msg = e.message;
     }
     equal(msg, 'child failed');
   });
 
-  test('cancelling the group wakes parked children; join completes normally', (ctx) => {
+  test('cancelling the group wakes parked children; join completes normally', async (ctx) => {
     let g1 = new Completer<i32>();
     let g2 = new Completer<i32>();
     let group = new TaskGroup();
@@ -103,20 +103,20 @@ export let tests = suite('TaskGroup', () => {
     isTrue(j.isCompleted);
     var raised = false;
     try {
-      runFuture(j);
+      await j;
     } catch (e) {
       raised = true;
     }
     isFalse(raised);
   });
 
-  test('join after everything settled is already settled', (ctx) => {
+  test('join after everything settled is already settled', async (ctx) => {
     let g1 = new Completer<i32>();
     let group = new TaskGroup();
     let a = group.spawn(() => doubled(g1.future));
     g1.complete(5);
     drainMicrotasks();
-    equal(runFuture(a), 10);
+    equal(await a, 10);
     isTrue(group.join().isCompleted);
   });
 
@@ -125,7 +125,7 @@ export let tests = suite('TaskGroup', () => {
     isTrue(group.join().isCompleted);
   });
 
-  test('race takes the first settled value and cancels the losers', (ctx) => {
+  test('race takes the first settled value and cancels the losers', async (ctx) => {
     let g1 = new Completer<i32>();
     let g2 = new Completer<i32>();
     let r = TaskGroup.race([
@@ -139,10 +139,10 @@ export let tests = suite('TaskGroup', () => {
     // parked forever, so only the loser-cancelling reaches it.
     g2.complete(21);
     drainMicrotasks();
-    equal(runFuture(r), 42);
+    equal(await r, 42);
   });
 
-  test('a failing winner surfaces through the race future', (ctx) => {
+  test('a failing winner surfaces through the race future', async (ctx) => {
     let g1 = new Completer<i32>();
     let g2 = new Completer<i32>();
     let r = TaskGroup.race([
@@ -153,7 +153,7 @@ export let tests = suite('TaskGroup', () => {
     drainMicrotasks();
     var msg = '';
     try {
-      runFuture(r);
+      await r;
       msg = 'settled normally';
     } catch (e) {
       msg = e.message;

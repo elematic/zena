@@ -4,7 +4,7 @@
 // an explicit second claim; the bare future stays an ordinary value.
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, FutureClaim, TaskGroup, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, FutureClaim, TaskGroup, drainMicrotasks} from 'zena:async';
 
 let doubled = async (gate: Future<i32>): Future<i32> => {
   let v = await gate;
@@ -47,7 +47,7 @@ export let tests = suite('FutureClaim', () => {
     assertCancelled(h.future);
   });
 
-  test('a split claim keeps the work alive', (ctx) => {
+  test('a split claim keeps the work alive', async (ctx) => {
     let gate = new Completer<i32>();
     let h = FutureClaim.spawn(() => doubled(gate.future));
     let h2 = h.split();
@@ -57,7 +57,7 @@ export let tests = suite('FutureClaim', () => {
 
     gate.complete(3);
     drainMicrotasks();
-    equal(runFuture(h2.future), 6);
+    equal(await h2.future, 6);
     h2.release();
   });
 
@@ -122,7 +122,7 @@ export let tests = suite('FutureClaim', () => {
     drainMicrotasks();
   });
 
-  test('work spawned under a detached group ignores enclosing cancellation', (ctx) => {
+  test('work spawned under a detached group ignores enclosing cancellation', async (ctx) => {
     let gate = new Completer<i32>();
     let outer = new TaskGroup();
     let shared = TaskGroup.detached();
@@ -138,7 +138,7 @@ export let tests = suite('FutureClaim', () => {
 
     gate.complete(4);
     drainMicrotasks();
-    equal(runFuture(handle.future), 8);
+    equal(await handle.future, 8);
     handle.release();
   });
 });

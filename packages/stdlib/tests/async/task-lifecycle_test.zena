@@ -4,7 +4,7 @@
 // the second's value.
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, drainMicrotasks} from 'zena:async';
 import {
   Task, TaskState, Initial, Pending, Complete, Errored,
 } from 'zena:task';
@@ -31,19 +31,19 @@ let describe = <T>(s: TaskState<T>) => {
 };
 
 export let tests = suite('Task lifecycle', () => {
-  test('a run moves initial -> pending -> complete', () => {
+  test('a run moves initial -> pending -> complete', async () => {
     gate = new Completer<i32>();
     let t = new Task(() => gated());
     equal(describe(t.state), 'initial');
     let f = t.run();
     equal(describe(t.state), 'pending');
     gate.complete(5);
-    equal(runFuture(f), 5);
+    equal(await f, 5);
     equal(describe(t.state), 'complete');
     equal((t.state as Complete<i32>).value, 5);
   });
 
-  test('a failed run is errored and completed fails', () => {
+  test('a failed run is errored and completed fails', async () => {
     gate = new Completer<i32>();
     let t = new Task(() => gated());
     let unused = t.run();
@@ -51,7 +51,7 @@ export let tests = suite('Task lifecycle', () => {
     gate.fail(new Error('boom'));
     var msg = '';
     try {
-      let v = runFuture(done);
+      let v = await done;
     } catch (e) {
       msg = e.message;
     }
@@ -59,7 +59,7 @@ export let tests = suite('Task lifecycle', () => {
     equal(describe(t.state), 'errored');
   });
 
-  test('run() while pending cancels and supersedes', () => {
+  test('run() while pending cancels and supersedes', async () => {
     log = '';
     gate = new Completer<i32>();
     let t = new Task(() => gated());
@@ -73,10 +73,10 @@ export let tests = suite('Task lifecycle', () => {
     // Its gate settling late changes nothing.
     firstGate.complete(-1);
     gate.complete(2);
-    equal(runFuture(second), 2);
+    equal(await second, 2);
     equal((t.state as Complete<i32>).value, 2);
     // completed carried forward: it answers with the SECOND run.
-    equal(runFuture(t.completed), 2);
+    equal(await t.completed, 2);
   });
 
   test('cancel() restores the previous settled state', () => {
@@ -97,7 +97,7 @@ export let tests = suite('Task lifecycle', () => {
     equal((t.state as Complete<i32>).value, 7);
   });
 
-  test('cancel() settles a pending completed from the restored state', () => {
+  test('cancel() settles a pending completed from the restored state', async () => {
     log = '';
     gate = new Completer<i32>();
     let t = new Task(() => gated());
@@ -112,7 +112,7 @@ export let tests = suite('Task lifecycle', () => {
     drainMicrotasks();
     // The task holds Complete(7) again, and completed agrees.
     equal((t.state as Complete<i32>).value, 7);
-    equal(runFuture(answer), 7);
+    equal(await answer, 7);
   });
 
   test('changed() conflates and wakes per transition', () => {
