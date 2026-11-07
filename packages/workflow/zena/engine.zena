@@ -55,8 +55,27 @@ export final class Skipped(reason: String) extends StepOutcome
 export class RunOptions {
   /** Maximum number of steps in their cache-or-run section at once. */
   parallelism: i32;
+  /**
+   * Bypass freshness and `StepCache.get` so every reachable task step
+   * executes its run callback, still storing new outputs in the cache
+   * and returned `EngineState`.
+   */
+  force: boolean;
+  /**
+   * Optional host check run before declaring a key-matched step `Fresh`
+   * (for example, checking that recorded output files still exist on
+   * disk). Returning `false` falls through to cache restore or execution
+   * while keeping `prior` for `RunContext`.
+   */
+  verifyOutputs: ((step: StepKey, manifest: OutputManifest) => Future<boolean>)?;
 
-  new(parallelism: i32 = 8) : parallelism = parallelism;
+  new(
+    parallelism: i32 = 8,
+    force: boolean = false,
+    verifyOutputs: ((step: StepKey, manifest: OutputManifest) => Future<boolean>)? = null,
+  ) : parallelism = parallelism,
+      force = force,
+      verifyOutputs = verifyOutputs;
 }
 
 /** The result of an engine run. */
@@ -129,6 +148,7 @@ class RunState {
   outcomes: HashMap<String, StepOutcome>;
   done: HashMap<String, Completer<void>>;
   semaphore: Semaphore;
+  options: RunOptions;
   taskList = new GrowableArray<TaskStep>();
   serviceList = new GrowableArray<ServiceRuntime>();
   services = new HashMap<String, ServiceRuntime>();
@@ -142,6 +162,7 @@ class RunState {
     this.outcomes,
     this.done,
     this.semaphore,
+    this.options,
   );
 }
 
@@ -182,6 +203,7 @@ export class Engine {
       new HashMap<String, StepOutcome>(),
       new HashMap<String, Completer<void>>(),
       new Semaphore(opts.parallelism),
+      opts,
     );
     this.#classify(graph, rs);
     rs.remaining = rs.taskList.length;
@@ -440,22 +462,29 @@ export class Engine {
 
     let cacheKey = cacheKeyFor(step.config, resolved, this.#digest);
 
-    // Fresh: the previous run recorded the same key.
+    // Fresh: the previous run recorded the same key, and any host output
+    // check confirms the recorded outputs are still intact.
     let prior = rs.previous.recordOf(step.key);
-    if (prior != null && prior.cacheKey.value == cacheKey.value) {
-      rs.next.setRecord(step.key, prior);
-      return new Succeeded(prior.manifest, StepSource.Fresh);
+    if (!rs.options.force && prior != null && prior.cacheKey.value == cacheKey.value) {
+      let verify = rs.options.verifyOutputs;
+      let intact = if (verify != null) await verify(step.key, prior.manifest) else true;
+      if (intact) {
+        rs.next.setRecord(step.key, prior);
+        return new Succeeded(prior.manifest, StepSource.Fresh);
+      }
     }
 
     await rs.semaphore.acquire();
     try {
-      let cached = await this.#cache.get(step.key, cacheKey);
-      if (cached != null) {
-        rs.next.setRecord(
-          step.key,
-          new StepRecord(step.config, cacheKey, cached, resolved),
-        );
-        return new Succeeded(cached, StepSource.Cache);
+      if (!rs.options.force) {
+        let cached = await this.#cache.get(step.key, cacheKey);
+        if (cached != null) {
+          rs.next.setRecord(
+            step.key,
+            new StepRecord(step.config, cacheKey, cached, resolved),
+          );
+          return new Succeeded(cached, StepSource.Cache);
+        }
       }
 
       // Only now is the step certain to execute, so only now are its

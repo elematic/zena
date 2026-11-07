@@ -3,6 +3,7 @@ import {getEnv} from 'zena:cli';
 import { HashSet } from 'zena:collections';
 import {isFileSync, readFileSync, writeFileSync} from 'zena:fs';
 import {monotonic} from 'zena:time';
+import {NullCache, StepCache} from 'workflow:cache';
 import {
   Engine,
   Failed,
@@ -13,6 +14,7 @@ import {
   Succeeded,
 } from 'workflow:engine';
 import {Fingerprint} from 'workflow:fingerprint';
+import {OutputManifest} from 'workflow:manifest';
 import {EngineState} from 'workflow:state';
 import {StepKey} from 'workflow:step';
 import {DiskCache, stateDirOf} from './disk-cache.zena';
@@ -139,15 +141,34 @@ export function defaultParallelism(): i32 {
   return 8;
 }
 
+async function verifyManifestOutputs(
+  hasher: FileHasher,
+  manifest: OutputManifest,
+): Future<boolean> {
+  for (let entry in manifest.outputs) {
+    if (!entry.fingerprint.value.startsWith('sha256:')) {
+      continue;
+    }
+    let current = await hasher.hashIfExists(entry.name);
+    if (current == null || current.value != entry.fingerprint.value) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * One full build of a script and its transitive dependencies: load
  * config and prior state, snapshot inputs, run the engine with the
- * local disk cache, persist the new state.
+ * local disk cache, persist the new state and hash memo.
  */
 export function buildTarget(
   root: String,
   entry: ScriptRef,
   parallelism: i32 = 0,
+  force: boolean = false,
+  useCache: boolean = true,
+  hasherOut: FileHasher? = null,
 ): BuildOutcome {
   let jobs = if (parallelism > 0) parallelism else defaultParallelism();
   let workspace = new WireitWorkspace(
@@ -158,7 +179,8 @@ export function buildTarget(
     refKey(entry)
   else
     null;
-  let hasher = new FileHasher(root);
+  let hasher = hasherOut ?? new FileHasher(root);
+  hasher.loadSync();
   let plan = planScripts(
     root,
     configs,
@@ -174,21 +196,34 @@ export function buildTarget(
       stateDirs.push(stateDir);
     }
   }
+  let cache: StepCache = if (useCache)
+    new DiskCache(
+      root,
+      () => {
+        hasher.markMutated();
+      },
+      (path, fp) => hasher.recordRestored(path, fp),
+    )
+  else
+    new NullCache();
   let engine = new Engine(
     (data: String) => new Fingerprint('sha256:' + sha256HexOfString(data)),
-    new DiskCache(root, () => {
-      hasher.markMutated();
-    }),
+    cache,
   );
   let result = runFuture(
     engine.run(
       plan.graph,
       plan.leaves,
       loadState(root, stateDirs),
-      new RunOptions(jobs),
+      new RunOptions(
+        jobs,
+        force,
+        (step, manifest) => verifyManifestOutputs(hasher, manifest),
+      ),
     ),
   );
   saveState(root, result, foregroundServiceKey);
+  hasher.saveSync();
   let stepKeys = new GrowableArray<String>();
   for (let config in configs) {
     stepKeys.push(refKey(config.ref));

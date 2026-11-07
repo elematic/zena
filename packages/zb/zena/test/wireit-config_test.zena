@@ -245,5 +245,34 @@ export let tests = suite('wireit-config', () => {
     checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"dependencies": [{"script": "y", "extra": 1}]}}}`);
     // Invalid env external: false.
     checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "env": {"FOO": {"external": false}}}}}`);
+    // Invalid packageLocks containing path separator or empty string.
+    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "packageLocks": ["../package-lock.json"]}}}`);
+    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "packageLocks": [""]}}}`);
+  });
+
+  test('packageLocks defaults to package-lock.json and supports custom or empty lists', () => {
+    let ws = new WireitWorkspace((path: String): String? => {
+      if (path == 'package.json') {
+        return `{
+          "scripts": {"def": "wireit", "none": "wireit", "pnpm": "wireit"},
+          "wireit": {
+            "def": {"command": "true", "files": [], "output": []},
+            "none": {"command": "true", "files": [], "output": [], "packageLocks": []},
+            "pnpm": {"command": "true", "files": [], "output": [], "packageLocks": ["pnpm-lock.yaml"]}
+          }
+        }`;
+      }
+      return null;
+    });
+    let def = ws.scriptConfig(new ScriptRef('', 'def'));
+    equal(def.packageLocks.length, 1);
+    equal(def.packageLocks[0], 'package-lock.json');
+
+    let none = ws.scriptConfig(new ScriptRef('', 'none'));
+    equal(none.packageLocks.length, 0);
+
+    let pnpm = ws.scriptConfig(new ScriptRef('', 'pnpm'));
+    equal(pnpm.packageLocks.length, 1);
+    equal(pnpm.packageLocks[0], 'pnpm-lock.yaml');
   });
 });

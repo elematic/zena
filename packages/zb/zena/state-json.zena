@@ -1,4 +1,4 @@
-import {Box} from 'zena:core';
+import {Box, i64ToString, parseI64} from 'zena:core';
 import {
   JsonArray,
   JsonBuilder,
@@ -161,4 +161,61 @@ export function stateFromJson(text: String): EngineState {
     );
   });
   return state;
+}
+
+/** One entry in the workspace-level `(modified, size) -> fingerprint` memo. */
+export class HashMemoEntry(
+  modified: i64,
+  size: i64,
+  fingerprint: Fingerprint,
+  var verifiedThisRun: boolean = false,
+)
+
+export function hashesToJson(entries: HashMap<String, HashMemoEntry>): String {
+  let b = new JsonBuilder();
+  b.beginObject();
+  b.key('version');
+  b.i32(1);
+  b.key('files');
+  b.beginObject();
+  entries.forEach((path, entry) => {
+    if (entry.modified > (0 as i64)) {
+      b.key(path);
+      b.beginArray();
+      b.string(i64ToString(entry.modified));
+      b.string(i64ToString(entry.size));
+      b.string(entry.fingerprint.value);
+      b.endArray();
+    }
+  });
+  b.endObject();
+  b.endObject();
+  return b.toString();
+}
+
+export function hashesFromJson(text: String): HashMap<String, HashMemoEntry> {
+  let out = new HashMap<String, HashMemoEntry>();
+  let root = asObject(parseJson(text), 'hashes root');
+  let version = root['version'];
+  if (!(version is Box<f64>) || version.value != 1.0) {
+    return out;
+  }
+  let files = asObject(root['files'], 'files');
+  files.forEach((path, value) => {
+    let arr = asArray(value, 'hash entry');
+    if (arr.length != 3) {
+      return;
+    }
+    let modStr = asString(arr[0], 'modified');
+    let sizeStr = asString(arr[1], 'size');
+    let fpStr = asString(arr[2], 'fingerprint');
+    if (let (true, modified) = parseI64(modStr)) {
+      if (let (true, size) = parseI64(sizeStr)) {
+        if (modified > (0 as i64) && size >= (0 as i64)) {
+          out[path] = new HashMemoEntry(modified, size, new Fingerprint(fpStr), false);
+        }
+      }
+    }
+  });
+  return out;
 }

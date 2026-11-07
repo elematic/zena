@@ -439,4 +439,54 @@ export let tests = suite('engine', () => {
     isTrue(result.outcomeOf(new StepKey('child')) is Skipped);
     isFalse(leafSetCalled);
   });
+
+  test('verifyOutputs falls back to cache or rerun while keeping prior manifest, and force bypasses both', () => {
+    var sawPriorOnRerun = false;
+    var stepRuns = 0;
+    let step: Step = new TaskStep(
+      new StepKey('compile'),
+      new Fingerprint('cfg:1'),
+      [new LeafInput('src.zena')],
+      (ctx) => {
+        stepRuns += 1;
+        if (ctx.previous != null) {
+          sawPriorOnRerun = true;
+        }
+        return Future.of(new OutputManifest([
+          new OutputEntry('out.wasm', new Fingerprint('fp:' + i32ToString(stepRuns))),
+        ]));
+      },
+    );
+    let graph = new Graph([step]);
+    let leaves = {'src.zena' => new Fingerprint('in:1')};
+    let cache = new InMemoryCache();
+    let engine = new Engine(digest, cache);
+
+    // Run 1 populates state and cache.
+    let r1 = runFuture(engine.run(graph, leaves, EngineState.empty()));
+    isTrue(sourceOf(r1, 'compile') == StepSource.Ran);
+    equal(stepRuns, 1);
+
+    // Run 2 with verifyOutputs returning false restores from cache without rerunning.
+    let optsMissing = new RunOptions(8, false, async (key, manifest): Future<boolean> => false);
+    let r2 = runFuture(engine.run(graph, leaves, r1.state, optsMissing));
+    isTrue(sourceOf(r2, 'compile') == StepSource.Cache);
+    equal(stepRuns, 1);
+
+    // Run 3 against an empty cache with verifyOutputs returning false reruns
+    // the callback and still passes prior.manifest on RunContext.
+    let uncachedEngine = new Engine(digest, new NullCache());
+    let r3 = runFuture(uncachedEngine.run(graph, leaves, r2.state, optsMissing));
+    isTrue(sourceOf(r3, 'compile') == StepSource.Ran);
+    equal(stepRuns, 2);
+    isTrue(sawPriorOnRerun);
+
+    // Run 4 with force: true bypasses both Fresh and InMemoryCache.get,
+    // executes the callback, and updates the cache.
+    let putsBefore = cache.puts;
+    let r4 = runFuture(engine.run(graph, leaves, r2.state, new RunOptions(8, true)));
+    isTrue(sourceOf(r4, 'compile') == StepSource.Ran);
+    equal(stepRuns, 3);
+    equal(cache.puts, putsBefore + 1);
+  });
 });

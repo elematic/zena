@@ -18,7 +18,7 @@ import {
   StepOutputs,
   TaskStep,
 } from 'workflow:step';
-import {deleteIfExists, withRoot} from './fs-util.zena';
+import {deleteIfExists, joinWorkspace, withRoot} from './fs-util.zena';
 import {FileHasher, expandGlobs, hashFile, validateGlobs} from './fs-walk.zena';
 import {sha256HexOfString} from 'zena:crypto';
 import {
@@ -97,7 +97,7 @@ function configFingerprint(
   forceSalted: boolean = false,
 ) {
   let sb = new StringBuilder();
-  appendSegment(sb, 'zb-config-v2');
+  appendSegment(sb, 'zb-config-v3');
   let command = config.command;
   appendSegment(sb, command ?? '');
   appendSegment(sb, config.clean);
@@ -117,6 +117,9 @@ function configFingerprint(
   }
   for (let glob in config.output) {
     appendSegment(sb, 'out:' + glob);
+  }
+  for (let lock in config.packageLocks) {
+    appendSegment(sb, 'lock:' + lock);
   }
   appendEnvSegments(sb, config.env);
   if (forceSalted || !config.fingerprintable) {
@@ -222,7 +225,8 @@ export async function runScript(
   let outFiles = await expandGlobs(root, config.ref.packageDir, config.output);
   let outputs = new GrowableArray<OutputEntry>();
   for (let path in outFiles) {
-    outputs.push(new OutputEntry(path, await hashFile(root, path)));
+    let fp = if (hasher != null) await hasher.hash(path) else await hashFile(root, path);
+    outputs.push(new OutputEntry(path, fp));
   }
   if (volatileMark != null) {
     // An unfingerprintable script's true outputs are unknown, so its
@@ -374,6 +378,34 @@ async function runForegroundService(
   ]);
 }
 
+function lockfileCandidates(
+  packageDir: String,
+  lockNames: Array<String>,
+): Array<String> {
+  let candidates = new GrowableArray<String>();
+  let seen = new HashSet<String>();
+  var cur = packageDir;
+  while (true) {
+    for (let name in lockNames) {
+      let candidate = joinWorkspace(cur, name);
+      if (seen.add(candidate)) {
+        candidates.push(candidate);
+      }
+    }
+    if (cur == '') {
+      break;
+    }
+    var slash = -1;
+    for (var i = 0; i < cur.length; i += 1) {
+      if (cur.getByteAt(i) == 47) {
+        slash = i;
+      }
+    }
+    cur = if (slash < 0) '' else cur.sliceBytes(0, slash);
+  }
+  return candidates;
+}
+
 function buildStepInputs(
   config: ScriptConfig,
   hasher: FileHasher,
@@ -381,10 +413,21 @@ function buildStepInputs(
   validateGlobs(config.ref.packageDir, config.files);
   validateGlobs(config.ref.packageDir, config.output);
   let inputs = new GrowableArray<InputRef>();
-  if (config.files.length > 0) {
+  let lockCandidates = if (
+    config.isWireit &&
+    config.command != null &&
+    config.fingerprintable &&
+    config.packageLocks.length > 0
+  )
+    lockfileCandidates(config.ref.packageDir, config.packageLocks)
+  else
+    new GrowableArray<String>();
+  if (config.files.length > 0 || lockCandidates.length > 0) {
     let pkgDir = config.ref.packageDir;
     let globs = config.files;
-    inputs.push(new LeafSet('files', () => hasher.hashGlobs(pkgDir, globs)));
+    inputs.push(
+      new LeafSet('files', () => hasher.hashInputs(pkgDir, globs, lockCandidates)),
+    );
   }
   // Deduplicate dependency edges, letting `cascade: true` win if listed both ways.
   let order = new GrowableArray<String>();

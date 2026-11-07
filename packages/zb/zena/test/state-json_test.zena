@@ -6,6 +6,9 @@ import {OutputEntry, OutputManifest} from 'workflow:manifest';
 import {EngineState, StepRecord} from 'workflow:state';
 import {StepKey} from 'workflow:step';
 import {
+  HashMemoEntry,
+  hashesFromJson,
+  hashesToJson,
   manifestFromJson,
   manifestToJson,
   stateFromJson,
@@ -86,5 +89,25 @@ export let tests = suite('state-json', () => {
     throws(() => {
       stateFromJson('{"version": 1, "steps": {"x": {"config": 5}}}');
     });
+  });
+
+  test('hash memo preserves full 64-bit nanosecond timestamps across round-trip', () => {
+    let entries = new HashMap<String, HashMemoEntry>();
+    // 1794000000123456789 exceeds IEEE 754 f64 exact integer precision (2^53).
+    let exactNanos = 1794000000123456789 as i64;
+    entries['src/main.zena'] = new HashMemoEntry(exactNanos, 4096 as i64, fp('sha256:abc'));
+    entries['virtual/zero'] = new HashMemoEntry(0 as i64, 10 as i64, fp('sha256:skip'));
+
+    let decoded = hashesFromJson(hashesToJson(entries));
+    equal(decoded.size, 1);
+    if (let (true, entry) = decoded.get('src/main.zena')) {
+      equal(entry.modified, exactNanos);
+      equal(entry.size, 4096 as i64);
+      equal(entry.fingerprint.value, 'sha256:abc');
+    } else {
+      throws(() => {
+        throw new Error('expected src/main.zena in decoded hash memo');
+      });
+    }
   });
 });
