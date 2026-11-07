@@ -6,12 +6,12 @@
 // them. Repo tests run with both grants.
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
+import { Future } from 'zena:async';
 import { StringBuilder } from 'zena:core';
 import {
   Binding, Extension, checkExtension, fromHost, fromProgram, loadExtension,
   loadTrustedExtension,
 } from 'zena:extensions';
-import { blockOn } from 'zena:wasi';
 import { RunOutcome, runModule } from 'zena:wasm';
 
 let fixtures = 'packages/stdlib/tests/extensions/fixtures';
@@ -19,14 +19,14 @@ let fixtures = 'packages/stdlib/tests/extensions/fixtures';
 let fixture = (name: String) => `${fixtures}/${name}`;
 
 /** Why a load failed, or '' when it did not. */
-let refusal = (name: String, bindings: Array<Binding>): String => {
-  let loaded = blockOn(loadExtension(fixture(name), bindings));
+async function refusal(name: String, bindings: Array<Binding>): Future<String> {
+  let loaded = await loadExtension(fixture(name), bindings);
   if (loaded is (false, String)) {
     return loaded[1];
   }
   (loaded as (true, Extension))[1].drop();
   return '';
-};
+}
 
 /** Runs the caller fixture's `scenario` and returns what it printed. */
 let run = (scenario: String): String => {
@@ -51,8 +51,8 @@ let checked = (name: String, world: String, wit: String = 'child.wit'): String =
 };
 
 export let tests = suite('extensions', () => {
-  test('a component with no imports loads and drops', () => {
-    let loaded = blockOn(loadExtension(fixture('plain.wasm'), []));
+  test('a component with no imports loads and drops', async () => {
+    let loaded = await loadExtension(fixture('plain.wasm'), []);
     if (loaded is (false, String)) {
       isTrue(false, loaded[1]);
     }
@@ -61,40 +61,40 @@ export let tests = suite('extensions', () => {
     ext.drop();
     // Dropping again is harmless, and handles are not reused.
     ext.drop();
-    let again = blockOn(loadExtension(fixture('plain.wasm'), []));
+    let again = await loadExtension(fixture('plain.wasm'), []);
     isTrue((again as (true, Extension))[1].handle > ext.handle);
   });
 
-  test('a file that is missing or out of reach does not load', () => {
-    isTrue(refusal('no-such.wasm', []).contains('no such file'));
-    isTrue(refusal('../../../../../etc/passwd', []).contains('outside'));
+  test('a file that is missing or out of reach does not load', async () => {
+    isTrue((await refusal('no-such.wasm', [])).contains('no such file'));
+    isTrue((await refusal('../../../../../etc/passwd', [])).contains('outside'));
   });
 
-  test('an import without a binding is refused', () => {
-    let refused = refusal('random.wasm', []);
+  test('an import without a binding is refused', async () => {
+    let refused = await refusal('random.wasm', []);
     isTrue(refused.contains('wasi:random/random@0.3.0'), refused);
     isTrue(refused.contains('not on its import list'), refused);
-    equal(refusal('random.wasm', [fromHost('wasi:random/random@0.3.0')]), '');
+    equal(await refusal('random.wasm', [fromHost('wasi:random/random@0.3.0')]), '');
   });
 
-  test('a trusted load allows every host interface', () => {
-    let loaded = blockOn(loadTrustedExtension(fixture('random.wasm')));
+  test('a trusted load allows every host interface', async () => {
+    let loaded = await loadTrustedExtension(fixture('random.wasm'));
     if (loaded is (false, String)) {
       isTrue(false, loaded[1]);
     }
     (loaded as (true, Extension))[1].drop();
   });
 
-  test('a binding to an export this program lacks is refused', () => {
-    let unbound = refusal('child.wasm', []);
+  test('a binding to an export this program lacks is refused', async () => {
+    let unbound = await refusal('child.wasm', []);
     isTrue(unbound.contains('test:ext/callbacks@1.0.0'), unbound);
     isTrue(unbound.contains('not on its import list'), unbound);
-    let bound = refusal('child.wasm', [fromProgram('test:ext/callbacks@1.0.0')]);
+    let bound = await refusal('child.wasm', [fromProgram('test:ext/callbacks@1.0.0')]);
     isTrue(bound.contains('test:ext/callbacks@1.0.0'), bound);
     isTrue(bound.contains('does not export'), bound);
-    let asHost = refusal('child.wasm', [fromHost('test:ext/callbacks@1.0.0')]);
+    let asHost = await refusal('child.wasm', [fromHost('test:ext/callbacks@1.0.0')]);
     isTrue(asHost.contains('not a host interface'), asHost);
-    let trusted = blockOn(loadTrustedExtension(fixture('child.wasm')));
+    let trusted = await loadTrustedExtension(fixture('child.wasm'));
     isTrue(trusted is (false, String));
   });
 

@@ -1,6 +1,6 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { runFuture, TaskGroup, drainMicrotasks, release } from 'zena:async';
+import { TaskGroup, drainMicrotasks, release } from 'zena:async';
 import { Some, None, Option, Own, Unmanaged, none, Result } from 'zena:core';
 import { StreamWriter, bytesStream } from 'zena:stream';
 import {
@@ -97,14 +97,14 @@ export let tests = suite('zena:http', () => {
     equal(res.body as String, 'Redirecting to /login.');
   });
 
-  test('a request body over its limit is refused, declared or not', (ctx) => {
+  test('a request body over its limit is refused, declared or not', async (ctx) => {
     let body = new FixedArray<u8>(100, 7 as u8);
     // A Content-Length over the limit is refused before the body is read.
     let declared = new Request.fromUrl('http://localhost/', 'POST', {'content-length' => '100'}, bytesStream(body));
     declared.bodyLimit = 10 as i64;
     var status = 0;
     try {
-      runFuture(declared.bytes());
+      await declared.bytes();
     } catch (e) {
       status = if (e is HttpError) e.status else -1;
     }
@@ -114,7 +114,7 @@ export let tests = suite('zena:http', () => {
     chunked.bodyLimit = 10 as i64;
     status = 0;
     try {
-      runFuture(chunked.text());
+      await chunked.text();
     } catch (e) {
       status = if (e is HttpError) e.status else -1;
     }
@@ -122,8 +122,8 @@ export let tests = suite('zena:http', () => {
     // Within it, or with none, the body reads whole.
     let within = new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(), bytesStream(body));
     within.bodyLimit = 100 as i64;
-    equal(runFuture(within.bytes()).length, 100);
-    equal(runFuture(new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(),
+    equal((await within.bytes()).length, 100);
+    equal((await new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(),
         bytesStream(body)).bytes()).length, 100);
 
     // The app answers 413.
@@ -133,8 +133,8 @@ export let tests = suite('zena:http', () => {
       res.body = await req.text();
     });
     let res = new Response();
-    runFuture(app.handleRequest(new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(),
-        bytesStream(body)), res));
+    await app.handleRequest(new Request.fromUrl('http://localhost/', 'POST', new HashMap<String, String>(),
+        bytesStream(body)), res);
     equal(res.statusCode, 413);
   });
 
@@ -156,150 +156,140 @@ export let tests = suite('zena:http', () => {
     equal(req.path, '/custom');
   });
 
-  test('compose executes middleware in onion order', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let trace = new GrowableArray<String>();
+  test('compose executes middleware in onion order', async (ctx) => {
+    let trace = new GrowableArray<String>();
 
-      let m1 = async (req: Own<Request>, res: Response, next: NextFunction): Future<void> => {
-        trace.push('m1 in');
-        await next(req);
-        trace.push('m1 out');
-      };
+    let m1 = async (req: Own<Request>, res: Response, next: NextFunction): Future<void> => {
+      trace.push('m1 in');
+      await next(req);
+      trace.push('m1 out');
+    };
 
-      let m2 = async (req: Own<Request>, res: Response, next: NextFunction): Future<void> => {
-        trace.push('m2 in');
-        await next(req);
-        trace.push('m2 out');
-      };
+    let m2 = async (req: Own<Request>, res: Response, next: NextFunction): Future<void> => {
+      trace.push('m2 in');
+      await next(req);
+      trace.push('m2 out');
+    };
 
-      let mList = new GrowableArray<Middleware>();
-      mList.push(m1);
-      mList.push(m2);
-      let pipeline = compose(mList);
-      let res = new Response();
+    let mList = new GrowableArray<Middleware>();
+    mList.push(m1);
+    mList.push(m2);
+    let pipeline = compose(mList);
+    let res = new Response();
 
-      await pipeline(new Request.fromUrl('http://localhost/'), res, async (req): Future<void> => {
-        trace.push('core handler');
-      });
+    await pipeline(new Request.fromUrl('http://localhost/'), res, async (req): Future<void> => {
+      trace.push('core handler');
+    });
 
-      equal(trace.length, 5);
-      equal(trace[0], 'm1 in');
-      equal(trace[1], 'm2 in');
-      equal(trace[2], 'core handler');
-      equal(trace[3], 'm2 out');
-      equal(trace[4], 'm1 out');
-    })());
+    equal(trace.length, 5);
+    equal(trace[0], 'm1 in');
+    equal(trace[1], 'm2 in');
+    equal(trace[2], 'core handler');
+    equal(trace[3], 'm2 out');
+    equal(trace[4], 'm1 out');
   });
 
-  test('mount rewrites path for sub-middleware and restores it for next', (ctx) => {
-    runFuture((async (): Future<void> => {
-      var subpathSeen = '';
-      var pathAfter = '';
+  test('mount rewrites path for sub-middleware and restores it for next', async (ctx) => {
+    var subpathSeen = '';
+    var pathAfter = '';
 
-      let mounted = mount('/api', async (req, res, next): Future<void> => {
-        subpathSeen = req.path;
-        res.body = 'Mounted response';
-        await next(req);
-      });
-      let res = new Response();
+    let mounted = mount('/api', async (req, res, next): Future<void> => {
+      subpathSeen = req.path;
+      res.body = 'Mounted response';
+      await next(req);
+    });
+    let res = new Response();
 
-      await mounted(new Request.fromUrl('http://localhost/api/v1/items'), res, async (req): Future<void> => {
-        pathAfter = req.path;
-      });
+    await mounted(new Request.fromUrl('http://localhost/api/v1/items'), res, async (req): Future<void> => {
+      pathAfter = req.path;
+    });
 
-      equal(subpathSeen, '/v1/items');
-      equal(pathAfter, '/api/v1/items');
-      equal(res.body as String, 'Mounted response');
+    equal(subpathSeen, '/v1/items');
+    equal(pathAfter, '/api/v1/items');
+    equal(res.body as String, 'Mounted response');
 
-      // A path outside the prefix goes straight to next.
-      subpathSeen = '';
-      await mounted(new Request.fromUrl('http://localhost/other'), new Response(), async (req): Future<void> => {
-        pathAfter = req.path;
-      });
-      equal(subpathSeen, '');
-      equal(pathAfter, '/other');
-    })());
+    // A path outside the prefix goes straight to next.
+    subpathSeen = '';
+    await mounted(new Request.fromUrl('http://localhost/other'), new Response(), async (req): Future<void> => {
+      pathAfter = req.path;
+    });
+    equal(subpathSeen, '');
+    equal(pathAfter, '/other');
   });
 
-  test('Router matches methods and extracts params', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let router = new Router();
+  test('Router matches methods and extracts params', async (ctx) => {
+    let router = new Router();
 
-      router.get('/users/:id', async (req, res, next, params): Future<void> => {
-        let id = params['id'] ?? '';
-        res.body = 'User ' + id;
-      });
+    router.get('/users/:id', async (req, res, next, params): Future<void> => {
+      let id = params['id'] ?? '';
+      res.body = 'User ' + id;
+    });
 
-      router.get('/static/*', async (req, res, next, params): Future<void> => {
-        let file = params['*'] ?? '';
-        res.body = 'Static: ' + file;
-      });
+    router.get('/static/*', async (req, res, next, params): Future<void> => {
+      let file = params['*'] ?? '';
+      res.body = 'Static: ' + file;
+    });
 
-      let routes = router.routes();
+    let routes = router.routes();
 
-      // Test param match
-      let res1 = new Response();
-      await routes(new Request.fromUrl('http://localhost/users/99'), res1, async (req): Future<void> => {});
-      equal(res1.body as String, 'User 99');
+    // Test param match
+    let res1 = new Response();
+    await routes(new Request.fromUrl('http://localhost/users/99'), res1, async (req): Future<void> => {});
+    equal(res1.body as String, 'User 99');
 
-      // Test wildcard match
-      let res2 = new Response();
-      await routes(new Request.fromUrl('http://localhost/static/css/theme.css'), res2,
-          async (req): Future<void> => {});
-      equal(res2.body as String, 'Static: css/theme.css');
+    // Test wildcard match
+    let res2 = new Response();
+    await routes(new Request.fromUrl('http://localhost/static/css/theme.css'), res2,
+        async (req): Future<void> => {});
+    equal(res2.body as String, 'Static: css/theme.css');
 
-      // Test unhandled route passes to next(req)
-      var nextCalled = false;
-      let res3 = new Response();
-      await routes(new Request.fromUrl('http://localhost/other'), res3, async (req): Future<void> => {
-        nextCalled = true;
-      });
-      equal(nextCalled, true);
-    })());
+    // Test unhandled route passes to next(req)
+    var nextCalled = false;
+    let res3 = new Response();
+    await routes(new Request.fromUrl('http://localhost/other'), res3, async (req): Future<void> => {
+      nextCalled = true;
+    });
+    equal(nextCalled, true);
   });
 
-  test('a route handing the request on reaches the next matching route', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let router = new Router();
-      router.get('/items/:id', async (req, res, next, params): Future<void> => {
-        res.setHeader('x-first', params['id'] ?? '');
-        await next(req);
-      });
-      router.all('/items/*', async (req, res, next, params): Future<void> => {
-        res.body = `rest ${params['*'] ?? ''}`;
-      });
-      let routes = router.routes();
-      let res = new Response();
-      await routes(new Request.fromUrl('http://localhost/items/7'), res,
-          async (req): Future<void> => {});
-      equal(res.getHeader('x-first') as String, '7');
-      equal(res.body as String, 'rest 7');
-    })());
+  test('a route handing the request on reaches the next matching route', async (ctx) => {
+    let router = new Router();
+    router.get('/items/:id', async (req, res, next, params): Future<void> => {
+      res.setHeader('x-first', params['id'] ?? '');
+      await next(req);
+    });
+    router.all('/items/*', async (req, res, next, params): Future<void> => {
+      res.body = `rest ${params['*'] ?? ''}`;
+    });
+    let routes = router.routes();
+    let res = new Response();
+    await routes(new Request.fromUrl('http://localhost/items/7'), res,
+        async (req): Future<void> => {});
+    equal(res.getHeader('x-first') as String, '7');
+    equal(res.body as String, 'rest 7');
   });
 
-  test('App handles requests and handles HttpError', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let app = new App();
+  test('App handles requests and handles HttpError', async (ctx) => {
+    let app = new App();
 
-      app.use(async (req, res, next): Future<void> => {
-        if (req.path == '/error') {
-          throw new HttpError(403, 'Forbidden action');
-        }
-        res.body = 'OK response';
-      });
+    app.use(async (req, res, next): Future<void> => {
+      if (req.path == '/error') {
+        throw new HttpError(403, 'Forbidden action');
+      }
+      res.body = 'OK response';
+    });
 
-      let reqOk = new Request.fromUrl('http://localhost/');
-      let resOk = new Response();
-      await app.handleRequest(reqOk, resOk);
-      equal(resOk.statusCode, 200);
-      equal(resOk.body as String, 'OK response');
+    let reqOk = new Request.fromUrl('http://localhost/');
+    let resOk = new Response();
+    await app.handleRequest(reqOk, resOk);
+    equal(resOk.statusCode, 200);
+    equal(resOk.body as String, 'OK response');
 
-      let reqErr = new Request.fromUrl('http://localhost/error');
-      let resErr = new Response();
-      await app.handleRequest(reqErr, resErr);
-      equal(resErr.statusCode, 403);
-      equal(resErr.body as String, 'Forbidden action');
-    })());
+    let reqErr = new Request.fromUrl('http://localhost/error');
+    let resErr = new Response();
+    await app.handleRequest(reqErr, resErr);
+    equal(resErr.statusCode, 403);
+    equal(resErr.body as String, 'Forbidden action');
   });
 
   test('Server lifecycle (bind port, status, close, done)', (ctx) => {
@@ -313,126 +303,116 @@ export let tests = suite('zena:http', () => {
     isTrue(server.isDone, 'server should be done after close()');
   });
 
-  test('App.listen starts server and resolves to Server', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let app = new App();
-      let server = await app.listen(0 as u16);
-      isTrue(server.isOpen, 'server should be open');
-      isTrue(server.port > 0 as u16, 'server should bind to an ephemeral port > 0');
-      server.close();
-      isTrue(!server.isOpen, 'server should be closed');
-      isTrue(server.isDone, 'server should be done after close()');
-    })());
+  test('App.listen starts server and resolves to Server', async (ctx) => {
+    let app = new App();
+    let server = await app.listen(0 as u16);
+    isTrue(server.isOpen, 'server should be open');
+    isTrue(server.port > 0 as u16, 'server should bind to an ephemeral port > 0');
+    server.close();
+    isTrue(!server.isOpen, 'server should be closed');
+    isTrue(server.isDone, 'server should be done after close()');
   });
 
-  test('App.listen rejects when port is already in use', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let app1 = new App();
-      let server1 = await app1.listen(0 as u16);
-      let port = server1.port;
+  test('App.listen rejects when port is already in use', async (ctx) => {
+    let app1 = new App();
+    let server1 = await app1.listen(0 as u16);
+    let port = server1.port;
 
-      let app2 = new App();
-      var rejected = false;
-      var errMsg = '';
-      try {
-        let server2 = await app2.listen(port);
-        server2.close();
-      } catch (e) {
-        rejected = true;
-        errMsg = e.message;
-      }
-      server1.close();
-      isTrue(rejected, 'second listen on the same port should reject');
-      isTrue(errMsg.contains('failed to bind'), `expected bind failure message, got: ${errMsg}`);
-    })());
+    let app2 = new App();
+    var rejected = false;
+    var errMsg = '';
+    try {
+      let server2 = await app2.listen(port);
+      server2.close();
+    } catch (e) {
+      rejected = true;
+      errMsg = e.message;
+    }
+    server1.close();
+    isTrue(rejected, 'second listen on the same port should reject');
+    isTrue(errMsg.contains('failed to bind'), `expected bind failure message, got: ${errMsg}`);
   });
 
-  test('a server is closed when its owner leaves scope', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let app = new App();
-      var boundPort = 0 as u16;
-      var done: Future<void> | null = null;
-      {
-        let s = await app.listen(0 as u16);
-        boundPort = s.port;
-        done = s.done;
-      }
-      if (done != null) {
-        await done;
-      }
-      // The port was released: a new server binds to it.
-      let rebound = await app.listen(boundPort);
-      equal(rebound.port, boundPort);
-    })());
+  test('a server is closed when its owner leaves scope', async (ctx) => {
+    let app = new App();
+    var boundPort = 0 as u16;
+    var done: Future<void> | null = null;
+    {
+      let s = await app.listen(0 as u16);
+      boundPort = s.port;
+      done = s.done;
+    }
+    if (done != null) {
+      await done;
+    }
+    // The port was released: a new server binds to it.
+    let rebound = await app.listen(boundPort);
+    equal(rebound.port, boundPort);
   });
 
-  test('a server kept open runs past its owner, until its scope is cancelled', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let app = new App();
-      let group = new TaskGroup();
-      var kept: Unmanaged<Server> | null = null;
-      group.spawn(async (): Future<void> => {
-        kept = (await app.listen(0 as u16)).keepOpen();
-      });
-      drainMicrotasks();
-      let server = kept;
-      if (server == null) {
-        throw new Error('the server did not start');
-      }
-      isTrue(server.isOpen, 'a kept-open server outlives its owner');
-      let boundPort = server.port;
+  test('a server kept open runs past its owner, until its scope is cancelled', async (ctx) => {
+    let app = new App();
+    let group = new TaskGroup();
+    var kept: Unmanaged<Server> | null = null;
+    group.spawn(async (): Future<void> => {
+      kept = (await app.listen(0 as u16)).keepOpen();
+    });
+    drainMicrotasks();
+    let server = kept;
+    if (server == null) {
+      throw new Error('the server did not start');
+    }
+    isTrue(server.isOpen, 'a kept-open server outlives its owner');
+    let boundPort = server.port;
 
-      group.cancel();
-      await group.join();
-      await server.done;
-      isTrue(!server.isOpen, 'cancelling its scope closes it');
-      let rebound = await app.listen(boundPort);
-      equal(rebound.port, boundPort);
-      rebound.close();
+    group.cancel();
+    await group.join();
+    await server.done;
+    isTrue(!server.isOpen, 'cancelling its scope closes it');
+    let rebound = await app.listen(boundPort);
+    equal(rebound.port, boundPort);
+    rebound.close();
 
-      // And close() closes it, a kept-open server's only other end.
-      let another = (await app.listen(0 as u16)).keepOpen();
-      isTrue(another.isOpen);
-      another.close();
-      isTrue(!another.isOpen);
-    })());
+    // And close() closes it, a kept-open server's only other end.
+    let another = (await app.listen(0 as u16)).keepOpen();
+    isTrue(another.isOpen);
+    another.close();
+    isTrue(!another.isOpen);
   });
 
-  test('App.listen closes server when enclosing TaskGroup is cancelled', (ctx) => {
-    runFuture((async (): Future<void> => {
-      let app = new App();
-      let group = new TaskGroup();
-      var boundPort = 0 as u16;
-      var openWhileRunning = false;
-      group.spawn(async (): Future<void> => {
-        let s = await app.listen(0 as u16);
-        boundPort = s.port;
-        openWhileRunning = s.isOpen;
-        await s.done;
-      });
-      drainMicrotasks();
-      isTrue(openWhileRunning, 'server should be open while group is active');
+  test('App.listen closes server when enclosing TaskGroup is cancelled', async (ctx) => {
+    let app = new App();
+    let group = new TaskGroup();
+    var boundPort = 0 as u16;
+    var openWhileRunning = false;
+    group.spawn(async (): Future<void> => {
+      let s = await app.listen(0 as u16);
+      boundPort = s.port;
+      openWhileRunning = s.isOpen;
+      await s.done;
+    });
+    drainMicrotasks();
+    isTrue(openWhileRunning, 'server should be open while group is active');
 
-      group.cancel();
-      await group.join();
+    group.cancel();
+    await group.join();
 
-      // Verify the port was released by binding a new server to the same port
-      let rebound = await app.listen(boundPort);
-      equal(rebound.port, boundPort);
-      rebound.close();
+    // Verify the port was released by binding a new server to the same port
+    let rebound = await app.listen(boundPort);
+    equal(rebound.port, boundPort);
+    rebound.close();
 
-      // Calling listen() in an already-cancelled TaskGroup should not bind
-      let preCancelled = new TaskGroup();
-      preCancelled.cancel();
-      var ranAfterListen = false;
-      preCancelled.spawn(async (): Future<void> => {
-        let s = await app.listen(0 as u16);
-        ranAfterListen = true;
-        s.close();
-      });
-      await preCancelled.join();
-      isTrue(!ranAfterListen, 'listen in an already-cancelled scope should unwind at checkpoint');
-    })());
+    // Calling listen() in an already-cancelled TaskGroup should not bind
+    let preCancelled = new TaskGroup();
+    preCancelled.cancel();
+    var ranAfterListen = false;
+    preCancelled.spawn(async (): Future<void> => {
+      let s = await app.listen(0 as u16);
+      ranAfterListen = true;
+      s.close();
+    });
+    await preCancelled.join();
+    isTrue(!ranAfterListen, 'listen in an already-cancelled scope should unwind at checkpoint');
   });
 
   test('fromWireRequest correctly parses method and headers', (ctx) => {
@@ -444,7 +424,7 @@ export let tests = suite('zena:http', () => {
     equal(req.getHeader('user-agent') as String, 'curl/8.0.0');
   });
 
-  test('a wire request reads its path, method and headers, then its body', (ctx) => {
+  test('a wire request reads its path, method and headers, then its body', async (ctx) => {
     // Reading the body hands the wire request to `consume-body` and
     // consumes the request, so it is read last.
     let fields = Fields.create();
@@ -455,7 +435,7 @@ export let tests = suite('zena:http', () => {
     equal(req.method, 'GET');
     equal(req.host, '127.0.0.1:8080');
     equal(req.getHeader('content-type') as String, 'text/plain');
-    equal(runFuture(req.text()), '');
+    equal(await req.text(), '');
   });
 
   test('a wire request dropped unread is released', (ctx) => {
@@ -486,7 +466,7 @@ export let tests = suite('zena:http', () => {
     isTrue(stopped, 'replacing a stream body stops the previous stream');
   });
 
-  test('toWireResponse rejects invalid headers and stops an attached stream body', (ctx) => {
+  test('toWireResponse rejects invalid headers and stops an attached stream body', async (ctx) => {
     let writer = new StreamWriter<u8>();
     var stopped = false;
     writer.write(1 as u8).then((result) => {
@@ -513,7 +493,7 @@ export let tests = suite('zena:http', () => {
       res.setHeader('transfer-encoding', 'chunked');
       res.body = 'bad';
     });
-    let result = runFuture(app.handle(wireRequest('/', Fields.create())));
+    let result = await app.handle(wireRequest('/', Fields.create()));
     if (let (true, wireRes) = result) {
       equal(wireRes.getStatusCode() as i32, 500);
     } else {
@@ -521,7 +501,7 @@ export let tests = suite('zena:http', () => {
     }
   });
 
-  test('toWireResponse and App.handle reject out-of-range status and mismatched fixed-body content-length', (ctx) => {
+  test('toWireResponse and App.handle reject out-of-range status and mismatched fixed-body content-length', async (ctx) => {
     let badStatus = new Response();
     badStatus.statusCode = 700;
     badStatus.body = 'bad';
@@ -587,7 +567,7 @@ export let tests = suite('zena:http', () => {
       }
     });
     for (let p in ['/status-700', '/bad-cl-text', '/bad-cl-bytes']) {
-      if (let (true, wireRes) = runFuture(app.handle(wireRequest(p, Fields.create())))) {
+      if (let (true, wireRes) = await app.handle(wireRequest(p, Fields.create()))) {
         equal(wireRes.getStatusCode() as i32, 500);
       } else {
         isTrue(false, `expected 500 WireResponse on ${p}`);

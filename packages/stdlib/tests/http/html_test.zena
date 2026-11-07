@@ -1,11 +1,10 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, equalText, isTrue } from 'zena:assert';
-import { runFuture, Completer, Future, requireSync } from 'zena:async';
+import { Completer, Future, requireSync } from 'zena:async';
 import {
   Some, Option, none, some, Iterable, Iterator, IterableUtils, ImmutableArray, AsyncInSyncIteration, StringBuilder, Result,
 } from 'zena:core';
 import { Stream, StreamWriter, readAllText } from 'zena:stream';
-import { blockOn } from 'zena:wasi';
 import {
   html,
   HTMLPartial,
@@ -245,89 +244,81 @@ export let tests = suite('zena:http html', () => {
       isTrue(threw);
     });
 
-    test('Async Futures with collectResult and for await', (ctx) => {
-      runFuture((async (): Future<void> => {
-        equal(
-          await collectResult(html`Hello ${resolveValue('World')}`),
-          'Hello World'
-        );
-        equal(
-          await collectResult(html`Hello ${resolveValue('<b>World</b>')}`),
-          'Hello &lt;b&gt;World&lt;/b&gt;'
-        );
-        equal(
-          await collectResult(html`Hello ${resolveValue(html`<h1>World</h1>`)}`),
-          'Hello <h1>World</h1>'
-        );
-        let items: Array<TemplateValue> = [html`a`, html`b`];
-        equal(
-          await collectResult(html`Hello ${resolveValue(items)}`),
-          'Hello ab'
-        );
+    test('Async Futures with collectResult and for await', async (ctx) => {
+      equal(
+        await collectResult(html`Hello ${resolveValue('World')}`),
+        'Hello World'
+      );
+      equal(
+        await collectResult(html`Hello ${resolveValue('<b>World</b>')}`),
+        'Hello &lt;b&gt;World&lt;/b&gt;'
+      );
+      equal(
+        await collectResult(html`Hello ${resolveValue(html`<h1>World</h1>`)}`),
+        'Hello <h1>World</h1>'
+      );
+      let items: Array<TemplateValue> = [html`a`, html`b`];
+      equal(
+        await collectResult(html`Hello ${resolveValue(items)}`),
+        'Hello ab'
+      );
 
-        let sb = new StringBuilder();
-        for await (let chunk in html`<span>${resolveValue('async')}</span>`) {
-          sb.append(chunk);
-        }
-        equal(sb.toString(), '<span>async</span>');
-      })());
+      let sb = new StringBuilder();
+      for await (let chunk in html`<span>${resolveValue('async')}</span>`) {
+        sb.append(chunk);
+      }
+      equal(sb.toString(), '<span>async</span>');
     });
   });
 
   suite('Streaming', () => {
-    test('htmlStream flushes buffered prefix before awaiting an unresolved Future', (ctx) => {
-      runFuture((async (): Future<void> => {
-        let gate = new Completer<TemplateValue>();
-        let tpl = html`<header>Title</header><main>${gate.future}</main><footer>End</footer>`;
+    test('htmlStream flushes buffered prefix before awaiting an unresolved Future', async (ctx) => {
+      let gate = new Completer<TemplateValue>();
+      let tpl = html`<header>Title</header><main>${gate.future}</main><footer>End</footer>`;
 
-        // Create a stream with a large flushSize (1024). Even though <header>Title</header><main>
-        // is much smaller than 1024 bytes, htmlStream must flush it before awaiting gate.future!
-        let stream = htmlStream(tpl, 1024);
+      // Create a stream with a large flushSize (1024). Even though <header>Title</header><main>
+      // is much smaller than 1024 bytes, htmlStream must flush it before awaiting gate.future!
+      let stream = htmlStream(tpl, 1024);
 
-        let firstChunk = await readNextTextChunk(stream);
-        equal(firstChunk, '<header>Title</header><main>');
+      let firstChunk = await readNextTextChunk(stream);
+      equal(firstChunk, '<header>Title</header><main>');
 
-        // Now resolve the future and read the remainder of the stream.
-        gate.complete('Async & Escaped');
-        let rest = await readAllText(stream);
-        equal(rest, 'Async &amp; Escaped</main><footer>End</footer>');
-      })());
+      // Now resolve the future and read the remainder of the stream.
+      gate.complete('Async & Escaped');
+      let rest = await readAllText(stream);
+      equal(rest, 'Async &amp; Escaped</main><footer>End</footer>');
     });
 
-    test('pipeToStream respects flushSize for synchronous chunks', (ctx) => {
-      runFuture((async (): Future<void> => {
-        let writer = new StreamWriter<u8>();
-        let tpl = html`12345${'67890'}abcdef`;
-        // Start piping with flushSize = 8 so it flushes once buffer exceeds 8 bytes,
-        // then close writer when pipeToStream completes.
-        let pipeTask = (async (): Future<void> => {
-          await pipeToStream(tpl, writer, { flushSize: 8 });
-          writer.close();
-        })();
+    test('pipeToStream respects flushSize for synchronous chunks', async (ctx) => {
+      let writer = new StreamWriter<u8>();
+      let tpl = html`12345${'67890'}abcdef`;
+      // Start piping with flushSize = 8 so it flushes once buffer exceeds 8 bytes,
+      // then close writer when pipeToStream completes.
+      let pipeTask = (async (): Future<void> => {
+        await pipeToStream(tpl, writer, { flushSize: 8 });
+        writer.close();
+      })();
 
-        let text = await readAllText(writer.stream);
-        await pipeTask;
-        equal(text, '1234567890abcdef');
-      })());
+      let text = await readAllText(writer.stream);
+      await pipeTask;
+      equal(text, '1234567890abcdef');
     });
 
-    test('htmlStream terminates cleanly when reader calls stop()', (ctx) => {
-      runFuture((async (): Future<void> => {
-        let gate = new Completer<TemplateValue>();
-        let tpl = html`<div>Start</div>${gate.future}<div>Never read</div>`;
-        let stream = htmlStream(tpl, 1024);
+    test('htmlStream terminates cleanly when reader calls stop()', async (ctx) => {
+      let gate = new Completer<TemplateValue>();
+      let tpl = html`<div>Start</div>${gate.future}<div>Never read</div>`;
+      let stream = htmlStream(tpl, 1024);
 
-        let firstChunk = await readNextTextChunk(stream);
-        equal(firstChunk, '<div>Start</div>');
+      let firstChunk = await readNextTextChunk(stream);
+      equal(firstChunk, '<div>Start</div>');
 
-        stream.stop();
-        gate.complete('After stop');
-        let remaining = await readAllText(stream);
-        equal(remaining, '');
-      })());
+      stream.stop();
+      gate.complete('After stop');
+      let remaining = await readAllText(stream);
+      equal(remaining, '');
     });
 
-    test('Response and toWireResponse set text/html content-type and stream HTMLPartial', (ctx) => {
+    test('Response and toWireResponse set text/html content-type and stream HTMLPartial', async (ctx) => {
       let app = new App();
       app.use(async (req, res, next): Future<void> => {
         res.body = html`<h1>Hello ${'Zena'} &amp; ${resolveValue('<Friends>')}</h1>`;
@@ -335,7 +326,7 @@ export let tests = suite('zena:http html', () => {
 
       let req = new Request.fromUrl('http://localhost/');
       let res = new Response();
-      blockOn(app.handleRequest(req, res));
+      await app.handleRequest(req, res);
 
       equal(res.statusCode, 200);
       let wireResp = toWireResponse(res);
@@ -348,7 +339,7 @@ export let tests = suite('zena:http html', () => {
 
       let received = new Completer<Result<void, ErrorCode>>();
       let (body, _) = WireResponse.consumeBody(wireResp, received.future);
-      let bodyText = blockOn(readAllText(body));
+      let bodyText = await readAllText(body);
       received.complete((true, unit()));
       equal(bodyText, '<h1>Hello Zena &amp; &lt;Friends&gt;</h1>');
     });

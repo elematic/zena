@@ -4,7 +4,7 @@
 // parked pump.
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, drainMicrotasks} from 'zena:async';
 import {
   Stream, StreamWriter, Multicast, Subscription, conflate, waits, buffered,
 } from 'zena:stream';
@@ -31,7 +31,7 @@ let newMulticast = (w: StreamWriter<i32>): Multicast<i32> => {
 };
 
 export let tests = suite('stream multicast', () => {
-  test('waits delivers everything, in order, to every subscriber', () => {
+  test('waits delivers everything, in order, to every subscriber', async () => {
     let w = new StreamWriter<i32>();
     let m = newMulticast(w);
     let a = m.subscribe(waits);
@@ -44,12 +44,12 @@ export let tests = suite('stream multicast', () => {
     let w2 = w.write(2);
     drainMicrotasks();
     w.close();
-    runFuture(pump);
-    equal(runFuture(ca), 'a12');
-    equal(runFuture(cb), 'b12');
+    await pump;
+    equal(await ca, 'a12');
+    equal(await cb, 'b12');
   });
 
-  test('waits holds the producer until the subscriber reads', () => {
+  test('waits holds the producer until the subscriber reads', async () => {
     let w = new StreamWriter<i32>();
     let m = newMulticast(w);
     let a = m.subscribe(waits);
@@ -64,11 +64,11 @@ export let tests = suite('stream multicast', () => {
     drainMicrotasks();
     isTrue(w2.isCompleted);
     w.close();
-    runFuture(pump);
-    equal(runFuture(ca), 'a12');
+    await pump;
+    equal(await ca, 'a12');
   });
 
-  test('conflate keeps only the latest for a slow subscriber', () => {
+  test('conflate keeps only the latest for a slow subscriber', async () => {
     let w = new StreamWriter<i32>();
     let m = newMulticast(w);
     let a = m.subscribe(conflate);
@@ -85,13 +85,13 @@ export let tests = suite('stream multicast', () => {
     let ca = collect(a.stream, 'a');
     drainMicrotasks();
     w.close();
-    runFuture(pump);
+    await pump;
     // 1 was delivered while the drainer was idle; 2 was conflated
     // away by 3 while the drainer's write of 1 was in flight.
-    equal(runFuture(ca), 'a13');
+    equal(await ca, 'a13');
   });
 
-  test('a disposed subscription frees a parked pump', () => {
+  test('a disposed subscription frees a parked pump', async () => {
     let w = new StreamWriter<i32>();
     let m = newMulticast(w);
     let slow = m.subscribe(waits);
@@ -107,11 +107,11 @@ export let tests = suite('stream multicast', () => {
     drainMicrotasks();
     isTrue(w2.isCompleted);
     w.close();
-    runFuture(pump);
-    equal(runFuture(cl), 'l12');
+    await pump;
+    equal(await cl, 'l12');
   });
 
-  test('a stopped reader detaches its subscription', () => {
+  test('a stopped reader detaches its subscription', async () => {
     let w = new StreamWriter<i32>();
     let m = newMulticast(w);
     let quitter = m.subscribe(waits);
@@ -125,11 +125,11 @@ export let tests = suite('stream multicast', () => {
     drainMicrotasks();
     isTrue(w2.isCompleted);
     w.close();
-    runFuture(pump);
-    equal(runFuture(cl), 'l12');
+    await pump;
+    equal(await cl, 'l12');
   });
 
-  test('buffered absorbs its capacity, then waits', () => {
+  test('buffered absorbs its capacity, then waits', async () => {
     let w = new StreamWriter<i32>();
     let m = newMulticast(w);
     let a = m.subscribe(buffered(2));
@@ -149,18 +149,18 @@ export let tests = suite('stream multicast', () => {
     drainMicrotasks();
     isTrue(w4.isCompleted);
     w.close();
-    runFuture(pump);
-    equal(runFuture(ca), 'a1234');
+    await pump;
+    equal(await ca, 'a1234');
   });
 
-  test('subscribing after the source ended gets an ended stream', () => {
+  test('subscribing after the source ended gets an ended stream', async () => {
     let w = new StreamWriter<i32>();
     let m = newMulticast(w);
     let a = m.subscribe(waits);
     let pump = m.run();
     w.close();
-    runFuture(pump);
+    await pump;
     let late = m.subscribe(conflate);
-    equal(runFuture(collect(late.stream, 'x')), 'x');
+    equal(await collect(late.stream, 'x'), 'x');
   });
 });

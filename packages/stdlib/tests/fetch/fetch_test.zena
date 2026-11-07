@@ -5,7 +5,7 @@
 
 import { suite, test } from 'zena:test';
 import { equal, isNull, isTrue } from 'zena:assert';
-import { Future, runFuture } from 'zena:async';
+import { Future } from 'zena:async';
 import { Borrow } from 'zena:core';
 import { fetch } from 'zena:fetch';
 import { App, Server } from 'zena:http';
@@ -65,154 +65,138 @@ function originOf(server: Borrow<Server>) {
   return `http://127.0.0.1:${server.port as i32}`;
 }
 
-// A response is an owner, so each test runs as an async body that
-// awaits it, rather than taking it out of a future with `runFuture`.
 export let tests = suite('zena:fetch', () => {
-  test('reads the status and headers, then the body', () => {
-    runFuture((async (): Future<void> => {
-      let server = startEchoServer();
-      let response = await fetch(`${originOf(server)}/after`);
-      equal(response.header('x-method') as String, 'GET');
-      equal(response.header('Content-Type') as String, 'text/plain');
-      isNull(response.header('x-missing'));
-      equal(await response.text(), 'GET /after: ');
-      let bytes = await fetch(`${originOf(server)}/after`);
-      equal(bytes.header('x-method') as String, 'GET');
-      equal((await bytes.bytes()).length, 12);
-      server.close();
-    })());
+  test('reads the status and headers, then the body', async () => {
+    let server = startEchoServer();
+    let response = await fetch(`${originOf(server)}/after`);
+    equal(response.header('x-method') as String, 'GET');
+    equal(response.header('Content-Type') as String, 'text/plain');
+    isNull(response.header('x-missing'));
+    equal(await response.text(), 'GET /after: ');
+    let bytes = await fetch(`${originOf(server)}/after`);
+    equal(bytes.header('x-method') as String, 'GET');
+    equal((await bytes.bytes()).length, 12);
+    server.close();
   });
 
-  test('a response dropped unread releases its body', () => {
-    runFuture((async (): Future<void> => {
-      let server = startEchoServer();
-      for (var i = 0; i < 3; i += 1) {
-        let response = await fetch(`${originOf(server)}/unread`);
-        equal(response.status, 200);
-      }
-      // The connection is not left holding an unread body: the next
-      // request is answered.
-      let last = await fetch(`${originOf(server)}/last`);
-      equal(await last.text(), 'GET /last: ');
-      server.close();
-    })());
-  });
-
-  test('GET sends headers and reads status, headers, and text', () => {
-    runFuture((async (): Future<void> => {
-      let server = startEchoServer();
-      let response = await fetch(`${originOf(server)}/hello?a=1`, {
-        headers: [
-          ('authorization', 'Bearer secret'),
-          ('x-custom', 'two'),
-        ],
-      });
+  test('a response dropped unread releases its body', async () => {
+    let server = startEchoServer();
+    for (var i = 0; i < 3; i += 1) {
+      let response = await fetch(`${originOf(server)}/unread`);
       equal(response.status, 200);
-      isTrue(response.ok);
-      equal(response.header('x-method') as String, 'GET');
-      equal(response.header('x-echo-auth') as String, 'Bearer secret');
-      equal(response.header('x-echo-custom') as String, 'two');
-      isNull(response.header('x-absent'));
-      equal(await response.text(), 'GET /hello?a=1: ');
-      server.close();
-    })());
+    }
+    // The connection is not left holding an unread body: the next
+    // request is answered.
+    let last = await fetch(`${originOf(server)}/last`);
+    equal(await last.text(), 'GET /last: ');
+    server.close();
   });
 
-  test('POST, PATCH, and DELETE send their methods and text bodies', () => {
-    runFuture((async (): Future<void> => {
-      let server = startEchoServer();
-      let origin = originOf(server);
-
-      let created = await fetch(`${origin}/items`, {
-        method: 'POST',
-        headers: [('content-type', 'application/json')],
-        body: '{"name":"box"}',
-      });
-      equal(created.status, 201);
-      isTrue(created.ok);
-      equal(await created.text(), 'POST /items: {"name":"box"}');
-
-      let patched = await fetch(URL.parse(`${origin}/items/1`) as URL, {
-        method: 'PATCH',
-        body: '{"name":"crate"}',
-      });
-      equal(patched.status, 200);
-      equal(await patched.text(), 'PATCH /items/1: {"name":"crate"}');
-
-      let deleted = await fetch(`${origin}/items/1`, {
-        method: 'DELETE',
-      });
-      equal(deleted.status, 204);
-      isTrue(deleted.ok);
-      server.close();
-    })());
+  test('GET sends headers and reads status, headers, and text', async () => {
+    let server = startEchoServer();
+    let response = await fetch(`${originOf(server)}/hello?a=1`, {
+      headers: [
+        ('authorization', 'Bearer secret'),
+        ('x-custom', 'two'),
+      ],
+    });
+    equal(response.status, 200);
+    isTrue(response.ok);
+    equal(response.header('x-method') as String, 'GET');
+    equal(response.header('x-echo-auth') as String, 'Bearer secret');
+    equal(response.header('x-echo-custom') as String, 'two');
+    isNull(response.header('x-absent'));
+    equal(await response.text(), 'GET /hello?a=1: ');
+    server.close();
   });
 
-  test('sends a FixedArray<u8> body and reads response.bytes()', () => {
-    runFuture((async (): Future<void> => {
-      let server = startEchoServer();
-      let payload = new FixedArray<u8>(3, 0 as u8);
-      payload[0] = 0x00 as u8;
-      payload[1] = 0x0f as u8;
-      payload[2] = 0xff as u8;
-      let response = await fetch(`${originOf(server)}/bytes`, {
-        method: 'PUT',
-        body: payload,
-      });
-      equal(response.status, 200);
-      let out = await response.bytes();
-      equal(out.length, 3);
-      equal(out[0], 0xff as u8);
-      equal(out[1], 0xf0 as u8);
-      equal(out[2], 0x00 as u8);
-      server.close();
-    })());
+  test('POST, PATCH, and DELETE send their methods and text bodies', async () => {
+    let server = startEchoServer();
+    let origin = originOf(server);
+
+    let created = await fetch(`${origin}/items`, {
+      method: 'POST',
+      headers: [('content-type', 'application/json')],
+      body: '{"name":"box"}',
+    });
+    equal(created.status, 201);
+    isTrue(created.ok);
+    equal(await created.text(), 'POST /items: {"name":"box"}');
+
+    let patched = await fetch(URL.parse(`${origin}/items/1`) as URL, {
+      method: 'PATCH',
+      body: '{"name":"crate"}',
+    });
+    equal(patched.status, 200);
+    equal(await patched.text(), 'PATCH /items/1: {"name":"crate"}');
+
+    let deleted = await fetch(`${origin}/items/1`, {
+      method: 'DELETE',
+    });
+    equal(deleted.status, 204);
+    isTrue(deleted.ok);
+    server.close();
   });
 
-  test('non-2xx responses resolve with ok == false and a readable body', () => {
-    runFuture((async (): Future<void> => {
-      let server = startEchoServer();
-      let response = await fetch(`${originOf(server)}/status/404`);
-      equal(response.status, 404);
-      isTrue(!response.ok);
-      equal(await response.text(), 'missing');
-      server.close();
-    })());
+  test('sends a FixedArray<u8> body and reads response.bytes()', async () => {
+    let server = startEchoServer();
+    let payload = new FixedArray<u8>(3, 0 as u8);
+    payload[0] = 0x00 as u8;
+    payload[1] = 0x0f as u8;
+    payload[2] = 0xff as u8;
+    let response = await fetch(`${originOf(server)}/bytes`, {
+      method: 'PUT',
+      body: payload,
+    });
+    equal(response.status, 200);
+    let out = await response.bytes();
+    equal(out.length, 3);
+    equal(out[0], 0xff as u8);
+    equal(out[1], 0xf0 as u8);
+    equal(out[2], 0x00 as u8);
+    server.close();
   });
 
-  test('fails on an invalid URL or an unreachable server', () => {
-    runFuture((async (): Future<void> => {
-      var badUrl = false;
-      try {
-        let response = await fetch('not a url');
-      } catch (e) {
-        badUrl = true;
-      }
-      isTrue(badUrl);
-
-      let server = startEchoServer();
-      let origin = originOf(server);
-      server.close();
-      var unreachable = false;
-      try {
-        let response = await fetch(origin);
-      } catch (e) {
-        unreachable = true;
-      }
-      isTrue(unreachable);
-    })());
+  test('non-2xx responses resolve with ok == false and a readable body', async () => {
+    let server = startEchoServer();
+    let response = await fetch(`${originOf(server)}/status/404`);
+    equal(response.status, 404);
+    isTrue(!response.ok);
+    equal(await response.text(), 'missing');
+    server.close();
   });
 
-  test('stops waiting for a slow server when its attempt is cancelled', () => {
+  test('fails on an invalid URL or an unreachable server', async () => {
+    var badUrl = false;
+    try {
+      let response = await fetch('not a url');
+    } catch (e) {
+      badUrl = true;
+    }
+    isTrue(badUrl);
+
+    let server = startEchoServer();
+    let origin = originOf(server);
+    server.close();
+    var unreachable = false;
+    try {
+      let response = await fetch(origin);
+    } catch (e) {
+      unreachable = true;
+    }
+    isTrue(unreachable);
+  });
+
+  test('stops waiting for a slow server when its attempt is cancelled', async () => {
     let server = startEchoServer();
     let origin = originOf(server);
     let start = monotonic();
     var timedOut = false;
     try {
-      runFuture(timeout<String>(milliseconds(100), async (): Future<String> => {
+      await timeout<String>(milliseconds(100), async (): Future<String> => {
         let response = await fetch(`${origin}/slow`);
         return await response.text();
-      })());
+      })();
     } catch (e) {
       timedOut = e is TimeoutError;
     }
@@ -222,7 +206,7 @@ export let tests = suite('zena:fetch', () => {
     server.close();
   });
 
-  test('a request with a body answered unread on a reused connection resolves', () => {
+  test('a request with a body answered unread on a reused connection resolves', async () => {
     let app = new App();
     app.use(async (req, res, next): Future<void> => {
       if (req.path == '/accept') {
@@ -248,7 +232,7 @@ export let tests = suite('zena:fetch', () => {
     server.start();
     let origin = originOf(server);
     try {
-      runFuture(timeout<void>(milliseconds(500), async (): Future<void> => {
+      await timeout<void>(milliseconds(500), async (): Future<void> => {
         let first = await fetch(`${origin}/accept`, {
           method: 'POST',
           body: '<script></script>'.toBytes(),
@@ -290,128 +274,124 @@ export let tests = suite('zena:fetch', () => {
         });
         equal(final.status, 200);
         equal(await final.text(), 'took 11');
-      })());
+      })();
     } finally {
       server.close();
     }
   });
 
-  test('server populates request host, protocol, and origin from Host header', () => {
-    runFuture((async (): Future<void> => {
-      let app = new App();
-      app.use(async (req, res, next): Future<void> => {
-        res.setHeader('x-proto', req.protocol);
-        res.setHeader('x-host', req.host);
-        res.setHeader('x-origin', req.origin);
-        res.body = req.url.href;
-      });
-      let server = new Server(app, 0 as u16);
-      server.start();
-      let expectedHost = `127.0.0.1:${server.port as i32}`;
-      let expectedOrigin = `http://${expectedHost}`;
-      try {
-        let resp = await fetch(`${expectedOrigin}/where?q=1`);
-        equal(resp.status, 200);
-        equal(resp.header('x-proto') as String, 'http');
-        equal(resp.header('x-host') as String, expectedHost);
-        equal(resp.header('x-origin') as String, expectedOrigin);
-        equal(await resp.text(), `${expectedOrigin}/where?q=1`);
-      } finally {
-        server.close();
-      }
-    })());
+  test('server populates request host, protocol, and origin from Host header', async () => {
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      res.setHeader('x-proto', req.protocol);
+      res.setHeader('x-host', req.host);
+      res.setHeader('x-origin', req.origin);
+      res.body = req.url.href;
+    });
+    let server = new Server(app, 0 as u16);
+    server.start();
+    let expectedHost = `127.0.0.1:${server.port as i32}`;
+    let expectedOrigin = `http://${expectedHost}`;
+    try {
+      let resp = await fetch(`${expectedOrigin}/where?q=1`);
+      equal(resp.status, 200);
+      equal(resp.header('x-proto') as String, 'http');
+      equal(resp.header('x-host') as String, expectedHost);
+      equal(resp.header('x-origin') as String, expectedOrigin);
+      equal(await resp.text(), `${expectedOrigin}/where?q=1`);
+    } finally {
+      server.close();
+    }
   });
 
-  test('204 and 304 omit content-length and invalid response headers answer 500', () => {
-    runFuture((async (): Future<void> => {
-      let app = new App();
-      app.use(async (req, res, next): Future<void> => {
-        let p = req.path;
-        if (p == '/204-text') {
-          res.statusCode = 204;
-          res.body = '';
-        } else if (p == '/204-bytes') {
-          res.statusCode = 204;
-          res.body = new FixedArray<u8>(0, 0 as u8);
-        } else if (p == '/304') {
-          res.statusCode = 304;
-        } else if (p == '/forbidden-text') {
-          res.setHeader('transfer-encoding', 'chunked');
-          res.body = 'bad';
-        } else if (p == '/invalid-text') {
-          res.setHeader('x-bad', 'a\r\nb');
-          res.body = 'bad';
-        } else if (p == '/forbidden-bytes') {
-          res.setHeader('transfer-encoding', 'chunked');
-          res.body = 'bad'.toBytes();
-        } else if (p == '/invalid-bytes') {
-          res.setHeader('x-bad', 'a\r\nb');
-          res.body = 'bad'.toBytes();
-        } else if (p == '/status-700') {
-          res.statusCode = 700;
-          res.body = 'bad';
-        } else if (p == '/status-wrap') {
-          res.statusCode = 65736;
-          res.body = 'bad';
-        } else if (p == '/bad-cl-empty-text') {
-          res.body = '';
-          res.setHeader('content-length', '99');
-        } else if (p == '/bad-cl-bytes') {
-          res.body = 'hello'.toBytes();
-          res.setHeader('content-length', '99');
-        } else if (p == '/head-metadata') {
-          res.statusCode = 200;
-          res.setHeader('content-length', '99');
-        }
-      });
-      let server = new Server(app, 0 as u16);
-      server.start();
-      let origin = originOf(server);
-      try {
-        let r204Text = await fetch(`${origin}/204-text`);
-        equal(r204Text.status, 204);
-        isNull(r204Text.header('content-length'));
-        equal(await r204Text.text(), '');
-
-        let r204Bytes = await fetch(`${origin}/204-bytes`);
-        equal(r204Bytes.status, 204);
-        isNull(r204Bytes.header('content-length'));
-        equal(await r204Bytes.text(), '');
-
-        let r304 = await fetch(`${origin}/304`);
-        equal(r304.status, 304);
-        isNull(r304.header('content-length'));
-        equal(await r304.text(), '');
-
-        let rForbiddenText = await fetch(`${origin}/forbidden-text`);
-        equal(rForbiddenText.status, 500);
-        await rForbiddenText.text();
-
-        let rInvalidText = await fetch(`${origin}/invalid-text`);
-        equal(rInvalidText.status, 500);
-        await rInvalidText.text();
-
-        let rForbiddenBytes = await fetch(`${origin}/forbidden-bytes`);
-        equal(rForbiddenBytes.status, 500);
-        await rForbiddenBytes.text();
-
-        let rInvalidBytes = await fetch(`${origin}/invalid-bytes`);
-        equal(rInvalidBytes.status, 500);
-        await rInvalidBytes.text();
-
-        for (let p in ['/status-700', '/status-wrap', '/bad-cl-empty-text', '/bad-cl-bytes']) {
-          let badResp = await fetch(`${origin}${p}`);
-          equal(badResp.status, 500);
-          await badResp.text();
-        }
-
-        let rHead = await fetch(`${origin}/head-metadata`, { method: 'HEAD' });
-        equal(rHead.status, 200);
-        equal(rHead.header('content-length') as String, '99');
-        equal(await rHead.text(), '');
-      } finally {
-        server.close();
+  test('204 and 304 omit content-length and invalid response headers answer 500', async () => {
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      let p = req.path;
+      if (p == '/204-text') {
+        res.statusCode = 204;
+        res.body = '';
+      } else if (p == '/204-bytes') {
+        res.statusCode = 204;
+        res.body = new FixedArray<u8>(0, 0 as u8);
+      } else if (p == '/304') {
+        res.statusCode = 304;
+      } else if (p == '/forbidden-text') {
+        res.setHeader('transfer-encoding', 'chunked');
+        res.body = 'bad';
+      } else if (p == '/invalid-text') {
+        res.setHeader('x-bad', 'a\r\nb');
+        res.body = 'bad';
+      } else if (p == '/forbidden-bytes') {
+        res.setHeader('transfer-encoding', 'chunked');
+        res.body = 'bad'.toBytes();
+      } else if (p == '/invalid-bytes') {
+        res.setHeader('x-bad', 'a\r\nb');
+        res.body = 'bad'.toBytes();
+      } else if (p == '/status-700') {
+        res.statusCode = 700;
+        res.body = 'bad';
+      } else if (p == '/status-wrap') {
+        res.statusCode = 65736;
+        res.body = 'bad';
+      } else if (p == '/bad-cl-empty-text') {
+        res.body = '';
+        res.setHeader('content-length', '99');
+      } else if (p == '/bad-cl-bytes') {
+        res.body = 'hello'.toBytes();
+        res.setHeader('content-length', '99');
+      } else if (p == '/head-metadata') {
+        res.statusCode = 200;
+        res.setHeader('content-length', '99');
       }
-    })());
+    });
+    let server = new Server(app, 0 as u16);
+    server.start();
+    let origin = originOf(server);
+    try {
+      let r204Text = await fetch(`${origin}/204-text`);
+      equal(r204Text.status, 204);
+      isNull(r204Text.header('content-length'));
+      equal(await r204Text.text(), '');
+
+      let r204Bytes = await fetch(`${origin}/204-bytes`);
+      equal(r204Bytes.status, 204);
+      isNull(r204Bytes.header('content-length'));
+      equal(await r204Bytes.text(), '');
+
+      let r304 = await fetch(`${origin}/304`);
+      equal(r304.status, 304);
+      isNull(r304.header('content-length'));
+      equal(await r304.text(), '');
+
+      let rForbiddenText = await fetch(`${origin}/forbidden-text`);
+      equal(rForbiddenText.status, 500);
+      await rForbiddenText.text();
+
+      let rInvalidText = await fetch(`${origin}/invalid-text`);
+      equal(rInvalidText.status, 500);
+      await rInvalidText.text();
+
+      let rForbiddenBytes = await fetch(`${origin}/forbidden-bytes`);
+      equal(rForbiddenBytes.status, 500);
+      await rForbiddenBytes.text();
+
+      let rInvalidBytes = await fetch(`${origin}/invalid-bytes`);
+      equal(rInvalidBytes.status, 500);
+      await rInvalidBytes.text();
+
+      for (let p in ['/status-700', '/status-wrap', '/bad-cl-empty-text', '/bad-cl-bytes']) {
+        let badResp = await fetch(`${origin}${p}`);
+        equal(badResp.status, 500);
+        await badResp.text();
+      }
+
+      let rHead = await fetch(`${origin}/head-metadata`, { method: 'HEAD' });
+      equal(rHead.status, 200);
+      equal(rHead.header('content-length') as String, '99');
+      equal(await rHead.text(), '');
+    } finally {
+      server.close();
+    }
   });
 });

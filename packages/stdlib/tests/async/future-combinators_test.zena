@@ -4,7 +4,7 @@
 // race (its early exit needs concurrent observation).
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, AggregateError, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, AggregateError, drainMicrotasks} from 'zena:async';
 import { growable, Result } from 'zena:core';
 
 let describe = (outcomes: Array<Result<i32, Error>>) => {
@@ -23,7 +23,7 @@ let describe = (outcomes: Array<Result<i32, Error>>) => {
 };
 
 export let tests = suite('Future combinators', () => {
-  test('allSettled keeps input order across settle order', (ctx) => {
+  test('allSettled keeps input order across settle order', async (ctx) => {
     let a = new Completer<i32>();
     let b = new Completer<i32>();
     let c = new Completer<i32>();
@@ -36,15 +36,15 @@ export let tests = suite('Future combinators', () => {
     c.complete(3);
     b.fail(new Error('mid'));
     a.complete(1);
-    equal(describe(runFuture(all)), 'v1emidv3');
+    equal(describe(await all), 'v1emidv3');
   });
 
-  test('allSettled of nothing is an empty array', (ctx) => {
+  test('allSettled of nothing is an empty array', async (ctx) => {
     let all = Future.allSettled<Future<i32>>(new Array<Future<i32>>());
-    equal(runFuture(all).length, 0);
+    equal((await all).length, 0);
   });
 
-  test('allSettled waits for every input past a failure', (ctx) => {
+  test('allSettled waits for every input past a failure', async (ctx) => {
     let a = new Completer<i32>();
     let b = new Completer<i32>();
     let inputs = new Array<Future<i32>>();
@@ -55,10 +55,10 @@ export let tests = suite('Future combinators', () => {
     drainMicrotasks();
     isFalse(all.isCompleted);
     b.complete(2);
-    equal(describe(runFuture(all)), 'exv2');
+    equal(describe(await all), 'exv2');
   });
 
-  test('allSettled works at void', (ctx) => {
+  test('allSettled works at void', async (ctx) => {
     let a = new Completer<void>();
     let b = new Completer<void>();
     let inputs = new Array<Future<void>>();
@@ -67,13 +67,13 @@ export let tests = suite('Future combinators', () => {
     let all = Future.allSettled<Future<void>>(inputs);
     a.complete();
     b.fail(new Error('v'));
-    let outcomes = runFuture(all);
+    let outcomes = await all;
     equal(outcomes.length, 2);
     isTrue(outcomes[0] is (true, void));
     isTrue(outcomes[1] is (false, Error));
   });
 
-  test('any settles with the first value, not the first settle', (ctx) => {
+  test('any settles with the first value, not the first settle', async (ctx) => {
     let a = new Completer<i32>();
     let b = new Completer<i32>();
     let inputs = new Array<Future<i32>>();
@@ -84,10 +84,10 @@ export let tests = suite('Future combinators', () => {
     drainMicrotasks();
     isFalse(first.isCompleted);
     b.complete(9);
-    equal(runFuture(first), 9);
+    equal(await first, 9);
   });
 
-  test('any aggregates when every input fails, in input order', (ctx) => {
+  test('any aggregates when every input fails, in input order', async (ctx) => {
     let a = new Completer<i32>();
     let b = new Completer<i32>();
     let inputs = new Array<Future<i32>>();
@@ -98,7 +98,7 @@ export let tests = suite('Future combinators', () => {
     a.fail(new Error('one'));
     var msg = '';
     try {
-      runFuture(first);
+      await first;
     } catch (e) {
       if (e is AggregateError) {
         let agg = e;

@@ -3,7 +3,7 @@
 // and hand cancellation through untouched.
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, TaskGroup, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, TaskGroup, drainMicrotasks} from 'zena:async';
 import {
   Op, TimeoutError, timeout, deadline, retry, fallback, hedge,
 } from 'zena:task';
@@ -39,17 +39,17 @@ let stuck = async (): Future<i32> => {
 };
 
 export let tests = suite('task ops', () => {
-  test('timeout hands back an attempt that beats its budget', () => {
+  test('timeout hands back an attempt that beats its budget', async () => {
     let op = timeout(milliseconds(1000), () => Future.of(5));
-    equal(runFuture(op()), 5);
+    equal(await op(), 5);
   });
 
-  test('timeout expires and cancels the attempt', () => {
+  test('timeout expires and cancels the attempt', async () => {
     log = '';
     let op = timeout(milliseconds(1), stuck);
     var msg = '';
     try {
-      let unused = runFuture(op());
+      let unused = await op();
       msg = 'no throw';
     } catch (e) {
       msg = e.message;
@@ -58,7 +58,7 @@ export let tests = suite('task ops', () => {
     equal(log, 'C');
   });
 
-  test('retry returns the first value and stops', () => {
+  test('retry returns the first value and stops', async () => {
     var calls = 0;
     let flaky = () => {
       calls += 1;
@@ -68,11 +68,11 @@ export let tests = suite('task ops', () => {
       return Future.of(calls);
     };
     let op = retry(5, flaky);
-    equal(runFuture(op()), 3);
+    equal(await op(), 3);
     equal(calls, 3);
   });
 
-  test('retry exhausts and rethrows the last failure', () => {
+  test('retry exhausts and rethrows the last failure', async () => {
     var calls = 0;
     let doomed = () => {
       calls += 1;
@@ -81,7 +81,7 @@ export let tests = suite('task ops', () => {
     var msg = '';
     try {
       let op = retry(2, doomed);
-      let unused = runFuture(op());
+      let unused = await op();
     } catch (e) {
       msg = e.message;
     }
@@ -89,7 +89,7 @@ export let tests = suite('task ops', () => {
     equal(calls, 2);
   });
 
-  test('fallback answers with alt on failure only', () => {
+  test('fallback answers with alt on failure only', async () => {
     var altCalls = 0;
     let alt = () => {
       altCalls += 1;
@@ -97,14 +97,14 @@ export let tests = suite('task ops', () => {
     };
     let bad = () => Future.failed<i32>(new Error('x'));
     let rescued = fallback(bad, alt);
-    equal(runFuture(rescued()), -1);
+    equal(await rescued(), -1);
     equal(altCalls, 1);
     let fine = fallback(() => Future.of(2), alt);
-    equal(runFuture(fine()), 2);
+    equal(await fine(), 2);
     equal(altCalls, 1);
   });
 
-  test('hedge lets the second attempt win and cancels the first', () => {
+  test('hedge lets the second attempt win and cancels the first', async () => {
     log = '';
     var calls = 0;
     let slowThenFast = () => {
@@ -115,7 +115,7 @@ export let tests = suite('task ops', () => {
       return Future.of(7);
     };
     let op = hedge(milliseconds(1), slowThenFast);
-    equal(runFuture(op()), 7);
+    equal(await op(), 7);
     equal(calls, 2);
     equal(log, 'C');
   });
@@ -137,7 +137,7 @@ export let tests = suite('task ops', () => {
     isFalse(altRan);
   });
 
-  test('a lapsed deadline fails without running the op', () => {
+  test('a lapsed deadline fails without running the op', async () => {
     var calls = 0;
     let counted = () => {
       calls += 1;
@@ -147,7 +147,7 @@ export let tests = suite('task ops', () => {
     let op = deadline(past, counted);
     var timedOut = false;
     try {
-      let unused = runFuture(op());
+      let unused = await op();
     } catch (e) {
       timedOut = e is TimeoutError;
     }
@@ -155,7 +155,7 @@ export let tests = suite('task ops', () => {
     equal(calls, 0);
   });
 
-  test('retry over timeout gives each attempt a fresh budget', () => {
+  test('retry over timeout gives each attempt a fresh budget', async () => {
     log = '';
     var calls = 0;
     let stuckOnceThenValue = () => {
@@ -166,7 +166,7 @@ export let tests = suite('task ops', () => {
       return Future.of(9);
     };
     let op = retry(2, timeout(milliseconds(1), stuckOnceThenValue));
-    equal(runFuture(op()), 9);
+    equal(await op(), 9);
     equal(calls, 2);
     equal(log, 'C');
   });

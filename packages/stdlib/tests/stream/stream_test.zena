@@ -5,7 +5,7 @@
 // generate.
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {drainMicrotasks, runFuture, AsyncIterable} from 'zena:async';
+import {drainMicrotasks, AsyncIterable} from 'zena:async';
 import {Stream, StreamWriter, readAllText, textStream} from 'zena:stream';
 import {Result} from 'zena:core';
 
@@ -37,43 +37,43 @@ let sumAll = async (s: Stream<Item>, buf: FixedArray<Item>): Future<i32> => {
 };
 
 export let tests = suite('Stream', () => {
-  test('readOne takes elements one at a time and none at the end', (ctx) => {
+  test('readOne takes elements one at a time and none at the end', async (ctx) => {
     let w = new StreamWriter<String>();
     // Pending first: the write meets it.
     let r1 = w.stream.readOne();
     drainMicrotasks();
     isFalse(r1.isCompleted);
     let wa = w.write('a');
-    let got1 = runFuture(r1);
+    let got1 = await r1;
     isTrue(got1 is Some<String>);
     equal((got1 as Some<String>).value, 'a');
-    isTrue(delivered(runFuture(wa)));
+    isTrue(delivered(await wa));
     // A batch write drains one element per readOne, completing once
     // the last is taken.
     let src = new Array<String>.fixed(2, '');
     src[0] = 'b';
     src[1] = 'c';
     let wb = w.writeAll(src);
-    equal((runFuture(w.stream.readOne()) as Some<String>).value, 'b');
+    equal(((await w.stream.readOne()) as Some<String>).value, 'b');
     drainMicrotasks();
     isFalse(wb.isCompleted);
-    equal((runFuture(w.stream.readOne()) as Some<String>).value, 'c');
-    isTrue(runFuture(wb));
+    equal(((await w.stream.readOne()) as Some<String>).value, 'c');
+    isTrue(await wb);
     // Closed: none, at once.
     w.close();
-    isFalse(runFuture(w.stream.readOne()) is Some<String>);
+    isFalse((await w.stream.readOne()) is Some<String>);
   });
 
-  test('a text stream carries the text to end-of-stream', (ctx) => {
-    equal(runFuture(readAllText(textStream('hello, stream'))), 'hello, stream');
+  test('a text stream carries the text to end-of-stream', async (ctx) => {
+    equal(await readAllText(textStream('hello, stream')), 'hello, stream');
   });
 
-  test('an empty text stream is end-of-stream at once', (ctx) => {
-    equal(runFuture(readAllText(textStream(''))), '');
+  test('an empty text stream is end-of-stream at once', async (ctx) => {
+    equal(await readAllText(textStream('')), '');
   });
 
 
-  test('a write with no reader parks; a read drains it', (ctx) => {
+  test('a write with no reader parks; a read drains it', async (ctx) => {
     let w = new StreamWriter<String>();
     let buf = new Array<String>.fixed(4, '');
 
@@ -82,12 +82,12 @@ export let tests = suite('Stream', () => {
     isFalse(wa.isCompleted);
 
     let r = w.stream.read(buf);
-    equal(runFuture(r), 1);
+    equal(await r, 1);
     equal(buf[0], 'a');
-    isTrue(delivered(runFuture(wa)));
+    isTrue(delivered(await wa));
   });
 
-  test('a pending read completes on the first write, count 1', (ctx) => {
+  test('a pending read completes on the first write, count 1', async (ctx) => {
     let w = new StreamWriter<String>();
     let buf = new Array<String>.fixed(4, '');
 
@@ -96,12 +96,12 @@ export let tests = suite('Stream', () => {
     isFalse(r.isCompleted);
 
     let wb = w.write('b');
-    equal(runFuture(r), 1);
+    equal(await r, 1);
     equal(buf[0], 'b');
-    isTrue(delivered(runFuture(wb)));
+    isTrue(delivered(await wb));
   });
 
-  test('a batch write drains across reads, up to read capacity', (ctx) => {
+  test('a batch write drains across reads, up to read capacity', async (ctx) => {
     let w = new StreamWriter<String>();
     let src = new Array<String>.fixed(5, '');
     src[0] = 'a';
@@ -113,20 +113,20 @@ export let tests = suite('Stream', () => {
 
     let wa = w.writeAll(src, 5);
     let r1 = w.stream.read(buf);
-    equal(runFuture(r1), 3);
+    equal(await r1, 3);
     equal(buf[0], 'a');
     equal(buf[2], 'c');
     // The write is not done until its whole slice is consumed.
     isFalse(wa.isCompleted);
 
     let r2 = w.stream.read(buf);
-    equal(runFuture(r2), 2);
+    equal(await r2, 2);
     equal(buf[0], 'd');
     equal(buf[1], 'e');
-    isTrue(runFuture(wa));
+    isTrue(await wa);
   });
 
-  test('writeAll without a count writes the whole buffer', (ctx) => {
+  test('writeAll without a count writes the whole buffer', async (ctx) => {
     let w = new StreamWriter<String>();
     let src = new Array<String>.fixed(2, '');
     src[0] = 'a';
@@ -135,13 +135,13 @@ export let tests = suite('Stream', () => {
 
     let wa = w.writeAll(src);
     let r = w.stream.read(buf);
-    equal(runFuture(r), 2);
+    equal(await r, 2);
     equal(buf[0], 'a');
     equal(buf[1], 'b');
-    isTrue(runFuture(wa));
+    isTrue(await wa);
   });
 
-  test('a batch write rendezvouses with a blocked reader, remainder parks', (ctx) => {
+  test('a batch write rendezvouses with a blocked reader, remainder parks', async (ctx) => {
     let w = new StreamWriter<String>();
     let src = new Array<String>.fixed(5, '');
     src[0] = 'a';
@@ -153,17 +153,17 @@ export let tests = suite('Stream', () => {
 
     let r1 = w.stream.read(buf);
     let wa = w.writeAll(src, 5);
-    equal(runFuture(r1), 3);
+    equal(await r1, 3);
     equal(buf[0], 'a');
     isFalse(wa.isCompleted);
 
     let r2 = w.stream.read(buf);
-    equal(runFuture(r2), 2);
+    equal(await r2, 2);
     equal(buf[0], 'd');
-    isTrue(runFuture(wa));
+    isTrue(await wa);
   });
 
-  test('a second write while one pends throws', (ctx) => {
+  test('a second write while one pends throws', async (ctx) => {
     let w = new StreamWriter<String>();
     let buf = new Array<String>.fixed(2, '');
 
@@ -177,43 +177,43 @@ export let tests = suite('Stream', () => {
     isFalse(wroteTwice);
 
     let r = w.stream.read(buf);
-    equal(runFuture(r), 1);
+    equal(await r, 1);
     equal(buf[0], 'a');
-    isTrue(delivered(runFuture(first)));
+    isTrue(delivered(await first));
   });
 
-  test('close completes a pending read with 0, and every read after', (ctx) => {
+  test('close completes a pending read with 0, and every read after', async (ctx) => {
     let w = new StreamWriter<String>();
     let buf = new Array<String>.fixed(2, '');
 
     let r = w.stream.read(buf);
     w.close();
-    equal(runFuture(r), 0);
-    equal(runFuture(w.stream.read(buf)), 0);
+    equal(await r, 0);
+    equal(await w.stream.read(buf), 0);
   });
 
-  test('a pending write still delivers after close', (ctx) => {
+  test('a pending write still delivers after close', async (ctx) => {
     let w = new StreamWriter<String>();
     let buf = new Array<String>.fixed(2, '');
 
     let last = w.write('tail');
     w.close();
     let r = w.stream.read(buf);
-    equal(runFuture(r), 1);
+    equal(await r, 1);
     equal(buf[0], 'tail');
-    isTrue(delivered(runFuture(last)));
-    equal(runFuture(w.stream.read(buf)), 0);
+    isTrue(delivered(await last));
+    equal(await w.stream.read(buf), 0);
   });
 
-  test('a stopped reader refuses the pending and later writes', (ctx) => {
+  test('a stopped reader refuses the pending and later writes', async (ctx) => {
     let w = new StreamWriter<String>();
     let buf = new Array<String>.fixed(2, '');
 
     let parked = w.write('never');
     w.stream.stop();
-    isFalse(delivered(runFuture(parked)));
-    isFalse(delivered(runFuture(w.write('later'))));
-    equal(runFuture(w.stream.read(buf)), 0);
+    isFalse(delivered(await parked));
+    isFalse(delivered(await w.write('later')));
+    equal(await w.stream.read(buf), 0);
   });
 
   test('write after close throws', (ctx) => {
@@ -228,7 +228,7 @@ export let tests = suite('Stream', () => {
     isTrue(threw);
   });
 
-  test('an async consumer drains an object stream in batches', (ctx) => {
+  test('an async consumer drains an object stream in batches', async (ctx) => {
     let w = new StreamWriter<Item>();
     let placeholder = new Item(0);
     let buf = new Array<Item>.fixed(3, placeholder);
@@ -245,11 +245,11 @@ export let tests = suite('Stream', () => {
     w.close();
     drainMicrotasks();
 
-    isTrue(runFuture(wa));
-    equal(runFuture(total), 660);
+    isTrue(await wa);
+    equal(await total, 660);
   });
 
-  test('Stream implements AsyncIterable for for-await consumption', (ctx) => {
+  test('Stream implements AsyncIterable for for-await consumption', async (ctx) => {
     let w = new StreamWriter<String>();
     let consumeAll = async (s: Stream<String>): Future<String> => {
       var out = '';
@@ -268,7 +268,7 @@ export let tests = suite('Stream', () => {
 
     let w1 = w.write('first');
     drainMicrotasks();
-    isTrue(delivered(runFuture(w1)));
+    isTrue(delivered(await w1));
 
     let batch = new Array<String>.fixed(3, '');
     batch[0] = 'second';
@@ -276,13 +276,13 @@ export let tests = suite('Stream', () => {
     batch[2] = 'fourth';
     let w2 = w.writeAll(batch);
     drainMicrotasks();
-    isTrue(runFuture(w2));
+    isTrue(await w2);
 
     w.close();
-    equal(runFuture(done), 'first,second,third,fourth');
+    equal(await done, 'first,second,third,fourth');
   });
 
-  test('Stream AsyncIterator yields Ready steps across a parked batch write', (ctx) => {
+  test('Stream AsyncIterator yields Ready steps across a parked batch write', async (ctx) => {
     let w = new StreamWriter<i32>();
     let batch = new Array<i32>.fixed(3, 0);
     batch[0] = 10;
@@ -309,7 +309,7 @@ export let tests = suite('Stream', () => {
     } else {
       isTrue(false);
     }
-    isTrue(runFuture(wb));
+    isTrue(await wb);
     // Stream is closed and drained -> Done step synchronously.
     if (let (0, _, _) = iter.next()) {
       isTrue(true);
