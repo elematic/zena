@@ -13,7 +13,6 @@
 
 import { suite, test } from 'zena:test';
 import { isTrue } from 'zena:assert';
-import { runFuture } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { GlobOptions, existsSync, globSync, mkdirSync, readFileSync, writeFileSync, writeFileBytesSync } from 'zena:fs';
 import { runIn } from 'zena:process';
@@ -56,9 +55,9 @@ function fixtureNames(): Array<String> {
  * `zena` command has; a test cannot search PATH itself, because the preopens
  * it gets are the repository, the standard library and a scratch directory.
  */
-function wasmTools(args: Array<String>): (boolean, String, String) {
+async function wasmTools(args: Array<String>): Future<(boolean, String, String)> {
   let result = try {
-    runFuture(runIn(args, '.'))
+    await runIn(args, '.')
   } catch (e) {
     throw new Error(
       `${e.message} — wasm-tools has to be on PATH; enter the dev shell (nix develop, or direnv)`,
@@ -68,7 +67,7 @@ function wasmTools(args: Array<String>): (boolean, String, String) {
 }
 
 export let tests = suite('WIT component encoder', () => {
-  test('each fixture encodes, validates and round-trips', () => {
+  test('each fixture encodes, validates and round-trips', async () => {
     if (!existsSync(OUT)) {
       mkdirSync(OUT);
     }
@@ -99,13 +98,13 @@ export let tests = suite('WIT component encoder', () => {
         continue;
       }
 
-      let (valid, _, invalidWhy) = wasmTools(['wasm-tools', 'validate', '--features', 'all', out]);
+      let (valid, _, invalidWhy) = await wasmTools(['wasm-tools', 'validate', '--features', 'all', out]);
       if (!valid) {
         failures.push(`${name}: does not validate as a component: ${invalidWhy}`);
         continue;
       }
 
-      let (printed, text, printWhy) = wasmTools(['wasm-tools', 'component', 'wit', out]);
+      let (printed, text, printWhy) = await wasmTools(['wasm-tools', 'component', 'wit', out]);
       if (!printed) {
         failures.push(`${name}: wasm-tools component wit failed: ${printWhy}`);
         continue;

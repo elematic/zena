@@ -5,7 +5,7 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {OrderedHashMap} from 'zena:collections';
 import {Cid} from 'atproto:cid';
 import {BlobRef} from 'atproto:data';
@@ -70,16 +70,16 @@ export let tests = suite('package-manager:registry', () => {
     }
   });
 
-  test('resolves a DID, a handle and @scope/name to a DID', (ctx) => {
+  test('resolves a DID, a handle and @scope/name to a DID', async (ctx): Future<void> => {
     let pds = started();
     pds.account(JSON_DID, 'json.acme.pkg.zena-lang.dev');
     let resolver = pds.resolver();
-    equal(runFuture(resolveIdentifier(JSON_DID, noScopes(), resolver)), JSON_DID);
-    equal(runFuture(resolveIdentifier('json.acme.pkg.zena-lang.dev', noScopes(), resolver)), JSON_DID);
-    equal(runFuture(resolveIdentifier('@acme/json', noScopes(), resolver)), JSON_DID);
+    equal(await resolveIdentifier(JSON_DID, noScopes(), resolver), JSON_DID);
+    equal(await resolveIdentifier('json.acme.pkg.zena-lang.dev', noScopes(), resolver), JSON_DID);
+    equal(await resolveIdentifier('@acme/json', noScopes(), resolver), JSON_DID);
     var message = '';
     try {
-      runFuture(resolveIdentifier('@acme/nothing', noScopes(), resolver));
+      await resolveIdentifier('@acme/nothing', noScopes(), resolver);
     } catch (e) {
       message = e.message;
     }
@@ -87,15 +87,15 @@ export let tests = suite('package-manager:registry', () => {
     pds.close();
   });
 
-  test('lists versions, and picks the latest that is not retracted', (ctx) => {
+  test('lists versions, and picks the latest that is not retracted', async (ctx): Future<void> => {
     let pds = started();
     let account = pds.main;
     for (let version in ['1.0.0', '1.4.2', '1.5.0', '2.0.0-rc.1', '2.0.0', '2.1.0']) {
       publish(account, version);
     }
     account.retract(new Retraction(Version.parse('2.1.0'), 'broken'));
-    let document = runFuture(pds.resolver().resolveDid(DID));
-    let versions = runFuture(listVersions(document));
+    let document = await pds.resolver().resolveDid(DID);
+    let versions = await listVersions(document);
     equal(versions.releases.length, 6);
     equal((versions.latest() as Version).toString(), '2.0.0');
     equal((versions.latest(1 as i64) as Version).toString(), '1.5.0');
@@ -105,16 +105,16 @@ export let tests = suite('package-manager:registry', () => {
     pds.close();
   });
 
-  test('reads a profile with its proof', (ctx) => {
+  test('reads a profile with its proof', async (ctx): Future<void> => {
     let pds = started();
     let resolver = pds.resolver();
-    isTrue(runFuture(fetchProfile(runFuture(resolver.resolveDid(DID)))) == null);
+    isTrue(await fetchProfile(await resolver.resolveDid(DID)) == null);
     pds.main.setProfile(new Profile('router', 'Routing'));
-    equal((runFuture(fetchProfile(runFuture(resolver.resolveDid(DID)))) as Profile).name, 'router');
+    equal((await fetchProfile(await resolver.resolveDid(DID)) as Profile).name, 'router');
     pds.close();
   });
 
-  test('resolves over the network, each release checked', (ctx) => {
+  test('resolves over the network, each release checked', async (ctx): Future<void> => {
     let pds = started();
     let json = pds.account(JSON_DID);
     publish(json, '2.0.0');
@@ -125,7 +125,7 @@ export let tests = suite('package-manager:registry', () => {
     requirements.push(new Requirement(DID, Version.parse('1.4.2')));
     requirements.push(new Requirement(JSON_DID, Version.parse('2.0.0')));
 
-    let resolution = runFuture(resolve(requirements, networkReleases(pds.resolver())));
+    let resolution = await resolve(requirements, networkReleases(pds.resolver()));
     equal(resolution.packages[`${JSON_DID}@2`].version.toString(), '2.1.0');
     isTrue(resolution.packages[`${DID}@1`].release.equals(routerRecord));
     isTrue(resolution.packages[`${DID}@1`].source.equals(Cid.forBlob(bytesOf(`${DID} 1.4.2`))));
@@ -133,7 +133,7 @@ export let tests = suite('package-manager:registry', () => {
     var message = '';
     try {
       requirements[1] = new Requirement(JSON_DID, Version.parse('2.9.0'));
-      runFuture(resolve(requirements, networkReleases(pds.resolver())));
+      await resolve(requirements, networkReleases(pds.resolver()));
     } catch (e) {
       message = e.message;
     }

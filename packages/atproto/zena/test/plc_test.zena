@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {p256} from 'zena:crypto';
 import {hex} from 'zena:encoding';
 import {readFileSync} from 'zena:fs';
@@ -145,7 +145,7 @@ export let tests = suite('atproto:plc', () => {
     isTrue(plcError(() => { PlcOperation.fromJson(parseJson('[]')); }).contains('not a JSON object'));
   });
 
-  test('sends an operation to a PLC directory, which may refuse it', (ctx) => {
+  test('sends an operation to a PLC directory, which may refuse it', async (ctx): Future<void> => {
     let received = new JsonObject();
     let app = new App();
     app.use(async (req, res, next): Future<void> => {
@@ -166,7 +166,7 @@ export let tests = suite('atproto:plc', () => {
     let c = cases()[0] as JsonObject;
     let operation = PlcOperation.fromJson(c['operation']);
     let did = c['did'] as String;
-    runFuture(submitPlcOperation(directory, did, operation));
+    await submitPlcOperation(directory, did, operation);
     equal(received['path'] as String, `/${did}`);
     isTrue(PlcOperation.fromJson(received['body']).cid().equals(operation.cid()));
 
@@ -174,7 +174,7 @@ export let tests = suite('atproto:plc', () => {
         new GrowableArray<String>(), operation.services, null, operation.sig);
     var refused = '';
     try {
-      runFuture(submitPlcOperation(directory, did, empty));
+      await submitPlcOperation(directory, did, empty);
     } catch (e) {
       refused = if (e is PlcError) e.message else `another error: ${e.message}`;
     }

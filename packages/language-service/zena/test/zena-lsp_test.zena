@@ -9,18 +9,17 @@
 // `.`, and needs spawning, which repository tests have.
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { runFuture } from 'zena:async';
 import { JsonObject, parseJson } from 'zena:json';
 import { runWith } from 'zena:process';
 import { MessageReader, frame } from '../lib/framing.zena';
 
 /** Runs `zena-cli lsp` on a whole session's input. */
-function session(messages: Array<String>) {
+async function session(messages: Array<String>) {
   var input = '';
   for (let message in messages) {
     input = input + frame(message);
   }
-  return runFuture(runWith(['./target/release/zena-cli', 'lsp'], {cwd: '.', input: input}));
+  return await runWith(['./target/release/zena-cli', 'lsp'], {cwd: '.', input: input});
 }
 
 /** The messages in a process's output, which must hold nothing else. */
@@ -82,12 +81,12 @@ function joined(lines: Array<String>) {
 }
 
 export let tests = suite('zena lsp', () => {
-  test('answers a session and exits with status 0', () => {
+  test('answers a session and exits with status 0', async () => {
     // The start of `addOne` in `addOne(41)`: UTF-16 character 27, byte
     // 28, since 'é' is one unit and two bytes. Read as a byte offset,
     // 27 is the space before it, and there would be nothing to hover.
     let at = `"textDocument":{"uri":"${uri}"},"position":{"line":4,"character":27}`;
-    let run = session([
+    let run = await session([
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}',
       '{"jsonrpc":"2.0","method":"initialized","params":{}}',
       `{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"${uri}","languageId":"zena","version":1,"text":"${joined(text)}"}}}`,
@@ -127,8 +126,8 @@ export let tests = suite('zena lsp', () => {
     isTrue(shutdown.has('result'));
   });
 
-  test('ends when its input ends', () => {
-    let run = session([
+  test('ends when its input ends', async () => {
+    let run = await session([
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}',
     ]);
     equal(run.exitCode, 0, run.stderr);

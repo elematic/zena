@@ -20,7 +20,6 @@
 
 import { suite, test } from 'zena:test';
 import { fail, isTrue, jsonEqual } from 'zena:assert';
-import { runFuture } from 'zena:async';
 import { HashSet } from 'zena:collections';
 import { StringBuilder } from 'zena:core';
 import { existsSync, isDirectorySync, listDirSync, readFileSync } from 'zena:fs';
@@ -266,13 +265,13 @@ function isBinary(path: String) {
 }
 
 /** The WIT a component decodes to, through the wasm-tools CLI. */
-function decodeBinary(path: String) {
+async function decodeBinary(path: String) {
   // The child runs on the host; '.' as its directory is the repository root,
   // which is what the paths here are relative to. The host resolves the
   // program name — a test cannot search PATH itself, because the preopens it
   // gets are the repository, the standard library and a scratch directory.
   let result = try {
-    runFuture(runIn(['wasm-tools', 'component', 'wit', path], '.'))
+    await runIn(['wasm-tools', 'component', 'wit', path], '.')
   } catch (e) {
     throw new Error(
       `${e.message} — wasm-tools has to be on PATH; enter the dev shell (nix develop, or direnv)`,
@@ -287,10 +286,10 @@ function decodeBinary(path: String) {
 }
 
 /** The single document a case parses: its files, in order, concatenated. */
-function inputOf(c: Case) {
+async function inputOf(c: Case) {
   if (!c.isDirectory) {
     if (isBinary(c.path)) {
-      return decodeBinary(c.path);
+      return await decodeBinary(c.path);
     }
     return readFileSync(c.path);
   }
@@ -312,7 +311,7 @@ function inputOf(c: Case) {
   let contents = new GrowableArray<String>();
   for (let path in ordered) {
     if (isBinary(path)) {
-      contents.push(decodeBinary(path));
+      contents.push(await decodeBinary(path));
     } else {
       contents.push(readFileSync(path));
     }
@@ -379,13 +378,13 @@ function harnessFault(c: Case) {
   return '';
 }
 
-function runCase(c: Case) {
+async function runCase(c: Case) {
   let fault = harnessFault(c);
   if (fault != '') {
     isTrue(!c.mustParse, `${c.name}: ${fault}`);
     return;
   }
-  let input = inputOf(c);
+  let input = await inputOf(c);
   if (!c.mustParse) {
     isTrue(failureOf(input) != '', `${c.name} parsed, but must fail`);
     return;
@@ -453,7 +452,7 @@ function readCorpus() {
  * Runs every case whose expectation is a `.wit.json` when `mustParse`, and
  * every `.wit.result` case otherwise, printing a line per failure.
  */
-function runGroup(mustParse: boolean, label: String) {
+async function runGroup(mustParse: boolean, label: String) {
   let corpus = readCorpus();
   var ran = 0;
   var skipped = 0;
@@ -468,7 +467,7 @@ function runGroup(mustParse: boolean, label: String) {
     }
     ran += 1;
     let message = try {
-      runCase(c);
+      await runCase(c);
       ''
     } catch (e) {
       e.message
@@ -493,11 +492,11 @@ function runGroup(mustParse: boolean, label: String) {
 }
 
 export let tests = suite('WIT corpus', () => {
-  test('documents that must parse', () => {
-    runGroup(true, 'success cases');
+  test('documents that must parse', async () => {
+    await runGroup(true, 'success cases');
   });
 
-  test('documents that must fail', () => {
-    runGroup(false, 'error cases');
+  test('documents that must fail', async () => {
+    await runGroup(false, 'error cases');
   });
 });

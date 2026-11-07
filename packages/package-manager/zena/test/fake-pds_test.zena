@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {now} from 'wasi:clocks/system-clock';
 import {verifyServiceAuth} from 'atproto:service-auth';
 import {createSession, getServiceAuth} from 'atproto:session';
@@ -12,24 +12,24 @@ let HOST = 'did:web:pkg.zena-lang.dev';
 let PUBLISH = 'dev.zena-lang.registry.publish';
 
 export let tests = suite('package-manager:testing/fake-pds', () => {
-  test('signs a maintainer in and hands out service-auth tokens that verify', (ctx) => {
+  test('signs a maintainer in and hands out service-auth tokens that verify', async (ctx): Future<void> => {
     let pds = new FakePds();
     pds.start();
     let alice = pds.account(ALICE, 'alice.test');
     alice.password = 'app-password';
     let resolver = pds.resolver();
 
-    let session = runFuture(createSession('alice.test', 'app-password', resolver));
+    let session = await createSession('alice.test', 'app-password', resolver);
     equal(session.did, ALICE);
-    let token = runFuture(getServiceAuth(session, HOST, PUBLISH));
-    let claims = runFuture(verifyServiceAuth(token, HOST, PUBLISH, now().seconds,
-        resolver.signingKeys()));
+    let token = await getServiceAuth(session, HOST, PUBLISH);
+    let claims = await verifyServiceAuth(token, HOST, PUBLISH, now().seconds,
+        resolver.signingKeys());
     equal(claims.iss, ALICE);
     equal(pds.serviceAuthRequests.length, 1);
 
     var refused = '';
     try {
-      runFuture(createSession(ALICE, 'wrong', resolver));
+      await createSession(ALICE, 'wrong', resolver);
     } catch (e) {
       refused = if (e is XrpcError) e.error else e.message;
     }
