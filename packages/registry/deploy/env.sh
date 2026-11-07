@@ -120,6 +120,38 @@ find_parent_zone() {
 # so both use the same one.
 TENANT=pkg
 
+# The App View's configuration (registry:service), which deploy.sh gives
+# its service and operator.sh the commands it runs here: APP_VIEW_VARS,
+# its variables as NAME=value, and APP_VIEW_SECRETS, as NAME=<secret>, the
+# Secret Manager secret each takes its value from.
+APP_VIEW_VARS=(
+  "APP_VIEW_DOMAIN=${DOMAIN}"
+  "APP_VIEW_PDS_URL=https://${PDS_DOMAIN}"
+  "APP_VIEW_STORAGE=firestore"
+  "APP_VIEW_FIRESTORE_DATABASE=${DATABASE}"
+  "APP_VIEW_TENANT=${TENANT}"
+  "APP_VIEW_SIGNING_KMS_KEY=${SIGNING_KMS_KEY_VERSION}"
+  "APP_VIEW_HANDLE_RECORDS=cloud-dns"
+  "APP_VIEW_DNS_ZONE=${ZONE}"
+  "APP_VIEW_DNS_PROJECT=${PROJECT}"
+  "APP_VIEW_PLC=${PLC_MODE}"
+  "GOOGLE_CLOUD_PROJECT=${PROJECT}"
+)
+# The web sessions' secret is the one padstone's sessions are signed with.
+APP_VIEW_SECRETS=("APP_VIEW_SESSION_SECRET=${JWT_SECRET}")
+if [ "$ROTATION_KMS" = 1 ]; then
+  APP_VIEW_VARS+=("APP_VIEW_ROTATION_KMS_KEY=${KMS_KEY_VERSION}")
+else
+  APP_VIEW_SECRETS+=("APP_VIEW_ROTATION_KEY=${SECRET}")
+fi
+if [ -n "$ADMIN_DIDS" ]; then
+  # Spaces, since gcloud's --set-env-vars splits on commas.
+  APP_VIEW_VARS+=("APP_VIEW_ADMIN_DIDS=${ADMIN_DIDS//,/ }")
+fi
+if [ -n "$OFFLINE_ROTATION_KEY" ]; then
+  APP_VIEW_VARS+=("APP_VIEW_OFFLINE_ROTATION_KEY=${OFFLINE_ROTATION_KEY}")
+fi
+
 echo "environment: $PDS_ENV ($DOMAIN, the PDS at $PDS_DOMAIN)"
 echo "project:     $PROJECT, $REGION"
 echo

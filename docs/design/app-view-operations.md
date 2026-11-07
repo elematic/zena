@@ -177,12 +177,12 @@ The three ways to remove a release differ in who does it and what stays:
 
 ## The operator
 
-| Operation                                  | Exists                               |
-| ------------------------------------------ | ------------------------------------ |
-| Deploy, set up keys and secrets            | `deploy/` (`deploy:setup`, `deploy`) |
-| Make the offline rotation key              | `main.zena generate-key`             |
-| Undo a misused online key's PLC operations | `main.zena plc-restore`              |
-| Create a scope for an organization         | `main.zena create-scope`             |
-| Rewrite every handle's DNS records         | `main.zena sync-handles`             |
-| Rewrite the summaries and mentions indexes | `main.zena sync-indexes`             |
-| Name the App View's admins                 | `APP_VIEW_ADMIN_DIDS`                |
+| Operation                                  | Exists                                                 |
+| ------------------------------------------ | ------------------------------------------------------ |
+| Deploy, set up keys and secrets            | `deploy/` (`deploy:setup`, `deploy`)                   |
+| Make the offline rotation key              | `main.zena generate-key`                               |
+| Undo a misused online key's PLC operations | `main.zena plc-restore`                                |
+| Create a scope for an organization         | `main.zena create-scope`, through `deploy/operator.sh` |
+| Rewrite every handle's DNS records         | `main.zena sync-handles`                               |
+| Rewrite the summaries and mentions indexes | `main.zena sync-indexes`                               |
+| Name the App View's admins                 | `APP_VIEW_ADMIN_DIDS`                                  |

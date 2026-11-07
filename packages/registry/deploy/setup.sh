@@ -58,6 +58,14 @@ else
     --display-name "Zena App View ($PDS_ENV)" --quiet
 fi
 MEMBER="serviceAccount:$SERVICE_ACCOUNT_EMAIL"
+# operator.sh runs the App View's operator commands here as the service
+# account, so the account running this may act as it.
+OPERATOR="$(gcloud config get-value account 2> /dev/null || true)"
+if [ -n "$OPERATOR" ]; then
+  gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT_EMAIL" --project "$PROJECT" \
+    --member "user:$OPERATOR" --role roles/iam.serviceAccountTokenCreator --quiet > /dev/null
+  echo "    $OPERATOR may act as it, for operator.sh"
+fi
 
 echo "==> Firestore database $DATABASE ($FIRESTORE_LOCATION)"
 if gcloud firestore databases describe --database "$DATABASE" --project "$PROJECT" > /dev/null 2>&1; then
