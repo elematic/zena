@@ -4,7 +4,7 @@
  * uses a small part of the Firestore API costs; see the package README.
  */
 
-import {Future, runFuture} from 'zena:async';
+import {Future} from 'zena:async';
 import {AsyncIterator} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {ProtoTransport, ProtoView, RpcMetadata, RpcMethod} from 'protobuf:runtime';
@@ -27,13 +27,13 @@ final class CannedTransport implements ProtoTransport {
   }
 }
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let fields = new HashMap<String, Value>();
   fields['title'] = Value.of({stringValue: 'Hello'});
   let canned = Document.of({name: 'projects/p/databases/(default)/documents/posts/1', fields});
   let client = new FirestoreClient(new CannedTransport(canned.protoView));
-  let doc = runFuture(client.getDocument({name: 'projects/p/databases/(default)/documents/posts/1'}));
+  let doc = await client.getDocument({name: 'projects/p/databases/(default)/documents/posts/1'});
   let title = doc.fields.getOr('title', Value.of({}));
   console.log(title.stringValue);
   return 0;
-};
+}
