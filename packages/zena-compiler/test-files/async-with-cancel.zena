@@ -1,17 +1,14 @@
-import {
-  Future, TaskGroup, drainMicrotasks, runFuture,
-} from 'zena:async';
+import { Future, TaskGroup } from 'zena:async';
 
 let work = async (gate: Future<i32>): Future<i32> => {
   let v = await gate;
   return v * 2;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let group = new TaskGroup();
   let f = group.spawn(() => work(Future.of(21)));
-  drainMicrotasks();
-  let got = runFuture(f);
+  let got = await f;
   group.cancel();
   return got;
-};
+}

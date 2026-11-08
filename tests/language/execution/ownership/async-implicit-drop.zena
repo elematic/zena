@@ -7,7 +7,7 @@
 // and on an early return. The release rides the same frame-surviving
 // finally regions `using` proved out.
 
-import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Completer } from 'zena:async';
 import { Own, Disposable } from 'zena:core';
 
 /** Records events as decimal digits, so ordering is observable. */
@@ -71,14 +71,13 @@ let observeFailure = async (f: Future<i32>): Future<i32> => {
   }
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let log = new Log();
 
   let c1 = new Completer<i32>();
   let a = normal(c1, log);
   c1.complete(10);
-  drainMicrotasks();
-  if (runFuture(a) != 10 || log.seq != 321) {
+  if ((await a) != 10 || log.seq != 321) {
     return 0 - 1;
   }
 
@@ -86,8 +85,7 @@ export let main = (): i32 => {
   let c2 = new Completer<i32>();
   let b = observeFailure(failing(c2, log));
   c2.fail(new Error('lost'));
-  drainMicrotasks();
-  if (runFuture(b) != 6 || log.seq != 4) {
+  if ((await b) != 6 || log.seq != 4) {
     return 0 - 2;
   }
 
@@ -95,8 +93,7 @@ export let main = (): i32 => {
   let c3 = new Completer<i32>();
   let e = early(c3, log);
   c3.complete(70);
-  drainMicrotasks();
-  if (runFuture(e) != 70 || log.seq != 5) {
+  if ((await e) != 70 || log.seq != 5) {
     return 0 - 3;
   }
 
@@ -104,10 +101,9 @@ export let main = (): i32 => {
   let c4 = new Completer<i32>();
   let t = takes(new Res(log, 8), c4, log);
   c4.complete(40);
-  drainMicrotasks();
-  if (runFuture(t) != 40 || log.seq != 78) {
+  if ((await t) != 40 || log.seq != 78) {
     return 0 - 4;
   }
 
   return 888;
-};
+}

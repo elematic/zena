@@ -1677,7 +1677,7 @@ byte budgets, to be moved DOWN only:
 | `test-files/minimal.zena`              | `return 42` — no strings, no allocation, no calls                                                                |    37 |     37 |
 | `test-files/array-sum.zena`            | an array literal summed by a for-in loop: one index-loop function, one array type (section 17)                   |   119 |    130 |
 | `test-files/hello-string.zena`         | a returned string literal: the literal machinery and the read-side exports                                       |   399 |    420 |
-| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime    | 4,995 |  5,100 |
+| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime    | 5,561 |  5,600 |
 | `test-files/component/print.zena`      | three lines written to stdout and stderr, as a whole component: stdio, and the runtime memory module's allocator | 8,361 |  8,500 |
 
 The first three are `freestanding` core modules. The last two are
@@ -1700,8 +1700,9 @@ which brought it to 7,810. Three smaller changes took it to 6,356:
 - The two `Future` error messages are built by top-level functions,
   one copy each, instead of once per `Future` instantiation.
 
-Most of what remains is `Future<void>`, whose methods are all in its
-method table, and String's `==` and `hashCode`, for the same reason.
+Most of what remains is `Future<void>` (whose result the component entry
+now awaits through `finishVoidTask` so a rejected `Future<void>` `main`
+reports its failure — #967), and String's `==` and `hashCode`.
 Leaving uncalled methods out is compiler work, tracked in #686.
 
 `print.zena` held 16,763 bytes while the program's allocator kept a

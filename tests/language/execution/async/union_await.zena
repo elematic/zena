@@ -7,13 +7,13 @@
 // caller can never observe a synchronous completion, whichever arm
 // arrived.
 
-import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Completer, drainMicrotasks } from 'zena:async';
 
 let echo = async (v: String | Future<String>): Future<String> => {
   return await v;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   // Bare arm: the value still takes one queue hop.
   let a = echo('bare');
   if (a.isCompleted) {
@@ -21,7 +21,7 @@ export let main = (): i32 => {
     return 0 - 1;
   }
   drainMicrotasks();
-  if (!a.isCompleted || !(runFuture(a) == 'bare')) {
+  if (!a.isCompleted || !((await a) == 'bare')) {
     return 0 - 2;
   }
 
@@ -33,10 +33,9 @@ export let main = (): i32 => {
     return 0 - 3;
   }
   c.complete('settled');
-  drainMicrotasks();
-  if (!(runFuture(b) == 'settled')) {
+  if (!((await b) == 'settled')) {
     return 0 - 4;
   }
 
   return 777;
-};
+}

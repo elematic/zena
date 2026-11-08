@@ -3,7 +3,7 @@
 // await inside try/catch (async.md §6): a rejected future's failure
 // surfaces at the resume point and must be catchable by an enclosing
 // handler in the async body, not just propagate to the caller.
-import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Completer, drainMicrotasks } from 'zena:async';
 
 let guarded = async (c: Completer<i32>): Future<i32> => {
   var v = 0;
@@ -15,7 +15,7 @@ let guarded = async (c: Completer<i32>): Future<i32> => {
   return v;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   // Success path through the try body.
   let ok = new Completer<i32>();
   let a = guarded(ok);
@@ -34,8 +34,8 @@ export let main = (): i32 => {
     return -3;
   }
 
-  if (runFuture(a) != 3 || runFuture(b) != -1) {
+  if ((await a) != 3 || (await b) != -1) {
     return -4;
   }
   return 321;
-};
+}

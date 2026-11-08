@@ -8,7 +8,7 @@
 //    catch entry, so anything still live across the suspension must
 //    already be in a frame field; a re-read after resuming would see
 //    whatever threw most recently instead.
-import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Completer, drainMicrotasks } from 'zena:async';
 
 let recover = async (c: Completer<i32>, fallback: Completer<i32>): Future<i32> => {
   var out = 0;
@@ -28,7 +28,7 @@ let recover = async (c: Completer<i32>, fallback: Completer<i32>): Future<i32> =
   return out;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let c = new Completer<i32>();
   let fb = new Completer<i32>();
   let f = recover(c, fb);
@@ -48,12 +48,12 @@ export let main = (): i32 => {
   if (!f.isCompleted || !g.isCompleted) {
     return -1;
   }
-  if (runFuture(f) != 9) {
+  if ((await f) != 9) {
     return -2;
   }
   // g caught 'second', so it takes the else arm.
-  if (runFuture(g) != -5) {
+  if ((await g) != -5) {
     return -3;
   }
   return 909;
-};
+}
