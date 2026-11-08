@@ -873,15 +873,36 @@ export function isOldCallee(callee: Expression): boolean {
  * header and its body. The keywords are contextual. See
  * docs/design/contracts.md.
  */
+/** When a contract clause's condition is checked at run time. */
+export enum ContractMode {
+  /** An unmarked clause: checked on every call, in every build. */
+  Checked,
+  /**
+   * `debug requires (c)`: checked in test and debug builds and left out
+   * of the others, for a condition that costs more than the code it
+   * guards.
+   */
+  Debug,
+  /**
+   * `static requires (c)`: never checked at run time. A specification
+   * the compiler type-checks and a verifier can prove.
+   */
+  Static,
+}
+
+/** The modifier a clause of `mode` is written with, or '' for an unmarked one. */
+export function contractModifier(mode: ContractMode): String {
+  return match (mode) {
+    case ContractMode.Checked: ''
+    case ContractMode.Debug: 'debug'
+    case ContractMode.Static: 'static'
+  };
+}
+
 export final class ContractClause(
   kind: ContractKind,
   condition: Expression,
-  /**
-   * `debug requires (c)`: the clause is checked in test and debug
-   * builds and left out of the others, for a condition that costs more
-   * than the code it guards.
-   */
-  isDebug: boolean,
+  mode: ContractMode,
   /** The clause as written, `requires (n > 0)`, for the failure's message. */
   text: String,
   loc: SourceLocation | null) extends Node

@@ -9,8 +9,8 @@
 import { HashSet } from 'zena:collections';
 import {
   AssignmentExpression, AwaitExpression, CallExpression, ContractClause,
-  ContractKind, Expression, Identifier, Node, Parameter, ThisExpression,
-  contractKeyword, isOldCallee,
+  ContractKind, ContractMode, Expression, Identifier, Node, Parameter,
+  ThisExpression, contractKeyword, isOldCallee,
 } from '../ast.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { FlowNode } from '../analysis/flow.zena';
@@ -97,9 +97,10 @@ export function checkRequiresClauses(
   for (let clause in contracts) {
     if (clause.kind != ContractKind.Requires) { continue; }
     checkCondition(ctx, clause);
-    // A `debug` clause is left out of some builds, so nothing after it
-    // can rely on what it would have narrowed.
-    if (clause.isDebug) { continue; }
+    // A `debug` clause is left out of some builds, and a `static` one of
+    // every build, so nothing after them can rely on what they would
+    // have narrowed.
+    if (clause.mode != ContractMode.Checked) { continue; }
     let narrowings = conditionNarrowings(ctx, clause.condition).whenTrue;
     ctx.pushFlowNarrowings(narrowings);
     // A later clause narrows what an earlier one left, so its type for

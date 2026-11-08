@@ -116,6 +116,7 @@ import {
   decoratorStringArg,
   ContractClause,
   ContractKind,
+  ContractMode,
   contractKeyword,
   DeclareFunction,
   SymbolDeclaration,
@@ -940,7 +941,19 @@ export final class Parser {
    * `debug`. The caller checks that a clause keyword is there.
    */
   #clauseKeywordAt(offset: i32): i32 {
-    return if (this.#isNameAt(offset, 'debug')) offset + 1 else offset;
+    return if (this.#clauseModifierAt(offset) != ContractMode.Checked) offset + 1 else offset;
+  }
+
+  /**
+   * The modifier written `offset` past the current token: `debug`, a
+   * name, or `static`, a keyword; `Checked` when there is none.
+   */
+  #clauseModifierAt(offset: i32): ContractMode {
+    if (this.#isNameAt(offset, 'debug')) { return ContractMode.Debug; }
+    if (this.#tokens[this.#current + offset].kind == TokenType.Static) {
+      return ContractMode.Static;
+    }
+    return ContractMode.Checked;
   }
 
   /**
@@ -1037,13 +1050,13 @@ export final class Parser {
   }
 
   /**
-   * One clause, `keyword (condition)` or `debug keyword (condition)`,
-   * with the current token at its first word.
+   * One clause, `keyword (condition)` with or without a modifier in
+   * front, with the current token at its first word.
    */
   #parseContractClause(kind: ContractKind): ContractClause {
     let startToken = this.#peek();
-    let isDebug = this.#isNameAt(0, 'debug');
-    if (isDebug) {
+    let mode = this.#clauseModifierAt(0);
+    if (mode != ContractMode.Checked) {
       this.#advance();
     }
     this.#advance();
@@ -1054,7 +1067,7 @@ export final class Parser {
     this.#consume(TokenType.RParen, `Expected ')' after the '${keyword}' condition`);
     let loc = this.#makeLocation(startToken);
     let text = this.#source.sliceBytes(loc.start, loc.end);
-    return new ContractClause(kind, condition, isDebug, text, loc);
+    return new ContractClause(kind, condition, mode, text, loc);
   }
 
   #parseReturnStatement(startToken: Token, isTail: boolean): ReturnStatement {

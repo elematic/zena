@@ -470,9 +470,21 @@ function search(items: FixedArray<i32>, target: i32): i32
 ```
 
 A `debug requires` clause does not narrow types in the body because ordinary
-builds run without it. Clauses are not yet supported on `gen` functions or
-bodyless (`interface`, `abstract`, `declare`) methods, and `ensures` is not yet
-supported on `async` functions or `inline` returns. See
+builds run without it.
+
+A clause marked `static` is a specification: type-checked in every build and
+never checked at run time, for a condition meant to be proved rather than run.
+
+```zena
+function search(items: FixedArray<i32>, target: i32): i32
+  static requires (isSorted(items))
+{
+  // ...
+}
+```
+
+Clauses are not yet supported on bodyless (`interface`, `abstract`, `declare`)
+methods, and `ensures` is not yet supported on `inline` record returns. See
 [Contracts](/reference/contracts/).
 
 ### Multi-Value Returns

@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 3
+// A `static` clause is never checked at run time, in any build: this
+// is a test build, where `debug` clauses do run, and these conditions
+// are false.
+
+var evaluated = 0;
+
+function note(holds: boolean): boolean {
+  evaluated += 1;
+  return holds;
+}
+
+function first(items: FixedArray<i32>): i32
+  requires (items.length > 0)
+  static requires (note(false))
+  static ensures (note(false))
+{
+  return items[0];
+}
+
+function countTo(limit: i32): i32 {
+  var i = 0;
+  while (i < limit) static invariant (note(false)) {
+    i += 1;
+  }
+  return i;
+}
+
+export function main(): i32 {
+  // 1 + 2 + 0: nothing threw, and no static condition was evaluated.
+  return first([1, 2]) + countTo(2) + evaluated;
+}

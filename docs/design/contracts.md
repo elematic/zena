@@ -436,11 +436,40 @@ library, as `@verify` in formal-verification.md. A clause the verifier
 proves needs no check at run time, except that a proved `requires`
 still has to be checked for callers the verifier did not see.
 
-**Verification will add conditions that cannot run at all**, such as a
-quantifier over every `i32` or a call to a specification-only function.
-Those need a marker on the clause too, so that the compiler knows never
-to emit them. formal-verification.md writes it `ghost invariant (...)`,
-and it takes the same position as `debug`. It is not parsed yet (#936).
+**A clause that is never checked at run time is marked `static`.**
+Verification will bring conditions that cannot run at all, such as a
+quantifier over every `i32` or a call to a specification-only function,
+and conditions that could run but are meant to be proved. Both take
+the marker, in the position `debug` takes:
+
+```zena
+function search(items: FixedArray<i32>, target: i32): i32
+  requires (items.length > 0)
+  static requires (isSorted(items))
+  static ensures (result < 0 || items[result] == target)
+{ ... }
+```
+
+- **Checking.** A `static` clause is type-checked in every build by the
+  rules every clause follows: its names resolve, its condition is a
+  boolean, `result` and `old` mean what they mean elsewhere. Until a
+  verifier exists it is a specification the compiler keeps honest about
+  names and types, which is what makes it worth writing down now.
+- **Emission.** Nothing, in any build. Reachability and lowering both
+  ask `WasmModule.runsContractClause`, which answers false for it.
+- **Narrowing.** None, for the reason a `debug` clause narrows nothing.
+- **What it may contain.** Today, any expression a clause may contain.
+  Quantifiers and specification-only functions arrive with the
+  verifier, and are the reason the marker exists before it does.
+- **The word.** `static_assert` is the precedent for `static` meaning
+  "at compile time". The position, directly before a clause keyword,
+  keeps it apart from a member's `static`, and the parser reads it
+  there by token kind. `ghost` is Dafny's word and formal-verification.md
+  used it; `prove` reads as a command, and nothing proves the clause
+  yet; `spec` was the runner-up (#936).
+- **One modifier per clause.** `static debug requires` is not a clause
+  and does not parse. A `static` clause is left out of every build, so
+  `debug` would add nothing to it.
 
 ## Alternatives considered
 

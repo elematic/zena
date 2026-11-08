@@ -2312,15 +2312,18 @@ export let tests = suite('zir backend', () => {
   test('a debug contract clause is compiled only when the build asks for it', (ctx) => {
     // One clause of each kind in `half`, and a loop with one of each.
     // A build that leaves `debug` clauses out emits the unmarked checks
-    // and nothing for the marked ones.
+    // and nothing for the marked ones. A `static` clause is emitted in
+    // neither build.
     let source = dedentRaw`
         function half(n: i32): i32
           requires (n >= 0)
           debug requires (n % 2 == 0)
           debug ensures (result * 2 == n)
+          static requires (n < 1000)
+          static ensures (result <= n)
         {
           var i = 0;
-          while (i < n) invariant (i >= 0) debug invariant (i <= n) {
+          while (i < n) invariant (i >= 0) debug invariant (i <= n) static invariant (i < 1000) {
             i += 2;
           }
           return n >> 1;
@@ -2329,10 +2332,10 @@ export let tests = suite('zir backend', () => {
     `;
     let without = compileWithZirStdlibAt(source, 1, false);
     assertFunctionUsesTimes(without, '$half', 'contractFailed', 2,
-        'the two unmarked clauses, and none of the three `debug` ones');
+        'the two unmarked clauses, and none of the `debug` or `static` ones');
 
     let withDebug = compileWithZirStdlibAt(source, 1, true);
     assertFunctionUsesTimes(withDebug, '$half', 'contractFailed', 5,
-        'every clause is checked in a debug build');
+        'every unmarked and `debug` clause is checked in a debug build, and no `static` one');
   });
 });

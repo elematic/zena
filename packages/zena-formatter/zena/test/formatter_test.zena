@@ -171,6 +171,26 @@ let tests = suite('formatter', () => {
     `);
   });
 
+  test('keeps the `static` modifier on a contract clause', (t) => {
+    checkFormat('static clauses', dedentRaw`
+      function first(items: FixedArray<i32>): i32 static   requires(isSorted(items)) { return items[0]; }
+    `, dedentRaw`
+      function first(items: FixedArray<i32>): i32 static requires (isSorted(items)) {
+        return items[0];
+      }
+    `);
+    checkStable('static clauses beside static members', dedentRaw`
+      class Stack {
+        pop(): i32 static ensures (this.size == old(this.size) - 1) {
+          return 0;
+        }
+        static empty(): Stack {
+          return new Stack();
+        }
+      }
+    `);
+  });
+
   test('leaves `requires`, `ensures` and `invariant` alone as names', (t) => {
     checkStable('names', dedentRaw`
       function f(requires: i32, ensures: i32, invariant: Check) {
