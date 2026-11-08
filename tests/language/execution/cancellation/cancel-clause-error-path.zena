@@ -6,7 +6,7 @@
 // sides of a suspension. A try with only a cancel clause (no catch,
 // no finally) is also legal — errors pass through it untouched.
 
-import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Completer } from 'zena:async';
 
 var trace = '';
 
@@ -33,12 +33,11 @@ let passesThrough = async (gate: Future<i32>): Future<i32> => {
   }
 };
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   let c = new Completer<i32>();
   let f = failing(c.future);
   c.complete(1);
-  drainMicrotasks();
-  if (runFuture(f) != 7) {
+  if ((await f) != 7) {
     return 2;
   }
   if (trace != 'abe') {
@@ -48,10 +47,9 @@ export function main(): i32 {
   let c2 = new Completer<i32>();
   let g = passesThrough(c2.future);
   c2.complete(1);
-  drainMicrotasks();
   var caught = false;
   try {
-    let ignored = runFuture(g);
+    let ignored = await g;
   } catch (e) {
     caught = true;
   }

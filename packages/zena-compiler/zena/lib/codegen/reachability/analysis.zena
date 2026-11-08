@@ -966,9 +966,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // links the driver's unit through the console it shares with the
     // component target, and must not root it.
     let entry = prog.entryPoint;
+    let asyncMain = entry != null &&
+        hasAsyncMain((entry as CompilationUnit).ast);
     if (entry != null && targetEmitsComponent(this.target) &&
-        (this.target == "zena-cli" ||
-            hasAsyncMain((entry as CompilationUnit).ast))) {
+        (this.target == "zena-cli" || asyncMain)) {
       anyDoorReached = true;
     }
     if (!anyDoorReached) {
@@ -983,6 +984,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.#rootUnitExport(driver, 'componentResume');
     this.#rootUnitExport(driver, 'beginTask');
     this.#rootUnitExport(driver, 'markReturned');
+    if (asyncMain) {
+      this.#rootUnitExport(driver, 'finishVoidTask');
+    }
     if (wrapper != null) {
       this.#rootUnitExports(wrapper as CompilationUnit);
     }

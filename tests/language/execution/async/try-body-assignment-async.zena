@@ -9,9 +9,7 @@
 // the two ever disagree. The first case below is the one that makes
 // that split load-bearing: the assignment happens, then the body parks,
 // and the handler runs only after the frame has been off the stack.
-import {
-  Future, Completer, drainMicrotasks, runFuture,
-} from 'zena:async';
+import { Future, Completer } from 'zena:async';
 
 // Assign, suspend, then fail: the handler must still see the value
 // written before the suspension.
@@ -41,15 +39,14 @@ let recovers = async (c: Completer<i32>) => {
   return n;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   var score = 0;
 
   // Parks on the await, then rejects: n is 7 at the throw.
   let bad = new Completer<i32>();
   let f = acrossSuspension(bad);
   bad.fail(new Error('nope'));
-  drainMicrotasks();
-  if (runFuture(f) == 8) {
+  if ((await f) == 8) {
     score += 10;
   }
 
@@ -57,19 +54,17 @@ export let main = (): i32 => {
   let good = new Completer<i32>();
   let g = acrossSuspension(good);
   good.complete(1);
-  drainMicrotasks();
-  if (runFuture(g) == 99) {
+  if ((await g) == 99) {
     score += 12;
   }
 
   let h0 = new Completer<i32>();
   let h = recovers(h0);
   h0.complete(5);
-  drainMicrotasks();
-  if (runFuture(h) == 6) {
+  if ((await h) == 6) {
     score += 20;
   }
 
   // 10 + 12 + 20 = 42
   return score;
-};
+}

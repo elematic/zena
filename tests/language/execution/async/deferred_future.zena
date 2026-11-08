@@ -6,7 +6,7 @@
 // await site must reach the subclass's `[subscribe]`, so the future
 // settles instead of parking the frame forever.
 
-import { Future, DeferredFuture, runFuture, drainMicrotasks } from 'zena:async';
+import { Future, DeferredFuture, drainMicrotasks } from 'zena:async';
 
 var started = 0;
 
@@ -21,7 +21,7 @@ let awaitIt = async (f: Future<i32>): Future<i32> => {
   return await f;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   // Never looked at: the producer never runs.
   let ignored = make();
   drainMicrotasks();
@@ -30,7 +30,7 @@ export let main = (): i32 => {
   }
   // Awaited: the producer runs exactly once.
   let awaited = awaitIt(make());
-  let a = runFuture(awaited);
+  let a = await awaited;
   if (started != 1 || a != 21) {
     return -2;
   }
@@ -45,10 +45,10 @@ export let main = (): i32 => {
   }
   // Awaited twice: the second await finds it settled.
   let shared = make();
-  let x = runFuture(awaitIt(shared));
-  let y = runFuture(awaitIt(shared));
+  let x = await awaitIt(shared);
+  let y = await awaitIt(shared);
   if (started != 3 || x + y != 42) {
     return -4;
   }
   return 0;
-};
+}

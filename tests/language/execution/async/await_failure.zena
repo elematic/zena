@@ -4,9 +4,7 @@
 // resurfaces as an ordinary throw at the resume point, unwinds into
 // step()'s failure-capture region, and rejects the frame's own future.
 // A throw before any suspension takes the same path.
-import {
-  Future, Completer, drainMicrotasks, runFuture,
-} from 'zena:async';
+import { Future, Completer } from 'zena:async';
 
 let awaitsFailure = async (c: Completer<i32>): Future<i32> => {
   let v = await c.future;
@@ -18,16 +16,15 @@ let throwsEagerly = async (): Future<i32> => {
   throw new Error('eager');
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   var score = 0;
 
   let c = new Completer<i32>();
   let f = awaitsFailure(c);
   c.fail(new Error('nope'));
-  drainMicrotasks();
   var fMsg = '';
   try {
-    runFuture(f);
+    await f;
     fMsg = 'no throw';
   } catch (e) {
     fMsg = e.message;
@@ -41,8 +38,7 @@ export let main = (): i32 => {
   let ok = new Completer<i32>();
   let g = awaitsFailure(ok);
   ok.complete(5);
-  drainMicrotasks();
-  if (runFuture(g) == 6) {
+  if ((await g) == 6) {
     score += 2;
   }
 
@@ -51,7 +47,7 @@ export let main = (): i32 => {
   let h = throwsEagerly();
   var hMsg = '';
   try {
-    runFuture(h);
+    await h;
     hMsg = 'no throw';
   } catch (e) {
     hMsg = e.message;
@@ -62,4 +58,4 @@ export let main = (): i32 => {
 
   // 1 + 2 + 4 = 7
   return score;
-};
+}

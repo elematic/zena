@@ -139,13 +139,12 @@ export function prepareComponentEntry(
   }
   var main = wasm.exportMap[key];
   // `async function main(): Future<void>` is the natural spelling of
-  // a program that awaits, and it drives identically to a sync main
-  // that fires an async helper: the entry calls the RAMP and drops
-  // the future — completion is observable through the driver's
-  // registries, which is what the poll below already watches. The
-  // level-0 wrapper the async pass exported (drain, then unwrap)
-  // must not be the callee: its unwrap throws on a future the host
-  // still owes events to.
+  // a program that awaits, and the entry drives its ramp through
+  // `finishVoidTask` so a rejection lands in `ctx.failure` for
+  // `componentPoll` / `componentResume` to throw. The level-0 wrapper
+  // the async pass exported (drain, then unwrap) must not be the
+  // callee: its unwrap throws on a future the host still owes events
+  // to.
   var mainIsAsync = false;
   let rampBack = main.asyncMainRamp;
   if (main.isAsyncMainWrapper && rampBack != null) {
@@ -249,9 +248,16 @@ export function prepareComponentEntry(
         new Array<i32>(0), null);
   }
   if (calleeReturnsFuture) {
-    // The frame future, deliberately unobserved (see above).
-    b.callFunc(b.addRef(new IrRefFunc(callee)), new Array<i32>(0),
+    let finish = wasm.getStdlibFunc(driverModule, 'finishVoidTask');
+    if (finish == null) {
+      throw new Error('async main: zena:wasi finishVoidTask was not reached');
+    }
+    pass.markFunctionReached(finish);
+    let future = b.callFunc(b.addRef(new IrRefFunc(callee)), new Array<i32>(0),
         callee.signature.returns[0]);
+    let args = growable<i32>([future]);
+    b.callFunc(b.addRef(new IrRefFunc(finish)), args,
+        finish.signature.returns[0]);
   } else if (syncReturn != null) {
     // The value is known now: return it, and tell the driver so it
     // does not return again at exit.

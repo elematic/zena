@@ -3,7 +3,7 @@
 // A future that holds an owner, released without being awaited, releases
 // the owner: at once when it has settled, and when it settles otherwise.
 import { Own, Disposable } from 'zena:core';
-import { Completer, runFuture } from 'zena:async';
+import { Completer, Future } from 'zena:async';
 
 var released = 0;
 
@@ -29,13 +29,13 @@ async function droppedThenSettled(gate: Future<void>): Future<Own<Res>> {
   return new Res(10);
 }
 
-export let main = (): i32 => {
-  runFuture(settledThenDropped());
+export async function main(): Future<i32> {
+  await settledThenDropped();
   let gate = new Completer<void>();
   if (true) {
     let pending = droppedThenSettled(gate.future);
   }
   gate.complete();
-  runFuture(gate.future);
+  await gate.future;
   return released;
-};
+}

@@ -6,7 +6,7 @@
 // (always-async holds — 'x' lands between the ramp segment and the
 // resume); a future specialization unwraps one level.
 
-import { Future, Awaited, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Awaited, Completer, drainMicrotasks } from 'zena:async';
 
 let pass = async <T>(v: T): Future<Awaited<T>> => {
   return await v;
@@ -21,7 +21,7 @@ let markAfter = async <T>(v: T): Future<Awaited<T>> => {
   return r;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   // Bare specialization: the value passes through with one hop.
   let bare = pass(21);
   // Future specialization: the future unwraps one level.
@@ -36,5 +36,5 @@ export let main = (): i32 => {
   if (order != 'axb') {
     return -1;
   }
-  return runFuture(bare) + runFuture(wrapped) - 42 + runFuture(m) - 5;
-};
+  return (await bare) + (await wrapped) - 42 + (await m) - 5;
+}

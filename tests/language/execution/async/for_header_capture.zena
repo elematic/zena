@@ -3,7 +3,7 @@
 // A `for` header variable that closures capture and the body assigns
 // lives in a cell, and each iteration gets a fresh one. In an async
 // body the loop carries that cell across each `await`.
-import { Future, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, drainMicrotasks } from 'zena:async';
 
 let collect = async (): Future<i32> => {
   let fs = new GrowableArray<() => i32>();
@@ -20,11 +20,11 @@ let collect = async (): Future<i32> => {
   return acc;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let f = collect();
   drainMicrotasks();
   if (!f.isCompleted) {
     return -1;
   }
-  return runFuture(f);
-};
+  return await f;
+}

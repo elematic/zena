@@ -7,7 +7,7 @@
 // propagates to the caller rather than landing in the catch
 // (issue #426, the split-pass face).
 
-import { Future, Completer, runFuture } from 'zena:async';
+import { Future, Completer } from 'zena:async';
 import { Error } from 'zena:core';
 
 let shape = async (src: Future<i32>, alt: Future<i32>): Future<i32> => {
@@ -20,7 +20,7 @@ let shape = async (src: Future<i32>, alt: Future<i32>): Future<i32> => {
   throw new Error('after ' + (if (v == 9) '9' else 'other'));
 };
 
-let probe = (fail: boolean): String => {
+let probe = async (fail: boolean): Future<String> => {
   let c = new Completer<i32>();
   let a = new Completer<i32>();
   let f = shape(c.future, a.future);
@@ -32,7 +32,7 @@ let probe = (fail: boolean): String => {
   a.complete(9);
   var msg = '';
   try {
-    let r = runFuture(f);
+    let r = await f;
     msg = 'returned ' + (if (r == -1) '-1' else 'other');
   } catch (e) {
     msg = e.message;
@@ -40,10 +40,10 @@ let probe = (fail: boolean): String => {
   return msg;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   // Normal path: both awaits resume, the continuation's throw escapes.
-  if (probe(false) != 'after 9') { return 1; }
+  if ((await probe(false)) != 'after 9') { return 1; }
   // The body's failure is still the catch's to handle.
-  if (probe(true) != 'returned -1') { return 2; }
+  if ((await probe(true)) != 'returned -1') { return 2; }
   return 0;
-};
+}

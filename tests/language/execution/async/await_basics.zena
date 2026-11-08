@@ -3,14 +3,14 @@
 // The A1 transform end to end (async.md §3): an async function
 // suspends on a Completer's future, the microtask drain resumes it,
 // and its own future settles with the returned value.
-import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Completer, drainMicrotasks } from 'zena:async';
 
 let addTwo = async (c: Completer<i32>): Future<i32> => {
   let v = await c.future;
   return v + 2;
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let c = new Completer<i32>();
   let f = addTwo(c);
   // Eager start ran the body up to the await; nothing has settled.
@@ -26,5 +26,5 @@ export let main = (): i32 => {
   if (!f.isCompleted) {
     return -3;
   }
-  return runFuture(f);
-};
+  return await f;
+}

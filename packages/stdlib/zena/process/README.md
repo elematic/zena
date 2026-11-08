@@ -74,9 +74,8 @@ stdlib module:
   `ProcessResult`.
 - `wait()` returns a `Future<ProcessResult>` so other tasks in the
   program keep running while the child executes. Waiting again returns
-  the same result. A synchronous caller inside `main` or a test body can
-  wait on it with `runFuture` from `zena:async`. `hasExited()` checks
-  without blocking whether the child has already exited.
+  the same result. `hasExited()` checks without blocking whether the
+  child has already exited.
 - `stop(graceMillis)` sends `SIGTERM` on Unix, waits up to `graceMillis`
   (default 2000ms) for the process to exit, and sends `SIGKILL` if it is
   still running.

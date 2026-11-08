@@ -9,7 +9,7 @@
 // survives the suspensions; this shape used to bail with 'suspension
 // inside a try with a finalizer'.
 
-import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Completer, drainMicrotasks } from 'zena:async';
 
 /** Records events as decimal digits, so ordering is observable. */
 class Log {
@@ -94,14 +94,13 @@ let observeFailure = async (f: Future<i32>): Future<i32> => {
   }
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let log = new Log();
 
   let c1 = new Completer<i32>();
   let a = normalPath(c1, log);
   c1.complete(10);
-  drainMicrotasks();
-  if (runFuture(a) != 10 || log.seq != 123) {
+  if ((await a) != 10 || log.seq != 123) {
     return 0 - 1;
   }
 
@@ -109,8 +108,7 @@ export let main = (): i32 => {
   let c2 = new Completer<i32>();
   let b = observeFailure(failPath(c2, log));
   c2.fail(new Error('lost'));
-  drainMicrotasks();
-  if (runFuture(b) != 9 || log.seq != 4) {
+  if ((await b) != 9 || log.seq != 4) {
     return 0 - 2;
   }
 
@@ -118,8 +116,7 @@ export let main = (): i32 => {
   let c3 = new Completer<i32>();
   let r = returnPath(c3, log);
   c3.complete(20);
-  drainMicrotasks();
-  if (runFuture(r) != 21 || log.seq != 5) {
+  if ((await r) != 21 || log.seq != 5) {
     return 0 - 3;
   }
 
@@ -130,8 +127,7 @@ export let main = (): i32 => {
   c4.complete(30);
   drainMicrotasks();
   c5.complete(7);
-  drainMicrotasks();
-  if (runFuture(f) != 37 || log.seq != 6) {
+  if ((await f) != 37 || log.seq != 6) {
     return 0 - 4;
   }
 
@@ -139,10 +135,9 @@ export let main = (): i32 => {
   let c6 = new Completer<i32>();
   let k = breakPath(c6, log);
   c6.complete(40);
-  drainMicrotasks();
-  if (runFuture(k) != 40 || log.seq != 7) {
+  if ((await k) != 40 || log.seq != 7) {
     return 0 - 5;
   }
 
   return 777;
-};
+}

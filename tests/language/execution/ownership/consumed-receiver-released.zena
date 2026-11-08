@@ -6,7 +6,7 @@
 // null in the field, and the consumed wrapper is released at the
 // method's exit, its glue skipping the field.
 import { Own, Borrow, Disposable } from 'zena:core';
-import { Completer, runFuture } from 'zena:async';
+import { Completer, Future } from 'zena:async';
 
 var innerDropped = 0;
 var outerDropped = 0;
@@ -49,7 +49,7 @@ resource class Outer {
   }
 }
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   var total = 0;
   if (true) {
     let a = new Outer(new Inner(1));
@@ -72,10 +72,10 @@ export let main = (): i32 => {
     return 0 - 2;
   }
   c.complete();
-  runFuture(c.future);
+  await c.future;
   // Now the task's parameter release ran.
   if (innerDropped != 2) {
     return 0 - 3;
   }
   return total;
-};
+}

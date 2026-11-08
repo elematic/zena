@@ -1,7 +1,7 @@
 // @mode: run
 // @result: 0
 
-import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Future, Completer } from 'zena:async';
 
 let shape = async (src: Future<i32>, alt: Future<i32>): Future<i32> => {
   let v = try {
@@ -12,7 +12,7 @@ let shape = async (src: Future<i32>, alt: Future<i32>): Future<i32> => {
   throw new Error('after');
 };
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let c = new Completer<i32>();
   let alt = new Completer<i32>();
   let f = shape(c.future, alt.future);
@@ -20,7 +20,7 @@ export let main = (): i32 => {
   alt.complete(9);
   var msg = '';
   try {
-    runFuture(f);
+    await f;
     msg = 'no throw';
   } catch (e) {
     msg = e.message;
@@ -30,4 +30,4 @@ export let main = (): i32 => {
   }
   console.log('got: ' + msg);
   return 1;
-};
+}
