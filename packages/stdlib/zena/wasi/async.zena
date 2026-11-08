@@ -20,12 +20,6 @@
  * the event *kind*, because `code` means a `CallState` for a subtask
  * and a copy result for an end, and the two must never be confused.
  *
- * It generalizes what `time/p3.zena` built for the one timer wait —
- * that driver now delegates here — from "at most one subtask" to a
- * registry of any number, which is what synthesized WIT imports need,
- * and keeps that registry per task: each waitable belongs to the task
- * whose entry registered it, and the callback answers for the owner.
- *
  * The entry and callback the compiler wires (`componentPoll`,
  * `componentResume`) live here, and only the `component` target
  * resolves this module.
@@ -381,6 +375,21 @@ export function awaitPacked(packed: i32): Future<void> {
   let subtask = (packed >> 4) as Waitable;
   registerFor(currentContext(), subtask, completer, null);
   return completer.future;
+}
+
+/**
+ * Stop waiting on a packed subtask if it has not yet completed. Used
+ * when an awaiting frame is cancelled, so the task's waitable set does
+ * not stay alive for a timer nothing awaits.
+ */
+export function cancelPacked(packed: i32): void {
+  if ((packed & STATE_MASK) == STATE_RETURNED) {
+    return;
+  }
+  let subtask = (packed >> 4) as Waitable;
+  if (release(subtask) != null) {
+    waitableJoin(subtask, 0 as WaitableSet);
+  }
 }
 
 /**

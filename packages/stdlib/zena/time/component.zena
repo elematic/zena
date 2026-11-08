@@ -1,0 +1,75 @@
+/**
+ * Monotonic time measurement, durations, and timers.
+ *
+ * Provides `Instant` for points in time, `Duration` for spans of time,
+ * `monotonic()` for reading the system monotonic clock, and `sleep(duration)`
+ * for asynchronous waiting.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { monotonic, sleep, milliseconds } from 'zena:time';
+ *
+ * let start = monotonic();
+ * await sleep(milliseconds(50));
+ * let elapsed = monotonic() - start;
+ * ```
+ */
+
+import { Future } from 'zena:async';
+import { awaitPacked, cancelPacked } from 'zena:wasi';
+import { Instant, Duration } from './types.zena';
+
+export { Instant, Duration, formatTimestamp, milliseconds, nanoseconds } from './types.zena';
+
+@external("wasi:clocks/monotonic-clock@0.3.0", "now")
+declare function monotonicNow(): u64;
+
+/**
+ * `wait-for: async func(how-long: duration)`.
+ *
+ * The third argument lowers the call with the canonical `async` option,
+ * which is the whole point: without it the same function blocks. The
+ * core signature that comes back is `(param i64) (result i32)`, and the
+ * result packs a subtask handle and a status — `(subtask << 4) | status`
+ * — which is exactly what `awaitPacked` takes.
+ */
+@external("wasi:clocks/monotonic-clock@0.3.0", "wait-for", "async")
+declare function waitFor(howLong: u64): i32;
+
+/**
+ * A future that completes after at least `d`.
+ *
+ * "At least": the deadline is when the timer becomes *eligible*, and it
+ * completes through the microtask queue like every other future, so a
+ * busy queue can delay it further. A zero-length sleep still yields — it
+ * never completes synchronously, per the always-async rule.
+ */
+export function sleep(d: Duration): Future<void> {
+  if (d.isNegative()) {
+    throw new Error('zena:time: sleep() needs a non-negative duration');
+  }
+  return sleepFor(d);
+}
+
+/**
+ * Waits for a host `wait-for` of `d`. When the waiting frame is
+ * cancelled, as the loser of `zena:task`'s `timeout` is, the `finally`
+ * runs on the cancellation's unwind and unjoins the subtask, so the
+ * task does not wait for it before exiting.
+ */
+async function sleepFor(d: Duration): Future<void> {
+  let ns = d as i64;
+  let packed = waitFor(ns as u64);
+  try {
+    await awaitPacked(packed);
+  } finally {
+    cancelPacked(packed);
+  }
+}
+
+/** The monotonic clock's reading. */
+export function monotonic(): Instant {
+  let ns = monotonicNow() as i64;
+  return ns as Instant;
+}
