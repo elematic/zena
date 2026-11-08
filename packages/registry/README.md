@@ -169,6 +169,8 @@ npm run deploy:setup -w @zena-lang/registry    # once: the resources, the key an
 npm run deploy -w @zena-lang/registry          # builds the image with Cloud Build, and deploys both services
 npm run deploy:domain -w @zena-lang/registry   # once: maps both names, with gcloud's beta component
 ZENA_ALERT_EMAIL=you@example.com npm run deploy:alerts -w @zena-lang/registry   # once both names answer
+packages/registry/deploy/smoke.sh setup        # once, signed in to zena as an owner of the scope zena
+npm run deploy:smoke -w @zena-lang/registry    # after every deploy
 ```
 
 `deploy:setup` is idempotent, and makes the keys and the session secret
@@ -221,6 +223,19 @@ gcloud storage restore gs://meta-garage-420114-zena-pkg/pkg/<did>/<cid>
 To serve from a restored database, set `DATABASE` in `deploy/env.sh` to
 it, then run `deploy:setup`, which gives the service account its role
 on it, and `deploy`.
+
+`deploy:smoke` checks an environment as its clients see it, with no
+browser and no personal account (`dev/smoke.zena`): both names' health,
+DID documents and descriptions, the site's home page, assets and OAuth
+client, and the canary package `@zena/smoke` (`ZENA_SMOKE_SCOPE` names
+another scope): its DID document, its repository on padstone, its page,
+and a new workspace that adds it and runs a program importing it. Then
+it publishes a new version as the automation account `smoke-ci`, which
+the App View holds until a person approves it, checks that it is held,
+and withdraws it, so that no run leaves a release behind. `smoke.sh
+setup` makes the canary and the account once, as you, and keeps the
+account's token in Secret Manager. `zena pkg owner add` and the other
+commands it runs need you signed in with `zena pkg login`.
 
 `deploy:alerts` watches an environment once both names answer. It makes
 an uptime check of `/xrpc/_health` on each name, every 5 minutes from
@@ -320,4 +335,4 @@ which padstone reads again when a token does not check.
     server it describes; `main` is the two together.
 - `zena/test/`: its tests.
 - `deploy/`: the image and the Cloud Run scripts.
-- `dev/demo.zena`: the demo.
+- `dev/demo.zena`: the demo; `dev/smoke.zena`: the smoke test.

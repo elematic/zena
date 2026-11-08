@@ -33,7 +33,7 @@ export function repoRoot(): String {
   if (root == null || root == '') {
     throw new Error('ZENA_REPO_ROOT is not set; run this test with zena test');
   }
-  return root as String;
+  return root;
 }
 
 /** The built `zena` binary. */
@@ -148,13 +148,23 @@ export final class ZenaCommand {
       return spawnWith(argv, {cwd: this.#cwd, env, envRemove: INHERITED_SETTINGS});
     }
     return spawnWith(argv, {cwd: this.#cwd, env, envRemove: INHERITED_SETTINGS,
-        input: input as String});
+        input: input});
   }
 }
 
 /** `zena` in `workspace`, a directory of `scratch`, with its cache in `cache/`. */
 export function zenaIn(scratch: Scratch, workspace: String): ZenaCommand {
   return new ZenaCommand(scratch.host(workspace), scratch.at(workspace), scratch.host('cache'));
+}
+
+/** The text after `label` on its line of `text`. */
+export function after(text: String, label: String): String {
+  for (let line in text.split('\n')) {
+    if (line.startsWith(label)) {
+      return line.sliceBytes(label.length, line.length).trim();
+    }
+  }
+  return '';
 }
 
 /** The command's output, for a failure message. */
@@ -169,22 +179,32 @@ export function described(result: ProcessResult): String {
  * sources, and concurrent writers rename their entries into place, so
  * tests can share it.
  */
-function fixtureCache(): String {
+function fixtureCache() {
   return `${repoRoot()}/.zena/test-fixture-cache`;
 }
 
 /**
  * Starts `tests/fixtures/<fixture>` with `zena run` as the PLC directory
- * and PDS, writing into `pds/` of `scratch`. Pass the process to
+ * and PDS, writing into `pds/` of `scratch`, and with `web`, a directory
+ * of the repository, as `/web` when it is given. Pass the process to
  * `fakePdsOrigin`, and stop it with `stopFakePds` when the test is done.
  * The test holds the process itself: a resource class wrapping it fails
  * to lower (elematic/zena#493).
  */
-export function startFakePds(scratch: Scratch, fixture: String): Own<Process> {
+export function startFakePds(scratch: Scratch, fixture: String, web: String | null = null): Own<Process> {
   ensureDir(scratch.at('pds'));
   let command = new ZenaCommand(repoRoot(), '.', fixtureCache());
-  return command.spawn(['run', '--dir', `${scratch.host('pds')}::/out`,
-      `packages/zena-cli/tests/fixtures/${fixture}`]);
+  let args = new GrowableArray<String>();
+  args.push('run');
+  args.push('--dir');
+  args.push(`${scratch.host('pds')}::/out`);
+  if (web != null) {
+    args.push('--dir');
+    args.push(`${repoRoot()}/${web}::/web`);
+    command.set('STACK_WEB_DIR', '/web');
+  }
+  args.push(`packages/zena-cli/tests/fixtures/${fixture}`);
+  return command.spawn(args);
 }
 
 /** Stops a `startFakePds` fixture process. */

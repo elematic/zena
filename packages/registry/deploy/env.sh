@@ -83,6 +83,10 @@ SECRET="zena-pkg${SUFFIX}-rotation-key"
 # Signs padstone's password sessions and the App View's web sessions, each
 # kind of token with a type of its own.
 JWT_SECRET="zena-pkg${SUFFIX}-jwt-secret"
+# The smoke test's (smoke.sh): the scope of its canary package, and the
+# secret that keeps the token of the automation account it publishes as.
+SMOKE_SCOPE="${ZENA_SMOKE_SCOPE:-zena}"
+SMOKE_SECRET="zena-pkg${SUFFIX}-smoke-token"
 # The online rotation key in Cloud KMS, when ROTATION_KMS is 1: an
 # asymmetric secp256k1 key, at HSM protection, the only level Cloud KMS
 # offers secp256k1 at.

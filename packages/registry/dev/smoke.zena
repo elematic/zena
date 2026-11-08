@@ -1,0 +1,336 @@
+/**
+ * The registry's smoke test (#665): checks a deployed environment as its
+ * clients see it, with no browser and no personal account, after every
+ * deploy. `deploy/smoke.sh` runs it, with these variables:
+ *
+ * - `SMOKE_APP_VIEW` and `SMOKE_PDS`: the App View's and padstone's
+ *   origins;
+ * - `SMOKE_PLC`: the PLC directory the environment's DIDs are in;
+ * - `SMOKE_SCOPE`: the scope of the canary package `smoke`, which
+ *   `smoke.sh setup` published once, at 1.0.0, with the automation
+ *   account `smoke-ci` among its publishers;
+ * - `ZENA_REGISTRY_TOKEN`: that account's token;
+ * - `SMOKE_HOST_DIR`: the host's path of the scratch directory this sees as
+ *   `/smoke`, and `SMOKE_REPO` the checkout, whose `zena` command it runs.
+ *
+ * It reads what anyone can: both names' health, DID documents and
+ * descriptions, the site's pages and its OAuth client, and the canary's
+ * DID document, repository and page. It adds the canary to a new
+ * workspace and runs a program that imports it. Then it publishes a new
+ * version as the automation account, which the App View holds until a
+ * person approves it, checks that it is held, and withdraws it, so that a
+ * run leaves no release behind (package-manager.md, "Publishing a
+ * release"). Every check runs, and it exits 1 if any failed.
+ */
+
+import {Future} from 'zena:async';
+import {exit, getEnv} from 'zena:cli';
+import {fetch} from 'zena:fetch';
+import {mkdirSync, writeFileSync} from 'zena:fs';
+import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {ProcessResult, runWith} from 'zena:process';
+import {URL} from 'zena:url';
+import {now} from 'wasi:clocks/system-clock';
+import {didWebFor} from 'atproto:identity';
+
+/** The scope the site's OAuth client asks for, exactly. */
+let OAUTH_SCOPE = 'atproto rpc:dev.zena-lang.registry.createWebSession?aud=*';
+
+/**
+ * Variables the `zena` command reads that the checks set themselves, or
+ * not at all. `ZENA_DNS_OVER_HTTPS` passes through: `smoke.sh` clears it.
+ */
+let INHERITED_SETTINGS = [
+  'ZENA_PROJECT_CACHE', 'ZENA_LOCAL_CACHE', 'ZENA_COMPILER_WASM', 'XDG_CACHE_HOME', 'ZENA_OPT_LEVEL',
+  'XDG_CONFIG_HOME', 'ZENA_APP_PASSWORD',
+];
+
+/** The variable `name`, which `smoke.sh` sets. */
+function required(name: String) {
+  let value = getEnv(name);
+  if (value == null || value == '') {
+    throw new Error(`${name} is not set: run packages/registry/deploy/smoke.sh`);
+  }
+  return value;
+}
+
+/** Throws `message` unless `condition`. */
+function expect(condition: boolean, message: String) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+/** The `did:web` of the server at `origin`, its port percent-encoded. */
+function didWebOf(origin: String) {
+  let url = URL.parse(origin);
+  if (url == null) {
+    throw new Error(`not a URL: ${origin}`);
+  }
+  return didWebFor(url.host());
+}
+
+/** The body of a GET of `url`, which must answer 200. */
+async function getText(url: String, token: String | null = null): Future<String> {
+  let headers = new GrowableArray<(String, String)>();
+  if (token != null) {
+    headers.push(('authorization', `Bearer ${token}`));
+  }
+  let response = await fetch(url, {headers});
+  let status = response.status;
+  let body = await response.text();
+  expect(status == 200, `GET ${url}: HTTP ${status}: ${body}`);
+  return body;
+}
+
+/** The JSON object a GET of `url` answers with. */
+async function getJson(url: String, token: String | null = null): Future<JsonObject> {
+  let parsed = parseJson(await getText(url, token));
+  expect(parsed is JsonObject, `GET ${url}: not a JSON object`);
+  return parsed as JsonObject;
+}
+
+/** POSTs `input` to the XRPC procedure at `url` with `token`; it must answer 200. */
+async function post(url: String, input: JsonObject, token: String): Future<void> {
+  let response = await fetch(url, {method: 'POST', body: stringify(input),
+      headers: [('content-type', 'application/json'), ('authorization', `Bearer ${token}`)]});
+  let status = response.status;
+  let body = await response.text();
+  expect(status == 200, `POST ${url}: HTTP ${status}: ${body}`);
+}
+
+/** The `serviceEndpoint` of the service `id` in the DID document `document`, or null. */
+function serviceOf(document: JsonObject, id: String): String | null {
+  let services = document['service'];
+  if (!(services is JsonArray)) {
+    return null;
+  }
+  for (var i = 0; i < services.length; i += 1) {
+    let service = services[i];
+    if (service is JsonObject && service['id'] == id) {
+      let endpoint = service['serviceEndpoint'];
+      return if (endpoint is String) endpoint else null;
+    }
+  }
+  return null;
+}
+
+/** Whether the array `value` holds the string `text`. */
+function holds(value: JsonValue, text: String): boolean {
+  if (!(value is JsonArray)) {
+    return false;
+  }
+  for (var i = 0; i < value.length; i += 1) {
+    if (value[i] == text) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** What a failed command printed, for its check's message. */
+function described(result: ProcessResult) {
+  return `exit ${result.exitCode}\n${result.stdout}${result.stderr}`;
+}
+
+/** The checks, and how many failed. */
+final class Smoke {
+  appView: String;
+  pds: String;
+  plc: String;
+  scope: String;
+  token: String;
+  hostDir: String;
+  repo: String;
+  /** The App View's domain, as it describes itself, once a check has read it. */
+  var domain: String | null = null;
+  /** The canary's DID, once a check has resolved it. */
+  var canaryDid: String | null = null;
+  var #failures = 0;
+
+  new()
+      : appView = required('SMOKE_APP_VIEW'), pds = required('SMOKE_PDS'), plc = required('SMOKE_PLC'),
+        scope = required('SMOKE_SCOPE'), token = required('ZENA_REGISTRY_TOKEN'),
+        hostDir = required('SMOKE_HOST_DIR'), repo = required('SMOKE_REPO');
+
+  /** The canary's handle, `smoke.<scope>.<domain>`. */
+  canary(): String {
+    let domain = this.domain;
+    if (domain == null) {
+      throw new Error('the App View did not describe its domain, above');
+    }
+    return `smoke.${this.scope}.${domain}`;
+  }
+
+  failures: i32 {
+    get {
+      return this.#failures;
+    }
+  }
+
+  /** Runs the check `name`, and says whether it passed. */
+  async check(name: String, body: () => Future<void>): Future<void> {
+    try {
+      await body();
+      console.log(`ok    ${name}`);
+    } catch (e) {
+      this.#failures += 1;
+      console.log(`FAIL  ${name}\n      ${e.message}`);
+    }
+  }
+
+  /** The canary's DID, which the checks after its handle's need. */
+  did(): String {
+    let did = this.canaryDid;
+    if (did == null) {
+      throw new Error(`${this.canary()} did not resolve, above`);
+    }
+    return did;
+  }
+
+  /** Runs `zena` with `args` in `/smoke/<dir>`, a workspace of its own, as a client would. */
+  async zena(dir: String, args: Array<String>): Future<ProcessResult> {
+    let argv = new GrowableArray<String>();
+    argv.push(`${this.repo}/target/release/zena-cli`);
+    for (let arg in args) {
+      argv.push(arg);
+    }
+    let env: Array<(String, String)> = [
+      ('ZENA_REPO_ROOT', `${this.hostDir}/${dir}`),
+      ('ZENA_CLI_MODULE', `${this.repo}/packages/zena-cli/out/zena.wasm`),
+      ('ZENA_STDLIB_DIR', `${this.repo}/packages/stdlib/zena`),
+      ('ZENA_CACHE_DIR', `${this.hostDir}/cache`),
+      ('ZENA_CONFIG_DIR', `${this.hostDir}/config`),
+      ('ZENA_REGISTRY', this.appView),
+      ('ZENA_PLC_DIRECTORY', this.plc),
+    ];
+    return await runWith(argv, {cwd: `/smoke/${dir}`, env, envRemove: INHERITED_SETTINGS});
+  }
+}
+
+export async function main(): Future<void> {
+  let smoke = new Smoke();
+  let appView = smoke.appView;
+  let pds = smoke.pds;
+  console.log(`Checking the App View at ${appView} and padstone at ${pds}`);
+
+  await smoke.check('the App View answers its health check', async (): Future<void> => {
+    expect((await getJson(`${appView}/xrpc/_health`))['version'] is String, 'no version');
+  });
+  await smoke.check('the App View describes itself, with the DID of its name', async (): Future<void> => {
+    let described = await getJson(`${appView}/xrpc/dev.zena-lang.registry.describeRegistry`);
+    expect(described['did'] == didWebOf(appView), `its DID is ${stringify(described['did'])}`);
+    let domain = described['domain'];
+    expect(domain is String, 'no domain');
+    smoke.domain = domain as String;
+  });
+  await smoke.check('the App View\'s DID document names its methods and its signing key', async (): Future<void> => {
+    let document = await getJson(`${appView}/.well-known/did.json`);
+    expect(document['id'] == didWebOf(appView), `its id is ${stringify(document['id'])}`);
+    expect(serviceOf(document, '#zena_registry') == appView, 'no #zena_registry at its origin');
+    expect(document['verificationMethod'] is JsonArray, 'no signing key');
+  });
+  await smoke.check('the site\'s home page and its assets', async (): Future<void> => {
+    let home = await getText(`${appView}/`);
+    for (let asset in ['/assets/app.css', '/assets/app.js', '/assets/logo.svg']) {
+      expect(home.contains(asset), `the home page does not link ${asset}`);
+      await getText(`${appView}${asset}`);
+    }
+  });
+  await smoke.check('the site\'s OAuth client asks for exactly its scope', async (): Future<void> => {
+    let client = await getJson(`${appView}/oauth/client-metadata.json`);
+    expect(client['client_id'] == `${appView}/oauth/client-metadata.json`, `client_id ${stringify(client['client_id'])}`);
+    expect(client['scope'] == OAUTH_SCOPE, `scope ${stringify(client['scope'])}`);
+  });
+  await smoke.check('padstone answers its health check and names its DID', async (): Future<void> => {
+    expect((await getJson(`${pds}/xrpc/_health`))['version'] is String, 'no version');
+    let described = await getJson(`${pds}/xrpc/com.atproto.server.describeServer`);
+    expect(described['did'] == didWebOf(pds), `its DID is ${stringify(described['did'])}`);
+  });
+
+  // The canary's handle is under the App View's domain: without it, the
+  // checks of the canary and of publishing cannot run.
+  if (smoke.domain == null) {
+    console.log(`${smoke.failures} failed, and the rest cannot run without the App View's domain`);
+    exit(1);
+    return;
+  }
+  let canary = smoke.canary();
+  await smoke.check(`the canary's handle, ${canary}, resolves`, async (): Future<void> => {
+    let resolved = await getJson(`${appView}/xrpc/com.atproto.identity.resolveHandle?handle=${canary}`);
+    let did = resolved['did'];
+    expect(did is String, 'no DID');
+    smoke.canaryDid = did as String;
+  });
+  await smoke.check('the canary\'s DID document names padstone and the App View', async (): Future<void> => {
+    let document = await getJson(`${smoke.plc}/${smoke.did()}`);
+    expect(holds(document['alsoKnownAs'], `at://${canary}`), `it does not claim ${canary}`);
+    expect(serviceOf(document, '#atproto_pds') == pds, `its PDS is ${serviceOf(document, '#atproto_pds') ?? 'none'}`);
+    expect(serviceOf(document, '#zena_registry') == appView,
+        `its App View is ${serviceOf(document, '#zena_registry') ?? 'none'}`);
+  });
+  await smoke.check('padstone serves the canary\'s repository and its releases', async (): Future<void> => {
+    let repo = await getJson(`${pds}/xrpc/com.atproto.repo.describeRepo?repo=${smoke.did()}`);
+    expect(repo['handle'] == canary, `its handle is ${stringify(repo['handle'])}`);
+    expect(holds(repo['collections'], 'dev.zena-lang.package.release'), 'no releases');
+  });
+  await smoke.check('the canary\'s page shows its release', async (): Future<void> => {
+    expect((await getText(`${appView}/packages/${canary}`)).contains('1.0.0'), 'no 1.0.0 on the page');
+  });
+
+  for (let dir in ['/smoke/app', '/smoke/lib', '/smoke/cache', '/smoke/config']) {
+    mkdirSync(dir);
+  }
+  await smoke.check('a new workspace adds the canary, and a program that imports it runs', async (): Future<void> => {
+    writeFileSync('/smoke/app/prog.zena',
+        'import { answer } from \'smoke:smoke\';\n\nexport function main(): i32 {\n  return answer() - 42;\n}\n');
+    let added = await smoke.zena('app', ['pkg', 'add', canary]);
+    expect(added.succeeded(), `zena pkg add: ${described(added)}`);
+    let ran = await smoke.zena('app', ['run', 'prog.zena']);
+    expect(ran.succeeded(), `zena run: ${described(ran)}`);
+  });
+
+  let version = `0.0.${now().seconds}`;
+  let token = smoke.token;
+  await smoke.check(`the automation account publishes ${version}, which waits for a person`, async (): Future<void> => {
+    let manifest = new JsonObject();
+    manifest['name'] = 'smoke';
+    manifest['did'] = smoke.did();
+    manifest['scope'] = smoke.scope;
+    manifest['version'] = version;
+    manifest['description'] = 'What the registry\'s smoke test adds and runs';
+    manifest['license'] = 'MIT';
+    writeFileSync('/smoke/lib/zena-package.json', stringify(manifest));
+    writeFileSync('/smoke/lib/smoke.zena',
+        '/** The answer the smoke test\'s program checks for. */\nexport function answer(): i32 {\n  return 42;\n}\n');
+    let published = await smoke.zena('lib', ['pkg', 'publish']);
+    expect(published.succeeded(), `zena pkg publish: ${described(published)}`);
+    let pending = await getJson(
+        `${appView}/xrpc/dev.zena-lang.registry.getPendingReleases?package=${smoke.did()}`, token);
+    let releases = pending['releases'];
+    var held = false;
+    if (releases is JsonArray) {
+      for (var i = 0; i < releases.length; i += 1) {
+        let release = releases[i];
+        held = held || (release is JsonObject && release['version'] == version);
+      }
+    }
+    expect(held, `${version} is not waiting for approval: ${stringify(pending)}`);
+  });
+  await smoke.check(`the automation account withdraws ${version}`, async (): Future<void> => {
+    let input = new JsonObject();
+    input['package'] = smoke.did();
+    input['version'] = version;
+    await post(`${appView}/xrpc/dev.zena-lang.registry.withdrawRelease`, input, token);
+    let pending = stringify(await getJson(
+        `${appView}/xrpc/dev.zena-lang.registry.getPendingReleases?package=${smoke.did()}`, token));
+    expect(!pending.contains(`"${version}"`), `${version} still waits: ${pending}`);
+  });
+
+  if (smoke.failures > 0) {
+    console.log(`${smoke.failures} failed`);
+    exit(1);
+    return;
+  }
+  console.log('All passed');
+}
