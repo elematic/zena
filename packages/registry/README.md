@@ -168,6 +168,7 @@ export ZENA_GCP_PROJECT=meta-garage-420114 PDS_ENV=staging
 npm run deploy:setup -w @zena-lang/registry    # once: the resources, the key and the zone
 npm run deploy -w @zena-lang/registry          # builds the image with Cloud Build, and deploys both services
 npm run deploy:domain -w @zena-lang/registry   # once: maps both names, with gcloud's beta component
+ZENA_ALERT_EMAIL=you@example.com npm run deploy:alerts -w @zena-lang/registry   # once both names answer
 ```
 
 `deploy:setup` is idempotent, and makes the keys and the session secret
@@ -199,6 +200,35 @@ export ZENA_CONFIG_DIR=$(mktemp -d)           # optional: a staging sign-in apar
 Every shell that runs `zena` against staging needs them, `zena pkg add` and
 `zena pkg fetch` included: without `ZENA_PLC_DIRECTORY`, a staging package's
 DID is looked up in `plc.directory`, which has never heard of it.
+
+### Backups and alerts
+
+Releases are permanent, so `deploy:setup` keeps the database from
+deletion and backs it up. Point-in-time recovery keeps every version of
+the last 7 days, a daily backup is kept 7 days, and in production a
+weekly backup is kept 14 weeks. A blob deleted from the bucket can be
+restored for 7 days on staging and 30 in production. A restore makes a
+new database beside the old one:
+
+```sh
+gcloud firestore backups list --location us-central1
+gcloud firestore databases restore --source-backup <backup> --destination-database zena-pkg-restored
+gcloud firestore databases clone --source-database projects/meta-garage-420114/databases/zena-pkg \
+  --snapshot-time 2026-11-08T10:20:00Z --destination-database zena-pkg-restored
+gcloud storage restore gs://meta-garage-420114-zena-pkg/pkg/<did>/<cid>
+```
+
+To serve from a restored database, set `DATABASE` in `deploy/env.sh` to
+it, then run `deploy:setup`, which gives the service account its role
+on it, and `deploy`.
+
+`deploy:alerts` watches an environment once both names answer. It makes
+an uptime check of `/xrpc/_health` on each name, every 5 minutes from
+three regions, and two alerts emailed to `ZENA_ALERT_EMAIL`: one when two
+regions fail a check, and one when a service answers more than 4
+requests in 5 minutes with a 5xx. With `ZENA_MONTHLY_BUDGET`, in US
+dollars, it also sets a monthly budget on the project that warns at 50%,
+90% and 100%. Running it again adds only what is missing.
 
 ### Rotation keys
 

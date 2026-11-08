@@ -48,6 +48,8 @@ case "$PDS_ENV" in
     PDS_DOMAIN=padstone-staging.zena-lang.dev
     PLC_MODE=staging
     ROTATION_KMS="${ZENA_ROTATION_KMS:-0}"
+    WEEKLY_BACKUPS=0
+    SOFT_DELETE=7d
     ;;
   production)
     SUFFIX=
@@ -55,6 +57,8 @@ case "$PDS_ENV" in
     PDS_DOMAIN=padstone.zena-lang.dev
     PLC_MODE=public
     ROTATION_KMS=1
+    WEEKLY_BACKUPS=1
+    SOFT_DELETE=30d
     ;;
   *)
     echo "PDS_ENV is staging or production, not $PDS_ENV" >&2
@@ -115,6 +119,11 @@ find_parent_zone() {
   PARENT_ZONE="${ZENA_DNS_PARENT_ZONE:-$(gcloud dns managed-zones list --project "$PARENT_PROJECT" \
     --format 'value(name,dnsName)' | awk '$2 == "zena-lang.dev." { print $1; exit }')}"
 }
+# Backups (setup.sh): point-in-time recovery of the database's last 7
+# days and a daily backup kept 7 days in both environments; in production,
+# WEEKLY_BACKUPS adds a weekly backup kept 14 weeks. A deleted blob stays
+# recoverable from the bucket for SOFT_DELETE.
+#
 # The tenant within the database (docs/design/pds.md, "Accounts,
 # organizations and tenants"). Each environment has a database of its own,
 # so both use the same one.
