@@ -1,0 +1,68 @@
+/**
+ * The registry's smoke test, `packages/registry/dev/smoke.zena`, from end
+ * to end, against `tests/fixtures/publish-stack.zena` serving the web app's
+ * assets: the stack set up as `deploy/smoke.sh setup` sets up an
+ * environment, then the smoke test run as `deploy/smoke.sh` runs it.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {JsonObject, parseJson} from 'zena:json';
+import {
+  Scratch, ZenaCommand, after, described, ensureDir, fakePdsOrigin, read, repoRoot, startFakePds, stopFakePds,
+  write
+} from './cli-support.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+
+export let tests = suite('the registry smoke test', () => {
+  test('passes against a stack set up as smoke.sh sets one up', async (ctx) => {
+    let scratch = Scratch.create('smoke');
+    let stack = startFakePds(scratch, 'publish-stack.zena', 'packages/registry/zena/test/fixtures/web');
+    try {
+      await fakePdsOrigin(scratch, stack);
+      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      let registry = addresses['registry'] as String;
+      let plc = addresses['plc'] as String;
+      let dns = addresses['dns'] as String;
+
+      // As `smoke.sh setup` does: a person publishes the canary, smoke
+      // 1.0.0, and makes an automation account one of its publishers.
+      write(scratch.at('canary/zena-package.json'),
+          '{"name": "smoke", "description": "What the smoke test adds and runs", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      write(scratch.at('canary/smoke.zena'), 'export function answer(): i32 { return 42; }\n');
+      let alice = new ZenaCommand(scratch.host('canary'), scratch.at('canary'), scratch.host('cache'))
+        .set('ZENA_PLC_DIRECTORY', plc)
+        .set('ZENA_DNS_OVER_HTTPS', dns)
+        .set('ZENA_REGISTRY', registry)
+        .set('ZENA_CONFIG_DIR', scratch.host('config'));
+      isTrue((await alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n')).succeeded(), 'alice signs in');
+      isTrue((await alice.run(['pkg', 'scope', 'create', 'acme', '--yes'])).succeeded(), 'the scope');
+      let published = await alice.run(['pkg', 'publish', '--yes']);
+      isTrue(published.succeeded(), described(published));
+      let created = await alice.run(['pkg', 'ci', 'create', 'acme/smoke-ci']);
+      let token = after(created.stdout, 'Its token, which is not shown again:');
+      isTrue(token.startsWith('zena_ci_'), described(created));
+      let added = await alice.run(['pkg', 'owner', 'add', 'smoke-ci.acme.pkg.test', '--automation']);
+      isTrue(added.succeeded(), described(added));
+
+      // As `smoke.sh` runs it, with one origin for the App View and the PDS
+      // it runs in the same process.
+      ensureDir(scratch.at('smoke'));
+      let smoke = await new ZenaCommand(repoRoot(), '.', scratch.host('smoke-cache'))
+        .set('SMOKE_APP_VIEW', registry)
+        .set('SMOKE_PDS', registry)
+        .set('SMOKE_PLC', plc)
+        .set('SMOKE_SCOPE', 'acme')
+        .set('ZENA_REGISTRY_TOKEN', token)
+        .set('SMOKE_HOST_DIR', scratch.host('smoke'))
+        .set('SMOKE_REPO', repoRoot())
+        .set('ZENA_DNS_OVER_HTTPS', dns)
+        .run(['run', '--allow-spawn', '--dir', `${scratch.host('smoke')}::/smoke`, 'packages/registry/dev/smoke.zena']);
+      isTrue(smoke.succeeded() && smoke.stdout.contains('All passed'), described(smoke));
+    } finally {
+      await stopFakePds(stack);
+      await scratch.remove();
+    }
+  });
+});

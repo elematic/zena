@@ -181,6 +181,7 @@ The three ways to remove a release differ in who does it and what stays:
 | ------------------------------------------ | ------------------------------------------------------ |
 | Deploy, set up keys and secrets            | `deploy/` (`deploy:setup`, `deploy`)                   |
 | Back up the data, and watch the services   | `deploy:setup` (backups), `deploy:alerts`              |
+| Check a deploy                             | `deploy:smoke`                                         |
 | Make the offline rotation key              | `main.zena generate-key`                               |
 | Undo a misused online key's PLC operations | `main.zena plc-restore`                                |
 | Create a scope for an organization         | `main.zena create-scope`, through `deploy/operator.sh` |
