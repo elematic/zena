@@ -1550,12 +1550,22 @@ export final class FunctionLowerer {
     this.b.switchTo(block);
     cx.reachable = true;
     let results = this.b.body.blocks[block].params;
+    // An inline result is the block's parameters together, bound as an
+    // inline parameter is: its lanes and their layout.
+    let inlineResult = if (this.#bindsResult) this.#functionReturnLayout() else null;
     for (let clause in ensures) {
       if (clause.kind != ContractKind.Ensures) { continue; }
       if (this.#bindsResult) {
         let result = this.func.model.resolveDeclaration(clause);
         if (result != null) {
-          cx.bindPatternSym(result, results[0]);
+          if (inlineResult != null) {
+            cx.env[result.id] = NO_VALUE;
+            cx.symbols[result.id] = result;
+            cx.inlineBindings[result.id] = new MultiValues(
+                results.slice(0, results.length), inlineResult);
+          } else {
+            cx.bindPatternSym(result, results[0]);
+          }
         }
       }
       lowerContractClause(cx, clause);
@@ -1998,7 +2008,8 @@ export final class FunctionLowerer {
         this.ctorPhase != 1 && extCtorDef == null) {
       let returned = this.#returnedValueTypes(sig);
       this.#ensures = contracts;
-      this.#bindsResult = ctorDef == null && returned.length == 1;
+      this.#bindsResult = ctorDef == null &&
+          (returned.length == 1 || this.#functionReturnLayout() != null);
       this.#lowerOldValues(contracts);
       this.b.redirectReturns(returned);
     }

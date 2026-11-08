@@ -1,0 +1,51 @@
+// @mode: run
+// @result: 35
+// `result` for a function that returns an inline value: the several
+// values a return carries, read by index as an inline parameter is.
+
+function divide(a: i32, b: i32): inline (i32, i32)
+  requires (b > 0)
+  ensures (result[0] * b + result[1] == a)
+  ensures (result[1] >= 0 && result[1] < b)
+{
+  var q = 0;
+  var rest = a;
+  while (rest >= b) invariant (q * b + rest == a) {
+    rest -= b;
+    q += 1;
+  }
+  return (q, rest);
+}
+
+// Wrong on purpose: it swaps nothing.
+function swap(pair: inline (i32, i32)): inline (i32, i32)
+  ensures (result[0] == pair[1] && result[1] == pair[0])
+{
+  return (pair[0], pair[1]);
+}
+
+// A nested inline tuple, and an expression body.
+let spread = (n: i32): inline (i32, inline (i32, i32))
+  ensures (result[0] == n && result[1][1] == n + 2)
+=> (n, (n + 1, n + 2));
+
+function violates(run: () => void): i32 {
+  try {
+    run();
+    return 0;
+  } catch (e) {
+    return if (e is ContractError) 1 else 2;
+  }
+}
+
+export function main(): i32 {
+  let (q, r) = divide(17, 5);
+  var score = q * 10 + r; // 32
+  score += violates(() => { swap((1, 2)); }); // +1
+  let (a, b) = swap((3, 3)); // the postcondition holds for equal elements
+  score += a - b; // +0
+  let (n, (m, p)) = spread(1);
+  score += p - m; // +1
+  score += violates(() => { divide(1, 0); }); // +1
+  return score;
+}
