@@ -32,7 +32,7 @@
  */
 
 import {
-  Completer, Parker, drainMicrotasks, setBlockingParker
+  Completer, drainMicrotasks
 } from 'zena:async';
 import { Memory, defaultAllocator } from 'zena:memory';
 
@@ -280,56 +280,33 @@ export function beginTask(): void {
 }
 
 /**
- * The synchronous wait's park source on this target: one blocking
- * `waitable-set.wait` on the running task's set, dispatched the way the
- * callback would. `runFuture` falls back to it once the microtask queue
- * is empty, which is what lets a synchronous caller wait out a p3
- * import or timer — `zena:fs` does, and so does a test that runs a
- * future to its value. Installed by `blockOn` (block.zena), and on the
- * zena command's host by the entry, through `zena:host-setup`. Not by
- * `beginTask`: building the parker links the wait, whose event pair
- * lives in linear memory, and a component that only awaits has no use
- * for either.
+ * One blocking turn of `blockOn`: one `waitable-set.wait` on the
+ * running task's set, dispatched the way the callback would. Returns
+ * false when the task has nothing in flight to wait on.
  */
-final class DriverParker implements Parker {
-  park(): boolean {
-    let ctx = currentContext();
-    if (ctx.pendingWaitables == 0) {
-      return false;
-    }
-    if (let (true, area) = defaultAllocator.alloc(8)) {
-      let mem = Memory.default;
-      let event = waitableSetWait(ensureSet(ctx) as i32, area);
-      let fired = mem.getI32(area);
-      let code = mem.getI32(area + 4);
-      defaultAllocator.free(area);
-      let waitable = fired as Waitable;
-      let isCopy = event == EVENT_STREAM_READ || event == EVENT_STREAM_WRITE ||
-          event == EVENT_FUTURE_READ || event == EVENT_FUTURE_WRITE;
-      if ((event == EVENT_SUBTASK && code == STATE_RETURNED) || isCopy) {
-        dispatchEvent(event, waitable, code);
-        // The event may have belonged to another task; the blocking
-        // one is running again now.
-        currentTask = ctx;
-      }
-      return true;
-    }
-    throw new Error('the blocking wait could not allocate its event area');
+export function waitOne(): boolean {
+  let ctx = currentContext();
+  if (ctx.pendingWaitables == 0) {
+    return false;
   }
-}
-
-var blockingParkerInstalled = false;
-
-/**
- * Register the parker, once: for `blockOn` (block.zena) and the zena
- * command's host setup. A program that reaches neither links no
- * blocking wait.
- */
-export function installBlockingParker(): void {
-  if (!blockingParkerInstalled) {
-    blockingParkerInstalled = true;
-    setBlockingParker(new DriverParker());
+  if (let (true, area) = defaultAllocator.alloc(8)) {
+    let mem = Memory.default;
+    let event = waitableSetWait(ensureSet(ctx) as i32, area);
+    let fired = mem.getI32(area);
+    let code = mem.getI32(area + 4);
+    defaultAllocator.free(area);
+    let waitable = fired as Waitable;
+    let isCopy = event == EVENT_STREAM_READ || event == EVENT_STREAM_WRITE ||
+        event == EVENT_FUTURE_READ || event == EVENT_FUTURE_WRITE;
+    if ((event == EVENT_SUBTASK && code == STATE_RETURNED) || isCopy) {
+      dispatchEvent(event, waitable, code);
+      // The event may have belonged to another task; the blocking
+      // one is running again now.
+      currentTask = ctx;
+    }
+    return true;
   }
+  throw new Error('the blocking wait could not allocate its event area');
 }
 
 /** The running task, created lazily when nothing began one: code
