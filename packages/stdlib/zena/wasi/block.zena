@@ -10,8 +10,8 @@
  * memory.
  */
 
-import { Future, runFuture } from 'zena:async';
-import { installBlockingParker } from './async.zena';
+import { Future, drainMicrotasks, runFuture } from 'zena:async';
+import { waitOne } from './async.zena';
 
 /**
  * Wait for `future` without returning to the host. Each turn blocks in
@@ -26,10 +26,14 @@ import { installBlockingParker } from './async.zena';
  * on cannot settle, and is reported rather than hung on.
  */
 export function blockOn<T>(future: Future<T>): T {
-  installBlockingParker();
   // Awaited, so that a deferred future — what a lifted `future<T>` is —
   // starts its work: nothing else would subscribe to it here.
-  return runFuture(awaited(future));
+  let f = awaited(future);
+  drainMicrotasks();
+  while (!f.isCompleted && waitOne()) {
+    drainMicrotasks();
+  }
+  return runFuture(f);
 }
 
 /** `future`, subscribed to: the settled value, or its failure. */
