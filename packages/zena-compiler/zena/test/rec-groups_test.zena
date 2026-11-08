@@ -15,12 +15,12 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-function compileToWat(source: String) {
+async function compileToWat(source: String) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
 
   let entryAst = compResult.entry.ast;
@@ -126,13 +126,13 @@ function recGroupBodies(wat: String): Array<String> {
 
 export let tests = suite('rec groups', () => {
   test('mutually recursive classes share one minimal group',
-      (ctx) => {
+      async (ctx) => {
     // A and B reference each other: a genuine two-member recursion.
     // Their group holds exactly the cycle — not the vtable structs,
     // not the signatures, not the String machinery. (OTHER multi-member
     // groups may exist: canonically-identical types share a group so
     // position keeps them nominally distinct.)
-    let wat = compileToWat(`
+    let wat = await compileToWat(`
 class A {
   var other: B | null;
   new() : other = null;
@@ -164,10 +164,10 @@ export let main = (): i32 => {
   });
 
   test('a self-referential class needs no rec group at all',
-      (ctx) => {
+      async (ctx) => {
     // A singleton type may reference itself without a group header —
     // the shorthand IS a one-member rec group.
-    let wat = compileToWat(`
+    let wat = await compileToWat(`
 class Node {
   var next: Node | null;
   new() : next = null;
@@ -186,7 +186,7 @@ export let main = (): i32 => {
   });
 
   test('structurally identical classes stay nominally distinct',
-      (ctx) => {
+      async (ctx) => {
     // P and Q have the same source shape; wasm-gc canonicalizes
     // identical groups to ONE type, which would make `is Q` true for a
     // P. Canonically-identical groups therefore merge into one rec
@@ -195,7 +195,7 @@ export let main = (): i32 => {
     // of each class's fields, and the twins are the two class structs
     // themselves. The runtime half of this pin is
     // tests/language/execution/classes/structural-twins-distinct.zena.
-    let wat = compileToWat(`
+    let wat = await compileToWat(`
 class P {
   x: i32;
   new(this.x);

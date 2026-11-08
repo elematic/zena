@@ -8,7 +8,7 @@
  *
  * Usage:
  *   let compiler = createCompiler(host, {stdlibRoot, packages});
- *   let result = compiler.compile({entry: '/path/to/main.zena', target: 'js'});
+ *   let result = await compiler.compile({entry: '/path/to/main.zena', target: 'js'});
  *   let checked = checkCompilation(result);
  *   for (let file in result.files) {
  *     // process each library in dependency order
@@ -174,6 +174,12 @@ export final class ProgramCheckResult {
  * imports may be two different libraries; what one compiler saves is
  * the second compiler, and everything a repeat compile on the same
  * target would have reloaded.
+ *
+ * A compiler runs one operation at a time. `compile`, `invalidate` and
+ * `refreshCache` await the host, and a second call on the same compiler
+ * while one is in flight would see a loader cache the first has half
+ * filled, so it throws instead. A caller whose requests can overlap
+ * queues them (the language service does).
  */
 export final class Compiler {
   #host: CompilerHost;
@@ -182,8 +188,22 @@ export final class Compiler {
   /** One per target compiled so far, keyed by canonical target name. */
   #targets = new Map<String, CompilerTarget>();
 
+  /** What is in flight, named for the error a second call gets. */
+  var #inFlight: String | null = null;
+
   new(host: CompilerHost, options: CompilerOptions)
     : #host = host, #options = options;
+
+  /** Marks `operation` as in flight; throws when one already is. */
+  #begin(operation: String): void {
+    let current = this.#inFlight;
+    if (current != null) {
+      throw new Error(
+          `Compiler.${operation} called while ${current} is in flight; ` +
+          `a compiler runs one operation at a time`);
+    }
+    this.#inFlight = operation;
+  }
 
   /**
    * This compiler's state for `target`, built on first use: the
@@ -222,8 +242,13 @@ export final class Compiler {
    * (an editor), call `invalidate(path)` first; in pull-based ones (a
    * build), call `refreshCache()`.
    */
-  compile(options: CompileOptions): CompilationResult {
-    return this.forTarget(options.target).compile(options);
+  async compile(options: CompileOptions): Future<CompilationResult> {
+    this.#begin("compile");
+    try {
+      return await this.forTarget(options.target).compile(options);
+    } finally {
+      this.#inFlight = null;
+    }
   }
 
   /** Time spent reading source, across every target. */
@@ -267,9 +292,14 @@ export final class Compiler {
    * Call this when a specific file's source has changed, e.g. the
    * language service receiving an editor update.
    */
-  invalidate(path: String): void {
-    for (let name in this.#targets.keys()) {
-      this.#targets[name].invalidate(path);
+  async invalidate(path: String): Future<void> {
+    this.#begin("invalidate");
+    try {
+      for (let name in this.#targets.keys()) {
+        await this.#targets[name].invalidate(path);
+      }
+    } finally {
+      this.#inFlight = null;
     }
   }
 
@@ -280,9 +310,14 @@ export final class Compiler {
    * changes is available. In push-based environments prefer
    * `invalidate(path)`.
    */
-  refreshCache(): void {
-    for (let name in this.#targets.keys()) {
-      this.#targets[name].refreshCache();
+  async refreshCache(): Future<void> {
+    this.#begin("refreshCache");
+    try {
+      for (let name in this.#targets.keys()) {
+        await this.#targets[name].refreshCache();
+      }
+    } finally {
+      this.#inFlight = null;
     }
   }
 }

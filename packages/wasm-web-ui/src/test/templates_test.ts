@@ -59,7 +59,7 @@ suite('wasm-web-ui: template results', () => {
   let host: InstanceType<typeof TemplateHost>;
 
   before(async () => {
-    const result = await instantiateModule(compile(source));
+    const result = await instantiateModule(await compile(source));
     host = new TemplateHost(result.instance.exports);
     module = result.module;
     exports = result.instance.exports as Exports;

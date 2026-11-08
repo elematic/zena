@@ -24,7 +24,7 @@ import {
 } from '../index.js';
 
 const run_ = async (source: string) => {
-  const wasm = compile(source);
+  const wasm = await compile(source);
   const result = await instantiate(wasm);
   const instance =
     (result as {instance?: WebAssembly.Instance}).instance ??
@@ -72,7 +72,7 @@ suite('Runtime - zena:time host integration', () => {
   // only way it gets `time` at all: a hand-rolled import object that
   // forgets it fails to instantiate the moment a program calls sleep().
   test('an embedder sees output from both sides of an await', async () => {
-    const wasm = compile(`
+    const wasm = await compile(`
       import { sleep, milliseconds } from 'zena:time';
 
       export async function main() {

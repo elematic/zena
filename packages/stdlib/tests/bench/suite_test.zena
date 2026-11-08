@@ -3,7 +3,7 @@
 // spawning commands need.
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { existsSync, readFileSync, unlinkSync } from 'zena:fs';
+import { exists, readFile, unlink } from 'zena:fs';
 import { runSuite } from 'zena:bench';
 
 let fixtures = 'packages/stdlib/tests/bench/fixtures';
@@ -12,14 +12,14 @@ export let tests = suite('bench suites', () => {
   test('a module and a command are sampled and reported', async () => {
     let out = '/tmp/zena-suite-test.results.json';
     equal(await runSuite(`${fixtures}/suite.json`, {out: out}), 0);
-    isTrue(existsSync(out));
-    let json = readFileSync(out);
+    isTrue(await exists(out));
+    let json = await readFile(out);
     isTrue(json.contains('"module"'));
     isTrue(json.contains('"command"'));
     // The command reports 0.25 ms on its last line, so every one of its
     // samples is exactly that.
     isTrue(json.contains('0.25'));
-    unlinkSync(out);
+    await unlink(out);
   });
 
   test('a path that climbs out of the config\'s directory is resolved', async () => {
@@ -27,7 +27,7 @@ export let tests = suite('bench suites', () => {
     // a `..` segment, so the suite has to resolve it first.
     let out = '/tmp/zena-suite-nested.results.json';
     equal(await runSuite(`${fixtures}/nested/suite.json`, {out: out}), 0);
-    unlinkSync(out);
+    await unlink(out);
   });
 
   test('a zena variant without a compiler is an error', async () => {
@@ -40,7 +40,7 @@ export let tests = suite('bench suites', () => {
     let status = await runSuite(`${fixtures}/needs-compiler.json`, {
       out: out,
       // Stands in for a compiler: hands back an existing module.
-      compile: (source: String) => {
+      compile: async (source: String) => {
         compiled += 1;
         equal(source, `${fixtures}/fib.zena`);
         return `${fixtures}/sum.wat`;
@@ -48,6 +48,6 @@ export let tests = suite('bench suites', () => {
     });
     equal(status, 0);
     equal(compiled, 1);
-    unlinkSync(out);
+    await unlink(out);
   });
 });

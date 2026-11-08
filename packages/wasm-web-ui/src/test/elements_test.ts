@@ -119,7 +119,7 @@ suite('wasm-web-ui: custom elements', () => {
   let elements: InstanceType<typeof ElementModule>;
 
   before(async () => {
-    const {instance} = await instantiateModule(compile(source));
+    const {instance} = await instantiateModule(await compile(source));
     exports = instance.exports;
     elements = new ElementModule(exports);
     // The page defines the tags its markup uses, here every suggested
@@ -171,7 +171,7 @@ suite('wasm-web-ui: custom elements', () => {
     // tags globally would throw here. Scoped custom element registries
     // would give the module one of its own; this DOM has none, so the
     // classes are only handed back.
-    const {instance} = await instantiateModule(compile(source));
+    const {instance} = await instantiateModule(await compile(source));
     const again = new ElementModule(instance.exports);
     assert.equal(again.registry, null);
     assert.deepEqual(
@@ -310,7 +310,7 @@ suite('wasm-web-ui: custom elements', () => {
 
   test('a page that grants no capabilities refuses the module', async () => {
     await assert.rejects(
-      instantiateModule(compile(source), {capabilities: []}),
+      instantiateModule(await compile(source), {capabilities: []}),
       WebAssembly.LinkError,
     );
   });

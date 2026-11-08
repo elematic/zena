@@ -108,11 +108,11 @@ final class CheckedImplementation(
  * it, and return the whole result — the signature map is keyed by path,
  * and rule two needs the types themselves.
  */
-function checkImplementation(
+async function checkImplementation(
   compiler: Compiler,
   impl: Implementation
 ) {
-  let result = compiler.compile({
+  let result = await compiler.compile({
     entry: `zena:${impl.path}`,
     target: impl.target,
   });
@@ -291,24 +291,24 @@ export let tests = suite('virtual library implementations', () => {
   });
 
   /** Every implementation of every multi-implementation virtual library. */
-  let checkAll = (
+  let checkAll = async (
     compiler: Compiler
   ) => {
     let out = new Array<(String, GrowableArray<CheckedImplementation>)>();
     for (let (name, impls) in virtualLibraries()) {
       let checked = new Array<CheckedImplementation>();
       for (let impl in impls) {
-        checked.push(checkImplementation(compiler, impl));
+        checked.push(await checkImplementation(compiler, impl));
       }
       out.push((name, checked));
     }
     return out;
   };
 
-  test('implementations agree on every name they share', (ctx) => {
+  test('implementations agree on every name they share', async (ctx) => {
     let gaps = signatureGaps();
     var compared = 0;
-    for (let (name, impls) in checkAll(newCompiler())) {
+    for (let (name, impls) in await checkAll(newCompiler())) {
       let first = impls[0];
       let firstSig = signatureOf(first.checked, first.impl);
       let complaints = new StringBuilder();
@@ -343,10 +343,10 @@ export let tests = suite('virtual library implementations', () => {
   });
 
   test('every exported type is declared where all implementations see it',
-      (ctx) => {
+      async (ctx) => {
     let gaps = typeDeclarationGaps();
     var checkedTypes = 0;
-    for (let (name, impls) in checkAll(newCompiler())) {
+    for (let (name, impls) in await checkAll(newCompiler())) {
       // A declaration is shared when every implementation's compile
       // loaded that library, at that path. `memory.zena` qualifies even
       // though it is itself the implementation three targets select,

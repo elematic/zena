@@ -19,8 +19,8 @@ import { compileFile } from '../lib/compile-file.zena';
 
 let fixtures = 'packages/zena-compiler/test-files/wit-diagnostics';
 
-function documentAt(path: String) {
-  return readWitDocument(new DiskHost(), path);
+async function documentAt(path: String) {
+  return await readWitDocument(new DiskHost(), path);
 }
 
 /** The diagnostic parsing `doc` produces, or null if it parsed. */
@@ -39,8 +39,8 @@ function parseFailureText(doc: WitDocument) {
 export let tests = suite("WIT diagnostics", () => {
 
   test("a keyword as a parameter name names the file and position",
-      (t) => {
-    let doc = documentAt(`${fixtures}/single/world.wit`);
+      async (t) => {
+    let doc = await documentAt(`${fixtures}/single/world.wit`);
     let text = parseFailureText(doc);
     isNotNull(text);
     equalText(text as String,
@@ -52,10 +52,10 @@ export let tests = suite("WIT diagnostics", () => {
   });
 
   test("a directory names the file the offending token is actually in",
-      (t) => {
+      async (t) => {
     // `greeter.wit` comes first in name order, so the world's offsets
     // are nowhere near the start of the document the parser saw.
-    let doc = documentAt(`${fixtures}/split`);
+    let doc = await documentAt(`${fixtures}/split`);
     let text = parseFailureText(doc);
     isNotNull(text);
     equalText(text as String,
@@ -66,8 +66,8 @@ export let tests = suite("WIT diagnostics", () => {
         "                     ^^^^^");
   });
 
-  test("locate puts an offset in the file it came from", (t) => {
-    let doc = documentAt(`${fixtures}/split`);
+  test("locate puts an offset in the file it came from", async (t) => {
+    let doc = await documentAt(`${fixtures}/split`);
     equal(doc.files.length, 2);
     equal(doc.files[0].name, `${fixtures}/split/greeter.wit`);
     equal(doc.files[1].name, `${fixtures}/split/world.wit`);
@@ -85,19 +85,19 @@ export let tests = suite("WIT diagnostics", () => {
     equal(second.column, 1);
   });
 
-  test("a single file is one file starting at zero", (t) => {
-    let doc = documentAt(`${fixtures}/single/world.wit`);
+  test("a single file is one file starting at zero", async (t) => {
+    let doc = await documentAt(`${fixtures}/single/world.wit`);
     equal(doc.files.length, 1);
     equal(doc.files[0].name, `${fixtures}/single/world.wit`);
     equal(doc.files[0].start, 0);
   });
 
   test("a malformed declared world fails the compile, not the compiler",
-      (t) => {
+      async (t) => {
     // The diagnostic goes to stderr, so what is asserted here is the
     // status: `compileFile` reports and returns 1 where it used to throw
     // past its own caller.
-    equal(compileFile({
+    equal(await compileFile({
       entry: `${fixtures}/main.zena`,
       outPath: 'packages/zena-compiler/zena/out/wit-diagnostics.wasm',
       target: 'component',

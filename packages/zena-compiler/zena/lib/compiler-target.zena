@@ -119,13 +119,13 @@ export final class CompilerTarget {
   }
 
   /** Invalidate a single cached file and re-load it (push-based). */
-  invalidate(path: String): void {
-    this.#loader.invalidate(path);
+  async invalidate(path: String): Future<void> {
+    await this.#loader.invalidate(path);
   }
 
   /** Re-read all cached non-stdlib files from the host (pull-based). */
-  refreshCache(): void {
-    this.#loader.refreshCache();
+  async refreshCache(): Future<void> {
+    await this.#loader.refreshCache();
   }
 
   /** Get a previously loaded source file by canonical path. */
@@ -149,7 +149,7 @@ export final class CompilerTarget {
    * NOTE: this does NOT detect file changes. In push-based environments,
    * call `invalidate(path)` first; in pull-based ones, `refreshCache()`.
    */
-  compile(options: CompileOptions): CompilationResult {
+  async compile(options: CompileOptions): Future<CompilationResult> {
     // The request's target is the `Compiler`'s routing key, so by the
     // time it gets here it names this one. Reaching a target's library
     // set directly with another target's request would compile the
@@ -166,11 +166,11 @@ export final class CompilerTarget {
     let prelude = getStandardPrelude(this.target);
     for (let specifier in prelude.keys()) {
       let resolved = this.#resolver.resolve(specifier, "");
-      entries.push(this.#loader.load(resolved.path, null));
+      entries.push(await this.#loader.load(resolved.path, null));
     }
 
     // Load the entry point and all transitive dependencies.
-    let entry = this.#loader.load(options.entry, options.version ?? null);
+    let entry = await this.#loader.load(options.entry, options.version ?? null);
     entries.push(entry);
 
     // The component target's entry wrapper, when the program's async
@@ -187,7 +187,7 @@ export final class CompilerTarget {
         let pinned: HashMap<String, String> = {
           wrapper.entrySpecifier => wrapper.entryPath,
         };
-        entries.push(this.#loader.loadSynthesized(
+        entries.push(await this.#loader.loadSynthesized(
             wrapper.path, wrapper.source, pinned));
       }
     }
@@ -196,14 +196,14 @@ export final class CompilerTarget {
     // cannot shift its symbol ids — see getTargetRuntimeModules.
     for (let specifier in getTargetRuntimeModules(this.target)) {
       let resolved = this.#resolver.resolve(specifier, "");
-      entries.push(this.#loader.load(resolved.path, null));
+      entries.push(await this.#loader.load(resolved.path, null));
     }
 
     // Run scope analysis on every loaded file. This gives each file's
     // implicit prelude imports and implied syntax modules their edges,
     // so it comes first.
     let tScope = performance.start("scope");
-    this.#resolveScopes(entries);
+    await this.#resolveScopes(entries);
     performance.end(tScope);
 
     // Compute topological order, over explicit and implicit imports alike.
@@ -239,7 +239,7 @@ export final class CompilerTarget {
    * added to its AST, but wiring still runs — a changed dependency may
    * carry fresh symbols.
    */
-  #resolveScopes(entries: GrowableArray<SourceFile>): void {
+  async #resolveScopes(entries: GrowableArray<SourceFile>): Future<void> {
     let preludeNames = this.#preludeNames();
     let withImplicit = new Array<SourceFile>();
     let scopeUnscoped = (list: GrowableArray<SourceFile>) => {
@@ -289,7 +289,7 @@ export final class CompilerTarget {
             facadePath = "";
           }
           if (facadePath != "" && !filePaths.has(facadePath)) {
-            nextEntries.push(this.#loader.load(facadePath, null));
+            nextEntries.push(await this.#loader.load(facadePath, null));
             addedImplied = true;
           }
         }

@@ -18,24 +18,30 @@ in a Web Worker, and in an editor extension host.
 
 ```ts
 import {createLanguageService} from '@zena-lang/language-service';
-import {readFileSync} from 'node:fs';
+import {readFile} from 'node:fs/promises';
 
 const service = await createLanguageService({
   wasm: new URL('@zena-lang/language-service/lsp.wasm', import.meta.url),
   stdlibRoot: '/path/to/stdlib/zena',
-  readFile: (path) => {
+  readFile: async (path) => {
     try {
-      return readFileSync(path, 'utf8');
+      return await readFile(path, 'utf8');
     } catch {
       return undefined;
     }
   },
 });
 
-for (const d of service.check('main.zena', 'let x: i32 = "hello";')) {
+for (const d of await service.check('main.zena', 'let x: i32 = "hello";')) {
   console.log(`${d.line}:${d.column} ${d.severity}: ${d.message}`);
 }
 ```
+
+`readFile` may return a string or a promise of one: the compiler reads
+files asynchronously, so a browser host can fetch a library when the
+compiler first asks for it. The methods that analyze a document
+(`check`, `lint`, `hover`, `completions`, `definition`, `documentSymbols`,
+`compileToWasm`) return promises.
 
 `wasm` accepts a URL, a string, a `Response`, bytes, or an already-compiled
 `WebAssembly.Module`. It defaults to `lspWasmUrl`, which resolves `lsp.wasm`

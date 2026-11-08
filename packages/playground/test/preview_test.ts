@@ -287,11 +287,11 @@ describe('ZenaProject preview support', () => {
       export let counterElement = defineElement('x-counter', () => new Counter());
     `;
 
-    const diagnostics = service.check('elements.zena', source);
+    const diagnostics = await service.check('elements.zena', source);
     const errors = diagnostics.filter((d) => d.severity === 'error');
     assert.deepEqual(errors, []);
 
-    const compiled = service.compileToWasm('elements.zena', source);
+    const compiled = await service.compileToWasm('elements.zena', source);
     assert.ok(compiled !== null && compiled.byteLength > 8);
     // Verify Wasm magic header \0asm
     assert.equal(compiled[0], 0x00);

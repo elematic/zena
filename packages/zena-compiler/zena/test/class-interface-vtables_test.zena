@@ -13,11 +13,11 @@ import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
 /** Runs reachability over `source` and returns the module it fills in. */
-function reach(source: String) {
+async function reach(source: String) {
   let host = new MockHost();
   host.addFile("test.zena", source);
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -100,8 +100,8 @@ let read = (s: Shape<i32>): i32 => s.value();
 `;
 
 export let tests = suite('class-interface vtables', () => {
-  test('a specialization nothing packs gets no vtable', () => {
-    let wasm = reach(`${declarations}
+  test('a specialization nothing packs gets no vtable', async () => {
+    let wasm = await reach(`${declarations}
 export let run = (): i32 => {
   let a = new Box<i32>(1);
   let b = new Box<boolean>(true);
@@ -111,8 +111,8 @@ export let run = (): i32 => {
     equalText(pairsOf(wasm, 'Shape'), 'Box_i32 as Shape_i32');
   });
 
-  test('each packed specialization gets its own vtable', () => {
-    let wasm = reach(`${declarations}
+  test('each packed specialization gets its own vtable', async () => {
+    let wasm = await reach(`${declarations}
 let readFlag = (s: Shape<boolean>): i32 => if (s.value()) 1 else 0;
 
 export let run = (): i32 => {
@@ -122,8 +122,8 @@ export let run = (): i32 => {
     equalText(pairsOf(wasm, 'Shape'), 'Box_i32 as Shape_i32, Box_bool as Shape_bool');
   });
 
-  test('a pack in a generic body counts for the specialization it is walked under', () => {
-    let wasm = reach(`${declarations}
+  test('a pack in a generic body counts for the specialization it is walked under', async () => {
+    let wasm = await reach(`${declarations}
 let pack = <T>(b: Box<T>): Shape<T> => b;
 
 export let run = (): i32 => {
@@ -134,8 +134,8 @@ export let run = (): i32 => {
     equalText(pairsOf(wasm, 'Shape'), 'Box_i32 as Shape_i32');
   });
 
-  test('a pack in a generic method counts for the specialization it is walked under', () => {
-    let wasm = reach(`${declarations}
+  test('a pack in a generic method counts for the specialization it is walked under', async () => {
+    let wasm = await reach(`${declarations}
 class Packer {
   new();
   pack<T>(b: Box<T>): Shape<T> {
@@ -154,8 +154,8 @@ export let run = (): i32 => {
   // The trampoline for a field's slot calls the getter registered with
   // the class, so the getter has to exist for the packed specialization
   // whichever of the two RTA reaches first.
-  test('a packed specialization has the getters its interface fields need', () => {
-    let wasm = reach(`
+  test('a packed specialization has the getters its interface fields need', async () => {
+    let wasm = await reach(`
 interface Named<T> {
   name: T;
 }

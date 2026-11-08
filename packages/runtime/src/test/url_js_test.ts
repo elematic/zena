@@ -126,7 +126,7 @@ const setJs = (href: string, component: string, value: string) => {
 let compiled: {wasm: Uint8Array; e: Record<string, Function>} | undefined;
 const zena = async () => {
   if (compiled === undefined) {
-    const wasm = compile(source, 'js');
+    const wasm = await compile(source, 'js');
     const res = await instantiate(wasm);
     const instance = res instanceof WebAssembly.Instance ? res : res.instance;
     compiled = {wasm, e: instance.exports as Record<string, Function>};

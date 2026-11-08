@@ -6,7 +6,7 @@
 
 import { ParsedArgs } from 'zena:args';
 import { getEnv } from 'zena:cli';
-import { existsSync, isDirectorySync } from 'zena:fs';
+import { exists, isDirectorySync } from 'zena:fs';
 import { AbsolutePath, RelativePath, extname } from 'zena:path';
 import { DirMapping, RunOutcome, runModule } from 'zena:wasm';
 import { CompileRequest, compileCached, ensureDir } from './compile.zena';
@@ -70,14 +70,14 @@ function extensionsAllowed(flag: boolean): boolean {
   return getEnv('ZENA_ALLOW_EXTENSIONS') == '1';
 }
 
-export function runCommand(args: ParsedArgs, options: Options): i32 {
+export async function runCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length == 0) {
     console.error('Error: run needs a .zena or .wasm file');
     return 2;
   }
   let file = args.rest[0];
   let path = resolveUserPath(file);
-  if (!existsSync(path.value)) {
+  if (!(await exists(path.value))) {
     console.error(`Error: no such file: ${file}`);
     return 2;
   }
@@ -89,7 +89,7 @@ export function runCommand(args: ParsedArgs, options: Options): i32 {
     request.time = args.getFlag('time');
     // The compiler's own output is kept out of the program's unless
     // something goes wrong or `-v` asks for it.
-    compileCached(request, options, args.getFlag('no-cache'), !options.verbose)
+    await compileCached(request, options, args.getFlag('no-cache'), !options.verbose)
   };
 
   // argv[0] is the program, by the usual convention; everything after

@@ -29,7 +29,7 @@ const formatSource = `
 
 let formatModule: Uint8Array | undefined;
 const formatExports = async () => {
-  formatModule ??= compile(formatSource, 'js');
+  formatModule ??= await compile(formatSource, 'js');
   const res = await instantiate(formatModule);
   const instance = res instanceof WebAssembly.Instance ? res : res.instance;
   return instance.exports as Record<string, Function>;
@@ -123,7 +123,7 @@ suite('Runtime - number conversion on the js target', () => {
 
   let parseModule: Uint8Array | undefined;
   const parseExports = async () => {
-    parseModule ??= compile(
+    parseModule ??= await compile(
       `export let parse = (s: String): f64 => parseF64(s);`,
       'js',
     );

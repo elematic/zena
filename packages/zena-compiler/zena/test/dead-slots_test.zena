@@ -12,12 +12,12 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-function compileToWat(source: String, optLevel: i32) {
+async function compileToWat(source: String, optLevel: i32) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -82,13 +82,13 @@ let source = `
 `;
 
 export let tests = suite('dead vtable slots', () => {
-  test('-O1 keeps a slot that a dispatch reads', () => {
-    isTrue(definesMethod(compileToWat(source, 1), 'Animal', 'speak'),
+  test('-O1 keeps a slot that a dispatch reads', async () => {
+    isTrue(definesMethod(await compileToWat(source, 1), 'Animal', 'speak'),
         'at -O1 speakOf still dispatches, so Animal.speak is installed and reachable');
   });
 
-  test('-O2 deletes a slot only a devirtualized call named', () => {
-    let wat = compileToWat(source, 2);
+  test('-O2 deletes a slot only a devirtualized call named', async () => {
+    let wat = await compileToWat(source, 2);
     isTrue(definesMethod(wat, 'Animal', 'kind'),
         'kind is still dispatched, so its implementations stay');
     isTrue(!definesMethod(wat, 'Animal', 'speak'),

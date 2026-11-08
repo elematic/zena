@@ -4,19 +4,19 @@
  * `CompilerHost` and does not import this module.
  */
 
-import { readFileSync, isDirectorySync, listDirSync } from 'zena:fs';
+import { readFile, isDirectory, listDir } from 'zena:fs';
 import { CompilerHost } from './library-loader.zena';
 
 /**
  * `CompilerHost.listDir` on disk: the names of the entries in the
  * directory at `path`, or null when `path` is not a directory.
  */
-export function directoryNames(path: String): GrowableArray<String> | null {
-  if (!isDirectorySync(path)) {
+export async function directoryNames(path: String): Future<GrowableArray<String> | null> {
+  if (!(await isDirectory(path))) {
     return null;
   }
   let names = new Array<String>();
-  for (let entry in listDirSync(path)) {
+  for (let entry in await listDir(path)) {
     names.push(entry.name);
   }
   return names;
@@ -30,11 +30,11 @@ export function directoryNames(path: String): GrowableArray<String> | null {
  * passing to `synthesizeWitModule`.
  */
 export class DiskHost implements CompilerHost {
-  readFile(path: String): String {
-    return readFileSync(path);
+  async readFile(path: String): Future<String> {
+    return await readFile(path);
   }
 
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
+  async listDir(path: String): Future<Array<String> | null> {
+    return await directoryNames(path);
   }
 }

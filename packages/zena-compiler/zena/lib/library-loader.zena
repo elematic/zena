@@ -34,15 +34,21 @@ import { performance } from './time.zena';
  * - Filesystem (Node.js, WASI)
  * - In-memory (testing, browser playground)
  * - Network (future)
+ *
+ * Both methods are asynchronous, so a host may answer from the network
+ * or from an editor, and a compile holds no task while it waits for a
+ * read. A host that has its sources in memory declares the methods
+ * `async` and returns directly. See docs/design/async-compiler.md.
  */
 export interface CompilerHost {
   /**
-   * Returns the source code of a file by its canonical path.
+   * Returns the source code of a file by its canonical path, or fails
+   * when there is no such file.
    *
    * For stdlib modules, the path has the form "zena:module-name". For file
    * modules, the path is an absolute filesystem path.
    */
-  readFile(path: String): String;
+  readFile(path: String): Future<String>;
 
   /**
    * Returns the names of the entries in the directory at `path`, or `null` when
@@ -52,7 +58,7 @@ export interface CompilerHost {
    * directory of `.wit` files. A host that serves no such package can return
    * `null`.
    */
-  listDir(path: String): Array<String> | null;
+  listDir(path: String): Future<Array<String> | null>;
 }
 
 // ============================================================================
@@ -172,9 +178,15 @@ export class SourceFileGraph(
  * - Caching loaded libraries by path (ensuring identity)
  * - Recursively loading dependencies (via import resolution)
  *
+ * Loading awaits the host one read at a time, in the order the imports
+ * are written: a library is read, parsed and cached, and then each of
+ * its imports is loaded in turn. The order matters because every parse
+ * draws node ids from this loader's one generator, and those ids reach
+ * the emitted module.
+ *
  * Usage:
  *   let loader = new LibraryLoader(host, resolver);
- *   let entry = loader.load("/path/to/main.zena");
+ *   let entry = await loader.load("/path/to/main.zena");
  *   let graph = loader.computeGraph([entry]);
  */
 /** A fresh identifier table with the keywords already in it. */
@@ -247,7 +259,7 @@ export class LibraryLoader {
    * A cached file with a different version is invalidated and re-loaded.
    * When omitted (or null), the cache is trusted unconditionally.
    */
-  load(path: String, version: String | null = null): SourceFile {
+  async load(path: String, version: String | null = null): Future<SourceFile> {
     if (this.#cache.has(path)) {
       // Version check: if a version was provided and it matches, use cache.
       // If no version was provided, always trust the cache.
@@ -259,9 +271,9 @@ export class LibraryLoader {
     }
 
     let tLoad = performance.start("load");
-    let source = this.#host.readFile(path);
+    let source = await this.#host.readFile(path);
     this.loadTime = this.loadTime + performance.end(tLoad);
-    return this.#register(path, source, version, null);
+    return await this.#register(path, source, version, null);
   }
 
   /**
@@ -272,24 +284,24 @@ export class LibraryLoader {
    * the entry's path a second way and loading it twice. Every other
    * import resolves as usual.
    */
-  loadSynthesized(
+  async loadSynthesized(
     path: String,
     source: String,
     pinned: HashMap<String, String>
-  ): SourceFile {
+  ): Future<SourceFile> {
     if (this.#cache.has(path)) {
       return this.#cache[path];
     }
-    return this.#register(path, source, null, pinned);
+    return await this.#register(path, source, null, pinned);
   }
 
   /** Parse `source` as the module at `path`, cache it, and load what it imports. */
-  #register(
+  async #register(
     path: String,
     source: String,
     version: String | null,
     pinned: HashMap<String, String> | null
-  ): SourceFile {
+  ): Future<SourceFile> {
     let isStdlib = path.startsWith("zena:") || path.contains("stdlib");
     let packageName = this.#resolver.findPackageForPath(path);
 
@@ -317,68 +329,74 @@ export class LibraryLoader {
     // Resolve and recursively load imports. A failure to resolve or
     // load a dependency is left for type checking to report as
     // ModuleNotFound.
-    let follow = (specifier: String) => {
-      // An empty specifier is the parser's stand-in for one that has not
-      // been typed yet (see #missingModuleSpecifier). There is nothing to
-      // resolve, so the declaration contributes no dependency.
-      if (specifier == "") {
-        return;
-      }
-      if (pinned != null && pinned.has(specifier)) {
-        record.imports[specifier] = pinned[specifier];
-        return;
-      }
-      // Two failures here mean the import names nothing, and the checker
-      // reports both against the import itself: a specifier that does not
-      // resolve, and a path with no file behind it.
-      var resolvedPath: String | null = null;
-      try {
-        let resolved = this.#resolver.resolve(specifier, path);
-        record.imports[specifier] = resolved.path;
-        resolvedPath = resolved.path;
-      } catch (e) {
-        // Nothing to load, and nothing more to say here.
-      }
-      if (resolvedPath == null) {
-        return;
-      }
-      let target = resolvedPath as String;
-      if (this.#cache.has(target)) {
-        return;
-      }
-      let tLoad = performance.start("load");
-      var source: String | null = null;
-      try {
-        source = this.#host.readFile(target);
-      } catch (e) {
-        // No file there, so this is the missing-library case after all.
-      }
-      this.loadTime = this.loadTime + performance.end(tLoad);
-      if (source == null) {
-        return;
-      }
-      // Parsing sits outside both catches. A dependency that does not
-      // parse throws, and swallowing that here would report the file as
-      // missing at the import site — naming a file that is sitting right
-      // there, and saying nothing about the error or its line.
-      this.#register(target, source as String, null, null);
-    };
     for (let stmt in ast.body) {
       match (stmt) {
         case ImportDeclaration {moduleSpecifier}: {
-          follow(moduleSpecifier.value);
+          await this.#follow(record, pinned, moduleSpecifier.value);
         }
         case ExportAllDeclaration {moduleSpecifier}: {
-          follow(moduleSpecifier.value);
+          await this.#follow(record, pinned, moduleSpecifier.value);
         }
         case ExportFromDeclaration {moduleSpecifier}: {
-          follow(moduleSpecifier.value);
+          await this.#follow(record, pinned, moduleSpecifier.value);
         }
         case _: {}
       }
     }
 
     return record;
+  }
+
+  /** Load the library one of `record`'s imports names, if any. */
+  async #follow(
+    record: SourceFile,
+    pinned: HashMap<String, String> | null,
+    specifier: String
+  ): Future<void> {
+    // An empty specifier is the parser's stand-in for one that has not
+    // been typed yet (see #missingModuleSpecifier). There is nothing to
+    // resolve, so the declaration contributes no dependency.
+    if (specifier == "") {
+      return;
+    }
+    if (pinned != null && pinned.has(specifier)) {
+      record.imports[specifier] = pinned[specifier];
+      return;
+    }
+    // Two failures here mean the import names nothing, and the checker
+    // reports both against the import itself: a specifier that does not
+    // resolve, and a path with no file behind it.
+    var resolvedPath: String | null = null;
+    try {
+      let resolved = this.#resolver.resolve(specifier, record.path);
+      record.imports[specifier] = resolved.path;
+      resolvedPath = resolved.path;
+    } catch (e) {
+      // Nothing to load, and nothing more to say here.
+    }
+    if (resolvedPath == null) {
+      return;
+    }
+    let target = resolvedPath;
+    if (this.#cache.has(target)) {
+      return;
+    }
+    let tLoad = performance.start("load");
+    var source: String | null = null;
+    try {
+      source = await this.#host.readFile(target);
+    } catch (e) {
+      // No file there, so this is the missing-library case after all.
+    }
+    this.loadTime = this.loadTime + performance.end(tLoad);
+    if (source == null) {
+      return;
+    }
+    // Parsing sits outside both catches. A dependency that does not
+    // parse throws, and swallowing that here would report the file as
+    // missing at the import site — naming a file that is sitting right
+    // there, and saying nothing about the error or its line.
+    await this.#register(target, source, null, null);
   }
 
   /**
@@ -411,11 +429,11 @@ export class LibraryLoader {
    * the host knows exactly which file changed. For pull-based batch
    * compilation, use `refreshCache()` instead.
    */
-  invalidate(path: String): void {
+  async invalidate(path: String): Future<void> {
     this.delete(path);
 
     // Re-load so the file is back in the cache with fresh content.
-    this.load(path);
+    await this.load(path);
   }
 
   /**
@@ -430,7 +448,7 @@ export class LibraryLoader {
    * no external notification of file changes is available. In push-based
    * environments (IDE), prefer `invalidate(path)` for targeted updates.
    */
-  refreshCache(): void {
+  async refreshCache(): Future<void> {
     // Collect paths first — can't mutate the map during iteration.
     let paths = new Array<String>();
     let iter = this.#cache.keys();
@@ -443,7 +461,7 @@ export class LibraryLoader {
     for (let path in paths) {
       let cached = this.#cache[path];
       if (!cached.isStdlib) {
-        let currentSource = this.#host.readFile(path);
+        let currentSource = await this.#host.readFile(path);
         if (currentSource != cached.source) {
           changedPaths.add(path);
           this.#cache.delete(path);
@@ -459,7 +477,7 @@ export class LibraryLoader {
       // Phase 2: Re-load evicted files so they're back in the cache
       // before computeGraph() tries to find them.
       for (let path in changedPaths) {
-        this.load(path);
+        await this.load(path);
       }
     }
   }

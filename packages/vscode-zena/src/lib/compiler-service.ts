@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import {readFile} from 'node:fs/promises';
-import {readFileSync, existsSync} from 'node:fs';
+import {existsSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {
   createStringReader,
@@ -46,8 +46,8 @@ function findStdlibRoot(extensionPath: string): string {
  * When the JS side drops the reference, WASM GC collects it.
  */
 interface LspExports extends WebAssembly.Exports {
-  init(stdlibRoot: unknown): void;
-  check(path: unknown, source: unknown): unknown;
+  init(stdlibRoot: unknown): Promise<void>;
+  check(path: unknown, source: unknown): Promise<unknown>;
   getDiagnosticCount(diagnostics: unknown): number;
   getDiagnosticLine(diagnostics: unknown, index: number): number;
   getDiagnosticColumn(diagnostics: unknown, index: number): number;
@@ -147,30 +147,30 @@ export class ZenaCompilerService {
     let lastReadFile: string | undefined;
     let lastReadFileFound = true;
 
-    // Host import: read a file by absolute path and return a WASM String, or null if not found.
-    const compilerImports = {
-      read_file: (pathRef: unknown, pathLen: number): unknown => {
-        try {
-          const reader = readString!;
-          const writer = writeString!;
-          const filePath = reader(pathRef, pathLen);
-          lastReadFile = filePath;
-          try {
-            const content = readFileSync(filePath, 'utf8');
-            lastReadFileFound = true;
-            return writer(content);
-          } catch {
-            lastReadFileFound = false;
-            return null;
-          }
-        } catch {
-          return null;
-        }
-      },
+    // Host import: read a file by absolute path. The compiler asks
+    // asynchronously, so the import is a promise-returning function the
+    // runtime settles the compiler's handle with; a rejection is a file
+    // the compiler reports as missing.
+    const readFileImport = async (
+      pathRef: unknown,
+      pathLen: number,
+    ): Promise<string> => {
+      const filePath = readString!(pathRef, pathLen);
+      lastReadFile = filePath;
+      try {
+        const content = await readFile(filePath, 'utf8');
+        lastReadFileFound = true;
+        return content;
+      } catch {
+        lastReadFileFound = false;
+        throw new Error(`File not found: ${filePath}`);
+      }
     };
 
     const result = await instantiate(wasmBuffer, {
-      compiler: compilerImports,
+      asyncImports: {
+        compiler: {read_file: {kind: 'string', fn: readFileImport}},
+      },
     });
 
     const instance =
@@ -190,7 +190,7 @@ export class ZenaCompilerService {
     );
     const stdlibRootRef = writeString(stdlibRoot);
     try {
-      exports.init(stdlibRootRef);
+      await exports.init(stdlibRootRef);
     } catch (e) {
       if (!lastReadFileFound && lastReadFile) {
         this.#outputChannel.appendLine(
@@ -213,17 +213,17 @@ export class ZenaCompilerService {
    * The returned map keys are file paths. Diagnostics from dependency
    * files are keyed under the dependency's path rather than the entry.
    */
-  checkDocument(
+  async checkDocument(
     source: string,
     path: string,
-  ): Map<string, vscode.Diagnostic[]> {
+  ): Promise<Map<string, vscode.Diagnostic[]>> {
     const exports = this.#exports!;
     const writeString = this.#writeString!;
     const readString = this.#readString!;
 
     const sourceRef = writeString(source);
     const pathRef = writeString(path);
-    const diagnosticsHandle = exports.check(pathRef, sourceRef);
+    const diagnosticsHandle = await exports.check(pathRef, sourceRef);
     const count = exports.getDiagnosticCount(diagnosticsHandle);
 
     const byFile = new Map<string, vscode.Diagnostic[]>();

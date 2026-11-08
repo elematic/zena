@@ -26,14 +26,14 @@ const source = `
   export let shout = (s: String): String => s.toUpperCase();
 `;
 
-const bytes = (): Uint8Array<ArrayBuffer> =>
-  compile(source) as Uint8Array<ArrayBuffer>;
+const bytes = async (): Promise<Uint8Array<ArrayBuffer>> =>
+  (await compile(source)) as Uint8Array<ArrayBuffer>;
 
 suite('createImports', () => {
   test('a plain WebAssembly.instantiate with the imports, bound by attach', async () => {
     const zena = createImports();
     const {instance} = await WebAssembly.instantiate(
-      bytes(),
+      await bytes(),
       {...zena.imports, extra: {}},
       compileOptions,
     );
@@ -55,13 +55,13 @@ suite('createImports', () => {
 
   test('instantiate builds the same imports', async () => {
     const zena = createImports();
-    const result = await instantiate(bytes());
+    const result = await instantiate(await bytes());
     const instance = 'instance' in result ? result.instance : result;
     const modules = new Set(
       WebAssembly.Module.imports(
         'module' in result
           ? result.module
-          : new WebAssembly.Module(bytes(), compileOptions),
+          : new WebAssembly.Module(await bytes(), compileOptions),
       ).map((i) => i.module),
     );
     for (const name of modules) {

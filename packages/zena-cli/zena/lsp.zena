@@ -11,9 +11,9 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { readStdinSync } from 'zena:cli';
+import { readStdin } from 'zena:cli';
 import { logString } from 'zena:console';
-import { isFileSync, readFileSync } from 'zena:fs';
+import { isFile, readFile } from 'zena:fs';
 import { CompilerHost } from 'zena-compiler:library-loader';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import { loadWorkspace } from 'zena-compiler:package-manifest';
@@ -24,9 +24,9 @@ import { Options, repoRoot, stdlibDir } from './env.zena';
 import { packageCacheDir } from './compile.zena';
 
 /** A file's text, or null when it cannot be read. */
-function readOrNull(path: String): String | null {
+async function readOrNull(path: String): Future<String | null> {
   try {
-    return readFileSync(path);
+    return await readFile(path);
   } catch (e) {
     return null;
   }
@@ -34,13 +34,13 @@ function readOrNull(path: String): String | null {
 
 /** Reads the workspace's manifests for `loadWorkspace`. */
 class ManifestHost implements CompilerHost {
-  readFile(path: String): String {
-    return readFileSync(path);
+  async readFile(path: String): Future<String> {
+    return await readFile(path);
   }
 
   /** Null: this host reads only the manifest. */
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
+  async listDir(path: String): Future<Array<String> | null> {
+    return await directoryNames(path);
   }
 }
 
@@ -48,33 +48,35 @@ class ManifestHost implements CompilerHost {
  * The workspace's packages, with absolute roots so that they match the
  * absolute paths an editor sends.
  */
-function packageMap(): Map<String, PackageConfig> | null {
+async function packageMap(): Future<Map<String, PackageConfig> | null> {
   let root = repoRoot().value;
-  if (!isFileSync(`${root}/zena-package.json`)) {
+  if (!(await isFile(`${root}/zena-package.json`))) {
     return null;
   }
-  return loadWorkspace(new ManifestHost(), root, null, packageCacheDir());
+  return await loadWorkspace(new ManifestHost(), root, null, packageCacheDir());
 }
 
-export function lspCommand(args: ParsedArgs, options: Options): i32 {
+export async function lspCommand(args: ParsedArgs, options: Options): Future<i32> {
   let service = createLanguageService(
     stdlibDir().value,
     readOrNull,
     'zena-cli',
-    packageMap(),
+    await packageMap(),
   );
   // Only the protocol's messages may reach stdout: anything else the
   // server has to say goes to stderr.
   let server = new LspServer(service, readOrNull, (json: String) => {
     logString(frame(json));
   });
-  let messages = new MessageReader(() => readStdinSync(65536));
+  // Each message is answered before the next is read, so a check that
+  // awaits the service still answers messages in the order they came.
+  let messages = new MessageReader(() => readStdin(65536));
   while (!server.exited) {
-    let body = messages.next();
+    let body = await messages.next();
     if (body == null) {
       break;
     }
-    server.handle(body);
+    await server.handle(body);
   }
   return 0;
 }

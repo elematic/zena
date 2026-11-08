@@ -26,16 +26,16 @@ import { growable } from 'zena:core';
  * A single file is its own document, taken verbatim: `--wit` names it
  * directly, so it is read whatever it is called.
  */
-export function readWitDocument(host: CompilerHost, path: String): WitDocument {
-  let names = host.listDir(path);
+export async function readWitDocument(host: CompilerHost, path: String): Future<WitDocument> {
+  let names = await host.listDir(path);
   if (names == null) {
     let starts = growable<WitFileStart>([new WitFileStart(path, 0)]);
-    return new WitDocument(host.readFile(path), starts);
+    return new WitDocument(await host.readFile(path), starts);
   }
   let files = new GrowableArray<WitFile>();
   for (let name in names as GrowableArray<String>) {
     if (name.endsWith(".wit")) {
-      files.push(new WitFile(`${path}/${name}`, host.readFile(`${path}/${name}`)));
+      files.push(new WitFile(`${path}/${name}`, await host.readFile(`${path}/${name}`)));
     }
   }
   if (files.length == 0) {
@@ -48,6 +48,6 @@ export function readWitDocument(host: CompilerHost, path: String): WitDocument {
  * `readWitDocument`'s source alone, for a caller with nothing to report
  * against it.
  */
-export function readWitSource(host: CompilerHost, path: String): String {
-  return readWitDocument(host, path).source;
+export async function readWitSource(host: CompilerHost, path: String): Future<String> {
+  return (await readWitDocument(host, path)).source;
 }

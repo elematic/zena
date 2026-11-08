@@ -13,7 +13,7 @@
  * that does not check is exactly when someone wants to read its docs.
  */
 
-import { readFileSync } from 'zena:fs';
+import { readFile } from 'zena:fs';
 import {
   createCompiler, checkCompilation, CompilerHost,
   PackageConfig, ModuleExport, ProgramCheckResult, Diagnostic,
@@ -89,28 +89,28 @@ final class FsHost implements CompilerHost {
 
   new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
 
-  readFile(path: String): String {
+  async readFile(path: String): Future<String> {
     // A WIT-backed package's module has no file: the source is
     // synthesized from the package's WIT.
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
+      return await synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
-      return readFileSync(join2(this.#stdlibRoot, stdlibIdToRelativeFile(path)));
+      return await readFile(join2(this.#stdlibRoot, stdlibIdToRelativeFile(path)));
     }
-    return readFileSync(path);
+    return await readFile(path);
   }
 
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
+  async listDir(path: String): Future<Array<String> | null> {
+    return await directoryNames(path);
   }
 }
 
 /** Documents every module a package exports. */
-export function documentPackage(
+export async function documentPackage(
   pkg: Package,
   options: DocumentOptions
-): DocumentResult {
+): Future<DocumentResult> {
   let docs = new DocPackage(pkg.name, pkg.root);
   docs.version = pkg.version;
   let out = new DocumentResult(docs);
@@ -128,7 +128,7 @@ export function documentPackage(
     } else {
       pkg.modules.length
     };
-    documentBatch(pkg, options, extractOptions, i, end, out, cache);
+    await documentBatch(pkg, options, extractOptions, i, end, out, cache);
     i = end;
   }
   // Both wait until every module has been walked: a link resolves to
@@ -140,7 +140,7 @@ export function documentPackage(
 }
 
 /** One batch of modules, through one compiler. */
-function documentBatch(
+async function documentBatch(
   pkg: Package,
   options: DocumentOptions,
   extractOptions: ExtractOptions,
@@ -148,7 +148,7 @@ function documentBatch(
   to: i32,
   out: DocumentResult,
   cache: WalkCache
-): void {
+): Future<void> {
   let host = new FsHost(options.stdlibRoot);
   let packages = new Map<String, PackageConfig>();
   if (pkg.name != STDLIB_PACKAGE) {
@@ -176,7 +176,7 @@ function documentBatch(
     let module = pkg.modules[i];
     try {
       let entry = target.resolve(`${pkg.name}:${module.name}`, '');
-      let result = compiler.compile({entry: entry.path, target: options.target});
+      let result = await compiler.compile({entry: entry.path, target: options.target});
       let checkResults = checkCompilation(result, previous);
       previous = checkResults;
       for (let diagnostic in checkResults.entry.diagnostics) {

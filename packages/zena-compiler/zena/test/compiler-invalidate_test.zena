@@ -57,16 +57,16 @@ function collisionCount(result: CompilationResult) {
   return collisions;
 }
 
-function newCompiler(host: PlainHost) {
-  let packages = loadWorkspace(host, '.');
+async function newCompiler(host: PlainHost) {
+  let packages = await loadWorkspace(host, '.');
   // The core module with no host beneath it: the bytes compared are
   // the program's own.
   return createCompiler(host, {stdlibRoot, packages});
 }
 
 /** Compiles to wasm, throwing on any check error. */
-function compileToWasm(c: Compiler, path: String) {
-  let result = c.compile({entry: path, target: 'freestanding'});
+async function compileToWasm(c: Compiler, path: String) {
+  let result = await c.compile({entry: path, target: 'freestanding'});
   let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
@@ -109,70 +109,70 @@ let heavyEntry = 'tests/language/execution/arrays/extension_class.zena';
 let mutableEntry = 'tests/language/execution/variables/local_let.zena';
 
 export let tests = suite('Compiler.invalidate', () => {
-  test('leaves node ids unique across files', (ctx) => {
+  test('leaves node ids unique across files', async (ctx) => {
     let host = new PlainHost();
-    let c = newCompiler(host);
-    c.invalidate(heavyEntry);
-    let result = c.compile({entry: heavyEntry, target: 'freestanding'});
+    let c = await newCompiler(host);
+    await c.invalidate(heavyEntry);
+    let result = await c.compile({entry: heavyEntry, target: 'freestanding'});
     isTrue(collisionCount(result) == 0,
       `${collisionCount(result)} node ids are claimed by more than one file`);
   });
 
-  test('parses the same nodes either way', (ctx) => {
+  test('parses the same nodes either way', async (ctx) => {
     // Not asserted: that a node keeps the same id. `invalidate` loads
     // the file before `compile` loads the prelude, so the ids are
     // handed out in a different order and every one of them differs.
     // That is only a relabelling — which the emitted bytes below prove,
     // by being identical — and pinning it would pin load order rather
     // than anything the compiler owes a caller.
-    let plain = newCompiler(new PlainHost());
-    let expected = idsOf(plain.compile({entry: heavyEntry, target: 'freestanding'}));
+    let plain = await newCompiler(new PlainHost());
+    let expected = idsOf(await plain.compile({entry: heavyEntry, target: 'freestanding'}));
 
-    let invalidated = newCompiler(new PlainHost());
-    invalidated.invalidate(heavyEntry);
-    let actual = idsOf(invalidated.compile({entry: heavyEntry, target: 'freestanding'}));
+    let invalidated = await newCompiler(new PlainHost());
+    await invalidated.invalidate(heavyEntry);
+    let actual = idsOf(await invalidated.compile({entry: heavyEntry, target: 'freestanding'}));
 
     isTrue(actual.length == expected.length,
       `${actual.length} nodes after invalidate, ${expected.length} without`);
   });
 
-  test('emits the same module for an unchanged file', (ctx) => {
+  test('emits the same module for an unchanged file', async (ctx) => {
     // The end-to-end statement of the bug: invalidating a file that did
     // not change must be invisible, all the way to the bytes. This is
     // what makes the differing ids above a relabelling and not a
     // behaviour change.
-    let plain = compileToWasm(newCompiler(new PlainHost()), heavyEntry);
-    let c = newCompiler(new PlainHost());
-    c.invalidate(heavyEntry);
-    let after = compileToWasm(c, heavyEntry);
+    let plain = await compileToWasm(await newCompiler(new PlainHost()), heavyEntry);
+    let c = await newCompiler(new PlainHost());
+    await c.invalidate(heavyEntry);
+    let after = await compileToWasm(c, heavyEntry);
     isTrue(bytesEqual(plain, after),
       `invalidate changed the emitted module (${plain.length} bytes vs ${after.length})`);
   });
 
-  test('picks up a file that changed', (ctx) => {
+  test('picks up a file that changed', async (ctx) => {
     // The other half: not corrupting the compile is worthless if the
     // new source is not what gets compiled.
     let host = new PlainHost();
-    let c = newCompiler(host);
+    let c = await newCompiler(host);
 
     host.addFile(mutableEntry, 'export let main = (): i32 => { return 1; };');
-    let first = compileToWasm(c, mutableEntry);
+    let first = await compileToWasm(c, mutableEntry);
 
     host.addFile(mutableEntry, 'export let main = (): i32 => { return 2; };');
-    c.invalidate(mutableEntry);
-    let second = compileToWasm(c, mutableEntry);
+    await c.invalidate(mutableEntry);
+    let second = await compileToWasm(c, mutableEntry);
 
     isTrue(!bytesEqual(first, second),
       'the compiler emitted the same module after the source changed');
   });
 
-  test('a changed file that stops compiling reports its error', (ctx) => {
+  test('a changed file that stops compiling reports its error', async (ctx) => {
     // A stale cache would keep reporting the old source as clean.
     let host = new PlainHost();
-    let c = newCompiler(host);
+    let c = await newCompiler(host);
 
     host.addFile(mutableEntry, 'export let main = (): i32 => { return 1; };');
-    let clean = checkCompilation(c.compile({entry: mutableEntry, target: 'freestanding'}));
+    let clean = checkCompilation(await c.compile({entry: mutableEntry, target: 'freestanding'}));
     var cleanErrors = 0;
     for (let d in clean.diagnostics) {
       if (d.severity == DiagnosticSeverity.Error) { cleanErrors += 1; }
@@ -180,8 +180,8 @@ export let tests = suite('Compiler.invalidate', () => {
     isTrue(cleanErrors == 0, `expected no errors, got ${cleanErrors}`);
 
     host.addFile(mutableEntry, 'export let main = (): i32 => { return "not an i32"; };');
-    c.invalidate(mutableEntry);
-    let broken = checkCompilation(c.compile({entry: mutableEntry, target: 'freestanding'}));
+    await c.invalidate(mutableEntry);
+    let broken = checkCompilation(await c.compile({entry: mutableEntry, target: 'freestanding'}));
     var brokenErrors = 0;
     for (let d in broken.diagnostics) {
       if (d.severity == DiagnosticSeverity.Error) { brokenErrors += 1; }

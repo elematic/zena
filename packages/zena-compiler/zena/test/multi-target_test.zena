@@ -31,11 +31,11 @@ import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 let fixtures = 'packages/zena-compiler/test-files/multi-target';
 
-function newCompiler() {
+async function newCompiler() {
   let host = new PlainHost();
   return createCompiler(host, {
     stdlibRoot,
-    packages: loadWorkspace(host, '.'),
+    packages: await loadWorkspace(host, '.'),
   });
 }
 
@@ -55,17 +55,17 @@ function firstError(checked: ProgramCheckResult) {
   return if (messages.length == 0) { '' } else { messages[0] };
 }
 
-function compileAndCheck(
+async function compileAndCheck(
   compiler: Compiler,
   entry: String,
   target: String
 ) {
-  return checkCompilation(compiler.compile({entry, target}));
+  return checkCompilation(await compiler.compile({entry, target}));
 }
 
 /** The module bytes for an entry on a target, throwing on a check error. */
-function wasmFor(compiler: Compiler, entry: String, target: String) {
-  let result = compiler.compile({entry, target});
+async function wasmFor(compiler: Compiler, entry: String, target: String) {
+  let result = await compiler.compile({entry, target});
   let checked = checkCompilation(result);
   let failure = firstError(checked);
   if (failure != '') {
@@ -98,8 +98,8 @@ let allocating = `${fixtures}/allocating.zena`;
 let usesFs = `${fixtures}/uses-fs.zena`;
 
 export let tests = suite('one compiler, several targets', () => {
-  test('a virtual specifier resolves to each target\'s own file', (ctx) => {
-    let compiler = newCompiler();
+  test('a virtual specifier resolves to each target\'s own file', async (ctx) => {
+    let compiler = await newCompiler();
 
     equal(compiler.forTarget('js').resolve('zena:console', '').path,
         'zena:console/js.zena');
@@ -117,11 +117,11 @@ export let tests = suite('one compiler, several targets', () => {
         'host and js share one CompilerTarget');
   });
 
-  test('an unknown target is rejected by name', (ctx) => {
-    let compiler = newCompiler();
+  test('an unknown target is rejected by name', async (ctx) => {
+    let compiler = await newCompiler();
     var message = '';
     try {
-      compiler.compile({entry: allocating, target: 'freestandng'});
+      await compiler.compile({entry: allocating, target: 'freestandng'});
     } catch (e) {
       message = (e as Error).message;
     }
@@ -129,10 +129,10 @@ export let tests = suite('one compiler, several targets', () => {
         `expected the typo to be named, got: ${message}`);
   });
 
-  test('one compiler checks the same program on four targets', (ctx) => {
-    let compiler = newCompiler();
+  test('one compiler checks the same program on four targets', async (ctx) => {
+    let compiler = await newCompiler();
     for (let target in ['js', 'freestanding', 'component', 'zena-cli']) {
-      let checked = compileAndCheck(compiler, allocating, target);
+      let checked = await compileAndCheck(compiler, allocating, target);
       let failure = firstError(checked);
       equal(failure, '', `${target}: ${failure}`);
       equal(checked.settings.target, target);
@@ -141,10 +141,10 @@ export let tests = suite('one compiler, several targets', () => {
     equal(compiler.compiledTargets.length, 4);
   });
 
-  test('each target keeps its own library for a shared path', (ctx) => {
-    let compiler = newCompiler();
-    compileAndCheck(compiler, allocating, 'js');
-    compileAndCheck(compiler, allocating, 'component');
+  test('each target keeps its own library for a shared path', async (ctx) => {
+    let compiler = await newCompiler();
+    await compileAndCheck(compiler, allocating, 'js');
+    await compileAndCheck(compiler, allocating, 'component');
 
     let js = compiler.forTarget('js');
     let component = compiler.forTarget('component');
@@ -169,48 +169,48 @@ export let tests = suite('one compiler, several targets', () => {
         'each target parsed its own AST');
   });
 
-  test('a library only one target has resolves only there', (ctx) => {
-    let compiler = newCompiler();
+  test('a library only one target has resolves only there', async (ctx) => {
+    let compiler = await newCompiler();
 
-    let onComponent = compileAndCheck(compiler, usesFs, 'component');
+    let onComponent = await compileAndCheck(compiler, usesFs, 'component');
     let failure = firstError(onComponent);
     equal(failure, '', failure);
 
     // `zena:fs` has no entry for `js`, so the import names nothing.
     // The same compiler reports it, having just checked the file clean
     // on the target that does have it.
-    let onJs = compileAndCheck(compiler, usesFs, 'js');
+    let onJs = await compileAndCheck(compiler, usesFs, 'js');
     isTrue(errorsOf(onJs).length > 0,
         'expected zena:fs to be unavailable on js');
   });
 
-  test('a target emits the same bytes whatever else was compiled', (ctx) => {
+  test('a target emits the same bytes whatever else was compiled', async (ctx) => {
     // Symbol and node ids are per target, so a compile must not depend
     // on which other targets the compiler was asked for first.
-    let alone = wasmFor(newCompiler(), allocating, 'freestanding');
+    let alone = await wasmFor(await newCompiler(), allocating, 'freestanding');
 
-    let shared = newCompiler();
-    compileAndCheck(shared, allocating, 'component');
-    compileAndCheck(shared, usesFs, 'zena-cli');
+    let shared = await newCompiler();
+    await compileAndCheck(shared, allocating, 'component');
+    await compileAndCheck(shared, usesFs, 'zena-cli');
     // Two whole library sets' worth of work before the one under test, or
     // there would be nothing for it to have been perturbed by.
     equal(shared.compiledTargets.length, 2);
-    let after = wasmFor(shared, allocating, 'freestanding');
+    let after = await wasmFor(shared, allocating, 'freestanding');
 
     isTrue(bytesEqual(alone, after),
         `freestanding output changed: ${i32ToString(alone.length)} bytes alone, ` +
         `${i32ToString(after.length)} after compiling other targets`);
   });
 
-  test('targets load different files even when they emit the same bytes', (ctx) => {
+  test('targets load different files even when they emit the same bytes', async (ctx) => {
     // `allocating.zena` reaches nothing target-specific, so `js` and
     // `freestanding` emit the same module — they differ only in the
     // prelude's `zena:console`, which neither program calls. The two
     // compiles are still not the same compile, and that is what the
     // separate file sets are for.
-    let compiler = newCompiler();
-    let js = wasmFor(compiler, allocating, 'js');
-    let freestanding = wasmFor(compiler, allocating, 'freestanding');
+    let compiler = await newCompiler();
+    let js = await wasmFor(compiler, allocating, 'js');
+    let freestanding = await wasmFor(compiler, allocating, 'freestanding');
     isTrue(bytesEqual(js, freestanding),
         'a program that touches no host should build the same either way');
 
@@ -224,12 +224,12 @@ export let tests = suite('one compiler, several targets', () => {
         'freestanding loaded the component console');
   });
 
-  test('a check result carries forward within a target', (ctx) => {
-    let compiler = newCompiler();
+  test('a check result carries forward within a target', async (ctx) => {
+    let compiler = await newCompiler();
     let first = checkCompilation(
-        compiler.compile({entry: allocating, target: 'js'}));
+        await compiler.compile({entry: allocating, target: 'js'}));
     let second = checkCompilation(
-        compiler.compile({entry: usesFs, target: 'js'}), first);
+        await compiler.compile({entry: usesFs, target: 'js'}), first);
 
     // The standard library was checked once: every file the second
     // compile shares with the first carries its CheckResult forward,
@@ -244,14 +244,14 @@ export let tests = suite('one compiler, several targets', () => {
         `expected the stdlib to carry forward, ${i32ToString(carried)} files did`);
   });
 
-  test('a check result does not carry across targets', (ctx) => {
+  test('a check result does not carry across targets', async (ctx) => {
     // Both targets key their results by file path and mean different
     // libraries by the same path, so threading one into the other has to
     // be refused rather than mixed in.
-    let compiler = newCompiler();
-    let onJs = checkCompilation(compiler.compile({entry: allocating, target: 'js'}));
+    let compiler = await newCompiler();
+    let onJs = checkCompilation(await compiler.compile({entry: allocating, target: 'js'}));
     let onComponent = checkCompilation(
-        compiler.compile({entry: allocating, target: 'component'}), onJs);
+        await compiler.compile({entry: allocating, target: 'component'}), onJs);
 
     let failure = firstError(onComponent);
     equal(failure, '', failure);
@@ -268,12 +268,12 @@ export let tests = suite('one compiler, several targets', () => {
         'the two targets share no checker state');
   });
 
-  test('a check result does not carry across checking flags', (ctx) => {
+  test('a check result does not carry across checking flags', async (ctx) => {
     // `warnUnnecessaryCasts` changes the diagnostics a check produces,
     // so it belongs to the compiler and its results are not
     // interchangeable with another compiler's.
     let host = new PlainHost();
-    let packages = loadWorkspace(host, '.');
+    let packages = await loadWorkspace(host, '.');
     let quiet = createCompiler(host, {stdlibRoot, packages});
     let warning = createCompiler(host, {
       stdlibRoot,
@@ -282,27 +282,27 @@ export let tests = suite('one compiler, several targets', () => {
     });
 
     let fromQuiet = checkCompilation(
-        quiet.compile({entry: allocating, target: 'js'}));
+        await quiet.compile({entry: allocating, target: 'js'}));
     isFalse(fromQuiet.settings.warnUnnecessaryCasts);
 
     let fromWarning = checkCompilation(
-        warning.compile({entry: allocating, target: 'js'}), fromQuiet);
+        await warning.compile({entry: allocating, target: 'js'}), fromQuiet);
     isTrue(fromWarning.settings.warnUnnecessaryCasts);
     isFalse(fromWarning.sharedState === fromQuiet.sharedState,
         'the warning compile reused the other setting\'s checker state');
   });
 
   test('a virtual library resolves to the implementation this compile linked',
-      (ctx) => {
+      async (ctx) => {
     // What a shared check result will need from codegen. A Symbol
     // carries the implementation its own compile resolved
     // (`zena:console/host.zena`), and a compile for another target has
     // a different library under that name. `Program.unitFor` maps the
     // path id back through the manifest to the library, so the unit
     // it answers with is this compile's.
-    let compiler = newCompiler();
-    let checked = compileAndCheck(compiler, allocating, 'component');
-    let result = compiler.compile({entry: allocating, target: 'component'});
+    let compiler = await newCompiler();
+    let checked = await compileAndCheck(compiler, allocating, 'component');
+    let result = await compiler.compile({entry: allocating, target: 'component'});
 
     let units = new Array<CompilationUnit>();
     for (let file in result.files) {

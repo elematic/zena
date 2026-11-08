@@ -15,12 +15,12 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-function compileToWat(source: String) {
+async function compileToWat(source: String) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
 
   let entryAst = compResult.entry.ast;
@@ -116,19 +116,19 @@ export let main = (): i32 => {
 
 export let tests = suite('inherited method sharing', () => {
   test('an inherited private method is not copied to the subclass',
-      (ctx) => {
-    let wat = compileToWat(privateFixture);
+      async (ctx) => {
+    let wat = await compileToWat(privateFixture);
     assertNoSubclassCopy(wat, 'Derived', '.#find', 'Base');
   });
 
   test('an inherited public method is not copied to the subclass',
-      (ctx) => {
-    let wat = compileToWat(privateFixture);
+      async (ctx) => {
+    let wat = await compileToWat(privateFixture);
     assertNoSubclassCopy(wat, 'Derived', '.size', 'Base');
   });
 
-  test('an override still gets its own copy', (ctx) => {
-    let wat = compileToWat(`
+  test('an override still gets its own copy', async (ctx) => {
+    let wat = await compileToWat(`
 class Base<T> {
 
   size(): i32 { return 0; }

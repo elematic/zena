@@ -17,12 +17,12 @@ import { checkCompilation } from '../lib/compiler.zena';
 import { assertFunctionUses, assertFunctionOmits } from './wat-invariants.zena';
 import { growable } from 'zena:core';
 
-function compileToWat(source: String, propagate: boolean) {
+async function compileToWat(source: String, propagate: boolean) {
   let host = new PlainHost();
   host.addFile("test.zena", source);
 
   let compiler = makeStdlibCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'freestanding'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -84,14 +84,14 @@ let source = `
 `;
 
 export let tests = suite('type propagation', () => {
-  test('the fixture needs propagation to resolve its dispatches', () => {
-    assertFunctionUses(compileToWat(source, false), '$total',
+  test('the fixture needs propagation to resolve its dispatches', async () => {
+    assertFunctionUses(await compileToWat(source, false), '$total',
         growable<String>(['call_ref']),
         'without propagation, the field and array dispatches should stay indirect');
   });
 
-  test('makes a dispatch only one class reaches direct', () => {
-    assertFunctionOmits(compileToWat(source, true), '$total',
+  test('makes a dispatch only one class reaches direct', async () => {
+    assertFunctionOmits(await compileToWat(source, true), '$total',
         growable<String>(['call_ref']),
         'only Squares reach Holder.shape and only Circles reach the array');
   });

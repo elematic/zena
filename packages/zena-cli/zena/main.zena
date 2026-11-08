@@ -11,7 +11,7 @@
 import { ArgParser, OptionType, ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
 import { getArguments, getEnv } from 'zena:cli';
-import { existsSync, isFileSync, readFileSync, writeFileSync } from 'zena:fs';
+import { exists, isFile, isFileSync, readFileSync, writeFile, writeFileSync } from 'zena:fs';
 import { AbsolutePath, extname } from 'zena:path';
 import { precompileModule } from 'zena:wasm';
 import { DiagnosticSeverity, SourceSpan } from 'zena-compiler:diagnostics';
@@ -408,19 +408,19 @@ async function dispatch(parser: ArgParser, args: ParsedArgs): Future<i32> {
     return await build(sub, options);
   }
   if (name == 'run') {
-    return runCommand(sub, options);
+    return await runCommand(sub, options);
   }
   if (name == 'test') {
-    return testCommand(sub, options);
+    return await testCommand(sub, options);
   }
   if (name == 'doc') {
-    return doc(sub);
+    return await doc(sub);
   }
   if (name == 'fmt') {
     return fmt(sub);
   }
   if (name == 'lint') {
-    return lintCommand(sub, options);
+    return await lintCommand(sub, options);
   }
   if (name == 'pkg') {
     return await pkgCommand(parser.command('pkg') as ArgParser, sub, options);
@@ -429,7 +429,7 @@ async function dispatch(parser: ArgParser, args: ParsedArgs): Future<i32> {
     return await benchCommand(sub, options);
   }
   if (name == 'lsp') {
-    return lspCommand(sub, options);
+    return await lspCommand(sub, options);
   }
   if (name == 'precompile') {
     return precompile(sub, options);
@@ -540,8 +540,8 @@ async function build(args: ParsedArgs, options: Options): Future<i32> {
   }
   let argument = if (args.rest.length == 0) 'build' else args.rest[0];
   let path = resolveUserPath(argument);
-  if (extname(argument) == '.zena' || isFileSync(path.value)) {
-    return buildFile(args, options, argument, path);
+  if (extname(argument) == '.zena' || await isFile(path.value)) {
+    return await buildFile(args, options, argument, path);
   }
   var jobs = 0;
   if (let (true, rawJobs) = args.getOption('jobs')) {
@@ -569,13 +569,13 @@ async function build(args: ParsedArgs, options: Options): Future<i32> {
  * Compiles one file, always: invoking `build` on a file is the request
  * to compile it, and the scripts that do so track their own inputs.
  */
-function buildFile(
+async function buildFile(
   args: ParsedArgs,
   options: Options,
   argument: String,
   path: AbsolutePath,
-): i32 {
-  if (!isFileSync(path.value)) {
+): Future<i32> {
+  if (!(await isFile(path.value))) {
     console.error(`Error: no such file: ${argument}`);
     return 2;
   }
@@ -605,7 +605,7 @@ function buildFile(
     request.importedStringConstants = value;
   }
   request.compactImports = args.getFlag('compact-imports');
-  compileTo(request, options, resolveUserPath(output));
+  await compileTo(request, options, resolveUserPath(output));
   return 0;
 }
 
@@ -678,13 +678,13 @@ function workspaceRoot(from: AbsolutePath): AbsolutePath {
  * is read repo-relative, which is what makes the `root` and `file` paths
  * in the JSON repo-relative, and so checkable in.
  */
-function doc(args: ParsedArgs): i32 {
+async function doc(args: ParsedArgs): Future<i32> {
   if (args.rest.length != 1) {
     console.error('Error: doc needs a path');
     return 2;
   }
   let path = resolveUserPath(args.rest[0]);
-  if (!existsSync(path.value)) {
+  if (!(await exists(path.value))) {
     console.error('Error: no such path: ' + path.value);
     return 2;
   }
@@ -698,7 +698,7 @@ function doc(args: ParsedArgs): i32 {
     name = value;
   }
   let pkg = loadPackage(repoRelative(path), name, options.target);
-  let result = documentPackage(pkg, options);
+  let result = await documentPackage(pkg, options);
   for (let failure in result.failures) {
     console.error('Failed to document ' + failure);
   }
@@ -709,7 +709,7 @@ function doc(args: ParsedArgs): i32 {
   }
   let json = packageToJson(result.docs);
   if (let (true, output) = args.getOption('output')) {
-    writeFileSync(resolveUserPath(output).value, json);
+    await writeFile(resolveUserPath(output).value, json);
   } else {
     console.log(json);
   }

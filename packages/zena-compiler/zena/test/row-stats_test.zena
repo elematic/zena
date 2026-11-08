@@ -15,11 +15,11 @@ import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
 /** Runs reachability over `source` and returns the module it fills in. */
-function reach(source: String) {
+async function reach(source: String) {
   let host = new MockHost();
   host.addFile("test.zena", source);
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -62,8 +62,8 @@ export let main = (): i32 => {
 `;
 
 export let tests = suite('row instantiation counts', () => {
-  test('counts one instantiation per distinct row', () => {
-    let counts = rowInstantiationCounts(reach(fixture));
+  test('counts one instantiation per distinct row', async () => {
+    let counts = rowInstantiationCounts(await reach(fixture));
     equal(counts.length, 2);
     equal(counts[0].name, 'keep');
     equal(counts[0].count, 2);
@@ -71,8 +71,8 @@ export let tests = suite('row instantiation counts', () => {
     equal(counts[1].count, 1);
   });
 
-  test('reports a total and a line per function', () => {
-    let lines = rowInstantiationReport(rowInstantiationCounts(reach(fixture)));
+  test('reports a total and a line per function', async () => {
+    let lines = rowInstantiationReport(rowInstantiationCounts(await reach(fixture)));
     equal(lines.length, 3);
     equal(lines[0], 'zir rows: 2 row-generic functions, 3 instantiations');
     equal(lines[1], '  keep: 2');

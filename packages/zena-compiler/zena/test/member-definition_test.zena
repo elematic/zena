@@ -29,12 +29,12 @@ class ResolveContext {
  * Compile and type-check a single source string, returning everything needed
  * for resolveMemberDefinition.
  */
-function prepare(source: String) {
+async function prepare(source: String) {
   let host = new MockHost();
   let path = "/test/main.zena";
   host.addFile(path, source);
   let compiler = makeCompiler(host);
-  let compilation = compiler.compile({entry: path, target: 'js'});
+  let compilation = await compiler.compile({entry: path, target: 'js'});
   let checkResult = checkCompilation(compilation);
   let entryModel = checkResult.results[path].model;
   let scopeResult = compilation.entry.scopeResult as ScopeResult;
@@ -69,9 +69,9 @@ export let tests = suite('Member Definition Resolution', () => {
 
   suite('field access', () => {
 
-    test('p.x resolves to field definition', () => {
+    test('p.x resolves to field definition', async () => {
       let src = "class Point { x: f64; y: f64; new(this.x, this.y); }\nlet p = new Point(1.0, 2.0);\nlet v = p.x;";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let offset = indexOf(src, ".x;") + 1; // land on 'x' after dot
       let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
@@ -80,9 +80,9 @@ export let tests = suite('Member Definition Resolution', () => {
       equal(s.line, 1);
     });
 
-    test('p.y resolves to second field', () => {
+    test('p.y resolves to second field', async () => {
       let src = "class Point { x: f64; y: f64; new(this.x, this.y); }\nlet p = new Point(1.0, 2.0);\nlet v = p.y;";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let offset = indexOf(src, ".y;") + 1;
       let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
@@ -90,9 +90,9 @@ export let tests = suite('Member Definition Resolution', () => {
       equal(s.line, 1);
     });
 
-    test('case class param resolves', () => {
+    test('case class param resolves', async () => {
       let src = "class Pair(first: i32, second: i32)\nlet p = new Pair(1, 2);\nlet v = p.first;";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let offset = indexOf(src, ".first;") + 1;
       let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
@@ -103,9 +103,9 @@ export let tests = suite('Member Definition Resolution', () => {
 
   suite('method access', () => {
 
-    test('c.increment resolves to method definition', () => {
+    test('c.increment resolves to method definition', async () => {
       let src = "class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}\nlet c = new Counter();\nlet use = (): void => {\n  c.increment();\n};";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let offset = indexOf(src, ".increment();") + 1;
       let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
@@ -116,9 +116,9 @@ export let tests = suite('Member Definition Resolution', () => {
 
   suite('private fields', () => {
 
-    test('this.#field resolves to private field definition', () => {
+    test('this.#field resolves to private field definition', async () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  deposit(amount: f64): void { this.#balance += amount; }\n}";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let offset = indexOf(src, ".#balance +=") + 2; // land on '#'
       let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
@@ -126,9 +126,9 @@ export let tests = suite('Member Definition Resolution', () => {
       equal(s.line, 2);
     });
 
-    test('other.#field resolves to private field definition', () => {
+    test('other.#field resolves to private field definition', async () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  new(amount: f64) : #balance = amount;\n  equals(other: Wallet): boolean { return this.#balance == other.#balance; }\n}";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let offset = indexOf(src, "other.#balance;") + 7; // land on 'b' after "other.#"
       let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
@@ -136,9 +136,9 @@ export let tests = suite('Member Definition Resolution', () => {
       equal(s.line, 2);
     });
 
-    test('clicking on # resolves to field definition', () => {
+    test('clicking on # resolves to field definition', async () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  new(amount: f64) : #balance = amount;\n  equals(other: Wallet): boolean { return this.#balance == other.#balance; }\n}";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let offset = indexOf(src, "other.#balance;") + 6; // land on '#'
       let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
@@ -149,17 +149,17 @@ export let tests = suite('Member Definition Resolution', () => {
 
   suite('non-member positions', () => {
 
-    test('offset on object returns null', () => {
+    test('offset on object returns null', async () => {
       let src = "class Point { x: f64; new(this.x); }\nlet p = new Point(1.0);\nlet v = p.x;";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let offset = indexOf(src, "p.x;"); // land on 'p', not 'x'
       let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span == null);
     });
 
-    test('offset on non-member returns null', () => {
+    test('offset on non-member returns null', async () => {
       let src = "let x = 42;";
-      let rc = prepare(src);
+      let rc = await prepare(src);
       let span = resolveMemberDefinition(rc.ast, 4, rc.model, rc.scopeResult, rc.modules);
       isTrue(span == null);
     });

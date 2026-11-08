@@ -18,8 +18,9 @@
 import { getEnv } from 'zena:cli';
 import { HashMap, HashSet } from 'zena:collections';
 import {
-  existsSync, isDirectorySync, isFileSync, mkdirSync, readFileSync, readFileBytesSync, renameSync, statSync, unlinkSync,
-  writeFileSync, writeFileBytesSync
+  exists, existsSync, isDirectorySync, isFile, isFileSync, mkdirSync, readFileSync,
+  readFileBytesSync, rename, renameSync, statSync, unlink, writeFile, writeFileSync,
+  writeFileBytesSync
 } from 'zena:fs';
 import { AbsolutePath, basename, dirname, extname } from 'zena:path';
 import { monotonic } from 'zena:time';
@@ -93,13 +94,13 @@ function externalCompiler(): AbsolutePath | null {
  * is held back and shown only if the compile fails, so that `zena run`'s
  * output is the program's alone.
  */
-export function compileTo(
+export async function compileTo(
   request: CompileRequest,
   options: Options,
   out: AbsolutePath,
   quiet: boolean = false,
-): void {
-  compileRecording(request, options, out, quiet, (path) => {});
+): Future<void> {
+  await compileRecording(request, options, out, quiet, (path) => {});
 }
 
 var runtimeMemoryModuleThisProcess: AbsolutePath | null = null;
@@ -123,7 +124,7 @@ var runtimeMemoryModuleThisProcess: AbsolutePath | null = null;
  * target is `freestanding`, which is not a component target, so this
  * does not recurse.
  */
-function cachedRuntimeMemoryModule(options: Options) {
+async function cachedRuntimeMemoryModule(options: Options): Future<AbsolutePath> {
   let already = runtimeMemoryModuleThisProcess;
   if (already != null) {
     return already;
@@ -131,7 +132,7 @@ function cachedRuntimeMemoryModule(options: Options) {
   let request = new CompileRequest(
       new AbsolutePath(`${stdlibDir().value}/component-runtime/memory.zena`));
   request.target = 'freestanding';
-  let path = compileCached(request, options);
+  let path = await compileCached(request, options);
   // Held for the process: the standard library cannot change under a
   // running command, and `compileCached` asks about it twice — once
   // before a program's own freshness check, once while compiling.
@@ -147,9 +148,9 @@ function cachedRuntimeMemoryModule(options: Options) {
  * do not load. The compiler has printed the cause by then; what did not
  * compile is `request`'s program, so that is the file the failure names.
  */
-function runtimeMemoryModuleFor(request: CompileRequest, options: Options) {
+async function runtimeMemoryModuleFor(request: CompileRequest, options: Options): Future<AbsolutePath> {
   try {
-    return cachedRuntimeMemoryModule(options);
+    return await cachedRuntimeMemoryModule(options);
   } catch (e) {
     if (e is CompileFailure) {
       throw new CompileFailure(`${request.source.value} did not compile`);
@@ -185,13 +186,13 @@ function recordedDeps(modulePath: AbsolutePath) {
   return paths;
 }
 
-function compileRecording(
+async function compileRecording(
   request: CompileRequest,
   options: Options,
   out: AbsolutePath,
   quiet: boolean,
   onRead: (path: String) => void,
-): void {
+): Future<void> {
   ensureDir(dirname(out.value));
   let compiler = externalCompiler();
   if (compiler != null) {
@@ -200,7 +201,7 @@ function compileRecording(
   }
   var status = 1;
   try {
-    status = compileFile(compileFileOptions(request, options, out, onRead));
+    status = await compileFile(await compileFileOptions(request, options, out, onRead));
   } catch (e) {
     if (e is CompileFailure) {
       throw e;
@@ -220,12 +221,12 @@ function compileRecording(
  * each file it reads to `onRead`. A component's runtime memory module is
  * built (or found in the cache) here, and its sources are reported too.
  */
-function compileFileOptions(
+async function compileFileOptions(
   request: CompileRequest,
   options: Options,
   out: AbsolutePath,
   onRead: (path: String) => void,
-): CompileFileOptions {
+): Future<CompileFileOptions> {
   let level = optLevelText(options);
   let optLevel = if (level == '') {
     defaultOptLevel
@@ -249,7 +250,7 @@ function compileFileOptions(
   let runtimeMemory = if (!targetEmitsComponent(target)) {
     ''
   } else {
-    let runtime = runtimeMemoryModuleFor(request, options);
+    let runtime = await runtimeMemoryModuleFor(request, options);
     // The sources behind those bytes are sources of *this* module: the
     // program embeds the runtime module's output, so a change to the
     // allocator changes the program. Recording the output's path
@@ -531,12 +532,12 @@ export function isCached(request: CompileRequest, options: Options): boolean {
  * Compiles through the cache and returns the cached module's path.
  * A module that is already there and fresh is not compiled again.
  */
-export function compileCached(
+export async function compileCached(
   request: CompileRequest,
   options: Options,
   noCache: boolean = false,
   quiet: boolean = true,
-): AbsolutePath {
+): Future<AbsolutePath> {
   let dir = cacheDir();
   ensureDir(dir);
   let name = cacheName(request, options);
@@ -554,7 +555,7 @@ export function compileCached(
   let tempModule = `${dir}/${name}.tmp-${unique}.wasm`;
   let deps = new GrowableArray<String>();
   let seen = new HashSet<String>();
-  compileRecording(
+  await compileRecording(
     request,
     options,
     new AbsolutePath(tempModule),
@@ -571,10 +572,10 @@ export function compileCached(
       }
     },
   );
-  renameSync(tempModule, modulePath);
+  await rename(tempModule, modulePath);
   let tempDeps = `${dir}/${name}.tmp-${unique}.deps`;
-  writeFileSync(tempDeps, joinLines(deps));
-  renameSync(tempDeps, depsPath);
+  await writeFile(tempDeps, joinLines(deps));
+  await rename(tempDeps, depsPath);
   return new AbsolutePath(modulePath);
 }
 
@@ -598,7 +599,7 @@ export function compileCached(
  * reports why. Nothing can be shared with the compiler module
  * ZENA_COMPILER_WASM names, so with it set nothing is compiled here.
  */
-export function compileIntoCache(requests: Array<CompileRequest>, options: Options): void {
+export async function compileIntoCache(requests: Array<CompileRequest>, options: Options): Future<void> {
   if (requests.length == 0 || getEnv('ZENA_COMPILER_WASM') != null) {
     return;
   }
@@ -633,7 +634,7 @@ export function compileIntoCache(requests: Array<CompileRequest>, options: Optio
   var opening: CompileSession | null = null;
   try {
     let out = new AbsolutePath(`${dir}/${cacheName(first, options)}.tmp-${unique}.wasm`);
-    opening = openCompileSession(compileFileOptions(first, options, out, onRead));
+    opening = await openCompileSession(await compileFileOptions(first, options, out, onRead));
   } catch (e) {
     // The compile `compileCached` runs for each of them reports it.
   }
@@ -647,14 +648,14 @@ export function compileIntoCache(requests: Array<CompileRequest>, options: Optio
     let tempModule = `${dir}/${name}.tmp-${unique}.wasm`;
     var status = 1;
     try {
-      status = session.compile(repoRelative(request.source), tempModule);
+      status = await session.compile(repoRelative(request.source), tempModule);
     } catch (e) {
       // A throw out of the compiler belongs to this entry alone; the
       // compile `compileCached` runs for it meets it again.
     }
-    if (status != 0 || !isFileSync(tempModule)) {
-      if (existsSync(tempModule)) {
-        unlinkSync(tempModule);
+    if (status != 0 || !(await isFile(tempModule))) {
+      if (await exists(tempModule)) {
+        await unlink(tempModule);
       }
       continue;
     }
@@ -666,10 +667,10 @@ export function compileIntoCache(requests: Array<CompileRequest>, options: Optio
     for (let path in session.sources) {
       recordDep(path, identities, seen, deps);
     }
-    renameSync(tempModule, `${dir}/${name}.wasm`);
+    await rename(tempModule, `${dir}/${name}.wasm`);
     let tempDeps = `${dir}/${name}.tmp-${unique}.deps`;
-    writeFileSync(tempDeps, joinLines(deps));
-    renameSync(tempDeps, `${dir}/${name}.deps`);
+    await writeFile(tempDeps, joinLines(deps));
+    await rename(tempDeps, `${dir}/${name}.deps`);
   }
 }
 

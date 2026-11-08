@@ -4,7 +4,7 @@ import {compile} from './compile-zena.js';
 import {instantiate, createStringReader, ZenaException} from '../index.js';
 
 async function compileAndInstantiate(source: string) {
-  const wasm = compile(source);
+  const wasm = await compile(source);
   const result = await instantiate(wasm);
   const instance = 'instance' in result ? result.instance : result;
   return instance.exports;

@@ -15,7 +15,7 @@
  * becomes `x ?? y`).
  */
 
-import { writeFileSync } from 'zena:fs';
+import { writeFile } from 'zena:fs';
 import { Set } from 'zena:collections';
 import { Project, CheckedFile } from './checking.zena';
 import { NamedRule, proposeEdits, runRules } from './rule.zena';
@@ -66,9 +66,9 @@ export final class FileReport {
  * Lints one file: reports its findings, or with `options.fix` rewrites it
  * in place.
  */
-export function lintFile(project: Project, path: String, options: LintOptions, write: boolean = true): FileReport {
+export async function lintFile(project: Project, path: String, options: LintOptions, write: boolean = true): Future<FileReport> {
   let report = new FileReport(path);
-  let checked = initialCheck(project, path, report);
+  let checked = await initialCheck(project, path, report);
   if (checked == null) {
     project.reset();
     return report;
@@ -121,7 +121,7 @@ export function lintFile(project: Project, path: String, options: LintOptions, w
     while (remaining.length > 0) {
       let candidates = groupEdits(disjointEdits(remaining));
       let before = report.rejected.length;
-      accepted = flattenGroups(settle(project, path, source, candidates, shared, report));
+      accepted = flattenGroups(await settle(project, path, source, candidates, shared, report));
       if (report.rejected.length == before) {
         break;
       }
@@ -153,8 +153,8 @@ export function lintFile(project: Project, path: String, options: LintOptions, w
       }
     }
     report.changed = true;
-    project.override(path, source);
-    current = project.check(path);
+    await project.override(path, source);
+    current = await project.check(path);
     if (current.hasErrors()) {
       // `settle` checked this exact text; a difference here is a bug.
       throw new Error(`${path}: the accepted rewrite does not check: ${current.errors()[0]}`);
@@ -163,7 +163,7 @@ export function lintFile(project: Project, path: String, options: LintOptions, w
 
   report.result = source;
   if (report.changed && write) {
-    writeFileSync(path, source);
+    await writeFile(path, source);
   }
   project.reset();
   return report;
@@ -174,9 +174,9 @@ export function lintFile(project: Project, path: String, options: LintOptions, w
  * file at `path`: relative imports resolve from there. Nothing is
  * written; with `options.fix` the result is on the report.
  */
-export function lintSource(project: Project, path: String, source: String, options: LintOptions): FileReport {
-  project.override(path, source);
-  return lintFile(project, path, options, false);
+export async function lintSource(project: Project, path: String, source: String, options: LintOptions): Future<FileReport> {
+  await project.override(path, source);
+  return await lintFile(project, path, options, false);
 }
 
 /**
@@ -189,9 +189,9 @@ function editKey(edit: Edit, source: String): String {
 }
 
 /** The file as it is on disk, checked; null (recorded on the report) when it cannot be. */
-function initialCheck(project: Project, path: String, report: FileReport): CheckedFile | null {
+async function initialCheck(project: Project, path: String, report: FileReport): Future<CheckedFile | null> {
   try {
-    return project.check(path);
+    return await project.check(path);
   } catch (e) {
     report.failure = e.message;
     return null;
@@ -205,15 +205,15 @@ function initialCheck(project: Project, path: String, report: FileReport): Check
  * far, so that a pair of rewrites that each check alone but not together
  * is caught too.
  */
-function settle(
+async function settle(
   project: Project,
   path: String,
   source: String,
   groups: GrowableArray<GrowableArray<Edit>>,
   shared: GrowableArray<Edit>,
   report: FileReport
-): GrowableArray<GrowableArray<Edit>> {
-  let failure = tryGroups(project, path, source, groups, shared);
+): Future<GrowableArray<GrowableArray<Edit>>> {
+  let failure = await tryGroups(project, path, source, groups, shared);
   if (failure == null) {
     return groups;
   }
@@ -222,8 +222,8 @@ function settle(
     return new Array<GrowableArray<Edit>>(0);
   }
   let mid = groups.length - (groups.length >> 1);
-  let left = settle(project, path, source, groups.slice(0, mid), shared, report);
-  let right = settle(project, path, source, groups.slice(mid, groups.length), shared, report);
+  let left = await settle(project, path, source, groups.slice(0, mid), shared, report);
+  let right = await settle(project, path, source, groups.slice(mid, groups.length), shared, report);
   let combined = new Array<GrowableArray<Edit>>(left.length + right.length);
   for (let g in left) {
     combined.push(g);
@@ -231,7 +231,7 @@ function settle(
   for (let g in right) {
     combined.push(g);
   }
-  if (combined.length == 0 || tryGroups(project, path, source, combined, shared) == null) {
+  if (combined.length == 0 || (await tryGroups(project, path, source, combined, shared)) == null) {
     return combined;
   }
   // Each half checks alone and not together: add one at a time.
@@ -242,7 +242,7 @@ function settle(
       attempt.push(a);
     }
     attempt.push(g);
-    let error = tryGroups(project, path, source, attempt, shared);
+    let error = await tryGroups(project, path, source, attempt, shared);
     if (error == null) {
       accepted.push(g);
     } else {
@@ -256,8 +256,8 @@ function settle(
  * Null when `source` with the groups' edits (and the shared ones) applied
  * checks, else the first error.
  */
-function tryGroups(project: Project, path: String, source: String,
-    groups: GrowableArray<GrowableArray<Edit>>, shared: GrowableArray<Edit>): String | null {
+async function tryGroups(project: Project, path: String, source: String,
+    groups: GrowableArray<GrowableArray<Edit>>, shared: GrowableArray<Edit>): Future<String | null> {
   let edits = flattenGroups(groups);
   for (let edit in shared) {
     edits.push(edit);
@@ -265,8 +265,8 @@ function tryGroups(project: Project, path: String, source: String,
   let text = applyEdits(source, disjointEdits(edits));
   try {
     // Setting the override re-reads the file, so a parse error lands here.
-    project.override(path, text);
-    let checked = project.check(path);
+    await project.override(path, text);
+    let checked = await project.check(path);
     let errors = checked.errors();
     if (errors.length == 0) {
       return null;

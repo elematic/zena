@@ -23,9 +23,9 @@ async function session(messages: Array<String>) {
 }
 
 /** The messages in a process's output, which must hold nothing else. */
-function messagesIn(output: String): Array<JsonObject> {
+async function messagesIn(output: String): Future<Array<JsonObject>> {
   var consumed = false;
-  let reader = new MessageReader(() => {
+  let reader = new MessageReader(async () => {
     if (consumed) {
       return '';
     }
@@ -34,7 +34,7 @@ function messagesIn(output: String): Array<JsonObject> {
   });
   let messages = new Array<JsonObject>();
   while (true) {
-    let body = reader.next();
+    let body = await reader.next();
     if (body == null) {
       return messages;
     }
@@ -96,7 +96,7 @@ export let tests = suite('zena lsp', () => {
       '{"jsonrpc":"2.0","method":"exit"}',
     ]);
     equal(run.exitCode, 0, run.stderr);
-    let messages = messagesIn(run.stdout);
+    let messages = await messagesIn(run.stdout);
 
     equal(replyTo(messages, 1).stringAt('result.serverInfo.name') ?? '', 'zena');
 
@@ -131,6 +131,6 @@ export let tests = suite('zena lsp', () => {
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}',
     ]);
     equal(run.exitCode, 0, run.stderr);
-    equal(messagesIn(run.stdout).length, 1);
+    equal((await messagesIn(run.stdout)).length, 1);
   });
 });

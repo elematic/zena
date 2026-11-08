@@ -50,7 +50,7 @@ suite('wasm-web-ui: hydration', () => {
     assert.ok(button, 'the server wrote the template');
 
     const source = readFileSync(elementsUrl, 'utf8');
-    const {instance} = await instantiateModule(compile(source));
+    const {instance} = await instantiateModule(await compile(source));
     const elements = new ElementModule(instance.exports);
     for (const definition of elements.definitions) {
       customElements.define(definition.tag, elements.classFor(definition));

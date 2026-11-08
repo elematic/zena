@@ -51,7 +51,7 @@ function createCapturingConsole(
  * Compile Zena source and instantiate with capturing console.
  */
 async function compileAndRun(source: string) {
-  const wasm = compile(source);
+  const wasm = await compile(source);
 
   let instanceExports: WebAssembly.Exports | undefined;
   const testConsole = createCapturingConsole(() => instanceExports);

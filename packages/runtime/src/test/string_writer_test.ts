@@ -18,7 +18,7 @@ async function instantiateWithStringExports() {
     export let identity = (s: String) => s;
   `;
 
-  const wasm = compile(source);
+  const wasm = await compile(source);
   const result = await instantiate(wasm);
   const instance = 'instance' in result ? result.instance : result;
   return instance.exports;

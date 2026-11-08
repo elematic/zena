@@ -51,7 +51,7 @@ import { Set } from 'zena:collections';
 import { ByteBuffer, StringBuilder, Unmanaged, disown, growable, i32ToString } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
 import { getEnv } from 'zena:cli';
-import { readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync, mkdirSync, existsSync, unlinkSync } from 'zena:fs';
+import { readFile, readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync, mkdirSync, existsSync, unlinkSync } from 'zena:fs';
 import {
   Discovery,
   TestFile,
@@ -342,20 +342,20 @@ function orphanedSupportModules(d: Discovery): Array<TestFile> {
 
 /** Reads sources for the compiler, mapping `zena:x` onto the stdlib. */
 class FsHost implements CompilerHost {
-  readFile(path: String): String {
+  async readFile(path: String): Future<String> {
     // A WIT-backed package's module has no file: it is synthesized
     // from the package's WIT.
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
+      return await synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
-      return readFileSync(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+      return await readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
-    return readFileSync(path);
+    return await readFile(path);
   }
 
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
+  async listDir(path: String): Future<Array<String> | null> {
+    return await directoryNames(path);
   }
 }
 
@@ -460,7 +460,7 @@ final class ComponentSettings {
  * rather than raised, so one bad test costs one test rather than the
  * rest of the slice.
  */
-function compileOne(
+async function compileOne(
   compiler: Compiler,
   f: TestFile,
   previous: ProgramCheckResult | null,
@@ -468,7 +468,7 @@ function compileOne(
   optLevel: i32
 ) {
   return try {
-    let compResult = compiler.compile({entry: f.path, target: 'zena-cli'});
+    let compResult = await compiler.compile({entry: f.path, target: 'zena-cli'});
     let checked = checkCompilation(compResult, previous);
 
     let errors = new StringBuilder();
@@ -542,7 +542,7 @@ function compileOne(
  * `zena-cli run --dir .::/ <self.wasm> compile-slice <index> <count> <filter>`,
  * and dispatched to from `main` on that first argument.
  */
-function compileSlice(args: Array<String>): i32 {
+async function compileSlice(args: Array<String>): Future<i32> {
   if (args.length < 5) {
     console.error('Usage: portable_execution compile-slice <index> <count> <filter>');
     return 1;
@@ -558,13 +558,13 @@ function compileSlice(args: Array<String>): i32 {
   // run (ModuleGenerator.propagate).
   let optLevel = testOptLevel();
   let host = new FsHost();
-  let packages = loadWorkspace(host, '.');
+  let packages = await loadWorkspace(host, '.');
   let options: CompilerOptions = {stdlibRoot, packages};
   var compiler = createCompiler(host, options);
   let settings = new ComponentSettings(
-      compileComponentRuntimeModule(compiler, stdlibRoot),
-      readWitSource(host, `${stdlibRoot}/wit`) + '\n' +
-          readWitSource(host, `${stdlibRoot}/host-wit`));
+      await compileComponentRuntimeModule(compiler, stdlibRoot),
+      (await readWitSource(host, `${stdlibRoot}/wit`)) + '\n' +
+          (await readWitSource(host, `${stdlibRoot}/host-wit`)));
 
   var previous: ProgramCheckResult | null = null;
   var sinceFresh = 0;
@@ -588,7 +588,7 @@ function compileSlice(args: Array<String>): i32 {
       // the module beside it usable.
       let statusPath = statusPathOf(f.relPath);
       if (existsSync(statusPath)) { unlinkSync(statusPath); }
-      previous = compileOne(compiler, f, previous, settings, optLevel);
+      previous = await compileOne(compiler, f, previous, settings, optLevel);
     }
     pos += 1;
   }
@@ -661,7 +661,7 @@ async function runCompilePhase(
  */
 export async function runPortableExecution(args: Array<String>): Future<i32> {
   if (args.length > 1 && args[1] == compileSliceCommand) {
-    return compileSlice(args);
+    return await compileSlice(args);
   }
   if (args.length < 3) {
     console.error('Usage: portable_execution <zenaCli> <parallelism> [filter]');

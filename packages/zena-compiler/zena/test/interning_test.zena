@@ -57,28 +57,28 @@ function identityCount(names: Array<String>) {
   return representatives.length;
 }
 
-function compileProgram() {
+async function compileProgram() {
   let host = new MockHost();
   program(host);
-  return makeCompiler(host).compile({entry: '/b.zena', target: 'freestanding'});
+  return await makeCompiler(host).compile({entry: '/b.zena', target: 'freestanding'});
 }
 
 export let tests = suite('identifier interning', () => {
-  test('the program repeats the name across both files', (ctx) => {
-    let names = valueNames(compileProgram());
+  test('the program repeats the name across both files', async (ctx) => {
+    let names = valueNames(await compileProgram());
     isTrue(names.length >= 5,
       `expected at least 5 occurrences of \`value\`, found ${i32ToString(names.length)}`);
   });
 
-  test('one table spans every file in the compilation', (ctx) => {
-    let names = valueNames(compileProgram());
+  test('one table spans every file in the compilation', async (ctx) => {
+    let names = valueNames(await compileProgram());
     equal(identityCount(names), 1,
       'every occurrence of `value`, in both files, should be the same String');
   });
 
-  test('two compilers do not share a table', (ctx) => {
-    let first = valueNames(compileProgram());
-    let second = valueNames(compileProgram());
+  test('two compilers do not share a table', async (ctx) => {
+    let first = valueNames(await compileProgram());
+    let second = valueNames(await compileProgram());
     isTrue(!(first[0] === second[0]),
       'a second compiler should intern into a table of its own');
   });

@@ -12,7 +12,7 @@
  */
 
 import { runAndReport, suite } from 'zena:test';
-import { readFileSync } from 'zena:fs';
+import { readFile } from 'zena:fs';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { directoryNames } from '../lib/fs-host.zena';
 import {
@@ -38,18 +38,18 @@ class FsHost implements CompilerHost {
   new(stdlibRoot: String)
     : #stdlibRoot = stdlibRoot;
 
-  readFile(path: String): String {
+  async readFile(path: String): Future<String> {
     if (path == this.filePathOverride) {
       return this.fileSourceOverride;
     }
     if (path.startsWith('zena:')) {
-      return readFileSync(`${this.#stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+      return await readFile(`${this.#stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
-    return readFileSync(path);
+    return await readFile(path);
   }
 
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
+  async listDir(path: String): Future<Array<String> | null> {
+    return await directoryNames(path);
   }
 }
 
@@ -79,20 +79,18 @@ final class SharedCompiler {
    * map reads files, and a component's module initializers run in the
    * instance's start function, before any task exists to block in.
    */
-  compiler: Compiler {
-    get {
-      let existing = this.#compiler;
-      if (existing != null) {
-        return existing;
-      }
-      let fresh = createCompiler(host, {
-        stdlibRoot,
-        packages: loadWorkspace(host, '.'),
-        warnUnnecessaryCasts: this.warnUnnecessaryCasts,
-      });
-      this.#compiler = fresh;
-      return fresh;
+  async compiler(): Future<Compiler> {
+    let existing = this.#compiler;
+    if (existing != null) {
+      return existing;
     }
+    let fresh = createCompiler(host, {
+      stdlibRoot,
+      packages: await loadWorkspace(host, '.'),
+      warnUnnecessaryCasts: this.warnUnnecessaryCasts,
+    });
+    this.#compiler = fresh;
+    return fresh;
   }
 }
 
@@ -171,7 +169,7 @@ function annotatedLine(lines: FixedArray<String>, line: i32) {
 }
 
 /** Parse → scope → check the file, then match diagnostics against directives. */
-function runSemanticTest(f: TestFile) {
+async function runSemanticTest(f: TestFile) {
   let expectedErrors = f.all('error');
   let expectedWarnings = f.all('warning');
   let warnUnnecessaryCasts = f.directive('warnUnnecessaryCasts') == 'true';
@@ -181,10 +179,10 @@ function runSemanticTest(f: TestFile) {
 
   let shared = if (warnUnnecessaryCasts) { warningCasts } else { plain };
   // Invalidate the loader cache for this path so the file is re-read.
-  let compiler = shared.compiler;
-  compiler.invalidate(f.path);
+  let compiler = await shared.compiler();
+  await compiler.invalidate(f.path);
 
-  let result = compiler.compile({entry: f.path, target: 'js'});
+  let result = await compiler.compile({entry: f.path, target: 'js'});
   let checkResult = checkCompilation(result, shared.checked);
   shared.checked = checkResult;
 

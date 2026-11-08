@@ -19,7 +19,7 @@ import {compile} from './compile-zena.js';
 import {instantiate, run, type ZenaImports} from '../index.js';
 
 const hosted = async (source: string, options?: ZenaImports) => {
-  const wasm = compile(source);
+  const wasm = await compile(source);
   const result = await instantiate(wasm, options);
   const instance =
     (result as {instance?: WebAssembly.Instance}).instance ??
@@ -175,7 +175,7 @@ suite('Runtime - zena:fetch', () => {
   });
 
   test('web: false omits web namespace, causing link failure', async () => {
-    const wasm = compile(`
+    const wasm = await compile(`
       import { Future } from 'zena:async';
       import { fetch } from 'zena:fetch';
 
@@ -191,10 +191,10 @@ suite('Runtime - zena:fetch', () => {
     );
   });
 
-  test('the body reads once; a second text() does not compile', () => {
+  test('the body reads once; a second text() does not compile', async () => {
     // `text()` consumes the response, so reading it again is a use after
     // the move.
-    assert.throws(
+    await assert.rejects(
       () =>
         compile(`
       import { Future } from 'zena:async';

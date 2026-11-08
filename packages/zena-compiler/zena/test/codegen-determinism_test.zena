@@ -38,18 +38,18 @@ import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { PlainHost, stdlibRoot } from './test-utils.zena';
 
-function newCompiler() {
+async function newCompiler() {
   let host = new PlainHost();
-  let packages = loadWorkspace(host, '.');
+  let packages = await loadWorkspace(host, '.');
   // The core module with no host beneath it: the bytes compared are
   // the program's own.
   return createCompiler(host, {stdlibRoot, packages});
 }
 
 /** Compiles to wasm with a fresh compiler, throwing on any check error. */
-function compileFresh(path: String) {
-  let c = newCompiler();
-  let result = c.compile({entry: path, target: 'freestanding'});
+async function compileFresh(path: String) {
+  let c = await newCompiler();
+  let result = await c.compile({entry: path, target: 'freestanding'});
   let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
@@ -102,12 +102,12 @@ let target = 'tests/language/execution/arrays/extension_class.zena';
 let repeats = 8;
 
 export let tests = suite('Codegen determinism', () => {
-  test('emits the same module whatever was compiled before it', (ctx) => {
-    let first = compileFresh(target);
+  test('emits the same module whatever was compiled before it', async (ctx) => {
+    let first = await compileFresh(target);
     let differing = new Array<i32>();
     var i = 1;
     while (i < repeats) {
-      let again = compileFresh(target);
+      let again = await compileFresh(target);
       if (firstDiff(first, again) >= 0) {
         differing.push(i + 1);
       }

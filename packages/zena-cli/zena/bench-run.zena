@@ -9,7 +9,7 @@
 import { ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
 import { runSuite } from 'zena:bench';
-import { existsSync } from 'zena:fs';
+import { exists } from 'zena:fs';
 import { AbsolutePath, RelativePath, isAbsolute } from 'zena:path';
 import { CompileRequest, compileCached } from './compile.zena';
 import { Options, repoRelative, repoRoot, resolveUserPath } from './env.zena';
@@ -20,13 +20,13 @@ export async function benchCommand(args: ParsedArgs, options: Options): Future<i
     return 2;
   }
   let config = resolveUserPath(args.rest[0]);
-  if (!existsSync(config.value)) {
+  if (!(await exists(config.value))) {
     console.error('Error: bench config not found: ' + config.value);
     return 2;
   }
   // The suite's paths are relative to its config, which is named
   // relative to this module's working directory, the repository root.
-  let compile = (source: String) => {
+  let compile = async (source: String): Future<String> => {
     let path = if (isAbsolute(source)) {
       new AbsolutePath(source)
     } else {
@@ -37,7 +37,7 @@ export async function benchCommand(args: ParsedArgs, options: Options): Future<i
     // variants beside it.
     let request = new CompileRequest(path);
     request.target = 'freestanding';
-    return compileCached(request, options).value;
+    return (await compileCached(request, options)).value;
   };
   let configPath = repoRelative(config);
   if (let (true, out) = args.getOption('out')) {

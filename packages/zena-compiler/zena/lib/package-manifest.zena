@@ -156,14 +156,14 @@ function isCidText(text: String): boolean {
 // not a package. A relative path that climbs out of the working directory
 // is read against `projectRoot`, its absolute path, when given. Published
 // packages are added only with a `packageCache`.
-export function loadWorkspace(
+export async function loadWorkspace(
   host: CompilerHost,
   root: String,
   projectRoot: String | null = null,
   packageCache: String | null = null
-): HashMap<String, PackageConfig> {
-  if (fileExists(host, joinPath(root, "zena-package.json"))) {
-    return new WorkspaceLoader(host, projectRoot, packageCache).load(root);
+): Future<HashMap<String, PackageConfig>> {
+  if (await fileExists(host, joinPath(root, "zena-package.json"))) {
+    return await new WorkspaceLoader(host, projectRoot, packageCache).load(root);
   }
   return new Map<String, PackageConfig>();
 }
@@ -182,26 +182,26 @@ final class WorkspaceLoader {
   new(host: CompilerHost, projectRoot: String | null, packageCache: String | null)
     : #host = host, #projectRoot = projectRoot, #packageCache = packageCache;
 
-  load(root: String): HashMap<String, PackageConfig> {
+  async load(root: String): Future<HashMap<String, PackageConfig>> {
     let cache = this.#packageCache;
     let lock = joinPath(root, "zena-lock.json");
-    if (cache != null && fileExists(this.#host, lock)) {
-      let pins = this.#readJson(lock);
+    if (cache != null && await fileExists(this.#host, lock)) {
+      let pins = await this.#readJson(lock);
       for (let key in addPins(pins, cache, this.#result, "zena-lock.json")) {
         // A published package's own manifest gives its exports, once it is
         // in the cache.
         let config = this.#result[key];
         let manifest = joinPath(config.root, "zena-package.json");
-        if (fileExists(this.#host, manifest)) {
-          config.exports = parseExports(this.#readJson(manifest));
+        if (await fileExists(this.#host, manifest)) {
+          config.exports = parseExports(await this.#readJson(manifest));
         }
       }
     }
-    let manifest = this.#readJson(joinPath(root, "zena-package.json"));
+    let manifest = await this.#readJson(joinPath(root, "zena-package.json"));
     if (manifest.has("name")) {
-      this.#loadPackage(root, manifest);
+      await this.#loadPackage(root, manifest);
     } else {
-      this.#loadRootNames(root, manifest);
+      await this.#loadRootNames(root, manifest);
     }
     let workspace = manifest["workspace"];
     if (workspace != null) {
@@ -209,7 +209,7 @@ final class WorkspaceLoader {
       if (packages != null) {
         let list = packages as JsonArray;
         for (var i = 0; i < list.length; i += 1) {
-          this.#loadWorkspaceEntry(root, list[i] as String);
+          await this.#loadWorkspaceEntry(root, list[i] as String);
         }
       }
     }
@@ -218,38 +218,38 @@ final class WorkspaceLoader {
 
   // A `workspace.packages` entry: a directory, or `dir/*` for each
   // directory in `dir` that holds a manifest.
-  #loadWorkspaceEntry(root: String, entry: String): void {
+  async #loadWorkspaceEntry(root: String, entry: String): Future<void> {
     if (entry.endsWith("/*")) {
       let parent = joinPath(root, entry.sliceBytes(0, entry.length - 2));
-      let names = this.#host.listDir(parent);
+      let names = await this.#host.listDir(parent);
       if (names == null) {
         throw new Error(`zena-package.json: workspace.packages names ${parent}, which is not a directory`);
       }
       for (let name in names as Array<String>) {
         let dir = joinPath(parent, name);
-        if (fileExists(this.#host, joinPath(dir, "zena-package.json"))) {
-          this.#loadPackageAt(dir);
+        if (await fileExists(this.#host, joinPath(dir, "zena-package.json"))) {
+          await this.#loadPackageAt(dir);
         }
       }
       return;
     }
-    this.#loadPackageAt(joinPath(root, entry));
+    await this.#loadPackageAt(joinPath(root, entry));
   }
 
   // The key of the package in `dir`, loading it first if need be.
-  #loadPackageAt(dir: String): String {
+  async #loadPackageAt(dir: String): Future<String> {
     let path = normalizePath(dir);
     if (let (true, key) = this.#keys.get(path)) {
       return key;
     }
     let manifest = joinPath(path, "zena-package.json");
-    if (!fileExists(this.#host, manifest)) {
+    if (!(await fileExists(this.#host, manifest))) {
       throw new Error(`${path} has no zena-package.json`);
     }
-    return this.#loadPackage(path, this.#readJson(manifest));
+    return await this.#loadPackage(path, await this.#readJson(manifest));
   }
 
-  #loadPackage(dir: String, manifest: JsonObject): String {
+  async #loadPackage(dir: String, manifest: JsonObject): Future<String> {
     let path = normalizePath(dir);
     let nameValue = manifest["name"];
     var name: String | null = null;
@@ -279,25 +279,27 @@ final class WorkspaceLoader {
     if (dependencies == null) {
       return key;
     }
-    (dependencies as JsonObject).forEach((localName, value) => {
-      let target = this.#dependency(path, localName, value);
+    let entries = dependencies as JsonObject;
+    for (let localName in entries.keys()) {
+      let target = await this.#dependency(path, localName, entries[localName]);
       if (target != null) {
         names[localName] = target;
       }
-    });
+    }
     return key;
   }
 
   // A root manifest that is not a package: its dependencies are names for
   // the files in no package, such as scripts and examples.
-  #loadRootNames(root: String, manifest: JsonObject): void {
+  async #loadRootNames(root: String, manifest: JsonObject): Future<void> {
     let dependencies = manifest["dependencies"];
     if (dependencies == null) {
       return;
     }
     let path = normalizePath(root);
-    (dependencies as JsonObject).forEach((localName, value) => {
-      let target = this.#dependency(path, localName, value);
+    let entries = dependencies as JsonObject;
+    for (let localName in entries.keys()) {
+      let target = await this.#dependency(path, localName, entries[localName]);
       if (target != null && target != localName) {
         if (this.#result.has(localName)) {
           throw new Error(`${path}/zena-package.json: '${localName}' is also a package's name`);
@@ -306,13 +308,13 @@ final class WorkspaceLoader {
         alias.aliasOf = target;
         this.#result[localName] = alias;
       }
-    });
+    }
   }
 
   // The key of the package the dependency `localName` of the manifest in
   // `dir` names, loading or registering it first; null for a published
   // package when there is no package cache.
-  #dependency(dir: String, localName: String, value: JsonValue): String | null {
+  async #dependency(dir: String, localName: String, value: JsonValue): Future<String | null> {
     if (!isLocalName(localName)) {
       throw new Error(`${dir}/zena-package.json: '${localName}' is not a package name`);
     }
@@ -322,7 +324,7 @@ final class WorkspaceLoader {
     let entry = value as JsonObject;
     if (entry.has("path")) {
       let target = resolveManifestPath(entry["path"] as String, dir, this.#projectRoot);
-      return this.#loadPackageAt(target);
+      return await this.#loadPackageAt(target);
     }
     if (entry.has("wit")) {
       let witRoot = resolveManifestPath(entry["wit"] as String, dir, this.#projectRoot);
@@ -353,8 +355,8 @@ final class WorkspaceLoader {
     return pinned;
   }
 
-  #readJson(path: String): JsonObject {
-    let text = this.#host.readFile(path);
+  async #readJson(path: String): Future<JsonObject> {
+    let text = await this.#host.readFile(path);
     var json: JsonValue = null;
     try {
       json = parseJson(text);
@@ -386,11 +388,11 @@ function joinPath(dir: String, name: String): String {
 // Whether the file `path` exists, asked of its directory's listing. A host
 // that cannot list directories, such as the browser language service's, is
 // asked for the file, and an empty or missing one counts as absent.
-function fileExists(host: CompilerHost, path: String): boolean {
-  let names = host.listDir(dirName(path));
+async function fileExists(host: CompilerHost, path: String): Future<boolean> {
+  let names = await host.listDir(dirName(path));
   if (names == null) {
     try {
-      return host.readFile(path) != "";
+      return (await host.readFile(path)) != "";
     } catch (e) {
       return false;
     }
