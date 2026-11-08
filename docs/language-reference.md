@@ -1778,8 +1778,29 @@ The compiler type-checks a `debug` clause in every build. A
 `debug requires` narrows nothing in the body, since the body may run
 without the check.
 
+#### Clauses that are never run: `static`
+
+A clause marked `static` is a specification: the compiler type-checks
+it in every build and never checks it at run time. It is for a
+condition that is meant to be proved rather than run, or that could
+not run at all.
+
+```zena
+function search(items: FixedArray<i32>, target: i32): i32
+  requires (items.length > 0)
+  static requires (isSorted(items))
+  static ensures (result < 0 || items[result] == target)
+{ ... }
+```
+
+Its names must resolve and its condition must be a boolean, like any
+clause's, so it cannot rot. It narrows nothing. A clause takes one
+modifier: `debug` or `static`.
+
 `requires`, `ensures`, `invariant` and `debug` are contextual keywords
-and stay available as identifiers. See `docs/design/contracts.md`.
+and stay available as identifiers; `static` is a keyword, and means a
+clause's modifier only directly before one of the three. See
+`docs/design/contracts.md`.
 
 ## 5. Expressions & Operators
 

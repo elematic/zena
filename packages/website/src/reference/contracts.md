@@ -7,11 +7,11 @@ statusType: warning
 
 ::: warning In Progress Feature
 
-`requires`, `ensures`, and `invariant` clauses (and the `debug` modifier) are
-checked and compiled to runtime assertions. The compiler rejects clauses in
-positions that are not yet supported (such as generators, bodyless methods, and
-`ensures` on `async` functions) rather than ignoring them. Static verification
-and `ghost` clauses are planned.
+`requires`, `ensures`, and `invariant` clauses, with the `debug` and `static`
+modifiers, are checked. Unmarked and `debug` clauses compile to runtime
+assertions; `static` clauses are specifications that are never run. The compiler
+rejects clauses in positions that are not yet supported (such as methods without
+a body) rather than ignoring them. Static verification is planned.
 
 :::
 
@@ -27,11 +27,12 @@ omitted from ordinary builds. When an active clause's condition evaluates to
 
 ```ebnf
 FunctionContracts := (RequiresClause | EnsuresClause)*
-RequiresClause    := 'debug'? 'requires' '(' Expression ')'
-EnsuresClause     := 'debug'? 'ensures' '(' Expression ')'
+Modifier          := 'debug' | 'static'
+RequiresClause    := Modifier? 'requires' '(' Expression ')'
+EnsuresClause     := Modifier? 'ensures' '(' Expression ')'
 
 LoopContracts     := InvariantClause*
-InvariantClause   := 'debug'? 'invariant' '(' Expression ')'
+InvariantClause   := Modifier? 'invariant' '(' Expression ')'
 ```
 
 ### Callable positions
@@ -92,6 +93,9 @@ or interface constructors.
   as a loop whose single-statement body calls a function named `invariant`.
   Consequently, any loop with `invariant` clauses must use a `{ ... }` block
   body.
+- `static` is a keyword everywhere. Directly before `requires`, `ensures`, or
+  `invariant` in the positions above it is a clause's modifier; a `static`
+  member declared after a method with clauses is still a member.
 
 ```zena
 // Contextual keywords remain usable as variable and function names:
@@ -136,6 +140,11 @@ followed by its field initializers, and then the superclass constructor's
   function is called, in the eager prefix before the first `await`. A failed
   `requires` clause rejects the returned `Future<T>` with `ContractError`, just
   like an exception thrown before the first `await`.
+- **Generators** (`gen` and `async gen`): A generator's body does not start at
+  the call, which only creates the iterator. Preconditions run at the first
+  step, as the first thing the body does, so a call with arguments that break
+  one returns an iterator, and the first `next()`, or the `for`-in driving it,
+  throws.
 
 ## Postconditions (ensures)
 
@@ -191,6 +200,15 @@ function echo(result: i32): i32 ensures (result > 0) {
   resulting `ContractError` is thrown outside the function's own `try`/`catch`
   handlers so the function cannot accidentally swallow its own broken
   postcondition.
+- **`async` functions**: Postconditions run when the body returns, just before
+  the future completes, and `result` is the value it completes with. A failure
+  completes the future with the `ContractError`. Such a function cannot return
+  another future for its caller to wait on in place of a value, since `result`
+  is not known at that return; it can `await` it.
+- **Generators**: Postconditions run when the body returns, which is when the
+  iteration ends: the step that would report the end throws instead. A
+  generator has no `result`. A loop that leaves early disposes the generator
+  without returning from its body, so nothing is checked.
 
 ## Entry values with old()
 
@@ -328,6 +346,38 @@ function search(items: FixedArray<i32>, target: i32): i32
 - **Error message**: When a `debug` clause fails, `ContractError.message`
   includes the `debug` prefix: `debug requires (isSorted(items)) does not hold`.
 
+## Static clauses (static)
+
+Prefixing a clause with `static` makes it a specification: type-checked in every
+build and never checked at run time. It is for a condition that is meant to be
+proved rather than run, or that could not run at all.
+
+```zena
+function search(items: FixedArray<i32>, target: i32): i32
+  requires (items.length > 0)
+  static requires (isSorted(items))
+  static ensures (result < 0 || items[result] == target)
+{
+  // ...
+}
+```
+
+- **Never emitted**: No build evaluates a `static` clause, calls
+  `$contractFailed` for it, or carries its message. Reachability skips it, so a
+  function called only in a `static` condition is not linked in.
+- **Type-checked**: Its names must resolve and its condition must be a boolean,
+  by the rules every clause follows, so it cannot rot.
+- **No narrowing**: A `static requires` narrows nothing, for the reason a `debug`
+  one does not.
+- **One modifier per clause**: `debug` or `static`, not both. A `static` clause
+  is left out of every build, so `debug` would add nothing.
+- **Why `static`**: `static_assert` is the precedent for `static` meaning "at
+  compile time"; the position keeps it apart from a member's `static`.
+
+Until a static verifier exists, a `static` clause is documentation the compiler
+keeps honest about names and types. Quantifiers and specification-only
+functions arrive with the verifier.
+
 ## Type checking and narrowing
 
 ### Pure-control condition rules
@@ -464,23 +514,22 @@ inheritance designs are completed:
 
 | Position                                                    | Status                                                             |
 | :---------------------------------------------------------- | :----------------------------------------------------------------- |
-| Generator functions and methods (`gen`)                     | `requires` and `ensures` rejected                                  |
 | Methods without a body (`interface`, `abstract`, `declare`) | `requires` and `ensures` rejected                                  |
-| `async` functions and methods                               | `requires` supported; `ensures` rejected                           |
-| Functions returning an `inline` tuple or record             | `requires` supported; `ensures` rejected                           |
+| Functions returning an `inline` record                      | `requires` supported; `ensures` rejected                           |
+| `old(...)` of an `inline` value                             | rejected                                                           |
 | Extension class constructors                                | `requires` supported; `ensures` rejected                           |
 | Constructor `ensures` clauses                               | `this` supported; `old(...)` inside constructor `ensures` rejected |
 
-## Planned static verification and ghost clauses
+## Planned static verification
 
-Unmarked clauses run in every build, and `debug` clauses run under `zena test`
-and `--debug` (`-g`). Future work extends the same contract surface with
-compile-time verification (see [Contracts Design](/development/design/contracts/)):
+Unmarked clauses run in every build, `debug` clauses run under `zena test` and
+`--debug` (`-g`), and `static` clauses never run. Future work extends the same
+contract surface with compile-time verification (see
+[Contracts Design](/development/design/contracts/)):
 
 - **Opt-in static verification (`@verify`)**: Discharging `requires`, `ensures`,
   and `invariant` clauses statically via SMT solvers so proven postconditions and
   invariants hold for all inputs.
-- **Specification-only `ghost` clauses**: A `ghost` modifier (in the same
-  leading position as `debug`) for non-executable specifications—such as
-  universal quantifiers (`forall`, `exists`) or inductive lemmas—that are proven
-  at compile time and never emitted at runtime.
+- **Specification vocabulary in `static` clauses**: Universal quantifiers
+  (`forall`, `exists`) and specification-only functions, which cannot run and so
+  belong only in clauses that are never emitted.

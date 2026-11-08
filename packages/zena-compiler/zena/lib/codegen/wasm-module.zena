@@ -1,7 +1,7 @@
 import { Set, HashMap, HashSet } from 'zena:collections';
 import {
   Node, Expression, NodeId, ImportSpecifier, FunctionExpression, MethodDefinition, DeclareFunction, VariableDeclaration, FunctionDeclaration, IdentifierPattern,
-  ContractClause, ContractKind,
+  ContractClause, ContractKind, ContractMode,
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
@@ -1373,9 +1373,17 @@ export final class WasmModule {
    */
   var debugContracts: boolean = false;
 
-  /** Whether `clause` is checked at run time in this build. */
+  /**
+   * Whether `clause` is checked at run time in this build. A `static`
+   * clause never is: it is a specification for a verifier, type-checked
+   * and emitted nowhere.
+   */
   runsContractClause(clause: ContractClause): boolean {
-    return !clause.isDebug || this.debugContracts;
+    return match (clause.mode) {
+      case ContractMode.Checked: true
+      case ContractMode.Debug: this.debugContracts
+      case ContractMode.Static: false
+    };
   }
 
   /** Whether `contracts` holds an `ensures` clause this build checks. */
