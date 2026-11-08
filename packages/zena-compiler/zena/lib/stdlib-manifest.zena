@@ -209,15 +209,12 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   exports["crypto"] = new ModuleExport(null, "crypto/index.zena");
 
 
-  // Virtual module: time → sleeping and the monotonic clock. The JS
-  // entry parks synchronously on a host import and shares
-  // time/queue.zena; see async.md §4.
+  // Virtual module: time → sleeping and the monotonic clock, over a
+  // host import on JS and wasi:clocks 0.3 on component targets.
   let timeVirtual = new Map<String, String>();
   timeVirtual["js"] = "time/host.zena";
-  timeVirtual["zena-cli"] = "time/p3.zena";
-  // The component target's clock is p3's, and p3's wait is asynchronous:
-  // see docs/design/component-emission.md, Part 5.
-  timeVirtual["component"] = "time/p3.zena";
+  timeVirtual["zena-cli"] = "time/component.zena";
+  timeVirtual["component"] = "time/component.zena";
   exports["time"] = new ModuleExport(timeVirtual);
 
   // Virtual module: random → the host's cryptographically secure
