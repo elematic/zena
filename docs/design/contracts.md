@@ -240,9 +240,11 @@ The checker reports each of these:
 
 - Any clause on a method without a body: an interface method, or an
   `abstract` or `declare` method (#929).
-- An `ensures` clause on a function whose return type is `inline`
-  (#932). Such a result is returned as several values, and `result` has
-  no one value to be.
+- An `ensures` clause on a function whose return type is an inline
+  record, or a union that mixes an inline tuple with another member
+  (#932). An inline tuple result is bound as the lanes it is returned
+  in; these have no such binding yet. `old` of an inline value is not
+  supported either: the value is kept from entry as one value.
 - An `ensures` clause on an extension class's constructor (#933).
 - `old` in a constructor's `ensures` condition (#934).
 
@@ -372,6 +374,11 @@ is the same array, and `old(this.items.length)` is the earlier length.
   separate values when every caller only reads the fields. A function
   with postconditions is left out of it, because `result` is the
   record.
+- **Inline tuple results.** An `inline (i32, i32)` result is returned
+  as two values, and the postcondition block takes two parameters.
+  `result` is bound to them the way an `inline` parameter is bound to
+  its lanes (`inlineBindings`, with the layout `inlineLayoutOf` gives
+  the return type), so `result[0]` reads a lane and nothing is boxed.
 
 ## Kinds of clause
 

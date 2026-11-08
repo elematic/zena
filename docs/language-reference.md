@@ -1755,8 +1755,20 @@ gen function range(from: i32, to: i32): Iterator<i32> requires (from <= to) {
 A function with `ensures` clauses cannot `tail return`, since the call
 would discard the frame the clauses run in. For the same reason an
 `async` function with `ensures` clauses cannot return a future for its
-caller to wait on; it can `await` it. `ensures` is not supported yet on
-a function whose return type is `inline`.
+caller to wait on; it can `await` it.
+
+A function that returns an inline tuple has `result` too, read by index
+or destructured:
+
+```zena
+function divide(a: i32, b: i32): inline (i32, i32)
+  requires (b > 0)
+  ensures (result[0] * b + result[1] == a)
+{ ... }
+```
+
+`ensures` is not supported yet on a function whose return type is an
+inline record.
 
 #### Clauses for test and debug builds: `debug`
 
