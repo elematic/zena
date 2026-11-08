@@ -570,12 +570,34 @@ export async function listDir(path: String): Future<Array<DirEntry>> {
 
 /** Whether anything exists at a path. */
 export async function exists(path: String): Future<boolean> {
+  if (!underPreopen(path)) {
+    return false;
+  }
   let (dir, rel) = resolvePreopen(path);
   return await dir.existsAt(rel);
 }
 
+/**
+ * Whether a preopened directory holds `path`. Nothing outside every one
+ * exists, as far as this program can see.
+ */
+function underPreopen(path: String): boolean {
+  try {
+    resolvePreopen(path);
+    return true;
+  } catch (e) {
+    if (e is FsError) {
+      return false;
+    }
+    throw e;
+  }
+}
+
 /** The metadata of a path, or null when nothing is there. */
 async function statOrNull(path: String): Future<FileStat | null> {
+  if (!underPreopen(path)) {
+    return null;
+  }
   let (dir, rel) = resolvePreopen(path);
   try {
     return await dir.statAt(rel);
