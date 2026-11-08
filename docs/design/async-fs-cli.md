@@ -129,14 +129,12 @@ forms: `zena:http`'s static file server, whose private copies of the
 preopen lookup and `stat` helpers are replaced by `zena:fs`'s, and the
 component fixtures that exercise the asynchronous path.
 
-`CompilerHost.readFile` stays synchronous. Making it asynchronous makes
-the whole library loader asynchronous, which is a change to the
-compiler's shape rather than to the library, and belongs with the
-longer-term direction: a fully asynchronous compiler, with parsing and
-scope analysis in workers. This change is the first step of that; the
-library the compiler would await already exists.
-[async-compiler.md](./async-compiler.md) proposes the next step: an
-asynchronous `CompilerHost` and everything that calls it.
+`CompilerHost.readFile` stayed synchronous in this change. Making it
+asynchronous makes the whole library loader asynchronous, which is a
+change to the compiler's shape rather than to the library; that step
+came later, in [async-compiler.md](./async-compiler.md): an
+asynchronous `CompilerHost` and everything that calls it, up to the
+`zena` command and the language service.
 
 ## Related
 

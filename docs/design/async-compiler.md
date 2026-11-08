@@ -2,9 +2,10 @@
 
 ## Status
 
-Proposed 2026-11-04. The compiler change is not implemented. The two
-changes it waited on, described under "Prerequisites", are done:
-asynchronous test bodies in `zena:test`, and elematic/zena#633.
+Proposed 2026-11-04, implemented 2026-11-08. The two changes it waited
+on, described under "Prerequisites", landed first: asynchronous test
+bodies in `zena:test`, and elematic/zena#633. The sections below
+describe what was built; "Verification" records what was measured.
 
 ## Overview
 
@@ -105,10 +106,12 @@ sources in memory declares the methods `async` and returns directly.
 
 ### Library loader
 
-`LibraryLoader.load`, `#register` and `refreshCache` become
-asynchronous. `loadSynthesized` does too, because it loads the imports
-of the module it is given. `invalidate`, `delete`, `has`, `get` and
-`computeGraph` read and edit the cache only and stay synchronous.
+`LibraryLoader.load`, `#register` and `refreshCache` are
+asynchronous. `loadSynthesized` is too, because it loads the imports of
+the module it is given, and so is `invalidate`, which re-reads the file
+it evicts so that an importer's cached record still finds it at the
+next compile. `delete`, `has`, `get` and `computeGraph` read and edit
+the cache only and stay synchronous.
 
 The loader awaits one read at a time, in the order it reads today: a
 library is read, parsed and cached, and then each of its imports is
@@ -195,8 +198,10 @@ futures, and so does `compileToWasm` (`lib/compile.zena`), which calls
 the last check, `getDocumentSymbols` parses the text it is given, and
 `openDocument` and `closeDocument` edit the host's document map.
 
-`LspServer.handle` becomes asynchronous. `zena lsp`'s loop awaits each
-message before reading the next, which keeps today's ordering.
+`LspServer.handle` is asynchronous, and so is `MessageReader.next`,
+which reads standard input with `readStdin`. `zena lsp`'s loop awaits
+each message before reading the next, which keeps the order messages
+were answered in.
 
 `lsp.wasm` is built for the `js` target, where a Wasm export returns a
 Wasm value and cannot return a `Future` the host could use. Each
@@ -220,6 +225,22 @@ type FileReader = (
 class ZenaLanguageService {
   check(path: string, source?: string): Promise<Diagnostic[]>;
   lint(path: string, source?: string): Promise<LintFinding[]>;
+  hover(
+    path: string,
+    offset: number,
+    source?: string,
+  ): Promise<HoverInfo | null>;
+  completions(
+    path: string,
+    offset: number,
+    source?: string,
+  ): Promise<CompletionItem[]>;
+  definition(
+    path: string,
+    offset: number,
+    source?: string,
+  ): Promise<DefinitionInfo | null>;
+  documentSymbols(path: string, source?: string): Promise<DocumentSymbolInfo[]>;
   compileToWasm(
     path: string,
     source?: string,
@@ -227,16 +248,23 @@ class ZenaLanguageService {
 }
 ```
 
-`lint` returns a promise because it checks the document first when it
-is given a source. Its callers are the playground's compiler worker, which already answers
-over messages, and the VS Code extension's `compiler-service.ts`, which
-binds `lsp.wasm`'s exports itself and changes with them.
+Every method that may analyze a document returns a promise: `lint`,
+`hover`, `completions` and `definition` check the document first when
+they are given a source, and `documentSymbols` reads it through
+`readFile` when it is not open. `format`, `openDocument` and
+`closeDocument` stay synchronous. The callers are the playground's
+compiler worker, which already answers over messages, the VS Code
+extension's `compiler-service.ts`, which binds `lsp.wasm`'s exports
+itself, and the test harnesses in `@zena-lang/runtime` and
+`wasm-web-ui` that compile fixtures through `lsp.wasm`; each gives the
+module the `js` promise imports and a host-async `read_file`.
 
 ### Tests
 
 The compiler's tests call the changed functions at about 230 sites in
-about 50 files. Each such test body becomes asynchronous and awaits the
-compile.
+about 50 files. Each such test body is asynchronous and awaits the
+compile; `zena:assert` gained `rejects`, the `throws` of an
+asynchronous function, for the tests that expect a compile to fail.
 `MockHost` and `PlainHost` (`test-utils.zena`) return their in-memory
 sources from `async` methods.
 
@@ -276,15 +304,24 @@ out. Fixed in elematic/zena#905.
 
 ## Verification
 
-- `npm test`, which includes the stage B and stage C comparison.
-- The same inputs compiled by a compiler built before the change and
-  one built after it produce identical bytes (`ZENA_COMPILER_WASM`,
-  `packages/zena-compiler/CONTEXT.md`, "Debugging the compiler").
-- The `load` line of `--time` before and after, for the compile
-  measured above.
-- The size of `lsp.wasm` before and after. The `js` target is the
-  size-sensitive one, and this change links the future machinery and
-  `zena:js`'s promise support into it.
+- `npm test` passes, the stage B and stage C comparison included.
+- A compiler built from the branch's base and one built from the
+  branch, each compiling the same inputs through `ZENA_COMPILER_WASM`
+  (`packages/zena-compiler/CONTEXT.md`, "Debugging the compiler"),
+  emit identical bytes: two small programs with an async `main`, the
+  compiler's `cli/main.zena` (2.2 MB), zenadoc's `main.zena` (1.0 MB)
+  and the `zena` command's `main.zena` (3.0 MB). The baseline has to be
+  the merge base: a first comparison against a later `main` differed
+  by a permutation of two canon imports, which a commit on `main` to
+  the component adapters accounted for.
+- The `load` line of `--time` is unchanged in kind: the compiler's own
+  `cli/main.zena` reads its 222 files in 0.31 s through the
+  asynchronous reads, where the measurement above read 367 files in
+  0.34 s through `blockOn`.
+- `lsp.wasm` grew from 2.36 MB to 2.46 MB. That figure compares against
+  an older `main`, so other commits are in it; the `zena:js` promise
+  support and the futures in the compiler are the part this change
+  adds.
 
 ## Later work
 

@@ -18,11 +18,11 @@ import { checkCompilation } from '../lib/compiler.zena';
 import { TypeInterner } from '../lib/types.zena';
 
 /** The checked program for `source`. */
-function programOf(source: String): Program {
+async function programOf(source: String): Future<Program> {
   let host = new MockHost();
   host.addFile("test.zena", source);
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -51,11 +51,11 @@ function programOf(source: String): Program {
  * disk, every unit included, with the checker's interner: what `hash`
  * on a class needs (it reaches the `String` helpers).
  */
-function stdlibProgramOf(source: String): (Program, TypeInterner) {
+async function stdlibProgramOf(source: String): Future<(Program, TypeInterner)> {
   let host = new PlainHost();
   host.addFile("test.zena", source);
   let compiler = makeStdlibCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'freestanding'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -82,24 +82,24 @@ function stdlibProgramOf(source: String): (Program, TypeInterner) {
  * module equals the one compiled with templates off, and returns the
  * families the first compile used.
  */
-function compileBothWays(source: String): TemplateFamilies {
+async function compileBothWays(source: String): Future<TemplateFamilies> {
   let withTemplates = new WatGenerator("freestanding", false, 1);
   withTemplates.templateCheck = true;
-  let wat = withTemplates.generate(programOf(source));
+  let wat = withTemplates.generate(await programOf(source));
   let without = new WatGenerator("freestanding", false, 1);
   without.templates = false;
-  equal(wat, without.generate(programOf(source)));
+  equal(wat, without.generate(await programOf(source)));
   return withTemplates.templateFamilies as TemplateFamilies;
 }
 
 /** `compileBothWays` against the standard library. */
-function compileBothWaysWithStdlib(source: String): TemplateFamilies {
-  let (program, interner) = stdlibProgramOf(source);
+async function compileBothWaysWithStdlib(source: String): Future<TemplateFamilies> {
+  let (program, interner) = await stdlibProgramOf(source);
   let withTemplates = new WatGenerator("freestanding", false, 1);
   withTemplates.templateCheck = true;
   withTemplates.interner = interner;
   let wat = withTemplates.generate(program);
-  let (program2, interner2) = stdlibProgramOf(source);
+  let (program2, interner2) = await stdlibProgramOf(source);
   let without = new WatGenerator("freestanding", false, 1);
   without.templates = false;
   without.interner = interner2;
@@ -108,8 +108,8 @@ function compileBothWaysWithStdlib(source: String): TemplateFamilies {
 }
 
 export let tests = suite('template lowering', () => {
-  test('methods of a class specialized at four classes copy from one template', () => {
-    let families = compileBothWays(`
+  test('methods of a class specialized at four classes copy from one template', async () => {
+    let families = await compileBothWays(`
       class A { n: i32; new(this.n); }
       class B { n: i32; new(this.n); }
       class C { n: i32; new(this.n); }
@@ -143,11 +143,11 @@ export let tests = suite('template lowering', () => {
     isTrue(families.specialized >= 6);
   });
 
-  test('methods of an extension class specialized at four classes copy from one template', () => {
+  test('methods of an extension class specialized at four classes copy from one template', async () => {
     // `this` is an array whose element type is the type argument, so
     // each member's receiver is a different array type, learned like a
     // class's struct.
-    let families = compileBothWaysWithStdlib(`
+    let families = await compileBothWaysWithStdlib(`
       class A { n: i32; new(this.n); }
       class B { n: i32; new(this.n); }
       class C { n: i32; new(this.n); }
@@ -169,12 +169,12 @@ export let tests = suite('template lowering', () => {
     isTrue(families.specialized >= 4);
   });
 
-  test('constructors and their phases specialized at four classes copy from templates', () => {
+  test('constructors and their phases specialized at four classes copy from templates', async () => {
     // `Labeled<T>` extends `Box<T>`, so each `Box<X>` has a value phase
     // (`<ctor-init>`, returning its fields for `Labeled<X>` to allocate
     // with) beside its own constructor. A template for the value phase
     // has to be learned from value phases, not from constructors.
-    let families = compileBothWays(`
+    let families = await compileBothWays(`
       class A { n: i32; new(this.n); }
       class B { n: i32; new(this.n); }
       class C { n: i32; new(this.n); }
@@ -206,14 +206,14 @@ export let tests = suite('template lowering', () => {
     isTrue(families.specialized >= 6);
   });
 
-  test('a method overridden in one specialization is not copied into it', () => {
+  test('a method overridden in one specialization is not copied into it', async () => {
     // Base<A> has a subclass that overrides `weight`, so `this.weight()`
     // in Base<A>.score dispatches through the vtable; in Base<B>,
     // Base<C> and Base<D> it is a direct call. Whichever members the
     // template was learned from, Base<A>'s body must not be copied
     // from the others: the guard on `memberProvidedBySubclass` declines
     // it, or the two representatives disagree and there is no template.
-    let families = compileBothWays(`
+    let families = await compileBothWays(`
       class A { n: i32; new(this.n); }
       class B { n: i32; new(this.n); }
       class C { n: i32; new(this.n); }
@@ -242,12 +242,12 @@ export let tests = suite('template lowering', () => {
     isTrue(declined.contains('guard') || stopped.contains('differ'));
   });
 
-  test('a key class with its own hashCode and == is not copied into', () => {
+  test('a key class with its own hashCode and == is not copied into', async () => {
     // A, B and C inherit hashCode from Keyed and compare by identity,
     // so a template learned from two of them calls Keyed.hashCode and
     // compares with ref.eq. D declares both, and the guards on the
     // method's owner and on identity equality decline its copies.
-    let families = compileBothWaysWithStdlib(`
+    let families = await compileBothWaysWithStdlib(`
       @intrinsic('hash')
       declare function hash<T>(value: T): i32;
       @intrinsic('eq')

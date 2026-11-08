@@ -50,12 +50,12 @@ suite('language service API', () => {
     });
   });
 
-  test('accepts valid source', () => {
-    assert.deepStrictEqual(service.check(PATH, 'let _x = 42;'), []);
+  test('accepts valid source', async () => {
+    assert.deepStrictEqual(await service.check(PATH, 'let _x = 42;'), []);
   });
 
-  test('reports type errors with a position', () => {
-    const diagnostics = service.check(PATH, 'let x: i32 = "hello";');
+  test('reports type errors with a position', async () => {
+    const diagnostics = await service.check(PATH, 'let x: i32 = "hello";');
     const error = diagnostics.find((d) => d.severity === 'error');
     assert.ok(error, `expected an error in ${JSON.stringify(diagnostics)}`);
     assert.strictEqual(error.file, PATH);
@@ -65,8 +65,8 @@ suite('language service API', () => {
     assert.ok(diagnostics.some((d) => d.severity === 'warning'));
   });
 
-  test('reports exactly one error for an illegal union type alias', () => {
-    const diagnostics = service.check(PATH, 'type U = String | i32;\n');
+  test('reports exactly one error for an illegal union type alias', async () => {
+    const diagnostics = await service.check(PATH, 'type U = String | i32;\n');
     const errors = diagnostics.filter((d) => d.severity === 'error');
     assert.strictEqual(
       errors.length,
@@ -80,8 +80,8 @@ suite('language service API', () => {
     );
   });
 
-  test('reports errors for both earlier statements and illegal union aliases', () => {
-    const diagnostics = service.check(
+  test('reports errors for both earlier statements and illegal union aliases', async () => {
+    const diagnostics = await service.check(
       PATH,
       'let _x: i32 = "hello";\ntype U = String | i32;\n',
     );
@@ -100,8 +100,8 @@ suite('language service API', () => {
     );
   });
 
-  test('resolves stdlib imports through the stdlib root', () => {
-    const diagnostics = service.check(
+  test('resolves stdlib imports through the stdlib root', async () => {
+    const diagnostics = await service.check(
       PATH,
       `import {OrderedHashMap} from 'zena:collections';\nlet _m = new OrderedHashMap<String, i32>();\n`,
     );
@@ -112,8 +112,8 @@ suite('language service API', () => {
   // module it merely imports is still reported, with that module's `file`
   // and its line numbers — an embedder with one open document has nowhere
   // sensible to put it, so it lands on the wrong file's last line.
-  test('a program awaiting zena:time reports nothing, in any file', () => {
-    const diagnostics = service.check(
+  test('a program awaiting zena:time reports nothing, in any file', async () => {
+    const diagnostics = await service.check(
       PATH,
       `import {sleep, milliseconds} from 'zena:time';\n` +
         `export async function main() {\n` +
@@ -123,9 +123,13 @@ suite('language service API', () => {
     assert.deepStrictEqual(diagnostics, []);
   });
 
-  test('reports hover type information', () => {
+  test('reports hover type information', async () => {
     const source = 'let greeting = 42;\nlet other = greeting;\n';
-    const hover = service.hover(PATH, source.indexOf('greeting;') + 1, source);
+    const hover = await service.hover(
+      PATH,
+      source.indexOf('greeting;') + 1,
+      source,
+    );
     assert.ok(hover, 'expected hover info');
     assert.ok(
       `${hover.label}${hover.type}`.includes('i32'),
@@ -133,9 +137,9 @@ suite('language service API', () => {
     );
   });
 
-  test('proposes completions', () => {
+  test('proposes completions', async () => {
     const source = 'let s = "hello";\nlet _n = s.';
-    const items = service.completions(PATH, source.length, source);
+    const items = await service.completions(PATH, source.length, source);
     assert.ok(items.length > 0, 'expected completions');
     assert.ok(
       items.some((item) => item.label === 'startsWith'),
@@ -143,8 +147,8 @@ suite('language service API', () => {
     );
   });
 
-  test('returns a document outline', () => {
-    const symbols = service.documentSymbols(
+  test('returns a document outline', async () => {
+    const symbols = await service.documentSymbols(
       PATH,
       'class Point {\n  x: f64;\n  new(this.x);\n}\n',
     );
@@ -152,8 +156,8 @@ suite('language service API', () => {
     assert.strictEqual(symbols[0].name, 'Point');
   });
 
-  test('compiles to a WebAssembly binary', () => {
-    const bytes = service.compileToWasm(
+  test('compiles to a WebAssembly binary', async () => {
+    const bytes = await service.compileToWasm(
       PATH,
       'export let main = (): i32 => 42;\n',
     );
@@ -162,9 +166,9 @@ suite('language service API', () => {
     assert.deepStrictEqual([...bytes.slice(0, 4)], [0x00, 0x61, 0x73, 0x6d]);
   });
 
-  test('routes console output to the sink', () => {
+  test('routes console output to the sink', async () => {
     logs.length = 0;
-    const bytes = service.compileToWasm(
+    const bytes = await service.compileToWasm(
       PATH,
       `export let main = () => {\n  console.log('from zena');\n};\n`,
     );
@@ -188,13 +192,13 @@ export let main = () => {
 `;
     const docPath = 'main.zena';
     service.openDocument(docPath, source);
-    const diags = service.check(docPath, source);
+    const diags = await service.check(docPath, source);
     assert.strictEqual(
       diags.length,
       0,
       `Unexpected diagnostics: ${JSON.stringify(diags)}`,
     );
-    const bytes = service.compileToWasm(docPath, source);
+    const bytes = await service.compileToWasm(docPath, source);
     assert.ok(bytes, 'expected a binary');
     let programExports: WebAssembly.Exports | undefined;
     const output: string[] = [];
@@ -228,15 +232,15 @@ export let main = (): i32 => {
 `;
     const docPath = 'basic_mixin.zena';
     service.openDocument(docPath, source);
-    const diags = service
-      .check(docPath, source)
-      .filter((d) => d.severity === 'error');
+    const diags = (await service.check(docPath, source)).filter(
+      (d) => d.severity === 'error',
+    );
     assert.strictEqual(
       diags.length,
       0,
       `Unexpected diagnostics: ${JSON.stringify(diags)}`,
     );
-    const bytes = service.compileToWasm(docPath, source);
+    const bytes = await service.compileToWasm(docPath, source);
     assert.ok(bytes, 'expected a binary');
   });
 
@@ -265,15 +269,15 @@ export let main = () => {
 `;
     const docPath = 'dog_friendly.zena';
     service.openDocument(docPath, source);
-    const diags = service
-      .check(docPath, source)
-      .filter((d) => d.severity === 'error');
+    const diags = (await service.check(docPath, source)).filter(
+      (d) => d.severity === 'error',
+    );
     assert.strictEqual(
       diags.length,
       0,
       `Unexpected diagnostics: ${JSON.stringify(diags)}`,
     );
-    const bytes = service.compileToWasm(docPath, source);
+    const bytes = await service.compileToWasm(docPath, source);
     assert.ok(bytes, 'expected a binary');
   });
 
@@ -297,15 +301,15 @@ export let main = () => {
 `;
     const docPath = 'sealed_classes.zena';
     service.openDocument(docPath, source);
-    const diags = service
-      .check(docPath, source)
-      .filter((d) => d.severity === 'error');
+    const diags = (await service.check(docPath, source)).filter(
+      (d) => d.severity === 'error',
+    );
     assert.strictEqual(
       diags.length,
       0,
       `Unexpected diagnostics: ${JSON.stringify(diags)}`,
     );
-    const bytes = service.compileToWasm(docPath, source);
+    const bytes = await service.compileToWasm(docPath, source);
     assert.ok(bytes, 'expected a binary');
   });
 
@@ -332,15 +336,15 @@ export let main = () => {
 `;
     const docPath = 'pattern_matching.zena';
     service.openDocument(docPath, source);
-    const diags = service
-      .check(docPath, source)
-      .filter((d) => d.severity === 'error');
+    const diags = (await service.check(docPath, source)).filter(
+      (d) => d.severity === 'error',
+    );
     assert.strictEqual(
       diags.length,
       0,
       `Unexpected diagnostics: ${JSON.stringify(diags)}`,
     );
-    const bytes = service.compileToWasm(docPath, source);
+    const bytes = await service.compileToWasm(docPath, source);
     assert.ok(bytes, 'expected a binary');
   });
 
@@ -359,15 +363,15 @@ export let main = () => {
 `;
     service.openDocument('math.zena', mathSource);
     service.openDocument('main.zena', mainSource);
-    const diags = service
-      .check('main.zena', mainSource)
-      .filter((d) => d.severity === 'error');
+    const diags = (await service.check('main.zena', mainSource)).filter(
+      (d) => d.severity === 'error',
+    );
     assert.strictEqual(
       diags.length,
       0,
       `Unexpected diagnostics: ${JSON.stringify(diags)}`,
     );
-    const bytes = service.compileToWasm('main.zena', mainSource);
+    const bytes = await service.compileToWasm('main.zena', mainSource);
     assert.ok(bytes, 'expected a binary');
   });
 
@@ -383,13 +387,13 @@ export let main = () => {
 `;
     const docPath = 'regex_example.zena';
     service.openDocument(docPath, source);
-    const diags = service.check(docPath, source);
+    const diags = await service.check(docPath, source);
     assert.strictEqual(
       diags.length,
       0,
       `Unexpected diagnostics: ${JSON.stringify(diags)}`,
     );
-    const bytes = service.compileToWasm(docPath, source);
+    const bytes = await service.compileToWasm(docPath, source);
     assert.ok(bytes, 'expected a binary');
   });
 
@@ -411,38 +415,38 @@ export let main = () => {
 `;
     const docPath = 'interface_only.zena';
     service.openDocument(docPath, source);
-    const diags = service
-      .check(docPath, source)
-      .filter((d) => d.severity === 'error');
+    const diags = (await service.check(docPath, source)).filter(
+      (d) => d.severity === 'error',
+    );
     assert.strictEqual(
       diags.length,
       0,
       `Unexpected diagnostics: ${JSON.stringify(diags)}`,
     );
-    const bytes = service.compileToWasm(docPath, source);
+    const bytes = await service.compileToWasm(docPath, source);
     assert.ok(bytes, 'expected a binary');
   });
 
-  test('formats source', () => {
+  test('formats source', async () => {
     const formatted = service.format('let    x=1;');
     assert.ok(formatted.includes('let x = 1;'), formatted);
   });
 
-  test('an open document shadows the file reader until closed', () => {
+  test('an open document shadows the file reader until closed', async () => {
     const path = '/virtual/only.zena';
     virtualFiles.set(path, 'let x: i32 = "from disk";');
 
     service.openDocument(path, 'let _ok = 1;');
-    assert.deepStrictEqual(service.check(path), []);
+    assert.deepStrictEqual(await service.check(path), []);
 
     service.closeDocument(path);
     assert.ok(
-      service.check(path).some((d) => d.severity === 'error'),
+      (await service.check(path)).some((d) => d.severity === 'error'),
       'expected the reader’s copy to be checked once the document was closed',
     );
   });
 
-  test('closing an imported document invalidates cache and reports missing module error', () => {
+  test('closing an imported document invalidates cache and reports missing module error', async () => {
     const mathPath = '/test/math.zena';
     const mainPath = '/test/main_import.zena';
 
@@ -450,14 +454,14 @@ export let main = () => {
       mathPath,
       'export let add = (a: i32, b: i32): i32 => a + b;',
     );
-    const diagsBefore = service.check(
+    const diagsBefore = await service.check(
       mainPath,
       "import { add } from './math.zena';\nexport let main = () => add(1, 2);",
     );
     assert.deepStrictEqual(diagsBefore, []);
 
     service.closeDocument(mathPath);
-    const diagsAfter = service.check(
+    const diagsAfter = await service.check(
       mainPath,
       "import { add } from './math.zena';\nexport let main = () => add(1, 2);",
     );
@@ -471,7 +475,7 @@ export let main = () => {
       `Expected Library not found error on line 1, got: ${JSON.stringify(diagsAfter)}`,
     );
 
-    const bytes = service.compileToWasm(
+    const bytes = await service.compileToWasm(
       mainPath,
       "import { add } from './math.zena';\nexport let main = () => add(1, 2);",
     );

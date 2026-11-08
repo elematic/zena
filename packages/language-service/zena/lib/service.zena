@@ -38,6 +38,7 @@ import { NamedRule, proposeEdits, messageOf } from 'zena-lint:rule';
 import { allRules } from 'zena-lint:rules';
 import { Edit, applyEdits } from 'zena-lint:source';
 import { growable } from 'zena:core';
+import { Completer } from 'zena:async';
 
 export { Edit } from 'zena-lint:source';
 
@@ -102,6 +103,14 @@ function diagnosticFromError(message: String, source: String) {
  * Owns the compiler host, compiler instance, and cached analysis
  * results. The compiler's LibraryLoader caches parsed stdlib files
  * across calls so they aren't re-parsed on every keystroke.
+ *
+ * `check` and `checkProgram` compile, which awaits the host, and the
+ * compiler runs one compile at a time. A caller may ask again before the
+ * last answer is in — an editor on every keystroke — so the two queue:
+ * each waits for the one before it to settle, and the open-document map
+ * is updated only once its turn comes, so a compile in flight reads the
+ * documents it started with. The queries (`getDefinition`, `getHover`,
+ * `getCompletions`, `lint`) read the last check that finished.
  */
 export class LanguageService {
   #host: DocumentHost;
@@ -113,9 +122,35 @@ export class LanguageService {
   #scopes = new Map<String, ScopeResult>();
   /** The last compile of each document checked, by normalized path. */
   #compilations = new Map<String, CompilationResult>();
+  /** The last compile queued, which the next waits for; null when none is in flight. */
+  var #tail: Future<void> | null = null;
 
   new(host: DocumentHost, compiler: Compiler, targetName: String)
     : #host = host, #compiler = compiler, #targetName = targetName;
+
+  /**
+   * Takes this call's turn: waits for the compile before it, if any, and
+   * returns the completer the caller settles when it is done, so the
+   * next call can take its turn. The completer is always settled, so the
+   * wait never fails.
+   */
+  async #takeTurn(): Future<Completer<void>> {
+    let previous = this.#tail;
+    let done = new Completer<void>();
+    this.#tail = done.future;
+    if (previous != null) {
+      await previous;
+    }
+    return done;
+  }
+
+  /** Releases the turn `#takeTurn` gave, so the next queued call runs. */
+  #endTurn(done: Completer<void>): void {
+    if (this.#tail == done.future) {
+      this.#tail = null;
+    }
+    done.complete();
+  }
 
   targetName: String {
     get { return this.#targetName; }
@@ -127,8 +162,8 @@ export class LanguageService {
   }
 
   /** Compile `entry` on this service's target. */
-  #compile(entry: String): CompilationResult {
-    return this.#compiler.compile({entry, target: this.#targetName});
+  async #compile(entry: String): Future<CompilationResult> {
+    return await this.#compiler.compile({entry, target: this.#targetName});
   }
 
   preloadStdlib(): void {
@@ -168,11 +203,11 @@ export class LanguageService {
    * importing this file sees the editor's version, then compiles
    * starting from `path` as the root of the dependency tree.
    */
-  check(path: String, source: String): Array<Diagnostic> {
-    this.openDocument(path, source);
-
-    let diagnostics = try {
-      let result = this.#compile(path);
+  async check(path: String, source: String): Future<Array<Diagnostic>> {
+    let turn = await this.#takeTurn();
+    try {
+      this.openDocument(path, source);
+      let result = await this.#compile(path);
 
       // Scopes for every file the compile reached, so that definition
       // and hover work in a dependency the editor navigates into.
@@ -200,60 +235,65 @@ export class LanguageService {
       for (let diagnostic in checked.diagnostics) {
         diagnostics.push(diagnostic);
       }
-      diagnostics
+      return diagnostics;
     } catch (e) {
-      let diagnostics = growable<Diagnostic>([
+      return growable<Diagnostic>([
         diagnosticFromError(e.message, source),
       ]);
-      diagnostics
-    };
-    return diagnostics;
+    } finally {
+      this.#endTurn(turn);
+    }
   }
 
   /**
    * A document checked for running: the program to generate code from,
    * or null when it has errors. `compile.zena` generates the code.
    */
-  checkProgram(path: String, source: String): Program | null {
-    this.#host.setDocument(path, source);
-    this.#compiler.invalidate(path);
-    let compiled = this.#compile(path);
+  async checkProgram(path: String, source: String): Future<Program | null> {
+    let turn = await this.#takeTurn();
+    try {
+      this.#host.setDocument(path, source);
+      await this.#compiler.invalidate(path);
+      let compiled = await this.#compile(path);
 
-    // A recovered AST holds stand-ins where the user has not finished
-    // typing, so it must not reach codegen. Check here rather than
-    // below: parse errors are not in the checker's diagnostics, so the
-    // error scan that follows would report none.
-    for (let file in compiled.files) {
-      if (file.completeness != ParseCompleteness.Complete) {
-        return null;
-      }
-    }
-
-    let checked = checkCompilation(compiled, this.#checked);
-    this.#checked = checked;
-    for (let diagnostic in checked.diagnostics) {
-      if (diagnostic.severity == DiagnosticSeverity.Error) {
-        return null;
-      }
-    }
-
-    let units = new Array<CompilationUnit>();
-    var entryUnit: CompilationUnit | null = null;
-    for (let file in compiled.files) {
-      if (let (true, res) = checked.results.get(file.path)) {
-        let unit = {ast: file.ast, model: res.model};
-        units.push(unit);
-        if (file.path == compiled.entry.path || file.ast.path == compiled.entry.ast.path) {
-          entryUnit = unit;
+      // A recovered AST holds stand-ins where the user has not finished
+      // typing, so it must not reach codegen. Check here rather than
+      // below: parse errors are not in the checker's diagnostics, so the
+      // error scan that follows would report none.
+      for (let file in compiled.files) {
+        if (file.completeness != ParseCompleteness.Complete) {
+          return null;
         }
-      } else {
-        console.error(`File not in checkResult: ${file.path}`);
       }
+
+      let checked = checkCompilation(compiled, this.#checked);
+      this.#checked = checked;
+      for (let diagnostic in checked.diagnostics) {
+        if (diagnostic.severity == DiagnosticSeverity.Error) {
+          return null;
+        }
+      }
+
+      let units = new Array<CompilationUnit>();
+      var entryUnit: CompilationUnit | null = null;
+      for (let file in compiled.files) {
+        if (let (true, res) = checked.results.get(file.path)) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.path == compiled.entry.path || file.ast.path == compiled.entry.ast.path) {
+            entryUnit = unit;
+          }
+        } else {
+          console.error(`File not in checkResult: ${file.path}`);
+        }
+      }
+      if (entryUnit == null && units.length > 0) {
+        entryUnit = units[units.length - 1];
+      }
+      return new Program(units, entryUnit);
+    } finally {
+      this.#endTurn(turn);
     }
-    if (entryUnit == null && units.length > 0) {
-      entryUnit = units[units.length - 1];
-    }
-    return new Program(units, entryUnit);
   }
 
   /**

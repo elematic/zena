@@ -2871,11 +2871,11 @@ function witRootOf(canonicalPath: String) {
 var memoWasiDir = "";
 var memoWasiWit = "";
 
-function readWasiWit(host: CompilerHost, witDir: String) {
+async function readWasiWit(host: CompilerHost, witDir: String): Future<String> {
   if (memoWasiDir == witDir && memoWasiWit != "") {
     return memoWasiWit;
   }
-  let source = readWitSource(host, witDir);
+  let source = await readWitSource(host, witDir);
   memoWasiDir = witDir;
   memoWasiWit = source;
   return source;
@@ -2889,8 +2889,8 @@ function readWasiWit(host: CompilerHost, witDir: String) {
  * is a root too, and its worlds import `wasi:cli` by name, which the
  * parser resolves.
  */
-export function synthesizeWitModule(host: CompilerHost, canonicalPath: String,
-    packagesWit: String = ""): String {
+export async function synthesizeWitModule(host: CompilerHost, canonicalPath: String,
+    packagesWit: String = ""): Future<String> {
   let spec = canonicalPath.sliceBytes(witRootEnd(canonicalPath) + 1,
       canonicalPath.length);
   var colon = -1;
@@ -2910,7 +2910,7 @@ export function synthesizeWitModule(host: CompilerHost, canonicalPath: String,
       let prefix = if (root == "host-wit") "" else root.sliceBytes(0, root.length - 8);
       let witDir = if (prefix == "") "wit" else prefix + "wit";
       try {
-        let wasiWit = readWasiWit(host, witDir);
+        let wasiWit = await readWasiWit(host, witDir);
         allPackages = if (allPackages == "") wasiWit else `${allPackages}\n${wasiWit}`;
       } catch (e) {
         // Leave allPackages as is if wit directory cannot be read
@@ -2919,8 +2919,10 @@ export function synthesizeWitModule(host: CompilerHost, canonicalPath: String,
   }
 
   // The splice appends, so the spans the type text is read from hold.
+  // Every read is above this line: what follows writes the module-level
+  // state the synthesis reads, and runs without suspending.
   let witSource = withWasiPackages(
-      readWitSource(host, root), allPackages);
+      await readWitSource(host, root), allPackages);
   reinterpretUsed = false;
   currentWitSource = witSource;
   let ast = parsedWit(witSource);

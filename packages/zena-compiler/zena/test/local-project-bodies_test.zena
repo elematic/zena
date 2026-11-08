@@ -30,20 +30,20 @@ function depPackage(): Map<String, PackageConfig> {
 
 export let tests = suite('Local project bodies', () => {
 
-  test('an unreached body in a relative import is checked', () => {
+  test('an unreached body in a relative import is checked', async () => {
     let host = new MockHost();
     host.addFile("/project/helper.zena", badBody);
     host.addFile("/project/main.zena",
         "import { unused } from './helper.zena';\nexport let main = (): i32 => 0;\n");
     let compiler = makeCompiler(host);
-    let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
+    let checked = checkCompilation(await compiler.compile({entry: "/project/main.zena", target: 'js'}));
     let errors = errorDiagnostics(checked.diagnostics);
     equal(errors.length, 1);
     let span = errors[0].location as SourceSpan;
     equal(span.file, "/project/helper.zena");
   });
 
-  test('a relative import two hops out is still local', () => {
+  test('a relative import two hops out is still local', async () => {
     let host = new MockHost();
     host.addFile("/project/deep.zena", badBody);
     host.addFile("/project/helper.zena",
@@ -51,31 +51,31 @@ export let tests = suite('Local project bodies', () => {
     host.addFile("/project/main.zena",
         "import { helper } from './helper.zena';\nexport let main = (): i32 => helper();\n");
     let compiler = makeCompiler(host);
-    let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
+    let checked = checkCompilation(await compiler.compile({entry: "/project/main.zena", target: 'js'}));
     let errors = errorDiagnostics(checked.diagnostics);
     equal(errors.length, 1);
     let span = errors[0].location as SourceSpan;
     equal(span.file, "/project/deep.zena");
   });
 
-  test('an unreached body in a package dependency is not checked', () => {
+  test('an unreached body in a package dependency is not checked', async () => {
     let host = new MockHost();
     host.addFile("/dep/mod.zena", badBody + "export let used = (): i32 => 2;\n");
     host.addFile("/project/main.zena",
         "import { used } from 'dep:mod';\nexport let main = (): i32 => used();\n");
     let compiler = makeCompiler(host, depPackage());
-    let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
+    let checked = checkCompilation(await compiler.compile({entry: "/project/main.zena", target: 'js'}));
     equal(errorDiagnostics(checked.diagnostics).length, 0);
   });
 
-  test('ZENA_CHECK_ALL_BODIES checks a package dependency too', () => {
+  test('ZENA_CHECK_ALL_BODIES checks a package dependency too', async () => {
     let host = new MockHost();
     host.addFile("/dep/mod.zena", badBody + "export let used = (): i32 => 2;\n");
     host.addFile("/project/main.zena",
         "import { used } from 'dep:mod';\nexport let main = (): i32 => used();\n");
     let compiler = makeCompiler(host, depPackage());
     setCheckAllBodies(true);
-    let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
+    let checked = checkCompilation(await compiler.compile({entry: "/project/main.zena", target: 'js'}));
     setCheckAllBodies(false);
     let errors = errorDiagnostics(checked.diagnostics);
     equal(errors.length, 1);
@@ -83,7 +83,7 @@ export let tests = suite('Local project bodies', () => {
     equal(span.file, "/dep/mod.zena");
   });
 
-  test('a reached dependency function still type-checks its caller', () => {
+  test('a reached dependency function still type-checks its caller', async () => {
     // The signature is registered whether or not the body is checked,
     // so a caller that gets the arguments wrong is still wrong.
     let host = new MockHost();
@@ -91,14 +91,14 @@ export let tests = suite('Local project bodies', () => {
     host.addFile("/project/main.zena",
         "import { twice } from 'dep:mod';\nexport let main = (): i32 => twice(true);\n");
     let compiler = makeCompiler(host, depPackage());
-    let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
+    let checked = checkCompilation(await compiler.compile({entry: "/project/main.zena", target: 'js'}));
     let errors = errorDiagnostics(checked.diagnostics);
     equal(errors.length, 1);
     let span = errors[0].location as SourceSpan;
     equal(span.file, "/project/main.zena");
   });
 
-  test('a dependency function with an inferred return type has a signature', () => {
+  test('a dependency function with an inferred return type has a signature', async () => {
     // Nothing annotates the return, so the signature cannot come from
     // annotations: the first reference checks the body to get it.
     let host = new MockHost();
@@ -106,11 +106,11 @@ export let tests = suite('Local project bodies', () => {
     host.addFile("/project/main.zena",
         "import { twice } from 'dep:mod';\nexport let main = (): i32 => twice(21);\n");
     let compiler = makeCompiler(host, depPackage());
-    let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
+    let checked = checkCompilation(await compiler.compile({entry: "/project/main.zena", target: 'js'}));
     equal(errorDiagnostics(checked.diagnostics).length, 0);
   });
 
-  test('a dependency method default naming a module-level let is checked even when bodies are deferred', () => {
+  test('a dependency method default naming a module-level let is checked even when bodies are deferred', async () => {
     let host = new MockHost();
     host.addFile("/dep/mod.zena",
         badBody +
@@ -127,7 +127,7 @@ export let tests = suite('Local project bodies', () => {
         "import { DepClient } from 'dep:mod';\n" +
         "export let main = (): i32 => new DepClient().offset(5);\n");
     let compiler = makeCompiler(host, depPackage());
-    let checked = checkCompilation(compiler.compile({entry: "/project/main.zena", target: 'js'}));
+    let checked = checkCompilation(await compiler.compile({entry: "/project/main.zena", target: 'js'}));
     // `badBody` was deferred and never reached, while `offset`'s default
     // resolved `BASE` and `badDefault`'s default was still type-checked.
     let errors = errorDiagnostics(checked.diagnostics);

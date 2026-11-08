@@ -29,22 +29,33 @@ import {
   createLanguageService,
 } from './lib/service.zena';
 import { compileToWasm as compileDocument } from './lib/compile.zena';
+import { pending, toPromise } from 'zena:js';
 
 // ============================================================================
 // Host imports
 // ============================================================================
 
 /**
- * Read a file from the host filesystem by absolute path.
- * The JS side provides this import at instantiation time.
+ * Read a file from the host filesystem by absolute path. The JS side
+ * provides this import at instantiation time, as a host-async import
+ * (`asyncImports` in `@zena-lang/runtime`): it completes `handle` with
+ * the file's text, or fails it when there is no such file.
  */
 @external("compiler", "read_file")
-declare function __read_file(path: String, len: i32): String | null;
+declare function __read_file(handle: i32, path: String, len: i32): void;
 
-
-/** Reads a file through the JS host's `read_file` import. */
-function readHostFile(path: String) {
-  return __read_file(path, path.length);
+/**
+ * Reads a file through the JS host's `read_file` import; null when
+ * there is no such file.
+ */
+async function readHostFile(path: String): Future<String | null> {
+  let p = pending<String>();
+  __read_file(p.handle, path, path.length);
+  try {
+    return await p.future;
+  } catch (e) {
+    return null;
+  }
 }
 
 // ============================================================================
@@ -55,16 +66,30 @@ function readHostFile(path: String) {
 var __ls: LanguageService | null = null;
 
 /**
- * Initialize the language service with the path to the stdlib sources.
- * Must be called once before check().
+ * The exports that compile, or read files, await the service, and a
+ * Wasm export cannot return a `Future` the host could use. Each returns
+ * a JavaScript promise instead, which `toPromise` settles as the future
+ * does: with the handle the synchronous export used to return, or a
+ * rejection carrying the failure's message.
  */
-export function init(stdlibRoot: String): void {
+
+/**
+ * Initialize the language service with the path to the stdlib sources.
+ * Must be called once before check(); the promise settles when the
+ * service is ready.
+ */
+export function init(stdlibRoot: String): anyref {
+  return toPromise(initService(stdlibRoot));
+}
+
+async function initService(stdlibRoot: String): Future<void> {
   // The workspace's packages, when the host can read its manifests from
   // the working directory, so that imports like `wit-parser:wit` resolve
   // the way they do for `zena build`. Without them a library of a
   // package in this repository reports every such import missing.
-  let packageMap: Map<String, PackageConfig> | null = if (readHostFile("zena-package.json") != null) {
-    loadWorkspace(new DocumentHost(stdlibRoot, readHostFile), ".")
+  let manifest = await readHostFile("zena-package.json");
+  let packageMap: Map<String, PackageConfig> | null = if (manifest != null) {
+    await loadWorkspace(new DocumentHost(stdlibRoot, readHostFile), ".")
   } else {
     null
   };
@@ -72,10 +97,11 @@ export function init(stdlibRoot: String): void {
 }
 
 /**
- * Check a source file. See LanguageService.check().
+ * Check a source file. See LanguageService.check(). The promise resolves
+ * with the diagnostics' handle.
  */
-export function check(path: String, source: String): Array<Diagnostic> {
-  return (__ls as LanguageService).check(path, source);
+export function check(path: String, source: String): anyref {
+  return toPromise((__ls as LanguageService).check(path, source));
 }
 
 /**
@@ -406,10 +432,11 @@ export function getLintShared(findings: Array<Edit>, index: i32): boolean {
 }
 
 /**
- * Compile source to WebAssembly binary (ByteArray).
+ * Compile source to WebAssembly binary (ByteArray). The promise resolves
+ * with the bytes' handle, or null when the source does not compile.
  */
-export function compileToWasm(path: String, source: String): ByteArray | null {
-  return compileDocument(__ls as LanguageService, path, source);
+export function compileToWasm(path: String, source: String): anyref {
+  return toPromise(compileDocument(__ls as LanguageService, path, source));
 }
 
 /**

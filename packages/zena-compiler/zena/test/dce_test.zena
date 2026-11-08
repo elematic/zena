@@ -7,7 +7,7 @@ import { MockHost } from './test-utils.zena';
 import { checkCompilation, createCompiler } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 
-function compileToBinary(source: String) {
+async function compileToBinary(source: String) {
   let host = new MockHost();
   host.addFile("zena:core/string.zena", "export enum Encoding { WTF8, WTF16 } export class ByteArray {} export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
   host.addFile("zena:core/array.zena", "export class Array {} export class FixedArray<T> {} export class GrowableArray<T> {}");
@@ -21,7 +21,7 @@ function compileToBinary(source: String) {
   let packages = new Map<String, PackageConfig>();
   let compiler = createCompiler(host, {stdlibRoot: "/stdlib", packages});
 
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
   
   let entryAst = compResult.entry.ast;
@@ -45,12 +45,12 @@ function compileToBinary(source: String) {
 }
 
 export let tests = suite('Dead Code Elimination', () => {
-  test('binary is smaller when unused functions are eliminated', (ctx) => {
+  test('binary is smaller when unused functions are eliminated', async (ctx) => {
     let source1 = 'export let main = (): i32 => { return 42; };';
-    let binary1 = compileToBinary(source1);
+    let binary1 = await compileToBinary(source1);
 
     let source2 = 'export let main = (): i32 => { return 42; }; let unused = (): i32 => { return 100; };';
-    let binary2 = compileToBinary(source2);
+    let binary2 = await compileToBinary(source2);
 
     isTrue(binary1.length == binary2.length);
   });

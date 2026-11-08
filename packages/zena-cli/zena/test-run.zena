@@ -236,21 +236,21 @@ function compileAhead(files: Array<String>, options: Options) {
  * `zena test --compile <files...>`: compile the files into the cache on
  * one compiler, and run none.
  */
-function compileOnly(args: ParsedArgs, options: Options): i32 {
+async function compileOnly(args: ParsedArgs, options: Options): Future<i32> {
   let requests = new GrowableArray<CompileRequest>();
   for (let path in args.rest) {
     requests.push(testRequest(path));
   }
-  compileIntoCache(requests, options);
+  await compileIntoCache(requests, options);
   return 0;
 }
 
-export function testCommand(args: ParsedArgs, options: Options): i32 {
+export async function testCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (args.getFlag('single')) {
-    return runSingle(args, options);
+    return await runSingle(args, options);
   }
   if (args.getFlag('compile')) {
-    return compileOnly(args, options);
+    return await compileOnly(args, options);
   }
   if (args.rest.length == 0) {
     console.error('Error: test needs a file, directory or glob');
@@ -318,7 +318,7 @@ function echo(text: String, toError: boolean) {
  * processes: repository tests are trusted code. `ZENA_REPO_ROOT` gives
  * it the repository's path on the host, for the processes it starts.
  */
-function runSingle(args: ParsedArgs, options: Options): i32 {
+async function runSingle(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length != 1) {
     console.error('Error: test --single takes exactly one file');
     return 2;
@@ -327,7 +327,7 @@ function runSingle(args: ParsedArgs, options: Options): i32 {
   let request = testRequest(file);
   var module: AbsolutePath | null = null;
   try {
-    module = compileCached(request, options);
+    module = await compileCached(request, options);
   } catch (e) {
     console.error(e.message);
     return 1;

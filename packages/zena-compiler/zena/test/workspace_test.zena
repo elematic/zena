@@ -57,21 +57,21 @@ function workspace(): MockHost {
 }
 
 /** The errors from compiling `entry` in the workspace `host` holds. */
-function compileErrors(host: MockHost, entry: String): Array<Diagnostic> {
-  let packages = loadWorkspace(host, "/ws", null, "/cache");
+async function compileErrors(host: MockHost, entry: String): Future<Array<Diagnostic>> {
+  let packages = await loadWorkspace(host, "/ws", null, "/cache");
   let compiler = makeCompiler(host, packages);
-  return errorDiagnostics(checkCompilation(compiler.compile({entry, target: 'js'})).diagnostics);
+  return errorDiagnostics(checkCompilation(await compiler.compile({entry, target: 'js'})).diagnostics);
 }
 
 /**
  * Whether compiling `entry` fails with a message that mentions `name`, as
  * a diagnostic or as the error a name that resolves to nothing throws.
  */
-function failsNaming(host: MockHost, entry: String, name: String): boolean {
-  let packages = loadWorkspace(host, "/ws", null, "/cache");
+async function failsNaming(host: MockHost, entry: String, name: String): Future<boolean> {
+  let packages = await loadWorkspace(host, "/ws", null, "/cache");
   let compiler = makeCompiler(host, packages);
   try {
-    let errors = errorDiagnostics(checkCompilation(compiler.compile({entry, target: 'js'})).diagnostics);
+    let errors = errorDiagnostics(checkCompilation(await compiler.compile({entry, target: 'js'})).diagnostics);
     for (let error in errors) {
       if (error.message.contains(name)) {
         return true;
@@ -85,22 +85,22 @@ function failsNaming(host: MockHost, entry: String, name: String): boolean {
 
 export let tests = suite('Workspace', () => {
 
-  test('compiles with workspace and published packages, each under its own names', () => {
-    equal(compileErrors(workspace(), "/ws/prog.zena").length, 0);
+  test('compiles with workspace and published packages, each under its own names', async () => {
+    equal((await compileErrors(workspace(), "/ws/prog.zena")).length, 0);
   });
 
-  test("a workspace package does not see another package's names", () => {
+  test("a workspace package does not see another package's names", async () => {
     let host = workspace();
     // `router` is app's name for the package, not lib's.
     host.addFile("/ws/packages/lib/lib.zena",
         "import { route } from 'router:match';\nexport let two = (): i32 => route() - 38;\n");
-    isTrue(failsNaming(host, "/ws/prog.zena", "router"));
+    isTrue(await failsNaming(host, "/ws/prog.zena", "router"));
   });
 
-  test("a dependency's dependency is not the workspace's to import", () => {
+  test("a dependency's dependency is not the workspace's to import", async () => {
     let host = workspace();
     host.addFile("/ws/direct.zena",
         "import { parse } from 'json:parse';\nexport let run = (): i32 => parse() - 41;\n");
-    isTrue(failsNaming(host, "/ws/direct.zena", "json"));
+    isTrue(await failsNaming(host, "/ws/direct.zena", "json"));
   });
 });

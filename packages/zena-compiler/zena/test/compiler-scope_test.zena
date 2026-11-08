@@ -15,11 +15,11 @@ export let tests = suite('Compiler Scope Integration', () => {
 
   suite('scope analysis runs on compile', () => {
 
-    test('single file gets scope result', () => {
+    test('single file gets scope result', async () => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "let x = 1;");
       let compiler = makeCompiler(host);
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       // The entry library should have a scope result.
       isTrue(result.entry.scopeResult != null);
@@ -27,12 +27,12 @@ export let tests = suite('Compiler Scope Integration', () => {
       isTrue(scope.rootScope.resolve("x") != null);
     });
 
-    test('all libraries in graph get scope results', () => {
+    test('all libraries in graph get scope results', async () => {
       let host = new MockHost();
       host.addFile("/project/math.zena", "export let add = (a: i32, b: i32): i32 => a + b;");
       host.addFile("/project/main.zena", "import { add } from './math.zena'; let result = add(1, 2);");
       let compiler = makeCompiler(host);
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       // All source files should have scope results.
       var i = 0;
@@ -42,12 +42,12 @@ export let tests = suite('Compiler Scope Integration', () => {
       }
     });
 
-    test('exported values visible in dependency exports', () => {
+    test('exported values visible in dependency exports', async () => {
       let host = new MockHost();
       host.addFile("/project/util.zena", "export let helper = 42;");
       host.addFile("/project/main.zena", "import { helper } from './util.zena'; let x = helper;");
       let compiler = makeCompiler(host);
-      compiler.compile({entry: "/project/main.zena", target: 'js'});
+      await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       // Check util.zena's exports.
       let utilLibMaybe = compiler.forTarget('js').getSourceFile("/project/util.zena");
@@ -60,12 +60,12 @@ export let tests = suite('Compiler Scope Integration', () => {
 
   suite('cross-module imports', () => {
 
-    test('valid import has no unresolved names', () => {
+    test('valid import has no unresolved names', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let greet = 'hello';");
       host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let x = greet;");
       let compiler = makeCompiler(host);
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       let mainScope = result.entry.scopeResult as ScopeResult;
       // 'greet' is imported and used — should not appear in unresolved.
@@ -74,12 +74,12 @@ export let tests = suite('Compiler Scope Integration', () => {
       equal(mainScope.unresolvedNames.length, 0);
     });
 
-    test('import of non-exported name is flagged', () => {
+    test('import of non-exported name is flagged', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "let secret = 42;");
       host.addFile("/project/main.zena", "import { secret } from './lib.zena'; let x = secret;");
       let compiler = makeCompiler(host);
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       let mainScope = result.entry.scopeResult as ScopeResult;
       // 'secret' is not exported from lib.zena — wire-up should add an unresolved entry.
@@ -87,12 +87,12 @@ export let tests = suite('Compiler Scope Integration', () => {
       equal(mainScope.unresolvedNames[0].name, "secret");
     });
 
-    test('exported class is validated as type and value', () => {
+    test('exported class is validated as type and value', async () => {
       let host = new MockHost();
       host.addFile("/project/point.zena", "export class Point { x: i32; }");
       host.addFile("/project/main.zena", "import { Point } from './point.zena'; let p = new Point();");
       let compiler = makeCompiler(host);
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       // Point should be exported as both type and value.
       let pointLibMaybe = compiler.forTarget('js').getSourceFile("/project/point.zena");
@@ -110,13 +110,13 @@ export let tests = suite('Compiler Scope Integration', () => {
 
   suite('dependency ordering', () => {
 
-    test('dependencies are processed before dependents', () => {
+    test('dependencies are processed before dependents', async () => {
       let host = new MockHost();
       host.addFile("/project/a.zena", "export let a = 1;");
       host.addFile("/project/b.zena", "import { a } from './a.zena'; export let b = a;");
       host.addFile("/project/main.zena", "import { b } from './b.zena'; let x = b;");
       let compiler = makeCompiler(host);
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       let userFiles = new Array<SourceFile>();
       for (let f in result.files) {
@@ -143,11 +143,11 @@ export let tests = suite('Compiler Scope Integration', () => {
 
   suite('stdlib imports', () => {
 
-    test('stdlib module gets scope result', () => {
+    test('stdlib module gets scope result', async () => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "import { Array } from 'zena:array'; let x = 1;");
       let compiler = makeCompiler(host);
-      compiler.compile({entry: "/project/main.zena", target: 'js'});
+      await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       // The stdlib array module should be loaded and scoped. getSourceFile
       // takes a canonical path, not a module name; zena:array's entry is
@@ -158,11 +158,11 @@ export let tests = suite('Compiler Scope Integration', () => {
       isTrue(arrayLib.scopeResult != null);
     });
 
-    test('stdlib exported class passes import validation', () => {
+    test('stdlib exported class passes import validation', async () => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "import { Array } from 'zena:array'; let x = Array;");
       let compiler = makeCompiler(host);
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       let mainScope = result.entry.scopeResult as ScopeResult;
       // Array is exported from the stub stdlib — should pass validation.
@@ -172,14 +172,14 @@ export let tests = suite('Compiler Scope Integration', () => {
 
   suite('scope result caching', () => {
 
-    test('dependency scope result is reused on recompile', () => {
+    test('dependency scope result is reused on recompile', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let helper = 42;");
       host.addFile("/project/main.zena", "import { helper } from './lib.zena'; let x = helper;");
       let compiler = makeCompiler(host);
 
       // First compile — builds scope results for all files.
-      compiler.compile({entry: "/project/main.zena", target: 'js', version: "v1"});
+      await compiler.compile({entry: "/project/main.zena", target: 'js', version: "v1"});
 
       // Grab the dependency's scope result.
       let libFile = compiler.forTarget('js').getSourceFile("/project/lib.zena") as SourceFile;
@@ -187,7 +187,7 @@ export let tests = suite('Compiler Scope Integration', () => {
 
       // Second compile — entry has a new version, but lib.zena is unchanged.
       host.addFile("/project/main.zena", "import { helper } from './lib.zena'; let y = helper;");
-      compiler.compile({entry: "/project/main.zena", target: 'js', version: "v2"});
+      await compiler.compile({entry: "/project/main.zena", target: 'js', version: "v2"});
 
       // lib.zena's scope result should be the same object (cached).
       let libFile2 = compiler.forTarget('js').getSourceFile("/project/lib.zena") as SourceFile;
@@ -195,18 +195,18 @@ export let tests = suite('Compiler Scope Integration', () => {
       equal(scopeBefore.rootScope, scopeAfter.rootScope);
     });
 
-    test('entry scope result is rebuilt on recompile', () => {
+    test('entry scope result is rebuilt on recompile', async () => {
       let host = new MockHost();
       host.addFile("/project/main.zena", "let x = 1;");
       let compiler = makeCompiler(host);
 
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js', version: "v1"});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js', version: "v1"});
       let scope1 = result1.entry.scopeResult as ScopeResult;
       isTrue(scope1.rootScope.resolve("x") != null);
 
       // Change the entry file.
       host.addFile("/project/main.zena", "let y = 2;");
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js', version: "v2"});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js', version: "v2"});
       let scope2 = result2.entry.scopeResult as ScopeResult;
 
       // New scope should have 'y', not 'x'.
@@ -214,20 +214,20 @@ export let tests = suite('Compiler Scope Integration', () => {
       isTrue(scope2.rootScope.resolve("x") == null);
     });
 
-    test('cross-module imports resolve correctly after cached recompile', () => {
+    test('cross-module imports resolve correctly after cached recompile', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let greet = 'hello';");
       host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let a = greet;");
       let compiler = makeCompiler(host);
 
       // First compile.
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js', version: "v1"});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js', version: "v1"});
       let scope1 = result1.entry.scopeResult as ScopeResult;
       equal(scope1.unresolvedNames.length, 0);
 
       // Second compile with changed entry — lib.zena cached.
       host.addFile("/project/main.zena", "import { greet } from './lib.zena'; let b = greet;");
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js', version: "v2"});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js', version: "v2"});
       let scope2 = result2.entry.scopeResult as ScopeResult;
 
       // Imports should still resolve correctly against cached dependency.
@@ -241,7 +241,7 @@ export let tests = suite('Compiler Scope Integration', () => {
 
     // elematic/zena#594: a library file that spells a prelude name
     // without importing it resolves the name like any other module.
-    test('a library file using a prelude name without importing it resolves it', () => {
+    test('a library file using a prelude name without importing it resolves it', async () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
       // `helper` spells a prelude name without importing it, exactly as
@@ -254,7 +254,7 @@ export let tests = suite('Compiler Scope Integration', () => {
           "import { widen } from './helper.zena'; export class String {}");
       host.addFile("/project/main.zena", "let x = 1;");
 
-      compiler.compile({entry: "/project/main.zena", target: 'js'});
+      await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       let helperMaybe = compiler.forTarget('js').getSourceFile("zena:core/helper.zena");
       isTrue(helperMaybe != null);
@@ -267,7 +267,7 @@ export let tests = suite('Compiler Scope Integration', () => {
     // name used without an import becomes one, and it names the module
     // that declares the name — here behind a re-export — which is also
     // what the module now depends on.
-    test('a prelude name used without an import is imported from its declaring module', () => {
+    test('a prelude name used without an import is imported from its declaring module', async () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
       host.addFile("zena:core/string-impl.zena", "export class String {}");
@@ -277,7 +277,7 @@ export let tests = suite('Compiler Scope Integration', () => {
           "export { String } from './string-impl.zena';");
       host.addFile("/project/main.zena", "let s: String = 'hi';");
 
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       let main = result.entry;
       let mainScope = main.scopeResult as ScopeResult;
@@ -295,7 +295,7 @@ export let tests = suite('Compiler Scope Integration', () => {
     // writing a prelude import out is redundant inside the library as
     // much as outside it (elematic/zena#594 withheld the warning there,
     // when the explicit import was the only edge).
-    test('a prelude import inside the library is called unnecessary', () => {
+    test('a prelude import inside the library is called unnecessary', async () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
       host.addFile("zena:core/helper.zena",
@@ -306,20 +306,20 @@ export let tests = suite('Compiler Scope Integration', () => {
           "import { each } from './helper.zena'; export class String {}");
       host.addFile("/project/main.zena", "let x = 1;");
 
-      compiler.compile({entry: "/project/main.zena", target: 'js'});
+      await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       let helper = compiler.forTarget('js').getSourceFile("zena:core/helper.zena") as SourceFile;
       let helperScope = helper.scopeResult as ScopeResult;
       equal(helperScope.unnecessaryImports.length, 1);
     });
 
-    test('a prelude import in user code is called unnecessary', () => {
+    test('a prelude import in user code is called unnecessary', async () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
       host.addFile("/project/main.zena",
           "import { Future } from 'zena:async'; export let each = (f: Future<i32>): void => {};");
 
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
 
       let mainScope = result.entry.scopeResult as ScopeResult;
       equal(mainScope.unnecessaryImports.length, 1);

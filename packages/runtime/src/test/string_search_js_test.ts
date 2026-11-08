@@ -11,7 +11,7 @@ import {instantiate} from '../index.js';
 import {compile} from './compile-zena.js';
 
 const exportsOf = async (source: string) => {
-  const wasm = compile(source, 'js');
+  const wasm = await compile(source, 'js');
   const res = await instantiate(wasm);
   const instance = res instanceof WebAssembly.Instance ? res : res.instance;
   return {wasm, exports: instance.exports as Record<string, Function>};

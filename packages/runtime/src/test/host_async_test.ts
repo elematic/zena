@@ -41,7 +41,7 @@ interface AsyncImport {
  * test.
  */
 const hosted = async (source: string, imports: Record<string, AsyncImport>) => {
-  const wasm = compile(source);
+  const wasm = await compile(source);
   const result = await instantiate(wasm, {asyncImports: {test: imports}});
   const instance =
     (result as {instance?: WebAssembly.Instance}).instance ??
@@ -73,7 +73,7 @@ suite('Runtime - zena:js host-async', () => {
     // function, so what is under test is the registry's semantics:
     // exactly-once settlement, no unknown-handle fallback, and the
     // completer's specialized type as the payload tag.
-    const wasm = compile(`
+    const wasm = await compile(`
       import { Future } from 'zena:async';
       import { pending } from 'zena:js';
 
@@ -237,7 +237,7 @@ suite('Runtime - zena:js host-async', () => {
     // must receive the same object — the engine round-trips the
     // reference, nothing is copied and no id registry is involved.
     const box = {weight: 21};
-    const wasm = compile(`
+    const wasm = await compile(`
       import { Future } from 'zena:async';
       import { pending } from 'zena:js';
 

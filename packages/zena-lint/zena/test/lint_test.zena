@@ -31,7 +31,7 @@ function projectFor() {
 }
 
 /** Runs the named rules (all when empty) over `source`. */
-function lint(source: String, only: String = '') {
+async function lint(source: String, only: String = ''): Future<FileReport> {
   let project = projectFor();
   let rules = allRules();
   let chosen = if (only == '') {
@@ -47,12 +47,12 @@ function lint(source: String, only: String = '') {
   };
   let options = new LintOptions(chosen);
   options.fix = true;
-  return lintSource(project, VIRTUAL_PATH, source, options);
+  return await lintSource(project, VIRTUAL_PATH, source, options);
 }
 
 /** Checks that `source` becomes `expected`, with no rejected edits. */
-function check(t: TestContext, source: String, expected: String, only: String = '') {
-  let report = lint(source, only);
+async function check(t: TestContext, source: String, expected: String, only: String = ''): Future<void> {
+  let report = await lint(source, only);
   let failure = report.failure;
   if (failure != null) {
     throw new Error(`could not compile: ${failure}`);
@@ -72,8 +72,8 @@ function check(t: TestContext, source: String, expected: String, only: String = 
 }
 
 let tests = suite('lint', () => {
-  test('top-level arrows become function declarations', (t) => {
-    check(t, dedentRaw`
+  test('top-level arrows become function declarations', async (t) => {
+    await check(t, dedentRaw`
       let add = (a: i32, b: i32): i32 => a + b;
       export let run = (): i32 => {
         return add(1, 2);
@@ -88,8 +88,8 @@ let tests = suite('lint', () => {
     `);
   });
 
-  test('async and generic arrows keep their modifiers', (t) => {
-    check(t, dedentRaw`
+  test('async and generic arrows keep their modifiers', async (t) => {
+    await check(t, dedentRaw`
       let same = <T>(x: T): T => x;
       export let run = (): i32 => same(3);
     `, dedentRaw`
@@ -102,8 +102,8 @@ let tests = suite('lint', () => {
     `, 'function-declaration');
   });
 
-  test('a parenthesized body keeps its parentheses', (t) => {
-    check(t, dedentRaw`
+  test('a parenthesized body keeps its parentheses', async (t) => {
+    await check(t, dedentRaw`
       let both = (a: boolean, b: boolean, c: boolean): boolean =>
           (a || b) && c;
       let scaled = (a: i32, b: i32): i32 => {
@@ -125,18 +125,18 @@ let tests = suite('lint', () => {
     `);
   });
 
-  test('a top-level let with a function type annotation is left alone', (t) => {
+  test('a top-level let with a function type annotation is left alone', async (t) => {
     let source = dedentRaw`
       let f: (x: i32) => i32 = (x) => x + 1;
       export function run(): i32 {
         return f(1);
       }
     `;
-    check(t, source, source, 'function-declaration');
+    await check(t, source, source, 'function-declaration');
   });
 
-  test('unnecessary casts go, and their grouping parentheses', (t) => {
-    check(t, dedentRaw`
+  test('unnecessary casts go, and their grouping parentheses', async (t) => {
+    await check(t, dedentRaw`
       class Named {
         name: String;
         new(this.name);
@@ -159,18 +159,18 @@ let tests = suite('lint', () => {
     `, 'unnecessary-cast');
   });
 
-  test('a cast that types a literal stays', (t) => {
+  test('a cast that types a literal stays', async (t) => {
     let source = dedentRaw`
       export function run(): i32 {
         let xs = [] as Array<i32>;
         return xs.length;
       }
     `;
-    check(t, source, source, 'unnecessary-cast');
+    await check(t, source, source, 'unnecessary-cast');
   });
 
-  test('BigInt literals drop redundant casts and annotations, while contextual ints keep annotations', (t) => {
-    check(t, dedentRaw`
+  test('BigInt literals drop redundant casts and annotations, while contextual ints keep annotations', async (t) => {
+    await check(t, dedentRaw`
       import { BigInt } from 'zena:bigint';
 
       export function run(): i32 {
@@ -195,8 +195,8 @@ let tests = suite('lint', () => {
     `);
   });
 
-  test('redundant local annotations go', (t) => {
-    check(t, dedentRaw`
+  test('redundant local annotations go', async (t) => {
+    await check(t, dedentRaw`
       function name(): String {
         return 'x';
       }
@@ -223,8 +223,8 @@ let tests = suite('lint', () => {
     `, 'unnecessary-annotation');
   });
 
-  test('return types the body implies go, except on exported or forward-referenced functions', (t) => {
-    check(t, dedentRaw`
+  test('return types the body implies go, except on exported or forward-referenced functions', async (t) => {
+    await check(t, dedentRaw`
       function plain(a: i32): i32 {
         return a + 1;
       }
@@ -261,7 +261,7 @@ let tests = suite('lint', () => {
     `, 'unnecessary-annotation');
   });
 
-  test('an annotation that an if of two classes joins to is kept', (t) => {
+  test('an annotation that an if of two classes joins to is kept', async (t) => {
     // Without it, `shape` is a `Square | Circle`, not a `Shape`.
     let source = dedentRaw`
       interface Shape {
@@ -282,10 +282,10 @@ let tests = suite('lint', () => {
         return shape.area();
       }
     `;
-    check(t, source, source, 'unnecessary-annotation');
+    await check(t, source, source, 'unnecessary-annotation');
   });
 
-  test('an annotation wider than a call result is kept', (t) => {
+  test('an annotation wider than a call result is kept', async (t) => {
     // The call's own type is the union, so it differs from the annotation
     // without any help from the context.
     let source = dedentRaw`
@@ -310,11 +310,11 @@ let tests = suite('lint', () => {
         return shape.area();
       }
     `;
-    check(t, source, source, 'unnecessary-annotation');
+    await check(t, source, source, 'unnecessary-annotation');
   });
 
-  test('an annotation on an if whose branches have its type goes', (t) => {
-    check(t, dedentRaw`
+  test('an annotation on an if whose branches have its type goes', async (t) => {
+    await check(t, dedentRaw`
       export function run(flag: boolean): i32 {
         let n: i32 = if (flag) run(false) else run(true);
         return n;
@@ -327,8 +327,8 @@ let tests = suite('lint', () => {
     `, 'unnecessary-annotation');
   });
 
-  test('callback parameters typed by the callee lose their annotations', (t) => {
-    check(t, dedentRaw`
+  test('callback parameters typed by the callee lose their annotations', async (t) => {
+    await check(t, dedentRaw`
       export function run(): i32 {
         let xs = new Array<String>(1);
         xs.push('a');
@@ -353,8 +353,8 @@ let tests = suite('lint', () => {
     `, 'unnecessary-annotation');
   });
 
-  test('a built-up array becomes a growable literal', (t) => {
-    check(t, dedentRaw`
+  test('a built-up array becomes a growable literal', async (t) => {
+    await check(t, dedentRaw`
       export function run(): i32 {
         let xs = new Array<String>(4);
         xs.push('one');
@@ -374,8 +374,8 @@ let tests = suite('lint', () => {
     `, 'collection-literal');
   });
 
-  test('a built-up map becomes a map literal', (t) => {
-    check(t, dedentRaw`
+  test('a built-up map becomes a map literal', async (t) => {
+    await check(t, dedentRaw`
       export function run(): i32 {
         let m = new Map<String, i32>();
         m['a'] = 1;
@@ -390,10 +390,10 @@ let tests = suite('lint', () => {
     `, 'collection-literal');
   });
 
-  test('a map whose value type closes with >> keeps one > per list', (t) => {
+  test('a map whose value type closes with >> keeps one > per list', async (t) => {
     // The `>>` closing both type argument lists is one token, so the value
     // type's source text has to end at its first half.
-    check(t, dedentRaw`
+    await check(t, dedentRaw`
       export function run(): i32 {
         let m = new Map<String, Array<i32>>();
         m['a'] = new Array<i32>();
@@ -407,8 +407,8 @@ let tests = suite('lint', () => {
     `, 'collection-literal');
   });
 
-  test('a long run of elements is laid out one per line', (t) => {
-    check(t, dedentRaw`
+  test('a long run of elements is laid out one per line', async (t) => {
+    await check(t, dedentRaw`
       export function run(): i32 {
         let xs = new Array<String>();
         xs.push('a fairly long string element');
@@ -430,8 +430,8 @@ let tests = suite('lint', () => {
     `, 'collection-literal');
   });
 
-  test('a var assigned by an if becomes a let with an if expression', (t) => {
-    check(t, dedentRaw`
+  test('a var assigned by an if becomes a let with an if expression', async (t) => {
+    await check(t, dedentRaw`
       export function run(): i32 {
         let n = 3;
         var sign = 0;
@@ -458,7 +458,7 @@ let tests = suite('lint', () => {
     `, 'if-initializer');
   });
 
-  test('an impure initializer stays a var', (t) => {
+  test('an impure initializer stays a var', async (t) => {
     let source = dedentRaw`
       var calls = 0;
       function next(): i32 {
@@ -473,11 +473,11 @@ let tests = suite('lint', () => {
         return x;
       }
     `;
-    check(t, source, source, 'if-initializer');
+    await check(t, source, source, 'if-initializer');
   });
 
-  test('null tests become ?? and ?.', (t) => {
-    check(t, dedentRaw`
+  test('null tests become ?? and ?.', async (t) => {
+    await check(t, dedentRaw`
       class Named {
         name: String;
         var tag: String | null = null;
@@ -545,7 +545,7 @@ let tests = suite('lint', () => {
     `, 'nullish');
   });
 
-  test('a default is not folded onto a nullable chain', (t) => {
+  test('a default is not folded onto a nullable chain', async (t) => {
     let source = dedentRaw`
       class Named {
         var tag: String | null = null;
@@ -558,11 +558,11 @@ let tests = suite('lint', () => {
         return (tagOf(null) ?? '').length;
       }
     `;
-    check(t, source, source, 'nullish');
+    await check(t, source, source, 'nullish');
   });
 
-  test('small matches become ifs', (t) => {
-    check(t, dedentRaw`
+  test('small matches become ifs', async (t) => {
+    await check(t, dedentRaw`
       sealed class Shape {
         case Circle(r: i32)
         case Square(side: i32)
@@ -616,8 +616,8 @@ let tests = suite('lint', () => {
     `, 'match-to-if');
   });
 
-  test('a statement match with an empty wildcard arm becomes a bare if', (t) => {
-    check(t, dedentRaw`
+  test('a statement match with an empty wildcard arm becomes a bare if', async (t) => {
+    await check(t, dedentRaw`
       sealed class Shape {
         case Circle(r: i32)
         case Square(side: i32)
@@ -661,8 +661,8 @@ let tests = suite('lint', () => {
     `, 'match-to-if');
   });
 
-  test('a class pattern keeps its type arguments in the is test', (t) => {
-    check(t, dedentRaw`
+  test('a class pattern keeps its type arguments in the is test', async (t) => {
+    await check(t, dedentRaw`
       class Box<T>(value: T)
       function report(v: Box<i32> | Box<String>): void {
         match (v) {
@@ -686,8 +686,8 @@ let tests = suite('lint', () => {
     `, 'match-to-if');
   });
 
-  test('an else holding only an if becomes else if', (t) => {
-    check(t, dedentRaw`
+  test('an else holding only an if becomes else if', async (t) => {
+    await check(t, dedentRaw`
       function sign(n: i32): i32 {
         if (n > 0) {
           return 1;
@@ -716,7 +716,7 @@ let tests = suite('lint', () => {
     `, 'else-if');
   });
 
-  test('a match with a guard or three arms stays', (t) => {
+  test('a match with a guard or three arms stays', async (t) => {
     let source = dedentRaw`
       function sign(n: i32): i32 {
         return match (n) {
@@ -729,11 +729,11 @@ let tests = suite('lint', () => {
         return sign(3);
       }
     `;
-    check(t, source, source, 'match-to-if');
+    await check(t, source, source, 'match-to-if');
   });
 
-  test('index loops become for-in loops', (t) => {
-    check(t, dedentRaw`
+  test('index loops become for-in loops', async (t) => {
+    await check(t, dedentRaw`
       function total(xs: GrowableArray<i32>): i32 {
         var sum = 0;
         var i = 0;
@@ -768,7 +768,7 @@ let tests = suite('lint', () => {
     `, 'for-in');
   });
 
-  test('an index used for more than the element keeps its loop', (t) => {
+  test('an index used for more than the element keeps its loop', async (t) => {
     let source = dedentRaw`
       function total(xs: GrowableArray<i32>): i32 {
         var sum = 0;
@@ -784,11 +784,11 @@ let tests = suite('lint', () => {
         return total(new Array<i32>());
       }
     `;
-    check(t, source, source, 'for-in');
+    await check(t, source, source, 'for-in');
   });
 
-  test('boolean returns collapse onto the condition', (t) => {
-    check(t, dedentRaw`
+  test('boolean returns collapse onto the condition', async (t) => {
+    await check(t, dedentRaw`
       function big(n: i32): boolean {
         if (n > 100) {
           return true;
@@ -826,8 +826,8 @@ let tests = suite('lint', () => {
     `, 'boolean-return');
   });
 
-  test('a match in the arm of a statement match is a statement too', (t) => {
-    check(t, dedentRaw`
+  test('a match in the arm of a statement match is a statement too', async (t) => {
+    await check(t, dedentRaw`
       sealed class Shape {
         case Circle(r: i32)
         case Square(side: i32)
@@ -871,8 +871,8 @@ let tests = suite('lint', () => {
     `, 'match-to-if');
   });
 
-  test('string concatenation becomes a template literal', (t) => {
-    check(t, dedentRaw`
+  test('string concatenation becomes a template literal', async (t) => {
+    await check(t, dedentRaw`
       function greet(name: String, n: i32): String {
         return 'Hello, ' + name + ' #' + i32ToString(n) + '!';
       }
@@ -895,8 +895,8 @@ let tests = suite('lint', () => {
     `, 'template-literal');
   });
 
-  test('trivial string conversions in console calls go', (t) => {
-    check(t, dedentRaw`
+  test('trivial string conversions in console calls go', async (t) => {
+    await check(t, dedentRaw`
       import { boolToString, f32ToString } from 'zena:core';
       export function run(x: i32, ok: boolean, f: f32): i32 {
         console.log(${'`'}${'${'}x}${'`'});
@@ -923,8 +923,8 @@ let tests = suite('lint', () => {
     `, 'console-to-string');
   });
 
-  test('an arrow returning one expression loses its block', (t) => {
-    check(t, dedentRaw`
+  test('an arrow returning one expression loses its block', async (t) => {
+    await check(t, dedentRaw`
       export function run(): i32 {
         let double = (x: i32) => {
           return x * 2;
@@ -943,8 +943,8 @@ let tests = suite('lint', () => {
     `, 'arrow-body');
   });
 
-  test('a var never reassigned becomes a let', (t) => {
-    check(t, dedentRaw`
+  test('a var never reassigned becomes a let', async (t) => {
+    await check(t, dedentRaw`
       export function run(): i32 {
         var a = 1;
         var b = 2;
@@ -971,8 +971,8 @@ let tests = suite('lint', () => {
     `, 'prefer-let');
   });
 
-  test('a var field nothing assigns loses its var', (t) => {
-    check(t, dedentRaw`
+  test('a var field nothing assigns loses its var', async (t) => {
+    await check(t, dedentRaw`
       class Named {
         var name: String;
         var #hits: i32 = 0;
@@ -1023,8 +1023,8 @@ let tests = suite('lint', () => {
     `, 'immutable-field');
   });
 
-  test('an empty default constructor goes unless a named one needs it', (t) => {
-    check(t, dedentRaw`
+  test('an empty default constructor goes unless a named one needs it', async (t) => {
+    await check(t, dedentRaw`
       class Counter {
         var n = 0;
         new() {}
@@ -1067,8 +1067,8 @@ let tests = suite('lint', () => {
     `, 'empty-constructor');
   });
 
-  test('rules compose across passes', (t) => {
-    check(t, dedentRaw`
+  test('rules compose across passes', async (t) => {
+    await check(t, dedentRaw`
       let pick = (s: String | null, d: String): String => {
         var out: String = d;
         if (s != null) {
@@ -1090,7 +1090,7 @@ let tests = suite('lint', () => {
     `);
   });
 
-  test('without fix the findings are reported and nothing changes', (t) => {
+  test('without fix the findings are reported and nothing changes', async (t) => {
     let source = dedentRaw`
       let add = (a: i32, b: i32): i32 => a + b;
       export function run(): i32 {
@@ -1099,7 +1099,7 @@ let tests = suite('lint', () => {
       }
     `;
     let options = new LintOptions(allRules());
-    let report = lintSource(projectFor(), VIRTUAL_PATH, source, options);
+    let report = await lintSource(projectFor(), VIRTUAL_PATH, source, options);
     equal(report.rejected.length, 0);
     equal(report.applied.length, 0);
     isTrue(!report.changed);
@@ -1113,8 +1113,8 @@ let tests = suite('lint', () => {
         'A `var` never assigned again; declare it with `let`.');
   });
 
-  test('a file that does not check is left alone', (t) => {
-    let report = lint('export let run = (): i32 => { return "x"; };\n');
+  test('a file that does not check is left alone', async (t) => {
+    let report = await lint('export let run = (): i32 => { return "x"; };\n');
     isTrue(report.errorsBefore.length > 0);
     isTrue(!report.changed);
   });

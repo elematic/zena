@@ -2,7 +2,7 @@
  * Shared test utilities for the self-hosted compiler test suite.
  */
 
-import { readFileSync } from 'zena:fs';
+import { readFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import {
@@ -25,7 +25,7 @@ export class MockHost implements CompilerHost {
     this.#files[path] = content;
   }
 
-  readFile(path: String): String {
+  async readFile(path: String): Future<String> {
     return this.#files.getOr(path, '');
   }
 
@@ -34,7 +34,7 @@ export class MockHost implements CompilerHost {
    * rest; null when no file is under `path`, since a map of files holds
    * no empty directories.
    */
-  listDir(path: String): Array<String> | null {
+  async listDir(path: String): Future<Array<String> | null> {
     let prefix = `${path}/`;
     let names = new GrowableArray<String>();
     for (let file in this.#files.keys()) {
@@ -79,21 +79,21 @@ export class PlainHost implements CompilerHost {
     this.#files[path] = content;
   }
 
-  readFile(path: String): String {
+  async readFile(path: String): Future<String> {
     if (let (true, content) = this.#files.get(path)) {
       return content;
     }
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
+      return await synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
-      return readFileSync(`${this.#stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+      return await readFile(`${this.#stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
-    return readFileSync(path);
+    return await readFile(path);
   }
 
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
+  async listDir(path: String): Future<Array<String> | null> {
+    return await directoryNames(path);
   }
 }
 

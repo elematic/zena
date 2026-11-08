@@ -86,17 +86,21 @@ async function init(request: InitRequest): Promise<void> {
   }
 }
 
-/** Runs a request against the service, reporting a missing one as an error. */
-function withService(
+/**
+ * Runs a request against the service, reporting a missing one as an
+ * error. The service's analysis methods return promises, so requests
+ * are awaited; the service answers them in order.
+ */
+async function withService(
   id: number,
-  run: (service: ZenaLanguageService) => void,
-): void {
+  run: (service: ZenaLanguageService) => Promise<void>,
+): Promise<void> {
   if (!service) {
     post({type: 'error', id, message: 'The compiler is not initialized yet.'});
     return;
   }
   try {
-    run(service);
+    await run(service);
   } catch (err) {
     post({type: 'error', id, message: errorMessage(err)});
   }
@@ -130,9 +134,9 @@ function syncFiles(
 }
 
 function check(request: CheckRequest): void {
-  withService(request.id, (service) => {
+  void withService(request.id, async (service) => {
     syncFiles(service, request.files);
-    const all = service.check(request.path, request.source);
+    const all = await service.check(request.path, request.source);
 
     // A check reports on every module it reached, not just this document,
     // and a diagnostic from an imported module carries *that* module's
@@ -155,13 +159,13 @@ function check(request: CheckRequest): void {
 }
 
 function hover(request: HoverRequest): void {
-  withService(request.id, (service) => {
+  void withService(request.id, async (service) => {
     syncFiles(service, request.files);
     try {
       post({
         type: 'hover',
         id: request.id,
-        hover: service.hover(request.path, request.offset),
+        hover: await service.hover(request.path, request.offset),
       });
     } catch {
       post({type: 'hover', id: request.id, hover: null});
@@ -170,13 +174,13 @@ function hover(request: HoverRequest): void {
 }
 
 function completions(request: CompletionsRequest): void {
-  withService(request.id, (service) => {
+  void withService(request.id, async (service) => {
     syncFiles(service, request.files);
     try {
       post({
         type: 'completions',
         id: request.id,
-        completions: service.completions(
+        completions: await service.completions(
           request.path,
           request.offset,
           request.source,
@@ -189,16 +193,16 @@ function completions(request: CompletionsRequest): void {
 }
 
 function compile(request: CompileRequest): void {
-  withService(request.id, (service) => {
+  void withService(request.id, async (service) => {
     syncFiles(service, request.files);
-    const all = service.check(request.path, request.source);
+    const all = await service.check(request.path, request.source);
     const filtered = all.filter(
       (d) => !d.file?.startsWith('zena:') || d.severity === 'error',
     );
     const hasErrors = all.some((d) => d.severity === 'error');
     const wasm = hasErrors
       ? null
-      : service.compileToWasm(request.path, request.source);
+      : await service.compileToWasm(request.path, request.source);
     post({
       type: 'compile',
       id: request.id,
@@ -228,7 +232,7 @@ async function runProgram(
   path: string,
   source: string,
 ): Promise<void> {
-  const bytes = service.compileToWasm(path, source);
+  const bytes = await service.compileToWasm(path, source);
   if (!bytes) {
     sendLog('error', 'The program failed to compile.');
     return;

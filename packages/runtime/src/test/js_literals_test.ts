@@ -14,7 +14,7 @@ import {compile} from './compile-zena.js';
 suite('Runtime - literals compiled by the js-target compiler', () => {
   test('string and template literals keep every character', async () => {
     const res = await instantiate(
-      compile(
+      await compile(
         `
         import { TemplateStringsArray } from 'zena:core';
         let rawOf = (strings: TemplateStringsArray, values: FixedArray<anyref>): String =>

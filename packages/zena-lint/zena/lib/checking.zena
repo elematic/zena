@@ -10,7 +10,7 @@
  * never collected (see packages/zena-compiler/CONTEXT.md).
  */
 
-import { readFileSync } from 'zena:fs';
+import { readFile } from 'zena:fs';
 import { getEnv } from 'zena:cli';
 import { join2 } from 'zena:path';
 import {
@@ -34,21 +34,21 @@ final class OverlayHost implements CompilerHost {
 
   new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
 
-  readFile(path: String): String {
+  async readFile(path: String): Future<String> {
     if (let (true, text) = this.overrides.get(path)) {
       return text;
     }
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
+      return await synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
-      return readFileSync(join2(this.#stdlibRoot, stdlibIdToRelativeFile(path)));
+      return await readFile(join2(this.#stdlibRoot, stdlibIdToRelativeFile(path)));
     }
-    return readFileSync(path);
+    return await readFile(path);
   }
 
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
+  async listDir(path: String): Future<Array<String> | null> {
+    return await directoryNames(path);
   }
 }
 
@@ -67,7 +67,9 @@ export final class Project {
   stdlibSources: String;
   target: String;
   #host: OverlayHost;
-  #packages: Map<String, PackageConfig>;
+  #packageCache: String | null;
+  /** The workspace's packages, read the first time a compiler needs them. */
+  var #packages: Map<String, PackageConfig> | null = null;
   var #compiler: Compiler | null = null;
   var #previous: ProgramCheckResult | null = null;
   var #entriesOnCompiler = 0;
@@ -84,13 +86,19 @@ export final class Project {
       stdlibSources = stdlibSources ?? stdlibRoot,
       target = target,
       #host = new OverlayHost(stdlibRoot),
-      #packages = loadPackages(new OverlayHost(stdlibRoot), packageCache);
+      #packageCache = packageCache;
 
   /** A fresh compiler, dropping whatever the old one accumulated. */
-  #freshCompiler(): Compiler {
+  async #freshCompiler(): Future<Compiler> {
+    var packages = this.#packages;
+    if (packages == null) {
+      let loaded = await loadWorkspace(new OverlayHost(this.stdlibRoot), '.', null, this.#packageCache);
+      this.#packages = loaded;
+      packages = loaded;
+    }
     let compiler = createCompiler(this.#host, {
       stdlibRoot: this.stdlibRoot,
-      packages: this.#packages,
+      packages: packages,
       warnUnnecessaryCasts: true,
     });
     this.#compiler = compiler;
@@ -103,7 +111,7 @@ export final class Project {
    * Text the compiler should read for `path` instead of the disk's, or
    * null to read the disk again. Call before `check` for the same path.
    */
-  override(path: String, text: String | null): void {
+  async override(path: String, text: String | null): Future<void> {
     let key = this.entryIdOf(path);
     if (text == null) {
       this.#host.overrides.delete(key);
@@ -123,7 +131,7 @@ export final class Project {
     // Not `compiler?.invalidate(path)`: an optional method call does not
     // lower yet (see the nullish rule).
     if (compiler != null) {
-      compiler.invalidate(key);
+      await compiler.invalidate(key);
     }
   }
 
@@ -157,16 +165,16 @@ export final class Project {
    * Compiles and checks the file at `path` (reading an override if one is
    * set), or throws when it does not parse or a dependency is missing.
    */
-  check(path: String): CheckedFile {
-    let compiler = this.#compiler ?? this.#freshCompiler();
+  async check(path: String): Future<CheckedFile> {
+    let compiler = this.#compiler ?? await this.#freshCompiler();
     // The file itself may have changed since the last check; the
     // dependencies are trusted until `reset`.
     let id = this.entryIdOf(path);
     if (getEnv('ZENA_LINT_DEBUG') != null) {
       console.log(`checking ${path} as ${id} (stdlib root ${this.stdlibRoot})`);
     }
-    compiler.invalidate(id);
-    let result = compiler.compile({entry: id, target: this.target});
+    await compiler.invalidate(id);
+    let result = await compiler.compile({entry: id, target: this.target});
     if (result.hasCycle) {
       this.#cyclic = true;
     }
@@ -186,9 +194,4 @@ export final class Project {
     file.isStdlib = id.startsWith('zena:');
     return file;
   }
-}
-
-/** The packages of the workspace in the working directory, or none. */
-function loadPackages(host: CompilerHost, packageCache: String | null): Map<String, PackageConfig> {
-  return loadWorkspace(host, '.', null, packageCache);
 }

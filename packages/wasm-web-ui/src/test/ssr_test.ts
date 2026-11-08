@@ -23,7 +23,7 @@ const cases = ['attributes', 'list', 'nested', 'counterView'] as const;
 /** The cases rendered by `@lit-labs/ssr` from the js-target module. */
 const renderWithLit = async (): Promise<string[]> => {
   const source = readFileSync(elementsUrl, 'utf8');
-  const {instance} = await instantiateModule(compile(source));
+  const {instance} = await instantiateModule(await compile(source));
   const host = new TemplateHost(instance.exports);
   const exports = instance.exports as unknown as Record<
     string,

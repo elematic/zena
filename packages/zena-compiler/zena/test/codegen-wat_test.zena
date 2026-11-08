@@ -34,13 +34,13 @@ function assertSnapshot(name: String, content: String) {
  * Generate wat for `entry` out of `host`, with `packages` registered on
  * the compiler so the program can import across a package specifier.
  */
-function generateWat(
+async function generateWat(
     host: MockHost,
     entry: String,
     packages: Map<String, PackageConfig> | null,
     wideArithmetic: boolean) {
   let compiler = makeCompiler(host, packages);
-  let compResult = compiler.compile({entry, target: 'js'});
+  let compResult = await compiler.compile({entry, target: 'js'});
   let checkRes = checkCompilation(compResult);
   
   let entryAst = compResult.entry.ast;
@@ -70,49 +70,49 @@ let stringConstantsEntry = 'packages/zena-compiler/test-files/imported-string-co
 let stringConstantsOut = 'packages/zena-compiler/zena/out/imported-string-constants.wat';
 
 /** The WAT `compileFile` writes for `options`, which must compile. */
-function stringConstantsWat(options: CompileFileOptions) {
-  equal(compileFile(options), 0);
+async function stringConstantsWat(options: CompileFileOptions) {
+  equal(await compileFile(options), 0);
   return readFileSync(options.outPath);
 }
 
-function compileAndGenerateWatWith(source: String, wideArithmetic: boolean) {
+async function compileAndGenerateWatWith(source: String, wideArithmetic: boolean) {
   let host = new MockHost();
   host.addFile("test.zena", source);
-  return generateWat(host, "test.zena", null, wideArithmetic);
+  return await generateWat(host, "test.zena", null, wideArithmetic);
 }
 
-function compileAndGenerateWat(source: String) {
-  return compileAndGenerateWatWith(source, false);
+async function compileAndGenerateWat(source: String) {
+  return await compileAndGenerateWatWith(source, false);
 }
 
 export let tests = suite('WatGenerator', () => {
-  test('main returns i32 with block statement', (ctx) => {
-    let result = compileAndGenerateWat('export let main = (): i32 => { return 42; };');
+  test('main returns i32 with block statement', async (ctx) => {
+    let result = await compileAndGenerateWat('export let main = (): i32 => { return 42; };');
     assertSnapshot('main_returns_i32_block', result);
   });
 
-  test('main returns i32 with expression body', (ctx) => {
-    let result = compileAndGenerateWat('export let main = (): i32 => 42;');
+  test('main returns i32 with expression body', async (ctx) => {
+    let result = await compileAndGenerateWat('export let main = (): i32 => 42;');
     assertSnapshot('main_returns_i32_expr', result);
   });
 
-  test('main returns 1 + 2', (ctx) => {
-    let result = compileAndGenerateWat('export let main = (): i32 => 1 + 2;');
+  test('main returns 1 + 2', async (ctx) => {
+    let result = await compileAndGenerateWat('export let main = (): i32 => 1 + 2;');
     assertSnapshot('main_returns_1_plus_2', result);
   });
 
-  test('multiple exported functions', (ctx) => {
-    let result = compileAndGenerateWat('export let foo = (): i32 => 1; export let bar = (): i32 => 2;');
+  test('multiple exported functions', async (ctx) => {
+    let result = await compileAndGenerateWat('export let foo = (): i32 => 1; export let bar = (): i32 => 2;');
     assertSnapshot('multiple_exported_functions', result);
   });
 
-  test('external function import and call', (ctx) => {
+  test('external function import and call', async (ctx) => {
     let host = new MockHost();
     let source = "@external(\"env\", \"consoleLog\")\ndeclare function consoleLog(msg: i32): void;\nexport let main = (): void => { consoleLog(42); };";
     host.addFile("test.zena", source);
     
     let compiler = makeCompiler(host);
-    let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+    let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
     let checkRes = checkCompilation(compResult);
     
     let entryAst = compResult.entry.ast;
@@ -142,13 +142,13 @@ export let tests = suite('WatGenerator', () => {
     assertSnapshot('external_function_import', result);
   });
 
-  test('parameter default dependency optimization skips locals', (ctx) => {
+  test('parameter default dependency optimization skips locals', async (ctx) => {
     let host = new MockHost();
     let source = "let testFn = (a: i32 = 1, b: i32 = 2): i32 => a + b;\nexport let foo = (): i32 => testFn();";
     host.addFile("test.zena", source);
     
     let compiler = makeCompiler(host);
-    let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+    let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
     let checkRes = checkCompilation(compResult);
     
     let entryAst = compResult.entry.ast;
@@ -175,13 +175,13 @@ export let tests = suite('WatGenerator', () => {
     assertSnapshot('param_default_opt', result);
   });
 
-  test('parameter default dependency optimization skips locals when dependent default is not run', (ctx) => {
+  test('parameter default dependency optimization skips locals when dependent default is not run', async (ctx) => {
     let host = new MockHost();
     let source = "let testFn = (a: i32, b: i32 = a, c: i32 = 10): i32 => a + b + c;\nexport let foo = (): i32 => testFn(1, 2);";
     host.addFile("test.zena", source);
     
     let compiler = makeCompiler(host);
-    let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+    let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
     let checkRes = checkCompilation(compResult);
     
     let entryAst = compResult.entry.ast;
@@ -208,13 +208,13 @@ export let tests = suite('WatGenerator', () => {
     assertSnapshot('param_default_opt_run_check', result);
   });
 
-  test('record property access casting', (ctx) => {
+  test('record property access casting', async (ctx) => {
     let host = new MockHost();
     let source = "export let main = (): i32 => {\n  let record = { a: 10, b: { c: 20 } };\n  return record.b.c;\n};";
     host.addFile("test.zena", source);
     
     let compiler = makeCompiler(host);
-    let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+    let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
     let checkRes = checkCompilation(compResult);
     
     let entryAst = compResult.entry.ast;
@@ -239,7 +239,7 @@ export let tests = suite('WatGenerator', () => {
     generator.generate(program);
   });
   
-  test('function adaptation deduplication', (ctx) => {
+  test('function adaptation deduplication', async (ctx) => {
     let host = new MockHost();
     let source = "export let main = (): void => {\n" +
                  "  let f1 = (a: i32): i32 => a;\n" +
@@ -255,7 +255,7 @@ export let tests = suite('WatGenerator', () => {
     host.addFile("test.zena", source);
     
     let compiler = makeCompiler(host);
-    let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+    let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
     let checkRes = checkCompilation(compResult);
     
     let entryAst = compResult.entry.ast;
@@ -282,13 +282,13 @@ export let tests = suite('WatGenerator', () => {
     assertSnapshot('function_adaptation_deduplication', result);
   });
 
-  test('inline tuple multi-value return', (ctx) => {
+  test('inline tuple multi-value return', async (ctx) => {
     let host = new MockHost();
     let source = "export let pair = (): inline (i32, i32) => ((1, 2));";
     host.addFile("test.zena", source);
     
     let compiler = makeCompiler(host);
-    let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+    let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
     let checkRes = checkCompilation(compResult);
     
     let entryAst = compResult.entry.ast;
@@ -315,7 +315,7 @@ export let tests = suite('WatGenerator', () => {
     assertSnapshot('inline_tuple_multi_value_return', result);
   });
 
-  test('compile console with target js generates JS console imports', (ctx) => {
+  test('compile console with target js generates JS console imports', async (ctx) => {
     let host = new MockHost();
     // The prelude names `zena:core`, so its entry has to exist and
     // re-export the stubs behind it.
@@ -352,7 +352,7 @@ export let tests = suite('WatGenerator', () => {
         "} " +
         "export let console = new HostConsole();");
     host.addFile("zena:console/wasi.zena", "import { String } from 'zena:core'; import { Console } from './interface.zena'; @intrinsic('wasi_write_string') declare function wasi_write_string(fd: i32, s: String): void; export class WasiConsole implements Console { log(message: String): void { wasi_write_string(1, message); } } export let console = new WasiConsole();");
-    host.addFile("zena:console", host.readFile("zena:console/js.zena"));
+    host.addFile("zena:console", await host.readFile("zena:console/js.zena"));
     host.addFile("zena:core/iterator.zena", "export interface Iterator<T> {} export interface Iterable<T> {}");
     host.addFile("zena:core/ownership.zena", "export class Resource {}");
     host.addFile("zena:core/hashable.zena", "export interface Hashable {}");
@@ -362,7 +362,7 @@ export let tests = suite('WatGenerator', () => {
     let packages = new Map<String, PackageConfig>();
     let compiler = createCompiler(host, {stdlibRoot: "/stdlib", packages});
 
-    let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+    let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
     let checkRes = checkCompilation(compResult);
     let errs = errorDiagnostics(checkRes.diagnostics);
     isTrue(errs.length == 0, if (errs.length > 0) errs[0].message else "");
@@ -393,8 +393,8 @@ export let tests = suite('WatGenerator', () => {
   // host can fix it: WebAssembly ESM integration uses
   // `wasm:js/string-constants`. The fixture's literals come from a
   // `console.log` argument and a template's two quasis.
-  test('string literals import from the importedStringConstants module', (ctx) => {
-    let wat = stringConstantsWat({
+  test('string literals import from the importedStringConstants module', async (ctx) => {
+    let wat = await stringConstantsWat({
       entry: stringConstantsEntry,
       outPath: stringConstantsOut,
       target: 'js',
@@ -409,8 +409,8 @@ export let tests = suite('WatGenerator', () => {
     isFalse(wat.contains('(import "_"'));
   });
 
-  test('string literals import from "_" by default', (ctx) => {
-    let wat = stringConstantsWat({
+  test('string literals import from "_" by default', async (ctx) => {
+    let wat = await stringConstantsWat({
       entry: stringConstantsEntry,
       outPath: stringConstantsOut,
       target: 'js',
@@ -433,8 +433,8 @@ export let tests = suite('WatGenerator', () => {
   // erased STRUCT may still appear — erased signatures and fields name
   // it — so this asserts on the two shapes an erased FUNCTION name
   // takes: `fill_spec_erased` and `Full_s867_erased.<constructor>`.
-  test('no function is emitted at an erasure', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('no function is emitted at an erasure', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       class Full<T> { value: T; new(value: T) : value = value; }
       function fill<T>(value: T): Full<T> { return new Full(value); }
       function outer<T>(v: T): T { return fill<T>(v).value; }
@@ -450,8 +450,8 @@ export let tests = suite('WatGenerator', () => {
   // else reads the WAT emitter's, so this asserts the text forms
   // directly: the instruction NAME recovered from the opcode, and each
   // immediate in the position wasm's text format puts it.
-  test('SIMD instructions emit their wasm text forms', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('SIMD instructions emit their wasm text forms', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       @intrinsic('v128.const')
       declare function vconst(a: i32, b: i32, c: i32, d: i32): v128;
       @intrinsic('i32x4.add')
@@ -495,8 +495,8 @@ export let tests = suite('WatGenerator', () => {
   // for any value but null, so the trap reads as a cast failure (#600)
   // rather than the bare `unreachable` it was. Both trap; only the
   // property says which.
-  test('a failed cast to a tuple union member traps as a cast', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('a failed cast to a tuple union member traps as a cast', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       type R = (true, i32) | (false, i32);
       function pick(ok: boolean): R {
         if (ok) {
@@ -518,8 +518,8 @@ export let tests = suite('WatGenerator', () => {
   // reads one nor a caller that passes a literal, forwards one or passes
   // an inline result allocates. Boxing would still run, so only the
   // property says it regressed.
-  test('inline parameters and lets allocate nothing', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('inline parameters and lets allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       type Span = (i32, i32);
       function width(s: inline Span): i32 {
         let (start, end) = s;
@@ -545,8 +545,8 @@ export let tests = suite('WatGenerator', () => {
   // An inline record parameter is passed as its fields, and the record
   // its body binds is rebuilt from them only for reads to answer from, so
   // dead code elimination deletes it.
-  test('inline record parameters and lets allocate nothing', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('inline record parameters and lets allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       type Point = {x: i32, y: i32};
       function sum(p: inline Point): i32 {
         let {x, y} = p;
@@ -568,8 +568,8 @@ export let tests = suite('WatGenerator', () => {
   // An inline `if` or `match` in a `let` or as an inline argument merges
   // its arms' slots at the join (#810), one block parameter per slot, so
   // neither the arms nor the join box the value.
-  test('an inline if or match merges slots without allocating', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('an inline if or match merges slots without allocating', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       type Span = (i32, i32);
       type Point = {x: i32, y: i32};
       function width(s: inline Span): i32 {
@@ -605,8 +605,8 @@ export let tests = suite('WatGenerator', () => {
 
   // An inline record result is returned as its fields, and the caller
   // holds them as the record it reads, so neither side builds it.
-  test('inline record results allocate nothing', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('inline record results allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       type Point = {x: i32, y: i32};
       function swap(p: inline Point): inline Point {
         return {x: p.y, y: p.x};
@@ -627,8 +627,8 @@ export let tests = suite('WatGenerator', () => {
   // An inline record inside an inline tuple is its fields, as the tuple's
   // slots (#811): binding it, destructuring it and forwarding it into a
   // nested position build nothing.
-  test('nested inline records allocate nothing', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('nested inline records allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       type Point = {x: i32, y: i32};
       function labelled(n: i32, p: inline Point): inline (i32, inline Point) {
         return (n, p);
@@ -647,8 +647,8 @@ export let tests = suite('WatGenerator', () => {
 
   // An inline field of an inline record is its own leaves, so a record
   // with one is passed, read and returned as all of them (#811).
-  test('inline fields of inline records allocate nothing', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('inline fields of inline records allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       type Vec = {x: i32, y: i32};
       type Sprite = inline {pos: inline Vec, id: i32};
       function reach(s: Sprite): i32 {
@@ -671,8 +671,8 @@ export let tests = suite('WatGenerator', () => {
   // allocation and no unpacking. A snapshot would not catch a
   // regression that started boxing them — the diff would just look
   // different — so assert the property.
-  test('a shaped vector type allocates nothing', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('a shaped vector type allocates nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       @intrinsic('i32x4.splat')
       declare function splat(x: i32): v128;
       @intrinsic('i32x4.add')
@@ -705,8 +705,8 @@ export let tests = suite('WatGenerator', () => {
   // only the property says it regressed. (This compiler's standard
   // library is a stub, so the step type is declared here as zena:core
   // declares it.)
-  test('a step of tuples allocates nothing', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('a step of tuples allocates nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       type Step<T> = inline (0, _, _) | (1, inline? T, _);
       function step(i: i32): Step<(i32, i32)> {
         if (i > 2) {
@@ -754,8 +754,8 @@ export let tests = suite('WatGenerator', () => {
     export let main = (): i64 => wide(7 as u64, 9 as u64);
   `;
 
-  test('wide arithmetic lowers to a software sequence by default', (ctx) => {
-    let result = compileAndGenerateWatWith(wideSource, false);
+  test('wide arithmetic lowers to a software sequence by default', async (ctx) => {
+    let result = await compileAndGenerateWatWith(wideSource, false);
     let absent = growable<String>(['i64.mul_wide_u', 'i64.add128']);
     assertFunctionOmits(result, '$wide', absent,
         'the proposal is off by default — V8 does not implement it yet, ' +
@@ -768,8 +768,8 @@ export let tests = suite('WatGenerator', () => {
         'the carry from an unsigned compare');
   });
 
-  test('wide arithmetic lowers to the real instructions when enabled', (ctx) => {
-    let result = compileAndGenerateWatWith(wideSource, true);
+  test('wide arithmetic lowers to the real instructions when enabled', async (ctx) => {
+    let result = await compileAndGenerateWatWith(wideSource, true);
     let present = growable<String>(['i64.mul_wide_u', 'i64.add128']);
     assertFunctionUses(result, '$wide', present,
         'with the flag on, each intrinsic is one instruction');
@@ -786,8 +786,8 @@ export let tests = suite('WatGenerator', () => {
   // a growing one. A snapshot would not tell a fallback to `call` from
   // any other emission change, so assert the instruction.
 
-  test('tail return emits return_call and no ordinary call', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('tail return emits return_call and no ordinary call', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       function down(n: i32, acc: i32): i32 {
         if (n == 0) { return acc; }
         tail return down(n - 1, acc + 1);
@@ -803,8 +803,8 @@ export let tests = suite('WatGenerator', () => {
         'the tail call IS the call — there is no plain one left');
   });
 
-  test('a tail call through a funcref emits return_call_ref', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('a tail call through a funcref emits return_call_ref', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       interface Hop {
         hop(n: i32): i32;
       }
@@ -831,8 +831,8 @@ export let tests = suite('WatGenerator', () => {
         'an interface call reads its target out of the vtable');
   });
 
-  test('an unannotated call in tail position stays an ordinary call', (ctx) => {
-    let result = compileAndGenerateWat(`
+  test('an unannotated call in tail position stays an ordinary call', async (ctx) => {
+    let result = await compileAndGenerateWat(`
       function down(n: i32, acc: i32): i32 {
         if (n == 0) { return acc; }
         return down(n - 1, acc + 1);
@@ -856,7 +856,7 @@ export let tests = suite('WatGenerator', () => {
   // that, nothing registers the wrapper and lowering fails with
   // "non-local identifier: addOne". See
   // https://github.com/elematic/zena/issues/159.
-  test('a package-imported function used as a value lowers', (ctx) => {
+  test('a package-imported function used as a value lowers', async (ctx) => {
     let host = new MockHost();
     host.addFile('/dep/mod.zena',
         'export function addOne(x: i32): i32 { return x + 1; }\n');
@@ -868,7 +868,7 @@ export let tests = suite('WatGenerator', () => {
       'dep' => new PackageConfig('/dep', null),
     };
 
-    let result = generateWat(host, '/project/main.zena', packages, false);
+    let result = await generateWat(host, '/project/main.zena', packages, false);
 
     isTrue(result.contains('$addOne_valwrapper_'),
         'the module has no value wrapper around the imported addOne');

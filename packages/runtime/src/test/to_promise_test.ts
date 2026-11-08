@@ -16,7 +16,7 @@ import {instantiate, createStringReader, createStringWriter} from '../index.js';
 type Exports = Record<string, (...args: unknown[]) => unknown>;
 
 const load = async (source: string): Promise<Exports> => {
-  const result = await instantiate(compile(source), {});
+  const result = await instantiate(await compile(source), {});
   const instance =
     (result as {instance?: WebAssembly.Instance}).instance ??
     (result as WebAssembly.Instance);
@@ -143,7 +143,7 @@ suite('Runtime - zena:js toPromise', () => {
     // result back through toPromise.
     let exports: Exports | undefined;
     const result = await instantiate(
-      compile(`
+      await compile(`
         import { Future } from 'zena:async';
         import { pending, toPromise } from 'zena:js';
 

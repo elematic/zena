@@ -20,23 +20,23 @@ export let tests = suite('Incremental Type Checking', () => {
 
   suite('body-only changes skip dependents', () => {
 
-    test('changing function body does not invalidate dependent', () => {
+    test('changing function body does not invalidate dependent', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let add = (a: i32, b: i32): i32 => a + b;");
       host.addFile("/project/main.zena", "import { add } from './lib.zena';\nlet r: i32 = add(1, 2);");
 
       // First compilation + check.
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Change lib's body only (return type stays i32).
       host.addFile("/project/lib.zena", "export let add = (a: i32, b: i32): i32 => a + b + 0;");
-      compiler.invalidate("/project/lib.zena");
+      await compiler.invalidate("/project/lib.zena");
 
       // Same compiler picks up the change via invalidate().
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
@@ -44,7 +44,7 @@ export let tests = suite('Incremental Type Checking', () => {
       equal(mainResult1.model, mainResult2.model);
     });
 
-    test('changing class method body does not invalidate dependent', () => {
+    test('changing class method body does not invalidate dependent', async () => {
       let host = new MockHost();
       host.addFile("/project/counter.zena",
         "export class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}");
@@ -52,16 +52,16 @@ export let tests = suite('Incremental Type Checking', () => {
         "import { Counter } from './counter.zena';\nlet c = new Counter();\nlet use = (): void => {\n  c.increment();\n};");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Change method body only.
       host.addFile("/project/counter.zena",
         "export class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 2; }\n}");
-      compiler.invalidate("/project/counter.zena");
+      await compiler.invalidate("/project/counter.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
@@ -71,21 +71,21 @@ export let tests = suite('Incremental Type Checking', () => {
 
   suite('signature changes invalidate dependents', () => {
 
-    test('changing export return type invalidates dependent', () => {
+    test('changing export return type invalidates dependent', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let num = (): i32 => 42;");
       host.addFile("/project/main.zena", "import { num } from './lib.zena';\nlet r = num();");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Change return type from i32 to f64.
       host.addFile("/project/lib.zena", "export let num = (): f64 => 42.0;");
-      compiler.invalidate("/project/lib.zena");
+      await compiler.invalidate("/project/lib.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
@@ -93,21 +93,21 @@ export let tests = suite('Incremental Type Checking', () => {
       isTrue(mainResult1.model != mainResult2.model);
     });
 
-    test('adding an unused export does NOT invalidate dependent', () => {
+    test('adding an unused export does NOT invalidate dependent', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let a = 1;");
       host.addFile("/project/main.zena", "import { a } from './lib.zena';\nlet x = a;");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Add a new export that main.zena doesn't import.
       host.addFile("/project/lib.zena", "export let a = 1;\nexport let b = 2;");
-      compiler.invalidate("/project/lib.zena");
+      await compiler.invalidate("/project/lib.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
@@ -115,21 +115,21 @@ export let tests = suite('Incremental Type Checking', () => {
       equal(mainResult1.model, mainResult2.model);
     });
 
-    test('changing type of an imported name invalidates dependent', () => {
+    test('changing type of an imported name invalidates dependent', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let a = 1;\nexport let b = 2;");
       host.addFile("/project/main.zena", "import { a } from './lib.zena';\nlet x = a;");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Change 'a' (which main imports) but not 'b'.
       host.addFile("/project/lib.zena", "export let a = 1.0;\nexport let b = 2;");
-      compiler.invalidate("/project/lib.zena");
+      await compiler.invalidate("/project/lib.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
@@ -137,21 +137,21 @@ export let tests = suite('Incremental Type Checking', () => {
       isTrue(mainResult1.model != mainResult2.model);
     });
 
-    test('changing type of an unimported name does NOT invalidate dependent', () => {
+    test('changing type of an unimported name does NOT invalidate dependent', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let a = 1;\nexport let b = 2;");
       host.addFile("/project/main.zena", "import { a } from './lib.zena';\nlet x = a;");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Change 'b' (which main does NOT import) but not 'a'.
       host.addFile("/project/lib.zena", "export let a = 1;\nexport let b = 2.0;");
-      compiler.invalidate("/project/lib.zena");
+      await compiler.invalidate("/project/lib.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
@@ -159,7 +159,7 @@ export let tests = suite('Incremental Type Checking', () => {
       equal(mainResult1.model, mainResult2.model);
     });
 
-    test('changing class field type invalidates dependent', () => {
+    test('changing class field type invalidates dependent', async () => {
       let host = new MockHost();
       host.addFile("/project/point.zena",
         "export class Point {\n  x: i32;\n  y: i32;\n  new(this.x, this.y);\n}");
@@ -167,16 +167,16 @@ export let tests = suite('Incremental Type Checking', () => {
         "import { Point } from './point.zena';\nlet p = new Point(1, 2);");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Change field type from i32 to f64.
       host.addFile("/project/point.zena",
         "export class Point {\n  x: f64;\n  y: f64;\n  new(this.x, this.y);\n}");
-      compiler.invalidate("/project/point.zena");
+      await compiler.invalidate("/project/point.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
@@ -184,7 +184,7 @@ export let tests = suite('Incremental Type Checking', () => {
       isTrue(mainResult1.model != mainResult2.model);
     });
 
-    test('adding a class method invalidates dependent', () => {
+    test('adding a class method invalidates dependent', async () => {
       let host = new MockHost();
       host.addFile("/project/counter.zena",
         "export class Counter {\n  var count: i32 = 0;\n}");
@@ -192,16 +192,16 @@ export let tests = suite('Incremental Type Checking', () => {
         "import { Counter } from './counter.zena';\nlet c = new Counter();");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Add a method.
       host.addFile("/project/counter.zena",
         "export class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}");
-      compiler.invalidate("/project/counter.zena");
+      await compiler.invalidate("/project/counter.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
@@ -212,45 +212,45 @@ export let tests = suite('Incremental Type Checking', () => {
 
   suite('transitive invalidation', () => {
 
-    test('signature change propagates through dependency chain', () => {
+    test('signature change propagates through dependency chain', async () => {
       let host = new MockHost();
       host.addFile("/project/a.zena", "export let val = (): i32 => 1;");
       host.addFile("/project/b.zena", "import { val } from './a.zena';\nexport let bval = val;");
       host.addFile("/project/main.zena", "import { bval } from './b.zena';\nlet x = bval;");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
 
       // Change a.zena's return type — should propagate through b.zena to main.zena.
       host.addFile("/project/a.zena", "export let val = (): f64 => 1.0;");
-      compiler.invalidate("/project/a.zena");
+      await compiler.invalidate("/project/a.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
 
       isTrue(mainResult1.model != mainResult2.model);
     });
 
-    test('body change does NOT propagate through dependency chain', () => {
+    test('body change does NOT propagate through dependency chain', async () => {
       let host = new MockHost();
       host.addFile("/project/a.zena", "export let val = (): i32 => 1;");
       host.addFile("/project/b.zena", "import { val } from './a.zena';\nexport let bval = val;");
       host.addFile("/project/main.zena", "import { bval } from './b.zena';\nlet x = bval;");
 
       let compiler = makeCompiler(host);
-      let result1 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check1 = checkCompilation(result1);
       let mainResult1 = check1.results["/project/main.zena"];
       let bResult1 = check1.results["/project/b.zena"];
 
       // Change a.zena's body only — type stays i32.
       host.addFile("/project/a.zena", "export let val = (): i32 => 2;");
-      compiler.invalidate("/project/a.zena");
+      await compiler.invalidate("/project/a.zena");
 
-      let result2 = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check2 = checkCompilation(result2, check1);
       let mainResult2 = check2.results["/project/main.zena"];
       let bResult2 = check2.results["/project/b.zena"];
@@ -263,13 +263,13 @@ export let tests = suite('Incremental Type Checking', () => {
 
   suite('no previous results', () => {
 
-    test('first check works without previous', () => {
+    test('first check works without previous', async () => {
       let host = new MockHost();
       host.addFile("/project/lib.zena", "export let x = 42;");
       host.addFile("/project/main.zena", "import { x } from './lib.zena';\nlet y = x;");
 
       let compiler = makeCompiler(host);
-      let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
       let check = checkCompilation(result);
 
       isTrue(check.results.has("/project/lib.zena"));

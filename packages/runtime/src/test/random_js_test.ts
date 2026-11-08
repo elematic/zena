@@ -32,7 +32,7 @@ let wasm: Uint8Array | undefined;
 
 /** An instance whose `u32` import returns `words` in turn, if given. */
 const zena = async (words?: number[]) => {
-  wasm ??= compile(source);
+  wasm ??= await compile(source);
   let next = 0;
   const res = await instantiate(
     wasm,
@@ -46,7 +46,7 @@ const zena = async (words?: number[]) => {
 
 suite('Runtime - zena:random on the js target', () => {
   test('the generator is zena:host:random u32', async () => {
-    wasm ??= compile(source);
+    wasm ??= await compile(source);
     const module = new (WebAssembly.Module as any)(wasm, {
       builtins: ['js-string'],
       importedStringConstants: '_',

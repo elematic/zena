@@ -5,7 +5,7 @@ import {compile} from './compile-zena.js';
 
 suite('Runtime - Target JS WebAssembly Strings', () => {
   test('string literal return and console.log with target js', async () => {
-    const wasm = compile(
+    const wasm = await compile(
       `
       export let main = (): String => {
         console.log("Hello from Zena JS target!");
@@ -37,7 +37,7 @@ suite('Runtime - Target JS WebAssembly Strings', () => {
   });
 
   test('passing JS string to Zena function and string concatenation', async () => {
-    const wasm = compile(
+    const wasm = await compile(
       `
       export let greet = (name: String): String => {
         return "Hello, " + name + "!";
@@ -56,7 +56,7 @@ suite('Runtime - Target JS WebAssembly Strings', () => {
   });
 
   test('string equality and comparisons with target js', async () => {
-    const wasm = compile(
+    const wasm = await compile(
       `
       export let checkEquals = (a: String, b: String): boolean => a == b;
       export let checkNotEquals = (a: String, b: String): boolean => a != b;
@@ -82,7 +82,7 @@ suite('Runtime - Target JS WebAssembly Strings', () => {
   });
 
   test('string methods on native JS strings', async () => {
-    const wasm = compile(
+    const wasm = await compile(
       `
       export let testLength = (s: String): i32 => s.length;
       export let testSubstring = (s: String, start: i32, end: i32): String => s.substring(start, end);
@@ -140,7 +140,7 @@ suite('Runtime - Target JS WebAssembly Strings', () => {
   });
 
   test('string split on native JS strings', async () => {
-    const wasm = compile(
+    const wasm = await compile(
       `
       export let countParts = (s: String, sep: String): i32 => {
         let parts = s.split(sep);
@@ -174,7 +174,7 @@ suite('Runtime - Target JS WebAssembly Strings', () => {
   });
 
   test('template literals with target js', async () => {
-    const wasm = compile(
+    const wasm = await compile(
       `
       export let formatGreeting = (name: String, count: i32): String => {
         return \`Hello \${name}, you have \${count} messages!\`;

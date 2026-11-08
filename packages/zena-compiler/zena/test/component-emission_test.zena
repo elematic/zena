@@ -11,7 +11,7 @@
  */
 
 import { suite, test, TestContext } from 'zena:test';
-import { isTrue, equal, throws } from 'zena:assert';
+import { isTrue, equal, throws, rejects } from 'zena:assert';
 import { readFileSync, existsSync, mkdirSync } from 'zena:fs';
 import { newByteArray, growable, Result } from 'zena:core';
 import { CompilerHost } from '../lib/library-loader.zena';
@@ -55,14 +55,14 @@ let disk = new DiskHost();
  * package) — a fixture world's `import wasi:cli/stdout@0.3.0;`
  * resolves against the latter.
  */
-function packagesWit() {
-  return readWitSource(disk, `${fixtures}/wit-pkg`) + "\n" +
-    readWitSource(disk, `${stdlibRoot}/wit`);
+async function packagesWit() {
+  return (await readWitSource(disk, `${fixtures}/wit-pkg`)) + "\n" +
+    await readWitSource(disk, `${stdlibRoot}/wit`);
 }
 
 /** Package map: the repo's, plus the WIT-backed `fixture` package. */
-function testPackages(host: CompilerHost): Map<String, PackageConfig> {
-  let packages = loadWorkspace(host, '.');
+async function testPackages(host: CompilerHost): Future<Map<String, PackageConfig>> {
+  let packages = await loadWorkspace(host, '.');
   let fixture = new PackageConfig('', null);
   fixture.witRoot = `${fixtures}/wit-pkg`;
   packages['fixture'] = fixture;
@@ -70,13 +70,13 @@ function testPackages(host: CompilerHost): Map<String, PackageConfig> {
 }
 
 /** A compiler over the test's host and packages. */
-function newCompiler() {
+async function newCompiler() {
   let host = new PlainHost();
-  return createCompiler(host, {stdlibRoot, packages: testPackages(host)});
+  return createCompiler(host, {stdlibRoot, packages: await testPackages(host)});
 }
 
 /** The compiled program, ready for whichever generator wants it. */
-function programFor(
+async function programFor(
   c: Compiler,
   path: String,
   target: String,
@@ -85,6 +85,9 @@ function programFor(
 ) {
   // With a declared world, the entry wrapper also implements the
   // world's async exports, as the CLI injects it under --wit.
+  // Read ahead of the compile: the wrapper synthesizer is a synchronous
+  // callback the compiler calls while loading.
+  let declaredPackages = if (witSource == '') { '' } else { await packagesWit() };
   let options: CompileOptions = if (witSource == '') {
     {entry: path, target}
   } else {
@@ -94,10 +97,10 @@ function programFor(
       componentWrapperSynth:
           (entryPath: String, ast: Module) =>
               synthesizeExportWrapper(witSource, worldName, entryPath, ast,
-                  packagesWit()),
+                  declaredPackages),
     }
   };
-  let result = c.compile(options);
+  let result = await c.compile(options);
   let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
@@ -118,34 +121,34 @@ function programFor(
   return new Program(units, entryUnit);
 }
 
-function compileFor(path: String, target: String) {
-  let c = newCompiler();
+async function compileFor(path: String, target: String) {
+  let c = await newCompiler();
   let generator = new BinaryGenerator(target, false);
-  let program = programFor(c, path, target);
+  let program = await programFor(c, path, target);
   if (target == 'component') {
     // On the same compiler as the program: the runtime module is the
     // `freestanding` target of this compile, not a compile of its own.
-    generator.runtimeMemoryModule = compileComponentRuntimeModule(c, stdlibRoot);
+    generator.runtimeMemoryModule = await compileComponentRuntimeModule(c, stdlibRoot);
     // The test `wasi` package's WIT, as the CLI passes its WIT-backed
     // packages' sources: the encoder emits those interfaces' true
     // types rather than deriving them from synthesized declarations.
-    generator.importEncoder = makeImportEncoder(null, '', packagesWit());
+    generator.importEncoder = makeImportEncoder(null, '', await packagesWit());
   }
   return generator.generate(program).toByteArray();
 }
 
 /** Compile against a declared world (`--wit`/`--world`'s path). */
-function compileForWorld(
+async function compileForWorld(
   path: String,
   witSource: String,
   worldName: String
 ) {
-  let c = newCompiler();
+  let c = await newCompiler();
   let generator = new BinaryGenerator('component', false);
-  let program = programFor(c, path, 'component', witSource, worldName);
-  generator.runtimeMemoryModule = compileComponentRuntimeModule(c, stdlibRoot);
+  let program = await programFor(c, path, 'component', witSource, worldName);
+  generator.runtimeMemoryModule = await compileComponentRuntimeModule(c, stdlibRoot);
   generator.importEncoder = makeImportEncoder(witSource, worldName,
-      packagesWit());
+      await packagesWit());
   return generator.generate(program).toByteArray();
 }
 
@@ -185,8 +188,8 @@ function sectionPayloadAfter(bytes: ByteArray, id: i32, skip: i32) {
  * not core wasm — so this is the module nested inside it, which is where
  * the synthesized wrappers live.
  */
-function watFor(path: String, target: String) {
-  return new WatGenerator(target, false).generate(programFor(newCompiler(), path, target));
+async function watFor(path: String, target: String) {
+  return new WatGenerator(target, false).generate(await programFor(await newCompiler(), path, target));
 }
 
 /**
@@ -281,11 +284,11 @@ function idsToString(ids: Array<i32>) {
 }
 
 export let tests = suite('Component emission', () => {
-  test('the output is a component, not a core module', (ctx) => {
+  test('the output is a component, not a core module', async (ctx) => {
     // Same magic, and then version 0x000d with layer 0x0001 where a
     // core module has version 1. The layer is the whole difference to a
     // reader deciding which format it is holding.
-    let bytes = compileFor(`${fixtures}/clock.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/clock.zena`, 'component');
     equal(bytes[0], 0x00);
     equal(bytes[1], 0x61);
     equal(bytes[2], 0x73);
@@ -296,28 +299,28 @@ export let tests = suite('Component emission', () => {
     equal(bytes[7], 0x00);
   });
 
-  test('an imported WIT interface produces the full section sequence', (ctx) => {
+  test('an imported WIT interface produces the full section sequence', async (ctx) => {
     // type (the instance type) / import / alias, for the `wasi:clocks/
     // types` instance the clock `use`s from, then again for the clock
     // itself / canon lower / core instance (the lowered functions) /
     // core module / core instance (instantiate) / alias (the core
     // export) / type / canon lift / export. Order is not cosmetic: each
     // section's indices refer only to what came before it.
-    let ids = sectionIds(compileFor(`${fixtures}/clock.zena`, 'component'));
+    let ids = sectionIds(await compileFor(`${fixtures}/clock.zena`, 'component'));
     equal(idsToString(ids), '7,10,6,7,10,6,8,2,1,2,6,7,8,11',
       `clock.zena emitted sections ${idsToString(ids)}`);
   });
 
-  test('two interfaces that each lift a future compile together', (ctx) => {
+  test('two interfaces that each lift a future compile together', async (ctx) => {
     // Each interface's bindings number their future types from zero, and
     // the builtins they declare used to be named by that number alone:
     // stdin's future and the filesystem's were both `future.read#0`, at
     // different types, and the encoder refused the second.
-    let bytes = compileFor(`${fixtures}/two-futures.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/two-futures.zena`, 'component');
     equal(bytes[4], 0x0d, 'a component');
   });
 
-  test('a p3 timer adds a canon section for the builtins', (ctx) => {
+  test('a p3 timer adds a canon section for the builtins', async (ctx) => {
     // The same sequence as clock.zena with two additions: a type section
     // declaring the driver's wake future — the one typed builtin every
     // driver-linking component carries, a bare `future` — and a second
@@ -325,12 +328,12 @@ export let tests = suite('Component emission', () => {
     // functions — no interface, no import, no declared type, only an
     // opcode — so they cannot ride in the lowering section beside the
     // imports they sit next to in the core module.
-    let ids = sectionIds(compileFor(`${fixtures}/timer.zena`, 'component'));
+    let ids = sectionIds(await compileFor(`${fixtures}/timer.zena`, 'component'));
     equal(idsToString(ids), '7,10,6,7,10,6,8,7,8,2,1,2,6,7,8,11',
       `timer.zena emitted sections ${idsToString(ids)}`);
   });
 
-  test('the async entry replaces main', (ctx) => {
+  test('the async entry replaces main', async (ctx) => {
     // A program that sleeps is entered through the callback-lifted
     // `run`: it hands control back to the host while the timer runs and
     // is re-entered when it fires. Lifting `main` as well would offer
@@ -340,13 +343,13 @@ export let tests = suite('Component emission', () => {
     // The entry keeps the name `main` either way; what tells the two
     // apart is the core export the async entry is lifted from, which
     // the embedded core module names verbatim.
-    let timer = compileFor(`${fixtures}/timer.zena`, 'component');
+    let timer = await compileFor(`${fixtures}/timer.zena`, 'component');
     isTrue(containsName(sectionPayload(timer, 11), 'main'),
       'the timer component does not export `main`');
     isTrue(containsName(timer, componentEntryExport),
       'the timer component is not entered through the async entry');
     // The synchronous case is unchanged: no driver, no async entry.
-    let plain = compileFor(`${fixtures}/clock.zena`, 'component');
+    let plain = await compileFor(`${fixtures}/clock.zena`, 'component');
     isTrue(containsName(sectionPayload(plain, 11), 'main'),
       'a component with no async driver does not export `main`');
     isTrue(!containsName(plain, componentEntryExport),
@@ -354,14 +357,14 @@ export let tests = suite('Component emission', () => {
   });
 
   test('an async main with a value returns it through a typed task.return',
-      (ctx) => {
+      async (ctx) => {
     // The lifted entry is `async func() -> u32`: the value cannot come
     // back from the call that started main, so the compiler loads a
     // wrapper beside the entry declaring `task.return` at main's
     // result type (lib/component-entry.zena), and the driver calls it
     // once main's future settles. The core module imports that
     // declaration under its own name, beside the driver's bare one.
-    let bytes = compileFor(`${fixtures}/exit-value.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/exit-value.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 11), 'main'),
       'the valued async entry is not exported as `main`');
     isTrue(containsName(bytes, componentEntryExport),
@@ -381,7 +384,7 @@ export let tests = suite('Component emission', () => {
   });
 
   test('a declared world\'s async exports lift through wrappers typed ' +
-      'by the WIT', (ctx) => {
+      'by the WIT', async (ctx) => {
     // Each async function export of the world gets a `<name>_export`
     // wrapper in the module the compiler writes beside the entry: it
     // lifts the flattened parameters, calls the program's function,
@@ -391,7 +394,7 @@ export let tests = suite('Component emission', () => {
     let wit = readFileSync(`${fixtures}/service.wit`);
     let entry = `${fixtures}/service.zena`;
     let wrapperOpt = synthesizeExportWrapper(wit, 'service', entry,
-        parse(readFileSync(entry), entry), packagesWit());
+        parse(readFileSync(entry), entry), await packagesWit());
     isTrue(wrapperOpt != null, 'the service world gets no wrapper');
     let source = (wrapperOpt as ComponentEntryWrapper).source;
     isTrue(source.contains('@external("canon", "task.return#describe", ' +
@@ -413,7 +416,7 @@ export let tests = suite('Component emission', () => {
     isTrue(source.contains('releaseStringArgument(p0, l0);'),
       'a string parameter buffer is not released:\n' + source);
     // The component: every export lifted, each typed return imported.
-    let bytes = compileForWorld(entry, wit, 'service');
+    let bytes = await compileForWorld(entry, wit, 'service');
     let exportSection = sectionPayload(bytes, 11);
     isTrue(containsName(exportSection, 'describe') &&
         containsName(exportSection, 'shout') &&
@@ -429,7 +432,7 @@ export let tests = suite('Component emission', () => {
       "count's typed return canon entry is missing");
   });
 
-  test('the stdlib\'s wasi WIT is a built-in package', (ctx) => {
+  test('the stdlib\'s wasi WIT is a built-in package', async (ctx) => {
     // The compiler registers `wasi` itself, rooted at the WIT shipped
     // under the stdlib, so a program — or a stdlib module such as
     // `zena:fetch` — imports `wasi:http/client` with no manifest. A
@@ -448,12 +451,12 @@ export let tests = suite('Component emission', () => {
       'a declared wasi package was replaced by the built-in one');
     // And the shipped WIT really is there, with the interfaces the
     // fetch module speaks.
-    isTrue(readWitSource(disk, `${stdlibRoot}/wit`).contains('interface client'),
+    isTrue((await readWitSource(disk, `${stdlibRoot}/wit`)).contains('interface client'),
       'the stdlib\'s wasi WIT does not declare wasi:http/client');
   });
 
   test('an exported interface\'s async function wraps with its used types',
-      (ctx) => {
+      async (ctx) => {
     // The wasi:http service world exports the `handler` interface,
     // whose `handle` takes the types interface's `request` and returns
     // its `response` or `error-code`. The wrapper lifts the request
@@ -463,7 +466,7 @@ export let tests = suite('Component emission', () => {
     let wit = readFileSync(`${fixtures}/http-service.wit`);
     let entry = `${fixtures}/http-service.zena`;
     let wrapperOpt = synthesizeExportWrapper(wit, 'http-service', entry,
-        parse(readFileSync(entry), entry), packagesWit());
+        parse(readFileSync(entry), entry), await packagesWit());
     isTrue(wrapperOpt != null, 'the http service world gets no wrapper');
     let source = (wrapperOpt as ComponentEntryWrapper).source;
     isTrue(source.contains('@external("canon", "task.return#handle", ' +
@@ -486,7 +489,7 @@ export let tests = suite('Component emission', () => {
   });
 
   test('an exported interface\'s future result lowers through its helpers',
-      (ctx) => {
+      async (ctx) => {
     // The composition fixture's provider: `ask` returns a
     // `future<s32>`, so the program's `Future<i32>` lowers into a
     // canonical future the wrapper module must carry the helpers
@@ -496,7 +499,7 @@ export let tests = suite('Component emission', () => {
     let wit = readFileSync(`${fixtures}/compose.wit`);
     let entry = `${fixtures}/compose-provider.zena`;
     let wrapperOpt = synthesizeExportWrapper(wit, 'provider', entry,
-        parse(readFileSync(entry), entry), packagesWit());
+        parse(readFileSync(entry), entry), await packagesWit());
     isTrue(wrapperOpt != null, 'the provider world gets no wrapper');
     let source = (wrapperOpt as ComponentEntryWrapper).source;
     isTrue(source.contains(
@@ -512,7 +515,7 @@ export let tests = suite('Component emission', () => {
   });
 
   test('a synchronous export richer than a string wraps and returns through a return area',
-      (ctx) => {
+      async (ctx) => {
     // The greeter interface: `count` and `shout` lift on their own and
     // get no wrapper; `describe`'s `result<string, string>` flattens
     // to three core values, so its wrapper stages the result in a
@@ -522,7 +525,7 @@ export let tests = suite('Component emission', () => {
     let wit = readFileSync(`${fixtures}/greeter.wit`);
     let entry = `${fixtures}/greeter.zena`;
     let wrapperOpt = synthesizeExportWrapper(wit, 'provider', entry,
-        parse(readFileSync(entry), entry), packagesWit());
+        parse(readFileSync(entry), entry), await packagesWit());
     isTrue(wrapperOpt != null, 'the greeter world gets no wrapper');
     let source = (wrapperOpt as ComponentEntryWrapper).source;
     isTrue(!source.contains('count_export'),
@@ -542,7 +545,7 @@ export let tests = suite('Component emission', () => {
   });
 
   test('an export\'s rich parameters lift out of flat core values',
-      (ctx) => {
+      async (ctx) => {
     // The params world: a list arrives as two core values and lifts
     // through the list helper's element half; a tuple, an option and a
     // result through a generated flat-lift helper taking their slots;
@@ -552,7 +555,7 @@ export let tests = suite('Component emission', () => {
     let wit = readFileSync(`${fixtures}/params.wit`);
     let entry = `${fixtures}/params.zena`;
     let wrapperOpt = synthesizeExportWrapper(wit, 'provider', entry,
-        parse(readFileSync(entry), entry), packagesWit());
+        parse(readFileSync(entry), entry), await packagesWit());
     isTrue(wrapperOpt != null, 'the params world gets no wrapper');
     let source = (wrapperOpt as ComponentEntryWrapper).source;
     isTrue(source.contains(`export function total_export_sync(a0_0: i32, a0_1: i32): i32 {`),
@@ -578,7 +581,7 @@ export let tests = suite('Component emission', () => {
   });
 
   test('a wrapped export lifts a record and a variant parameter from their slots',
-      (ctx) => {
+      async (ctx) => {
     // Named types through `use`, as the relay fixture's forwarding
     // interface declares them: a record's fields take consecutive
     // slots, a variant's cases share the payload slots after the
@@ -619,7 +622,7 @@ export async function confirm(): Future<Future<Result<void, Fault>>> { return Fu
 export function reset(): boolean { return true; }
 `, entry);
     let wrapperOpt = synthesizeExportWrapper(wit, 'provider', entry, program,
-        packagesWit());
+        await packagesWit());
     isTrue(wrapperOpt != null, 'the relay provider world gets no wrapper');
     let source = (wrapperOpt as ComponentEntryWrapper).source;
     isTrue(source.contains(`export function forward_export(a0_0: i32, a0_1: i32, a0_2: i32): void {`),
@@ -631,14 +634,14 @@ export function reset(): boolean { return true; }
   });
 
   test('an exported interface\'s own types are encoded and exported from its instance',
-      (ctx) => {
+      async (ctx) => {
     // The geo provider: `survey` declares `point`, `reading`,
     // `quality`, `finding` and `note` itself. Each is encoded at
     // component level as a function type first names it, and the
     // exported instance exports it under its name — so the component
     // reads back as the interface, types and all.
     let wit = readFileSync(`${fixtures}/wit-pkg/geo.wit`);
-    let bytes = compileForWorld(`${fixtures}/geo-provider.zena`, wit,
+    let bytes = await compileForWorld(`${fixtures}/geo-provider.zena`, wit,
         'provider');
     isTrue(containsName(bytes, 'fixture:geo/survey@1.0.0'),
       'the survey instance is not exported');
@@ -652,15 +655,15 @@ export function reset(): boolean { return true; }
   });
 
   test('an explicit identifier synthesizes under its bare name',
-      (ctx) => {
+      async (ctx) => {
     // `wasi:filesystem/types` spells two record fields `%type` and a
     // parameter `%flags`: the `%` escapes a keyword and is no part of
     // the name. The parser drops it, so the module renders `type` as
     // a field — before, the whole module failed to synthesize, and
     // every import from it reported as "Library not found".
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
-        readWitSource(disk, `${stdlibRoot}/wit`));
+        await readWitSource(disk, `${stdlibRoot}/wit`));
     isTrue(source.contains('type: DescriptorType'),
       `the escaped field is not rendered under its bare name:\n${source}`);
     isTrue(!source.contains('%'),
@@ -668,7 +671,7 @@ export function reset(): boolean { return true; }
   });
 
   test('a WIT module synthesizes from a directory the host holds in memory',
-      (ctx) => {
+      async (ctx) => {
     // A host with no filesystem — the playground, or the compiler built
     // as a component and run in a browser — serves WIT the way it
     // serves source. The root is a directory that exists only in the
@@ -679,7 +682,7 @@ export function reset(): boolean { return true; }
     host.addFile('/mem/wit/b.wit',
         'interface hello {\n  greet: func(name: string) -> string;\n}\n');
     host.addFile('/mem/wit/README.md', 'not WIT');
-    let source = synthesizeWitModule(host, 'wit:/mem/wit#mem:greet/hello');
+    let source = await synthesizeWitModule(host, 'wit:/mem/wit#mem:greet/hello');
     isTrue(source.contains('// Synthesized from WIT: mem:greet/hello@1.0.0.'),
       `the module is not the in-memory interface's:\n${source}`);
     isTrue(source.contains('greet'),
@@ -699,7 +702,7 @@ export function reset(): boolean { return true; }
   });
 
   test('an empty WIT directory is reported as a directory with no .wit files',
-      (ctx) => {
+      async (ctx) => {
     // git keeps no empty directories, so the test makes one. An empty
     // listing has to mean "a directory with nothing in it": read as a
     // file instead, the root failed with the host's error for reading a
@@ -714,7 +717,7 @@ export function reset(): boolean { return true; }
     }
     var message = '';
     try {
-      readWitSource(disk, dir);
+      await readWitSource(disk, dir);
     } catch (e) {
       message = (e as Error).message;
     }
@@ -723,15 +726,15 @@ export function reset(): boolean { return true; }
   });
 
   test('an async method on an imported resource renders as an async member',
-      (ctx) => {
+      async (ctx) => {
     // `descriptor`'s `get-type` is `async func` on the resource: the
     // raw declaration is the async lowering with the implicit `self`
     // handle first and the return area last, and the member wrapper
     // awaits the packed subtask, then lifts the result into a Result.
     // Refused as "waits on the interop stages" until now.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
-        readWitSource(disk, `${stdlibRoot}/wit`));
+        await readWitSource(disk, `${stdlibRoot}/wit`));
     isTrue(source.contains('@external("wasi:filesystem/types@0.3.0", "[method]descriptor.get-type", "async")'),
       `the method is not declared with the async option:\n${source}`);
     isTrue(source.contains('declare function descriptorGetType_raw(self: i32, ret: i32): i32;'),
@@ -745,15 +748,15 @@ export function reset(): boolean { return true; }
   });
 
   test('a resource of an interface in the owned list renders as a resource class',
-      (ctx) => {
+      async (ctx) => {
     // `zena-cli:host/process` is in `ownedResourceSpecifiers`: its
     // `command` and `process` resources are resource classes whose
     // dispose consumes the receiver, the constructor and `spawn` hand
     // back owners, and nothing carries a moved flag — lowering an own
     // disowns the wrapper instead.
-    let source = synthesizeWitModule(disk,
+    let source = await synthesizeWitModule(disk,
         `wit:${stdlibRoot}/host-wit#zena-cli:host/process`,
-        readWitSource(disk, `${stdlibRoot}/host-wit`));
+        await readWitSource(disk, `${stdlibRoot}/host-wit`));
     isTrue(source.contains('export resource class Command {'),
       `command is not a resource class:\n${source}`);
     isTrue(source.contains('export resource class Process {'),
@@ -771,24 +774,24 @@ export function reset(): boolean { return true; }
   });
 
   test('an own inside an aggregate lifts as an unmanaged handle',
-      (ctx) => {
+      async (ctx) => {
     // The wasm interface's results carry no handles in aggregates, so
     // nothing there mentions `Unmanaged`; the filesystem's preopens
     // return `list<tuple<descriptor, string>>`, where a `resource
     // class` handle inside a tuple is `Unmanaged<T>`, disowned as it
     // is lifted, for the program to adopt what it keeps.
-    let wasm = synthesizeWitModule(disk,
+    let wasm = await synthesizeWitModule(disk,
         `wit:${stdlibRoot}/host-wit#zena-cli:host/wasm`,
-        readWitSource(disk, `${stdlibRoot}/host-wit`));
+        await readWitSource(disk, `${stdlibRoot}/host-wit`));
     isTrue(wasm.contains('export resource class Run {'),
       `run is not a resource class:\n${wasm}`);
     isTrue(wasm.contains('): Own<Run> {'),
       `the constructor does not hand back an owner:\n${wasm}`);
     isTrue(!wasm.contains('Unmanaged'),
       `an unmanaged handle appears where no aggregate holds one:\n${wasm}`);
-    let preopens = synthesizeWitModule(disk,
+    let preopens = await synthesizeWitModule(disk,
         `wit:${stdlibRoot}/wit#wasi:filesystem/preopens`,
-        readWitSource(disk, `${stdlibRoot}/wit`));
+        await readWitSource(disk, `${stdlibRoot}/wit`));
     isTrue(preopens.contains('Array<(Unmanaged<Descriptor>, String)>'),
       `a handle in a tuple is not unmanaged:\n${preopens}`);
     isTrue(preopens.contains('disown(new Descriptor('),
@@ -796,12 +799,12 @@ export function reset(): boolean { return true; }
   });
 
   test('a resource of an interface outside the owned list keeps the Disposable class',
-      (ctx) => {
+      async (ctx) => {
     // `wasi:cli/terminal-input` is not in the list yet: its
     // `terminal-input` renders as before, flag and all.
-    let source = synthesizeWitModule(disk,
+    let source = await synthesizeWitModule(disk,
         `wit:${stdlibRoot}/wit#wasi:cli/terminal-input`,
-        readWitSource(disk, `${stdlibRoot}/wit`));
+        await readWitSource(disk, `${stdlibRoot}/wit`));
     isTrue(source.contains('export final class TerminalInput implements Disposable {'),
       `terminal-input is not the Disposable class:\n${source}`);
     isTrue(source.contains('[markMoved](): void {'),
@@ -811,15 +814,15 @@ export function reset(): boolean { return true; }
   });
 
   test('the HTTP resources render as resource classes, with owners in tuples',
-      (ctx) => {
+      async (ctx) => {
     // `wasi:http/types` and `zena-cli:host/http-server` joined the list
     // with `zena:http`'s and `zena:fetch`'s migration. A tuple in a bare
     // position carries owners: `new` hands back the request it made,
     // `consume-body` a trailers future of an owned `fields`, and
     // `listen` a stream of owned request and writer pairs. A tuple in a
     // list still cannot, so `copy-all`'s entries stay plain data.
-    let wit = readWitSource(disk, `${stdlibRoot}/wit`);
-    let types = synthesizeWitModule(disk,
+    let wit = await readWitSource(disk, `${stdlibRoot}/wit`);
+    let types = await synthesizeWitModule(disk,
         `wit:${stdlibRoot}/wit#wasi:http/types`, wit);
     for (let name in ['Fields', 'Request', 'Response']) {
       isTrue(types.contains(`export resource class ${name} {`),
@@ -834,9 +837,9 @@ export function reset(): boolean { return true; }
     isTrue(types.contains('copyAll(): Array<(String, FixedArray<u8>)> {'),
       `copy-all's entries changed:\n${types}`);
 
-    let server = synthesizeWitModule(disk,
+    let server = await synthesizeWitModule(disk,
         `wit:${stdlibRoot}/host-wit#zena-cli:host/http-server`,
-        `${readWitSource(disk, `${stdlibRoot}/host-wit`)}\n${wit}`);
+        `${await readWitSource(disk, `${stdlibRoot}/host-wit`)}\n${wit}`);
     isTrue(server.contains('listen(): Stream<(Own<Request>, Own<ResponseWriter>)> {'),
       `listen does not yield owned pairs:\n${server}`);
     // A stream of owners has one reader, made with `create`, and the
@@ -855,7 +858,7 @@ export function reset(): boolean { return true; }
         server.contains('let refused = liftVal'),
       `the lowering pump does not take back a refused element:\n${server}`);
 
-    let client = synthesizeWitModule(disk,
+    let client = await synthesizeWitModule(disk,
         `wit:${stdlibRoot}/wit#wasi:http/client`, wit);
     isTrue(client.contains('export async function send(request: Own<Request>): ' +
         'Future<Result<Own<Response>, ErrorCode>> {'),
@@ -863,13 +866,13 @@ export function reset(): boolean { return true; }
   });
 
   test('the filesystem descriptor renders as a resource class',
-      (ctx) => {
+      async (ctx) => {
     // `wasi:filesystem/types` joined the list with `zena:fs`'s
     // migration: an `open-at` result carries an `Own<Descriptor>`, and a
     // method's `self` and the `rename-at` target are borrows.
-    let source = synthesizeWitModule(disk,
+    let source = await synthesizeWitModule(disk,
         `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
-        readWitSource(disk, `${stdlibRoot}/wit`));
+        await readWitSource(disk, `${stdlibRoot}/wit`));
     isTrue(source.contains('export resource class Descriptor {'),
       `descriptor is not a resource class:\n${source}`);
     isTrue(source.contains('Result<Own<Descriptor>, ErrorCode>'),
@@ -879,7 +882,7 @@ export function reset(): boolean { return true; }
   });
 
   test('parameters past the core-value limit spill into one staged buffer',
-      (ctx) => {
+      async (ctx) => {
     // The spill fixture: `sum`'s seventeen core values and the `gpu`
     // method's sixteen-plus-`self` spill on a synchronous call, and
     // `sum-async`'s five — or `request`'s `self` plus an option of a
@@ -888,8 +891,8 @@ export function reset(): boolean { return true; }
     // offsets (a method's handle first), and passes its address as the
     // raw call's one argument; `four` sits exactly at the async limit
     // and stays flat.
-    let source = synthesizeWitModule(disk, 
-        `wit:${fixtures}/wit-pkg#fixture:spill/wide`, packagesWit());
+    let source = await synthesizeWitModule(disk, 
+        `wit:${fixtures}/wit-pkg#fixture:spill/wide`, await packagesWit());
     isTrue(!source.contains('Not yet importable'),
       `something is still refused:\n${source}`);
     isTrue(source.contains('declare function sum_raw(args: i32): u32;'),
@@ -917,7 +920,7 @@ export function reset(): boolean { return true; }
   });
 
   test('a resource the program provides gets wrappers over a table of instances',
-      (ctx) => {
+      async (ctx) => {
     // The gfx-surface world: `surface` and `context` are the program's
     // classes. Each resource function is an export under the canonical
     // ABI's mangled name, implemented by a wrapper: a constructor
@@ -928,7 +931,7 @@ export function reset(): boolean { return true; }
     let wit = readFileSync(`${fixtures}/gfx-surface.wit`);
     let entry = `${fixtures}/gfx-surface-provider.zena`;
     let wrapperOpt = synthesizeExportWrapper(wit, 'provider', entry,
-        parse(readFileSync(entry), entry), packagesWit());
+        parse(readFileSync(entry), entry), await packagesWit());
     isTrue(wrapperOpt != null, 'the provider world gets no wrapper');
     let source = (wrapperOpt as ComponentEntryWrapper).source;
     isTrue(source.contains('export function surface__constructor_export_sync(a0: u32, a1: u32): i32 {'),
@@ -968,7 +971,7 @@ export function reset(): boolean { return true; }
   });
 
   test('the graphics runtime fixture\'s WIT synthesizes whole',
-      (ctx) => {
+      async (ctx) => {
     // `webgpu.wit` is the WIT the zenafx triangle fixture is built
     // against, as wasm-tools prints it: all of `wasi:webgpu/webgpu`
     // and both `wasi-gfx:surface` interfaces — 18 resources, 34
@@ -981,37 +984,37 @@ export function reset(): boolean { return true; }
     let specs = ['wasi:webgpu/webgpu', 'wasi-gfx:surface/surface',
         'wasi-gfx:surface/surface-webgpu'];
     for (let spec in specs) {
-      let source = synthesizeWitModule(disk, `wit:${doc}#${spec}`, packagesWit());
+      let source = await synthesizeWitModule(disk, `wit:${doc}#${spec}`, await packagesWit());
       isTrue(!source.contains('Not yet importable'),
         `${spec} still refuses something:\n${source}`);
     }
-    let webgpu = synthesizeWitModule(disk, `wit:${doc}#wasi:webgpu/webgpu`,
-        packagesWit());
+    let webgpu = await synthesizeWitModule(disk, `wit:${doc}#wasi:webgpu/webgpu`,
+        await packagesWit());
     isTrue(webgpu.contains('  async requestAdapter(options: Option<GpuRequestAdapterOptions>): Future<Option<GpuAdapter>> {'),
       `request-adapter is not an async member:\n${webgpu}`);
     isTrue(webgpu.contains('declare function gpuRequestAdapter_raw(args: i32, ret: i32): i32;'),
       `request-adapter's parameters do not spill:\n${webgpu}`);
     isTrue(webgpu.contains('storeI32(args, this.#handle);'),
       `the handle is not first in the spilled buffer:\n${webgpu}`);
-    let surface = synthesizeWitModule(disk, `wit:${doc}#wasi-gfx:surface/surface`,
-        packagesWit());
+    let surface = await synthesizeWitModule(disk, `wit:${doc}#wasi-gfx:surface/surface`,
+        await packagesWit());
     isTrue(surface.contains('  onFrame(): Stream<FrameEvent> {'),
       `on-frame is not a typed stream:\n${surface}`);
-    let surfaceWebgpu = synthesizeWitModule(disk, 
-        `wit:${doc}#wasi-gfx:surface/surface-webgpu`, packagesWit());
+    let surfaceWebgpu = await synthesizeWitModule(disk, 
+        `wit:${doc}#wasi-gfx:surface/surface-webgpu`, await packagesWit());
     isTrue(surfaceWebgpu.contains('export class ContextConfiguration(device: GpuDevice, format: GpuTextureFormat,'),
       `the borrowed device is not a field of the cross-package record:\n${surfaceWebgpu}`);
   });
 
   test('a stream of records renders per-element pumps',
-      (ctx) => {
+      async (ctx) => {
     // `stream<frame-event>`: the five stream builtins declared per
     // element, typed against the interface like a future's payload,
     // a lift that reads a chunk of records out of a return area into
     // a StreamWriter, and a lower that writes the guest stream's
     // records one at a time — `Stream<FrameEvent>` in the signatures.
-    let source = synthesizeWitModule(disk, 
-        `wit:${fixtures}/gfx.wit#test:gfx/feed`, packagesWit());
+    let source = await synthesizeWitModule(disk, 
+        `wit:${fixtures}/gfx.wit#test:gfx/feed`, await packagesWit());
     isTrue(source.contains(`@external("canon", "stream.read#test:gfx/feed@1.0.0.0", "stream:test:gfx/feed@1.0.0#frame-event,async")`),
       `the stream read is not declared per element:\n${source}`);
     isTrue(source.contains(`export async function frames(count: u32): Future<Stream<FrameEvent>> {`),
@@ -1031,37 +1034,37 @@ export function reset(): boolean { return true; }
   });
 
   test('a borrowed cross-package resource inside a record parameter compiles',
-      (ctx) => {
+      async (ctx) => {
     // wasi-gfx's shape: `context-configuration` carries
     // `borrow<gpu-device>` used from another package, passed to a
     // resource method. The program compiles and the component's
     // import carries the borrow in the record.
-    let bytes = compileFor(`${fixtures}/gfx-configure.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/gfx-configure.zena`, 'component');
     isTrue(containsName(bytes, 'fixture:gfx/surface@1.0.0'),
       'the surface interface import is missing');
     isTrue(containsName(bytes, 'context-configuration'),
       'the configuration record is not in the import');
   });
 
-  test('a component with no imports carries no import machinery', (ctx) => {
+  test('a component with no imports carries no import machinery', async (ctx) => {
     // No instance type, no import, no lowering, no synthesized instance
     // — just the module, its instantiation, and the lifted export. This
     // is the one-core-module case: a component that imports nothing
     // memory-carrying needs no second module.
     let ids = sectionIds(
-        compileFor('packages/zena-compiler/test-files/minimal.zena', 'component'));
+        await compileFor('packages/zena-compiler/test-files/minimal.zena', 'component'));
     equal(idsToString(ids), '1,2,6,7,8,11',
       `minimal.zena emitted sections ${idsToString(ids)}`);
   });
 
-  test('the component embeds the core module verbatim', (ctx) => {
+  test('the component embeds the core module verbatim', async (ctx) => {
     // Emission is a wrapper, not a second backend: the module inside the
     // component is the same module the compiler emits for a hostless
     // core-module target, byte for byte. If these ever diverge, some
     // target knowledge has leaked into codegen, where the design says
     // there is none.
-    let component = compileFor(`${fixtures}/scalars.zena`, 'component');
-    let core = compileFor(`${fixtures}/scalars.zena`, 'freestanding');
+    let component = await compileFor(`${fixtures}/scalars.zena`, 'component');
+    let core = await compileFor(`${fixtures}/scalars.zena`, 'freestanding');
     let embedded = sectionPayload(component, 1);
     equal(embedded.length, core.length,
       `the embedded core module is ${i32ToString(embedded.length)} bytes and ` +
@@ -1075,34 +1078,34 @@ export function reset(): boolean { return true; }
     }
   });
 
-  test('a core-module import namespace is rejected', (ctx) => {
+  test('a core-module import namespace is rejected', async (ctx) => {
     // `env` is not a WIT interface, and no host can satisfy it through
     // a component's import. Emitting one anyway would produce a
     // component that nothing can instantiate, which is a worse failure
     // than not compiling.
-    throws(() => {
-      compileFor(`${fixtures}/env-import.zena`, 'component');
+    await rejects(async () => {
+      await compileFor(`${fixtures}/env-import.zena`, 'component');
     }, 'an @external in the `env` namespace compiled for the component target');
   });
 
-  test('a string on an import is rejected', (ctx) => {
+  test('a string on an import is rejected', async (ctx) => {
     // The asymmetry is structural rather than a missing case. An export
     // takes its memory from the program module, which exists by the time
     // anything is lifted; a lowered import has to exist before the
     // program module is instantiated, so its memory has to come from
     // somewhere earlier. That is the runtime module, and it is C3.
-    throws(() => {
-      compileFor(`${fixtures}/string-import.zena`, 'component');
+    await rejects(async () => {
+      await compileFor(`${fixtures}/string-import.zena`, 'component');
     }, 'a String-taking import compiled for the component target');
   });
 
   test('a string export is lifted through a wrapper, with memory options',
-      (ctx) => {
+      async (ctx) => {
     // The canonical ABI calls a `string`-taking export with a pointer and
     // a length; the Zena function takes a String. The wrapper is what has
     // the signature the ABI expects, and the lift names it rather than
     // the program's own function.
-    let bytes = compileFor(`${fixtures}/strings.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/strings.zena`, 'component');
     // Two core modules: the runtime memory module first, then the
     // program. The program's export section is in the second.
     let runtimeExports = sectionPayload(sectionPayload(bytes, 1), 7);
@@ -1136,18 +1139,18 @@ export function reset(): boolean { return true; }
   });
 
   test('a string-moving component embeds the runtime memory module first',
-      (ctx) => {
+      async (ctx) => {
     // Two core-module sections and two instantiations, runtime first:
     // its memory must exist before the program module that imports it —
     // the same ordering a memory-carrying `canon lower` will need
     // (docs/design/component-emission.md, 1.3).
-    let ids = sectionIds(compileFor(`${fixtures}/strings.zena`, 'component'));
+    let ids = sectionIds(await compileFor(`${fixtures}/strings.zena`, 'component'));
     equal(idsToString(ids), '1,2,1,2,6,7,8,11',
       `strings.zena emitted sections ${idsToString(ids)}`);
   });
 
   test('a wrapper releases every argument buffer it is handed',
-      (ctx) => {
+      async (ctx) => {
     // The host lowers a `string` argument through the *lifted*
     // function's `realloc`, so the bytes come out of the guest's own
     // allocator and are the guest's to free. `post-return` is handed the
@@ -1158,7 +1161,7 @@ export function reset(): boolean { return true; }
     // Counted rather than merely present: one release per string
     // argument, so a second copy would be a double free and none would
     // be the leak.
-    let wat = watFor(`${fixtures}/strings.zena`, 'component');
+    let wat = await watFor(`${fixtures}/strings.zena`, 'component');
     assertFunctionUsesTimes(wat, '$greet$componentExport',
       'call $releaseStringArgument', 1,
       'the argument buffer is the guest\'s to free');
@@ -1173,13 +1176,13 @@ export function reset(): boolean { return true; }
   });
 
   test('a component moving no strings links none of the marshaling',
-      (ctx) => {
+      async (ctx) => {
     // `zena:wasi` is in the component target's prelude, so it is
     // loaded for every program. Reachability is what keeps it out: the
     // allocator and the copy loops are rooted only when a String
     // actually crosses an export, so the timer and clock components are
     // emitted exactly as they were before any of this existed.
-    let bytes = compileFor(`${fixtures}/clock.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/clock.zena`, 'component');
     let coreExports = sectionPayload(sectionPayload(bytes, 1), 7);
     isTrue(!containsName(coreExports, 'cabi_realloc'),
       'a component with no strings still links the canonical allocator');
@@ -1235,7 +1238,7 @@ export function reset(): boolean { return true; }
   });
 
   test('a declared world is the import surface, used or not',
-      (ctx) => {
+      async (ctx) => {
     // The world imports an interface the program never calls. With a
     // declared world the component's imports are the world's, so the
     // unused instance is imported anyway — a host must satisfy the
@@ -1251,14 +1254,14 @@ world probe {
   export main: func() -> s32;
 }
 `;
-    let bytes = compileForWorld(
+    let bytes = await compileForWorld(
         'packages/zena-compiler/test-files/minimal.zena', wit, 'probe');
     isTrue(containsName(sectionPayload(bytes, 10), 'test:probe/extras@1.0.0'),
       'the unused world import is missing from the import section');
   });
 
   test('disagreements between a declared world and the program are errors',
-      (ctx) => {
+      async (ctx) => {
     // Both directions, and types: a world export the program lacks, a
     // program export the world lacks, and a shared export whose types
     // differ. Each is a compile error naming the mismatch, not a
@@ -1269,8 +1272,8 @@ world probe {
   export absent: func() -> u32;
 }
 `;
-    throws(() => {
-      compileForWorld('packages/zena-compiler/test-files/minimal.zena',
+    await rejects(async () => {
+      await compileForWorld('packages/zena-compiler/test-files/minimal.zena',
           missingInProgram, 'probe');
     }, 'a world export the program lacks compiled anyway');
 
@@ -1278,8 +1281,8 @@ world probe {
 world probe {
 }
 `;
-    throws(() => {
-      compileForWorld('packages/zena-compiler/test-files/minimal.zena',
+    await rejects(async () => {
+      await compileForWorld('packages/zena-compiler/test-files/minimal.zena',
           missingInWorld, 'probe');
     }, 'a program export the world lacks compiled anyway');
 
@@ -1288,31 +1291,31 @@ world probe {
   export main: func() -> string;
 }
 `;
-    throws(() => {
-      compileForWorld('packages/zena-compiler/test-files/minimal.zena',
+    await rejects(async () => {
+      await compileForWorld('packages/zena-compiler/test-files/minimal.zena',
           wrongType, 'probe');
     }, 'a type disagreement compiled anyway');
   });
 
   test('a declared world resolves without --world when it is alone',
-      (ctx) => {
+      async (ctx) => {
     let wit = `package test:probe@1.0.0;
 world only {
   export main: func() -> s32;
 }
 `;
-    let bytes = compileForWorld(
+    let bytes = await compileForWorld(
         'packages/zena-compiler/test-files/minimal.zena', wit, '');
     isTrue(containsName(sectionPayload(bytes, 11), 'main'),
       'the sole world did not resolve');
-    throws(() => {
-      compileForWorld('packages/zena-compiler/test-files/minimal.zena',
+    await rejects(async () => {
+      await compileForWorld('packages/zena-compiler/test-files/minimal.zena',
           wit, 'nope');
     }, "--world named a world the document does not declare");
   });
 
   test('a WIT-typed module imports the interface as its WIT declares it',
-      (ctx) => {
+      async (ctx) => {
     // `import {now} from 'wasi:clocks/monotonic-clock'` — the
     // signature comes from the package's WIT, and so does the emitted
     // instance type: the package's source is spliced whole, so the
@@ -1320,7 +1323,7 @@ world only {
     // every function declared — not a derivation from the synthesized
     // core-shaped declarations, and not just the slice the program
     // touched.
-    let viaWit = compileFor(`${fixtures}/clock-wit.zena`, 'component');
+    let viaWit = await compileFor(`${fixtures}/clock-wit.zena`, 'component');
     // The clock `use`s `wasi:clocks/types`, so that instance is imported
     // first and the clock's import is the second import section.
     isTrue(containsName(sectionPayloadAfter(viaWit, 10, 0),
@@ -1337,14 +1340,14 @@ world only {
   });
 
   test('a WIT-typed module stages strings and lifts spilled results',
-      (ctx) => {
+      async (ctx) => {
     // The synthesized source for an interface with strings and lists:
     // the raw declaration carries the canonically flattened core
     // signature — two i32s per staged value, a trailing return-area
     // address when the result spills past one core value — and the
     // wrapper stages before the call, releases after it, and lifts the
     // result through zena:wasi.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:text/transform`);
     isTrue(source.contains(
         'declare function upper_raw(p0: i32, l0: i32, ret: i32): void;'),
@@ -1379,14 +1382,14 @@ world only {
   });
 
   test('a WIT-typed module synthesizes enums and flags',
-      (ctx) => {
+      async (ctx) => {
     // A WIT `enum` becomes a Zena enum with explicit ordinals (the
     // ordinal is the wire discriminant), a `flags` becomes a distinct
     // u32 with one constant per label, and the wrappers cast at the
     // boundary — with a range-checked lift on an enum result, so an
     // out-of-range discriminant is a loud error rather than a value
     // that defeats exhaustive matching later.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:codes/status`);
     isTrue(source.contains('export enum Level {'),
       'no synthesized enum:\n' + source);
@@ -1407,20 +1410,20 @@ world only {
       'flags parameters should cast through u32:\n' + source);
     // And the fixture importing all of it emits a component naming the
     // interface.
-    let bytes = compileFor(`${fixtures}/codes-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/codes-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 10),
         'fixture:codes/status@1.0.0'),
       'the codes interface import is missing');
   });
 
   test('a WIT-typed module synthesizes records, variants and lifts',
-      (ctx) => {
+      async (ctx) => {
     // The aggregate surface: records as case classes, variants as
     // sealed hierarchies (cases prefixed with the variant's name),
     // and generated lift helpers reading the canonical layout out of
     // a spilled return area — offsets computed per the canonical
     // ABI's size-and-alignment rules.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:geo/survey`);
     isTrue(source.contains(
         'export class Point(x: f64, y: f64, label: String)'),
@@ -1453,14 +1456,14 @@ world only {
       'a tuple result should be an inline tuple:\n' + source);
     // And the consumer fixture compiles to a component naming the
     // interface.
-    let bytes = compileFor(`${fixtures}/geo-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/geo-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 10),
         'fixture:geo/survey@1.0.0'),
       'the geo interface import is missing');
   });
 
   test('an async WIT import with a result lifts through the return area',
-      (ctx) => {
+      async (ctx) => {
     // `fetch-point: async func(name: string) -> result<point,
     // finding>` — the async lowering flattens the staged string (two
     // core values, within the async limit of four), appends the
@@ -1468,7 +1471,7 @@ world only {
     // wrapper is an async function: stage, call, await the driver,
     // release its own staging range, then lift the result the host
     // wrote — into a stored Result, which a future's payload is.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:geo/survey`);
     isTrue(source.contains(
         '@external("fixture:geo/survey@1.0.0", "fetch-point", "async")'),
@@ -1491,13 +1494,13 @@ world only {
         'Future<void> {'),
       'the rich-parameter async wrapper is wrong:\n' + source);
     // And the consumer awaiting both compiles to a component.
-    let bytes = compileFor(`${fixtures}/fetch-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/fetch-wit.zena`, 'component');
     isTrue(containsName(bytes, componentEntryExport),
       'an awaiting program should be entered through the async entry');
   });
 
   test('a WIT-typed module lowers aggregate parameters into flat slots',
-      (ctx) => {
+      async (ctx) => {
     // The mirror of the lift half: an aggregate parameter flattens
     // into zero-initialized slot variables the wrapper fills — a
     // record field by field, a variant through an if chain writing
@@ -1506,7 +1509,7 @@ world only {
     // staged buffers registered in the arena and one releaseStaged()
     // after the call. A list parameter stages an element buffer and
     // writes each element at its canonical stride.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:geo/survey`);
     // point flattens to [f64, f64, i32, i32].
     isTrue(source.contains(
@@ -1542,14 +1545,14 @@ world only {
   });
 
   test('a WIT-typed module synthesizes resource classes',
-      (ctx) => {
+      async (ctx) => {
     // A resource is a Disposable class owning the imported handle:
     // methods lead their raw calls with the handle, the WIT
     // constructor is `static create`, statics are statics, disposal
     // is the canonical `resource.drop` (idempotent behind a flag),
     // and a bare resource in value position — implicit `own` — wraps
     // the returned handle.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:store/kv`);
     isTrue(source.contains(
         'export final class Bucket implements Disposable {'),
@@ -1583,21 +1586,21 @@ world only {
     // And the consumer fixture compiles to a component naming the
     // interface, with the alias for the drop's nominal type carrying
     // the resource's name.
-    let bytes = compileFor(`${fixtures}/store-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/store-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 10),
         'fixture:store/kv@1.0.0'),
       'the store interface import is missing');
   });
 
   test('a WIT stream<u8> binds to Stream through the pumps',
-      (ctx) => {
+      async (ctx) => {
     // A `stream<u8>` in any position is one end-handle on the wire
     // and `zena:stream`'s `Stream<u8>` in the signature, connected by
     // `zena:wasi`'s pumps: `lowerByteStream` going in
     // (fresh pair, pump, pass the readable end), `liftByteStream`
     // coming out. Streams inside aggregates ride the same expression
     // forms as any handle. Non-u8 elements and future values refuse.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:pipe/pipes`);
     isTrue(source.contains("import { Stream, StreamWriter } from 'zena:stream';"),
       'the stream type is not imported:\n' + source);
@@ -1647,14 +1650,14 @@ world only {
       'a bare future should refuse:\n' + source);
     // And the consumer fixture compiles to a component naming the
     // interface.
-    let bytes = compileFor(`${fixtures}/pipe-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/pipe-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 10),
         'fixture:pipe/pipes@1.0.0'),
       'the pipe interface import is missing');
   });
 
   test('a WIT future<T> binds to Future through generated helpers',
-      (ctx) => {
+      async (ctx) => {
     // A `future<T>` in any position is one end-handle on the wire
     // and a `Future` in the signature, moved by generated
     // per-payload-type helpers: each payload type gets its own five
@@ -1663,7 +1666,7 @@ world only {
     // the payload's own component type. A `result` payload is a
     // stored `Result`, and a bare arm — in a future payload or a plain
     // sync result — is a `void` lane filled by `witUnit()`.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:pipe/pipes`);
     // A scalar-payload future result, lifted directly.
     isTrue(source.contains('export function finish(): Future<u32> {'),
@@ -1715,14 +1718,14 @@ world only {
     isTrue(source.contains('return (true, witUnit());'),
       "the sync bare ok arm should return witUnit:\n" + source);
     // And the consumer fixture compiles to a component.
-    let bytes = compileFor(`${fixtures}/pipe-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/pipe-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 10),
         'fixture:pipe/pipes@1.0.0'),
       'the pipe interface import is missing');
   });
 
   test('a WIT interface reaches another interface through use',
-      (ctx) => {
+      async (ctx) => {
     // `forwarding` does `use data.{packet, fault, channel, level}`:
     // the used types' declarations live in `data`'s synthesized
     // module, so `forwarding`'s module imports them — the sealed base
@@ -1730,7 +1733,7 @@ world only {
     // The resource crosses because the marshaling symbols live in
     // `zena:wasi`, one identity for every synthesized
     // module, rather than per-module.
-    let source = synthesizeWitModule(disk, 
+    let source = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:relay/forwarding`);
     isTrue(source.contains(
         "import { Level, Packet, Fault, FaultLost, FaultGarbled, " +
@@ -1762,7 +1765,7 @@ world only {
       "the bare result's wire discriminant is the boolean:\n" + source);
     // The declaring module still declares, importing the shared
     // marshaling symbols from the abi.
-    let dataSource = synthesizeWitModule(disk, 
+    let dataSource = await synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:relay/data`);
     isTrue(dataSource.contains(
         'export class Packet(level: Level, body: String)'),
@@ -1775,7 +1778,7 @@ world only {
     // And a consumer using classes from BOTH modules compiles, with
     // both interfaces imported — `data` first (dependency order), so
     // the forwarding import is the second import section.
-    let bytes = compileFor(`${fixtures}/relay-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/relay-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 10),
         'fixture:relay/data@1.0.0'),
       'the data interface import is missing');
@@ -1785,24 +1788,24 @@ world only {
   });
 
   test('a stream-only program still gets the async entry',
-      (ctx) => {
+      async (ctx) => {
     // `pipe.zena` awaits canonical copies (`awaitWaitable`) but never
     // an async-lowered import (`awaitPacked`): the driver's rooting
     // gate must open for either door, or the entry stays sync-lifted
     // and stream events are never dispatched.
-    let bytes = compileFor(`${fixtures}/pipe.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/pipe.zena`, 'component');
     isTrue(containsName(bytes, componentEntryExport),
       'a stream-awaiting program should be entered through the ' +
       'async entry');
   });
 
   test('a marshaling import lowers with the canonical memory options',
-      (ctx) => {
+      async (ctx) => {
     // text-wit.zena imports the whole transform interface. Every one of
     // its lowers moves bytes, so each carries (memory 0) (realloc 0) —
     // the runtime memory module's, aliased ahead of the lowers — and
     // the component imports the interface by its qualified name.
-    let bytes = compileFor(`${fixtures}/text-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/text-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 10),
         'fixture:text/transform@1.0.0'),
       'the interface import is missing');
@@ -1821,14 +1824,14 @@ world only {
   });
 
   test('a printing component declares the stream type for its builtins',
-      (ctx) => {
+      async (ctx) => {
     // p3 stdio: the guest creates a `stream<u8>` and writes through the
     // canonical `stream.write`. The stream/future builtins are
     // per-type — the canon entry's immediate is a component type
     // index — so a type section right before the builtins declares
     // `(stream u8)` (0x66, present element, u8), continuing the index
     // space the import front matter used.
-    let bytes = compileFor(`${fixtures}/print.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/print.zena`, 'component');
     // Front matter declares one instance type per imported interface
     // (types, stdout, stderr); the fourth type section is the canon
     // types'. A write that does not complete at once waits in
@@ -1871,32 +1874,32 @@ world only {
   });
 
   test('a WIT-typed async import produces the async entry',
-      (ctx) => {
+      async (ctx) => {
     // `wait-for` is `async` in the package's WIT, so the synthesized
     // module is the raw async-lowered declaration plus a `Future<void>`
     // wrapper over `awaitPacked`, and awaiting it roots the driver:
     // the program is entered through the callback-lifted entry, under
     // `main`. The hand-transcribed spelling (wait-ext.zena) must land
     // in the same place.
-    let viaWit = compileFor(`${fixtures}/wait-wit.zena`, 'component');
+    let viaWit = await compileFor(`${fixtures}/wait-wit.zena`, 'component');
     isTrue(containsName(viaWit, componentEntryExport),
       'the WIT-typed async import did not produce the async entry');
     isTrue(containsName(sectionPayload(viaWit, 11), 'main'),
       'the async entry should be exported as main');
-    let viaExternal = compileFor(`${fixtures}/wait-ext.zena`, 'component');
+    let viaExternal = await compileFor(`${fixtures}/wait-ext.zena`, 'component');
     isTrue(containsName(viaExternal, componentEntryExport),
       'the hand-spelled async import did not produce the async entry');
   });
 
   test('a sync-only use of an async-declaring interface keeps the ' +
-      'synchronous lift', (ctx) => {
+      'synchronous lift', async (ctx) => {
     // clock-wit.zena imports only `now`, but the interface also
     // declares the async `wait-for` — so the synthesized module links
     // `zena:wasi` for its wrapper. Linking the driver's unit
     // must not root it: only a program that actually awaits an
     // async-lowered import gets the callback-lifted entry, and this one
     // keeps its synchronous `main(): u64`.
-    let bytes = compileFor(`${fixtures}/clock-wit.zena`, 'component');
+    let bytes = await compileFor(`${fixtures}/clock-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 11), 'main'),
       'a program that awaits nothing lost its synchronous main');
     isTrue(!containsName(bytes, componentEntryExport),

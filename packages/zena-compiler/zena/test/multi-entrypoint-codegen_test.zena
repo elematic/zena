@@ -37,12 +37,12 @@ import { PlainHost, stdlibRoot } from './test-utils.zena';
  * own code, and a component target would wrap it in the same bytes
  * every time.
  */
-function compileToWasm(
+async function compileToWasm(
     host: PlainHost,
     packages: Map<String, PackageConfig>,
     path: String) {
   let compiler = createCompiler(host, {stdlibRoot, packages});
-  let compResult = compiler.compile({entry: path, target: 'freestanding'});
+  let compResult = await compiler.compile({entry: path, target: 'freestanding'});
   let checkResults = checkCompilation(compResult);
   for (let diag in checkResults.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
@@ -83,27 +83,27 @@ let entryPoints = [
 ];
 
 export let tests = suite('Multi-entrypoint codegen', () => {
-  test('six different modules compile in one process', (ctx) => {
+  test('six different modules compile in one process', async (ctx) => {
     let host = new PlainHost();
-    let packages = loadWorkspace(host, '.');
+    let packages = await loadWorkspace(host, '.');
     for (let path in entryPoints) {
-      let bytes = compileToWasm(host, packages, path);
+      let bytes = await compileToWasm(host, packages, path);
       isTrue(bytes.length > 0, `${path} emitted no bytes`);
     }
   });
 
-  test('the same module compiles to the same size however many precede it', (ctx) => {
+  test('the same module compiles to the same size however many precede it', async (ctx) => {
     // Byte-for-byte equality is not asserted: it was written when a
     // spurious value-wrapper was emitted for a directly-called function,
     // and which one it picked moved with hash order. Both are fixed. The
     // size is stable, so this still catches a module whose contents
     // drift with position.
     let host = new PlainHost();
-    let packages = loadWorkspace(host, '.');
+    let packages = await loadWorkspace(host, '.');
     let path = 'tests/language/execution/variables/local_let.zena';
-    let first = compileToWasm(host, packages, path).length;
+    let first = (await compileToWasm(host, packages, path)).length;
     for (var i = 0; i < 4; i += 1) {
-      let again = compileToWasm(host, packages, path).length;
+      let again = (await compileToWasm(host, packages, path)).length;
       isTrue(again == first, `compile ${i + 2} emitted ${again} bytes, first emitted ${first}`);
     }
   });

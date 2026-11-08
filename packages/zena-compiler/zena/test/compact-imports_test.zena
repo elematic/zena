@@ -24,9 +24,9 @@ import { watFunction } from './wat-invariants.zena';
 
 let entry = 'packages/zena-compiler/test-files/compact-imports.zena';
 
-function wat(compactImports: boolean): String {
+async function wat(compactImports: boolean): Future<String> {
   let outPath = `packages/zena-compiler/zena/out/compact-imports-${compactImports}.wat`;
-  equal(compileFile({entry, outPath, target: 'js', stdlibRoot, compactImports}), 0);
+  equal(await compileFile({entry, outPath, target: 'js', stdlibRoot, compactImports}), 0);
   return readFileSync(outPath);
 }
 
@@ -99,8 +99,8 @@ function describe(entries: GrowableArray<ImportEntry>): String {
 }
 
 export let tests = suite('compact imports', () => {
-  test('imports are emitted one by one, in order, by default', (ctx) => {
-    equal(importSection(wat(false)),
+  test('imports are emitted one by one, in order, by default', async (ctx) => {
+    equal(importSection(await wat(false)),
         '  (import "env" "log_i32" (func (type 2)))\n' +
         '  (import "other" "tick" (func (type 3)))\n' +
         '  (import "env" "log_f64" (func (type 4)))\n' +
@@ -112,8 +112,8 @@ export let tests = suite('compact imports', () => {
         '  (import "_" "c" (global (ref extern)))\n');
   });
 
-  test("a module's imports are grouped, and its imports of one type share it", (ctx) => {
-    equal(importSection(wat(true)),
+  test("a module's imports are grouped, and its imports of one type share it", async (ctx) => {
+    equal(importSection(await wat(true)),
         '  (import "env"\n' +
         '    (item "log_i32" (func (type 2)))\n' +
         '    (item "log_i32_again" (func (type 2)))\n' +
@@ -131,10 +131,10 @@ export let tests = suite('compact imports', () => {
   // An import's index is its position, so moving `tick` after the `env`
   // imports and `log_i32_again` beside its type renumbers them, and the
   // calls have to follow.
-  test('calls name the reordered imports by their new indices', (ctx) => {
-    equal(importCalls(wat(false)),
+  test('calls name the reordered imports by their new indices', async (ctx) => {
+    equal(importCalls(await wat(false)),
         'call $func0\ncall $func1\ncall $func2\ncall $func3\n');
-    equal(importCalls(wat(true)),
+    equal(importCalls(await wat(true)),
         'call $func0\ncall $func3\ncall $func2\ncall $func1\n');
   });
 
@@ -183,9 +183,9 @@ export let tests = suite('compact imports', () => {
     equal(describe(planImports(imports, true)), 'type group env: p q r\ngroup env: s t\n');
   });
 
-  test('--compact-imports is refused on a target that emits a component', (ctx) => {
+  test('--compact-imports is refused on a target that emits a component', async (ctx) => {
     let outPath = 'packages/zena-compiler/zena/out/compact-imports-component.wat';
-    equal(compileFile({entry, outPath, target: 'zena-cli', stdlibRoot, compactImports: true}), 1);
+    equal(await compileFile({entry, outPath, target: 'zena-cli', stdlibRoot, compactImports: true}), 1);
   });
 
   test('imports of a shared type are grouped apart from the rest of the module', (ctx) => {

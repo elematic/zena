@@ -40,7 +40,7 @@ function show(errors: Array<Diagnostic>, label: String) {
 
 export let tests = suite('Declarations on Import Cycles', () => {
 
-  test('plain interface member resolves across a cycle', () => {
+  test('plain interface member resolves across a cycle', async () => {
     let host = new MockHost();
     // shape imports geometry (forward edge); geometry imports Shape from
     // shape (back edge) and calls a method on it.
@@ -56,13 +56,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { measure } from './geometry.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "plain interface");
     equal(errors.length, 0);
   });
 
-  test('generic interface instantiation resolves across a cycle', () => {
+  test('generic interface instantiation resolves across a cycle', async () => {
     let host = new MockHost();
     // Mirrors `Array<Waiter>.length`: a generic interface defined on the
     // cycle, instantiated with a type argument by a module across the back
@@ -79,13 +79,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { unwrap } from './user.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "generic interface");
     equal(errors.length, 0);
   });
 
-  test('inherited interface member resolves across a cycle', () => {
+  test('inherited interface member resolves across a cycle', async () => {
     let host = new MockHost();
     // Mirrors `Array extends Iterable`: an interface on the cycle inherits
     // from another interface reached across the back edge, and the
@@ -103,13 +103,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { describe } from './derived.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "inherited interface");
     equal(errors.length, 0);
   });
 
-  test('plain interface member resolves through a re-export across a cycle', () => {
+  test('plain interface member resolves through a re-export across a cycle', async () => {
     let host = new MockHost();
     // Models how `Array` reaches a cycle module in the stdlib: not by a
     // direct import of its defining module, but through a facade that
@@ -128,13 +128,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { rMeasure } from './rconsumer.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "re-export plain interface");
     equal(errors.length, 0);
   });
 
-  test('generic interface instantiation resolves through a re-export across a cycle', () => {
+  test('generic interface instantiation resolves through a re-export across a cycle', async () => {
     let host = new MockHost();
     // The closest model of `Array<Waiter>.length`: a generic interface,
     // reached through a facade's `export *`, instantiated with a type
@@ -152,13 +152,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { gUnwrap } from './gconsumer.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "re-export generic interface");
     equal(errors.length, 0);
   });
 
-  test('interface as a class field type resolves across a cycle', () => {
+  test('interface as a class field type resolves across a cycle', async () => {
     let host = new MockHost();
     // Mirrors `TaskQueue`, whose `#items` field is typed by an interface
     // (`Array`) defined across the cycle. A field type is resolved when
@@ -179,13 +179,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { FHolder } from './fconsumer.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "field-type interface");
     equal(errors.length, 0);
   });
 
-  test('generic interface as a class field type resolves across a cycle', () => {
+  test('generic interface as a class field type resolves across a cycle', async () => {
     let host = new MockHost();
     // The nearest model of `TaskQueue.#items: Array<Waiter>`: a generic
     // interface, instantiated as the type of a class field, defined across
@@ -205,13 +205,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { HHolder } from './hconsumer.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "field-type generic interface");
     equal(errors.length, 0);
   });
 
-  test('prelude name resolves inside the cycle it is declared on', () => {
+  test('prelude name resolves inside the cycle it is declared on', async () => {
     let host = new MockHost();
     let compiler = makeCompiler(host);
     // `array.zena` uses `Iterable` through the prelude, importing nothing,
@@ -230,13 +230,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
     host.addFile("/project/main.zena",
       "export let n = (x: Iterable<i32>): i32 => x.count();\n" +
       "export function main(): i32 { return 0; }\n");
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "prelude name on a cycle");
     equal(errors.length, 0);
   });
 
-  test('a string literal depends on the module declaring String', () => {
+  test('a string literal depends on the module declaring String', async () => {
     let host = new MockHost();
     let compiler = makeCompiler(host);
     // `tables.zena` never names `String`, but its literals have that
@@ -257,7 +257,7 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "export enum Mode { Lower = 'lower', Upper = 'upper' }\n");
     host.addFile("/project/main.zena",
       "export function main(): i32 { return 0; }\n");
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     // A dependency's errors are left out of the program's diagnostics,
     // so read the library's own.
     let checked = checkCompilation(result);
@@ -273,7 +273,7 @@ export let tests = suite('Declarations on Import Cycles', () => {
     equal(errors.length, 0);
   });
 
-  test('array, map and range literals depend on the modules declaring their classes', () => {
+  test('array, map and range literals depend on the modules declaring their classes', async () => {
     let host = new MockHost();
     let compiler = makeCompiler(host);
     // As for `String`: each library uses a literal whose class it never
@@ -306,7 +306,7 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "export let pairs = () => ({1 => 2});\n");
     host.addFile("/project/main.zena",
       "export function main(): i32 { return 0; }\n");
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let checked = checkCompilation(result);
     var found = 0;
     var errorCount = 0;
@@ -323,7 +323,7 @@ export let tests = suite('Declarations on Import Cycles', () => {
     equal(errorCount, 0);
   });
 
-  test('enum member resolves across a back edge', () => {
+  test('enum member resolves across a back edge', async () => {
     let host = new MockHost();
     // The entry imports `edef`, so `euse` is checked first and reaches
     // `Color` over the back edge — the order `string-convert` meets
@@ -340,13 +340,13 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { fromDef } from './edef.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "enum");
     equal(errors.length, 0);
   });
 
-  test('enum member resolves from a cycle member that has not finished', () => {
+  test('enum member resolves from a cycle member that has not finished', async () => {
     let host = new MockHost();
     // The entry imports `euse`, so `edef` is checked first: it has
     // registered `Color` but not finished when `euse` asks for it — the
@@ -363,7 +363,7 @@ export let tests = suite('Declarations on Import Cycles', () => {
       "import { isRed } from './euse.zena';\n" +
       "export function main(): i32 { return 0; }\n");
     let compiler = makeCompiler(host);
-    let result = compiler.compile({entry: "/project/main.zena", target: 'js'});
+    let result = await compiler.compile({entry: "/project/main.zena", target: 'js'});
     let errors = errorDiagnostics(checkCompilation(result).diagnostics);
     show(errors, "enum, origin first");
     equal(errors.length, 0);

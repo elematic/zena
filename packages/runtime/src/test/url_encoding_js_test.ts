@@ -27,7 +27,7 @@ const source = `
 
 suite('Runtime - zena:url percent-encoding on the js target', () => {
   test('encodes and decodes text above U+007F as UTF-8', async () => {
-    const res = await instantiate(compile(source, 'js'));
+    const res = await instantiate(await compile(source, 'js'));
     const instance = res instanceof WebAssembly.Instance ? res : res.instance;
     const e = instance.exports as Record<string, Function>;
 

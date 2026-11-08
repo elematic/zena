@@ -8,7 +8,12 @@
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {numberImports, stringImports} from '@zena-lang/runtime';
+import {
+  createHostAsync,
+  createPromiseImports,
+  numberImports,
+  stringImports,
+} from '@zena-lang/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Compiled test files live in packages/wasm-web-ui/test/.
@@ -20,11 +25,11 @@ const lspWasmPath =
 const stdlibRoot = join(repoRoot, 'packages', 'stdlib', 'zena');
 
 interface LspExports extends WebAssembly.Exports {
-  init: (stdlibRoot: string) => void;
-  compileToWasm: (path: string, source: string) => unknown;
+  init: (stdlibRoot: string) => Promise<void>;
+  compileToWasm: (path: string, source: string) => Promise<unknown>;
   getByteArrayLength: (bytes: unknown) => number;
   getByteArrayByte: (bytes: unknown, index: number) => number;
-  check: (path: string, source: string) => unknown;
+  check: (path: string, source: string) => Promise<unknown>;
   getDiagnosticCount: (diagnostics: unknown) => number;
   getDiagnosticLine: (diagnostics: unknown, index: number) => number;
   getDiagnosticColumn: (diagnostics: unknown, index: number) => number;
@@ -42,10 +47,13 @@ let service: LspExports | undefined;
  * module, so strings cross it as JavaScript strings: `$stringCreate`
  * wraps one for a parameter, `$stringGetHandle` unwraps a result.
  */
-const languageService = (): LspExports => {
+const languageService = async (): Promise<LspExports> => {
   if (service !== undefined) {
     return service;
   }
+  // The compiler reads files through a host-async import, and the
+  // exports that compile return promises through `zena:js`.
+  const hostAsync = createHostAsync(() => service);
   const module = new WebAssembly.Module(readFileSync(lspWasmPath), {
     builtins: ['js-string'],
     importedStringConstants: '_',
@@ -71,27 +79,22 @@ const languageService = (): LspExports => {
       log_f32: (n: number) => console.log(n),
     },
     compiler: {
-      read_file: (path: unknown): unknown => {
+      read_file: hostAsync.wrap(async (path: unknown): Promise<string> => {
         const exports = service!;
-        try {
-          return exports.$stringCreate(
-            readFileSync(exports.$stringGetHandle(path), 'utf8'),
-          );
-        } catch {
-          return null;
-        }
-      },
+        return readFileSync(exports.$stringGetHandle(path), 'utf8');
+      }, 'string'),
     },
+    js: createPromiseImports(() => service) as WebAssembly.ModuleImports,
     'zena:host:string': stringImports,
     'zena:host:number': numberImports,
   });
   service = instance.exports as LspExports;
-  service.init(service.$stringCreate(stdlibRoot) as string);
+  await service.init(service.$stringCreate(stdlibRoot) as string);
   return service;
 };
 
-const errorsOf = (exports: LspExports, path: string, source: string) => {
-  const diagnostics = exports.check(
+const errorsOf = async (exports: LspExports, path: string, source: string) => {
+  const diagnostics = await exports.check(
     exports.$stringCreate(path) as string,
     exports.$stringCreate(source) as string,
   );
@@ -117,15 +120,15 @@ const errorsOf = (exports: LspExports, path: string, source: string) => {
 let counter = 0;
 
 /** Compiles `source` for the js target and returns the module bytes. */
-export const compile = (source: string): Uint8Array => {
-  const exports = languageService();
+export const compile = async (source: string): Promise<Uint8Array> => {
+  const exports = await languageService();
   const path = `/inline/wasm-web-ui-test-${counter++}.zena`;
-  const bytes = exports.compileToWasm(
+  const bytes = await exports.compileToWasm(
     exports.$stringCreate(path) as string,
     exports.$stringCreate(source) as string,
   );
   if (!bytes) {
-    const errors = errorsOf(exports, path, source);
+    const errors = await errorsOf(exports, path, source);
     throw new Error(
       `Zena compilation failed:\n${
         errors === ''

@@ -28,28 +28,28 @@ function errorsOf(result: ProgramCheckResult) {
 }
 
 export let tests = suite('cycle members across incremental compiles', () => {
-  test('the second entry of a cycle checks clean after the first', (ctx) => {
+  test('the second entry of a cycle checks clean after the first', async (ctx) => {
     let host = new PlainHost();
-    let packages = loadWorkspace(host, ".");
+    let packages = await loadWorkspace(host, ".");
     let compiler = createCompiler(host, {stdlibRoot, packages});
     let a = "tests/language/semantics/modules/cyclic_functions_ok.zena";
     let b = "tests/language/semantics/modules/cyclic_functions_ok_first.zena";
 
-    compiler.invalidate(a);
-    let first = checkCompilation(compiler.compile({entry: a, target: 'js'}));
+    await compiler.invalidate(a);
+    let first = checkCompilation(await compiler.compile({entry: a, target: 'js'}));
     let firstErrors = errorsOf(first);
     for (let e in firstErrors) { console.log("first: " + e); }
     equal(firstErrors.length, 0);
 
-    compiler.invalidate(b);
-    let second = checkCompilation(compiler.compile({entry: b, target: 'js'}), first);
+    await compiler.invalidate(b);
+    let second = checkCompilation(await compiler.compile({entry: b, target: 'js'}), first);
     let secondErrors = errorsOf(second);
     for (let e in secondErrors) { console.log("second: " + e); }
     equal(secondErrors.length, 0);
 
     // And a third compilation of the first entry again, everything
     // unchanged: every module carries forward and it is still clean.
-    let third = checkCompilation(compiler.compile({entry: a, target: 'js'}), second);
+    let third = checkCompilation(await compiler.compile({entry: a, target: 'js'}), second);
     let thirdErrors = errorsOf(third);
     for (let e in thirdErrors) { console.log("third: " + e); }
     equal(thirdErrors.length, 0);

@@ -21,12 +21,12 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-function compileToWat(source: String) {
+async function compileToWat(source: String) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
 
   let entryAst = compResult.entry.ast;
@@ -90,11 +90,11 @@ function assertOpen(wat: String, name: String, why: String) {
 
 export let tests = suite('struct finality', () => {
   test('a class nothing extends is final; its superclass is open',
-      (ctx) => {
+      async (ctx) => {
     // Base is extended, so its struct has to stay open — Derived
     // declares it as a supertype. Derived is a leaf, and so is Tag,
     // which is in no hierarchy at all.
-    let wat = compileToWat(`
+    let wat = await compileToWat(`
 class Base {
   x: i32;
   new(this.x);
@@ -123,10 +123,10 @@ export let main = (): i32 => {
   });
 
   test('a sealed hierarchy leaves only the root open',
-      (ctx) => {
+      async (ctx) => {
     // The shape a match compiles against: one `ref.test` per case,
     // all but one of them failing. Every case struct is a leaf.
-    let wat = compileToWat(`
+    let wat = await compileToWat(`
 sealed class Expr {
   case Lit(value: i32)
   case Neg(inner: Expr)

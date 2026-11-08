@@ -36,7 +36,7 @@
 
 import { Future } from 'zena:async';
 import { StringBuilder } from 'zena:core';
-import { readFileSync, writeFileSync } from 'zena:fs';
+import { readFile, writeFile } from 'zena:fs';
 import { parseJson, JsonObject, JsonArray, JsonValue } from 'zena:json';
 import { normalize } from 'zena:path';
 import { runIn } from 'zena:process';
@@ -64,7 +64,7 @@ export type SuiteOptions = {
    * module it wrote. A suite with a `zena` variant needs it; a program
    * that links a compiler passes one in.
    */
-  compile?: (source: String) => String,
+  compile?: (source: String) => Future<String>,
 };
 
 /** A suite that cannot run: a bad config, or a variant that failed. */
@@ -284,12 +284,12 @@ function readOptions(config: JsonObject) {
 }
 
 /** One variant from the config, compiling a `zena` variant's source. */
-function readVariant(
+async function readVariant(
   spec: JsonObject,
   name: String,
   configDir: String,
   options: SuiteOptions,
-) {
+): Future<BenchVariant> {
   let commandVal = spec['command'];
   if (commandVal is JsonArray) {
     let argv = new GrowableArray<String>();
@@ -326,7 +326,7 @@ function readVariant(
   if (zena.length > 0) {
     // Compiled once, before any sampling starts.
     if (let {compile} = options) {
-      module = compile(path);
+      module = await compile(path);
     } else {
       throw new SuiteError(
         `variant ${name}: a \`zena\` variant needs a compiler, and none was given`,
@@ -359,7 +359,7 @@ export async function runSuite(configPath: String, options: SuiteOptions = {}): 
 async function runSuiteOrThrow(configPath: String, suiteOptions: SuiteOptions): Future<i32> {
   let {debug = false} = suiteOptions;
   let configDir = dirName(configPath);
-  let parsed = parseJson(readFileSync(configPath));
+  let parsed = parseJson(await readFile(configPath));
   if (!(parsed is JsonObject)) {
     throw new SuiteError('config is not a JSON object');
   }
@@ -394,7 +394,7 @@ async function runSuiteOrThrow(configPath: String, suiteOptions: SuiteOptions): 
         throw new SuiteError(`duplicate variant name: ${name}`);
       }
     }
-    variants.push(readVariant(specVal, name, configDir, suiteOptions));
+    variants.push(await readVariant(specVal, name, configDir, suiteOptions));
   }
   if (variants.length == 0) {
     throw new SuiteError('config has no variants');
@@ -450,7 +450,7 @@ async function runSuiteOrThrow(configPath: String, suiteOptions: SuiteOptions): 
   if (let {out} = suiteOptions) {
     outPath = out;
   }
-  writeFileSync(outPath, reportToJson(report));
+  await writeFile(outPath, reportToJson(report));
   console.log(`results written to ${outPath}`);
   return 0;
 }

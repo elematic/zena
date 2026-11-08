@@ -18,7 +18,7 @@ import {instantiate} from '../index.js';
 suite('Runtime - generic casts', () => {
   test('a primitive cast to a reference traps when it runs', async () => {
     const result = await instantiate(
-      compile(`
+      await compile(`
         let toRef = <T>(v: T): anyref => v as anyref;
 
         export let primitive = (): i32 => {

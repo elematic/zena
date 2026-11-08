@@ -14,7 +14,7 @@ import {compile} from './compile-zena.js';
 
 const exportsOf = async (source: string) => {
   const res = await instantiate(
-    compile(
+    await compile(
       `import {StringBuilder, join, dedent} from 'zena:core';\n${source}`,
       'js',
     ),

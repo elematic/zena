@@ -87,14 +87,14 @@ export class ZenaExtension {
 
     // Check the active document on activation.
     if (vscode.window.activeTextEditor?.document.languageId === 'zena') {
-      this.#checkDocument(vscode.window.activeTextEditor.document);
+      void this.#checkDocument(vscode.window.activeTextEditor.document);
     }
 
     // Re-check on document change.
     context.subscriptions.push(
       vscode.workspace.onDidChangeTextDocument((e) => {
         if (e.document.languageId === 'zena') {
-          this.#checkDocument(e.document);
+          void this.#checkDocument(e.document);
         }
       }),
     );
@@ -103,7 +103,7 @@ export class ZenaExtension {
     context.subscriptions.push(
       vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor?.document.languageId === 'zena') {
-          this.#checkDocument(editor.document);
+          void this.#checkDocument(editor.document);
         }
       }),
     );
@@ -181,7 +181,7 @@ export class ZenaExtension {
       vscode.commands.registerCommand('zena.fixLint', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.document.languageId !== 'zena') return;
-        this.#checkDocument(editor.document);
+        await this.#checkDocument(editor.document);
         const findings = this.#findingsFor(editor.document);
         const count = findings.filter((f) => !f.shared).length;
         if (count === 0) {
@@ -364,13 +364,13 @@ export class ZenaExtension {
     );
   }
 
-  #checkDocument(document: vscode.TextDocument) {
+  async #checkDocument(document: vscode.TextDocument): Promise<void> {
     if (!this.#compiler.isReady) return;
 
     try {
       const source = document.getText();
       const path = document.uri.fsPath;
-      const byFile = this.#compiler.checkDocument(source, path);
+      const byFile = await this.#compiler.checkDocument(source, path);
 
       // Clear previous diagnostics for the entry file (always present).
       this.#diagnosticCollection.set(document.uri, []);

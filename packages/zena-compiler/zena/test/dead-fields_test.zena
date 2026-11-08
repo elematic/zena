@@ -12,12 +12,12 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-function compileToWat(source: String, optLevel: i32) {
+async function compileToWat(source: String, optLevel: i32) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -60,7 +60,7 @@ function fieldCount(wat: String, name: String): i32 {
 }
 
 export let tests = suite('dead-field elimination', () => {
-  test('deletes a field that is only written', () => {
+  test('deletes a field that is only written', async () => {
     let source = `
       class Box {
         value: i32;
@@ -75,11 +75,11 @@ export let tests = suite('dead-field elimination', () => {
       };
     `;
     // Nothing dispatches on a Box either, so its <vtable> goes too.
-    equal(fieldCount(compileToWat(source, 1), 'Box'), 1);
-    equal(fieldCount(compileToWat(source, 0), 'Box'), 3);
+    equal(fieldCount(await compileToWat(source, 1), 'Box'), 1);
+    equal(fieldCount(await compileToWat(source, 0), 'Box'), 3);
   });
 
-  test('keeps a field read through a base class in the subclass', () => {
+  test('keeps a field read through a base class in the subclass', async () => {
     let source = `
       class Base {
         shared: i32;
@@ -92,11 +92,11 @@ export let tests = suite('dead-field elimination', () => {
       let read = (b: Base): i32 => b.shared;
       export let main = (): i32 => read(new Derived(2, 9));
     `;
-    let wat = compileToWat(source, 1);
+    let wat = await compileToWat(source, 1);
     equal(fieldCount(wat, 'Derived'), 1);
   });
 
-  test('keeps the vtable of a hierarchy that dispatches', () => {
+  test('keeps the vtable of a hierarchy that dispatches', async () => {
     let source = `
       class Animal {
         sound(): i32 { return 1; }
@@ -107,12 +107,12 @@ export let tests = suite('dead-field elimination', () => {
       let speak = (a: Animal): i32 => a.sound();
       export let main = (): i32 => speak(new Dog()) + speak(new Animal());
     `;
-    let wat = compileToWat(source, 1);
+    let wat = await compileToWat(source, 1);
     equal(fieldCount(wat, 'Dog'), 1);
     equal(fieldCount(wat, 'Animal'), 1);
   });
 
-  test('deletes a write-only accessor with its backing field', () => {
+  test('deletes a write-only accessor with its backing field', async () => {
     let source = `
       class Message {
         content: i32;
@@ -129,16 +129,16 @@ export let tests = suite('dead-field elimination', () => {
         return m.content;
       };
     `;
-    let wat = compileToWat(source, 1);
+    let wat = await compileToWat(source, 1);
     equal(fieldCount(wat, 'Message'), 1);
     // The setter stored to the backing field and did nothing else, so
     // its call goes and harvest deletes it.
     isTrue(!wat.contains('set#metadata'), wat);
-    isTrue(compileToWat(source, 0).contains('set#metadata'),
+    isTrue((await compileToWat(source, 0)).contains('set#metadata'),
         'the fixture should call the setter when nothing is eliminated');
   });
 
-  test('keeps cases of a sealed class distinct once their fields go', () => {
+  test('keeps cases of a sealed class distinct once their fields go', async () => {
     let source = `
       sealed class Shape {
         case Circle(radius: i32)
@@ -150,7 +150,7 @@ export let tests = suite('dead-field elimination', () => {
       };
       export let main = (): i32 => code(new Square(4.0)) * 10 + code(new Circle(5));
     `;
-    let wat = compileToWat(source, 1);
+    let wat = await compileToWat(source, 1);
     equal(fieldCount(wat, 'Circle'), 0);
     equal(fieldCount(wat, 'Square'), 0);
     // The cases differed until their fields went; identical shapes with

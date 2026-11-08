@@ -16,6 +16,8 @@
  */
 
 import {
+  createHostAsync,
+  createPromiseHost,
   createStringReader,
   createStringWriter,
   createConsoleImports,
@@ -129,10 +131,13 @@ export type WasmSource =
  * Reads a file for the compiler.
  *
  * Called for every import the compiler resolves that is not an open document.
- * Return `undefined` or `null` when the path does not exist; the compiler sees
- * an empty file and reports it as a missing module.
+ * Return `undefined` or `null` when the path does not exist, and the compiler
+ * reports it as a missing module. It may return a promise, so a browser host
+ * can fetch a library when the compiler first asks for it.
  */
-export type FileReader = (path: string) => string | undefined | null;
+export type FileReader = (
+  path: string,
+) => string | undefined | null | Promise<string | undefined | null>;
 
 /** Sink for `console.*` calls made by checked or compiled Zena code. */
 export interface ConsoleSink {
@@ -161,11 +166,11 @@ export interface LanguageServiceOptions {
  * collected once JS drops them. Field access goes through the getters.
  */
 export interface LspExports extends WebAssembly.Exports {
-  init(stdlibRoot: unknown): void;
-  check(path: unknown, source: unknown): unknown;
+  init(stdlibRoot: unknown): Promise<void>;
+  check(path: unknown, source: unknown): Promise<unknown>;
   openDocument?(path: unknown, source: unknown): void;
   closeDocument?(path: unknown): void;
-  compileToWasm(path: unknown, source: unknown): unknown;
+  compileToWasm(path: unknown, source: unknown): Promise<unknown>;
   format(source: unknown): unknown;
   getByteArrayLength(bytes: unknown): number;
   getByteArrayByte(bytes: unknown, index: number): number;
@@ -261,7 +266,14 @@ export async function createLanguageService(
 
   const openDocuments = new Map<string, string>();
 
-  const readFileImport = (pathRef: unknown, pathLen: number): unknown => {
+  // The compiler's file reads are host-async imports: the module hands
+  // over a handle, the promise below settles it with the text, and a
+  // rejection fails it, which the compiler reports as a missing module.
+  // `readFile` may itself return a promise.
+  const readFileImport = async (
+    pathRef: unknown,
+    pathLen: number,
+  ): Promise<string> => {
     const rawPath = readString!(pathRef, pathLen);
     const cleaned = cleanPath(rawPath);
     const normalized = normalizePath(rawPath);
@@ -270,14 +282,16 @@ export async function createLanguageService(
       openDocuments.get(cleaned) ??
       openDocuments.get(normalized) ??
       openDocuments.get('./' + cleaned) ??
-      readFile?.(rawPath) ??
-      readFile?.(cleaned) ??
-      readFile?.(normalized);
+      (await readFile?.(rawPath)) ??
+      (await readFile?.(cleaned)) ??
+      (await readFile?.(normalized));
     if (contents == null) {
-      return null;
+      throw new Error(`File not found: ${rawPath}`);
     }
-    return writeString!(contents);
+    return contents;
   };
+  const hostAsync = createHostAsync(() => exports);
+  const promiseHost = createPromiseHost(() => exports);
 
   const defaultConsole = createConsoleImports(() => exports);
   const consoleImports: Record<string, Function> = {...defaultConsole};
@@ -291,7 +305,8 @@ export async function createLanguageService(
 
   const imports: WebAssembly.Imports = {
     console: consoleImports,
-    compiler: {read_file: readFileImport},
+    compiler: {read_file: hostAsync.wrap(readFileImport, 'string')},
+    js: promiseHost.imports as WebAssembly.ModuleImports,
     // The compiler times its own phases through `zena:time`, which on
     // the host target is this clock. It never sleeps.
     time: {
@@ -313,7 +328,7 @@ export async function createLanguageService(
   readString = createStringReader(exports);
   writeString = createStringWriter(exports);
 
-  exports.init(writeString(stdlibRoot));
+  await exports.init(writeString(stdlibRoot));
 
   return new ZenaLanguageService({
     exports,
@@ -398,9 +413,10 @@ const isThenable = (value: unknown): value is Promise<Response> =>
  * types a document, and the position queries read back from that analysis. A
  * query for a document that was never checked returns nothing.
  *
- * Every method is synchronous — the Wasm module runs on the calling thread.
- * A full check of a large file takes long enough to drop frames, so browsers
- * should run this in a Web Worker.
+ * The methods that analyze a document return promises, because the
+ * compiler reads files through an asynchronous host. The Wasm module still
+ * runs on the calling thread, and a full check of a large file takes long
+ * enough to drop frames, so browsers should run this in a Web Worker.
  */
 export class ZenaLanguageService {
   readonly #exports: LspExports;
@@ -490,13 +506,13 @@ export class ZenaLanguageService {
    * This is also what makes the position queries below meaningful: they read
    * the analysis this call leaves behind.
    */
-  check(path: string, source?: string): Diagnostic[] {
+  async check(path: string, source?: string): Promise<Diagnostic[]> {
     if (source !== undefined) {
       this.openDocument(path, source);
     }
-    const handle = this.#exports.check(
+    const handle = await this.#exports.check(
       this.#writeString(path),
-      this.#writeString(this.#sourceOf(path)),
+      this.#writeString(await this.#sourceOf(path)),
     );
     const count = this.#exports.getDiagnosticCount(handle);
     const diagnostics: Diagnostic[] = [];
@@ -529,9 +545,9 @@ export class ZenaLanguageService {
    * {@link check} left behind is read. A document with errors has no
    * findings: the rules read types the checker could not give.
    */
-  lint(path: string, source?: string): LintFinding[] {
+  async lint(path: string, source?: string): Promise<LintFinding[]> {
     if (source !== undefined) {
-      this.check(path, source);
+      await this.check(path, source);
     }
     const handle = this.#exports.lint(this.#writeString(path));
     const count = this.#exports.getLintCount(handle);
@@ -558,13 +574,16 @@ export class ZenaLanguageService {
    * excludes views over a `SharedArrayBuffer`, so a plain `Uint8Array` would
    * not be accepted by `WebAssembly.instantiate`.
    */
-  compileToWasm(path: string, source?: string): Uint8Array<ArrayBuffer> | null {
+  async compileToWasm(
+    path: string,
+    source?: string,
+  ): Promise<Uint8Array<ArrayBuffer> | null> {
     if (source !== undefined) {
       this.openDocument(path, source);
     }
-    const handle = this.#exports.compileToWasm(
+    const handle = await this.#exports.compileToWasm(
       this.#writeString(path),
-      this.#writeString(this.#sourceOf(path)),
+      this.#writeString(await this.#sourceOf(path)),
     );
     if (!handle) {
       return null;
@@ -578,9 +597,13 @@ export class ZenaLanguageService {
   }
 
   /** Type information at a byte offset, or `null` if there is nothing there. */
-  hover(path: string, offset: number, source?: string): HoverInfo | null {
+  async hover(
+    path: string,
+    offset: number,
+    source?: string,
+  ): Promise<HoverInfo | null> {
     if (source !== undefined) {
-      this.check(path, source);
+      await this.check(path, source);
     }
     const handle = this.#exports.getHover(this.#writeString(path), offset);
     if (!handle) {
@@ -594,9 +617,13 @@ export class ZenaLanguageService {
   }
 
   /** Completion proposals for a byte offset. */
-  completions(path: string, offset: number, source?: string): CompletionItem[] {
+  async completions(
+    path: string,
+    offset: number,
+    source?: string,
+  ): Promise<CompletionItem[]> {
     if (source !== undefined) {
-      this.check(path, source);
+      await this.check(path, source);
     }
     const handle = this.#exports.getCompletions(
       this.#writeString(path),
@@ -620,13 +647,13 @@ export class ZenaLanguageService {
   }
 
   /** Where the symbol at a byte offset is declared. */
-  definition(
+  async definition(
     path: string,
     offset: number,
     source?: string,
-  ): DefinitionInfo | null {
+  ): Promise<DefinitionInfo | null> {
     if (source !== undefined) {
-      this.check(path, source);
+      await this.check(path, source);
     }
     const handle = this.#exports.getDefinition(this.#writeString(path), offset);
     if (!handle) {
@@ -642,13 +669,16 @@ export class ZenaLanguageService {
   }
 
   /** The document outline, as a tree. */
-  documentSymbols(path: string, source?: string): DocumentSymbolInfo[] {
+  async documentSymbols(
+    path: string,
+    source?: string,
+  ): Promise<DocumentSymbolInfo[]> {
     if (source !== undefined) {
       this.openDocument(path, source);
     }
     const handle = this.#exports.getDocumentSymbols(
       this.#writeString(path),
-      this.#writeString(this.#sourceOf(path)),
+      this.#writeString(await this.#sourceOf(path)),
     );
     if (!handle) {
       return [];
@@ -696,11 +726,11 @@ export class ZenaLanguageService {
    * whatever the `readFile` hook has. Empty when neither knows the path — the
    * compiler then reports it the way it reports any missing module.
    */
-  #sourceOf(path: string): string {
+  async #sourceOf(path: string): Promise<string> {
     return (
       this.#openDocuments.get(path) ??
       this.#openDocuments.get(normalizePath(path)) ??
-      this.#readFile?.(path) ??
+      (await this.#readFile?.(path)) ??
       ''
     );
   }

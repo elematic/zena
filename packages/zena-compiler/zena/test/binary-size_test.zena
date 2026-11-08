@@ -64,9 +64,9 @@ function assertSnapshot(name: String, content: String) {
  * `main` be an async export, which is the host's cost rather than the
  * program's.
  */
-function compile(path: String, target: String = 'freestanding') {
-  let c = newCompiler();
-  let result = c.compile({entry: path, target});
+async function compile(path: String, target: String = 'freestanding') {
+  let c = await newCompiler();
+  let result = await c.compile({entry: path, target});
   let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
@@ -238,24 +238,24 @@ let asyncNoopBudget = 5600;
 let printBudget = 8000;
 
 export let tests = suite('Binary size', () => {
-  test('a minimal program stays within its byte budget', (ctx) => {
-    let bytes = compile(target);
+  test('a minimal program stays within its byte budget', async (ctx) => {
+    let bytes = await compile(target);
     isTrue(bytes.length <= budget,
       `${target} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
       `${i32ToString(budget)}-byte budget. Something is being emitted that a ` +
       `program with no code in it does not need — see docs/design/binary-size.md.`);
   });
 
-  test('an array-literal sum stays within its byte budget', (ctx) => {
-    let bytes = compile(arrayTarget);
+  test('an array-literal sum stays within its byte budget', async (ctx) => {
+    let bytes = await compile(arrayTarget);
     isTrue(bytes.length <= arrayBudget,
       `${arrayTarget} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
       `${i32ToString(arrayBudget)}-byte budget. A generic specialization is ` +
       `reaching more than the program uses — see docs/design/binary-size.md.`);
   });
 
-  test('a returned string literal stays within its byte budget', (ctx) => {
-    let bytes = compile(helloTarget);
+  test('a returned string literal stays within its byte budget', async (ctx) => {
+    let bytes = await compile(helloTarget);
     isTrue(bytes.length <= helloBudget,
       `${helloTarget} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
       `${i32ToString(helloBudget)}-byte budget. Instantiating String is ` +
@@ -263,13 +263,13 @@ export let tests = suite('Binary size', () => {
       `docs/design/binary-size.md.`);
   });
 
-  test('an async main that does nothing stays within its byte budget', (ctx) => {
+  test('an async main that does nothing stays within its byte budget', async (ctx) => {
     // The whole component, wrapper included. The event loop used to
     // keep three hash maps from the host's handle numbers to what each
     // handle was owed, and each map came with every method a map has:
     // 22,839 bytes, about 60% of it map code. One array indexed by
     // handle does the same job.
-    let bytes = compileComponent(asyncNoopTarget, 'component');
+    let bytes = await compileComponent(asyncNoopTarget, 'component');
     isTrue(bytes.length <= asyncNoopBudget,
       `${asyncNoopTarget} compiles to ${i32ToString(bytes.length)} bytes, ` +
       `over the ${i32ToString(asyncNoopBudget)}-byte budget. The event ` +
@@ -278,13 +278,13 @@ export let tests = suite('Binary size', () => {
       `docs/design/binary-size.md.`);
   });
 
-  test('a component that prints stays within its byte budget', (ctx) => {
+  test('a component that prints stays within its byte budget', async (ctx) => {
     // The allocator this program's linear memory goes through used to
     // keep a hash map from over-aligned pointers to their blocks, and
     // the map brought every method a map has: 16,763 bytes. The
     // runtime module's allocator now frees an aligned block by the
     // pointer it handed out, so there is nothing to look up.
-    let bytes = compileComponent(printTarget, 'component');
+    let bytes = await compileComponent(printTarget, 'component');
     isTrue(bytes.length <= printBudget,
       `${printTarget} compiles to ${i32ToString(bytes.length)} bytes, ` +
       `over the ${i32ToString(printBudget)}-byte budget. Writing to ` +
@@ -292,7 +292,7 @@ export let tests = suite('Binary size', () => {
       `that prints needs — see docs/design/binary-size.md.`);
   });
 
-  test('a for-in over an array ships no iterator machinery', (ctx) => {
+  test('a for-in over an array ships no iterator machinery', async (ctx) => {
     // lowerForIn compiles a for-in whose iterable is a bare array,
     // FixedArray, ImmutableArray or Array to an index loop —
     // array.len/array.get, no :iterator call, no ArrayIterator, no
@@ -303,7 +303,7 @@ export let tests = suite('Binary size', () => {
     // FixedArray<String> as a sibling force-reached its `contains`,
     // whose `==` on elements dragged the whole String equality/hash
     // family into a program with no strings.
-    let wat = new WatGenerator('freestanding', false).generate(programOf(arrayTarget));
+    let wat = new WatGenerator('freestanding', false).generate(await programOf(arrayTarget));
     isTrue(!wat.contains('ArrayIterator'),
       `${arrayTarget} emits ArrayIterator machinery for a loop lowering ` +
       `compiles to an index loop.`);
@@ -330,22 +330,22 @@ export let tests = suite('Binary size', () => {
       `extension value is the raw array, so the struct is unreferenceable.`);
   });
 
-  test('a for-in over a range literal compiles to the C-style loop', (ctx) => {
+  test('a for-in over a range literal compiles to the C-style loop', async (ctx) => {
     // A range written in the loop header is only syntax for a counting
     // loop: no range object, no iterator, and the same bytes as
     // `for (var i = 0; i < n; i += 1)`.
     let rangeWat = new WatGenerator('freestanding', false)
-        .generate(programOf(rangeLoopTarget));
+        .generate(await programOf(rangeLoopTarget));
     let countingWat = new WatGenerator('freestanding', false)
-        .generate(programOf(countingLoopTarget));
+        .generate(await programOf(countingLoopTarget));
     equal(rangeWat, countingWat);
   });
 
-  test('a for-in over a range value ships no iterator machinery', (ctx) => {
+  test('a for-in over a range value ships no iterator machinery', async (ctx) => {
     // A range held in a parameter is a real object, and the loop reads
     // its start and end fields. It still never asks for an iterator.
     let wat = new WatGenerator('freestanding', false)
-        .generate(programOf(rangeValueTarget));
+        .generate(await programOf(rangeValueTarget));
     isTrue(!wat.contains('RangeIterator'),
       `${rangeValueTarget} emits a range iterator for loops that count ` +
       `from the range's bounds.`);
@@ -354,46 +354,46 @@ export let tests = suite('Binary size', () => {
       `never dispatch through an interface.`);
   });
 
-  test('async without a way to cancel carries no cancellation machinery', (ctx) => {
+  test('async without a way to cancel carries no cancellation machinery', async (ctx) => {
     // The whole-program gate: this program awaits but has no way to
     // cause a cancellation, so the module must not carry the second
     // exception tag (its export is the machinery's one stable,
     // name-section-independent marker).
-    let bytes = compile('packages/zena-compiler/test-files/async-no-cancel.zena');
+    let bytes = await compile('packages/zena-compiler/test-files/async-no-cancel.zena');
     isFalse(hasExport(bytes, '__zena_cancellation'));
   });
 
-  test('a reachable cancel call enables the cancellation machinery', (ctx) => {
-    let bytes = compile('packages/zena-compiler/test-files/async-with-cancel.zena');
+  test('a reachable cancel call enables the cancellation machinery', async (ctx) => {
+    let bytes = await compile('packages/zena-compiler/test-files/async-with-cancel.zena');
     isTrue(hasExport(bytes, '__zena_cancellation'));
   });
 
-  test('a cancel clause alone does not enable the machinery', (ctx) => {
+  test('a cancel clause alone does not enable the machinery', async (ctx) => {
     // Handler syntax is not a cause: with no way to raise a
     // cancellation the clause is elided, and the module carries no
     // machinery.
-    let bytes = compile('packages/zena-compiler/test-files/async-cancel-clause-only.zena');
+    let bytes = await compile('packages/zena-compiler/test-files/async-cancel-clause-only.zena');
     isFalse(hasExport(bytes, '__zena_cancellation'));
   });
 
-  test('a generator without a protocol for-in stays gate-closed', (ctx) => {
+  test('a generator without a protocol for-in stays gate-closed', async (ctx) => {
     // Manual next() consumption cannot dispose, so the generator
     // carries no disposal machinery and no tag.
-    let bytes = compile('packages/zena-compiler/test-files/gen-no-protocol-forin.zena');
+    let bytes = await compile('packages/zena-compiler/test-files/gen-no-protocol-forin.zena');
     isFalse(hasExport(bytes, '__zena_cancellation'));
   });
 
-  test('a generator iterated by a protocol for-in opens the disposal gate', (ctx) => {
-    let bytes = compile('packages/zena-compiler/test-files/gen-with-protocol-forin.zena');
+  test('a generator iterated by a protocol for-in opens the disposal gate', async (ctx) => {
+    let bytes = await compile('packages/zena-compiler/test-files/gen-with-protocol-forin.zena');
     isTrue(hasExport(bytes, '__zena_cancellation'));
   });
 
-  test('methods nothing calls are not emitted, whatever the hierarchy', (ctx) => {
+  test('methods nothing calls are not emitted, whatever the hierarchy', async (ctx) => {
     // A method table slot is kept only when a call can dispatch through
     // it, and a method is reached only when something calls it. How the
     // class got the method (declared, inherited or from a mixin) and
     // whether the class is final play no part.
-    let wat = new WatGenerator('freestanding', false).generate(programOf(mixinTarget));
+    let wat = new WatGenerator('freestanding', false).generate(await programOf(mixinTarget));
     isTrue(wat.contains('describe'),
       `${mixinTarget}: the fixture should call describe.`);
     isTrue(!wat.contains('unused'),
@@ -407,7 +407,7 @@ export let tests = suite('Binary size', () => {
       `${mixinTarget}: a call through Animal must reach Dog's speak.`);
   });
 
-  test('interface members nothing calls through the interface get no slot', (ctx) => {
+  test('interface members nothing calls through the interface get no slot', async (ctx) => {
     // An interface vtable slot comes with a trampoline per class, and the
     // trampoline reaches the class's method. Packing a GrowableArray into
     // an Iterable slot used to reach every Iterable method on it, and
@@ -415,7 +415,7 @@ export let tests = suite('Binary size', () => {
     // implement Iterable and Iterator in turn (#425). An upcast from
     // Array to Iterable used to reference every member of Iterable too.
     for (let path in [iterableSlotsTarget, iterableSlotsUpcastTarget]) {
-      let wat = new WatGenerator('freestanding', false).generate(programOf(path));
+      let wat = new WatGenerator('freestanding', false).generate(await programOf(path));
       isTrue(wat.contains('.:iterator') && wat.contains('.next'),
         `${path}: the for-in must dispatch :iterator and next.`);
       isTrue(!wat.contains('FilteredIterable') && !wat.contains('FilterIterator'),
@@ -428,7 +428,7 @@ export let tests = suite('Binary size', () => {
     }
   });
 
-  test('a subclassed generic emits no erased specialization', (ctx) => {
+  test('a subclassed generic emits no erased specialization', async (ctx) => {
     // `Counted<T> extends Cell<T>` names `Cell<T>` from inside generic
     // code — linking the subclass template's supertype — and the
     // erasure `Cell<anyref>` IS `isConcrete`, so RTA took it for a
@@ -442,7 +442,7 @@ export let tests = suite('Binary size', () => {
     // COMPILE once subclassed — the erased body has no operand type to
     // dispatch on. See
     // tests/language/execution/generics/subclassed-generic-eq-hash.zena.
-    let wat = new WatGenerator('freestanding', false).generate(programOf(subclassedTarget));
+    let wat = new WatGenerator('freestanding', false).generate(await programOf(subclassedTarget));
     isTrue(!wat.contains('_anyref.'),
       `${subclassedTarget} emits a method on an erased class type. No value ` +
       `can have that type — every value the mention stands for is a real ` +
@@ -461,7 +461,7 @@ export let tests = suite('Binary size', () => {
       `site; the unspecialized registration is not a function.`);
   });
 
-  test('a class nothing reaches specializes nothing', (ctx) => {
+  test('a class nothing reaches specializes nothing', async (ctx) => {
     // `Shelf` is declared and unreachable, and its field type is the
     // only mention of `Cell<Marker>` in the program. Every declared
     // class is still laid out — that is what registers its members,
@@ -480,7 +480,7 @@ export let tests = suite('Binary size', () => {
     // component suite's CPU-time assertion.
     let unreachedTarget =
         'packages/zena-compiler/test-files/unreached-class-generic-field.zena';
-    let wat = new WatGenerator('freestanding', false).generate(programOf(unreachedTarget));
+    let wat = new WatGenerator('freestanding', false).generate(await programOf(unreachedTarget));
     isTrue(!wat.contains('Marker'),
       `${unreachedTarget} emits the Cell<Marker> specialization. Only an ` +
       `unreachable class's field type names it, and laying that class out ` +
@@ -490,7 +490,7 @@ export let tests = suite('Binary size', () => {
       `passing because nothing is being emitted at all.`);
   });
 
-  test('a facade re-exporting TemplateStringsArray ships none of it', (ctx) => {
+  test('a facade re-exporting TemplateStringsArray ships none of it', async (ctx) => {
     // `TemplateStringsArray` used to be instantiated because the class was
     // visible, not because anything built one — so importing any library
     // that re-exports it cost its struct, the two String arrays its fields
@@ -498,7 +498,7 @@ export let tests = suite('Binary size', () => {
     // returns `'hello'.length`, which is the whole of what `zena:core`
     // cost over importing the same name from its own module.
     let quiet = 'packages/zena-compiler/test-files/core-facade-no-template.zena';
-    let wat = new WatGenerator('freestanding', false).generate(programOf(quiet));
+    let wat = new WatGenerator('freestanding', false).generate(await programOf(quiet));
     isTrue(!wat.contains('TemplateStringsArray'),
       `${quiet} emits TemplateStringsArray. Importing a library that ` +
       `re-exports it is not evidence that a tagged template exists.`);
@@ -507,74 +507,74 @@ export let tests = suite('Binary size', () => {
       `nothing is being emitted at all.`);
   });
 
-  test('a tagged template still ships TemplateStringsArray', (ctx) => {
+  test('a tagged template still ships TemplateStringsArray', async (ctx) => {
     // The other half: the root moved to where a tagged template is found,
     // so it has to fire there. Without this, the test above passes by
     // never emitting the class at all.
     let tagged =
         'packages/zena-compiler/test-files/core-facade-tagged-template.zena';
-    let wat = new WatGenerator('freestanding', false).generate(programOf(tagged));
+    let wat = new WatGenerator('freestanding', false).generate(await programOf(tagged));
     isTrue(wat.contains('TemplateStringsArray'),
       `${tagged} does not emit TemplateStringsArray, but its tagged ` +
       `template needs one built.`);
   });
 
-  test('the hello-string WAT names everything it ships', (ctx) => {
+  test('the hello-string WAT names everything it ships', async (ctx) => {
     // Small enough to read whole, like minimal's: a regression names
     // the exact function/type it added. Regenerate with
     // UPDATE_SNAPSHOTS=1; `zena build <file> -o out.wat` dumps the
     // same text for any program.
     assertSnapshot('hello_string_program',
-        new WatGenerator('freestanding', false).generate(programOf(helloTarget)));
+        new WatGenerator('freestanding', false).generate(await programOf(helloTarget)));
   });
 
-  test('the array-sum WAT names everything it ships', (ctx) => {
+  test('the array-sum WAT names everything it ships', async (ctx) => {
     // Small enough to read whole since the for-in fast path stopped
     // rooting the iterator protocol: one function (main's index loop),
     // one array type, and the plumbing. Regenerate with
     // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry means a
     // loop that lowers to array.get started reaching machinery again.
     assertSnapshot('array_sum_program',
-        new WatGenerator('freestanding', false).generate(programOf(arrayTarget)));
+        new WatGenerator('freestanding', false).generate(await programOf(arrayTarget)));
   });
 
-  test('the minimal program WAT is exactly the ideal module', (ctx) => {
+  test('the minimal program WAT is exactly the ideal module', async (ctx) => {
     // A SNAPSHOT, unlike the byte budgets: the minimal module is small
     // enough to read whole, and any regression shows up as the exact
     // type/function/export it added. Regenerate with
     // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry here means
     // something reached code a program with no code in it cannot run.
     assertSnapshot('minimal_program',
-        new WatGenerator('freestanding', false).generate(programOf(target)));
+        new WatGenerator('freestanding', false).generate(await programOf(target)));
   });
 
-  test('a program with no strings exports no string helpers', (ctx) => {
+  test('a program with no strings exports no string helpers', async (ctx) => {
     // The $string* helpers exist to hand String values across the host
     // boundary; a module with no String values has nothing to hand
     // across, and every export is emitted code. A returned literal
     // must have them (the host reads the result through
     // $stringGetLength/$stringGetByte).
-    isTrue(!hasExport(compile(target), '$stringCreate'),
+    isTrue(!hasExport(await compile(target), '$stringCreate'),
       `${target} exports $stringCreate — a program with no strings is ` +
       `carrying the String host-interop helpers.`);
-    isTrue(hasExport(compile(helloTarget), '$stringGetLength'),
+    isTrue(hasExport(await compile(helloTarget), '$stringGetLength'),
       `${helloTarget} does not export $stringGetLength — the host cannot ` +
       `read the String this program returns.`);
   });
 
-  test('naming zena:wasi links none of the component runtime', (ctx) => {
+  test('naming zena:wasi links none of the component runtime', async (ctx) => {
     // The library is all-target, because the name is the subject and not
     // the host: a core-module program can say `zena:wasi` and a component
     // is only where the canonical parts have anything beneath them. What
     // makes that safe is that the `@external("canon", ...)` declarations
     // are declarations — reachability links one when the program calls
     // it, and this program calls none.
-    equal(importCount(compile(wasiTarget, 'freestanding')), 0,
+    equal(importCount(await compile(wasiTarget, 'freestanding')), 0,
       `${wasiTarget} imports something on the freestanding target. Naming ` +
       `the module must not link the component runtime behind it.`);
   });
 
-  test('freestanding imports nothing the program did not ask for', (ctx) => {
+  test('freestanding imports nothing the program did not ask for', async (ctx) => {
     // The floor a target promises, asserted rather than inspected.
     // `freestanding` has no host beneath it, so its import list holds
     // only what the program itself declared with `@external` — and
@@ -583,27 +583,27 @@ export let tests = suite('Binary size', () => {
     // unconditional, and take `anyref`/`externref`, which no component
     // and no hostless embedder can supply. See
     // docs/design/component-emission.md, Part 2.
-    equal(importCount(compile(errorTarget, 'freestanding')), 0,
+    equal(importCount(await compile(errorTarget, 'freestanding')), 0,
       `${errorTarget} imports something on the freestanding target. A ` +
       `target with no host must import only what the program declared.`);
-    equal(importCount(compile(target, 'freestanding')), 0,
+    equal(importCount(await compile(target, 'freestanding')), 0,
       `${target} imports something on the freestanding target.`);
     // The same program on a target that HAS a host still links the
     // hooks: `zena-cli`'s traces come from its host's `stack-trace`
     // interface, so that import must be there. Import names are stored
     // verbatim like export names, so the byte scan finds it the same way.
-    isTrue(hasExport(compileComponent(errorTarget, 'zena-cli'),
+    isTrue(hasExport(await compileComponent(errorTarget, 'zena-cli'),
         'zena-cli:host/stack-trace'),
       `${errorTarget} does not import the host's stack-trace interface on ` +
       `zena-cli, whose host supplies it.`);
   });
 
-  test('the name section is opt-in', (ctx) => {
+  test('the name section is opt-in', async (ctx) => {
     // Debug metadata, and for a small module the largest thing in it.
     // `-g` (ZENA_DEBUG_NAMES) turns it on; the default must not.
-    let plain = compile(target);
+    let plain = await compile(target);
     let named = new BinaryGenerator('freestanding', false, true)
-      .generate(programOf(target))
+      .generate(await programOf(target))
       .toByteArray();
     isTrue(named.length > plain.length,
       `the debugNames build is ${i32ToString(named.length)} bytes and the ` +
@@ -617,41 +617,41 @@ export let tests = suite('Binary size', () => {
  * target, with the runtime memory module and the WIT-typed import
  * encoder the wrapper needs; `compile` above stops at the core module.
  */
-function compileComponent(path: String, target: String): ByteArray {
+async function compileComponent(path: String, target: String): Future<ByteArray> {
   let host = new PlainHost();
-  let c = newCompilerOn(host);
+  let c = await newCompilerOn(host);
   let generator = new BinaryGenerator(target, false);
-  let program = programOf(path, target, c);
+  let program = await programOf(path, target, c);
   // On the same compiler as the program, at its `freestanding` target.
-  generator.runtimeMemoryModule = compileComponentRuntimeModule(c, stdlibRoot);
+  generator.runtimeMemoryModule = await compileComponentRuntimeModule(c, stdlibRoot);
   // The WIT-backed packages the stdlib carries, as the CLI passes them.
-  let packagesWit = readWitSource(host, `${stdlibRoot}/wit`) + '\n' +
-      readWitSource(host, `${stdlibRoot}/host-wit`);
+  let packagesWit = (await readWitSource(host, `${stdlibRoot}/wit`)) + '\n' +
+      await readWitSource(host, `${stdlibRoot}/host-wit`);
   generator.importEncoder = makeImportEncoder(null, '', packagesWit);
   return generator.generate(program).toByteArray();
 }
 
 /** A compiler over the real standard library and package map. */
-function newCompiler(): Compiler {
-  return newCompilerOn(new PlainHost());
+async function newCompiler(): Future<Compiler> {
+  return await newCompilerOn(new PlainHost());
 }
 
 /** The same, over a host the caller also needs — to read WIT through. */
-function newCompilerOn(host: PlainHost): Compiler {
+async function newCompilerOn(host: PlainHost): Future<Compiler> {
   return createCompiler(host, {
     stdlibRoot,
-    packages: loadWorkspace(host, '.'),
+    packages: await loadWorkspace(host, '.'),
   });
 }
 
 /** The `Program` for a path, for a second generate() over the same input. */
-function programOf(
+async function programOf(
   path: String,
   target: String = 'freestanding',
   compiler: Compiler | null = null
-): Program {
-  let c = compiler ?? newCompiler();
-  let result = c.compile({entry: path, target});
+): Future<Program> {
+  let c = compiler ?? await newCompiler();
+  let result = await c.compile({entry: path, target});
   let checked = checkCompilation(result);
   let entryAst = result.entry.ast;
   let units = new Array<CompilationUnit>();

@@ -21,6 +21,8 @@ import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
   createConsoleImports,
+  createHostAsync,
+  createPromiseImports,
   createStringWriter,
   createStringReader,
   numberImports,
@@ -38,11 +40,11 @@ const stdlibRoot = join(repoRoot, 'packages', 'stdlib', 'zena');
 
 /** The subset of lsp.wasm's exports this helper uses. */
 interface LspExports extends WebAssembly.Exports {
-  init: (stdlibRoot: unknown) => void;
-  compileToWasm: (path: unknown, source: unknown) => unknown;
+  init: (stdlibRoot: unknown) => Promise<void>;
+  compileToWasm: (path: unknown, source: unknown) => Promise<unknown>;
   getByteArrayLength: (bytes: unknown) => number;
   getByteArrayByte: (bytes: unknown, index: number) => number;
-  check: (path: unknown, source: unknown) => unknown;
+  check: (path: unknown, source: unknown) => Promise<unknown>;
   getDiagnosticCount: (diagnostics: unknown) => number;
   getDiagnosticLine: (diagnostics: unknown, index: number) => number;
   getDiagnosticColumn: (diagnostics: unknown, index: number) => number;
@@ -66,13 +68,16 @@ let service: Service | undefined;
  * and the service keeps the standard library it has checked, so a second
  * compile in the same file costs only its own source.
  */
-const languageService = (): Service => {
+const languageService = async (): Promise<Service> => {
   if (service !== undefined) {
     return service;
   }
   let exports: LspExports | undefined;
   let writeString: ((s: string) => unknown) | undefined;
   let readString: ((ref: unknown, len?: number) => string) | undefined;
+  // The compiler reads files through a host-async import, and the
+  // exports that compile return promises through `zena:js`.
+  const hostAsync = createHostAsync(() => exports);
 
   const module = new (WebAssembly.Module as any)(readFileSync(lspWasmPath), {
     builtins: ['js-string'],
@@ -93,25 +98,25 @@ const languageService = (): Service => {
     },
     console: createConsoleImports(() => exports),
     compiler: {
-      read_file: (pathRef: unknown, pathLen: number): unknown => {
-        const path = readString!(pathRef, pathLen);
-        try {
-          return writeString!(readFileSync(path, 'utf8'));
-        } catch {
-          // Null, not an empty string: the service reports a file it
-          // cannot read, where an empty one would compile as a module
-          // exporting nothing.
-          return null;
-        }
-      },
+      read_file: hostAsync.wrap(
+        async (pathRef: unknown, pathLen: number): Promise<string> => {
+          const path = readString!(pathRef, pathLen);
+          // A rejection, not an empty string: the service reports a
+          // file it cannot read, where an empty one would compile as a
+          // module exporting nothing.
+          return readFileSync(path, 'utf8');
+        },
+        'string',
+      ),
     },
+    js: createPromiseImports(() => exports) as WebAssembly.ModuleImports,
     'zena:host:string': stringImports,
     'zena:host:number': numberImports,
   });
   exports = instance.exports as LspExports;
   writeString = createStringWriter(exports);
   readString = createStringReader(exports);
-  exports.init(writeString(stdlibRoot));
+  await exports.init(writeString(stdlibRoot));
   service = {
     exports: exports!,
     writeString: writeString!,
@@ -121,12 +126,15 @@ const languageService = (): Service => {
 };
 
 /** The errors a failed compile reports, one per line. */
-const errorsOf = (
+const errorsOf = async (
   {exports, writeString, readString}: Service,
   path: string,
   source: string,
-): string => {
-  const diagnostics = exports.check(writeString(path), writeString(source));
+): Promise<string> => {
+  const diagnostics = await exports.check(
+    writeString(path),
+    writeString(source),
+  );
   const lines: string[] = [];
   for (let i = 0; i < exports.getDiagnosticCount(diagnostics); i++) {
     // 0 is the error severity; a warning is not why a compile failed.
@@ -153,17 +161,23 @@ const errorsOf = (
 
 let counter = 0;
 
-export const compile = (source: string, _target?: string): Uint8Array => {
-  const zena = languageService();
+export const compile = async (
+  source: string,
+  _target?: string,
+): Promise<Uint8Array> => {
+  const zena = await languageService();
   const {exports, writeString} = zena;
   // A path of its own per call: the service keys documents by path, and two
   // sources compiled in one process have nothing to do with each other.
   const path = `/inline/test-${counter++}.zena`;
-  const bytes = exports.compileToWasm(writeString(path), writeString(source));
+  const bytes = await exports.compileToWasm(
+    writeString(path),
+    writeString(source),
+  );
   if (!bytes) {
     // compileToWasm says only that it failed; the reason comes from checking
     // the same document, which also folds in parse errors.
-    const errors = errorsOf(zena, path, source);
+    const errors = await errorsOf(zena, path, source);
     throw new Error(
       `Zena compilation failed:\n${
         errors === ''

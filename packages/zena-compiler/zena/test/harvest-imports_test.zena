@@ -12,12 +12,12 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-function compileToWat(source: String, optLevel: i32) {
+async function compileToWat(source: String, optLevel: i32) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
   let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'js'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -80,8 +80,8 @@ export ${'function'} main(): i32 {
 `;
 
 export let tests = suite('harvest: imports', () => {
-  test('an import only a deleted function called is deleted too', (ctx) => {
-    let wat = compileToWat(fixture, 1);
+  test('an import only a deleted function called is deleted too', async (ctx) => {
+    let wat = await compileToWat(fixture, 1);
     isTrue(wat.contains('(import "host" "used"'),
         `the live import is missing:\n${wat}`);
     isTrue(!wat.contains('(import "host" "unused"'),

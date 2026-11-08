@@ -12,7 +12,7 @@
 import { getEnv } from 'zena:cli';
 import { ByteBuffer, StringBuilder } from 'zena:core';
 import { JsonBuilder } from 'zena:json';
-import { readFileSync, readFileBytesSync, writeFileBytesSync, writeFileSync, existsSync } from 'zena:fs';
+import { readFile, readFileBytes, writeFileBytes, writeFile, exists } from 'zena:fs';
 import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
 import { loadWorkspace } from './package-manifest.zena';
@@ -183,16 +183,16 @@ class FileHost implements CompilerHost {
     };
   }
 
-  readFile(path: String): String {
+  async readFile(path: String): Future<String> {
     // A WIT-backed package's module: no file exists — the source is
     // synthesized from the package's WIT.
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path, this.packagesWit);
+      return await synthesizeWitModule(this, path, this.packagesWit);
     }
     let actualPath = this.fileOf(path);
     let onRead = this.onRead;
     onRead(actualPath);
-    let content = readFileSync(actualPath);
+    let content = await readFile(actualPath);
     if (this.testMode && path == this.entryPath) {
       // A file that declares its own entry point is left alone. This runs
       // before the source is parsed, so the test is textual; what matters is
@@ -218,8 +218,8 @@ class FileHost implements CompilerHost {
     return content;
   }
 
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
+  async listDir(path: String): Future<Array<String> | null> {
+    return await directoryNames(path);
   }
 }
 
@@ -228,14 +228,18 @@ class FileHost implements CompilerHost {
 // fine — standalone files need only stdlib and relative imports — but a
 // malformed one throws loudly, and so does one that pins a package the cache
 // does not have.
-function loadPackages(host: CompilerHost, projectRoot: String | null, packageCache: String | null) {
-  let packages = loadWorkspace(host, ".", projectRoot, packageCache);
+async function loadPackages(
+  host: CompilerHost,
+  projectRoot: String | null,
+  packageCache: String | null
+): Future<HashMap<String, PackageConfig>> {
+  let packages = await loadWorkspace(host, ".", projectRoot, packageCache);
   if (packageCache == null) {
     return packages;
   }
   for (let key in packages.keys()) {
     let config = packages[key];
-    if (config.root.startsWith(`${packageCache}/`) && !existsSync(config.root)) {
+    if (config.root.startsWith(`${packageCache}/`) && !(await exists(config.root))) {
       throw new Error(`${key} is not in the package cache (${config.root}). Run 'zena pkg fetch'.`);
     }
   }
@@ -247,13 +251,13 @@ function loadPackages(host: CompilerHost, projectRoot: String | null, packageCac
 // error, and its message names the manifest. Thrown, it escaped
 // `compileFile` before any of its handlers, so `zc` trapped with no
 // message at all (https://github.com/elematic/zena/issues/534).
-function loadPackagesOrReport(
+async function loadPackagesOrReport(
   host: CompilerHost,
   projectRoot: String | null,
   packageCache: String | null
-): HashMap<String, PackageConfig> | null {
+): Future<HashMap<String, PackageConfig> | null> {
   try {
-    return loadPackages(host, projectRoot, packageCache);
+    return await loadPackages(host, projectRoot, packageCache);
   } catch (e) {
     console.error(`Error: ${e.message}`);
     return null;
@@ -458,7 +462,7 @@ let entriesPerCompiler = 16;
  * are read here, once for every compile the session runs, and `onRead`
  * hears about them first.
  */
-export function openCompileSession(options: CompileFileOptions): CompileSession | null {
+export async function openCompileSession(options: CompileFileOptions): Future<CompileSession | null> {
   // ZENA_CHECK_ALL_BODIES=1 checks every loaded module's bodies when
   // its module is checked, instead of leaving a dependency's for
   // reachability to ask for. See docs/design/lazy-body-checking.md.
@@ -543,11 +547,11 @@ export function openCompileSession(options: CompileFileOptions): CompileSession 
   // joined document.
   var witDoc: WitDocument | null = null;
   if (witPath != "") {
-    if (!existsSync(witPath)) {
+    if (!(await exists(witPath))) {
       console.error("Error: --wit path does not exist: " + witPath);
       return null;
     }
-    let doc = readWitDocument(host, witPath);
+    let doc = await readWitDocument(host, witPath);
     witDoc = doc;
     witSource = doc.source;
   }
@@ -566,11 +570,11 @@ export function openCompileSession(options: CompileFileOptions): CompileSession 
     }
     var problems = 0;
     for (let path in extensionWits) {
-      if (!existsSync(path)) {
+      if (!(await exists(path))) {
         console.error("Error: --extension-wit path does not exist: " + path);
         return null;
       }
-      let guestDoc = readWitDocument(host, path);
+      let guestDoc = await readWitDocument(host, path);
       var guestAst: WitAst | null = null;
       try {
         guestAst = parseSyntax(guestDoc.source);
@@ -592,7 +596,7 @@ export function openCompileSession(options: CompileFileOptions): CompileSession 
       return null;
     }
   }
-  let loaded = loadPackagesOrReport(host, if (projectRoot == "") null else projectRoot,
+  let loaded = await loadPackagesOrReport(host, if (projectRoot == "") null else projectRoot,
       if (packageCache == "") null else packageCache);
   if (loaded == null) {
     return null;
@@ -663,7 +667,7 @@ export function openCompileSession(options: CompileFileOptions): CompileSession 
     }
     for (let packageName in witPackages) {
       packagesWit = packagesWit +
-          readWitSource(host, allPackages[packageName].witRoot as String) + "\n";
+          (await readWitSource(host, allPackages[packageName].witRoot as String)) + "\n";
     }
     host.packagesWit = packagesWit;
   }
@@ -719,16 +723,16 @@ export final class CompileSession {
   }
 
   /** The runtime memory module, built or read on first use. */
-  #runtimeMemoryModule(compiler: Compiler, stdlibRoot: String, runtimeMemoryPath: String): ByteBuffer {
+  async #runtimeMemoryModule(compiler: Compiler, stdlibRoot: String, runtimeMemoryPath: String): Future<ByteBuffer> {
     let built = this.#runtimeMemory;
     if (built != null) {
       return built as ByteBuffer;
     }
     let module = if (runtimeMemoryPath == "") {
-      compileComponentRuntimeModule(compiler, stdlibRoot)
+      await compileComponentRuntimeModule(compiler, stdlibRoot)
     } else {
       // Already built, by a driver that keeps them between builds.
-      new ByteBuffer().writeBytes(readFileBytesSync(runtimeMemoryPath) as ByteArray)
+      new ByteBuffer().writeBytes((await readFileBytes(runtimeMemoryPath)) as ByteArray)
     };
     this.#runtimeMemory = module;
     return module;
@@ -739,7 +743,7 @@ export final class CompileSession {
    * and writes its module to `outPath`. Returns 0, or 1 after printing the
    * diagnostics.
    */
-  compile(entry: String, outPath: String): i32 {
+  async compile(entry: String, outPath: String): Future<i32> {
     let options = this.#options;
     let {
       stdlibRoot = "/stdlib",
@@ -805,7 +809,7 @@ export final class CompileSession {
       console.log(`Compiling ${filename}...`);
     }
     try {
-      let compResult = compiler.compile(compileOptions);
+      let compResult = await compiler.compile(compileOptions);
       let sources = new GrowableArray<String>();
       for (let file in compResult.files) {
         if (!isWitModulePath(file.path)) {
@@ -893,7 +897,7 @@ export final class CompileSession {
         watOnly.templates = templates;
         watOnly.templateCheck = templateCheck;
         watOnly.interner = checkResults.sharedState.interner;
-        writeFileSync(outPath, watOnly.generate(program));
+        await writeFile(outPath, watOnly.generate(program));
         performance.end(tCodegen);
         if (progress) {
           console.log("Success: wrote " + outPath);
@@ -929,7 +933,7 @@ export final class CompileSession {
         // whole nested compile.
         performance.suspend();
         generator.runtimeMemoryModule =
-            this.#runtimeMemoryModule(compiler, stdlibRoot, runtimeMemoryPath);
+            await this.#runtimeMemoryModule(compiler, stdlibRoot, runtimeMemoryPath);
         performance.resume();
         performance.add("codegen-runtime-module", nowMs() - tRuntimeModule);
         // A declared world compiles against its own document, with the
@@ -944,7 +948,7 @@ export final class CompileSession {
       }
       let wasmBytes = generator.generate(program).toByteArray();
       markTypes("emit");
-      writeFileBytesSync(outPath, wasmBytes as FixedArray<u8>);
+      await writeFileBytes(outPath, wasmBytes as FixedArray<u8>);
 
       // The WAT dump runs a SECOND full generator pass and its text
       // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
@@ -955,7 +959,7 @@ export final class CompileSession {
         watGenerator.importedStringConstants = importedStringConstants;
         watGenerator.compactImports = compactImports;
         let watString = watGenerator.generate(program);
-        writeFileSync(outPath + ".wat", watString);
+        await writeFile(outPath + ".wat", watString);
       }
       performance.end(tCodegen);
 
@@ -1011,10 +1015,10 @@ export final class CompileSession {
   }
 }
 
-export function compileFile(options: CompileFileOptions): i32 {
-  let session = openCompileSession(options);
+export async function compileFile(options: CompileFileOptions): Future<i32> {
+  let session = await openCompileSession(options);
   if (session == null) {
     return 1;
   }
-  return (session as CompileSession).compile(options.entry, options.outPath);
+  return await session.compile(options.entry, options.outPath);
 }

@@ -81,8 +81,12 @@ export final class LspServer {
     }
   }
 
-  /** Answers one message's body. */
-  handle(body: String): void {
+  /**
+   * Answers one message's body. A message that opens or changes a
+   * document checks it, which awaits the service; the caller awaits each
+   * message before reading the next, so messages are answered in order.
+   */
+  async handle(body: String): Future<void> {
     let message = this.#parse(body);
     if (message == null) {
       return;
@@ -93,7 +97,7 @@ export final class LspServer {
     let params = message.objectAt('params') ?? new JsonObject();
     if (!message.has('id')) {
       try {
-        this.#notification(method, params);
+        await this.#notification(method, params);
       } catch (e) {
         console.error(`zena lsp: ${method}: ${e.message}`);
       }
@@ -101,7 +105,7 @@ export final class LspServer {
     }
     let id = message['id'];
     try {
-      let result = this.#request(method, params);
+      let result = await this.#request(method, params);
       if (result == null) {
         this.#error(id, ErrorCode.MethodNotFound, `Unsupported request: ${method}`);
       } else {
@@ -128,20 +132,20 @@ export final class LspServer {
     return null;
   }
 
-  #notification(method: String, params: JsonObject): void {
+  async #notification(method: String, params: JsonObject): Future<void> {
     match (method) {
       case 'exit': {
         this.#exited = true;
       }
       case 'textDocument/didOpen': {
-        this.#setDocument(this.#uriIn(params), params.stringAt('textDocument.text') ?? '');
+        await this.#setDocument(this.#uriIn(params), params.stringAt('textDocument.text') ?? '');
       }
       case 'textDocument/didChange': {
         // Full synchronization: the last change holds the whole text.
         if (let (true, changes) = params.arrayAt('contentChanges')) {
           let last = if (changes.length > 0) { changes[changes.length - 1] } else { null };
           if (last is JsonObject) {
-            this.#setDocument(this.#uriIn(params), last.stringAt('text') ?? '');
+            await this.#setDocument(this.#uriIn(params), last.stringAt('text') ?? '');
           }
         }
       }
@@ -160,12 +164,15 @@ export final class LspServer {
   }
 
   /** A request's result as JSON, or null for a method the server lacks. */
-  #request(method: String, params: JsonObject): String | null {
+  async #request(method: String, params: JsonObject): Future<String | null> {
+    if (method == 'textDocument/definition') {
+      // Reads the file the definition is in, which may be on disk.
+      return await this.#definition(params);
+    }
     return match (method) {
       case 'initialize': initializeResult()
       case 'shutdown': 'null'
       case 'textDocument/hover': this.#hover(params)
-      case 'textDocument/definition': this.#definition(params)
       case 'textDocument/documentSymbol': this.#documentSymbols(params)
       case 'textDocument/completion': this.#completions(params)
       case 'textDocument/formatting': this.#formatting(params)
@@ -198,10 +205,10 @@ export final class LspServer {
   }
 
   /** Records a document's text, checks it, and publishes what it found. */
-  #setDocument(uri: String, text: String): void {
+  async #setDocument(uri: String, text: String): Future<void> {
     let path = pathOf(uri);
     this.#documents[path] = text;
-    let diagnostics = this.#service.check(path, text);
+    let diagnostics = await this.#service.check(path, text);
     this.#publish(uri, path, text, diagnostics, this.#service.lint(path));
   }
 
@@ -322,15 +329,15 @@ export final class LspServer {
   }
 
   /** The text of a file, open or on disk; null when it cannot be read. */
-  #fileText(path: String): String | null {
+  async #fileText(path: String): Future<String | null> {
     if (let (true, open) = this.#documents.get(path)) {
       return open;
     }
     let read = this.#readFile;
-    return read(path);
+    return await read(path);
   }
 
-  #definition(params: JsonObject): String {
+  async #definition(params: JsonObject): Future<String> {
     let path = pathOf(this.#uriIn(params));
     let span = this.#service.getDefinition(path, this.#offsetIn(params, this.#openText(path)));
     if (span == null) {
@@ -338,7 +345,7 @@ export final class LspServer {
     }
     let b = new JsonBuilder();
     b.beginObject().key('uri').string(uriOf(span.file)).key('range');
-    let text = this.#fileText(span.file);
+    let text = await this.#fileText(span.file);
     if (text != null) {
       writeSpan(b, text, span.start, span.start + span.length);
     } else {
