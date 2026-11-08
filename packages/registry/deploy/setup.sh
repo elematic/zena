@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
 # One-time Google Cloud setup for one environment of the App View and
-# padstone (env.sh). Idempotent: safe to re-run, and re-running is the fix when a
-# step failed part way. It never replaces a key once made: the rotation
-# key, or the key that encrypts accounts' signing keys.
+# padstone (env.sh), with the database's backups. Idempotent: safe to
+# re-run, and re-running is the fix when a step failed part way. It never
+# replaces a key once made: the rotation key, or the key that encrypts
+# accounts' signing keys.
 #
 #   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:setup -w @zena-lang/registry
 #
-# Then `npm run deploy` deploys the server, and `npm run deploy:domain`
-# maps the domain to it, once.
+# Then `npm run deploy` deploys the services, `npm run deploy:domain` maps
+# their names, once, and `npm run deploy:alerts` watches them.
 #
 # Every prompt is answered by a flag, since this runs under wireit, which
 # gives gcloud no terminal to read an answer from.
@@ -26,6 +27,7 @@ gcloud services enable \
   firestore.googleapis.com \
   storage.googleapis.com \
   dns.googleapis.com \
+  monitoring.googleapis.com \
   secretmanager.googleapis.com \
   cloudkms.googleapis.com \
   iam.googleapis.com \
@@ -79,6 +81,28 @@ gcloud projects add-iam-policy-binding "$PROJECT" --member "$MEMBER" --role role
   --condition "expression=resource.name==\"projects/${PROJECT}/databases/${DATABASE}\",title=${DATABASE}-only" \
   --quiet > /dev/null
 echo "    $SERVICE_ACCOUNT may use it"
+# Releases are permanent, so the database is kept from deletion, and every
+# version of it from the last 7 days can be read back.
+gcloud firestore databases update --database "$DATABASE" --project "$PROJECT" --enable-pitr --delete-protection \
+  --quiet > /dev/null
+echo "    point-in-time recovery for 7 days, and delete protection"
+SCHEDULES="$(gcloud firestore backups schedules list --database "$DATABASE" --project "$PROJECT" --format json)"
+if grep -q '"dailyRecurrence"' <<< "$SCHEDULES"; then
+  echo "    daily backups exist"
+else
+  gcloud firestore backups schedules create --database "$DATABASE" --project "$PROJECT" --recurrence daily \
+    --retention 7d --quiet > /dev/null
+  echo "    daily backups, kept 7 days"
+fi
+if [ "$WEEKLY_BACKUPS" = 1 ]; then
+  if grep -q '"weeklyRecurrence"' <<< "$SCHEDULES"; then
+    echo "    weekly backups exist"
+  else
+    gcloud firestore backups schedules create --database "$DATABASE" --project "$PROJECT" --recurrence weekly \
+      --day-of-week SUN --retention 98d --quiet > /dev/null
+    echo "    weekly backups on Sundays, kept 14 weeks"
+  fi
+fi
 
 echo "==> Bucket gs://$BUCKET"
 if gcloud storage buckets describe "gs://$BUCKET" --project "$PROJECT" > /dev/null 2>&1; then
@@ -90,6 +114,9 @@ fi
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member "$MEMBER" \
   --role roles/storage.objectAdmin --quiet > /dev/null
 echo "    $SERVICE_ACCOUNT may use it"
+# A blob is deleted only with its account; it can be restored for this long.
+gcloud storage buckets update "gs://$BUCKET" --soft-delete-duration "$SOFT_DELETE" --quiet > /dev/null
+echo "    deleted objects kept for $SOFT_DELETE"
 
 echo "==> Cloud KMS key ring $KMS_KEYRING ($KMS_LOCATION)"
 if gcloud kms keyrings describe "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" > /dev/null 2>&1; then
