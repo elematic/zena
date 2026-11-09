@@ -22,13 +22,14 @@
 
 import { ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
+import { getEnv } from 'zena:cli';
 import { OrderedHashMap } from 'zena:collections';
 import { exists, readFile, writeFile } from 'zena:fs';
 import { Cid } from 'atproto:cid';
 import { IdentityResolver } from 'atproto:identity';
 import { writeDependencies } from 'package-manager:manifest';
 import { isValidPackageName } from 'package-manager:records';
-import { fetchProfile, listVersions, networkReleases, resolveIdentifier } from 'package-manager:registry';
+import { DEFAULT_DOMAIN, fetchProfile, listVersions, networkReleases, resolveIdentifier } from 'package-manager:registry';
 import {
   Pin, PinAdded, PinChange, PinChangedInPlace, PinRemoved, PinVersionChanged, diffPins, readPins, writeLockfile
 } from 'package-manager:resolution';
@@ -37,6 +38,20 @@ import { Version } from 'package-manager:version';
 import { DiskFiles, Workspace, WorkspacePackage, readWorkspace } from 'package-manager:workspace';
 import { Options, repoRoot, userCwd } from './env.zena';
 import { fetchAndReport, packageResolver } from './fetch.zena';
+import { findRegistry } from './publish.zena';
+
+/**
+ * The domain `@scope/name` stands under when the workspace's `scopes` do
+ * not name one: the domain of the registry `ZENA_REGISTRY` names, as its
+ * `describeRegistry` gives it, or else the Zena project's, without asking
+ * any registry, so that adding a package needs no App View.
+ */
+async function scopeDomain(args: ParsedArgs): Future<String> {
+  if (getEnv('ZENA_REGISTRY') == null) {
+    return DEFAULT_DOMAIN;
+  }
+  return (await findRegistry(args)).domain;
+}
 
 export async function addCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length != 1) {
@@ -49,7 +64,8 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
   let manifest = target.manifest;
   let requirements = manifest.requirements;
   let resolver = packageResolver();
-  let did = await resolveIdentifier(identifier, workspace.root.manifest.scopes, resolver);
+  let domain = if (identifier.startsWith('@')) await scopeDomain(args) else DEFAULT_DOMAIN;
+  let did = await resolveIdentifier(identifier, workspace.root.manifest.scopes, resolver, domain);
   let document = await resolver.resolveDid(did);
 
   var version: Version | null = null;
