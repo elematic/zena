@@ -7,32 +7,33 @@
 
 import {suite, test} from 'zena:test';
 import {isTrue} from 'zena:assert';
-import {existsSync, readFileSync} from 'zena:fs';
+import {Future} from 'zena:async';
+import {exists, readFile} from 'zena:fs';
 import {generate} from 'protobuf:generator';
 
 /** Relative to the repository root, which is where a test runs. */
 let PROTOS = 'packages/protobuf/protos';
 
-function readProto(path: String): String | null {
+async function readProto(path: String): Future<String | null> {
   let candidate = `${PROTOS}/${path}`;
-  return if (existsSync(candidate)) readFileSync(candidate) else null;
+  return if (await exists(candidate)) await readFile(candidate) else null;
 }
 
 /** Checks that `generated` is the generator's output for `proto`. */
-function isCurrent(proto: String, generated: String) {
-  let source = generate({files: [proto], read: readProto});
+async function isCurrent(proto: String, generated: String) {
+  let source = await generate({files: [proto], read: readProto});
   isTrue(
-    readFileSync(generated) == source,
+    (await readFile(generated)) == source,
     `${generated} does not match the generator's output; run npm run generate -w @zena-lang/google-cloud`
   );
 }
 
 export let tests = suite('google-cloud generated code', () => {
-  test('firestore-v1.zena is current', () => {
-    isCurrent('google/firestore/v1/firestore.proto', 'packages/google-cloud/zena/firestore-v1.zena');
+  test('firestore-v1.zena is current', async () => {
+    await isCurrent('google/firestore/v1/firestore.proto', 'packages/google-cloud/zena/firestore-v1.zena');
   });
 
-  test('storage-v2.zena is current', () => {
-    isCurrent('google/storage/v2/storage.proto', 'packages/google-cloud/zena/storage-v2.zena');
+  test('storage-v2.zena is current', async () => {
+    await isCurrent('google/storage/v2/storage.proto', 'packages/google-cloud/zena/storage-v2.zena');
   });
 });

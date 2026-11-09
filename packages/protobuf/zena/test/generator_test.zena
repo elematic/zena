@@ -10,8 +10,9 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
+import {Future} from 'zena:async';
 import {getEnv} from 'zena:cli';
-import {existsSync, readFileSync, writeFileSync} from 'zena:fs';
+import {exists, readFile, writeFile} from 'zena:fs';
 import {HashMap} from 'zena:collections';
 import {generate} from '../generator.zena';
 import {camelCase, pascalCase} from '../emitter.zena';
@@ -20,34 +21,34 @@ import {camelCase, pascalCase} from '../emitter.zena';
 let INCLUDES = ['packages/protobuf/test-files/protos', 'packages/protobuf/protos'];
 let GENERATED = 'packages/protobuf/test-files/generated';
 
-function readFromIncludes(path: String): String | null {
+async function readFromIncludes(path: String): Future<String | null> {
   for (let dir in INCLUDES) {
     let candidate = `${dir}/${path}`;
-    if (existsSync(candidate)) {
-      return readFileSync(candidate);
+    if (await exists(candidate)) {
+      return await readFile(candidate);
     }
   }
   return null;
 }
 
 /** Generates from `file` and compares with, or with the env var writes, `golden`. */
-function checkGolden(file: String, golden: String) {
-  let source = generate({files: [file], read: readFromIncludes});
+async function checkGolden(file: String, golden: String) {
+  let source = await generate({files: [file], read: readFromIncludes});
   let path = `${GENERATED}/${golden}`;
   if (getEnv('UPDATE_PROTO_GOLDENS') != null) {
-    writeFileSync(path, source);
+    await writeFile(path, source);
     return;
   }
-  isTrue(existsSync(path), `no golden at ${path}; run with UPDATE_PROTO_GOLDENS=1`);
+  isTrue(await exists(path), `no golden at ${path}; run with UPDATE_PROTO_GOLDENS=1`);
   isTrue(
-    readFileSync(path) == source,
+    (await readFile(path)) == source,
     `${path} does not match the generator's output; run with UPDATE_PROTO_GOLDENS=1 and review the diff`
   );
 }
 
 /** A reader over in-memory files. */
-function filesOf(files: HashMap<String, String>): (path: String) => String | null {
-  return (path: String): String | null => {
+function filesOf(files: HashMap<String, String>): (path: String) => Future<String | null> {
+  return async (path: String): Future<String | null> => {
     if (let (true, source) = files.get(path)) {
       return source;
     }
@@ -56,9 +57,9 @@ function filesOf(files: HashMap<String, String>): (path: String) => String | nul
 }
 
 /** The message `generate` fails with on `files`, or '' when it succeeds. */
-function failure(files: HashMap<String, String>) {
+async function failure(files: HashMap<String, String>) {
   return try {
-  generate({files: ['a.proto'], read: filesOf(files)});
+  await generate({files: ['a.proto'], read: filesOf(files)});
   ''
 } catch (e) {
   e.message
@@ -66,8 +67,8 @@ function failure(files: HashMap<String, String>) {
 }
 
 export let tests = suite('protobuf generator', () => {
-  test('generates the feature fixture', () => {
-    checkGolden('zena/test/v1/everything.proto', 'everything.zena');
+  test('generates the feature fixture', async () => {
+    await checkGolden('zena/test/v1/everything.proto', 'everything.zena');
   });
 
   test('converts names', () => {
@@ -79,68 +80,68 @@ export let tests = suite('protobuf generator', () => {
     equal(camelCase('name'), 'name');
   });
 
-  test('reports an unknown type with the missing imports', () => {
+  test('reports an unknown type with the missing imports', async () => {
     let files: HashMap<String, String> = {
       'a.proto' => 'syntax = "proto3"; import "gone.proto"; message A { Missing m = 1; }',
     };
-    let message = failure(files);
+    let message = await failure(files);
     isTrue(message.contains('A.m refers to unknown type Missing'), message);
     isTrue(message.contains('gone.proto'), message);
   });
 
-  test('ignores a missing import nothing needs', () => {
+  test('ignores a missing import nothing needs', async () => {
     let files: HashMap<String, String> = {
       'a.proto' => 'syntax = "proto3"; import "gone.proto"; message A { int32 x = 1; }',
     };
-    equal(failure(files), '');
+    equal(await failure(files), '');
   });
 
-  test('resolves names from the innermost scope out', () => {
+  test('resolves names from the innermost scope out', async () => {
     let files: HashMap<String, String> = {
       'a.proto' => 'syntax = "proto3"; package p.q; import "b.proto";'
         + ' message Outer { message Inner {} Inner a = 1; p.Shared b = 2; .p.Shared c = 3; Shared d = 4; }',
       'b.proto' => 'syntax = "proto3"; package p; message Shared { int32 x = 1; }',
     };
-    let source = generate({files: ['a.proto'], read: filesOf(files)});
+    let source = await generate({files: ['a.proto'], read: filesOf(files)});
     isTrue(source.contains('a: OuterInner | null'), source);
     isTrue(source.contains('b: Shared | null'), source);
     isTrue(source.contains('d: Shared | null'), source);
   });
 
-  test('generates only what the roots reach', () => {
+  test('generates only what the roots reach', async () => {
     let files: HashMap<String, String> = {
       'a.proto' => 'syntax = "proto3"; message A { B b = 1; } message B {} message C {}',
     };
-    let source = generate({files: ['a.proto'], read: filesOf(files), roots: ['A']});
+    let source = await generate({files: ['a.proto'], read: filesOf(files), roots: ['A']});
     isTrue(source.contains('class A '), source);
     isTrue(source.contains('class B '), source);
     isTrue(!source.contains('class C '), source);
   });
 
-  test('prefixes a type whose name another package uses', () => {
+  test('prefixes a type whose name another package uses', async () => {
     let files: HashMap<String, String> = {
       'a.proto' => 'syntax = "proto3"; package app; import "b.proto";'
         + ' message Value { other.Value v = 1; }',
       'b.proto' => 'syntax = "proto3"; package other; message Value {}',
     };
-    let source = generate({files: ['a.proto'], read: filesOf(files)});
+    let source = await generate({files: ['a.proto'], read: filesOf(files)});
     isTrue(source.contains('class Value '), source);
     isTrue(source.contains('class OtherValue '), source);
   });
 
-  test('prefixes a type named like a Zena type the module uses', () => {
+  test('prefixes a type named like a Zena type the module uses', async () => {
     let files: HashMap<String, String> = {
       'a.proto' => 'syntax = "proto3"; package geo; message Map { int32 x = 1; }',
     };
-    let source = generate({files: ['a.proto'], read: filesOf(files)});
+    let source = await generate({files: ['a.proto'], read: filesOf(files)});
     isTrue(source.contains('class GeoMap '), source);
   });
 
-  test('reports a syntax error with its position', () => {
+  test('reports a syntax error with its position', async () => {
     let files: HashMap<String, String> = {
       'a.proto' => 'syntax = "proto3";\nmessage A {\n  int32 x = ;\n}',
     };
-    let message = failure(files);
+    let message = await failure(files);
     isTrue(message.contains('a.proto:3:13: expected a field number'), message);
   });
 });

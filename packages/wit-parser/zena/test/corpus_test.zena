@@ -22,7 +22,7 @@ import { suite, test } from 'zena:test';
 import { fail, isTrue, jsonEqual } from 'zena:assert';
 import { HashSet } from 'zena:collections';
 import { StringBuilder } from 'zena:core';
-import { existsSync, isDirectorySync, listDirSync, readFileSync } from 'zena:fs';
+import { exists, isDirectory, listDir, readFile } from 'zena:fs';
 import { JsonArray, JsonObject, JsonValue, parseJson } from 'zena:json';
 import { runIn } from 'zena:process';
 import { regex } from 'zena:regex';
@@ -60,9 +60,9 @@ function sortStrings(values: GrowableArray<String>) {
 }
 
 /** The names in a directory, sorted. */
-function entryNames(dir: String) {
+async function entryNames(dir: String) {
   let names = new GrowableArray<String>();
-  for (let entry in listDirSync(dir)) {
+  for (let entry in await listDir(dir)) {
     if (entry.name != '.' && entry.name != '..') {
       names.push(entry.name);
     }
@@ -83,19 +83,19 @@ function join(values: GrowableArray<String>, separator: String) {
 }
 
 /** Collects the cases under `dir`, with `prefix` their path under `tests/`. */
-function discover(dir: String, prefix: String, out: GrowableArray<Case>): void {
-  for (let name in entryNames(dir)) {
+async function discover(dir: String, prefix: String, out: GrowableArray<Case>): Future<void> {
+  for (let name in await entryNames(dir)) {
     let path = `${dir}/${name}`;
     let relative = if (prefix == '') { name } else { `${prefix}/${name}` };
-    if (isDirectorySync(path)) {
+    if (await isDirectory(path)) {
       // A directory is a case when its expectation sits beside it rather
       // than inside it; otherwise it just holds more cases.
-      if (existsSync(`${path}.wit.json`)) {
+      if (await exists(`${path}.wit.json`)) {
         out.push(new Case(relative, path, `${path}.wit.json`, true, true));
-      } else if (existsSync(`${path}.wit.result`)) {
+      } else if (await exists(`${path}.wit.result`)) {
         out.push(new Case(relative, path, `${path}.wit.result`, false, true));
       } else {
-        discover(path, relative, out);
+        await discover(path, relative, out);
       }
       continue;
     }
@@ -114,25 +114,25 @@ function discover(dir: String, prefix: String, out: GrowableArray<Case>): void {
     if (base == '') {
       continue;
     }
-    if (existsSync(`${base}.wit.json`)) {
+    if (await exists(`${base}.wit.json`)) {
       out.push(new Case(relative, path, `${base}.wit.json`, true, false));
-    } else if (existsSync(`${base}.wit.result`)) {
+    } else if (await exists(`${base}.wit.result`)) {
       out.push(new Case(relative, path, `${base}.wit.result`, false, false));
     }
   }
 }
 
 /** Collects a directory case's files, splitting out the vendored deps. */
-function collectFiles(
+async function collectFiles(
   dir: String,
   isDep: boolean,
   main: GrowableArray<String>,
   deps: GrowableArray<String>,
-): void {
-  for (let name in entryNames(dir)) {
+): Future<void> {
+  for (let name in await entryNames(dir)) {
     let path = `${dir}/${name}`;
-    if (isDirectorySync(path)) {
-      collectFiles(path, isDep || name == 'deps', main, deps);
+    if (await isDirectory(path)) {
+      await collectFiles(path, isDep || name == 'deps', main, deps);
     } else if (name.endsWith('.wit') || name.endsWith('.wat') || name.endsWith('.wasm')) {
       if (isDep) {
         deps.push(path);
@@ -168,10 +168,10 @@ function declaredPackage(source: String) {
 }
 
 /** A directory case's main files, sorted: everything not under `deps/`. */
-function mainFiles(dir: String) {
+async function mainFiles(dir: String) {
   let main = new GrowableArray<String>();
   let deps = new GrowableArray<String>();
-  collectFiles(dir, false, main, deps);
+  await collectFiles(dir, false, main, deps);
   sortStrings(main);
   return main;
 }
@@ -186,14 +186,14 @@ function mainFiles(dir: String) {
  * boundaries are gone. Upstream parses each file on its own and merges by
  * package name, so it sees both.
  */
-function fileLevelFault(dir: String) {
-  let paths = mainFiles(dir);
+async function fileLevelFault(dir: String) {
+  let paths = await mainFiles(dir);
   if (paths.length < 2) {
     return '';
   }
   let sources = new GrowableArray<String>();
   for (let path in paths) {
-    sources.push(readFileSync(path));
+    sources.push(await readFile(path));
   }
 
   // Every file of one package declares the same package, or none.
@@ -291,11 +291,11 @@ async function inputOf(c: Case) {
     if (isBinary(c.path)) {
       return await decodeBinary(c.path);
     }
-    return readFileSync(c.path);
+    return await readFile(c.path);
   }
   let main = new GrowableArray<String>();
   let deps = new GrowableArray<String>();
-  collectFiles(c.path, false, main, deps);
+  await collectFiles(c.path, false, main, deps);
   sortStrings(main);
   sortStrings(deps);
   let ordered = new GrowableArray<String>();
@@ -313,7 +313,7 @@ async function inputOf(c: Case) {
     if (isBinary(path)) {
       contents.push(await decodeBinary(path));
     } else {
-      contents.push(readFileSync(path));
+      contents.push(await readFile(path));
     }
   }
   return join(contents, '\n');
@@ -368,18 +368,18 @@ function failureOf(input: String) {
 }
 
 /** The fault the harness itself finds, or '' when it finds none. */
-function harnessFault(c: Case) {
+async function harnessFault(c: Case) {
   if (c.isDirectory) {
-    return fileLevelFault(c.path);
+    return await fileLevelFault(c.path);
   }
-  if (!isBinary(c.path) && declaresPackageTwice(readFileSync(c.path))) {
+  if (!isBinary(c.path) && declaresPackageTwice(await readFile(c.path))) {
     return "expected '{', found ';'";
   }
   return '';
 }
 
 async function runCase(c: Case) {
-  let fault = harnessFault(c);
+  let fault = await harnessFault(c);
   if (fault != '') {
     isTrue(!c.mustParse, `${c.name}: ${fault}`);
     return;
@@ -389,7 +389,7 @@ async function runCase(c: Case) {
     isTrue(failureOf(input) != '', `${c.name} parsed, but must fail`);
     return;
   }
-  let expected = parseJson(readFileSync(c.expected), {
+  let expected = parseJson(await readFile(c.expected), {
     allowComments: false,
     trackLocations: true,
   });
@@ -430,17 +430,15 @@ final class Corpus {
 }
 
 /**
- * Reads the corpus from disk. A test calls this rather than the suite body:
- * the body runs while the module is still starting, and a blocking host call
- * there traps with "cannot block a synchronous task before returning".
+ * Reads the corpus from disk.
  */
-function readCorpus() {
-  let config = parseJson(readFileSync(`${TESTS}/test-config.json`), {
+async function readCorpus() {
+  let config = parseJson(await readFile(`${TESTS}/test-config.json`), {
     allowComments: true,
     trackLocations: false,
   });
   let cases = new GrowableArray<Case>();
-  discover(TESTS, '', cases);
+  await discover(TESTS, '', cases);
   return new Corpus(
     cases,
     namesFrom(config, 'skip'),
@@ -453,7 +451,7 @@ function readCorpus() {
  * every `.wit.result` case otherwise, printing a line per failure.
  */
 async function runGroup(mustParse: boolean, label: String) {
-  let corpus = readCorpus();
+  let corpus = await readCorpus();
   var ran = 0;
   var skipped = 0;
   let failures = new GrowableArray<String>();

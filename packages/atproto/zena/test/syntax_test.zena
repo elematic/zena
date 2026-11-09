@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, fail, isFalse, isTrue} from 'zena:assert';
-import {readFileSync} from 'zena:fs';
+import {readFile} from 'zena:fs';
 import {
   isValidAtIdentifier,
   isValidCidSyntax,
@@ -16,9 +16,9 @@ import {
 let FIXTURES = 'packages/atproto/zena/test/fixtures/interop/syntax';
 
 /** The cases in an interop syntax file: every line but comments and blank lines. */
-function cases(name: String) {
+async function cases(name: String) {
   let out = new GrowableArray<String>();
-  for (let line in readFileSync(`${FIXTURES}/${name}`).split('\n')) {
+  for (let line in (await readFile(`${FIXTURES}/${name}`)).split('\n')) {
     if (line.length > 0 && !line.startsWith('#')) {
       out.push(line);
     }
@@ -30,15 +30,15 @@ function cases(name: String) {
  * Checks `check` against `<kind>_syntax_valid.txt` and
  * `<kind>_syntax_invalid.txt`, and returns how many cases there were.
  */
-function checkFixtures(kind: String, check: (text: String) => boolean) {
+async function checkFixtures(kind: String, check: (text: String) => boolean) {
   var count = 0;
-  for (let text in cases(`${kind}_syntax_valid.txt`)) {
+  for (let text in await cases(`${kind}_syntax_valid.txt`)) {
     if (!check(text)) {
       fail(`rejected valid ${kind} '${text}'`);
     }
     count += 1;
   }
-  for (let text in cases(`${kind}_syntax_invalid.txt`)) {
+  for (let text in await cases(`${kind}_syntax_invalid.txt`)) {
     if (check(text)) {
       fail(`accepted invalid ${kind} '${text}'`);
     }
@@ -48,36 +48,36 @@ function checkFixtures(kind: String, check: (text: String) => boolean) {
 }
 
 export let tests = suite('atproto:syntax', () => {
-  test('DIDs match the interop fixtures', (ctx) => {
-    isTrue(checkFixtures('did', (text) => isValidDid(text)) > 30);
+  test('DIDs match the interop fixtures', async (ctx) => {
+    isTrue(await checkFixtures('did', (text) => isValidDid(text)) > 30);
   });
 
-  test('handles match the interop fixtures', (ctx) => {
-    isTrue(checkFixtures('handle', (text) => isValidHandle(text)) > 30);
+  test('handles match the interop fixtures', async (ctx) => {
+    isTrue(await checkFixtures('handle', (text) => isValidHandle(text)) > 30);
   });
 
-  test('NSIDs match the interop fixtures', (ctx) => {
-    isTrue(checkFixtures('nsid', (text) => isValidNsid(text)) > 20);
+  test('NSIDs match the interop fixtures', async (ctx) => {
+    isTrue(await checkFixtures('nsid', (text) => isValidNsid(text)) > 20);
   });
 
-  test('record keys match the interop fixtures', (ctx) => {
-    isTrue(checkFixtures('recordkey', (text) => isValidRecordKey(text)) > 20);
+  test('record keys match the interop fixtures', async (ctx) => {
+    isTrue(await checkFixtures('recordkey', (text) => isValidRecordKey(text)) > 20);
   });
 
-  test('TIDs match the interop fixtures', (ctx) => {
-    isTrue(checkFixtures('tid', (text) => isValidTid(text)) > 5);
+  test('TIDs match the interop fixtures', async (ctx) => {
+    isTrue(await checkFixtures('tid', (text) => isValidTid(text)) > 5);
   });
 
-  test('datetimes match the interop fixtures', (ctx) => {
-    isTrue(checkFixtures('datetime', (text) => isValidDatetime(text)) > 60);
+  test('datetimes match the interop fixtures', async (ctx) => {
+    isTrue(await checkFixtures('datetime', (text) => isValidDatetime(text)) > 60);
   });
 
-  test('AT identifiers match the interop fixtures', (ctx) => {
-    isTrue(checkFixtures('atidentifier', (text) => isValidAtIdentifier(text)) > 10);
+  test('AT identifiers match the interop fixtures', async (ctx) => {
+    isTrue(await checkFixtures('atidentifier', (text) => isValidAtIdentifier(text)) > 10);
   });
 
-  test('CID strings match the interop fixtures', (ctx) => {
-    isTrue(checkFixtures('cid', (text) => isValidCidSyntax(text)) > 10);
+  test('CID strings match the interop fixtures', async (ctx) => {
+    isTrue(await checkFixtures('cid', (text) => isValidCidSyntax(text)) > 10);
   });
 
   test('datetimes must name a day that exists', (ctx) => {

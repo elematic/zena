@@ -11,20 +11,20 @@
  */
 
 import { getArguments, exit } from 'zena:cli';
-import { readFileSync, writeFileBytesSync } from 'zena:fs';
+import { readFile, writeFileBytes } from 'zena:fs';
 import { parse } from '../zena/wit.zena';
 import { encodeTypesOnlyComponent } from '../zena/component-encoder.zena';
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   let args = getArguments();
   if (args.length != 4) {
     console.error('Usage: encode-wit <input.wit> <world> <out.wasm>');
     exit(1);
   }
   try {
-    let ast = parse(readFileSync(args[1]));
+    let ast = parse(await readFile(args[1]));
     let result = encodeTypesOnlyComponent(ast, args[2]);
-    writeFileBytesSync(args[3], result.bytes.toByteArray() as FixedArray<u8>);
+    await writeFileBytes(args[3], result.bytes.toByteArray() as FixedArray<u8>);
     for (let name in result.encoded.skippedExports) {
       // A types-only component has nothing to implement an export with;
       // the harness's goldens show the imports only.

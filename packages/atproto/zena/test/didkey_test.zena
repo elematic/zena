@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isTrue, throws} from 'zena:assert';
-import {readFileSync} from 'zena:fs';
+import {readFile} from 'zena:fs';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {base64, hex} from 'zena:encoding';
 import {
@@ -18,8 +18,8 @@ import {decodeBase58btc} from 'atproto:multibase';
 
 let INTEROP = 'packages/atproto/zena/test/fixtures/interop/crypto';
 
-function fixtures(name: String) {
-  return parseJson(readFileSync(`${INTEROP}/${name}`)) as JsonArray;
+async function fixtures(name: String) {
+  return parseJson(await readFile(`${INTEROP}/${name}`)) as JsonArray;
 }
 
 function keyTypeName(key: PublicKey) {
@@ -27,8 +27,8 @@ function keyTypeName(key: PublicKey) {
 }
 
 export let tests = suite('atproto:didkey', () => {
-  test('checks the atproto signature fixtures in strict mode', (ctx) => {
-    let cases = fixtures('signature-fixtures.json');
+  test('checks the atproto signature fixtures in strict mode', async (ctx) => {
+    let cases = await fixtures('signature-fixtures.json');
     equal(cases.length, 6);
     for (var i = 0; i < cases.length; i += 1) {
       let c = cases[i] as JsonObject;
@@ -48,15 +48,15 @@ export let tests = suite('atproto:didkey', () => {
     }
   });
 
-  test('derives the did:key of each W3C test vector from its private key', (ctx) => {
-    let k256 = fixtures('w3c_didkey_K256.json');
+  test('derives the did:key of each W3C test vector from its private key', async (ctx) => {
+    let k256 = await fixtures('w3c_didkey_K256.json');
     equal(k256.length, 5);
     for (var i = 0; i < k256.length; i += 1) {
       let c = k256[i] as JsonObject;
       let key = publicKeyFor(KeyType.Secp256k1, hex.decode(c['privateKeyBytesHex'] as String));
       equal(formatDidKey(key), c['publicDidKey'] as String);
     }
-    let p256 = fixtures('w3c_didkey_P256.json');
+    let p256 = await fixtures('w3c_didkey_P256.json');
     equal(p256.length, 1);
     let c = p256[0] as JsonObject;
     let privateKey = decodeBase58btc(c['privateKeyBytesBase58'] as String);
@@ -73,9 +73,9 @@ export let tests = suite('atproto:didkey', () => {
     isFalse(verifySignature(key, hex.decode('00'), signature));
   });
 
-  test('reads a key from a did:key and from the older DID document types alike', (ctx) => {
+  test('reads a key from a did:key and from the older DID document types alike', async (ctx) => {
     for (let (name, type) in [('w3c_didkey_K256.json', 'secp256k1'), ('w3c_didkey_P256.json', 'P-256')]) {
-      let cases = fixtures(name);
+      let cases = await fixtures(name);
       for (var i = 0; i < cases.length; i += 1) {
         let did = (cases[i] as JsonObject)['publicDidKey'] as String;
         let key = parseDidKey(did);

@@ -12,7 +12,7 @@
 
 import { suite, test } from 'zena:test';
 import { equal, fail, isNotNull, isTrue } from 'zena:assert';
-import { globSync, readFileSync } from 'zena:fs';
+import { glob, readFile } from 'zena:fs';
 import { Lexer } from '../lexer.zena';
 import { TokenType } from '../token.zena';
 import { Ast, InterfaceDef, PackageName, WorldDef } from '../parser.zena';
@@ -169,15 +169,15 @@ export let tests = suite('WIT syntax', () => {
     equal(firstTokenText('hello-world'), 'hello-world');
   });
 
-  test('lexes every file in the corpus', () => {
-    let files = globSync(CORPUS);
+  test('lexes every file in the corpus', async () => {
+    let files = await glob(CORPUS);
     // A floor rather than an exact count: the corpus is synced from
     // wasm-tools and grows. Zero would mean the glob stopped matching, which
     // otherwise reads as a pass.
     isTrue(files.length > 200, `only ${files.length} .wit files matched ${CORPUS}`);
     for (let file in files) {
       try {
-        tokenCount(readFileSync(file));
+        tokenCount(await readFile(file));
       } catch (e) {
         fail(`${file}: ${e.message}`);
       }

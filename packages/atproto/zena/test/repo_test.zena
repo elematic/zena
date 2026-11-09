@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue, throws} from 'zena:assert';
-import {readFileBytesSync} from 'zena:fs';
+import {readFileBytes} from 'zena:fs';
 import {hex} from 'zena:encoding';
 import {BlockMap, Car, readCar, writeCar} from 'atproto:car';
 import {encodeCbor} from 'atproto:cbor';
@@ -18,8 +18,8 @@ function acceptAny(signed: FixedArray<u8>, sig: FixedArray<u8>) {
   return true;
 }
 
-function networkCar() {
-  return readCar(readFileBytesSync(`${NETWORK}/atproto-com-profile.car`));
+async function networkCar() {
+  return readCar(await readFileBytes(`${NETWORK}/atproto-com-profile.car`));
 }
 
 /**
@@ -64,8 +64,8 @@ export let tests = suite('atproto:car and atproto:repo', () => {
     isTrue((decodeCommit(second.bytes).prev as Cid).equals(first.cid));
   });
 
-  test('reads a getRecord answer from the network', (ctx) => {
-    let car = networkCar();
+  test('reads a getRecord answer from the network', async (ctx) => {
+    let car = await networkCar();
     equal(car.roots.length, 1);
     let commit = decodeCommit(car.blocks.get(car.roots[0]) as FixedArray<u8>);
     equal(commit.did, DID);
@@ -73,15 +73,15 @@ export let tests = suite('atproto:car and atproto:repo', () => {
     equal(commit.sig.length, 64);
   });
 
-  test('finds the record the proof is for', (ctx) => {
-    let proof = verifyRecordProof(networkCar(), DID, 'app.bsky.actor.profile', 'self', acceptAny);
+  test('finds the record the proof is for', async (ctx) => {
+    let proof = verifyRecordProof(await networkCar(), DID, 'app.bsky.actor.profile', 'self', acceptAny);
     let record = proof.record as MapValue;
     equal(stringField(record, '$type') as String, 'app.bsky.actor.profile');
     isTrue(proof.cid != null);
   });
 
-  test('re-encodes the commit to the bytes it was signed over', (ctx) => {
-    let car = networkCar();
+  test('re-encodes the commit to the bytes it was signed over', async (ctx) => {
+    let car = await networkCar();
     let commitBytes = car.blocks.get(car.roots[0]) as FixedArray<u8>;
     let commit = decodeCommit(commitBytes);
     // The signed bytes are the commit minus its `sig` field: a map of one
@@ -91,22 +91,25 @@ export let tests = suite('atproto:car and atproto:repo', () => {
     equal(hex.encode(commit.signedBytes()).sliceBytes(0, 2), 'a5');
   });
 
-  test('rejects a proof whose signature check fails', (ctx) => {
+  test('rejects a proof whose signature check fails', async (ctx) => {
+    let car = await networkCar();
     throws(() => {
-      verifyRecordProof(networkCar(), DID, 'app.bsky.actor.profile', 'self', (signed, sig) => false);
+      verifyRecordProof(car, DID, 'app.bsky.actor.profile', 'self', (signed, sig) => false);
     });
   });
 
-  test('rejects a proof for another repository', (ctx) => {
+  test('rejects a proof for another repository', async (ctx) => {
+    let car = await networkCar();
     throws(() => {
-      verifyRecordProof(networkCar(), 'did:plc:someoneelse', 'app.bsky.actor.profile', 'self', acceptAny);
+      verifyRecordProof(car, 'did:plc:someoneelse', 'app.bsky.actor.profile', 'self', acceptAny);
     });
   });
 
-  test('rejects a proof that lacks the nodes on the path to the key', (ctx) => {
+  test('rejects a proof that lacks the nodes on the path to the key', async (ctx) => {
     // The proof holds only the path to app.bsky.actor.profile/self.
+    let car = await networkCar();
     throws(() => {
-      verifyRecordProof(networkCar(), DID, 'app.bsky.feed.post', '3jqfcqzm3fo2j', acceptAny);
+      verifyRecordProof(car, DID, 'app.bsky.feed.post', '3jqfcqzm3fo2j', acceptAny);
     });
   });
 

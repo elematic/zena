@@ -26,7 +26,7 @@
 import {Future} from 'zena:async';
 import {exit, getEnv} from 'zena:cli';
 import {fetch} from 'zena:fetch';
-import {mkdirSync, writeFileSync} from 'zena:fs';
+import {mkdir, writeFile} from 'zena:fs';
 import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {ProcessResult, runWith} from 'zena:process';
 import {URL} from 'zena:url';
@@ -279,10 +279,10 @@ export async function main(): Future<void> {
   });
 
   for (let dir in ['/smoke/app', '/smoke/lib', '/smoke/cache', '/smoke/config']) {
-    mkdirSync(dir);
+    await mkdir(dir);
   }
   await smoke.check('a new workspace adds the canary, and a program that imports it runs', async (): Future<void> => {
-    writeFileSync('/smoke/app/prog.zena',
+    await writeFile('/smoke/app/prog.zena',
         'import { answer } from \'smoke:smoke\';\n\nexport function main(): i32 {\n  return answer() - 42;\n}\n');
     let added = await smoke.zena('app', ['pkg', 'add', canary]);
     expect(added.succeeded(), `zena pkg add: ${described(added)}`);
@@ -300,8 +300,8 @@ export async function main(): Future<void> {
     manifest['version'] = version;
     manifest['description'] = 'What the registry\'s smoke test adds and runs';
     manifest['license'] = 'MIT';
-    writeFileSync('/smoke/lib/zena-package.json', stringify(manifest));
-    writeFileSync('/smoke/lib/smoke.zena',
+    await writeFile('/smoke/lib/zena-package.json', stringify(manifest));
+    await writeFile('/smoke/lib/smoke.zena',
         '/** The answer the smoke test\'s program checks for. */\nexport function answer(): i32 {\n  return 42;\n}\n');
     let published = await smoke.zena('lib', ['pkg', 'publish']);
     expect(published.succeeded(), `zena pkg publish: ${described(published)}`);

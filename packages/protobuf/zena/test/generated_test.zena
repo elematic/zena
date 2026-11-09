@@ -10,7 +10,7 @@ import {Future} from 'zena:async';
 import {AsyncIterator, AsyncStep} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {newByteArray} from 'zena:core';
-import {readFileBytesSync} from 'zena:fs';
+import {readFileBytes} from 'zena:fs';
 import {ProtoBytes, ProtoTransport, ProtoView, RpcMetadata, RpcMethod} from '../runtime.zena';
 import {
   Color,
@@ -187,8 +187,8 @@ export let tests = suite('generated protobuf code', () => {
     isFalse(s.hasMaybe);
   });
 
-  test('decodes messages protoc encoded', () => {
-    let node = Node.decode(readFileBytesSync(`${PROTOC}/node.binpb`) as ByteArray);
+  test('decodes messages protoc encoded', async () => {
+    let node = Node.decode((await readFileBytes(`${PROTOC}/node.binpb`)) as ByteArray);
     equal(node.name, 'root');
     equal(node.children.toArray()[1].name, 'b');
     equal(node.byName.getOr('x', Node.of({name: '?'})).name, 'x');
@@ -204,7 +204,7 @@ export let tests = suite('generated protobuf code', () => {
     equal(node.type_, 16);
     equal(node.from, 'here');
     equal(node.blobs.toArray()[0][2], 3);
-    let s = Scalars.decode(readFileBytesSync(`${PROTOC}/scalars.binpb`) as ByteArray);
+    let s = Scalars.decode((await readFileBytes(`${PROTOC}/scalars.binpb`)) as ByteArray);
     equal(s.fInt64, -4000000000 as i64);
     equal(s.fUint64, 18000000000000000000 as u64);
     equal(s.fSint32, -5);
@@ -213,7 +213,7 @@ export let tests = suite('generated protobuf code', () => {
     isTrue(s.hasMaybe);
   });
 
-  test('encodes the same bytes as protoc', () => {
+  test('encodes the same bytes as protoc', async () => {
     let bytes = newByteArray(2);
     bytes[0] = 7;
     bytes[1] = 255;
@@ -235,8 +235,8 @@ export let tests = suite('generated protobuf code', () => {
       fBytes: bytes,
       maybe: 0,
     });
-    isTrue(sameBytes(scalars.protoView.toByteArray(), readFileBytesSync(`${PROTOC}/scalars.binpb`) as ByteArray));
-    isTrue(sameBytes(protocNode().protoView.toByteArray(), readFileBytesSync(`${PROTOC}/node.binpb`) as ByteArray));
+    isTrue(sameBytes(scalars.protoView.toByteArray(), (await readFileBytes(`${PROTOC}/scalars.binpb`)) as ByteArray));
+    isTrue(sameBytes(protocNode().protoView.toByteArray(), (await readFileBytes(`${PROTOC}/node.binpb`)) as ByteArray));
   });
 
   test('tells an absent optional scalar from a zero one', () => {

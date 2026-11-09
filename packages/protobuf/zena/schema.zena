@@ -9,6 +9,7 @@
  * for its options without that file being present.
  */
 
+import {Future} from 'zena:async';
 import {HashMap, HashSet} from 'zena:collections';
 import {joinStrings} from './text.zena';
 import {
@@ -176,7 +177,10 @@ export final class Schema {
  * Loads `paths` and everything they import, and resolves every type
  * reference in them. `read` returns a file's source, or null.
  */
-export function loadSchema(paths: Array<String>, read: (path: String) => String | null): Schema {
+export async function loadSchema(
+  paths: Array<String>,
+  read: (path: String) => Future<String | null>
+): Future<Schema> {
   let schema = new Schema();
   let loaded = new HashSet<String>();
   /** For each queued import, the file that imported it first; roots have none. */
@@ -194,7 +198,7 @@ export function loadSchema(paths: Array<String>, read: (path: String) => String 
       continue;
     }
     loaded.add(path);
-    let source = read(path);
+    let source = await read(path);
     if (source == null) {
       if (isRoot) {
         throw new SchemaError(`cannot read ${path}`);
