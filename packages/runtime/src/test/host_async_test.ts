@@ -487,4 +487,19 @@ suite('Runtime - runSync / run', () => {
     assert.throws(() => runSync(hostedModule.instance), /async/);
     assert.strictEqual(await hostedModule.main(), 5);
   });
+
+  test('run() rejects when async main stays pending after microtasks drain', async () => {
+    const hostedModule = await hosted(
+      `
+      import { Completer, Future } from 'zena:async';
+
+      export async function main(): Future<i32> {
+        let never = new Completer<i32>();
+        return await never.future;
+      }
+    `,
+      {},
+    );
+    await assert.rejects(hostedModule.main());
+  });
 });
