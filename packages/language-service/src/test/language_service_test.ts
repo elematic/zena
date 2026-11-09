@@ -67,7 +67,7 @@ suite('language service API', () => {
 
   test('reports syntax errors with a file, position, and token length', async () => {
     const source =
-      'export function main() {\n  let x = 1\n  console.log("hi");\n}\n';
+      'export function main() {\n  let _x = 1\n  console.log("hi");\n}\n';
     const diagnostics = await service.check(PATH, source);
     assert.strictEqual(diagnostics.length, 1);
     const [error] = diagnostics;
@@ -80,6 +80,56 @@ suite('language service API', () => {
     assert.strictEqual(
       error.message,
       "Expected ';' after variable declaration (got 'console')",
+    );
+  });
+
+  test('reports multiple syntax errors in the same file', async () => {
+    const source =
+      'export function main() {\n  let _x = 1\n  let _y = 2\n  console.log("hi");\n}\n';
+    const diagnostics = await service.check(PATH, source);
+    const errors = diagnostics.filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      errors.length,
+      2,
+      `expected 2 errors in ${JSON.stringify(diagnostics)}`,
+    );
+    assert.strictEqual(errors[0].line, 3);
+    assert.match(errors[0].message, /Expected ';' after variable declaration/);
+    assert.strictEqual(errors[1].line, 4);
+    assert.match(errors[1].message, /Expected ';' after variable declaration/);
+  });
+
+  test('reports both syntax errors at the end of a block when semicolons are omitted', async () => {
+    const source =
+      'export function main() {\n  console.log("a")\n  console.log("b")\n}\n';
+    const diagnostics = await service.check(PATH, source);
+    const errors = diagnostics.filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      errors.length,
+      2,
+      `expected 2 errors in ${JSON.stringify(diagnostics)}`,
+    );
+    assert.strictEqual(errors[0].line, 3);
+    assert.match(errors[0].message, /Expected ';' after expression/);
+    assert.strictEqual(errors[1].line, 4);
+    assert.match(errors[1].message, /Expected ';' after expression/);
+  });
+
+  test('reports both syntax errors and type errors in the same file', async () => {
+    const source =
+      'export function main() {\n  let _x = \n  let _y: i32 = "hello";\n}\ntype U = String | i32;\n';
+    const diagnostics = await service.check(PATH, source);
+    const errors = diagnostics.filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      errors.length,
+      3,
+      `expected 3 errors in ${JSON.stringify(diagnostics)}`,
+    );
+    assert.match(errors[0].message, /Unexpected token in expression/);
+    assert.match(errors[1].message, /not assignable/);
+    assert.match(
+      errors[2].message,
+      /cannot mix primitive types with reference types/,
     );
   });
 

@@ -3,7 +3,7 @@ import { growable } from 'zena:core';
 import { FlowUnreachable } from '../analysis/flow.zena';
 import { walkEnter } from '../visitor.zena';
 import {
-  AccessorDeclaration, BlockStatement, CaseClassParam, ClassDeclaration, Decorator, Expression, FieldDefinition, FieldInitializer, Identifier, MethodDefinition, MethodSignature, MixinDeclaration, Node, SealedVariant, SetterInfo, SourceLocation, SuperInitializer, TypeAnnotation, hasEnsuresClause, isBuiltinDecoratorName, isSymbolFieldDeclaration, syntacticMemberName
+  AccessorDeclaration, BlockStatement, CaseClassParam, ClassDeclaration, Decorator, Expression, FieldDefinition, FieldInitializer, Identifier, MethodDefinition, MethodSignature, MixinDeclaration, NamedTypeAnnotation, Node, SealedVariant, SetterInfo, SourceLocation, SuperInitializer, TypeAnnotation, hasEnsuresClause, isBuiltinDecoratorName, isSymbolFieldDeclaration, syntacticMemberName
 } from '../ast.zena';
 import {
   BooleanType, ClassType, DecoratedField, ErrorType, FieldInfo, FunctionDeclInfo, FunctionType, I32Type, InterfaceType, MethodInfo, MixinType, OwnershipHandle, ReceiverKind, Type, TypeParameterType, VoidType, instantiateClassType, isNullableType, isScopedType, mentionsTypeParams, ownershipHandleInner, ownershipHandleOf, requiredParameterCount, scopedFieldNames, scopedInner, scopedTypeParamsOf, soleNonNullMember, typeCarriesOwner, typeToString
@@ -849,11 +849,13 @@ export function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclarati
         currentSuper = st;
       }
       case _: {
-        ctx.error(
-          `Superclass must be a class type, got '${typeToString(superType)}'.`,
-          DiagnosticCode.IncompatibleTypes,
-          cd.loc
-        );
+        if (!(superAnn is NamedTypeAnnotation && superAnn.name == "")) {
+          ctx.error(
+            `Superclass must be a class type, got '${typeToString(superType)}'.`,
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        }
       }
     }
   }

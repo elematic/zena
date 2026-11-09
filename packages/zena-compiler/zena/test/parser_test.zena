@@ -3,7 +3,7 @@ import { equal, equalText, isTrue, isFalse, throws, greater } from 'zena:assert'
 // `parseAllowingStatements` is for the cases below whose whole source is
 // one expression or statement: the node they assert on is what the
 // parser built, and the module-body rule is not what they are testing.
-import { parse, parseRecovering, parseAllowingStatements } from '../lib/parser.zena';
+import { parse, parseRecovering, parseAllowingStatements, ParseCompleteness } from '../lib/parser.zena';
 import { SourceSpan } from '../lib/diagnostics.zena';
 import {
   VariableDeclaration, Identifier, IdentifierPattern, NumberLiteral, StringLiteral, BooleanLiteral, BinaryExpression, ExpressionStatement, MemberExpression, BlockStatement, FunctionExpression, ClassDeclaration, TypeAnnotation, NamedTypeAnnotation, CallExpression, ImportDeclaration, SourceLocation,
@@ -523,14 +523,37 @@ export let tests = suite('Parser', () => {
 
     test('should still reject a malformed import on one line', (ctx) => {
       // Recovery is for a statement being typed, not for a typo mid-line:
-      // `from` here sits on the same line as the specifier list. Neither
-      // entry point can make sense of it.
+      // `from` here sits on the same line as the specifier list. `parse`
+      // throws, and `parseRecovering` records the error and skips the
+      // malformed import rather than fabricating an ImportDeclaration.
       throws(() => {
         parse("import {Map from 'zena:map';", 'test.zena');
       });
-      throws(() => {
-        parseRecovering("import {Map from 'zena:map';", 'test.zena');
-      });
+      let result = parseRecovering("import {Map from 'zena:map';\nlet x = 1;", 'test.zena');
+      equal(result.completeness, ParseCompleteness.Recovered);
+      equal(result.diagnostics.length, 1);
+      equal(result.ast.body.length, 1);
+    });
+
+    test('should report multiple syntax errors across top-level declarations in parseRecovering', (ctx) => {
+      let result = parseRecovering('let a = ;\nlet b = ;\nlet c = 1;', 'test.zena');
+
+      equal(result.completeness, ParseCompleteness.Recovered);
+      equal(result.diagnostics.length, 2);
+      equal((result.diagnostics[0].location as SourceSpan).line, 1);
+      equal((result.diagnostics[1].location as SourceSpan).line, 2);
+    });
+
+    test('should report multiple syntax errors inside a function block in parseRecovering', (ctx) => {
+      let result = parseRecovering(
+        'export function main() {\n  let x = 1\n  let y = 2\n}\n',
+        'test.zena'
+      );
+
+      equal(result.completeness, ParseCompleteness.Recovered);
+      equal(result.diagnostics.length, 2);
+      equal((result.diagnostics[0].location as SourceSpan).line, 3);
+      equal((result.diagnostics[1].location as SourceSpan).line, 4);
     });
   });
 
