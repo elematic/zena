@@ -79,6 +79,12 @@ stdlib module:
 - `stop(graceMillis)` sends `SIGTERM` on Unix, waits up to `graceMillis`
   (default 2000ms) for the process to exit, and sends `SIGKILL` if it is
   still running.
+- `listenSignals()`, `checkSignal()`, `waitSignal()`, and
+  `waitSignalFor(millis)` install and observe `SIGINT` (`2`) and
+  `SIGTERM` (`15`) on the host process so long-running runners can stop
+  child process groups cleanly before exiting. Once `listenSignals()` is
+  active, an arrival of `SIGINT` or `SIGTERM` also unblocks any in-flight
+  `readLine()` or `wait()`/`waitFor()` call on a spawned child process.
 - `waitFor(millis)` bounds the wait: on the deadline the child is
   killed, and the result carries `timedOut` along with whatever it wrote
   first.

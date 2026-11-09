@@ -1,6 +1,6 @@
 import {getEnv} from 'zena:cli';
 import { HashSet } from 'zena:collections';
-import {Process, runWith, spawnWith} from 'zena:process';
+import {Process, checkSignal, runWith, spawnWith} from 'zena:process';
 import {Regex} from 'zena:regex';
 import {StringBuilder, Unmanaged, adopt, disown} from 'zena:core';
 import {Fingerprint} from 'workflow:fingerprint';
@@ -204,6 +204,12 @@ export async function runScript(
     return new OutputManifest(forwarded);
   }
   if (command != null) {
+    let sigBefore = checkSignal();
+    if (sigBefore != 0) {
+      throw new Error(
+        `script "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigBefore)}`,
+      );
+    }
     if (hasher != null) {
       hasher.markMutated();
     }
@@ -214,7 +220,14 @@ export async function runScript(
     let result = await runWith(['sh', '-c', wrapped], {
       cwd: cwd,
       env: resolveEnvOverrides(config.env),
+      processGroup: true,
     });
+    let sigAfter = checkSignal();
+    if (sigAfter != 0) {
+      throw new Error(
+        `script "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigAfter)}`,
+      );
+    }
     if (!result.succeeded()) {
       throw new Error(
         `script "${refKey(config.ref)}" failed (exit ${i32ToString(result.exitCode)}): ${command}\n` +
@@ -268,10 +281,13 @@ class ZbServiceHandle implements ServiceHandle {
     let proc = adopt(this.#proc);
     if (proc.hasExited()) {
       let res = await proc.wait();
-      throw new Error(
-        `service "${this.#key}" exited unexpectedly (exit ${i32ToString(res.exitCode)}): ${this.#command}\n` +
-        res.stdout + res.stderr,
-      );
+      if (checkSignal() == 0) {
+        throw new Error(
+          `service "${this.#key}" exited unexpectedly (exit ${i32ToString(res.exitCode)}): ${this.#command}\n` +
+          res.stdout + res.stderr,
+        );
+      }
+      return;
     }
     await proc.stop(2000 as i64);
   }
@@ -301,6 +317,12 @@ async function startService(
   readyRegex: Regex?,
   hasher: FileHasher,
 ): Future<ServiceHandle> {
+  let sigBefore = checkSignal();
+  if (sigBefore != 0) {
+    throw new Error(
+      `service "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigBefore)}`,
+    );
+  }
   hasher.markMutated();
   let command = config.command ?? '';
   let cwd = withRoot(root, config.ref.packageDir);
@@ -322,6 +344,13 @@ async function startService(
         matched = true;
         break;
       }
+    }
+    let sigAfter = checkSignal();
+    if (sigAfter != 0) {
+      await proc.stop(2000 as i64);
+      throw new Error(
+        `service "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigAfter)}`,
+      );
     }
     if (!matched) {
       let res = await proc.stop(500 as i64);
@@ -347,6 +376,12 @@ async function runForegroundService(
   salt: String,
   hasher: FileHasher,
 ): Future<OutputManifest> {
+  let sigBefore = checkSignal();
+  if (sigBefore != 0) {
+    throw new Error(
+      `service "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigBefore)}`,
+    );
+  }
   hasher.markMutated();
   let command = config.command ?? '';
   let cwd = withRoot(root, config.ref.packageDir);
@@ -355,6 +390,7 @@ async function runForegroundService(
   let proc = spawnWith(['sh', '-c', wrapped], {
     cwd: cwd,
     env: resolveEnvOverrides(config.env),
+    processGroup: true,
   });
   var matched = readyRegex == null;
   while (true) {
@@ -367,7 +403,20 @@ async function runForegroundService(
       matched = true;
     }
   }
+  let sigAfterRead = checkSignal();
+  if (sigAfterRead != 0) {
+    await proc.stop(2000 as i64);
+    throw new Error(
+      `service "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigAfterRead)}`,
+    );
+  }
   let res = await proc.wait();
+  let sigAfterWait = checkSignal();
+  if (sigAfterWait != 0) {
+    throw new Error(
+      `service "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigAfterWait)}`,
+    );
+  }
   if (!matched) {
     throw new Error(
       `service "${refKey(config.ref)}" exited before readyWhen.lineMatches matched (exit ${i32ToString(res.exitCode)}): ${command}\n` +

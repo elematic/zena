@@ -1,6 +1,8 @@
 import {suite, test} from 'zena:test';
 import {equal, fail, isFalse, isTrue} from 'zena:assert';
-import {readFile, unlink, writeFile} from 'zena:fs';
+import {getEnv} from 'zena:cli';
+import {isFile, readFile, unlink, writeFile} from 'zena:fs';
+import {spawnWith} from 'zena:process';
 import {milliseconds, monotonic, sleep} from 'zena:time';
 import {
   Failed,
@@ -860,5 +862,117 @@ export let tests = suite('zb end to end', () => {
       await readFile(withRoot(root, 'serve.log')),
       'start:v1\nstop\nstart:v2\nstop\nreloaded:v2\nstop\n',
     );
+  });
+
+  test('SIGTERM cleanly tears down pinned services in watch mode and exits 143', async (ctx) => {
+    let root = '/tmp/zb-sig-watch-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {
+        "db": "wireit",
+        "app": "wireit"
+      },
+      "wireit": {
+        "db": {
+          "command": "echo start >> svc.log && trap 'echo stop >> svc.log; exit 0' TERM; echo READY && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^READY$"}}
+        },
+        "app": {
+          "command": "mkdir -p out && echo ok > out/app.txt",
+          "files": ["in.txt"],
+          "output": ["out/app.txt"],
+          "dependencies": ["db"]
+        }
+      }
+    }`);
+    await write(root, 'in.txt', 'v1\n');
+
+    let zenaBin = (getEnv('ZENA_REPO_ROOT') ?? '.') + '/target/release/zena-cli';
+    let proc = spawnWith([zenaBin, 'build', '--watch', 'app'], {
+      cwd: root,
+      env: [('ZENA_REPO_ROOT', '')],
+    });
+    var sawSucceeded = false;
+    while (true) {
+      let line = await proc.readLine();
+      if (line == null) {
+        break;
+      }
+      if (line == 'build succeeded') {
+        sawSucceeded = true;
+        break;
+      }
+    }
+    isTrue(sawSucceeded, 'expected first watch iteration to report build succeeded');
+    equal(await readFile(withRoot(root, 'svc.log')), 'start\n');
+
+    let stopped = await proc.stop(3000 as i64);
+    isFalse(stopped.timedOut, 'expected watch process to exit cleanly on SIGTERM');
+    equal(stopped.exitCode, 143);
+    equal(await readFile(withRoot(root, 'svc.log')), 'start\nstop\n');
+  });
+
+  test('SIGTERM cleanly stops a foreground top-level service and exits 143', async (ctx) => {
+    let root = '/tmp/zb-sig-fg-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {"serve": "wireit"},
+      "wireit": {
+        "serve": {
+          "command": "echo start >> serve.log && trap 'echo stop >> serve.log; exit 0' TERM; echo SERVING && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^SERVING$"}}
+        }
+      }
+    }`);
+
+    let zenaBin = (getEnv('ZENA_REPO_ROOT') ?? '.') + '/target/release/zena-cli';
+    let proc = spawnWith([zenaBin, 'build', 'serve'], {
+      cwd: root,
+      env: [('ZENA_REPO_ROOT', '')],
+    });
+    let firstLine = await proc.readLine();
+    equal(firstLine, 'SERVING');
+    equal(await readFile(withRoot(root, 'serve.log')), 'start\n');
+
+    let stopped = await proc.stop(3000 as i64);
+    isFalse(stopped.timedOut, 'expected foreground service to exit cleanly on SIGTERM');
+    equal(stopped.exitCode, 143);
+    equal(await readFile(withRoot(root, 'serve.log')), 'start\nstop\n');
+  });
+
+  test('SIGTERM during an in-flight build stops running scripts and active services', async (ctx) => {
+    let root = '/tmp/zb-sig-build-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {
+        "db": "wireit",
+        "app": "wireit"
+      },
+      "wireit": {
+        "db": {
+          "command": "echo db-start >> svc.log && trap 'echo db-stop >> svc.log; exit 0' TERM; echo READY && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^READY$"}}
+        },
+        "app": {
+          "command": "echo app-start >> svc.log && trap 'echo app-stop >> svc.log; exit 0' TERM; echo running > app.running && while true; do sleep 0.1; done",
+          "dependencies": ["db"]
+        }
+      }
+    }`);
+
+    let zenaBin = (getEnv('ZENA_REPO_ROOT') ?? '.') + '/target/release/zena-cli';
+    let proc = spawnWith([zenaBin, 'build', 'app'], {
+      cwd: root,
+      env: [('ZENA_REPO_ROOT', '')],
+    });
+    while (!(await isFile(withRoot(root, 'app.running')))) {
+      await sleep(milliseconds(20));
+    }
+    equal(await readFile(withRoot(root, 'svc.log')), 'db-start\napp-start\n');
+
+    let stopped = await proc.stop(3000 as i64);
+    isFalse(stopped.timedOut, 'expected in-flight build to exit cleanly on SIGTERM');
+    equal(stopped.exitCode, 143);
+    equal(await readFile(withRoot(root, 'svc.log')), 'db-start\napp-start\napp-stop\ndb-stop\n');
   });
 });

@@ -6,7 +6,19 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {Future} from 'zena:async';
 import {milliseconds, sleep} from 'zena:time';
-import {run, runIn, runInheriting, runWith, spawn, spawnWith} from 'zena:process';
+import {
+  SIGINT,
+  SIGTERM,
+  checkSignal,
+  listenSignals,
+  run,
+  runIn,
+  runInheriting,
+  runWith,
+  spawn,
+  spawnWith,
+  waitSignalFor,
+} from 'zena:process';
 
 export let tests = suite('zena:process', () => {
   test('run captures stdout, stderr, and the exit code', async (ctx) => {
@@ -195,5 +207,14 @@ export let tests = suite('zena:process', () => {
     isTrue(p.hasExited(), 'hasExited is true after stop');
     let eof = await p.readLine();
     equal(eof, null);
+  });
+
+  test('listenSignals, checkSignal, and waitSignalFor report 0 when no signal arrives', async (ctx) => {
+    equal(SIGINT, 2);
+    equal(SIGTERM, 15);
+    listenSignals();
+    equal(checkSignal(), 0);
+    equal(await waitSignalFor(20 as i64), 0);
+    equal(checkSignal(), 0);
   });
 });

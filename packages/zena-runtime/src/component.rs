@@ -39,6 +39,7 @@ pub(crate) mod bindings {
             "zena-cli:host/process.[method]process.wait": async | trappable | store,
             "zena-cli:host/process.[method]process.read-line": async | trappable | store,
             "zena-cli:host/process.[method]process.stop": async | trappable | store,
+            "zena-cli:host/process.wait-signal": async | trappable | store,
             "zena-cli:host/wasm.[method]run.wait": async | trappable | store,
             "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
             "zena-cli:host/http-server.[static]response-writer.respond": trappable | store,
@@ -96,6 +97,8 @@ pub struct ComponentState {
     pub(crate) proxies: crate::extensions::Proxies,
     /// In an extension's store: its memory limit, when it has one.
     pub(crate) limits: wasmtime::StoreLimits,
+    /// Termination signal state (`SIGINT` / `SIGTERM`) shared with spawned child processes.
+    pub(crate) signals: Arc<SignalState>,
 }
 
 impl ComponentState {
@@ -115,6 +118,7 @@ impl ComponentState {
             my_calls: None,
             proxies: Default::default(),
             limits: wasmtime::StoreLimits::default(),
+            signals: Arc::new(SignalState::new()),
         }
     }
 
@@ -294,6 +298,99 @@ enum ChildSlot {
     Taken,
 }
 
+/// Tracks `SIGINT` (2) and `SIGTERM` (15) once a guest opts in via
+/// `listen-signals` or `wait-signal`.
+pub(crate) struct SignalState {
+    listening: Mutex<bool>,
+    tx: tokio::sync::watch::Sender<i32>,
+    rx: tokio::sync::watch::Receiver<i32>,
+}
+
+impl SignalState {
+    pub(crate) fn new() -> Self {
+        let (tx, rx) = tokio::sync::watch::channel(0);
+        SignalState {
+            listening: Mutex::new(false),
+            tx,
+            rx,
+        }
+    }
+
+    fn listen(&self) {
+        let mut listening = self.listening.lock().unwrap();
+        if *listening {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        #[cfg(unix)]
+        {
+            let _guard = handle.enter();
+            if let Ok(mut sigint) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                && let Ok(mut sigterm) =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            {
+                *listening = true;
+                let tx = self.tx.clone();
+                handle.spawn(async move {
+                    loop {
+                        let sig = tokio::select! {
+                            _ = sigint.recv() => 2,
+                            _ = sigterm.recv() => 15,
+                        };
+                        if *tx.borrow() == 0 {
+                            let _ = tx.send(sig);
+                        }
+                    }
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            *listening = true;
+            let tx = self.tx.clone();
+            handle.spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() && *tx.borrow() == 0 {
+                    let _ = tx.send(2);
+                }
+            });
+        }
+    }
+
+    fn current(&self) -> i32 {
+        *self.rx.borrow()
+    }
+
+    fn subscribe(&self) -> tokio::sync::watch::Receiver<i32> {
+        self.rx.clone()
+    }
+
+    async fn wait(&self, timeout: Option<Duration>) -> i32 {
+        let cur = *self.rx.borrow();
+        if cur != 0 {
+            return cur;
+        }
+        let mut rx = self.rx.clone();
+        let wait_changed = async {
+            loop {
+                let val = *rx.borrow_and_update();
+                if val != 0 {
+                    return val;
+                }
+                if rx.changed().await.is_err() {
+                    return 0;
+                }
+            }
+        };
+        match timeout {
+            None => wait_changed.await,
+            Some(dur) => tokio::time::timeout(dur, wait_changed).await.unwrap_or(0),
+        }
+    }
+}
+
 /// Shared state between the reap worker thread and async waiters.
 struct ProcessInner {
     pid: u32,
@@ -303,6 +400,7 @@ struct ProcessInner {
     done: Mutex<Option<ReapResult>>,
     line_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<(String, usize)>>,
     unread_line_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    signal_rx: tokio::sync::watch::Receiver<i32>,
 }
 
 /// A running process, then its result.
@@ -421,7 +519,33 @@ pub(crate) fn translate(path: &str, map: &PathMap) -> Option<PathBuf> {
     Some(if rest.is_empty() { host.clone() } else { host.join(rest) })
 }
 
-impl process::Host for ComponentState {}
+impl process::Host for ComponentState {
+    fn listen_signals(&mut self) -> Result<()> {
+        self.granted("process spawning")?;
+        self.signals.listen();
+        Ok(())
+    }
+
+    fn check_signal(&mut self) -> Result<i32> {
+        self.granted("process spawning")?;
+        Ok(self.signals.current())
+    }
+}
+
+impl process::HostWithStore<ComponentState> for HasSelf<ComponentState> {
+    async fn wait_signal(
+        accessor: &wasmtime::component::Accessor<ComponentState, Self>,
+        millis: i64,
+    ) -> Result<i32> {
+        let signals = accessor.with(|mut access| -> Result<Arc<SignalState>> {
+            access.get().granted("process spawning")?;
+            let signals = access.get().signals.clone();
+            signals.listen();
+            Ok(signals)
+        })?;
+        Ok(signals.wait(timeout_from_millis(millis)).await)
+    }
+}
 
 impl process::HostCommand for ComponentState {
     fn new(&mut self, argv: Vec<String>) -> Result<Resource<CommandState>> {
@@ -557,6 +681,7 @@ impl process::HostCommand for ComponentState {
             done: Mutex::new(None),
             line_rx: tokio::sync::Mutex::new(line_rx),
             unread_line_bytes,
+            signal_rx: self.signals.subscribe(),
         });
         let worker_inner = inner.clone();
         std::thread::spawn(move || {
@@ -667,12 +792,42 @@ impl ProcessInner {
         }
     }
 
+    async fn wait_signal(sig_rx: &mut tokio::sync::watch::Receiver<i32>) -> i32 {
+        loop {
+            let sig = *sig_rx.borrow_and_update();
+            if sig != 0 {
+                return sig;
+            }
+            if sig_rx.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
     async fn read_line(&self) -> Option<String> {
         let mut rx = self.line_rx.lock().await;
-        let (line, credit) = rx.recv().await?;
+        let mut sig_rx = self.signal_rx.clone();
+        if *sig_rx.borrow_and_update() != 0 {
+            return None;
+        }
+        let item = tokio::select! {
+            item = rx.recv() => item?,
+            _ = Self::wait_signal(&mut sig_rx) => return None,
+        };
+        let (line, credit) = item;
         self.unread_line_bytes
             .fetch_sub(credit, std::sync::atomic::Ordering::Relaxed);
         Some(line)
+    }
+
+    async fn stop_on_signal(&self, sig: i32) -> ReapResult {
+        let res = self.stop(2000).await;
+        res.map(|mut fin| {
+            if fin.exit_code == 0 {
+                fin.exit_code = 128 + sig;
+            }
+            fin
+        })
     }
 
     async fn stop(&self, grace_millis: i64) -> ReapResult {
@@ -733,29 +888,44 @@ impl ProcessInner {
             return res;
         }
         let mut rx = self.reaped_watch.clone();
+        if let Some(res) = rx.borrow_and_update().clone() {
+            return self.record_done(res, false);
+        }
+        let mut sig_rx = self.signal_rx.clone();
+        if *sig_rx.borrow_and_update() != 0 {
+            let sig = *sig_rx.borrow();
+            return self.stop_on_signal(sig).await;
+        }
         match timeout {
             None => {
-                let res = Self::recv_reaped(&mut rx).await;
-                self.record_done(res, false)
-            }
-            Some(dur) => match tokio::time::timeout(dur, Self::recv_reaped(&mut rx)).await {
-                Ok(res) => self.record_done(res, false),
-                Err(_) => {
-                    // Kill, then take the result the worker sends once the
-                    // child is reaped, so stdout and stderr captured before
-                    // the deadline are preserved. A grandchild the kill did
-                    // not reach can hold a pipe open, so give up after a
-                    // grace period rather than hanging on it.
-                    self.kill_child();
-                    let reaped = tokio::time::timeout(
-                        Duration::from_secs(2),
-                        Self::recv_reaped(&mut rx),
-                    )
-                    .await
-                    .unwrap_or_else(|_| Ok(withheld_timeout(dur)));
-                    self.record_done(reaped, true)
+                tokio::select! {
+                    res = Self::recv_reaped(&mut rx) => self.record_done(res, false),
+                    sig = Self::wait_signal(&mut sig_rx) => self.stop_on_signal(sig).await,
                 }
-            },
+            }
+            Some(dur) => {
+                tokio::select! {
+                    res = tokio::time::timeout(dur, Self::recv_reaped(&mut rx)) => match res {
+                        Ok(res) => self.record_done(res, false),
+                        Err(_) => {
+                            // Kill, then take the result the worker sends once the
+                            // child is reaped, so stdout and stderr captured before
+                            // the deadline are preserved. A grandchild the kill did
+                            // not reach can hold a pipe open, so give up after a
+                            // grace period rather than hanging on it.
+                            self.kill_child();
+                            let reaped = tokio::time::timeout(
+                                Duration::from_secs(2),
+                                Self::recv_reaped(&mut rx),
+                            )
+                            .await
+                            .unwrap_or_else(|_| Ok(withheld_timeout(dur)));
+                            self.record_done(reaped, true)
+                        }
+                    },
+                    sig = Self::wait_signal(&mut sig_rx) => self.stop_on_signal(sig).await,
+                }
+            }
         }
     }
 }

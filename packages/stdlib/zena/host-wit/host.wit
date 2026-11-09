@@ -68,6 +68,20 @@ interface process {
     /// exit, then force-kill it if it is still running.
     stop: async func(grace-millis: s64) -> finished;
   }
+
+  /// Catch `SIGINT` and `SIGTERM` on the host so the program can tear
+  /// down child processes cleanly before exiting.
+  listen-signals: func();
+
+  /// The first termination signal received since `listen-signals` (`2`
+  /// for `SIGINT`, `15` for `SIGTERM`), or `0` if none has arrived.
+  check-signal: func() -> s32;
+
+  /// Wait up to `millis` milliseconds for `SIGINT` or `SIGTERM` (calling
+  /// `listen-signals` if not yet listening); a non-positive limit waits
+  /// until a signal arrives. Returns the signal number (`2` or `15`), or
+  /// `0` if the deadline elapsed first.
+  wait-signal: async func(millis: s64) -> s32;
 }
 
 /// Running other Wasm components. Granted with `process`.
