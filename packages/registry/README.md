@@ -56,15 +56,88 @@ APP_VIEW_DOMAIN=pkg.test ./target/release/zena-cli run packages/registry/zena/ma
 
 ## The demo
 
-`npm run demo -w @zena-lang/registry` starts an App View for `pkg.test`, a
-stand-in PLC directory with a maintainer who has an app password, and a
-DNS-over-HTTPS resolver that answers from the App View's handle records, all
-on this machine (`dev/demo.zena`). It prints the environment to give
-`zena`, and the commands of a first `zena pkg login` and `zena pkg publish`; a
-package it publishes can then be added by its handle and run from another
-workspace. Nothing goes to the public PLC directory or to real DNS. It
-builds the App View from the environment as `main.zena` does, so it runs on
-the Firestore emulator too, with `PDS_STORAGE=firestore` and the rest.
+`npm run demo -w @zena-lang/registry`, from the repository root, starts
+everything a first publish needs on this machine, in one process
+(`dev/demo.zena`):
+
+- The App View for the domain `pkg.test`, with the PDS its accounts are on
+  in the same process, at `http://127.0.0.1:2583` (`PORT` changes the
+  port). The web pages are there too. Deployments run the App View and
+  padstone as two services; the demo runs them as one, as `main.zena` does
+  without `APP_VIEW_PDS_URL`.
+- A stand-in PLC directory, which records the demo's DIDs and reads every
+  other DID from `plc.directory`, and a PDS with one maintainer,
+  `did:plc:maintainermaintainermain`, whose app password is
+  `demo-app-password`.
+- A DNS-over-HTTPS resolver that answers for the handles under `pkg.test`
+  and asks Cloudflare about every other name.
+
+Nothing reaches the public PLC directory or real DNS, and everything is in
+memory: Ctrl-C forgets it all. The limits on actions and creations apply
+(docs/design/package-manager.md, "Limits on creating accounts"), so the
+maintainer can create two scopes before the demo is restarted.
+
+### Publishing a package
+
+The demo prints the variables `zena` needs, with the ports it chose. Set
+them in each shell that runs `zena pkg`: without `ZENA_REGISTRY`, `zena`
+calls the Zena project's registry, `https://pkg.zena-lang.dev`.
+
+```sh
+export ZENA_PLC_DIRECTORY=http://127.0.0.1:<port>/plc
+export ZENA_DNS_OVER_HTTPS=http://127.0.0.1:<port>/dns-query
+export ZENA_REGISTRY=http://127.0.0.1:2583
+export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
+alias zena="$PWD/target/release/zena-cli"   # run in the repository root
+```
+
+Then make a package outside the repository, sign in as the demo's
+maintainer, create a scope, and publish. A package's manifest needs a
+name, a version, a description and a license.
+
+```sh
+mkdir -p ~/demo/hello && cd ~/demo/hello
+echo '{"name": "hello", "version": "1.0.0", "description": "Says hello", "license": "MIT"}' > zena-package.json
+echo 'export let greeting = "hello";' > hello.zena
+echo demo-app-password | zena pkg login did:plc:maintainermaintainermain --password-stdin
+zena pkg scope create acme --yes
+zena pkg publish --scope acme --yes
+```
+
+`publish` creates the package `hello.acme.pkg.test`, writes its DID into
+`zena-package.json`, and publishes 1.0.0. With one maintainer, nothing
+waits for approval. Publish as the demo's maintainer rather than as
+yourself: `publish` writes an attestation to the publisher's repository,
+which for you is on your real PDS.
+
+In another workspace, with the same variables, add the package and import
+its libraries as `'<name>:<library>'`:
+
+```sh
+mkdir -p ~/demo/app && cd ~/demo/app
+echo '{"name": "app"}' > zena-package.json
+zena pkg add hello.acme.pkg.test
+cat > main.zena <<'EOF'
+import {greeting} from 'hello:hello';
+
+export function main(): i32 {
+  console.log(greeting);
+  return 0;
+}
+EOF
+zena run main.zena
+```
+
+### The pages
+
+Open `http://127.0.0.1:2583` to browse the demo's scopes and packages, and
+sign in there with your own atproto account: the stand-in PLC directory
+reads real DIDs from `plc.directory`. Start the demo with
+`APP_VIEW_ADMIN_DIDS=<your DID>` to see `/admin` as well.
+
+The demo builds its App View from the environment as `main.zena` does,
+apart from the PLC directories and handle records it provides, so the
+variables below change it too.
 
 ## Configuration
 
@@ -152,6 +225,109 @@ PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 packages/registry/deploy/ope
 on one machine. `FIRESTORE_EMULATOR_HOST` points the server at the
 emulator, and `GOOGLE_CLOUD_PROJECT` names the project. A configuration
 the server cannot use stops it with every problem listed, and status 2.
+
+## Configuration reference
+
+Every variable the App View, padstone, the image and the deploy scripts
+read, with its value in the demo and in the two deployments. The
+deployments' values come from `deploy/env.sh` and `deploy/deploy.sh`; a
+blank cell means the variable is not set, and the default applies.
+`registry:service` and `pds:service` describe each variable in full, and
+`zena/test/configuration_test.zena` fails when one is missing here.
+
+### The App View (`registry:service`)
+
+| Variable                        | What it is                                                                                                                                     | Default                                            | Demo                       | Staging                                  | Production                            |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | -------------------------- | ---------------------------------------- | ------------------------------------- |
+| `APP_VIEW_DOMAIN`               | The domain of its site and handles. Required.                                                                                                  |                                                    | `pkg.test`                 | `pkg-staging.zena-lang.dev`              | `pkg.zena-lang.dev`                   |
+| `APP_VIEW_PDS_URL`              | The origin of the PDS its accounts are on, when that runs elsewhere. Without it, the PDS runs in the same process, from the `PDS_*` variables. | the same process                                   |                            | `https://padstone-staging.zena-lang.dev` | `https://padstone.zena-lang.dev`      |
+| `APP_VIEW_PDS_DID`              | That PDS's DID.                                                                                                                                | the `did:web` of its host                          |                            |                                          |                                       |
+| `APP_VIEW_PUBLIC_URL`           | Its own origin, with a PDS elsewhere.                                                                                                          | `https://<domain>`                                 |                            |                                          |                                       |
+| `APP_VIEW_STORAGE`              | `memory` or `firestore`, with a PDS elsewhere.                                                                                                 | `memory`                                           |                            | `firestore`                              | `firestore`                           |
+| `APP_VIEW_TENANT`               | Its tenant, with `firestore`.                                                                                                                  |                                                    |                            | `pkg`                                    | `pkg`                                 |
+| `APP_VIEW_FIRESTORE_DATABASE`   | Its Firestore database.                                                                                                                        | `(default)`                                        |                            | `zena-pkg-staging`                       | `zena-pkg`                            |
+| `APP_VIEW_SESSION_SECRET`       | 32 bytes in hex, which signs web sessions and avatar URLs. Required with `APP_VIEW_PDS_URL` and Firestore.                                     | `PDS_JWT_SECRET` in the same process, else made up | made up                    | secret `zena-pkg-staging-jwt-secret`     | secret `zena-pkg-jwt-secret`          |
+| `APP_VIEW_ROTATION_KEY`         | The online PLC rotation key, secp256k1 in hex. This or the next is required with Firestore.                                                    | made up in memory                                  | made up                    | secret `zena-pkg-staging-rotation-key`   |                                       |
+| `APP_VIEW_ROTATION_KMS_KEY`     | The online rotation key as a Cloud KMS key version.                                                                                            |                                                    |                            | with `ZENA_ROTATION_KMS=1`               | KMS `zena-pkg/rotation`               |
+| `APP_VIEW_SIGNING_KEY`          | Its own signing key, in hex, for its tokens to a PDS elsewhere. This or the next is required with `APP_VIEW_PDS_URL` and Firestore.            | made up                                            | made up                    |                                          |                                       |
+| `APP_VIEW_SIGNING_KMS_KEY`      | Its signing key as a Cloud KMS key version.                                                                                                    |                                                    |                            | KMS `zena-pkg-staging/signing`           | KMS `zena-pkg/signing`                |
+| `APP_VIEW_OFFLINE_ROTATION_KEY` | The operator's offline rotation key, a `did:key`, ranked above the online one.                                                                 | none                                               |                            | `ZENA_OFFLINE_ROTATION_KEY`              | `ZENA_OFFLINE_ROTATION_KEY`, required |
+| `APP_VIEW_DID`                  | Its DID.                                                                                                                                       | the `did:web` of the origin its methods are at     | `did:web:127.0.0.1%3A2583` |                                          |                                       |
+| `APP_VIEW_SITE_URL`             | The site's origin, when the pages have a name of their own.                                                                                    | none: every name serves both                       |                            |                                          |                                       |
+| `APP_VIEW_ADMIN_DIDS`           | The DIDs of its admins, separated by commas or spaces.                                                                                         | none                                               | yours, if you set it       | `ZENA_ADMIN_DIDS`                        | `ZENA_ADMIN_DIDS`                     |
+| `APP_VIEW_RESERVED_SCOPES`      | Scope names no one may take, beside `www`, `api`, `admin`, `zena`, `pkg` and `mail`.                                                           | none                                               |                            |                                          |                                       |
+| `APP_VIEW_PRIVATE_READS`        | `1` lets it read PDSes on this machine or a private network.                                                                                   | off                                                | `1`                        |                                          |                                       |
+| `APP_VIEW_HANDLE_RECORDS`       | Where it writes its handles' DNS records: `memory` or `cloud-dns`. Required with Firestore.                                                    | `memory`                                           | `memory`                   | `cloud-dns`                              | `cloud-dns`                           |
+| `APP_VIEW_DNS_ZONE`             | The Cloud DNS zone, with `cloud-dns`.                                                                                                          |                                                    |                            | `zena-pkg-staging`                       | `zena-pkg`                            |
+| `APP_VIEW_DNS_PROJECT`          | That zone's project.                                                                                                                           | the server's                                       |                            | the project                              | the project                           |
+| `APP_VIEW_PLC_DIRECTORY`        | Where DIDs are resolved.                                                                                                                       | `https://plc.directory`                            | the stand-in               |                                          |                                       |
+| `APP_VIEW_DNS_OVER_HTTPS`       | Where handles are resolved. In the demo, where its resolver asks about names outside `pkg.test`.                                               | Cloudflare's                                       | Cloudflare's               |                                          |                                       |
+| `APP_VIEW_PLC`                  | `public`: it sends its accounts' operations to the PLC directory. `staging`: it is a PLC directory itself, at `/plc`.                          | `public`                                           | `public`, to the stand-in  | `staging`                                | `public`                              |
+| `APP_VIEW_WEB_DIR`              | The build of the pages' stylesheet and script (`packages/pds-web`).                                                                            | none: unstyled pages                               | `/web`                     | `/web`, from the image                   | `/web`, from the image                |
+
+### The PDS (`pds:service`)
+
+padstone reads these, and so does the App View for the PDS it runs in the
+same process. With `APP_VIEW_PDS_URL`, the App View refuses them.
+
+| Variable                     | What it is                                                                                                           | Default                                  | Demo                    | Staging                                           | Production                                |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ----------------------- | ------------------------------------------------- | ----------------------------------------- |
+| `PORT`                       | The port to listen on. The App View reads it too.                                                                    | `2583`                                   | `2583`                  | `8080`, from the image                            | `8080`, from the image                    |
+| `PDS_STORAGE`                | `memory` or `firestore`.                                                                                             | `memory`                                 | `memory`                | `firestore`                                       | `firestore`                               |
+| `PDS_TENANT`                 | Its tenant, with `firestore`.                                                                                        |                                          |                         | `pkg`                                             | `pkg`                                     |
+| `PDS_BLOB_BUCKET`            | The Cloud Storage bucket for blob bytes, with `firestore`.                                                           |                                          |                         | `<project>-zena-pkg-staging`                      | `<project>-zena-pkg`                      |
+| `PDS_BLOB_DIR`               | A directory for blob bytes instead, for a server on one machine.                                                     |                                          |                         |                                                   |                                           |
+| `PDS_FIRESTORE_DATABASE`     | Its Firestore database.                                                                                              | `(default)`                              |                         | `zena-pkg-staging`                                | `zena-pkg`                                |
+| `PDS_KEY_ENCRYPTION_KMS_KEY` | The Cloud KMS key that encrypts accounts' signing keys in Firestore.                                                 | none: kept in the clear                  |                         | KMS `zena-pkg-staging/signing-keys`               | KMS `zena-pkg/signing-keys`               |
+| `PDS_PUBLIC_URL`             | The origin the accounts' DID documents name as their PDS.                                                            | the server's own                         | `http://127.0.0.1:2583` | `https://padstone-staging.zena-lang.dev`          | `https://padstone.zena-lang.dev`          |
+| `PDS_DID`                    | Its DID, which App Views' tokens are addressed to.                                                                   | the `did:web` of `PDS_PUBLIC_URL`'s host |                         |                                                   |                                           |
+| `PDS_TRUSTED_APP_VIEWS`      | The App Views it keeps managed accounts for, each `<did>=<did:key>` of its online rotation key, separated by spaces. | none; the App View in the same process   |                         | `did:web:pkg-staging.zena-lang.dev=<its did:key>` | `did:web:pkg.zena-lang.dev=<its did:key>` |
+| `PDS_PLC_DIRECTORY`          | Where DIDs are resolved and managed accounts' operations read.                                                       | `https://plc.directory`                  | the stand-in            | `https://pkg-staging.zena-lang.dev/plc`           |                                           |
+| `PDS_JWT_SECRET`             | 32 bytes in hex, which signs sessions' tokens. Required with `firestore`.                                            | made up in memory                        | made up                 | secret `zena-pkg-staging-jwt-secret`              | secret `zena-pkg-jwt-secret`              |
+| `PDS_CLOCK_ID`               | 0 to 1023, which keeps this server's revisions apart from another's.                                                 | random                                   |                         |                                                   |                                           |
+
+### Google Cloud and the runtime
+
+| Variable                           | What it is                                                                                                                            | Default                      | Demo                   | Staging and production                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ---------------------- | ------------------------------------------ |
+| `GOOGLE_CLOUD_PROJECT`             | The project Firestore and Cloud DNS are reached in.                                                                                   | the metadata server's        |                        | the project, set by `deploy`               |
+| `FIRESTORE_EMULATOR_HOST`          | The Firestore emulator's address, in place of Firestore.                                                                              |                              | to run on the emulator |                                            |
+| `GOOGLE_OAUTH_ACCESS_TOKEN`        | An access token to call Google Cloud with, such as `gcloud auth print-access-token`'s. `operator.sh` and `deploy`'s `did-key` set it. | the metadata server's tokens |                        |                                            |
+| `GCE_METADATA_HOST`                | The metadata server's host.                                                                                                           | `metadata.google.internal`   |                        |                                            |
+| `HOST`                             | The address the server listens on.                                                                                                    | `127.0.0.1`                  |                        | `0.0.0.0`, from the image                  |
+| `ZENA_DENY_PRIVATE_EGRESS`         | `1`: the server connects only to public addresses.                                                                                    | off                          |                        | `1`, from the image                        |
+| `ZENA_ALLOW_EGRESS`                | Host names exempt from that, separated by commas.                                                                                     | none                         |                        | `metadata.google.internal`, from the image |
+| `ZENA_HTTP_HEADER_TIMEOUT_SECONDS` | How long a client may take to send a request's headers.                                                                               | `30`                         |                        |                                            |
+| `ZENA_HTTP_MAX_CONNECTIONS`        | How many connections the server keeps open at once.                                                                                   | `1024`                       |                        |                                            |
+
+The runtime's other variables choose its garbage collector and turn on
+profiling and logging, for debugging (`packages/zena-runtime`).
+
+### The `zena` command
+
+The variables the `zena pkg` commands read are in
+[`packages/zena-cli`'s README](../zena-cli/README.md): the demo needs
+`ZENA_REGISTRY`, `ZENA_PLC_DIRECTORY`, `ZENA_DNS_OVER_HTTPS` and
+`ZENA_CONFIG_DIR`, and CI publishes with `ZENA_REGISTRY_TOKEN`.
+
+### The deploy scripts (`deploy/`)
+
+| Variable                    | What it is                                                                                                          | Default                         |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `PDS_ENV`                   | The environment: `staging` or `production`.                                                                         | `staging`                       |
+| `ZENA_GCP_PROJECT`          | The Google Cloud project. Required.                                                                                 |                                 |
+| `ZENA_GCP_REGION`           | The region of the services, the bucket and the image.                                                               | `us-central1`                   |
+| `ZENA_GCP_REPO`             | The Artifact Registry repository of the image.                                                                      | `cloud-run-images`              |
+| `ZENA_FIRESTORE_LOCATION`   | The Firestore database's location.                                                                                  | the region                      |
+| `ZENA_KMS_LOCATION`         | The key ring's location.                                                                                            | the region                      |
+| `ZENA_ROTATION_KMS`         | `1` keeps staging's online rotation key in Cloud KMS, as production's is. Only for a staging whose data was reset.  | `0` on staging                  |
+| `ZENA_OFFLINE_ROTATION_KEY` | The `did:key` of the operator's offline rotation key, for `APP_VIEW_OFFLINE_ROTATION_KEY`. Required for production. |                                 |
+| `ZENA_ADMIN_DIDS`           | The admins' DIDs, for `APP_VIEW_ADMIN_DIDS`.                                                                        |                                 |
+| `ZENA_DNS_PARENT_PROJECT`   | The project of `zena-lang.dev`'s Cloud DNS zone.                                                                    | the project                     |
+| `ZENA_DNS_PARENT_ZONE`      | That zone's name.                                                                                                   | the zone named `zena-lang.dev.` |
+| `ZENA_SMOKE_SCOPE`          | The scope of the smoke test's canary package.                                                                       | `zena`                          |
+| `ZENA_ALERT_EMAIL`          | Where `deploy:alerts` sends alerts. Required by it.                                                                 |                                 |
+| `ZENA_MONTHLY_BUDGET`       | A monthly budget on the project, in US dollars, for `deploy:alerts`.                                                | none                            |
 
 ## Deploying
 

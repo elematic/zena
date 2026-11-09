@@ -20,11 +20,11 @@
  * asked anything, so a package whose release would be refused is never
  * created.
  *
- * The registry is `--registry`, else `ZENA_REGISTRY`, else the Zena project's
- * PDS, `https://padstone.zena-lang.dev`, whose handles are under
- * `pkg.zena-lang.dev`; its service DID and handle domain come from
- * its `dev.zena-lang.registry.describeRegistry`, and the DID must be the
- * origin's own (`checkHostDid`) before any token is made for it.
+ * The registry is `--registry`, else `ZENA_REGISTRY`, else the Zena
+ * project's App View (`DEFAULT_REGISTRY`); its service DID and handle
+ * domain come from its `dev.zena-lang.registry.describeRegistry`, and the
+ * DID must be the origin's own (`checkHostDid`) before any token is made
+ * for it.
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -62,7 +62,12 @@ import {
   COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, DESCRIBE_REGISTRY, PUBLISH, UPLOAD_ARTIFACT
 } from 'package-manager:registry-methods';
 
-let DEFAULT_HOST = 'https://padstone.zena-lang.dev';
+/**
+ * The Zena project's App View, the registry `zena pkg` calls without
+ * `--registry` or `ZENA_REGISTRY`. Its accounts are on padstone, which
+ * serves no registry methods.
+ */
+export let DEFAULT_REGISTRY = 'https://pkg.zena-lang.dev';
 
 /** A DID no package has, for checking a release before its package exists. */
 let STAND_IN_DID = 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa';
@@ -251,7 +256,7 @@ export async function callerClient(caller: Caller, registry: Registry, method: S
 }
 
 export async function findRegistry(args: ParsedArgs): Future<Registry> {
-  var origin = getEnv('ZENA_REGISTRY') ?? DEFAULT_HOST;
+  var origin = getEnv('ZENA_REGISTRY') ?? DEFAULT_REGISTRY;
   if (let (true, given) = args.getOption('registry')) {
     origin = given;
   }

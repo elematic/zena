@@ -221,6 +221,12 @@ The workspace's root is the repository root, `ZENA_REPO_ROOT`, which
 defaults to the checkout the binary was built in, or the current directory
 for a standalone binary.
 
+These are the `zena` command's variables. The registry's servers, the
+App View and padstone, read their own, `APP_VIEW_*` and `PDS_*`, which
+the configuration reference in
+[`packages/registry`'s README](../registry/README.md#configuration-reference)
+lists with their values in the demo, staging and production.
+
 | Variable                           | Effect                                                                                                                           |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `ZENA_CACHE_DIR`                   | The cache directory, holding fetched packages under `packages/`. Defaults to `$XDG_CACHE_HOME/zena`, or `~/.cache/zena`.         |
@@ -234,7 +240,7 @@ for a standalone binary.
 | `ZENA_ALLOW_EGRESS`                | Host names exempt from `ZENA_DENY_PRIVATE_EGRESS`, separated by commas.                                                          |
 | `ZENA_HTTP_HEADER_TIMEOUT_SECONDS` | How long a connection to a server a program runs may take to send a request's headers before it is closed. 30 by default.        |
 | `ZENA_HTTP_MAX_CONNECTIONS`        | How many connections such a server keeps open at once; the next waits. 1024 by default.                                          |
-| `ZENA_REGISTRY`                    | The registry `publish` and `package create` use, in place of the Zena project's, `https://padstone.zena-lang.dev`.               |
+| `ZENA_REGISTRY`                    | The registry the `zena pkg` commands call, in place of the Zena project's App View, `https://pkg.zena-lang.dev`.                 |
 
 ## Development and Architecture
 
