@@ -178,11 +178,13 @@ export class SourceFileGraph(
  * - Caching loaded libraries by path (ensuring identity)
  * - Recursively loading dependencies (via import resolution)
  *
- * Loading awaits the host one read at a time, in the order the imports
- * are written: a library is read, parsed and cached, and then each of
- * its imports is loaded in turn. The order matters because every parse
- * draws node ids from this loader's one generator, and those ids reach
- * the emitted module.
+ * Loading reads a library's imports together and parses them in the
+ * order the imports are written: a library is parsed and cached, a read
+ * of every import it names starts, and then each import is awaited and
+ * loaded in turn. The parse order matters because every parse draws
+ * node ids from this loader's one generator, and those ids reach the
+ * emitted module; the reads' order does not, since a read changes
+ * nothing until its turn.
  *
  * Usage:
  *   let loader = new LibraryLoader(host, resolver);
@@ -200,6 +202,15 @@ export class LibraryLoader {
   #host: CompilerHost;
   #resolver: ModuleResolver;
   #cache: HashMap<String, SourceFile>;
+
+  /**
+   * The reads in flight, by path. A library's imports are all read at
+   * once and parsed in source order, so a read is started when its
+   * importer is parsed and finished when its turn comes; two importers
+   * of one file share its read. Cleared when a load starts: a read a
+   * failed load left here would serve the next load stale text.
+   */
+  #pending = new Map<String, Future<String>>();
 
   /**
    * Node ids must be unique across every file this loader has parsed —
@@ -270,6 +281,7 @@ export class LibraryLoader {
       this.#cache.delete(path);
     }
 
+    this.#pending.clear();
     let tLoad = performance.start("load");
     let source = await this.#host.readFile(path);
     this.loadTime = this.loadTime + performance.end(tLoad);
@@ -326,77 +338,113 @@ export class LibraryLoader {
     record.completeness = completeness;
     this.#cache[path] = record;
 
-    // Resolve and recursively load imports. A failure to resolve or
-    // load a dependency is left for type checking to report as
-    // ModuleNotFound.
+    // Resolve every import, and start reading each one that is not
+    // loaded yet, so the reads are in flight together. A failure to
+    // resolve or load a dependency is left for type checking to report
+    // as ModuleNotFound.
+    let targets = new Array<String>();
     for (let stmt in ast.body) {
+      var specifier: String | null = null;
       match (stmt) {
         case ImportDeclaration {moduleSpecifier}: {
-          await this.#follow(record, pinned, moduleSpecifier.value);
+          specifier = moduleSpecifier.value;
         }
         case ExportAllDeclaration {moduleSpecifier}: {
-          await this.#follow(record, pinned, moduleSpecifier.value);
+          specifier = moduleSpecifier.value;
         }
         case ExportFromDeclaration {moduleSpecifier}: {
-          await this.#follow(record, pinned, moduleSpecifier.value);
+          specifier = moduleSpecifier.value;
         }
         case _: {}
       }
+      if (specifier == null) {
+        continue;
+      }
+      let target = this.#resolveImport(record, pinned, specifier);
+      if (target != null && !this.#cache.has(target)) {
+        targets.push(target);
+        this.#startRead(target);
+      }
+    }
+
+    // Then load them in source order. The order is what keeps node ids
+    // where they were: each parse draws from the one generator, so
+    // parsing in the order the reads completed would hand out
+    // different ids on every run.
+    for (let target in targets) {
+      if (this.#cache.has(target)) {
+        continue;
+      }
+      let tLoad = performance.start("load");
+      let source = await this.#finishRead(target);
+      this.loadTime = this.loadTime + performance.end(tLoad);
+      if (source == null) {
+        // No file there, so this is the missing-library case after all.
+        continue;
+      }
+      // Parsing sits outside the read's catch. A dependency that does
+      // not parse throws, and swallowing that would report the file as
+      // missing at the import site — naming a file that is sitting right
+      // there, and saying nothing about the error or its line.
+      await this.#register(target, source, null, null);
     }
 
     return record;
   }
 
-  /** Load the library one of `record`'s imports names, if any. */
-  async #follow(
+  /**
+   * The path one of `record`'s imports names, recorded on the record;
+   * null when there is nothing to load for it.
+   */
+  #resolveImport(
     record: SourceFile,
     pinned: HashMap<String, String> | null,
     specifier: String
-  ): Future<void> {
+  ): String | null {
     // An empty specifier is the parser's stand-in for one that has not
     // been typed yet (see #missingModuleSpecifier). There is nothing to
     // resolve, so the declaration contributes no dependency.
     if (specifier == "") {
-      return;
+      return null;
     }
     if (pinned != null && pinned.has(specifier)) {
       record.imports[specifier] = pinned[specifier];
-      return;
+      return null;
     }
     // Two failures here mean the import names nothing, and the checker
     // reports both against the import itself: a specifier that does not
     // resolve, and a path with no file behind it.
-    var resolvedPath: String | null = null;
     try {
       let resolved = this.#resolver.resolve(specifier, record.path);
       record.imports[specifier] = resolved.path;
-      resolvedPath = resolved.path;
+      return resolved.path;
     } catch (e) {
       // Nothing to load, and nothing more to say here.
+      return null;
     }
-    if (resolvedPath == null) {
+  }
+
+  /** Starts reading `path` unless a read of it is already in flight. */
+  #startRead(path: String): void {
+    if (this.#pending.has(path)) {
       return;
     }
-    let target = resolvedPath;
-    if (this.#cache.has(target)) {
-      return;
-    }
-    let tLoad = performance.start("load");
-    var source: String | null = null;
+    this.#pending[path] = this.#host.readFile(path);
+  }
+
+  /**
+   * The source of `path`, from the read `#startRead` began, or from one
+   * started now; null when the host has no such file.
+   */
+  async #finishRead(path: String): Future<String | null> {
+    this.#startRead(path);
+    let read = this.#pending[path];
+    this.#pending.delete(path);
     try {
-      source = await this.#host.readFile(target);
+      return await read;
     } catch (e) {
-      // No file there, so this is the missing-library case after all.
+      return null;
     }
-    this.loadTime = this.loadTime + performance.end(tLoad);
-    if (source == null) {
-      return;
-    }
-    // Parsing sits outside both catches. A dependency that does not
-    // parse throws, and swallowing that here would report the file as
-    // missing at the import site — naming a file that is sitting right
-    // there, and saying nothing about the error or its line.
-    await this.#register(target, source, null, null);
   }
 
   /**
@@ -456,16 +504,23 @@ export class LibraryLoader {
       paths.push(path);
     }
 
-    // Phase 1: Detect changed files and remove from cache.
-    let changedPaths = new Set<String>();
+    // Phase 1: Detect changed files and remove from cache. Every file
+    // is read at once, and compared in order.
+    this.#pending.clear();
+    let userPaths = new Array<String>();
     for (let path in paths) {
+      if (!this.#cache[path].isStdlib) {
+        userPaths.push(path);
+        this.#startRead(path);
+      }
+    }
+    let changedPaths = new Set<String>();
+    for (let path in userPaths) {
       let cached = this.#cache[path];
-      if (!cached.isStdlib) {
-        let currentSource = await this.#host.readFile(path);
-        if (currentSource != cached.source) {
-          changedPaths.add(path);
-          this.#cache.delete(path);
-        }
+      let currentSource = await this.#finishRead(path);
+      if (currentSource != cached.source) {
+        changedPaths.add(path);
+        this.#cache.delete(path);
       }
     }
 

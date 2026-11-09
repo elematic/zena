@@ -1,0 +1,156 @@
+// The loader starts reading every import of a library at once and
+// parses them in source order, so a host whose reads complete in any
+// order yields the same node ids and the same module as one that
+// answers in order.
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { Completer, scheduleMicrotask } from 'zena:async';
+import {
+  createCompiler, checkCompilation, CompilerHost, CompilationResult, Compiler
+} from '../lib/compiler.zena';
+import { loadWorkspace } from '../lib/package-manifest.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { NodeId } from '../lib/ast.zena';
+import { walkEnter } from '../lib/visitor.zena';
+import { PlainHost, stdlibRoot } from './test-utils.zena';
+
+/**
+ * Reads from disk through `PlainHost`, but holds every read until the
+ * current run of the microtask queue is over and then releases the
+ * reads in the reverse of the order they were asked for, so the last
+ * import a library names is the first whose source arrives.
+ */
+class OutOfOrderHost implements CompilerHost {
+  #disk = new PlainHost();
+  /** Every path asked for, in request order. */
+  requested = new Array<String>();
+  var #held = new Array<Completer<void>>();
+  var #outstanding = 0;
+  /** The most reads that were ever waiting at once. */
+  var maxOutstanding = 0;
+  var #releaseScheduled = false;
+
+  async readFile(path: String): Future<String> {
+    this.requested.push(path);
+    this.#outstanding += 1;
+    if (this.#outstanding > this.maxOutstanding) {
+      this.maxOutstanding = this.#outstanding;
+    }
+    let gate = new Completer<void>();
+    this.#held.push(gate);
+    if (!this.#releaseScheduled) {
+      this.#releaseScheduled = true;
+      scheduleMicrotask(() => {
+        this.#release();
+      });
+    }
+    await gate.future;
+    this.#outstanding -= 1;
+    return await this.#disk.readFile(path);
+  }
+
+  async listDir(path: String): Future<Array<String> | null> {
+    return await this.#disk.listDir(path);
+  }
+
+  #release(): void {
+    this.#releaseScheduled = false;
+    let held = this.#held;
+    this.#held = new Array<Completer<void>>();
+    for (var i = held.length - 1; i >= 0; i -= 1) {
+      held[i].complete();
+    }
+  }
+}
+
+/** Every node id in the compilation, in file order. */
+function idsOf(result: CompilationResult): Array<NodeId> {
+  let ids = new Array<NodeId>();
+  for (let file in result.files) {
+    walkEnter(file.ast, (n) => { ids.push(n.id); });
+  }
+  return ids;
+}
+
+function pathsOf(result: CompilationResult): Array<String> {
+  let paths = new Array<String>();
+  for (let file in result.files) {
+    paths.push(file.path);
+  }
+  return paths;
+}
+
+async function newCompiler(host: CompilerHost): Future<Compiler> {
+  let packages = await loadWorkspace(host, '.');
+  return createCompiler(host, {stdlibRoot, packages});
+}
+
+/** Compiles to wasm, throwing on any check error. */
+async function compileToWasm(c: Compiler, path: String): Future<(CompilationResult, ByteArray)> {
+  let result = await c.compile({entry: path, target: 'freestanding'});
+  let checked = checkCompilation(result);
+  for (let diag in checked.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      throw new Error(`${path}: ${diag.message}`);
+    }
+  }
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.path == result.entry.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+  let bytes = new BinaryGenerator('freestanding', false)
+      .generate(new Program(units, entryUnit)).toByteArray();
+  return (result, bytes);
+}
+
+function bytesEqual(a: ByteArray, b: ByteArray): boolean {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+let entry = 'tests/language/execution/arrays/extension_class.zena';
+
+export let tests = suite('concurrent reads', () => {
+  test('a library\'s imports are read at once', async (ctx) => {
+    let host = new OutOfOrderHost();
+    await compileToWasm(await newCompiler(host), entry);
+    isTrue(host.maxOutstanding > 1,
+      `at most ${host.maxOutstanding} read was in flight at a time`);
+  });
+
+  test('reads completing out of order change nothing', async (ctx) => {
+    let (inOrder, plainBytes) = await compileToWasm(await newCompiler(new PlainHost()), entry);
+    let (outOfOrder, heldBytes) = await compileToWasm(await newCompiler(new OutOfOrderHost()), entry);
+    equal(pathsOf(outOfOrder).length, pathsOf(inOrder).length);
+    let inOrderPaths = pathsOf(inOrder);
+    let outOfOrderPaths = pathsOf(outOfOrder);
+    for (var i = 0; i < inOrderPaths.length; i += 1) {
+      equal(outOfOrderPaths[i], inOrderPaths[i]);
+    }
+    let inOrderIds = idsOf(inOrder);
+    let outOfOrderIds = idsOf(outOfOrder);
+    equal(outOfOrderIds.length, inOrderIds.length);
+    for (var i = 0; i < inOrderIds.length; i += 1) {
+      isTrue(outOfOrderIds[i] == inOrderIds[i], `node ${i} has a different id`);
+    }
+    isTrue(bytesEqual(plainBytes, heldBytes),
+      `the emitted module differs (${plainBytes.length} bytes vs ${heldBytes.length})`);
+  });
+});

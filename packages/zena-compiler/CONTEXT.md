@@ -71,7 +71,8 @@ way even where the surrounding text is mixed.
 The target is a property of a compile, not of a compiler.
 `Compiler.compile` takes a `CompileOptions` record — entry point and
 target — and returns a `Future`: every read goes through the
-asynchronous `CompilerHost`, one at a time in import order, and a
+asynchronous `CompilerHost`, a library's imports read together and
+parsed in import order, and a
 compiler runs one `compile`, `invalidate` or `refreshCache` at a time
 (a second call while one is in flight throws). Checking and code
 generation are synchronous. See `docs/design/async-compiler.md`.
