@@ -1,7 +1,7 @@
 /**
  * The home page: rendered from `packages/pds-web/site/index.md` (`HOME_TEMPLATE`,
  * or `${webDir}/home.html` when present on disk) with server-generated slots
- * for the package search form and the featured packages section.
+ * for the package search form and the packages updated most recently.
  */
 
 import { getEnv } from 'zena:cli';
@@ -13,41 +13,12 @@ import { AppView, PackageSummary } from '../../app-view.zena';
 import { page } from '../layout.zena';
 import { People } from '../people.zena';
 import { contextOf } from '../session.zena';
-import { count, each, renderSlots } from '../partials/common.zena';
+import { count, each, renderSlots, when } from '../partials/common.zena';
 import { packageList } from '../partials/packages.zena';
 import { HOME_TEMPLATE } from './home-template.zena';
 
-/** A featured package shown in the `featured-packages` slot on the home page. */
-final class FeaturedPackage {
-  icon: String;
-  name: String;
-  version: String;
-  description: String;
-  href: String;
-
-  new(this.icon, this.name, this.version, this.description, this.href);
-}
-
-let FEATURED_PACKAGES = [
-  new FeaturedPackage('🌐', '@zena/http', '0.4.2',
-      'HTTP client, router, and streaming HTML templates for WASI HTTP components and servers.',
-      '/docs/installing/'),
-  new FeaturedPackage('📄', '@zena/json', '0.3.1',
-      'Fast JSON parser, schema validator, and typed serializer for WebAssembly GC records and classes.',
-      '/docs/installing/'),
-  new FeaturedPackage('🗄️', '@zena/sqlite', '0.2.0',
-      'Embedded SQLite bindings, typed query builder, and schema migrations with prepared statement caching.',
-      '/docs/installing/'),
-  new FeaturedPackage('🔐', '@zena/crypto', '0.5.0',
-      'SHA-256, Ed25519, secp256k1 signatures, and content-addressed CIDs for verifiable data structures.',
-      '/docs/installing/'),
-  new FeaturedPackage('⌨️', '@zena/cli', '0.3.0',
-      'Command-line flag parsing, subcommand dispatch, ANSI terminal styling, and interactive prompts.',
-      '/docs/installing/'),
-  new FeaturedPackage('⏱️', '@zena/bench', '0.1.4',
-      'Microbenchmarking harness and statistical regression runner for performance-critical Zena libraries.',
-      '/docs/installing/'),
-];
+/** How many packages the home page lists as updated most recently. */
+let RECENT_COUNT = 6;
 
 /** Adds the home page, `/`, to `router`. */
 export function homePage(router: Router, appView: AppView, people: People): void {
@@ -83,7 +54,7 @@ export function homePage(router: Router, appView: AppView, people: People): void
 
     let slots: HashMap<String, TemplateValue> = {
       'search-form' => searchForm(''),
-      'featured-packages' => featuredPackagesSlot(),
+      'recent-packages' => recentPackagesSlot(await appView.recentPackages(RECENT_COUNT)),
     };
     res.body = page('Zena packages', context, renderSlots(await loadHomeTemplate(), slots));
   });
@@ -115,28 +86,34 @@ function searchForm(query: String): HTMLPartial {
     </form>`;
 }
 
-/** Server-rendered `featured-packages` slot injected into `site/index.md`. */
-function featuredPackagesSlot(): HTMLPartial {
+/**
+ * Server-rendered `recent-packages` slot injected into `site/index.md`: the
+ * packages updated most recently (`AppView.recentPackages`), or nothing
+ * when no package has a release yet.
+ */
+function recentPackagesSlot(packages: Array<PackageSummary>): TemplateValue {
+  if (packages.length == 0) {
+    return null;
+  }
   return html`
-    <div class="features featured-packages">
+    <div class="features recent-packages">
       <div class="container">
-        <div class="featured-header">
-          <h2>Featured Packages</h2>
-          <p class="muted">Popular libraries and foundational packages for Zena applications.</p>
+        <div class="recent-header">
+          <h2>Recently updated</h2>
+          <p class="muted">The packages whose releases or maintainers changed most recently.</p>
         </div>
         <div class="items">
-          ${each(FEATURED_PACKAGES, (pkg) => html`
+          ${each(packages, (pkg) => html`
           <div class="item grid-3">
-            <a class="feature link" href="${pkg.href}">
+            <a class="feature link" href="/packages/${pkg.handle}">
               <article class="box">
                 <div class="header">
-                  <div class="icon">${pkg.icon}</div>
-                  <h3 class="title mono">${pkg.name}</h3>
-                  <span class="chip chip-primary">${pkg.version}</span>
+                  <h3 class="title mono">@${pkg.scope}/${pkg.name}</h3>
+                  ${when(pkg.latest != null, () => html`<span class="chip chip-primary">${pkg.latest}</span>`)}
                 </div>
-                <p class="details">${pkg.description}</p>
+                <p class="details">${pkg.description ?? ''}</p>
                 <div class="link-text">
-                  <p class="link-text-value mono">zena pkg add ${pkg.name}</p>
+                  <p class="link-text-value mono">zena pkg add ${pkg.handle}</p>
                 </div>
               </article>
             </a>

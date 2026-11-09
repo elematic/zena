@@ -478,6 +478,7 @@ export final class MemoryAppViewStore implements AppViewStore {
         return;
       }
     }
+    summary.rev = rev;
     this.#summaries[summary.did] = new KeptSummary(summary, rev);
   }
 
@@ -1974,6 +1975,35 @@ export final class AppView {
   }
 
   /**
+   * Up to `count` packages that have a release, the one whose repository
+   * changed last first, as the home page lists them. A package's latest
+   * commit is its summary's revision, from the PDS's clock, so a release's
+   * own `createdAt`, which its publisher chose, does not move it. Reads
+   * every summary, as `listPackages` does.
+   */
+  async recentPackages(count: i32): Future<Array<PackageSummary>> {
+    let packages = new GrowableArray<PackageSummary>();
+    for (let summary in await this.#store.summaries(null)) {
+      let rev = summary.rev;
+      if (summary.releases == 0 || rev == null) {
+        continue;
+      }
+      var i = packages.length;
+      packages.push(summary);
+      while (i > 0 && compareKeys(packages[i - 1].rev as String, rev) < 0) {
+        packages[i] = packages[i - 1];
+        i -= 1;
+      }
+      packages[i] = summary;
+    }
+    let recent = new GrowableArray<PackageSummary>();
+    for (var i = 0; i < packages.length && i < count; i += 1) {
+      recent.push(packages[i]);
+    }
+    return recent;
+  }
+
+  /**
    * The scope `name`, as its page shows it: its organization, the
    * commitments of its members record, and its teams, by name; or null
    * when no organization holds it. Public, as the records are; the entries
@@ -3040,6 +3070,12 @@ export final class PackageSummary {
   var releases: i32 = 0;
   /** The bytes the blobs of those releases take (`Release.blobBytes`). */
   var bytes: i64 = 0;
+  /**
+   * The revision of the commit it was made from, a TID from the PDS's
+   * clock, which a store gives back with it (`putSummary`); null before
+   * it is kept.
+   */
+  var rev: String | null = null;
 
   new(this.did, this.handle, this.scope, this.name);
 
