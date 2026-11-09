@@ -1,13 +1,11 @@
-// Executor and runFuture: FIFO microtask draining, synchronous
-// settlement, and deadlock detection when a future remains pending
-// after the microtask queue is empty.
+// Executor: FIFO microtask draining and DeferredFuture laziness.
 import {suite, test, TestContext} from 'zena:test';
-import {equal, isTrue} from 'zena:assert';
+import {equal, rejects} from 'zena:assert';
 import {
-  Completer, DeferredFuture, Future, drainMicrotasks, runFuture, scheduleMicrotask,
+  Completer, DeferredFuture, Future, drainMicrotasks, scheduleMicrotask,
 } from 'zena:async';
 
-export let tests = suite('executor and runFuture', () => {
+export let tests = suite('executor', () => {
   test('drainMicrotasks runs scheduled callbacks in FIFO order including nested schedules', (ctx) => {
     var order = '';
     scheduleMicrotask(() => {
@@ -24,69 +22,31 @@ export let tests = suite('executor and runFuture', () => {
     equal(order, 'abc');
   });
 
-  test('runFuture drains microtasks and returns the settled value', (ctx) => {
+  test('drainMicrotasks settles a scheduled Completer', async (ctx) => {
     let c = new Completer<i32>();
     scheduleMicrotask(() => {
       c.complete(42);
     });
-    equal(runFuture(c.future), 42);
+    equal(await c.future, 42);
   });
 
-  test('runFuture rethrows a rejected future failure', (ctx) => {
+  test('drainMicrotasks rejects a failed Completer', async (ctx) => {
     let c = new Completer<i32>();
     scheduleMicrotask(() => {
       c.fail(new Error('rejected'));
     });
-    var msg = '';
-    try {
-      let unused = runFuture(c.future);
-    } catch (e) {
-      msg = e.message;
-    }
-    equal(msg, 'rejected');
+    await rejects(async () => {
+      await c.future;
+    });
   });
 
-  test('runFuture throws Deadlock when a future remains pending after draining microtasks', (ctx) => {
-    let never = new Completer<i32>();
-    var msg = '';
-    try {
-      let unused = runFuture(never.future);
-    } catch (e) {
-      msg = e.message;
-    }
-    isTrue(msg.startsWith('Deadlock:'), `expected Deadlock error, got: ${msg}`);
-
-    let parked = (async (): Future<i32> => {
-      let step = new Completer<i32>();
-      scheduleMicrotask(() => {
-        step.complete(1);
-      });
-      let first = await step.future;
-      let second = await never.future;
-      return first + second;
-    })();
-    var parkedMsg = '';
-    try {
-      let unused = runFuture(parked);
-    } catch (e) {
-      parkedMsg = e.message;
-    }
-    isTrue(parkedMsg.startsWith('Deadlock:'), `expected Deadlock error, got: ${parkedMsg}`);
-  });
-
-  test('runFuture throws Deadlock on an unsubscribed DeferredFuture', async (ctx) => {
+  test('DeferredFuture does not run its producer until awaited', async (ctx) => {
     var produced = false;
     let deferred: Future<i32> = new DeferredFuture<i32>(() => {
       produced = true;
       return Future.of(7);
     });
-    var msg = '';
-    try {
-      let unused = runFuture(deferred);
-    } catch (e) {
-      msg = e.message;
-    }
-    isTrue(msg.startsWith('Deadlock:'), `expected Deadlock error, got: ${msg}`);
+    drainMicrotasks();
     equal(produced, false);
     equal(await deferred, 7);
     equal(produced, true);

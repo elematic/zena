@@ -793,28 +793,6 @@ export class DeferredFuture<scoped T> extends Future<T> implements Disposable {
   }
 }
 
-/**
- * Drains the microtask queue and returns `f`'s value, throwing its
- * failure.
- *
- * The public way to get a value out of a future from synchronous code,
- * and deliberately the only one: it cannot answer before the queue has
- * run, so there is no way to observe whether something settled "early".
- * If `f` is still pending once the microtask queue is empty, that is a
- * deadlock and it throws saying so.
- *
- * Top-level only — a driver, a test, `main`. Calling it from inside a
- * task would re-enter the drain and break run-to-completion.
- *
- * `T` may be an owner (`runFuture(make())`): the value comes out of `f`
- * by a take, so the caller owns it, and `f`, released at exit as an
- * owned parameter is, holds nothing to release.
- */
-export function runFuture<scoped T>(f: Future<T>): T {
-  drainMicrotasks();
-  return f.[valueOrThrow]();
-}
-
 /** Shared state for one `allOf` call: the inputs, how many are still
  * outstanding, and the future they all settle. */
 class AllState<T> {
