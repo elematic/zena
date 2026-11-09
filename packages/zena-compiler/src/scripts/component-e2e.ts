@@ -221,11 +221,11 @@ const FIXTURES: Fixture[] = [
     wasi: ['p3=y'],
     wit: ['async-void-main.wit', 'app'],
     // The smallest program that needs the component entry: an `async
-    // main` returning nothing, with no imports and no other export. The
-    // async pass hands the `main` export to a synthesized wrapper that
-    // only the entry can lift, and the entry exists only when the async
-    // driver is rooted — which an `async main` now does on its own,
-    // rather than only through an awaited import or a wrapper module.
+    // main` returning nothing, with no imports and no other export. Only
+    // the component entry can lift a `Future<void>` return, and the
+    // entry exists only when the async driver is rooted — which an
+    // `async main` does on its own, rather than only through an awaited
+    // import or a wrapper module.
     invocations: [{invoke: 'main()', expect: '()'}],
   },
   {
@@ -598,7 +598,7 @@ const FIXTURES: Fixture[] = [
     // call is awaited, so the task parks on the import's subtask and
     // the host re-enters through the callback. A directory made, a file
     // written and read back as text and as bytes, listed, stat'd,
-    // renamed, removed. (fs-sizes covers the `Sync` forms.)
+    // renamed, removed.
     invocations: [
       {
         invoke: 'main()',
@@ -652,10 +652,11 @@ const FIXTURES: Fixture[] = [
     name: 'async-block-wait',
     wasi: ['p3=y'],
     // A task under a callback-lifted export blocks in
-    // `waitable-set.wait` for an async-lowered import: what every
-    // synchronous `zena:fs` call does. A synchronous export cannot —
-    // wasmtime traps with "cannot block a synchronous task before
-    // returning" — which is why the entry is lifted async.
+    // `waitable-set.wait` for an async-lowered import: what a blocking
+    // `zena:console` write does when the host cannot take all the bytes
+    // at once. A synchronous export cannot — wasmtime traps with
+    // "cannot block a synchronous task before returning" — which is why
+    // the entry is lifted async.
     invocations: [{invoke: 'main()', expect: '1', minWallMs: 25}],
   },
   {

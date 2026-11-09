@@ -910,15 +910,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * has just finished, reached a door into the driver's registries:
    * `awaitPacked` (subtasks) or `awaitWaitable` (stream and future
    * copies), or `waitable-set.wait` itself, which is how a synchronous
-   * call blocks — a file read, a stdout write that did not complete at
-   * once — and which the host allows only inside a task it lifted
-   * async. A program that never awaits an async-lowered import, never
-   * blocks and has no async main keeps the synchronous lift.
+   * call blocks — a stdout write that did not complete at once — and
+   * which the host allows only inside a task it lifted async. A program
+   * that never awaits an async-lowered import, never blocks and has no
+   * async main keeps the synchronous lift.
    *
    * The zena command's host is the exception: it lifts every `main`
    * async, so that the entry installs the host's stack-trace hooks
-   * before the program runs, and so that a program run there may block
-   * on whatever it links later.
+   * before the program runs.
    */
   #rootComponentAsyncDriver(): void {
     let driverPath = componentDriverUnitId;
@@ -957,11 +956,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     // An async main is the same case without a wrapper to notice it
-    // by: the async pass replaces its export with a synthesized wrapper
-    // only the entry can lift. Leaving the driver unrooted here means
-    // `prepareComponentEntry` finds no `componentPoll` in the function
-    // map, builds no entry, and the export loops reach the wrapper
-    // instead.
+    // by: its `Future<void>` return can only be lifted by the component
+    // entry, which subscribes to the future and calls `finishVoidTask`.
+    // Leaving the driver unrooted here means `prepareComponentEntry`
+    // finds no `componentPoll` in the function map, builds no entry,
+    // and the export loops reach the async ramp directly.
     // Only a component has an entry to lift: a freestanding core module
     // links the driver's unit through the console it shares with the
     // component target, and must not root it.
@@ -975,10 +974,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (!anyDoorReached) {
       return;
     }
-    // The four the adapters call from outside the program, by name:
-    // rooting every export of the driver's module would build the
-    // blocking parker too, and with it the wait and the linear memory
-    // its event pair lives in, into a component that only awaits.
+    // The four the adapters call from outside the program, by name.
     let driver = prog.unitsByPath[driverPath];
     this.#rootUnitExport(driver, 'componentPoll');
     this.#rootUnitExport(driver, 'componentResume');
@@ -990,10 +986,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (wrapper != null) {
       this.#rootUnitExports(wrapper as CompilationUnit);
     }
-    // The zena command's host also supplies `Error`'s stack traces and
-    // the blocking wait, through `zena:host-setup`, whose installer the
-    // entry calls before the program runs: rooted with the driver,
-    // since the entry needs it in the function map the same way.
+    // The zena command's host also supplies `Error`'s stack traces
+    // through `zena:host-setup`, whose installer the entry calls before
+    // the program runs: rooted with the driver, since the entry needs
+    // it in the function map the same way.
     if (prog.unitsByPath.has(hostSetupUnitId)) {
       this.#rootUnitExports(prog.unitsByPath[hostSetupUnitId]);
     }

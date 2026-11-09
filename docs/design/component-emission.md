@@ -966,9 +966,10 @@ special"). The path is unused rather than shared — still the right one
 to land on, and still no change to `queue.zena`'s park/drain loop, but
 p3 would be its first implementation.
 
-Since 2026-09-28 the p3 clock is the only `Clock` on any target that
-has one: the p1 row of the table is history, and `time/p3.zena` serves
-both the `component` and the `zena-cli` targets.
+Since 2026-09-28 the preview 1 clock is gone, and `time/component.zena`
+calls `wasi:clocks/monotonic-clock`'s `wait-for` directly through
+`awaitPacked` on both the `component` and the `zena-cli` targets, with
+no `Clock` interface, timer queue, or `Parker` in between.
 
 ### When `main` is lifted async
 
@@ -984,19 +985,14 @@ for one call from the host. `componentPoll` answers the host with
 callback: it settles the Zena future tied to the handle that finished
 and runs whatever was waiting for it.
 
-A synchronous Zena program sometimes has to wait too. `zena:fs`'s
-`readFileSync` is synchronous, and the 0.3 filesystem is asynchronous
-throughout, so the read has to wait for the host to finish without
-returning to it. It does that in `blockOn`
-(`packages/stdlib/zena/wasi/block.zena`): one `waitable-set.wait` at a
-time on the handles the current call owns, each event handled the way
-`componentResume` would handle it, until the read is done. The
-console's write does the same when the host cannot take all the bytes
-at once. wasmtime allows this kind of wait only inside a call to an
-async export, and traps anywhere else with "cannot block a synchronous
-task before returning" (probed on wasmtime 47 and 48, both with a
-synchronously lowered async import and with a bare `waitable-set.wait`).
-So a program that can reach such a wait must export `main` async.
+A synchronous Zena function sometimes has to wait too: `zena:console`'s
+write blocks in `waitable-set.wait` on its own waitable set when the
+host cannot take all the bytes at once. wasmtime allows this kind of
+wait only inside a call to an async export, and traps anywhere else with
+"cannot block a synchronous task before returning" (probed on wasmtime
+47 and 48, both with a synchronously lowered async import and with a
+bare `waitable-set.wait`). So a program that can reach such a wait must
+export `main` async.
 
 The compiler decides this from what the program uses
 (`#rootComponentAsyncDriver` in `codegen/reachability/analysis.zena`).
@@ -1005,8 +1001,8 @@ and includes the event loop, when any of these holds:
 
 - the program awaits an async import or a stream or future copy (it
   reaches `awaitPacked` or `awaitWaitable`);
-- the program can wait synchronously (it reaches `waitable-set.wait`): a
-  file read, a console write, `blockOn` itself;
+- the program can wait synchronously (it reaches `waitable-set.wait`,
+  such as a console write);
 - a declared world has exports whose wrappers hand their results to the
   event loop through `finishTask`;
 - `main` is `async`;
@@ -1023,7 +1019,8 @@ the host's first call, and the entry returns its value through a
 `task.return` declared at `main`'s checked return type. No annotation is
 needed, and an enum or a distinct alias returns as the scalar under it.
 An async `main` returns its value through the entry wrapper's typed
-`task.return` once its future settles. A `String` result, from an async
+`task.return` once its future settles, or through `finishVoidTask` when
+its return type is `Future<void>`. A `String` result, from an async
 `main` or a synchronous one, goes through the wrapper too: a `string`
 is read out of linear memory, so its `task.return` is typed by the WIT
 `string` (`return:#string`), takes the staged bytes' address and
@@ -1035,17 +1032,9 @@ declared world whose `main` is a synchronous function while exporting
 `main` async; whether the component model's type rules allow that has
 not been checked.
 
-Only four of the event loop's exports are kept by name:
-`componentPoll`, `componentResume`, `beginTask`, and `markReturned`,
-which the entry calls after returning a synchronous `main`'s value.
-Keeping every export of `wasi/async.zena` would also keep the
-synchronous wait, whose event record lives in linear memory, and so pull
-the allocator into a program that only awaits. `blockOn` and
-`installHost` register the synchronous wait with the executor instead.
-One consequence falls on `runFuture`: on a portable component it can
-wait for the host only once something in the program uses `blockOn`;
-otherwise a future still waiting on the host is reported as a deadlock.
-An `async main` that awaits is the way to write that program.
+Only the event loop exports the adapters call are kept by name:
+`componentPoll`, `componentResume`, `beginTask`, and `markReturned`
+(plus `finishVoidTask` when `main` is `async`).
 
 An `async main` with an empty body
 (`packages/zena-compiler/test-files/component/async-noop.zena`) is a
@@ -1356,16 +1345,13 @@ nothing waits on the host.
 
 What was built (2026-09-28):
 
-- `fs/component.zena` and `cli/component.zena` implement the same
-  synchronous API the p1 files had, over the modules the compiler
-  synthesizes from the vendored WIT. A synchronous call over an async
-  0.3 import blocks in `blockOn`; see "When `main` is lifted async" in
-  Part 5. Module initializers run in the core module's start function,
-  outside any task, so a file read at module level or while a test
-  suite registers traps; reads belong inside `main` and test bodies.
-  Since 2026-10-16 the asynchronous forms are the API and the
-  synchronous ones carry a `Sync` suffix
-  ([async-fs-cli.md](./async-fs-cli.md)).
+- `fs/component.zena` and `cli/component.zena` implement `zena:fs` and
+  `zena:cli` over the modules the compiler synthesizes from the vendored
+  WIT. They initially kept the synchronous API over `blockOn`, switched
+  to asynchronous functions alongside `*Sync` twins on 2026-10-16
+  ([async-fs-cli.md](./async-fs-cli.md)), and dropped the `*Sync` forms
+  and `blockOn` once `CompilerHost` and the CLI tools became
+  asynchronous ([async-compiler.md](./async-compiler.md)).
 - The zena command's host is a component host. Its own interfaces are
   declared in `packages/stdlib/zena/host-wit/host.wit` (package
   `zena-cli:host@1.0.0`): `stack-trace` with `capture`, `process` with

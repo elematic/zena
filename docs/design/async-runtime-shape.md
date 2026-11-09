@@ -31,7 +31,9 @@ which replaces this document's original removal plan.
 
 Not landed, in the order the plan below gives them: hole-initialized
 fields (so `#value` is still a `Box<T>`), the intrusive queue, removing
-`state`/`isCompleted`, the `Parker` hook, and the multi-value ramp.
+`state`/`isCompleted`, and the multi-value ramp. The `Parker` hook was
+subsequently removed altogether once timers and filesystem I/O moved to
+WASI 0.3 async imports.
 
 Line references below are to `ea7837e3`, the commit before this change,
 since the point of most of them is what the code looked like going in.
@@ -72,11 +74,13 @@ of API that looked like a design decision:
   tolerable only because both members are private to the module. It
   retires when void lanes lower. **This is the one that is still open**,
   and the only place the shipped code diverges from the sketch.
-- **`runFuture(f)` is the public way to get a value out.** Drain, then
-  unwrap. It cannot answer before the queue has run, so it gives
-  synchronous code a value without giving it a way to observe _when_
-  something settled. The async tests use it where they previously called
-  `valueOrThrow`.
+- **`runFuture(f)` was the transitional public way to get a value out.**
+  Drain, then unwrap. It could not answer before the queue had run, so
+  it gave synchronous code a value without giving it a way to observe
+  _when_ something settled. Once `async main` and `zena:test` supported
+  asynchronous bodies directly, `runFuture` was removed (scoped
+  synchronous execution of microtask-only async functions is tracked in
+  [#1004](https://github.com/elematic/zena/issues/1004)).
 
 The general lesson is the one worth keeping: every one of these produced
 a plausible-sounding justification for a worse API. "A pulling waiter
@@ -551,17 +555,15 @@ was written, `zena:fs` imported `fd_read`, `fd_write` and `path_open` —
 ordinary synchronous WASI preview 1 calls, callable from inside an async
 function, during which no frame ran, no timer fired and no completion was
 processed. Since 2026-09-28 `zena:fs` is written over the asynchronous
-0.3 filesystem, and a synchronous `readFile` waits in `blockOn`, which
-dispatches the events of every other task while it waits; the caller's
-frame is still stopped, so a `readFile` inside an async function still
-holds up that task, but nothing else. The cause of the remaining
-limitation is the stackless choice: with stackful coroutines a single
-task can block, while with stackless frames blocking is always global. A
-function that suspends and a function that blocks the world are
-indistinguishable
-at the call site, and the language has no way to say which is which.
-Naming that distinction is a separate design question; it is recorded
-here because parking is where it surfaces.
+0.3 filesystem, and once `CompilerHost` and the CLI tools became
+asynchronous ([async-compiler.md](async-compiler.md)), the transitional
+`blockOn` and `*Sync` wrappers were removed as well. The cause of the
+general limitation is the stackless choice: with stackful coroutines a
+single task can block, while with stackless frames blocking is always
+global. A function that suspends and a function that blocks the world
+are indistinguishable at the call site, and the language has no way to
+say which is which. Naming that distinction is a separate design
+question; it is recorded here because parking is where it surfaces.
 
 **One live footgun.** `setParker` replaces any previous parker
 (`async.zena:115`–`118`), and `zena:time` registers on first use.
@@ -619,12 +621,9 @@ above. These are the same change.
 **Do not generalize it.** Under a WASI p3 component the clock does not
 block: the export returns WAIT and the host drives re-entry through the
 callback ABI, which is the JS shape
-([component-emission.md](component-emission.md)). The preview 1 clock
-that parked is gone; the one `Parker` left is the component's blocking
-wait (`DriverParker` in `packages/stdlib/zena/wasi/async.zena`), which
-parks on the task's waitable set and lets the host choose what fires
-next, so multiple sources, priorities, and fairness are all investment
-in the wrong place.
+([component-emission.md](component-emission.md)). Both the preview 1
+clock and the transitional `blockOn` parker are now gone, and `Parker`
+itself has been removed from `zena:async`.
 
 ## The multi-value ramp
 

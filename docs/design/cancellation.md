@@ -556,7 +556,8 @@ refactor above can leave them open. A frame waiting on a future
 sits in that future's waiter list and on no queue, so if the future is
 settled by a timer or by a frame in another scope, the scoped drain
 runs dry with the result still pending; the call must fail loudly at
-that point, the way `runFuture` reports a deadlock today. And a nested
+that point, the way the top-level drain reports a deadlock when the
+root future is still pending ([#1004](https://github.com/elematic/zena/issues/1004)). And a nested
 drain runs the callee's frames inside the caller's step, so the
 always-async rule ([async.md](async.md) §2) holds only for frames
 outside the scope.
