@@ -135,7 +135,24 @@ zena run main.zena
 Open `http://127.0.0.1:2583` to browse the demo's scopes and packages, and
 sign in there with your own atproto account: the stand-in PLC directory
 reads real DIDs from `plc.directory`. Start the demo with
-`APP_VIEW_ADMIN_DIDS=<your DID>` to see `/admin` as well.
+`APP_VIEW_ADMIN_DIDS=<your DID>` to see `/admin` as well. Open the pages
+at `127.0.0.1`, not `localhost`: signing in sends the browser back to
+`127.0.0.1`.
+
+### Reserved scopes
+
+`zena pkg scope create` refuses the names the App View reserves, `zena`
+among them; the operator creates those with `create-scope`, which acts on a
+server's store. The demo's store is in its own process, so the demo creates
+them itself, as the operator, from `DEMO_SCOPES`: scope and owner pairs,
+the owner by DID or handle, separated by spaces.
+
+```sh
+DEMO_SCOPES="zena=alice.bsky.social" npm run demo -w @zena-lang/registry
+```
+
+The owner can then add packages to the scope, and people to it, as with
+any other.
 
 The demo builds its App View from the environment as `main.zena` does,
 apart from the PLC directories and handle records it provides, so the
