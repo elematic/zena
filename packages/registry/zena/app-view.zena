@@ -24,7 +24,7 @@
  */
 
 import {Future} from 'zena:async';
-import {join} from 'zena:core';
+import {Option, Some, join, none, some} from 'zena:core';
 import {HashMap, HashSet} from 'zena:collections';
 import {sha256} from 'zena:crypto';
 import {base64Url, hex} from 'zena:encoding';
@@ -116,6 +116,67 @@ export class AppViewError extends Error {
 }
 
 /**
+ * A limit on what an account may take, which the operator can raise for
+ * one account (`AppView.setLimit`) above the App View's default
+ * (`AppViewConfig`).
+ */
+export enum Limit {
+  /** The bytes of one release's artifacts, set on a package or its organization. */
+  ReleaseBytes,
+  /** The bytes of a package's releases, held ones included, set on a package or its organization. */
+  PackageBytes,
+  /** The bytes of the releases of a scope's packages, set on its organization. */
+  ScopeBytes
+}
+
+/** Every limit, in the order `Limit` declares them. */
+export let LIMITS: Array<Limit> = [Limit.ReleaseBytes, Limit.PackageBytes, Limit.ScopeBytes];
+
+/** The name of `limit`, as the operator and the store write it. */
+export function limitName(limit: Limit): String {
+  return match (limit) {
+    case Limit.ReleaseBytes: 'releaseBytes'
+    case Limit.PackageBytes: 'packageBytes'
+    case Limit.ScopeBytes: 'scopeBytes'
+  };
+}
+
+/** The limit named `name`, or none. */
+export function limitNamed(name: String): Option<Limit> {
+  for (let limit in LIMITS) {
+    if (limitName(limit) == name) {
+      return some(limit);
+    }
+  }
+  return none;
+}
+
+/** The limits the operator has set on one account, in place of the App View's defaults. */
+export final class Limits {
+  #values = new HashMap<String, i64>();
+
+  /** The value set for `limit`, or none. */
+  get(limit: Limit): Option<i64> {
+    return this.#values.getOption(limitName(limit));
+  }
+
+  /** The value set for `limit`, or `fallback` when none is. */
+  valueOr(limit: Limit, fallback: i64): i64 {
+    return this.#values.getOr(limitName(limit), fallback);
+  }
+
+  /** Sets `limit` to `value`, or takes its setting away for none. */
+  set(limit: Limit, value: Option<i64>): void {
+    let name = limitName(limit);
+    if (let Some {value: set} = value) {
+      this.#values[name] = set;
+    } else {
+      this.#values.delete(name);
+    }
+  }
+}
+
+/**
  * What the App View keeps beside the accounts' repositories: the accounts it
  * holds, scope names, and private entries. Several servers may share it,
  * so a name is taken with one call that fails when someone has it
@@ -199,6 +260,10 @@ export interface AppViewStore {
   setAutomationToken(did: String, hash: String): Future<void>;
   /** The automation account whose token's SHA-256, in hex, is `hash`, or null. */
   automationAccountOf(hash: String): Future<String | null>;
+  /** The limits the operator has set on the account `did`. */
+  limits(did: String): Future<Limits>;
+  /** Sets `limit` on the account `did` to `value`, or takes its setting away for none. */
+  setLimit(did: String, limit: Limit, value: Option<i64>): Future<void>;
 }
 
 /**
@@ -272,6 +337,8 @@ export final class MemoryAppViewStore implements AppViewStore {
   /** Each automation account's token hash, and whose each hash is. */
   #tokenHashes = new HashMap<String, String>();
   #tokenAccounts = new HashMap<String, String>();
+  /** The limits the operator has set, by account. */
+  #limits = new HashMap<String, Limits>();
 
   async putAccount(account: AppViewAccount): Future<void> {
     this.#accounts[account.did] = account;
@@ -497,6 +564,24 @@ export final class MemoryAppViewStore implements AppViewStore {
     }
     return null;
   }
+
+  async limits(did: String): Future<Limits> {
+    // A copy, which the caller may change without changing the store.
+    let copy = new Limits();
+    if (let (true, kept) = this.#limits.get(did)) {
+      for (let limit in LIMITS) {
+        copy.set(limit, kept.get(limit));
+      }
+    }
+    return copy;
+  }
+
+  async setLimit(did: String, limit: Limit, value: Option<i64>): Future<void> {
+    if (!this.#limits.has(did)) {
+      this.#limits[did] = new Limits();
+    }
+    this.#limits[did].set(limit, value);
+  }
 }
 
 /** An account `#prepareAccount` made ready, with the DID it will have. */
@@ -553,8 +638,15 @@ export final class AppViewConfig {
    * signs. The server knows only its public key.
    */
   var offlineRotationKey: PublicKey | null = null;
-  /** The largest blob `uploadArtifact` stores. */
-  var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
+  /**
+   * The bytes one release's artifacts may take (`Limit.ReleaseBytes`):
+   * a source archive, since the App View stores no other kind yet.
+   */
+  var releaseBytes: i64 = (4 * 1024 * 1024) as i64;
+  /** The bytes a package's releases may take, held ones included (`Limit.PackageBytes`). */
+  var packageBytes: i64 = (64 * 1024 * 1024) as i64;
+  /** The bytes the releases of a scope's packages may take (`Limit.ScopeBytes`). */
+  var scopeBytes: i64 = (256 * 1024 * 1024) as i64;
   /** Scope names no one may take. */
   reservedScopes = new HashSet<String>();
   /**
@@ -732,6 +824,8 @@ export final class AppView {
     let versions = new GrowableArray<String>();
     for (let record in await this.#pds.listRecords(did, RELEASE_TYPE)) {
       versions.push(record.rkey);
+      // The App View checked the blobs' sizes when it took the release.
+      summary.bytes += Release.fromValue(record.value).blobBytes();
     }
     summary.releases = versions.length;
     var latest: Version | null = null;
@@ -1004,10 +1098,11 @@ export final class AppView {
 
   /**
    * `uploadArtifact`: stores `bytes` as a blob of `pkg`, for a release, when
-   * `contentType` is one of an artifact's (`ARTIFACT_MIME_TYPES`).
+   * `contentType` is one of an artifact's (`ARTIFACT_MIME_TYPES`) and the
+   * package has room for it (`#checkStorage`).
    */
-  async uploadArtifact(caller: String, pkg: String, contentType: String, bytes: FixedArray<u8>)
-      : Future<BlobRef> {
+  async uploadArtifact(caller: String, pkg: String, contentType: String, bytes: FixedArray<u8>,
+      nowMicros: i64): Future<BlobRef> {
     let account = await this.#maintainedPackage(caller, pkg);
     // Only what an artifact can be: a blob the App View serves as a page or a
     // script would run on its origin.
@@ -1016,9 +1111,12 @@ export final class AppView {
       throw new AppViewError(400, 'InvalidRequest', `'${contentType}' is not an artifact's type: ${join(ARTIFACT_MIME_TYPES, ', ')}`);
     }
     let mimeType = type;
-    if ((bytes.length as i64) > this.config.maxBlobSize) {
-      throw new AppViewError(400, 'TooLarge', `the blob is larger than ${this.config.maxBlobSize} bytes`);
+    let limits = await this.#storageLimits(account);
+    let size = bytes.length as i64;
+    if (size > limits.releaseBytes) {
+      throw new AppViewError(400, 'TooLarge', `the blob is larger than a release of ${pkg} may be, ${limits.releaseBytes} bytes`);
     }
+    await this.#checkStorage(account, limits, size, null, nowMicros);
     try {
       return await this.#pds.uploadBlob(account.did, mimeType, bytes);
     } catch (e) {
@@ -1041,16 +1139,34 @@ export final class AppView {
     let account = await this.#maintainedPackage(caller, pkg);
     let release = readRecord(() => Release.fromValue(releaseValue));
     for (let artifact in release.artifacts) {
-      for (let blob in blobsOf(artifact.blob, artifact.parts, artifact.wit)) {
-        if ((await this.#pds.getBlob(account.did, blob.cid)) == null) {
+      // A package has no way to use a Wasm module or other assets yet, so
+      // the App View stores its source alone (#669).
+      if (artifact.kind != SOURCE) {
+        throw new AppViewError(400, 'InvalidRelease', `the registry stores only source artifacts, not '${artifact.kind}'`);
+      }
+      for (let blob in artifact.blobs()) {
+        let stored = await this.#pds.getBlob(account.did, blob.cid);
+        if (stored == null) {
           throw new AppViewError(400, 'BlobNotFound', `${blob.cid.toString()} was not uploaded to ${pkg}`);
         }
+        // The storage counted is the sizes the records give.
+        if ((stored.bytes.length as i64) != blob.size) {
+          throw new AppViewError(400, 'InvalidRelease', `${blob.cid.toString()} holds ${stored.bytes.length} bytes, not ${blob.size}`);
+        }
       }
+    }
+    let limits = await this.#storageLimits(account);
+    let size = release.blobBytes();
+    if (size > limits.releaseBytes) {
+      throw new AppViewError(400, 'TooLarge', `release ${release.version.toString()} takes ${size} bytes, more than a release of ${pkg} may, ${limits.releaseBytes}`);
     }
     let version = release.version.toString();
     if ((await this.#current(account.did, RELEASE_TYPE, version)) != null) {
       throw new AppViewError(400, 'VersionExists', `${pkg} has a release ${version}`);
     }
+    // A release held at this version is left out: either this publish
+    // repeats it, or the version is taken and the publish fails below.
+    await this.#checkStorage(account, limits, size, version, nowMicros);
     // The App View checks the release as every fetch will, against the archive
     // it holds and the name its own profile record gives, and trusts
     // nothing the client checked.
@@ -1190,6 +1306,91 @@ export final class AppView {
     }
     await this.#store.dropRelease(pkg, release.version);
     return true;
+  }
+
+  /**
+   * The storage limits of the package `account`. For each, the operator's
+   * setting on the package wins, then the one on its organization, then
+   * the App View's default; the scope's is set on the organization alone.
+   */
+  async #storageLimits(account: AppViewAccount): Future<StorageLimits> {
+    let own = await this.#store.limits(account.did);
+    let org = await this.#store.scopeOwner(account.scope);
+    let scoped = if (org == null) new Limits() else await this.#store.limits(org);
+    let config = this.config;
+    return new StorageLimits(
+        own.valueOr(Limit.ReleaseBytes, scoped.valueOr(Limit.ReleaseBytes, config.releaseBytes)),
+        own.valueOr(Limit.PackageBytes, scoped.valueOr(Limit.PackageBytes, config.packageBytes)),
+        scoped.valueOr(Limit.ScopeBytes, config.scopeBytes));
+  }
+
+  /**
+   * Refuses `adding` more bytes for the package `account` when its
+   * releases, published and held, or its scope's would then take more
+   * than `limits` allow. A scope counts the releases its packages have
+   * published and the ones this package holds: reading every package's
+   * held releases would take a read for each, and a held release is
+   * dropped after `PENDING_MICROS`. The release held at `version` is left
+   * out.
+   */
+  async #checkStorage(account: AppViewAccount, limits: StorageLimits, adding: i64, version: String | null,
+      nowMicros: i64): Future<void> {
+    var held: i64 = 0;
+    for (let release in await this.#store.heldReleases(account.did)) {
+      if (release.version != version && !(await this.#expired(account.did, release, nowMicros))) {
+        held += Release.fromValue(decodeCbor(release.record)).blobBytes();
+      }
+    }
+    var published: i64 = 0;
+    var scope: i64 = 0;
+    for (let summary in await this.#store.summaries(account.scope)) {
+      scope += summary.bytes;
+      if (summary.did == account.did) {
+        published = summary.bytes;
+      }
+    }
+    if (published + held + adding > limits.packageBytes) {
+      throw new AppViewError(400, 'QuotaExceeded',
+          `${account.handle} would take ${published + held + adding} bytes, more than its ${limits.packageBytes}`);
+    }
+    if (scope + held + adding > limits.scopeBytes) {
+      throw new AppViewError(400, 'QuotaExceeded',
+          `the scope ${account.scope} would take ${scope + held + adding} bytes, more than its ${limits.scopeBytes}`);
+    }
+  }
+
+  /**
+   * The bytes a release of `pkg` may take, which bounds an upload's body
+   * before the App View reads it: the default when it holds no such
+   * package, which `uploadArtifact` then refuses.
+   */
+  async releaseBytesOf(pkg: String): Future<i64> {
+    let account = await this.#store.account(pkg);
+    if (account == null || account.kind != AccountKind.Package) {
+      return this.config.releaseBytes;
+    }
+    return (await this.#storageLimits(account)).releaseBytes;
+  }
+
+  /**
+   * Sets `limit` on `did`, a package or an organization, to `value`, or
+   * takes the setting away for none: the operator raising a limit for one
+   * package, or for a scope and its packages.
+   */
+  async setLimit(did: String, limit: Limit, value: Option<i64>): Future<void> {
+    let account = await this.#store.account(did);
+    let onPackage = limit != Limit.ScopeBytes;
+    if (account == null
+        || (account.kind != AccountKind.Organization && !(onPackage && account.kind == AccountKind.Package))) {
+      let what = if (onPackage) 'a package or an organization' else 'an organization';
+      throw new AppViewError(400, 'InvalidRequest', `${limitName(limit)} is set on ${what} the App View holds, which ${did} is not`);
+    }
+    if (let Some {value: set} = value) {
+      if (set < 0) {
+        throw new AppViewError(400, 'InvalidRequest', `${limitName(limit)} cannot be ${set}`);
+      }
+    }
+    await this.#store.setLimit(did, limit, value);
   }
 
   /**
@@ -2639,6 +2840,8 @@ export final class PackageSummary {
   var latest: String | null = null;
   /** How many releases it has, retracted ones included. */
   var releases: i32 = 0;
+  /** The bytes the blobs of those releases take (`Release.blobBytes`). */
+  var bytes: i64 = 0;
 
   new(this.did, this.handle, this.scope, this.name);
 
@@ -2646,6 +2849,15 @@ export final class PackageSummary {
   sortKey(): String {
     return `${this.scope} ${this.name}`;
   }
+}
+
+/** The storage limits that apply to one package (`AppView.#storageLimits`). */
+final class StorageLimits {
+  releaseBytes: i64;
+  packageBytes: i64;
+  scopeBytes: i64;
+
+  new(this.releaseBytes, this.packageBytes, this.scopeBytes);
 }
 
 /** A package's summary, and the revision of the commit it was made from. */
@@ -2809,21 +3021,4 @@ function readRecord<T>(read: () => T): T {
     }
     throw e;
   }
-}
-
-function blobsOf(blob: BlobRef | null, parts: FixedArray<BlobRef> | null, wit: BlobRef | null)
-    : GrowableArray<BlobRef> {
-  let all = new GrowableArray<BlobRef>();
-  if (blob != null) {
-    all.push(blob);
-  }
-  if (parts != null) {
-    for (let part in parts) {
-      all.push(part);
-    }
-  }
-  if (wit != null) {
-    all.push(wit);
-  }
-  return all;
 }

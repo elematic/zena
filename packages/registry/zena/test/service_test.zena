@@ -143,7 +143,6 @@ export let tests = suite('registry:service', () => {
       ('APP_VIEW_ROTATION_KEY', KEY),
       ('APP_VIEW_RESERVED_SCOPES', 'std, core,,'),
       ('APP_VIEW_ADMIN_DIDS', 'did:plc:aaaa, did:web:ops.example.dev,did:plc:cccc  did:plc:dddd'),
-      ('APP_VIEW_MAX_BLOB_BYTES', '1000'),
       ('PDS_CLOCK_ID', '7'),
       ('PDS_PLC_DIRECTORY', 'http://plc.test'),
       ('APP_VIEW_PLC_DIRECTORY', 'http://app-view-plc.test'),
@@ -303,12 +302,10 @@ export let tests = suite('registry:service', () => {
       ('PDS_CLOCK_ID', '1024'),
       ('APP_VIEW_DOMAIN', 'pkg.test'),
       ('APP_VIEW_ROTATION_KEY', 'abcd'),
-      ('APP_VIEW_MAX_BLOB_BYTES', '-5'),
       ('PDS_JWT_SECRET', 'not hex'),
     ]);
     for (let expected in ['PORT is not a number', 'PDS_STORAGE is memory or firestore', 'PDS_CLOCK_ID is 0 to 1023',
-        'APP_VIEW_ROTATION_KEY is not 32 bytes of hex', 'APP_VIEW_MAX_BLOB_BYTES must be positive',
-        'PDS_JWT_SECRET is not 32 bytes of hex']) {
+        'APP_VIEW_ROTATION_KEY is not 32 bytes of hex', 'PDS_JWT_SECRET is not 32 bytes of hex']) {
       isTrue(values.contains(expected), `${expected} in: ${values}`);
     }
 
@@ -350,7 +347,10 @@ export let tests = suite('registry:service', () => {
     equal(described['did'] as String, 'did:web:pkg.test');
     equal(described['domain'] as String, 'pkg.test');
     isTrue(contains(described['reservedScopes'] as JsonArray, 'std'), 'its reserved scopes');
-    equal(((described['limits'] as JsonObject)['maxBlobSize'] as Box<f64>).value as i64, appView.config.maxBlobSize);
+    let limits = described['limits'] as JsonObject;
+    equal((limits['releaseBytes'] as Box<f64>).value as i64, appView.config.releaseBytes);
+    equal((limits['packageBytes'] as Box<f64>).value as i64, appView.config.packageBytes);
+    equal((limits['scopeBytes'] as Box<f64>).value as i64, appView.config.scopeBytes);
     isTrue(!(described['scopeApproval'] as Box<boolean>).value, 'no approval');
     isTrue(contains(described['methods'] as JsonArray, 'dev.zena-lang.registry.publish'), 'publish');
     isTrue(contains(described['methods'] as JsonArray, 'dev.zena-lang.registry.createAutomationAccount'),

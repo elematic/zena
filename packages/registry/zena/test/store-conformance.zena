@@ -5,6 +5,7 @@
  * stores have their own, in `packages/pds/zena/test/storage-conformance.zena`.
  */
 
+import {None, none, some} from 'zena:core';
 import {test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
 import {hex} from 'zena:encoding';
@@ -13,7 +14,7 @@ import {KeyType, curveOf, publicKeyFor} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {MemberEntry, OWNER} from 'package-manager:records';
 import {AccountKind} from 'pds:storage';
-import {AppViewAccount, AppViewStore, PackageSummary, PendingChange, PendingRelease} from 'registry:app-view';
+import {AppViewAccount, AppViewStore, Limit, PackageSummary, PendingChange, PendingRelease} from 'registry:app-view';
 import {PlcLog} from 'registry:plc-directory';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
@@ -72,6 +73,7 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     router.license = 'MIT';
     router.latest = '1.0.0';
     router.releases = 2;
+    router.bytes = 5000000000 as i64;
     await store.putSummary(router, '3l3qo2vutsw2b');
     await store.putSummary(new PackageSummary(BOB, 'json.other.pkg.test', 'other', 'json'), '3l3qo2vutsw2a');
     let all = await store.summaries(null);
@@ -86,11 +88,13 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     equal(read.license as String, 'MIT');
     equal(read.latest as String, '1.0.0');
     equal(read.releases, 2);
+    equal(read.bytes, 5000000000 as i64);
     let json = (await store.summaries('other'))[0];
     isNull(json.description);
     isNull(json.license);
     isNull(json.latest);
     equal(json.releases, 0);
+    equal(json.bytes, 0 as i64);
 
     // A summary of an earlier commit does not replace one of a later.
     let older = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
@@ -160,6 +164,24 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     isNull(await store.automationAccountOf('aa'));
     equal((await store.automationAccountOf('cc')) as String, ALICE);
     equal((await store.automationAccountOf('bb')) as String, BOB);
+  });
+
+  test('keeps the limits the operator sets on each account, until they are taken away', async (ctx) => {
+    let store = make();
+    isTrue((await store.limits(ALICE)).get(Limit.PackageBytes) is None);
+    await store.setLimit(ALICE, Limit.PackageBytes, some(5000000000 as i64));
+    await store.setLimit(ALICE, Limit.ReleaseBytes, some(1024 as i64));
+    await store.setLimit(BOB, Limit.ScopeBytes, some(0 as i64));
+    let alice = await store.limits(ALICE);
+    equal(alice.valueOr(Limit.PackageBytes, 0 as i64), 5000000000 as i64);
+    equal(alice.valueOr(Limit.ReleaseBytes, 0 as i64), 1024 as i64);
+    isTrue(alice.get(Limit.ScopeBytes) is None);
+    equal((await store.limits(BOB)).valueOr(Limit.ScopeBytes, 7 as i64), 0 as i64);
+    // Taking one away leaves the others.
+    await store.setLimit(ALICE, Limit.PackageBytes, none);
+    let after = await store.limits(ALICE);
+    isTrue(after.get(Limit.PackageBytes) is None);
+    equal(after.valueOr(Limit.ReleaseBytes, 0 as i64), 1024 as i64);
   });
 
   test('keeps member entries', async (ctx) => {

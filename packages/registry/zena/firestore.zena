@@ -12,15 +12,19 @@
  *   `names/{name}.{scope}`: `did`, `scope` and `name`;
  *   `summaries/{did}`: a package's summary, `handle`, `scope`, `name`,
  *   `description`, `license` and `latest` (each absent for none),
- *   `releases`, and `rev`, the revision of the commit it was made from;
+ *   `releases`, `bytes`, the bytes of their blobs, and `rev`, the revision
+ *   of the commit it was made from;
  *   `mentions/{subject}/by/{account}`: `account`, for each account whose
  *   records or entries mention a person's DID or a team, `<org DID> <team>`;
  *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR;
- *   and `automationTokens/{did}`: `hash`, the SHA-256 of the token an
- *   automation account calls with, in hex.
+ *   `automationTokens/{did}`: `hash`, the SHA-256 of the token an
+ *   automation account calls with, in hex; and `limits/{did}`: the limits
+ *   the operator set on an account, each an integer named for its limit
+ *   (`limitName`).
  */
 
 import {Future} from 'zena:async';
+import {Option, Some, some} from 'zena:core';
 import {parseJson, stringify} from 'zena:json';
 import {
   CollectionReference, Fields, Firestore, Operator, DocumentReference, DocumentSnapshot, bytesValue, stringValue
@@ -33,7 +37,10 @@ import {MemberEntry} from 'package-manager:records';
 import {
   BATCH_WRITES, bytesAt, cidAt, claim, kindName, kindNamed, recordId, release, stringAt, tenantRoot
 } from 'pds:firestore';
-import {ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, PackageSummary, PendingChange, PendingRelease} from './app-view.zena';
+import {
+  ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, LIMITS, Limit, Limits, PackageSummary, PendingChange,
+  PendingRelease, limitName
+} from './app-view.zena';
 import {PlcLog} from './plc-directory.zena';
 
 /** The App View's names and entries in Firestore, for `tenant`. */
@@ -127,6 +134,7 @@ export final class FirestoreAppViewStore implements AppViewStore {
         .string('scope', summary.scope)
         .string('name', summary.name)
         .integer('releases', summary.releases as i64)
+        .integer('bytes', summary.bytes)
         .string('rev', rev);
       if (summary.description != null) {
         fields.string('description', summary.description as String);
@@ -182,6 +190,9 @@ export final class FirestoreAppViewStore implements AppViewStore {
       summary.latest = stringAt(snapshot, 'latest');
       if (let (true, releases) = snapshot.getInteger('releases')) {
         summary.releases = releases as i32;
+      }
+      if (let (true, bytes) = snapshot.getInteger('bytes')) {
+        summary.bytes = bytes;
       }
       out.push(summary);
     }
@@ -292,6 +303,37 @@ export final class FirestoreAppViewStore implements AppViewStore {
     }
     return null;
   }
+
+  async limits(did: String): Future<Limits> {
+    return limitsFrom(await this.#root.collection('limits').doc(did).get());
+  }
+
+  async setLimit(did: String, limit: Limit, value: Option<i64>): Future<void> {
+    let ref = this.#root.collection('limits').doc(did);
+    await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
+      let limits = limitsFrom(await tx.get(ref));
+      limits.set(limit, value);
+      let fields = new Fields();
+      for (let each in LIMITS) {
+        if (let Some {value: set} = limits.get(each)) {
+          fields.integer(limitName(each), set);
+        }
+      }
+      tx.set(ref, fields);
+      return true;
+    });
+  }
+}
+
+/** The limits a `limits/{did}` document sets, each a field named for its limit. */
+function limitsFrom(snapshot: DocumentSnapshot): Limits {
+  let limits = new Limits();
+  for (let limit in LIMITS) {
+    if (let (true, value) = snapshot.getInteger(limitName(limit))) {
+      limits.set(limit, some(value));
+    }
+  }
+  return limits;
 }
 
 /** A staging PLC directory's operations in Firestore, for `tenant`. */

@@ -2187,9 +2187,14 @@ throttled. The App View therefore limits who creates accounts and how many:
   Accounts on permissive PDSes cost little to create, so the App View also
   considers how old the maintainer's account is, which PDS holds it, and
   the labels that labelers the operator follows put on it.
-- **Storage.** Each artifact, each release and each scope has a size
-  limit, and a release can store only the artifact kinds the release
-  schema defines. Without limits an App View is free file hosting.
+- **Storage.** Each release, each package and each scope has a size
+  limit, and a release can store only the artifact kinds the App View
+  takes. Without limits an App View is free file hosting. The Zena App
+  View allows 4 MiB a release, 64 MiB a package, counting the releases
+  waiting for approval, and 256 MiB a scope, and takes only source
+  archives: nothing in a package can use a Wasm module or another asset
+  yet. The operator can raise each limit for a package, or for a scope
+  and its packages.
 
 ### Reports and takedowns
 

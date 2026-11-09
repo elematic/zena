@@ -38,10 +38,18 @@
  * it creates a scope owned by `<did>` alone, as the App View's operator, and
  * exits. Unlike `zena pkg scope create`, it may take a name the App View reserves
  * (package-manager.md, "Scopes").
+ *
+ * `set-limit <account> <limit> <bytes>|default` sets one of the App View's
+ * limits (`limitName`, such as `packageBytes`) on a package or on a
+ * scope's organization, by DID or handle, in place of the App View's
+ * default, or takes the setting away with `default`, and exits. A
+ * setting on an organization applies to its scope's packages too, unless
+ * a package has one of its own.
  */
 
 import {Future} from 'zena:async';
 import {exit, getArguments, getEnv, readStdin} from 'zena:cli';
+import {Option, Some, join, none, parseI64, some} from 'zena:core';
 import {hex} from 'zena:encoding';
 import {stringify} from 'zena:json';
 import {randomBytes} from 'zena:random';
@@ -50,7 +58,7 @@ import {KeyType, PublicKey, formatDidKey} from 'atproto:didkey';
 import {PlcError, fetchOperations, submitPlcOperation, undoOperation} from 'atproto:plc';
 import {KmsSigner} from 'pds:signer';
 import {SigningKey} from 'pds:storage';
-import {AppViewError} from './app-view.zena';
+import {AppViewError, LIMITS, Limit, limitName, limitNamed} from './app-view.zena';
 import {nowMicros} from 'pds:xrpc/common';
 import {ConfigError} from 'pds:service';
 import {ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
@@ -96,6 +104,10 @@ export async function main(): Future<void> {
   }
   if (hasArgument('create-scope')) {
     await createScope(config);
+    return;
+  }
+  if (hasArgument('set-limit')) {
+    await setLimit(config);
     return;
   }
   let running = await serve(config);
@@ -176,6 +188,64 @@ async function createScope(config: ServiceConfig): Future<void> {
       return;
     }
     throw e;
+  }
+  exit(0);
+}
+
+/** Sets the limit `set-limit` names on an account, as the operator, and exits. */
+async function setLimit(config: ServiceConfig): Future<void> {
+  let names = new GrowableArray<String>();
+  for (let limit in LIMITS) {
+    names.push(limitName(limit));
+  }
+  let usage = `usage: set-limit <DID or handle> <${join(names, '|')}> <bytes>|default`;
+  let args = argumentsAfter('set-limit') as Array<String>;
+  if (args.length != 3) {
+    console.error(usage);
+    exit(2);
+    return;
+  }
+  var value: Option<i64> = none;
+  if (args[2] != 'default') {
+    if (let (true, bytes) = parseI64(args[2])) {
+      value = some(bytes);
+    } else {
+      console.error(usage);
+      exit(2);
+      return;
+    }
+  }
+  if (let Some {value: limit} = limitNamed(args[1])) {
+    await setLimitOn(config, args[0], limit, value);
+    return;
+  }
+  console.error(`set-limit: no limit is named '${args[1]}'; ${usage}`);
+  exit(2);
+}
+
+/** Sets `limit` on `account`, a DID or a handle, to `value`, and exits. */
+async function setLimitOn(config: ServiceConfig, account: String, limit: Limit, value: Option<i64>): Future<void> {
+  let appView = (await buildService(config, '')).appView;
+  let did = if (account.startsWith('did:')) account else await appView.resolveHandle(account);
+  if (did == null) {
+    console.error(`set-limit: ${account} does not resolve to a DID`);
+    exit(1);
+    return;
+  }
+  try {
+    await appView.setLimit(did, limit, value);
+  } catch (e) {
+    if (e is AppViewError) {
+      console.error(`set-limit: ${e.message}`);
+      exit(1);
+      return;
+    }
+    throw e;
+  }
+  if (let Some {value: bytes} = value) {
+    console.log(`set ${limitName(limit)} on ${account} (${did}) to ${bytes} bytes`);
+  } else {
+    console.log(`took the setting of ${limitName(limit)} on ${account} (${did}) away`);
   }
   exit(0);
 }
