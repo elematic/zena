@@ -42,11 +42,14 @@ export let tests = suite('timers', () => {
     try {
       await write(scratch.at('app/zena-package.json'), '{"name": "app"}\n');
       await write(scratch.at('app/main.zena'), PROGRAM);
+      let zena = zenaIn(scratch, 'app');
+      let built = await zena.run(['build', 'main.zena', '-o', 'main.wasm']);
+      isTrue(built.succeeded(), described(built));
       let start = monotonic();
-      let result = await zenaIn(scratch, 'app').run(['run', 'main.zena']);
+      let result = await zena.run(['run', 'main.wasm']);
       let elapsed = monotonic() - start;
       isTrue(result.succeeded() && result.stdout.contains('got 7'), described(result));
-      // Compiling takes a few seconds; waiting out the cancelled timer, 20.
+      // Running takes well under a second; waiting out the cancelled timer, 20.
       isTrue((elapsed - milliseconds(10000)).isNegative(),
           `exited after ${(elapsed as i64) / (1000000 as i64)} ms, waiting for a cancelled timer`);
     } finally {
