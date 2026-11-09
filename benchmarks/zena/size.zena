@@ -5,8 +5,7 @@
  * (code, type, data, import, export, custom) for each compiled workload.
  */
 
-import { getArguments, exit } from 'zena:cli';
-import { existsSync, readFileBytesSync, writeFileSync } from 'zena:fs';
+import { exists, readFileBytes, writeFile } from 'zena:fs';
 import { run } from 'zena:process';
 import { StringBuilder } from 'zena:core';
 
@@ -196,12 +195,12 @@ function trim(s: String) {
   return s.sliceBytes(start, end);
 }
 
-function getGzipSize(path: String): i32 {
+async function getGzipSize(path: String): Future<i32> {
   let argv = new GrowableArray<String>();
   argv.push('sh');
   argv.push('-c');
   argv.push(`gzip -9 -c "${path}" | wc -c`);
-  let res = run(argv);
+  let res = await run(argv);
   if (res.exitCode != 0) {
     return 0;
   }
@@ -246,7 +245,7 @@ function formatDelta(bytes: i32, baseline: i32) {
   return `${sign}${i32ToString(pctI32)}%`;
 }
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   console.log('=== WebAssembly Binary Size Analysis ===\n');
 
   let measurements = new GrowableArray<VariantMeasurement>();
@@ -263,10 +262,10 @@ export function main(): i32 {
   for (let workload in workloads) {
     for (let variant in variantNames) {
       let path = `benchmarks/out/${workload}/${variant}.wasm`;
-      if (existsSync(path)) {
-        let bytes = readFileBytesSync(path);
+      if (await exists(path)) {
+        let bytes = await readFileBytes(path);
         let info = parseWasmSections(bytes as ByteArray);
-        let gzip = getGzipSize(path);
+        let gzip = await getGzipSize(path);
         measurements.push(new VariantMeasurement(workload, variant, path, bytes.length, gzip, info));
       }
     }
@@ -330,7 +329,7 @@ export function main(): i32 {
   }
 
   let reportPath = 'benchmarks/out/size-report.md';
-  writeFileSync(reportPath, md.toString());
+  await writeFile(reportPath, md.toString());
   console.log(`Markdown report written to ${reportPath}`);
 
   return 0;

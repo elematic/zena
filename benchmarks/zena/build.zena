@@ -5,8 +5,8 @@
  * Zena, AssemblyScript, and Rust into `benchmarks/out/<workload>/<variant>.wasm`.
  */
 
-import { getArguments, exit } from 'zena:cli';
-import { existsSync, mkdirSync } from 'zena:fs';
+import { getArguments } from 'zena:cli';
+import { exists, mkdir } from 'zena:fs';
 import { run } from 'zena:process';
 
 let workloads = [
@@ -33,14 +33,14 @@ let workloads = [
   'iface-test-chain',
 ];
 
-function ensureDir(path: String) {
-  if (!existsSync(path)) {
-    mkdirSync(path);
+async function ensureDir(path: String) {
+  if (!await exists(path)) {
+    await mkdir(path);
   }
 }
 
-function execCommand(cmd: GrowableArray<String>, desc: String): boolean {
-  let res = run(cmd);
+async function execCommand(cmd: GrowableArray<String>, desc: String): Future<boolean> {
+  let res = await run(cmd);
   if (res.exitCode != 0) {
     console.error(`❌ [FAILED] ${desc}`);
     if (res.stderr.length > 0) {
@@ -55,10 +55,10 @@ function execCommand(cmd: GrowableArray<String>, desc: String): boolean {
   return true;
 }
 
-function buildZena(workload: String): boolean {
+async function buildZena(workload: String): Future<boolean> {
   let src = `benchmarks/workloads/${workload}/main.zena`;
   let out = `benchmarks/out/${workload}/zena.wasm`;
-  if (!existsSync(src)) {
+  if (!await exists(src)) {
     return true;
   }
   let argv = new GrowableArray<String>();
@@ -73,13 +73,13 @@ function buildZena(workload: String): boolean {
   argv.push(src);
   argv.push('-o');
   argv.push(out);
-  return execCommand(argv, `${workload}: Zena -> ${out}`);
+  return await execCommand(argv, `${workload}: Zena -> ${out}`);
 }
 
-function buildAscSize(workload: String): boolean {
+async function buildAscSize(workload: String): Future<boolean> {
   let src = `benchmarks/workloads/${workload}/main.as.ts`;
   let out = `benchmarks/out/${workload}/asc-size.wasm`;
-  if (!existsSync(src)) {
+  if (!await exists(src)) {
     return true;
   }
   let argv = new GrowableArray<String>();
@@ -91,13 +91,13 @@ function buildAscSize(workload: String): boolean {
   argv.push('--runtime');
   argv.push('stub');
   argv.push('--converge');
-  return execCommand(argv, `${workload}: AssemblyScript (size) -> ${out}`);
+  return await execCommand(argv, `${workload}: AssemblyScript (size) -> ${out}`);
 }
 
-function buildAscSpeed(workload: String): boolean {
+async function buildAscSpeed(workload: String): Future<boolean> {
   let src = `benchmarks/workloads/${workload}/main.as.ts`;
   let out = `benchmarks/out/${workload}/asc-speed.wasm`;
-  if (!existsSync(src)) {
+  if (!await exists(src)) {
     return true;
   }
   let argv = new GrowableArray<String>();
@@ -108,16 +108,16 @@ function buildAscSpeed(workload: String): boolean {
   argv.push('-O3');
   argv.push('--runtime');
   argv.push('incremental');
-  return execCommand(argv, `${workload}: AssemblyScript (speed) -> ${out}`);
+  return await execCommand(argv, `${workload}: AssemblyScript (speed) -> ${out}`);
 }
 
-function buildRustNostd(workload: String): boolean {
+async function buildRustNostd(workload: String): Future<boolean> {
   var src = `benchmarks/workloads/${workload}/main_nostd.rs`;
-  if (!existsSync(src)) {
+  if (!await exists(src)) {
     src = `benchmarks/workloads/${workload}/main.rs`;
   }
   let out = `benchmarks/out/${workload}/rust-nostd.wasm`;
-  if (!existsSync(src)) {
+  if (!await exists(src)) {
     return true;
   }
   let argv = new GrowableArray<String>();
@@ -139,16 +139,16 @@ function buildRustNostd(workload: String): boolean {
   argv.push(src);
   argv.push('-o');
   argv.push(out);
-  return execCommand(argv, `${workload}: Rust (nostd) -> ${out}`);
+  return await execCommand(argv, `${workload}: Rust (nostd) -> ${out}`);
 }
 
-function buildRustStd(workload: String): boolean {
+async function buildRustStd(workload: String): Future<boolean> {
   var src = `benchmarks/workloads/${workload}/main_std.rs`;
-  if (!existsSync(src)) {
+  if (!await exists(src)) {
     src = `benchmarks/workloads/${workload}/main.rs`;
   }
   let out = `benchmarks/out/${workload}/rust-std.wasm`;
-  if (!existsSync(src)) {
+  if (!await exists(src)) {
     return true;
   }
   let argv = new GrowableArray<String>();
@@ -170,13 +170,13 @@ function buildRustStd(workload: String): boolean {
   argv.push(src);
   argv.push('-o');
   argv.push(out);
-  return execCommand(argv, `${workload}: Rust (std) -> ${out}`);
+  return await execCommand(argv, `${workload}: Rust (std) -> ${out}`);
 }
 
-function buildWatMilestone(workload: String): boolean {
+async function buildWatMilestone(workload: String): Future<boolean> {
   let src = `benchmarks/workloads/${workload}/milestones/${workload}.wat`;
   let out = `benchmarks/out/${workload}/milestone.wasm`;
-  if (!existsSync(src)) {
+  if (!await exists(src)) {
     return true;
   }
   let argv = new GrowableArray<String>();
@@ -185,13 +185,13 @@ function buildWatMilestone(workload: String): boolean {
   argv.push(src);
   argv.push('-o');
   argv.push(out);
-  return execCommand(argv, `${workload}: WAT milestone -> ${out}`);
+  return await execCommand(argv, `${workload}: WAT milestone -> ${out}`);
 }
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   console.log('=== Building Cross-Language Wasm Benchmarks ===\n');
 
-  ensureDir('benchmarks/out');
+  await ensureDir('benchmarks/out');
 
   let args = getArguments();
   let targetWorkloads = new GrowableArray<String>();
@@ -211,14 +211,14 @@ export function main(): i32 {
 
   for (let workload in targetWorkloads) {
     console.log(`Building workload [${workload}]...`);
-    ensureDir(`benchmarks/out/${workload}`);
+    await ensureDir(`benchmarks/out/${workload}`);
 
-    if (!buildZena(workload)) { failures += 1; }
-    if (!buildAscSize(workload)) { failures += 1; }
-    if (!buildAscSpeed(workload)) { failures += 1; }
-    if (!buildRustNostd(workload)) { failures += 1; }
-    if (!buildRustStd(workload)) { failures += 1; }
-    if (!buildWatMilestone(workload)) { failures += 1; }
+    if (!await buildZena(workload)) { failures += 1; }
+    if (!await buildAscSize(workload)) { failures += 1; }
+    if (!await buildAscSpeed(workload)) { failures += 1; }
+    if (!await buildRustNostd(workload)) { failures += 1; }
+    if (!await buildRustStd(workload)) { failures += 1; }
+    if (!await buildWatMilestone(workload)) { failures += 1; }
 
     console.log('');
   }

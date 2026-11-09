@@ -24,9 +24,9 @@
  * `npm run build -w @zena-lang/zena-cli` has rebuilt it.
  */
 
-import { getArguments, getEnv, exit } from 'zena:cli';
+import { getArguments, getEnv } from 'zena:cli';
 import { StringBuilder } from 'zena:core';
-import { existsSync } from 'zena:fs';
+import { exists } from 'zena:fs';
 import { JsonArray, JsonBuilder, JsonObject, JsonValue, parseJson } from 'zena:json';
 import { run } from 'zena:process';
 
@@ -157,7 +157,7 @@ function zenaCli() {
  * Returns whether the compile succeeded; a failure is reported once
  * per fixture rather than once per sample.
  */
-function sampleOnce(fixture: Fixture, into: FixtureResult): boolean {
+async function sampleOnce(fixture: Fixture, into: FixtureResult): Future<boolean> {
   let args = new GrowableArray<String>();
   args.push(zenaCli());
   args.push('build');
@@ -169,7 +169,7 @@ function sampleOnce(fixture: Fixture, into: FixtureResult): boolean {
   // ZENA_TIME_JSON reaches the child by inheritance: the host spawns
   // with the parent's environment, and `SpawnOptions` has no env field.
   // `main` refuses to start without it set.
-  let result = run(args);
+  let result = await run(args);
   if (result.exitCode != 0) {
     return false;
   }
@@ -283,7 +283,7 @@ function printJson(results: Array<FixtureResult>) {
   console.log(b.toString());
 }
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   if (getEnv('ZENA_TIME_JSON') == null) {
     console.error(
         'Set ZENA_TIME_JSON=1: the compilers this spawns inherit it, and ' +
@@ -322,7 +322,7 @@ export function main(): i32 {
   let results = new Array<FixtureResult>(chosen.length);
   var failures = 0;
   for (let f in chosen) {
-    if (!existsSync(f.path)) {
+    if (!await exists(f.path)) {
       console.error(`Missing fixture: ${f.path}`);
       failures += 1;
       continue;
@@ -333,7 +333,7 @@ export function main(): i32 {
     let result = new FixtureResult(f.name);
     var s = 0;
     while (s < f.samples) {
-      if (!sampleOnce(f, result)) {
+      if (!await sampleOnce(f, result)) {
         result.failed = true;
         failures += 1;
         break;
