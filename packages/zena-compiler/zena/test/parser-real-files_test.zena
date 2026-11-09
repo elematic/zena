@@ -1,10 +1,10 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal } from 'zena:assert';
-import { readFileSync, listDirSync, FileType } from 'zena:fs';
+import { readFile, listDir, FileType } from 'zena:fs';
 import { parse } from '../lib/parser.zena';
 
-function parseFile(path: String): boolean {
-  let source = readFileSync(path);
+async function parseFile(path: String): Future<boolean> {
+  let source = await readFile(path);
   let mod = try {
     parse(source, path);
     true
@@ -20,11 +20,11 @@ function parseFile(path: String): boolean {
 }
 
 /** Every `.zena` file under `dirPath`, deepest directories included. */
-function zenaFilesUnder(dirPath: String, out: GrowableArray<String>): void {
-  for (let entry in listDirSync(dirPath)) {
+async function zenaFilesUnder(dirPath: String, out: GrowableArray<String>): Future<void> {
+  for (let entry in await listDir(dirPath)) {
     if (entry.fileType == FileType.Directory) {
       if (entry.name != "." && entry.name != "..") {
-        zenaFilesUnder(`${dirPath}/${entry.name}`, out);
+        await zenaFilesUnder(`${dirPath}/${entry.name}`, out);
       }
     } else if (entry.fileType == FileType.RegularFile) {
       if (entry.name.endsWith(".zena")) {
@@ -39,13 +39,13 @@ function zenaFilesUnder(dirPath: String, out: GrowableArray<String>): void {
 // before any task exists, and a component's file system calls block
 // in a task.
 export let tests = suite('Parser: Real Files', () => {
-  test('every standard library file parses', (ctx) => {
+  test('every standard library file parses', async (ctx) => {
     let files = new Array<String>();
-    zenaFilesUnder('packages/stdlib/zena', files);
+    await zenaFilesUnder('packages/stdlib/zena', files);
     var failed = 0;
     var names = '';
     for (let path in files) {
-      if (!parseFile(path)) {
+      if (!await parseFile(path)) {
         failed += 1;
         names = `${names} ${path}`;
       }

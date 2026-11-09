@@ -51,7 +51,7 @@ import { Set } from 'zena:collections';
 import { ByteBuffer, StringBuilder, Unmanaged, bytesEqual, disown, growable, i32ToString } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
 import { getEnv } from 'zena:cli';
-import { readFile, readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync, mkdirSync, existsSync, unlinkSync } from 'zena:fs';
+import { readFile, readFileBytes, writeFile, writeFileBytes, mkdir, exists, unlink } from 'zena:fs';
 import {
   Discovery,
   TestFile,
@@ -90,7 +90,7 @@ let compileSliceCommand = 'compile-slice';
 function testOptLevel(): i32 {
   let env = getEnv('ZENA_TEST_OPT_LEVEL');
   if (env != null) {
-    if (let (true, n) = parseI64(env as String)) {
+    if (let (true, n) = parseI64(env)) {
       return n as i32;
     }
   }
@@ -144,7 +144,7 @@ function expectationOf(f: TestFile) {
   return new Expectation(
     if (result == null) { null } else { unquote(result) },
     if (stdout == null) { null } else { unescapeNewlines(unquote(stdout)) },
-    if (invoke == null) { 'main' } else { invoke });
+    invoke ?? 'main');
 }
 
 /** A test file is only a test if it says what running it should produce. */
@@ -404,18 +404,18 @@ function statusPathOf(relPath: String) {
  * compile cache: the module was compiled either way, and it is the
  * status file, not this one, that says the result is from this run.
  */
-function emit(relPath: String, bytes: ByteArray) {
+async function emit(relPath: String, bytes: ByteArray) {
   let path = wasmPathOf(relPath);
-  if (existsSync(path) && bytesEqual(readFileBytesSync(path) as ByteArray, bytes)) {
+  if (await exists(path) && bytesEqual(await readFileBytes(path) as ByteArray, bytes)) {
     return;
   }
-  writeFileBytesSync(path, bytes as FixedArray<u8>);
+  await writeFileBytes(path, bytes as FixedArray<u8>);
 }
 
 /** The tests this run covers, in discovery order — the order slices index into. */
-function selectedTests(filter: String): Array<TestFile> {
+async function selectedTests(filter: String): Future<Array<TestFile>> {
   let discovery = new Discovery();
-  collect(testsRoot, '', discovery, isExecutionTest);
+  await collect(testsRoot, '', discovery, isExecutionTest);
   let files = new Array<TestFile>(discovery.tests.length);
   for (let f in discovery.tests) {
     if (filter.length == 0 || f.relPath.contains(filter)) {
@@ -472,7 +472,7 @@ async function compileOne(
       }
     }
     if (hasError) {
-      writeFileSync(statusPathOf(f.relPath), errors.toString());
+      await writeFile(statusPathOf(f.relPath), errors.toString());
       // Still threaded: the check ran, and its per-file results are
       // valid for every file that did check.
       checked
@@ -510,14 +510,14 @@ async function compileOne(
       let bytes = generator
         .generate(new Program(units, entryUnit))
         .toByteArray();
-      emit(f.relPath, bytes);
-      writeFileSync(statusPathOf(f.relPath), 'ok');
+      await emit(f.relPath, bytes);
+      await writeFile(statusPathOf(f.relPath), 'ok');
       checked
     }
   } catch (e) {
     // A throw out of the compiler is a compiler bug, not a test
     // failure, but it still belongs to one test — name it and carry on.
-    writeFileSync(statusPathOf(f.relPath), `the compiler threw: ${e.message}`);
+    await writeFile(statusPathOf(f.relPath), `the compiler threw: ${e.message}`);
     null
   };
 }
@@ -539,7 +539,7 @@ async function compileSlice(args: Array<String>): Future<i32> {
   if (let (true, n) = parseI64(args[3])) { count = n as i32; }
   let filter = args[4];
 
-  let files = selectedTests(filter);
+  let files = await selectedTests(filter);
   // ZENA_PROPAGATE=0 leaves the type propagation rewrite out of an -O2
   // run (ModuleGenerator.propagate).
   let optLevel = testOptLevel();
@@ -573,7 +573,7 @@ async function compileSlice(args: Array<String>): Future<i32> {
       // reported as a pass. Only a status written by *this* run makes
       // the module beside it usable.
       let statusPath = statusPathOf(f.relPath);
-      if (existsSync(statusPath)) { unlinkSync(statusPath); }
+      if (await exists(statusPath)) { await unlink(statusPath); }
       previous = await compileOne(compiler, f, previous, settings, optLevel);
     }
     pos += 1;
@@ -593,8 +593,8 @@ async function runCompilePhase(
   workers: i32,
   filter: String
 ): Future<boolean> {
-  if (!existsSync(outRoot)) {
-    mkdirSync(outRoot);
+  if (!await exists(outRoot)) {
+    await mkdir(outRoot);
   }
   let running = new Array<Unmanaged<Process>>(workers);
   var i = 0;
@@ -663,7 +663,7 @@ export async function runPortableExecution(args: Array<String>): Future<i32> {
   let filter = if (args.length > 3) { args[3] } else { '' };
 
   let discovery = new Discovery();
-  collect(testsRoot, '', discovery, isExecutionTest);
+  await collect(testsRoot, '', discovery, isExecutionTest);
 
   let orphans = orphanedSupportModules(discovery);
   if (orphans.length > 0) {
@@ -730,8 +730,8 @@ export async function runPortableExecution(args: Array<String>): Future<i32> {
     let expectation = expectationOf(file);
     let wasmPath = wasmPathOf(file.relPath);
     let statusPath = statusPathOf(file.relPath);
-    let status = if (existsSync(statusPath)) { readFileSync(statusPath) } else { null };
-    if (status == null || status != 'ok' || !existsSync(wasmPath)) {
+    let status = if (await exists(statusPath)) { await readFile(statusPath) } else { null };
+    if (status == null || status != 'ok' || !await exists(wasmPath)) {
       // Anything other than an `ok` written by this run's compile phase
       // means this test has no module to run: it failed to compile, or
       // its worker died before reaching it. Either way it failed, and

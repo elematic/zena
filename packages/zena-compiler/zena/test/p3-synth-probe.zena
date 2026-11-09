@@ -4,16 +4,16 @@
 import { readWitSource } from '../lib/wit-source.zena';
 import { synthesizeWitModule } from '../lib/wit-module-synth.zena';
 import { DiskHost } from '../lib/fs-host.zena';
-import { writeFileSync } from 'zena:fs';
+import { writeFile } from 'zena:fs';
 
 let stdlibRoot = 'packages/stdlib/zena';
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   console.log('reading the vendored WIT');
   let wit = try {
-    readWitSource(new DiskHost(), `${stdlibRoot}/wit`)
+    await readWitSource(new DiskHost(), `${stdlibRoot}/wit`)
   } catch (e) {
-    console.log(`readWitSource threw: ${(e as Error).message}`);
+    console.log(`readWitSource threw: ${e.message}`);
     ''
   };
   console.log(`${wit.length} bytes of WIT`);
@@ -28,9 +28,9 @@ export function main(): i32 {
   for (let spec in specs) {
     index += 1;
     let source = try {
-      synthesizeWitModule(new DiskHost(), `wit:${stdlibRoot}/wit#${spec}`, wit)
+      await synthesizeWitModule(new DiskHost(), `wit:${stdlibRoot}/wit#${spec}`, wit)
     } catch (e) {
-      console.log(`${spec}: THREW ${(e as Error).message}`);
+      console.log(`${spec}: THREW ${e.message}`);
       ''
     };
     let lines = source.split('\n');
@@ -43,7 +43,7 @@ export function main(): i32 {
     }
     console.log(`${spec}: ${lines.length} lines, ${count} refusals`);
     refused += count;
-    writeFileSync(`packages/zena-compiler/zena/out/synth-${index}.zena`, source);
+    await writeFile(`packages/zena-compiler/zena/out/synth-${index}.zena`, source);
   }
   return refused;
 }

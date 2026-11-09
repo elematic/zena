@@ -10,9 +10,9 @@
  * runner then reports.
  */
 
-import { suite, test, TestContext } from 'zena:test';
+import { suite, test, Suite, TestContext } from 'zena:test';
 import { StringReader, StringBuilder } from 'zena:core';
-import { readFileSync, listDirSync, DirEntry, FileType } from 'zena:fs';
+import { readFile, listDir, DirEntry, FileType } from 'zena:fs';
 
 /** One `// @name: value` comment directive and the line it was found on. */
 export type Directive = { name: String, line: i32, value: String };
@@ -222,23 +222,25 @@ class DirContents {
   files = new Array<DirEntry>(8);
   subdirs = new Array<DirEntry>(4);
 
-  new(dirPath: String) {
-    for (let entry in listDirSync(dirPath)) {
+  static async read(dirPath: String): Future<DirContents> {
+    let contents = new DirContents();
+    for (let entry in await listDir(dirPath)) {
       if (entry.fileType == FileType.Directory) {
         if (entry.name != '.' && entry.name != '..') {
-          this.subdirs.push(entry);
+          contents.subdirs.push(entry);
         }
       } else if (entry.fileType == FileType.RegularFile) {
         if (entry.name.endsWith('.zena')) {
-          this.files.push(entry);
+          contents.files.push(entry);
         }
       }
     }
     // readdir order varies by platform and filesystem, and the runners
     // share one compiler instance, so the state a test sees must not
     // depend on where the suite runs.
-    sortByName(this.subdirs);
-    sortByName(this.files);
+    sortByName(contents.subdirs);
+    sortByName(contents.files);
+    return contents;
   }
 }
 
@@ -246,31 +248,39 @@ function joinRel(prefix: String, name: String) {
   return if (prefix.length > 0) { `${prefix}/${name}` } else { name };
 }
 
-function load(dirPath: String, relPrefix: String, name: String) {
+async function load(dirPath: String, relPrefix: String, name: String) {
   let path = `${dirPath}/${name}`;
-  let source = readFileSync(path);
+  let source = await readFile(path);
   return new TestFile(path, joinRel(relPrefix, name), name, source, parseDirectives(source));
 }
 
-/**
- * Walks `dirPath` recursively and registers a `zena:test` case per file,
- * mirroring the directory tree as nested suites. `isTest` separates real
- * tests from modules that only exist to be imported by one; `run` is the
- * test body.
- *
- * Used by the in-process runners (syntax, semantics). The execution
- * runner spawns a process per test and uses `collect` instead.
- */
-export function registerSuites(
-    dirPath: String,
-    relPrefix: String,
+class DirTree {
+  name: String;
+  files = new Array<TestFile>(8);
+  subdirs = new Array<DirTree>(4);
+
+  new(this.name);
+
+  static async read(dirPath: String, relPrefix: String, name: String): Future<DirTree> {
+    let tree = new DirTree(name);
+    let contents = await DirContents.read(dirPath);
+    for (let entry in contents.files) {
+      tree.files.push(await load(dirPath, relPrefix, entry.name));
+    }
+    for (let entry in contents.subdirs) {
+      tree.subdirs.push(await DirTree.read(
+        `${dirPath}/${entry.name}`, joinRel(relPrefix, entry.name), entry.name));
+    }
+    return tree;
+  }
+}
+
+function registerTree(
+    tree: DirTree,
     d: Discovery,
     isTest: (f: TestFile) => boolean,
     run: (f: TestFile) => Future<void>): void {
-  let contents = new DirContents(dirPath);
-
-  for (let entry in contents.files) {
-    let f = load(dirPath, relPrefix, entry.name);
+  for (let f in tree.files) {
     if (f.skipReason() != null) {
       d.skipped.push(f);
     } else if (!isTest(f)) {
@@ -283,12 +293,32 @@ export function registerSuites(
     }
   }
 
-  for (let entry in contents.subdirs) {
-    suite(entry.name, () => {
-      registerSuites(
-        `${dirPath}/${entry.name}`, joinRel(relPrefix, entry.name), d, isTest, run);
+  for (let subdir in tree.subdirs) {
+    suite(subdir.name, () => {
+      registerTree(subdir, d, isTest, run);
     });
   }
+}
+
+/**
+ * Walks `dirPath` recursively and registers a `zena:test` case per file,
+ * mirroring the directory tree as nested suites. `isTest` separates real
+ * tests from modules that only exist to be imported by one; `run` is the
+ * test body.
+ *
+ * Used by the in-process runners (syntax, semantics). The execution
+ * runner spawns a process per test and uses `collect` instead.
+ */
+export async function registerSuites(
+    title: String,
+    dirPath: String,
+    d: Discovery,
+    isTest: (f: TestFile) => boolean,
+    run: (f: TestFile) => Future<void>): Future<Suite> {
+  let tree = await DirTree.read(dirPath, '', '');
+  return suite(title, () => {
+    registerTree(tree, d, isTest, run);
+  });
 }
 
 /**
@@ -296,15 +326,15 @@ export function registerSuites(
  * by the execution runner, which needs the whole list up front so it can
  * keep a pool of worker processes busy.
  */
-export function collect(
+export async function collect(
     dirPath: String,
     relPrefix: String,
     d: Discovery,
-    isTest: (f: TestFile) => boolean): void {
-  let contents = new DirContents(dirPath);
+    isTest: (f: TestFile) => boolean): Future<void> {
+  let contents = await DirContents.read(dirPath);
 
   for (let entry in contents.files) {
-    let f = load(dirPath, relPrefix, entry.name);
+    let f = await load(dirPath, relPrefix, entry.name);
     if (f.skipReason() != null) {
       d.skipped.push(f);
     } else if (!isTest(f)) {
@@ -315,7 +345,7 @@ export function collect(
   }
 
   for (let entry in contents.subdirs) {
-    collect(`${dirPath}/${entry.name}`, joinRel(relPrefix, entry.name), d, isTest);
+    await collect(`${dirPath}/${entry.name}`, joinRel(relPrefix, entry.name), d, isTest);
   }
 }
 
