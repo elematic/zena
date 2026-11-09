@@ -3,7 +3,10 @@
  */
 
 import { Array, GrowableArray } from 'zena:core';
-import { Autolink, Span } from '../ast.zena';
+import {
+  Autolink, Block, BlockQuote, Document, Emphasis, Heading, Inline, ListBlock,
+  ListItem, Paragraph, Span, Strong, Text
+} from '../ast.zena';
 import {
   AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser,
   InlineMatch, InlineParserRunner, MarkdownExtension, NodeRenderer
@@ -191,18 +194,202 @@ function trimAutolinkTrailing(s: String, start: i32, initialEnd: i32): i32 {
   return end;
 }
 
+final class AutolinkEmailTransformer implements AstTransformer {
+  transform(doc: Document, inlineParser: InlineParserRunner): void {
+    this.#visitBlocks(doc.blocks);
+  }
+
+  #visitBlocks(blocks: GrowableArray<Block>): void {
+    for (let block in blocks) {
+      match (block) {
+        case Paragraph as p: {
+          p.inlines = this.#processInlines(p.inlines);
+        }
+        case Heading as h: {
+          h.inlines = this.#processInlines(h.inlines);
+        }
+        case BlockQuote {blocks: let children}: {
+          this.#visitBlocks(children);
+        }
+        case ListBlock {items}: {
+          for (let item in items) {
+            this.#visitBlocks(item.blocks);
+          }
+        }
+        case ListItem {blocks: let children}: {
+          this.#visitBlocks(children);
+        }
+        case _: {}
+      }
+    }
+  }
+
+  #processInlines(inlines: GrowableArray<Inline>): GrowableArray<Inline> {
+    var hasAt = false;
+    for (let node in inlines) {
+      if (let Text {literal} = node) {
+        var i = 0;
+        while (i < literal.length) {
+          if (literal.getByteAt(i) == 0x40) {
+            hasAt = true;
+            break;
+          }
+          i += 1;
+        }
+      } else if (node is Emphasis || node is Strong) {
+        hasAt = true;
+      }
+      if (hasAt) {
+        break;
+      }
+    }
+    if (!hasAt) {
+      return inlines;
+    }
+
+    let out = new GrowableArray<Inline>(inlines.length);
+    for (let node in inlines) {
+      match (node) {
+        case Text {literal, span}: {
+          this.#splitEmailsInText(literal, span.start, out);
+        }
+        case Emphasis as em: {
+          em.children = this.#processInlines(em.children);
+          out.push(em);
+        }
+        case Strong as st: {
+          st.children = this.#processInlines(st.children);
+          out.push(st);
+        }
+        case _: {
+          out.push(node);
+        }
+      }
+    }
+    return out;
+  }
+
+  #splitEmailsInText(text: String, baseOffset: i32, out: GrowableArray<Inline>): void {
+    let len = text.length;
+    var textStart = 0;
+    var i = 0;
+    while (i < len) {
+      if (text.getByteAt(i) == 0x40) { // '@'
+        let (matched, emailStart, emailEnd) = tryScanEmailAt(text, i, textStart, len);
+        if (matched) {
+          if (emailStart > textStart) {
+            out.push(
+              new Text(
+                text.sliceBytes(textStart, emailStart),
+                new Span(baseOffset + textStart, baseOffset + emailStart)
+              )
+            );
+          }
+          let email = text.sliceBytes(emailStart, emailEnd);
+          out.push(
+            new Autolink(
+              `mailto:${email}`,
+              email,
+              true,
+              new Span(baseOffset + emailStart, baseOffset + emailEnd)
+            )
+          );
+          textStart = emailEnd;
+          i = emailEnd;
+          continue;
+        }
+      }
+      i += 1;
+    }
+    if (textStart < len) {
+      out.push(
+        new Text(
+          text.sliceBytes(textStart, len),
+          new Span(baseOffset + textStart, baseOffset + len)
+        )
+      );
+    }
+  }
+}
+
+function isEmailLocalByte(b: i32) {
+  return isAsciiAlphanumeric(b) ||
+      b == 0x2E ||
+      b == 0x2D ||
+      b == 0x5F ||
+      b == 0x2B;
+}
+
+function tryScanEmailAt(
+  s: String,
+  atIndex: i32,
+  minStart: i32,
+  len: i32
+): inline (boolean, i32, i32) {
+  var localStart = atIndex;
+  while (localStart > minStart && isEmailLocalByte(s.getByteAt(localStart - 1))) {
+    localStart -= 1;
+  }
+  if (localStart == atIndex) {
+    return (false, 0, 0);
+  }
+  if (localStart > 0) {
+    let prev = s.getByteAt(localStart - 1);
+    if (prev == 0x2F || prev == 0x3A) {
+      return (false, 0, 0);
+    }
+  }
+
+  var p = atIndex + 1;
+  var hasDot = false;
+  var labelLen = 0;
+  var lastDotPos = -1;
+  while (p < len) {
+    let db = s.getByteAt(p);
+    if (db == 0x2E) {
+      if (labelLen == 0 || s.getByteAt(p - 1) == 0x2D || s.getByteAt(p - 1) == 0x5F) {
+        break;
+      }
+      hasDot = true;
+      lastDotPos = p;
+      labelLen = 0;
+      p += 1;
+    } else if (isAsciiAlphanumeric(db) || ((db == 0x2D || db == 0x5F) && labelLen > 0)) {
+      labelLen += 1;
+      p += 1;
+    } else {
+      break;
+    }
+  }
+  // Strip trailing '.', '-', '_'
+  while (p > atIndex + 1) {
+    let last = s.getByteAt(p - 1);
+    if (last == 0x2E || last == 0x2D || last == 0x5F) {
+      p -= 1;
+    } else {
+      break;
+    }
+  }
+  if (!hasDot || lastDotPos < atIndex + 2 || lastDotPos >= p - 1) {
+    return (false, 0, 0);
+  }
+  return (true, localStart, p);
+}
+
 /**
  * Returns the `MarkdownExtension` for GFM extended autolinks (`http://`,
- * `https://`, `www.`).
+ * `https://`, `www.`, and bare emails).
  */
 export function autolinkExtension(): MarkdownExtension {
   let parsers = new GrowableArray<InlineContentParser>(1);
   parsers.push(new GfmAutolinkParser());
+  let transformers = new GrowableArray<AstTransformer>(1);
+  transformers.push(new AutolinkEmailTransformer());
   return new MarkdownExtension(
     new GrowableArray<BlockParserFactory>(0),
     new GrowableArray<DelimiterProcessor>(0),
     parsers,
-    new GrowableArray<AstTransformer>(0),
+    transformers,
     new GrowableArray<NodeRenderer>(0)
   );
 }

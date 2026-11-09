@@ -74,17 +74,22 @@ final class TableBlockParser implements CustomBlockParser {
   }
 
   tryContinue(state: BlockLineState): BlockContinue {
-    if (state.isBlank || state.indent >= 4) {
-      return BlockContinue.none();
-    }
-    let b = state.line.getByteAt(state.nextNonSpaceIndex);
-    // Interrupting block starters: `#`, `>`, ```, `~~~`
-    if (b == 0x23 || b == 0x3E || b == 0x60 || b == 0x7E) {
+    if (state.isBlank) {
       return BlockContinue.none();
     }
     let slice = state.line.sliceBytes(state.nextNonSpaceIndex, state.line.length);
-    if (!containsUnescapedPipe(slice)) {
+    if (trimSpaces(slice) == '|') {
       return BlockContinue.none();
+    }
+    if (state.indent <= 3) {
+      let b = state.line.getByteAt(state.nextNonSpaceIndex);
+      // Interrupting block starters: `#`, `>`, ```, `~~~`, thematic break, list marker
+      if (b == 0x23 || b == 0x3E || b == 0x60 || b == 0x7E) {
+        return BlockContinue.none();
+      }
+      if ((b == 0x2A || b == 0x2D || b == 0x5F) && isTableInterruptingBreakOrList(slice)) {
+        return BlockContinue.none();
+      }
     }
     return BlockContinue.atIndex(state.nextNonSpaceIndex);
   }
@@ -180,13 +185,13 @@ final class TableBlockParserFactory implements BlockParserFactory {
       return null;
     }
     let paraLines = matched.paragraphLines;
-    if (paraLines == null || paraLines.length != 1) {
+    if (paraLines == null || paraLines.length == 0) {
       return null;
     }
 
     let delimLine = state.line.sliceBytes(state.nextNonSpaceIndex, state.line.length);
-    let headerLine = paraLines[0];
-    if (!containsUnescapedPipe(delimLine) && !containsUnescapedPipe(headerLine)) {
+    let headerLine = paraLines[paraLines.length - 1];
+    if (!containsUnescapedPipe(delimLine) || !containsUnescapedPipe(headerLine)) {
       return null;
     }
 
@@ -211,12 +216,41 @@ final class TableBlockParserFactory implements BlockParserFactory {
   }
 }
 
+function isTableInterruptingBreakOrList(slice: String): boolean {
+  if (containsUnescapedPipe(slice)) {
+    return false;
+  }
+  let b = slice.getByteAt(0);
+  if ((b == 0x2D || b == 0x2B || b == 0x2A) && slice.length > 1 && isSpaceOrTab(slice.getByteAt(1))) {
+    return true;
+  }
+  if (b == 0x2A || b == 0x2D || b == 0x5F) {
+    var count = 0;
+    var i = 0;
+    var allSameOrSpace = true;
+    while (i < slice.length) {
+      let c = slice.getByteAt(i);
+      if (c == b) {
+        count += 1;
+      } else if (!isSpaceOrTab(c)) {
+        allSameOrSpace = false;
+        break;
+      }
+      i += 1;
+    }
+    if (allSameOrSpace && count >= 3) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function containsUnescapedPipe(s: String): boolean {
   let len = s.length;
   var i = 0;
   while (i < len) {
     let b = s.getByteAt(i);
-    if (b == 0x5C && i + 1 < len) {
+    if (b == 0x5C && i + 1 < len && s.getByteAt(i + 1) == 0x7C) {
       i += 2;
       continue;
     }
@@ -240,7 +274,7 @@ function splitTableCells(line: String): GrowableArray<String> {
     start += 1;
   }
   if (end > start && trimmed.getByteAt(end - 1) == 0x7C) {
-    // Only strip trailing `|` if it is not escaped by an odd number of `\`
+    // Only strip trailing `|` if it is not preceded by `\`
     if (end - 1 == start || trimmed.getByteAt(end - 2) != 0x5C) {
       end -= 1;
     }
@@ -251,7 +285,7 @@ function splitTableCells(line: String): GrowableArray<String> {
   var i = start;
   while (i < end) {
     let b = trimmed.getByteAt(i);
-    if (b == 0x5C && i + 1 < end) {
+    if (b == 0x5C && i + 1 < end && trimmed.getByteAt(i + 1) == 0x7C) {
       i += 2;
       continue;
     }
