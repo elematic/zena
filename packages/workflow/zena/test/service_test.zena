@@ -4,7 +4,9 @@ import {NullCache} from '../cache.zena';
 import {
   Engine,
   Failed,
+  RunOptions,
   RunResult,
+  ServicePool,
   Skipped,
   StepSource,
   Succeeded,
@@ -45,10 +47,16 @@ function mkInputs(deps: Array<String>, leafNames: Array<String>): Array<InputRef
 class TestHandle implements ServiceHandle {
   log: GrowableArray<String>;
   name: String;
+  var alive = true;
 
   new(this.log, this.name);
 
+  isAlive(): boolean {
+    return this.alive;
+  }
+
   async stop(): Future<void> {
+    this.alive = false;
     this.log.push('stop:' + this.name);
   }
 }
@@ -354,5 +362,161 @@ export let tests = suite('services', () => {
     isTrue(second.allSucceeded);
     isTrue(sourceOf(second, 'app') == StepSource.Fresh);
     equal(count(log, 'start:db'), 1);
+  });
+
+  test('ServicePool pins a started service across runs and reuses it without restarting', async (ctx) => {
+    let log = new GrowableArray<String>();
+    let mkGraph = () => new Graph([
+      mkService(log, 'db', noStrings, ['db-cfg']),
+      mkTask(log, 'app', ['db'], ['src']),
+    ]);
+    let leaves: HashMap<String, Fingerprint> = {
+      'db-cfg' => new Fingerprint('v1'),
+      'src' => new Fingerprint('v1'),
+    };
+    let pool = new ServicePool();
+    let opts = new RunOptions(8, false, null, pool);
+    let engine = new Engine(digest, new NullCache());
+
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty(), opts);
+    isTrue(first.allSucceeded);
+    equal(count(log, 'start:db'), 1);
+    equal(count(log, 'stop:db'), 0);
+    isTrue(sourceOf(first, 'db') == StepSource.Ran);
+    isTrue(sourceOf(first, 'app') == StepSource.Ran);
+
+    // Edit app's leaf input; db stays unchanged and is reused without restarting.
+    leaves['src'] = new Fingerprint('v2');
+    let second = await engine.run(mkGraph(), leaves, first.state, opts);
+    isTrue(second.allSucceeded);
+    equal(count(log, 'start:db'), 1);
+    equal(count(log, 'stop:db'), 0);
+    equal(count(log, 'run:app'), 2);
+    isTrue(sourceOf(second, 'db') == StepSource.Fresh);
+    isTrue(sourceOf(second, 'app') == StepSource.Ran);
+
+    await pool.stopAll();
+    equal(count(log, 'stop:db'), 1);
+  });
+
+  test('ServicePool restarts a pinned service when its leaf input changes', async (ctx) => {
+    let log = new GrowableArray<String>();
+    let mkGraph = () => new Graph([
+      mkService(log, 'db', noStrings, ['db-cfg']),
+      mkTask(log, 'app', ['db'], ['src']),
+    ]);
+    let leaves: HashMap<String, Fingerprint> = {
+      'db-cfg' => new Fingerprint('v1'),
+      'src' => new Fingerprint('v1'),
+    };
+    let pool = new ServicePool();
+    let opts = new RunOptions(8, false, null, pool);
+    let engine = new Engine(digest, new NullCache());
+
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty(), opts);
+    isTrue(first.allSucceeded);
+    equal(count(log, 'start:db'), 1);
+    equal(count(log, 'stop:db'), 0);
+
+    leaves['db-cfg'] = new Fingerprint('v2');
+    let second = await engine.run(mkGraph(), leaves, first.state, opts);
+    isTrue(second.allSucceeded);
+    equal(count(log, 'stop:db'), 1);
+    equal(count(log, 'start:db'), 2);
+    equal(count(log, 'run:app'), 2);
+    isTrue(sourceOf(second, 'db') == StepSource.Ran);
+    isTrue(sourceOf(second, 'app') == StepSource.Ran);
+
+    await pool.stopAll();
+    equal(count(log, 'stop:db'), 2);
+  });
+
+  test('ServicePool stops child service before parent when parent identity changes', async (ctx) => {
+    let log = new GrowableArray<String>();
+    let mkGraph = () => new Graph([
+      mkService(log, 'db', noStrings, ['db-cfg']),
+      mkService(log, 'proxy', ['db'], ['proxy-cfg']),
+      mkTask(log, 'app', ['proxy'], ['src']),
+    ]);
+    let leaves: HashMap<String, Fingerprint> = {
+      'db-cfg' => new Fingerprint('v1'),
+      'proxy-cfg' => new Fingerprint('v1'),
+      'src' => new Fingerprint('v1'),
+    };
+    let pool = new ServicePool();
+    let opts = new RunOptions(8, false, null, pool);
+    let engine = new Engine(digest, new NullCache());
+
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty(), opts);
+    isTrue(first.allSucceeded);
+    equal(count(log, 'start:db'), 1);
+    equal(count(log, 'start:proxy'), 1);
+    equal(count(log, 'stop:db'), 0);
+    equal(count(log, 'stop:proxy'), 0);
+
+    log.clear();
+    leaves['db-cfg'] = new Fingerprint('v2');
+    let second = await engine.run(mkGraph(), leaves, first.state, opts);
+    isTrue(second.allSucceeded);
+    // Child stops before parent, then parent starts before child, then app runs.
+    less(indexOf(log, 'stop:proxy'), indexOf(log, 'stop:db'));
+    less(indexOf(log, 'stop:db'), indexOf(log, 'start:db'));
+    less(indexOf(log, 'start:db'), indexOf(log, 'start:proxy'));
+    less(indexOf(log, 'start:proxy'), indexOf(log, 'run:app'));
+
+    log.clear();
+    await pool.stopAll();
+    less(indexOf(log, 'stop:proxy'), indexOf(log, 'stop:db'));
+  });
+
+  test('ServicePool stops services removed from the graph', async (ctx) => {
+    let log = new GrowableArray<String>();
+    let pool = new ServicePool();
+    let opts = new RunOptions(8, false, null, pool);
+    let engine = new Engine(digest, new NullCache());
+    let leaves = new HashMap<String, Fingerprint>();
+
+    let g1 = new Graph([
+      mkService(log, 'db', noStrings, noStrings),
+      mkTask(log, 'app', ['db'], noStrings),
+    ]);
+    let first = await engine.run(g1, leaves, EngineState.empty(), opts);
+    isTrue(first.allSucceeded);
+    equal(count(log, 'start:db'), 1);
+    equal(count(log, 'stop:db'), 0);
+
+    let g2 = new Graph([mkTask(log, 'app', noStrings, noStrings)]);
+    let second = await engine.run(g2, leaves, first.state, opts);
+    isTrue(second.allSucceeded);
+    equal(count(log, 'stop:db'), 1);
+    equal(pool.size, 0);
+  });
+
+  test('ServicePool starts a root service with no dependents and keeps it pinned', async (ctx) => {
+    let log = new GrowableArray<String>();
+    let mkGraph = () => new Graph([
+      mkService(log, 'serve', noStrings, ['cfg']),
+    ]);
+    let leaves: HashMap<String, Fingerprint> = {
+      'cfg' => new Fingerprint('v1'),
+    };
+    let pool = new ServicePool();
+    let opts = new RunOptions(8, false, null, pool);
+    let engine = new Engine(digest, new NullCache());
+
+    let first = await engine.run(mkGraph(), leaves, EngineState.empty(), opts);
+    isTrue(first.allSucceeded);
+    equal(count(log, 'start:serve'), 1);
+    equal(count(log, 'stop:serve'), 0);
+    isTrue(sourceOf(first, 'serve') == StepSource.Ran);
+
+    let second = await engine.run(mkGraph(), leaves, first.state, opts);
+    isTrue(second.allSucceeded);
+    equal(count(log, 'start:serve'), 1);
+    equal(count(log, 'stop:serve'), 0);
+    isTrue(sourceOf(second, 'serve') == StepSource.Fresh);
+
+    await pool.stopAll();
+    equal(count(log, 'stop:serve'), 1);
   });
 });

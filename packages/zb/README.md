@@ -43,12 +43,18 @@ default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
   `fresh`, zb checks that its recorded file outputs still match on disk,
   restoring from `.zb/blobs/` or rerunning the command if an output was
   deleted or modified
-- one-shot services: started on demand when a dependent executes, gated
-  on `readyWhen.lineMatches` when configured, shared across dependents,
+- services: started on demand when a dependent executes, gated on
+  `readyWhen.lineMatches` when configured, shared across dependents,
   skipped when all dependents are fresh or cached, and stopped as a Unix
   process group (`SIGTERM` then `SIGKILL`). Invoking a service directly
   as the top-level target runs its dependencies and streams the service
   in the foreground.
+- watch mode (`-w` / `--watch`): watches input globs, lockfiles, and
+  `package.json` manifests for changes, re-running affected steps
+  incrementally while keeping unchanged services pinned alive in a
+  `ServicePool` across rebuilds and restarting them (stopping child
+  services before parents) only when their own configuration or inputs
+  change
 - bare npm scripts as always-run commands (with dependent poisoning)
 - content-addressed local cache under `.zb/` (state file, per-key
   manifests, blob store); lost state restores from cache instead of
@@ -60,7 +66,6 @@ default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
 
 Not yet (see the design doc's milestones):
 
-- watch mode (re-running on file edits with pinned long-lived services)
 - remote caches, per-output incremental deltas to commands
 
 ## Running
@@ -70,10 +75,10 @@ Prerequisite: a built checkout (`npm run build`), so
 root:
 
 ```sh
-./target/release/zena-cli build [-j <jobs>] [-f|--force] [--no-cache] [<target>]
+./target/release/zena-cli build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [<target>]
 # or directly:
 ./target/release/zena-cli run --dir . --allow-spawn packages/zb/zena/main.zena \
-  [-C <workspace-root>] [-j <jobs>] [-f|--force] [--no-cache] [<package-dir>] <script>
+  [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [<package-dir>] <script>
 ```
 
 `--dir .` grants filesystem access and `--allow-spawn` process spawning;
