@@ -29,18 +29,20 @@ export function releaseRoutes(router: Router, appView: AppView): void {
     }
     // Reading the body consumes the request: its type is read first.
     let mimeType = req.getHeader('content-type') ?? 'application/octet-stream';
-    // As large as the App View stores, and refused before more is read.
-    req.bodyLimit = appView.config.maxBlobSize;
+    // As large as a release of the package may be, and refused before more
+    // is read.
+    let limit = await appView.releaseBytesOf(pkg);
+    req.bodyLimit = limit;
     let bytes = try {
       await req.bytes()
     } catch (e) {
       if (e is HttpError && e.status == 413) {
-        fail(res, 413, 'TooLarge', `the blob is larger than ${appView.config.maxBlobSize} bytes`);
+        fail(res, 413, 'TooLarge', `the blob is larger than a release of ${pkg} may be, ${limit} bytes`);
         return null;
       }
       throw e;
     };
-    let blob = await appView.uploadArtifact(caller, pkg, mimeType, bytes);
+    let blob = await appView.uploadArtifact(caller, pkg, mimeType, bytes, nowMicros());
     let body = new JsonObject();
     body['blob'] = toJson(blob.toValue());
     return body;

@@ -11,6 +11,8 @@
 #     create-scope zena --owner did:plc:... [--recovery-key did:key:...]
 #   ... operator.sh sync-handles
 #   ... operator.sh sync-indexes
+#   ... operator.sh set-limit router.acme.pkg-staging.zena-lang.dev packageBytes 134217728
+#   ... operator.sh set-limit acme.pkg-staging.zena-lang.dev scopeBytes default
 #
 # It runs packages/registry/zena/main.zena with the repository's zena-cli,
 # so build that first (npm run build -w @zena-lang/zena-cli). The access
@@ -22,9 +24,10 @@ cd "$(dirname "$0")"
 source ./env.sh
 
 case "${1:-}" in
-  create-scope | sync-handles | sync-indexes) ;;
+  create-scope | sync-handles | sync-indexes | set-limit) ;;
   *)
     echo "usage: operator.sh create-scope <name> --owner <did> [--recovery-key <did:key>]... | sync-handles | sync-indexes" >&2
+    echo "       | set-limit <DID or handle> <limit> <bytes>|default" >&2
     exit 2
     ;;
 esac

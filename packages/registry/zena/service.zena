@@ -67,7 +67,6 @@
  *   passes spaces, since `gcloud --set-env-vars` splits on commas.
  * - `APP_VIEW_RESERVED_SCOPES`: scope names no one may take,
  *   comma-separated, beside the App View's own.
- * - `APP_VIEW_MAX_BLOB_BYTES`: the largest artifact the App View stores.
  * - `APP_VIEW_PRIVATE_READS`: `1` lets the App View read PDSes at
  *   addresses on this machine or a private network, as a stack on one
  *   machine needs (tests, demos). Off by default, so a DID document cannot
@@ -95,7 +94,7 @@
  */
 
 import {Future} from 'zena:async';
-import {Option, Some, Unmanaged, none, some} from 'zena:core';
+import {Unmanaged} from 'zena:core';
 import {App, Server, mount, serve as serveFiles} from 'zena:http';
 import {randomBytes} from 'zena:random';
 import {URL} from 'zena:url';
@@ -161,13 +160,11 @@ export final class AppViewSettings {
   reservedScopes: Array<String>;
   /** The DIDs of the App View's admins. */
   var admins: Array<String> = [];
-  /** The largest artifact the App View stores, or none for the App View's default. */
-  maxBlobSize: Option<i64>;
   /** Whether the App View may read PDSes on this machine or a private network (`APP_VIEW_PRIVATE_READS`). */
   var privateReads = false;
   records: RecordsChoice;
 
-  new(this.domain, this.serviceDid, this.rotationKey, this.reservedScopes, this.maxBlobSize, this.records);
+  new(this.domain, this.serviceDid, this.rotationKey, this.reservedScopes, this.records);
 }
 
 /** A PDS elsewhere, which keeps the App View's accounts: its origin, and its DID (`APP_VIEW_PDS_URL`). */
@@ -349,19 +346,6 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       problems.push('APP_VIEW_OFFLINE_ROTATION_KEY is not a did:key');
     }
   }
-  var maxBlobSize: Option<i64> = none;
-  let maxText = value('APP_VIEW_MAX_BLOB_BYTES');
-  if (maxText != null) {
-    if (let (true, parsed) = parseI32(maxText)) {
-      if (parsed > 0) {
-        maxBlobSize = some(parsed as i64);
-      } else {
-        problems.push(`APP_VIEW_MAX_BLOB_BYTES must be positive: ${maxText}`);
-      }
-    } else {
-      problems.push(`APP_VIEW_MAX_BLOB_BYTES is not a number: ${maxText}`);
-    }
-  }
   let reserved = new GrowableArray<String>();
   let reservedText = value('APP_VIEW_RESERVED_SCOPES');
   if (reservedText != null) {
@@ -426,7 +410,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     }
   }
   let serviceDid = value('APP_VIEW_DID') ?? (if (appViewOrigin != null) didWebOfOrigin(appViewUrl) else null);
-  let settings = new AppViewSettings(domain, serviceDid, rotationKey, reserved, maxBlobSize, records);
+  let settings = new AppViewSettings(domain, serviceDid, rotationKey, reserved, records);
   settings.siteUrl = siteUrl;
   settings.rotationKmsKey = kmsKey;
   settings.signingKey = signingKey;
@@ -539,9 +523,6 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   }
   for (let name in settings.reservedScopes) {
     appViewConfig.reservedScopes.add(name);
-  }
-  if (let Some {value} = settings.maxBlobSize) {
-    appViewConfig.maxBlobSize = value;
   }
   let resolver = new IdentityResolver();
   resolver.plcDirectory = config.plcDirectory;

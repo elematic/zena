@@ -8,7 +8,7 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {Unmanaged, join} from 'zena:core';
+import {None, Option, Some, Unmanaged, join, none, some} from 'zena:core';
 import {hex} from 'zena:encoding';
 import {App, HTMLPartial, Request, Response, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
@@ -32,7 +32,7 @@ import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'registry:handles';
 import {
   ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
-  PackageSummary, PendingChange, PendingRelease
+  Limit, Limits, PackageSummary, PendingChange, PendingRelease, limitName, limitNamed
 } from 'registry:app-view';
 import {createApp} from 'registry:server';
 import {WebSessions} from 'registry:web-sessions';
@@ -346,6 +346,10 @@ final class StaleAppViewStore implements AppViewStore {
   async heldChanges(account: String): Future<Array<PendingChange>> { return await this.#inner.heldChanges(account); }
   async dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void> {
     await this.#inner.dropChange(account, collection, rkey, cid);
+  }
+  async limits(did: String): Future<Limits> { return await this.#inner.limits(did); }
+  async setLimit(did: String, limit: Limit, value: Option<i64>): Future<void> {
+    await this.#inner.setLimit(did, limit, value);
   }
 }
 
@@ -1368,13 +1372,84 @@ export let tests = suite('registry:app-view', () => {
     // An artifact may be as large as the App View stores, and no larger.
     let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
     let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
-    (fixture.appView as AppView).config.maxBlobSize = 1000 as i64;
+    (fixture.appView as AppView).config.releaseBytes = 1000 as i64;
     let over = await fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>(2000, 1 as u8), `?package=${pkgDid}`,
         'application/octet-stream');
     equal(over.statusCode, 413);
     equal(errorOf(over), 'TooLarge');
     ok(await fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>(1000, 1 as u8), `?package=${pkgDid}`,
         'application/octet-stream'));
+  });
+
+  test('keeps releases, packages and scopes within their storage, which the operator can raise', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    // Room for one archive in a release, two in a package, and three in the scope.
+    let size = archiveOf(router, '1.0.0').length as i64;
+    appView.config.releaseBytes = size;
+    appView.config.packageBytes = 2 * size;
+    appView.config.scopeBytes = 3 * size;
+
+    // Only source archives are stored, for now: no Wasm modules beside them.
+    let source = await upload(fixture, router, archiveOf(router, '0.1.0'));
+    let wasm = BlobRef.fromValue(fromJson(ok(await fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>(8, 0 as u8),
+        `?package=${router}`, 'application/wasm'))['blob'] as JsonObject));
+    let withModule = new Release(Version.parse('0.1.0'), '2026-11-09T00:00:00.000Z',
+        [Artifact.whole(SOURCE, source), Artifact.whole('core-module', wasm)],
+        new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+    let module = await fixture.call(ALICE, 'publish',
+        `{"package": "${router}", "release": ${stringify(toJson(withModule.toValue()))}}`);
+    equal(errorOf(module), 'InvalidRelease');
+
+    // A release holds at most releaseBytes.
+    let large = await fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>((size + 1) as i32, 1 as u8),
+        `?package=${router}`, 'application/vnd.ipld.car');
+    equal(errorOf(large), 'TooLarge');
+    // A package holds at most packageBytes, counting the releases it holds
+    // for approval.
+    await release(fixture, ALICE, router, '1.0.0', await upload(fixture, router, archiveOf(router, '1.0.0')));
+    let second = await upload(fixture, router, archiveOf(router, '1.0.1'));
+    ok(await fixture.call(ALICE, 'publish', `{"package": "${router}", "release": ${releaseJson('1.0.1', second)}}`));
+    let third = await fixture.call(ALICE, 'uploadArtifact', archiveOf(router, '1.0.2'), `?package=${router}`,
+        'application/vnd.ipld.car');
+    equal(errorOf(third), 'QuotaExceeded');
+    // The operator allows the package more.
+    await appView.setLimit(router, Limit.PackageBytes, some(3 * size));
+    await release(fixture, ALICE, router, '1.0.2', await upload(fixture, router, archiveOf(router, '1.0.2')));
+
+    // A scope holds at most scopeBytes, over the releases of all its
+    // packages and the ones held of the package at hand.
+    let cli = ok(await createPackage(fixture, ALICE, orgDid, 'cli'))['did'] as String;
+    let cliArchive = (version: String) => archiveOf(cli, version,
+        `{"name": "cli", "did": "${cli}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`);
+    await release(fixture, ALICE, cli, '1.0.0', await upload(fixture, cli, cliArchive('1.0.0')));
+    let full = await fixture.call(ALICE, 'uploadArtifact', cliArchive('1.0.1'), `?package=${cli}`,
+        'application/vnd.ipld.car');
+    equal(errorOf(full), 'QuotaExceeded');
+    await appView.setLimit(orgDid, Limit.ScopeBytes, some(10 * size));
+    await release(fixture, ALICE, cli, '1.0.1', await upload(fixture, cli, cliArchive('1.0.1')));
+
+    // A package, or every package of a scope, may be allowed larger releases.
+    let json = ok(await createPackage(fixture, ALICE, orgDid, 'json'))['did'] as String;
+    let uploadLarge = () => fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>((size + 1) as i32, 1 as u8),
+        `?package=${json}`, 'application/vnd.ipld.car');
+    await appView.setLimit(orgDid, Limit.ReleaseBytes, some(2 * size));
+    ok(await uploadLarge());
+    // Back to the default.
+    await appView.setLimit(orgDid, Limit.ReleaseBytes, none);
+    equal(errorOf(await uploadLarge()), 'TooLarge');
+    await appView.setLimit(json, Limit.ReleaseBytes, some(2 * size));
+    ok(await uploadLarge());
+    // The operator names a limit as the App View does.
+    equal(limitName(Limit.PackageBytes), 'packageBytes');
+    if (let Some {value} = limitNamed('scopeBytes')) {
+      isTrue(value == Limit.ScopeBytes);
+    } else {
+      isTrue(false, 'scopeBytes is not a limit');
+    }
+    isTrue(limitNamed('blobCount') is None);
   });
 
   test('renders the pages a visitor browses', async (ctx) => {

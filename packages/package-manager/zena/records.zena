@@ -336,6 +336,26 @@ export final class Artifact {
     return Artifact.inParts(kind, parts, cid, total, world, wit);
   }
 
+  /** The blobs that hold it: its blob or its parts, and its WIT. */
+  blobs(): GrowableArray<BlobRef> {
+    let all = new GrowableArray<BlobRef>();
+    let blob = this.blob;
+    if (blob != null) {
+      all.push(blob);
+    }
+    let parts = this.parts;
+    if (parts != null) {
+      for (let part in parts) {
+        all.push(part);
+      }
+    }
+    let wit = this.wit;
+    if (wit != null) {
+      all.push(wit);
+    }
+    return all;
+  }
+
   toValue(): MapValue {
     let map = newMap();
     map.entries['kind'] = new StringValue(this.kind);
@@ -465,6 +485,17 @@ export final class Release {
       }
     }
     return null;
+  }
+
+  /** The bytes of the blobs that hold its artifacts, as their references give them. */
+  blobBytes(): i64 {
+    var total: i64 = 0;
+    for (let artifact in this.artifacts) {
+      for (let blob in artifact.blobs()) {
+        total += blob.size;
+      }
+    }
+    return total;
   }
 
   toValue(): MapValue {

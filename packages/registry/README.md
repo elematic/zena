@@ -127,8 +127,16 @@ creates a scope owned by that DID and exits. This is how the operator
 takes a name the App View reserves (`www`, `api`, `admin`, `zena`, `pkg`,
 `mail`, and `APP_VIEW_RESERVED_SCOPES`), which no `zena pkg scope create` can.
 
-`deploy/operator.sh` runs `create-scope`, `sync-handles` and `sync-indexes`
-on your machine against a deployed environment, with its service's
+The App View limits the storage releases take: 4 MiB for one release, 64
+MiB for a package's releases, those waiting for approval included, and 256
+MiB for the releases of a scope's packages, and it stores only source
+archives for now. `set-limit <DID or handle> <limit> <bytes>|default`,
+with the limit `releaseBytes`, `packageBytes` or `scopeBytes`, raises one
+for a package, or for a scope's organization and its packages, or takes
+the setting away, and exits.
+
+`deploy/operator.sh` runs `create-scope`, `sync-handles`, `sync-indexes`
+and `set-limit` on your machine against a deployed environment, with its service's
 configuration: the variables `deploy` gives it, its secrets from Secret
 Manager, and an access token for its service account, which
 `deploy:setup` lets the gcloud account that ran it act as:
