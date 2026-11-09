@@ -1011,6 +1011,7 @@ export final class ScopeBuilder {
   #processExpression(expr: Expression): void {
     match (expr) {
       case Identifier {name}: {
+        if (name == "") { return; }
         let info = this.#current.resolve(name);
         if (info == null) {
           this.#unresolvedNames.push(new UnresolvedName(name, expr));
@@ -1726,12 +1727,14 @@ export final class ScopeBuilder {
   #processTypeAnnotation(ann: TypeAnnotation): void {
     match (ann) {
       case NamedTypeAnnotation {name, typeArguments}: {
-        let info = this.#current.resolve(name);
-        if (info != null) {
-          this.#symbols.record(ann, info);
-          this.#isRead[info.id] = true;
-        } else {
-          this.#unresolvedNames.push(new UnresolvedName(name, ann));
+        if (name != "") {
+          let info = this.#current.resolve(name);
+          if (info != null) {
+            this.#symbols.record(ann, info);
+            this.#isRead[info.id] = true;
+          } else {
+            this.#unresolvedNames.push(new UnresolvedName(name, ann));
+          }
         }
         if (typeArguments != null) {
           for (let arg in typeArguments) {

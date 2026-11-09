@@ -191,6 +191,7 @@ export final class Parser {
   var #combinedTypeAnnotation: RecordTypeAnnotation | null;
   #errors: GrowableArray<Diagnostic>;
   var #completeness: ParseCompleteness;
+  var #lastErrorOffset: i32;
   #recover: boolean;
   /**
    * Whether a module body may hold statements as well as declarations.
@@ -205,7 +206,7 @@ export final class Parser {
   new(source: String, path: String, recover: boolean = false,
       table: StringTable | null = null,
       allowTopLevelStatements: boolean = false)
-    : #source = source, #path = path, #recover = recover, #allowTopLevelStatements = allowTopLevelStatements, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null, #errors = new Array<Diagnostic>(0), #completeness = ParseCompleteness.Complete
+    : #source = source, #path = path, #recover = recover, #allowTopLevelStatements = allowTopLevelStatements, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null, #errors = new Array<Diagnostic>(0), #completeness = ParseCompleteness.Complete, #lastErrorOffset = -1
   {
     let tokenizer = new Tokenizer(source, table);
     this.#tokens = tokenizer.tokenize();
@@ -238,18 +239,44 @@ export final class Parser {
       if (this.#check(TokenType.From) && this.#peek2().kind != TokenType.String) {
         break;
       }
-      body.push(this.#parseImportDeclaration());
+      if (this.#recover) {
+        let posBefore = this.#current;
+        try {
+          body.push(this.#parseImportDeclaration());
+        } catch (e) {
+          this.#recordSyntaxError(e);
+          this.#synchronizeTopLevel(posBefore);
+        }
+      } else {
+        body.push(this.#parseImportDeclaration());
+      }
     }
 
     while (!this.#isAtEnd()) {
       let startToken = this.#peek();
-      let stmt = this.#parseStatement(true);
-      if (!this.#allowTopLevelStatements && !isModuleDeclaration(stmt)) {
-        this.#recoverableError(
-            "A module body may only contain declarations. Move this statement into a function.",
-            DiagnosticCode.StatementOutsideFunction, startToken);
+      if (this.#recover) {
+        let posBefore = this.#current;
+        try {
+          let stmt = this.#parseStatement(true);
+          if (!this.#allowTopLevelStatements && !isModuleDeclaration(stmt)) {
+            this.#recoverableError(
+                "A module body may only contain declarations. Move this statement into a function.",
+                DiagnosticCode.StatementOutsideFunction, startToken);
+          }
+          body.push(stmt);
+        } catch (e) {
+          this.#recordSyntaxError(e);
+          this.#synchronizeTopLevel(posBefore);
+        }
+      } else {
+        let stmt = this.#parseStatement(true);
+        if (!this.#allowTopLevelStatements && !isModuleDeclaration(stmt)) {
+          this.#recoverableError(
+              "A module body may only contain declarations. Move this statement into a function.",
+              DiagnosticCode.StatementOutsideFunction, startToken);
+        }
+        body.push(stmt);
       }
-      body.push(stmt);
     }
 
     return new Module(body, this.#path, this.#source, this.#comments, null);
@@ -551,6 +578,7 @@ export final class Parser {
     }
     this.#completeness = ParseCompleteness.Recovered;
     let token = at ?? this.#peek();
+    this.#lastErrorOffset = token.start;
     this.#errors.push(new Diagnostic(
       code,
       message,
@@ -563,6 +591,169 @@ export final class Parser {
         token.column
       )
     ));
+  }
+
+  #recordSyntaxError(e: Error): void {
+    if (!(e is SyntaxError)) {
+      throw e;
+    }
+    this.#completeness = ParseCompleteness.Recovered;
+    let loc = e.diagnostic.location;
+    if (loc != null) {
+      if (loc.start == this.#lastErrorOffset) {
+        return;
+      }
+      this.#lastErrorOffset = loc.start;
+    }
+    this.#errors.push(e.diagnostic);
+  }
+
+  #isTopLevelStart(): boolean {
+    if (this.#isAtEnd()) {
+      return false;
+    }
+    return match (this.#peek().kind) {
+      case TokenType.Import: true
+      case TokenType.Export: true
+      case TokenType.Let: true
+      case TokenType.Var: true
+      case TokenType.Function: true
+      case TokenType.Gen: true
+      case TokenType.Async: true
+      case TokenType.Class: true
+      case TokenType.Final: true
+      case TokenType.Abstract: true
+      case TokenType.Sealed: true
+      case TokenType.Extension: true
+      case TokenType.Interface: true
+      case TokenType.Mixin: true
+      case TokenType.Decorator: true
+      case TokenType.Enum: true
+      case TokenType.Type: true
+      case TokenType.Distinct: true
+      case TokenType.Symbol: true
+      case TokenType.Declare: true
+      case TokenType.At: true
+      case _: false
+    };
+  }
+
+  #isStatementStart(): boolean {
+    if (this.#isTopLevelStart()) {
+      return true;
+    }
+    if (this.#isAtEnd()) {
+      return false;
+    }
+    return match (this.#peek().kind) {
+      case TokenType.Return: true
+      case TokenType.While: true
+      case TokenType.For: true
+      case TokenType.Break: true
+      case TokenType.Continue: true
+      case TokenType.If: true
+      case TokenType.Match: true
+      case TokenType.Try: true
+      case TokenType.Using: true
+      case TokenType.Yield: true
+      case _: false
+    };
+  }
+
+  #synchronizeTopLevel(posBefore: i32): void {
+    this.#extraGreaters = 0;
+    if (this.#current == posBefore && !this.#isAtEnd()) {
+      let tok = this.#advance();
+      if (tok.kind == TokenType.Semi) {
+        return;
+      }
+    } else if (this.#current > posBefore) {
+      let prev = this.#previous().kind;
+      if (prev == TokenType.Semi || prev == TokenType.RBrace) {
+        return;
+      }
+      if (this.#check(TokenType.Semi)) {
+        this.#advance();
+        return;
+      }
+      if ((this.#atLineBreak() && !this.#check(TokenType.RBrace)) || this.#isTopLevelStart()) {
+        return;
+      }
+    }
+
+    var braceDepth = 0;
+    while (!this.#isAtEnd()) {
+      if (braceDepth == 0) {
+        if (this.#check(TokenType.Semi)) {
+          this.#advance();
+          return;
+        }
+        if ((this.#atLineBreak() && !this.#check(TokenType.RBrace)) || this.#isTopLevelStart()) {
+          return;
+        }
+      }
+      let tok = this.#advance();
+      if (tok.kind == TokenType.LBrace) {
+        braceDepth += 1;
+      } else if (tok.kind == TokenType.RBrace) {
+        if (braceDepth > 0) {
+          braceDepth -= 1;
+          if (braceDepth == 0) {
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  #synchronizeStatement(posBefore: i32): void {
+    this.#extraGreaters = 0;
+    if (this.#current == posBefore && !this.#isAtEnd() && !this.#check(TokenType.RBrace)) {
+      let tok = this.#advance();
+      if (tok.kind == TokenType.Semi) {
+        return;
+      }
+    } else if (this.#current > posBefore) {
+      let prev = this.#previous().kind;
+      if (prev == TokenType.Semi || prev == TokenType.RBrace) {
+        return;
+      }
+      if (this.#check(TokenType.Semi)) {
+        this.#advance();
+        return;
+      }
+      if (this.#check(TokenType.RBrace) || this.#atLineBreak() || this.#isStatementStart()) {
+        return;
+      }
+    }
+
+    var braceDepth = 0;
+    while (!this.#isAtEnd()) {
+      if (braceDepth == 0) {
+        if (this.#check(TokenType.Semi)) {
+          this.#advance();
+          return;
+        }
+        if (this.#check(TokenType.RBrace) || this.#atLineBreak() || this.#isStatementStart()) {
+          return;
+        }
+      }
+      let tok = this.#advance();
+      if (tok.kind == TokenType.LBrace) {
+        braceDepth += 1;
+      } else if (tok.kind == TokenType.RBrace) {
+        if (braceDepth > 0) {
+          braceDepth -= 1;
+          if (braceDepth == 0) {
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  #synchronizeClassMember(posBefore: i32): void {
+    this.#synchronizeStatement(posBefore);
   }
 
   #parseNumberLiteral(token: Token, startToken: Token): NumberLiteral {
@@ -841,6 +1032,12 @@ export final class Parser {
 
     if (this.#check(TokenType.Semi)) {
       this.#advance();
+    } else if (this.#recover) {
+      if (this.#atLineBreak() || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        this.#recordSyntaxError(this.#error("Expected ';' after using statement"));
+      } else {
+        this.#consume(TokenType.Semi, "Expected ';' after using statement");
+      }
     } else if (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       this.#consume(TokenType.Semi, "Expected ';' after using statement");
     }
@@ -865,6 +1062,9 @@ export final class Parser {
     } else {
       this.#consume(TokenType.Equals, "Expected '=' after variable name");
       if (this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        if (this.#recover) {
+          this.#recordSyntaxError(this.#error("Unexpected token in expression"));
+        }
         let st = this.#peek();
         new Identifier("", this.#makeLocation(st))
       } else {
@@ -874,6 +1074,12 @@ export final class Parser {
     
     if (this.#check(TokenType.Semi)) {
       this.#advance();
+    } else if (this.#recover) {
+      if (this.#atLineBreak() || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        this.#recordSyntaxError(this.#error("Expected ';' after variable declaration"));
+      } else {
+        this.#consume(TokenType.Semi, "Expected ';' after variable declaration");
+      }
     } else if (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       this.#consume(TokenType.Semi, "Expected ';' after variable declaration");
     }
@@ -1243,10 +1449,24 @@ export final class Parser {
     let body = new Array<Statement>(8);
     
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-      body.push(this.#parseStatement());
+      if (this.#recover) {
+        let posBefore = this.#current;
+        try {
+          body.push(this.#parseStatement());
+        } catch (e) {
+          this.#recordSyntaxError(e);
+          this.#synchronizeStatement(posBefore);
+        }
+      } else {
+        body.push(this.#parseStatement());
+      }
     }
     
-    this.#consume(TokenType.RBrace, "Expected '}' after block");
+    if (this.#recover && !this.#check(TokenType.RBrace)) {
+      this.#recordSyntaxError(this.#error("Expected '}' after block"));
+    } else {
+      this.#consume(TokenType.RBrace, "Expected '}' after block");
+    }
     
     return new BlockStatement(body, this.#makeLocation(startToken));
   }
@@ -1255,40 +1475,61 @@ export final class Parser {
     let body = new Array<Statement>(8);
     
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-      // Check for keywords that definitely start statements
-      if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.Yield) || this.#check(TokenType.While) || this.#check(TokenType.For) || this.#check(TokenType.Break) || this.#check(TokenType.Continue) || this.#check(TokenType.Class) || this.#check(TokenType.Using) || this.#isTailReturnAhead()) {
-        body.push(this.#parseStatement());
-        continue;
-      }
-      
-      // If we're at a semicolon, skip it (e.g. empty statement or trailing ; after block-ended stmt)
-      if (this.#check(TokenType.Semi)) {
-        this.#advance();
-        continue;
-      }
-      
-      // Try to parse as expression
-      let expr = this.#parseExpression();
-      
-      // If next token is '}', this is the trailing expression (no semicolon needed)
-      if (this.#check(TokenType.RBrace)) {
-        body.push(new ExpressionStatement(expr, expr.loc));
-        break;
-      }
-      
-      body.push(new ExpressionStatement(expr, expr.loc));
-      if (!this.#isBlockEndedExpression(expr)) {
+      let posBefore = this.#current;
+      try {
+        // Check for keywords that definitely start statements
+        if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.Yield) || this.#check(TokenType.While) || this.#check(TokenType.For) || this.#check(TokenType.Break) || this.#check(TokenType.Continue) || this.#check(TokenType.Class) || this.#check(TokenType.Using) || this.#isTailReturnAhead()) {
+          body.push(this.#parseStatement());
+          continue;
+        }
+        
+        // If we're at a semicolon, skip it (e.g. empty statement or trailing ; after block-ended stmt)
         if (this.#check(TokenType.Semi)) {
           this.#advance();
-        } else if (!this.#check(TokenType.RBrace)) {
-          this.#error("Expected ';' after expression");
+          continue;
         }
-      } else if (this.#check(TokenType.Semi)) {
-        this.#advance();
+        
+        // Try to parse as expression
+        let expr = this.#parseExpression();
+        
+        // If next token is '}', this is the trailing expression (no semicolon needed)
+        if (this.#check(TokenType.RBrace)) {
+          body.push(new ExpressionStatement(expr, expr.loc));
+          break;
+        }
+        
+        body.push(new ExpressionStatement(expr, expr.loc));
+        if (!this.#isBlockEndedExpression(expr)) {
+          if (this.#check(TokenType.Semi)) {
+            this.#advance();
+          } else if (!this.#check(TokenType.RBrace)) {
+            if (this.#recover) {
+              if (this.#atLineBreak() || this.#isAtEnd()) {
+                this.#recordSyntaxError(this.#error("Expected ';' after expression"));
+              } else {
+                this.#consume(TokenType.Semi, "Expected ';' after expression");
+              }
+            } else {
+              this.#error("Expected ';' after expression");
+            }
+          }
+        } else if (this.#check(TokenType.Semi)) {
+          this.#advance();
+        }
+      } catch (e) {
+        if (!this.#recover) {
+          throw e;
+        }
+        this.#recordSyntaxError(e);
+        this.#synchronizeStatement(posBefore);
       }
     }
     
-    this.#consume(TokenType.RBrace, "Expected '}' after block");
+    if (this.#recover && !this.#check(TokenType.RBrace)) {
+      this.#recordSyntaxError(this.#error("Expected '}' after block"));
+    } else {
+      this.#consume(TokenType.RBrace, "Expected '}' after block");
+    }
     
     return new BlockStatement(body, this.#makeLocation(startToken));
   }
@@ -1641,6 +1882,12 @@ export final class Parser {
       }
     } else if (this.#check(TokenType.Semi)) {
       this.#advance();
+    } else if (this.#recover) {
+      if (this.#atLineBreak() || this.#check(TokenType.RBrace) || this.#check(TokenType.EOF)) {
+        this.#recordSyntaxError(this.#error("Expected ';' after expression"));
+      } else {
+        this.#consume(TokenType.Semi, "Expected ';' after expression");
+      }
     } else if (!this.#check(TokenType.RBrace) && !this.#check(TokenType.EOF)) {
       this.#consume(TokenType.Semi, "Expected ';' after expression");
     }
@@ -2216,6 +2463,9 @@ export final class Parser {
     while (this.#check(TokenType.Plus) || this.#check(TokenType.Minus)) {
       let op = this.#advance();
       let right = if (this.#check(TokenType.Semi) || this.#check(TokenType.RParen) || this.#check(TokenType.Comma) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        if (this.#recover) {
+          this.#recordSyntaxError(this.#error("Unexpected token in expression"));
+        }
         let st = this.#peek();
         new Identifier("", this.#makeLocation(st))
       } else {
@@ -2234,6 +2484,9 @@ export final class Parser {
     while (this.#check(TokenType.Star) || this.#check(TokenType.Slash) || this.#check(TokenType.Percent)) {
       let op = this.#advance();
       let right = if (this.#check(TokenType.Semi) || this.#check(TokenType.RParen) || this.#check(TokenType.Comma) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        if (this.#recover) {
+          this.#recordSyntaxError(this.#error("Unexpected token in expression"));
+        }
         let st = this.#peek();
         new Identifier("", this.#makeLocation(st))
       } else {
@@ -2252,6 +2505,9 @@ export final class Parser {
     if (this.#match(TokenType.StarStar)) {
       let op = this.#previous();
       let right = if (this.#check(TokenType.Semi) || this.#check(TokenType.RParen) || this.#check(TokenType.Comma) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        if (this.#recover) {
+          this.#recordSyntaxError(this.#error("Unexpected token in expression"));
+        }
         let st = this.#peek();
         new Identifier("", this.#makeLocation(st))
       } else {
@@ -2332,6 +2588,9 @@ export final class Parser {
           let name = if (this.#isIdentifier()) {
             this.#parseIdentifier()
           } else {
+            if (this.#recover) {
+              this.#recordSyntaxError(this.#error("Expected identifier"));
+            }
             let startToken = this.#peek();
             new Identifier("", this.#makeLocation(startToken))
           };
@@ -2389,6 +2648,9 @@ export final class Parser {
     
     if (!this.#check(TokenType.RParen)) {
       if (this.#check(TokenType.Semi) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        if (this.#recover) {
+          this.#recordSyntaxError(this.#error("Unexpected token in expression"));
+        }
         let st = this.#peek();
         args.push(new Identifier("", this.#makeLocation(st)));
       } else {
@@ -2398,6 +2660,9 @@ export final class Parser {
             break;
           }
           if (this.#check(TokenType.Semi) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+            if (this.#recover) {
+              this.#recordSyntaxError(this.#error("Unexpected token in expression"));
+            }
             let st = this.#peek();
             args.push(new Identifier("", this.#makeLocation(st)));
             break;
@@ -2409,6 +2674,8 @@ export final class Parser {
     
     if (this.#check(TokenType.RParen)) {
       this.#advance();
+    } else if (this.#recover && (this.#check(TokenType.Semi) || this.#check(TokenType.RBrace) || this.#isAtEnd())) {
+      this.#recordSyntaxError(this.#error("Expected ')' after arguments"));
     } else if (!this.#check(TokenType.Semi) && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       this.#consume(TokenType.RParen, "Expected ')' after arguments");
     }
@@ -2623,6 +2890,19 @@ export final class Parser {
       return this.#parseIdentifier();
     }
     
+    if (this.#recover && (
+      this.#check(TokenType.Semi) ||
+      this.#check(TokenType.RParen) ||
+      this.#check(TokenType.RBracket) ||
+      this.#check(TokenType.RBrace) ||
+      this.#check(TokenType.Comma) ||
+      this.#isAtEnd() ||
+      (this.#atLineBreak() && this.#isStatementStart())
+    )) {
+      this.#recordSyntaxError(this.#error("Unexpected token in expression"));
+      return new Identifier("", this.#makeLocation(startToken));
+    }
+
     throw this.#error("Unexpected token in expression");
   }
   
@@ -3268,6 +3548,19 @@ export final class Parser {
       return new NamedTypeAnnotation(name, typeArgs, elementsMutable, this.#makeLocation(startToken));
     }
     
+    if (this.#recover && (
+      this.#check(TokenType.Equals) ||
+      this.#check(TokenType.Semi) ||
+      this.#check(TokenType.RParen) ||
+      this.#check(TokenType.RBrace) ||
+      this.#check(TokenType.Comma) ||
+      this.#isAtEnd() ||
+      this.#atLineBreak()
+    )) {
+      this.#recordSyntaxError(this.#error("Expected type annotation"));
+      return new NamedTypeAnnotation("", null, false, this.#makeLocation(startToken));
+    }
+
     throw this.#error("Expected type annotation");
   }
   
@@ -3564,6 +3857,9 @@ export final class Parser {
     var superClass: TypeAnnotation | null = null;
     if (this.#match(TokenType.Extends)) {
       if (this.#check(TokenType.With) || this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+        if (this.#recover) {
+          this.#recordSyntaxError(this.#error("Expected type annotation"));
+        }
         let st = this.#peek();
         superClass = new NamedTypeAnnotation("", null, false, this.#makeLocation(st));
       } else {
@@ -3576,12 +3872,18 @@ export final class Parser {
     if (this.#match(TokenType.With)) {
       let ms = new Array<TypeAnnotation>(4);
       if (this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+        if (this.#recover) {
+          this.#recordSyntaxError(this.#error("Expected type annotation"));
+        }
         let st = this.#peek();
         ms.push(new NamedTypeAnnotation("", null, false, this.#makeLocation(st)));
       } else {
         ms.push(this.#parseTypeAnnotation());
         while (this.#match(TokenType.Comma)) {
           if (this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+            if (this.#recover) {
+              this.#recordSyntaxError(this.#error("Expected type annotation"));
+            }
             let st = this.#peek();
             ms.push(new NamedTypeAnnotation("", null, false, this.#makeLocation(st)));
           } else {
@@ -3597,12 +3899,18 @@ export final class Parser {
     if (this.#match(TokenType.Implements)) {
       let impls = new Array<TypeAnnotation>(4);
       if (this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+        if (this.#recover) {
+          this.#recordSyntaxError(this.#error("Expected type annotation"));
+        }
         let st = this.#peek();
         impls.push(new NamedTypeAnnotation("", null, false, this.#makeLocation(st)));
       } else {
         impls.push(this.#parseTypeAnnotation());
         while (this.#match(TokenType.Comma)) {
           if (this.#check(TokenType.LBrace) || this.#isAtEnd()) {
+            if (this.#recover) {
+              this.#recordSyntaxError(this.#error("Expected type annotation"));
+            }
             let st = this.#peek();
             impls.push(new NamedTypeAnnotation("", null, false, this.#makeLocation(st)));
           } else {
@@ -3618,13 +3926,31 @@ export final class Parser {
     let sealedVariants = new Array<SealedVariant>(4);
     if (this.#match(TokenType.LBrace)) {
       while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-        if (isSealed && this.#check(TokenType.Case)) {
-          this.#parseSealedVariants(sealedVariants);
+        if (this.#recover) {
+          let posBefore = this.#current;
+          try {
+            if (isSealed && this.#check(TokenType.Case)) {
+              this.#parseSealedVariants(sealedVariants);
+            } else {
+              body.push(this.#parseClassMember());
+            }
+          } catch (e) {
+            this.#recordSyntaxError(e);
+            this.#synchronizeClassMember(posBefore);
+          }
         } else {
-          body.push(this.#parseClassMember());
+          if (isSealed && this.#check(TokenType.Case)) {
+            this.#parseSealedVariants(sealedVariants);
+          } else {
+            body.push(this.#parseClassMember());
+          }
         }
       }
-      this.#consume(TokenType.RBrace, "Expected '}' after class body");
+      if (this.#recover && !this.#check(TokenType.RBrace)) {
+        this.#recordSyntaxError(this.#error("Expected '}' after class body"));
+      } else {
+        this.#consume(TokenType.RBrace, "Expected '}' after class body");
+      }
     } else if (caseParams == null) {
       this.#consume(TokenType.LBrace, "Expected '{' before class body");
     }
@@ -4386,10 +4712,24 @@ export final class Parser {
     
     let body = new Array<Node>(8);
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-      body.push(this.#parseInterfaceMember());
+      if (this.#recover) {
+        let posBefore = this.#current;
+        try {
+          body.push(this.#parseInterfaceMember());
+        } catch (e) {
+          this.#recordSyntaxError(e);
+          this.#synchronizeClassMember(posBefore);
+        }
+      } else {
+        body.push(this.#parseInterfaceMember());
+      }
     }
     
-    this.#consume(TokenType.RBrace, "Expected '}' after interface body");
+    if (this.#recover && !this.#check(TokenType.RBrace)) {
+      this.#recordSyntaxError(this.#error("Expected '}' after interface body"));
+    } else {
+      this.#consume(TokenType.RBrace, "Expected '}' after interface body");
+    }
     
     return new InterfaceDeclaration(name, typeParameters, extendsList, body, exported, this.#makeLocation(startToken));
   }
@@ -4626,10 +4966,24 @@ export final class Parser {
 
     let body = new Array<Node>(8);
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
-      body.push(this.#parseClassMember());
+      if (this.#recover) {
+        let posBefore = this.#current;
+        try {
+          body.push(this.#parseClassMember());
+        } catch (e) {
+          this.#recordSyntaxError(e);
+          this.#synchronizeClassMember(posBefore);
+        }
+      } else {
+        body.push(this.#parseClassMember());
+      }
     }
 
-    this.#consume(TokenType.RBrace, `Expected '}' after ${what} body`);
+    if (this.#recover && !this.#check(TokenType.RBrace)) {
+      this.#recordSyntaxError(this.#error(`Expected '}' after ${what} body`));
+    } else {
+      this.#consume(TokenType.RBrace, `Expected '}' after ${what} body`);
+    }
 
     return new MixinDeclaration(name, typeParameters, on, mixins, body, exported, decoratorSubject, this.#makeLocation(startToken));
   }
