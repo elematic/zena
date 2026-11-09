@@ -28,7 +28,7 @@ export async function retractCommand(args: ParsedArgs, options: Options): Future
     } catch (e) {
       throw new PublishError(`'${version}' is not a version`);
     }
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let pkg = await packageDid(registry, args);
     let input = new JsonObject();
@@ -41,6 +41,6 @@ export async function retractCommand(args: ParsedArgs, options: Options): Future
     let written = (await client.procedure(RETRACT, input)) as JsonObject;
     await attest(session, written['uri'] as String, Cid.parse(written['cid'] as String));
     console.log(`Retracted ${version} of ${pkg}. Builds that pin it still use it; choosing a version skips it.`);
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }

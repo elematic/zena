@@ -13,6 +13,7 @@
 
 import {suite, test} from 'zena:test';
 import {isTrue} from 'zena:assert';
+import {Future} from 'zena:async';
 import {run} from 'zena:process';
 import {MAIN, Scratch, described, write, zenaIn} from './cli-support.zena';
 
@@ -21,17 +22,17 @@ import {MAIN, Scratch, described, write, zenaIn} from './cli-support.zena';
  * `libs/near` (a path dependency `../libs/near`) and `libs/far` (by its
  * absolute path).
  */
-function pathLayout(scratch: Scratch): void {
-  write(scratch.at('libs/near/zena-package.json'), '{"name": "near"}');
-  write(scratch.at('libs/near/numbers.zena'), 'export function two(): i32 { return 2; }\n');
-  write(scratch.at('libs/far/zena-package.json'), '{"name": "far"}');
-  write(scratch.at('libs/far/numbers.zena'), 'export function three(): i32 { return 3; }\n');
-  write(scratch.at('workspace/zena-package.json'),
+async function pathLayout(scratch: Scratch): Future<void> {
+  await write(scratch.at('libs/near/zena-package.json'), '{"name": "near"}');
+  await write(scratch.at('libs/near/numbers.zena'), 'export function two(): i32 { return 2; }\n');
+  await write(scratch.at('libs/far/zena-package.json'), '{"name": "far"}');
+  await write(scratch.at('libs/far/numbers.zena'), 'export function three(): i32 { return 3; }\n');
+  await write(scratch.at('workspace/zena-package.json'),
       `{"dependencies": {"near": {"path": "../libs/near"}, "far": {"path": "${scratch.host('libs/far')}"}}}\n`);
-  write(scratch.at('workspace/prog.zena'),
+  await write(scratch.at('workspace/prog.zena'),
       "import { two } from 'near:numbers';\nimport { three } from 'far:numbers';\n" +
       `${MAIN} {\n  return two() * three() - 6;\n}\n`);
-  write(scratch.at('workspace/numbers_test.zena'),
+  await write(scratch.at('workspace/numbers_test.zena'),
       "import { suite, test } from 'zena:test';\nimport { equal } from 'zena:assert';\n" +
       "import { two } from 'near:numbers';\nimport { three } from 'far:numbers';\n\n" +
       "export let tests = suite('numbers', () => {\n" +
@@ -45,14 +46,14 @@ function pathLayout(scratch: Scratch): void {
  * leaves them: each source archive unpacked under
  * `cache/packages/sources/<CID>`.
  */
-function publishedLayout(scratch: Scratch): void {
-  write(scratch.at('cache/packages/sources/bafkreirouter/match.zena'),
+async function publishedLayout(scratch: Scratch): Future<void> {
+  await write(scratch.at('cache/packages/sources/bafkreirouter/match.zena'),
       "import { parse } from 'json:parse';\nexport function route(): i32 { return parse() + 1; }\n");
-  write(scratch.at('cache/packages/sources/bafkreijson/parse.zena'),
+  await write(scratch.at('cache/packages/sources/bafkreijson/parse.zena'),
       'export function parse(): i32 { return 41; }\n');
-  write(scratch.at('workspace/zena-package.json'),
+  await write(scratch.at('workspace/zena-package.json'),
       '{"dependencies": {"router": {"did": "did:plc:router", "version": "1.4.2"}}}');
-  write(scratch.at('workspace/zena-lock.json'), `{
+  await write(scratch.at('workspace/zena-lock.json'), `{
   "resolved": {
     "did:plc:router@1": {
       "version": "1.4.2",
@@ -64,15 +65,15 @@ function publishedLayout(scratch: Scratch): void {
   }
 }
 `);
-  write(scratch.at('workspace/prog.zena'),
+  await write(scratch.at('workspace/prog.zena'),
       `import { route } from 'router:match';\n${MAIN} {\n  return route() - 42;\n}\n`);
 }
 
 export let tests = suite('zena: packages outside the workspace', () => {
   test('run and test read path dependencies outside the workspace and at absolute paths', async (ctx) => {
-    let scratch = Scratch.create('packages-paths');
+    let scratch = await Scratch.create('packages-paths');
     try {
-      pathLayout(scratch);
+      await pathLayout(scratch);
       let zena = zenaIn(scratch, 'workspace');
       let ran = await zena.run(['run', 'prog.zena']);
       isTrue(ran.succeeded(), described(ran));
@@ -84,9 +85,9 @@ export let tests = suite('zena: packages outside the workspace', () => {
   });
 
   test('run reads published packages from the package cache', async (ctx) => {
-    let scratch = Scratch.create('packages-published');
+    let scratch = await Scratch.create('packages-published');
     try {
-      publishedLayout(scratch);
+      await publishedLayout(scratch);
       let ran = await zenaIn(scratch, 'workspace').run(['run', 'prog.zena']);
       isTrue(ran.succeeded(), described(ran));
     } finally {
@@ -95,9 +96,9 @@ export let tests = suite('zena: packages outside the workspace', () => {
   });
 
   test('a package missing from the cache says to fetch it', async (ctx) => {
-    let scratch = Scratch.create('packages-missing');
+    let scratch = await Scratch.create('packages-missing');
     try {
-      publishedLayout(scratch);
+      await publishedLayout(scratch);
       await run(['rm', '-r', scratch.host('cache/packages/sources/bafkreijson')]);
       let compiled = await zenaIn(scratch, 'workspace').run(['run', 'prog.zena']);
       isTrue(!compiled.succeeded(), 'compiled without json in the cache');

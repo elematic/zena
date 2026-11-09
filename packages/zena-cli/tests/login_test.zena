@@ -7,7 +7,7 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
-import {existsSync} from 'zena:fs';
+import {exists} from 'zena:fs';
 import {run} from 'zena:process';
 import {
   Scratch, ZenaCommand, described, dnsBeside, ensureDir, fakePdsOrigin, read, startFakePds, stopFakePds, write
@@ -23,11 +23,11 @@ async function modeOf(hostPath: String): Future<String> {
 
 export let tests = suite('zena pkg login and zena pkg logout', () => {
   test('keep a session only its owner can read, and end it', async (ctx) => {
-    let scratch = Scratch.create('login');
-    let pds = startFakePds(scratch, 'login-pds.zena');
+    let scratch = await Scratch.create('login');
+    let pds = await startFakePds(scratch, 'login-pds.zena');
     try {
       let plc = await fakePdsOrigin(scratch, pds);
-      ensureDir(scratch.at('workspace'));
+      await ensureDir(scratch.at('workspace'));
       let zena = new ZenaCommand(scratch.host('workspace'), scratch.at('workspace'), scratch.host('cache'))
         .set('ZENA_PLC_DIRECTORY', plc)
         .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc))
@@ -38,16 +38,16 @@ export let tests = suite('zena pkg login and zena pkg logout', () => {
       let wrong = await zena.run(['pkg', 'login', 'alice.test', '--password-stdin'], 'not-it\n');
       isTrue(!wrong.succeeded(), 'zena pkg login accepted a wrong password');
       isTrue(wrong.stderr.contains('AuthenticationRequired'), described(wrong));
-      isTrue(!existsSync(session), 'a refused login stored a session');
+      isTrue(!(await exists(session)), 'a refused login stored a session');
 
       // A session file left readable by others is made private.
-      write(session, '{}');
+      await write(session, '{}');
       await run(['chmod', '644', scratch.host('config/session.json')]);
 
       let login = await zena.run(['pkg', 'login', 'alice.test', '--password-stdin'], 'app-password\n');
       isTrue(login.succeeded(), described(login));
       isTrue(login.stdout.contains(`Signed in as alice.test (${ALICE})`), described(login));
-      let stored = read(session);
+      let stored = await read(session);
       isTrue(stored.contains(ALICE) && stored.contains('refreshJwt'), stored);
       equal(await modeOf(scratch.host('config/session.json')), '600');
 
@@ -63,7 +63,7 @@ export let tests = suite('zena pkg login and zena pkg logout', () => {
 
       let logout = await zena.run(['pkg', 'logout']);
       isTrue(logout.succeeded() && logout.stdout.contains('Signed out alice.test'), described(logout));
-      isTrue(!existsSync(session), 'zena pkg logout kept the session');
+      isTrue(!(await exists(session)), 'zena pkg logout kept the session');
     } finally {
       await stopFakePds(pds);
       await scratch.remove();

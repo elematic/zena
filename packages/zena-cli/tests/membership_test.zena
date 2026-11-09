@@ -15,11 +15,11 @@ let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 
 export let tests = suite('zena pkg scope, team and owner', () => {
   test('adds people to a scope, a team and a package, and takes them away', async (ctx) => {
-    let scratch = Scratch.create('membership');
-    let stack = startFakePds(scratch, 'publish-stack.zena');
+    let scratch = await Scratch.create('membership');
+    let stack = await startFakePds(scratch, 'publish-stack.zena');
     try {
       await fakePdsOrigin(scratch, stack);
-      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
       // Each person signs in with a configuration directory of their own.
       let person = (who: String, dir: String) =>
         new ZenaCommand(scratch.host(dir), scratch.at(dir), scratch.host('cache'))
@@ -28,8 +28,8 @@ export let tests = suite('zena pkg scope, team and owner', () => {
           .set('ZENA_REGISTRY', addresses['registry'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
 
-      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
-      write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      await write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      await write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       let alice = person('alice', 'lib');
       let bob = person('bob', 'lib');
       isTrue((await alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n')).succeeded(), 'alice signs in');
@@ -38,8 +38,8 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       isTrue(scope.succeeded(), described(scope));
       let published = await alice.run(['pkg', 'publish', '--yes']);
       isTrue(published.succeeded(), described(published));
-      let did = (parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
-      let manifestAt = (version: String) => write(scratch.at('lib/zena-package.json'),
+      let did = (parseJson(await read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
+      let manifestAt = async (version: String) => await write(scratch.at('lib/zena-package.json'),
           `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "${version}"}\n`);
 
       // Alice is the only member; Bob, who is none, sees no one and can
@@ -89,7 +89,7 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       isTrue(owners.succeeded() && owners.stdout.contains(`${ALICE}  owner`) &&
           owners.stdout.contains('the team core of did:plc:') && owners.stdout.contains('publisher'), described(owners));
 
-      manifestAt('1.1.0');
+      await manifestAt('1.1.0');
       let byBob = await bob.run(['pkg', 'publish']);
       isTrue(byBob.succeeded() && byBob.stdout.contains('Published greet 1.1.0'), described(byBob));
       // As a publisher, Bob does not choose the package's maintainers.
@@ -99,7 +99,7 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       // Taken away: the team loses the package, and Bob the scope.
       let taken = await alice.run(['pkg', 'owner', 'remove', '--team', 'acme/core']);
       isTrue(taken.succeeded(), described(taken));
-      manifestAt('1.2.0');
+      await manifestAt('1.2.0');
       let refused = await bob.run(['pkg', 'publish']);
       isTrue(!refused.succeeded() && refused.stderr.contains('Forbidden'), described(refused));
       let deleted = await alice.run(['pkg', 'team', 'delete', 'acme/core']);

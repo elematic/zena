@@ -11,12 +11,12 @@ import {Scratch, described, ensureDir, fakePdsOrigin, startFakePds, stopFakePds,
 
 export let tests = suite("zena: the registry's DID", () => {
   test("refuses a registry that answers with another registry's DID", async (ctx) => {
-    let scratch = Scratch.create('registry-did');
-    let stack = startFakePds(scratch, 'lying-registry.zena');
+    let scratch = await Scratch.create('registry-did');
+    let stack = await startFakePds(scratch, 'lying-registry.zena');
     try {
       let plc = await fakePdsOrigin(scratch, stack);
       let origin = plc.sliceBytes(0, plc.length - '/plc'.length);
-      ensureDir(scratch.at('project'));
+      await ensureDir(scratch.at('project'));
       let refused = await zenaIn(scratch, 'project').run(['pkg', 'scope', 'info', 'acme', '--registry', origin]);
       isTrue(!refused.succeeded() && refused.stderr.contains('says it is did:web:pkg.zena-lang.dev') &&
           refused.stderr.contains('the registry at pkg.zena-lang.dev'), described(refused));

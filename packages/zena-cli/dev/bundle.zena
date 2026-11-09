@@ -1,6 +1,7 @@
 import { ArgParser } from 'zena:args';
+import { Future } from 'zena:async';
 import { getArguments, exit } from 'zena:cli';
-import { existsSync, isDirectorySync, isFileSync, listDirSync, FileType, mkdirSync, readFileBytesSync, writeFileSync } from 'zena:fs';
+import { exists, isDirectory, isFile, listDir, FileType, mkdir, readFileBytes, writeFile } from 'zena:fs';
 import { dirname, join2, relative } from 'zena:path';
 import { StringBuilder, GrowableArray } from 'zena:core';
 import { sha256Hex, sha256HexOfString } from 'zena:crypto';
@@ -8,15 +9,15 @@ import { compareStrings, sortBy } from 'workflow:canonical';
 
 class BundleFile(relPath: String, absPath: String)
 
-let collectFiles = (
+async function collectFiles(
   dir: String,
   base: String,
   out: GrowableArray<BundleFile>,
-): void => {
-  if (!isDirectorySync(dir)) {
+): Future<void> {
+  if (!(await isDirectory(dir))) {
     return;
   }
-  for (let entry in listDirSync(dir)) {
+  for (let entry in await listDir(dir)) {
     let name = entry.name;
     // Skip hidden files or OS artifacts like .DS_Store
     if (name.startsWith('.')) {
@@ -24,15 +25,15 @@ let collectFiles = (
     }
     let full = join2(dir, name);
     if (entry.fileType == FileType.Directory) {
-      collectFiles(full, base, out);
+      await collectFiles(full, base, out);
     } else if (entry.fileType == FileType.RegularFile) {
       let rel = relative(base, full);
       out.push(new BundleFile(rel, full));
     }
   }
-};
+}
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let parser = new ArgParser('bundle', 'Generates the Rust stdlib and CLI module bundle.')
     .addOption('stdlib', {
       abbr: 's',
@@ -56,7 +57,7 @@ export let main = (): i32 => {
   let outPath = parsed.getOption('out') ?? 'packages/zena-cli/out/stdlib_bundle.rs';
 
   let files = new GrowableArray<BundleFile>();
-  collectFiles(stdlibDir, stdlibDir, files);
+  await collectFiles(stdlibDir, stdlibDir, files);
   sortBy(files, (a: BundleFile, b: BundleFile) => compareStrings(a.relPath, b.relPath));
 
   // Compute a composite hash of all stdlib files (relative paths + content hashes)
@@ -64,7 +65,7 @@ export let main = (): i32 => {
   for (let f in files) {
     hashSummary.append(f.relPath);
     hashSummary.append(':');
-    let contentHash = sha256Hex(readFileBytesSync(f.absPath));
+    let contentHash = sha256Hex(await readFileBytes(f.absPath));
     hashSummary.append(contentHash);
     hashSummary.append('\n');
   }
@@ -85,8 +86,8 @@ export let main = (): i32 => {
   }
   sb.append('];\n\n');
 
-  if (isFileSync(modulePath)) {
-    let wasmHash = sha256Hex(readFileBytesSync(modulePath));
+  if (await isFile(modulePath)) {
+    let wasmHash = sha256Hex(await readFileBytes(modulePath));
     sb.append('pub static BUNDLED_CLI_HASH: Option<&str> = Some("');
     sb.append(wasmHash);
     sb.append('");\n');
@@ -97,12 +98,12 @@ export let main = (): i32 => {
   }
 
   let outDir = dirname(outPath);
-  if (outDir.length > 0 && !existsSync(outDir)) {
-    mkdirSync(outDir);
+  if (outDir.length > 0 && !(await exists(outDir))) {
+    await mkdir(outDir);
   }
 
-  writeFileSync(outPath, sb.toString());
+  await writeFile(outPath, sb.toString());
   console.log(`Bundled ${files.length} stdlib files into ${outPath}`);
   return 0;
-};
+}
 

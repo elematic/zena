@@ -56,7 +56,7 @@ export async function scopeAddCommand(args: ParsedArgs, options: Options): Futur
   return await runCommand(async (): Future<void> => {
     let (scope, person) = twoArguments(args, 'zena pkg scope add <scope> <handle or DID> [--role member|admin|owner]');
     let role = roleOf(args, MEMBER, [MEMBER, ADMIN, OWNER]);
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let org = await scopeDid(registry, scope);
     let did = await personDid(person);
@@ -74,7 +74,7 @@ export async function scopeAddCommand(args: ParsedArgs, options: Options): Futur
     if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
       console.log(`Added ${person} to ${scope} as ${role}.`);
     }
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -82,7 +82,7 @@ export async function scopeAddCommand(args: ParsedArgs, options: Options): Futur
 export async function scopeRemoveCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
     let (scope, person) = twoArguments(args, 'zena pkg scope remove <scope> <handle or DID>');
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let org = await scopeDid(registry, scope);
     let did = await personDid(person);
@@ -102,7 +102,7 @@ export async function scopeRemoveCommand(args: ParsedArgs, options: Options): Fu
     if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
       console.log(`Removed ${person} from ${scope}.`);
     }
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -121,14 +121,14 @@ export async function scopeSettingsCommand(args: ParsedArgs, options: Options): 
     let scope = args.rest[1];
     let owners = countOption(args, 'owner-threshold', 1);
     let admins = countOption(args, 'admin-threshold', 1);
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let org = await scopeDid(registry, scope);
     let held = required(await current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
     let members = Members.fromValue(fromJson(held.value));
     if (owners < 0 && admins < 0) {
       console.log(scopeSettings(scope, members));
-      saveIfRefreshed(session);
+      await saveIfRefreshed(session);
       return;
     }
     let record = new Members(members.members, if (owners < 0) members.ownerThreshold else owners,
@@ -141,7 +141,7 @@ export async function scopeSettingsCommand(args: ParsedArgs, options: Options): 
     if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
       console.log(scopeSettings(scope, record));
     }
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -162,7 +162,7 @@ export async function scopePolicyCommand(args: ParsedArgs, options: Options): Fu
       throw new PublishError('give the scope: zena pkg scope policy <scope> [--minimum-threshold <n>] ...');
     }
     let scope = args.rest[1];
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let org = await scopeDid(registry, scope);
     let held = await current(org, POLICY_TYPE, 'self');
@@ -198,7 +198,7 @@ export async function scopePolicyCommand(args: ParsedArgs, options: Options): Fu
     }
     if (!changed) {
       console.log(describePolicy(scope, policy));
-      saveIfRefreshed(session);
+      await saveIfRefreshed(session);
       return;
     }
     let input = new JsonObject();
@@ -210,7 +210,7 @@ export async function scopePolicyCommand(args: ParsedArgs, options: Options): Fu
     if (await write(session, registry, PUT_POLICY, input, `${scope}'s policy`, `@${scope}`)) {
       console.log(describePolicy(scope, policy));
     }
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -259,12 +259,12 @@ export async function scopeMembersCommand(args: ParsedArgs, options: Options): F
     if (args.rest.length != 2) {
       throw new PublishError('give the scope: zena pkg scope members <scope>');
     }
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let org = await scopeDid(registry, args.rest[1]);
     required(await current(org, MEMBERS_TYPE, 'self'), `${args.rest[1]} has no members record`);
     await printEntries(await visibleEntries(session, registry, org, null));
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -281,7 +281,7 @@ export async function teamCommand(args: ParsedArgs, options: Options): Future<i3
     }
     let sub = args.rest[0];
     let (scope, name) = teamName(args.rest[1]);
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let org = await scopeDid(registry, scope);
     let held = await current(org, TEAM_TYPE, name);
@@ -340,7 +340,7 @@ export async function teamCommand(args: ParsedArgs, options: Options): Future<i3
         throw new PublishError(usage);
       }
     }
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -358,7 +358,7 @@ export async function ownerCommand(args: ParsedArgs, options: Options): Future<i
       throw new PublishError(usage);
     }
     let sub = args.rest[0];
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let pkg = await packageDid(registry, args);
     let held = await current(pkg, MAINTAINERS_TYPE, 'self');
@@ -379,7 +379,7 @@ export async function ownerCommand(args: ParsedArgs, options: Options): Future<i
         console.log(`${describeMaintainer(maintainer, entries)}  ${maintainer.role}`);
       }
       console.log(packageSettings(record));
-      saveIfRefreshed(session);
+      await saveIfRefreshed(session);
       return;
     }
     if (sub == 'settings') {
@@ -388,7 +388,7 @@ export async function ownerCommand(args: ParsedArgs, options: Options): Future<i
       let humans = countOption(args, 'humans', 0);
       if (threshold < 0 && owners < 0 && humans < 0) {
         console.log(packageSettings(record));
-        saveIfRefreshed(session);
+        await saveIfRefreshed(session);
         return;
       }
       let changed = new Maintainers(record.maintainers, if (threshold < 0) record.threshold else threshold,
@@ -399,10 +399,10 @@ export async function ownerCommand(args: ParsedArgs, options: Options): Future<i
       input['maintainers'] = toJson(changed.toValue());
       input['entries'] = new JsonArray();
       input['swapRecord'] = found.cid;
-      if (await write(session, registry, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAsOf(args, pkg))) {
+      if (await write(session, registry, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, await approveAsOf(args, pkg))) {
         console.log(packageSettings(changed));
       }
-      saveIfRefreshed(session);
+      await saveIfRefreshed(session);
       return;
     }
     if (sub != 'add' && sub != 'remove') {
@@ -461,10 +461,10 @@ export async function ownerCommand(args: ParsedArgs, options: Options): Future<i
     input['maintainers'] = toJson(changed.toValue());
     input['entries'] = entriesJson(fresh);
     input['swapRecord'] = found.cid;
-    if (await write(session, registry, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, approveAsOf(args, pkg))) {
+    if (await write(session, registry, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, await approveAsOf(args, pkg))) {
       console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.`);
     }
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -555,11 +555,11 @@ function packageSettings(record: Maintainers): String {
  * `@scope/name` from the manifest of the package in the current directory,
  * else by DID.
  */
-function approveAsOf(args: ParsedArgs, pkg: String): String {
+async function approveAsOf(args: ParsedArgs, pkg: String): Future<String> {
   if (let (true, given) = args.getOption('package')) {
     return given;
   }
-  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+  let workspace = await readWorkspace(repoRoot().value, new DiskFiles());
   let manifest = workspace.packageAt(userCwd().value).manifest;
   let scope = manifest.scope ?? workspace.root.manifest.scope;
   if (manifest.did == pkg && scope != null && manifest.name != null) {
@@ -656,7 +656,7 @@ export async function packageDid(registry: Registry, args: ParsedArgs): Future<S
   if (let (true, given) = args.getOption('package')) {
     return await namedPackage(registry, given);
   }
-  return currentPackageDid();
+  return await currentPackageDid();
 }
 
 /** The package `given` names, by DID, handle or `@scope/name` on the registry. */
@@ -677,8 +677,8 @@ export async function namedPackage(registry: Registry, given: String): Future<St
 }
 
 /** The DID of the package in the current directory, from its manifest. */
-export function currentPackageDid(): String {
-  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+export async function currentPackageDid(): Future<String> {
+  let workspace = await readWorkspace(repoRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
   if (target.manifest.did == null) {
     throw new PublishError('run this in a published package, or name the package');

@@ -31,7 +31,7 @@ import { ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { OrderedHashMap } from 'zena:collections';
-import { FileType, existsSync, listDirSync, readFileBytesSync, readFileSync, writeFileSync } from 'zena:fs';
+import { FileType, exists, listDir, readFile, readFileBytes, writeFile } from 'zena:fs';
 import { hex } from 'zena:encoding';
 import { JsonArray, JsonObject } from 'zena:json';
 import { join2 } from 'zena:path';
@@ -85,10 +85,10 @@ export class PublishError extends Error {
 
 export async function publishCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
-    let target = currentPackage();
+    let target = await currentPackage();
     refuseWitDependencies(target.manifest);
     refuseProblems(checkMetadata(target.manifest, target.manifestPath()));
-    await requirePublished(dependenciesOf(target, target.manifest));
+    await requirePublished(await dependenciesOf(target, target.manifest));
     var manifestText = target.text as String;
     if (target.manifest.did == null) {
       // Everything about the release is checked before anything is asked
@@ -99,7 +99,7 @@ export async function publishCommand(args: ParsedArgs, options: Options): Future
       let draft = writeDid(manifestText, STAND_IN_DID, null);
       await prepareRelease(target, readManifest(draft), STAND_IN_DID, draft);
     }
-    let caller = currentCaller();
+    let caller = await currentCaller();
     let registry = await findRegistry(args);
     if (target.manifest.did == null) {
       manifestText = await createPackage(args, personOf(caller, 'create a package'), registry, target);
@@ -107,24 +107,24 @@ export async function publishCommand(args: ParsedArgs, options: Options): Future
       await checkScope(args, registry, target);
     }
     let manifest = readManifest(manifestText);
-    let scope = scopeOf(args, target);
+    let scope = await scopeOf(args, target);
     let approveAs = if (scope != null) `@${scope}/${manifest.name as String}` else manifest.did as String;
     await publish(caller, registry, target, manifest, await prepareRelease(target, manifest, manifest.did as String, manifestText),
         approveAs);
-    saveCaller(caller);
+    await saveCaller(caller);
   });
 }
 
 export async function packageCreateCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
-    let target = currentPackage();
+    let target = await currentPackage();
     if (target.manifest.did != null) {
       throw new PublishError(`${target.manifestPath()} already names its package: ${target.manifest.did as String}`);
     }
     refuseProblems(checkMetadata(target.manifest, target.manifestPath()));
-    let session = signedIn();
+    let session = await signedIn();
     await createPackage(args, session, await findRegistry(args), target);
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -147,8 +147,8 @@ export async function runCommand(body: () => Future<void>): Future<i32> {
   }
 }
 
-function currentPackage(): WorkspacePackage {
-  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+async function currentPackage(): Future<WorkspacePackage> {
+  let workspace = await readWorkspace(repoRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
   if (target.text == null || target.manifest.name == null) {
     throw new PublishError('run this in a package: a directory whose zena-package.json has a name');
@@ -189,17 +189,17 @@ function refuseProblems(problems: Array<String>): void {
   throw new PublishError(message);
 }
 
-export function signedIn(): Session {
-  let session = currentSession();
+export async function signedIn(): Future<Session> {
+  let session = await currentSession();
   if (session == null) {
     throw new PublishError('sign in first, with zena pkg login');
   }
   return session;
 }
 
-export function saveIfRefreshed(session: Session): void {
+export async function saveIfRefreshed(session: Session): Future<void> {
   if (session.refreshed) {
-    saveSession(session);
+    await saveSession(session);
   }
 }
 
@@ -217,12 +217,12 @@ export sealed class Caller {
  * The caller of `zena pkg publish`: CI, when `ZENA_REGISTRY_TOKEN` holds an
  * automation account's token, or else the signed-in maintainer.
  */
-export function currentCaller(): Caller {
+export async function currentCaller(): Future<Caller> {
   let token = getEnv('ZENA_REGISTRY_TOKEN');
   if (token != null && token.length > 0) {
     return new AutomationToken(token);
   }
-  return new SignedIn(signedIn());
+  return new SignedIn(await signedIn());
 }
 
 /** The session of `caller`, who must be a person: an automation token does only what CI publishes. */
@@ -234,9 +234,9 @@ function personOf(caller: Caller, doing: String): Session {
 }
 
 /** Saves `caller`'s session when it was refreshed. */
-function saveCaller(caller: Caller): void {
+async function saveCaller(caller: Caller): Future<void> {
   if (let SignedIn {session} = caller) {
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   }
 }
 
@@ -316,8 +316,8 @@ export async function registryClient(session: Session, registry: Registry, metho
  * when the manifest names one, else the manifest's, else its workspace
  * root's (package-manifest.md, "scope"). Null when none names one.
  */
-function scopeOf(args: ParsedArgs, target: WorkspacePackage): String | null {
-  let named = target.manifest.scope ?? rootScope();
+async function scopeOf(args: ParsedArgs, target: WorkspacePackage): Future<String | null> {
+  let named = target.manifest.scope ?? (await rootScope());
   if (let (true, given) = args.getOption('scope')) {
     if (named != null && named != given) {
       throw new PublishError(`${target.manifestPath()} puts ${target.manifest.name as String} in the scope ${named}, not ${given}`);
@@ -328,8 +328,8 @@ function scopeOf(args: ParsedArgs, target: WorkspacePackage): String | null {
 }
 
 /** The scope the workspace's root manifest names for its packages, or null. */
-function rootScope(): String | null {
-  return readWorkspace(repoRoot().value, new DiskFiles()).root.manifest.scope;
+async function rootScope(): Future<String | null> {
+  return (await readWorkspace(repoRoot().value, new DiskFiles())).root.manifest.scope;
 }
 
 /**
@@ -341,7 +341,7 @@ function rootScope(): String | null {
  * domain, is not checked.
  */
 async function checkScope(args: ParsedArgs, registry: Registry, target: WorkspacePackage): Future<void> {
-  let scope = scopeOf(args, target);
+  let scope = await scopeOf(args, target);
   if (scope == null) {
     return;
   }
@@ -362,7 +362,7 @@ async function checkScope(args: ParsedArgs, registry: Registry, target: Workspac
  */
 async function createPackage(args: ParsedArgs, session: Session, registry: Registry, target: WorkspacePackage): Future<String> {
   let name = target.manifest.name as String;
-  let found = scopeOf(args, target);
+  let found = await scopeOf(args, target);
   if (found == null) {
     throw new PublishError(
         `${name} has no DID yet; name the scope to create it in, with "scope" in ${target.manifestPath()} or --scope <name>`);
@@ -377,7 +377,7 @@ async function createPackage(args: ParsedArgs, session: Session, registry: Regis
     throw new PublishError(
         `${name} has no DID yet. Run again with --yes to create the package ${handle} on ${registry.origin}, maintained by ${session.handle}.`);
   }
-  let recoveryKeys = recoveryDidKeys();
+  let recoveryKeys = await recoveryDidKeys();
 
   let input = new JsonObject();
   input['organization'] = org;
@@ -390,8 +390,8 @@ async function createPackage(args: ParsedArgs, session: Session, registry: Regis
   let created = (await client.procedure(CREATE_PACKAGE, input)) as JsonObject;
   let did = created['did'] as String;
   let text = writeDid(target.text as String, did,
-      if (target.manifest.scope == null && rootScope() != scope) scope else null);
-  writeFileSync(target.manifestPath(), text);
+      if (target.manifest.scope == null && (await rootScope()) != scope) scope else null);
+  await writeFile(target.manifestPath(), text);
   console.log(`Created ${created['handle'] as String} (${did}), and wrote its DID into ${target.manifestPath()}.`);
   return text;
 }
@@ -442,7 +442,7 @@ export async function scopePolicy(org: String): Future<Policy> {
 export async function createOrganization(session: Session, registry: Registry, scope: String): Future<String> {
   let input = new JsonObject();
   input['name'] = scope;
-  input['recoveryKeys'] = strings(recoveryDidKeys());
+  input['recoveryKeys'] = strings(await recoveryDidKeys());
   let client = await registryClient(session, registry, CREATE_ORGANIZATION);
   let created = (await client.procedure(CREATE_ORGANIZATION, input)) as JsonObject;
   console.log(`Created the scope ${created['handle'] as String} (${created['did'] as String}), with you as its owner.`);
@@ -474,12 +474,12 @@ export async function scopeOrganization(handle: String): Future<String | null> {
  * creates, and a recovery key is for owners who choose to keep one
  * (package-manager.md, "Keys").
  */
-function recoveryDidKeys(): Array<String> {
+async function recoveryDidKeys(): Future<Array<String>> {
   let path = `${configDir()}/recovery-key`;
-  if (!existsSync(path)) {
+  if (!(await exists(path))) {
     return [];
   }
-  return [formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode(readFileSync(path).trim())))];
+  return [formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode((await readFile(path)).trim())))];
 }
 
 /** A release of a package, and the source archive it names, checked and ready to upload. */
@@ -501,7 +501,7 @@ async function prepareRelease(target: WorkspacePackage, manifest: Manifest, did:
   if (manifest.version == null) {
     throw new PublishError(`${target.manifestPath()} has no version to publish`);
   }
-  let files = sourceFiles(target.dir, manifest);
+  let files = await sourceFiles(target.dir, manifest);
   files['zena-package.json'] = manifestText.toBytes();
   let archive = packSource(files);
   // The blob the registry will store, named by its contents, so the release is
@@ -509,7 +509,7 @@ async function prepareRelease(target: WorkspacePackage, manifest: Manifest, did:
   // uploaded.
   let blob = new BlobRef(Cid.forBlob(archive), SOURCE_MIME_TYPE, archive.length as i64);
   let release = new Release(manifest.version as Version, formatTimestamp(nowNanos()),
-      new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), dependenciesOf(target, manifest));
+      new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), await dependenciesOf(target, manifest));
   refuseProblems(await validateRelease(release, did, archive, manifest.name as String, packageResolver()));
   return new PreparedRelease(release, archive);
 }
@@ -602,19 +602,20 @@ export async function attest(session: Session, uri: String, cid: Cid): Future<vo
  * dependency as the DID and version its own manifest gives, so a package
  * another depends on is published first.
  */
-function dependenciesOf(target: WorkspacePackage, manifest: Manifest): FixedArray<Dependency> {
+async function dependenciesOf(target: WorkspacePackage, manifest: Manifest): Future<FixedArray<Dependency>> {
   let all = new GrowableArray<Dependency>();
   manifest.requirements.forEach((name, requirement) => {
     all.push(new Dependency(requirement.did, requirement.version, name));
   });
-  manifest.paths.forEach((name, path) => {
+  for (let name in manifest.paths.keys()) {
+    let path = manifest.paths[name];
     let dir = join2(target.dir, path);
-    let other = readManifest(readFileSync(`${dir}/zena-package.json`));
+    let other = readManifest(await readFile(`${dir}/zena-package.json`));
     if (other.did == null || other.version == null) {
       throw new PublishError(`${name} (${dir}) has no DID and version yet; publish it first`);
     }
     all.push(new Dependency(other.did as String, other.version as Version, name));
-  });
+  }
   let fixed = new FixedArray<Dependency>(all.length, new Dependency('', Version.parse('0.0.0'), ''));
   for (var i = 0; i < all.length; i += 1) {
     fixed[i] = all[i];
@@ -628,9 +629,9 @@ function dependenciesOf(target: WorkspacePackage, manifest: Manifest): FixedArra
  * but its tests, and never hidden ones, `node_modules`, `zena-lock.json`,
  * or the files of packages nested in it, which are published on their own.
  */
-function sourceFiles(dir: String, manifest: Manifest): OrderedHashMap<String, FixedArray<u8>> {
+async function sourceFiles(dir: String, manifest: Manifest): Future<OrderedHashMap<String, FixedArray<u8>>> {
   let files = new OrderedHashMap<String, FixedArray<u8>>();
-  addFiles(dir, '', PublishedFiles.of(manifest), files);
+  await addFiles(dir, '', PublishedFiles.of(manifest), files);
   return files;
 }
 
@@ -639,9 +640,9 @@ function sourceFiles(dir: String, manifest: Manifest): OrderedHashMap<String, Fi
  * takes. A directory that holds a `zena-package.json` is a package of its
  * own, published on its own.
  */
-function addFiles(dir: String, prefix: String, published: PublishedFiles,
-    files: OrderedHashMap<String, FixedArray<u8>>): void {
-  for (let entry in listDirSync(dir)) {
+async function addFiles(dir: String, prefix: String, published: PublishedFiles,
+    files: OrderedHashMap<String, FixedArray<u8>>): Future<void> {
+  for (let entry in await listDir(dir)) {
     let name = entry.name;
     if (name.startsWith('.') || name == 'node_modules' || (prefix == '' && name == 'zena-lock.json')) {
       continue;
@@ -649,11 +650,11 @@ function addFiles(dir: String, prefix: String, published: PublishedFiles,
     let path = `${dir}/${name}`;
     let relative = if (prefix == '') name else `${prefix}/${name}`;
     if (entry.fileType == FileType.Directory) {
-      if (!existsSync(`${path}/zena-package.json`)) {
-        addFiles(path, relative, published, files);
+      if (!(await exists(`${path}/zena-package.json`))) {
+        await addFiles(path, relative, published, files);
       }
     } else if (entry.fileType == FileType.RegularFile && published.includes(relative)) {
-      files[relative] = readFileBytesSync(path);
+      files[relative] = await readFileBytes(path);
     }
   }
 }

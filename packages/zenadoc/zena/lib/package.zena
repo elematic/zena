@@ -12,7 +12,8 @@
  */
 
 import { parseJson, JsonValue, JsonObject } from 'zena:json';
-import { existsSync, isDirectorySync, listDirSync, readFileSync, FileType } from 'zena:fs';
+import { Future } from 'zena:async';
+import { exists, isDirectory, listDir, readFile, FileType } from 'zena:fs';
 import { basename, dirname, join2 } from 'zena:path';
 import { growable } from 'zena:core';
 
@@ -44,44 +45,44 @@ export final class Package {
  * `path` is a directory or a single `.zena` file. `name` overrides the
  * name the manifest or the directory would give.
  */
-export function loadPackage(
+export async function loadPackage(
   path: String,
   name: String | null = null,
   target: String = 'zena-cli'
-): Package {
-  if (!existsSync(path)) {
+): Future<Package> {
+  if (!(await exists(path))) {
     throw new Error('no such path: ' + path);
   }
-  if (!isDirectorySync(path)) {
+  if (!(await isDirectory(path))) {
     return singleFilePackage(path, name);
   }
-  let manifestPath = manifestIn(path);
+  let manifestPath = await manifestIn(path);
   if (manifestPath == null) {
-    return openPackage(path, name);
+    return await openPackage(path, name);
   }
-  return manifestPackage(path, manifestPath, name, target);
+  return await manifestPackage(path, manifestPath, name, target);
 }
 
 /** The manifest in a directory, whichever of the two names it uses. */
-function manifestIn(root: String): String | null {
+async function manifestIn(root: String): Future<String | null> {
   let preferred = join2(root, PACKAGE_MANIFEST);
-  if (existsSync(preferred)) {
+  if (await exists(preferred)) {
     return preferred;
   }
   let stdlib = join2(root, STDLIB_MANIFEST);
-  if (existsSync(stdlib)) {
+  if (await exists(stdlib)) {
     return stdlib;
   }
   return null;
 }
 
-function manifestPackage(
+async function manifestPackage(
   root: String,
   manifestPath: String,
   override: String | null,
   target: String
-): Package {
-  let json = parseJson(readFileSync(manifestPath));
+): Future<Package> {
+  let json = parseJson(await readFile(manifestPath));
   let manifest = json as JsonObject;
   var exports = manifest['exports'];
   if (exports == null) {
@@ -106,7 +107,7 @@ function manifestPackage(
   if (exports == null) {
     // A manifest with no export map says nothing about which modules
     // are public, so every file is.
-    out.modules = openModules(sourceRoot);
+    out.modules = await openModules(sourceRoot);
     return out;
   }
   let modules = new Array<PackageModule>(16);
@@ -170,26 +171,26 @@ function manifestName(manifest: JsonObject, root: String): String {
 }
 
 /** Every `.zena` file under a root, as a module named by its path. */
-function openPackage(root: String, override: String | null): Package {
+async function openPackage(root: String, override: String | null): Future<Package> {
   let name = override ?? basename(root);
   let out = new Package(name, root);
-  out.modules = openModules(root);
+  out.modules = await openModules(root);
   return out;
 }
 
-function openModules(root: String): GrowableArray<PackageModule> {
+async function openModules(root: String): Future<GrowableArray<PackageModule>> {
   let modules = new Array<PackageModule>(16);
-  collectZenaFiles(root, '', modules);
+  await collectZenaFiles(root, '', modules);
   return sortModules(modules);
 }
 
-function collectZenaFiles(
+async function collectZenaFiles(
   root: String,
   prefix: String,
   out: GrowableArray<PackageModule>
-): void {
+): Future<void> {
   let dir = if (prefix.length == 0) { root } else { join2(root, prefix) };
-  for (let entry in listDirSync(dir)) {
+  for (let entry in await listDir(dir)) {
     if (entry.name == '.' || entry.name == '..') {
       continue;
     }
@@ -199,7 +200,7 @@ function collectZenaFiles(
       join2(prefix, entry.name)
     };
     if (entry.fileType == FileType.Directory) {
-      collectZenaFiles(root, relative, out);
+      await collectZenaFiles(root, relative, out);
     } else if (entry.fileType == FileType.RegularFile &&
         entry.name.endsWith('.zena')) {
       out.push(new PackageModule(

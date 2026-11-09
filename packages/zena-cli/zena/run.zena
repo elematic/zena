@@ -5,8 +5,9 @@
  */
 
 import { ParsedArgs } from 'zena:args';
+import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
-import { exists, isDirectorySync } from 'zena:fs';
+import { exists, isDirectory } from 'zena:fs';
 import { AbsolutePath, RelativePath, extname } from 'zena:path';
 import { DirMapping, RunOutcome, runModule } from 'zena:wasm';
 import { CompileRequest, compileCached, ensureDir } from './compile.zena';
@@ -18,7 +19,7 @@ import { Options, envSet, repoRoot, resolveUserPath } from './env.zena';
  * side is the name the program sees, and is the host side as typed when
  * there is no `::`.
  */
-function dirMapping(spec: String): DirMapping {
+async function dirMapping(spec: String): Future<DirMapping> {
   var host = spec;
   var guest = spec;
   for (var i = 0; i + 1 < spec.length; i += 1) {
@@ -28,7 +29,7 @@ function dirMapping(spec: String): DirMapping {
       break;
     }
   }
-  return {from: hostDir(host).value, to: guest};
+  return {from: (await hostDir(host)).value, to: guest};
 }
 
 /**
@@ -36,16 +37,16 @@ function dirMapping(spec: String): DirMapping {
  * ZENA_LOCAL_CACHE, a directory under `/tmp` moves to `.zena/tmp` in the
  * repository, for sandboxes where `/tmp` is not writable.
  */
-export function hostDir(path: String): AbsolutePath {
+export async function hostDir(path: String): Future<AbsolutePath> {
   let resolved = resolveUserPath(path);
   if ((envSet('ZENA_PROJECT_CACHE') || envSet('ZENA_LOCAL_CACHE')) &&
       (resolved.value == '/tmp' || resolved.value.startsWith('/tmp/'))) {
     let rest = resolved.value.sliceBytes(4, resolved.value.length);
     let moved = new AbsolutePath(`${repoRoot().value}/.zena/tmp${rest}`);
-    ensureDir(moved.value);
+    await ensureDir(moved.value);
     return moved;
   }
-  if (!isDirectorySync(resolved.value)) {
+  if (!(await isDirectory(resolved.value))) {
     throw new Error(`--dir ${path}: no such directory`);
   }
   return resolved;
@@ -105,7 +106,7 @@ export async function runCommand(args: ParsedArgs, options: Options): Future<i32
   }
   let dirs = new GrowableArray<DirMapping>();
   for (let spec in args.getMultiOption('dir')) {
-    dirs.push(dirMapping(spec));
+    dirs.push(await dirMapping(spec));
   }
   let result = runModule(module.value, {
     args: programArgs,

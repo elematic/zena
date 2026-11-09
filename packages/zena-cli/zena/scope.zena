@@ -35,7 +35,7 @@ export async function scopeCreateCommand(args: ParsedArgs, options: Options): Fu
       throw new PublishError(
           `'${name}' cannot be a scope: use lowercase letters, digits and -, starting with a letter`);
     }
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let handle = `${name}.${registry.domain}`;
     if ((await scopeOrganization(handle)) != null) {
@@ -46,7 +46,7 @@ export async function scopeCreateCommand(args: ParsedArgs, options: Options): Fu
           `Run again with --yes to create the scope ${handle} on ${registry.origin}, owned by ${session.handle}.`);
     }
     await createOrganization(session, registry, name);
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -112,7 +112,7 @@ export async function scopeProfileCommand(args: ParsedArgs, options: Options): F
       throw new PublishError('give the scope: zena pkg scope profile <scope> [--name <text>] [--description <text>] [--website <url>]');
     }
     let scope = args.rest[1];
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     let org = await scopeOrganization(`${scope}.${registry.domain}`);
     if (org == null) {
@@ -137,7 +137,7 @@ export async function scopeProfileCommand(args: ParsedArgs, options: Options): F
     if (!changed) {
       console.log(`${scope}.${registry.domain}`);
       printProfile(profile);
-      saveIfRefreshed(session);
+      await saveIfRefreshed(session);
       return;
     }
     // Checked here as the registry will check it, so a bad website is refused before the call.
@@ -159,7 +159,7 @@ export async function scopeProfileCommand(args: ParsedArgs, options: Options): F
     await client.procedure(PUT_SCOPE_PROFILE, input);
     console.log(`Changed the profile of ${scope}.`);
     printProfile(profile);
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 

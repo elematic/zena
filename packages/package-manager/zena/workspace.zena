@@ -9,8 +9,9 @@
  * workspace in memory; `DiskFiles` reads them with `zena:fs`.
  */
 
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {isDirectorySync, isFileSync, listDirSync, readFileSync} from 'zena:fs';
+import {isDirectory, isFile, listDir, readFile} from 'zena:fs';
 import {join2, normalize} from 'zena:path';
 import {Manifest, ManifestError, readManifest} from './manifest.zena';
 import {Requirement} from './resolve.zena';
@@ -24,23 +25,23 @@ export let LOCKFILE = 'zena-lock.json';
 /** How a workspace's files are read. */
 export interface WorkspaceFiles {
   /** The text of the file `path`, or null when there is none. */
-  read(path: String): String | null;
+  read(path: String): Future<String | null>;
   /** The names in the directory `path`, or null when it is not one. */
-  list(path: String): Array<String> | null;
+  list(path: String): Future<Array<String> | null>;
 }
 
 /** A workspace's files on disk. */
 export final class DiskFiles implements WorkspaceFiles {
-  read(path: String): String | null {
-    return if (isFileSync(path)) readFileSync(path) else null;
+  async read(path: String): Future<String | null> {
+    return if (await isFile(path)) await readFile(path) else null;
   }
 
-  list(path: String): Array<String> | null {
-    if (!isDirectorySync(path)) {
+  async list(path: String): Future<Array<String> | null> {
+    if (!(await isDirectory(path))) {
       return null;
     }
     let names = new GrowableArray<String>();
-    for (let entry in listDirSync(path)) {
+    for (let entry in await listDir(path)) {
       names.push(entry.name);
     }
     return names;
@@ -116,25 +117,25 @@ export final class Workspace {
  * for one that cannot be read, and for a path dependency on a directory
  * with no manifest.
  */
-export function readWorkspace(root: String, files: WorkspaceFiles): Workspace {
+export async function readWorkspace(root: String, files: WorkspaceFiles): Future<Workspace> {
   let reader = new WorkspaceReader(files);
-  let rootPackage = reader.read(normalize(root), true);
+  let rootPackage = await reader.read(normalize(root), true);
   for (let entry in rootPackage.manifest.workspacePackages) {
     if (entry.endsWith('/*')) {
       let parent = join2(rootPackage.dir, entry.sliceBytes(0, entry.length - 2));
-      let names = files.list(parent);
+      let names = await files.list(parent);
       if (names == null) {
         throw new ManifestError(
             `${rootPackage.manifestPath()}: workspace.packages names ${parent}, which is not a directory`);
       }
       for (let name in names) {
         let dir = join2(parent, name);
-        if (files.read(join2(dir, MANIFEST)) != null) {
-          reader.read(dir, false);
+        if ((await files.read(join2(dir, MANIFEST))) != null) {
+          await reader.read(dir, false);
         }
       }
     } else {
-      reader.read(join2(rootPackage.dir, entry), false);
+      await reader.read(join2(rootPackage.dir, entry), false);
     }
   }
   return new Workspace(rootPackage, reader.packages);
@@ -148,12 +149,12 @@ final class WorkspaceReader {
 
   new(files: WorkspaceFiles) : #files = files;
 
-  read(dir: String, isRoot: boolean): WorkspacePackage {
+  async read(dir: String, isRoot: boolean): Future<WorkspacePackage> {
     if (let (true, pkg) = this.#byDir.get(dir)) {
       return pkg;
     }
     let path = join2(dir, MANIFEST);
-    let text = this.#files.read(path);
+    let text = await this.#files.read(path);
     if (text == null && !isRoot) {
       throw new ManifestError(`${dir} has no ${MANIFEST}`);
     }
@@ -166,9 +167,9 @@ final class WorkspaceReader {
     let pkg = new WorkspacePackage(dir, text, manifest);
     this.#byDir[dir] = pkg;
     this.packages.push(pkg);
-    pkg.manifest.paths.forEach((name, target) => {
-      this.read(join2(dir, target), false);
-    });
+    for (let name in pkg.manifest.paths.keys()) {
+      await this.read(join2(dir, pkg.manifest.paths[name]), false);
+    }
     return pkg;
   }
 }

@@ -11,7 +11,7 @@
 import { ArgParser, OptionType, ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
 import { getArguments, getEnv } from 'zena:cli';
-import { exists, isFile, isFileSync, readFileSync, writeFile, writeFileSync } from 'zena:fs';
+import { exists, isFile, readFile, writeFile } from 'zena:fs';
 import { AbsolutePath, extname } from 'zena:path';
 import { precompileModule } from 'zena:wasm';
 import { DiagnosticSeverity, SourceSpan } from 'zena-compiler:diagnostics';
@@ -417,7 +417,7 @@ async function dispatch(parser: ArgParser, args: ParsedArgs): Future<i32> {
     return await doc(sub);
   }
   if (name == 'fmt') {
-    return fmt(sub);
+    return await fmt(sub);
   }
   if (name == 'lint') {
     return await lintCommand(sub, options);
@@ -640,11 +640,11 @@ async function buildScript(
     script = argument.sliceBytes(colon + 1, argument.length);
   }
   let packageDir = resolveUserPath(packagePath);
-  if (!isFileSync(packageDir.value + '/package.json')) {
+  if (!(await isFile(packageDir.value + '/package.json'))) {
     console.error(`Error: no package.json in ${packageDir.value}`);
     return 2;
   }
-  let root = workspaceRoot(packageDir);
+  let root = await workspaceRoot(packageDir);
   let relative = packageDir.stripPrefix(root);
   let packageRef = if (relative == null) '' else relative.value;
   let outcome = await buildTarget(
@@ -658,11 +658,11 @@ async function buildScript(
 }
 
 /** The nearest directory at or above `from` whose package.json has workspaces. */
-function workspaceRoot(from: AbsolutePath): AbsolutePath {
+async function workspaceRoot(from: AbsolutePath): Future<AbsolutePath> {
   var dir = from;
   while (true) {
     let manifest = dir.value + '/package.json';
-    if (isFileSync(manifest) && readFileSync(manifest).contains('"workspaces"')) {
+    if ((await isFile(manifest)) && (await readFile(manifest)).contains('"workspaces"')) {
       return dir;
     }
     if (dir.value == '/') {
@@ -697,7 +697,7 @@ async function doc(args: ParsedArgs): Future<i32> {
   if (let (true, value) = args.getOption('name')) {
     name = value;
   }
-  let pkg = loadPackage(repoRelative(path), name, options.target);
+  let pkg = await loadPackage(repoRelative(path), name, options.target);
   let result = await documentPackage(pkg, options);
   for (let failure in result.failures) {
     console.error('Failed to document ' + failure);
@@ -730,7 +730,7 @@ function where(location: SourceSpan | null): String {
  * `zena fmt`: prints one file formatted, or with `--write` rewrites each
  * file, or with `--check` lists the files that are not formatted.
  */
-function fmt(args: ParsedArgs): i32 {
+async function fmt(args: ParsedArgs): Future<i32> {
   if (args.rest.length == 0) {
     console.error('Error: fmt needs a file');
     return 2;
@@ -744,7 +744,7 @@ function fmt(args: ParsedArgs): i32 {
   var unformatted = 0;
   for (let file in args.rest) {
     let path = resolveUserPath(file).value;
-    let source = readFileSync(path);
+    let source = await readFile(path);
     let formatted = format(source);
     if (check) {
       if (formatted != source) {
@@ -753,7 +753,7 @@ function fmt(args: ParsedArgs): i32 {
       }
     } else if (write) {
       if (formatted != source) {
-        writeFileSync(path, formatted);
+        await writeFile(path, formatted);
       }
     } else {
       console.log(formatted);
