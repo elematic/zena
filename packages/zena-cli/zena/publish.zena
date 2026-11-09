@@ -274,6 +274,23 @@ export async function findRegistry(args: ParsedArgs): Future<Registry> {
  * answered with the real registry's DID would be given tokens it could replay
  * to the real registry, as whoever asked for them.
  */
+/**
+ * `authority`, a host and an optional port, in lowercase, with a loopback
+ * address written as `localhost`. atproto allows a port in a `did:web`
+ * only for `localhost`, so a registry on this machine, such as the
+ * demo's, is served at `127.0.0.1` and names itself
+ * `did:web:localhost%3A<port>`: both name this machine, on the same port.
+ */
+function loopbackAsLocalhost(authority: String) {
+  let lower = authority.asciiLowerCase();
+  for (let address in ['127.0.0.1', '[::1]']) {
+    if (lower == address || lower.startsWith(`${address}:`)) {
+      return `localhost${lower.sliceBytes(address.length, lower.length)}`;
+    }
+  }
+  return lower;
+}
+
 async function checkRegistryDid(origin: String, did: String): Future<void> {
   let url = URL.parse(origin);
   if (url == null) {
@@ -287,7 +304,7 @@ async function checkRegistryDid(origin: String, did: String): Future<void> {
     } catch (e) {
       throw new PublishError(`the registry ${origin} says it is ${did}: ${e.message}`);
     };
-    if (named.asciiLowerCase() != authority.asciiLowerCase()) {
+    if (loopbackAsLocalhost(named) != loopbackAsLocalhost(authority)) {
       throw new PublishError(`the registry ${origin} says it is ${did}, which is the registry at ${named}, not ${authority}`);
     }
     return;

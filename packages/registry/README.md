@@ -8,8 +8,10 @@ PDS ([`packages/pds`](../pds), padstone), and serves the
 service-auth token from the caller's PDS, and
 `dev.zena-lang.registry.describeRegistry`, which tells `zena` its service
 DID and handle domain. `zena` refuses an App View whose DID does not name its
-origin, so `APP_VIEW_DID` defaults to `did:web:<domain>`, and the
-demo's to the `did:web` of `127.0.0.1` and its port.
+origin, so `APP_VIEW_DID` defaults to `did:web:<domain>`. The demo's is
+`did:web:localhost%3A<port>`, since atproto allows a port in a `did:web`
+only for `localhost` and a real PDS refuses tokens for any other; `zena`
+takes it for the App View at `127.0.0.1` on that port.
 
 It serves web pages, rendered on the server (`zena/web/`), beside its
 XRPC routes (`zena/xrpc/`): a visitor browses the App View's scopes and
@@ -252,7 +254,7 @@ blank cell means the variable is not set, and the default applies.
 | `APP_VIEW_SIGNING_KEY`          | Its own signing key, in hex, for its tokens to a PDS elsewhere. This or the next is required with `APP_VIEW_PDS_URL` and Firestore.            | made up                                            | made up                    |                                          |                                       |
 | `APP_VIEW_SIGNING_KMS_KEY`      | Its signing key as a Cloud KMS key version.                                                                                                    |                                                    |                            | KMS `zena-pkg-staging/signing`           | KMS `zena-pkg/signing`                |
 | `APP_VIEW_OFFLINE_ROTATION_KEY` | The operator's offline rotation key, a `did:key`, ranked above the online one.                                                                 | none                                               |                            | `ZENA_OFFLINE_ROTATION_KEY`              | `ZENA_OFFLINE_ROTATION_KEY`, required |
-| `APP_VIEW_DID`                  | Its DID.                                                                                                                                       | the `did:web` of the origin its methods are at     | `did:web:127.0.0.1%3A2583` |                                          |                                       |
+| `APP_VIEW_DID`                  | Its DID.                                                                                                                                       | the `did:web` of the origin its methods are at     | `did:web:localhost%3A2583` |                                          |                                       |
 | `APP_VIEW_SITE_URL`             | The site's origin, when the pages have a name of their own.                                                                                    | none: every name serves both                       |                            |                                          |                                       |
 | `APP_VIEW_ADMIN_DIDS`           | The DIDs of its admins, separated by commas or spaces.                                                                                         | none                                               | yours, if you set it       | `ZENA_ADMIN_DIDS`                        | `ZENA_ADMIN_DIDS`                     |
 | `APP_VIEW_RESERVED_SCOPES`      | Scope names no one may take, beside `www`, `api`, `admin`, `zena`, `pkg` and `mail`.                                                           | none                                               |                            |                                          |                                       |

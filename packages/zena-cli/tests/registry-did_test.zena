@@ -25,4 +25,21 @@ export let tests = suite("zena: the registry's DID", () => {
       await scratch.remove();
     }
   });
+
+  test('takes a registry at 127.0.0.1 that names itself after localhost, on the same port', async (ctx) => {
+    let scratch = await Scratch.create('registry-did-loopback');
+    let stack = await startFakePds(scratch, 'loopback-registry.zena');
+    try {
+      let plc = await fakePdsOrigin(scratch, stack);
+      let origin = plc.sliceBytes(0, plc.length - '/plc'.length);
+      await ensureDir(scratch.at('project'));
+      // The fixture answers nothing after describeRegistry, so the command
+      // fails, but not for the DID.
+      let asked = await zenaIn(scratch, 'project').run(['pkg', 'scope', 'info', 'acme', '--registry', origin]);
+      isTrue(!asked.stderr.contains('says it is'), described(asked));
+    } finally {
+      await stopFakePds(stack);
+      await scratch.remove();
+    }
+  });
 });
