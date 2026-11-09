@@ -38,9 +38,9 @@ A package's metadata and releases are stored as DAG-CBOR records in its atproto 
 
 ### Maintainer records (in a maintainer's own repository)
 
-| Collection NSID                        | Record key                   | Contents                                                                    |
-| -------------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| `dev.zena-lang.maintainer.attestation` | Base32 hash of `uri` + `cid` | AT-URI and CID of a release or membership record approved by the maintainer |
+| Collection NSID                     | Record key                   | Contents                                                                    |
+| ----------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
+| `dev.zena-lang.package.attestation` | Base32 hash of `uri` + `cid` | AT-URI and CID of a release or membership record approved by the maintainer |
 
 ## Source archives and verification
 
@@ -61,7 +61,7 @@ Because both the record proof and the blob hash are verified by the client, mirr
 - Authenticates callers using atproto service-auth tokens (`Bearer` JWTs signed by the caller's own PDS signing key for a specific `lxm` method).
 - Creates organization accounts, package accounts, and CI automation accounts, registering their `did:plc` identities and DNS handle records.
 - Validates uploaded source archives against the release record and verifies that all declared dependencies exist.
-- Holds releases and membership updates until the required number of maintainers have published `dev.zena-lang.maintainer.attestation` records in their own repositories, then commits the record to the target repository.
+- Holds releases and membership updates until the required number of maintainers have published `dev.zena-lang.package.attestation` records in their own repositories, then commits the record to the target repository.
 
 ## Immutability and transparency
 

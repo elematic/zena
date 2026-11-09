@@ -7,38 +7,27 @@ status: Preview
 The Zena package manager and registry are under active development. Commands, manifest fields, and lexicon schemas may change as the system matures.
 :::
 
-Zena's package manager is built on the [AT Protocol](https://atproto.com) (atproto). Every package and organization scope is an atproto account with its own Decentralized Identifier (`did:plc` or `did:web`) and signed Merkle repository.
+Zena packages are libraries and tools for the Zena programming language. Add one to your project with `zena pkg add`, and publish your own with `zena pkg publish`.
 
-## Core concepts
+## Install a package
 
-- **Identity by DID**: A package is identified by its DID, such as `did:plc:routerrouterrouterrouter`. It can change handles, maintainers, or hosting servers while keeping the same identity.
-- **Scoped handles for discovery**: People find and add packages by their handle (`router.acme.pkg.zena-lang.dev`) or shorthand (`@acme/router`). `zena pkg add` resolves the handle to a DID and records the DID in `zena-package.json`.
-- **Local import names**: Each package chooses its own local name for every dependency it imports (`import {Router} from 'router:server'`). Two packages in the same workspace can use different local names for the same dependency.
-- **Minimal version selection**: Across a workspace, the version selected for a major version of a package is the highest minimum version any package in the dependency graph requests.
-- **Cryptographic verification**: Release records are fetched with Merkle proofs from the package's signed repository, and source archives are addressed by SHA-256 CID and pinned in `zena-lock.json`.
-- **Maintainer attestations**: Maintainers sign in with their own atproto accounts. A package has no password of its own; instead, maintainers approve releases and membership changes by writing signed attestation records into their own repositories.
-
-## Workflow at a glance
-
-### Using packages
-
-Add a dependency by `@scope/name`, handle, or DID:
+Add a package by its `@scope/name`:
 
 ```sh
 zena pkg add @acme/router
 ```
 
-`zena pkg add` resolves `@acme/router`, adds its DID and version to `zena-package.json`, writes the resolved dependency graph and CIDs to `zena-lock.json`, and unpacks the source archive into the local cache.
-
-Import the package's exported libraries in Zena source using its local name:
+Then import its libraries by the name your project gives it:
 
 ```zena
 import {Router} from 'router:server';
 ```
 
-### Publishing packages
+`zena pkg add` records the package in `zena-package.json` and pins the exact release in `zena-lock.json`, so every machine builds the same code. See [Installing Packages](/docs/installing/).
 
-Sign in with an Atmosphere account, create a scope once, and publish:
+## Publish a package
+
+Sign in with your Bluesky or other AT Protocol account, create a scope once, and publish:
 
 ```sh
 zena pkg login alice.bsky.social
@@ -46,17 +35,31 @@ zena pkg scope create acme
 zena pkg publish --scope acme
 ```
 
-On the first publish, the registry creates an atproto account for the package under `@acme`, writes the new `did` field into `zena-package.json`, uploads the source archive blob, and records your release attestation.
+See [Publishing Packages](/docs/publishing/), and [Defining a Package](/docs/manifests/) for what goes in `zena-package.json`.
+
+## Security
+
+Every dependency is pinned by its content hash, a published version never changes, and a package can require several maintainers to approve each release. See [Security](/docs/security/).
+
+## Scopes, organizations and teams
+
+Packages are published under a scope, such as `@acme`, that an organization owns. Its owners give members and teams roles, and who belongs stays private until they act. See [Scopes, Orgs & Teams](/docs/orgs-and-teams/).
+
+## Decentralized
+
+No single registry owns your packages: each keeps its own identity and data wherever it is hosted, and the projects that depend on it name it by that identity. The package manager is built on the AT Protocol, the network Bluesky runs on. See [Decentralized Packages](/docs/decentralized/).
 
 ## Documentation guide
 
-| Section                                                           | Topics covered                                                                                           |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| [Getting Started](/docs/getting-started/)                         | Creating `zena-package.json`, adding dependencies, importing libraries, updating, and fetching           |
-| [Publishing Packages](/docs/publishing/)                          | Signing in, creating scopes, publishing releases, approving held releases, and retracting versions       |
-| [Package Manifests](/docs/manifests/)                             | `zena-package.json` fields, open vs. closed packages, `exports`, `virtual` targets, and dependency types |
-| [Workspaces & Lockfiles](/docs/workspaces/)                       | Multi-package workspaces, path dependencies, minimal version selection, and `zena-lock.json`             |
-| [Scopes, Orgs & Teams](/docs/orgs-and-teams/)                     | Organization scopes, member roles, teams, package maintainers, and private membership commitments        |
-| [Approvals, Thresholds & Policies](/docs/approvals-and-settings/) | M-of-N release approvals, owner thresholds, scope policies, and CI automation accounts                   |
-| [CLI Commands](/docs/cli/)                                        | Subcommands, flags, and environment variables for `zena`                                                 |
-| [AT Protocol Architecture](/docs/architecture/)                   | DIDs, handles, repository records, `dev.zena-lang.*` lexicons, CAR archives, and transparency logs       |
+| Section                                               | Topics covered                                                                                     |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| [Installing Packages](/docs/installing/)              | Setting up a project, adding dependencies, importing libraries, updating, and fetching             |
+| [Workspaces & Lockfiles](/docs/workspaces/)           | Multi-package workspaces, path dependencies, minimal version selection, and `zena-lock.json`       |
+| [Publishing Packages](/docs/publishing/)              | Signing in, creating scopes, publishing releases, approving held releases, and retracting versions |
+| [Defining a Package](/docs/manifests/)                | `zena-package.json` fields, `exports`, `virtual` targets, and dependency types                     |
+| [Security](/docs/security/)                           | Pinned hashes, immutable versions, maintainer approvals, automation accounts, and what is planned  |
+| [Approvals & Policies](/docs/approvals-and-settings/) | Release approvals, thresholds, scope policies, and CI automation accounts                          |
+| [Scopes, Orgs & Teams](/docs/orgs-and-teams/)         | Organization scopes, member roles, teams, package maintainers, and private memberships             |
+| [Decentralized Packages](/docs/decentralized/)        | Package identity, owning your data, mirrors and indexes, and labels                                |
+| [AT Protocol Architecture](/docs/architecture/)       | DIDs, handles, repository records, `dev.zena-lang.*` lexicons, and source archives                 |
+| [CLI Commands](/docs/cli/)                            | Subcommands, flags, and environment variables for `zena`                                           |

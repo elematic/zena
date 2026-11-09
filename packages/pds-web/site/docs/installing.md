@@ -1,12 +1,12 @@
 ---
-title: Getting Started
+title: Installing Packages
 ---
 
-Create a package manifest, add published dependencies, and import them in Zena code.
+Add a published package to your project with `zena pkg add`, then import its libraries in your Zena code. You need no account to install packages.
 
-## Creating a package
+## Setting up a project
 
-Every Zena package is a directory with a `zena-package.json` manifest and one or more `.zena` source files (called libraries).
+A Zena project is a directory with a `zena-package.json` manifest and one or more `.zena` source files (called libraries).
 
 Create a directory for your project and write a minimal `zena-package.json`:
 

@@ -1,14 +1,14 @@
 ---
-title: Approvals, Thresholds & Policies
+title: Approvals & Policies
 ---
 
-The Zena package manager protects packages against single-account compromise by separating proposing a change from approving it, and verifying approvals through independent AT Protocol repositories.
+A package can require more than one maintainer to approve each release, so that one stolen account cannot publish alone. The same goes for changes to who maintains a package and who belongs to a scope. [Security](/docs/security/) describes the other protections.
 
 ## How maintainer attestations work
 
 When a maintainer publishes a release or proposes a change to a package's maintainers, a scope's members, or a team:
 
-1. The author's CLI writes a `dev.zena-lang.maintainer.attestation` record into the author's own atproto repository, naming the target record's AT-URI and its content hash (CID).
+1. The author's CLI writes a `dev.zena-lang.package.attestation` record into the author's own atproto repository, naming the target record's AT-URI and its content hash (CID).
 2. If the target's approval threshold is `1`, the registry verifies the attestation against the author's DID document signing key and commits the record immediately.
 3. If the threshold is greater than `1` (or the release was uploaded by a CI automation account that requires human approval), the registry holds the proposed record in a pending state until enough eligible maintainers have written matching attestations in their own repositories.
 

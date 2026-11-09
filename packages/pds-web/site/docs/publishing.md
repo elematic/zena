@@ -2,11 +2,11 @@
 title: Publishing Packages
 ---
 
-Packages on `pkg.zena-lang.dev` do not have separate registry usernames or package passwords. You sign in with your own AT Protocol (Atmosphere) account—such as a Bluesky account or an account on your own PDS—and publish under an organization scope.
+To publish, sign in, create a scope for your packages, describe the package in its manifest ([Defining a Package](/docs/manifests/)), and run `zena pkg publish`. There is no registry account to make: you sign in with the account you already have on Bluesky or another AT Protocol service.
 
 ## 1. Sign in to the CLI
 
-Create an app password in your Atmosphere account settings and sign in with `zena pkg login`:
+Create an app password in your account's settings (on Bluesky, Settings → Privacy and security → App passwords) and sign in with `zena pkg login`:
 
 ```sh
 zena pkg login alice.bsky.social
@@ -78,7 +78,7 @@ When `zena pkg publish` runs:
 
 1. **Account creation (first publish only)**: When `zena-package.json` has no `did` field, the CLI asks the registry to create a new package account (`router.acme.pkg.zena-lang.dev`) and writes the resulting `did` into `zena-package.json`. Commit this updated `zena-package.json` so future releases publish to the same DID.
 2. **Archive packing and upload**: The CLI packs the package's source files and manifest into a deterministic IPLD CAR archive and uploads it as a blob to the registry.
-3. **Attestation**: The CLI writes a signed `dev.zena-lang.maintainer.attestation` record into your own atproto repository, attesting to the release record's AT-URI and CID.
+3. **Attestation**: The CLI writes a signed `dev.zena-lang.package.attestation` record into your own atproto repository, attesting to the release record's AT-URI and CID.
 4. **Release commit**: Once the package's required number of maintainers (`threshold`) have attested the release, the registry commits the `dev.zena-lang.package.release` record into the package's repository.
 
 ## 5. Approving multi-maintainer releases
