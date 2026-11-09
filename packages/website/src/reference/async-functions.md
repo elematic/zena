@@ -219,7 +219,7 @@ This guarantees that `await` always introduces an asynchronous boundary,
 preventing re-entrancy bugs and ensuring consistent control flow regardless of
 whether data is cached synchronously or retrieved asynchronously.
 
-### Queue drainage and the Parker hook
+### Queue drainage
 
 The microtask loop runs via `drainMicrotasks()` from `zena:async`:
 
@@ -230,15 +230,10 @@ import { drainMicrotasks } from 'zena:async';
 drainMicrotasks();
 ```
 
-When the microtask queue empties, external event drivers (such as timers or host
-I/O) can wake the executor through the `Parker` interface:
-
-1. The executor drains all runnable microtasks.
-2. When the queue is empty and an external parker is registered, the executor
-   calls `parker.park()`, which waits until the next external completion is
-   ready (on WASI 0.3, by arming a `wasi:clocks` `wait-for` and letting the
-   host re-enter the component when it fires).
-3. Newly scheduled microtasks are drained, repeating until all work completes.
+Host drivers (the component event loop in `zena:wasi` and the JS host's
+`__zena_drain` callback) call `drainMicrotasks()` after each entry or
+external completion to run all newly scheduled microtasks before
+returning to the host.
 
 ## Future and Completer
 
@@ -352,10 +347,10 @@ When `main` is asynchronous:
 
 ### Deadlock detection
 
-If the microtask queue empties while the future returned by `main` (or any awaited
-future) is still pending, and no external `Parker` is registered to provide future
-events, the program cannot make progress. The runtime detects this condition and
-terminates with an error:
+If the microtask queue empties while the future returned by `main` is still
+pending on a standalone core-module host with no external event loop, the
+program cannot make progress. The runtime detects this condition and terminates
+with an error:
 
 ```text
 Error: Deadlock: the microtask queue is empty but this future is still pending,

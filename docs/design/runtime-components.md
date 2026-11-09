@@ -345,13 +345,12 @@ as a borrow needs a call in progress, so the proxies a call receives are
 made before it as owned handles and released after it.
 
 A consequence the program's code has to respect: a call on an attached
-object must be awaited. A program that blocks on it, with `blockOn`,
-parks its task in a synchronous `waitable-set.wait`, which keeps its
-instance entered; the call back's task queues behind it, the program
-waits for the extension and the extension for the program. The PDS's
-handlers are async, so this costs nothing there; the API's
-documentation states the rule. A program whose method is synchronous
-blocks the same way.
+object must be awaited. A program that blocks in a synchronous
+`waitable-set.wait` keeps its instance entered; the call back's task
+queues behind it, the program waits for the extension and the extension
+for the program. The PDS's handlers are async, so this costs nothing
+there; the API's documentation states the rule. A program whose method
+is synchronous blocks the same way.
 
 ### Forwarding
 
@@ -546,8 +545,7 @@ to start the load and to keep its result, and the program's other tasks
 run while the extension's thread compiles and instantiates. The slot
 for the handle is reserved when the load starts, so two loads in flight
 get distinct handles; a load that fails leaves its slot empty, as a
-dropped extension does. A program that wants to wait blocks on the
-future, which is safe here because a load serves no calls back.
+dropped extension does.
 
 The program's side of the extension interfaces is ordinary WIT interop:
 it declares a world that imports its views of what extensions export

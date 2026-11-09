@@ -79,13 +79,11 @@ This document tracks completed work and planned features. For project instructio
     no wasm slot, so callers omit its arguments); see the language
     reference under "Generic Classes".
   - **A2 (timers) is done, on both targets.** `zena:time` provides
-    `sleep(ms): Future<void>` and a monotonic clock, and `zena:async`
-    grew a `Parker` hook so an empty microtask queue means "wait for
-    the next external completion" rather than "done". The WASI entry
+    `sleep(ms): Future<void>` and a monotonic clock. The WASI entry
     parked on preview 1's `poll_oneoff` then, and arms a `wasi:clocks`
-    `wait-for` on 0.3 now; the JS entry parks on two imports from
-    `@zena-lang/runtime`. No `zena-cli` changes. `sleep` is what
-    `Future<void>` was blocking.
+    `wait-for` directly on 0.3 now (`time/component.zena`); the JS entry
+    schedules a `setTimeout` through `@zena-lang/runtime`. `sleep` is
+    what `Future<void>` was blocking.
   - **A3 (external completions on a JS host) is done.** A JS host can
     settle a Zena future from its own event loop, so `fetch` and friends
     are now expressible: `zena:host-async` mints an i32 handle and keeps
@@ -97,11 +95,11 @@ This document tracks completed work and planned features. For project instructio
     completion exports exist only in programs that import the module, so
     the JS target pays nothing for host I/O it does not do.
     `zena:time`'s host entry became an ordinary host-async binding over
-    `setTimeout` in the process, leaving the `Clock`/timer-queue/`Parker`
-    machinery reachable only from the WASI entry, which is the target
-    that can actually block. `run()`/`runSync()` split so that a caller
-    who wants a value and a caller who wants a promise get different
-    functions.
+    `setTimeout` in the process, and the `Clock`/timer-queue/`Parker`
+    machinery has since been retired once the component target also
+    moved `sleep` directly onto `wasi:clocks`'s `wait-for`. `run()`/
+    `runSync()` split so that a caller who wants a value and a caller
+    who wants a promise get different functions.
   - **Combinators: `Future.all` and `Future.race` are done.** `Future.all` gives a
     future of every value in input order, or the first failure to
     arrive — reported at once, without waiting on inputs whose result
@@ -225,8 +223,8 @@ await x` pays the bare-value queue hop for nothing — return
     for awaiting inside sync contexts. 9. **JS interop**: Zena async exports surfacing as Promises, and
     the `AbortSignal` ↔ `CancelScope` bridge in both directions
     (a signal cancels a scope; a scope hands `fetch` a signal). 10. ~~WASI p3 as the
-    primary parker, retiring `poll_oneoff`~~ — done: `time/p3.zena` arms a
-    `wasi:clocks` `wait-for`, and preview 1 is gone.
+    primary parker, retiring `poll_oneoff`~~ — done: `time/component.zena` arms a
+    `wasi:clocks` `wait-for`, and preview 1 and `Parker` are gone.
   - Open type-system threads feeding this roadmap (from the #335
     review): `WithDefault<T>` (the honest type of a default-initialized
     generic field; de-boxes `Future.#value` and gives collections an

@@ -154,9 +154,7 @@ re-entry), the `__zena_drain` export a JS host re-enters through, and
 the level-0 `main` wrapper for hosts with no event loop at all
 (async.md §4), which also throws on a still-pending future rather
 than returning a wrong answer — the deadlock a `sleep()` produces
-where nothing can wake the module. `runFuture` is the same
-checkpoint packaged for a synchronous caller, and documented as
-top-level only for the same reason.
+where nothing can wake the module.
 
 Nothing else should call it, and the design above never does: the
 driver's checkpoint at each entry is the whole story. The

@@ -3,9 +3,10 @@
 ## Status
 
 Implemented 2026-10-16 (elematic/zena#282). `zena:fs` and `zena:cli`
-export asynchronous functions, and the synchronous forms that existed
-before carry a `Sync` suffix. The compiler's own file reads stay
-synchronous behind `CompilerHost`; see "Migration".
+export asynchronous functions. The transitional `*Sync` forms and
+`blockOn` that shipped with this change were removed once `CompilerHost`
+and the CLI tools moved to the asynchronous APIs
+([async-compiler.md](./async-compiler.md)).
 
 ## Overview
 
@@ -30,9 +31,10 @@ That had three costs:
 - A program that read a file blocked the whole component while it
   waited, so nothing else in it, timers included, made progress.
 
-The asynchronous forms are the API now, and the synchronous forms keep
-working under a `Sync` suffix, the way Node names `readFileSync` beside
-`readFile`.
+The asynchronous forms are the API now, and the synchronous forms kept
+working during the migration under a `Sync` suffix, the way Node names
+`readFileSync` beside `readFile`, before being retired once every caller
+was asynchronous.
 
 ## The API
 

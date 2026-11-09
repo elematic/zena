@@ -142,10 +142,9 @@ than being pushed to, so there is one untyped `Task` protocol instead of
 the settling operations are symbol-keyed and private to `zena:async`,
 so a reference to a `Future` is read-only and "there is no other way
 in" above is identity-enforced, not conventional; `onComplete` takes a
-pair of callbacks rather than one tagged-tuple callback; the statics
-are `of`/`failed`; and `runFuture(f)` is how synchronous code gets a
-value out. [async-runtime-shape.md](async-runtime-shape.md) has the current
-shape and the reasoning.
+pair of callbacks rather than one tagged-tuple callback; and the statics
+are `of`/`failed`. [async-runtime-shape.md](async-runtime-shape.md) has
+the current shape and the reasoning.
 
 Two API stances, decided here:
 
@@ -469,35 +468,20 @@ runtime suite's host_async_test asserts both halves of that.)
 
 Once a host can settle a future by handle, `sleep` is an ordinary
 host-async binding whose host side is `setTimeout`, and `zena:time`'s
-host entry is six lines with no mechanism of its own. The `Clock`
-interface, the timer queue and the `Parker` exist for the target that
-wait on its own: the component's drain sorts pending deadlines itself
-and arms a `wasi:clocks` `wait-for` for the nearest. `time/queue.zena`
-is reachable only from `time/p3.zena`, and Level 1 above describes the
-WASI story.
+host entry is six lines with no mechanism of its own. On the component
+targets (`time/component.zena`), `sleep` is equally direct: it calls
+`wasi:clocks/monotonic-clock`'s async-lowered `wait-for` through
+`awaitPacked`, and the host re-enters through the component's callback
+when the timer fires.
 
-The p3 clock (`time/p3.zena`) is a third `Clock` on the non-blocking
-side: it arms `wait-for` and returns `false` like the JS entry, and the
-host re-enters through the component's callback. That left exactly one
-blocking driver, the preview 1 clock, and it was removed on 2026-09-28
-when the zena command's host became a component host: a p3 host does the
-blocking on its own threads and hands the guest a subtask, which is the
-thread pool a second driver would otherwise have reimplemented. See
-[component-emission.md](./component-emission.md), open question 2.
-
-The `Parker` hook outlived that removal, with a different job. A
-synchronous program on a component still has to wait for the host
-sometimes — a `readFile` over the asynchronous 0.3 filesystem, or
-`runFuture` in a test body. `zena:wasi` registers a `Parker` whose
-`park` makes one blocking `waitable-set.wait` on the handles the current
-call from the host owns, and handles the event the way the component's
-callback would, so everything else in flight keeps making progress
-while the caller waits. That is `blockOn` in
-`packages/stdlib/zena/wasi/block.zena`; `runFuture` falls back to the
-same `Parker` once the microtask queue is empty. The compiler exports
-`main` async for any program that can reach that wait, because wasmtime
-allows it only inside a call to an async export (component-emission.md,
-"When `main` is lifted async").
+The `Clock` interface, the timer queue, `Parker`, `blockOn`, and
+`runFuture` were all subsequently retired: the preview 1 clock was
+removed on 2026-09-28 when the zena command's host became a component
+host ([component-emission.md](./component-emission.md), open question
+2), the timer queue was deleted once `time/component.zena` forwarded
+directly to `monotonic-clock.wait-for`, and `blockOn`, `Parker`, and
+`runFuture` were removed once `zena:fs`, `CompilerHost`, `async main`,
+and `zena:test` moved to asynchronous execution.
 
 On the **Rust CLI**, the same shape backed by tokio: host ops spawn onto
 a runtime keyed by handle, and a `zena_park()` import blocks until a
