@@ -39,6 +39,7 @@ pub(crate) mod bindings {
             "zena-cli:host/process.[method]process.wait": async | trappable | store,
             "zena-cli:host/process.[method]process.read-line": async | trappable | store,
             "zena-cli:host/process.[method]process.stop": async | trappable | store,
+            "zena-cli:host/wasm.[method]run.wait": async | trappable | store,
             "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
             "zena-cli:host/http-server.[static]response-writer.respond": trappable | store,
             "zena-cli:host/extensions.load": async | trappable | store,
@@ -850,6 +851,7 @@ impl From<Outcome> for wasm::Outcome {
 }
 
 /// What a finished run reports.
+#[derive(Clone)]
 pub(crate) struct RunFinished {
     pub(crate) outcome: Outcome,
     pub(crate) exit_code: i32,
@@ -888,8 +890,7 @@ impl RunFinished {
 
 /// A run in progress, then its result.
 pub struct RunState {
-    rx: Option<std::sync::mpsc::Receiver<RunFinished>>,
-    done: Option<RunFinished>,
+    rx: tokio::sync::watch::Receiver<Option<RunFinished>>,
 }
 
 /// Everything a run needs, with the caller's paths already translated
@@ -979,7 +980,7 @@ impl wasm::HostRun for ComponentState {
         };
         let same_as_caller = config.debug == grant.debug;
         let engine = self.engine.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = tokio::sync::watch::channel(None);
         std::thread::spawn(move || {
             let finished = match refused {
                 Some(message) => RunFinished::failed(message),
@@ -1001,33 +1002,37 @@ impl wasm::HostRun for ComponentState {
                     }
                 }
             };
-            let _ = tx.send(finished);
+            let _ = tx.send(Some(finished));
         });
         self.table
-            .push(RunState {
-                rx: Some(rx),
-                done: None,
-            })
+            .push(RunState { rx })
             .context("failed to push the run resource")
-    }
-
-    fn wait(&mut self, this: Resource<RunState>) -> Result<wasm::RunResult> {
-        let state = self.table.get_mut(&this).context("run")?;
-        if let Some(rx) = state.rx.take() {
-            state.done = Some(rx.recv().unwrap_or_else(|_| {
-                RunFinished::failed("the run's thread vanished".to_string())
-            }));
-        }
-        Ok(state
-            .done
-            .as_ref()
-            .map(RunFinished::to_wit)
-            .unwrap_or_else(|| RunFinished::failed("run in invalid state".to_string()).to_wit()))
     }
 
     fn drop(&mut self, rep: Resource<RunState>) -> Result<()> {
         self.table.delete(rep).context("run")?;
         Ok(())
+    }
+}
+
+impl wasm::HostRunWithStore<ComponentState> for HasSelf<ComponentState> {
+    async fn wait(
+        accessor: &wasmtime::component::Accessor<ComponentState, Self>,
+        this: Resource<RunState>,
+    ) -> Result<wasm::RunResult> {
+        let mut rx = accessor.with(|mut access| -> Result<_> {
+            Ok(access.get().table.get(&this).context("run")?.rx.clone())
+        })?;
+        loop {
+            if let Some(finished) = rx.borrow_and_update().as_ref() {
+                return Ok(finished.to_wit());
+            }
+            if rx.changed().await.is_err() {
+                return Ok(
+                    RunFinished::failed("the run's thread vanished".to_string()).to_wit(),
+                );
+            }
+        }
     }
 }
 

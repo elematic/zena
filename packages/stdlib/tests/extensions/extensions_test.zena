@@ -29,15 +29,15 @@ async function refusal(name: String, bindings: Array<Binding>): Future<String> {
 }
 
 /** Runs the caller fixture's `scenario` and returns what it printed. */
-let run = (scenario: String): String => {
-  let result = runModule(fixture('caller.wasm'), {
+async function run(scenario: String): Future<String> {
+  let result = await runModule(fixture('caller.wasm'), {
     args: ['caller', scenario],
     dirs: [{from: '.', to: '.'}],
     grantExtensions: true,
   });
   equal(result.outcome, RunOutcome.Returned, `${result.message}\n${result.stderr}`);
   return result.stdout;
-};
+}
 
 let lines = (text: String) => text.trim().split('\n');
 
@@ -121,8 +121,8 @@ export let tests = suite('extensions', () => {
     isTrue(noWit.contains('no-such.wit'), noWit);
   });
 
-  test('calls cross with their arguments and results, and call back', () => {
-    equal(run('calls').trim(),
+  test('calls cross with their arguments and results, and call back', async () => {
+    equal((await run('calls')).trim(),
       'lookup 1 5\n' +
       'compute(5) = 210\n' +
       'lookup 1 7\n' +
@@ -130,8 +130,8 @@ export let tests = suite('extensions', () => {
       'describe = ab:3:6');
   });
 
-  test('a trap fails the call, and the next call starts afresh', () => {
-    let text = run('trap');
+  test('a trap fails the call, and the next call starts afresh', async () => {
+    let text = await run('trap');
     let out = lines(text);
     equal(out[0], 'count = 1');
     equal(out[1], 'count = 2');
@@ -141,25 +141,25 @@ export let tests = suite('extensions', () => {
     equal(out[out.length - 1], 'count = 1');
   });
 
-  test('a call past its time limit is stopped, and the next call runs', () => {
-    equal(run('timeout').trim(),
+  test('a call past its time limit is stopped, and the next call runs', async () => {
+    equal((await run('timeout')).trim(),
       'spin failed: stopped at its time limit\n' +
       'lookup 1 1\n' +
       'compute(1) = 202');
   });
 
-  test('memory past the limit fails the call', () => {
-    let text = run('memory');
+  test('memory past the limit fails the call', async () => {
+    let text = await run('memory');
     let out = lines(text);
     isTrue(out[0].startsWith('grow(64) failed: '), out[0]);
     isTrue(text.contains('out of memory'), text);
     equal(out[out.length - 1], 'grow(1) = 1');
   });
 
-  test('a dropped extension, or an unknown handle, fails calls', () => {
+  test('a dropped extension, or an unknown handle, fails calls', async () => {
     // Dropping also releases the objects the plugin object vended, which runs their
     // destructor.
-    equal(run('drop').trim(),
+    equal((await run('drop')).trim(),
       'lookup 1 1\n' +
       'compute(1) = 202\n' +
       'callbacks 1 disposed\n' +
@@ -167,8 +167,8 @@ export let tests = suite('extensions', () => {
       'no such handle failed: no extension 99');
   });
 
-  test('a run loads nothing without the grant passed on', () => {
-    let result = runModule(fixture('caller.wasm'), {
+  test('a run loads nothing without the grant passed on', async () => {
+    let result = await runModule(fixture('caller.wasm'), {
       args: ['caller', 'calls'],
       dirs: [{from: '.', to: '.'}],
     });
@@ -176,21 +176,21 @@ export let tests = suite('extensions', () => {
     isTrue(result.message.contains('--allow-extensions'), result.message);
   });
 
-  test('an export of the program is not granted by being exported', () => {
-    let out = run('unbound');
+  test('an export of the program is not granted by being exported', async () => {
+    let out = await run('unbound');
     isTrue(out.startsWith('unbound refused: '), out);
     isTrue(out.contains('test:ext/callbacks@1.0.0, which is not on its import list'), out);
   });
 
-  test('an export whose type does not match is refused', () => {
-    let out = run('mismatch');
+  test('an export whose type does not match is refused', async () => {
+    let out = await run('mismatch');
     isTrue(out.startsWith('mismatch refused: '), out);
     isTrue(out.contains('test:ext/ops@1.0.0#compute'), out);
     isTrue(out.contains('S64'), out);
   });
 
-  test('resources cross both ways as proxies, and drops reach their owner', () => {
-    equal(run('resources').trim(),
+  test('resources cross both ways as proxies, and drops reach their owner', async () => {
+    equal((await run('resources')).trim(),
       'begin for 1\n' +
       'put k 7\n' +
       'put k2 8\n' +
@@ -203,8 +203,8 @@ export let tests = suite('extensions', () => {
       'disposed = 1');
   });
 
-  test('calls into one extension run at once, each with its own calls back', () => {
-    let text = run('concurrent');
+  test('calls into one extension run at once, each with its own calls back', async () => {
+    let text = await run('concurrent');
     isTrue(text.contains('slow(5) = 105'), text);
     isTrue(text.contains('slow(7) = 107'), text);
     // Each call waited its own time: a void async export the program
@@ -213,19 +213,19 @@ export let tests = suite('extensions', () => {
     isTrue(text.contains('overlapped: true'), text);
   });
 
-  test('a failure fails every call in flight, and the next call starts afresh', () => {
-    let out = lines(run('concurrent-failure'));
+  test('a failure fails every call in flight, and the next call starts afresh', async () => {
+    let out = lines(await run('concurrent-failure'));
     isTrue(out[0].contains('time limit'), out[0]);
     isTrue(out[1].contains('time limit'), out[1]);
     equal(out[2], 'count = 1');
   });
 
-  test('loads in flight at once get distinct handles', () => {
-    equal(run('loads').trim(), 'distinct: true');
+  test('loads in flight at once get distinct handles', async () => {
+    equal((await run('loads')).trim(), 'distinct: true');
   });
 
-  test('an extension bound to another calls it, and it calls the program', () => {
-    let text = run('relay');
+  test('an extension bound to another calls it, and it calls the program', async () => {
+    let text = await run('relay');
     let out = lines(text);
     // The child's lookup is served for extension 1 while the program
     // waits on the relay, extension 2.

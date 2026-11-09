@@ -38,7 +38,7 @@ import { resolveImportedSymbolId } from './import-resolver.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../../stdlib-manifest.zena';
 import { growable } from 'zena:core';
-import { targetUsesJsStrings } from '../../targets.zena';
+import { targetEmitsComponent, targetUsesJsStrings } from '../../targets.zena';
 
 /**
  * TypeLowerer translates Zena semantic types into their target WebAssembly representation,
@@ -1907,13 +1907,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (this.pass.cancellationMachineryActive) {
         this.queueCancellationMachinery(futureType, model);
       }
-      // An async `main` is driven by a synthesized export wrapper that
-      // drains the queue and unwraps the result (async.md §4, Level 0).
-      // Whether THIS function is that main is not knowable here, so
-      // reach both pieces for any async function: two small stdlib
-      // entries, and no way to be wrong about it later.
-      this.queuePrivateMethod(futureType, ':valueOrThrow');
-      this.queueStdlibFunction('async', 'drainMicrotasks');
+      // On core-module targets, an async `main` is driven by a
+      // synthesized export wrapper that drains the queue and unwraps
+      // the result (async.md §4, Level 0). Whether THIS function is
+      // that main is not knowable here, so reach both pieces for any
+      // async function on those targets.
+      if (!targetEmitsComponent(this.pass.wasm.target)) {
+        this.queuePrivateMethod(futureType, ':valueOrThrow');
+        this.queueStdlibFunction('async', 'drainMicrotasks');
+      }
     } else {
       this.queuePrivateMethod(futureType, ':valueOrThrow');
       this.queuePrivateMethod(futureType, ':subscribe');
@@ -2099,12 +2101,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     } else if (ret is ClassType) {
       this.registerAsyncFuture(ret, model, true);
     }
-    // The async ramp and the async-main wrapper reach
+    // On core-module targets, the async-main wrapper reaches
     // `zena:async.drainMicrotasks` through `getStdlibFunc`, so there is
     // no call node for RTA to find it by — async.zena throws outright
     // if it was not reached. Root it from the async function that
     // implies it, rather than from every program.
-    this.queueStdlibFunction('async', 'drainMicrotasks');
+    if (!targetEmitsComponent(this.pass.wasm.target)) {
+      this.queueStdlibFunction('async', 'drainMicrotasks');
+    }
   }
 
   /**

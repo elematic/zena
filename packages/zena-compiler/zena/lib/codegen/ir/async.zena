@@ -91,6 +91,7 @@ import {
   isScopedType, scopedInner,
 } from '../../types.zena';
 import { FunctionExpression, MethodDefinition, Node } from '../../ast.zena';
+import { targetEmitsComponent } from '../../targets.zena';
 import { growable } from 'zena:core';
 
 let STATE_RUNNING = 1;
@@ -323,6 +324,9 @@ export function prepareAsyncFunctions(
  * deadlock.
  */
 function prepareAsyncMain(wasm: WasmModule, pass: ReachabilityAnalysis): void {
+  if (targetEmitsComponent(wasm.target)) {
+    return;
+  }
   let key = 'main' as ExportKey;
   if (!wasm.exportMap.has(key)) {
     return;
@@ -344,7 +348,6 @@ function prepareAsyncMain(wasm: WasmModule, pass: ReachabilityAnalysis): void {
   let wrapper = new WasmFunction(wrapperSig, null, ramp.model);
   wrapper.name = 'main$asyncEntry';
   wrapper.isAsyncMainWrapper = true;
-  wrapper.asyncMainRamp = ramp;
   wasm.addFunction(wrapper);
   pass.markFunctionReached(wrapper);
 
