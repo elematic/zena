@@ -77,7 +77,8 @@ how packages are published on atproto.
 
 `zena pkg add` takes a package by DID, by handle, or as `@scope/name`, which
 means `name.scope.pkg.zena-lang.dev` unless the root manifest's `scopes`
-maps the scope to another domain. Without a version it takes the latest
+maps the scope to another domain, or `ZENA_REGISTRY` names another
+registry, whose domain it then asks for. Without a version it takes the latest
 that is not retracted, and without `--name` the name the package's profile
 suggests:
 

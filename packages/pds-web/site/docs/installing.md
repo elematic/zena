@@ -36,7 +36,7 @@ zena run main.zena
 Use `zena pkg add` to add a published package to your project. You can refer to a package by `@scope/name`, by its full handle, or by its DID:
 
 ```sh
-# By @scope/name on the default registry (pkg.zena-lang.dev)
+# By @scope/name, on pkg.zena-lang.dev, or on the registry ZENA_REGISTRY names
 zena pkg add @acme/router
 
 # By full handle (including packages on custom domains)
