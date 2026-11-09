@@ -168,7 +168,7 @@ registered through a `MarkdownExtension` passed to `Parser` and `HtmlRenderer`:
 
 ## Built-in extensions
 
-Every extension in `packages/markdown/zena/plugins/` uses the public extension
+Every extension in `packages/markdown/src/plugins/` uses the public extension
 interfaces above:
 
 - **`strikethrough` (`DelimiterProcessor`)**: matches `~` or `~~` runs of equal
