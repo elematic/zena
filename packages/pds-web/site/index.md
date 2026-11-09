@@ -88,5 +88,5 @@ features:
       </div>
     </div>
   </div>
-  {% slot "featured-packages" %}
+  {% slot "recent-packages" %}
 </div>

@@ -1538,6 +1538,32 @@ export let tests = suite('registry:app-view', () => {
     equal(await refusal(() => appView.setLimit(ALICE, Limit.PackageActions, some(1 as i64))), 'InvalidRequest');
   });
 
+  test('lists the packages with a release, the one whose repository changed last first', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let cli = ok(await createPackage(fixture, ALICE, orgDid, 'cli'))['did'] as String;
+    ok(await createPackage(fixture, ALICE, orgDid, 'parser'));
+    let cliArchive = (version: String) => archiveOf(cli, version,
+        `{"name": "cli", "did": "${cli}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`);
+    let handles = async (count: i32) => {
+      var text = '';
+      for (let summary in await appView.recentPackages(count)) {
+        text = `${text} ${summary.name}`;
+      }
+      return text;
+    };
+    equal(await handles(10), '');
+    await release(fixture, ALICE, router, '1.0.0', await upload(fixture, router, archiveOf(router, '1.0.0')));
+    await release(fixture, ALICE, cli, '1.0.0', await upload(fixture, cli, cliArchive('1.0.0')));
+    // parser has no release, so it is not listed.
+    equal(await handles(10), ' cli router');
+    await release(fixture, ALICE, router, '1.0.1', await upload(fixture, router, archiveOf(router, '1.0.1')));
+    equal(await handles(10), ' router cli');
+    equal(await handles(1), ' router');
+  });
+
   test('renders the pages a visitor browses', async (ctx) => {
     let fixture = new Fixture();
     let router = await seedBrowsable(fixture);
@@ -1545,10 +1571,12 @@ export let tests = suite('registry:app-view', () => {
     let home = await fixture.get('/');
     equal(home.statusCode, 200, 'home');
     let homeHtml = pageOf(home);
-    for (let expected in ['Packages for Zena', 'Featured Packages', '@zena/http',
-        'href="/docs/"', 'href="/docs/installing/"', 'Installing Packages', 'Decentralized']) {
+    for (let expected in ['Packages for Zena', 'href="/docs/"', 'href="/docs/installing/"', 'Installing Packages',
+        'Decentralized', 'Recently updated', 'href="/packages/router.acme.pkg.test"', 'zena pkg add router.acme.pkg.test']) {
       isTrue(homeHtml.contains(expected), `${expected} in the home page`);
     }
+    // Only packages with a release, and no made-up ones.
+    isTrue(!homeHtml.contains('parser.acme.pkg.test') && !homeHtml.contains('@zena/http'), homeHtml);
     // The filter matches the description, ignoring case, and escapes the query.
     let found = pageOf(await fixture.get('/?q=ROUTES'));
     isTrue(found.contains('router.acme.pkg.test') && !found.contains('parser.acme.pkg.test'), found);
