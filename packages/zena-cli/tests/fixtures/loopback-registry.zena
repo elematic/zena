@@ -1,0 +1,32 @@
+/**
+ * A registry on this machine that names itself as the demo's App View
+ * does, for `tests/registry-did_test.zena`: served at `127.0.0.1`, its
+ * `dev.zena-lang.registry.describeRegistry` answers with
+ * `did:web:localhost%3A<its port>`, since atproto allows a port in a
+ * `did:web` only for `localhost`. Run with `--dir <scratch>::/out`, it
+ * writes `/out/plc.txt`, its origin followed by `/plc` as `fakePdsOrigin`
+ * reads it, and serves until it is killed.
+ */
+
+import {Future} from 'zena:async';
+import {Box} from 'zena:core';
+import {writeFile} from 'zena:fs';
+import {App, Router, Server} from 'zena:http';
+
+export async function main(): Future<i32> {
+  let did = new Box<String>('');
+  let router = new Router();
+  router.get('/xrpc/dev.zena-lang.registry.describeRegistry', async (req, res, next, params) => {
+    res.type = 'application/json';
+    res.body = `{"did": "${did.value}", "domain": "pkg.test", "reservedScopes": [], "limits": {"releaseBytes": 1024, "packageBytes": 4096, "scopeBytes": 16384}, "scopeApproval": false, "methods": []}`;
+  });
+  let app = new App();
+  app.use(router.routes());
+  let server = new Server(app, 0 as u16);
+  server.start();
+  let port = server.port as i32;
+  did.value = `did:web:localhost%3A${port}`;
+  await writeFile('/out/plc.txt', `http://127.0.0.1:${port}/plc`);
+  await server.done;
+  return 0;
+}
