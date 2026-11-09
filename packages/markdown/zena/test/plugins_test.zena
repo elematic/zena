@@ -1,0 +1,205 @@
+/**
+ * Tests for GFM extensions, GitHub alerts, heading anchors, and custom plugins.
+ */
+
+import { Array, GrowableArray, StringBuilder } from 'zena:core';
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import {
+  markdownToHtml, gfmExtensions, headingAnchorsExtension, CustomInline,
+  CustomBlock, Inline, Span, DelimiterProcessor, DelimiterRunInfo,
+  InlineContentParser, InlineMatch, InlineParserRunner, AstTransformer,
+  BlockParserFactory, HtmlRenderContext, MarkdownExtension, NodeRenderer, Link,
+  Text, appendInlinesPlainText
+} from '../index.zena';
+import { isAsciiAlphanumeric } from '../scanner.zena';
+
+/**
+ * Custom test inline node for `==highlight==` (`<mark>...</mark>`).
+ */
+final class Highlight extends CustomInline {
+  children: GrowableArray<Inline>;
+
+  new(this.children, span: Span) : super(span);
+
+  appendPlainText(sb: StringBuilder): void {
+    appendInlinesPlainText(this.children, sb);
+  }
+}
+
+final class HighlightDelimiterProcessor implements DelimiterProcessor {
+  openingByte(): i32 {
+    return 0x3D; // '='
+  }
+
+  closingByte(): i32 {
+    return 0x3D; // '='
+  }
+
+  minLength(): i32 {
+    return 2;
+  }
+
+  process(
+    opener: DelimiterRunInfo,
+    closer: DelimiterRunInfo,
+    children: GrowableArray<Inline>
+  ): inline (i32, Inline | null) {
+    if (opener.length >= 2 && closer.length >= 2) {
+      return (2, new Highlight(children, new Span(opener.startOffset, closer.endOffset)));
+    }
+    return (0, null);
+  }
+}
+
+final class HighlightRenderer implements NodeRenderer {
+  renderBlock(block: CustomBlock, ctx: HtmlRenderContext): boolean {
+    return false;
+  }
+
+  renderInline(node: CustomInline, ctx: HtmlRenderContext): boolean {
+    if (node is Highlight) {
+      ctx.sb.append('<mark>');
+      ctx.renderInlines(node.children);
+      ctx.sb.append('</mark>');
+      return true;
+    }
+    return false;
+  }
+}
+
+/**
+ * Custom test inline content parser for `@handle` mentions.
+ */
+final class MentionInlineParser implements InlineContentParser {
+  triggerBytes(): Array<i32> {
+    return [0x40]; // '@'
+  }
+
+  tryParse(
+    source: String,
+    baseOffset: i32,
+    index: i32,
+    precedingByte: i32,
+    inlineParser: InlineParserRunner
+  ): InlineMatch | null {
+    if (precedingByte >= 0 && isAsciiAlphanumeric(precedingByte)) {
+      return null;
+    }
+    var end = index + 1;
+    while (
+      end < source.length &&
+      (isAsciiAlphanumeric(source.getByteAt(end)) || source.getByteAt(end) == 0x2D)
+    ) {
+      end += 1;
+    }
+    if (end == index + 1) {
+      return null;
+    }
+    let handle = source.sliceBytes(index + 1, end);
+    let span = new Span(baseOffset + index, baseOffset + end);
+    let children = new GrowableArray<Inline>(1);
+    children.push(new Text(`@${handle}`, span));
+    let link = new Link(`/people/${handle}`, '', children, span);
+    return new InlineMatch(link, end);
+  }
+}
+
+export let tests = suite('Plugins and GFM', () => {
+  suite('GFM strikethrough', () => {
+    test('single and double tilde strikethrough', (ctx) => {
+      let exts = gfmExtensions();
+      equal(
+        markdownToHtml('~one~ and ~~two~~ and ~~~three~~~\n', {extensions: exts}),
+        '<p><del>one</del> and <del>two</del> and ~~~three~~~</p>\n'
+      );
+      equal(
+        markdownToHtml('**bold ~~and struck~~ text**\n', {extensions: exts}),
+        '<p><strong>bold <del>and struck</del> text</strong></p>\n'
+      );
+    });
+  });
+
+  suite('GFM tables', () => {
+    test('pipe table with column alignments and inline formatting', (ctx) => {
+      let exts = gfmExtensions();
+      let md = '| Name | Type | Score |\n| :--- | :---: | ---: |\n| `x` | **i32** | 10 |\n| a \\| b | str | 20 |\n';
+      equal(
+        markdownToHtml(md, {extensions: exts}),
+        '<table>\n<thead>\n<tr>\n<th align="left">Name</th>\n<th align="center">Type</th>\n<th align="right">Score</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td align="left"><code>x</code></td>\n<td align="center"><strong>i32</strong></td>\n<td align="right">10</td>\n</tr>\n<tr>\n<td align="left">a | b</td>\n<td align="center">str</td>\n<td align="right">20</td>\n</tr>\n</tbody>\n</table>\n'
+      );
+    });
+  });
+
+  suite('GFM task lists', () => {
+    test('checked and unchecked task list items', (ctx) => {
+      let exts = gfmExtensions();
+      let md = '- [ ] Write parser\n- [x] Write tests\n- [X] Ship it\n';
+      equal(
+        markdownToHtml(md, {extensions: exts}),
+        '<ul>\n<li class="task-list-item"><input type="checkbox" disabled="" /> Write parser</li>\n<li class="task-list-item"><input type="checkbox" disabled="" checked="" /> Write tests</li>\n<li class="task-list-item"><input type="checkbox" disabled="" checked="" /> Ship it</li>\n</ul>\n'
+      );
+    });
+  });
+
+  suite('GFM extended autolinks', () => {
+    test('bare http, https, and www URLs with trailing punctuation', (ctx) => {
+      let exts = gfmExtensions();
+      equal(
+        markdownToHtml(
+          'Visit https://zena-lang.dev/docs, www.example.com/a(b), or (http://example.org/test).\n',
+          {extensions: exts}
+        ),
+        '<p>Visit <a href="https://zena-lang.dev/docs">https://zena-lang.dev/docs</a>, <a href="http://www.example.com/a(b)">www.example.com/a(b)</a>, or (<a href="http://example.org/test">http://example.org/test</a>).</p>\n'
+      );
+    });
+  });
+
+  suite('GitHub alerts', () => {
+    test('note, tip, important, warning, and caution alerts', (ctx) => {
+      let exts = gfmExtensions();
+      let md = '> [!NOTE]\n> Useful information that users should know.\n\n> [!WARNING]\n> Urgent info that needs immediate attention.\n';
+      equal(
+        markdownToHtml(md, {extensions: exts}),
+        '<div class="markdown-alert markdown-alert-note">\n<p class="markdown-alert-title">Note</p>\n<p>Useful information that users should know.</p>\n</div>\n<div class="markdown-alert markdown-alert-warning">\n<p class="markdown-alert-title">Warning</p>\n<p>Urgent info that needs immediate attention.</p>\n</div>\n'
+      );
+    });
+  });
+
+  suite('Heading anchors', () => {
+    test('generates slugs and deduplicates collisions', (ctx) => {
+      let exts = gfmExtensions(true);
+      let md = '# Getting Started!\n\n## `String` & `Array`\n\n### Getting Started!\n';
+      equal(
+        markdownToHtml(md, {extensions: exts}),
+        '<h1 id="getting-started">Getting Started!</h1>\n<h2 id="string-array"><code>String</code> &amp; <code>Array</code></h2>\n<h3 id="getting-started-1">Getting Started!</h3>\n'
+      );
+    });
+  });
+
+  suite('Custom user plugins', () => {
+    test('custom DelimiterProcessor (==highlight==) and InlineContentParser (@mention)', (ctx) => {
+      let delims = new GrowableArray<DelimiterProcessor>(1);
+      delims.push(new HighlightDelimiterProcessor());
+      let inlines = new GrowableArray<InlineContentParser>(1);
+      inlines.push(new MentionInlineParser());
+      let renderers = new GrowableArray<NodeRenderer>(1);
+      renderers.push(new HighlightRenderer());
+
+      let customExt = new MarkdownExtension(
+        new GrowableArray<BlockParserFactory>(0),
+        delims,
+        inlines,
+        new GrowableArray<AstTransformer>(0),
+        renderers
+      );
+      let exts = new GrowableArray<MarkdownExtension>(1);
+      exts.push(customExt);
+
+      equal(
+        markdownToHtml('Hello @alice, check out ==this feature==!\n', {extensions: exts}),
+        '<p>Hello <a href="/people/alice">@alice</a>, check out <mark>this feature</mark>!</p>\n'
+      );
+    });
+  });
+});

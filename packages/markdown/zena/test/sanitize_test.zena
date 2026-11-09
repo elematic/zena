@@ -1,0 +1,48 @@
+/**
+ * HTML sanitization and safe URL filtering tests for `markdown`.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import { markdownToHtml, isSafeUrl, gfmExtensions } from '../index.zena';
+
+export let tests = suite('Sanitization and Safe Mode', () => {
+  test('omits raw HTML blocks and inline HTML when safe is true', (ctx) => {
+    let md = 'Hello <script>alert(1)</script> world\n\n<div onclick="evil()">\nblock\n</div>\n\nParagraph.\n';
+    equal(
+      markdownToHtml(md, {safe: true}),
+      '<p>Hello alert(1) world</p>\n<p>Paragraph.</p>\n'
+    );
+  });
+
+  test('escapes raw HTML when safe and escapeRawHtml are true', (ctx) => {
+    let md = 'Hello <b>world</b>\n';
+    equal(
+      markdownToHtml(md, {safe: true, escapeRawHtml: true}),
+      '<p>Hello &lt;b&gt;world&lt;/b&gt;</p>\n'
+    );
+  });
+
+  test('filters dangerous link and image schemes in safe mode', (ctx) => {
+    let md = '[Evil](javascript:alert(1)) and [Entity](&#106;avascript:alert(1)) and ![Bad](data:text/html,hi) and [Good](https://zena-lang.dev) and [Rel](./guide.md)\n';
+    equal(
+      markdownToHtml(md, {safe: true, extensions: gfmExtensions()}),
+      '<p><a href="">Evil</a> and <a href="">Entity</a> and <img src="" alt="Bad" /> and <a href="https://zena-lang.dev">Good</a> and <a href="./guide.md">Rel</a></p>\n'
+    );
+  });
+
+  test('isSafeUrl unit checks', (ctx) => {
+    equal(isSafeUrl('https://zena-lang.dev', false), true);
+    equal(isSafeUrl('http://example.com', true), true);
+    equal(isSafeUrl('mailto:dev@zena-lang.dev', false), true);
+    equal(isSafeUrl('mailto:dev@zena-lang.dev', true), false);
+    equal(isSafeUrl('/docs/intro', false), true);
+    equal(isSafeUrl('./image.png', true), true);
+    equal(isSafeUrl('#section', false), true);
+    equal(isSafeUrl('javascript:alert(1)', false), false);
+    equal(isSafeUrl('  JaVaScRiPt:alert(1)', false), false);
+    equal(isSafeUrl('java\tscript:alert(1)', false), false);
+    equal(isSafeUrl('vbscript:msgbox(1)', false), false);
+    equal(isSafeUrl('data:image/svg+xml;base64,PHN2Zz4=', true), false);
+  });
+});

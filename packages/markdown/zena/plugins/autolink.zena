@@ -1,0 +1,208 @@
+/**
+ * GFM extended autolink extension (`http://...`, `https://...`, `www....`).
+ */
+
+import { Array, GrowableArray } from 'zena:core';
+import { Autolink, Span } from '../ast.zena';
+import {
+  AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser,
+  InlineMatch, InlineParserRunner, MarkdownExtension, NodeRenderer
+} from '../plugin.zena';
+import {
+  isWhitespaceByte, isAsciiLetter, isAsciiAlphanumeric, toLowerAsciiByte
+} from '../scanner.zena';
+
+final class GfmAutolinkParser implements InlineContentParser {
+  triggerBytes(): Array<i32> {
+    return [0x68, 0x48, 0x77, 0x57]; // 'h', 'H', 'w', 'W'
+  }
+
+  tryParse(
+    source: String,
+    baseOffset: i32,
+    index: i32,
+    precedingByte: i32,
+    inlineParser: InlineParserRunner
+  ): InlineMatch | null {
+    // Do not trigger in the middle of an identifier or path
+    if (
+      precedingByte >= 0 &&
+      (isAsciiAlphanumeric(precedingByte) ||
+        precedingByte == 0x5F ||
+        precedingByte == 0x2F ||
+        precedingByte == 0x2E)
+    ) {
+      return null;
+    }
+
+    let len = source.length;
+    var domainStart = -1;
+    var isWww = false;
+
+    if (startsWithCaseInsensitive(source, index, 'https://')) {
+      domainStart = index + 8;
+    } else if (startsWithCaseInsensitive(source, index, 'http://')) {
+      domainStart = index + 7;
+    } else if (startsWithCaseInsensitive(source, index, 'www.')) {
+      domainStart = index + 4;
+      isWww = true;
+    } else {
+      return null;
+    }
+
+    // Validate domain: non-empty, contains at least one '.', valid domain chars
+    let (domainOk, afterDomain) = scanAutolinkDomain(source, domainStart, len, isWww);
+    if (!domainOk) {
+      return null;
+    }
+
+    // Scan path/query/fragment up to whitespace or `<`
+    var end = afterDomain;
+    while (end < len) {
+      let b = source.getByteAt(end);
+      if (b <= 0x20 || b == 0x3C || b == 0x7F) {
+        break;
+      }
+      end += 1;
+    }
+
+    // Apply GFM extended autolink trailing punctuation trimming
+    end = trimAutolinkTrailing(source, index, end);
+    if (end <= domainStart) {
+      return null;
+    }
+
+    let label = source.sliceBytes(index, end);
+    let destination = if (isWww) `http://${label}` else label;
+    let node = new Autolink(
+      destination,
+      label,
+      false,
+      new Span(baseOffset + index, baseOffset + end)
+    );
+    return new InlineMatch(node, end);
+  }
+}
+
+function startsWithCaseInsensitive(s: String, index: i32, prefix: String): boolean {
+  if (index + prefix.length > s.length) {
+    return false;
+  }
+  var i = 0;
+  while (i < prefix.length) {
+    if (toLowerAsciiByte(s.getByteAt(index + i)) != prefix.getByteAt(i)) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+function scanAutolinkDomain(
+  s: String,
+  start: i32,
+  len: i32,
+  requireDot: boolean
+): inline (boolean, i32) {
+  if (start >= len) {
+    return (false, start);
+  }
+  var i = start;
+  var hasDot = false;
+  var segLen = 0;
+  while (i < len) {
+    let b = s.getByteAt(i);
+    if (isAsciiAlphanumeric(b) || b == 0x2D || b == 0x5F) {
+      segLen += 1;
+      i += 1;
+    } else if (b == 0x2E) { // .
+      if (segLen == 0) {
+        break;
+      }
+      hasDot = true;
+      segLen = 0;
+      i += 1;
+    } else {
+      break;
+    }
+  }
+  if (segLen == 0 && i > start && s.getByteAt(i - 1) == 0x2E) {
+    i -= 1;
+  }
+  if (i == start || (requireDot && !hasDot)) {
+    return (false, start);
+  }
+  return (true, i);
+}
+
+function trimAutolinkTrailing(s: String, start: i32, initialEnd: i32): i32 {
+  var end = initialEnd;
+  while (end > start) {
+    let last = s.getByteAt(end - 1);
+    // Always trim `? ! . , : * _ ~`
+    if (
+      last == 0x3F ||
+      last == 0x21 ||
+      last == 0x2E ||
+      last == 0x2C ||
+      last == 0x3A ||
+      last == 0x2A ||
+      last == 0x5F ||
+      last == 0x7E
+    ) {
+      end -= 1;
+      continue;
+    }
+    // Trim `)` when closing parens outnumber opening parens
+    if (last == 0x29) {
+      var openCount = 0;
+      var closeCount = 0;
+      var i = start;
+      while (i < end) {
+        let b = s.getByteAt(i);
+        if (b == 0x28) {
+          openCount += 1;
+        } else if (b == 0x29) {
+          closeCount += 1;
+        }
+        i += 1;
+      }
+      if (closeCount > openCount) {
+        end -= 1;
+        continue;
+      }
+      break;
+    }
+    // Trim `;` and preceding `&alnum+` entity reference
+    if (last == 0x3B) {
+      var k = end - 2;
+      while (k > start && isAsciiAlphanumeric(s.getByteAt(k))) {
+        k -= 1;
+      }
+      if (k > start && k < end - 2 && s.getByteAt(k) == 0x26) {
+        end = k;
+        continue;
+      }
+      end -= 1;
+      continue;
+    }
+    break;
+  }
+  return end;
+}
+
+/**
+ * Returns the `MarkdownExtension` for GFM extended autolinks (`http://`,
+ * `https://`, `www.`).
+ */
+export function autolinkExtension(): MarkdownExtension {
+  let parsers = new GrowableArray<InlineContentParser>(1);
+  parsers.push(new GfmAutolinkParser());
+  return new MarkdownExtension(
+    new GrowableArray<BlockParserFactory>(0),
+    new GrowableArray<DelimiterProcessor>(0),
+    parsers,
+    new GrowableArray<AstTransformer>(0),
+    new GrowableArray<NodeRenderer>(0)
+  );
+}

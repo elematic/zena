@@ -1,0 +1,190 @@
+/**
+ * CommonMark specification tests for `markdown`.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import {
+  parse, markdownToHtml, Heading, Paragraph
+} from '../index.zena';
+
+export let tests = suite('CommonMark', () => {
+  suite('Paragraphs and line breaks', () => {
+    test('simple paragraphs', (ctx) => {
+      equal(
+        markdownToHtml('aaa\n\nbbb\n'),
+        '<p>aaa</p>\n<p>bbb</p>\n'
+      );
+    });
+
+    test('soft and hard line breaks', (ctx) => {
+      equal(
+        markdownToHtml('line one\nline two\n'),
+        '<p>line one\nline two</p>\n'
+      );
+      equal(
+        markdownToHtml('line one  \nline two\n'),
+        '<p>line one<br />\nline two</p>\n'
+      );
+      equal(
+        markdownToHtml('line one\\\nline two\n'),
+        '<p>line one<br />\nline two</p>\n'
+      );
+    });
+  });
+
+  suite('Headings and thematic breaks', () => {
+    test('ATX headings h1 through h6 and closing hashes', (ctx) => {
+      equal(
+        markdownToHtml('# Heading 1\n## Heading 2 ##\n###### Heading 6   ###\n'),
+        '<h1>Heading 1</h1>\n<h2>Heading 2</h2>\n<h6>Heading 6</h6>\n'
+      );
+      // 7 hashes is not a heading
+      equal(
+        markdownToHtml('####### Not a heading\n'),
+        '<p>####### Not a heading</p>\n'
+      );
+    });
+
+    test('Setext headings', (ctx) => {
+      equal(
+        markdownToHtml('Foo *bar*\n=========\n\nFoo *bar*\n---------\n'),
+        '<h1>Foo <em>bar</em></h1>\n<h2>Foo <em>bar</em></h2>\n'
+      );
+    });
+
+    test('thematic breaks', (ctx) => {
+      equal(
+        markdownToHtml('***\n---\n_ _ _\n'),
+        '<hr />\n<hr />\n<hr />\n'
+      );
+    });
+  });
+
+  suite('Block quotes', () => {
+    test('simple and nested block quotes with lazy continuation', (ctx) => {
+      equal(
+        markdownToHtml('> # Foo\n> bar\nbaz\n'),
+        '<blockquote>\n<h1>Foo</h1>\n<p>bar\nbaz</p>\n</blockquote>\n'
+      );
+      equal(
+        markdownToHtml('> > nested\n'),
+        '<blockquote>\n<blockquote>\n<p>nested</p>\n</blockquote>\n</blockquote>\n'
+      );
+    });
+  });
+
+  suite('Lists', () => {
+    test('tight unordered list', (ctx) => {
+      equal(
+        markdownToHtml('- one\n- two\n- three\n'),
+        '<ul>\n<li>one</li>\n<li>two</li>\n<li>three</li>\n</ul>\n'
+      );
+    });
+
+    test('loose unordered list', (ctx) => {
+      equal(
+        markdownToHtml('- one\n\n- two\n'),
+        '<ul>\n<li>\n<p>one</p>\n</li>\n<li>\n<p>two</p>\n</li>\n</ul>\n'
+      );
+    });
+
+    test('ordered list with custom start number', (ctx) => {
+      equal(
+        markdownToHtml('3. third\n4. fourth\n'),
+        '<ol start="3">\n<li>third</li>\n<li>fourth</li>\n</ol>\n'
+      );
+    });
+
+    test('nested lists', (ctx) => {
+      equal(
+        markdownToHtml('- outer\n  - inner 1\n  - inner 2\n'),
+        '<ul>\n<li>outer\n<ul>\n<li>inner 1</li>\n<li>inner 2</li>\n</ul>\n</li>\n</ul>\n'
+      );
+    });
+  });
+
+  suite('Code blocks', () => {
+    test('fenced code block with info string and indentation stripping', (ctx) => {
+      equal(
+        markdownToHtml('  ```zena\n  let x = 1 < 2;\n  ```\n'),
+        '<pre><code class="language-zena">let x = 1 &lt; 2;\n</code></pre>\n'
+      );
+    });
+
+    test('indented code block trims leading and trailing blank lines', (ctx) => {
+      equal(
+        markdownToHtml('    \n    let a = 1;\n    let b = 2;\n    \n'),
+        '<pre><code>let a = 1;\nlet b = 2;\n</code></pre>\n'
+      );
+    });
+  });
+
+  suite('Emphasis, strong, and code spans', () => {
+    test('emphasis and strong nesting and intraword rules', (ctx) => {
+      equal(
+        markdownToHtml('*em* **strong** _em_ __strong__ foo_bar_baz\n'),
+        '<p><em>em</em> <strong>strong</strong> <em>em</em> <strong>strong</strong> foo_bar_baz</p>\n'
+      );
+      equal(
+        markdownToHtml('***both*** and *foo**bar**baz*\n'),
+        '<p><em><strong>both</strong></em> and <em>foo<strong>bar</strong>baz</em></p>\n'
+      );
+    });
+
+    test('code spans with multi-backticks and space stripping', (ctx) => {
+      equal(
+        markdownToHtml('`foo` and `` `bar` `` and `<tag>`\n'),
+        '<p><code>foo</code> and <code>`bar`</code> and <code>&lt;tag&gt;</code></p>\n'
+      );
+    });
+  });
+
+  suite('Links, images, and reference definitions', () => {
+    test('inline links and images', (ctx) => {
+      equal(
+        markdownToHtml('[Zena](https://zena-lang.dev "Title") and ![alt *text*](/logo.png "Logo")\n'),
+        '<p><a href="https://zena-lang.dev" title="Title">Zena</a> and <img src="/logo.png" alt="alt text" title="Logo" /></p>\n'
+      );
+    });
+
+    test('full, collapsed, and shortcut reference links', (ctx) => {
+      let src = '[Full][ref], [Ref][], and [Ref].\n\n[ref]: https://example.com/path "Example"\n';
+      equal(
+        markdownToHtml(src),
+        '<p><a href="https://example.com/path" title="Example">Full</a>, <a href="https://example.com/path" title="Example">Ref</a>, and <a href="https://example.com/path" title="Example">Ref</a>.</p>\n'
+      );
+    });
+
+    test('autolinks', (ctx) => {
+      equal(
+        markdownToHtml('<https://zena-lang.dev> and <dev@zena-lang.dev>\n'),
+        '<p><a href="https://zena-lang.dev">https://zena-lang.dev</a> and <a href="mailto:dev@zena-lang.dev">dev@zena-lang.dev</a></p>\n'
+      );
+    });
+  });
+
+  suite('Escapes, entities, and source spans', () => {
+    test('backslash escapes and HTML character references', (ctx) => {
+      let replacement = String.fromCodePoint(0xFFFD);
+      equal(
+        markdownToHtml('\\*not emphasis\\* &amp; &copy; &#35; &#x41; &#0;\n'),
+        `<p>*not emphasis* &amp; © # A ${replacement}</p>\n`
+      );
+    });
+
+    test('AST nodes record source byte spans', (ctx) => {
+      let doc = parse('# Title\n\nHello\n');
+      equal(doc.blocks.length, 2);
+      if (let Heading {level, span} = doc.blocks[0]) {
+        equal(level, 1);
+        equal(span.start, 0);
+        equal(span.end, 7);
+      }
+      if (let Paragraph {span} = doc.blocks[1]) {
+        equal(span.start, 9);
+        equal(span.end, 14);
+      }
+    });
+  });
+});

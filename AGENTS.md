@@ -175,6 +175,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - [packages/pds/CONTEXT.md](packages/pds/CONTEXT.md) — the PDS, ported from pds.js, and its managed accounts
 - [packages/registry/CONTEXT.md](packages/registry/CONTEXT.md) — the App View: the registry methods, the site, and the service
 - [packages/pds-web/CONTEXT.md](packages/pds-web/CONTEXT.md) — the App View's server-rendered pages and their assets (Radica)
+- [packages/markdown/CONTEXT.md](packages/markdown/CONTEXT.md) — CommonMark and GFM parser, AST, plugin API, and HTML renderer
 - [packages/workspace-hack/CONTEXT.md](packages/workspace-hack/CONTEXT.md) — the generated crate that gives the Rust crates one set of dependency features
 
 ### Packages & Directories
@@ -191,6 +192,7 @@ in the root `CLAUDE.md`.
 - **`packages/zena-run`**: Minimal Rust binary that runs one compiled Zena module on wasmtime with those imports, without the CLI module.
 - **`packages/zenafx`**: Experimental runtime binary (`zfx`) for graphical programs: runs WebAssembly components with GPU hardware acceleration via `wasi:webgpu` and OS window presentation via `wasi-gfx:surface`. (See [graphical-runtime.md](docs/design/graphical-runtime.md)).
 - **`packages/wit-parser`**: WIT (WebAssembly Interface Types) parser, resolver, and component encoder (`@zena-lang/wit-parser`). (See [wit-parser.md](docs/design/wit-parser.md)).
+- **`packages/markdown`**: CommonMark and GitHub Flavored Markdown (GFM) parser, syntax tree, plugin system, and HTML renderer (`@zena-lang/markdown`). (See [markdown.md](docs/design/markdown.md)).
 - **`packages/zena-formatter`**: Code formatter for Zena (`@zena-lang/zena-formatter`).
 - **`packages/zena-lint`**: Lint rules for Zena source, each with a fix the tool applies: `function` declarations for top-level arrows, `??`/`?.`, collection literals, immutable fields and variables, no redundant casts or annotations (`@zena-lang/zena-lint`). Every fix is type-checked before it is kept. `zena lint <paths>` reports, `zena lint --fix <paths>` rewrites; the language server and the VS Code extension show the findings with quick fixes. See its README.
 - **`packages/zb`**: Zena build orchestrator tool (`@zena-lang/zb`).

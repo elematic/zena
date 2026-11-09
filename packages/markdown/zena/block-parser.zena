@@ -1,0 +1,1578 @@
+/**
+ * CommonMark Phase 1 block parser with open-block stack, lazy continuation,
+ * link reference definitions, and `BlockParserFactory` plugin dispatch.
+ */
+
+import {
+  FixedArray, GrowableArray, Option, none, StringBuilder
+} from 'zena:core';
+import { HashMap } from 'zena:collections';
+import {
+  Block, Document, Inline, LinkDef, Span, Paragraph, Heading, BlockQuote,
+  ListBlock, ListItem, FencedCodeBlock, IndentedCodeBlock, HtmlBlock,
+  ThematicBreak, Text
+} from './ast.zena';
+import {
+  AstTransformer, BlockContinue, BlockLineState, BlockParserFactory,
+  CustomBlockParser, CustomBlockStart, InlineParserRunner, MarkdownExtension,
+  MatchedBlockInfo
+} from './plugin.zena';
+import { InlineParser } from './inline-parser.zena';
+import {
+  isSpaceOrTab, isWhitespaceByte, isAsciiLetter, isAsciiDigit,
+  isAsciiAlphanumeric, toLowerAscii, trimSpaces, trimWhitespace,
+  skipSpacesAndTabs, normalizeLinkLabel, unescapeString, scanLinkDestination,
+  scanLinkTitle, scanLinkLabel
+} from './scanner.zena';
+
+enum OpenBlockKind {
+  Doc,
+  Quote,
+  List,
+  Item,
+  Para,
+  HeadingBlock,
+  FencedCode,
+  IndentedCode,
+  Html,
+  BreakBlock,
+  Custom
+}
+
+/**
+ * State for an open block on the Phase 1 stack.
+ */
+final class OpenBlock {
+  kind: OpenBlockKind;
+  var startOffset: i32;
+  var endOffset: i32;
+  children = new GrowableArray<Block>(4);
+
+  // Paragraph / code / HTML accumulated lines
+  lines = new GrowableArray<String>(4);
+  lineOffsets = new GrowableArray<i32>(4);
+
+  // Heading
+  var headingLevel: i32 = 1;
+  var headingText: String = '';
+  var headingTextOffset: i32 = 0;
+
+  // Fenced code
+  var fenceByte: i32 = 0;
+  var fenceLength: i32 = 0;
+  var fenceIndent: i32 = 0;
+  var fenceInfo: String = '';
+  var fenceFirstLine: boolean = true;
+
+  // HTML block (types 1..7)
+  var htmlType: i32 = 0;
+
+  // List & ListItem
+  var listOrdered: boolean = false;
+  var listStartNumber: i32 = 1;
+  var listDelimiter: i32 = 0;
+  var listTight: boolean = true;
+  listItems = new GrowableArray<ListItem>(4);
+  var listHadBlankLine: boolean = false;
+  var itemContentIndent: i32 = 0;
+  var itemHadBlankLine: boolean = false;
+  var itemLineCount: i32 = 0;
+
+  // Custom plugin block
+  var customParser: CustomBlockParser | null = null;
+  var builtBlock: Block | null = null;
+
+  new(this.kind, this.startOffset) : endOffset = startOffset;
+}
+
+/**
+ * Parses a Markdown document string into a `Document` AST.
+ */
+export function parse(
+  source: String,
+  extensions: GrowableArray<MarkdownExtension> = new GrowableArray<MarkdownExtension>(0)
+): Document {
+  let parser = new DocumentBlockParser(extensions);
+  return parser.parseDocument(source);
+}
+
+/**
+ * Phase 1 + Phase 2 + Phase 3 coordinator.
+ */
+export final class DocumentBlockParser {
+  #extensions: GrowableArray<MarkdownExtension>;
+  #factoriesByByte = new FixedArray<GrowableArray<BlockParserFactory> | null>(128, null);
+  #wildcardFactories = new GrowableArray<BlockParserFactory>(2);
+  #transformers = new GrowableArray<AstTransformer>(4);
+
+  #links = new HashMap<String, LinkDef>();
+  #openBlocks = new GrowableArray<OpenBlock>(8);
+  #customHolders = new GrowableArray<OpenBlock>(4);
+
+  var #partiallyConsumedTab: boolean = false;
+  var #tabRemainingColumns: i32 = 0;
+
+  new(extensions: GrowableArray<MarkdownExtension>) : #extensions = extensions {
+    for (let ext in extensions) {
+      for (let factory in ext.blockFactories) {
+        let triggers = factory.triggerBytes();
+        if (triggers.length == 0) {
+          this.#wildcardFactories.push(factory);
+        } else {
+          for (let b in triggers) {
+            if (b >= 0 && b < 128) {
+              var bucket = this.#factoriesByByte[b];
+              if (bucket == null) {
+                bucket = new GrowableArray<BlockParserFactory>(2);
+                this.#factoriesByByte[b] = bucket;
+              }
+              bucket.push(factory);
+            }
+          }
+        }
+      }
+      for (let transformer in ext.astTransformers) {
+        this.#transformers.push(transformer);
+      }
+    }
+  }
+
+  parseDocument(source: String): Document {
+    this.#links.clear();
+    this.#openBlocks.clear();
+    this.#customHolders.clear();
+
+    let root = new OpenBlock(OpenBlockKind.Doc, 0);
+    root.endOffset = source.length;
+    this.#openBlocks.push(root);
+
+    let len = source.length;
+    var pos = 0;
+    while (pos < len) {
+      var lineEnd = pos;
+      while (lineEnd < len) {
+        let b = source.getByteAt(lineEnd);
+        if (b == 0x0A || b == 0x0D) {
+          break;
+        }
+        lineEnd += 1;
+      }
+      let line = source.sliceBytes(pos, lineEnd);
+      var nextPos = lineEnd;
+      if (nextPos < len) {
+        if (
+          source.getByteAt(nextPos) == 0x0D &&
+          nextPos + 1 < len &&
+          source.getByteAt(nextPos + 1) == 0x0A
+        ) {
+          nextPos += 2;
+        } else {
+          nextPos += 1;
+        }
+      }
+      this.#processLine(source, line, pos, lineEnd);
+      pos = nextPos;
+    }
+
+    // Finalize all remaining open blocks from tip down to root
+    while (this.#openBlocks.length > 1) {
+      this.#closeTipBlock(len);
+    }
+
+    let inlineParser = new InlineParser(this.#links, this.#extensions);
+    this.#parseBlockInlines(root.children, inlineParser);
+    for (let holder in this.#customHolders) {
+      let cp = holder.customParser;
+      if (cp != null) {
+        cp.parseInlines(inlineParser);
+      }
+    }
+
+    let doc = new Document(root.children, this.#links, new Span(0, len));
+    for (let transformer in this.#transformers) {
+      transformer.transform(doc, inlineParser);
+    }
+    return doc;
+  }
+
+  #processLine(
+    source: String,
+    line: String,
+    lineStartOffset: i32,
+    lineEndOffset: i32
+  ): void {
+    this.#partiallyConsumedTab = false;
+    this.#tabRemainingColumns = 0;
+
+    let state = new BlockLineState(
+      source,
+      line,
+      lineStartOffset,
+      0,
+      0,
+      0,
+      0,
+      0,
+      true
+    );
+    this.#findNextNonSpace(state);
+
+    // Step 1: Check continuation of open blocks (starting after Document at index 0)
+    var matchedCount = 1;
+    var i = 1;
+    while (i < this.#openBlocks.length) {
+      let block = this.#openBlocks[i];
+      if (!this.#continueOpenBlock(block, state)) {
+        break;
+      }
+      block.endOffset = lineEndOffset;
+      matchedCount += 1;
+      i += 1;
+    }
+
+    let allMatched = matchedCount == this.#openBlocks.length;
+    let lastMatched = this.#openBlocks[matchedCount - 1];
+    var currentTip = this.#openBlocks[this.#openBlocks.length - 1];
+
+    // Step 2: Try to open new child blocks unless the last matched block is a
+    // leaf block that consumes raw text (FencedCode, IndentedCode, Html)
+    let tryBlockStarts = lastMatched.kind != OpenBlockKind.FencedCode &&
+        lastMatched.kind != OpenBlockKind.IndentedCode &&
+        lastMatched.kind != OpenBlockKind.Html;
+
+    while (tryBlockStarts) {
+      this.#findNextNonSpace(state);
+      if (state.isBlank) {
+        this.#AdvanceToEnd(state);
+        break;
+      }
+
+      let matchedBlock = this.#openBlocks[matchedCount - 1];
+      let started = this.#tryStartNewBlock(state, matchedBlock, currentTip, lineEndOffset);
+      if (!started) {
+        this.#setNewIndex(state, state.nextNonSpaceIndex);
+        break;
+      }
+
+      currentTip = this.#openBlocks[this.#openBlocks.length - 1];
+      matchedCount = this.#openBlocks.length;
+      if (!this.#isContainerOrCustomizable(currentTip)) {
+        break;
+      }
+    }
+
+    // Step 3: Lazy continuation of an open paragraph
+    if (!allMatched && !state.isBlank && currentTip.kind == OpenBlockKind.Para) {
+      this.#addParagraphLine(currentTip, state, lineEndOffset);
+      return;
+    }
+
+    // Close unmatched blocks
+    while (this.#openBlocks.length > matchedCount) {
+      this.#closeTipBlock(lineStartOffset);
+    }
+
+    currentTip = this.#openBlocks[this.#openBlocks.length - 1];
+    this.#findNextNonSpace(state);
+
+    // Track blank lines on lists/items for tight vs. loose determination
+    if (state.isBlank) {
+      if (currentTip.kind == OpenBlockKind.List) {
+        if (currentTip.listItems.length > 0) {
+          currentTip.listHadBlankLine = true;
+        }
+      } else if (currentTip.kind == OpenBlockKind.Item) {
+        if (currentTip.children.length > 0 || currentTip.itemLineCount > 0) {
+          currentTip.itemHadBlankLine = true;
+        }
+      }
+    }
+
+    // Step 4: Add remaining line text to the active block
+    match (currentTip.kind) {
+      case OpenBlockKind.IndentedCode: {
+        this.#addIndentedCodeLine(currentTip, state, lineEndOffset);
+      }
+      case OpenBlockKind.FencedCode: {
+        this.#addFencedCodeLine(currentTip, state, lineEndOffset);
+      }
+      case OpenBlockKind.Html: {
+        this.#addHtmlBlockLine(currentTip, state, lineEndOffset);
+      }
+      case OpenBlockKind.Para: {
+        if (!state.isBlank) {
+          this.#addParagraphLine(currentTip, state, lineEndOffset);
+        }
+      }
+      case OpenBlockKind.Custom: {
+        let cp = currentTip.customParser;
+        if (cp != null && cp.acceptsLines() && !state.isBlank) {
+          let slice = state.line.sliceBytes(state.index, state.line.length);
+          cp.addLine(slice, state.lineStartOffset + state.index);
+          currentTip.endOffset = lineEndOffset;
+        }
+      }
+      case OpenBlockKind.HeadingBlock | OpenBlockKind.BreakBlock: {
+        // Single-line blocks close immediately at the end of the line
+        this.#closeTipBlock(lineEndOffset);
+      }
+      case _: {
+        if (!state.isBlank) {
+          let para = new OpenBlock(
+            OpenBlockKind.Para,
+            state.lineStartOffset + state.nextNonSpaceIndex
+          );
+          para.endOffset = lineEndOffset;
+          this.#openChildBlock(para, state.lineStartOffset);
+          this.#setNewIndex(state, state.nextNonSpaceIndex);
+          this.#addParagraphLine(para, state, lineEndOffset);
+        }
+      }
+    }
+  }
+
+  #isContainerOrCustomizable(block: OpenBlock): boolean {
+    return block.kind == OpenBlockKind.Doc ||
+        block.kind == OpenBlockKind.Quote ||
+        block.kind == OpenBlockKind.List ||
+        block.kind == OpenBlockKind.Item;
+  }
+
+  #continueOpenBlock(block: OpenBlock, state: BlockLineState): boolean {
+    this.#findNextNonSpace(state);
+    match (block.kind) {
+      case OpenBlockKind.Quote: {
+        if (
+          state.indent <= 3 &&
+          state.nextNonSpaceIndex < state.line.length &&
+          state.line.getByteAt(state.nextNonSpaceIndex) == 0x3E // >
+        ) {
+          this.#setNewColumn(state, state.nextNonSpaceColumn + 1);
+          if (
+            state.index < state.line.length &&
+            isSpaceOrTab(state.line.getByteAt(state.index))
+          ) {
+            this.#setNewColumn(state, state.column + 1);
+          }
+          return true;
+        }
+        return false;
+      }
+      case OpenBlockKind.List: {
+        return true;
+      }
+      case OpenBlockKind.Item: {
+        if (state.isBlank) {
+          if (block.children.length == 0 && block.itemLineCount == 0) {
+            // An empty list item cannot continue past a blank line
+            return false;
+          }
+          this.#setNewIndex(state, state.nextNonSpaceIndex);
+          return true;
+        }
+        if (state.indent >= block.itemContentIndent) {
+          this.#setNewColumn(state, state.column + block.itemContentIndent);
+          return true;
+        }
+        return false;
+      }
+      case OpenBlockKind.IndentedCode: {
+        if (state.indent >= 4) {
+          this.#setNewColumn(state, state.column + 4);
+          return true;
+        }
+        if (state.isBlank) {
+          this.#setNewIndex(state, state.nextNonSpaceIndex);
+          return true;
+        }
+        return false;
+      }
+      case OpenBlockKind.FencedCode: {
+        if (
+          state.indent <= 3 &&
+          state.nextNonSpaceIndex < state.line.length &&
+          state.line.getByteAt(state.nextNonSpaceIndex) == block.fenceByte
+        ) {
+          var i = state.nextNonSpaceIndex;
+          while (i < state.line.length && state.line.getByteAt(i) == block.fenceByte) {
+            i += 1;
+          }
+          let closeLen = i - state.nextNonSpaceIndex;
+          if (closeLen >= block.fenceLength) {
+            let afterFence = skipSpacesAndTabs(state.line, i, state.line.length);
+            if (afterFence == state.line.length) {
+              // Closing fence matched: close block and consume line
+              this.#closeTipBlock(state.lineStartOffset + state.line.length);
+              this.#AdvanceToEnd(state);
+              return false;
+            }
+          }
+        }
+        // Strip up to `fenceIndent` leading spaces
+        var spaces = block.fenceIndent;
+        while (
+          spaces > 0 &&
+          state.index < state.line.length &&
+          state.line.getByteAt(state.index) == 0x20
+        ) {
+          this.#setNewIndex(state, state.index + 1);
+          spaces -= 1;
+        }
+        return true;
+      }
+      case OpenBlockKind.Html: {
+        if (state.isBlank && (block.htmlType == 6 || block.htmlType == 7)) {
+          return false;
+        }
+        return true;
+      }
+      case OpenBlockKind.Para: {
+        return !state.isBlank;
+      }
+      case OpenBlockKind.Custom: {
+        let cp = block.customParser;
+        if (cp == null) {
+          return false;
+        }
+        let cont = cp.tryContinue(state);
+        if (!cont.matched) {
+          return false;
+        }
+        if (cont.finalize) {
+          this.#closeTipBlock(state.lineStartOffset + state.line.length);
+          return false;
+        }
+        if (cont.newIndex >= 0) {
+          this.#setNewIndex(state, cont.newIndex);
+        } else if (cont.newColumn >= 0) {
+          this.#setNewColumn(state, cont.newColumn);
+        }
+        return true;
+      }
+      case _: {
+        return false;
+      }
+    }
+  }
+
+  #tryStartNewBlock(
+    state: BlockLineState,
+    matchedBlock: OpenBlock,
+    currentTip: OpenBlock,
+    lineEndOffset: i32
+  ): boolean {
+    let inParagraph = currentTip.kind == OpenBlockKind.Para;
+    let b = state.line.getByteAt(state.nextNonSpaceIndex);
+
+    // 1. Custom `BlockParserFactory` plugins (allowing plugins like GFM tables
+    // to inspect `matchedInfo` and replace an open paragraph before Setext
+    // headings or thematic breaks claim a `---` line)
+    if (this.#tryCustomBlockFactories(state, currentTip, b, lineEndOffset)) {
+      return true;
+    }
+
+    if (state.indent >= 4) {
+      if (!inParagraph && !state.isBlank) {
+        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset);
+        this.#setNewColumn(state, state.column + 4);
+        let codeBlock = new OpenBlock(
+          OpenBlockKind.IndentedCode,
+          state.lineStartOffset + state.index
+        );
+        codeBlock.endOffset = lineEndOffset;
+        this.#openChildBlock(codeBlock, state.lineStartOffset);
+        return true;
+      }
+      return false;
+    }
+
+    // 2. BlockQuote (`>`)
+    if (b == 0x3E) {
+      this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset);
+      let quote = new OpenBlock(
+        OpenBlockKind.Quote,
+        state.lineStartOffset + state.nextNonSpaceIndex
+      );
+      quote.endOffset = lineEndOffset;
+      this.#openChildBlock(quote, state.lineStartOffset);
+      this.#setNewColumn(state, state.nextNonSpaceColumn + 1);
+      if (
+        state.index < state.line.length &&
+        isSpaceOrTab(state.line.getByteAt(state.index))
+      ) {
+        this.#setNewColumn(state, state.column + 1);
+      }
+      return true;
+    }
+
+    // 3. ATX Heading (`#`..`######`)
+    if (b == 0x23) {
+      let heading = this.#tryParseAtxHeading(state, lineEndOffset);
+      if (heading != null) {
+        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset);
+        this.#openChildBlock(heading, state.lineStartOffset);
+        this.#AdvanceToEnd(state);
+        return true;
+      }
+    }
+
+    // 4. Fenced Code Block (``` or ~~~)
+    if (b == 0x60 || b == 0x7E) {
+      let fenced = this.#tryParseFencedCode(state, lineEndOffset);
+      if (fenced != null) {
+        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset);
+        this.#openChildBlock(fenced, state.lineStartOffset);
+        this.#AdvanceToEnd(state);
+        return true;
+      }
+    }
+
+    // 5. HTML Block (`<...`)
+    if (b == 0x3C) {
+      let htmlType = detectHtmlBlockStart(
+        state.line,
+        state.nextNonSpaceIndex,
+        inParagraph
+      );
+      if (htmlType > 0) {
+        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset);
+        let htmlBlock = new OpenBlock(
+          OpenBlockKind.Html,
+          state.lineStartOffset + state.nextNonSpaceIndex
+        );
+        htmlBlock.htmlType = htmlType;
+        htmlBlock.endOffset = lineEndOffset;
+        this.#openChildBlock(htmlBlock, state.lineStartOffset);
+        return true;
+      }
+    }
+
+    // 6. Setext Heading underline (`===` or `---`) when tip is an open Paragraph
+    if (inParagraph && (b == 0x3D || b == 0x2D)) {
+      let level = matchSetextUnderline(state.line, state.nextNonSpaceIndex);
+      if (level > 0) {
+        // Strip leading link reference definitions from the paragraph first;
+        // only become a Setext heading if non-blank paragraph text remains!
+        this.#extractLinkDefinitionsFromParagraph(currentTip);
+        if (currentTip.lines.length > 0) {
+          let paraStart = currentTip.startOffset;
+          let text = joinParagraphLines(currentTip.lines);
+          // Close unmatched up to and including the open paragraph
+          while (this.#openBlocks.length > 1) {
+            let top = this.#openBlocks[this.#openBlocks.length - 1];
+            this.#openBlocks.pop();
+            if (top == currentTip) {
+              break;
+            }
+          }
+          let setext = new OpenBlock(OpenBlockKind.HeadingBlock, paraStart);
+          setext.headingLevel = level;
+          setext.headingText = text;
+          setext.headingTextOffset = paraStart;
+          setext.endOffset = lineEndOffset;
+          this.#openChildBlock(setext, paraStart);
+          this.#AdvanceToEnd(state);
+          return true;
+        }
+      }
+    }
+
+    // 7. Thematic Break (`***`, `---`, `___`)
+    if (b == 0x2A || b == 0x2D || b == 0x5F) {
+      if (isThematicBreak(state.line, state.nextNonSpaceIndex)) {
+        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset);
+        let hr = new OpenBlock(
+          OpenBlockKind.BreakBlock,
+          state.lineStartOffset + state.nextNonSpaceIndex
+        );
+        hr.endOffset = lineEndOffset;
+        this.#openChildBlock(hr, state.lineStartOffset);
+        this.#AdvanceToEnd(state);
+        return true;
+      }
+    }
+
+    // 8. List Item (`-`, `+`, `*`, or `1.`, `1)`)
+    if (
+      b == 0x2D ||
+      b == 0x2B ||
+      b == 0x2A ||
+      isAsciiDigit(b)
+    ) {
+      let inParaAtCurrentLevel = matchedBlock.kind == OpenBlockKind.Para;
+      let (listOk, ordered, startNum, delim, contentIndent, nextCol) =
+          tryParseListMarker(state, inParaAtCurrentLevel);
+      if (listOk) {
+        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset);
+        this.#setNewColumn(state, nextCol);
+
+        // Ensure an open `ListBlock` with matching type/delimiter is on top
+        let top = this.#openBlocks[this.#openBlocks.length - 1];
+        if (
+          top.kind != OpenBlockKind.List ||
+          top.listOrdered != ordered ||
+          top.listDelimiter != delim
+        ) {
+          if (top.kind == OpenBlockKind.List) {
+            this.#closeTipBlock(state.lineStartOffset);
+          }
+          let listBlock = new OpenBlock(
+            OpenBlockKind.List,
+            state.lineStartOffset + state.nextNonSpaceIndex
+          );
+          listBlock.listOrdered = ordered;
+          listBlock.listStartNumber = startNum;
+          listBlock.listDelimiter = delim;
+          listBlock.endOffset = lineEndOffset;
+          this.#openChildBlock(listBlock, state.lineStartOffset);
+        }
+
+        let listParent = this.#openBlocks[this.#openBlocks.length - 1];
+        if (listParent.listHadBlankLine && listParent.listItems.length > 0) {
+          listParent.listTight = false;
+          listParent.listHadBlankLine = false;
+        }
+
+        let item = new OpenBlock(
+          OpenBlockKind.Item,
+          state.lineStartOffset + state.nextNonSpaceIndex
+        );
+        item.itemContentIndent = contentIndent;
+        item.endOffset = lineEndOffset;
+        this.#openChildBlock(item, state.lineStartOffset);
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  #tryCustomBlockFactories(
+    state: BlockLineState,
+    currentTip: OpenBlock,
+    firstByte: i32,
+    lineEndOffset: i32
+  ): boolean {
+    var matchedInfo: MatchedBlockInfo | null = null;
+    if (firstByte >= 0 && firstByte < 128) {
+      let bucket = this.#factoriesByByte[firstByte];
+      if (bucket != null) {
+        matchedInfo = this.#buildMatchedBlockInfo(currentTip);
+        for (let factory in bucket) {
+          let res = factory.tryStart(state, matchedInfo);
+          if (res != null) {
+            this.#applyCustomBlockStart(res, state, currentTip, lineEndOffset);
+            return true;
+          }
+        }
+      }
+    }
+    if (this.#wildcardFactories.length > 0) {
+      if (matchedInfo == null) {
+        matchedInfo = this.#buildMatchedBlockInfo(currentTip);
+      }
+      for (let factory in this.#wildcardFactories) {
+        let res = factory.tryStart(state, matchedInfo);
+        if (res != null) {
+          this.#applyCustomBlockStart(res, state, currentTip, lineEndOffset);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  #buildMatchedBlockInfo(currentTip: OpenBlock): MatchedBlockInfo {
+    if (currentTip.kind == OpenBlockKind.Para) {
+      this.#extractLinkDefinitionsFromParagraph(currentTip);
+      if (currentTip.lines.length > 0) {
+        return new MatchedBlockInfo(true, currentTip.lines, currentTip.startOffset);
+      }
+    }
+    return new MatchedBlockInfo(false, null, 0);
+  }
+
+  #applyCustomBlockStart(
+    start: CustomBlockStart,
+    state: BlockLineState,
+    currentTip: OpenBlock,
+    lineEndOffset: i32
+  ): void {
+    var startOff = state.lineStartOffset + state.nextNonSpaceIndex;
+    if (start.replaceParagraph && currentTip.kind == OpenBlockKind.Para) {
+      startOff = currentTip.startOffset;
+      this.#openBlocks.pop();
+    }
+    let customBlock = new OpenBlock(OpenBlockKind.Custom, startOff);
+    customBlock.customParser = start.parser;
+    customBlock.endOffset = lineEndOffset;
+    this.#openChildBlock(customBlock, state.lineStartOffset);
+    this.#customHolders.push(customBlock);
+
+    if (start.newIndex >= 0) {
+      this.#setNewIndex(state, start.newIndex);
+    } else if (start.newColumn >= 0) {
+      this.#setNewColumn(state, start.newColumn);
+    }
+  }
+
+  #closeUnmatchedBeforeNewBlock(matchedBlock: OpenBlock, closeOffset: i32): void {
+    while (this.#openBlocks.length > 1) {
+      let top = this.#openBlocks[this.#openBlocks.length - 1];
+      if (top == matchedBlock) {
+        if (top.kind == OpenBlockKind.Para) {
+          this.#closeTipBlock(closeOffset);
+        }
+        break;
+      }
+      this.#closeTipBlock(closeOffset);
+    }
+  }
+
+  #openChildBlock(child: OpenBlock, offset: i32): void {
+    let parent = this.#openBlocks[this.#openBlocks.length - 1];
+    if (parent.kind == OpenBlockKind.Item && parent.itemHadBlankLine) {
+      parent.itemHadBlankLine = false;
+      // A blank line directly between two blocks in a list item makes the
+      // enclosing list loose
+      if (this.#openBlocks.length >= 2) {
+        let maybeList = this.#openBlocks[this.#openBlocks.length - 2];
+        if (maybeList.kind == OpenBlockKind.List) {
+          maybeList.listTight = false;
+        }
+      }
+    }
+    this.#openBlocks.push(child);
+  }
+
+  #closeTipBlock(closeOffset: i32): void {
+    let tip = this.#openBlocks.pop();
+    let parent = this.#openBlocks[this.#openBlocks.length - 1];
+    if (tip.endOffset > parent.endOffset && parent.kind != OpenBlockKind.Doc) {
+      parent.endOffset = tip.endOffset;
+    }
+    let span = new Span(tip.startOffset, tip.endOffset);
+
+    match (tip.kind) {
+      case OpenBlockKind.Para: {
+        this.#extractLinkDefinitionsFromParagraph(tip);
+        if (tip.lines.length > 0) {
+          let rawText = joinParagraphLines(tip.lines);
+          // Store rawText temporarily in a single Text inline; Phase 2 replaces
+          // `inlines` with the parsed inline nodes
+          let inlines = new GrowableArray<Inline>(1);
+          inlines.push(new Text(rawText, span));
+          parent.children.push(new Paragraph(inlines, null, span));
+        }
+      }
+      case OpenBlockKind.HeadingBlock: {
+        let inlines = new GrowableArray<Inline>(1);
+        inlines.push(
+          new Text(
+            tip.headingText,
+            new Span(tip.headingTextOffset, tip.endOffset)
+          )
+        );
+        parent.children.push(new Heading(tip.headingLevel, inlines, null, span));
+      }
+      case OpenBlockKind.Quote: {
+        parent.children.push(new BlockQuote(tip.children, span));
+      }
+      case OpenBlockKind.List: {
+        parent.children.push(
+          new ListBlock(
+            tip.listOrdered,
+            tip.listStartNumber,
+            tip.listDelimiter,
+            tip.listTight,
+            tip.listItems,
+            span
+          )
+        );
+      }
+      case OpenBlockKind.Item: {
+        let itemNode = new ListItem(tip.children, none, span);
+        if (parent.kind == OpenBlockKind.List) {
+          if (tip.itemHadBlankLine) {
+            parent.listHadBlankLine = true;
+          }
+          parent.listItems.push(itemNode);
+        } else {
+          parent.children.push(itemNode);
+        }
+      }
+      case OpenBlockKind.FencedCode: {
+        let sb = new StringBuilder(64);
+        for (let line in tip.lines) {
+          sb.append(line);
+          sb.appendByte(0x0A);
+        }
+        parent.children.push(
+          new FencedCodeBlock(tip.fenceInfo, sb.toString(), span)
+        );
+      }
+      case OpenBlockKind.IndentedCode: {
+        // Strip leading and trailing blank lines per CommonMark 4.4
+        var start = 0;
+        var end = tip.lines.length;
+        while (start < end && isBlankString(tip.lines[start])) {
+          start += 1;
+        }
+        while (end > start && isBlankString(tip.lines[end - 1])) {
+          end -= 1;
+        }
+        let sb = new StringBuilder(64);
+        var i = start;
+        while (i < end) {
+          sb.append(tip.lines[i]);
+          sb.appendByte(0x0A);
+          i += 1;
+        }
+        parent.children.push(new IndentedCodeBlock(sb.toString(), span));
+      }
+      case OpenBlockKind.Html: {
+        let sb = new StringBuilder(64);
+        var i = 0;
+        while (i < tip.lines.length) {
+          if (i > 0) {
+            sb.appendByte(0x0A);
+          }
+          sb.append(tip.lines[i]);
+          i += 1;
+        }
+        parent.children.push(new HtmlBlock(sb.toString(), span));
+      }
+      case OpenBlockKind.BreakBlock: {
+        parent.children.push(new ThematicBreak(span));
+      }
+      case OpenBlockKind.Custom: {
+        let cp = tip.customParser;
+        if (cp != null) {
+          let built = cp.closeBlock(tip.endOffset);
+          tip.builtBlock = built;
+          parent.children.push(built);
+        }
+      }
+      case OpenBlockKind.Doc: {}
+    }
+  }
+
+  #addParagraphLine(
+    para: OpenBlock,
+    state: BlockLineState,
+    lineEndOffset: i32
+  ): void {
+    let slice = state.line.sliceBytes(state.nextNonSpaceIndex, state.line.length);
+    para.lines.push(slice);
+    para.lineOffsets.push(state.lineStartOffset + state.nextNonSpaceIndex);
+    para.endOffset = lineEndOffset;
+    this.#markEnclosingItemHasLine();
+  }
+
+  #addIndentedCodeLine(
+    code: OpenBlock,
+    state: BlockLineState,
+    lineEndOffset: i32
+  ): void {
+    let content = this.#extractRemainingWithTabSpaces(state);
+    code.lines.push(content);
+    code.endOffset = lineEndOffset;
+    this.#markEnclosingItemHasLine();
+  }
+
+  #addFencedCodeLine(
+    code: OpenBlock,
+    state: BlockLineState,
+    lineEndOffset: i32
+  ): void {
+    if (code.fenceFirstLine) {
+      code.fenceFirstLine = false;
+      return;
+    }
+    let content = this.#extractRemainingWithTabSpaces(state);
+    code.lines.push(content);
+    code.endOffset = lineEndOffset;
+    this.#markEnclosingItemHasLine();
+
+    // Check if an HTML block type 1..5 would end on this line (not applicable here)
+  }
+
+  #addHtmlBlockLine(
+    html: OpenBlock,
+    state: BlockLineState,
+    lineEndOffset: i32
+  ): void {
+    let content = state.line.sliceBytes(state.index, state.line.length);
+    html.lines.push(content);
+    html.endOffset = lineEndOffset;
+    this.#markEnclosingItemHasLine();
+
+    if (htmlBlockEndsOnLine(content, html.htmlType)) {
+      this.#closeTipBlock(lineEndOffset);
+    }
+  }
+
+  #markEnclosingItemHasLine(): void {
+    var i = this.#openBlocks.length - 1;
+    while (i >= 0) {
+      let b = this.#openBlocks[i];
+      if (b.kind == OpenBlockKind.Item) {
+        b.itemLineCount += 1;
+        return;
+      }
+      i -= 1;
+    }
+  }
+
+  #extractRemainingWithTabSpaces(state: BlockLineState): String {
+    let rest = state.line.sliceBytes(state.index, state.line.length);
+    if (!this.#partiallyConsumedTab || this.#tabRemainingColumns <= 0) {
+      return rest;
+    }
+    let sb = new StringBuilder(rest.length + this.#tabRemainingColumns);
+    var s = 0;
+    while (s < this.#tabRemainingColumns) {
+      sb.appendByte(0x20);
+      s += 1;
+    }
+    sb.append(rest);
+    return sb.toString();
+  }
+
+  #extractLinkDefinitionsFromParagraph(para: OpenBlock): void {
+    if (para.lines.length == 0) {
+      return;
+    }
+    let combined = joinParagraphLines(para.lines);
+    var pos = 0;
+    var consumedAny = false;
+    while (pos < combined.length) {
+      let (ok, label, dest, title, nextPos) = tryParseLinkReferenceDefinition(
+        combined,
+        pos
+      );
+      if (!ok) {
+        break;
+      }
+      consumedAny = true;
+      if (!this.#links.has(label)) {
+        this.#links[label] = new LinkDef(
+          label,
+          dest,
+          title,
+          new Span(para.startOffset + pos, para.startOffset + nextPos)
+        );
+      }
+      pos = nextPos;
+    }
+    if (!consumedAny) {
+      return;
+    }
+    para.lines.clear();
+    if (pos < combined.length) {
+      let remainder = combined.sliceBytes(pos, combined.length);
+      // Split remaining lines back into `para.lines`
+      var lineStart = 0;
+      var i = 0;
+      while (i < remainder.length) {
+        if (remainder.getByteAt(i) == 0x0A) {
+          para.lines.push(remainder.sliceBytes(lineStart, i));
+          lineStart = i + 1;
+        }
+        i += 1;
+      }
+      if (lineStart < remainder.length) {
+        para.lines.push(remainder.sliceBytes(lineStart, remainder.length));
+      }
+      para.startOffset += pos;
+    }
+  }
+
+  #parseBlockInlines(
+    blocks: GrowableArray<Block>,
+    inlineParser: InlineParserRunner
+  ): void {
+    for (let block in blocks) {
+      match (block) {
+        case Paragraph as p: {
+          if (p.inlines.length == 1) {
+            if (let Text {literal, span} = p.inlines[0]) {
+              p.inlines = inlineParser.parse(literal, span.start);
+            }
+          }
+        }
+        case Heading as h: {
+          if (h.inlines.length == 1) {
+            if (let Text {literal, span} = h.inlines[0]) {
+              h.inlines = inlineParser.parse(literal, span.start);
+            }
+          }
+        }
+        case BlockQuote {blocks: let children}: {
+          this.#parseBlockInlines(children, inlineParser);
+        }
+        case ListBlock {items}: {
+          for (let item in items) {
+            this.#parseBlockInlines(item.blocks, inlineParser);
+          }
+        }
+        case ListItem {blocks: let children}: {
+          this.#parseBlockInlines(children, inlineParser);
+        }
+        case _: {}
+      }
+    }
+  }
+
+  #tryParseAtxHeading(state: BlockLineState, lineEndOffset: i32): OpenBlock | null {
+    let line = state.line;
+    let start = state.nextNonSpaceIndex;
+    var i = start;
+    while (i < line.length && line.getByteAt(i) == 0x23 && i - start < 7) {
+      i += 1;
+    }
+    let level = i - start;
+    if (level == 0 || level > 6) {
+      return null;
+    }
+    if (i < line.length && !isSpaceOrTab(line.getByteAt(i))) {
+      return null;
+    }
+
+    // Trim leading spaces/tabs and optional closing `#` sequence
+    let contentStart = skipSpacesAndTabs(line, i, line.length);
+    var contentEnd = line.length;
+    while (contentEnd > contentStart && isSpaceOrTab(line.getByteAt(contentEnd - 1))) {
+      contentEnd -= 1;
+    }
+    var hashEnd = contentEnd;
+    while (hashEnd > contentStart && line.getByteAt(hashEnd - 1) == 0x23) {
+      hashEnd -= 1;
+    }
+    if (hashEnd < contentEnd) {
+      if (hashEnd == contentStart || isSpaceOrTab(line.getByteAt(hashEnd - 1))) {
+        contentEnd = hashEnd;
+        while (contentEnd > contentStart && isSpaceOrTab(line.getByteAt(contentEnd - 1))) {
+          contentEnd -= 1;
+        }
+      }
+    }
+
+    let h = new OpenBlock(OpenBlockKind.HeadingBlock, state.lineStartOffset + start);
+    h.headingLevel = level;
+    h.headingText = line.sliceBytes(contentStart, contentEnd);
+    h.headingTextOffset = state.lineStartOffset + contentStart;
+    h.endOffset = lineEndOffset;
+    return h;
+  }
+
+  #tryParseFencedCode(state: BlockLineState, lineEndOffset: i32): OpenBlock | null {
+    let line = state.line;
+    let start = state.nextNonSpaceIndex;
+    let fenceByte = line.getByteAt(start);
+    var i = start;
+    while (i < line.length && line.getByteAt(i) == fenceByte) {
+      i += 1;
+    }
+    let fenceLen = i - start;
+    if (fenceLen < 3) {
+      return null;
+    }
+    // Backtick fence info string cannot contain backticks
+    if (fenceByte == 0x60) {
+      var k = i;
+      while (k < line.length) {
+        if (line.getByteAt(k) == 0x60) {
+          return null;
+        }
+        k += 1;
+      }
+    }
+    let rawInfo = trimSpaces(line.sliceBytes(i, line.length));
+    let block = new OpenBlock(OpenBlockKind.FencedCode, state.lineStartOffset + start);
+    block.fenceByte = fenceByte;
+    block.fenceLength = fenceLen;
+    block.fenceIndent = state.indent;
+    block.fenceInfo = unescapeString(rawInfo);
+    block.fenceFirstLine = true;
+    block.endOffset = lineEndOffset;
+    return block;
+  }
+
+  #findNextNonSpace(state: BlockLineState): void {
+    var i = state.index;
+    var cols = state.column;
+    if (this.#partiallyConsumedTab) {
+      cols += this.#tabRemainingColumns;
+    }
+    let len = state.line.length;
+    while (i < len) {
+      let b = state.line.getByteAt(i);
+      if (b == 0x20) {
+        i += 1;
+        cols += 1;
+      } else if (b == 0x09) {
+        i += 1;
+        cols += 4 - (cols % 4);
+      } else {
+        break;
+      }
+    }
+    state.nextNonSpaceIndex = i;
+    state.nextNonSpaceColumn = cols;
+    state.indent = cols - state.column;
+    state.isBlank = i >= len;
+  }
+
+  #setNewIndex(state: BlockLineState, newIndex: i32): void {
+    if (newIndex >= state.nextNonSpaceIndex) {
+      state.index = state.nextNonSpaceIndex;
+      state.column = state.nextNonSpaceColumn;
+    }
+    let len = state.line.length;
+    while (state.index < newIndex && state.index < len) {
+      let b = state.line.getByteAt(state.index);
+      if (b == 0x09) {
+        state.column += 4 - (state.column % 4);
+      } else {
+        state.column += 1;
+      }
+      state.index += 1;
+    }
+    this.#partiallyConsumedTab = false;
+    this.#tabRemainingColumns = 0;
+  }
+
+  #setNewColumn(state: BlockLineState, newColumn: i32): void {
+    if (newColumn >= state.nextNonSpaceColumn) {
+      state.index = state.nextNonSpaceIndex;
+      state.column = state.nextNonSpaceColumn;
+    }
+    let len = state.line.length;
+    while (state.column < newColumn && state.index < len) {
+      let b = state.line.getByteAt(state.index);
+      if (b == 0x09) {
+        let step = 4 - (state.column % 4);
+        if (state.column + step > newColumn) {
+          this.#partiallyConsumedTab = true;
+          this.#tabRemainingColumns = state.column + step - newColumn;
+          state.column = newColumn;
+          state.index += 1;
+          return;
+        }
+        state.column += step;
+        state.index += 1;
+      } else {
+        state.column += 1;
+        state.index += 1;
+      }
+    }
+    this.#partiallyConsumedTab = false;
+    this.#tabRemainingColumns = 0;
+  }
+
+  #AdvanceToEnd(state: BlockLineState): void {
+    this.#setNewIndex(state, state.line.length);
+  }
+}
+
+function isBlankString(s: String): boolean {
+  var i = 0;
+  while (i < s.length) {
+    if (!isSpaceOrTab(s.getByteAt(i))) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+function joinParagraphLines(lines: GrowableArray<String>): String {
+  if (lines.length == 0) {
+    return '';
+  }
+  if (lines.length == 1) {
+    return trimSpaces(lines[0]);
+  }
+  let sb = new StringBuilder(64);
+  var i = 0;
+  while (i < lines.length) {
+    if (i > 0) {
+      sb.appendByte(0x0A);
+    }
+    // Strip leading spaces on paragraph continuation lines
+    let line = lines[i];
+    let start = skipSpacesAndTabs(line, 0, line.length);
+    sb.appendSlice(line, start, line.length);
+    i += 1;
+  }
+  return sb.toString();
+}
+
+/**
+ * Checks whether `line` at `start` is a Setext heading underline (`===` or `---`).
+ * Returns `1` for `=`, `2` for `-`, or `0` if not a Setext underline.
+ */
+function matchSetextUnderline(line: String, start: i32): i32 {
+  if (start >= line.length) {
+    return 0;
+  }
+  let marker = line.getByteAt(start);
+  if (marker != 0x3D && marker != 0x2D) {
+    return 0;
+  }
+  var i = start;
+  while (i < line.length && line.getByteAt(i) == marker) {
+    i += 1;
+  }
+  i = skipSpacesAndTabs(line, i, line.length);
+  if (i != line.length) {
+    return 0;
+  }
+  return if (marker == 0x3D) 1 else 2;
+}
+
+/**
+ * Checks whether `line` at `start` is a CommonMark thematic break (`***`, `---`, `___`).
+ */
+function isThematicBreak(line: String, start: i32): boolean {
+  if (start >= line.length) {
+    return false;
+  }
+  let marker = line.getByteAt(start);
+  if (marker != 0x2A && marker != 0x2D && marker != 0x5F) {
+    return false;
+  }
+  var count = 0;
+  var i = start;
+  while (i < line.length) {
+    let b = line.getByteAt(i);
+    if (b == marker) {
+      count += 1;
+    } else if (!isSpaceOrTab(b)) {
+      return false;
+    }
+    i += 1;
+  }
+  return count >= 3;
+}
+
+/**
+ * Attempts to parse a list marker (`-`, `+`, `*`, or `1.`, `1)`) at
+ * `state.nextNonSpaceIndex`.
+ * Returns `(matched, ordered, startNumber, delimiterByte, contentIndent, nextColumn)`.
+ */
+function tryParseListMarker(
+  state: BlockLineState,
+  inParagraph: boolean
+): inline (boolean, boolean, i32, i32, i32, i32) {
+  let line = state.line;
+  let start = state.nextNonSpaceIndex;
+  let b = line.getByteAt(start);
+  var ordered = false;
+  var startNum = 1;
+  var delim = b;
+  var afterMarker = start + 1;
+
+  if (b == 0x2D || b == 0x2B || b == 0x2A) {
+    ordered = false;
+  } else if (isAsciiDigit(b)) {
+    ordered = true;
+    startNum = 0;
+    var i = start;
+    while (i < line.length && i - start < 9 && isAsciiDigit(line.getByteAt(i))) {
+      startNum = startNum * 10 + (line.getByteAt(i) - 0x30);
+      i += 1;
+    }
+    if (i >= line.length) {
+      return (false, false, 1, 0, 0, 0);
+    }
+    let d = line.getByteAt(i);
+    if (d != 0x2E && d != 0x29) { // . or )
+      return (false, false, 1, 0, 0, 0);
+    }
+    delim = d;
+    afterMarker = i + 1;
+  } else {
+    return (false, false, 1, 0, 0, 0);
+  }
+
+  // Must be followed by end of line, space, or tab
+  if (afterMarker < line.length && !isSpaceOrTab(line.getByteAt(afterMarker))) {
+    return (false, false, 1, 0, 0, 0);
+  }
+
+  let markerCols = afterMarker - start;
+  let markerEndCol = state.nextNonSpaceColumn + markerCols;
+
+  // Compute columns of whitespace after the marker
+  var i = afterMarker;
+  var col = markerEndCol;
+  while (i < line.length) {
+    let wb = line.getByteAt(i);
+    if (wb == 0x20) {
+      col += 1;
+      i += 1;
+    } else if (wb == 0x09) {
+      col += 4 - (col % 4);
+      i += 1;
+    } else {
+      break;
+    }
+  }
+
+  let blankAfterMarker = i >= line.length;
+  // Rule: interrupting a paragraph requires non-blank item content and, for
+  // ordered lists, a start number of 1
+  if (inParagraph) {
+    if (blankAfterMarker || (ordered && startNum != 1)) {
+      return (false, false, 1, 0, 0, 0);
+    }
+  }
+
+  let spacesAfter = col - markerEndCol;
+  let spacesConsumed = if (!blankAfterMarker && spacesAfter >= 1 && spacesAfter <= 4)
+    spacesAfter
+  else
+    1;
+  let contentIndent = state.indent + markerCols + spacesConsumed;
+  let nextCol = markerEndCol + (if (blankAfterMarker) 0 else spacesConsumed);
+  return (true, ordered, startNum, delim, contentIndent, nextCol);
+}
+
+/**
+ * Attempts to parse a link reference definition `[label]: destination "title"`
+ * starting at `start` in `text`.
+ * Returns `(matched, normalizedLabel, destination, title, nextPos)`.
+ */
+function tryParseLinkReferenceDefinition(
+  text: String,
+  start: i32
+): inline (boolean, String, String, String, i32) {
+  let len = text.length;
+  var p = skipSpacesAndTabs(text, start, len);
+  if (p >= len || text.getByteAt(p) != 0x5B) {
+    return (false, '', '', '', start);
+  }
+
+  let (labelOk, rawLabel, afterLabel) = scanLinkLabel(text, p, len);
+  if (!labelOk || afterLabel >= len || text.getByteAt(afterLabel) != 0x3A) { // :
+    return (false, '', '', '', start);
+  }
+  let normalizedLabel = normalizeLinkLabel(rawLabel);
+  if (normalizedLabel.length == 0) {
+    return (false, '', '', '', start);
+  }
+
+  p = skipSpacesAndTabs(text, afterLabel + 1, len);
+  if (p < len && text.getByteAt(p) == 0x0A) {
+    p = skipSpacesAndTabs(text, p + 1, len);
+  }
+
+  let (destOk, dest, afterDest) = scanLinkDestination(text, p, len);
+  if (!destOk) {
+    return (false, '', '', '', start);
+  }
+
+  let afterDestSpaces = skipSpacesAndTabs(text, afterDest, len);
+  var lineEndAfterDest = afterDestSpaces;
+  var validWithoutTitle = false;
+  if (afterDestSpaces == len) {
+    validWithoutTitle = true;
+    lineEndAfterDest = len;
+  } else if (text.getByteAt(afterDestSpaces) == 0x0A) {
+    validWithoutTitle = true;
+    lineEndAfterDest = afterDestSpaces + 1;
+  }
+
+  // Try optional title on the same line or the next line
+  var titleCandidatePos = afterDestSpaces;
+  if (titleCandidatePos < len && text.getByteAt(titleCandidatePos) == 0x0A) {
+    titleCandidatePos = skipSpacesAndTabs(text, titleCandidatePos + 1, len);
+  }
+  if (titleCandidatePos > afterDest && titleCandidatePos < len) {
+    let tb = text.getByteAt(titleCandidatePos);
+    if (tb == 0x22 || tb == 0x27 || tb == 0x28) {
+      let (titleOk, parsedTitle, afterTitle) = scanLinkTitle(
+        text,
+        titleCandidatePos,
+        len
+      );
+      if (titleOk) {
+        let endSpaces = skipSpacesAndTabs(text, afterTitle, len);
+        if (endSpaces == len) {
+          return (true, normalizedLabel, dest, parsedTitle, len);
+        }
+        if (text.getByteAt(endSpaces) == 0x0A) {
+          return (true, normalizedLabel, dest, parsedTitle, endSpaces + 1);
+        }
+      }
+    }
+  }
+
+  if (validWithoutTitle) {
+    return (true, normalizedLabel, dest, '', lineEndAfterDest);
+  }
+  return (false, '', '', '', start);
+}
+
+/**
+ * Detects whether `line` at `start` (where `line.getByteAt(start) == '<'`)
+ * starts a CommonMark HTML block of type 1..7. Returns `0` if none matches.
+ */
+function detectHtmlBlockStart(
+  line: String,
+  start: i32,
+  inParagraph: boolean
+): i32 {
+  let len = line.length;
+  if (start + 1 >= len || line.getByteAt(start) != 0x3C) {
+    return 0;
+  }
+  let second = line.getByteAt(start + 1);
+
+  if (second == 0x21) { // <!
+    if (
+      start + 4 <= len &&
+      line.getByteAt(start + 2) == 0x2D &&
+      line.getByteAt(start + 3) == 0x2D
+    ) {
+      return 2; // <!--
+    }
+    if (start + 9 <= len && line.sliceBytes(start + 2, start + 9) == '[CDATA[') {
+      return 5; // <![CDATA[
+    }
+    if (start + 2 < len && isAsciiLetter(line.getByteAt(start + 2))) {
+      return 4; // <!DOCTYPE ...
+    }
+    return 0;
+  }
+  if (second == 0x3F) {
+    return 3; // <?
+  }
+
+  var nameStart = start + 1;
+  let isClose = second == 0x2F;
+  if (isClose) {
+    nameStart += 1;
+  }
+  if (nameStart >= len || !isAsciiLetter(line.getByteAt(nameStart))) {
+    return 0;
+  }
+  var nameEnd = nameStart + 1;
+  while (
+    nameEnd < len &&
+    (isAsciiAlphanumeric(line.getByteAt(nameEnd)) || line.getByteAt(nameEnd) == 0x2D)
+  ) {
+    nameEnd += 1;
+  }
+  let tagName = toLowerAscii(line.sliceBytes(nameStart, nameEnd));
+  let nextByte = if (nameEnd < len) line.getByteAt(nameEnd) else 0x20;
+
+  // Type 1: <pre, <script, <style, <textarea
+  if (
+    !isClose &&
+    (tagName == 'pre' || tagName == 'script' || tagName == 'style' || tagName == 'textarea') &&
+    (isSpaceOrTab(nextByte) || nextByte == 0x3E)
+  ) {
+    return 1;
+  }
+
+  // Type 6: standard HTML block tags
+  let afterOk = isSpaceOrTab(nextByte) ||
+      nextByte == 0x3E ||
+      (nextByte == 0x2F && nameEnd + 1 < len && line.getByteAt(nameEnd + 1) == 0x3E);
+  if (afterOk && isType6HtmlTag(tagName)) {
+    return 6;
+  }
+
+  // Type 7: complete open or close tag alone on the line (cannot interrupt a paragraph)
+  if (!inParagraph) {
+    var i = nameEnd;
+    while (i < len && line.getByteAt(i) != 0x3E) {
+      i += 1;
+    }
+    if (i < len && line.getByteAt(i) == 0x3E) {
+      let rest = skipSpacesAndTabs(line, i + 1, len);
+      if (rest == len) {
+        return 7;
+      }
+    }
+  }
+  return 0;
+}
+
+function isType6HtmlTag(tag: String): boolean {
+  return tag == 'address' || tag == 'article' || tag == 'aside' ||
+      tag == 'base' || tag == 'basefont' || tag == 'blockquote' ||
+      tag == 'body' || tag == 'caption' || tag == 'center' ||
+      tag == 'col' || tag == 'colgroup' || tag == 'dd' ||
+      tag == 'details' || tag == 'dialog' || tag == 'dir' ||
+      tag == 'div' || tag == 'dl' || tag == 'dt' ||
+      tag == 'fieldset' || tag == 'figcaption' || tag == 'figure' ||
+      tag == 'footer' || tag == 'form' || tag == 'frame' ||
+      tag == 'frameset' || tag == 'h1' || tag == 'h2' ||
+      tag == 'h3' || tag == 'h4' || tag == 'h5' || tag == 'h6' ||
+      tag == 'head' || tag == 'header' || tag == 'hr' ||
+      tag == 'html' || tag == 'iframe' || tag == 'legend' ||
+      tag == 'li' || tag == 'link' || tag == 'main' ||
+      tag == 'menu' || tag == 'menuitem' || tag == 'nav' ||
+      tag == 'noframes' || tag == 'ol' || tag == 'optgroup' ||
+      tag == 'option' || tag == 'p' || tag == 'param' ||
+      tag == 'search' || tag == 'section' || tag == 'summary' ||
+      tag == 'table' || tag == 'tbody' || tag == 'td' ||
+      tag == 'tfoot' || tag == 'th' || tag == 'thead' ||
+      tag == 'title' || tag == 'tr' || tag == 'track' ||
+      tag == 'ul';
+}
+
+function htmlBlockEndsOnLine(line: String, htmlType: i32): boolean {
+  if (htmlType == 1) {
+    let lower = toLowerAscii(line);
+    return containsSubstring(lower, '</pre>') ||
+        containsSubstring(lower, '</script>') ||
+        containsSubstring(lower, '</style>') ||
+        containsSubstring(lower, '</textarea>');
+  }
+  if (htmlType == 2) {
+    return containsSubstring(line, '-->');
+  }
+  if (htmlType == 3) {
+    return containsSubstring(line, '?>');
+  }
+  if (htmlType == 4) {
+    return containsSubstring(line, '>');
+  }
+  if (htmlType == 5) {
+    return containsSubstring(line, ']]>');
+  }
+  return false;
+}
+
+function containsSubstring(haystack: String, needle: String): boolean {
+  let nLen = needle.length;
+  let hLen = haystack.length;
+  if (nLen == 0 || nLen > hLen) {
+    return false;
+  }
+  let first = needle.getByteAt(0);
+  var i = 0;
+  while (i <= hLen - nLen) {
+    if (haystack.getByteAt(i) == first) {
+      var matched = true;
+      var j = 1;
+      while (j < nLen) {
+        if (haystack.getByteAt(i + j) != needle.getByteAt(j)) {
+          matched = false;
+          break;
+        }
+        j += 1;
+      }
+      if (matched) {
+        return true;
+      }
+    }
+    i += 1;
+  }
+  return false;
+}

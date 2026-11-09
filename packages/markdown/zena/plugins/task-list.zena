@@ -1,0 +1,120 @@
+/**
+ * GFM task list item extension (`- [ ] todo`, `- [x] done`).
+ */
+
+import { GrowableArray, some } from 'zena:core';
+import {
+  Block, Document, Inline, Paragraph, BlockQuote, ListBlock, ListItem, Text,
+  SoftBreak, HardBreak, Span
+} from '../ast.zena';
+import {
+  AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser,
+  InlineParserRunner, MarkdownExtension, NodeRenderer
+} from '../plugin.zena';
+
+final class TaskListTransformer implements AstTransformer {
+  transform(doc: Document, inlineParser: InlineParserRunner): void {
+    this.#visitBlocks(doc.blocks);
+  }
+
+  #visitBlocks(blocks: GrowableArray<Block>): void {
+    for (let block in blocks) {
+      match (block) {
+        case BlockQuote {blocks: let children}: {
+          this.#visitBlocks(children);
+        }
+        case ListBlock {items}: {
+          for (let item in items) {
+            this.#processItem(item);
+            this.#visitBlocks(item.blocks);
+          }
+        }
+        case ListItem as item: {
+          this.#processItem(item);
+          this.#visitBlocks(item.blocks);
+        }
+        case _: {}
+      }
+    }
+  }
+
+  #processItem(item: ListItem): void {
+    if (item.blocks.length == 0) {
+      return;
+    }
+    if (let Paragraph {inlines} = item.blocks[0]) {
+      if (inlines.length == 0) {
+        return;
+      }
+      if (let Text {literal, span} = inlines[0]) {
+        if (literal.length < 3 || literal.getByteAt(0) != 0x5B || literal.getByteAt(2) != 0x5D) {
+          return;
+        }
+        let mark = literal.getByteAt(1);
+        var checked = false;
+        if (mark == 0x20) { // ' '
+          checked = false;
+        } else if (mark == 0x78 || mark == 0x58) { // 'x' or 'X'
+          checked = true;
+        } else {
+          return;
+        }
+
+        // Must be followed by space/tab, or end of Text node when followed by
+        // another inline (e.g. `SoftBreak` or `Emphasis`)
+        if (literal.length > 3) {
+          let after = literal.getByteAt(3);
+          if (after != 0x20 && after != 0x09) {
+            return;
+          }
+          let rest = literal.sliceBytes(4, literal.length);
+          item.checked = some(checked);
+          if (rest.length == 0 && inlines.length > 1) {
+            this.#removeFirstInline(inlines);
+          } else {
+            inlines[0] = new Text(rest, new Span(span.start + 4, span.end));
+          }
+        } else if (inlines.length > 1) {
+          item.checked = some(checked);
+          this.#removeFirstInline(inlines);
+          if (inlines.length > 0) {
+            if (inlines[0] is SoftBreak || inlines[0] is HardBreak) {
+              this.#removeFirstInline(inlines);
+            } else if (let Text {literal: nextLit, span: nextSpan} = inlines[0]) {
+              if (nextLit.length > 0 && nextLit.getByteAt(0) == 0x20) {
+                inlines[0] = new Text(
+                  nextLit.sliceBytes(1, nextLit.length),
+                  new Span(nextSpan.start + 1, nextSpan.end)
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  #removeFirstInline(inlines: GrowableArray<Inline>): void {
+    var i = 1;
+    while (i < inlines.length) {
+      inlines[i - 1] = inlines[i];
+      i += 1;
+    }
+    inlines.pop();
+  }
+}
+
+/**
+ * Returns the `MarkdownExtension` for GFM task list items (`- [ ]` and `- [x]`).
+ */
+export function taskListExtension(): MarkdownExtension {
+  let transformers = new GrowableArray<AstTransformer>(1);
+  transformers.push(new TaskListTransformer());
+  return new MarkdownExtension(
+    new GrowableArray<BlockParserFactory>(0),
+    new GrowableArray<DelimiterProcessor>(0),
+    new GrowableArray<InlineContentParser>(0),
+    transformers,
+    new GrowableArray<NodeRenderer>(0)
+  );
+}

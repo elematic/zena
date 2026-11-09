@@ -1,0 +1,179 @@
+/**
+ * GitHub alerts / notes extension (`> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`,
+ * `> [!WARNING]`, `> [!CAUTION]`).
+ */
+
+import { GrowableArray } from 'zena:core';
+import {
+  Block, CustomBlock, CustomInline, Document, Inline, Paragraph, BlockQuote,
+  ListBlock, ListItem, Text, SoftBreak, HardBreak, Span
+} from '../ast.zena';
+import {
+  AstTransformer, BlockParserFactory, DelimiterProcessor, HtmlRenderContext,
+  InlineContentParser, InlineParserRunner, MarkdownExtension, NodeRenderer
+} from '../plugin.zena';
+import { toLowerAscii, trimSpaces } from '../scanner.zena';
+
+/**
+ * The five GitHub alert levels.
+ */
+export enum AlertKind {
+  Note,
+  Tip,
+  Important,
+  Warning,
+  Caution
+}
+
+/**
+ * AST block node representing a GitHub alert block (`> [!NOTE] ...`).
+ */
+export final class AlertBlock extends CustomBlock {
+  kind: AlertKind;
+  kindSlug: String;
+  title: String;
+  var blocks: GrowableArray<Block>;
+
+  new(this.kind, this.kindSlug, this.title, this.blocks, span: Span) : super(span);
+}
+
+final class AlertsTransformer implements AstTransformer {
+  transform(doc: Document, inlineParser: InlineParserRunner): void {
+    this.#transformBlockList(doc.blocks);
+  }
+
+  #transformBlockList(blocks: GrowableArray<Block>): void {
+    var i = 0;
+    while (i < blocks.length) {
+      let block = blocks[i];
+      match (block) {
+        case BlockQuote as bq: {
+          this.#transformBlockList(bq.blocks);
+          let converted = this.#tryConvertBlockQuote(bq);
+          if (converted != null) {
+            blocks[i] = converted;
+          }
+        }
+        case ListBlock {items}: {
+          for (let item in items) {
+            this.#transformBlockList(item.blocks);
+          }
+        }
+        case ListItem {blocks: let children}: {
+          this.#transformBlockList(children);
+        }
+        case _: {}
+      }
+      i += 1;
+    }
+  }
+
+  #tryConvertBlockQuote(bq: BlockQuote): AlertBlock | null {
+    if (bq.blocks.length == 0) {
+      return null;
+    }
+    if (let Paragraph {inlines: firstInlines, id: firstId, span: firstSpan} = bq.blocks[0]) {
+      if (firstInlines.length == 0) {
+        return null;
+      }
+      if (let Text {literal} = firstInlines[0]) {
+        let trimmed = trimSpaces(literal);
+        let (matched, kind, slug, defaultTitle) = parseAlertMarker(trimmed);
+        if (!matched) {
+          return null;
+        }
+        // Marker must be the entire first Text inline (meaning either the end
+        // of the paragraph or immediately followed by a SoftBreak / HardBreak)
+        if (firstInlines.length > 1) {
+          let second = firstInlines[1];
+          if (!(second is SoftBreak) && !(second is HardBreak)) {
+            return null;
+          }
+        }
+
+        // Remove the marker Text and optional line break from `firstPara`
+        let remainingInlines = new GrowableArray<Inline>(firstInlines.length);
+        var k = 2; // skip index 0 (`[!KIND]`) and index 1 (`SoftBreak`/`HardBreak`)
+        while (k < firstInlines.length) {
+          remainingInlines.push(firstInlines[k]);
+          k += 1;
+        }
+
+        let alertChildren = new GrowableArray<Block>(bq.blocks.length);
+        if (remainingInlines.length > 0) {
+          alertChildren.push(new Paragraph(remainingInlines, firstId, firstSpan));
+        }
+        var bIdx = 1;
+        while (bIdx < bq.blocks.length) {
+          alertChildren.push(bq.blocks[bIdx]);
+          bIdx += 1;
+        }
+        return new AlertBlock(kind, slug, defaultTitle, alertChildren, bq.span);
+      }
+    }
+    return null;
+  }
+}
+
+function parseAlertMarker(
+  s: String
+): inline (boolean, AlertKind, String, String) {
+  if (s.length < 6 || s.getByteAt(0) != 0x5B || s.getByteAt(1) != 0x21 || s.getByteAt(s.length - 1) != 0x5D) {
+    return (false, AlertKind.Note, '', '');
+  }
+  let name = toLowerAscii(s.sliceBytes(2, s.length - 1));
+  if (name == 'note') {
+    return (true, AlertKind.Note, 'note', 'Note');
+  }
+  if (name == 'tip') {
+    return (true, AlertKind.Tip, 'tip', 'Tip');
+  }
+  if (name == 'important') {
+    return (true, AlertKind.Important, 'important', 'Important');
+  }
+  if (name == 'warning') {
+    return (true, AlertKind.Warning, 'warning', 'Warning');
+  }
+  if (name == 'caution') {
+    return (true, AlertKind.Caution, 'caution', 'Caution');
+  }
+  return (false, AlertKind.Note, '', '');
+}
+
+final class AlertsRenderer implements NodeRenderer {
+  renderBlock(block: CustomBlock, ctx: HtmlRenderContext): boolean {
+    if (block is AlertBlock) {
+      ctx.sb.append('<div class="markdown-alert markdown-alert-');
+      ctx.escapeAttribute(block.kindSlug);
+      ctx.sb.append('">\n<p class="markdown-alert-title">');
+      ctx.escapeHtml(block.title);
+      ctx.sb.append('</p>\n');
+      ctx.renderBlocks(block.blocks);
+      ctx.sb.append('</div>\n');
+      return true;
+    }
+    return false;
+  }
+
+  renderInline(node: CustomInline, ctx: HtmlRenderContext): boolean {
+    return false;
+  }
+}
+
+/**
+ * Returns the `MarkdownExtension` for GitHub alerts (`> [!NOTE]`, `> [!TIP]`,
+ * `> [!IMPORTANT]`, `> [!WARNING]`, `> [!CAUTION]`).
+ */
+export function alertsExtension(): MarkdownExtension {
+  let transformers = new GrowableArray<AstTransformer>(1);
+  transformers.push(new AlertsTransformer());
+  let renderers = new GrowableArray<NodeRenderer>(1);
+  renderers.push(new AlertsRenderer());
+  return new MarkdownExtension(
+    new GrowableArray<BlockParserFactory>(0),
+    new GrowableArray<DelimiterProcessor>(0),
+    new GrowableArray<InlineContentParser>(0),
+    transformers,
+    renderers
+  );
+}
