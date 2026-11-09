@@ -113,17 +113,30 @@ it evicts so that an importer's cached record still finds it at the
 next compile. `delete`, `has`, `get` and `computeGraph` read and edit
 the cache only and stay synchronous.
 
-The loader awaits one read at a time, in the order it reads today: a
-library is read, parsed and cached, and then each of its imports is
-loaded in source order before the next. The order matters because every
-parse draws node ids from one generator and interns identifiers in one
-`StringTable`, both owned by the loader. Node ids key the semantic
-model, and their order reaches the emitted module. Keeping the order
-keeps the compiler's output byte for byte what it is now.
+The loader reads a library's imports together and parses them in
+source order. Once a library is parsed, `#register` resolves every
+import it names and starts a read of each one that is not loaded
+(`#startRead`, one read per path, shared by every importer that asks
+while it is in flight); then it awaits the reads in the order the
+imports are written and registers each in turn, so a nested library's
+own imports start reading while its siblings' reads are still out. The
+parse order is what matters: every parse draws node ids from one
+generator and interns identifiers in one `StringTable`, both owned by
+the loader, node ids key the semantic model, and their order reaches
+the emitted module. The reads' completion order changes nothing, since
+a read is used only at its turn. `refreshCache` reads every cached user
+file the same way. The first change landed with the reads one at a
+time, and the second made them concurrent; both emit the same bytes as
+the synchronous compiler did.
 
-`#register` catches a failed read of an import and leaves the import
-for the checker to report as a missing library. The `await` sits inside
-that `try`.
+The reads in flight are bounded by the import lists along the current
+path of the depth-first load, so a program with hundreds of libraries
+has tens of reads out, not hundreds. The map of in-flight reads is
+cleared when a load starts: a read a failed load left behind would
+otherwise serve the next load stale text.
+
+A failed read of an import leaves the import for the checker to report
+as a missing library. The `await` sits inside that `try`.
 
 ### One compile at a time
 
@@ -327,10 +340,9 @@ out. Fixed in elematic/zena#905.
 
 These are outside this change and depend on it.
 
-- **Concurrent reads.** Starting all of a library's imports at once
-  makes read completion order vary between runs. Parse order must stay
-  fixed, or node ids must stop depending on it, for example by
-  numbering nodes per file.
+- **Parallel parsing.** With the reads concurrent, parsing is still
+  sequential because node ids come from one generator. Numbering nodes
+  per file would let a worker parse a file on its own.
 - **Workers.** Wasm GC objects cannot be shared between instances, so a
   worker's result crosses as bytes. Code generation already produces
   bytes; a worker that parses would have to serialize its AST.
