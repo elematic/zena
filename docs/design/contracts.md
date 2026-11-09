@@ -436,11 +436,17 @@ library, as `@verify` in formal-verification.md. A clause the verifier
 proves needs no check at run time, except that a proved `requires`
 still has to be checked for callers the verifier did not see.
 
-**A clause that is never checked at run time is marked `static`.**
-Verification will bring conditions that cannot run at all, such as a
-quantifier over every `i32` or a call to a specification-only function,
-and conditions that could run but are meant to be proved. Both take
-the marker, in the position `debug` takes:
+A property of one value is better written as a type than as a clause,
+so that the type checker carries it across calls and the verifier has
+fewer obligations: [refinement-types.md](./refinement-types.md).
+
+**A clause the compiler must prove at compile time is marked `static`.**
+It is never checked at run time, because it has been shown to hold
+before the program runs; a `static` clause the compiler cannot prove is
+an error. Verification will bring conditions that cannot run at all,
+such as a quantifier over every `i32` or a call to a specification-only
+function, and conditions that could run but are meant to be proved.
+Both take the marker, in the position `debug` takes:
 
 ```zena
 function search(items: FixedArray<i32>, target: i32): i32
@@ -452,15 +458,29 @@ function search(items: FixedArray<i32>, target: i32): i32
 
 - **Checking.** A `static` clause is type-checked in every build by the
   rules every clause follows: its names resolve, its condition is a
-  boolean, `result` and `old` mean what they mean elsewhere. Until a
-  verifier exists it is a specification the compiler keeps honest about
-  names and types, which is what makes it worth writing down now.
+  boolean, `result` and `old` mean what they mean elsewhere.
+- **Proving.** The compiler has to show the condition holds. What it can
+  show grows with the verifier. Before one exists, the prover is
+  constant evaluation: a condition that evaluates to true from literals
+  alone is proved, and anything over a parameter or a field is refused,
+  since nothing can show it. So a `static` clause is of little use until
+  the verifier, and that is intended: the marker means "proved", and
+  nothing should be able to write it where that is not so.
 - **Emission.** Nothing, in any build. Reachability and lowering both
   ask `WasmModule.runsContractClause`, which answers false for it.
-- **Narrowing.** None, for the reason a `debug` clause narrows nothing.
-- **What it may contain.** Today, any expression a clause may contain.
+- **Narrowing.** A proved `static requires` holds on every call, so it
+  can narrow in the body as an unmarked one does. A `debug` clause
+  cannot, because a build may run without it.
+- **What it may contain.** Any expression a clause may contain, that the
+  prover can decide, calling only pure functions
+  ([pure-functions.md](./pure-functions.md)): a function the prover can
+  unfold is one whose body reads nothing mutable and has no effects.
   Quantifiers and specification-only functions arrive with the
   verifier, and are the reason the marker exists before it does.
+- **Today's compiler** accepts a `static` clause without proving it, and
+  does not narrow from it. That is the gap between this design and
+  #974, and closing it, with constant evaluation as the first prover, is
+  the next piece of work on `static` (#936 follow-up).
 - **The word.** `static_assert` is the precedent for `static` meaning
   "at compile time". The position, directly before a clause keyword,
   keeps it apart from a member's `static`, and the parser reads it
@@ -468,8 +488,13 @@ function search(items: FixedArray<i32>, target: i32): i32
   used it; `prove` reads as a command, and nothing proves the clause
   yet; `spec` was the runner-up (#936).
 - **One modifier per clause.** `static debug requires` is not a clause
-  and does not parse. A `static` clause is left out of every build, so
-  `debug` would add nothing to it.
+  and does not parse. A `static` clause is proved before any build
+  runs, so `debug` would add nothing to it.
+
+A refinement type can be `static` too, which restricts its predicate to
+what the prover can reason about, so that a `static` clause may mention
+the type ([refinement-types.md](./refinement-types.md), "`static`
+refinements").
 
 ## Alternatives considered
 
@@ -549,7 +574,10 @@ loop optimizer uses.
   `ensures` is about its body returning. A condition every yielded
   value satisfies would need a clause of its own.
 - **Calls with effects in a condition.** Assignments and `await` are
-  rejected. A function the condition calls can still change state.
+  rejected. A function an unmarked or `debug` condition calls can still
+  change state. [pure-functions.md](./pure-functions.md) gives `static`
+  conditions, `old` arguments and refinement predicates a rule, and
+  leaves the others as they are.
 - **Narrowing from `invariant`.** An invariant that held at the test
   could narrow in the loop's body until the body assigns what it
   names. It does not today.

@@ -105,7 +105,14 @@ instance as the compiler.
 This security model points toward more general language features:
 
 1. **Pure Functions**: Functions that provably have no side effects. Macros are
-   an early use case—they're effectively pure functions over ASTs.
+   an early use case—they're effectively pure functions over ASTs. In the
+   terms of [pure-functions.md](./pure-functions.md) a macro is
+   effect-free, the weakest of its three grades: it builds and mutates
+   AST nodes and reaches no state outside them. A `macro` declaration
+   kind, like `decorator`, would be what demands that of a body, and a
+   macro may then call anything the compiler infers effect-free. What
+   keeps it from files and the network is the import restriction above,
+   not purity.
 
 2. **Capability-Based I/O**: Rather than importing `zena:fs` for ambient
    filesystem access, programs would receive explicit capability objects:

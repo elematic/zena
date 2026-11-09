@@ -78,7 +78,11 @@ aggressive DCE:
 export class String { ... }
 ```
 
-For now, we treat all stdlib modules as pure by default.
+For now, we treat all stdlib modules as pure by default. The property
+this needs is what [pure-functions.md](./pure-functions.md) calls
+effect-free, the weakest of its three grades, which the compiler infers
+from a body; a module whose initializers are all effect-free needs no
+decorator.
 
 ### Scope of Analysis
 
