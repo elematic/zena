@@ -43,7 +43,7 @@
 
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {existsSync, mkdirSync, readFileBytesSync, renameSync, writeFileBytesSync} from 'zena:fs';
+import {exists, mkdir, readFileBytes, rename, writeFileBytes} from 'zena:fs';
 import {randomU64} from 'zena:random';
 import {Fields, Firestore, Operator, Direction, DocumentReference, DocumentSnapshot, bytesValue, stringValue}
   from 'google-cloud:firestore';
@@ -96,26 +96,26 @@ export final class DirectoryBlobs implements BlobBytes {
 
   async read(name: String): Future<FixedArray<u8> | null> {
     let path = `${this.#root}/${name}`;
-    return if (existsSync(path)) readFileBytesSync(path) else null;
+    return if (await exists(path)) await readFileBytes(path) else null;
   }
 
   async write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void> {
     let path = `${this.#root}/${name}`;
-    ensureDirectory(path.sliceBytes(0, lastSlash(path)));
+    await ensureDirectory(path.sliceBytes(0, lastSlash(path)));
     let temp = `${path}.tmp-${randomU64()}`;
-    writeFileBytesSync(temp, bytes);
-    renameSync(temp, path);
+    await writeFileBytes(temp, bytes);
+    await rename(temp, path);
   }
 }
 
 /** Creates `path` and every directory above it that is missing. */
 // TODO(#540): use zena:fs's, once it has one.
-function ensureDirectory(path: String): void {
-  if (path.length == 0 || existsSync(path)) {
+async function ensureDirectory(path: String): Future<void> {
+  if (path.length == 0 || await exists(path)) {
     return;
   }
-  ensureDirectory(path.sliceBytes(0, lastSlash(path)));
-  mkdirSync(path);
+  await ensureDirectory(path.sliceBytes(0, lastSlash(path)));
+  await mkdir(path);
 }
 
 /** The index of the last `/` in `path`, or 0 when there is none. */

@@ -3,7 +3,7 @@ import {equal, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
 import {p256} from 'zena:crypto';
 import {hex} from 'zena:encoding';
-import {readFileSync} from 'zena:fs';
+import {readFile} from 'zena:fs';
 import {App, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, publicKeyFor} from 'atproto:didkey';
@@ -15,8 +15,8 @@ import {
 
 let FIXTURES = 'packages/atproto/zena/test/fixtures/plc/operations.json';
 
-function cases() {
-  return (parseJson(readFileSync(FIXTURES)) as JsonObject)['cases'] as JsonArray;
+async function cases() {
+  return (parseJson(await readFile(FIXTURES)) as JsonObject)['cases'] as JsonArray;
 }
 
 /** The message `call` throws as a `PlcError`, or '' when it throws nothing. */
@@ -30,8 +30,8 @@ function plcError(call: () => void) {
 }
 
 export let tests = suite('atproto:plc', () => {
-  test('derives the DIDs pds.js derived from its genesis operations', (ctx) => {
-    let all = cases();
+  test('derives the DIDs pds.js derived from its genesis operations', async (ctx) => {
+    let all = await cases();
     equal(all.length, 2);
     for (var i = 0; i < all.length; i += 1) {
       let c = all[i] as JsonObject;
@@ -45,8 +45,8 @@ export let tests = suite('atproto:plc', () => {
     }
   });
 
-  test('signs a genesis operation of its own, which makes a DID', (ctx) => {
-    let rotation = hex.decode((cases()[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+  test('signs a genesis operation of its own, which makes a DID', async (ctx) => {
+    let rotation = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
     let signing = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
     let rotationKey = publicKeyFor(KeyType.P256, rotation);
     let operation = genesisOperation(publicKeyFor(KeyType.P256, signing), [rotationKey],
@@ -73,8 +73,8 @@ export let tests = suite('atproto:plc', () => {
     isTrue(plcError(() => { didOfGenesis(next); }).contains('follows another'));
   });
 
-  test('checks that an operation may follow a DID\'s log', (ctx) => {
-    let rotation = hex.decode((cases()[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+  test('checks that an operation may follow a DID\'s log', async (ctx) => {
+    let rotation = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
     let other = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
     let genesis = genesisOperation(publicKeyFor(KeyType.P256, other), [publicKeyFor(KeyType.P256, rotation)],
         'router.acme.pkg.test', 'https://pkg.test').signedWith((bytes) => p256.sign(rotation, bytes));
@@ -96,10 +96,10 @@ export let tests = suite('atproto:plc', () => {
     isTrue(plcError(() => { checkNextOperation(did, log, stranger); }).contains('rotation keys'));
   });
 
-  test('undoes the operations after one, with a key that ranks above their signer', (ctx) => {
+  test('undoes the operations after one, with a key that ranks above their signer', async (ctx) => {
     // Ranked first, an offline key; then the online key, which signs.
     let offline = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
-    let online = hex.decode((cases()[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let online = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
     let signing = hex.decode('0101010101010101010101010101010101010101010101010101010101010101');
     let genesis = genesisOperation(publicKeyFor(KeyType.P256, signing),
         [publicKeyFor(KeyType.P256, offline), publicKeyFor(KeyType.P256, online)],
@@ -128,8 +128,8 @@ export let tests = suite('atproto:plc', () => {
       .contains('not in the log'));
   });
 
-  test('gives the DID document an operation describes', (ctx) => {
-    let rotation = hex.decode((cases()[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+  test('gives the DID document an operation describes', async (ctx) => {
+    let rotation = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
     let signing = publicKeyFor(KeyType.P256, hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
     let genesis = genesisOperation(signing, [publicKeyFor(KeyType.P256, rotation)], 'router.acme.pkg.test',
         'https://pkg.test').signedWith((bytes) => p256.sign(rotation, bytes));
@@ -163,7 +163,7 @@ export let tests = suite('atproto:plc', () => {
     let server = new Server(app, 0 as u16);
     server.start();
     let directory = `http://127.0.0.1:${server.port as i32}`;
-    let c = cases()[0] as JsonObject;
+    let c = (await cases())[0] as JsonObject;
     let operation = PlcOperation.fromJson(c['operation']);
     let did = c['did'] as String;
     await submitPlcOperation(directory, did, operation);

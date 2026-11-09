@@ -23,7 +23,7 @@
 
 import { getArguments, getEnv } from 'zena:cli';
 import { StringBuilder } from 'zena:core';
-import { isDirectorySync, listDirSync, readFileSync, readFileBytesSync } from 'zena:fs';
+import { isDirectory, listDir, readFile, readFileBytes } from 'zena:fs';
 import { JsonArray, JsonObject, JsonValue, parseJson } from 'zena:json';
 import { regex } from 'zena:regex';
 import { sha256Hex, sha256HexOfString } from 'zena:crypto';
@@ -107,9 +107,9 @@ function sortStrings(values: GrowableArray<String>) {
 }
 
 /** The names in a directory, sorted. */
-function entryNames(dir: String) {
+async function entryNames(dir: String) {
   let names = new GrowableArray<String>();
-  for (let entry in listDirSync(dir)) {
+  for (let entry in await listDir(dir)) {
     if (entry.name != '.' && entry.name != '..') {
       names.push(entry.name);
     }
@@ -119,11 +119,11 @@ function entryNames(dir: String) {
 }
 
 /** Every `.wit` file under `dir`, as paths relative to it, sorted. */
-function witFilesUnder(dir: String, prefix: String, found: GrowableArray<String>): void {
-  for (let name in entryNames(dir)) {
+async function witFilesUnder(dir: String, prefix: String, found: GrowableArray<String>): Future<void> {
+  for (let name in await entryNames(dir)) {
     let relative = if (prefix == '') { name } else { `${prefix}/${name}` };
-    if (isDirectorySync(`${dir}/${name}`)) {
-      witFilesUnder(`${dir}/${name}`, relative, found);
+    if (await isDirectory(`${dir}/${name}`)) {
+      await witFilesUnder(`${dir}/${name}`, relative, found);
     } else if (name.endsWith('.wit')) {
       found.push(relative);
     }
@@ -138,32 +138,32 @@ function witFilesUnder(dir: String, prefix: String, found: GrowableArray<String>
  * check for a corpus that is in fact correct. `dev/wit-corpus.js` computes the
  * same digest, which is what `dev/fetch-wit-corpus.js` verifies on download.
  */
-function contentDigest(dir: String) {
+async function contentDigest(dir: String) {
   let summary = new StringBuilder();
   let files = new GrowableArray<String>();
-  witFilesUnder(dir, '', files);
+  await witFilesUnder(dir, '', files);
   sortStrings(files);
   for (let relative in files) {
-    summary.append(`${relative} ${sha256Hex(readFileBytesSync(`${dir}/${relative}`))}\n`);
+    summary.append(`${relative} ${sha256Hex(await readFileBytes(`${dir}/${relative}`))}\n`);
   }
   return `sha256:${sha256HexOfString(summary.toString())}`;
 }
 
 /** Where the corpus root is, or null. */
-function findCorpus(): Corpus | null {
+async function findCorpus(): Future<Corpus | null> {
   let fromNix = getEnv('ZENA_WASI_WIT');
-  if (fromNix != null && fromNix != '' && isDirectorySync(fromNix)) {
+  if (fromNix != null && fromNix != '' && await isDirectory(fromNix)) {
     return new Corpus(fromNix, 'ZENA_WASI_WIT (nix)');
   }
-  if (isDirectorySync(LOCAL_CORPUS)) {
+  if (await isDirectory(LOCAL_CORPUS)) {
     return new Corpus(LOCAL_CORPUS, '.wit-corpus');
   }
   return null;
 }
 
 /** The `sources` object of the pin manifest. */
-function manifestSources() {
-  let manifest = parseJson(readFileSync(MANIFEST));
+async function manifestSources() {
+  let manifest = parseJson(await readFile(MANIFEST));
   if (!(manifest is JsonObject)) {
     throw new Error(`${MANIFEST} is not an object`);
   }
@@ -178,13 +178,14 @@ function manifestSources() {
  * Every pinned source present under `root` and matching its digest, as a list
  * of problems; empty means good.
  */
-function verifyCorpus(root: String, sources: JsonObject) {
+async function verifyCorpus(root: String, sources: JsonObject) {
   let problems = new GrowableArray<String>();
-  sources.forEach((name, source) => {
+  for (let name in sources.keys()) {
+    let source = sources[name];
     let dir = `${root}/${name}`;
-    if (!isDirectorySync(dir)) {
+    if (!(await isDirectory(dir))) {
       problems.push(`source \`${name}\` is missing from the corpus`);
-      return;
+      continue;
     }
     var pinned: String | null = null;
     if (source is JsonObject) {
@@ -198,9 +199,9 @@ function verifyCorpus(root: String, sources: JsonObject) {
         `source \`${name}\` has no contentDigest in wit-corpus.json ` +
           '(compute it with: node dev/fetch-wit-corpus.js --print-digest)',
       );
-      return;
+      continue;
     }
-    let digest = contentDigest(dir);
+    let digest = await contentDigest(dir);
     if (digest != (pinned)) {
       problems.push(
         `source \`${name}\` does not match its pin\n` +
@@ -208,7 +209,7 @@ function verifyCorpus(root: String, sources: JsonObject) {
           `    actual   ${digest}`,
       );
     }
-  });
+  }
   return problems;
 }
 
@@ -234,11 +235,11 @@ final class Unit {
  * units in sorted order by path: every descendant of a directory starts with
  * that directory's name and a separator.
  */
-function collectUnits(root: String, isDep: boolean, units: GrowableArray<Unit>): void {
-  let names = entryNames(root);
+async function collectUnits(root: String, isDep: boolean, units: GrowableArray<Unit>): Future<void> {
+  let names = await entryNames(root);
   var unit: Unit | null = null;
   for (let name in names) {
-    if (!name.endsWith('.wit') || isDirectorySync(`${root}/${name}`)) {
+    if (!name.endsWith('.wit') || await isDirectory(`${root}/${name}`)) {
       continue;
     }
     if (unit == null) {
@@ -248,8 +249,8 @@ function collectUnits(root: String, isDep: boolean, units: GrowableArray<Unit>):
     unit.files.push(`${root}/${name}`);
   }
   for (let name in names) {
-    if (isDirectorySync(`${root}/${name}`)) {
-      collectUnits(`${root}/${name}`, isDep || name == 'deps', units);
+    if (await isDirectory(`${root}/${name}`)) {
+      await collectUnits(`${root}/${name}`, isDep || name == 'deps', units);
     }
   }
 }
@@ -264,12 +265,12 @@ function collectUnits(root: String, isDep: boolean, units: GrowableArray<Unit>):
  * `wasi:sockets` declares its header only in `world.wit`, which sorts last, so
  * plain alphabetical order puts seven interfaces ahead of their own package.
  */
-function readUnit(unit: Unit) {
+async function readUnit(unit: Unit) {
   let paths = new GrowableArray<String>();
   let sources = new GrowableArray<String>();
   for (let path in unit.files) {
     paths.push(path);
-    sources.push(readFileSync(path));
+    sources.push(await readFile(path));
   }
   let ordered = new GrowableArray<String>();
   let orderedSources = new GrowableArray<String>();
@@ -361,11 +362,11 @@ function visit(unit: Unit, units: GrowableArray<Unit>, ordered: GrowableArray<Un
  * Directory order is topological, not alphabetical — `deps/cli` sorts first
  * but depends on `io`, `clocks`, `filesystem`, `sockets` and `random`.
  */
-function orderedUnits(dir: String) {
+async function orderedUnits(dir: String) {
   let units = new GrowableArray<Unit>();
-  collectUnits(dir, false, units);
+  await collectUnits(dir, false, units);
   for (let unit in units) {
-    readUnit(unit);
+    await readUnit(unit);
   }
   let ordered = new GrowableArray<Unit>();
   for (let unit in units) {
@@ -387,10 +388,10 @@ final class Document {
   new(this.text, this.files);
 }
 
-function documentOf(dir: String) {
+async function documentOf(dir: String) {
   let sources = new GrowableArray<String>();
   var files = 0;
-  for (let unit in orderedUnits(dir)) {
+  for (let unit in await orderedUnits(dir)) {
     for (let source in unit.sources) {
       sources.push(source);
       files += 1;
@@ -434,15 +435,15 @@ function resolveCounts(text: String) {
 }
 
 /** `--check`: assert every pinned tree still resolves. */
-function check(): i32 {
-  let found = findCorpus();
+async function check(): Future<i32> {
+  let found = await findCorpus();
   if (found == null) {
     console.error(MISSING_CORPUS);
     return 1;
   }
   let corpus = found;
-  let sources = manifestSources();
-  let problems = verifyCorpus(corpus.dir, sources);
+  let sources = await manifestSources();
+  let problems = await verifyCorpus(corpus.dir, sources);
   if (problems.length > 0) {
     console.error(`✗ corpus at ${corpus.source} does not match wit-corpus.json`);
     for (let problem in problems) {
@@ -466,7 +467,7 @@ function check(): i32 {
 
   let failures = new GrowableArray<String>();
   for (let wanted in expectations()) {
-    let document = documentOf(`${corpus.dir}/${wanted.dir}`);
+    let document = await documentOf(`${corpus.dir}/${wanted.dir}`);
     var resolved: Counts | null = null;
     let message = try {
       resolved = resolveCounts(document.text);
@@ -500,8 +501,8 @@ function check(): i32 {
 }
 
 /** Resolves one whole tree, reporting what it holds. */
-function parseDir(dir: String): boolean {
-  let document = documentOf(dir);
+async function parseDir(dir: String): Future<boolean> {
+  let document = await documentOf(dir);
   console.log(`\n=== ${dir} === (${document.files} files, ${document.text.length} bytes)`);
   return try {
     console.log(`  ✅ ${resolveCounts(document.text).describe()}`);
@@ -513,8 +514,8 @@ function parseDir(dir: String): boolean {
 }
 
 /** Parses each file alone. Cross-file `use` fails; syntax faults still show. */
-function parseFiles(dir: String) {
-  for (let unit in orderedUnits(dir)) {
+async function parseFiles(dir: String) {
+  for (let unit in await orderedUnits(dir)) {
     for (var i = 0; i < unit.files.length; i += 1) {
       let outcome = try {
         parseSyntax(unit.sources[i]);
@@ -531,24 +532,24 @@ function parseFiles(dir: String) {
   }
 }
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   let args = getArguments();
   if (args.length < 2) {
     console.error('usage: parse-real-wit.zena [--check|--files] <wit-dir>...');
     return 1;
   }
   if (args[1] == '--check') {
-    return check();
+    return await check();
   }
   if (args[1] == '--files') {
     for (var i = 2; i < args.length; i += 1) {
-      parseFiles(args[i]);
+      await parseFiles(args[i]);
     }
     return 0;
   }
   var ok = true;
   for (var i = 1; i < args.length; i += 1) {
-    ok = parseDir(args[i]) && ok;
+    ok = (await parseDir(args[i])) && ok;
   }
   return if (ok) { 0 } else { 1 };
 }

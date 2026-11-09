@@ -12,6 +12,7 @@
  * of the generated code.
  */
 
+import {Future} from 'zena:async';
 import {joinStrings} from './text.zena';
 import {emitModule} from './emitter.zena';
 import {loadSchema, markReached} from './schema.zena';
@@ -25,7 +26,7 @@ export type GenerateOptions = {
   /** The files whose declarations are generated, by import path. */
   files: Array<String>,
   /** A file's source by import path, or null when there is no such file. */
-  read: (path: String) => String | null,
+  read: (path: String) => Future<String | null>,
   /**
    * Full names of the messages, enums and services to generate, with
    * everything they refer to. When absent, every declaration in `files`.
@@ -36,7 +37,7 @@ export type GenerateOptions = {
 };
 
 /** Generates one Zena module from `options.files`. */
-export function generate(options: GenerateOptions): String {
+export async function generate(options: GenerateOptions): Future<String> {
   var roots: Array<String> = new GrowableArray<String>();
   if (let {roots as given} = options) {
     roots = given;
@@ -45,7 +46,7 @@ export function generate(options: GenerateOptions): String {
   if (let {runtimeImport as given} = options) {
     runtimeImport = given;
   }
-  let schema = loadSchema(options.files, options.read);
+  let schema = await loadSchema(options.files, options.read);
   let services = markReached(schema, roots);
   let primary = if (schema.rootFiles.length > 0) schema.rootFiles[0].package else '';
   return emitModule(schema, services, primary, runtimeImport, joinStrings(options.files, ', '));

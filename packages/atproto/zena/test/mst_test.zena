@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, fail, isNull, isTrue, throws} from 'zena:assert';
-import {readFileSync} from 'zena:fs';
+import {readFile} from 'zena:fs';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {growable} from 'zena:core';
 import {BlockMap} from 'atproto:car';
@@ -38,13 +38,13 @@ function record(rkey: String) {
   return `com.example.record/${rkey}`;
 }
 
-function fixtures(name: String) {
-  return parseJson(readFileSync(`${FIXTURES}/${name}`)) as JsonArray;
+async function fixtures(name: String) {
+  return parseJson(await readFile(`${FIXTURES}/${name}`)) as JsonArray;
 }
 
 export let tests = suite('atproto:mst', () => {
-  test('key heights match the interop fixtures', (ctx) => {
-    let cases = fixtures('mst/key_heights.json');
+  test('key heights match the interop fixtures', async (ctx) => {
+    let cases = await fixtures('mst/key_heights.json');
     isTrue(cases.length > 5);
     for (var i = 0; i < cases.length; i += 1) {
       let c = cases[i] as JsonObject;
@@ -59,8 +59,8 @@ export let tests = suite('atproto:mst', () => {
     }
   });
 
-  test('common prefixes match the interop fixtures', (ctx) => {
-    let cases = fixtures('mst/common_prefix.json');
+  test('common prefixes match the interop fixtures', async (ctx) => {
+    let cases = await fixtures('mst/common_prefix.json');
     isTrue(cases.length > 5);
     for (var i = 0; i < cases.length; i += 1) {
       let c = cases[i] as JsonObject;
@@ -117,8 +117,8 @@ export let tests = suite('atproto:mst', () => {
     equal(rootOf(keys, LEAF), 'bafyreid2x5eqs4w4qxvc5jiwda4cien3gw2q6cshofxwnvv7iucrmfohpm');
   });
 
-  test('roots before and after each commit match the commit-proof fixtures', (ctx) => {
-    let cases = fixtures('firehose/commit-proof-fixtures.json');
+  test('roots before and after each commit match the commit-proof fixtures', async (ctx) => {
+    let cases = await fixtures('firehose/commit-proof-fixtures.json');
     equal(cases.length, 6);
     for (var i = 0; i < cases.length; i += 1) {
       let c = cases[i] as JsonObject;
