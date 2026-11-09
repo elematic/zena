@@ -101,7 +101,28 @@ export function isSafeUrl(url: String, isImage: boolean = false): boolean {
   if (scheme == 'http' || scheme == 'https') {
     return true;
   }
+  if (scheme == 'data') {
+    let rest = url.sliceBytes(i + 1, len);
+    return startsWithCaseInsensitiveAscii(rest, 'image/png;') ||
+        startsWithCaseInsensitiveAscii(rest, 'image/gif;') ||
+        startsWithCaseInsensitiveAscii(rest, 'image/jpeg;') ||
+        startsWithCaseInsensitiveAscii(rest, 'image/webp;');
+  }
   return !isImage && (scheme == 'mailto' || scheme == 'irc' || scheme == 'ircs' || scheme == 'xmpp');
+}
+
+function startsWithCaseInsensitiveAscii(s: String, prefix: String): boolean {
+  if (s.length < prefix.length) {
+    return false;
+  }
+  var i = 0;
+  while (i < prefix.length) {
+    if (toLowerAsciiByte(s.getByteAt(i)) != prefix.getByteAt(i)) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
 }
 
 /**
@@ -222,8 +243,9 @@ export final class HtmlRenderer implements HtmlRenderContext {
       case HtmlBlock {literal}: {
         if (this.safe) {
           if (this.escapeRawHtml) {
+            this.sb.append('<p>');
             this.escapeHtml(literal);
-            this.sb.appendByte(0x0A);
+            this.sb.append('</p>\n');
           }
         } else {
           this.sb.append(literal);
@@ -275,9 +297,6 @@ export final class HtmlRenderer implements HtmlRenderContext {
       while (idx < item.blocks.length) {
         let child = item.blocks[idx];
         if (let Paragraph {inlines} = child) {
-          if (idx > 0) {
-            this.sb.appendByte(0x0A);
-          }
           if (idx == 0 && hasCheckbox) {
             this.sb.append(checkboxHtml);
           }

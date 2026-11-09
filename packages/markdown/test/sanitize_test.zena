@@ -1,5 +1,6 @@
 /**
- * HTML sanitization and safe URL filtering tests for `markdown`.
+ * HTML sanitization and safe URL filtering tests for `markdown`, including
+ * cases ported from `commonmark-java`'s `HtmlRendererTest`.
  */
 
 import { suite, test, TestContext } from 'zena:test';
@@ -8,26 +9,46 @@ import { markdownToHtml, isSafeUrl, gfmExtensions } from 'markdown:index';
 
 export let tests = suite('Sanitization and Safe Mode', () => {
   test('omits raw HTML blocks and inline HTML when safe is true', (ctx) => {
-    let md = 'Hello <script>alert(1)</script> world\n\n<div onclick="evil()">\nblock\n</div>\n\nParagraph.\n';
+    let md =
+      'Hello <script>alert(1)</script> world\n\n<div onclick="evil()">\nblock\n</div>\n\nParagraph.\n';
     equal(
       markdownToHtml(md, {safe: true}),
       '<p>Hello alert(1) world</p>\n<p>Paragraph.</p>\n'
     );
   });
 
-  test('escapes raw HTML when safe and escapeRawHtml are true', (ctx) => {
-    let md = 'Hello <b>world</b>\n';
+  test('escapes raw HTML inline and blocks when safe and escapeRawHtml are true', (ctx) => {
     equal(
-      markdownToHtml(md, {safe: true, escapeRawHtml: true}),
-      '<p>Hello &lt;b&gt;world&lt;/b&gt;</p>\n'
+      markdownToHtml(
+        "paragraph with <span id='foo' class=\"bar\">inline &amp; html</span>",
+        {safe: true, escapeRawHtml: true}
+      ),
+      "<p>paragraph with &lt;span id='foo' class=&quot;bar&quot;&gt;inline &amp; html&lt;/span&gt;</p>\n"
+    );
+    equal(
+      markdownToHtml(
+        "<div id='foo' class=\"bar\">block &amp;</div>",
+        {safe: true, escapeRawHtml: true}
+      ),
+      "<p>&lt;div id='foo' class=&quot;bar&quot;&gt;block &amp;amp;&lt;/div&gt;</p>\n"
     );
   });
 
   test('filters dangerous link and image schemes in safe mode', (ctx) => {
-    let md = '[Evil](javascript:alert(1)) and [Entity](&#106;avascript:alert(1)) and ![Bad](data:text/html,hi) and [Good](https://zena-lang.dev) and [Rel](./guide.md)\n';
+    let md =
+      '[Evil](javascript:alert(1)) and [Entity](&#106;avascript:alert(1)) and ![Bad](data:text/html,hi) and [Good](https://zena-lang.dev) and [Rel](./guide.md)\n';
     equal(
       markdownToHtml(md, {safe: true, extensions: gfmExtensions()}),
       '<p><a href="">Evil</a> and <a href="">Entity</a> and <img src="" alt="Bad" /> and <a href="https://zena-lang.dev">Good</a> and <a href="./guide.md">Rel</a></p>\n'
+    );
+  });
+
+  test('allows safe protocols and data images in safe mode', (ctx) => {
+    let dataPng =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAFiUAABYlAUlSJPAAAAAQSURBVBhXY/iPBVBf8P9/AG8TY51nJdgkAAAAAElFTkSuQmCC';
+    equal(
+      markdownToHtml(`[http](http://google.com) [https](https://google.com) [mail](mailto:foo@bar.example.com) ![img](${dataPng})\n`, {safe: true}),
+      `<p><a href="http://google.com">http</a> <a href="https://google.com">https</a> <a href="mailto:foo@bar.example.com">mail</a> <img src="${dataPng}" alt="img" /></p>\n`
     );
   });
 
@@ -43,6 +64,7 @@ export let tests = suite('Sanitization and Safe Mode', () => {
     equal(isSafeUrl('  JaVaScRiPt:alert(1)', false), false);
     equal(isSafeUrl('java\tscript:alert(1)', false), false);
     equal(isSafeUrl('vbscript:msgbox(1)', false), false);
+    equal(isSafeUrl('ftp://google.com', false), false);
     equal(isSafeUrl('data:image/svg+xml;base64,PHN2Zz4=', true), false);
   });
 });

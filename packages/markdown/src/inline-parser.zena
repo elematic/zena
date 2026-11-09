@@ -579,8 +579,10 @@ export final class InlineParser implements InlineParserRunner {
       if (afterClose < len && text.getByteAt(afterClose) == 0x5B) { // [
         if (afterClose + 1 < len && text.getByteAt(afterClose + 1) == 0x5D) {
           // Collapsed reference `[text][]`
-          refLabel = text.sliceBytes(opener.index + 1, index);
-          refEnd = afterClose + 2;
+          if (!opener.bracketAfter && index - (opener.index + 1) <= 999) {
+            refLabel = text.sliceBytes(opener.index + 1, index);
+            refEnd = afterClose + 2;
+          }
         } else {
           let (labelOk, rawLabel, afterLabel) = scanLinkLabel(text, afterClose, len);
           if (labelOk) {
@@ -588,7 +590,7 @@ export final class InlineParser implements InlineParserRunner {
             refEnd = afterLabel;
           }
         }
-      } else if (!opener.bracketAfter) {
+      } else if (!opener.bracketAfter && index - (opener.index + 1) <= 999) {
         // Shortcut reference `[text]`
         refLabel = text.sliceBytes(opener.index + 1, index);
       }
@@ -800,11 +802,15 @@ export final class InlineParser implements InlineParserRunner {
         continue;
       }
 
-      let bottomKey = delimByte * 8 + (if (c.canOpen) 4 else 0) + (c.originalLength % 3);
+      let lenKey = if (customProc != null) (c.length % 16) else (c.originalLength % 3);
+      let bottomKey = delimByte * 32 + (if (c.canOpen) 16 else 0) + lenKey;
       let lowerBound = if (openersBottom.has(bottomKey)) openersBottom[bottomKey] else stackBottom;
 
       var opener = c.prev;
-      var openerFound = false;
+      var matchedOpener: Delimiter | null = null;
+      var usedDelims = 0;
+      var wrappedNode: Inline | null = null;
+
       while (opener != null && opener != stackBottom && opener != lowerBound) {
         let o = opener;
         if (o.canOpen && o.delimiterByte == delimByte && o.length >= minLen) {
@@ -818,13 +824,58 @@ export final class InlineParser implements InlineParserRunner {
             opener = o.prev;
             continue;
           }
-          openerFound = true;
-          break;
+
+          // Collect children strictly between `o.entry` and `c.entry`
+          let children = new GrowableArray<Inline>(4);
+          var curr = o.entry.next;
+          while (curr != null && curr != c.entry) {
+            children.push(curr.node);
+            curr = curr.next;
+          }
+
+          if (customProc != null) {
+            let openerInfo = new DelimiterRunInfo(
+              o.delimiterByte,
+              o.length,
+              o.originalLength,
+              o.canOpen,
+              o.canClose,
+              o.startOffset + (o.originalLength - o.length),
+              o.startOffset + o.originalLength
+            );
+            let closerInfo = new DelimiterRunInfo(
+              c.delimiterByte,
+              c.length,
+              c.originalLength,
+              c.canOpen,
+              c.canClose,
+              c.startOffset,
+              c.startOffset + c.length
+            );
+            let (used, customNode) = customProc.process(openerInfo, closerInfo, children);
+            if (used > 0 && customNode != null) {
+              usedDelims = used;
+              wrappedNode = customNode;
+              matchedOpener = o;
+              break;
+            }
+          } else {
+            usedDelims = if (o.length >= 2 && c.length >= 2) 2 else 1;
+            let spanStart = o.startOffset + (o.length - usedDelims);
+            let spanEnd = c.startOffset + usedDelims;
+            let span = new Span(spanStart, spanEnd);
+            wrappedNode = if (usedDelims == 2)
+              new Strong(delimByte, children, span)
+            else
+              new Emphasis(delimByte, children, span);
+            matchedOpener = o;
+            break;
+          }
         }
         opener = o.prev;
       }
 
-      if (!openerFound || opener == null) {
+      if (matchedOpener == null || wrappedNode == null || usedDelims <= 0) {
         openersBottom[bottomKey] = c.prev;
         if (!c.canOpen) {
           this.#removeDelimiter(c);
@@ -833,57 +884,7 @@ export final class InlineParser implements InlineParserRunner {
         continue;
       }
 
-      let o = opener;
-
-      // Collect children strictly between `o.entry` and `c.entry`
-      let children = new GrowableArray<Inline>(4);
-      var curr = o.entry.next;
-      while (curr != null && curr != c.entry) {
-        children.push(curr.node);
-        curr = curr.next;
-      }
-
-      var usedDelims = 0;
-      var wrappedNode: Inline | null = null;
-
-      if (customProc != null) {
-        let openerInfo = new DelimiterRunInfo(
-          o.delimiterByte,
-          o.length,
-          o.originalLength,
-          o.canOpen,
-          o.canClose,
-          o.startOffset + (o.originalLength - o.length),
-          o.startOffset + o.originalLength
-        );
-        let closerInfo = new DelimiterRunInfo(
-          c.delimiterByte,
-          c.length,
-          c.originalLength,
-          c.canOpen,
-          c.canClose,
-          c.startOffset,
-          c.startOffset + c.length
-        );
-        let (used, customNode) = customProc.process(openerInfo, closerInfo, children);
-        usedDelims = used;
-        wrappedNode = customNode;
-      } else {
-        usedDelims = if (o.length >= 2 && c.length >= 2) 2 else 1;
-        let spanStart = o.startOffset + (o.length - usedDelims);
-        let spanEnd = c.startOffset + usedDelims;
-        let span = new Span(spanStart, spanEnd);
-        wrappedNode = if (usedDelims == 2)
-          new Strong(delimByte, children, span)
-        else
-          new Emphasis(delimByte, children, span);
-      }
-
-      if (usedDelims <= 0 || wrappedNode == null) {
-        openersBottom[bottomKey] = o.prev;
-        closer = c.next;
-        continue;
-      }
+      let o = matchedOpener;
 
       // Unlink the child entries that are now inside `wrappedNode`
       var unlinkCurr = o.entry.next;

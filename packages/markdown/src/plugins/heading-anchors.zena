@@ -13,7 +13,7 @@ import {
   InlineParserRunner, MarkdownExtension, NodeRenderer
 } from '../plugin.zena';
 import {
-  isAsciiLetter, isAsciiDigit, isWhitespaceByte, toLowerAsciiByte
+  isAsciiLetter, isAsciiDigit, isWhitespaceByte, toLowerAsciiByte, trimWhitespace
 } from '../scanner.zena';
 
 final class HeadingAnchorsTransformer implements AstTransformer {
@@ -59,27 +59,30 @@ final class HeadingAnchorsTransformer implements AstTransformer {
 }
 
 /**
- * Converts heading text to a lowercase URL slug, turning whitespace runs into
- * `-` and keeping ASCII letters, digits, `-`, `_`, and multi-byte UTF-8
- * scalars.
+ * Converts heading text to a lowercase URL slug, turning whitespace into `-`
+ * and keeping ASCII letters, digits, `-`, `_`, and multi-byte UTF-8 scalars.
  */
 export function slugifyHeading(text: String): String {
-  let sb = new StringBuilder(text.length);
-  var pendingDash = false;
-  var wroteAny = false;
+  let trimmed = trimWhitespace(text);
+  let sb = new StringBuilder(trimmed.length);
+  var lastWrittenWasDash = false;
+  var lastWasStrippedAfterDash = false;
   var i = 0;
-  let len = text.length;
+  let len = trimmed.length;
   while (i < len) {
-    let b = text.getByteAt(i);
-    if (isAsciiLetter(b) || isAsciiDigit(b) || b == 0x5F || b >= 0x80) {
-      if (pendingDash && wroteAny) {
-        sb.appendByte(0x2D);
-      }
-      pendingDash = false;
+    let b = trimmed.getByteAt(i);
+    if (isAsciiLetter(b) || isAsciiDigit(b) || b == 0x5F || b == 0x2D || b >= 0x80) {
       sb.appendByte(toLowerAsciiByte(b));
-      wroteAny = true;
-    } else if (b == 0x2D || isWhitespaceByte(b)) {
-      pendingDash = true;
+      lastWrittenWasDash = b == 0x2D;
+      lastWasStrippedAfterDash = false;
+    } else if (isWhitespaceByte(b)) {
+      if (!lastWasStrippedAfterDash) {
+        sb.appendByte(0x2D);
+        lastWrittenWasDash = true;
+      }
+      lastWasStrippedAfterDash = false;
+    } else if (lastWrittenWasDash) {
+      lastWasStrippedAfterDash = true;
     }
     i += 1;
   }

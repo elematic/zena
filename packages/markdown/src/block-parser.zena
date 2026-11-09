@@ -111,6 +111,7 @@ export final class DocumentBlockParser {
 
   var #partiallyConsumedTab: boolean = false;
   var #tabRemainingColumns: i32 = 0;
+  var #closingFenceConsumedLine: boolean = false;
 
   new(extensions: GrowableArray<MarkdownExtension>) : #extensions = extensions {
     for (let ext in extensions) {
@@ -157,7 +158,7 @@ export final class DocumentBlockParser {
         }
         lineEnd += 1;
       }
-      let line = source.sliceBytes(pos, lineEnd);
+      let line = extractLineReplacingNulls(source, pos, lineEnd);
       var nextPos = lineEnd;
       if (nextPos < len) {
         if (
@@ -203,6 +204,7 @@ export final class DocumentBlockParser {
   ): void {
     this.#partiallyConsumedTab = false;
     this.#tabRemainingColumns = 0;
+    this.#closingFenceConsumedLine = false;
 
     let state = new BlockLineState(
       source,
@@ -235,10 +237,11 @@ export final class DocumentBlockParser {
     var currentTip = this.#openBlocks[this.#openBlocks.length - 1];
 
     // Step 2: Try to open new child blocks unless the last matched block is a
-    // leaf block that consumes raw text (FencedCode, IndentedCode, Html)
+    // leaf block that consumes raw text (FencedCode, IndentedCode, Html, Custom)
     let tryBlockStarts = lastMatched.kind != OpenBlockKind.FencedCode &&
         lastMatched.kind != OpenBlockKind.IndentedCode &&
-        lastMatched.kind != OpenBlockKind.Html;
+        lastMatched.kind != OpenBlockKind.Html &&
+        lastMatched.kind != OpenBlockKind.Custom;
 
     while (tryBlockStarts) {
       this.#findNextNonSpace(state);
@@ -272,11 +275,22 @@ export final class DocumentBlockParser {
       this.#closeTipBlock(lineStartOffset);
     }
 
+    // If a non-blank line did not start a new list item in an open List block,
+    // close the List block now before adding paragraph text
+    this.#findNextNonSpace(state);
+    while (
+      !state.isBlank &&
+      this.#openBlocks.length > 1 &&
+      this.#openBlocks[this.#openBlocks.length - 1].kind == OpenBlockKind.List
+    ) {
+      this.#closeTipBlock(lineStartOffset);
+    }
+
     currentTip = this.#openBlocks[this.#openBlocks.length - 1];
     this.#findNextNonSpace(state);
 
     // Track blank lines on lists/items for tight vs. loose determination
-    if (state.isBlank) {
+    if (state.isBlank && !this.#closingFenceConsumedLine) {
       if (currentTip.kind == OpenBlockKind.List) {
         if (currentTip.listItems.length > 0) {
           currentTip.listHadBlankLine = true;
@@ -402,6 +416,7 @@ export final class DocumentBlockParser {
             let afterFence = skipSpacesAndTabs(state.line, i, state.line.length);
             if (afterFence == state.line.length) {
               // Closing fence matched: close block and consume line
+              this.#closingFenceConsumedLine = true;
               this.#closeTipBlock(state.lineStartOffset + state.line.length);
               this.#AdvanceToEnd(state);
               return false;
@@ -603,7 +618,7 @@ export final class DocumentBlockParser {
       let (listOk, ordered, startNum, delim, contentIndent, nextCol) =
           tryParseListMarker(state, inParaAtCurrentLevel);
       if (listOk) {
-        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset);
+        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset, true);
         this.#setNewColumn(state, nextCol);
 
         // Ensure an open `ListBlock` with matching type/delimiter is on top
@@ -700,8 +715,20 @@ export final class DocumentBlockParser {
   ): void {
     var startOff = state.lineStartOffset + state.nextNonSpaceIndex;
     if (start.replaceParagraph && currentTip.kind == OpenBlockKind.Para) {
-      startOff = currentTip.startOffset;
-      this.#openBlocks.pop();
+      if (currentTip.lines.length > 1) {
+        let lastIdx = currentTip.lines.length - 1;
+        currentTip.lines.pop();
+        if (currentTip.lineOffsets.length > lastIdx) {
+          startOff = currentTip.lineOffsets.pop();
+        } else {
+          startOff = state.lineStartOffset;
+        }
+        currentTip.endOffset = startOff;
+        this.#closeTipBlock(startOff);
+      } else {
+        startOff = currentTip.startOffset;
+        this.#openBlocks.pop();
+      }
     }
     let customBlock = new OpenBlock(OpenBlockKind.Custom, startOff);
     customBlock.customParser = start.parser;
@@ -716,11 +743,17 @@ export final class DocumentBlockParser {
     }
   }
 
-  #closeUnmatchedBeforeNewBlock(matchedBlock: OpenBlock, closeOffset: i32): void {
+  #closeUnmatchedBeforeNewBlock(
+    matchedBlock: OpenBlock,
+    closeOffset: i32,
+    startingListItem: boolean = false
+  ): void {
     while (this.#openBlocks.length > 1) {
       let top = this.#openBlocks[this.#openBlocks.length - 1];
       if (top == matchedBlock) {
         if (top.kind == OpenBlockKind.Para) {
+          this.#closeTipBlock(closeOffset);
+        } else if (top.kind == OpenBlockKind.List && !startingListItem) {
           this.#closeTipBlock(closeOffset);
         }
         break;
@@ -779,6 +812,13 @@ export final class DocumentBlockParser {
         parent.children.push(new BlockQuote(tip.children, span));
       }
       case OpenBlockKind.List: {
+        if (tip.listHadBlankLine) {
+          if (parent.kind == OpenBlockKind.Item) {
+            parent.itemHadBlankLine = true;
+          } else if (parent.kind == OpenBlockKind.List) {
+            parent.listHadBlankLine = true;
+          }
+        }
         parent.children.push(
           new ListBlock(
             tip.listOrdered,
@@ -820,6 +860,13 @@ export final class DocumentBlockParser {
         }
         while (end > start && isBlankString(tip.lines[end - 1])) {
           end -= 1;
+        }
+        if (end < tip.lines.length) {
+          if (parent.kind == OpenBlockKind.Item) {
+            parent.itemHadBlankLine = true;
+          } else if (parent.kind == OpenBlockKind.List) {
+            parent.listHadBlankLine = true;
+          }
         }
         let sb = new StringBuilder(64);
         var i = start;
@@ -902,7 +949,7 @@ export final class DocumentBlockParser {
     state: BlockLineState,
     lineEndOffset: i32
   ): void {
-    let content = state.line.sliceBytes(state.index, state.line.length);
+    let content = this.#extractRemainingWithTabSpaces(state);
     html.lines.push(content);
     html.endOffset = lineEndOffset;
     this.#markEnclosingItemHasLine();
@@ -1174,6 +1221,35 @@ export final class DocumentBlockParser {
   #AdvanceToEnd(state: BlockLineState): void {
     this.#setNewIndex(state, state.line.length);
   }
+}
+
+function extractLineReplacingNulls(s: String, start: i32, end: i32): String {
+  var hasNull = false;
+  var i = start;
+  while (i < end) {
+    if (s.getByteAt(i) == 0) {
+      hasNull = true;
+      break;
+    }
+    i += 1;
+  }
+  if (!hasNull) {
+    return s.sliceBytes(start, end);
+  }
+  let sb = new StringBuilder(end - start + 4);
+  var j = start;
+  while (j < end) {
+    let b = s.getByteAt(j);
+    if (b == 0) {
+      sb.appendByte(0xEF);
+      sb.appendByte(0xBF);
+      sb.appendByte(0xBD);
+    } else {
+      sb.appendByte(b);
+    }
+    j += 1;
+  }
+  return sb.toString();
 }
 
 function isBlankString(s: String): boolean {
@@ -1487,7 +1563,7 @@ function detectHtmlBlockStart(
   }
 
   // Type 7: complete open or close tag alone on the line (cannot interrupt a paragraph)
-  if (!inParagraph) {
+  if (!inParagraph && afterOk) {
     var i = nameEnd;
     while (i < len && line.getByteAt(i) != 0x3E) {
       i += 1;
