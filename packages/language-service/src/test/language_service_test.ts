@@ -65,6 +65,46 @@ suite('language service API', () => {
     assert.ok(diagnostics.some((d) => d.severity === 'warning'));
   });
 
+  test('reports syntax errors with a file, position, and token length', async () => {
+    const source =
+      'export function main() {\n  let x = 1\n  console.log("hi");\n}\n';
+    const diagnostics = await service.check(PATH, source);
+    assert.strictEqual(diagnostics.length, 1);
+    const [error] = diagnostics;
+    assert.strictEqual(error.severity, 'error');
+    assert.strictEqual(error.file, PATH);
+    assert.strictEqual(error.line, 3);
+    assert.strictEqual(error.column, 3);
+    assert.strictEqual(error.start, source.indexOf('console'));
+    assert.strictEqual(error.length, 'console'.length);
+    assert.strictEqual(
+      error.message,
+      "Expected ';' after variable declaration (got 'console')",
+    );
+  });
+
+  test('reports syntax errors in an imported module with its file and position', async () => {
+    const depPath = '/test/broken_dep.zena';
+    const depSource = 'export let a = 1;\nexport let b = ;\n';
+    service.openDocument(depPath, depSource);
+    try {
+      const diagnostics = await service.check(
+        PATH,
+        "import { a } from './broken_dep.zena';\nlet _ = a;\n",
+      );
+      assert.strictEqual(diagnostics.length, 1);
+      const [error] = diagnostics;
+      assert.strictEqual(error.severity, 'error');
+      assert.strictEqual(error.file, depPath);
+      assert.strictEqual(error.line, 2);
+      assert.strictEqual(error.column, 16);
+      assert.strictEqual(error.start, depSource.lastIndexOf(';'));
+      assert.strictEqual(error.length, 1);
+    } finally {
+      service.closeDocument(depPath);
+    }
+  });
+
   test('reports exactly one error for an illegal union type alias', async () => {
     const diagnostics = await service.check(PATH, 'type U = String | i32;\n');
     const errors = diagnostics.filter((d) => d.severity === 'error');

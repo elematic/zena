@@ -24,7 +24,7 @@ import {
 import { parse as parseSource, ParseCompleteness } from 'zena-compiler:parser';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
-  Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity, spanOf
+  Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity, SyntaxError, spanOf
 } from 'zena-compiler:diagnostics';
 import { Symbol, ScopeResult } from 'zena-compiler:scope';
 import { Program, CompilationUnit } from 'zena-compiler:program';
@@ -73,8 +73,8 @@ function offsetOf(source: String, line: i32, column: i32): i32 {
 
 /**
  * A diagnostic for a compile that threw instead of reporting. The
- * message's first line may start with `file:line:column:`, which becomes
- * the diagnostic's location.
+ * message's first line may start with `file:line:column:` or
+ * `file:line:column - Error: `, which becomes the diagnostic's location.
  */
 function diagnosticFromError(message: String, source: String) {
   let firstLine = message.split('\n')[0];
@@ -82,9 +82,15 @@ function diagnosticFromError(message: String, source: String) {
   if (parts.length >= 4) {
     let file = parts[0];
     if (let (true, line) = parseI32(parts[1])) {
-      if (let (true, column) = parseI32(parts[2])) {
+      let colPart = parts[2];
+      let colText = if (colPart.endsWith(' - Error')) {
+        colPart.sliceBytes(0, colPart.length - 8)
+      } else {
+        colPart
+      };
+      if (let (true, column) = parseI32(colText)) {
         let location = new SourceSpan(file, offsetOf(source, line, column), 1, line, column);
-        let prefixLength = file.length + parts[1].length + parts[2].length + 4;
+        let prefixLength = file.length + parts[1].length + colPart.length + 4;
         let text = if (firstLine.length > prefixLength) {
           firstLine.sliceBytes(prefixLength, firstLine.length)
         } else {
@@ -237,6 +243,9 @@ export class LanguageService {
       }
       return diagnostics;
     } catch (e) {
+      if (e is SyntaxError) {
+        return growable<Diagnostic>([e.diagnostic]);
+      }
       return growable<Diagnostic>([
         diagnosticFromError(e.message, source),
       ]);
