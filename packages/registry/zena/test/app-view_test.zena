@@ -32,8 +32,9 @@ import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'registry:handles';
 import {
   ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
-  Limit, Limits, PackageSummary, PendingChange, PendingRelease, limitName, limitNamed
+  Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, limitName, limitNamed
 } from 'registry:app-view';
+import {nowMicros} from 'pds:xrpc/common';
 import {createApp} from 'registry:server';
 import {WebSessions} from 'registry:web-sessions';
 import {MemberEntry, attestationKey} from 'package-manager:records';
@@ -351,6 +352,25 @@ final class StaleAppViewStore implements AppViewStore {
   async setLimit(did: String, limit: Limit, value: Option<i64>): Future<void> {
     await this.#inner.setLimit(did, limit, value);
   }
+  async addCounts(counts: Array<Count>, nowMicros: i64): Future<Count | null> {
+    return await this.#inner.addCounts(counts, nowMicros);
+  }
+}
+
+/** A day, in microseconds. */
+let DAY_MICROS = ((24 * 60 * 60) as i64) * (1000000 as i64);
+
+/** The error the App View refuses `call` with, or '' when it does not. */
+async function refusal<T>(call: () => Future<T>): Future<String> {
+  try {
+    await call();
+  } catch (e) {
+    if (e is AppViewError) {
+      return e.error;
+    }
+    throw e;
+  }
+  return '';
 }
 
 function filled(value: i32): FixedArray<u8> {
@@ -1450,6 +1470,72 @@ export let tests = suite('registry:app-view', () => {
       isTrue(false, 'scopeBytes is not a limit');
     }
     isTrue(limitNamed('blobCount') is None);
+  });
+
+  test('counts the actions on each package and scope and by each caller apart, and the scopes and packages created', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let config = appView.config;
+
+    // A person creates one scope a day, and two in all.
+    config.scopeCreations = 1;
+    config.scopes = 2;
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let again = await createOrganization(fixture, ALICE, 'beta');
+    equal(again.statusCode, 429);
+    equal(errorOf(again), 'RateLimitExceeded');
+    let tomorrow = nowMicros() + DAY_MICROS;
+    await appView.createOrganization(ALICE, 'beta', [], tomorrow);
+    equal(await refusal(() => appView.createOrganization(ALICE, 'gamma', [], tomorrow + DAY_MICROS)), 'QuotaExceeded');
+    // Bob's count is his own, and the operator creates scopes uncounted.
+    ok(await createOrganization(fixture, BOB, 'bobs'));
+    await appView.createScopeAsOperator(ALICE, 'delta', [], nowMicros());
+    await appView.setLimit(ALICE, Limit.Scopes, some(3 as i64));
+    await appView.createOrganization(ALICE, 'gamma', [], tomorrow + DAY_MICROS);
+
+    // A scope creates two packages a day, and three in all.
+    config.packageCreations = 2;
+    config.packages = 3;
+    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    ok(await createPackage(fixture, ALICE, orgDid, 'cli'));
+    equal(errorOf(await createPackage(fixture, ALICE, orgDid, 'json')), 'RateLimitExceeded');
+    // Raising the day's count leaves the count in all as it was.
+    await appView.setLimit(orgDid, Limit.PackageCreations, some(10 as i64));
+    ok(await createPackage(fixture, ALICE, orgDid, 'json'));
+    equal(errorOf(await createPackage(fixture, ALICE, orgDid, 'yaml')), 'QuotaExceeded');
+
+    // So far today Alice has made four actions, all in acme, which has had three.
+    config.packageActions = 2;
+    config.scopeActions = 6;
+    config.userActions = 8;
+    ok(await upload(fixture, ALICE, router));
+    ok(await upload(fixture, ALICE, router));
+    // Under the counts of its scope and its caller, the package's is full.
+    let third = await upload(fixture, ALICE, router);
+    equal(errorOf(third), 'RateLimitExceeded');
+    isTrue((json(third)['message'] as String).contains('packageActions'), json(third)['message'] as String);
+    // Raising it lets the scope's fill.
+    await appView.setLimit(router, Limit.PackageActions, some(10 as i64));
+    ok(await upload(fixture, ALICE, router));
+    let scopeFull = await upload(fixture, ALICE, router);
+    isTrue((json(scopeFull)['message'] as String).contains('scopeActions'), json(scopeFull)['message'] as String);
+    await appView.setLimit(orgDid, Limit.ScopeActions, some(100 as i64));
+    ok(await upload(fixture, ALICE, router));
+    let userFull = await upload(fixture, ALICE, router);
+    isTrue((json(userFull)['message'] as String).contains('userActions'), json(userFull)['message'] as String);
+    // A call the caller may not make counts against no one.
+    equal(errorOf(await upload(fixture, BOB, router)), 'Forbidden');
+    await appView.setLimit(ALICE, Limit.UserActions, some(100 as i64));
+    ok(await upload(fixture, ALICE, router));
+    // A day's counts start again the next day.
+    await appView.setLimit(router, Limit.PackageActions, none);
+    equal(await refusal(() => appView.uploadArtifact(ALICE, router, 'application/octet-stream',
+        new FixedArray<u8>(4, 1 as u8), nowMicros())), 'RateLimitExceeded');
+    await appView.uploadArtifact(ALICE, router, 'application/octet-stream', new FixedArray<u8>(4, 1 as u8), tomorrow);
+
+    // A limit on a caller is set on a DID that calls, and no other.
+    equal(await refusal(() => appView.setLimit(router, Limit.UserActions, some(1 as i64))), 'InvalidRequest');
+    equal(await refusal(() => appView.setLimit(ALICE, Limit.PackageActions, some(1 as i64))), 'InvalidRequest');
   });
 
   test('renders the pages a visitor browses', async (ctx) => {

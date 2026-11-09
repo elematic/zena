@@ -2187,6 +2187,13 @@ throttled. The App View therefore limits who creates accounts and how many:
   Accounts on permissive PDSes cost little to create, so the App View also
   considers how old the maintainer's account is, which PDS holds it, and
   the labels that labelers the operator follows put on it.
+- **Actions.** The App View counts each call that changes something
+  three times: against the package, against its scope, and against the
+  caller, each up to a number per UTC day. A call over any of them fails
+  with `RateLimitExceeded` (HTTP 429). The counts are kept apart, so a
+  maintainer allowed more actions a day still makes no more on a package
+  than the package's count allows. The operator raises a count for one
+  package, for a scope and its packages, or for one caller.
 - **Storage.** Each release, each package and each scope has a size
   limit, and a release can store only the artifact kinds the App View
   takes. Without limits an App View is free file hosting. The Zena App
@@ -2195,6 +2202,21 @@ throttled. The App View therefore limits who creates accounts and how many:
   archives: nothing in a package can use a Wasm module or another asset
   yet. The operator can raise each limit for a package, or for a scope
   and its packages.
+
+The Zena App View's counts, whose defaults are placeholders until trusted
+testers have used it:
+
+| Count                                                                             | Default                |
+| --------------------------------------------------------------------------------- | ---------------------- |
+| Actions on a package (`packageActions`)                                           | 100 a day              |
+| Actions on a scope and its packages (`scopeActions`)                              | 1000 a day             |
+| Actions by one caller (`userActions`)                                             | 400 a day              |
+| Scopes one person creates (`scopeCreations`, `scopes`)                            | 2 a day, 5 in all      |
+| Packages and automation accounts a scope creates (`packageCreations`, `packages`) | 100 a day, 1000 in all |
+
+A release is two actions, its upload and its publish; approving it is
+none. A count in all fails with `QuotaExceeded`. When an organization can
+own several scopes (#988), an organization's count will join these.
 
 ### Reports and takedowns
 

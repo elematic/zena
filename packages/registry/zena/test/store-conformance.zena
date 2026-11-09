@@ -14,7 +14,9 @@ import {KeyType, curveOf, publicKeyFor} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {MemberEntry, OWNER} from 'package-manager:records';
 import {AccountKind} from 'pds:storage';
-import {AppViewAccount, AppViewStore, Limit, PackageSummary, PendingChange, PendingRelease} from 'registry:app-view';
+import {
+  ALL_TIME, AppViewAccount, AppViewStore, Count, Limit, PackageSummary, PendingChange, PendingRelease
+} from 'registry:app-view';
 import {PlcLog} from 'registry:plc-directory';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
@@ -182,6 +184,29 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     let after = await store.limits(ALICE);
     isTrue(after.get(Limit.PackageBytes) is None);
     equal(after.valueOr(Limit.ReleaseBytes, 0 as i64), 1024 as i64);
+  });
+
+  test('adds to every count of an action, or to none when one is full', async (ctx) => {
+    let store = make();
+    let now = 1762646400000000 as i64;
+    let pkg = new Count(ALICE, Limit.PackageActions, '2026-11-09', 2 as i64);
+    let user = new Count(BOB, Limit.UserActions, '2026-11-09', 1 as i64);
+    let ever = new Count(BOB, Limit.Scopes, ALL_TIME, 5 as i64);
+    isNull(await store.addCounts([pkg], now));
+    isNull(await store.addCounts([pkg, user, ever], now));
+    // Each count is full, or not, by itself; one full count adds to none.
+    let full = await store.addCounts([ever, pkg], now);
+    equal((full as Count).key, pkg.key);
+    let fullUser = await store.addCounts([ever, user], now);
+    equal((fullUser as Count).key, user.key);
+    // `ever` was added to once, so it takes four more.
+    for (var i = 0; i < 4; i += 1) {
+      isNull(await store.addCounts([ever], now));
+    }
+    equal(((await store.addCounts([ever], now)) as Count).key, ever.key);
+    // Another day is another count, and a higher maximum leaves room in a full one.
+    isNull(await store.addCounts([new Count(ALICE, Limit.PackageActions, '2026-11-10', 2 as i64)], now));
+    isNull(await store.addCounts([new Count(ALICE, Limit.PackageActions, '2026-11-09', 3 as i64)], now));
   });
 
   test('keeps member entries', async (ctx) => {
