@@ -1,8 +1,8 @@
 ---
-title: Package Manifests
+title: Defining a Package
 ---
 
-Every Zena package has a `zena-package.json` manifest at its root. The manifest defines the package's name, published metadata, exported libraries, and dependencies.
+A package is defined by the `zena-package.json` manifest at its root: its name, the metadata a registry shows, the libraries it exports, and its dependencies. To publish one, see [Publishing Packages](/docs/publishing/).
 
 ## Example `zena-package.json`
 

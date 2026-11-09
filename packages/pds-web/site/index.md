@@ -4,48 +4,48 @@ permalink: /home.html
 hero:
   name: Packages for Zena
   title: Find and share packages for the Zena programming language.
-  tagline: Explore community libraries, tools, and official packages — or publish your own with <code>zena pkg publish</code>.
+  tagline: Add libraries and tools to your project with one command, or publish your own under a scope your team controls.
   actions:
     - theme: brand
-      text: Get Started
-      link: /docs/getting-started/
-    - theme: alt
-      text: Documentation
-      link: /docs/
+      text: Install a Package
+      link: /docs/installing/
     - theme: alt
       text: Publish a Package
       link: /docs/publishing/
+    - theme: alt
+      text: Documentation
+      link: /docs/
 features:
+  - icon: 📦
+    title: Installing Packages
+    details: Add a package to your project by name and import its libraries. Every dependency is pinned, so every machine builds the same code, and nothing updates until you ask.
+    link: /docs/installing/
+    linkText: Install a package
   - icon: 🚀
-    title: Getting Started
-    details: Add dependencies with <code>zena pkg add</code>, pin versions reproducibly in <code>zena-lock.json</code>, and import libraries by local alias.
-    link: /docs/getting-started/
-    linkText: Quickstart guide
-  - icon: 🛡️
-    title: Security & Labelers
-    details: Protect releases with M-of-N maintainer approvals, signed Merkle proofs, and independent security labelers that flag vulnerabilities.
-    link: /docs/approvals-and-settings/
-    linkText: Security & policies
-  - icon: 🔓
-    title: No Registry Lock-In
-    details: Decentralized by design with no single gatekeeper or namespace monopoly. Move hosts anytime without breaking existing dependents.
+    title: Publishing Packages
+    details: Sign in with the account you already have, define your package in its manifest, and publish a release under your scope.
     link: /docs/publishing/
-    linkText: Publishing workflow
+    linkText: Publish a package
+  - icon: 🛡️
+    title: Security
+    details: Built to keep supply-chain attacks and malicious packages out of your project. Published versions never change, and a release can need approval from several maintainers.
+    link: /docs/security/
+    linkText: How packages are protected
+  - icon: 🏷️
+    title: Labels
+    details: Coming soon. Anyone can run a labeler that marks packages as reviewed, deprecated or malicious, and you choose whose labels your projects follow.
+    link: /docs/security/#planned
+    linkText: Labels and what is planned
   - icon: 👥
     title: Scopes, Orgs & Teams
-    details: Organize packages under <code>@scope</code> namespaces and manage team roles with commitments that keep memberships private until members act.
+    details: Publish under a scope your organization owns, such as <code>@acme</code>. Give members and teams roles, and keep who belongs private until they act.
     link: /docs/orgs-and-teams/
     linkText: Orgs & teams
-  - icon: 📋
-    title: Manifests & Workspaces
-    details: Configure <code>zena-package.json</code>, library <code>exports</code>, conditional targets, minimal version selection, and multi-package workspaces.
-    link: /docs/manifests/
-    linkText: Manifest reference
   - icon: 🌐
-    title: Built on AT Protocol
-    details: Curious how it works under the hood? Every package and scope is an Atmosphere account with a DID, signed repository, and CAR archives.
-    link: /docs/architecture/
-    linkText: AT Protocol architecture
+    title: Decentralized
+    details: No registry owns your packages. Each keeps its own identity and data wherever it is hosted. Built on the AT Protocol, the network Bluesky runs on.
+    link: /docs/decentralized/
+    linkText: Decentralized packages
 ---
 
 <div class="home-page">
