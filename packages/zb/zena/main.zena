@@ -1,5 +1,6 @@
 import {Future} from 'zena:async';
 import {getArguments} from 'zena:cli';
+import {checkSignal} from 'zena:process';
 import {BuildOutcome, buildTarget, reportBuild, watchTarget} from './runner.zena';
 import {ScriptRef} from './wireit-config.zena';
 
@@ -77,6 +78,10 @@ export async function main(): Future<i32> {
     else
       await buildTarget(root, entry, jobs, force, useCache);
   } catch (e) {
+    let sig = checkSignal();
+    if (sig != 0) {
+      return 128 + sig;
+    }
     console.log('zb: ' + e.message);
     return 1;
   }

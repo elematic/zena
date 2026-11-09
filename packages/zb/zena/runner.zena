@@ -2,7 +2,8 @@ import {Future} from 'zena:async';
 import {getEnv} from 'zena:cli';
 import {HashSet} from 'zena:collections';
 import {isFile, readFile, writeFile} from 'zena:fs';
-import {milliseconds, monotonic, sleep} from 'zena:time';
+import {checkSignal, listenSignals, waitSignalFor} from 'zena:process';
+import {monotonic} from 'zena:time';
 import {NullCache, StepCache} from 'workflow:cache';
 import {
   Engine,
@@ -117,6 +118,10 @@ function describeStep(result: RunResult, key: String) {
  * `zb` and `zena build <target>` both report this way.
  */
 export function reportBuild(outcome: BuildOutcome): i32 {
+  let sig = checkSignal();
+  if (sig != 0) {
+    return 128 + sig;
+  }
   let result = outcome.result;
   for (let key in outcome.stepKeys) {
     console.log(`${key}: ${describeStep(result, key)}`);
@@ -178,6 +183,7 @@ async function runTargetOnce(
   configPathsOut: GrowableArray<String>? = null,
   configsOut: GrowableArray<ScriptConfig>? = null,
 ): Future<BuildOutcome> {
+  listenSignals();
   let jobs = if (parallelism > 0) parallelism else defaultParallelism();
   let seenConfigPaths = new HashSet<String>();
   let workspace = new WireitWorkspace((path: String) => {
@@ -349,6 +355,7 @@ export async function watchTarget(
   pollIntervalMs: i64 = 150,
   onIteration: ((iteration: i32, outcome: BuildOutcome) => Future<boolean>)? = null,
 ): Future<BuildOutcome> {
+  listenSignals();
   let servicePool = new ServicePool();
   let interval = if (pollIntervalMs > (0 as i64)) pollIntervalMs else 50 as i64;
   var iteration = 0;
@@ -368,6 +375,9 @@ export async function watchTarget(
         configPaths,
         configs,
       );
+      if (checkSignal() != 0) {
+        return outcome;
+      }
       iteration += 1;
       let baseline = await snapshotWatchFiles(root, configPaths, configs);
       if (onIteration != null) {
@@ -375,14 +385,27 @@ export async function watchTarget(
           return outcome;
         }
       } else {
-        reportBuild(outcome);
+        let result = outcome.result;
+        for (let key in outcome.stepKeys) {
+          console.log(`${key}: ${describeStep(result, key)}`);
+        }
+        if (!result.allSucceeded) {
+          console.log('build failed');
+        } else {
+          console.log('build succeeded');
+        }
       }
       while (true) {
+        if (checkSignal() != 0) {
+          return outcome;
+        }
         let current = await snapshotWatchFiles(root, configPaths, configs);
         if (!snapshotsEqual(baseline, current)) {
           break;
         }
-        await sleep(milliseconds(interval));
+        if ((await waitSignalFor(interval)) != 0) {
+          return outcome;
+        }
       }
     }
   } finally {

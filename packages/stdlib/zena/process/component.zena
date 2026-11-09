@@ -18,7 +18,14 @@
 
 import { Future } from 'zena:async';
 import { Own, Some } from 'zena:core';
-import { Command, Process as HostProcess, Finished } from 'zena-cli:host/process';
+import {
+  Command,
+  Process as HostProcess,
+  Finished,
+  listenSignals as hostListenSignals,
+  checkSignal as hostCheckSignal,
+  waitSignal as hostWaitSignal,
+} from 'zena-cli:host/process';
 
 /** How a process ended, and what it wrote. */
 export class ProcessResult {
@@ -248,4 +255,45 @@ export async function runInheriting(
 ): Future<ProcessResult> {
   let proc = spawnIn(argv, cwd, true);
   return await proc.wait();
+}
+
+/** Signal number for `SIGINT` (`Ctrl-C`). */
+export let SIGINT = 2;
+
+/** Signal number for `SIGTERM`. */
+export let SIGTERM = 15;
+
+/**
+ * Installs handlers for `SIGINT` and `SIGTERM` on the host process so
+ * termination signals can be observed with `checkSignal` and `waitSignal`
+ * instead of ending the process immediately.
+ */
+export function listenSignals(): void {
+  hostListenSignals();
+}
+
+/**
+ * Returns the first termination signal received since `listenSignals`
+ * (`SIGINT` = 2, `SIGTERM` = 15), or `0` if none has arrived.
+ */
+export function checkSignal(): i32 {
+  return hostCheckSignal();
+}
+
+/**
+ * Waits up to `millis` milliseconds for `SIGINT` or `SIGTERM` (enabling
+ * `listenSignals` if not already active). A non-positive `millis` waits
+ * indefinitely. Returns the signal number (`2` or `15`), or `0` if the
+ * timeout elapsed first.
+ */
+export async function waitSignalFor(millis: i64): Future<i32> {
+  return await hostWaitSignal(millis);
+}
+
+/**
+ * Waits for `SIGINT` or `SIGTERM` (enabling `listenSignals` if not
+ * already active) and returns the signal number (`2` or `15`).
+ */
+export async function waitSignal(): Future<i32> {
+  return await hostWaitSignal(0 as i64);
 }

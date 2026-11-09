@@ -54,7 +54,9 @@ default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
   incrementally while keeping unchanged services pinned alive in a
   `ServicePool` across rebuilds and restarting them (stopping child
   services before parents) only when their own configuration or inputs
-  change
+  change. `SIGINT` and `SIGTERM` cleanly stop in-flight scripts,
+  foreground services, and pinned watch-mode service process groups in
+  reverse startup order before exiting (`130` / `143`).
 - bare npm scripts as always-run commands (with dependent poisoning)
 - content-addressed local cache under `.zb/` (state file, per-key
   manifests, blob store); lost state restores from cache instead of
