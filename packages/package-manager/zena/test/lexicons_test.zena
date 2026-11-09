@@ -11,7 +11,7 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {HashMap, HashSet} from 'zena:collections';
 import {join} from 'zena:core';
-import {globSync, readFileSync} from 'zena:fs';
+import {glob, readFile} from 'zena:fs';
 import {JsonArray, JsonObject, JsonValue, parseJson} from 'zena:json';
 import {isValidNsid} from 'atproto:syntax';
 import {REGISTRY_METHODS} from 'package-manager:registry-methods';
@@ -19,10 +19,10 @@ import {REGISTRY_METHODS} from 'package-manager:registry-methods';
 let ROOT = 'packages/package-manager/lexicons';
 
 /** Every lexicon, by NSID. */
-function lexicons() {
+async function lexicons() {
   let all = new HashMap<String, JsonObject>();
-  for (let path in globSync(`${ROOT}/**/*.json`)) {
-    let lexicon = parseJson(readFileSync(path)) as JsonObject;
+  for (let path in await glob(`${ROOT}/**/*.json`)) {
+    let lexicon = parseJson(await readFile(path)) as JsonObject;
     let relative = path.sliceBytes(ROOT.length + 1, path.length - '.json'.length);
     let nsid = join(relative.split('/'), '.');
     equal(lexicon['id'] as String, nsid, path);
@@ -112,8 +112,8 @@ function check(all: HashMap<String, JsonObject>, nsid: String, value: JsonValue,
 }
 
 export let tests = suite('package-manager:lexicons', () => {
-  test('each lexicon is named by its path, and its references resolve', (ctx) => {
-    let all = lexicons();
+  test('each lexicon is named by its path, and its references resolve', async (ctx) => {
+    let all = await lexicons();
     isTrue(all.size >= 20, `${all.size} lexicons`);
     let problems = new GrowableArray<String>();
     for (let nsid in all.keys()) {
@@ -128,8 +128,8 @@ export let tests = suite('package-manager:lexicons', () => {
     equal(problems.length, 0, join(problems, '\n'));
   });
 
-  test('the publishing permission set covers every host method', (ctx) => {
-    let all = lexicons();
+  test('the publishing permission set covers every host method', async (ctx) => {
+    let all = await lexicons();
     let main = defs(all['dev.zena-lang.authPublish'])['main'] as JsonObject;
     let covered = new HashSet<String>();
     let permissions = main['permissions'] as JsonArray;
@@ -152,8 +152,8 @@ export let tests = suite('package-manager:lexicons', () => {
     equal(covered.size, methods);
   });
 
-  test('registry-methods names each registry lexicon, and nothing else', (ctx) => {
-    let all = lexicons();
+  test('registry-methods names each registry lexicon, and nothing else', async (ctx) => {
+    let all = await lexicons();
     let named = new HashSet<String>();
     for (let method in REGISTRY_METHODS) {
       isTrue(!named.has(method), `${method} is listed twice`);

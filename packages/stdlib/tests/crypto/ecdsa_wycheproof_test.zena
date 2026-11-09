@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, fail} from 'zena:assert';
-import {readFileSync} from 'zena:fs';
+import {readFile} from 'zena:fs';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {hex} from 'zena:encoding';
 import {EcdsaCurve, p256, secp256k1} from 'zena:crypto';
@@ -33,8 +33,8 @@ function arrayAt(object: JsonObject, key: String) {
  * Verifies every test in a Wycheproof file, with high-S signatures
  * allowed and in strict mode.
  */
-function runFile(curve: EcdsaCurve, fileName: String, halfNHex: String) {
-  let text = readFileSync(`packages/stdlib/tests/crypto/fixtures/wycheproof/${fileName}`);
+async function runFile(curve: EcdsaCurve, fileName: String, halfNHex: String) {
+  let text = await readFile(`packages/stdlib/tests/crypto/fixtures/wycheproof/${fileName}`);
   let root = parseJson(text) as JsonObject;
   let halfN = hex.decode(halfNHex);
   let tally = new Tally();
@@ -72,8 +72,8 @@ function runFile(curve: EcdsaCurve, fileName: String, halfNHex: String) {
 }
 
 export let tests = suite('zena:crypto ECDSA Wycheproof', () => {
-  test('P-256 with SHA-256, P1363 signatures', (ctx) => {
-    let tally = runFile(
+  test('P-256 with SHA-256, P1363 signatures', async (ctx) => {
+    let tally = await runFile(
       p256,
       'ecdsa_secp256r1_sha256_p1363_test.json',
       '7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8',
@@ -83,8 +83,8 @@ export let tests = suite('zena:crypto ECDSA Wycheproof', () => {
     equal(tally.highS, 70);
   });
 
-  test('secp256k1 with SHA-256, P1363 signatures', (ctx) => {
-    let tally = runFile(
+  test('secp256k1 with SHA-256, P1363 signatures', async (ctx) => {
+    let tally = await runFile(
       secp256k1,
       'ecdsa_secp256k1_sha256_p1363_test.json',
       '7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0',

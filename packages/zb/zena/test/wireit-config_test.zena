@@ -1,5 +1,5 @@
 import {suite, test} from 'zena:test';
-import {equal, isFalse, isNotNull, isNull, isTrue, throws} from 'zena:assert';
+import {equal, isFalse, isNotNull, isNull, isTrue, rejects, throws} from 'zena:assert';
 import {joinWorkspace} from '../fs-util.zena';
 import {
   EnvExternal,
@@ -70,7 +70,7 @@ function fixture() {
     }
   }`,
   };
-  return new WireitWorkspace((path: String): String? => {
+  return new WireitWorkspace(async (path: String): Future<String?> => {
     if (let (true, content) = files.get(path)) {
       return content;
     }
@@ -115,9 +115,9 @@ export let tests = suite('wireit-config', () => {
     });
   });
 
-  test('wireit scripts, cascade flags, and env bindings parse', () => {
+  test('wireit scripts, cascade flags, and env bindings parse', async () => {
     let ws = fixture();
-    let config = ws.scriptConfig(new ScriptRef('packages/app', 'build'));
+    let config = await ws.scriptConfig(new ScriptRef('packages/app', 'build'));
     isTrue(config.isWireit);
     equal(config.command, 'tsc');
     equal(config.files.length, 2);
@@ -149,12 +149,12 @@ export let tests = suite('wireit-config', () => {
     }
   });
 
-  test('clean and service forms parse', () => {
+  test('clean and service forms parse', async () => {
     let ws = fixture();
-    let lib = ws.scriptConfig(new ScriptRef('packages/lib', 'build'));
+    let lib = await ws.scriptConfig(new ScriptRef('packages/lib', 'build'));
     equal(lib.clean, 'false');
 
-    let serve = ws.scriptConfig(new ScriptRef('packages/lib', 'serve'));
+    let serve = await ws.scriptConfig(new ScriptRef('packages/lib', 'serve'));
     let serveSvc = serve.service;
     isNotNull(serveSvc);
     if (serveSvc != null) {
@@ -162,7 +162,7 @@ export let tests = suite('wireit-config', () => {
     }
     equal(serve.dependencies.length, 1);
 
-    let emulate = ws.scriptConfig(new ScriptRef('packages/lib', 'emulate'));
+    let emulate = await ws.scriptConfig(new ScriptRef('packages/lib', 'emulate'));
     let emuSvc = emulate.service;
     isNotNull(emuSvc);
     if (emuSvc != null) {
@@ -170,41 +170,41 @@ export let tests = suite('wireit-config', () => {
     }
   });
 
-  test('dependency-only wireit scripts need no scripts entry', () => {
+  test('dependency-only wireit scripts need no scripts entry', async () => {
     let ws = fixture();
-    let config = ws.scriptConfig(new ScriptRef('packages/app', 'build:dep-only'));
+    let config = await ws.scriptConfig(new ScriptRef('packages/app', 'build:dep-only'));
     isTrue(config.isWireit);
     equal(config.command, 'true');
   });
 
-  test('fingerprintability follows declared files and output (and files for services)', () => {
+  test('fingerprintability follows declared files and output (and files for services)', async () => {
     let ws = fixture();
     // Command with files and output declared: fully tracked.
-    isTrue(ws.scriptConfig(new ScriptRef('packages/app', 'build')).fingerprintable);
+    isTrue((await ws.scriptConfig(new ScriptRef('packages/app', 'build'))).fingerprintable);
     // Command without files/output keys: unknown inputs, never fresh.
-    isFalse(ws.scriptConfig(new ScriptRef('packages/app', 'build:dep-only')).fingerprintable);
+    isFalse((await ws.scriptConfig(new ScriptRef('packages/app', 'build:dep-only'))).fingerprintable);
     // Service with files declared: tracked identity.
-    isTrue(ws.scriptConfig(new ScriptRef('packages/lib', 'serve')).fingerprintable);
+    isTrue((await ws.scriptConfig(new ScriptRef('packages/lib', 'serve'))).fingerprintable);
     // Service without files declared: untracked identity.
-    isFalse(ws.scriptConfig(new ScriptRef('packages/lib', 'emulate')).fingerprintable);
+    isFalse((await ws.scriptConfig(new ScriptRef('packages/lib', 'emulate'))).fingerprintable);
     // No command at all: a dependency group, always tracked.
-    isTrue(ws.scriptConfig(new ScriptRef('', 'build')).fingerprintable);
+    isTrue((await ws.scriptConfig(new ScriptRef('', 'build'))).fingerprintable);
     // Bare npm script: always runs.
-    isFalse(ws.scriptConfig(new ScriptRef('packages/app', 'lint')).fingerprintable);
+    isFalse((await ws.scriptConfig(new ScriptRef('packages/app', 'lint'))).fingerprintable);
   });
 
-  test('bare npm scripts always run', () => {
+  test('bare npm scripts always run', async () => {
     let ws = fixture();
-    let lint = ws.scriptConfig(new ScriptRef('packages/app', 'lint'));
+    let lint = await ws.scriptConfig(new ScriptRef('packages/app', 'lint'));
     isFalse(lint.isWireit);
     equal(lint.command, 'eslint .');
     equal(lint.files.length, 0);
   });
 
-  test('a dependency-only root script collects the closure', () => {
+  test('a dependency-only root script collects the closure', async () => {
     let ws = fixture();
     let entry = new ScriptRef('', 'build');
-    let configs = ws.collect([entry]);
+    let configs = await ws.collect([entry]);
     equal(configs.length, 4);
     equal(refKey(configs[0].ref), ':build');
     equal(refKey(configs[1].ref), 'packages/app:build');
@@ -213,45 +213,45 @@ export let tests = suite('wireit-config', () => {
     isNull(configs[0].command);
   });
 
-  test('missing packages and scripts fail loudly', () => {
+  test('missing packages and scripts fail loudly', async () => {
     let ws = fixture();
-    throws(() => {
-      ws.scriptConfig(new ScriptRef('packages/ghost', 'build'));
+    await rejects(async () => {
+      await ws.scriptConfig(new ScriptRef('packages/ghost', 'build'));
     });
-    throws(() => {
-      ws.scriptConfig(new ScriptRef('packages/app', 'nope'));
+    await rejects(async () => {
+      await ws.scriptConfig(new ScriptRef('packages/app', 'nope'));
     });
   });
 
-  test('unsupported keys and invalid service/dependency/env shapes fail loudly', () => {
-    let checkThrows = (json: String) => {
-      let ws = new WireitWorkspace((path: String): String? => {
+  test('unsupported keys and invalid service/dependency/env shapes fail loudly', async () => {
+    let checkThrows = async (json: String) => {
+      let ws = new WireitWorkspace(async (path: String): Future<String?> => {
         return if (path == 'package.json') json else null;
       });
-      throws(() => {
-        ws.scriptConfig(new ScriptRef('', 'x'));
+      await rejects(async () => {
+        await ws.scriptConfig(new ScriptRef('', 'x'));
       });
     };
 
     // Unknown top-level wireit key.
-    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "bogus": 1}}}`);
+    await checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "bogus": 1}}}`);
     // Service declaring output.
-    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "service": true, "output": []}}}`);
+    await checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "service": true, "output": []}}}`);
     // Service without command.
-    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"service": true}}}`);
+    await checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"service": true}}}`);
     // Invalid readyWhen key.
-    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "service": {"readyWhen": {"port": 8080}}}}}`);
+    await checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "service": {"readyWhen": {"port": 8080}}}}}`);
     // Invalid dependency object key.
-    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"dependencies": [{"script": "y", "extra": 1}]}}}`);
+    await checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"dependencies": [{"script": "y", "extra": 1}]}}}`);
     // Invalid env external: false.
-    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "env": {"FOO": {"external": false}}}}}`);
+    await checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "env": {"FOO": {"external": false}}}}}`);
     // Invalid packageLocks containing path separator or empty string.
-    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "packageLocks": ["../package-lock.json"]}}}`);
-    checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "packageLocks": [""]}}}`);
+    await checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "packageLocks": ["../package-lock.json"]}}}`);
+    await checkThrows(`{"scripts": {"x": "wireit"}, "wireit": {"x": {"command": "true", "packageLocks": [""]}}}`);
   });
 
-  test('packageLocks defaults to package-lock.json and supports custom or empty lists', () => {
-    let ws = new WireitWorkspace((path: String): String? => {
+  test('packageLocks defaults to package-lock.json and supports custom or empty lists', async () => {
+    let ws = new WireitWorkspace(async (path: String): Future<String?> => {
       if (path == 'package.json') {
         return `{
           "scripts": {"def": "wireit", "none": "wireit", "pnpm": "wireit"},
@@ -264,14 +264,14 @@ export let tests = suite('wireit-config', () => {
       }
       return null;
     });
-    let def = ws.scriptConfig(new ScriptRef('', 'def'));
+    let def = await ws.scriptConfig(new ScriptRef('', 'def'));
     equal(def.packageLocks.length, 1);
     equal(def.packageLocks[0], 'package-lock.json');
 
-    let none = ws.scriptConfig(new ScriptRef('', 'none'));
+    let none = await ws.scriptConfig(new ScriptRef('', 'none'));
     equal(none.packageLocks.length, 0);
 
-    let pnpm = ws.scriptConfig(new ScriptRef('', 'pnpm'));
+    let pnpm = await ws.scriptConfig(new ScriptRef('', 'pnpm'));
     equal(pnpm.packageLocks.length, 1);
     equal(pnpm.packageLocks[0], 'pnpm-lock.yaml');
   });

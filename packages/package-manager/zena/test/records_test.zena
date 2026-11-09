@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isNull, isTrue, jsonEqual} from 'zena:assert';
-import {readFileSync} from 'zena:fs';
+import {readFile} from 'zena:fs';
 import {JsonObject, parseJson} from 'zena:json';
 import {Cid} from 'atproto:cid';
 import {BlobRef, Value, fromJson, toJson} from 'atproto:data';
@@ -99,12 +99,12 @@ function rejectsProfile(json: String) {
 }
 
 export let tests = suite('package-manager:records', () => {
-  test('names each record type after its lexicon', (ctx) => {
+  test('names each record type after its lexicon', async (ctx) => {
     for (let type in [PROFILE_TYPE, RELEASE_TYPE, RETRACTION_TYPE, MAINTAINERS_TYPE, ATTESTATION_TYPE]) {
       isTrue(isValidNsid(type), type);
       let parts = type.split('.');
       let path = `packages/package-manager/lexicons/dev/zena-lang/package/${parts[parts.length - 1]}.json`;
-      let lexicon = parseJson(readFileSync(path)) as JsonObject;
+      let lexicon = parseJson(await readFile(path)) as JsonObject;
       equal(lexicon['id'] as String, type);
     }
   });
@@ -404,9 +404,9 @@ export let tests = suite('package-manager:records', () => {
     equal(refused, 2);
   });
 
-  test('reads a scope\'s policy and writes it back, leaving out what it does not change', (ctx) => {
+  test('reads a scope\'s policy and writes it back, leaving out what it does not change', async (ctx) => {
     let parts = POLICY_TYPE.split('.');
-    let lexicon = parseJson(readFileSync(`packages/package-manager/lexicons/dev/zena-lang/org/${parts[parts.length - 1]}.json`))
+    let lexicon = parseJson(await readFile(`packages/package-manager/lexicons/dev/zena-lang/org/${parts[parts.length - 1]}.json`))
       as JsonObject;
     equal(lexicon['id'] as String, POLICY_TYPE);
     // An empty policy asks nothing more than a package's own record.
@@ -452,8 +452,8 @@ export let tests = suite('package-manager:records', () => {
     equal(refused, 4);
   });
 
-  test('reads a scope\'s profile, and refuses a website that is not a web address', (ctx) => {
-    let lexicon = parseJson(readFileSync('packages/package-manager/lexicons/dev/zena-lang/org/profile.json'))
+  test('reads a scope\'s profile, and refuses a website that is not a web address', async (ctx) => {
+    let lexicon = parseJson(await readFile('packages/package-manager/lexicons/dev/zena-lang/org/profile.json'))
       as JsonObject;
     equal(lexicon['id'] as String, SCOPE_PROFILE_TYPE);
     let profile = new ScopeProfile();

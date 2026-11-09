@@ -1,7 +1,7 @@
 /**
  * Does interning identifiers pay for itself?
  *
- * Six runners, because "is interning faster" is not one question and a
+ * Five runners, because "is interning faster" is not one question and a
  * single number would answer it dishonestly:
  *
  * 1. **Tokenize.** The cost, isolated. Interning adds a table probe per
@@ -16,19 +16,13 @@
  *    compared by pointer — earns back what runner 1 charges. Two map
  *    operations per identifier, which is a *floor* on what a checker does,
  *    not an estimate of it. A proxy, deliberately labelled as one.
- * 4. **Front end.** The real thing rather than a proxy: load, parse, scope
- *    and check a whole program through one `Compiler`, which is the only
- *    configuration where the table spans every file. Codegen is excluded
- *    because interning cannot touch it and it is four fifths of a build —
- *    including it would measure GC noise at five times the signal.
- * 5. **Flag off.** What the feature costs callers who never enable it,
+ * 4. **Flag off.** What the feature costs callers who never enable it,
  *    measured within one build (see the runner for why not across two).
- * 6. **Lookup strategy.** Whether the table should hash every byte (FNV,
+ * 5. **Lookup strategy.** Whether the table should hash every byte (FNV,
  *    what `String.hashCode` does) or take the O(1) bucket hash the shipped
  *    table uses. `FnvStringTable` below exists only to be the control.
  *
- * Run from the repository root, which is where the package map's paths
- * resolve from:
+ * Run from the repository root:
  *
  *     zena-cli run packages/zena-compiler/zena/bench/interning.zena --dir .
  *
@@ -37,17 +31,13 @@
  * docs/design/string-interning.md.
  */
 import {BenchRunner, BenchContext, reportToString} from 'zena:bench';
-import {listDirSync, readFileSync} from 'zena:fs';
+import {listDir, readFile} from 'zena:fs';
 import {getArguments} from 'zena:cli';
 import {HashMap} from 'zena:collections';
 import {StringReader, StringTable} from 'zena:core';
 import {parse} from '../lib/parser.zena';
 import {makeNodeIdGenerator} from '../lib/ast.zena';
 import {Token, TokenType, tokenize, primeKeywords} from '../lib/tokenizer.zena';
-import {CompilerHost} from '../lib/library-loader.zena';
-import {createCompiler, CompilerOptions, checkCompilation} from '../lib/compiler.zena';
-import { loadWorkspace } from '../lib/package-manifest.zena';
-import {stdlibIdToRelativeFile} from '../lib/module-resolver.zena';
 
 class Source {
   path: String;
@@ -56,16 +46,16 @@ class Source {
   new(this.path, this.text);
 }
 
-let loadCorpus = (dir: String): Array<Source> => {
+async function loadCorpus(dir: String): Future<Array<Source>> {
   let sources = new Array<Source>();
-  for (let entry in listDirSync(dir)) {
+  for (let entry in await listDir(dir)) {
     if (entry.name.endsWith('.zena')) {
-      let path = dir + '/' + entry.name;
-      sources.push(new Source(path, readFileSync(path)));
+      let path = `${dir}/${entry.name}`;
+      sources.push(new Source(path, await readFile(path)));
     }
   }
   return sources;
-};
+}
 
 // ============================================================================
 // The control: a table that hashes every byte
@@ -149,24 +139,24 @@ final class FnvStringTable {
 
 /** FNV-1a over every byte, computed fresh — not `String.hashCode`, whose
  * cache would hide exactly the cost being measured. */
-let fnv = (s: String): i32 => {
+function fnv(s: String): i32 {
   var h = 0x811C9DC5;
   let length = s.length;
   for (var i = 0; i < length; i += 1) {
     h = (h ^ s.getByteAt(i)) * 0x01000193;
   }
   return h & 0x7FFFFFFF;
-};
+}
 
 // ============================================================================
 // Workloads
 // ============================================================================
 
-let parseAll = (sources: Array<Source>, table: StringTable | null): void => {
+function parseAll(sources: Array<Source>, table: StringTable | null) {
   for (let s in sources) {
     parse(s.text, s.path, makeNodeIdGenerator(), table);
   }
-};
+}
 
 /**
  * Stands in for what a checker does with a token stream: every identifier is
@@ -175,7 +165,7 @@ let parseAll = (sources: Array<Source>, table: StringTable | null): void => {
  * measurement includes the hashing an interned string avoids on repeat
  * lookups.
  */
-let resolveAll = (sources: Array<Source>, table: StringTable | null): i32 => {
+function resolveAll(sources: Array<Source>, table: StringTable | null) {
   var found = 0;
   let scope = new HashMap<String, i32>();
   for (let s in sources) {
@@ -192,7 +182,7 @@ let resolveAll = (sources: Array<Source>, table: StringTable | null): i32 => {
     }
   }
   return found;
-};
+}
 
 /** A byte range within `sources[source]`. */
 class Range {
@@ -207,7 +197,7 @@ class Range {
  * Every identifier's byte range, so a benchmark can replay exactly the slices
  * the tokenizer would take without re-running the scan that found them.
  */
-let identifierRanges = (sources: Array<Source>): Array<Range> => {
+function identifierRanges(sources: Array<Source>): Array<Range> {
   let ranges = new Array<Range>();
   for (var i = 0; i < sources.length; i += 1) {
     for (let t in tokenize(sources[i].text)) {
@@ -217,75 +207,38 @@ let identifierRanges = (sources: Array<Source>): Array<Range> => {
     }
   }
   return ranges;
-};
+}
 
-let readersFor = (sources: Array<Source>, table: StringTable | null): Array<StringReader> => {
+function readersFor(sources: Array<Source>, table: StringTable | null): Array<StringReader> {
   let readers = new Array<StringReader>();
   for (let s in sources) {
     readers.push(new StringReader(s.text, table));
   }
   return readers;
-};
-
-// ============================================================================
-// The front end, end to end
-// ============================================================================
-
-let stdlibRoot = 'packages/stdlib/zena';
-
-class PlainHost implements CompilerHost {
-  new();
-  readFile(path: String): String {
-    if (path.startsWith('zena:')) {
-      return readFileSync(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
-    }
-    return readFileSync(path);
-  }
 }
 
-/**
- * Load, parse, scope and check `entry` and everything it imports, through a
- * compiler built fresh for this sample.
- *
- * Fresh on purpose. A `Compiler` accumulates nominal types, model nodes and
- * generic instantiations for as long as it lives and never collects them, so
- * reusing one across samples would measure that growth rather than the
- * option. It also has to be fresh for the option to mean anything: the table
- * is built once, in the loader's constructor.
- */
-let frontEnd = (entry: String, internStrings: boolean): i32 => {
-  let host = new PlainHost();
-  let packages = loadWorkspace(host, '.');
-  let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
-  options.internStrings = internStrings;
-  let compiler = createCompiler(host, options);
-  let result = compiler.compile(entry);
-  let checked = checkCompilation(result, null, false);
-  return checked.diagnostics.length;
-};
-
 /** Interns every identifier in the corpus with the shipped table. */
-let internAllBucketHash = (identifiers: Array<String>): i32 => {
+function internAllBucketHash(identifiers: Array<String>) {
   let table = new StringTable(4096);
   for (let id in identifiers) {
     table.intern(id);
   }
   return table.size;
-};
+}
 
 /** The same, hashing every byte. See `FnvStringTable`. */
-let internAllFnv = (identifiers: Array<String>): i32 => {
+function internAllFnv(identifiers: Array<String>) {
   let table = new FnvStringTable(4096);
   for (let id in identifiers) {
     table.intern(id);
   }
   return table.size;
-};
+}
 
-export let main = (): i32 => {
+export async function main(): Future<i32> {
   let args = getArguments();
   let dir = if (args.length > 1) args[1] else 'packages/zena-compiler/zena/lib';
-  let sources = loadCorpus(dir);
+  let sources = await loadCorpus(dir);
   if (sources.length == 0) {
     console.log('no .zena sources found under ' + dir);
     return 1;
@@ -351,78 +304,58 @@ export let main = (): i32 => {
   // order of magnitude larger than the token stream, and the GC variance that
   // comes with it swamps a single-digit-percent effect — so measure the
   // narrow thing first and the whole thing after.
-  let tokenizeRunner = new BenchRunner('tokenize (' + dir + ')');
+  let tokenizeRunner = new BenchRunner(`tokenize (${dir})`);
   tokenizeRunner.options.minSamples = 40;
   tokenizeRunner.options.timeBudgetMs = 60000.0;
   tokenizeRunner.options.horizons = ['1%'];
-  tokenizeRunner.bench('no-intern', (_ctx: BenchContext) => {
+  tokenizeRunner.bench('no-intern', (_ctx) => {
     for (let s in sources) {
       tokenize(s.text, null);
     }
   });
-  tokenizeRunner.bench('intern-shared', (_ctx: BenchContext) => {
+  tokenizeRunner.bench('intern-shared', (_ctx) => {
     let table = new StringTable();
     primeKeywords(table);
     for (let s in sources) {
       tokenize(s.text, table);
     }
   });
-  console.log(reportToString(tokenizeRunner.run()));
+  console.log(reportToString(await tokenizeRunner.run()));
 
-  let parseRunner = new BenchRunner('parse (' + dir + ')');
+  let parseRunner = new BenchRunner(`parse (${dir})`);
   parseRunner.options.minSamples = 20;
   parseRunner.options.timeBudgetMs = 60000.0;
   parseRunner.options.horizons = ['2%'];
-  parseRunner.bench('no-intern', (_ctx: BenchContext) => {
+  parseRunner.bench('no-intern', (_ctx) => {
     parseAll(sources, null);
   });
-  parseRunner.bench('intern-per-file', (_ctx: BenchContext) => {
+  parseRunner.bench('intern-per-file', (_ctx) => {
     for (let s in sources) {
       let table = new StringTable();
       primeKeywords(table);
       parse(s.text, s.path, makeNodeIdGenerator(), table);
     }
   });
-  parseRunner.bench('intern-shared', (_ctx: BenchContext) => {
+  parseRunner.bench('intern-shared', (_ctx) => {
     let table = new StringTable();
     primeKeywords(table);
     parseAll(sources, table);
   });
-  console.log(reportToString(parseRunner.run()));
+  console.log(reportToString(await parseRunner.run()));
 
-  let resolveRunner = new BenchRunner('tokenize + scope lookups (' + dir + ')');
+  let resolveRunner = new BenchRunner(`tokenize + scope lookups (${dir})`);
   resolveRunner.options.minSamples = 40;
   resolveRunner.options.timeBudgetMs = 60000.0;
   resolveRunner.options.horizons = ['1%'];
-  resolveRunner.bench('no-intern', (_ctx: BenchContext) => {
+  resolveRunner.bench('no-intern', (_ctx) => {
     resolveAll(sources, null);
   });
-  resolveRunner.bench('intern-shared', (_ctx: BenchContext) => {
+  resolveRunner.bench('intern-shared', (_ctx) => {
     let table = new StringTable();
     primeKeywords(table);
     resolveAll(sources, table);
   });
-  console.log(reportToString(resolveRunner.run()));
-
-  // The question the proxy above only gestures at: over a real compilation,
-  // does the checker hand back more than the tokenizer spent? One `Compiler`
-  // per sample, so the table spans the whole module graph — which is the only
-  // arrangement worth shipping, and the reason `LibraryLoader` owns it.
-  //
-  // The entry is the compiler's own CLI: the largest program on hand, and the
-  // one whose build time anyone actually waits on.
-  let frontEndEntry = 'packages/zena-compiler/zena/cli/main.zena';
-  let frontEndRunner = new BenchRunner('front end: load+parse+scope+check');
-  frontEndRunner.options.minSamples = 20;
-  frontEndRunner.options.timeBudgetMs = 120000.0;
-  frontEndRunner.options.horizons = ['1%'];
-  frontEndRunner.bench('no-intern', (_ctx: BenchContext) => {
-    frontEnd(frontEndEntry, false);
-  });
-  frontEndRunner.bench('intern-shared', (_ctx: BenchContext) => {
-    frontEnd(frontEndEntry, true);
-  });
-  console.log(reportToString(frontEndRunner.run()));
+  console.log(reportToString(await resolveRunner.run()));
 
   // What the feature costs the callers who never enable it. The tokenizer
   // now reaches every identifier through `internFrom`, which tests a null
@@ -436,29 +369,29 @@ export let main = (): i32 => {
   offRunner.options.minSamples = 60;
   offRunner.options.timeBudgetMs = 30000.0;
   offRunner.options.horizons = ['1%'];
-  offRunner.bench('sliceRange', (_ctx: BenchContext) => {
+  offRunner.bench('sliceRange', (_ctx) => {
     for (let r in ranges) {
       plainReaders[r.source].sliceRange(r.start, r.end);
     }
   });
-  offRunner.bench('internRange-no-table', (_ctx: BenchContext) => {
+  offRunner.bench('internRange-no-table', (_ctx) => {
     for (let r in ranges) {
       plainReaders[r.source].internRange(r.start, r.end);
     }
   });
-  console.log(reportToString(offRunner.run()));
+  console.log(reportToString(await offRunner.run()));
 
   let hashRunner = new BenchRunner('intern lookup: bucket hash vs FNV');
   hashRunner.options.minSamples = 30;
   hashRunner.options.timeBudgetMs = 60000.0;
   hashRunner.options.horizons = ['1%'];
-  hashRunner.bench('bucket-hash', (_ctx: BenchContext) => {
+  hashRunner.bench('bucket-hash', (_ctx) => {
     internAllBucketHash(identifiers);
   });
-  hashRunner.bench('fnv', (_ctx: BenchContext) => {
+  hashRunner.bench('fnv', (_ctx) => {
     internAllFnv(identifiers);
   });
-  console.log(reportToString(hashRunner.run()));
+  console.log(reportToString(await hashRunner.run()));
 
   return 0;
-};
+}

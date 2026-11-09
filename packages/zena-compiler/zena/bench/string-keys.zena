@@ -33,7 +33,7 @@
  *     zena-cli run packages/zena-compiler/zena/bench/string-keys.zena --dir .
  */
 import {BenchRunner, BenchContext, reportToString} from 'zena:bench';
-import {listDirSync, readFileSync} from 'zena:fs';
+import {listDir, readFile} from 'zena:fs';
 import {getArguments} from 'zena:cli';
 import {HashMap} from 'zena:collections';
 import {div} from 'zena:math';
@@ -42,11 +42,11 @@ import {matchKeyword, isIdentifierPart} from '../lib/tokenizer.zena';
 /** One identifier occurrence, as a range into the file that produced it. */
 final class Occurrence(source: String, start: i32, length: i32)
 
-function loadCorpus(dir: String): Array<String> {
+async function loadCorpus(dir: String): Future<Array<String>> {
   let sources = new Array<String>();
-  for (let entry in listDirSync(dir)) {
+  for (let entry in await listDir(dir)) {
     if (entry.name.endsWith('.zena')) {
-      sources.push(readFileSync(`${dir}/${entry.name}`));
+      sources.push(await readFile(`${dir}/${entry.name}`));
     }
   }
   return sources;
@@ -75,10 +75,10 @@ function collectIdentifiers(sources: Array<String>): Array<Occurrence> {
   return out;
 }
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   let args = getArguments();
   let dir = if (args.length > 1) args[1] else 'packages/zena-compiler/zena/lib';
-  let sources = loadCorpus(dir);
+  let sources = await loadCorpus(dir);
   if (sources.length == 0) {
     console.log('no .zena sources found under ' + dir);
     return 1;
@@ -130,7 +130,7 @@ export function main(): i32 {
       }
     }
   });
-  console.log(reportToString(coldRunner.run()));
+  console.log(reportToString(await coldRunner.run()));
 
   // ---- Runner 2: key instances reused, hashes already warm ----
   // Both arms hold instances whose hash was cached by the loop above,
@@ -165,6 +165,6 @@ export function main(): i32 {
       }
     }
   });
-  console.log(reportToString(warmRunner.run()));
+  console.log(reportToString(await warmRunner.run()));
   return 0;
 }

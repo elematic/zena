@@ -10,7 +10,7 @@ import {equal, isFalse, isNull, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
 import {OrderedHashMap} from 'zena:collections';
 import {hex} from 'zena:encoding';
-import {existsSync, listDirSync, readFileSync} from 'zena:fs';
+import {exists, listDir, readFile} from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {encodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
@@ -101,10 +101,10 @@ export let tests = suite('package-manager:fetch', () => {
 
     isTrue(await fetchPackage(pin, cache, pds.resolver()));
     let dir = cache.sourceDir(pin.source);
-    equal(readFileSync(`${dir}/match.zena`), 'export function route(): i32 { return 42; }\n');
-    equal(readFileSync(`${dir}/util/strings.zena`), "export let name = 'router';\n");
+    equal(await readFile(`${dir}/match.zena`), 'export function route(): i32 { return 42; }\n');
+    equal(await readFile(`${dir}/util/strings.zena`), "export let name = 'router';\n");
     // Nothing is left half-written.
-    equal(listDirSync(`${cache.root}/tmp`).length, 0);
+    equal((await listDir(`${cache.root}/tmp`)).length, 0);
 
     // A second fetch finds it in the cache and asks the network nothing.
     let requests = pds.requests;
@@ -128,7 +128,7 @@ export let tests = suite('package-manager:fetch', () => {
     let cache = freshCache();
 
     isTrue(await fetchPackage(pinFor(recordCid, Cid.forBlob(archive)), cache, pds.resolver()));
-    isTrue(existsSync(`${cache.sourceDir(Cid.forBlob(archive))}/match.zena`));
+    isTrue(await exists(`${cache.sourceDir(Cid.forBlob(archive))}/match.zena`));
     pds.close();
   });
 
@@ -147,7 +147,7 @@ export let tests = suite('package-manager:fetch', () => {
         ', "dependencies": {"json": "did:web:json.example.com@2"}'), cache, pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('does not agree with its source archive') &&
         message.contains('depends on json, which the archive'), message);
-    isFalse(existsSync(cache.sourceDir(Cid.forBlob(archive))));
+    isFalse(await exists(cache.sourceDir(Cid.forBlob(archive))));
     pds.close();
   });
 
@@ -161,7 +161,7 @@ export let tests = suite('package-manager:fetch', () => {
 
     let message = await failure(pinFor(pinned, Cid.forBlob(archive)), cache, pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('changed after it was pinned'), message);
-    isFalse(existsSync(cache.sourceDir(Cid.forBlob(archive))));
+    isFalse(await exists(cache.sourceDir(Cid.forBlob(archive))));
     pds.close();
   });
 
@@ -186,7 +186,7 @@ export let tests = suite('package-manager:fetch', () => {
 
     let message = await failure(pinFor(recordCid, Cid.forBlob(archive)), cache, pds);
     isTrue(message.contains('does not match its CID'), message);
-    isFalse(existsSync(cache.sourceDir(Cid.forBlob(archive))));
+    isFalse(await exists(cache.sourceDir(Cid.forBlob(archive))));
     pds.close();
   });
 

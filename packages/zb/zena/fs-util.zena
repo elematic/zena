@@ -2,12 +2,9 @@ import {
   FsError,
   FsErrorCode,
   exists,
-  existsSync,
   isFile,
-  isFileSync,
   mkdir,
-  mkdirSync,
-  readFileSync,
+  readFile,
   unlink,
 } from 'zena:fs';
 import {dirname, join2} from 'zena:path';
@@ -73,21 +70,9 @@ export async function deleteIfExists(path: String): Future<void> {
   }
 }
 
-export function readFileOrNullSync(path: String): String? {
-  if (!isFileSync(path)) {
+export async function readFileOrNull(path: String): Future<String?> {
+  if (!(await isFile(path))) {
     return null;
   }
-  return readFileSync(path);
-}
-
-export function ensureDirSync(path: String): void {
-  if (path == '' || path == '.' || existsSync(path)) {
-    return;
-  }
-  ensureDirSync(dirname(path));
-  mkdirSync(path);
-}
-
-export function ensureParentDirSync(path: String): void {
-  ensureDirSync(dirname(path));
+  return await readFile(path);
 }
