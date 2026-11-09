@@ -580,15 +580,34 @@ export class ZenaProject extends LitElement {
     return {...this._fileMap};
   }
 
-  /** Returns diagnostics that apply to a specific filename. */
-  getFileDiagnostics(filename: string): Diagnostic[] {
-    const fileContent = this._fileMap[filename] ?? '';
-    const ignoreUnused =
-      this.allowUnusedVariables ||
+  #isIgnoredUnusedWarning(d: Diagnostic, filename?: string): boolean {
+    if (d.severity !== 'warning') return false;
+    if (
+      !d.message.includes('is never read') &&
+      !d.message.includes('is declared as mutable but never written to')
+    ) {
+      return false;
+    }
+    if (this.allowUnusedVariables) return true;
+    const targetFile = filename ?? d.file;
+    if (!targetFile) return false;
+    const cleanFile = targetFile.replace(/^\.\//, '').replace(/^\//, '');
+    const fileContent =
+      this._fileMap[targetFile] ?? this._fileMap[cleanFile] ?? '';
+    return (
       fileContent.includes('// @allow-unused') ||
       fileContent.includes('// @allow-unused-variables') ||
-      fileContent.includes('// @no-unused-warnings');
+      fileContent.includes('// @no-unused-warnings')
+    );
+  }
 
+  /** Returns project diagnostics after applying unused-variable suppression rules. */
+  getEffectiveDiagnostics(): Diagnostic[] {
+    return this.diagnostics.filter((d) => !this.#isIgnoredUnusedWarning(d));
+  }
+
+  /** Returns diagnostics that apply to a specific filename. */
+  getFileDiagnostics(filename: string): Diagnostic[] {
     return this.diagnostics.filter((d) => {
       if (!d.file) return false;
       const matchesFile =
@@ -597,15 +616,7 @@ export class ZenaProject extends LitElement {
         d.file.replace(/^\.\//, '') === filename.replace(/^\.\//, '') ||
         d.file.endsWith(`/${filename}`);
       if (!matchesFile) return false;
-
-      if (ignoreUnused && d.severity === 'warning') {
-        if (
-          d.message.includes('is never read') ||
-          d.message.includes('is declared as mutable but never written to')
-        ) {
-          return false;
-        }
-      }
+      if (this.#isIgnoredUnusedWarning(d, filename)) return false;
 
       return true;
     });

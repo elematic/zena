@@ -118,6 +118,10 @@ suite('ZenaProject file management', () => {
     const mainDiags = project.getFileDiagnostics('main.zena');
     assert.strictEqual(mainDiags.length, 1);
     assert.strictEqual(mainDiags[0].message, 'Type error');
+
+    const effectiveDiags = project.getEffectiveDiagnostics();
+    assert.strictEqual(effectiveDiags.length, 1);
+    assert.strictEqual(effectiveDiags[0].message, 'Type error');
   });
 
   test('filters unused variable diagnostics when file contains // @allow-unused', () => {
@@ -138,5 +142,6 @@ suite('ZenaProject file management', () => {
 
     const mainDiags = project.getFileDiagnostics('main.zena');
     assert.strictEqual(mainDiags.length, 0);
+    assert.strictEqual(project.getEffectiveDiagnostics().length, 0);
   });
 });

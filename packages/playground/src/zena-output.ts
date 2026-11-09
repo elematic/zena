@@ -260,7 +260,8 @@ export class ZenaOutput extends PlaygroundConnectedElement {
 
   override render() {
     const project = this.projectElement;
-    const diagnostics = project?.diagnostics ?? [];
+    const diagnostics =
+      project?.getEffectiveDiagnostics?.() ?? project?.diagnostics ?? [];
     const errorCount = diagnostics.filter((d) => d.severity === 'error').length;
     const warningCount = diagnostics.filter(
       (d) => d.severity === 'warning',

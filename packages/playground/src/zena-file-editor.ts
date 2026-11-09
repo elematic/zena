@@ -444,9 +444,16 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
 
     const rawDiagnostics: CMLintDiagnostic[] = diagnostics.map((d) => {
       const lineNo = Math.min(Math.max(d.line, 1), doc.lines);
-      const line = doc.line(lineNo);
-      const from = Math.min(line.from + Math.max(d.column - 1, 0), line.to);
-      const to = Math.min(from + Math.max(d.length, 1), line.to);
+      let line = doc.line(lineNo);
+      while (line.from === line.to && line.number > 1) {
+        line = doc.line(line.number - 1);
+      }
+      let from = Math.min(line.from + Math.max(d.column - 1, 0), line.to);
+      let to = Math.min(from + Math.max(d.length, 1), line.to);
+      if (from === to && line.to > line.from) {
+        from = line.to - 1;
+        to = line.to;
+      }
       return {
         from,
         to,
