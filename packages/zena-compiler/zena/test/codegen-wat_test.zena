@@ -4,7 +4,7 @@ import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { CompileFileOptions, compileFile } from '../lib/compile-file.zena';
 import { Module } from '../lib/ast.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'zena:fs';
+import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import { makeCompiler, MockHost, errorDiagnostics, stdlibRoot } from './test-utils.zena';
 import { checkCompilation, createCompiler } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
@@ -12,20 +12,20 @@ import { getEnv } from 'zena:cli';
 import { assertFunctionUses, assertFunctionUsesTimes, assertFunctionOmits, assertNoAllocation } from './wat-invariants.zena';
 import { growable } from 'zena:core';
 
-function assertSnapshot(name: String, content: String) {
+async function assertSnapshot(name: String, content: String) {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
-  if (!existsSync(snapDir)) {
-    mkdirSync(snapDir);
+  if (!await exists(snapDir)) {
+    await mkdir(snapDir);
   }
   let snapFile = `${snapDir}/${name}.snap`;
   if (getEnv("UPDATE_SNAPSHOTS") != null) {
-    writeFileSync(snapFile, content);
+    await writeFile(snapFile, content);
     equal(content, content);
-  } else if (existsSync(snapFile)) {
-    let expected = readFileSync(snapFile);
+  } else if (await exists(snapFile)) {
+    let expected = await readFile(snapFile);
     equal(content, expected);
   } else {
-    writeFileSync(snapFile, content);
+    await writeFile(snapFile, content);
     equal(content, content);
   }
 }
@@ -72,7 +72,7 @@ let stringConstantsOut = 'packages/zena-compiler/zena/out/imported-string-consta
 /** The WAT `compileFile` writes for `options`, which must compile. */
 async function stringConstantsWat(options: CompileFileOptions) {
   equal(await compileFile(options), 0);
-  return readFileSync(options.outPath);
+  return await readFile(options.outPath);
 }
 
 async function compileAndGenerateWatWith(source: String, wideArithmetic: boolean) {
@@ -88,22 +88,22 @@ async function compileAndGenerateWat(source: String) {
 export let tests = suite('WatGenerator', () => {
   test('main returns i32 with block statement', async (ctx) => {
     let result = await compileAndGenerateWat('export let main = (): i32 => { return 42; };');
-    assertSnapshot('main_returns_i32_block', result);
+    await assertSnapshot('main_returns_i32_block', result);
   });
 
   test('main returns i32 with expression body', async (ctx) => {
     let result = await compileAndGenerateWat('export let main = (): i32 => 42;');
-    assertSnapshot('main_returns_i32_expr', result);
+    await assertSnapshot('main_returns_i32_expr', result);
   });
 
   test('main returns 1 + 2', async (ctx) => {
     let result = await compileAndGenerateWat('export let main = (): i32 => 1 + 2;');
-    assertSnapshot('main_returns_1_plus_2', result);
+    await assertSnapshot('main_returns_1_plus_2', result);
   });
 
   test('multiple exported functions', async (ctx) => {
     let result = await compileAndGenerateWat('export let foo = (): i32 => 1; export let bar = (): i32 => 2;');
-    assertSnapshot('multiple_exported_functions', result);
+    await assertSnapshot('multiple_exported_functions', result);
   });
 
   test('external function import and call', async (ctx) => {
@@ -139,7 +139,7 @@ export let tests = suite('WatGenerator', () => {
     // Using simple asserts for the import since snapshots will change based on ast/model
     // if new logic is added. Just ensuring it generates `(import "env" "consoleLog" ...)` 
     // and calls it.
-    assertSnapshot('external_function_import', result);
+    await assertSnapshot('external_function_import', result);
   });
 
   test('parameter default dependency optimization skips locals', async (ctx) => {
@@ -172,7 +172,7 @@ export let tests = suite('WatGenerator', () => {
     let generator = new WatGenerator();
     let result = generator.generate(program);
     
-    assertSnapshot('param_default_opt', result);
+    await assertSnapshot('param_default_opt', result);
   });
 
   test('parameter default dependency optimization skips locals when dependent default is not run', async (ctx) => {
@@ -205,7 +205,7 @@ export let tests = suite('WatGenerator', () => {
     let generator = new WatGenerator();
     let result = generator.generate(program);
     
-    assertSnapshot('param_default_opt_run_check', result);
+    await assertSnapshot('param_default_opt_run_check', result);
   });
 
   test('record property access casting', async (ctx) => {
@@ -279,7 +279,7 @@ export let tests = suite('WatGenerator', () => {
     let generator = new WatGenerator();
     let result = generator.generate(program);
     
-    assertSnapshot('function_adaptation_deduplication', result);
+    await assertSnapshot('function_adaptation_deduplication', result);
   });
 
   test('inline tuple multi-value return', async (ctx) => {
@@ -312,7 +312,7 @@ export let tests = suite('WatGenerator', () => {
     let generator = new WatGenerator();
     let result = generator.generate(program);
     
-    assertSnapshot('inline_tuple_multi_value_return', result);
+    await assertSnapshot('inline_tuple_multi_value_return', result);
   });
 
   test('compile console with target js generates JS console imports', async (ctx) => {
@@ -386,7 +386,7 @@ export let tests = suite('WatGenerator', () => {
     let generator = new WatGenerator("js");
     let result = generator.generate(program);
     
-    assertSnapshot('console_target_js', result);
+    await assertSnapshot('console_target_js', result);
   });
 
   // A module is compiled with one `importedStringConstants` name, and a

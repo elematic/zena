@@ -22,7 +22,7 @@
 
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue, isFalse, equal } from 'zena:assert';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'zena:fs';
+import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import {
   Compiler, createCompiler, checkCompilation,
 } from '../lib/compiler.zena';
@@ -38,20 +38,20 @@ import { getEnv } from 'zena:cli';
 import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 /** Mirrors codegen-wat_test's helper; UPDATE_SNAPSHOTS=1 regenerates. */
-function assertSnapshot(name: String, content: String) {
+async function assertSnapshot(name: String, content: String) {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
-  if (!existsSync(snapDir)) {
-    mkdirSync(snapDir);
+  if (!await exists(snapDir)) {
+    await mkdir(snapDir);
   }
   let snapFile = `${snapDir}/${name}.snap`;
   if (getEnv("UPDATE_SNAPSHOTS") != null) {
-    writeFileSync(snapFile, content);
+    await writeFile(snapFile, content);
     equal(content, content);
-  } else if (existsSync(snapFile)) {
-    let expected = readFileSync(snapFile);
+  } else if (await exists(snapFile)) {
+    let expected = await readFile(snapFile);
     equal(content, expected);
   } else {
-    writeFileSync(snapFile, content);
+    await writeFile(snapFile, content);
     equal(content, content);
   }
 }
@@ -524,7 +524,7 @@ export let tests = suite('Binary size', () => {
     // the exact function/type it added. Regenerate with
     // UPDATE_SNAPSHOTS=1; `zena build <file> -o out.wat` dumps the
     // same text for any program.
-    assertSnapshot('hello_string_program',
+    await assertSnapshot('hello_string_program',
         new WatGenerator('freestanding', false).generate(await programOf(helloTarget)));
   });
 
@@ -534,7 +534,7 @@ export let tests = suite('Binary size', () => {
     // one array type, and the plumbing. Regenerate with
     // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry means a
     // loop that lowers to array.get started reaching machinery again.
-    assertSnapshot('array_sum_program',
+    await assertSnapshot('array_sum_program',
         new WatGenerator('freestanding', false).generate(await programOf(arrayTarget)));
   });
 
@@ -544,7 +544,7 @@ export let tests = suite('Binary size', () => {
     // type/function/export it added. Regenerate with
     // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry here means
     // something reached code a program with no code in it cannot run.
-    assertSnapshot('minimal_program',
+    await assertSnapshot('minimal_program',
         new WatGenerator('freestanding', false).generate(await programOf(target)));
   });
 

@@ -3,7 +3,7 @@ import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, fail } from 'zena:assert';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'zena:fs';
+import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import {
   makeCompiler, makeStdlibCompiler, MockHost, PlainHost, errorDiagnostics,
 } from './test-utils.zena';
@@ -14,20 +14,20 @@ import {
 import { checkCompilation } from '../lib/compiler.zena';
 import { getEnv } from 'zena:cli';
 
-function assertSnapshot(name: String, content: String) {
+async function assertSnapshot(name: String, content: String) {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
-  if (!existsSync(snapDir)) {
-    mkdirSync(snapDir);
+  if (!await exists(snapDir)) {
+    await mkdir(snapDir);
   }
   let snapFile = `${snapDir}/${name}.snap`;
   if (getEnv("UPDATE_SNAPSHOTS") != null) {
-    writeFileSync(snapFile, content);
+    await writeFile(snapFile, content);
     equal(content, content);
-  } else if (existsSync(snapFile)) {
-    let expected = readFileSync(snapFile);
+  } else if (await exists(snapFile)) {
+    let expected = await readFile(snapFile);
     equal(content, expected);
   } else {
-    writeFileSync(snapFile, content);
+    await writeFile(snapFile, content);
     equal(content, content);
   }
 }
@@ -114,7 +114,7 @@ export let tests = suite('zir backend', () => {
   test('straight-line arithmetic function', async (ctx) => {
     let result = await compileWithZir(
         'export let main = (): i32 => { let a = 6; let b = 7; return a * b; };');
-    assertSnapshot('zir_straight_line', result);
+    await assertSnapshot('zir_straight_line', result);
   });
 
   test('if/else with merged assignment', async (ctx) => {
@@ -130,7 +130,7 @@ export let tests = suite('zir backend', () => {
           return r;
         };
         `);
-    assertSnapshot('zir_if_else_merge', result);
+    await assertSnapshot('zir_if_else_merge', result);
   });
 
   test('try/catch keeps an assigned local off the heap', async (ctx) => {
@@ -155,7 +155,7 @@ export let tests = suite('zir backend', () => {
         'the fixture is supposed to compile a protected region');
     assertNoAllocation(result, '$main',
         'a try-assigned local is mirrored into a wasm local, not boxed');
-    assertSnapshot('zir_try_local_mirror', result);
+    await assertSnapshot('zir_try_local_mirror', result);
   });
 
   test('a finalizer is emitted once for every way out of the try', async (ctx) => {
@@ -192,7 +192,7 @@ export let tests = suite('zir backend', () => {
         'the finalizer');
     assertNoAllocation(result, '$main',
         'a finally region parks its exit in wasm locals, not on the heap');
-    assertSnapshot('zir_try_finally', result);
+    await assertSnapshot('zir_try_finally', result);
   });
 
   test('while loop with break and continue', async (ctx) => {
@@ -213,7 +213,7 @@ export let tests = suite('zir backend', () => {
           return acc;
         };
         `);
-    assertSnapshot('zir_while_break_continue', result);
+    await assertSnapshot('zir_while_break_continue', result);
   });
 
   test('short-circuit logic chains', async (ctx) => {
@@ -221,7 +221,7 @@ export let tests = suite('zir backend', () => {
         let f = (x: i32, y: i32): boolean => x > 0 && y > 0 || x == -1;
         export let main = (): i32 => if (f(1, 2)) 1 else 0;
         `);
-    assertSnapshot('zir_short_circuit', result);
+    await assertSnapshot('zir_short_circuit', result);
   });
 
   test('direct calls, recursion, and mutual recursion', async (ctx) => {
@@ -274,7 +274,7 @@ export let tests = suite('zir backend', () => {
           return kind;
         };
         `);
-    assertSnapshot('zir_if_expression', result);
+    await assertSnapshot('zir_if_expression', result);
   });
 
   test('c-style for loop with break and continue', async (ctx) => {
@@ -289,7 +289,7 @@ export let tests = suite('zir backend', () => {
           return acc;
         };
         `);
-    assertSnapshot('zir_for_loop', result);
+    await assertSnapshot('zir_for_loop', result);
   });
 
   test('scalar casts', async (ctx) => {
@@ -302,7 +302,7 @@ export let tests = suite('zir backend', () => {
           return (half as i32) + ((wide * (3 as i64)) as i32);
         };
         `);
-    assertSnapshot('zir_scalar_casts', result);
+    await assertSnapshot('zir_scalar_casts', result);
   });
 
   test('unsigned operators select _u variants', async (ctx) => {
@@ -468,7 +468,7 @@ export let tests = suite('zir backend', () => {
           };
         };
         `);
-    assertSnapshot('zir_match_scalar', result);
+    await assertSnapshot('zir_match_scalar', result);
   });
 
   test('match with class patterns and as-bindings', async (ctx) => {

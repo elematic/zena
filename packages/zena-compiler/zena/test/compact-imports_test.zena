@@ -8,7 +8,7 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { ByteBuffer, growable } from 'zena:core';
-import { readFileSync } from 'zena:fs';
+import { readFile } from 'zena:fs';
 import { compileFile } from '../lib/compile-file.zena';
 import { BinaryEmitter } from '../lib/codegen/binary-emitter.zena';
 import {
@@ -27,11 +27,11 @@ let entry = 'packages/zena-compiler/test-files/compact-imports.zena';
 async function wat(compactImports: boolean): Future<String> {
   let outPath = `packages/zena-compiler/zena/out/compact-imports-${compactImports}.wat`;
   equal(await compileFile({entry, outPath, target: 'js', stdlibRoot, compactImports}), 0);
-  return readFileSync(outPath);
+  return await readFile(outPath);
 }
 
 /** The module's import declarations, one per line as emitted. */
-function importSection(wat: String): String {
+function importSection(wat: String) {
   var out = '';
   var inImports = false;
   for (let line in wat.split('\n')) {
@@ -48,7 +48,7 @@ function importSection(wat: String): String {
 }
 
 /** The imports `main` calls, in order. */
-function importCalls(wat: String): String {
+function importCalls(wat: String) {
   var out = '';
   for (let line in watFunction(wat, '$main').split('\n')) {
     if (line.contains('call $func')) {
@@ -60,7 +60,7 @@ function importCalls(wat: String): String {
 
 let digits = '0123456789abcdef';
 
-function hex(buffer: ByteBuffer): String {
+function hex(buffer: ByteBuffer) {
   var out = '';
   for (var i = 0; i < buffer.length; i += 1) {
     let b = buffer.getByte(i);
@@ -72,11 +72,11 @@ function hex(buffer: ByteBuffer): String {
 
 let stringGlobal = new GlobalImport(new ValTypeRefExtern(), false);
 
-function stringImport(module: String, name: String): ImportItem {
+function stringImport(module: String, name: String) {
   return new ImportItem(module, name, stringGlobal, null);
 }
 
-function namesOf(items: GrowableArray<ImportItem>): String {
+function namesOf(items: GrowableArray<ImportItem>) {
   var names = '';
   for (let item in items) {
     names = `${names} ${item.name}`;
@@ -85,7 +85,7 @@ function namesOf(items: GrowableArray<ImportItem>): String {
 }
 
 /** Each entry as its kind and its import names. */
-function describe(entries: GrowableArray<ImportEntry>): String {
+function describe(entries: GrowableArray<ImportEntry>) {
   var out = '';
   for (let entry in entries) {
     let line = match (entry) {

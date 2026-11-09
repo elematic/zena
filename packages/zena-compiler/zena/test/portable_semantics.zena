@@ -11,7 +11,7 @@
  * Requires WASI (run with wasmtime via `npm run test:semantics`).
  */
 
-import { runAndReport, suite } from 'zena:test';
+import { runAndReport } from 'zena:test';
 import { readFile } from 'zena:fs';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { directoryNames } from '../lib/fs-host.zena';
@@ -308,13 +308,11 @@ async function runSemanticTest(f: TestFile) {
 
 export async function runPortableSemantics(): Future<i32> {
   let discovery = new Discovery();
-  let root = suite('Portable Semantics Tests', () => {
-    // Every `.zena` file under semantics/ is checked on its own, the
-    // modules that exist to be imported by another test included: a
-    // module that fails to check in isolation is itself a bug.
-    registerSuites(
-      testsRoot, '', discovery, (f): boolean => true, runSemanticTest);
-  });
+  // Every `.zena` file under semantics/ is checked on its own, the
+  // modules that exist to be imported by another test included: a
+  // module that fails to check in isolation is itself a bug.
+  let root = await registerSuites(
+    'Portable Semantics Tests', testsRoot, discovery, (f): boolean => true, runSemanticTest);
   // Registration is complete once `suite` returns, so what was found can
   // be reported before anything runs.
   let write = (s: String) => { console.log(s); };

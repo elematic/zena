@@ -4,7 +4,7 @@ import {suite, test, testOnly, testSkip} from 'zena:test';
 import {equal, isTrue, isNotNull, fail} from 'zena:assert';
 import {Completer, scheduleMicrotask} from 'zena:async';
 import {sleep, milliseconds} from 'zena:time';
-import {readFileSync, writeFileSync, readFile} from 'zena:fs';
+import {readFile, writeFile} from 'zena:fs';
 
 var log = '';
 var afterSuspension = '';
@@ -30,15 +30,13 @@ export let tests = suite('Asynchronous tests', () => {
   });
 
   // The test above returned to the host while it slept, so this body
-  // runs in a task the host resumed. A `Sync` read waits in `blockOn`
-  // there.
-  test('a synchronous test after a suspended one can block on a read', (ctx) => {
+  // runs in a task the host resumed.
+  test('a synchronous test after a suspended one sees its side effects', (ctx) => {
     equal(afterSuspension, 'ran');
-    writeFileSync('/tmp/async-test-bodies.txt', 'written');
-    equal(readFileSync('/tmp/async-test-bodies.txt'), 'written');
   });
 
-  test('an async body can await a file read', async (ctx) => {
+  test('an async body can await a file write and read', async (ctx) => {
+    await writeFile('/tmp/async-test-bodies.txt', 'written');
     equal(await readFile('/tmp/async-test-bodies.txt'), 'written');
   });
 
