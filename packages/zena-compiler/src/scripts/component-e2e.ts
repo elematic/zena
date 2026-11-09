@@ -619,10 +619,9 @@ const FIXTURES: Fixture[] = [
     preopen: true,
     // Files from ten bytes to a hundred thousand, written and read back
     // through the byte stream pumps: past one 4096-byte chunk a read
-    // takes several canonical copies, each waited for in `blockOn`.
+    // takes several canonical copies.
     // The result future of a write is a deferred future, which only
-    // starts once something awaits it; this sweep caught `blockOn`
-    // polling it instead.
+    // starts once something awaits it.
     invocations: [
       {
         invoke: 'main()',

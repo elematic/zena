@@ -8,33 +8,23 @@
  *
  * The API is asynchronous, as the 0.3 filesystem is: every descriptor
  * method is an `async func` on the wire, and a file's contents travel
- * as a `stream<u8>`. Each convenience function here (`readFile`,
- * `writeFile`, `listDir`, ...) also has a synchronous twin under a
- * `Sync` suffix, which waits for the same call in `blockOn`. Only a
- * task the host lifted async may wait that way, and the compiler
- * exports `main` async for a program that reaches `blockOn`, so the
- * `Sync` forms work inside `main` and inside test bodies; in a
- * synchronous WIT export, a module initializer or test registration
- * they trap, and the asynchronous forms are the ones to use. See
- * docs/design/async-fs-cli.md.
+ * as a `stream<u8>`.
  *
  * ## Examples
  *
  * ```zena
- * import { readFile, writeFile, listDir, readFileSync } from 'zena:fs';
+ * import { readFile, writeFile, listDir } from 'zena:fs';
  *
  * let content = await readFile('config.json');
  * await writeFile('output.txt', 'Hello, World!');
  * for (let entry in await listDir('.')) {
  *   console.log(entry.name);
  * }
- * let synchronous = readFileSync('config.json');
  * ```
  */
 
 import {Disposable, Some, Own, Unmanaged, adopt, disown, Result} from 'zena:core';
 import { Stream, readAllBytes, bytesStream, textStream } from 'zena:stream';
-import { blockOn } from 'zena:wasi';
 import { GlobPattern, hasMagic } from 'zena:glob';
 import { getDirectories } from 'wasi:filesystem/preopens';
 import {
@@ -294,8 +284,7 @@ async function closeWhenRead(
  * as `Own<Descriptor>` and released when that owner leaves scope. A
  * use after the release is a compile error.
  * Paths given to the `*At` methods are relative to a directory
- * descriptor. Every operation is asynchronous; a synchronous caller
- * waits with `blockOn`.
+ * descriptor. Every operation is asynchronous.
  *
  * The preopened directories are `Unmanaged<Descriptor>`: they live as
  * long as the program and are never released, and an unmanaged handle
@@ -797,54 +786,4 @@ export async function glob(
   await scanDir(scanRoot, relPrefix, globPattern, excludePatterns, opts.onlyFiles, results);
   sortStrings(results);
   return results;
-}
-
-// ============================================================================
-// Synchronous forms
-// ============================================================================
-//
-// Each waits for the asynchronous function above it in `blockOn`. See
-// the library header for where that is allowed.
-
-export function readFileSync(path: String): String {
-  return blockOn(readFile(path));
-}
-export function readFileBytesSync(path: String): FixedArray<u8> {
-  return blockOn(readFileBytes(path));
-}
-export function writeFileSync(path: String, content: String): void {
-  blockOn(writeFile(path, content));
-}
-export function writeFileBytesSync(path: String, content: FixedArray<u8>): void {
-  blockOn(writeFileBytes(path, content));
-}
-export function listDirSync(path: String): Array<DirEntry> {
-  return blockOn(listDir(path));
-}
-export function existsSync(path: String): boolean {
-  return blockOn(exists(path));
-}
-export function isFileSync(path: String): boolean {
-  return blockOn(isFile(path));
-}
-export function isDirectorySync(path: String): boolean {
-  return blockOn(isDirectory(path));
-}
-export function mkdirSync(path: String): void {
-  blockOn(mkdir(path));
-}
-export function unlinkSync(path: String): void {
-  blockOn(unlink(path));
-}
-export function renameSync(from: String, to: String): void {
-  blockOn(rename(from, to));
-}
-export function statSync(path: String): FileStat {
-  return blockOn(stat(path));
-}
-export function rmdirSync(path: String): void {
-  blockOn(rmdir(path));
-}
-export function globSync(pattern: String, options: GlobOptions | null = null): Array<String> {
-  return blockOn(glob(pattern, options));
 }

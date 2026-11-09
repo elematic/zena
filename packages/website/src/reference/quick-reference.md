@@ -2738,7 +2738,7 @@ characters, and `toHex` renders any `ByteArray` that way.
 import {sha256Hex, sha256HexOfString} from 'zena:crypto';
 
 sha256HexOfString('abc'); // 'ba7816bf8f01cfea...'
-sha256Hex(readFileBytesSync(path) as ByteArray);
+sha256Hex((await readFileBytes(path)) as ByteArray);
 ```
 
 ### zena:random
@@ -2859,13 +2859,11 @@ fail('message');                   // always fails
 ### zena:fs
 
 File system operations (component targets only). Every operation is
-asynchronous; each has a `Sync` twin for a synchronous `main`.
+asynchronous.
 
 ```zena
-import {readFile, writeFile, readFileSync} from 'zena:fs';
+import {readFile, writeFile} from 'zena:fs';
 
 let content = await readFile('input.txt');
 await writeFile('output.txt', content);
-
-let same = readFileSync('input.txt');
 ```

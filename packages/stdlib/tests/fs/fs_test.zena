@@ -2,18 +2,14 @@
 //
 // The test runner preopens the repository as `.` and a scratch
 // directory as `/tmp`. The asynchronous API is awaited directly in
-// async test bodies; the `Sync` forms are the same calls waited for
-// inside the library.
+// async test bodies.
 
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse, throws } from 'zena:assert';
 import {
   readFile, writeFile, exists, isFile, isDirectory, unlink, listDir, mkdir,
-  rmdir, stat, readFileBytes, writeFileBytes, glob, resolvePreopen,
-  DescriptorFlags, FsError,
-  readFileSync, writeFileSync, existsSync, isFileSync, isDirectorySync,
-  unlinkSync, getPreopens, globSync, GlobOptions, renameSync, statSync,
-  FileType, readFileBytesSync, writeFileBytesSync,
+  rmdir, rename, stat, readFileBytes, writeFileBytes, glob, resolvePreopen,
+  DescriptorFlags, FsError, getPreopens, GlobOptions, FileType,
 } from 'zena:fs';
 
 export let tests = suite('Filesystem', () => {
@@ -22,61 +18,57 @@ export let tests = suite('Filesystem', () => {
     isTrue(preopens.length > 0);
   });
 
-  test('writeFile and readFile roundtrip', (ctx) => {
+  test('writeFile and readFile roundtrip', async (ctx) => {
     let testPath = 'fs-test-roundtrip.txt';
     let content = 'Hello from Zena fs test!';
 
-    writeFileSync(testPath, content);
+    await writeFile(testPath, content);
 
-    isTrue(existsSync(testPath));
-    isTrue(isFileSync(testPath));
-    isFalse(isDirectorySync(testPath));
+    isTrue(await exists(testPath));
+    isTrue(await isFile(testPath));
+    isFalse(await isDirectory(testPath));
 
-    let read = readFileSync(testPath);
+    let read = await readFile(testPath);
     equal(read, content);
 
-    unlinkSync(testPath);
-    isFalse(existsSync(testPath));
+    await unlink(testPath);
+    isFalse(await exists(testPath));
   });
 
-  test('the asynchronous forms do the same through an await', async (ctx) => {
+  test('full file roundtrip through await', async (ctx) => {
     let path = '/tmp/zena-fs-async-roundtrip.txt';
     await roundTrip(path, 'written asynchronously');
-    isFalse(existsSync(path));
+    isFalse(await exists(path));
   });
 
   test('exists returns false for missing file', async (ctx) => {
-    isFalse(existsSync('non-existent-file-12345.txt'));
     isFalse(await exists('non-existent-file-12345.txt'));
   });
 
   test('a path outside every preopened directory exists as nothing', async (ctx) => {
     // The test sees `.`, `/stdlib` and `/tmp`, and nothing holds `/nowhere`.
-    isFalse(existsSync('/nowhere/file.txt'));
+    isFalse(await exists('/nowhere/file.txt'));
     isFalse(await exists('/nowhere'));
-    isFalse(isFileSync('/nowhere/file.txt'));
-    isFalse(isDirectorySync('/nowhere'));
+    isFalse(await isFile('/nowhere/file.txt'));
+    isFalse(await isDirectory('/nowhere'));
   });
 
   test('a missing file fails with an FsError naming the path', async (ctx) => {
-    throws(() => {
-      readFileSync('non-existent-file-12345.txt');
-    });
     let failure = await readFailure('non-existent-file-12345.txt');
     isTrue(failure is FsError);
     isTrue((failure as FsError).message.contains('non-existent-file-12345.txt'));
   });
 
-  test('readFile across different preopened directories', (ctx) => {
+  test('readFile across different preopened directories', async (ctx) => {
     let preopens = getPreopens();
     // The test runner maps the repository to `.` and a scratch directory
     // to `/tmp`; an absolute path resolves against its preopen.
     if (preopens.length > 1) {
        let tmpTestPath = '/tmp/zena-multi-preopen-test.txt';
-       writeFileSync(tmpTestPath, 'testing multi-preopen');
-       isTrue(existsSync(tmpTestPath));
-       equal(readFileSync(tmpTestPath), 'testing multi-preopen');
-       unlinkSync(tmpTestPath);
+       await writeFile(tmpTestPath, 'testing multi-preopen');
+       isTrue(await exists(tmpTestPath));
+       equal(await readFile(tmpTestPath), 'testing multi-preopen');
+       await unlink(tmpTestPath);
     }
   });
 
@@ -95,31 +87,26 @@ export let tests = suite('Filesystem', () => {
     equal(slashed, 'a/b');
   });
 
-  test('writeFile preserves newlines', (ctx) => {
+  test('writeFile preserves newlines', async (ctx) => {
     let testPath = 'fs-test-newlines.txt';
     let content = 'line1\nline2\nline3';
 
-    writeFileSync(testPath, content);
-    let read = readFileSync(testPath);
+    await writeFile(testPath, content);
+    let read = await readFile(testPath);
     equal(read, content);
 
-    unlinkSync(testPath);
+    await unlink(testPath);
   });
 
   test('glob filesystem search', async (ctx) => {
-    let found = globSync('packages/stdlib/tests/path/*_test.zena');
+    let found = await glob('packages/stdlib/tests/path/*_test.zena');
     isTrue(found.length > 0);
     equal(found[0], 'packages/stdlib/tests/path/path_test.zena');
-
-    // The asynchronous form, through an await.
-    let foundAsync = await glob('packages/stdlib/tests/path/*_test.zena');
-    equal(foundAsync.length, found.length);
-    equal(foundAsync[0], found[0]);
 
     // Test with cwd option
     let cwdOpts = new GlobOptions();
     cwdOpts.cwd = 'packages/stdlib';
-    let foundCwd = globSync('tests/path/*_test.zena', cwdOpts);
+    let foundCwd = await glob('tests/path/*_test.zena', cwdOpts);
     isTrue(foundCwd.length > 0);
     equal(foundCwd[0], 'tests/path/path_test.zena');
 
@@ -129,38 +116,38 @@ export let tests = suite('Filesystem', () => {
     let excludes = new GrowableArray<String>();
     excludes.push('**/path_test.zena');
     opts.exclude = excludes;
-    let excluded = globSync('tests/path/*_test.zena', opts);
+    let excluded = await glob('tests/path/*_test.zena', opts);
     equal(excluded.length, 0);
   });
 
-  test('glob with braces in a directory segment', (ctx) => {
+  test('glob with braces in a directory segment', async (ctx) => {
     // The walk has to start above the braces: there is no directory
     // named `{path,glob}` to start from.
-    let found = globSync('packages/stdlib/tests/{path,glob}/*_test.zena');
+    let found = await glob('packages/stdlib/tests/{path,glob}/*_test.zena');
     equal(found.length, 2);
     equal(found[0], 'packages/stdlib/tests/glob/glob_test.zena');
     equal(found[1], 'packages/stdlib/tests/path/path_test.zena');
   });
 
-  test('stat reports a modification time', (ctx) => {
+  test('stat reports a modification time', async (ctx) => {
     let path = '/tmp/zena-fs-stat-test.txt';
-    writeFileSync(path, 'x');
-    let info = statSync(path);
+    await writeFile(path, 'x');
+    let info = await stat(path);
     equal(info.fileType, FileType.RegularFile);
     equal(info.size, 1 as i64);
     // Nanoseconds since the Unix epoch: 2020-01-01 is 1.5777e18.
     isTrue(info.modified > (1577836800000000000 as i64));
-    unlinkSync(path);
+    await unlink(path);
   });
 
-  test('readFileBytes reads an empty file', (ctx) => {
+  test('readFileBytes reads an empty file', async (ctx) => {
     let path = '/tmp/zena-fs-empty.bin';
-    writeFileBytesSync(path, new FixedArray<u8>(0, 0 as u8));
-    equal(readFileBytesSync(path).length, 0);
-    unlinkSync(path);
+    await writeFileBytes(path, new FixedArray<u8>(0, 0 as u8));
+    equal((await readFileBytes(path)).length, 0);
+    await unlink(path);
   });
 
-  test('readFileBytes reads a file larger than one host read', (ctx) => {
+  test('readFileBytes reads a file larger than one host read', async (ctx) => {
     // zena-runtime reads 256 KiB per host read (fs_read.rs): this spans
     // several, with a pattern whose period does not divide the read
     // size, so a misplaced or repeated chunk shows.
@@ -170,8 +157,8 @@ export let tests = suite('Filesystem', () => {
     for (var i = 0; i < size; i += 1) {
       data[i] = (i % 251) as u8;
     }
-    writeFileBytesSync(path, data);
-    let read = readFileBytesSync(path);
+    await writeFileBytes(path, data);
+    let read = await readFileBytes(path);
     equal(read.length, size);
     var mismatches = 0;
     for (var i = 0; i < size; i += 1) {
@@ -180,18 +167,18 @@ export let tests = suite('Filesystem', () => {
       }
     }
     equal(mismatches, 0);
-    unlinkSync(path);
+    await unlink(path);
   });
 
-  test('rename moves a file and replaces an existing one', (ctx) => {
+  test('rename moves a file and replaces an existing one', async (ctx) => {
     let from = '/tmp/zena-fs-rename-from.txt';
     let to = '/tmp/zena-fs-rename-to.txt';
-    writeFileSync(to, 'old');
-    writeFileSync(from, 'new');
-    renameSync(from, to);
-    isFalse(existsSync(from));
-    equal(readFileSync(to), 'new');
-    unlinkSync(to);
+    await writeFile(to, 'old');
+    await writeFile(from, 'new');
+    await rename(from, to);
+    isFalse(await exists(from));
+    equal(await readFile(to), 'new');
+    await unlink(to);
   });
 
   test('a directory is made, listed and removed asynchronously', async (ctx) => {
@@ -199,14 +186,14 @@ export let tests = suite('Filesystem', () => {
     equal(names.length, 2);
     isTrue(names[0] == 'a.txt' || names[1] == 'a.txt');
     isTrue(names[0] == 'b.txt' || names[1] == 'b.txt');
-    isFalse(existsSync('/tmp/zena-fs-dir-test'));
+    isFalse(await exists('/tmp/zena-fs-dir-test'));
   });
 
   test('a descriptor opened through resolvePreopen reads and streams a file', async (ctx) => {
     let path = '/tmp/zena-fs-descriptor-test.txt';
-    writeFileSync(path, 'through a descriptor');
+    await writeFile(path, 'through a descriptor');
     equal(await viaDescriptor(path), 'through a descriptor');
-    unlinkSync(path);
+    await unlink(path);
   });
 });
 
