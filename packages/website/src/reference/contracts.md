@@ -348,9 +348,12 @@ function search(items: FixedArray<i32>, target: i32): i32
 
 ## Static clauses (static)
 
-Prefixing a clause with `static` makes it a specification: type-checked in every
-build and never checked at run time. It is for a condition that is meant to be
-proved rather than run, or that could not run at all.
+Prefixing a clause with `static` makes it a condition the compiler is to prove
+at compile time instead of checking at run time. It is for a condition that is
+meant to be proved rather than run, or that could not run at all. The compiler
+does not prove anything yet: today a `static` clause is type-checked in every
+build and never checked, and once the compiler can prove some, a `static` clause
+it cannot prove becomes an error.
 
 ```zena
 function search(items: FixedArray<i32>, target: i32): i32

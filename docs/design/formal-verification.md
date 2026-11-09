@@ -410,6 +410,9 @@ lemma reversePreservesLength<T>(list: List<T>)
 
 ### Refinement Types
 
+The design for Zena is [refinement-types.md](./refinement-types.md);
+the examples below are sketches.
+
 A refinement type is a base type plus a predicate that values must satisfy:
 
 ```zena
@@ -713,6 +716,9 @@ AI figures out how, verifier ensures correctness.
    - Foundation for future verification
 
 2. **Add simple refinement types**
+   - Design: [refinement-types.md](./refinement-types.md), with
+     [pure-functions.md](./pure-functions.md) for the functions
+     predicates and `static` clauses may call
    - `type Positive = i32 where self > 0`
    - Compiler proves simple predicates automatically
    - Subsumption checking via SMT

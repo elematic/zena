@@ -472,8 +472,9 @@ function search(items: FixedArray<i32>, target: i32): i32
 A `debug requires` clause does not narrow types in the body because ordinary
 builds run without it.
 
-A clause marked `static` is a specification: type-checked in every build and
-never checked at run time, for a condition meant to be proved rather than run.
+A clause marked `static` is to be proved at compile time rather than checked at
+run time. The compiler does not prove anything yet, so today it is type-checked
+in every build and never checked.
 
 ```zena
 function search(items: FixedArray<i32>, target: i32): i32

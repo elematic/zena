@@ -1790,12 +1790,14 @@ The compiler type-checks a `debug` clause in every build. A
 `debug requires` narrows nothing in the body, since the body may run
 without the check.
 
-#### Clauses that are never run: `static`
+#### Clauses that are proved, not run: `static`
 
-A clause marked `static` is a specification: the compiler type-checks
-it in every build and never checks it at run time. It is for a
-condition that is meant to be proved rather than run, or that could
-not run at all.
+A clause marked `static` is one the compiler is to prove at compile
+time instead of checking at run time. It is for a condition that is
+meant to be proved rather than run, or that could not run at all. The
+compiler does not prove anything yet: today a `static` clause is
+type-checked in every build and never checked, and a `static` clause
+the compiler cannot prove will become an error once it can prove some.
 
 ```zena
 function search(items: FixedArray<i32>, target: i32): i32
