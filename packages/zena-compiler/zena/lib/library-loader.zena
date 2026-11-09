@@ -344,22 +344,12 @@ export class LibraryLoader {
     // as ModuleNotFound.
     let targets = new Array<String>();
     for (let stmt in ast.body) {
-      var specifier: String | null = null;
-      match (stmt) {
-        case ImportDeclaration {moduleSpecifier}: {
-          specifier = moduleSpecifier.value;
-        }
-        case ExportAllDeclaration {moduleSpecifier}: {
-          specifier = moduleSpecifier.value;
-        }
-        case ExportFromDeclaration {moduleSpecifier}: {
-          specifier = moduleSpecifier.value;
-        }
-        case _: {}
-      }
-      if (specifier == null) {
-        continue;
-      }
+      let specifier = match (stmt) {
+        case ImportDeclaration {moduleSpecifier}: moduleSpecifier.value
+        case ExportAllDeclaration {moduleSpecifier}: moduleSpecifier.value
+        case ExportFromDeclaration {moduleSpecifier}: moduleSpecifier.value
+        case _: { continue; }
+      };
       let target = this.#resolveImport(record, pinned, specifier);
       if (target != null && !this.#cache.has(target)) {
         targets.push(target);
