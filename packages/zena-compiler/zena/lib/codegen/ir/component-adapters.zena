@@ -60,6 +60,7 @@ import { FunctionDeclaration } from '../../ast.zena';
 import { IrBody } from './ir.zena';
 import { IrBuilder } from './builder.zena';
 import { IrRefFunc } from './ir.zena';
+import { isAsyncGeneratorFunction } from './async.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import { ExportKey } from '../codegen-utils.zena';
 import {
@@ -88,11 +89,11 @@ let driverModule = 'wasi';
  *
  * "Needs one" is decided by reachability, not by a flag: `componentPoll`
  * is reached exactly when the program pulled in `zena:wasi` and either
- * awaited something through it, blocked through it (a file read, a
- * stdout write that did not complete at once — only a task the host
- * lifted async may block), or has an async main; and always on the
- * zena command's host. A program that does none of that gets the
- * synchronous lift and none of this.
+ * awaited something through it, blocked in `waitable-set.wait` (a stdout
+ * write that did not complete at once — only a task the host lifted
+ * async may block), or has an async main; and always on the zena
+ * command's host. A program that does none of that gets the synchronous
+ * lift and none of this.
  */
 export function prepareComponentEntry(
   wasm: WasmModule,
@@ -137,20 +138,12 @@ export function prepareComponentEntry(
     // leaves the driver unused.
     return;
   }
-  var main = wasm.exportMap[key];
+  let main = wasm.exportMap[key];
   // `async function main(): Future<void>` is the natural spelling of
   // a program that awaits, and the entry drives its ramp through
   // `finishVoidTask` so a rejection lands in `ctx.failure` for
-  // `componentPoll` / `componentResume` to throw. The level-0 wrapper
-  // the async pass exported (drain, then unwrap) must not be the
-  // callee: its unwrap throws on a future the host still owes events
-  // to.
-  var mainIsAsync = false;
-  let rampBack = main.asyncMainRamp;
-  if (main.isAsyncMainWrapper && rampBack != null) {
-    main = rampBack as WasmFunction;
-    mainIsAsync = true;
-  }
+  // `componentPoll` / `componentResume` to throw.
+  let mainIsAsync = main.isAsyncRamp && !isAsyncGeneratorFunction(main);
   if (main.signature.params.length != 0) {
     throw new Error(
       'The component target cannot drive a main that takes parameters.'
@@ -302,9 +295,8 @@ function mainTaskReturn(wasm: WasmModule, main: WasmFunction): WasmFunction {
 /**
  * `zena:host-setup`'s `installHost`, when the target loads that module
  * (the zena command's host): called by every entry before the program
- * runs, so `Error`'s stack traces come from the host and a synchronous
- * wait may block. Null on a portable component, which has no host to
- * ask and links the blocking wait only where it blocks.
+ * runs, so `Error`'s stack traces come from the host. Null on a
+ * portable component, which has no host to ask.
  */
 function hostSetupInstall(
   wasm: WasmModule,

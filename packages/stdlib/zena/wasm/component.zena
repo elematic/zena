@@ -17,11 +17,12 @@
  * ```zena
  * import { runModule } from 'zena:wasm';
  *
- * let result = runModule('out/hello.wasm', {args: ['hello', 'world']});
+ * let result = await runModule('out/hello.wasm', {args: ['hello', 'world']});
  * console.log(`${result.outcome} ${result.exitCode}`);
  * ```
  */
 
+import { Future } from 'zena:async';
 import { Own } from 'zena:core';
 import { Duration } from 'zena:time';
 import {
@@ -210,13 +211,13 @@ export resource class Run {
 
   new(run: Own<HostRun>) : #run = run;
 
-  /** Block until the run ends. Waiting again returns the same result. */
-  wait(): RunResult {
+  /** Wait for the run to end without blocking this program's other tasks. Waiting again returns the same result. */
+  async wait(): Future<RunResult> {
     let cached = this.#result;
     if (cached != null) {
       return cached;
     }
-    let result = resultOf(this.#run.wait());
+    let result = resultOf(await this.#run.wait());
     this.#result = result;
     return result;
   }
@@ -228,8 +229,9 @@ export function startModule(path: String, options: RunOptions = {}): Own<Run> {
 }
 
 /** Run a component to its end. */
-export function runModule(path: String, options: RunOptions = {}): RunResult {
-  return startModule(path, options).wait();
+export async function runModule(path: String, options: RunOptions = {}): Future<RunResult> {
+  let run = startModule(path, options);
+  return await run.wait();
 }
 
 /**

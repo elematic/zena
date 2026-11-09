@@ -122,8 +122,8 @@ function printIndented(label: String, text: String) {
 }
 
 /** Waits for a test and prints its result line. Returns whether it passed. */
-function report(running: RunningTest): boolean {
-  let result = running.run.wait();
+async function report(running: RunningTest): Future<boolean> {
+  let result = await running.run.wait();
   let ms = (result.callTime as i64 as f64) / 1000000.0;
   let tenths = ((ms * 10.0) as i64 as f64) / 10.0;
   if (result.succeeded()) {
@@ -229,7 +229,7 @@ async function compileAhead(files: Array<String>, options: Options): Future<void
     compiling.push(disown(startCopy('--compile', share, options)));
   }
   for (let run in compiling) {
-    run.wait();
+    await run.wait();
   }
 }
 
@@ -278,7 +278,7 @@ export async function testCommand(args: ParsedArgs, options: Options): Future<i3
   var next = 0;
   while (next < files.length || reported < running.length) {
     if (running.length - reported >= limit || next >= files.length) {
-      if (report(running[reported])) {
+      if (await report(running[reported])) {
         passed += 1;
       } else {
         failed += 1;
@@ -336,7 +336,7 @@ async function runSingle(args: ParsedArgs, options: Options): Future<i32> {
   if (module == null) {
     return 1;
   }
-  let result = runModule(module.value, {
+  let result = await runModule(module.value, {
     args: [file],
     env: {'ZENA_REPO_ROOT' => repoRoot().value},
     inheritEnv: true,
