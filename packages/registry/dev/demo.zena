@@ -33,9 +33,46 @@ import {Server} from 'zena:http';
 import {FakePds} from 'package-manager:testing/fake-pds';
 import {MemoryHandleRecords, dnsOverHttpsApp, dnsOverHttpsUpstream} from 'registry:handles';
 import {configFromEnv, serve} from 'registry:service';
+import {AppView, AppViewError} from 'registry:app-view';
+import {nowMicros} from 'pds:xrpc/common';
 
 let MAINTAINER = 'did:plc:maintainermaintainermain';
 let PASSWORD = 'demo-app-password';
+
+/**
+ * Creates the scopes `pairs` names, `<scope>=<owner's DID or handle>`
+ * separated by spaces (`DEMO_SCOPES`), as the operator's
+ * `main.zena create-scope` would. That command acts on a server's store,
+ * which for the demo is in this process, and only it takes a name the App
+ * View reserves, such as `zena`.
+ */
+async function createScopes(appView: AppView, pairs: String): Future<void> {
+  for (let pair in pairs.split(' ')) {
+    if (pair == '') {
+      continue;
+    }
+    let parts = pair.split('=');
+    if (parts.length != 2 || parts[0] == '' || parts[1] == '') {
+      console.error(`DEMO_SCOPES: '${pair}' is not <scope>=<owner's DID or handle>`);
+      continue;
+    }
+    let owner = if (parts[1].startsWith('did:')) parts[1] else await appView.resolveHandle(parts[1]);
+    if (owner == null) {
+      console.error(`DEMO_SCOPES: ${parts[1]} does not resolve to a DID`);
+      continue;
+    }
+    try {
+      let created = await appView.createScopeAsOperator(owner, parts[0], [], nowMicros());
+      console.log(`Created the scope ${created.handle}, owned by ${owner}.`);
+    } catch (e) {
+      if (e is AppViewError) {
+        console.error(`DEMO_SCOPES: ${parts[0]}: ${e.message}`);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
 
 export async function main(): Future<void> {
   let world = new FakePds();
@@ -75,6 +112,7 @@ export async function main(): Future<void> {
     return null;
   });
   let running = await serve(config);
+  await createScopes(running.service.appView, getEnv('DEMO_SCOPES') ?? '');
   let upstream = dnsOverHttpsUpstream(getEnv('APP_VIEW_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
   let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords, upstream), 0 as u16);
   dns.start();
@@ -101,7 +139,9 @@ export async function main(): Future<void> {
     \`zena pkg add <name>.acme.pkg.test\`, then import its libraries as
     '<name>:<library>' and \`zena run\`.
     To see /admin when you sign in to the pages, start the demo with
-    APP_VIEW_ADMIN_DIDS set to your DID.
+    APP_VIEW_ADMIN_DIDS set to your DID. A scope the App View reserves, such
+    as zena, is created only as the operator: start the demo with
+    DEMO_SCOPES="zena=<your handle or DID>".
     Ctrl-C stops the App View and forgets everything it held in memory.
   `);
   await world.done();
