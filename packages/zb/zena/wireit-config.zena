@@ -324,18 +324,18 @@ function parseEnv(
  * on in-memory fixtures.
  */
 export class WireitWorkspace {
-  #readFile: (path: String) => String?;
+  #readFile: (path: String) => Future<String?>;
   #packages = new HashMap<String, JsonObject>();
 
-  new(readFile: (path: String) => String?) : #readFile = readFile;
+  new(readFile: (path: String) => Future<String?>) : #readFile = readFile;
 
-  #packageJson(packageDir: String): JsonObject {
+  async #packageJson(packageDir: String): Future<JsonObject> {
     if (let (true, cached) = this.#packages.get(packageDir)) {
       return cached;
     }
     let path = joinWorkspace(packageDir, 'package.json');
     let readFile = this.#readFile;
-    let content = readFile(path);
+    let content = await readFile(path);
     if (content == null) {
       throw new ConfigError('no package.json at ' + path);
     }
@@ -347,8 +347,8 @@ export class WireitWorkspace {
     return parsed;
   }
 
-  scriptConfig(ref: ScriptRef): ScriptConfig {
-    let pkg = this.#packageJson(ref.packageDir);
+  async scriptConfig(ref: ScriptRef): Future<ScriptConfig> {
+    let pkg = await this.#packageJson(ref.packageDir);
     let where = refKey(ref);
 
     var wireitEntry: JsonValue = null;
@@ -481,7 +481,7 @@ export class WireitWorkspace {
   }
 
   /** The transitive dependency closure, in discovery (BFS) order. */
-  collect(entries: Array<ScriptRef>): Array<ScriptConfig> {
+  async collect(entries: Array<ScriptRef>): Future<Array<ScriptConfig>> {
     let seen = new HashSet<String>();
     let queue = new GrowableArray<ScriptRef>();
     let out = new GrowableArray<ScriptConfig>();
@@ -495,7 +495,7 @@ export class WireitWorkspace {
       if (!seen.add(refKey(ref))) {
         continue;
       }
-      let config = this.scriptConfig(ref);
+      let config = await this.scriptConfig(ref);
       out.push(config);
       for (let dep in config.dependencies) {
         queue.push(dep.ref);

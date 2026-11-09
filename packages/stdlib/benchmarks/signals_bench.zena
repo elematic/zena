@@ -36,15 +36,15 @@ class PlainStep {
   }
 }
 
-export function main(): i32 {
+export async function main(): Future<i32> {
   let runner = new BenchRunner('signals');
   runner.options.minSamples = 30;
 
   // set, then get at the end of a chain of 100 computeds: every link
   // reruns, and each rerun reuses its one dependency link.
-  runner.bench('chain of 100: set + get', (ctx: BenchContext): void => {
+  runner.bench('chain of 100: set + get', (ctx) => {
     let s = new State(0);
-    var last: Computed<i32> = new Computed<i32>((): i32 => s.get());
+    var last = new Computed<i32>(() => s.get());
     for (var i = 0; i < WIDTH; i += 1) {
       last = new Step(last);
     }
@@ -62,7 +62,7 @@ export function main(): i32 {
     }
   });
 
-  runner.bench('chain of 100, no signals: set + get', (ctx: BenchContext): void => {
+  runner.bench('chain of 100, no signals: set + get', (ctx) => {
     let first = new PlainStep(null);
     var last = first;
     for (var i = 0; i < WIDTH; i += 1) {
@@ -81,12 +81,12 @@ export function main(): i32 {
   });
 
   // One state read by 100 effects: each set marks and reruns all of them.
-  runner.bench('100 effects: set', (ctx: BenchContext): void => {
+  runner.bench('100 effects: set', (ctx) => {
     let s = new State(0);
     var total = 0;
     let effects = new Array<Effect>();
     for (var i = 0; i < WIDTH; i += 1) {
-      effects.push(effect((): void => {
+      effects.push(effect(() => {
         total += s.get();
       }));
     }
@@ -102,13 +102,13 @@ export function main(): i32 {
 
   // An effect reading 100 states, all set in one batch: the effect runs
   // once per batch.
-  runner.bench('batch of 100 sets, 1 effect', (ctx: BenchContext): void => {
+  runner.bench('batch of 100 sets, 1 effect', (ctx) => {
     let states = new Array<State<i32>>();
     for (var i = 0; i < WIDTH; i += 1) {
       states.push(new State(0));
     }
     var runs = 0;
-    let e = effect((): void => {
+    let e = effect(() => {
       runs += 1;
       for (let s in states) {
         s.get();
@@ -116,7 +116,7 @@ export function main(): i32 {
     });
     ctx.start();
     for (var i = 0; i < ITERATIONS / WIDTH as i32; i += 1) {
-      batch<void>((): void => {
+      batch<void>(() => {
         for (let s in states) {
           s.set(i + 1);
         }
@@ -127,7 +127,7 @@ export function main(): i32 {
   });
 
   // Reading a state outside any computed: the cost every plain read pays.
-  runner.bench('untracked get', (ctx: BenchContext): void => {
+  runner.bench('untracked get', (ctx) => {
     let s = new State(1);
     ctx.start();
     var sum = 0;
@@ -140,7 +140,7 @@ export function main(): i32 {
     }
   });
 
-  let report = runner.run();
+  let report = await runner.run();
   console.log(reportToString(report));
   return 0;
 }

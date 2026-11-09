@@ -3,17 +3,13 @@ import {
   FsError,
   FsErrorCode,
   exists,
-  existsSync,
   isFile,
-  isFileSync,
   listDir,
-  listDirSync,
+  readFile,
   readFileBytes,
-  readFileSync,
-  renameSync,
+  rename,
   stat,
-  statSync,
-  writeFileSync,
+  writeFile,
 } from 'zena:fs';
 import { HashSet } from 'zena:collections';
 import {compareStrings, sortBy} from 'workflow:canonical';
@@ -21,7 +17,7 @@ import {Fingerprint} from 'workflow:fingerprint';
 import {StringBuilder} from 'zena:core';
 import {GlobSet, hasMagic} from 'zena:glob';
 import {isAbsolute} from 'zena:path';
-import {ensureParentDirSync, joinWorkspace, withRoot} from './fs-util.zena';
+import {ensureParentDir, joinWorkspace, withRoot} from './fs-util.zena';
 import {HashMemoEntry, hashesFromJson, hashesToJson} from './state-json.zena';
 import {sha256Hex} from 'zena:crypto';
 import {ConfigError} from './wireit-config.zena';
@@ -167,55 +163,6 @@ export async function expandGlobs(
   return out;
 }
 
-function collectFilesSync(
-  root: String,
-  dir: String,
-  set: GlobSet,
-  out: GrowableArray<String>,
-  seen: HashSet<String>,
-): void {
-  let full = withRoot(root, dir);
-  if (!existsSync(full)) {
-    return;
-  }
-  if (isFileSync(full)) {
-    if (set.matches(dir) && seen.add(dir)) {
-      out.push(dir);
-    }
-    return;
-  }
-  for (let entry in listDirSync(full)) {
-    if (entry.name == '.' || entry.name == '..') {
-      continue;
-    }
-    if (entry.fileType == FileType.Directory) {
-      if (!skipDir(entry.name)) {
-        collectFilesSync(root, joinWorkspace(dir, entry.name), set, out, seen);
-      }
-    } else {
-      let path = joinWorkspace(dir, entry.name);
-      if (set.matches(path) && seen.add(path)) {
-        out.push(path);
-      }
-    }
-  }
-}
-
-export function expandGlobsSync(
-  root: String,
-  packageDir: String,
-  globs: Array<String>,
-): Array<String> {
-  let (set, bases) = prepareGlobs(packageDir, globs);
-  let out = new GrowableArray<String>();
-  let seen = new HashSet<String>();
-  for (let base in bases) {
-    collectFilesSync(root, base, set, out, seen);
-  }
-  sortBy(out, (a, b) => compareStrings(a, b));
-  return out;
-}
-
 /** The content fingerprint zb uses everywhere: 'sha256:<hex>'. */
 export async function hashFile(root: String, path: String): Future<Fingerprint> {
   return new Fingerprint('sha256:' + sha256Hex(await readFileBytes(withRoot(root, path))));
@@ -264,15 +211,15 @@ export class FileHasher {
   }
 
   /** Loads `<root>/.zb/hashes.json` if present, skipping racily-recent entries. */
-  loadSync(): void {
+  async load(): Future<void> {
     let path = this.#hashesPath();
-    if (!isFileSync(path)) {
+    if (!(await isFile(path))) {
       return;
     }
     try {
-      let memoStat = statSync(path);
+      let memoStat = await stat(path);
       let cutoff = memoStat.modified - RACY_WINDOW_NANOS;
-      let loaded = hashesFromJson(readFileSync(path));
+      let loaded = hashesFromJson(await readFile(path));
       loaded.forEach((filePath, entry) => {
         if (memoStat.modified > (0 as i64) && entry.modified < cutoff) {
           this.#memo[filePath] = entry;
@@ -284,15 +231,15 @@ export class FileHasher {
   }
 
   /** Persists updated `(modified, size) -> sha256` entries to `<root>/.zb/hashes.json`. */
-  saveSync(): void {
+  async save(): Future<void> {
     if (!this.#dirty) {
       return;
     }
     let path = this.#hashesPath();
     let merged = new HashMap<String, HashMemoEntry>();
-    if (isFileSync(path)) {
+    if (await isFile(path)) {
       try {
-        hashesFromJson(readFileSync(path)).forEach((k, v) => {
+        hashesFromJson(await readFile(path)).forEach((k, v) => {
           merged[k] = v;
         });
       } catch (e) {}
@@ -302,10 +249,10 @@ export class FileHasher {
         merged[k] = v;
       }
     });
-    ensureParentDirSync(path);
+    await ensureParentDir(path);
     let tmp = path + '.tmp';
-    writeFileSync(tmp, hashesToJson(merged));
-    renameSync(tmp, path);
+    await writeFile(tmp, hashesToJson(merged));
+    await rename(tmp, path);
     this.#dirty = false;
   }
 

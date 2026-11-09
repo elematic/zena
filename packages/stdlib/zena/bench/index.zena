@@ -20,13 +20,13 @@
  *   // benchmark workload B
  * });
  *
- * let report = runner.run();
+ * let report = await runner.run();
  * ```
  */
 
 import { StringBuilder } from 'zena:core';
 import { JsonBuilder } from 'zena:json';
-import { readFileSync, isFileSync } from 'zena:fs';
+import { readFile, isFile } from 'zena:fs';
 import { monotonic } from 'zena:time';
 import { now as wallClockNow } from 'wasi:clocks/system-clock';
 import { abs, floor, div } from 'zena:math';
@@ -221,7 +221,7 @@ export class BenchRunner {
    * Runs all variants: warmup, then minSamples round-robin rounds, then
    * auto-sampling rounds until conclusive or over budget.
    */
-  run(): BenchReport {
+  async run(): Future<BenchReport> {
     if (this.#cases.length == 0) {
       throw new Error('BenchRunner has no benchmarks registered');
     }
@@ -260,7 +260,7 @@ export class BenchRunner {
     return new BenchReport(
       this.name,
       round.results,
-      collectMachineInfo(),
+      await collectMachineInfo(),
       realtimeMs(),
       nowMs() - started,
       round.allResolved,
@@ -292,9 +292,9 @@ export class MachineInfo {
 
 }
 
-function tryReadFile(path: String) {
+async function tryReadFile(path: String) {
   return try {
-  if (isFileSync(path)) { readFileSync(path) } else { null }
+  if (await isFile(path)) { await readFile(path) } else { null }
 } catch (e) {
   null
 };
@@ -324,10 +324,10 @@ function lineValue(line: String) {
   return trim(parts[1]);
 }
 
-export function collectMachineInfo(): MachineInfo {
+export async function collectMachineInfo(): Future<MachineInfo> {
   let info = new MachineInfo();
 
-  let cpuinfo = tryReadFile('/proc/cpuinfo');
+  let cpuinfo = await tryReadFile('/proc/cpuinfo');
   if (cpuinfo != null) {
     var cores = 0;
     for (let line in cpuinfo.split('\n')) {
@@ -342,7 +342,7 @@ export function collectMachineInfo(): MachineInfo {
     }
   }
 
-  let meminfo = tryReadFile('/proc/meminfo');
+  let meminfo = await tryReadFile('/proc/meminfo');
   if (meminfo != null) {
     for (let line in meminfo.split('\n')) {
       // Lines look like "MemTotal:       23990728 kB".
@@ -358,7 +358,7 @@ export function collectMachineInfo(): MachineInfo {
     }
   }
 
-  let loadavg = tryReadFile('/proc/loadavg');
+  let loadavg = await tryReadFile('/proc/loadavg');
   if (loadavg != null) {
     let parts = trim(loadavg).split(' ');
     if (parts.length >= 3) {
@@ -368,7 +368,7 @@ export function collectMachineInfo(): MachineInfo {
     }
   }
 
-  let hostname = tryReadFile('/etc/hostname');
+  let hostname = await tryReadFile('/etc/hostname');
   if (hostname != null) {
     let trimmed = trim(hostname);
     if (trimmed.length > 0) {
@@ -423,17 +423,17 @@ function computeResults(cases: Array<NamedSamples>, horizons: Horizons): RoundRe
  * BenchRunner.run(), minus the sampling loop. durationMs is the caller's
  * total sampling time (0.0 if unknown).
  */
-export function analyze(
+export async function analyze(
   suiteName: String,
   cases: Array<NamedSamples>,
   options: BenchOptions,
   durationMs: f64,
-): BenchReport {
+): Future<BenchReport> {
   let round = computeResults(cases, parseHorizons(options.horizons));
   return new BenchReport(
     suiteName,
     round.results,
-    collectMachineInfo(),
+    await collectMachineInfo(),
     realtimeMs(),
     durationMs,
     round.allResolved,

@@ -1,7 +1,7 @@
 import {Future} from 'zena:async';
 import {getEnv} from 'zena:cli';
 import { HashSet } from 'zena:collections';
-import {isFileSync, readFileSync, writeFileSync} from 'zena:fs';
+import {isFile, readFile, writeFile} from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {NullCache, StepCache} from 'workflow:cache';
 import {
@@ -15,11 +15,11 @@ import {
 } from 'workflow:engine';
 import {Fingerprint} from 'workflow:fingerprint';
 import {OutputManifest} from 'workflow:manifest';
-import {EngineState} from 'workflow:state';
+import {EngineState, StepRecord} from 'workflow:state';
 import {StepKey} from 'workflow:step';
 import {DiskCache, stateDirOf} from './disk-cache.zena';
 import {planScripts} from './builder.zena';
-import {ensureParentDirSync, readFileOrNullSync, withRoot} from './fs-util.zena';
+import {ensureParentDir, readFileOrNull, withRoot} from './fs-util.zena';
 import {FileHasher} from './fs-walk.zena';
 import {sha256HexOfString} from 'zena:crypto';
 import {stateFromJson, stateToJson} from './state-json.zena';
@@ -33,14 +33,14 @@ function packageStatePath(root: String, stateDir: String) {
   return withRoot(root, stateDir + '/state.json');
 }
 
-function loadState(root: String, stateDirs: Array<String>) {
+async function loadState(root: String, stateDirs: Array<String>) {
   let state = new EngineState();
   for (let stateDir in stateDirs) {
     let path = packageStatePath(root, stateDir);
-    if (!isFileSync(path)) {
+    if (!(await isFile(path))) {
       continue;
     }
-    stateFromJson(readFileSync(path)).forEach((key, record) => {
+    stateFromJson(await readFile(path)).forEach((key, record) => {
       state.setRecord(new StepKey(key), record);
     });
   }
@@ -52,31 +52,39 @@ function loadState(root: String, stateDirs: Array<String>) {
  * already holds — a run of one target must not drop a package's
  * records for scripts outside the run's closure.
  */
-function saveState(root: String, result: RunResult, skipKey: String? = null) {
-  let byDir = new HashMap<String, EngineState>();
+async function saveState(root: String, result: RunResult, skipKey: String? = null) {
+  let entries = new GrowableArray<(String, StepRecord)>();
   let dirs = new GrowableArray<String>();
+  let seenDirs = new HashSet<String>();
   result.state.forEach((key, record) => {
     if (skipKey != null && key == skipKey) {
       return;
     }
+    entries.push((key, record));
     let stateDir = stateDirOf(key);
-    if (!byDir.has(stateDir)) {
-      let path = packageStatePath(root, stateDir);
-      byDir[stateDir] = if (isFileSync(path))
-        stateFromJson(readFileSync(path))
-      else
-        EngineState.empty();
+    if (seenDirs.add(stateDir)) {
       dirs.push(stateDir);
     }
+  });
+  let byDir = new HashMap<String, EngineState>();
+  for (let stateDir in dirs) {
+    let path = packageStatePath(root, stateDir);
+    byDir[stateDir] = if (await isFile(path))
+      stateFromJson(await readFile(path))
+    else
+      EngineState.empty();
+  }
+  for (let (key, record) in entries) {
+    let stateDir = stateDirOf(key);
     if (let (true, packageState) = byDir.get(stateDir)) {
       packageState.setRecord(new StepKey(key), record);
     }
-  });
+  }
   for (let stateDir in dirs) {
     if (let (true, packageState) = byDir.get(stateDir)) {
       let path = packageStatePath(root, stateDir);
-      ensureParentDirSync(path);
-      writeFileSync(path, stateToJson(packageState));
+      await ensureParentDir(path);
+      await writeFile(path, stateToJson(packageState));
     }
   }
 }
@@ -172,15 +180,15 @@ export async function buildTarget(
 ): Future<BuildOutcome> {
   let jobs = if (parallelism > 0) parallelism else defaultParallelism();
   let workspace = new WireitWorkspace(
-    (path: String) => readFileOrNullSync(withRoot(root, path)),
+    (path: String) => readFileOrNull(withRoot(root, path)),
   );
-  let configs = workspace.collect([entry]);
+  let configs = await workspace.collect([entry]);
   let foregroundServiceKey = if (configs.length > 0 && configs[0].service != null)
     refKey(entry)
   else
     null;
   let hasher = hasherOut ?? new FileHasher(root);
-  hasher.loadSync();
+  await hasher.load();
   let plan = planScripts(
     root,
     configs,
@@ -213,15 +221,15 @@ export async function buildTarget(
   let result = await engine.run(
     plan.graph,
     plan.leaves,
-    loadState(root, stateDirs),
+    await loadState(root, stateDirs),
     new RunOptions(
       jobs,
       force,
       (step, manifest) => verifyManifestOutputs(hasher, manifest),
     ),
   );
-  saveState(root, result, foregroundServiceKey);
-  hasher.saveSync();
+  await saveState(root, result, foregroundServiceKey);
+  await hasher.save();
   let stepKeys = new GrowableArray<String>();
   for (let config in configs) {
     stepKeys.push(refKey(config.ref));

@@ -2,16 +2,16 @@ import {suite, test} from 'zena:test';
 import {equal, equalText, fail, isTrue} from 'zena:assert';
 import {
   FileType,
-  listDirSync,
-  readFileSync,
-  readFileBytesSync,
-  writeFileSync,
-  writeFileBytesSync,
+  listDir,
+  readFile,
+  readFileBytes,
+  writeFile,
+  writeFileBytes,
 } from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {RunResult, StepSource, Succeeded} from 'workflow:engine';
 import {StepKey} from 'workflow:step';
-import {ensureDirSync, withRoot} from '../fs-util.zena';
+import {ensureDir, withRoot} from '../fs-util.zena';
 import {buildTarget} from '../runner.zena';
 import {ScriptRef} from '../wireit-config.zena';
 
@@ -23,9 +23,9 @@ import {ScriptRef} from '../wireit-config.zena';
  * place.
  */
 
-function copyDir(from: String, to: String): void {
-  ensureDirSync(to);
-  for (let entry in listDirSync(from)) {
+async function copyDir(from: String, to: String): Future<void> {
+  await ensureDir(to);
+  for (let entry in await listDir(from)) {
     // Skip dot entries and any build state from manual runs of the
     // example in the checkout.
     if (entry.name == '.' || entry.name == '..' || entry.name == '.zb' ||
@@ -35,9 +35,9 @@ function copyDir(from: String, to: String): void {
     let src = `${from}/${entry.name}`;
     let dst = `${to}/${entry.name}`;
     if (entry.fileType == FileType.Directory) {
-      copyDir(src, dst);
+      await copyDir(src, dst);
     } else {
-      writeFileBytesSync(dst, readFileBytesSync(src));
+      await writeFileBytes(dst, await readFileBytes(src));
     }
   }
 }
@@ -53,7 +53,7 @@ function sourceOf(result: RunResult, key: String): StepSource {
 export let tests = suite('zb example workspace', () => {
   test('the site builds, stays fresh, and rebuilds incrementally', async () => {
     let root = '/tmp/zb-example-' + i64ToString(monotonic() as i64);
-    copyDir('packages/zb/example', root);
+    await copyDir('packages/zb/example', root);
     let entry = new ScriptRef('site', 'build');
 
     let first = await buildTarget(root, entry);
@@ -62,21 +62,21 @@ export let tests = suite('zb example workspace', () => {
     isTrue(sourceOf(first.result, 'site:build') == StepSource.Ran, 'first: site ran');
     // Expected content comes from the fixture files as checked out, so
     // formatters or line-ending normalization cannot break the test.
-    let expected = readFileSync(withRoot(root, 'site/header.txt')) +
-      readFileSync(withRoot(root, 'greeting/src/hello.txt')) +
-      readFileSync(withRoot(root, 'site/footer.txt'));
-    equalText(readFileSync(withRoot(root, 'site/out/index.html')), expected);
-    isTrue(readFileSync(withRoot(root, 'site/out/index.html')).contains('Hello from zb!'), 'greeting text present');
+    let expected = (await readFile(withRoot(root, 'site/header.txt'))) +
+      (await readFile(withRoot(root, 'greeting/src/hello.txt'))) +
+      (await readFile(withRoot(root, 'site/footer.txt')));
+    equalText(await readFile(withRoot(root, 'site/out/index.html')), expected);
+    isTrue((await readFile(withRoot(root, 'site/out/index.html'))).contains('Hello from zb!'), 'greeting text present');
 
     let second = await buildTarget(root, entry);
     isTrue(sourceOf(second.result, 'greeting:build') == StepSource.Fresh, 'second: greeting fresh');
     isTrue(sourceOf(second.result, 'site:build') == StepSource.Fresh, 'second: site fresh');
 
-    writeFileSync(withRoot(root, 'greeting/src/more.txt'), 'A second line.\n');
+    await writeFile(withRoot(root, 'greeting/src/more.txt'), 'A second line.\n');
     let third = await buildTarget(root, entry);
     isTrue(third.result.allSucceeded, 'third build succeeds');
     isTrue(sourceOf(third.result, 'greeting:build') == StepSource.Ran, 'third: greeting ran');
     isTrue(sourceOf(third.result, 'site:build') == StepSource.Ran, 'third: site ran');
-    isTrue(readFileSync(withRoot(root, 'site/out/index.html')).contains('A second line.'), 'edit visible in output');
+    isTrue((await readFile(withRoot(root, 'site/out/index.html'))).contains('A second line.'), 'edit visible in output');
   });
 });
