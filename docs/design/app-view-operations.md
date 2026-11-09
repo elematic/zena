@@ -187,5 +187,5 @@ The three ways to remove a release differ in who does it and what stays:
 | Create a scope for an organization         | `main.zena create-scope`, through `deploy/operator.sh` |
 | Rewrite every handle's DNS records         | `main.zena sync-handles`                               |
 | Rewrite the summaries and mentions indexes | `main.zena sync-indexes`                               |
-| Allow a package or a scope more storage    | `main.zena set-limit`, through `deploy/operator.sh`    |
+| Raise a limit for a package, scope, caller | `main.zena set-limit`, through `deploy/operator.sh`    |
 | Name the App View's admins                 | `APP_VIEW_ADMIN_DIDS`                                  |

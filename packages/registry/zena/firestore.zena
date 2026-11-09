@@ -18,13 +18,17 @@
  *   records or entries mention a person's DID or a team, `<org DID> <team>`;
  *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR;
  *   `automationTokens/{did}`: `hash`, the SHA-256 of the token an
- *   automation account calls with, in hex; and `limits/{did}`: the limits
+ *   automation account calls with, in hex; `limits/{did}`: the limits
  *   the operator set on an account, each an integer named for its limit
- *   (`limitName`).
+ *   (`limitName`); and `counts/{subject} {limit} {period}`: `count`, how
+ *   many actions or creations a count has had, and for a day's count
+ *   `expiresAt`, two days on, which the database's TTL policy deletes it
+ *   at.
  */
 
 import {Future} from 'zena:async';
 import {Option, Some, some} from 'zena:core';
+import {div} from 'zena:math';
 import {parseJson, stringify} from 'zena:json';
 import {
   CollectionReference, Fields, Firestore, Operator, DocumentReference, DocumentSnapshot, bytesValue, stringValue
@@ -38,8 +42,8 @@ import {
   BATCH_WRITES, bytesAt, cidAt, claim, kindName, kindNamed, recordId, release, stringAt, tenantRoot
 } from 'pds:firestore';
 import {
-  ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, LIMITS, Limit, Limits, PackageSummary, PendingChange,
-  PendingRelease, limitName
+  ALL_TIME, ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, Count, LIMITS, Limit, Limits, PackageSummary,
+  PendingChange, PendingRelease, limitName
 } from './app-view.zena';
 import {PlcLog} from './plc-directory.zena';
 
@@ -321,6 +325,35 @@ export final class FirestoreAppViewStore implements AppViewStore {
       }
       tx.set(ref, fields);
       return true;
+    });
+  }
+
+  async addCounts(counts: Array<Count>, nowMicros: i64): Future<Count | null> {
+    let refs = new GrowableArray<DocumentReference>();
+    for (let count in counts) {
+      refs.push(this.#root.collection('counts').doc(count.key));
+    }
+    // A day's count is kept two days past its time, which covers every
+    // time zone's day; the TTL policy on `expiresAt` deletes it after.
+    let expiresAt = div(nowMicros, 1000000 as i64) + ((2 * 24 * 60 * 60) as i64);
+    return await this.#db.runTransaction<Count | null>(async (tx): Future<Count | null> => {
+      let values = new GrowableArray<i64>();
+      for (var i = 0; i < counts.length; i += 1) {
+        let snapshot = await tx.get(refs[i]);
+        let value = if (let (true, n) = snapshot.getInteger('count')) { n } else { 0 as i64 };
+        if (value >= counts[i].max) {
+          return counts[i];
+        }
+        values.push(value);
+      }
+      for (var i = 0; i < counts.length; i += 1) {
+        let fields = new Fields().integer('count', values[i] + 1);
+        if (counts[i].period != ALL_TIME) {
+          fields.timestamp('expiresAt', expiresAt);
+        }
+        tx.set(refs[i], fields);
+      }
+      return null;
     });
   }
 }

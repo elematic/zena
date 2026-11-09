@@ -83,6 +83,7 @@ import {formatTimestamp, milliseconds} from 'zena:time';
 import {AccountKind, Head} from 'pds:storage';
 import {compareKeys} from 'atproto:mst';
 import {SYNC_GET_RECORD, xrpcPath} from 'atproto:methods';
+import {isValidDid} from 'atproto:syntax';
 
 /** The most recovery keys an account's genesis operation ranks above the App View's keys. */
 let MAX_RECOVERY_KEYS = 3;
@@ -116,9 +117,14 @@ export class AppViewError extends Error {
 }
 
 /**
- * A limit on what an account may take, which the operator can raise for
- * one account (`AppView.setLimit`) above the App View's default
- * (`AppViewConfig`).
+ * A limit on what an account may take or do, which the operator can raise
+ * for one account (`AppView.setLimit`) above the App View's default
+ * (`AppViewConfig`). An action is a call to change something, counted
+ * once the caller is found allowed to make it: an upload, a publish, a
+ * retraction, a change to a record, an account or a token created.
+ * Completing or withdrawing what was held for approval is not one. Each
+ * count of actions is kept apart: an action is refused when any count it
+ * adds to is full, and raising one limit leaves the others as they are.
  */
 export enum Limit {
   /** The bytes of one release's artifacts, set on a package or its organization. */
@@ -126,11 +132,28 @@ export enum Limit {
   /** The bytes of a package's releases, held ones included, set on a package or its organization. */
   PackageBytes,
   /** The bytes of the releases of a scope's packages, set on its organization. */
-  ScopeBytes
+  ScopeBytes,
+  /** Actions on a package in a day, set on a package or its organization. */
+  PackageActions,
+  /** Actions on a scope, its organization and its packages in a day, set on its organization. */
+  ScopeActions,
+  /** Actions by one caller in a day, set on the caller. */
+  UserActions,
+  /** Scopes one person creates in a day, set on the person. */
+  ScopeCreations,
+  /** Scopes one person creates in all, set on the person. */
+  Scopes,
+  /** Packages and automation accounts a scope creates in a day, set on its organization. */
+  PackageCreations,
+  /** Packages and automation accounts a scope creates in all, set on its organization. */
+  Packages
 }
 
 /** Every limit, in the order `Limit` declares them. */
-export let LIMITS: Array<Limit> = [Limit.ReleaseBytes, Limit.PackageBytes, Limit.ScopeBytes];
+export let LIMITS: Array<Limit> = [
+  Limit.ReleaseBytes, Limit.PackageBytes, Limit.ScopeBytes, Limit.PackageActions, Limit.ScopeActions,
+  Limit.UserActions, Limit.ScopeCreations, Limit.Scopes, Limit.PackageCreations, Limit.Packages
+];
 
 /** The name of `limit`, as the operator and the store write it. */
 export function limitName(limit: Limit): String {
@@ -138,7 +161,66 @@ export function limitName(limit: Limit): String {
     case Limit.ReleaseBytes: 'releaseBytes'
     case Limit.PackageBytes: 'packageBytes'
     case Limit.ScopeBytes: 'scopeBytes'
+    case Limit.PackageActions: 'packageActions'
+    case Limit.ScopeActions: 'scopeActions'
+    case Limit.UserActions: 'userActions'
+    case Limit.ScopeCreations: 'scopeCreations'
+    case Limit.Scopes: 'scopes'
+    case Limit.PackageCreations: 'packageCreations'
+    case Limit.Packages: 'packages'
   };
+}
+
+/** What a limit is set on (`limitSetOn`). */
+export enum LimitSubject {
+  /** A package, or an organization for all of its packages. */
+  Package,
+  /** An organization. */
+  Organization,
+  /** A person or an automation account that calls the App View. */
+  Caller
+}
+
+/** What `limit` is set on. */
+export function limitSetOn(limit: Limit): LimitSubject {
+  return match (limit) {
+    case Limit.ReleaseBytes: LimitSubject.Package
+    case Limit.PackageBytes: LimitSubject.Package
+    case Limit.PackageActions: LimitSubject.Package
+    case Limit.ScopeBytes: LimitSubject.Organization
+    case Limit.ScopeActions: LimitSubject.Organization
+    case Limit.PackageCreations: LimitSubject.Organization
+    case Limit.Packages: LimitSubject.Organization
+    case Limit.UserActions: LimitSubject.Caller
+    case Limit.ScopeCreations: LimitSubject.Caller
+    case Limit.Scopes: LimitSubject.Caller
+  };
+}
+
+/** The period of a count that never starts again (`Count.period`). */
+export let ALL_TIME = 'all';
+
+/** The UTC day of `nowMicros`, `YYYY-MM-DD`, the period of a day's count. */
+export function dayOf(nowMicros: i64): String {
+  return formatTimestamp(nowMicros * (1000 as i64)).sliceBytes(0, 10);
+}
+
+/**
+ * One count an action adds to: `subject`'s count of `limit` in `period`,
+ * a UTC day (`dayOf`) or `ALL_TIME`, which may reach `max`.
+ */
+export final class Count {
+  subject: String;
+  limit: Limit;
+  period: String;
+  max: i64;
+
+  new(this.subject, this.limit, this.period, this.max);
+
+  /** The key the store keeps the count at. */
+  key: String {
+    get { return `${this.subject} ${limitName(this.limit)} ${this.period}`; }
+  }
 }
 
 /** The limit named `name`, or none. */
@@ -264,6 +346,13 @@ export interface AppViewStore {
   limits(did: String): Future<Limits>;
   /** Sets `limit` on the account `did` to `value`, or takes its setting away for none. */
   setLimit(did: String, limit: Limit, value: Option<i64>): Future<void>;
+  /**
+   * Adds one to each of `counts`, unless one of them has reached its
+   * `max`: then it adds to none, and returns that one. Several servers may
+   * share the store, so the counts are checked and added to in this one
+   * call. A store may forget a day's counts once the day is over.
+   */
+  addCounts(counts: Array<Count>, nowMicros: i64): Future<Count | null>;
 }
 
 /**
@@ -339,6 +428,8 @@ export final class MemoryAppViewStore implements AppViewStore {
   #tokenAccounts = new HashMap<String, String>();
   /** The limits the operator has set, by account. */
   #limits = new HashMap<String, Limits>();
+  /** Each count by its key (`Count.key`). */
+  #counts = new HashMap<String, i64>();
 
   async putAccount(account: AppViewAccount): Future<void> {
     this.#accounts[account.did] = account;
@@ -582,6 +673,18 @@ export final class MemoryAppViewStore implements AppViewStore {
     }
     this.#limits[did].set(limit, value);
   }
+
+  async addCounts(counts: Array<Count>, nowMicros: i64): Future<Count | null> {
+    for (let count in counts) {
+      if (this.#counts.getOr(count.key, 0 as i64) >= count.max) {
+        return count;
+      }
+    }
+    for (let count in counts) {
+      this.#counts[count.key] = this.#counts.getOr(count.key, 0 as i64) + 1;
+    }
+    return null;
+  }
 }
 
 /** An account `#prepareAccount` made ready, with the DID it will have. */
@@ -647,6 +750,23 @@ export final class AppViewConfig {
   var packageBytes: i64 = (64 * 1024 * 1024) as i64;
   /** The bytes the releases of a scope's packages may take (`Limit.ScopeBytes`). */
   var scopeBytes: i64 = (256 * 1024 * 1024) as i64;
+  /**
+   * Actions on a package in a day (`Limit.PackageActions`): a release is
+   * two, its upload and its publish.
+   */
+  var packageActions: i64 = 100;
+  /** Actions on a scope and its packages in a day (`Limit.ScopeActions`). */
+  var scopeActions: i64 = 1000;
+  /** Actions by one caller in a day (`Limit.UserActions`). */
+  var userActions: i64 = 400;
+  /** Scopes one person creates in a day (`Limit.ScopeCreations`). */
+  var scopeCreations: i64 = 2;
+  /** Scopes one person creates in all (`Limit.Scopes`). */
+  var scopes: i64 = 5;
+  /** Packages and automation accounts a scope creates in a day (`Limit.PackageCreations`). */
+  var packageCreations: i64 = 100;
+  /** Packages and automation accounts a scope creates in all (`Limit.Packages`). */
+  var packages: i64 = 1000;
   /** Scope names no one may take. */
   reservedScopes = new HashSet<String>();
   /**
@@ -914,30 +1034,36 @@ export final class AppView {
     if (this.config.reservedScopes.has(name)) {
       throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
-    return await this.#createOrganization(caller, name, recoveryKeys, nowMicros);
+    return await this.#createOrganization(caller, name, recoveryKeys, nowMicros, true);
   }
 
   /**
    * A scope named `name`, owned by `owner` alone, created by the App View's
    * operator: as `createOrganization`, but a reserved name may be taken.
    * No XRPC method reaches it; `main.zena -- create-scope` calls it with
-   * the server's own configuration (package-manager.md, "Scopes").
+   * the server's own configuration (package-manager.md, "Scopes"). It
+   * counts against none of the owner's limits.
    */
   async createScopeAsOperator(owner: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
-    return await this.#createOrganization(owner, name, recoveryKeys, nowMicros);
+    return await this.#createOrganization(owner, name, recoveryKeys, nowMicros, false);
   }
 
-  async #createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
-      : Future<Created> {
+  /** The scope `name`, owned by `caller`, which with `counted` counts as `caller`'s action and creation. */
+  async #createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64,
+      counted: boolean): Future<Created> {
     if (!isValidScopeName(name)) {
       throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
     if ((await this.#store.scopeOwner(name)) != null) {
       throw new AppViewError(400, 'NameTaken', `the scope '${name}' exists`);
     }
+    let recovery = parseRecoveryKeys(recoveryKeys);
+    if (counted) {
+      await this.#countCaller(caller, new GrowableArray<Count>(), nowMicros, true);
+    }
     let handle = `${name}.${this.config.domain}`;
-    let prepared = await this.#prepareAccount(handle, recoveryKeys);
+    let prepared = await this.#prepareAccount(handle, recovery);
     let did = prepared.did;
     if (!(await this.#store.claimScope(name, did))) {
       throw new AppViewError(400, 'NameTaken', `the scope '${name}' exists`);
@@ -977,8 +1103,9 @@ export final class AppView {
     if ((await this.#store.nameInScope(scope, name)) != null) {
       throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
+    await this.#countAction(caller, organization, nowMicros, true);
     let handle = `${name}.${scope}.${this.config.domain}`;
-    let prepared = await this.#prepareAccount(handle, []);
+    let prepared = await this.#prepareAccount(handle, new GrowableArray<PublicKey>());
     let did = prepared.did;
     if (!(await this.#store.claimName(scope, name, did))) {
       throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
@@ -997,7 +1124,7 @@ export final class AppView {
    * one it had, which stops working. The caller must be an owner or admin
    * of its organization.
    */
-  async issueAutomationToken(caller: String, account: String): Future<String> {
+  async issueAutomationToken(caller: String, account: String, nowMicros: i64): Future<String> {
     let held = await this.#store.account(account);
     if (held == null || held.kind != AccountKind.Automation) {
       throw new AppViewError(400, 'InvalidRequest', `${account} is not an automation account on this App View`);
@@ -1006,6 +1133,7 @@ export final class AppView {
     if (org == null || !isAdmin(await this.#orgRole(org, caller))) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${held.scope}`);
     }
+    await this.#countAction(caller, held, nowMicros);
     return await this.#issueToken(account);
   }
 
@@ -1053,8 +1181,10 @@ export final class AppView {
     if ((await this.#store.nameInScope(scope, profile.name)) != null) {
       throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${profile.name}'`);
     }
+    let recovery = parseRecoveryKeys(recoveryKeys);
+    await this.#countAction(caller, organization, nowMicros, true);
     let handle = `${profile.name}.${scope}.${this.config.domain}`;
-    let prepared = await this.#prepareAccount(handle, recoveryKeys);
+    let prepared = await this.#prepareAccount(handle, recovery);
     let did = prepared.did;
     let name = profile.name;
     if (!(await this.#store.claimName(scope, name, did))) {
@@ -1104,6 +1234,7 @@ export final class AppView {
   async uploadArtifact(caller: String, pkg: String, contentType: String, bytes: FixedArray<u8>,
       nowMicros: i64): Future<BlobRef> {
     let account = await this.#maintainedPackage(caller, pkg);
+    await this.#countAction(caller, account, nowMicros);
     // Only what an artifact can be: a blob the App View serves as a page or a
     // script would run on its origin.
     let type = artifactMimeType(contentType);
@@ -1137,6 +1268,7 @@ export final class AppView {
    */
   async publish(caller: String, pkg: String, releaseValue: Value, nowMicros: i64): Future<Created> {
     let account = await this.#maintainedPackage(caller, pkg);
+    await this.#countAction(caller, account, nowMicros);
     let release = readRecord(() => Release.fromValue(releaseValue));
     for (let artifact in release.artifacts) {
       // A package has no way to use a Wasm module or other assets yet, so
@@ -1360,6 +1492,64 @@ export final class AppView {
   }
 
   /**
+   * Counts one action by `caller` on `account`, a package, an organization
+   * or an automation account: a day's actions on the package, on its scope
+   * and by the caller. With `creating`, `account` is the organization a
+   * package or an automation account is created in, and the scope's
+   * creations count too. Refuses the action when one of the counts is full.
+   */
+  async #countAction(caller: String, account: AppViewAccount, nowMicros: i64, creating: boolean = false)
+      : Future<void> {
+    let config = this.config;
+    let day = dayOf(nowMicros);
+    let org = if (account.kind == AccountKind.Organization) account.did else await this.#store.scopeOwner(account.scope);
+    let scoped = if (org == null) new Limits() else await this.#store.limits(org);
+    let counts = new GrowableArray<Count>();
+    if (account.kind == AccountKind.Package) {
+      let own = await this.#store.limits(account.did);
+      counts.push(new Count(account.did, Limit.PackageActions, day,
+          own.valueOr(Limit.PackageActions, scoped.valueOr(Limit.PackageActions, config.packageActions))));
+    }
+    if (org != null) {
+      counts.push(new Count(org, Limit.ScopeActions, day, scoped.valueOr(Limit.ScopeActions, config.scopeActions)));
+      if (creating) {
+        counts.push(new Count(org, Limit.PackageCreations, day,
+            scoped.valueOr(Limit.PackageCreations, config.packageCreations)));
+        counts.push(new Count(org, Limit.Packages, ALL_TIME, scoped.valueOr(Limit.Packages, config.packages)));
+      }
+    }
+    await this.#countCaller(caller, counts, nowMicros, false);
+  }
+
+  /**
+   * Adds `counts` and the caller's own count of a day's actions, and with
+   * `creatingScope` its counts of scopes created, refusing the action when
+   * one of them is full: `RateLimitExceeded` for a day's count, and
+   * `QuotaExceeded` for one that never starts again.
+   */
+  async #countCaller(caller: String, counts: GrowableArray<Count>, nowMicros: i64, creatingScope: boolean)
+      : Future<void> {
+    let config = this.config;
+    let day = dayOf(nowMicros);
+    let own = await this.#store.limits(caller);
+    counts.push(new Count(caller, Limit.UserActions, day, own.valueOr(Limit.UserActions, config.userActions)));
+    if (creatingScope) {
+      counts.push(new Count(caller, Limit.ScopeCreations, day, own.valueOr(Limit.ScopeCreations, config.scopeCreations)));
+      counts.push(new Count(caller, Limit.Scopes, ALL_TIME, own.valueOr(Limit.Scopes, config.scopes)));
+    }
+    let full = await this.#store.addCounts(counts, nowMicros);
+    if (full == null) {
+      return;
+    }
+    let name = limitName(full.limit);
+    if (full.period == ALL_TIME) {
+      throw new AppViewError(400, 'QuotaExceeded', `${full.subject} has reached its ${name} limit, ${full.max}`);
+    }
+    throw new AppViewError(429, 'RateLimitExceeded',
+        `${full.subject} has reached its ${name} limit, ${full.max} a day; the count starts again at 00:00 UTC`);
+  }
+
+  /**
    * The bytes a release of `pkg` may take, which bounds an upload's body
    * before the App View reads it: the default when it holds no such
    * package, which `uploadArtifact` then refuses.
@@ -1373,17 +1563,26 @@ export final class AppView {
   }
 
   /**
-   * Sets `limit` on `did`, a package or an organization, to `value`, or
-   * takes the setting away for none: the operator raising a limit for one
-   * package, or for a scope and its packages.
+   * Sets `limit` on `did` to `value`, or takes the setting away for none:
+   * the operator raising a limit for one package, for a scope and its
+   * packages, or for one caller, as `limitSetOn` says.
    */
   async setLimit(did: String, limit: Limit, value: Option<i64>): Future<void> {
     let account = await this.#store.account(did);
-    let onPackage = limit != Limit.ScopeBytes;
-    if (account == null
-        || (account.kind != AccountKind.Organization && !(onPackage && account.kind == AccountKind.Package))) {
-      let what = if (onPackage) 'a package or an organization' else 'an organization';
-      throw new AppViewError(400, 'InvalidRequest', `${limitName(limit)} is set on ${what} the App View holds, which ${did} is not`);
+    let subject = limitSetOn(limit);
+    let fits = match (subject) {
+      case LimitSubject.Package: account != null
+          && (account.kind == AccountKind.Package || account.kind == AccountKind.Organization)
+      case LimitSubject.Organization: account != null && account.kind == AccountKind.Organization
+      case LimitSubject.Caller: isValidDid(did) && (account == null || account.kind == AccountKind.Automation)
+    };
+    if (!fits) {
+      let what = match (subject) {
+        case LimitSubject.Package: 'a package or an organization the App View holds'
+        case LimitSubject.Organization: 'an organization the App View holds'
+        case LimitSubject.Caller: 'a person or an automation account'
+      };
+      throw new AppViewError(400, 'InvalidRequest', `${limitName(limit)} is set on ${what}, which ${did} is not`);
     }
     if (let Some {value: set} = value) {
       if (set < 0) {
@@ -1854,6 +2053,7 @@ export final class AppView {
   async retract(caller: String, pkg: String, version: String, reason: String | null, nowMicros: i64)
       : Future<Created> {
     let account = await this.#maintainedPackage(caller, pkg);
+    await this.#countAction(caller, account, nowMicros);
     if ((await this.#current(pkg, RELEASE_TYPE, version)) == null) {
       throw new AppViewError(400, 'ReleaseNotFound', `${pkg} has no release ${version}`);
     }
@@ -1866,22 +2066,14 @@ export final class AppView {
    * An account named `handle` on this App View, to be: the genesis
    * operation of a `did:plc` that names a signing key the PDS reserved,
    * the PDS, and this App View as `zena_registry` (package-manager.md,
-   * "Creating a package"). It ranks `recoveryKeys` first, then the
-   * operator's offline key, then the online rotation key, which signs it.
-   * A PLC operation lists at most five rotation keys, and the App View
-   * keeps two of them for its own.
+   * "Creating a package"). It ranks `recoveryKeys` (`parseRecoveryKeys`)
+   * first, then the operator's offline key, then the online rotation key,
+   * which signs it.
    */
-  async #prepareAccount(handle: String, recoveryKeys: Array<String>): Future<PreparedAccount> {
-    if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
-      throw new AppViewError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
-    }
+  async #prepareAccount(handle: String, recoveryKeys: Array<PublicKey>): Future<PreparedAccount> {
     let rotation = new GrowableArray<PublicKey>();
     for (let key in recoveryKeys) {
-      try {
-        rotation.push(parseDidKey(key));
-      } catch (e) {
-        throw new AppViewError(400, 'InvalidRequest', `'${key}' is not a did:key`);
-      }
+      rotation.push(key);
     }
     let offline = this.config.offlineRotationKey;
     if (offline != null) {
@@ -1954,6 +2146,7 @@ export final class AppView {
     if ((await this.#orgRole(org, caller)) != OWNER) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
     }
+    await this.#countAction(caller, account, nowMicros);
     let members = readRecord(() => Members.fromValue(membersValue));
     let entries = await this.#entriesBehind(org, members.members, entryValues);
     var owners = 0;
@@ -1993,6 +2186,7 @@ export final class AppView {
         (existing == null || (await this.#teamRole(org, name, caller)) != MAINTAINER)) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org} or a maintainer of its team ${name}`);
     }
+    await this.#countAction(caller, account, nowMicros);
     let team = readRecord(() => Team.fromValue(teamValue));
     let entries = await this.#entriesBehind(org, team.members, entryValues);
     let inOrg = new HashSet<String>();
@@ -2023,6 +2217,7 @@ export final class AppView {
     if ((await this.#orgRole(org, caller)) != OWNER) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
     }
+    await this.#countAction(caller, account, nowMicros);
     let policy = readRecord(() => Policy.fromValue(policyValue));
     let teams = new GrowableArray<String>();
     for (let team in policy.defaultTeams) {
@@ -2053,6 +2248,7 @@ export final class AppView {
     if (!isAdmin(await this.#orgRole(org, caller))) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
     }
+    await this.#countAction(caller, account, nowMicros);
     readRecord(() => ScopeProfile.fromValue(profileValue));
     return await this.#put(account, SCOPE_PROFILE_TYPE, 'self', asMap(profileValue), swapRecord);
   }
@@ -2089,6 +2285,7 @@ export final class AppView {
     if (!isAdmin(await this.#orgRole(org, caller))) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
     }
+    await this.#countAction(caller, account, nowMicros);
     if ((await this.#current(org, TEAM_TYPE, name)) == null) {
       throw new AppViewError(400, 'TeamNotFound', `${org} has no team ${name}`);
     }
@@ -2108,6 +2305,7 @@ export final class AppView {
     if ((await this.#packageRole(pkg, caller)) != OWNER) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${pkg}`);
     }
+    await this.#countAction(caller, account, nowMicros);
     let maintainers = readRecord(() => Maintainers.fromValue(maintainersValue));
     let commitments = new GrowableArray<Cid>();
     for (let maintainer in maintainers.maintainers) {
@@ -3009,6 +3207,26 @@ function asMap(value: Value): MapValue {
     throw new AppViewError(400, 'InvalidRequest', 'a record is not an object');
   }
   return value;
+}
+
+/**
+ * `recoveryKeys`, `did:key`s, as keys, refusing more than
+ * `MAX_RECOVERY_KEYS`: a PLC operation lists at most five rotation keys,
+ * and the App View keeps two of them for its own.
+ */
+function parseRecoveryKeys(recoveryKeys: Array<String>): Array<PublicKey> {
+  if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
+    throw new AppViewError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
+  }
+  let keys = new GrowableArray<PublicKey>();
+  for (let key in recoveryKeys) {
+    try {
+      keys.push(parseDidKey(key));
+    } catch (e) {
+      throw new AppViewError(400, 'InvalidRequest', `'${key}' is not a did:key`);
+    }
+  }
+  return keys;
 }
 
 /** Reads a record with `read`, answering `InvalidRequest` when it is not one. */

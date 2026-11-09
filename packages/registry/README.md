@@ -130,10 +130,13 @@ takes a name the App View reserves (`www`, `api`, `admin`, `zena`, `pkg`,
 The App View limits the storage releases take: 4 MiB for one release, 64
 MiB for a package's releases, those waiting for approval included, and 256
 MiB for the releases of a scope's packages, and it stores only source
-archives for now. `set-limit <DID or handle> <limit> <bytes>|default`,
-with the limit `releaseBytes`, `packageBytes` or `scopeBytes`, raises one
-for a package, or for a scope's organization and its packages, or takes
-the setting away, and exits.
+archives for now. It also counts each day's actions on each package and
+scope and by each caller, and the scopes and packages created
+(docs/design/package-manager.md, "Limits on creating accounts").
+`set-limit <DID or handle> <limit> <number>|default` raises one of these
+limits (`registry:app-view`'s `Limit`, such as `packageBytes` or
+`userActions`) for a package, a scope's organization and its packages, or
+a caller, or takes the setting away, and exits.
 
 `deploy/operator.sh` runs `create-scope`, `sync-handles`, `sync-indexes`
 and `set-limit` on your machine against a deployed environment, with its service's
