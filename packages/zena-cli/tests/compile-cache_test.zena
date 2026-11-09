@@ -21,15 +21,15 @@
 import {suite, test} from 'zena:test';
 import {isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
-import {listDirSync, readFileSync, statSync, writeFileSync} from 'zena:fs';
+import {listDir, readFile, stat, writeFile} from 'zena:fs';
 import {run} from 'zena:process';
 import {MAIN, Scratch, ZenaCommand, described, repoRoot, write} from './cli-support.zena';
 
 /** A copy of the standard library the test may edit, and a program. */
 async function fixture(name: String): Future<Scratch> {
-  let scratch = Scratch.create(name);
+  let scratch = await Scratch.create(name);
   await run(['cp', '-R', `${repoRoot()}/packages/stdlib/zena`, scratch.host('stdlib')]);
-  write(scratch.at('prog.zena'), `${MAIN} { return 0; }\n`);
+  await write(scratch.at('prog.zena'), `${MAIN} { return 0; }\n`);
   return scratch;
 }
 
@@ -43,7 +43,7 @@ async function runProgram(scratch: Scratch): Future<String> {
     .run(['run', scratch.host('prog.zena')]);
   isTrue(result.succeeded(), described(result));
   var found: String | null = null;
-  for (let entry in listDirSync(scratch.at('cache/wasm_objects'))) {
+  for (let entry in await listDir(scratch.at('cache/wasm_objects'))) {
     if (entry.name.startsWith('prog_') && entry.name.endsWith('.wasm')) {
       isTrue(found == null, 'two cache entries for one program');
       found = scratch.at(`cache/wasm_objects/${entry.name}`);
@@ -52,14 +52,14 @@ async function runProgram(scratch: Scratch): Future<String> {
   if (found == null) {
     throw new Error('no cache entry for prog.zena');
   }
-  return found as String;
+  return found;
 }
 
 /** The source paths the `.deps` file beside `module` lists. */
-function dependencyPaths(module: String): GrowableArray<String> {
+async function dependencyPaths(module: String): Future<GrowableArray<String>> {
   let deps = `${module.sliceBytes(0, module.length - '.wasm'.length)}.deps`;
   let paths = new GrowableArray<String>();
-  for (let line in readFileSync(deps).split('\n')) {
+  for (let line in (await readFile(deps)).split('\n')) {
     if (line == '') {
       continue;
     }
@@ -76,7 +76,7 @@ export let tests = suite('zena: the compile cache', () => {
   test("a component's entry depends on the runtime memory module's sources", async (ctx) => {
     let scratch = await fixture('cache-deps');
     try {
-      let paths = dependencyPaths(await runProgram(scratch));
+      let paths = await dependencyPaths(await runProgram(scratch));
       var listed = false;
       for (let path in paths) {
         listed = listed || path.endsWith('/component-runtime/memory.zena');
@@ -93,15 +93,15 @@ export let tests = suite('zena: the compile cache', () => {
     let scratch = await fixture('cache-stale');
     try {
       let module = await runProgram(scratch);
-      let before = statSync(module).modified;
+      let before = (await stat(module)).modified;
 
       // Nothing a program can import reaches this file, so only the runtime
       // memory module's own compile reads it.
       let source = scratch.at('stdlib/component-runtime/memory.zena');
-      writeFileSync(source, `${readFileSync(source)}\n// A change the program cannot see.\n`);
+      await writeFile(source, `${await readFile(source)}\n// A change the program cannot see.\n`);
 
       isTrue((await runProgram(scratch)) == module, 'the cache key changed, which is not the point');
-      isTrue(statSync(module).modified != before,
+      isTrue((await stat(module)).modified != before,
           'the program was served from the cache after a change to the allocator it embeds');
     } finally {
       await scratch.remove();

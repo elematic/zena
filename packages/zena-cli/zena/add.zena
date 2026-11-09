@@ -23,7 +23,7 @@
 import { ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
 import { OrderedHashMap } from 'zena:collections';
-import { existsSync, readFileSync, writeFileSync } from 'zena:fs';
+import { exists, readFile, writeFile } from 'zena:fs';
 import { Cid } from 'atproto:cid';
 import { IdentityResolver } from 'atproto:identity';
 import { writeDependencies } from 'package-manager:manifest';
@@ -44,7 +44,7 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
     return 2;
   }
   let (identifier, versionText) = splitVersion(args.rest[0]);
-  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+  let workspace = await readWorkspace(repoRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
   let manifest = target.manifest;
   let requirements = manifest.requirements;
@@ -92,7 +92,7 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
 }
 
 export async function updateCommand(args: ParsedArgs, options: Options): Future<i32> {
-  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+  let workspace = await readWorkspace(repoRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
   let requirements = target.manifest.requirements;
   if (requirements.size == 0) {
@@ -173,15 +173,15 @@ async function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePacka
     resolver: IdentityResolver, allowChanged: boolean, options: Options): Future<i32> {
   let requirements = target.manifest.requirements;
   let lockfilePath = workspace.lockfilePath();
-  let before = if (existsSync(lockfilePath)) readPins(readFileSync(lockfilePath)) else new GrowableArray<Pin>();
+  let before = if (await exists(lockfilePath)) readPins(await readFile(lockfilePath)) else new GrowableArray<Pin>();
   let resolution = await resolve(workspace.requirements(), networkReleases(resolver));
   let changes = diffPins(before, resolution);
   if (!allowChanged && refuseChangedInPlace(changes)) {
     return 1;
   }
   let lockfile = writeLockfile(resolution);
-  writeFileSync(target.manifestPath(), writeDependencies(target.text, requirements, target.manifest.paths));
-  writeFileSync(lockfilePath, lockfile);
+  await writeFile(target.manifestPath(), writeDependencies(target.text, requirements, target.manifest.paths));
+  await writeFile(lockfilePath, lockfile);
   if (changes.length == 0) {
     console.log('zena-lock.json is unchanged.');
   }

@@ -17,20 +17,20 @@ let ALICE = 'did:plc:alicealicealicealicealic';
 
 export let tests = suite('the registry smoke test', () => {
   test('passes against a stack set up as smoke.sh sets one up', async (ctx) => {
-    let scratch = Scratch.create('smoke');
-    let stack = startFakePds(scratch, 'publish-stack.zena', 'packages/registry/zena/test/fixtures/web');
+    let scratch = await Scratch.create('smoke');
+    let stack = await startFakePds(scratch, 'publish-stack.zena', 'packages/registry/zena/test/fixtures/web');
     try {
       await fakePdsOrigin(scratch, stack);
-      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
       let registry = addresses['registry'] as String;
       let plc = addresses['plc'] as String;
       let dns = addresses['dns'] as String;
 
       // As `smoke.sh setup` does: a person publishes the canary, smoke
       // 1.0.0, and makes an automation account one of its publishers.
-      write(scratch.at('canary/zena-package.json'),
+      await write(scratch.at('canary/zena-package.json'),
           '{"name": "smoke", "description": "What the smoke test adds and runs", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
-      write(scratch.at('canary/smoke.zena'), 'export function answer(): i32 { return 42; }\n');
+      await write(scratch.at('canary/smoke.zena'), 'export function answer(): i32 { return 42; }\n');
       let alice = new ZenaCommand(scratch.host('canary'), scratch.at('canary'), scratch.host('cache'))
         .set('ZENA_PLC_DIRECTORY', plc)
         .set('ZENA_DNS_OVER_HTTPS', dns)
@@ -48,7 +48,7 @@ export let tests = suite('the registry smoke test', () => {
 
       // As `smoke.sh` runs it, with one origin for the App View and the PDS
       // it runs in the same process.
-      ensureDir(scratch.at('smoke'));
+      await ensureDir(scratch.at('smoke'));
       let smoke = await new ZenaCommand(repoRoot(), '.', scratch.host('smoke-cache'))
         .set('SMOKE_APP_VIEW', registry)
         .set('SMOKE_PDS', registry)

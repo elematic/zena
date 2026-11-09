@@ -35,57 +35,57 @@ function entryFile(pkg: Package, name: String) {
 }
 
 let tests = suite('package', () => {
-  test('reads a manifest package', (t) => {
-    let pkg = loadPackage(join2(FIXTURES, 'lib'));
+  test('reads a manifest package', async (t) => {
+    let pkg = await loadPackage(join2(FIXTURES, 'lib'));
     equal(pkg.name, 'fixture');
     equal(pkg.version, '1.2.3');
     equal(pkg.root, FIXTURES + '/lib');
   });
 
-  test('lists exported modules in name order', (t) => {
-    let pkg = loadPackage(join2(FIXTURES, 'lib'));
+  test('lists exported modules in name order', async (t) => {
+    let pkg = await loadPackage(join2(FIXTURES, 'lib'));
     equal(moduleNames(pkg), 'console,facade,shapes,widgets');
   });
 
-  test('uses the entry file the manifest names', (t) => {
-    let pkg = loadPackage(join2(FIXTURES, 'lib'));
+  test('uses the entry file the manifest names', async (t) => {
+    let pkg = await loadPackage(join2(FIXTURES, 'lib'));
     equal(entryFile(pkg, 'shapes'), 'shapes.zena');
     equal(entryFile(pkg, 'widgets'), 'nested/widgets.zena');
   });
 
-  test('picks a virtual module entry by target', (t) => {
-    equal(entryFile(loadPackage(join2(FIXTURES, 'lib'), null, 'zena-cli'),
+  test('picks a virtual module entry by target', async (t) => {
+    equal(entryFile(await loadPackage(join2(FIXTURES, 'lib'), null, 'zena-cli'),
         'console'), 'nested/console-cli.zena');
-    equal(entryFile(loadPackage(join2(FIXTURES, 'lib'), null, 'js'), 'console'),
+    equal(entryFile(await loadPackage(join2(FIXTURES, 'lib'), null, 'js'), 'console'),
         'nested/console-js.zena');
   });
 
-  test('drops a module the target does not have', (t) => {
+  test('drops a module the target does not have', async (t) => {
     // `component-only` exists on the component target and nowhere else.
-    equal(moduleNames(loadPackage(join2(FIXTURES, 'lib'), null, 'component')),
+    equal(moduleNames(await loadPackage(join2(FIXTURES, 'lib'), null, 'component')),
         'component-only,facade,shapes,widgets');
   });
 
-  test('takes every file when there is no manifest', (t) => {
-    let pkg = loadPackage(join2(FIXTURES, 'open'));
+  test('takes every file when there is no manifest', async (t) => {
+    let pkg = await loadPackage(join2(FIXTURES, 'open'));
     equal(pkg.name, 'open');
     equal(moduleNames(pkg), 'nested/deep,tools');
     equal(entryFile(pkg, 'nested/deep'), 'nested/deep.zena');
   });
 
-  test('takes a single file as a package of one module', (t) => {
-    let pkg = loadPackage(join2(FIXTURES, 'open/tools.zena'));
+  test('takes a single file as a package of one module', async (t) => {
+    let pkg = await loadPackage(join2(FIXTURES, 'open/tools.zena'));
     equal(pkg.name, 'tools');
     equal(pkg.root, FIXTURES + '/open');
     equal(moduleNames(pkg), 'tools');
   });
 
-  test('honours a name override', (t) => {
-    equal(loadPackage(join2(FIXTURES, 'open'), 'renamed').name, 'renamed');
+  test('honours a name override', async (t) => {
+    equal((await loadPackage(join2(FIXTURES, 'open'), 'renamed')).name, 'renamed');
   });
 
   test('documents a package end to end', async (t) => {
-    let pkg = loadPackage(join2(FIXTURES, 'lib'));
+    let pkg = await loadPackage(join2(FIXTURES, 'lib'));
     let result = await documentPackage(pkg, new DocumentOptions());
     equal(result.failures.length, 0);
     equal(result.hasErrors(), false);

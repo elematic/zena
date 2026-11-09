@@ -15,11 +15,11 @@ let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 
 export let tests = suite('zena pkg approve', () => {
   test('holds releases and changes until a second owner approves them', async (ctx) => {
-    let scratch = Scratch.create('approvals');
-    let stack = startFakePds(scratch, 'publish-stack.zena');
+    let scratch = await Scratch.create('approvals');
+    let stack = await startFakePds(scratch, 'publish-stack.zena');
     try {
       await fakePdsOrigin(scratch, stack);
-      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
       let personIn = (who: String, dir: String) =>
         new ZenaCommand(scratch.host(dir), scratch.at(dir), scratch.host('cache'))
           .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
@@ -27,8 +27,8 @@ export let tests = suite('zena pkg approve', () => {
           .set('ZENA_REGISTRY', addresses['registry'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
       let person = (who: String) => personIn(who, 'lib');
-      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
-      write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      await write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      await write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       let alice = person('alice');
       let bob = person('bob');
       isTrue((await alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n')).succeeded(), 'alice signs in');
@@ -36,8 +36,8 @@ export let tests = suite('zena pkg approve', () => {
       isTrue((await alice.run(['pkg', 'scope', 'create', 'acme', '--yes'])).succeeded(), 'the scope');
       let published = await alice.run(['pkg', 'publish', '--yes']);
       isTrue(published.succeeded() && published.stdout.contains('Published greet 1.0.0'), described(published));
-      let did = (parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
-      let manifestAt = (version: String) => write(scratch.at('lib/zena-package.json'),
+      let did = (parseJson(await read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
+      let manifestAt = async (version: String) => await write(scratch.at('lib/zena-package.json'),
           `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "${version}"}\n`);
 
       // Alice alone decides, until Bob is an owner and the package needs both.
@@ -64,7 +64,7 @@ export let tests = suite('zena pkg approve', () => {
       isTrue(now.succeeded() && now.stdout.contains("Releases need 2 maintainers' attestations"), described(now));
 
       // And a release waits for Bob too.
-      manifestAt('1.1.0');
+      await manifestAt('1.1.0');
       let held = await alice.run(['pkg', 'publish']);
       isTrue(held.succeeded() && held.stdout.contains('greet 1.1.0 is waiting for approval') &&
           held.stdout.contains('approved by 1 of the 2 maintainers'), described(held));
@@ -105,8 +105,8 @@ export let tests = suite('zena pkg approve', () => {
       let printed = await alice.run(['pkg', 'scope', 'policy', 'acme']);
       isTrue(printed.succeeded() && printed.stdout.contains("Every release in acme needs at least 2 maintainers'"),
           described(printed));
-      write(scratch.at('solo/zena-package.json'), '{"name": "solo", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
-      write(scratch.at('solo/solo.zena'), 'export let one = 1;\n');
+      await write(scratch.at('solo/zena-package.json'), '{"name": "solo", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      await write(scratch.at('solo/solo.zena'), 'export let one = 1;\n');
       let solo = await personIn('alice', 'solo').run(['pkg', 'create', '--yes']);
       isTrue(!solo.succeeded() && solo.stderr.contains('asks 2 maintainers'), described(solo));
 

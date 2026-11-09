@@ -58,14 +58,14 @@ export async function approveCommand(args: ParsedArgs, options: Options): Future
     } catch (e) {
       isVersion = false;
     }
-    let session = signedIn();
+    let session = await signedIn();
     let registry = await findRegistry(args);
     if (isVersion) {
       await approveRelease(args, session, registry, given, parts.length > 1, version);
     } else {
       await approveChanges(args, session, registry, given);
     }
-    saveIfRefreshed(session);
+    await saveIfRefreshed(session);
   });
 }
 
@@ -73,7 +73,7 @@ export async function approveCommand(args: ParsedArgs, options: Options): Future
 async function approveRelease(args: ParsedArgs, session: Session, registry: Registry, given: String, named: boolean,
     version: String): Future<void> {
   let name = given.sliceBytes(0, given.length - version.length - 1);
-  let pkg = if (named) await namedPackage(registry, name) else currentPackageDid();
+  let pkg = if (named) await namedPackage(registry, name) else await currentPackageDid();
   let label = if (named) name else pkg;
   let client = await registryClient(session, registry, GET_PENDING_RELEASES);
   let pending = (await client.query(GET_PENDING_RELEASES, [('package', pkg)])) as JsonObject;

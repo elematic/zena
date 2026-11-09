@@ -18,9 +18,10 @@
  */
 
 import { ParsedArgs } from 'zena:args';
+import { Future } from 'zena:async';
 import { HashSet } from 'zena:collections';
 import { Own, StringBuilder, Unmanaged, disown } from 'zena:core';
-import { GlobOptions, existsSync, globSync, isDirectorySync } from 'zena:fs';
+import { GlobOptions, exists, glob, isDirectory } from 'zena:fs';
 import { hasMagic } from 'zena:glob';
 import { AbsolutePath, RelativePath, extname } from 'zena:path';
 import { div } from 'zena:math';
@@ -51,23 +52,23 @@ let reset = sgr('0');
  * repository root, or null when it names nothing. A directory means
  * every `_test.zena` file beneath it.
  */
-function testPattern(argument: String): String | null {
+async function testPattern(argument: String): Future<String | null> {
   let resolved = resolveUserPath(argument);
   let fromRoot = repoRelative(resolved);
   if (hasMagic(argument)) {
     return fromRoot;
   }
-  if (!existsSync(fromRoot) && !existsSync(resolved.value)) {
+  if (!(await exists(fromRoot)) && !(await exists(resolved.value))) {
     return null;
   }
-  if (isDirectorySync(fromRoot) || isDirectorySync(resolved.value)) {
+  if ((await isDirectory(fromRoot)) || (await isDirectory(resolved.value))) {
     return fromRoot + '/**/*_test.zena';
   }
   return fromRoot;
 }
 
 /** The test files the arguments name, repo-relative and in order. */
-function findTests(args: ParsedArgs): Array<String> | null {
+async function findTests(args: ParsedArgs): Future<Array<String> | null> {
   let excludes = args.getMultiOption('exclude');
   var filter = '';
   if (let (true, value) = args.getOption('filter')) {
@@ -76,7 +77,7 @@ function findTests(args: ParsedArgs): Array<String> | null {
   let found = new GrowableArray<String>();
   let seen = new HashSet<String>();
   for (let argument in args.rest) {
-    let pattern = testPattern(argument);
+    let pattern = await testPattern(argument);
     if (pattern == null) {
       console.error('Error: path not found: ' + argument);
       return null;
@@ -86,7 +87,7 @@ function findTests(args: ParsedArgs): Array<String> | null {
     for (let exclude in excludes) {
       opts.exclude.push(exclude);
     }
-    for (let match in globSync(pattern, opts)) {
+    for (let match in await glob(pattern, opts)) {
       if (extname(match) != '.zena') {
         continue;
       }
@@ -200,11 +201,11 @@ function startCopy(mode: String, paths: Array<String>, options: Options) {
  * would only cost: the `--single` copies compile their own files then,
  * each test running as soon as its compile is done.
  */
-function compileAhead(files: Array<String>, options: Options) {
+async function compileAhead(files: Array<String>, options: Options): Future<void> {
   let stale = new GrowableArray<String>();
   for (let file in files) {
     let path = testPath(file);
-    if (!isCached(testRequest(path), options)) {
+    if (!(await isCached(testRequest(path), options))) {
       stale.push(path);
     }
   }
@@ -256,7 +257,7 @@ export async function testCommand(args: ParsedArgs, options: Options): Future<i3
     console.error('Error: test needs a file, directory or glob');
     return 2;
   }
-  let files = findTests(args);
+  let files = await findTests(args);
   if (files == null) {
     return 2;
   }
@@ -265,7 +266,7 @@ export async function testCommand(args: ParsedArgs, options: Options): Future<i3
     return 2;
   }
   console.log(`Running ${files.length} tests...`);
-  compileAhead(files, options);
+  await compileAhead(files, options);
 
   // A sliding window: at most `limit` copies in flight, results printed
   // in file order as the window advances.
@@ -342,7 +343,7 @@ async function runSingle(args: ParsedArgs, options: Options): Future<i32> {
     dirs: [
       {from: repoRoot().value, to: '.'},
       {from: stdlibDir().value, to: '/stdlib'},
-      {from: hostDir('/tmp').value, to: '/tmp'},
+      {from: (await hostDir('/tmp')).value, to: '/tmp'},
     ],
     grant: true,
     grantExtensions: true,

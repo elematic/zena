@@ -14,7 +14,7 @@
 import {Future} from 'zena:async';
 import {Borrow, Own, Scoped} from 'zena:core';
 import {getEnv} from 'zena:cli';
-import {existsSync, isDirectorySync, mkdirSync, readFileSync, writeFileSync} from 'zena:fs';
+import {exists, isDirectory, mkdir, readFile, writeFile} from 'zena:fs';
 import {dirname} from 'zena:path';
 import {Process, ProcessResult, run, spawnWith} from 'zena:process';
 import {milliseconds, sleep} from 'zena:time';
@@ -42,32 +42,32 @@ export function zenaBinary(): String {
 }
 
 /** Creates `dir` and the directories above it that are missing. */
-export function ensureDir(dir: String): void {
-  if (dir == '' || dir == '.' || existsSync(dir)) {
+export async function ensureDir(dir: String): Future<void> {
+  if (dir == '' || dir == '.' || (await exists(dir))) {
     return;
   }
-  ensureDir(dirname(dir));
+  await ensureDir(dirname(dir));
   try {
-    mkdirSync(dir);
+    await mkdir(dir);
   } catch (e) {
-    // Another test file may have made it since `existsSync` said no:
+    // Another test file may have made it since `exists` said no:
     // `zena test` runs files in parallel, and every scratch directory is
     // under `.zena/test-scratch`.
     // TODO(#540): use a recursive mkdir from zena:fs.
-    if (!isDirectorySync(dir)) {
+    if (!(await isDirectory(dir))) {
       throw e;
     }
   }
 }
 
 /** Writes `text` to `path`, creating its directory. */
-export function write(path: String, text: String): void {
-  ensureDir(dirname(path));
-  writeFileSync(path, text);
+export async function write(path: String, text: String): Future<void> {
+  await ensureDir(dirname(path));
+  await writeFile(path, text);
 }
 
-export function read(path: String): String {
-  return readFileSync(path);
+export async function read(path: String): Future<String> {
+  return await readFile(path);
 }
 
 /** A directory of a test's own, under `.zena/test-scratch` in the repository. */
@@ -77,10 +77,10 @@ export final class Scratch {
 
   new(this.path);
 
-  static create(name: String): Scratch {
+  static async create(name: String): Future<Scratch> {
     let suffix = (randomU64() >> (16 as u64)) as i64;
     let scratch = new Scratch(`.zena/test-scratch/${name}-${suffix}`);
-    ensureDir(scratch.path);
+    await ensureDir(scratch.path);
     return scratch;
   }
 
@@ -191,8 +191,8 @@ function fixtureCache() {
  * The test holds the process itself: a resource class wrapping it fails
  * to lower (elematic/zena#493).
  */
-export function startFakePds(scratch: Scratch, fixture: String, web: String | null = null): Own<Process> {
-  ensureDir(scratch.at('pds'));
+export async function startFakePds(scratch: Scratch, fixture: String, web: String | null = null): Future<Own<Process>> {
+  await ensureDir(scratch.at('pds'));
   let command = new ZenaCommand(repoRoot(), '.', fixtureCache());
   let args = new GrowableArray<String>();
   args.push('run');
@@ -221,8 +221,8 @@ export async function fakePdsOrigin(scratch: Scratch, process: Borrow<Process>):
   // The file can be read between its creation and the write, so wait for
   // the whole origin, which ends in "/plc".
   for (var tries = 0; tries < 1500; tries += 1) {
-    if (existsSync(plc)) {
-      let origin = readFileSync(plc);
+    if (await exists(plc)) {
+      let origin = await readFile(plc);
       if (origin.endsWith('/plc')) {
         return origin;
       }

@@ -18,19 +18,19 @@ let ALICE = 'did:plc:alicealicealicealicealic';
 
 export let tests = suite('zena pkg ci', () => {
   test('creates an automation account that CI publishes as with its token', async (ctx) => {
-    let scratch = Scratch.create('ci');
-    let stack = startFakePds(scratch, 'publish-stack.zena');
+    let scratch = await Scratch.create('ci');
+    let stack = await startFakePds(scratch, 'publish-stack.zena');
     try {
       await fakePdsOrigin(scratch, stack);
-      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
       let person = (who: String) =>
         new ZenaCommand(scratch.host('lib'), scratch.at('lib'), scratch.host('cache'))
           .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
           .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
           .set('ZENA_REGISTRY', addresses['registry'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
-      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
-      write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      await write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      await write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       let alice = person('alice');
       isTrue((await alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n')).succeeded(), 'alice signs in');
       isTrue((await alice.run(['pkg', 'scope', 'create', 'acme', '--yes'])).succeeded(), 'the scope');
@@ -50,8 +50,8 @@ export let tests = suite('zena pkg ci', () => {
       // automation.
       let ci = (given: String) => person('bot').set('ZENA_REGISTRY_TOKEN', given);
       let bot = ci(token);
-      let did = (parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
-      write(scratch.at('lib/zena-package.json'),
+      let did = (parseJson(await read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
+      await write(scratch.at('lib/zena-package.json'),
           `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "1.1.0"}\n`);
       let notYet = await bot.run(['pkg', 'publish']);
       isTrue(!notYet.succeeded() && notYet.stderr.contains('Forbidden'), described(notYet));
@@ -86,7 +86,7 @@ export let tests = suite('zena pkg ci', () => {
       let replaced = await alice.run(['pkg', 'ci', 'token', 'acme/ci']);
       let next = after(replaced.stdout, 'Its new token, which is not shown again:');
       isTrue(replaced.succeeded() && next.startsWith('zena_ci_') && next != token, described(replaced));
-      write(scratch.at('lib/zena-package.json'),
+      await write(scratch.at('lib/zena-package.json'),
           `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "1.2.0"}\n`);
       let revoked = await bot.run(['pkg', 'publish']);
       isTrue(!revoked.succeeded() && revoked.stderr.contains('InvalidToken'), described(revoked));

@@ -15,12 +15,11 @@
  * since the compiler is part of it.
  */
 
+import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { HashMap, HashSet } from 'zena:collections';
 import {
-  exists, existsSync, isDirectorySync, isFile, isFileSync, mkdirSync, readFileSync,
-  readFileBytesSync, rename, renameSync, statSync, unlink, writeFile, writeFileSync,
-  writeFileBytesSync
+  exists, isDirectory, isFile, mkdir, readFile, rename, stat, unlink, writeFile
 } from 'zena:fs';
 import { AbsolutePath, basename, dirname, extname } from 'zena:path';
 import { monotonic } from 'zena:time';
@@ -75,13 +74,13 @@ function optLevelText(options: Options) {
 }
 
 /** The compiler module ZENA_COMPILER_WASM names, or null for this one. */
-function externalCompiler(): AbsolutePath | null {
+async function externalCompiler(): Future<AbsolutePath | null> {
   let named = getEnv('ZENA_COMPILER_WASM');
   if (named == null) {
     return null;
   }
   let path = resolveUserPath(named);
-  if (!isFileSync(path.value)) {
+  if (!(await isFile(path.value))) {
     throw new CompileFailure(
       `Compiler WASM not found at ${path.value}. Please build it first.`,
     );
@@ -166,13 +165,13 @@ async function runtimeMemoryModuleFor(request: CompileRequest, options: Options)
  * compile that was not cached leaves — the caller then records nothing
  * and its own entry is rebuilt next time, which is safe.
  */
-function recordedDeps(modulePath: AbsolutePath) {
+async function recordedDeps(modulePath: AbsolutePath): Future<GrowableArray<String>> {
   let paths = new GrowableArray<String>();
   let depsPath = `${modulePath.value.sliceBytes(0, modulePath.value.length - 5)}.deps`;
-  if (!isFileSync(depsPath)) {
+  if (!(await isFile(depsPath))) {
     return paths;
   }
-  for (let line in readFileSync(depsPath).split('\n')) {
+  for (let line in (await readFile(depsPath)).split('\n')) {
     if (line == '') {
       continue;
     }
@@ -193,10 +192,10 @@ async function compileRecording(
   quiet: boolean,
   onRead: (path: String) => void,
 ): Future<void> {
-  ensureDir(dirname(out.value));
-  let compiler = externalCompiler();
+  await ensureDir(dirname(out.value));
+  let compiler = await externalCompiler();
   if (compiler != null) {
-    compileWith(compiler, request, options, out, quiet);
+    await compileWith(compiler, request, options, out, quiet);
     return;
   }
   var status = 1;
@@ -258,7 +257,7 @@ async function compileFileOptions(
     // an ordering a refactor could break without any test noticing,
     // and the symptom would be a program embedding an allocator that
     // no longer matches its source.
-    for (let path in recordedDeps(runtime)) {
+    for (let path in await recordedDeps(runtime)) {
       onRead(path);
     }
     runtime.value
@@ -295,13 +294,13 @@ async function compileFileOptions(
  * the repository root as `.`, the standard library as `/stdlib`, and
  * the output's directory under its own name.
  */
-function compileWith(
+async function compileWith(
   compiler: AbsolutePath,
   request: CompileRequest,
   options: Options,
   out: AbsolutePath,
   quiet: boolean,
-): void {
+): Future<void> {
   let args = new GrowableArray<String>();
   args.push('zc');
   args.push(repoRelative(request.source));
@@ -359,7 +358,7 @@ function compileWith(
     ],
     inheritStdio: !quiet,
   });
-  if (result.succeeded() && isFileSync(out.value)) {
+  if (result.succeeded() && (await isFile(out.value))) {
     return;
   }
   printCaptured(result.stdout);
@@ -382,17 +381,17 @@ function printCaptured(text: String): void {
 }
 
 /** Creates a directory and any parents it needs. */
-export function ensureDir(path: String): void {
-  if (path == '' || path == '/' || path == '.' || existsSync(path)) {
+export async function ensureDir(path: String): Future<void> {
+  if (path == '' || path == '/' || path == '.' || (await exists(path))) {
     return;
   }
-  ensureDir(dirname(path));
+  await ensureDir(dirname(path));
   try {
-    mkdirSync(path);
+    await mkdir(path);
   } catch (e) {
     // Another process may have made it since `exists` said no: `zena
     // test` compiles its files in parallel, into one cache directory.
-    if (!isDirectorySync(path)) {
+    if (!(await isDirectory(path))) {
       throw e;
     }
   }
@@ -443,13 +442,13 @@ function cacheSubdir(inProject: String, inUserCache: String): String {
 }
 
 /** A file's identity for the cache: its modification time and size. */
-function identity(path: String) {
-  let info = statSync(path);
+async function identity(path: String): Future<String> {
+  let info = await stat(path);
   return `${info.modified} ${info.size}`;
 }
 
 /** What decides the module a compile produces, apart from its sources. */
-function cacheKey(request: CompileRequest, options: Options) {
+async function cacheKey(request: CompileRequest, options: Options): Future<String> {
   let compiler = getEnv('ZENA_COMPILER_WASM') ?? cliModule().value;
   var key = `zena-cache-1\n${request.source.value}\n`;
   key = key + `test=${request.testMode} debug=${options.debug}\n`;
@@ -457,7 +456,7 @@ function cacheKey(request: CompileRequest, options: Options) {
   key = key + `strings=${request.importedStringConstants ?? ''}\n`;
   key = key + `compact=${request.compactImports}\n`;
   key = key + `wide=${envSet('ZENA_WIDE_ARITHMETIC')}\n`;
-  key = `${key}${compiler} ${identity(resolveUserPath(compiler).value)}\n`;
+  key = `${key}${compiler} ${await identity(resolveUserPath(compiler).value)}\n`;
   return sha256HexOfString(key).sliceBytes(0, 16);
 }
 
@@ -486,11 +485,11 @@ function joinLines(lines: Array<String>) {
  * Whether every file a cache entry lists still has the modification
  * time and size it had when the entry was written.
  */
-function entryIsFresh(depsPath: String, modulePath: String): boolean {
-  if (!isFileSync(depsPath) || !isFileSync(modulePath)) {
+async function entryIsFresh(depsPath: String, modulePath: String): Future<boolean> {
+  if (!(await isFile(depsPath)) || !(await isFile(modulePath))) {
     return false;
   }
-  let lines = readFileSync(depsPath).split('\n');
+  let lines = (await readFile(depsPath)).split('\n');
   var checked = 0;
   for (let line in lines) {
     if (line == '') {
@@ -504,7 +503,7 @@ function entryIsFresh(depsPath: String, modulePath: String): boolean {
     }
     let path = line.sliceBytes(second + 1, line.length);
     let recorded = line.sliceBytes(0, second);
-    let current = try { identity(path) } catch (e) { '' };
+    let current = try { await identity(path) } catch (e) { '' };
     if (current != recorded) {
       return false;
     }
@@ -514,18 +513,18 @@ function entryIsFresh(depsPath: String, modulePath: String): boolean {
 }
 
 /** The name of `request`'s entry in the cache, before `.wasm` and `.deps`. */
-function cacheName(request: CompileRequest, options: Options) {
+async function cacheName(request: CompileRequest, options: Options): Future<String> {
   let stem = basename(request.source.value, extname(request.source.value));
-  return `${stem}_${cacheKey(request, options)}`;
+  return `${stem}_${await cacheKey(request, options)}`;
 }
 
 /** Whether the cache holds a fresh module for `request`. */
-export function isCached(request: CompileRequest, options: Options): boolean {
+export async function isCached(request: CompileRequest, options: Options): Future<boolean> {
   if (getEnv('ZENA_COMPILER_WASM') != null) {
     return false;
   }
-  let name = `${cacheDir()}/${cacheName(request, options)}`;
-  return entryIsFresh(`${name}.deps`, `${name}.wasm`);
+  let name = `${cacheDir()}/${await cacheName(request, options)}`;
+  return await entryIsFresh(`${name}.deps`, `${name}.wasm`);
 }
 
 /**
@@ -539,12 +538,12 @@ export async function compileCached(
   quiet: boolean = true,
 ): Future<AbsolutePath> {
   let dir = cacheDir();
-  ensureDir(dir);
-  let name = cacheName(request, options);
+  await ensureDir(dir);
+  let name = await cacheName(request, options);
   let modulePath = `${dir}/${name}.wasm`;
   let depsPath = `${dir}/${name}.deps`;
   if (!noCache && getEnv('ZENA_COMPILER_WASM') == null &&
-      entryIsFresh(depsPath, modulePath)) {
+      (await entryIsFresh(depsPath, modulePath))) {
     return new AbsolutePath(modulePath);
   }
 
@@ -553,7 +552,7 @@ export async function compileCached(
   // both compile it, and the second rename wins.
   let unique = i64ToString(monotonic() as i64);
   let tempModule = `${dir}/${name}.tmp-${unique}.wasm`;
-  let deps = new GrowableArray<String>();
+  let readPaths = new GrowableArray<String>();
   let seen = new HashSet<String>();
   await compileRecording(
     request,
@@ -562,16 +561,18 @@ export async function compileCached(
     quiet,
     (path) => {
       if (seen.add(path)) {
-        // Taken before the compiler reads the file, so an edit made
-        // during the compile leaves the entry stale, not wrongly fresh.
-        try {
-          deps.push(`${identity(path)} ${path}`);
-        } catch (e) {
-          // A file that cannot be read fails the compile anyway.
-        }
+        readPaths.push(path);
       }
     },
   );
+  let deps = new GrowableArray<String>();
+  for (let path in readPaths) {
+    try {
+      deps.push(`${await identity(path)} ${path}`);
+    } catch (e) {
+      // A file that cannot be read fails the compile anyway.
+    }
+  }
   await rename(tempModule, modulePath);
   let tempDeps = `${dir}/${name}.tmp-${unique}.deps`;
   await writeFile(tempDeps, joinLines(deps));
@@ -604,10 +605,10 @@ export async function compileIntoCache(requests: Array<CompileRequest>, options:
     return;
   }
   let dir = cacheDir();
-  ensureDir(dir);
+  await ensureDir(dir);
   let stale = new GrowableArray<CompileRequest>();
   for (let request in requests) {
-    if (!isCached(request, options)) {
+    if (!(await isCached(request, options))) {
       stale.push(request);
     }
   }
@@ -617,34 +618,44 @@ export async function compileIntoCache(requests: Array<CompileRequest>, options:
   // Each file's identity when the compiler last read it, and the files
   // the session read before its first compile.
   let identities = new HashMap<String, String>();
+  let pendingReads = new GrowableArray<String>();
+  var flushedReads = 0;
   let setup = new GrowableArray<String>();
   var opened = false;
   let onRead = (path: String) => {
-    try {
-      identities[path] = identity(path);
-    } catch (e) {
-      // A file that cannot be read fails the compile anyway.
-    }
+    pendingReads.push(path);
     if (!opened) {
       setup.push(path);
+    }
+  };
+  let flushReads = async (): Future<void> => {
+    while (flushedReads < pendingReads.length) {
+      let path = pendingReads[flushedReads];
+      flushedReads += 1;
+      try {
+        identities[path] = await identity(path);
+      } catch (e) {
+        // A file that cannot be read fails the compile anyway.
+      }
     }
   };
   let unique = i64ToString(monotonic() as i64);
   let first = stale[0];
   var opening: CompileSession | null = null;
   try {
-    let out = new AbsolutePath(`${dir}/${cacheName(first, options)}.tmp-${unique}.wasm`);
+    let out = new AbsolutePath(`${dir}/${await cacheName(first, options)}.tmp-${unique}.wasm`);
     opening = await openCompileSession(await compileFileOptions(first, options, out, onRead));
   } catch (e) {
     // The compile `compileCached` runs for each of them reports it.
   }
+  await flushReads();
   opened = true;
   if (opening == null) {
     return;
   }
   let session = opening;
   for (let request in stale) {
-    let name = cacheName(request, options);
+    let name = await cacheName(request, options);
     let tempModule = `${dir}/${name}.tmp-${unique}.wasm`;
     var status = 1;
     try {
@@ -653,6 +664,7 @@ export async function compileIntoCache(requests: Array<CompileRequest>, options:
       // A throw out of the compiler belongs to this entry alone; the
       // compile `compileCached` runs for it meets it again.
     }
+    await flushReads();
     if (status != 0 || !(await isFile(tempModule))) {
       if (await exists(tempModule)) {
         await unlink(tempModule);

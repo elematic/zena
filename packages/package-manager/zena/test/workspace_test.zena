@@ -1,5 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
+import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {ManifestError} from 'package-manager:manifest';
 import {WorkspaceFiles, readWorkspace} from 'package-manager:workspace';
@@ -16,14 +17,14 @@ final class MemoryFiles implements WorkspaceFiles {
     return this;
   }
 
-  read(path: String): String | null {
+  async read(path: String): Future<String | null> {
     if (let (true, text) = this.files.get(path)) {
       return text;
     }
     return null;
   }
 
-  list(path: String): Array<String> | null {
+  async list(path: String): Future<Array<String> | null> {
     let prefix = `${path}/`;
     let names = new GrowableArray<String>();
     for (let file in this.files.keys()) {
@@ -76,8 +77,8 @@ function files() {
 }
 
 export let tests = suite('package-manager:workspace', () => {
-  test('reads the root, the workspace packages and their path dependencies', (ctx) => {
-    let workspace = readWorkspace('/ws', files());
+  test('reads the root, the workspace packages and their path dependencies', async (ctx) => {
+    let workspace = await readWorkspace('/ws', files());
     equal(workspace.root.dir, '/ws');
     equal(workspace.root.manifest.name as String, 'app');
     equal(workspace.packages.length, 3);
@@ -88,8 +89,8 @@ export let tests = suite('package-manager:workspace', () => {
     equal(workspace.packages[1].manifestPath(), '/ws/packages/lib/zena-package.json');
   });
 
-  test("gathers every package's requirements", (ctx) => {
-    let requirements = readWorkspace('/ws', files()).requirements();
+  test("gathers every package's requirements", async (ctx) => {
+    let requirements = (await readWorkspace('/ws', files())).requirements();
     equal(requirements.length, 3);
     equal(requirements[0].did, ROUTER);
     equal(requirements[0].version.toString(), '1.4.2');
@@ -97,8 +98,8 @@ export let tests = suite('package-manager:workspace', () => {
     equal(requirements[2].version.toString(), '1.5.0');
   });
 
-  test('finds the package a directory is in', (ctx) => {
-    let workspace = readWorkspace('/ws', files());
+  test('finds the package a directory is in', async (ctx) => {
+    let workspace = await readWorkspace('/ws', files());
     equal(workspace.packageAt('/ws/packages/lib').dir, '/ws/packages/lib');
     equal(workspace.packageAt('/ws/packages/lib/src/deep').dir, '/ws/packages/lib');
     equal(workspace.packageAt('/ws/packages/library').dir, '/ws');
@@ -106,30 +107,30 @@ export let tests = suite('package-manager:workspace', () => {
     equal(workspace.packageAt('/ws').dir, '/ws');
   });
 
-  test('reads a root with no manifest yet as an empty one', (ctx) => {
-    let workspace = readWorkspace('/ws', new MemoryFiles());
+  test('reads a root with no manifest yet as an empty one', async (ctx) => {
+    let workspace = await readWorkspace('/ws', new MemoryFiles());
     equal(workspace.packages.length, 1);
     isTrue(workspace.root.text == null);
     equal(workspace.requirements().length, 0);
   });
 
-  test('names the manifest it cannot read', (ctx) => {
-    let fails = (files: MemoryFiles, expected: String) => {
+  test('names the manifest it cannot read', async (ctx) => {
+    let fails = async (files: MemoryFiles, expected: String) => {
       var message = '';
       try {
-        readWorkspace('/ws', files);
+        await readWorkspace('/ws', files);
       } catch (e) {
         message = if (e is ManifestError) e.message else 'another error';
       }
       isTrue(message.contains(expected), message);
     };
-    fails(new MemoryFiles().add('/ws/zena-package.json', '{"dependencies": {"lib": {"path": "./lib"}}}'),
+    await fails(new MemoryFiles().add('/ws/zena-package.json', '{"dependencies": {"lib": {"path": "./lib"}}}'),
         '/ws/lib has no zena-package.json');
-    fails(new MemoryFiles()
+    await fails(new MemoryFiles()
         .add('/ws/zena-package.json', '{"workspace": {"packages": ["lib"]}}')
         .add('/ws/lib/zena-package.json', '{"name": 1}'),
         '/ws/lib/zena-package.json');
-    fails(new MemoryFiles().add('/ws/zena-package.json', '{"workspace": {"packages": ["missing/*"]}}'),
+    await fails(new MemoryFiles().add('/ws/zena-package.json', '{"workspace": {"packages": ["missing/*"]}}'),
         '/ws/missing, which is not a directory');
   });
 });

@@ -13,8 +13,8 @@
 
 import { ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
-import { getEnv, readStdinSync } from 'zena:cli';
-import { existsSync, readFileSync, unlinkSync } from 'zena:fs';
+import { getEnv, readStdin } from 'zena:cli';
+import { exists, readFile, unlink } from 'zena:fs';
 import { parseJson, stringify } from 'zena:json';
 import { dirname } from 'zena:path';
 import { Session, createSession, deleteSession } from 'atproto:session';
@@ -48,18 +48,18 @@ function sessionPath() {
 }
 
 /** The signed-in session, or null when no one is signed in. */
-export function currentSession(): Session | null {
+export async function currentSession(): Future<Session | null> {
   let path = sessionPath();
-  if (!existsSync(path)) {
+  if (!(await exists(path))) {
     return null;
   }
-  return Session.fromJson(parseJson(readFileSync(path)));
+  return Session.fromJson(parseJson(await readFile(path)));
 }
 
 /** Writes `session` where `currentSession` reads it, readable only by its owner. */
-export function saveSession(session: Session): void {
+export async function saveSession(session: Session): Future<void> {
   let path = sessionPath();
-  ensureDir(dirname(path));
+  await ensureDir(dirname(path));
   match (writePrivate(path, stringify(session.toJson(), '  ').toBytes())) {
     case (true, _): {}
     case (false, let why): {
@@ -79,19 +79,19 @@ export async function loginCommand(args: ParsedArgs, options: Options): Future<i
     return 2;
   }
   let identifier = args.rest[0];
-  let password = readPassword(identifier, args.getFlag('password-stdin'));
+  let password = await readPassword(identifier, args.getFlag('password-stdin'));
   if (password == null) {
     return 1;
   }
   let session = await createSession(identifier, password, packageResolver());
-  saveSession(session);
+  await saveSession(session);
   console.log(`Signed in as ${session.handle} (${session.did}) at ${session.pds}.`);
   return 0;
 }
 
 /** `zena pkg logout`: ends the session at the PDS and forgets it. */
 export async function logoutCommand(args: ParsedArgs, options: Options): Future<i32> {
-  let session = currentSession();
+  let session = await currentSession();
   if (session == null) {
     console.log('Not signed in.');
     return 0;
@@ -104,14 +104,14 @@ export async function logoutCommand(args: ParsedArgs, options: Options): Future<
     // or that already ended it, leaves nothing to undo here.
     console.error(`Warning: ${signedIn.pds} did not end the session: ${e.message}`);
   }
-  unlinkSync(sessionPath());
+  await unlink(sessionPath());
   console.log(`Signed out ${signedIn.handle}.`);
   return 0;
 }
 
-function readPassword(identifier: String, fromStdin: boolean): String | null {
+async function readPassword(identifier: String, fromStdin: boolean): Future<String | null> {
   if (fromStdin) {
-    return trimLineEnd(readStdinSync());
+    return trimLineEnd(await readStdin());
   }
   let fromEnv = getEnv('ZENA_APP_PASSWORD');
   if (fromEnv != null && fromEnv != '') {
