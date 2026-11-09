@@ -1,0 +1,408 @@
+/**
+ * GFM pipe tables extension (`| a | b |\n| --- | :---: |`).
+ */
+
+import { Array, GrowableArray, StringBuilder } from 'zena:core';
+import {
+  Block, CustomBlock, CustomInline, Inline, Span
+} from '../ast.zena';
+import {
+  AstTransformer, BlockContinue, BlockLineState, BlockParserFactory,
+  CustomBlockParser, CustomBlockStart, DelimiterProcessor, HtmlRenderContext,
+  InlineContentParser, InlineParserRunner, MarkdownExtension, MatchedBlockInfo,
+  NodeRenderer
+} from '../plugin.zena';
+import { isSpaceOrTab, trimSpaces } from '../scanner.zena';
+
+/**
+ * Column alignment in a GFM pipe table.
+ */
+export enum TableAlignment {
+  None,
+  Left,
+  Center,
+  Right
+}
+
+/**
+ * A single cell in a GFM table header or body row.
+ */
+export final class TableCell(
+  var inlines: GrowableArray<Inline>,
+  alignment: TableAlignment,
+  isHeader: boolean,
+  span: Span
+)
+
+/**
+ * A row of cells in a GFM table.
+ */
+export final class TableRow(
+  var cells: GrowableArray<TableCell>,
+  span: Span
+)
+
+/**
+ * AST block node representing a GFM pipe table.
+ */
+export final class TableBlock extends CustomBlock {
+  alignments: GrowableArray<TableAlignment>;
+  var head: TableRow;
+  var rows: GrowableArray<TableRow>;
+
+  new(this.alignments, this.head, this.rows, span: Span) : super(span);
+}
+
+final class TableBlockParser implements CustomBlockParser {
+  #alignments: GrowableArray<TableAlignment>;
+  #headerRawCells: GrowableArray<String>;
+  #startOffset: i32;
+  #rawBodyLines = new GrowableArray<String>(4);
+  #rawBodyOffsets = new GrowableArray<i32>(4);
+  var #builtTable: TableBlock | null = null;
+
+  new(
+    alignments: GrowableArray<TableAlignment>,
+    headerRawCells: GrowableArray<String>,
+    startOffset: i32
+  ) : #alignments = alignments,
+      #headerRawCells = headerRawCells,
+      #startOffset = startOffset;
+
+  acceptsLines(): boolean {
+    return true;
+  }
+
+  tryContinue(state: BlockLineState): BlockContinue {
+    if (state.isBlank || state.indent >= 4) {
+      return BlockContinue.none();
+    }
+    let b = state.line.getByteAt(state.nextNonSpaceIndex);
+    // Interrupting block starters: `#`, `>`, ```, `~~~`
+    if (b == 0x23 || b == 0x3E || b == 0x60 || b == 0x7E) {
+      return BlockContinue.none();
+    }
+    let slice = state.line.sliceBytes(state.nextNonSpaceIndex, state.line.length);
+    if (!containsUnescapedPipe(slice)) {
+      return BlockContinue.none();
+    }
+    return BlockContinue.atIndex(state.nextNonSpaceIndex);
+  }
+
+  addLine(line: String, startOffset: i32): void {
+    this.#rawBodyLines.push(line);
+    this.#rawBodyOffsets.push(startOffset);
+  }
+
+  parseInlines(inlineParser: InlineParserRunner): void {
+    let table = this.#builtTable;
+    if (table == null) {
+      return;
+    }
+    let colCount = this.#alignments.length;
+
+    // Parse header cells
+    let headCells = new GrowableArray<TableCell>(colCount);
+    var c = 0;
+    while (c < colCount) {
+      let rawText = if (c < this.#headerRawCells.length)
+        unescapePipes(this.#headerRawCells[c])
+      else
+        '';
+      let inlines = inlineParser.parse(rawText, this.#startOffset);
+      headCells.push(
+        new TableCell(
+          inlines,
+          this.#alignments[c],
+          true,
+          new Span(this.#startOffset, this.#startOffset + rawText.length)
+        )
+      );
+      c += 1;
+    }
+    table.head = new TableRow(headCells, new Span(this.#startOffset, table.span.end));
+
+    // Parse body rows
+    var r = 0;
+    while (r < this.#rawBodyLines.length) {
+      let rowLine = this.#rawBodyLines[r];
+      let rowOffset = this.#rawBodyOffsets[r];
+      let rawCells = splitTableCells(rowLine);
+      let cells = new GrowableArray<TableCell>(colCount);
+      var col = 0;
+      while (col < colCount) {
+        let cellText = if (col < rawCells.length)
+          unescapePipes(rawCells[col])
+        else
+          '';
+        let inlines = inlineParser.parse(cellText, rowOffset);
+        cells.push(
+          new TableCell(
+            inlines,
+            this.#alignments[col],
+            false,
+            new Span(rowOffset, rowOffset + rowLine.length)
+          )
+        );
+        col += 1;
+      }
+      table.rows.push(
+        new TableRow(cells, new Span(rowOffset, rowOffset + rowLine.length))
+      );
+      r += 1;
+    }
+  }
+
+  closeBlock(endOffset: i32): Block {
+    let span = new Span(this.#startOffset, endOffset);
+    let emptyHead = new TableRow(new GrowableArray<TableCell>(0), span);
+    let table = new TableBlock(
+      this.#alignments,
+      emptyHead,
+      new GrowableArray<TableRow>(this.#rawBodyLines.length),
+      span
+    );
+    this.#builtTable = table;
+    return table;
+  }
+}
+
+final class TableBlockParserFactory implements BlockParserFactory {
+  triggerBytes(): Array<i32> {
+    return [0x7C, 0x2D, 0x3A]; // '|', '-', ':'
+  }
+
+  tryStart(
+    state: BlockLineState,
+    matched: MatchedBlockInfo
+  ): CustomBlockStart | null {
+    if (state.indent >= 4 || !matched.isParagraph) {
+      return null;
+    }
+    let paraLines = matched.paragraphLines;
+    if (paraLines == null || paraLines.length != 1) {
+      return null;
+    }
+
+    let delimLine = state.line.sliceBytes(state.nextNonSpaceIndex, state.line.length);
+    let headerLine = paraLines[0];
+    if (!containsUnescapedPipe(delimLine) && !containsUnescapedPipe(headerLine)) {
+      return null;
+    }
+
+    let alignments = parseDelimiterRow(delimLine);
+    if (alignments == null || alignments.length == 0) {
+      return null;
+    }
+
+    let headerCells = splitTableCells(headerLine);
+    if (headerCells.length != alignments.length) {
+      return null;
+    }
+
+    let parser = new TableBlockParser(
+      alignments,
+      headerCells,
+      matched.paragraphStartOffset
+    );
+    return CustomBlockStart.of(parser)
+      .atIndex(state.line.length)
+      .replacingParagraph();
+  }
+}
+
+function containsUnescapedPipe(s: String): boolean {
+  let len = s.length;
+  var i = 0;
+  while (i < len) {
+    let b = s.getByteAt(i);
+    if (b == 0x5C && i + 1 < len) {
+      i += 2;
+      continue;
+    }
+    if (b == 0x7C) { // |
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+/**
+ * Splits a table row into trimmed cell strings, respecting `\|` escapes and
+ * stripping optional leading and trailing `|` delimiters.
+ */
+function splitTableCells(line: String): GrowableArray<String> {
+  let trimmed = trimSpaces(line);
+  var start = 0;
+  var end = trimmed.length;
+  if (start < end && trimmed.getByteAt(start) == 0x7C) {
+    start += 1;
+  }
+  if (end > start && trimmed.getByteAt(end - 1) == 0x7C) {
+    // Only strip trailing `|` if it is not escaped by an odd number of `\`
+    if (end - 1 == start || trimmed.getByteAt(end - 2) != 0x5C) {
+      end -= 1;
+    }
+  }
+
+  let cells = new GrowableArray<String>(4);
+  var cellStart = start;
+  var i = start;
+  while (i < end) {
+    let b = trimmed.getByteAt(i);
+    if (b == 0x5C && i + 1 < end) {
+      i += 2;
+      continue;
+    }
+    if (b == 0x7C) {
+      cells.push(trimSpaces(trimmed.sliceBytes(cellStart, i)));
+      cellStart = i + 1;
+    }
+    i += 1;
+  }
+  cells.push(trimSpaces(trimmed.sliceBytes(cellStart, end)));
+  return cells;
+}
+
+function unescapePipes(s: String): String {
+  let len = s.length;
+  var hasEscapedPipe = false;
+  var k = 0;
+  while (k + 1 < len) {
+    if (s.getByteAt(k) == 0x5C && s.getByteAt(k + 1) == 0x7C) {
+      hasEscapedPipe = true;
+      break;
+    }
+    k += 1;
+  }
+  if (!hasEscapedPipe) {
+    return s;
+  }
+  let sb = new StringBuilder(len);
+  var i = 0;
+  while (i < len) {
+    if (s.getByteAt(i) == 0x5C && i + 1 < len && s.getByteAt(i + 1) == 0x7C) {
+      sb.appendByte(0x7C);
+      i += 2;
+    } else {
+      sb.appendByte(s.getByteAt(i));
+      i += 1;
+    }
+  }
+  return sb.toString();
+}
+
+function parseDelimiterRow(line: String): GrowableArray<TableAlignment> | null {
+  let rawCells = splitTableCells(line);
+  if (rawCells.length == 0) {
+    return null;
+  }
+  let alignments = new GrowableArray<TableAlignment>(rawCells.length);
+  for (let cell in rawCells) {
+    if (cell.length == 0) {
+      return null;
+    }
+    var start = 0;
+    var end = cell.length;
+    var left = false;
+    var right = false;
+    if (cell.getByteAt(0) == 0x3A) { // :
+      left = true;
+      start += 1;
+    }
+    if (end > start && cell.getByteAt(end - 1) == 0x3A) { // :
+      right = true;
+      end -= 1;
+    }
+    if (end <= start) {
+      return null;
+    }
+    var i = start;
+    while (i < end) {
+      if (cell.getByteAt(i) != 0x2D) { // -
+        return null;
+      }
+      i += 1;
+    }
+    let align = if (left && right)
+      TableAlignment.Center
+    else if (left)
+      TableAlignment.Left
+    else if (right)
+      TableAlignment.Right
+    else
+      TableAlignment.None;
+    alignments.push(align);
+  }
+  return alignments;
+}
+
+final class TableRenderer implements NodeRenderer {
+  renderBlock(block: CustomBlock, ctx: HtmlRenderContext): boolean {
+    if (block is TableBlock) {
+      ctx.sb.append('<table>\n<thead>\n<tr>\n');
+      for (let cell in block.head.cells) {
+        this.#renderCell(cell, 'th', ctx);
+      }
+      ctx.sb.append('</tr>\n</thead>\n');
+      if (block.rows.length > 0) {
+        ctx.sb.append('<tbody>\n');
+        for (let row in block.rows) {
+          ctx.sb.append('<tr>\n');
+          for (let cell in row.cells) {
+            this.#renderCell(cell, 'td', ctx);
+          }
+          ctx.sb.append('</tr>\n');
+        }
+        ctx.sb.append('</tbody>\n');
+      }
+      ctx.sb.append('</table>\n');
+      return true;
+    }
+    return false;
+  }
+
+  #renderCell(cell: TableCell, tag: String, ctx: HtmlRenderContext): void {
+    ctx.sb.append('<');
+    ctx.sb.append(tag);
+    match (cell.alignment) {
+      case TableAlignment.Left: {
+        ctx.sb.append(' align="left"');
+      }
+      case TableAlignment.Center: {
+        ctx.sb.append(' align="center"');
+      }
+      case TableAlignment.Right: {
+        ctx.sb.append(' align="right"');
+      }
+      case TableAlignment.None: {}
+    }
+    ctx.sb.append('>');
+    ctx.renderInlines(cell.inlines);
+    ctx.sb.append('</');
+    ctx.sb.append(tag);
+    ctx.sb.append('>\n');
+  }
+
+  renderInline(node: CustomInline, ctx: HtmlRenderContext): boolean {
+    return false;
+  }
+}
+
+/**
+ * Returns the `MarkdownExtension` for GFM pipe tables.
+ */
+export function tablesExtension(): MarkdownExtension {
+  let factories = new GrowableArray<BlockParserFactory>(1);
+  factories.push(new TableBlockParserFactory());
+  let renderers = new GrowableArray<NodeRenderer>(1);
+  renderers.push(new TableRenderer());
+  return new MarkdownExtension(
+    factories,
+    new GrowableArray<DelimiterProcessor>(0),
+    new GrowableArray<InlineContentParser>(0),
+    new GrowableArray<AstTransformer>(0),
+    renderers
+  );
+}

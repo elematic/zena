@@ -1,0 +1,85 @@
+/**
+ * GFM strikethrough extension (`~text~` and `~~text~~`).
+ */
+
+import { GrowableArray, StringBuilder } from 'zena:core';
+import {
+  CustomBlock, CustomInline, Inline, Span, appendInlinesPlainText
+} from '../ast.zena';
+import {
+  BlockParserFactory, DelimiterProcessor, DelimiterRunInfo, HtmlRenderContext,
+  InlineContentParser, AstTransformer, MarkdownExtension, NodeRenderer
+} from '../plugin.zena';
+
+/**
+ * AST node for GFM strikethrough (`<del>...</del>`).
+ */
+export final class Strikethrough extends CustomInline {
+  var children: GrowableArray<Inline>;
+
+  new(this.children, span: Span) : super(span);
+
+  appendPlainText(sb: StringBuilder): void {
+    appendInlinesPlainText(this.children, sb);
+  }
+}
+
+final class StrikethroughDelimiterProcessor implements DelimiterProcessor {
+  openingByte(): i32 {
+    return 0x7E; // ~
+  }
+
+  closingByte(): i32 {
+    return 0x7E; // ~
+  }
+
+  minLength(): i32 {
+    return 1;
+  }
+
+  process(
+    opener: DelimiterRunInfo,
+    closer: DelimiterRunInfo,
+    children: GrowableArray<Inline>
+  ): inline (i32, Inline | null) {
+    // GFM strikethrough matches 1 or 2 tildes of equal length
+    if (opener.length == closer.length && (opener.length == 1 || opener.length == 2)) {
+      let span = new Span(opener.startOffset, closer.endOffset);
+      return (opener.length, new Strikethrough(children, span));
+    }
+    return (0, null);
+  }
+}
+
+final class StrikethroughRenderer implements NodeRenderer {
+  renderBlock(block: CustomBlock, ctx: HtmlRenderContext): boolean {
+    return false;
+  }
+
+  renderInline(node: CustomInline, ctx: HtmlRenderContext): boolean {
+    if (node is Strikethrough) {
+      ctx.sb.append('<del>');
+      ctx.renderInlines(node.children);
+      ctx.sb.append('</del>');
+      return true;
+    }
+    return false;
+  }
+}
+
+/**
+ * Returns the `MarkdownExtension` for GFM strikethrough (`~` and `~~`).
+ */
+export function strikethroughExtension(): MarkdownExtension {
+  let delims = new GrowableArray<DelimiterProcessor>(1);
+  delims.push(new StrikethroughDelimiterProcessor());
+  let renderers = new GrowableArray<NodeRenderer>(1);
+  renderers.push(new StrikethroughRenderer());
+  return new MarkdownExtension(
+    new GrowableArray<BlockParserFactory>(0),
+    delims,
+    new GrowableArray<InlineContentParser>(0),
+    new GrowableArray<AstTransformer>(0),
+    renderers
+  );
+}

@@ -1,0 +1,470 @@
+/**
+ * HTML renderer for `Document` ASTs with `safe` sanitization mode and
+ * `NodeRenderer` extension dispatch.
+ */
+
+import { GrowableArray, Some, StringBuilder } from 'zena:core';
+import {
+  Block, CustomBlock, Document, Inline, CustomInline, Paragraph, Heading,
+  BlockQuote, ListBlock, ListItem, FencedCodeBlock, IndentedCodeBlock,
+  HtmlBlock, ThematicBreak, Text, CodeSpan, Emphasis, Strong, Link, Image,
+  Autolink, HtmlInline, SoftBreak, HardBreak, appendInlinesPlainText
+} from './ast.zena';
+import { HtmlRenderContext, MarkdownExtension, NodeRenderer } from './plugin.zena';
+import {
+  isWhitespaceByte, isAsciiLetter, isAsciiAlphanumeric, toLowerAsciiByte
+} from './scanner.zena';
+
+/**
+ * Options controlling HTML rendering and sanitization.
+ */
+export type HtmlRenderOptions = {
+  /**
+   * When `true`, raw HTML (`HtmlBlock`, `HtmlInline`) is omitted (or escaped
+   * if `escapeRawHtml` is also `true`) and link/image URLs are checked with
+   * `isSafeUrl`.
+   */
+  safe?: boolean,
+  /**
+   * When `true` alongside `safe: true`, raw HTML blocks and inline HTML are
+   * rendered as escaped text rather than dropped.
+   */
+  escapeRawHtml?: boolean,
+  /** String emitted for `SoftBreak` nodes (default `"\n"`). */
+  softBreak?: String,
+  /** Extensions supplying `NodeRenderer` implementations. */
+  extensions?: GrowableArray<MarkdownExtension>
+};
+
+/**
+ * Renders `doc` to an HTML string.
+ */
+export function renderHtml(
+  doc: Document,
+  options: HtmlRenderOptions = {}
+): String {
+  let renderer = new HtmlRenderer(options);
+  return renderer.render(doc);
+}
+
+/**
+ * Checks whether `url` uses a safe scheme (or is a relative reference).
+ *
+ * Allows relative references (`/`, `./`, `../`, `#`, `?`, or paths with no `:`
+ * before the first `/`, `?`, or `#`). When a scheme is present, allows `http:`
+ * and `https:` for both links and images, and `mailto:`, `irc:`, `ircs:`, and
+ * `xmpp:` for links. Rejects `javascript:`, `vbscript:`, `data:`, and other
+ * schemes.
+ */
+export function isSafeUrl(url: String, isImage: boolean = false): boolean {
+  // Strip ASCII control characters and whitespace when inspecting the scheme
+  let len = url.length;
+  var start = 0;
+  while (start < len && url.getByteAt(start) <= 0x20) {
+    start += 1;
+  }
+  if (start >= len) {
+    return true;
+  }
+  let first = url.getByteAt(start);
+  if (first == 0x23 || first == 0x2F || first == 0x3F) { // #, /, ?
+    // Reject protocol-relative `//` only if desired? No, CommonMark safe mode
+    // allows `/path`; check that there is no scheme colon.
+    return true;
+  }
+
+  let schemeSb = new StringBuilder(16);
+  var hasColon = false;
+  var i = start;
+  while (i < len) {
+    let b = url.getByteAt(i);
+    if (b <= 0x20 || b == 0x7F) {
+      i += 1;
+      continue;
+    }
+    if (b == 0x2F || b == 0x3F || b == 0x23) { // /, ?, # before any ':'
+      return true;
+    }
+    if (b == 0x3A) { // :
+      hasColon = true;
+      break;
+    }
+    schemeSb.appendByte(toLowerAsciiByte(b));
+    i += 1;
+  }
+
+  if (!hasColon) {
+    return true;
+  }
+
+  let scheme = schemeSb.toString();
+  if (scheme == 'http' || scheme == 'https') {
+    return true;
+  }
+  return !isImage && (scheme == 'mailto' || scheme == 'irc' || scheme == 'ircs' || scheme == 'xmpp');
+}
+
+/**
+ * Stateful HTML renderer implementing `HtmlRenderContext`.
+ */
+export final class HtmlRenderer implements HtmlRenderContext {
+  sb = new StringBuilder(256);
+  var safe: boolean;
+  var escapeRawHtml: boolean;
+  var #softBreak: String;
+  #renderers = new GrowableArray<NodeRenderer>(4);
+
+  new(options: HtmlRenderOptions = {})
+    : safe = false,
+      escapeRawHtml = false,
+      #softBreak = '\n' {
+    let {
+      safe = false,
+      escapeRawHtml = false,
+      softBreak = '\n',
+      extensions = new GrowableArray<MarkdownExtension>(0)
+    } = options;
+    this.safe = safe;
+    this.escapeRawHtml = escapeRawHtml;
+    this.#softBreak = softBreak;
+    for (let ext in extensions) {
+      for (let r in ext.nodeRenderers) {
+        this.#renderers.push(r);
+      }
+    }
+  }
+
+  render(doc: Document): String {
+    this.sb.clear();
+    this.renderBlocks(doc.blocks);
+    return this.sb.toString();
+  }
+
+  renderBlocks(blocks: GrowableArray<Block>): void {
+    for (let block in blocks) {
+      this.renderBlock(block);
+    }
+  }
+
+  renderBlock(block: Block): void {
+    match (block) {
+      case Paragraph {inlines, id}: {
+        if (id != null) {
+          this.sb.append('<p id="');
+          this.escapeAttribute(id);
+          this.sb.append('">');
+        } else {
+          this.sb.append('<p>');
+        }
+        this.renderInlines(inlines);
+        this.sb.append('</p>\n');
+      }
+      case Heading {level, inlines, id}: {
+        this.sb.append('<h');
+        this.sb.appendI32(level);
+        if (id != null) {
+          this.sb.append(' id="');
+          this.escapeAttribute(id);
+          this.sb.append('"');
+        }
+        this.sb.append('>');
+        this.renderInlines(inlines);
+        this.sb.append('</h');
+        this.sb.appendI32(level);
+        this.sb.append('>\n');
+      }
+      case BlockQuote {blocks}: {
+        this.sb.append('<blockquote>\n');
+        this.renderBlocks(blocks);
+        this.sb.append('</blockquote>\n');
+      }
+      case ListBlock {ordered, startNumber, tight, items}: {
+        if (ordered) {
+          if (startNumber != 1) {
+            this.sb.append('<ol start="');
+            this.sb.appendI32(startNumber);
+            this.sb.append('">\n');
+          } else {
+            this.sb.append('<ol>\n');
+          }
+        } else {
+          this.sb.append('<ul>\n');
+        }
+        for (let item in items) {
+          this.#renderListItem(item, tight);
+        }
+        if (ordered) {
+          this.sb.append('</ol>\n');
+        } else {
+          this.sb.append('</ul>\n');
+        }
+      }
+      case ListItem as item: {
+        this.#renderListItem(item, false);
+      }
+      case FencedCodeBlock {info, literal}: {
+        let lang = firstWord(info);
+        if (lang.length > 0) {
+          this.sb.append('<pre><code class="language-');
+          this.escapeAttribute(lang);
+          this.sb.append('">');
+        } else {
+          this.sb.append('<pre><code>');
+        }
+        this.escapeHtml(literal);
+        this.sb.append('</code></pre>\n');
+      }
+      case IndentedCodeBlock {literal}: {
+        this.sb.append('<pre><code>');
+        this.escapeHtml(literal);
+        this.sb.append('</code></pre>\n');
+      }
+      case HtmlBlock {literal}: {
+        if (this.safe) {
+          if (this.escapeRawHtml) {
+            this.escapeHtml(literal);
+            this.sb.appendByte(0x0A);
+          }
+        } else {
+          this.sb.append(literal);
+          this.sb.appendByte(0x0A);
+        }
+      }
+      case ThematicBreak: {
+        this.sb.append('<hr />\n');
+      }
+      case CustomBlock as custom: {
+        for (let renderer in this.#renderers) {
+          if (renderer.renderBlock(custom, this)) {
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  #renderListItem(item: ListItem, tight: boolean): void {
+    var hasCheckbox = false;
+    var isChecked = false;
+    if (let Some {value} = item.checked) {
+      hasCheckbox = true;
+      isChecked = value;
+    }
+
+    if (hasCheckbox) {
+      this.sb.append('<li class="task-list-item">');
+    } else {
+      this.sb.append('<li>');
+    }
+
+    let checkboxHtml = if (isChecked)
+      '<input type="checkbox" disabled="" checked="" /> '
+    else
+      '<input type="checkbox" disabled="" /> ';
+
+    if (item.blocks.length == 0) {
+      if (hasCheckbox) {
+        this.sb.append(checkboxHtml);
+      }
+      this.sb.append('</li>\n');
+      return;
+    }
+
+    if (tight) {
+      var idx = 0;
+      while (idx < item.blocks.length) {
+        let child = item.blocks[idx];
+        if (let Paragraph {inlines} = child) {
+          if (idx > 0) {
+            this.sb.appendByte(0x0A);
+          }
+          if (idx == 0 && hasCheckbox) {
+            this.sb.append(checkboxHtml);
+          }
+          this.renderInlines(inlines);
+          if (idx + 1 < item.blocks.length) {
+            this.sb.appendByte(0x0A);
+          }
+        } else {
+          if (idx == 0) {
+            if (hasCheckbox) {
+              this.sb.append(checkboxHtml);
+            }
+            this.sb.appendByte(0x0A);
+          }
+          this.renderBlock(child);
+        }
+        idx += 1;
+      }
+      this.sb.append('</li>\n');
+      return;
+    }
+
+    this.sb.appendByte(0x0A);
+    var idx = 0;
+    while (idx < item.blocks.length) {
+      let child = item.blocks[idx];
+      if (idx == 0 && hasCheckbox) {
+        if (let Paragraph {inlines, id} = child) {
+          if (id != null) {
+            this.sb.append('<p id="');
+            this.escapeAttribute(id);
+            this.sb.append('">');
+          } else {
+            this.sb.append('<p>');
+          }
+          this.sb.append(checkboxHtml);
+          this.renderInlines(inlines);
+          this.sb.append('</p>\n');
+          idx += 1;
+          continue;
+        }
+        this.sb.append(checkboxHtml);
+      }
+      this.renderBlock(child);
+      idx += 1;
+    }
+    this.sb.append('</li>\n');
+  }
+
+  renderInlines(nodes: GrowableArray<Inline>): void {
+    for (let node in nodes) {
+      this.renderInline(node);
+    }
+  }
+
+  renderInline(node: Inline): void {
+    match (node) {
+      case Text {literal}: {
+        this.escapeHtml(literal);
+      }
+      case CodeSpan {literal}: {
+        this.sb.append('<code>');
+        this.escapeHtml(literal);
+        this.sb.append('</code>');
+      }
+      case Emphasis {children}: {
+        this.sb.append('<em>');
+        this.renderInlines(children);
+        this.sb.append('</em>');
+      }
+      case Strong {children}: {
+        this.sb.append('<strong>');
+        this.renderInlines(children);
+        this.sb.append('</strong>');
+      }
+      case Link {destination, title, children}: {
+        this.sb.append('<a href="');
+        if (!this.safe || this.isSafeUrl(destination, false)) {
+          this.escapeAttribute(destination);
+        }
+        this.sb.append('"');
+        if (title.length > 0) {
+          this.sb.append(' title="');
+          this.escapeAttribute(title);
+          this.sb.append('"');
+        }
+        this.sb.append('>');
+        this.renderInlines(children);
+        this.sb.append('</a>');
+      }
+      case Image {destination, title, children}: {
+        this.sb.append('<img src="');
+        if (!this.safe || this.isSafeUrl(destination, true)) {
+          this.escapeAttribute(destination);
+        }
+        this.sb.append('" alt="');
+        let altSb = new StringBuilder(32);
+        appendInlinesPlainText(children, altSb);
+        this.escapeAttribute(altSb.toString());
+        this.sb.append('"');
+        if (title.length > 0) {
+          this.sb.append(' title="');
+          this.escapeAttribute(title);
+          this.sb.append('"');
+        }
+        this.sb.append(' />');
+      }
+      case Autolink {destination, label}: {
+        this.sb.append('<a href="');
+        if (!this.safe || this.isSafeUrl(destination, false)) {
+          this.escapeAttribute(destination);
+        }
+        this.sb.append('">');
+        this.escapeHtml(label);
+        this.sb.append('</a>');
+      }
+      case HtmlInline {literal}: {
+        if (this.safe) {
+          if (this.escapeRawHtml) {
+            this.escapeHtml(literal);
+          }
+        } else {
+          this.sb.append(literal);
+        }
+      }
+      case SoftBreak: {
+        this.sb.append(this.#softBreak);
+      }
+      case HardBreak: {
+        this.sb.append('<br />\n');
+      }
+      case CustomInline as custom: {
+        for (let renderer in this.#renderers) {
+          if (renderer.renderInline(custom, this)) {
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  escapeHtml(text: String): void {
+    let len = text.length;
+    var last = 0;
+    var i = 0;
+    while (i < len) {
+      let b = text.getByteAt(i);
+      let entity = if (b == 0x26) {
+        '&amp;'
+      } else if (b == 0x3C) {
+        '&lt;'
+      } else if (b == 0x3E) {
+        '&gt;'
+      } else if (b == 0x22) {
+        '&quot;'
+      } else {
+        null
+      };
+      if (entity != null) {
+        if (i > last) {
+          this.sb.appendSlice(text, last, i);
+        }
+        this.sb.append(entity);
+        last = i + 1;
+      }
+      i += 1;
+    }
+    if (last == 0) {
+      this.sb.append(text);
+    } else if (last < len) {
+      this.sb.appendSlice(text, last, len);
+    }
+  }
+
+  escapeAttribute(text: String): void {
+    this.escapeHtml(text);
+  }
+
+  isSafeUrl(url: String, isImage: boolean): boolean {
+    return isSafeUrl(url, isImage);
+  }
+}
+
+function firstWord(s: String): String {
+  var i = 0;
+  while (i < s.length && !isWhitespaceByte(s.getByteAt(i))) {
+    i += 1;
+  }
+  return s.sliceBytes(0, i);
+}

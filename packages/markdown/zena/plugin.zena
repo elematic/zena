@@ -1,0 +1,317 @@
+/**
+ * Plugin and extension interfaces for `markdown`.
+ *
+ * Extensions hook into five points of the pipeline:
+ * 1. `BlockParserFactory` (Phase 1: line-by-line block structure)
+ * 2. `DelimiterProcessor` (Phase 2: paired inline delimiters on the delimiter stack)
+ * 3. `InlineContentParser` (Phase 2: trigger-byte inline scanners)
+ * 4. `AstTransformer` (Phase 3: post-parse AST transformations)
+ * 5. `NodeRenderer` (Phase 4: rendering `CustomBlock` and `CustomInline` nodes)
+ */
+
+import { Array, GrowableArray, StringBuilder } from 'zena:core';
+import {
+  Block, CustomBlock, Inline, CustomInline, Document, LinkDef, Span
+} from './ast.zena';
+import { HashMap } from 'zena:collections';
+
+/**
+ * Runner interface passed to blocks and transformers that need to parse inline
+ * Markdown text using the document's active link definitions and inline
+ * plugins.
+ */
+export interface InlineParserRunner {
+  parse(text: String, baseOffset: i32): GrowableArray<Inline>;
+  links: HashMap<String, LinkDef>;
+}
+
+/**
+ * Snapshot of the current line and cursor during Phase 1 block parsing.
+ */
+export final class BlockLineState(
+  /** Full document source string. */
+  source: String,
+  /** Current line without trailing `\r` or `\n`. */
+  line: String,
+  /** 0-based byte offset of `line` in `source`. */
+  lineStartOffset: i32,
+  /** Current byte index in `line`. */
+  var index: i32,
+  /** Current column (with 4-space tab stops). */
+  var column: i32,
+  /** Byte index of the next non-space/tab byte in `line` at or after `index`. */
+  var nextNonSpaceIndex: i32,
+  /** Column of `nextNonSpaceIndex`. */
+  var nextNonSpaceColumn: i32,
+  /** Columns of indentation (`nextNonSpaceColumn - column`). */
+  var indent: i32,
+  /** True when the rest of the line contains only spaces or tabs. */
+  var isBlank: boolean
+)
+
+/**
+ * Information about the currently open tip block when trying to start a new
+ * child block.
+ */
+export final class MatchedBlockInfo(
+  /** True when the active tip block is an open paragraph. */
+  isParagraph: boolean,
+  /**
+   * The raw lines accumulated in the open paragraph (after stripping leading
+   * link reference definitions), or `null` when the tip block is not a
+   * paragraph.
+   */
+  paragraphLines: GrowableArray<String> | null,
+  /** Start byte offset of the open paragraph, or `0`. */
+  paragraphStartOffset: i32
+)
+
+/**
+ * Result of `CustomBlockParser.tryContinue`.
+ */
+export final class BlockContinue(
+  matched: boolean,
+  newIndex: i32,
+  newColumn: i32,
+  finalize: boolean
+) {
+  static none(): BlockContinue {
+    return new BlockContinue(false, -1, -1, false);
+  }
+
+  static atIndex(newIndex: i32): BlockContinue {
+    return new BlockContinue(true, newIndex, -1, false);
+  }
+
+  static atColumn(newColumn: i32): BlockContinue {
+    return new BlockContinue(true, -1, newColumn, false);
+  }
+
+  static finished(): BlockContinue {
+    return new BlockContinue(true, -1, -1, true);
+  }
+}
+
+/**
+ * A stateful parser for a custom block opened by a `BlockParserFactory`.
+ */
+export interface CustomBlockParser {
+  /** Whether this block can accept raw content lines via `addLine`. */
+  acceptsLines(): boolean;
+
+  /**
+   * Checks whether this open block continues on `state`.
+   */
+  tryContinue(state: BlockLineState): BlockContinue;
+
+  /**
+   * Appends the remaining slice of the current line to this block.
+   */
+  addLine(line: String, startOffset: i32): void;
+
+  /**
+   * Runs Phase 2 inline parsing on any text accumulated inside this block.
+   */
+  parseInlines(inlineParser: InlineParserRunner): void;
+
+  /**
+   * Finalizes the block at `endOffset` and returns the resulting AST `Block`.
+   */
+  closeBlock(endOffset: i32): Block;
+}
+
+/**
+ * Result of `BlockParserFactory.tryStart` when a custom block matches.
+ */
+export final class CustomBlockStart(
+  parser: CustomBlockParser,
+  newIndex: i32,
+  newColumn: i32,
+  replaceParagraph: boolean
+) {
+  static of(parser: CustomBlockParser): CustomBlockStart {
+    return new CustomBlockStart(parser, -1, -1, false);
+  }
+
+  atIndex(newIndex: i32): CustomBlockStart {
+    return new CustomBlockStart(
+      this.parser,
+      newIndex,
+      this.newColumn,
+      this.replaceParagraph
+    );
+  }
+
+  atColumn(newColumn: i32): CustomBlockStart {
+    return new CustomBlockStart(
+      this.parser,
+      this.newIndex,
+      newColumn,
+      this.replaceParagraph
+    );
+  }
+
+  replacingParagraph(): CustomBlockStart {
+    return new CustomBlockStart(
+      this.parser,
+      this.newIndex,
+      this.newColumn,
+      true
+    );
+  }
+}
+
+/**
+ * Phase 1 extension point: starts a custom block on a line.
+ */
+export interface BlockParserFactory {
+  /**
+   * ASCII starter bytes (`< 128`) that can begin this block at
+   * `state.nextNonSpaceIndex`, or an empty array if this factory can
+   * start on any non-space byte.
+   */
+  triggerBytes(): Array<i32>;
+
+  /**
+   * Inspects `state` and `matched` and returns a `CustomBlockStart` when a new
+   * block begins, or `null` otherwise.
+   */
+  tryStart(
+    state: BlockLineState,
+    matched: MatchedBlockInfo
+  ): CustomBlockStart | null;
+}
+
+/**
+ * Metadata for an opening or closing delimiter run on the Phase 2 delimiter
+ * stack.
+ */
+export final class DelimiterRunInfo(
+  delimiterByte: i32,
+  /** Current remaining number of delimiter characters in this run. */
+  length: i32,
+  /** Initial number of delimiter characters before any were consumed. */
+  originalLength: i32,
+  canOpen: boolean,
+  canClose: boolean,
+  /** Byte offset in the document where the active delimiter characters start. */
+  startOffset: i32,
+  /** Byte offset in the document where the active delimiter characters end. */
+  endOffset: i32
+)
+
+/**
+ * Phase 2 extension point: processes paired inline delimiters (such as `~~`
+ * for strikethrough) using CommonMark's delimiter stack.
+ */
+export interface DelimiterProcessor {
+  /** ASCII byte (`< 128`) that opens the delimiter pair. */
+  openingByte(): i32;
+
+  /** ASCII byte (`< 128`) that closes the delimiter pair. */
+  closingByte(): i32;
+
+  /** Minimum run length required to trigger `process`. */
+  minLength(): i32;
+
+  /**
+   * Inspects `opener` and `closer` and the `children` between them.
+   *
+   * Returns `(usedCount, node)` where `usedCount` (`> 0`) is the number of
+   * delimiter characters consumed from both `opener` and `closer` and `node`
+   * is the replacement `Inline` node, or `(0, null)` when the runs do not
+   * form a valid delimiter pair.
+   */
+  process(
+    opener: DelimiterRunInfo,
+    closer: DelimiterRunInfo,
+    children: GrowableArray<Inline>
+  ): inline (i32, Inline | null);
+}
+
+/**
+ * Result of `InlineContentParser.tryParse`.
+ */
+export final class InlineMatch(
+  node: Inline,
+  nextIndex: i32
+)
+
+/**
+ * Phase 2 extension point: scans an inline construct starting at one of its
+ * declared `triggerBytes`.
+ */
+export interface InlineContentParser {
+  /** Non-empty array of ASCII starter bytes (`< 128`). */
+  triggerBytes(): Array<i32>;
+
+  /**
+   * Attempts to parse an inline node starting at `index` in `source` (where
+   * `baseOffset` is the byte offset of `source` in the document and
+   * `precedingByte` is the byte at `index - 1`, or `-1` at index 0).
+   */
+  tryParse(
+    source: String,
+    baseOffset: i32,
+    index: i32,
+    precedingByte: i32,
+    inlineParser: InlineParserRunner
+  ): InlineMatch | null;
+}
+
+/**
+ * Phase 3 extension point: transforms the `Document` AST after block and
+ * inline parsing complete.
+ */
+export interface AstTransformer {
+  transform(doc: Document, inlineParser: InlineParserRunner): void;
+}
+
+/**
+ * Context passed to `NodeRenderer` plugins during HTML rendering.
+ */
+export interface HtmlRenderContext {
+  sb: StringBuilder;
+  safe: boolean;
+  escapeRawHtml: boolean;
+  renderBlock(block: Block): void;
+  renderBlocks(blocks: GrowableArray<Block>): void;
+  renderInline(node: Inline): void;
+  renderInlines(nodes: GrowableArray<Inline>): void;
+  escapeHtml(text: String): void;
+  escapeAttribute(text: String): void;
+  isSafeUrl(url: String, isImage: boolean): boolean;
+}
+
+/**
+ * Phase 4 extension point: renders `CustomBlock` and `CustomInline` nodes to
+ * HTML.
+ */
+export interface NodeRenderer {
+  renderBlock(block: CustomBlock, ctx: HtmlRenderContext): boolean;
+  renderInline(node: CustomInline, ctx: HtmlRenderContext): boolean;
+}
+
+/**
+ * Bundles any combination of block factories, delimiter processors, inline
+ * parsers, AST transformers, and node renderers into one registrable unit.
+ */
+export final class MarkdownExtension {
+  blockFactories: GrowableArray<BlockParserFactory>;
+  delimiterProcessors: GrowableArray<DelimiterProcessor>;
+  inlineParsers: GrowableArray<InlineContentParser>;
+  astTransformers: GrowableArray<AstTransformer>;
+  nodeRenderers: GrowableArray<NodeRenderer>;
+
+  new(
+    blockFactories: GrowableArray<BlockParserFactory> = new GrowableArray<BlockParserFactory>(0),
+    delimiterProcessors: GrowableArray<DelimiterProcessor> = new GrowableArray<DelimiterProcessor>(0),
+    inlineParsers: GrowableArray<InlineContentParser> = new GrowableArray<InlineContentParser>(0),
+    astTransformers: GrowableArray<AstTransformer> = new GrowableArray<AstTransformer>(0),
+    nodeRenderers: GrowableArray<NodeRenderer> = new GrowableArray<NodeRenderer>(0)
+  ) : blockFactories = blockFactories,
+      delimiterProcessors = delimiterProcessors,
+      inlineParsers = inlineParsers,
+      astTransformers = astTransformers,
+      nodeRenderers = nodeRenderers;
+}

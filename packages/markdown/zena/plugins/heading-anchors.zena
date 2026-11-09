@@ -1,0 +1,103 @@
+/**
+ * Heading anchor (`id` slug) generation and deduplication extension.
+ */
+
+import { GrowableArray, StringBuilder, i32ToString } from 'zena:core';
+import { HashMap } from 'zena:collections';
+import {
+  Block, Document, Heading, BlockQuote, ListBlock, ListItem,
+  inlinesToPlainText
+} from '../ast.zena';
+import {
+  AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser,
+  InlineParserRunner, MarkdownExtension, NodeRenderer
+} from '../plugin.zena';
+import {
+  isAsciiLetter, isAsciiDigit, isWhitespaceByte, toLowerAsciiByte
+} from '../scanner.zena';
+
+final class HeadingAnchorsTransformer implements AstTransformer {
+  transform(doc: Document, inlineParser: InlineParserRunner): void {
+    let counts = new HashMap<String, i32>();
+    this.#visitBlocks(doc.blocks, counts);
+  }
+
+  #visitBlocks(blocks: GrowableArray<Block>, counts: HashMap<String, i32>): void {
+    for (let block in blocks) {
+      match (block) {
+        case Heading as h: {
+          if (h.id == null) {
+            let text = inlinesToPlainText(h.inlines);
+            let baseSlug = slugifyHeading(text);
+            if (baseSlug.length > 0) {
+              if (counts.has(baseSlug)) {
+                let n = counts[baseSlug];
+                counts[baseSlug] = n + 1;
+                h.id = `${baseSlug}-${i32ToString(n)}`;
+              } else {
+                counts[baseSlug] = 1;
+                h.id = baseSlug;
+              }
+            }
+          }
+        }
+        case BlockQuote {blocks: let children}: {
+          this.#visitBlocks(children, counts);
+        }
+        case ListBlock {items}: {
+          for (let item in items) {
+            this.#visitBlocks(item.blocks, counts);
+          }
+        }
+        case ListItem {blocks: let children}: {
+          this.#visitBlocks(children, counts);
+        }
+        case _: {}
+      }
+    }
+  }
+}
+
+/**
+ * Converts heading text to a lowercase URL slug, turning whitespace runs into
+ * `-` and keeping ASCII letters, digits, `-`, `_`, and multi-byte UTF-8
+ * scalars.
+ */
+export function slugifyHeading(text: String): String {
+  let sb = new StringBuilder(text.length);
+  var pendingDash = false;
+  var wroteAny = false;
+  var i = 0;
+  let len = text.length;
+  while (i < len) {
+    let b = text.getByteAt(i);
+    if (isAsciiLetter(b) || isAsciiDigit(b) || b == 0x5F || b >= 0x80) {
+      if (pendingDash && wroteAny) {
+        sb.appendByte(0x2D);
+      }
+      pendingDash = false;
+      sb.appendByte(toLowerAsciiByte(b));
+      wroteAny = true;
+    } else if (b == 0x2D || isWhitespaceByte(b)) {
+      pendingDash = true;
+    }
+    i += 1;
+  }
+  return sb.toString();
+}
+
+/**
+ * Returns the `MarkdownExtension` that populates deduplicated `id` slugs on
+ * `Heading` AST nodes.
+ */
+export function headingAnchorsExtension(): MarkdownExtension {
+  let transformers = new GrowableArray<AstTransformer>(1);
+  transformers.push(new HeadingAnchorsTransformer());
+  return new MarkdownExtension(
+    new GrowableArray<BlockParserFactory>(0),
+    new GrowableArray<DelimiterProcessor>(0),
+    new GrowableArray<InlineContentParser>(0),
+    transformers,
+    new GrowableArray<NodeRenderer>(0)
+  );
+}
