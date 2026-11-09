@@ -1,24 +1,25 @@
 import {Future} from 'zena:async';
 import {getArguments} from 'zena:cli';
-import {BuildOutcome, buildTarget, reportBuild} from './runner.zena';
+import {BuildOutcome, buildTarget, reportBuild, watchTarget} from './runner.zena';
 import {ScriptRef} from './wireit-config.zena';
 
 /**
  * zb: a wireit-compatible incremental build runner.
  *
- *     zb [-C <workspace-root>] [-j <jobs>] <script>
- *     zb [-C <workspace-root>] [-j <jobs>] <package-dir> <script>
+ *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] <script>
+ *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] <package-dir> <script>
  *
  * The workspace root defaults to the current directory; -C points at a
  * nested workspace (a directory with its own package.json tree).
  */
 let usage =
-  'usage: zb [-C <workspace-root>] [-j <jobs>] [-f|--force] [--no-cache] [<package-dir>] <script>';
+  'usage: zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [<package-dir>] <script>';
 
 export async function main(): Future<i32> {
   let args = getArguments();
   var root = '';
   var jobs = 0;
+  var watch = false;
   var force = false;
   var useCache = true;
   var next = 1;
@@ -45,6 +46,9 @@ export async function main(): Future<i32> {
       }
       console.log(`zb: invalid job count "${args[next + 1]}"`);
       return 2;
+    } else if (flag == '-w' || flag == '--watch') {
+      watch = true;
+      next += 1;
     } else if (flag == '-f' || flag == '--force') {
       force = true;
       next += 1;
@@ -68,7 +72,10 @@ export async function main(): Future<i32> {
 
   var outcome: BuildOutcome | null = null;
   try {
-    outcome = await buildTarget(root, entry, jobs, force, useCache);
+    outcome = if (watch)
+      await watchTarget(root, entry, jobs, force, useCache)
+    else
+      await buildTarget(root, entry, jobs, force, useCache);
   } catch (e) {
     console.log('zb: ' + e.message);
     return 1;

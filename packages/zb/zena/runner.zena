@@ -1,14 +1,15 @@
 import {Future} from 'zena:async';
 import {getEnv} from 'zena:cli';
-import { HashSet } from 'zena:collections';
+import {HashSet} from 'zena:collections';
 import {isFile, readFile, writeFile} from 'zena:fs';
-import {monotonic} from 'zena:time';
+import {milliseconds, monotonic, sleep} from 'zena:time';
 import {NullCache, StepCache} from 'workflow:cache';
 import {
   Engine,
   Failed,
   RunOptions,
   RunResult,
+  ServicePool,
   Skipped,
   StepSource,
   Succeeded,
@@ -18,12 +19,12 @@ import {OutputManifest} from 'workflow:manifest';
 import {EngineState, StepRecord} from 'workflow:state';
 import {StepKey} from 'workflow:step';
 import {DiskCache, stateDirOf} from './disk-cache.zena';
-import {planScripts} from './builder.zena';
+import {lockfileCandidates, planScripts} from './builder.zena';
 import {ensureParentDir, readFileOrNull, withRoot} from './fs-util.zena';
 import {FileHasher} from './fs-walk.zena';
 import {sha256HexOfString} from 'zena:crypto';
 import {stateFromJson, stateToJson} from './state-json.zena';
-import {ScriptRef, WireitWorkspace, refKey} from './wireit-config.zena';
+import {ScriptConfig, ScriptRef, WireitWorkspace, refKey} from './wireit-config.zena';
 
 // State is stored per package ('<pkg>/.zb/state.json'), like wireit's
 // .wireit/, so its location does not depend on the invocation
@@ -165,25 +166,37 @@ async function verifyManifestOutputs(
   return true;
 }
 
-/**
- * One full build of a script and its transitive dependencies: load
- * config and prior state, snapshot inputs, run the engine with the
- * local disk cache, persist the new state and hash memo.
- */
-export async function buildTarget(
+async function runTargetOnce(
   root: String,
   entry: ScriptRef,
   parallelism: i32 = 0,
   force: boolean = false,
   useCache: boolean = true,
   hasherOut: FileHasher? = null,
+  servicePool: ServicePool? = null,
+  allowForegroundService: boolean = true,
+  configPathsOut: GrowableArray<String>? = null,
+  configsOut: GrowableArray<ScriptConfig>? = null,
 ): Future<BuildOutcome> {
   let jobs = if (parallelism > 0) parallelism else defaultParallelism();
-  let workspace = new WireitWorkspace(
-    (path: String) => readFileOrNull(withRoot(root, path)),
-  );
+  let seenConfigPaths = new HashSet<String>();
+  let workspace = new WireitWorkspace((path: String) => {
+    if (configPathsOut != null && seenConfigPaths.add(path)) {
+      configPathsOut.push(path);
+    }
+    return readFileOrNull(withRoot(root, path));
+  });
   let configs = await workspace.collect([entry]);
-  let foregroundServiceKey = if (configs.length > 0 && configs[0].service != null)
+  if (configsOut != null) {
+    for (let config in configs) {
+      configsOut.push(config);
+    }
+  }
+  let foregroundServiceKey = if (
+    allowForegroundService &&
+    configs.length > 0 &&
+    configs[0].service != null
+  )
     refKey(entry)
   else
     null;
@@ -226,6 +239,7 @@ export async function buildTarget(
       jobs,
       force,
       (step, manifest) => verifyManifestOutputs(hasher, manifest),
+      servicePool,
     ),
   );
   await saveState(root, result, foregroundServiceKey);
@@ -235,4 +249,143 @@ export async function buildTarget(
     stepKeys.push(refKey(config.ref));
   }
   return new BuildOutcome(result, stepKeys);
+}
+
+/**
+ * One full build of a script and its transitive dependencies: load
+ * config and prior state, snapshot inputs, run the engine with the
+ * local disk cache, persist the new state and hash memo.
+ */
+export async function buildTarget(
+  root: String,
+  entry: ScriptRef,
+  parallelism: i32 = 0,
+  force: boolean = false,
+  useCache: boolean = true,
+  hasherOut: FileHasher? = null,
+): Future<BuildOutcome> {
+  return await runTargetOnce(
+    root,
+    entry,
+    parallelism,
+    force,
+    useCache,
+    hasherOut,
+  );
+}
+
+async function snapshotWatchFiles(
+  root: String,
+  configPaths: Array<String>,
+  configs: Array<ScriptConfig>,
+): Future<HashMap<String, String>> {
+  let hasher = new FileHasher(root);
+  await hasher.load();
+  let snapshot = new HashMap<String, String>();
+  for (let path in configPaths) {
+    let fp = await hasher.hashIfExists(path);
+    snapshot[path] = fp?.value ?? '$missing';
+  }
+  for (let config in configs) {
+    let lockCandidates = if (
+      config.isWireit &&
+      config.command != null &&
+      config.fingerprintable &&
+      config.packageLocks.length > 0
+    )
+      lockfileCandidates(config.ref.packageDir, config.packageLocks)
+    else
+      new GrowableArray<String>();
+    if (config.files.length > 0 || lockCandidates.length > 0) {
+      for (let (path, fp) in await hasher.hashInputs(
+        config.ref.packageDir,
+        config.files,
+        lockCandidates,
+      )) {
+        snapshot[path] = fp.value;
+      }
+    }
+  }
+  return snapshot;
+}
+
+function snapshotsEqual(
+  a: HashMap<String, String>,
+  b: HashMap<String, String>,
+) {
+  if (a.size != b.size) {
+    return false;
+  }
+  var same = true;
+  a.forEach((key, valA) => {
+    if (let (true, valB) = b.get(key)) {
+      if (valA != valB) {
+        same = false;
+      }
+    } else {
+      same = false;
+    }
+  });
+  return same;
+}
+
+/**
+ * Runs `entry` and watches its input files, lockfiles, and `package.json`
+ * manifests for changes, re-running incrementally and keeping services
+ * alive in a `ServicePool` across rebuilds.
+ *
+ * When `onIteration` is null (CLI watch mode), each completed iteration
+ * is reported with `reportBuild(outcome)` and watching continues until
+ * the process is terminated. When `onIteration` is supplied, it is
+ * called after each iteration's post-build file snapshot is captured;
+ * returning `false` stops watching and tears down all pinned services.
+ */
+export async function watchTarget(
+  root: String,
+  entry: ScriptRef,
+  parallelism: i32 = 0,
+  force: boolean = false,
+  useCache: boolean = true,
+  pollIntervalMs: i64 = 150,
+  onIteration: ((iteration: i32, outcome: BuildOutcome) => Future<boolean>)? = null,
+): Future<BuildOutcome> {
+  let servicePool = new ServicePool();
+  let interval = if (pollIntervalMs > (0 as i64)) pollIntervalMs else 50 as i64;
+  var iteration = 0;
+  try {
+    while (true) {
+      let configPaths = new GrowableArray<String>();
+      let configs = new GrowableArray<ScriptConfig>();
+      let outcome = await runTargetOnce(
+        root,
+        entry,
+        parallelism,
+        force,
+        useCache,
+        null,
+        servicePool,
+        false,
+        configPaths,
+        configs,
+      );
+      iteration += 1;
+      let baseline = await snapshotWatchFiles(root, configPaths, configs);
+      if (onIteration != null) {
+        if (!(await onIteration(iteration, outcome))) {
+          return outcome;
+        }
+      } else {
+        reportBuild(outcome);
+      }
+      while (true) {
+        let current = await snapshotWatchFiles(root, configPaths, configs);
+        if (!snapshotsEqual(baseline, current)) {
+          break;
+        }
+        await sleep(milliseconds(interval));
+      }
+    }
+  } finally {
+    await servicePool.stopAll();
+  }
 }

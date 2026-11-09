@@ -19,7 +19,7 @@ import { format } from 'zena-formatter:printer';
 import { documentPackage, DocumentOptions } from 'zenadoc:document';
 import { packageToJson } from 'zenadoc:json';
 import { loadPackage } from 'zenadoc:package';
-import { buildTarget, reportBuild } from 'zb:runner';
+import { buildTarget, reportBuild, watchTarget } from 'zb:runner';
 import { ScriptRef } from 'zb:wireit-config';
 import { benchCommand } from './bench-run.zena';
 import { CompileFailure, CompileRequest, compileTo } from './compile.zena';
@@ -100,6 +100,11 @@ function describe() {
           'jobs' => {
             abbr: 'j',
             help: 'Maximum concurrent target scripts to run',
+          },
+          'watch' => {
+            type: OptionType.Flag,
+            abbr: 'w',
+            help: 'Watch target inputs and rebuild incrementally',
           },
           'force' => {
             type: OptionType.Flag,
@@ -563,6 +568,7 @@ async function build(args: ParsedArgs, options: Options): Future<i32> {
   return await buildScript(
     argument,
     jobs,
+    args.getFlag('watch'),
     args.getFlag('force'),
     !args.getFlag('no-cache'),
   );
@@ -622,6 +628,7 @@ async function buildFile(
 async function buildScript(
   argument: String,
   jobs: i32 = 0,
+  watch: boolean = false,
   force: boolean = false,
   useCache: boolean = true,
 ): Future<i32> {
@@ -650,13 +657,11 @@ async function buildScript(
   let root = await workspaceRoot(packageDir);
   let relative = packageDir.stripPrefix(root);
   let packageRef = if (relative == null) '' else relative.value;
-  let outcome = await buildTarget(
-    root.value,
-    new ScriptRef(packageRef, script),
-    jobs,
-    force,
-    useCache,
-  );
+  let entry = new ScriptRef(packageRef, script);
+  let outcome = if (watch)
+    await watchTarget(root.value, entry, jobs, force, useCache)
+  else
+    await buildTarget(root.value, entry, jobs, force, useCache);
   return reportBuild(outcome);
 }
 

@@ -11,7 +11,7 @@ import {
 import {StepKey} from 'workflow:step';
 import {ensureDir, ensureParentDir, withRoot} from '../fs-util.zena';
 import {FileHasher} from '../fs-walk.zena';
-import {buildTarget} from '../runner.zena';
+import {BuildOutcome, buildTarget, watchTarget} from '../runner.zena';
 import {ScriptRef} from '../wireit-config.zena';
 
 /**
@@ -691,5 +691,174 @@ export let tests = suite('zb end to end', () => {
     isTrue(noCache.result.allSucceeded);
     isTrue(sourceOf(noCache.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(noCache.result, 'packages/app:build') == StepSource.Fresh);
+  });
+
+  test('watchTarget rebuilds incrementally across file edits', async (ctx) => {
+    let root = '/tmp/zb-watch-inc-' + i64ToString(monotonic() as i64);
+    await mkFixture(root);
+    let entry = new ScriptRef('', 'build');
+
+    var observed = 0;
+    let finalOutcome = await watchTarget(
+      root,
+      entry,
+      0,
+      false,
+      true,
+      20 as i64,
+      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+        observed = iteration;
+        isTrue(outcome.result.allSucceeded);
+        if (iteration == 1) {
+          isTrue(sourceOf(outcome.result, 'packages/lib:build') == StepSource.Ran);
+          isTrue(sourceOf(outcome.result, 'packages/app:build') == StepSource.Ran);
+          await write(root, 'packages/app/greeting.txt', 'hello-v2\n');
+          return true;
+        }
+        if (iteration == 2) {
+          isTrue(sourceOf(outcome.result, 'packages/lib:build') == StepSource.Fresh);
+          isTrue(sourceOf(outcome.result, 'packages/app:build') == StepSource.Ran);
+          equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v2\n');
+          await write(root, 'packages/lib/src/in.txt', 'lib-v2\n');
+          return true;
+        }
+        isTrue(sourceOf(outcome.result, 'packages/lib:build') == StepSource.Ran);
+        isTrue(sourceOf(outcome.result, 'packages/app:build') == StepSource.Ran);
+        equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v2\nhello-v2\n');
+        return false;
+      },
+    );
+    equal(observed, 3);
+    isTrue(finalOutcome.result.allSucceeded);
+  });
+
+  test('watchTarget pins a service across dependent rebuilds, restarts on service input edit, and stops on exit', async (ctx) => {
+    let root = '/tmp/zb-watch-svc-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {
+        "db": "wireit",
+        "app": "wireit"
+      },
+      "wireit": {
+        "db": {
+          "command": "echo $$ > db.pid && echo start >> svc.log && trap 'echo stop >> svc.log; exit 0' TERM; echo READY && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^READY$"}},
+          "files": ["db.conf"]
+        },
+        "app": {
+          "command": "mkdir -p out && cat db.pid src/app.txt > out/result.txt",
+          "files": ["src/app.txt"],
+          "output": ["out/result.txt"],
+          "dependencies": ["db"]
+        }
+      }
+    }`);
+    await write(root, 'db.conf', 'port=5432\n');
+    await write(root, 'src/app.txt', 'hello-1\n');
+
+    var pid1 = '';
+    var pid2 = '';
+    var observed = 0;
+    await watchTarget(
+      root,
+      new ScriptRef('', 'app'),
+      0,
+      false,
+      true,
+      20 as i64,
+      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+        observed = iteration;
+        isTrue(outcome.result.allSucceeded);
+        if (iteration == 1) {
+          isTrue(sourceOf(outcome.result, ':db') == StepSource.Ran);
+          isTrue(sourceOf(outcome.result, ':app') == StepSource.Ran);
+          pid1 = await readFile(withRoot(root, 'db.pid'));
+          equal(await readFile(withRoot(root, 'svc.log')), 'start\n');
+          await write(root, 'src/app.txt', 'hello-2\n');
+          return true;
+        }
+        if (iteration == 2) {
+          // Service stays pinned and fresh while dependent rebuilds against the same PID.
+          isTrue(sourceOf(outcome.result, ':db') == StepSource.Fresh);
+          isTrue(sourceOf(outcome.result, ':app') == StepSource.Ran);
+          equal(await readFile(withRoot(root, 'out/result.txt')), pid1 + 'hello-2\n');
+          equal(await readFile(withRoot(root, 'svc.log')), 'start\n');
+          await write(root, 'db.conf', 'port=5433\n');
+          return true;
+        }
+        // Editing db.conf stops the old service, starts a new one, and reruns app.
+        isTrue(sourceOf(outcome.result, ':db') == StepSource.Ran);
+        isTrue(sourceOf(outcome.result, ':app') == StepSource.Ran);
+        pid2 = await readFile(withRoot(root, 'db.pid'));
+        isFalse(pid1 == pid2);
+        equal(await readFile(withRoot(root, 'out/result.txt')), pid2 + 'hello-2\n');
+        equal(await readFile(withRoot(root, 'svc.log')), 'start\nstop\nstart\n');
+        return false;
+      },
+    );
+    equal(observed, 3);
+    // Exiting watch mode stops all remaining pinned services.
+    equal(await readFile(withRoot(root, 'svc.log')), 'start\nstop\nstart\nstop\n');
+  });
+
+  test('watchTarget starts a root service target and reloads on input or package.json edit', async (ctx) => {
+    let root = '/tmp/zb-watch-root-svc-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {"serve": "wireit"},
+      "wireit": {
+        "serve": {
+          "command": "echo start:$(cat srv.conf) >> serve.log && trap 'echo stop >> serve.log; exit 0' TERM; echo SERVING && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^SERVING$"}},
+          "files": ["srv.conf"]
+        }
+      }
+    }`);
+    await write(root, 'srv.conf', 'v1');
+
+    var observed = 0;
+    await watchTarget(
+      root,
+      new ScriptRef('', 'serve'),
+      0,
+      false,
+      true,
+      20 as i64,
+      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+        observed = iteration;
+        isTrue(outcome.result.allSucceeded);
+        isTrue(sourceOf(outcome.result, ':serve') == StepSource.Ran);
+        if (iteration == 1) {
+          equal(await readFile(withRoot(root, 'serve.log')), 'start:v1\n');
+          await write(root, 'srv.conf', 'v2');
+          return true;
+        }
+        if (iteration == 2) {
+          equal(await readFile(withRoot(root, 'serve.log')), 'start:v1\nstop\nstart:v2\n');
+          await write(root, 'package.json', `{
+            "scripts": {"serve": "wireit"},
+            "wireit": {
+              "serve": {
+                "command": "echo reloaded:$(cat srv.conf) >> serve.log && trap 'echo stop >> serve.log; exit 0' TERM; echo SERVING && while true; do sleep 0.1; done",
+                "service": {"readyWhen": {"lineMatches": "^SERVING$"}},
+                "files": ["srv.conf"]
+              }
+            }
+          }`);
+          return true;
+        }
+        equal(
+          await readFile(withRoot(root, 'serve.log')),
+          'start:v1\nstop\nstart:v2\nstop\nreloaded:v2\n',
+        );
+        return false;
+      },
+    );
+    equal(observed, 3);
+    equal(
+      await readFile(withRoot(root, 'serve.log')),
+      'start:v1\nstop\nstart:v2\nstop\nreloaded:v2\nstop\n',
+    );
   });
 });

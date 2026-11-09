@@ -1,5 +1,5 @@
 import {Completer} from 'zena:async';
-import { HashSet } from 'zena:collections';
+import {HashSet, OrderedHashMap} from 'zena:collections';
 import {StepCache} from './cache.zena';
 import {ResolvedInput, cacheKeyFor, manifestFingerprint} from './canonical.zena';
 import {InputDelta, computeDelta, staleOutputNames} from './delta.zena';
@@ -51,6 +51,74 @@ export final class Failed(error: Error) extends StepOutcome
 /** Not run because a dependency failed or was skipped. */
 export final class Skipped(reason: String) extends StepOutcome
 
+/** A running service held in a `ServicePool` across watch iterations. */
+export class PinnedService(identity: Fingerprint, handle: ServiceHandle)
+
+/**
+ * Holds running services across multiple `Engine.run` invocations (such
+ * as watch iterations) so services whose identity fingerprint has not
+ * changed stay alive instead of restarting on every rebuild.
+ *
+ * Services are recorded in startup order and stopped in reverse order
+ * by `stopAll()`.
+ */
+export class ServicePool {
+  #entries = new OrderedHashMap<String, PinnedService>();
+
+  size: i32 {
+    get {
+      return this.#entries.size;
+    }
+  }
+
+  has(key: String): boolean {
+    return this.#entries.has(key);
+  }
+
+  get(key: String): PinnedService? {
+    if (let (true, entry) = this.#entries.get(key)) {
+      return entry;
+    }
+    return null;
+  }
+
+  set(key: String, entry: PinnedService): void {
+    this.#entries[key] = entry;
+  }
+
+  take(key: String): PinnedService? {
+    if (let (true, entry) = this.#entries.get(key)) {
+      this.#entries.delete(key);
+      return entry;
+    }
+    return null;
+  }
+
+  keys(): Array<String> {
+    let result = new GrowableArray<String>();
+    this.#entries.forEach((key, _) => {
+      result.push(key);
+    });
+    return result;
+  }
+
+  /** Stops all remaining pinned services in reverse startup order. */
+  async stopAll(): Future<void> {
+    let allKeys = this.keys();
+    var i = allKeys.length - 1;
+    while (i >= 0) {
+      let key = allKeys[i];
+      let entry = this.take(key);
+      if (entry != null) {
+        try {
+          await entry.handle.stop();
+        } catch (_) {}
+      }
+      i -= 1;
+    }
+  }
+}
+
 /** Options for one engine run. */
 export class RunOptions {
   /** Maximum number of steps in their cache-or-run section at once. */
@@ -68,14 +136,23 @@ export class RunOptions {
    * while keeping `prior` for `RunContext`.
    */
   verifyOutputs: ((step: StepKey, manifest: OutputManifest) => Future<boolean>)?;
+  /**
+   * Optional pool of persistent services across watch runs. When set,
+   * services whose identity fingerprint matches a live handle in the
+   * pool are reused without restarting, and newly started services stay
+   * alive in the pool when the run ends.
+   */
+  servicePool: ServicePool?;
 
   new(
     parallelism: i32 = 8,
     force: boolean = false,
     verifyOutputs: ((step: StepKey, manifest: OutputManifest) => Future<boolean>)? = null,
+    servicePool: ServicePool? = null,
   ) : parallelism = parallelism,
       force = force,
-      verifyOutputs = verifyOutputs;
+      verifyOutputs = verifyOutputs,
+      servicePool = servicePool;
 }
 
 /** The result of an engine run. */
@@ -125,6 +202,8 @@ class ServiceRuntime {
   var pending: i32 = 0;
   var started = false;
   var stopping = false;
+  var reusedFromPool = false;
+  var wasInPool = false;
   var identityFp: Fingerprint? = null;
   var failure: Error? = null;
   var handle: ServiceHandle? = null;
@@ -206,6 +285,23 @@ export class Engine {
       opts,
     );
     this.#classify(graph, rs);
+    let pool = opts.servicePool;
+    if (pool != null) {
+      let poolKeys = pool.keys();
+      var i = poolKeys.length - 1;
+      while (i >= 0) {
+        let key = poolKeys[i];
+        if (!rs.services.has(key)) {
+          let evicted = pool.take(key);
+          if (evicted != null) {
+            try {
+              await evicted.handle.stop();
+            } catch (_) {}
+          }
+        }
+        i -= 1;
+      }
+    }
     rs.remaining = rs.taskList.length;
 
     // A countdown completer joins the step tasks. TaskGroup.spawn and
@@ -579,7 +675,8 @@ export class Engine {
 
   /**
    * Computes a service's identity fingerprint once its dependencies
-   * have settled. The service is not started.
+   * have settled. When a `ServicePool` is active, reuses a matching
+   * live handle or evicts stale ones in reverse dependency order.
    */
   async #serviceMain(svc: ServiceRuntime, rs: RunState): Future<void> {
     for (let completer in this.#depCompleters(svc.step, rs)) {
@@ -608,7 +705,87 @@ export class Engine {
         `service "${svc.step.key.value}" has unresolved inputs`,
       );
     }
+    let pool = rs.options.servicePool;
+    if (pool != null) {
+      let existing = pool.get(svc.step.key.value);
+      if (existing != null) {
+        let newFp = svc.identityFp;
+        if (
+          !rs.options.force &&
+          svc.failure == null &&
+          newFp != null &&
+          existing.identity.value == newFp.value &&
+          existing.handle.isAlive() &&
+          this.#allServiceDepsReused(svc, rs)
+        ) {
+          svc.reusedFromPool = true;
+          svc.started = true;
+          svc.handle = existing.handle;
+          svc.ready.complete();
+        } else {
+          await this.#evictFromPool(svc, rs);
+        }
+      }
+      if (
+        svc.failure == null &&
+        !svc.started &&
+        (svc.pending == 0 || svc.wasInPool)
+      ) {
+        svc.started = true;
+        this.#startService(svc, rs);
+      }
+    }
     svc.identityDone.complete();
+  }
+
+  /** Whether every service that `svc` depends on was reused from the pool. */
+  #allServiceDepsReused(svc: ServiceRuntime, rs: RunState): boolean {
+    for (let dep in this.#serviceDeps(svc.step, rs)) {
+      if (!dep.reusedFromPool) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Services that directly depend on `target`. */
+  #serviceConsumers(
+    target: ServiceRuntime,
+    rs: RunState,
+  ): GrowableArray<ServiceRuntime> {
+    let consumers = new GrowableArray<ServiceRuntime>();
+    let targetKey = target.step.key.value;
+    for (let candidate in rs.serviceList) {
+      for (let dep in this.#serviceDeps(candidate.step, rs)) {
+        if (dep.step.key.value == targetKey) {
+          consumers.push(candidate);
+          break;
+        }
+      }
+    }
+    return consumers;
+  }
+
+  /**
+   * Stops and removes `svc` from the service pool, after recursively
+   * evicting any pooled services that depend on it so children stop
+   * before parents.
+   */
+  async #evictFromPool(svc: ServiceRuntime, rs: RunState): Future<void> {
+    let pool = rs.options.servicePool;
+    if (pool == null) {
+      return;
+    }
+    for (let consumer in this.#serviceConsumers(svc, rs)) {
+      await this.#evictFromPool(consumer, rs);
+    }
+    let evicted = pool.take(svc.step.key.value);
+    if (evicted != null) {
+      svc.wasInPool = true;
+      try {
+        await evicted.handle.stop();
+      } catch (_) {}
+    }
   }
 
   /**
@@ -643,7 +820,13 @@ export class Engine {
       return;
     }
     try {
-      svc.handle = await svc.start(new ServiceContext());
+      let handle = await svc.start(new ServiceContext());
+      svc.handle = handle;
+      let pool = rs.options.servicePool;
+      let identity = svc.identityFp;
+      if (pool != null && identity != null) {
+        pool.set(svc.step.key.value, new PinnedService(identity, handle));
+      }
     } catch (e) {
       svc.failure = e;
     }
@@ -651,8 +834,24 @@ export class Engine {
   }
 
   async #stopService(svc: ServiceRuntime, rs: RunState): Future<void> {
+    await svc.identityDone.future;
+    if (svc.started) {
+      await svc.ready.future;
+    }
     let handle = svc.handle;
-    if (handle != null) {
+    let pool = rs.options.servicePool;
+    if (pool != null) {
+      if (handle != null && (svc.failure != null || !handle.isAlive())) {
+        pool.take(svc.step.key.value);
+        try {
+          await handle.stop();
+        } catch (e) {
+          if (svc.failure == null) {
+            svc.failure = e;
+          }
+        }
+      }
+    } else if (handle != null) {
       try {
         await handle.stop();
       } catch (e) {
@@ -667,7 +866,7 @@ export class Engine {
     } else {
       rs.outcomes[svc.step.key.value] = new Succeeded(
         OutputManifest.empty(),
-        if (svc.started) StepSource.Ran else StepSource.Fresh,
+        if (svc.started && !svc.reusedFromPool) StepSource.Ran else StepSource.Fresh,
       );
     }
     // A stopped service no longer holds its own service dependencies.
