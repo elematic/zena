@@ -171,5 +171,17 @@ export let tests = suite('StringBuilder', () => {
     let expected = 65 | (66 << 8) | (67 << 16) | (68 << 24);
     equal(s.getI32At(0), expected);
   });
+
+  test('appendCodePoint encodes ASCII, BMP, supplementary, and invalid scalars', (ctx) => {
+    let sb = new StringBuilder();
+    sb.appendCodePoint(0x41)     // 'A'
+      .appendCodePoint(0xE9)     // 'é'
+      .appendCodePoint(0x20AC)   // '€'
+      .appendCodePoint(0x1F600)  // '😀'
+      .appendCodePoint(0xD800)   // surrogate -> U+FFFD
+      .appendCodePoint(-1);      // negative -> U+FFFD
+    let replacement = String.fromCodePoint(0xFFFD);
+    equal(sb.toString(), `Aé€😀${replacement}${replacement}`);
+  });
 });
 

@@ -250,6 +250,29 @@ export final class StringBuilder {
   }
 
   /**
+   * Appends a single Unicode code point, encoding it as UTF-8.
+   * Invalid or surrogate code points are replaced with U+FFFD.
+   */
+  appendCodePoint(codePoint: i32): StringBuilder {
+    var cp = codePoint;
+    if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+      cp = 0xFFFD;
+    }
+    if (cp <= 0x7F) {
+      return this.appendByte(cp);
+    }
+    if (cp <= 0x7FF) {
+      return this.appendByte2(0xC0 | ((cp >> 6) & 0x1F), 0x80 | (cp & 0x3F));
+    }
+    if (cp <= 0xFFFF) {
+      this.appendByte(0xE0 | ((cp >> 12) & 0x0F));
+      return this.appendByte2(0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+    }
+    this.appendByte2(0xF0 | ((cp >> 18) & 0x07), 0x80 | ((cp >> 12) & 0x3F));
+    return this.appendByte2(0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+  }
+
+  /**
    * Appends a signed 32-bit integer as decimal.
    * Uses shared conversion from zena:string-convert.
    */

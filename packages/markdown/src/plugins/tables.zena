@@ -2,7 +2,9 @@
  * GFM pipe tables extension (`| a | b |\n| --- | :---: |`).
  */
 
-import { Array, GrowableArray, StringBuilder } from 'zena:core';
+import {
+  Array, GrowableArray, StringBuilder, StringReader, isSpaceOrTab
+} from 'zena:core';
 import {
   Block, CustomBlock, CustomInline, Inline, Span
 } from '../ast.zena';
@@ -12,7 +14,7 @@ import {
   InlineContentParser, InlineParserRunner, MarkdownExtension, MatchedBlockInfo,
   NodeRenderer
 } from '../plugin.zena';
-import { isSpaceOrTab, trimSpaces } from '../scanner.zena';
+import { trimSpaces } from '../scanner.zena';
 
 /**
  * Column alignment in a GFM pipe table.
@@ -77,12 +79,14 @@ final class TableBlockParser implements CustomBlockParser {
     if (state.isBlank) {
       return BlockContinue.none();
     }
-    let slice = state.line.sliceBytes(state.nextNonSpaceIndex, state.line.length);
+    let r = new StringReader(state.line);
+    r.reset(state.nextNonSpaceIndex);
+    let b = r.peek();
+    let slice = r.readToEnd();
     if (trimSpaces(slice) == '|') {
       return BlockContinue.none();
     }
     if (state.indent <= 3) {
-      let b = state.line.getByteAt(state.nextNonSpaceIndex);
       // Interrupting block starters: `#`, `>`, ```, `~~~`, thematic break, list marker
       if (b == 0x23 || b == 0x3E || b == 0x60 || b == 0x7E) {
         return BlockContinue.none();
@@ -120,7 +124,7 @@ final class TableBlockParser implements CustomBlockParser {
           inlines,
           this.#alignments[c],
           true,
-          new Span(this.#startOffset, this.#startOffset + rawText.length)
+          new Span(this.#startOffset, this.#startOffset)
         )
       );
       c += 1;
@@ -146,13 +150,13 @@ final class TableBlockParser implements CustomBlockParser {
             inlines,
             this.#alignments[col],
             false,
-            new Span(rowOffset, rowOffset + rowLine.length)
+            new Span(rowOffset, rowOffset)
           )
         );
         col += 1;
       }
       table.rows.push(
-        new TableRow(cells, new Span(rowOffset, rowOffset + rowLine.length))
+        new TableRow(cells, new Span(rowOffset, table.span.end))
       );
       r += 1;
     }
@@ -189,7 +193,10 @@ final class TableBlockParserFactory implements BlockParserFactory {
       return null;
     }
 
-    let delimLine = state.line.sliceBytes(state.nextNonSpaceIndex, state.line.length);
+    let r = new StringReader(state.line);
+    let lineEnd = r.remaining;
+    r.reset(state.nextNonSpaceIndex);
+    let delimLine = r.readToEnd();
     let headerLine = paraLines[paraLines.length - 1];
     if (!containsUnescapedPipe(delimLine) || !containsUnescapedPipe(headerLine)) {
       return null;
@@ -211,7 +218,7 @@ final class TableBlockParserFactory implements BlockParserFactory {
       matched.paragraphStartOffset
     );
     return CustomBlockStart.of(parser)
-      .atIndex(state.line.length)
+      .atIndex(lineEnd)
       .replacingParagraph();
   }
 }
@@ -220,23 +227,22 @@ function isTableInterruptingBreakOrList(slice: String): boolean {
   if (containsUnescapedPipe(slice)) {
     return false;
   }
-  let b = slice.getByteAt(0);
-  if ((b == 0x2D || b == 0x2B || b == 0x2A) && slice.length > 1 && isSpaceOrTab(slice.getByteAt(1))) {
+  let r = new StringReader(slice);
+  let b = r.advance();
+  if ((b == 0x2D || b == 0x2B || b == 0x2A) && isSpaceOrTab(r.peek())) {
     return true;
   }
   if (b == 0x2A || b == 0x2D || b == 0x5F) {
-    var count = 0;
-    var i = 0;
+    var count = 1;
     var allSameOrSpace = true;
-    while (i < slice.length) {
-      let c = slice.getByteAt(i);
+    while (!r.isAtEnd) {
+      let c = r.advance();
       if (c == b) {
         count += 1;
       } else if (!isSpaceOrTab(c)) {
         allSameOrSpace = false;
         break;
       }
-      i += 1;
     }
     if (allSameOrSpace && count >= 3) {
       return true;
@@ -246,18 +252,16 @@ function isTableInterruptingBreakOrList(slice: String): boolean {
 }
 
 function containsUnescapedPipe(s: String): boolean {
-  let len = s.length;
-  var i = 0;
-  while (i < len) {
-    let b = s.getByteAt(i);
-    if (b == 0x5C && i + 1 < len && s.getByteAt(i + 1) == 0x7C) {
-      i += 2;
+  let r = new StringReader(s);
+  while (!r.isAtEnd) {
+    let cp = r.advance();
+    if (cp == 0x5C && r.peek() == 0x7C) {
+      r.advance();
       continue;
     }
-    if (b == 0x7C) { // |
+    if (cp == 0x7C) { // '|'
       return true;
     }
-    i += 1;
   }
   return false;
 }
@@ -268,61 +272,54 @@ function containsUnescapedPipe(s: String): boolean {
  */
 function splitTableCells(line: String): GrowableArray<String> {
   let trimmed = trimSpaces(line);
-  var start = 0;
-  var end = trimmed.length;
-  if (start < end && trimmed.getByteAt(start) == 0x7C) {
-    start += 1;
-  }
-  if (end > start && trimmed.getByteAt(end - 1) == 0x7C) {
-    // Only strip trailing `|` if it is not preceded by `\`
-    if (end - 1 == start || trimmed.getByteAt(end - 2) != 0x5C) {
-      end -= 1;
-    }
-  }
+  let r = new StringReader(trimmed);
+  r.matchCodePoint(0x7C); // optional leading '|'
 
   let cells = new GrowableArray<String>(4);
-  var cellStart = start;
-  var i = start;
-  while (i < end) {
-    let b = trimmed.getByteAt(i);
-    if (b == 0x5C && i + 1 < end && trimmed.getByteAt(i + 1) == 0x7C) {
-      i += 2;
+  var cellStart = r.mark();
+  var lastPipePos = -1;
+  while (!r.isAtEnd) {
+    let pos = r.mark();
+    let cp = r.advance();
+    if (cp == 0x5C && r.peek() == 0x7C) {
+      r.advance();
       continue;
     }
-    if (b == 0x7C) {
-      cells.push(trimSpaces(trimmed.sliceBytes(cellStart, i)));
-      cellStart = i + 1;
+    if (cp == 0x7C) {
+      if (r.isAtEnd) {
+        // Trailing unescaped '|' at end of line: stop before it
+        lastPipePos = pos;
+        break;
+      }
+      cells.push(trimSpaces(r.sliceRange(cellStart, pos)));
+      cellStart = r.mark();
     }
-    i += 1;
   }
-  cells.push(trimSpaces(trimmed.sliceBytes(cellStart, end)));
+  let finalEnd = if (lastPipePos >= 0) lastPipePos else r.mark();
+  cells.push(trimSpaces(r.sliceRange(cellStart, finalEnd)));
   return cells;
 }
 
 function unescapePipes(s: String): String {
-  let len = s.length;
-  var hasEscapedPipe = false;
-  var k = 0;
-  while (k + 1 < len) {
-    if (s.getByteAt(k) == 0x5C && s.getByteAt(k + 1) == 0x7C) {
-      hasEscapedPipe = true;
-      break;
-    }
-    k += 1;
-  }
-  if (!hasEscapedPipe) {
+  if (!s.contains('\\|')) {
     return s;
   }
-  let sb = new StringBuilder(len);
-  var i = 0;
-  while (i < len) {
-    if (s.getByteAt(i) == 0x5C && i + 1 < len && s.getByteAt(i + 1) == 0x7C) {
+  let r = new StringReader(s);
+  let sb = new StringBuilder();
+  var last = r.mark();
+  while (!r.isAtEnd) {
+    let pos = r.mark();
+    let cp = r.advance();
+    if (cp == 0x5C && r.matchCodePoint(0x7C)) {
+      if (pos > last) {
+        sb.append(r.sliceRange(last, pos));
+      }
       sb.appendByte(0x7C);
-      i += 2;
-    } else {
-      sb.appendByte(s.getByteAt(i));
-      i += 1;
+      last = r.mark();
     }
+  }
+  if (last < r.mark()) {
+    sb.append(r.sliceFrom(last));
   }
   return sb.toString();
 }
@@ -334,30 +331,21 @@ function parseDelimiterRow(line: String): GrowableArray<TableAlignment> | null {
   }
   let alignments = new GrowableArray<TableAlignment>(rawCells.length);
   for (let cell in rawCells) {
-    if (cell.length == 0) {
+    if (cell.isEmpty) {
       return null;
     }
-    var start = 0;
-    var end = cell.length;
-    var left = false;
-    var right = false;
-    if (cell.getByteAt(0) == 0x3A) { // :
-      left = true;
-      start += 1;
+    let r = new StringReader(cell);
+    let left = r.matchCodePoint(0x3A); // ':'
+    var dashCount = 0;
+    while (r.matchCodePoint(0x2D)) { // '-'
+      dashCount += 1;
     }
-    if (end > start && cell.getByteAt(end - 1) == 0x3A) { // :
-      right = true;
-      end -= 1;
-    }
-    if (end <= start) {
+    if (dashCount == 0) {
       return null;
     }
-    var i = start;
-    while (i < end) {
-      if (cell.getByteAt(i) != 0x2D) { // -
-        return null;
-      }
-      i += 1;
+    let right = r.matchCodePoint(0x3A); // ':'
+    if (!r.isAtEnd) {
+      return null;
     }
     let align = if (left && right)
       TableAlignment.Center
@@ -375,22 +363,45 @@ function parseDelimiterRow(line: String): GrowableArray<TableAlignment> | null {
 final class TableRenderer implements NodeRenderer {
   renderBlock(block: CustomBlock, ctx: HtmlRenderContext): boolean {
     if (block is TableBlock) {
-      ctx.sb.append('<table>\n<thead>\n<tr>\n');
+      ctx.writeIndent();
+      ctx.sb.append('<table>\n');
+      ctx.pushIndent();
+      ctx.writeIndent();
+      ctx.sb.append('<thead>\n');
+      ctx.pushIndent();
+      ctx.writeIndent();
+      ctx.sb.append('<tr>\n');
+      ctx.pushIndent();
       for (let cell in block.head.cells) {
         this.#renderCell(cell, 'th', ctx);
       }
-      ctx.sb.append('</tr>\n</thead>\n');
+      ctx.popIndent();
+      ctx.writeIndent();
+      ctx.sb.append('</tr>\n');
+      ctx.popIndent();
+      ctx.writeIndent();
+      ctx.sb.append('</thead>\n');
       if (block.rows.length > 0) {
+        ctx.writeIndent();
         ctx.sb.append('<tbody>\n');
+        ctx.pushIndent();
         for (let row in block.rows) {
+          ctx.writeIndent();
           ctx.sb.append('<tr>\n');
+          ctx.pushIndent();
           for (let cell in row.cells) {
             this.#renderCell(cell, 'td', ctx);
           }
+          ctx.popIndent();
+          ctx.writeIndent();
           ctx.sb.append('</tr>\n');
         }
+        ctx.popIndent();
+        ctx.writeIndent();
         ctx.sb.append('</tbody>\n');
       }
+      ctx.popIndent();
+      ctx.writeIndent();
       ctx.sb.append('</table>\n');
       return true;
     }
@@ -398,6 +409,7 @@ final class TableRenderer implements NodeRenderer {
   }
 
   #renderCell(cell: TableCell, tag: String, ctx: HtmlRenderContext): void {
+    ctx.writeIndent();
     ctx.sb.append('<');
     ctx.sb.append(tag);
     match (cell.alignment) {

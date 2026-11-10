@@ -12,7 +12,7 @@ import {
   AstTransformer, BlockParserFactory, DelimiterProcessor, HtmlRenderContext,
   InlineContentParser, InlineParserRunner, MarkdownExtension, NodeRenderer
 } from '../plugin.zena';
-import { toLowerAscii, trimSpaces } from '../scanner.zena';
+import { trimSpaces } from '../scanner.zena';
 
 /**
  * The five GitHub alert levels.
@@ -118,23 +118,20 @@ final class AlertsTransformer implements AstTransformer {
 function parseAlertMarker(
   s: String
 ): inline (boolean, AlertKind, String, String) {
-  if (s.length < 6 || s.getByteAt(0) != 0x5B || s.getByteAt(1) != 0x21 || s.getByteAt(s.length - 1) != 0x5D) {
-    return (false, AlertKind.Note, '', '');
-  }
-  let name = toLowerAscii(s.sliceBytes(2, s.length - 1));
-  if (name == 'note') {
+  let lower = s.asciiLowerCase();
+  if (lower == '[!note]') {
     return (true, AlertKind.Note, 'note', 'Note');
   }
-  if (name == 'tip') {
+  if (lower == '[!tip]') {
     return (true, AlertKind.Tip, 'tip', 'Tip');
   }
-  if (name == 'important') {
+  if (lower == '[!important]') {
     return (true, AlertKind.Important, 'important', 'Important');
   }
-  if (name == 'warning') {
+  if (lower == '[!warning]') {
     return (true, AlertKind.Warning, 'warning', 'Warning');
   }
-  if (name == 'caution') {
+  if (lower == '[!caution]') {
     return (true, AlertKind.Caution, 'caution', 'Caution');
   }
   return (false, AlertKind.Note, '', '');
@@ -143,12 +140,18 @@ function parseAlertMarker(
 final class AlertsRenderer implements NodeRenderer {
   renderBlock(block: CustomBlock, ctx: HtmlRenderContext): boolean {
     if (block is AlertBlock) {
+      ctx.writeIndent();
       ctx.sb.append('<div class="markdown-alert markdown-alert-');
       ctx.escapeAttribute(block.kindSlug);
-      ctx.sb.append('">\n<p class="markdown-alert-title">');
+      ctx.sb.append('">\n');
+      ctx.pushIndent();
+      ctx.writeIndent();
+      ctx.sb.append('<p class="markdown-alert-title">');
       ctx.escapeHtml(block.title);
       ctx.sb.append('</p>\n');
       ctx.renderBlocks(block.blocks);
+      ctx.popIndent();
+      ctx.writeIndent();
       ctx.sb.append('</div>\n');
       return true;
     }

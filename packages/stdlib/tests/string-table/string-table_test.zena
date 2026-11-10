@@ -1,7 +1,11 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse, same, notSame} from 'zena:assert';
-import {StringReader, StringTable} from 'zena:core';
-import {StringBuilder} from 'zena:core';
+import {
+  StringReader, StringTable, StringBuilder,
+  isSpaceOrTab, isAsciiWhitespace, isAsciiDigit, isAsciiHexDigit,
+  hexDigitValue, isAsciiAlpha, isAsciiAlphanumeric, isAsciiPunctuation,
+  isUnicodeWhitespace, isUnicodePunctuation,
+} from 'zena:core';
 import {HashMap} from 'zena:collections';
 
 /**
@@ -273,6 +277,65 @@ export let tests = suite('StringTable', () => {
       new StringReader('alpha', t).internRange(0, 5);
       new StringReader('beta', t).internRange(0, 4);
       equal(t.size, 2);
+    });
+  });
+
+  suite('StringReader scanning and character utilities', () => {
+    test('peek, advance, and peekBefore handle multi-byte Unicode', () => {
+      let r = new StringReader('aé€😀!');
+      equal(r.peekBefore(), -1);
+      equal(r.peek(), 0x61);
+      equal(r.advance(), 0x61);
+      equal(r.peekBefore(), 0x61);
+      equal(r.advance(), 0xE9);
+      equal(r.peekBefore(), 0xE9);
+      equal(r.advance(), 0x20AC);
+      equal(r.peekBefore(), 0x20AC);
+      equal(r.advance(), 0x1F600);
+      equal(r.peekBefore(), 0x1F600);
+      equal(r.advance(), 0x21);
+      equal(r.peekBefore(), 0x21);
+      isTrue(r.isAtEnd);
+    });
+
+    test('startsWith, startsWithIgnoreAsciiCase, matchString, and matchCodePoint', () => {
+      let r = new StringReader('  [!NoTe] €100');
+      r.skipSpaces();
+      isTrue(r.startsWith('[!NoTe]'));
+      isTrue(r.startsWithIgnoreAsciiCase('[!note]'));
+      isTrue(r.matchString('[!NoTe]'));
+      r.skipSpaces();
+      isTrue(r.matchCodePoint(0x20AC));
+      equal(r.readToEnd(), '100');
+    });
+
+    test('readLine handles LF, CRLF, CR, and EOF', () => {
+      let r = new StringReader('one\ntwo\r\nthree\rfour');
+      equal(r.readLine() ?? '', 'one');
+      equal(r.readLine() ?? '', 'two');
+      equal(r.readLine() ?? '', 'three');
+      equal(r.readLine() ?? '', 'four');
+      equal(r.readLine() == null, true);
+    });
+
+    test('character classification helpers', () => {
+      isTrue(isSpaceOrTab(0x20));
+      isTrue(isSpaceOrTab(0x09));
+      isFalse(isSpaceOrTab(0x0A));
+      isTrue(isAsciiWhitespace(0x0A));
+      isTrue(isAsciiDigit(0x35));
+      isTrue(isAsciiHexDigit(0x66));
+      equal(hexDigitValue(0x66), 15);
+      equal(hexDigitValue(0x41), 10);
+      equal(hexDigitValue(0x39), 9);
+      equal(hexDigitValue(0x67), -1);
+      isTrue(isAsciiAlpha(0x5A));
+      isTrue(isAsciiAlphanumeric(0x30));
+      isTrue(isAsciiPunctuation(0x21));
+      isTrue(isUnicodeWhitespace(0xA0));
+      isTrue(isUnicodeWhitespace(0x3000));
+      isTrue(isUnicodePunctuation(0x2014));
+      isTrue(isUnicodePunctuation(0x20AC));
     });
   });
 });

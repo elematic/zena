@@ -4,7 +4,8 @@
  */
 
 import {
-  FixedArray, GrowableArray, Option, none, StringBuilder
+  FixedArray, GrowableArray, Option, none, StringBuilder, StringReader,
+  isSpaceOrTab, isAsciiAlpha, isAsciiDigit, isAsciiAlphanumeric
 } from 'zena:core';
 import { HashMap } from 'zena:collections';
 import {
@@ -19,9 +20,7 @@ import {
 } from './plugin.zena';
 import { InlineParser } from './inline-parser.zena';
 import {
-  isSpaceOrTab, isWhitespaceByte, isAsciiLetter, isAsciiDigit,
-  isAsciiAlphanumeric, toLowerAscii, trimSpaces, trimWhitespace,
-  skipSpacesAndTabs, normalizeLinkLabel, unescapeString, scanLinkDestination,
+  trimSpaces, normalizeLinkLabel, unescapeString, scanLinkDestination,
   scanLinkTitle, scanLinkLabel
 } from './scanner.zena';
 
@@ -143,36 +142,20 @@ export final class DocumentBlockParser {
     this.#openBlocks.clear();
     this.#customHolders.clear();
 
+    let docReader = new StringReader(source);
+    let len = docReader.remaining;
+
     let root = new OpenBlock(OpenBlockKind.Doc, 0);
-    root.endOffset = source.length;
+    root.endOffset = len;
     this.#openBlocks.push(root);
 
-    let len = source.length;
-    var pos = 0;
-    while (pos < len) {
-      var lineEnd = pos;
-      while (lineEnd < len) {
-        let b = source.getByteAt(lineEnd);
-        if (b == 0x0A || b == 0x0D) {
-          break;
-        }
-        lineEnd += 1;
-      }
-      let line = extractLineReplacingNulls(source, pos, lineEnd);
-      var nextPos = lineEnd;
-      if (nextPos < len) {
-        if (
-          source.getByteAt(nextPos) == 0x0D &&
-          nextPos + 1 < len &&
-          source.getByteAt(nextPos + 1) == 0x0A
-        ) {
-          nextPos += 2;
-        } else {
-          nextPos += 1;
-        }
-      }
+    while (!docReader.isAtEnd) {
+      let pos = docReader.mark();
+      let rawLine = docReader.readLine() ?? '';
+      let lr = new StringReader(rawLine);
+      let lineEnd = pos + lr.remaining;
+      let line = replaceNullCodePoints(rawLine);
       this.#processLine(source, line, pos, lineEnd);
-      pos = nextPos;
     }
 
     // Finalize all remaining open blocks from tip down to root
@@ -321,8 +304,9 @@ export final class DocumentBlockParser {
       case OpenBlockKind.Custom: {
         let cp = currentTip.customParser;
         if (cp != null && cp.acceptsLines() && !state.isBlank) {
-          let slice = state.line.sliceBytes(state.index, state.line.length);
-          cp.addLine(slice, state.lineStartOffset + state.index);
+          let r = new StringReader(state.line);
+          r.reset(state.index);
+          cp.addLine(r.readToEnd(), state.lineStartOffset + state.index);
           currentTip.endOffset = lineEndOffset;
         }
       }
@@ -354,18 +338,14 @@ export final class DocumentBlockParser {
 
   #continueOpenBlock(block: OpenBlock, state: BlockLineState): boolean {
     this.#findNextNonSpace(state);
+    let r = new StringReader(state.line);
     match (block.kind) {
       case OpenBlockKind.Quote: {
-        if (
-          state.indent <= 3 &&
-          state.nextNonSpaceIndex < state.line.length &&
-          state.line.getByteAt(state.nextNonSpaceIndex) == 0x3E // >
-        ) {
+        r.reset(state.nextNonSpaceIndex);
+        if (state.indent <= 3 && r.peek() == 0x3E) { // '>'
           this.#setNewColumn(state, state.nextNonSpaceColumn + 1);
-          if (
-            state.index < state.line.length &&
-            isSpaceOrTab(state.line.getByteAt(state.index))
-          ) {
+          r.reset(state.index);
+          if (isSpaceOrTab(r.peek())) {
             this.#setNewColumn(state, state.column + 1);
           }
           return true;
@@ -402,22 +382,18 @@ export final class DocumentBlockParser {
         return false;
       }
       case OpenBlockKind.FencedCode: {
-        if (
-          state.indent <= 3 &&
-          state.nextNonSpaceIndex < state.line.length &&
-          state.line.getByteAt(state.nextNonSpaceIndex) == block.fenceByte
-        ) {
-          var i = state.nextNonSpaceIndex;
-          while (i < state.line.length && state.line.getByteAt(i) == block.fenceByte) {
-            i += 1;
+        r.reset(state.nextNonSpaceIndex);
+        if (state.indent <= 3 && r.peek() == block.fenceByte) {
+          var closeLen = 0;
+          while (r.matchCodePoint(block.fenceByte)) {
+            closeLen += 1;
           }
-          let closeLen = i - state.nextNonSpaceIndex;
           if (closeLen >= block.fenceLength) {
-            let afterFence = skipSpacesAndTabs(state.line, i, state.line.length);
-            if (afterFence == state.line.length) {
+            r.skipSpaces();
+            if (r.isAtEnd) {
               // Closing fence matched: close block and consume line
               this.#closingFenceConsumedLine = true;
-              this.#closeTipBlock(state.lineStartOffset + state.line.length);
+              this.#closeTipBlock(state.lineStartOffset + r.mark());
               this.#AdvanceToEnd(state);
               return false;
             }
@@ -425,13 +401,14 @@ export final class DocumentBlockParser {
         }
         // Strip up to `fenceIndent` leading spaces
         var spaces = block.fenceIndent;
-        while (
-          spaces > 0 &&
-          state.index < state.line.length &&
-          state.line.getByteAt(state.index) == 0x20
-        ) {
-          this.#setNewIndex(state, state.index + 1);
-          spaces -= 1;
+        while (spaces > 0) {
+          r.reset(state.index);
+          if (r.peek() == 0x20) {
+            this.#setNewIndex(state, state.index + 1);
+            spaces -= 1;
+          } else {
+            break;
+          }
         }
         return true;
       }
@@ -454,7 +431,7 @@ export final class DocumentBlockParser {
           return false;
         }
         if (cont.finalize) {
-          this.#closeTipBlock(state.lineStartOffset + state.line.length);
+          this.#closeTipBlock(state.lineStartOffset + r.remaining);
           return false;
         }
         if (cont.newIndex >= 0) {
@@ -477,7 +454,9 @@ export final class DocumentBlockParser {
     lineEndOffset: i32
   ): boolean {
     let inParagraph = currentTip.kind == OpenBlockKind.Para;
-    let b = state.line.getByteAt(state.nextNonSpaceIndex);
+    let r = new StringReader(state.line);
+    r.reset(state.nextNonSpaceIndex);
+    let b = r.peek();
 
     // 1. Custom `BlockParserFactory` plugins (allowing plugins like GFM tables
     // to inspect `matchedInfo` and replace an open paragraph before Setext
@@ -511,10 +490,8 @@ export final class DocumentBlockParser {
       quote.endOffset = lineEndOffset;
       this.#openChildBlock(quote, state.lineStartOffset);
       this.#setNewColumn(state, state.nextNonSpaceColumn + 1);
-      if (
-        state.index < state.line.length &&
-        isSpaceOrTab(state.line.getByteAt(state.index))
-      ) {
+      r.reset(state.index);
+      if (isSpaceOrTab(r.peek())) {
         this.#setNewColumn(state, state.column + 1);
       }
       return true;
@@ -909,8 +886,9 @@ export final class DocumentBlockParser {
     state: BlockLineState,
     lineEndOffset: i32
   ): void {
-    let slice = state.line.sliceBytes(state.nextNonSpaceIndex, state.line.length);
-    para.lines.push(slice);
+    let r = new StringReader(state.line);
+    r.reset(state.nextNonSpaceIndex);
+    para.lines.push(r.readToEnd());
     para.lineOffsets.push(state.lineStartOffset + state.nextNonSpaceIndex);
     para.endOffset = lineEndOffset;
     this.#markEnclosingItemHasLine();
@@ -940,8 +918,6 @@ export final class DocumentBlockParser {
     code.lines.push(content);
     code.endOffset = lineEndOffset;
     this.#markEnclosingItemHasLine();
-
-    // Check if an HTML block type 1..5 would end on this line (not applicable here)
   }
 
   #addHtmlBlockLine(
@@ -972,11 +948,13 @@ export final class DocumentBlockParser {
   }
 
   #extractRemainingWithTabSpaces(state: BlockLineState): String {
-    let rest = state.line.sliceBytes(state.index, state.line.length);
+    let r = new StringReader(state.line);
+    r.reset(state.index);
+    let rest = r.readToEnd();
     if (!this.#partiallyConsumedTab || this.#tabRemainingColumns <= 0) {
       return rest;
     }
-    let sb = new StringBuilder(rest.length + this.#tabRemainingColumns);
+    let sb = new StringBuilder();
     var s = 0;
     while (s < this.#tabRemainingColumns) {
       sb.appendByte(0x20);
@@ -991,45 +969,38 @@ export final class DocumentBlockParser {
       return;
     }
     let combined = joinParagraphLines(para.lines);
-    var pos = 0;
+    let r = new StringReader(combined);
     var consumedAny = false;
-    while (pos < combined.length) {
-      let (ok, label, dest, title, nextPos) = tryParseLinkReferenceDefinition(
-        combined,
-        pos
-      );
+    while (!r.isAtEnd) {
+      let defStart = r.mark();
+      let (ok, label, dest, title) = tryParseLinkReferenceDefinition(r);
       if (!ok) {
+        r.reset(defStart);
         break;
       }
       consumedAny = true;
+      let nextPos = r.mark();
       if (!this.#links.has(label)) {
         this.#links[label] = new LinkDef(
           label,
           dest,
           title,
-          new Span(para.startOffset + pos, para.startOffset + nextPos)
+          new Span(para.startOffset + defStart, para.startOffset + nextPos)
         );
       }
-      pos = nextPos;
     }
     if (!consumedAny) {
       return;
     }
+    let pos = r.mark();
     para.lines.clear();
-    if (pos < combined.length) {
-      let remainder = combined.sliceBytes(pos, combined.length);
+    if (!r.isAtEnd) {
       // Split remaining lines back into `para.lines`
-      var lineStart = 0;
-      var i = 0;
-      while (i < remainder.length) {
-        if (remainder.getByteAt(i) == 0x0A) {
-          para.lines.push(remainder.sliceBytes(lineStart, i));
-          lineStart = i + 1;
+      while (!r.isAtEnd) {
+        let line = r.readLine();
+        if (line != null) {
+          para.lines.push(line);
         }
-        i += 1;
-      }
-      if (lineStart < remainder.length) {
-        para.lines.push(remainder.sliceBytes(lineStart, remainder.length));
       }
       para.startOffset += pos;
     }
@@ -1072,70 +1043,82 @@ export final class DocumentBlockParser {
   }
 
   #tryParseAtxHeading(state: BlockLineState, lineEndOffset: i32): OpenBlock | null {
-    let line = state.line;
+    let r = new StringReader(state.line);
     let start = state.nextNonSpaceIndex;
-    var i = start;
-    while (i < line.length && line.getByteAt(i) == 0x23 && i - start < 7) {
-      i += 1;
+    r.reset(start);
+    var level = 0;
+    while (level < 7 && r.matchCodePoint(0x23)) {
+      level += 1;
     }
-    let level = i - start;
     if (level == 0 || level > 6) {
       return null;
     }
-    if (i < line.length && !isSpaceOrTab(line.getByteAt(i))) {
+    if (!r.isAtEnd && !isSpaceOrTab(r.peek())) {
       return null;
     }
 
     // Trim leading spaces/tabs and optional closing `#` sequence
-    let contentStart = skipSpacesAndTabs(line, i, line.length);
-    var contentEnd = line.length;
-    while (contentEnd > contentStart && isSpaceOrTab(line.getByteAt(contentEnd - 1))) {
-      contentEnd -= 1;
+    r.skipSpaces();
+    let contentStart = r.mark();
+    var contentEnd = contentStart + r.remaining;
+    while (contentEnd > contentStart) {
+      r.reset(contentEnd);
+      if (isSpaceOrTab(r.peekBefore())) {
+        contentEnd -= 1;
+      } else {
+        break;
+      }
     }
     var hashEnd = contentEnd;
-    while (hashEnd > contentStart && line.getByteAt(hashEnd - 1) == 0x23) {
-      hashEnd -= 1;
+    while (hashEnd > contentStart) {
+      r.reset(hashEnd);
+      if (r.peekBefore() == 0x23) {
+        hashEnd -= 1;
+      } else {
+        break;
+      }
     }
     if (hashEnd < contentEnd) {
-      if (hashEnd == contentStart || isSpaceOrTab(line.getByteAt(hashEnd - 1))) {
+      r.reset(hashEnd);
+      if (hashEnd == contentStart || isSpaceOrTab(r.peekBefore())) {
         contentEnd = hashEnd;
-        while (contentEnd > contentStart && isSpaceOrTab(line.getByteAt(contentEnd - 1))) {
-          contentEnd -= 1;
+        while (contentEnd > contentStart) {
+          r.reset(contentEnd);
+          if (isSpaceOrTab(r.peekBefore())) {
+            contentEnd -= 1;
+          } else {
+            break;
+          }
         }
       }
     }
 
     let h = new OpenBlock(OpenBlockKind.HeadingBlock, state.lineStartOffset + start);
     h.headingLevel = level;
-    h.headingText = line.sliceBytes(contentStart, contentEnd);
+    h.headingText = r.sliceRange(contentStart, contentEnd);
     h.headingTextOffset = state.lineStartOffset + contentStart;
     h.endOffset = lineEndOffset;
     return h;
   }
 
   #tryParseFencedCode(state: BlockLineState, lineEndOffset: i32): OpenBlock | null {
-    let line = state.line;
+    let r = new StringReader(state.line);
     let start = state.nextNonSpaceIndex;
-    let fenceByte = line.getByteAt(start);
-    var i = start;
-    while (i < line.length && line.getByteAt(i) == fenceByte) {
-      i += 1;
+    r.reset(start);
+    let fenceByte = r.peek();
+    var fenceLen = 0;
+    while (r.matchCodePoint(fenceByte)) {
+      fenceLen += 1;
     }
-    let fenceLen = i - start;
     if (fenceLen < 3) {
       return null;
     }
+    let rest = r.readToEnd();
     // Backtick fence info string cannot contain backticks
-    if (fenceByte == 0x60) {
-      var k = i;
-      while (k < line.length) {
-        if (line.getByteAt(k) == 0x60) {
-          return null;
-        }
-        k += 1;
-      }
+    if (fenceByte == 0x60 && rest.contains('`')) {
+      return null;
     }
-    let rawInfo = trimSpaces(line.sliceBytes(i, line.length));
+    let rawInfo = trimSpaces(rest);
     let block = new OpenBlock(OpenBlockKind.FencedCode, state.lineStartOffset + start);
     block.fenceByte = fenceByte;
     block.fenceLength = fenceLen;
@@ -1147,28 +1130,28 @@ export final class DocumentBlockParser {
   }
 
   #findNextNonSpace(state: BlockLineState): void {
-    var i = state.index;
+    let r = new StringReader(state.line);
+    r.reset(state.index);
     var cols = state.column;
     if (this.#partiallyConsumedTab) {
       cols += this.#tabRemainingColumns;
     }
-    let len = state.line.length;
-    while (i < len) {
-      let b = state.line.getByteAt(i);
+    while (!r.isAtEnd) {
+      let b = r.peek();
       if (b == 0x20) {
-        i += 1;
+        r.advance();
         cols += 1;
       } else if (b == 0x09) {
-        i += 1;
+        r.advance();
         cols += 4 - (cols % 4);
       } else {
         break;
       }
     }
-    state.nextNonSpaceIndex = i;
+    state.nextNonSpaceIndex = r.mark();
     state.nextNonSpaceColumn = cols;
     state.indent = cols - state.column;
-    state.isBlank = i >= len;
+    state.isBlank = r.isAtEnd;
   }
 
   #setNewIndex(state: BlockLineState, newIndex: i32): void {
@@ -1176,16 +1159,17 @@ export final class DocumentBlockParser {
       state.index = state.nextNonSpaceIndex;
       state.column = state.nextNonSpaceColumn;
     }
-    let len = state.line.length;
-    while (state.index < newIndex && state.index < len) {
-      let b = state.line.getByteAt(state.index);
+    let r = new StringReader(state.line);
+    r.reset(state.index);
+    while (r.mark() < newIndex && !r.isAtEnd) {
+      let b = r.advance();
       if (b == 0x09) {
         state.column += 4 - (state.column % 4);
       } else {
         state.column += 1;
       }
-      state.index += 1;
     }
+    state.index = r.mark();
     this.#partiallyConsumedTab = false;
     this.#tabRemainingColumns = 0;
   }
@@ -1195,72 +1179,60 @@ export final class DocumentBlockParser {
       state.index = state.nextNonSpaceIndex;
       state.column = state.nextNonSpaceColumn;
     }
-    let len = state.line.length;
-    while (state.column < newColumn && state.index < len) {
-      let b = state.line.getByteAt(state.index);
+    let r = new StringReader(state.line);
+    r.reset(state.index);
+    while (state.column < newColumn && !r.isAtEnd) {
+      let b = r.advance();
       if (b == 0x09) {
         let step = 4 - (state.column % 4);
         if (state.column + step > newColumn) {
           this.#partiallyConsumedTab = true;
           this.#tabRemainingColumns = state.column + step - newColumn;
           state.column = newColumn;
-          state.index += 1;
+          state.index = r.mark();
           return;
         }
         state.column += step;
-        state.index += 1;
       } else {
         state.column += 1;
-        state.index += 1;
       }
     }
+    state.index = r.mark();
     this.#partiallyConsumedTab = false;
     this.#tabRemainingColumns = 0;
   }
 
   #AdvanceToEnd(state: BlockLineState): void {
-    this.#setNewIndex(state, state.line.length);
+    let r = new StringReader(state.line);
+    this.#setNewIndex(state, r.remaining);
   }
 }
 
-function extractLineReplacingNulls(s: String, start: i32, end: i32): String {
+function replaceNullCodePoints(s: String): String {
+  let r = new StringReader(s);
   var hasNull = false;
-  var i = start;
-  while (i < end) {
-    if (s.getByteAt(i) == 0) {
+  while (!r.isAtEnd) {
+    if (r.advance() == 0) {
       hasNull = true;
       break;
     }
-    i += 1;
   }
   if (!hasNull) {
-    return s.sliceBytes(start, end);
+    return s;
   }
-  let sb = new StringBuilder(end - start + 4);
-  var j = start;
-  while (j < end) {
-    let b = s.getByteAt(j);
-    if (b == 0) {
-      sb.appendByte(0xEF);
-      sb.appendByte(0xBF);
-      sb.appendByte(0xBD);
-    } else {
-      sb.appendByte(b);
-    }
-    j += 1;
+  r.reset(0);
+  let sb = new StringBuilder();
+  while (!r.isAtEnd) {
+    let cp = r.advance();
+    sb.appendCodePoint(if (cp == 0) 0xFFFD else cp);
   }
   return sb.toString();
 }
 
 function isBlankString(s: String): boolean {
-  var i = 0;
-  while (i < s.length) {
-    if (!isSpaceOrTab(s.getByteAt(i))) {
-      return false;
-    }
-    i += 1;
-  }
-  return true;
+  let r = new StringReader(s);
+  r.skipSpaces();
+  return r.isAtEnd;
 }
 
 function joinParagraphLines(lines: GrowableArray<String>): String {
@@ -1277,9 +1249,9 @@ function joinParagraphLines(lines: GrowableArray<String>): String {
       sb.appendByte(0x0A);
     }
     // Strip leading spaces on paragraph continuation lines
-    let line = lines[i];
-    let start = skipSpacesAndTabs(line, 0, line.length);
-    sb.appendSlice(line, start, line.length);
+    let r = new StringReader(lines[i]);
+    r.skipSpaces();
+    sb.append(r.readToEnd());
     i += 1;
   }
   return sb.toString();
@@ -1290,19 +1262,15 @@ function joinParagraphLines(lines: GrowableArray<String>): String {
  * Returns `1` for `=`, `2` for `-`, or `0` if not a Setext underline.
  */
 function matchSetextUnderline(line: String, start: i32): i32 {
-  if (start >= line.length) {
-    return 0;
-  }
-  let marker = line.getByteAt(start);
+  let r = new StringReader(line);
+  r.reset(start);
+  let marker = r.peek();
   if (marker != 0x3D && marker != 0x2D) {
     return 0;
   }
-  var i = start;
-  while (i < line.length && line.getByteAt(i) == marker) {
-    i += 1;
-  }
-  i = skipSpacesAndTabs(line, i, line.length);
-  if (i != line.length) {
+  while (r.matchCodePoint(marker)) {}
+  r.skipSpaces();
+  if (!r.isAtEnd) {
     return 0;
   }
   return if (marker == 0x3D) 1 else 2;
@@ -1312,23 +1280,20 @@ function matchSetextUnderline(line: String, start: i32): i32 {
  * Checks whether `line` at `start` is a CommonMark thematic break (`***`, `---`, `___`).
  */
 function isThematicBreak(line: String, start: i32): boolean {
-  if (start >= line.length) {
-    return false;
-  }
-  let marker = line.getByteAt(start);
+  let r = new StringReader(line);
+  r.reset(start);
+  let marker = r.peek();
   if (marker != 0x2A && marker != 0x2D && marker != 0x5F) {
     return false;
   }
   var count = 0;
-  var i = start;
-  while (i < line.length) {
-    let b = line.getByteAt(i);
+  while (!r.isAtEnd) {
+    let b = r.advance();
     if (b == marker) {
       count += 1;
     } else if (!isSpaceOrTab(b)) {
       return false;
     }
-    i += 1;
   }
   return count >= 3;
 }
@@ -1342,39 +1307,37 @@ function tryParseListMarker(
   state: BlockLineState,
   inParagraph: boolean
 ): inline (boolean, boolean, i32, i32, i32, i32) {
-  let line = state.line;
+  let r = new StringReader(state.line);
   let start = state.nextNonSpaceIndex;
-  let b = line.getByteAt(start);
+  r.reset(start);
+  let b = r.peek();
   var ordered = false;
   var startNum = 1;
   var delim = b;
-  var afterMarker = start + 1;
 
   if (b == 0x2D || b == 0x2B || b == 0x2A) {
     ordered = false;
+    r.advance();
   } else if (isAsciiDigit(b)) {
     ordered = true;
     startNum = 0;
-    var i = start;
-    while (i < line.length && i - start < 9 && isAsciiDigit(line.getByteAt(i))) {
-      startNum = startNum * 10 + (line.getByteAt(i) - 0x30);
-      i += 1;
+    var digits = 0;
+    while (digits < 9 && isAsciiDigit(r.peek())) {
+      startNum = startNum * 10 + (r.advance() - 0x30);
+      digits += 1;
     }
-    if (i >= line.length) {
+    let d = r.peek();
+    if (d != 0x2E && d != 0x29) { // '.' or ')'
       return (false, false, 1, 0, 0, 0);
     }
-    let d = line.getByteAt(i);
-    if (d != 0x2E && d != 0x29) { // . or )
-      return (false, false, 1, 0, 0, 0);
-    }
-    delim = d;
-    afterMarker = i + 1;
+    delim = r.advance();
   } else {
     return (false, false, 1, 0, 0, 0);
   }
 
+  let afterMarker = r.mark();
   // Must be followed by end of line, space, or tab
-  if (afterMarker < line.length && !isSpaceOrTab(line.getByteAt(afterMarker))) {
+  if (!r.isAtEnd && !isSpaceOrTab(r.peek())) {
     return (false, false, 1, 0, 0, 0);
   }
 
@@ -1382,22 +1345,21 @@ function tryParseListMarker(
   let markerEndCol = state.nextNonSpaceColumn + markerCols;
 
   // Compute columns of whitespace after the marker
-  var i = afterMarker;
   var col = markerEndCol;
-  while (i < line.length) {
-    let wb = line.getByteAt(i);
+  while (!r.isAtEnd) {
+    let wb = r.peek();
     if (wb == 0x20) {
       col += 1;
-      i += 1;
+      r.advance();
     } else if (wb == 0x09) {
       col += 4 - (col % 4);
-      i += 1;
+      r.advance();
     } else {
       break;
     }
   }
 
-  let blankAfterMarker = i >= line.length;
+  let blankAfterMarker = r.isAtEnd;
   // Rule: interrupting a paragraph requires non-blank item content and, for
   // ordered lists, a start number of 1
   if (inParagraph) {
@@ -1418,107 +1380,109 @@ function tryParseListMarker(
 
 /**
  * Attempts to parse a link reference definition `[label]: destination "title"`
- * starting at `start` in `text`.
- * Returns `(matched, normalizedLabel, destination, title, nextPos)`.
+ * at the current position of `r`.
+ * Returns `(matched, normalizedLabel, destination, title)`.
  */
 function tryParseLinkReferenceDefinition(
-  text: String,
-  start: i32
-): inline (boolean, String, String, String, i32) {
-  let len = text.length;
-  var p = skipSpacesAndTabs(text, start, len);
-  if (p >= len || text.getByteAt(p) != 0x5B) {
-    return (false, '', '', '', start);
+  r: StringReader
+): inline (boolean, String, String, String) {
+  let saved = r.mark();
+  r.skipSpaces();
+  if (r.peek() != 0x5B) { // '['
+    r.reset(saved);
+    return (false, '', '', '');
   }
 
-  let (labelOk, rawLabel, afterLabel) = scanLinkLabel(text, p, len);
-  if (!labelOk || afterLabel >= len || text.getByteAt(afterLabel) != 0x3A) { // :
-    return (false, '', '', '', start);
+  let (labelOk, rawLabel) = scanLinkLabel(r);
+  if (!labelOk || !r.matchCodePoint(0x3A)) { // ':'
+    r.reset(saved);
+    return (false, '', '', '');
   }
   let normalizedLabel = normalizeLinkLabel(rawLabel);
-  if (normalizedLabel.length == 0) {
-    return (false, '', '', '', start);
+  if (normalizedLabel.isEmpty) {
+    r.reset(saved);
+    return (false, '', '', '');
   }
 
-  p = skipSpacesAndTabs(text, afterLabel + 1, len);
-  if (p < len && text.getByteAt(p) == 0x0A) {
-    p = skipSpacesAndTabs(text, p + 1, len);
+  r.skipSpaces();
+  if (r.matchCodePoint(0x0A)) {
+    r.skipSpaces();
   }
 
-  let (destOk, dest, afterDest) = scanLinkDestination(text, p, len);
+  let (destOk, dest) = scanLinkDestination(r);
   if (!destOk) {
-    return (false, '', '', '', start);
+    r.reset(saved);
+    return (false, '', '', '');
   }
+  let afterDest = r.mark();
 
-  let afterDestSpaces = skipSpacesAndTabs(text, afterDest, len);
+  r.skipSpaces();
+  let afterDestSpaces = r.mark();
   var lineEndAfterDest = afterDestSpaces;
   var validWithoutTitle = false;
-  if (afterDestSpaces == len) {
+  if (r.isAtEnd) {
     validWithoutTitle = true;
-    lineEndAfterDest = len;
-  } else if (text.getByteAt(afterDestSpaces) == 0x0A) {
+    lineEndAfterDest = r.mark();
+  } else if (r.peek() == 0x0A) {
     validWithoutTitle = true;
     lineEndAfterDest = afterDestSpaces + 1;
   }
 
   // Try optional title on the same line or the next line
-  var titleCandidatePos = afterDestSpaces;
-  if (titleCandidatePos < len && text.getByteAt(titleCandidatePos) == 0x0A) {
-    titleCandidatePos = skipSpacesAndTabs(text, titleCandidatePos + 1, len);
+  r.reset(afterDestSpaces);
+  if (r.matchCodePoint(0x0A)) {
+    r.skipSpaces();
   }
-  if (titleCandidatePos > afterDest && titleCandidatePos < len) {
-    let tb = text.getByteAt(titleCandidatePos);
+  let titleCandidatePos = r.mark();
+  if (titleCandidatePos > afterDest && !r.isAtEnd) {
+    let tb = r.peek();
     if (tb == 0x22 || tb == 0x27 || tb == 0x28) {
-      let (titleOk, parsedTitle, afterTitle) = scanLinkTitle(
-        text,
-        titleCandidatePos,
-        len
-      );
+      let (titleOk, parsedTitle) = scanLinkTitle(r);
       if (titleOk) {
-        let endSpaces = skipSpacesAndTabs(text, afterTitle, len);
-        if (endSpaces == len) {
-          return (true, normalizedLabel, dest, parsedTitle, len);
+        r.skipSpaces();
+        if (r.isAtEnd) {
+          return (true, normalizedLabel, dest, parsedTitle);
         }
-        if (text.getByteAt(endSpaces) == 0x0A) {
-          return (true, normalizedLabel, dest, parsedTitle, endSpaces + 1);
+        if (r.matchCodePoint(0x0A)) {
+          return (true, normalizedLabel, dest, parsedTitle);
         }
       }
     }
   }
 
   if (validWithoutTitle) {
-    return (true, normalizedLabel, dest, '', lineEndAfterDest);
+    r.reset(lineEndAfterDest);
+    return (true, normalizedLabel, dest, '');
   }
-  return (false, '', '', '', start);
+  r.reset(saved);
+  return (false, '', '', '');
 }
 
 /**
- * Detects whether `line` at `start` (where `line.getByteAt(start) == '<'`)
- * starts a CommonMark HTML block of type 1..7. Returns `0` if none matches.
+ * Detects whether `line` at `start` starts a CommonMark HTML block of type 1..7.
+ * Returns `0` if none matches.
  */
 function detectHtmlBlockStart(
   line: String,
   start: i32,
   inParagraph: boolean
 ): i32 {
-  let len = line.length;
-  if (start + 1 >= len || line.getByteAt(start) != 0x3C) {
+  let r = new StringReader(line);
+  r.reset(start);
+  if (!r.matchCodePoint(0x3C) || r.isAtEnd) { // '<'
     return 0;
   }
-  let second = line.getByteAt(start + 1);
+  let second = r.peek();
 
-  if (second == 0x21) { // <!
-    if (
-      start + 4 <= len &&
-      line.getByteAt(start + 2) == 0x2D &&
-      line.getByteAt(start + 3) == 0x2D
-    ) {
+  if (second == 0x21) { // '<!'
+    r.advance();
+    if (r.matchString('--')) {
       return 2; // <!--
     }
-    if (start + 9 <= len && line.sliceBytes(start + 2, start + 9) == '[CDATA[') {
+    if (r.matchString('[CDATA[')) {
       return 5; // <![CDATA[
     }
-    if (start + 2 < len && isAsciiLetter(line.getByteAt(start + 2))) {
+    if (isAsciiAlpha(r.peek())) {
       return 4; // <!DOCTYPE ...
     }
     return 0;
@@ -1527,23 +1491,16 @@ function detectHtmlBlockStart(
     return 3; // <?
   }
 
-  var nameStart = start + 1;
-  let isClose = second == 0x2F;
-  if (isClose) {
-    nameStart += 1;
-  }
-  if (nameStart >= len || !isAsciiLetter(line.getByteAt(nameStart))) {
+  let isClose = r.matchCodePoint(0x2F); // '/'
+  if (!isAsciiAlpha(r.peek())) {
     return 0;
   }
-  var nameEnd = nameStart + 1;
-  while (
-    nameEnd < len &&
-    (isAsciiAlphanumeric(line.getByteAt(nameEnd)) || line.getByteAt(nameEnd) == 0x2D)
-  ) {
-    nameEnd += 1;
-  }
-  let tagName = toLowerAscii(line.sliceBytes(nameStart, nameEnd));
-  let nextByte = if (nameEnd < len) line.getByteAt(nameEnd) else 0x20;
+  let nameStart = r.mark();
+  r.advance();
+  r.skipWhile((cp) => isAsciiAlphanumeric(cp) || cp == 0x2D);
+  let nameEnd = r.mark();
+  let tagName = r.sliceRange(nameStart, nameEnd).asciiLowerCase();
+  let nextByte = if (r.isAtEnd) 0x20 else r.peek();
 
   // Type 1: <pre, <script, <style, <textarea
   if (
@@ -1557,20 +1514,19 @@ function detectHtmlBlockStart(
   // Type 6: standard HTML block tags
   let afterOk = isSpaceOrTab(nextByte) ||
       nextByte == 0x3E ||
-      (nextByte == 0x2F && nameEnd + 1 < len && line.getByteAt(nameEnd + 1) == 0x3E);
+      r.startsWith('/>');
   if (afterOk && isType6HtmlTag(tagName)) {
     return 6;
   }
 
   // Type 7: complete open or close tag alone on the line (cannot interrupt a paragraph)
   if (!inParagraph && afterOk) {
-    var i = nameEnd;
-    while (i < len && line.getByteAt(i) != 0x3E) {
-      i += 1;
+    while (!r.isAtEnd && r.peek() != 0x3E) {
+      r.advance();
     }
-    if (i < len && line.getByteAt(i) == 0x3E) {
-      let rest = skipSpacesAndTabs(line, i + 1, len);
-      if (rest == len) {
+    if (r.matchCodePoint(0x3E)) {
+      r.skipSpaces();
+      if (r.isAtEnd) {
         return 7;
       }
     }
@@ -1604,51 +1560,23 @@ function isType6HtmlTag(tag: String): boolean {
 
 function htmlBlockEndsOnLine(line: String, htmlType: i32): boolean {
   if (htmlType == 1) {
-    let lower = toLowerAscii(line);
-    return containsSubstring(lower, '</pre>') ||
-        containsSubstring(lower, '</script>') ||
-        containsSubstring(lower, '</style>') ||
-        containsSubstring(lower, '</textarea>');
+    let lower = line.asciiLowerCase();
+    return lower.contains('</pre>') ||
+        lower.contains('</script>') ||
+        lower.contains('</style>') ||
+        lower.contains('</textarea>');
   }
   if (htmlType == 2) {
-    return containsSubstring(line, '-->');
+    return line.contains('-->');
   }
   if (htmlType == 3) {
-    return containsSubstring(line, '?>');
+    return line.contains('?>');
   }
   if (htmlType == 4) {
-    return containsSubstring(line, '>');
+    return line.contains('>');
   }
   if (htmlType == 5) {
-    return containsSubstring(line, ']]>');
-  }
-  return false;
-}
-
-function containsSubstring(haystack: String, needle: String): boolean {
-  let nLen = needle.length;
-  let hLen = haystack.length;
-  if (nLen == 0 || nLen > hLen) {
-    return false;
-  }
-  let first = needle.getByteAt(0);
-  var i = 0;
-  while (i <= hLen - nLen) {
-    if (haystack.getByteAt(i) == first) {
-      var matched = true;
-      var j = 1;
-      while (j < nLen) {
-        if (haystack.getByteAt(i + j) != needle.getByteAt(j)) {
-          matched = false;
-          break;
-        }
-        j += 1;
-      }
-      if (matched) {
-        return true;
-      }
-    }
-    i += 1;
+    return line.contains(']]>');
   }
   return false;
 }

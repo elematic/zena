@@ -67,4 +67,23 @@ export let tests = suite('Sanitization and Safe Mode', () => {
     equal(isSafeUrl('ftp://google.com', false), false);
     equal(isSafeUrl('data:image/svg+xml;base64,PHN2Zz4=', true), false);
   });
+
+  test('preserves multi-byte Unicode characters in text, attributes, and fenced code info', (ctx) => {
+    let hBar = String.fromCodePoint(0x0126); // U+0126 (low byte 0x26 == '&')
+    let cyrM = String.fromCodePoint(0x043C); // U+043C (low byte 0x3C == '<')
+    let rocket = String.fromCodePoint(0x1F680);
+    let md = `${hBar} and ${cyrM} and ${rocket}\n\n\`\`\`ts-${hBar} extra\ncode\n\`\`\`\n`;
+    equal(
+      markdownToHtml(md),
+      `<p>${hBar} and ${cyrM} and ${rocket}</p>\n<pre><code class="language-ts-${hBar}">code\n</code></pre>\n`
+    );
+  });
+
+  test('pretty-prints nested block elements when indent option is set', (ctx) => {
+    let md = '> - item 1\n>   - nested\n\n| A | B |\n| - | - |\n| 1 | 2 |\n';
+    equal(
+      markdownToHtml(md, {indent: 2, extensions: gfmExtensions()}),
+      '<blockquote>\n  <ul>\n    <li>item 1\n      <ul>\n        <li>nested</li>\n      </ul>\n    </li>\n  </ul>\n</blockquote>\n<table>\n  <thead>\n    <tr>\n      <th>A</th>\n      <th>B</th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n      <td>1</td>\n      <td>2</td>\n    </tr>\n  </tbody>\n</table>\n'
+    );
+  });
 });

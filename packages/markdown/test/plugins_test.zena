@@ -4,7 +4,7 @@
  * `TaskListItemsTest`, `AutolinkTest`, `HeadingAnchorTest`, and `AlertsTest`).
  */
 
-import { Array, GrowableArray, StringBuilder } from 'zena:core';
+import { Array, GrowableArray, StringBuilder, StringReader } from 'zena:core';
 import { suite, test, TestContext } from 'zena:test';
 import { equal } from 'zena:assert';
 import {
@@ -90,17 +90,15 @@ final class MentionInlineParser implements InlineContentParser {
     if (precedingByte >= 0 && isAsciiAlphanumeric(precedingByte)) {
       return null;
     }
-    var end = index + 1;
-    while (
-      end < source.length &&
-      (isAsciiAlphanumeric(source.getByteAt(end)) || source.getByteAt(end) == 0x2D)
-    ) {
-      end += 1;
-    }
-    if (end == index + 1) {
+    let reader = new StringReader(source);
+    reader.reset(index + 1);
+    let mark = reader.mark();
+    reader.skipWhile((cp) => isAsciiAlphanumeric(cp) || cp == 0x2D);
+    if (reader.position == index + 1) {
       return null;
     }
-    let handle = source.sliceBytes(index + 1, end);
+    let handle = reader.sliceFrom(mark);
+    let end = reader.position;
     let span = new Span(baseOffset + index, baseOffset + end);
     let children = new GrowableArray<Inline>(1);
     children.push(new Text(`@${handle}`, span));
