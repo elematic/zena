@@ -26,8 +26,8 @@ import {
 } from 'pds:service';
 import {PlcDirectory} from 'registry:plc-directory';
 import {
-  AppViewSettings, InCloudDns, RecordsInMemory, RemotePds, Service, ServiceConfig, StoresInFirestore, StoresInMemory,
-  buildService, configFromEnv
+  AppViewSettings, InCloudDns, PAGE_POLICY, RecordsInMemory, RemotePds, Service, ServiceConfig, StoresInFirestore,
+  StoresInMemory, buildService, configFromEnv
 } from 'registry:service';
 
 let KEY = 'c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721';
@@ -341,6 +341,16 @@ export let tests = suite('registry:service', () => {
     equal(parsed.pds as String, 'https://pkg.test');
     // It names the App View's methods too, as a client finds them.
     equal(parsed.serviceEndpoint('#zena_registry', 'ZenaRegistry') as String, 'https://pkg.test');
+
+    // Every page runs only the App View's own scripts, and no other site
+    // frames it: what a package's README or profile puts in a page cannot
+    // run, even if sanitizing it let something through.
+    let home = await get(hosted.app, '/');
+    equal(home.getHeader('content-security-policy') ?? '', PAGE_POLICY);
+    for (let directive in ["script-src 'self'", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'"]) {
+      isTrue(PAGE_POLICY.contains(`${directive};`), directive);
+    }
+    isTrue(!PAGE_POLICY.contains("script-src 'self' 'unsafe"), 'no inline script');
 
     // describeRegistry says what the App View is, to anyone.
     let described = parseJson((await get(hosted.app, '/xrpc/dev.zena-lang.registry.describeRegistry')).body as String) as JsonObject;

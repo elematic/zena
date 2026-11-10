@@ -17,6 +17,9 @@ await copyFile(
   join(here, '../website/src/public/logo.svg'),
   join(out, 'logo.svg'),
 );
+// The theme script runs before the page paints, so it is not bundled with
+// app.js, which is a module and runs after.
+await copyFile(join(here, 'src/theme.js'), join(out, 'theme.js'));
 
 /**
  * Radica's components import their styles as CSS module scripts
