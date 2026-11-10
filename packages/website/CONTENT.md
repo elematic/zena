@@ -317,6 +317,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Narrow integers
     - Arbitrary-precision integers
     - Floats
+    - Decimal floating-point
     - Number literals
     - Unsigned semantics
     - Overflow and special values
@@ -581,8 +582,45 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ## API
 
-- 📝 [Overview](src/api.md) — `/api/`
+- ✅ [Overview](src/api/index.md) — `/api/`
   - Libraries
+- ⚙️ zena:args — `/api/args/`
+- ⚙️ zena:assert — `/api/assert/`
+- ⚙️ zena:async — `/api/async/`
+- ⚙️ zena:bench — `/api/bench/`
+- ⚙️ zena:bigint — `/api/bigint/`
+- ⚙️ zena:cli — `/api/cli/`
+- ⚙️ zena:collections — `/api/collections/`
+- ⚙️ zena:console — `/api/console/`
+- ⚙️ zena:core — `/api/core/`
+- ⚙️ zena:crypto — `/api/crypto/`
+- ⚙️ zena:decimal — `/api/decimal/`
+- ⚙️ zena:encoding — `/api/encoding/`
+- ⚙️ zena:extensions — `/api/extensions/`
+- ⚙️ zena:fetch — `/api/fetch/`
+- ⚙️ zena:fs — `/api/fs/`
+- ⚙️ zena:glob — `/api/glob/`
+- ⚙️ zena:host-setup — `/api/host-setup/`
+- ⚙️ zena:http — `/api/http/`
+- ⚙️ zena:json — `/api/json/`
+- ⚙️ zena:math — `/api/math/`
+- ⚙️ zena:memory — `/api/memory/`
+- ⚙️ zena:path — `/api/path/`
+- ⚙️ zena:process — `/api/process/`
+- ⚙️ zena:random — `/api/random/`
+- ⚙️ zena:regex — `/api/regex/`
+- ⚙️ zena:signals — `/api/signals/`
+- ⚙️ zena:simd — `/api/simd/`
+- ⚙️ zena:stream — `/api/stream/`
+- ⚙️ zena:string — `/api/string/`
+- ⚙️ zena:task — `/api/task/`
+- ⚙️ zena:test — `/api/test/`
+- ⚙️ zena:time — `/api/time/`
+- ⚙️ zena:url — `/api/url/`
+- ⚙️ zena:wasi — `/api/wasi/`
+- ⚙️ zena:wasm — `/api/wasm/`
+- ⚙️ zena:web-elements — `/api/web-elements/`
+- ⚙️ zena:web-templates — `/api/web-templates/`
 
 ## Development
 
@@ -679,4 +717,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-81 of 103 pages written; 22 still placeholders.
+82 of 103 pages written; 21 still placeholders.

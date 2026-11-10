@@ -133,10 +133,11 @@ Default target. Emits a WebAssembly Component for `zena-runtime` (`zena-cli`,
 ## Standard library availability
 
 Portable standard library modules (`zena:core`, `zena:collections`, `zena:math`,
-`zena:bigint`, `zena:json`, `zena:regex`, `zena:path`, `zena:args`,
-`zena:encoding`, `zena:crypto`, `zena:simd`, `zena:stream`, `zena:task`,
-`zena:async`, `zena:signals`, `zena:assert`, `zena:url`) are available on all
-five targets. Modules that depend on host capabilities resolve per target:
+`zena:bigint`, `zena:decimal`, `zena:json`, `zena:regex`, `zena:path`,
+`zena:args`, `zena:encoding`, `zena:crypto`, `zena:simd`, `zena:stream`,
+`zena:task`, `zena:async`, `zena:signals`, `zena:assert`, `zena:url`) are
+available on all five targets. Modules that depend on host capabilities resolve
+per target:
 
 | Library              |  `core`   |   `js`    |   `zena-js`    |         `component`          |              `zena-component`              |
 | :------------------- | :-------: | :-------: | :------------: | :--------------------------: | :----------------------------------------: |

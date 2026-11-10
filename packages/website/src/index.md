@@ -975,6 +975,10 @@ happen frequently.
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
+          <td>Decimal</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
           <td>Regular expressions</td>
           <td><span class="badge success">Complete</span></td>
         </tr>
