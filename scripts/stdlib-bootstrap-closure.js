@@ -37,7 +37,7 @@ const MANIFEST = 'packages/stdlib/stdlib-manifest.json';
 const PRELUDE = 'packages/zena-compiler/zena/lib/prelude.zena';
 const ENTRY = 'packages/zena-compiler/zena/cli/main.zena';
 const ALSO_COMPILED = [
-  'packages/wit-parser/zena',
+  'packages/wit-parser/src',
   'packages/zena-formatter/zena',
 ];
 

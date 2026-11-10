@@ -14,7 +14,7 @@
         nodejs = pkgs.nodejs_latest;
 
         # Real-world WIT the parser is checked against (see
-        # packages/wit-parser/wit-corpus.json, which is the single source of
+        # packages/wit-parser/dev/wit-corpus.json, which is the single source of
         # truth for the URLs — dev/fetch-wit-corpus.js reads the same file for
         # checkouts that are not using Nix).
         #
@@ -23,7 +23,7 @@
         # GitHub regenerates archives and the gzip framing changes even when no
         # file does.
         witCorpusPin = builtins.fromJSON
-          (builtins.readFile ./packages/wit-parser/wit-corpus.json);
+          (builtins.readFile ./packages/wit-parser/dev/wit-corpus.json);
 
         # One root holding every pinned source as <root>/<name>, matching the
         # layout dev/fetch-wit-corpus.js produces, so the checks address a
