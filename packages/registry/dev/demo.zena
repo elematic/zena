@@ -6,14 +6,19 @@
  *
  * - a stand-in PLC directory, which records the demo's DIDs and reads
  *   every other DID from `plc.directory`, and the PDS of a maintainer,
- *   with an app password (`package-manager:testing/fake-pds`);
+ *   with an app password (`package-manager:testing/fake-pds`), on the
+ *   port after the App View's (`PORT`, 2583 by default);
  * - the App View for `pkg.test`, built from the environment as
  *   `main.zena` builds it, so `PDS_STORAGE=firestore` and the rest work
  *   here too, with the Firestore emulator. Its handle records are in
  *   memory;
  * - a DNS-over-HTTPS resolver that answers from those records, and asks
  *   `APP_VIEW_DNS_OVER_HTTPS` (Cloudflare's, by default) about every other
- *   name, so handles on a person's own domain resolve.
+ *   name, so handles on a person's own domain resolve, on the port after
+ *   that.
+ *
+ * Fixed ports keep the variables it prints right from one start to the
+ * next.
  *
  * `npm run demo` builds the web app (`packages/pds-web`) and gives it to
  * the demo as the directory `/web` (`--dir packages/pds-web/out::/web`,
@@ -32,6 +37,7 @@ import {getEnv} from 'zena:cli';
 import {Server} from 'zena:http';
 import {FakePds} from 'package-manager:testing/fake-pds';
 import {MemoryHandleRecords, dnsOverHttpsApp, dnsOverHttpsUpstream} from 'registry:handles';
+import {readPort} from 'pds:service';
 import {configFromEnv, serve} from 'registry:service';
 import {AppView, AppViewError} from 'registry:app-view';
 import {nowMicros} from 'pds:xrpc/common';
@@ -75,8 +81,12 @@ async function createScopes(appView: AppView, pairs: String): Future<void> {
 }
 
 export async function main(): Future<void> {
+  // The stand-ins listen on the two ports after the App View's, so that
+  // the variables printed below are still right when the demo starts
+  // again; another PORT moves all three.
+  let appViewPort = readPort((name) => getEnv(name), new GrowableArray<String>()) as i32;
   let world = new FakePds();
-  world.start();
+  world.start(appViewPort + 1);
   world.account(MAINTAINER, null).password = PASSWORD;
   // Real accounts, such as one signing in to the web app, resolve through
   // the public directory; the demo's own accounts never reach it.
@@ -114,7 +124,8 @@ export async function main(): Future<void> {
   let running = await serve(config);
   await createScopes(running.service.appView, getEnv('DEMO_SCOPES') ?? '');
   let upstream = dnsOverHttpsUpstream(getEnv('APP_VIEW_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
-  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords, upstream), 0 as u16);
+  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords, upstream),
+      (appViewPort + 2) as u16);
   dns.start();
 
   let dnsUrl = `http://127.0.0.1:${dns.port as i32}/dns-query`;

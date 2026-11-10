@@ -70,9 +70,10 @@ everything a first publish needs on this machine, in one process
 - A stand-in PLC directory, which records the demo's DIDs and reads every
   other DID from `plc.directory`, and a PDS with one maintainer,
   `did:plc:maintainermaintainermain`, whose app password is
-  `demo-app-password`.
+  `demo-app-password`, at `http://127.0.0.1:2584`, the port after the
+  App View's.
 - A DNS-over-HTTPS resolver that answers for the handles under `pkg.test`
-  and asks Cloudflare about every other name.
+  and asks Cloudflare about every other name, at `http://127.0.0.1:2585`.
 
 Nothing reaches the public PLC directory or real DNS, and everything is in
 memory: Ctrl-C forgets it all. The limits on actions and creations apply
@@ -81,13 +82,15 @@ maintainer can create two scopes before the demo is restarted.
 
 ### Publishing a package
 
-The demo prints the variables `zena` needs, with the ports it chose. Set
-them in each shell that runs `zena pkg`: without `ZENA_REGISTRY`, `zena`
-calls the Zena project's registry, `https://pkg.zena-lang.dev`.
+The demo prints the variables `zena` needs. Set them in each shell that
+runs `zena pkg`: without `ZENA_REGISTRY`, `zena` calls the Zena project's
+registry, `https://pkg.zena-lang.dev`. They stay right when the demo is
+started again, with the same `PORT`, though what the demo held is gone:
+a session made against its maintainer needs `zena pkg login` again.
 
 ```sh
-export ZENA_PLC_DIRECTORY=http://127.0.0.1:<port>/plc
-export ZENA_DNS_OVER_HTTPS=http://127.0.0.1:<port>/dns-query
+export ZENA_PLC_DIRECTORY=http://127.0.0.1:2584/plc
+export ZENA_DNS_OVER_HTTPS=http://127.0.0.1:2585/dns-query
 export ZENA_REGISTRY=http://127.0.0.1:2583
 export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
 alias zena="$PWD/target/release/zena-cli"   # run in the repository root

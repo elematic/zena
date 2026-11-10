@@ -214,9 +214,9 @@ export final class FakePds {
     return stringify(session);
   }
 
-  /** Starts serving, on a port of the system's choosing. */
-  start(): void {
-    let server = serve(this).keepOpen();
+  /** Starts serving, on `port`, or one of the system's choosing for 0. */
+  start(port: i32 = 0): void {
+    let server = serve(this, port).keepOpen();
     this.#server = server;
     this.origin = `http://127.0.0.1:${server.port as i32}`;
     this.accounts.forEach((did, account) => {
@@ -310,7 +310,7 @@ export final class FakePds {
   }
 }
 
-function serve(pds: FakePds): Own<Server> {
+function serve(pds: FakePds, port: i32): Own<Server> {
   let app = new App();
   app.use(async (req, res, next): Future<void> => {
     pds.requests += 1;
@@ -411,7 +411,7 @@ function serve(pds: FakePds): Own<Server> {
     res.type = 'application/json';
     res.body = '{"error":"InvalidRequest","message":"no such method or repository"}';
   });
-  let server = new Server(app, 0 as u16);
+  let server = new Server(app, port as u16);
   server.start();
   return server;
 }

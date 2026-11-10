@@ -95,6 +95,13 @@ export let tests = suite('zena pkg publish', () => {
       let info = await lib.run(['pkg', 'scope', 'info', 'acme']);
       isTrue(info.succeeded() && info.stdout.contains('acme.pkg.test') && info.stdout.contains('DID: did:plc:') &&
           info.stdout.contains('Members: 1'), described(info));
+      // A resolver that does not answer, as when ZENA_DNS_OVER_HTTPS still
+      // names one that has stopped, is a failure to look the scope up, and
+      // not a scope that is not there.
+      let stale = await zenaIn('lib').set('ZENA_DNS_OVER_HTTPS', 'http://127.0.0.1:1/dns-query')
+          .run(['pkg', 'publish', '--scope', 'acme', '--yes']);
+      isTrue(!stale.succeeded() && stale.stderr.contains('could not look up acme.pkg.test') &&
+          stale.stderr.contains('ZENA_DNS_OVER_HTTPS') && !stale.stderr.contains('has no scope'), described(stale));
 
       let noYes = await lib.run(['pkg', 'publish', '--scope', 'acme']);
       isTrue(!noYes.succeeded() && noYes.stderr.contains('--yes') &&
