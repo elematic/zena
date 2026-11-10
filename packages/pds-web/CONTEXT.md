@@ -41,6 +41,10 @@ served at `/docs/` by `registry:service`. Read this package's README first.
   homepage, goes through `externalLink` (`registry:web/partials/common`), which
   renders only `http:` and `https:` URLs: escaping keeps a value in its
   attribute, but a `javascript:` URL would still run on the App View's origin.
+- Every page is served with a content security policy
+  (`registry:service`'s `PAGE_POLICY`) that runs scripts only from
+  `/assets/`: no inline `<script>` and no `on…` attributes. Script goes in
+  `src/` and loads from `/assets/`, as `src/theme.js` does.
 - Prefer plain links and GET forms to script. Use a Radica element only for
   what must happen in the browser, and import it in `src/main.ts`; its
   looks come with it. Server-rendered markup is styled in `src/app.css`,

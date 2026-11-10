@@ -585,7 +585,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let app = if (site == null) withAssets(withPlc(createApp(pds, appView, sessions), plc), config.webDir)
       else byHostName(site, withAssets(createApp(pds, appView, sessions, AppPart.Site), config.webDir),
           withPlc(createApp(pds, appView, sessions, AppPart.Pds), plc));
-  return new Service(app, pds, appView, records, plc, sessions);
+  return new Service(withPolicy(app), pds, appView, records, plc, sessions);
 }
 
 /** The key `kmsKey` names in Cloud KMS, or else `key`, or else one made up now. */
@@ -619,6 +619,37 @@ function byHostName(siteUrl: String, site: App, pds: App): App {
  * `/assets/` and its static documentation pages at `/docs/`. The dynamic
  * pages are `app`'s (`registry:web/routes`).
  */
+/**
+ * The content security policy of every response the server sends, unless
+ * a route sets a stricter one, as those that serve a publisher's bytes do
+ * (a release's files, blobs, avatars). It backs up the sanitizing of what
+ * pages show from packages and people (a README, a profile): a script the
+ * sanitizing missed still cannot run.
+ *
+ * - Scripts only from the App View itself (`/assets/`), none inline: the
+ *   theme script is `/assets/theme.js`.
+ * - Styles from the App View and inline, for the `style` attributes of the
+ *   docs' highlighted code. A style cannot run script.
+ * - Images from the App View, any HTTPS site and `data:`, as a README
+ *   shows them.
+ * - Connections to the App View and any HTTPS site: signing in talks to
+ *   the person's own PDS from the browser.
+ * - No plugins, no `<base>`, forms only to the App View, and no framing.
+ */
+export let PAGE_POLICY = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' https: data:; connect-src 'self' https:; object-src 'none'; base-uri 'none'; " +
+    "form-action 'self'; frame-ancestors 'none';";
+
+/** `app`, with `PAGE_POLICY` on every response that sets no policy of its own. */
+function withPolicy(app: App): App {
+  let both = new App();
+  both.use(async (req, res, next): Future<void> => {
+    res.setHeader('content-security-policy', PAGE_POLICY);
+    await app.handleRequest(req, res);
+  });
+  return both;
+}
+
 function withAssets(app: App, dir: String | null): App {
   if (dir == null) {
     return app;
