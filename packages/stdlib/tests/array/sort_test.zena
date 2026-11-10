@@ -1,0 +1,169 @@
+// sort on FixedArray and GrowableArray, using zena:test
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, lessOrEqual} from 'zena:assert';
+import {fixed} from 'zena:core';
+
+/** An element whose `key` is sorted on and whose `order` is where it started. */
+class Item(key: i32, order: i32)
+
+/** The elements of `items`, joined with commas. */
+function text(items: Array<i32>) {
+  var out = '';
+  for (var i = 0; i < items.length; i += 1) {
+    out = if (i == 0) `${items[i]}` else `${out},${items[i]}`;
+  }
+  return out;
+}
+
+/**
+ * `length` items with keys from a linear congruential generator, so the
+ * same arrays come back every run, in `0..range`: a small range gives many
+ * equal keys.
+ */
+function randomItems(length: i32, range: i32) {
+  let items = new GrowableArray<Item>(length);
+  var state = 12345;
+  for (var i = 0; i < length; i += 1) {
+    state = state * 1103515245 + 12345;
+    let key = ((state >> 16) & 0x7fff) % range;
+    items.push(new Item(key, i));
+  }
+  return items;
+}
+
+/** Whether `items` is sorted by key, with equal keys in their starting order. */
+function sortedStably(items: GrowableArray<Item>): boolean {
+  for (var i = 1; i < items.length; i += 1) {
+    let before = items[i - 1];
+    let after = items[i];
+    if (before.key > after.key) {
+      return false;
+    }
+    if (before.key == after.key && before.order > after.order) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export let tests = suite('sort', () => {
+  test('sorts a FixedArray in place', (ctx) => {
+    let items = fixed([5, 3, 9, 1, 7]);
+    items.sort((a, b) => a - b);
+    equal(text(items), '1,3,5,7,9');
+  });
+
+  test('sorts by the comparator, descending too', (ctx) => {
+    let items = fixed([5, 3, 9, 1, 7]);
+    items.sort((a, b) => b - a);
+    equal(text(items), '9,7,5,3,1');
+  });
+
+  test('leaves an empty or one-element array alone', (ctx) => {
+    let empty = new FixedArray<i32>(0, 0);
+    empty.sort((a, b) => a - b);
+    equal(empty.length, 0);
+    let one = fixed([42]);
+    one.sort((a, b) => a - b);
+    equal(text(one), '42');
+  });
+
+  test('sorts reversed input', (ctx) => {
+    let items = new FixedArray<i32>(100, 0);
+    for (var i = 0; i < 100; i += 1) {
+      items[i] = 99 - i;
+    }
+    items.sort((a, b) => a - b);
+    for (var i = 0; i < 100; i += 1) {
+      equal(items[i], i);
+    }
+  });
+
+  test('keeps duplicates', (ctx) => {
+    let items = fixed([2, 1, 2, 3, 1, 2, 1, 3, 3, 2, 1, 2, 3, 1, 1, 2, 3, 3]);
+    items.sort((a, b) => a - b);
+    equal(text(items), '1,1,1,1,1,1,2,2,2,2,2,2,3,3,3,3,3,3');
+  });
+
+  test('sorts strings', (ctx) => {
+    let items = fixed(['pear', 'apple', 'fig', 'banana']);
+    items.sort((a, b) => a.compareTo(b));
+    equal(items[0], 'apple');
+    equal(items[1], 'banana');
+    equal(items[2], 'fig');
+    equal(items[3], 'pear');
+  });
+
+  test('sorts a copy of an ImmutableArray', (ctx) => {
+    let names = ['Lin', 'Ada', 'Kay'][..];
+    names.sort((a, b) => a.compareTo(b));
+    equal(names[0], 'Ada');
+    equal(names[1], 'Kay');
+    equal(names[2], 'Lin');
+  });
+
+  test('keeps equal elements in their order', (ctx) => {
+    let items = randomItems(40, 4);
+    items.sort((a, b) => a.key - b.key);
+    isTrue(sortedStably(items));
+  });
+
+  test('sorts a large array stably', (ctx) => {
+    let items = randomItems(5000, 100);
+    items.sort((a, b) => a.key - b.key);
+    equal(items.length, 5000);
+    isTrue(sortedStably(items));
+    // Every element is still there once.
+    let seen = new FixedArray<boolean>(5000, false);
+    for (let item in items) {
+      isTrue(!seen[item.order]);
+      seen[item.order] = true;
+    }
+  });
+
+  test('takes O(n log n) comparisons', (ctx) => {
+    let items = new FixedArray<i32>(1024, 0);
+    for (var i = 0; i < 1024; i += 1) {
+      items[i] = 1023 - i;
+    }
+    let calls = new Box<i32>(0);
+    items.sort((a, b) => {
+      calls.value += 1;
+      return a - b;
+    });
+    // 1024 * log2(1024); an insertion sort of reversed input takes 523,776.
+    lessOrEqual(calls.value, 10240);
+    equal(items[0], 0);
+    equal(items[1023], 1023);
+  });
+
+  test('takes n - 1 comparisons of sorted input', (ctx) => {
+    let items = new FixedArray<i32>(1000, 0);
+    for (var i = 0; i < 1000; i += 1) {
+      items[i] = i;
+    }
+    let calls = new Box<i32>(0);
+    items.sort((a, b) => {
+      calls.value += 1;
+      return a - b;
+    });
+    lessOrEqual(calls.value, 999);
+  });
+
+  test('sorts only the elements of a GrowableArray', (ctx) => {
+    // The buffer keeps the popped elements past the length; a sort of the
+    // whole buffer would bring them back.
+    let items = new GrowableArray<i32>(8);
+    items.push(3);
+    items.push(1);
+    items.push(2);
+    items.push(0);
+    items.push(-1);
+    items.pop();
+    items.pop();
+    items.sort((a, b) => a - b);
+    equal(text(items), '1,2,3');
+    items.push(0);
+    equal(text(items), '1,2,3,0');
+  });
+});

@@ -5904,6 +5904,19 @@ A slice of a `GrowableArray` is a `GrowableArray`. A slice of a `FixedArray` or
 an `ImmutableArray` is a `FixedArray`, because a WASM-GC immutable array cannot
 be filled after it is created.
 
+`sort(compare)` sorts a `FixedArray` or a `GrowableArray` in place.
+`compare(a, b)` is negative when `a` goes first, positive when `b` does, and
+zero when either order will do. Equal elements keep their order, so sorting
+by one key after another orders by the last key and then the earlier ones. An
+`ImmutableArray` cannot change, so sort a copy of it:
+
+```zena
+let scores = fixed([88, 95, 70]);
+scores.sort((a, b) => b - a);              // 95, 88, 70
+let names = ["Lin", "Ada", "Kay"][..];     // a FixedArray copy
+names.sort((a, b) => a.compareTo(b));      // Ada, Kay, Lin
+```
+
 #### The builtin `array` type
 
 `array<T>` is the builtin WASM-GC array type that `FixedArray<T>` and

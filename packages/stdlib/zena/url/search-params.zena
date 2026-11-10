@@ -179,7 +179,7 @@ export final class URLSearchParams with IterableUtils<(String, String)>
 
   /**
    * Sorts pairs by name, preserving the relative order of pairs that
-   * share a name (an insertion sort, which is stable).
+   * share a name.
    *
    * The spec sorts by UTF-16 code unit; this compares UTF-8 bytes, which
    * is code POINT order. The two agree on everything except a
@@ -187,21 +187,11 @@ export final class URLSearchParams with IterableUtils<(String, String)>
    * `compareByteWise`.
    */
   sort(): void {
-    let a = this.#pairs;
-    for (var i = 1; i < a.length; i += 1) {
-      let cur = a[i];
-      let (curName, _cv) = cur;
-      var j = i - 1;
-      while (j >= 0) {
-        let (prevName, _pv) = a[j];
-        if (prevName.compareTo(curName) <= 0) {
-          break;
-        }
-        a[j + 1] = a[j];
-        j -= 1;
-      }
-      a[j + 1] = cur;
-    }
+    this.#pairs.sort((a, b) => {
+      let (aName, _av) = a;
+      let (bName, _bv) = b;
+      return aName.compareTo(bName);
+    });
     // Reordering in place is as disruptive to a live iteration as an
     // insert or a removal, so it counts as a modification too.
     this.#version.value += 1;

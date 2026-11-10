@@ -1,0 +1,81 @@
+/**
+ * Runs this long or shorter are sorted by insertion, which compares fewer
+ * times than merging does on so few elements.
+ */
+let INSERTION_LIMIT = 8;
+
+/**
+ * Sorts the first `length` elements of `items` in place, so that
+ * `compare(a, b)` is not positive for each element `a` and the one after
+ * it, `b`. Equal elements keep their order.
+ *
+ * A merge sort: O(n log n) comparisons, n - 1 for input already in order,
+ * and one scratch copy of the elements. `FixedArray.sort` and
+ * `GrowableArray.sort` call it.
+ */
+export function sortElements<T>(items: FixedArray<T>, length: i32, compare: (a: T, b: T) => i32): void {
+  if (length <= INSERTION_LIMIT) {
+    insertionSort(items, 0, length, compare);
+    return;
+  }
+  mergeSortInto(items.slice(0, length), items, 0, length, compare);
+}
+
+/**
+ * Sorts `source[start..end]` into `target[start..end]`. The two ranges
+ * hold the same elements when it starts; `source`'s are left in some
+ * other order.
+ */
+function mergeSortInto<T>(source: FixedArray<T>, target: FixedArray<T>, start: i32, end: i32, compare: (a: T, b: T) => i32): void {
+  if (end - start <= INSERTION_LIMIT) {
+    insertionSort(target, start, end, compare);
+    return;
+  }
+  let mid = start + ((end - start) >> 1);
+  // The halves are sorted into `source`, which `target` has the same
+  // elements as, and merged back.
+  mergeSortInto(target, source, start, mid, compare);
+  mergeSortInto(target, source, mid, end, compare);
+  if (compare(source[mid - 1], source[mid]) <= 0) {
+    for (var i = start; i < end; i += 1) {
+      target[i] = source[i];
+    }
+    return;
+  }
+  var left = start;
+  var right = mid;
+  var out = start;
+  while (left < mid && right < end) {
+    // Taking from the left on a tie keeps equal elements in order.
+    if (compare(source[left], source[right]) <= 0) {
+      target[out] = source[left];
+      left += 1;
+    } else {
+      target[out] = source[right];
+      right += 1;
+    }
+    out += 1;
+  }
+  while (left < mid) {
+    target[out] = source[left];
+    left += 1;
+    out += 1;
+  }
+  while (right < end) {
+    target[out] = source[right];
+    right += 1;
+    out += 1;
+  }
+}
+
+function insertionSort<T>(items: FixedArray<T>, start: i32, end: i32, compare: (a: T, b: T) => i32): void {
+  for (var i = start + 1; i < end; i += 1) {
+    let item = items[i];
+    var j = i;
+    while (j > start && compare(items[j - 1], item) > 0) {
+      items[j] = items[j - 1];
+      j -= 1;
+    }
+    items[j] = item;
+  }
+}
