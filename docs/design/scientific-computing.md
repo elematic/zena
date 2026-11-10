@@ -21,16 +21,23 @@ promotion and no implicit coercion ([arithmetic-conversions.md](arithmetic-conve
 context, so `let x: f64 = 3;` and `let n: i64 = 5000000000;` compile.
 Float printing and parsing are correct and shortest-round-trip
 ([float-conversion.md](float-conversion.md)). `zena:math` has the
-operations Wasm has instructions for, and the 128-bit wide arithmetic
-intrinsics `mulWide`, `add128` and `sub128`.
+operations Wasm has instructions for, the elementary functions from
+musl's libm, and the 128-bit wide arithmetic intrinsics `mulWide`,
+`add128` and `sub128`. `zena:bigint` provides arbitrary-precision signed
+integers (`BigInt`) with `n`-suffixed literals, and `zena:decimal`
+provides 128-bit IEEE 754 `decimal128` floating-point numbers (`Decimal`,
+`RoundingMode` and `DecimalContext`).
 
 ### Operators on user types
 
-A class can declare `operator +`, `-`, `*`, `/`, `**`, `==`, `[]` and
-`[]=`. An extension class over a primitive can declare the same, and is
-erased, so a `Celsius on f64` costs a call per operation and no
-allocation. `zena:simd`'s `F32x4` and siblings are built this way over
-`v128`.
+A class can declare unary `operator -()`, binary `operator +`, `-`, `*`,
+`/`, `%`, `**`, `&`, `|`, `^`, `<<`, `>>`, `>>>`, `==`, `<`, `<=`, `>`,
+`>=`, `[]` and `[]=`, with multiple overloads distinguished by parameter
+type and relational operators falling back to `compareTo(other): i32`
+when not declared directly. An extension class over a primitive can
+declare the same, and is erased, so a `Celsius on f64` costs a call per
+operation and no allocation. `zena:simd`'s `F32x4` and siblings are
+built this way over `v128`.
 
 ### SIMD
 
@@ -82,22 +89,20 @@ truncates the exponent to an integer and runs a squaring loop, with `0.5`
 special-cased as `sqrt`, so `2.0 ** 0.3` returns `1.0`
 ([#878](https://github.com/elematic/zena/issues/878)).
 
-**Operator dispatch is incomplete**, in ways that every numeric type hits
-at once. Unary minus never dispatches
-([#233](https://github.com/elematic/zena/issues/233)), relational
-operators never dispatch
-([#253](https://github.com/elematic/zena/issues/253)), an operator on a
-generic class does not substitute its type arguments
-([#232](https://github.com/elematic/zena/issues/232)), a second
-`operator -` with a different parameter type is never considered, `==`
-on a numeric extension class is an internal compiler error
+**Extension-class edges remain**, under
+[#883](https://github.com/elematic/zena/issues/883). Unary `-`
+([#233](https://github.com/elematic/zena/issues/233)), relational `<`,
+`<=`, `>`, `>=` with `compareTo` fallback
+([#253](https://github.com/elematic/zena/issues/253)), generic operator
+type-argument substitution
+([#232](https://github.com/elematic/zena/issues/232)), and multi-overload
+operators by parameter type are implemented and used by `BigInt`,
+`Decimal`, `Instant` and `Duration`. Still open are unary `~`
+([#237](https://github.com/elematic/zena/issues/237)), `==` on a numeric
+extension class without an explicit `operator ==`
 ([#252](https://github.com/elematic/zena/issues/252)), and `Array<T>`
-over an extension class fails in ZIR
-([#234](https://github.com/elematic/zena/issues/234)). `Instant` and
-`Duration` spell ordering as methods because of these, and units,
-`Complex`, `Decimal`, `BigInt` and any matrix type would each hit them in
-turn. Tracked together as
-[#883](https://github.com/elematic/zena/issues/883).
+over an extension class in ZIR
+([#234](https://github.com/elematic/zena/issues/234)).
 
 ## Plan
 
@@ -203,10 +208,18 @@ misread; `-` and `/` are excluded for that reason.
   and views; broadcasting; elementwise operations over the numeric
   bound; pairwise reductions; naive then blocked `matmul`; LU, Cholesky,
   QR and Jacobi eigenvalues in pure Zena.
-- **Fixed-scale decimals**
-  ([#889](https://github.com/elematic/zena/issues/889)): `Money` over
-  `i64` as an erased extension class, which needs only the operator
-  fixes, then a 128-bit `Decimal` with a per-value scale.
+- **Decimals**
+  ([#889](https://github.com/elematic/zena/issues/889)): `zena:decimal`
+  ships 128-bit IEEE 754-2008 `decimal128` Binary Integer Decimal
+  (`Decimal`), nine `RoundingMode` variants, and `DecimalContext`
+  (`sigFigs` and `fixedScale`) for single-rounded per-operation
+  evaluation. Remaining follow-ups are `_dec` and contextual decimal
+  literals ([#913](https://github.com/elematic/zena/issues/913)),
+  contextual parameters when callers want an explicit scope-bound
+  context, and an `@autoRound` expression macro once expression macros
+  land. `Money` is omitted from the standard library because currency
+  sets are not fixed; currency types belong in packages built over
+  `Decimal`, `i64` or `f64` with [units of measure](units-of-measure.md).
 - **Complex numbers and small vectors**
   ([#890](https://github.com/elematic/zena/issues/890)) as case classes
   now and as nominal value types when
@@ -314,9 +327,10 @@ scope. An interactive runner is plausible, since the compiler is fast and
 the language service exists, and a notebook kernel is a reasonable later
 target.
 
-**Finance.** Exact decimals with named rounding modes, `Instant` and
-`Duration` over integers, and units for currencies once units land. The
-`Money` type ships first because it needs the least.
+**Finance.** Exact base-10 decimals (`zena:decimal`) with named rounding
+modes and per-operation `DecimalContext`, `Instant` and `Duration` over
+integers, and userland currency packages built on
+[units of measure](units-of-measure.md) once units land.
 
 ## Alternatives considered
 

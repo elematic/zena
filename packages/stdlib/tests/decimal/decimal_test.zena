@@ -1,0 +1,562 @@
+import { suite, test } from 'zena:test';
+import {
+  equal, equalText, notEqual, isTrue, isFalse, isNull, isNotNull, throws, fail,
+} from 'zena:assert';
+import { BigInt } from 'zena:bigint';
+import { HashMap, HashSet } from 'zena:collections';
+import { parseF64, parseI64 } from 'zena:core';
+import { Decimal, DecimalContext, RoundingMode } from 'zena:decimal';
+import { I64_MAX, I64_MIN, U64_MAX, i64_reinterpret_f64, isNaN } from 'zena:math';
+import {
+  DEC128_ADD_SUB, DEC128_DIV_REM, DEC128_FMA, DEC128_MUL, DEC128_SQRT,
+  FIXED_SCALE_CTX, ROUNDING_MODES_CTX,
+} from './decimal-reference.zena';
+
+function parseI32Strict(s: String): i32 {
+  if (let (true, v) = parseI64(s)) {
+    return v as i32;
+  }
+  fail(`Invalid integer in test table: ${s}`);
+}
+
+function modeFromIndex(idx: i32): RoundingMode {
+  if (idx == 0) { return RoundingMode.HalfEven; }
+  if (idx == 1) { return RoundingMode.HalfExpand; }
+  if (idx == 2) { return RoundingMode.HalfTrunc; }
+  if (idx == 3) { return RoundingMode.HalfCeil; }
+  if (idx == 4) { return RoundingMode.HalfFloor; }
+  if (idx == 5) { return RoundingMode.Ceil; }
+  if (idx == 6) { return RoundingMode.Floor; }
+  if (idx == 7) { return RoundingMode.Trunc; }
+  if (idx == 8) { return RoundingMode.Expand; }
+  fail(`Invalid rounding mode index: ${idx}`);
+}
+
+function contextFor(prec: i32, mode: RoundingMode) {
+  if (prec == 16) {
+    return DecimalContext.DECIMAL64.withRounding(mode);
+  }
+  if (prec == 34) {
+    return DecimalContext.DECIMAL128.withRounding(mode);
+  }
+  return DecimalContext.sigFigs(prec, mode);
+}
+
+function assertSci(actual: Decimal, expected: String, label: String) {
+  let got = actual.toString();
+  if (got != expected) {
+    fail(`${label}: got '${got}', expected '${expected}'`);
+  }
+}
+
+export let tests = suite('Decimal', () => {
+  suite('reference vectors (Python IEEE 754 decimal)', () => {
+    test('addition and subtraction (decimal128)', () => {
+      var count = 0;
+      for (let line in DEC128_ADD_SUB.split('\n')) {
+        let p = line.split(' ');
+        let a = Decimal.from(p[0]);
+        let b = Decimal.from(p[1]);
+        assertSci(a + b, p[2], `add(${line})`);
+        assertSci(a - b, p[3], `sub(${line})`);
+        count += 1;
+      }
+      isTrue(count >= 90);
+    });
+
+    test('multiplication (decimal128)', () => {
+      var count = 0;
+      for (let line in DEC128_MUL.split('\n')) {
+        let p = line.split(' ');
+        let a = Decimal.from(p[0]);
+        let b = Decimal.from(p[1]);
+        assertSci(a * b, p[2], `mul(${line})`);
+        count += 1;
+      }
+      isTrue(count >= 70);
+    });
+
+    test('division and remainder (decimal128)', () => {
+      var count = 0;
+      for (let line in DEC128_DIV_REM.split('\n')) {
+        let p = line.split(' ');
+        let a = Decimal.from(p[0]);
+        let b = Decimal.from(p[1]);
+        assertSci(a / b, p[2], `div(${line})`);
+        assertSci(a % b, p[3], `rem(${line})`);
+        let (q, r) = a.divRem(b);
+        assertSci(r, p[3], `divRem.r(${line})`);
+        if (!r.isNaN && a.isFinite && b.isFinite) {
+          equal(q * b + r, a);
+        }
+        count += 1;
+      }
+      isTrue(count >= 80);
+    });
+
+    test('fused multiply-add (decimal128)', () => {
+      var count = 0;
+      for (let line in DEC128_FMA.split('\n')) {
+        let p = line.split(' ');
+        let a = Decimal.from(p[0]);
+        let b = Decimal.from(p[1]);
+        let c = Decimal.from(p[2]);
+        assertSci(a.fma(b, c), p[3], `fma(${line})`);
+        count += 1;
+      }
+      isTrue(count >= 50);
+    });
+
+    test('square root (decimal128)', () => {
+      var count = 0;
+      for (let line in DEC128_SQRT.split('\n')) {
+        let p = line.split(' ');
+        let a = Decimal.from(p[0]);
+        assertSci(a.sqrt(), p[1], `sqrt(${line})`);
+        count += 1;
+      }
+      isTrue(count >= 60);
+    });
+
+    test('all 9 rounding modes across prec=4, DECIMAL64, and DECIMAL128', () => {
+      var count = 0;
+      for (let line in ROUNDING_MODES_CTX.split('\n')) {
+        let p = line.split(' ');
+        let mode = modeFromIndex(parseI32Strict(p[0]));
+        let prec = parseI32Strict(p[1]);
+        let op = p[2];
+        let aStr = p[3];
+        let bStr = p[4];
+        let expected = p[5];
+        let ctx = contextFor(prec, mode);
+
+        if (op == 'parse') {
+          assertSci(ctx.from(aStr), expected, `ctx.from(${line})`);
+        } else {
+          let a = Decimal.from(aStr);
+          let b = Decimal.from(bStr);
+          if (op == 'add') {
+            assertSci(ctx.add(a, b), expected, `ctx.add(${line})`);
+          } else if (op == 'sub') {
+            assertSci(ctx.sub(a, b), expected, `ctx.sub(${line})`);
+          } else if (op == 'mul') {
+            assertSci(ctx.mul(a, b), expected, `ctx.mul(${line})`);
+          } else if (op == 'div') {
+            assertSci(ctx.div(a, b), expected, `ctx.div(${line})`);
+          } else if (op == 'sqrt') {
+            assertSci(ctx.sqrt(a), expected, `ctx.sqrt(${line})`);
+          } else {
+            fail(`Unknown op: ${op}`);
+          }
+        }
+        count += 1;
+      }
+      isTrue(count >= 900);
+    });
+
+    test('quantize and DecimalContext.fixedScale single-rounding across all 9 modes', () => {
+      var count = 0;
+      for (let line in FIXED_SCALE_CTX.split('\n')) {
+        let p = line.split(' ');
+        let mode = modeFromIndex(parseI32Strict(p[0]));
+        let scale = parseI32Strict(p[1]);
+        let op = p[2];
+        let a = Decimal.from(p[3]);
+        let b = Decimal.from(p[4]);
+        let expected = p[5];
+        let ctx = DecimalContext.fixedScale(scale, mode);
+
+        if (op == 'quantize') {
+          assertSci(a.quantize(scale, mode), expected, `quantize(${line})`);
+          assertSci(ctx.round(a), expected, `ctx.round(${line})`);
+        } else if (op == 'add') {
+          assertSci(ctx.add(a, b), expected, `fixed.add(${line})`);
+        } else if (op == 'mul') {
+          assertSci(ctx.mul(a, b), expected, `fixed.mul(${line})`);
+        } else if (op == 'div') {
+          assertSci(ctx.div(a, b), expected, `fixed.div(${line})`);
+          assertSci(a.div(b, scale, mode), expected, `a.div(${line})`);
+        } else if (op == 'sqrt') {
+          assertSci(ctx.sqrt(a), expected, `fixed.sqrt(${line})`);
+        } else {
+          fail(`Unknown op: ${op}`);
+        }
+        count += 1;
+      }
+      isTrue(count >= 190);
+    });
+  });
+
+  suite('exact decimal & financial calculations', () => {
+    test('0.1 + 0.2 == 0.3 and scale preservation', () => {
+      let a = Decimal.from('0.1');
+      let b = Decimal.from('0.2');
+      let c = Decimal.from('0.3');
+      equal(a + b, c);
+      equalText((a + b).toString(), '0.3');
+      equal((a + b).scale, 1);
+
+      let price = Decimal.fromScaled(1999, 2);
+      equalText(price.toString(), '19.99');
+      let subtotal = price * Decimal.from(3);
+      equalText(subtotal.toString(), '59.97');
+      let tax = (subtotal * Decimal.from('0.0825')).round(2, RoundingMode.HalfExpand);
+      equalText(tax.toString(), '4.95');
+      equalText((subtotal + tax).toString(), '64.92');
+
+      let split = (subtotal + tax).div(Decimal.from(3), 2, RoundingMode.HalfEven);
+      equalText(split.toString(), '21.64');
+    });
+
+    test('fma avoids intermediate rounding loss', () => {
+      let a = Decimal.from('100000000000000001');
+      let b = Decimal.from('99999999999999999');
+      let c = Decimal.from('-1e+34');
+      // Naive `(a * b) + c` rounds `10^34 - 1` (34 nines) exact, wait: try 10^18 +- 1 -> 10^36 - 1!
+      let a18 = Decimal.from('1000000000000000001');
+      let b18 = Decimal.from('999999999999999999');
+      let c36 = Decimal.from('-1e+36');
+      // `a18 * b18` = 10^36 - 1 (36 nines), which rounds to `1e+36` in 34 digits,
+      // so `(a18 * b18) + c36` is `0`, whereas `a18.fma(b18, c36)` is `-1`!
+      equal(a18 * b18 + c36, Decimal.ZERO);
+      equal(a18.fma(b18, c36), Decimal.NEG_ONE);
+      equal(a.fma(b, c), Decimal.NEG_ONE);
+    });
+  });
+
+  suite('IEEE 754-2008 decimal128 BID bit layout', () => {
+    test('canonical BID bit patterns and round-trips', () => {
+      let (zLo, zHi) = Decimal.ZERO.toBits();
+      equal(zLo, 0 as u64);
+      equal(zHi, 0x3040000000000000 as u64);
+
+      let (nzLo, nzHi) = Decimal.NEG_ZERO.toBits();
+      equal(nzLo, 0 as u64);
+      equal(nzHi, 0xb040000000000000 as u64);
+
+      let (infLo, infHi) = Decimal.INFINITY.toBits();
+      equal(infLo, 0 as u64);
+      equal(infHi, 0x7800000000000000 as u64);
+
+      let (ninfLo, ninfHi) = Decimal.NEG_INFINITY.toBits();
+      equal(ninfLo, 0 as u64);
+      equal(ninfHi, 0xf800000000000000 as u64);
+
+      let (nanLo, nanHi) = Decimal.NAN.toBits();
+      equal(nanLo, 0 as u64);
+      equal(nanHi, 0x7c00000000000000 as u64);
+
+      let (subLo, subHi) = Decimal.MIN_SUBNORMAL.toBits();
+      equal(subLo, 1 as u64);
+      equal(subHi, 0 as u64);
+      equalText(Decimal.MIN_SUBNORMAL.toString(), '1e-6176');
+      isTrue(Decimal.MIN_SUBNORMAL.isSubnormal);
+      isFalse(Decimal.MIN_POSITIVE.isSubnormal);
+      equalText(Decimal.MIN_POSITIVE.toString(), '1e-6143');
+      equalText(
+        Decimal.MAX_VALUE.toString(),
+        '9.999999999999999999999999999999999e+6144',
+      );
+
+      let sample = Decimal.from('-12345678901234567890.12345678901234');
+      let (sLo, sHi) = sample.toBits();
+      equalText(Decimal.fromBits(sLo, sHi).toString(), sample.toString());
+    });
+
+    test('non-canonical BID significands decode to signed scaled zero', () => {
+      // Significand `2^113 - 1 > 10^34 - 1` at `exp = -2` (`biased = 6174`):
+      let hi1 = ((6174 as u64) << 49) | 0x0001ffffffffffff;
+      let d1 = Decimal.fromBits(U64_MAX, hi1);
+      isTrue(d1.isZero);
+      equalText(d1.toString(), '0.00');
+
+      // Combination field `1100..1110` (`bits 62..61 == 0b11`, `biased = 6175` at bits `60..47`, negative):
+      let hi2 = (0x8000000000000000 as u64) | (0x6000000000000000 as u64) | ((6175 as u64) << 47) | 12345;
+      let d2 = Decimal.fromBits(999, hi2);
+      isTrue(d2.isZero);
+      isTrue(d2.isSignNegative);
+      equalText(d2.toString(), '-0.0');
+    });
+  });
+
+  suite('equality, ordering, cohorts, and hashing', () => {
+    test('value equality, signed zeros, NaN, and HashMap/HashSet keys', () => {
+      let a = Decimal.from('1.5');
+      let b = Decimal.from('1.50');
+      let c = Decimal.from('1500e-3');
+      equal(a, b);
+      equal(b, c);
+      equal(a.hashCode(), b.hashCode());
+      equal(b.hashCode(), c.hashCode());
+      equal(a.scale, 1);
+      equal(b.scale, 2);
+      equal(c.scale, 3);
+      equal(b.precision(), 3);
+      equalText(c.normalize().toString(), '1.5');
+
+      equal(Decimal.ZERO, Decimal.NEG_ZERO);
+      equal(Decimal.ZERO, Decimal.from('0.000'));
+      equal(Decimal.ZERO.hashCode(), Decimal.NEG_ZERO.hashCode());
+      equal(Decimal.ZERO.hashCode(), Decimal.from('-0.00').hashCode());
+
+      isFalse(Decimal.NAN == Decimal.NAN);
+      isTrue(Decimal.NAN != Decimal.NAN);
+      isFalse(Decimal.NAN < Decimal.ZERO);
+      isFalse(Decimal.NAN <= Decimal.ZERO);
+      isFalse(Decimal.NAN > Decimal.ZERO);
+      isFalse(Decimal.NAN >= Decimal.ZERO);
+      isFalse(Decimal.ZERO < Decimal.NAN);
+      isFalse(Decimal.ZERO <= Decimal.NAN);
+      isFalse(Decimal.ZERO > Decimal.NAN);
+      isFalse(Decimal.ZERO >= Decimal.NAN);
+      isFalse(Decimal.NAN <= Decimal.NAN);
+      isFalse(Decimal.NAN >= Decimal.NAN);
+
+      isTrue(Decimal.from('-2.5') < Decimal.from('-1.5'));
+      isTrue(Decimal.from('1.49') < a);
+      isTrue(Decimal.from('1.51') > a);
+      isFalse(a < b);
+      isTrue(a <= b);
+      isFalse(a > b);
+      isTrue(a >= b);
+      isFalse(Decimal.ZERO < Decimal.from('-0.00'));
+      isTrue(Decimal.ZERO <= Decimal.from('-0.00'));
+      isFalse(Decimal.ZERO > Decimal.from('-0.00'));
+      isTrue(Decimal.ZERO >= Decimal.from('-0.00'));
+      isTrue(Decimal.NEG_INFINITY < Decimal.from('-1e+6000'));
+      isTrue(Decimal.INFINITY > Decimal.MAX_VALUE);
+      isTrue(Decimal.INFINITY <= Decimal.INFINITY);
+      isFalse(Decimal.INFINITY < Decimal.INFINITY);
+
+      equalText((-Decimal.from('19.99')).toString(), '-19.99');
+      equalText((-(-Decimal.from('19.99'))).toString(), '19.99');
+      isTrue((-Decimal.ZERO).isSignNegative);
+      isFalse((-Decimal.NEG_ZERO).isSignNegative);
+      equalText((-Decimal.from('0.00')).toString(), '-0.00');
+      equal(-Decimal.INFINITY, Decimal.NEG_INFINITY);
+      equal(-Decimal.NEG_INFINITY, Decimal.INFINITY);
+      isTrue((-Decimal.NAN).isNaN);
+
+      var running = Decimal.from('10.00');
+      running += Decimal.from('2.50');
+      running -= Decimal.from('0.25');
+      equalText(running.toString(), '12.25');
+
+      isTrue(Decimal.NAN.min(Decimal.ONE).isNaN);
+      isTrue(Decimal.ONE.max(Decimal.NAN).isNaN);
+      isTrue(Decimal.ZERO.min(Decimal.NEG_ZERO).isSignNegative);
+      isFalse(Decimal.ZERO.max(Decimal.NEG_ZERO).isSignNegative);
+
+      let map: HashMap<Decimal, String> = {
+        Decimal.from('1.5') => 'one-point-five',
+        Decimal.NEG_ZERO => 'zero',
+      };
+      equalText(map[Decimal.from('1.500')] ?? '', 'one-point-five');
+      equalText(map[Decimal.from('0.00')] ?? '', 'zero');
+
+      let set = new HashSet<Decimal>();
+      set.add(Decimal.from('42.0'));
+      isTrue(set.has(Decimal.from('42.000')));
+      isTrue(set.has(Decimal.from(42)));
+    });
+
+    test('IEEE 754 compareTotal with Array.sort', () => {
+      let negNaN = Decimal.fromBits(0, 0xfc00000000000000);
+      let arr: FixedArray<Decimal> = [
+        Decimal.NAN,
+        Decimal.from('1.0'),
+        Decimal.NEG_ZERO,
+        Decimal.INFINITY,
+        Decimal.from('-1.00'),
+        Decimal.from('1.00'),
+        Decimal.ZERO,
+        Decimal.NEG_INFINITY,
+        Decimal.from('-1.0'),
+        negNaN,
+        Decimal.from('0.00'),
+      ];
+      arr.sort((x, y) => x.compareTotal(y));
+
+      isTrue(arr[0].isNaN && arr[0].isSignNegative);
+      equalText(arr[1].toString(), '-Infinity');
+      equalText(arr[2].toString(), '-1.0');
+      equalText(arr[3].toString(), '-1.00');
+      equalText(arr[4].toString(), '-0');
+      equalText(arr[5].toString(), '0.00');
+      equalText(arr[6].toString(), '0');
+      equalText(arr[7].toString(), '1.00');
+      equalText(arr[8].toString(), '1.0');
+      equalText(arr[9].toString(), 'Infinity');
+      isTrue(arr[10].isNaN && !arr[10].isSignNegative);
+    });
+  });
+
+  suite('parsing, formatting, conversions, and powers', () => {
+    test('valid and invalid syntax in parse / from', () => {
+      equalText(Decimal.from('1_000_000.25_50').toString(), '1000000.2550');
+      equalText(Decimal.from('+1_2.5e+1_0').toString(), '1.25e+11');
+      equalText(Decimal.from('.5').toString(), '0.5');
+      equalText(Decimal.from('5.').toString(), '5');
+      isTrue(Decimal.from('+NaN').isNaN);
+      isTrue(Decimal.from('-NaN').isNaN);
+      equal(Decimal.from('+Infinity'), Decimal.INFINITY);
+      equal(Decimal.from('-Infinity'), Decimal.NEG_INFINITY);
+
+      // Sticky rounding past 60 zeros on subnormal half-way boundary `5e-6177`:
+      equalText(
+        Decimal.from('5.000000000000000000000000000000000000000000000000000000000000e-6177').toString(),
+        '0e-6176',
+      );
+      equalText(
+        Decimal.from('5.000000000000000000000000000000000000000000000000000000000001e-6177').toString(),
+        '1e-6176',
+      );
+
+      let bad = [
+        '', '+', '-', '.', '+.', '-.', '_1', '1_', '1__0', '1_.0', '1._0',
+        '1.0_', '1e', '1e+', '1e-', '1e_2', '1e2_', '1.2.3', ' 1', '1 ',
+        '12abc', 'inf', 'nan',
+      ];
+      for (let s in bad) {
+        isNull(Decimal.parse(s));
+        throws(() => { Decimal.from(s); });
+      }
+    });
+
+    test('toPlainString, toFixed, Stringable, round, floor, ceil, trunc', () => {
+      let large = Decimal.from('1.25e+6');
+      equalText(large.toString(), '1.25e+6');
+      equalText(large.toPlainString(), '1250000');
+      equalText(large.toFixed(2), '1250000.00');
+      equalText(`${Decimal.from('19.99')}`, '19.99');
+
+      let tiny = Decimal.from('2.5e-8');
+      equalText(tiny.toString(), '2.5e-8');
+      equalText(tiny.toPlainString(), '0.000000025');
+      equalText(tiny.toFixed(6), '0.000000');
+      equalText(tiny.toFixed(9), '0.000000025');
+
+      let huge = Decimal.from('1e+40');
+      equalText(huge.round().toString(), '1e+40');
+      equalText(huge.floor().toString(), '1e+40');
+      equalText(huge.ceil().toString(), '1e+40');
+      equalText(huge.trunc().toString(), '1e+40');
+      isTrue(huge.quantize(2).isNaN);
+
+      let neg = Decimal.from('-2.3');
+      equalText(neg.floor().toString(), '-3');
+      equalText(neg.ceil().toString(), '-2');
+      equalText(neg.trunc().toString(), '-2');
+
+      throws(() => { Decimal.ONE.toFixed(-1); });
+      throws(() => { Decimal.ONE.toFixed(1001); });
+    });
+
+    test('i64, u64, BigInt, and f64 conversions', () => {
+      equal(Decimal.from(0).toI64(), 0 as i64);
+      equal(Decimal.fromI64(I64_MIN).toI64(), I64_MIN);
+      equal(Decimal.fromI64(I64_MAX).toI64(), I64_MAX);
+      equal(Decimal.from('42.000').toI64(), 42 as i64);
+      isTrue(Decimal.from('42.000').isInteger);
+      isFalse(Decimal.from('42.5').isInteger);
+      throws(() => { Decimal.from('42.5').toI64(); });
+      throws(() => { Decimal.fromU64(U64_MAX).toI64(); });
+
+      let big = BigInt.from('1234567890123456789012345678901234');
+      equal(Decimal.from(big).toBigInt(), big);
+      equal(Decimal.from('1e+100').toBigInt(), BigInt.from(10) ** 100);
+      isNull(Decimal.from('1.5').tryToBigInt());
+      isNull(Decimal.INFINITY.tryToBigInt());
+
+      let floats = [
+        0.0, -0.0, 0.1, 0.2, -19.99,
+        parseF64('1e100'), parseF64('1e-300'),
+        1.0 / 0.0, -1.0 / 0.0,
+      ];
+      for (let f in floats) {
+        let rt = Decimal.fromF64(f).toF64();
+        equal(i64_reinterpret_f64(rt), i64_reinterpret_f64(f));
+      }
+      equal(Decimal.fromF64(0.1), Decimal.from('0.1'));
+      isTrue(isNaN(Decimal.fromF64(0.0 / 0.0).toF64()));
+    });
+
+    test('integer exponentiation (** and pow)', () => {
+      equal(Decimal.ZERO ** 0, Decimal.ONE);
+      equal(Decimal.NEG_ZERO ** 0, Decimal.ONE);
+      equal(Decimal.NAN ** 0, Decimal.ONE);
+      equal(Decimal.INFINITY ** 0, Decimal.ONE);
+      equal(Decimal.from(2) ** 10, Decimal.from(1024));
+      equalText((Decimal.from(2) ** -3).toString(), '0.125');
+      equalText((Decimal.from(-2) ** -3).toString(), '-0.125');
+      equal(Decimal.ZERO ** -1, Decimal.INFINITY);
+      equal(Decimal.NEG_ZERO ** -3, Decimal.NEG_INFINITY);
+      equal(Decimal.NEG_ZERO ** -2, Decimal.INFINITY);
+      equalText((Decimal.from('0.0') ** 3).toString(), '0.000');
+
+      // Compound interest `(1.05) ** 12` exact (25 decimal digits <= 34):
+      equalText(
+        (Decimal.from('1.05') ** 12).toString(),
+        '1.795856326022129150390625',
+      );
+      // Large exponent binary squaring path (`|exp| > 20`):
+      let compound360 = Decimal.from('1.005') ** 360;
+      equalText(compound360.round(6).toString(), '6.022575');
+      equal(Decimal.from('1.1') ** 200000, Decimal.INFINITY);
+      equal(Decimal.from('0.9') ** 200000, Decimal.ZERO);
+    });
+
+    test('quantize(Decimal), fromScaled(I64_MIN), wide BigInt, and DecimalContext API', () => {
+      equalText(
+        Decimal.from('19.995').quantize(Decimal.from('0.01'), RoundingMode.HalfExpand).toString(),
+        '20.00',
+      );
+      equal(Decimal.INFINITY.quantize(Decimal.NEG_INFINITY), Decimal.INFINITY);
+      isTrue(Decimal.INFINITY.quantize(Decimal.ONE).isNaN);
+      isTrue(Decimal.ONE.quantize(Decimal.INFINITY).isNaN);
+
+      equalText(
+        Decimal.fromScaled(I64_MIN, 2).toString(),
+        '-92233720368547758.08',
+      );
+      equalText(Decimal.fromScaled(42, -2).toString(), '4.2e+3');
+      equalText(Decimal.fromScaled(42, -2).toPlainString(), '4200');
+
+      let wideBig = BigInt.from('12345678901234567890123456789012345000');
+      equalText(
+        Decimal.fromBigInt(wideBig, RoundingMode.HalfEven).toString(),
+        '1.234567890123456789012345678901234e+37',
+      );
+      equalText(
+        Decimal.fromBigInt(wideBig, RoundingMode.HalfExpand).toString(),
+        '1.234567890123456789012345678901235e+37',
+      );
+
+      let sigCtx = DecimalContext.sigFigs(6, RoundingMode.HalfEven);
+      equal(sigCtx.precision, 6);
+      isFalse(sigCtx.isFixedScale);
+      equal(sigCtx.scale, 0);
+      isTrue(sigCtx.rounding == RoundingMode.HalfEven);
+      equalText(sigCtx.pow(Decimal.from('1.05'), 12).toString(), '1.79586');
+      equalText(sigCtx.fma(Decimal.from('1000.01'), Decimal.from('1000.01'), Decimal.from('-1000020')).toString(), '0.0001');
+      let (dq, dr) = sigCtx.divRem(Decimal.from('17.5'), Decimal.from('5'));
+      equalText(dq.toString(), '3');
+      equalText(dr.toString(), '2.5');
+      equalText(sigCtx.rem(Decimal.from('17.5'), Decimal.from('5')).toString(), '2.5');
+      isNull(sigCtx.parse('bad'));
+
+      let floorCtx = DecimalContext.DECIMAL64.withRounding(RoundingMode.Floor);
+      isFalse(sigCtx.plus(Decimal.ZERO).isSignNegative);
+      isFalse(sigCtx.plus(Decimal.NEG_ZERO).isSignNegative);
+      isFalse(floorCtx.plus(Decimal.ZERO).isSignNegative);
+      isTrue(floorCtx.plus(Decimal.NEG_ZERO).isSignNegative);
+      isTrue(floorCtx.neg(Decimal.ZERO).isSignNegative);
+      isFalse(floorCtx.neg(Decimal.NEG_ZERO).isSignNegative);
+      isFalse(floorCtx.abs(Decimal.NEG_ZERO).isSignNegative);
+      isTrue(sigCtx.round(Decimal.NEG_ZERO).isSignNegative);
+
+      throws(() => { DecimalContext.sigFigs(0); });
+      throws(() => { DecimalContext.sigFigs(35); });
+    });
+  });
+});

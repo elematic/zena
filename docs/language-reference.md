@@ -116,7 +116,9 @@ safety.
 - **`f64`**: 64-bit floating-point number. This is the default type for
   floating-point literals. See [Default literal
   types](design/types.md#default-literal-types) for why the integer default is
-  32-bit while the float default is 64-bit.
+  32-bit while the float default is 64-bit. Arbitrary-precision signed integers
+  are in `zena:bigint` (`BigInt`), and 128-bit IEEE 754 base-10 floating-point
+  numbers are in `zena:decimal` (`Decimal`, `RoundingMode`, `DecimalContext`).
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`v128`**: A 128-bit WebAssembly SIMD vector. It has no literal syntax and
   no operators of its own: the bits carry no interpretation — the same vector

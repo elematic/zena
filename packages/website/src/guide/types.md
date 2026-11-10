@@ -108,6 +108,7 @@ References point to heap-allocated objects managed by the WebAssembly GC:
 
 - `String` (UTF-8 string instances).
 - `BigInt` from [`zena:bigint`](/api/bigint/) (immutable arbitrary-precision signed integers).
+- `Decimal` from [`zena:decimal`](/api/decimal/) (immutable 128-bit IEEE 754 decimal floating-point numbers).
 - Class instances and closures.
 - Arrays (`ImmutableArray<T>`, `FixedArray<T>`, `GrowableArray<T>`).
 - Records and boxed tuples.

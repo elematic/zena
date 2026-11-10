@@ -588,6 +588,7 @@ const reference = [
           'Narrow integers',
           'Arbitrary-precision integers',
           'Floats',
+          'Decimal floating-point',
           'Number literals',
           'Unsigned semantics',
           'Overflow and special values',

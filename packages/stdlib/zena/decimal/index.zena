@@ -1,0 +1,1181 @@
+/**
+ * IEEE 754-2008 `decimal128` floating-point numbers (`Decimal`), rounding
+ * modes (`RoundingMode`), and per-operation rounding contexts
+ * (`DecimalContext`).
+ *
+ * `Decimal` stores 34 significant decimal digits and a signed base-10 quantum
+ * exponent in `[-6176, 6111]` (adjusted exponent `[-6143, 6144]`), packed in
+ * two `u64` words using the IEEE 754 Binary Integer Decimal (BID) interchange
+ * encoding. Exact decimal fractions such as `0.1`, `0.2`, and `19.99` are
+ * represented without binary rounding error, trailing zeros record scale
+ * (`1.50` has `scale == 2` while `1.5 == 1.50`), and `NaN`, `±Infinity`, and
+ * `-0` follow IEEE 754 semantics.
+ *
+ * Unary `-` and binary `+`, `-`, `*`, `/`, `%`, `**`, `==`, `<`, `<=`, `>`, and
+ * `>=` evaluate with 34-digit `HalfEven` rounding and IEEE 754 partial ordering
+ * (`NaN` compares `false` on `<`, `<=`, `>`, `>=`). Call `.round()`,
+ * `.quantize()`, or `.div()` for explicit scale rounding, or use
+ * `DecimalContext` (`DecimalContext.sigFigs` or `DecimalContext.fixedScale`)
+ * when a specification requires rounding after every operation.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { Decimal, DecimalContext, RoundingMode } from 'zena:decimal';
+ *
+ * let subtotal = Decimal.from('19.99') * Decimal.from(3);
+ * let tax = (subtotal * Decimal.from('0.0825')).round(2, RoundingMode.HalfExpand);
+ * let total = subtotal + tax; // 64.92
+ *
+ * let cents = DecimalContext.fixedScale(2, RoundingMode.HalfEven);
+ * let split = cents.div(total, Decimal.from(3)); // 21.64
+ * ```
+ */
+
+import { BigInt } from 'zena:bigint';
+import {
+  Error, Hashable, Stringable, f64ToString, parseF64,
+} from 'zena:core';
+import {
+  I64_MIN, f64_reinterpret_i64, i64_reinterpret_f64,
+} from 'zena:math';
+import {
+  CANON_NAN_HI, DEC128_EMAX, DEC128_EMIN, DEC128_ETINY, DEC128_ETOP,
+  DEC128_PREC, DEC64_ETINY, DEC64_ETOP, DEC64_PREC, MAX_FINITE_HI,
+  MAX_FINITE_LO, MIN_NORMAL_HI, MIN_NORMAL_LO, MIN_SUBNORMAL_HI,
+  MIN_SUBNORMAL_LO, NEG_INF_HI, NEG_ZERO_HI, POS_INF_HI, RoundingMode,
+  ZERO_HI, absDecBits, addDecCtx, bigIntToU128, canonicalizeBits,
+  cmpDecNumerical, cmpDecTotal, digits128, divDecCtx, divRemDecCtx,
+  divToExpDec, eqDecBits, finalize128, fmaDecCtx, formatFixedDec,
+  formatPlainDec, formatSciDec, hashDecBits, isInfBits, isNaNBits,
+  isSpecialBits, mul128Pow10, mulDecCtx, negDecBits, normalizeDecBits,
+  packFinite, packInf, packZero, parseDecCtx, pow10Big, powDecCtx,
+  quantize128ToExp, remDecCtx, roundDecToScale, signBit, sqrtDecCtx,
+  stripZeros128, u128ToBigInt, unpackFinite,
+} from './arithmetic.zena';
+
+export { RoundingMode } from './arithmetic.zena';
+
+/**
+ * An immutable 128-bit IEEE 754-2008 decimal floating-point number
+ * (`decimal128` Binary Integer Decimal).
+ */
+export final class Decimal implements Hashable, Stringable {
+  #lo: u64;
+  #hi: u64;
+
+  new #raw(lo: u64, hi: u64) : #lo = lo, #hi = hi;
+
+  /** The additive identity `0` (`scale == 0`). */
+  static ZERO: Decimal = new Decimal.#raw(0, ZERO_HI);
+
+  /** Negative zero `-0` (`scale == 0`). */
+  static NEG_ZERO: Decimal = new Decimal.#raw(0, NEG_ZERO_HI);
+
+  /** The multiplicative identity `1` (`scale == 0`). */
+  static ONE: Decimal = new Decimal.#raw(1, ZERO_HI);
+
+  /** `-1` (`scale == 0`). */
+  static NEG_ONE: Decimal = new Decimal.#raw(1, NEG_ZERO_HI);
+
+  /** `10` (`scale == 0`). */
+  static TEN: Decimal = new Decimal.#raw(10, ZERO_HI);
+
+  /** Quiet `NaN`. */
+  static NAN: Decimal = new Decimal.#raw(0, CANON_NAN_HI);
+
+  /** Positive infinity (`+Infinity`). */
+  static INFINITY: Decimal = new Decimal.#raw(0, POS_INF_HI);
+
+  /** Negative infinity (`-Infinity`). */
+  static NEG_INFINITY: Decimal = new Decimal.#raw(0, NEG_INF_HI);
+
+  /** Largest finite value `(10^34 - 1) * 10^6111` (`9.999...9e+6144`). */
+  static MAX_VALUE: Decimal = new Decimal.#raw(MAX_FINITE_LO, MAX_FINITE_HI);
+
+  /** Smallest positive normal value `10^-6143`. */
+  static MIN_POSITIVE: Decimal = new Decimal.#raw(MIN_NORMAL_LO, MIN_NORMAL_HI);
+
+  /** Smallest positive subnormal value `10^-6176`. */
+  static MIN_SUBNORMAL: Decimal = new Decimal.#raw(
+    MIN_SUBNORMAL_LO, MIN_SUBNORMAL_HI,
+  );
+
+  static #wrap(lo: u64, hi: u64): Decimal {
+    if (lo == 0) {
+      if (hi == ZERO_HI) {
+        return Decimal.ZERO;
+      }
+      if (hi == CANON_NAN_HI) {
+        return Decimal.NAN;
+      }
+      if (hi == POS_INF_HI) {
+        return Decimal.INFINITY;
+      }
+      if (hi == NEG_INF_HI) {
+        return Decimal.NEG_INFINITY;
+      }
+    } else if (lo == 1) {
+      if (hi == ZERO_HI) {
+        return Decimal.ONE;
+      }
+      if (hi == NEG_ZERO_HI) {
+        return Decimal.NEG_ONE;
+      }
+    }
+    return new Decimal.#raw(lo, hi);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Construction and parsing
+  // ---------------------------------------------------------------------------
+
+  /** Converts a signed 32-bit integer to `Decimal`. */
+  static from(value: i32): Decimal {
+    return Decimal.fromI64(value as i64);
+  }
+
+  /** Converts a signed 64-bit integer to `Decimal`. */
+  static from(value: i64): Decimal {
+    return Decimal.fromI64(value);
+  }
+
+  /** Converts an unsigned 64-bit integer to `Decimal`. */
+  static from(value: u64): Decimal {
+    return Decimal.fromU64(value);
+  }
+
+  /**
+   * Converts an arbitrary-precision `BigInt` to `Decimal`, rounding to 34
+   * digits with `RoundingMode.HalfEven` if needed.
+   */
+  static from(value: BigInt): Decimal {
+    return Decimal.fromBigInt(value, RoundingMode.HalfEven);
+  }
+
+  /**
+   * Parses `text` as a decimal number (`[+-]?` digits, optional `.` fraction,
+   * optional `e`/`E` exponent, `_` separators between digits, `Infinity`, or
+   * `NaN`). Throws `Error` if `text` is invalid.
+   */
+  static from(text: String): Decimal {
+    let parsed = Decimal.parse(text);
+    if (parsed == null) {
+      throw new Error(`Invalid Decimal literal: ${text}`);
+    }
+    return parsed;
+  }
+
+  /** Converts a signed 64-bit integer to `Decimal` (exact; 19 digits <= 34). */
+  static fromI64(value: i64): Decimal {
+    if (value == 0) {
+      return Decimal.ZERO;
+    }
+    if (value == 1) {
+      return Decimal.ONE;
+    }
+    if (value == -1) {
+      return Decimal.NEG_ONE;
+    }
+    if (value > 0) {
+      let (lo, hi) = packFinite(0, 0, value as u64, 0);
+      return new Decimal.#raw(lo, hi);
+    }
+    let mag = (0 as u64) - (value as u64);
+    let (lo, hi) = packFinite(1, 0, mag, 0);
+    return new Decimal.#raw(lo, hi);
+  }
+
+  /** Converts an unsigned 64-bit integer to `Decimal` (exact; 20 digits <= 34). */
+  static fromU64(value: u64): Decimal {
+    if (value == 0) {
+      return Decimal.ZERO;
+    }
+    if (value == 1) {
+      return Decimal.ONE;
+    }
+    let (lo, hi) = packFinite(0, 0, value, 0);
+    return new Decimal.#raw(lo, hi);
+  }
+
+  /**
+   * Constructs `unscaled * 10^-scale` (for example, `Decimal.fromScaled(1999, 2)`
+   * produces `19.99`).
+   */
+  static fromScaled(
+    unscaled: i64,
+    scale: i32 = 0,
+    mode: RoundingMode = RoundingMode.HalfEven,
+  ): Decimal {
+    let sign = if (unscaled < 0) 1 else 0;
+    let mag = if (unscaled < 0) (0 as u64) - (unscaled as u64) else (unscaled as u64);
+    let exp = if (scale == -2147483648) 2147483647 else -scale;
+    let (lo, hi) = finalize128(
+      sign, mag, 0, exp, DEC128_PREC, DEC128_ETINY, DEC128_ETOP, mode,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /**
+   * Converts `value` to `Decimal`, rounding with `mode` when `value` has more
+   * than 34 decimal digits.
+   */
+  static fromBigInt(
+    value: BigInt,
+    mode: RoundingMode = RoundingMode.HalfEven,
+  ): Decimal {
+    if (value.isZero) {
+      return Decimal.ZERO;
+    }
+    let sign = if (value.isNegative) 1 else 0;
+    let mag = value.abs();
+    if (mag.bitLength() <= 126) {
+      let (mLo, mHi) = bigIntToU128(mag);
+      let (lo, hi) = finalize128(
+        sign, mLo, mHi, 0, DEC128_PREC, DEC128_ETINY, DEC128_ETOP, mode,
+      );
+      return Decimal.#wrap(lo, hi);
+    }
+    return DecimalContext.DECIMAL128.withRounding(mode).parse(value.toString()) as Decimal;
+  }
+
+  /**
+   * Converts `value` via its shortest round-trip decimal representation
+   * (`f64ToString`), so `Decimal.fromF64(0.1)` produces `0.1` and
+   * `Decimal.fromF64(x).toF64()` round-trips every `f64` including `-0.0`,
+   * `±Infinity`, and `NaN`.
+   */
+  static fromF64(value: f64): Decimal {
+    if (value != value) {
+      return Decimal.NAN;
+    }
+    if (value - value != 0.0) {
+      return if (value > 0.0) Decimal.INFINITY else Decimal.NEG_INFINITY;
+    }
+    if (value == 0.0) {
+      return if (i64_reinterpret_f64(value) == I64_MIN) Decimal.NEG_ZERO else Decimal.ZERO;
+    }
+    return Decimal.from(f64ToString(value));
+  }
+
+  /**
+   * Parses `text` as a 34-digit IEEE 754 `decimal128` value (with `HalfEven`
+   * rounding when `text` has more than 34 significant digits), returning `null`
+   * on invalid syntax.
+   */
+  static parse(text: String): Decimal | null {
+    let (ok, lo, hi) = parseDecCtx(
+      text,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    if (!ok) {
+      return null;
+    }
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /**
+   * Constructs a `Decimal` from raw IEEE 754-2008 `decimal128` Binary Integer
+   * Decimal (BID) words `(lo, hi)`. Non-canonical BID significands decode to
+   * zero with the encoded sign and exponent per IEEE 754 §3.5.2.
+   */
+  static fromBits(lo: u64, hi: u64): Decimal {
+    let (cLo, cHi) = canonicalizeBits(lo, hi);
+    return Decimal.#wrap(cLo, cHi);
+  }
+
+  /** Returns the raw IEEE 754-2008 `decimal128` BID words `(lo, hi)`. */
+  toBits(): inline (u64, u64) {
+    return (this.#lo, this.#hi);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Classification and quantum inspection
+  // ---------------------------------------------------------------------------
+
+  /** Whether this value is `NaN`. */
+  isNaN: boolean {
+    get {
+      return isNaNBits(this.#hi);
+    }
+  }
+
+  /** Whether this value is `±Infinity`. */
+  isInfinite: boolean {
+    get {
+      return isInfBits(this.#hi);
+    }
+  }
+
+  /** Whether this value is finite (neither `NaN` nor `±Infinity`). */
+  isFinite: boolean {
+    get {
+      return !isSpecialBits(this.#hi);
+    }
+  }
+
+  /** Whether this value equals `0` (including `-0` and scaled zeros like `0.00`). */
+  isZero: boolean {
+    get {
+      if (isSpecialBits(this.#hi)) {
+        return false;
+      }
+      let (_, _, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+      return cLo == 0 && cHi == 0;
+    }
+  }
+
+  /** Whether the IEEE 754 sign bit is `1` (true for `-x`, `-0`, and `-Infinity`). */
+  isSignNegative: boolean {
+    get {
+      return signBit(this.#hi) != 0;
+    }
+  }
+
+  /** Whether this value is strictly less than `0` (false for `-0` and `NaN`). */
+  isNegative: boolean {
+    get {
+      if (isNaNBits(this.#hi)) {
+        return false;
+      }
+      if (signBit(this.#hi) == 0) {
+        return false;
+      }
+      if (isInfBits(this.#hi)) {
+        return true;
+      }
+      let (_, _, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+      return cLo != 0 || cHi != 0;
+    }
+  }
+
+  /** Whether this value is strictly greater than `0` (false for `+0` and `NaN`). */
+  isPositive: boolean {
+    get {
+      if (isNaNBits(this.#hi)) {
+        return false;
+      }
+      if (signBit(this.#hi) != 0) {
+        return false;
+      }
+      if (isInfBits(this.#hi)) {
+        return true;
+      }
+      let (_, _, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+      return cLo != 0 || cHi != 0;
+    }
+  }
+
+  /** Whether this value is finite and has zero fractional part (e.g. `42`, `42.00`). */
+  isInteger: boolean {
+    get {
+      if (isSpecialBits(this.#hi)) {
+        return false;
+      }
+      let (_, exp, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+      if (cLo == 0 && cHi == 0) {
+        return true;
+      }
+      if (exp >= 0) {
+        return true;
+      }
+      let (_, _, nExp) = stripZeros128(cLo, cHi, exp);
+      return nExp >= 0;
+    }
+  }
+
+  /** Whether this value is finite, non-zero, and has adjusted exponent `< -6143`. */
+  isSubnormal: boolean {
+    get {
+      if (isSpecialBits(this.#hi)) {
+        return false;
+      }
+      let (_, exp, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+      if (cLo == 0 && cHi == 0) {
+        return false;
+      }
+      return exp + digits128(cLo, cHi) - 1 < DEC128_EMIN;
+    }
+  }
+
+  /**
+   * Unbiased quantum exponent `q` in `[-6176, 6111]` such that a finite value
+   * equals `(-1)^sign * coeff * 10^q` (`0` for `NaN` and `±Infinity`).
+   */
+  exponent: i32 {
+    get {
+      if (isSpecialBits(this.#hi)) {
+        return 0;
+      }
+      let (_, exp, _, _) = unpackFinite(this.#lo, this.#hi);
+      return exp;
+    }
+  }
+
+  /**
+   * Fractional scale `-exponent` (for example, `Decimal.from('19.99').scale == 2`).
+   * Negative when `exponent > 0`; `0` for `NaN` and `±Infinity`.
+   */
+  scale: i32 {
+    get {
+      if (isSpecialBits(this.#hi)) {
+        return 0;
+      }
+      let (_, exp, _, _) = unpackFinite(this.#lo, this.#hi);
+      return -exp;
+    }
+  }
+
+  /**
+   * Number of significant decimal digits in the unscaled significand (`1..34`
+   * for finite values including trailing zeros, `0` for `NaN` and `±Infinity`).
+   */
+  precision(): i32 {
+    if (isSpecialBits(this.#hi)) {
+      return 0;
+    }
+    let (_, _, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+    return digits128(cLo, cHi);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Arithmetic
+  // ---------------------------------------------------------------------------
+
+  /** Returns `-this` (flipping the sign of finite values, zeros, and infinities). */
+  neg(): Decimal {
+    let (lo, hi) = negDecBits(this.#lo, this.#hi);
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /** Unary negation `-this` (flipping the sign of finite values, zeros, and infinities). */
+  operator -(): Decimal {
+    return this.neg();
+  }
+
+  /** Returns `|this|` (clearing the sign bit; `-0` becomes `+0` with the same scale). */
+  abs(): Decimal {
+    if (signBit(this.#hi) == 0 && !isNaNBits(this.#hi)) {
+      return this;
+    }
+    let (lo, hi) = absDecBits(this.#lo, this.#hi);
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /** Sum `this + other` (34 digits, `RoundingMode.HalfEven`). */
+  operator +(other: Decimal): Decimal {
+    let (lo, hi) = addDecCtx(
+      this.#lo, this.#hi, other.#lo, other.#hi,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /** Difference `this - other` (34 digits, `RoundingMode.HalfEven`). */
+  operator -(other: Decimal): Decimal {
+    let (nbLo, nbHi) = negDecBits(other.#lo, other.#hi);
+    let (lo, hi) = addDecCtx(
+      this.#lo, this.#hi, nbLo, nbHi,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /** Product `this * other` (34 digits, `RoundingMode.HalfEven`). */
+  operator *(other: Decimal): Decimal {
+    let (lo, hi) = mulDecCtx(
+      this.#lo, this.#hi, other.#lo, other.#hi,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /** Quotient `this / other` (34 digits, `RoundingMode.HalfEven`). */
+  operator /(other: Decimal): Decimal {
+    let (lo, hi) = divDecCtx(
+      this.#lo, this.#hi, other.#lo, other.#hi,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /**
+   * Divides `this` by `other` rounded directly to `scale` fractional digits
+   * (`targetExp = -scale`) using `mode` in a single rounding step.
+   */
+  div(
+    other: Decimal,
+    scale: i32,
+    mode: RoundingMode = RoundingMode.HalfEven,
+  ): Decimal {
+    let targetExp = if (scale == -2147483648) 2147483647 else -scale;
+    let (lo, hi) = divToExpDec(
+      this.#lo, this.#hi, other.#lo, other.#hi, targetExp, mode,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /**
+   * Truncating integer quotient and remainder `(quotient, remainder)` satisfying
+   * `quotient * other + remainder == this`, with `remainder` carrying the sign
+   * of `this`. Returns `(NaN, NaN)` if `other == 0` or `|quotient| >= 10^34`.
+   */
+  divRem(other: Decimal): inline (Decimal, Decimal) {
+    let (qLo, qHi, rLo, rHi) = divRemDecCtx(
+      this.#lo, this.#hi, other.#lo, other.#hi,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return (Decimal.#wrap(qLo, qHi), Decimal.#wrap(rLo, rHi));
+  }
+
+  /**
+   * Truncating division remainder `this - trunc(this / other) * other`,
+   * carrying the sign of `this`.
+   */
+  operator %(other: Decimal): Decimal {
+    let (lo, hi) = remDecCtx(
+      this.#lo, this.#hi, other.#lo, other.#hi,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /**
+   * Fused multiply-add `(this * mul) + addend` rounded once to 34 digits with
+   * `RoundingMode.HalfEven`.
+   */
+  fma(mul: Decimal, addend: Decimal): Decimal {
+    let (lo, hi) = fmaDecCtx(
+      this.#lo, this.#hi, mul.#lo, mul.#hi, addend.#lo, addend.#hi,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /** Principal square root rounded to 34 digits with `RoundingMode.HalfEven`. */
+  sqrt(): Decimal {
+    let (lo, hi) = sqrtDecCtx(
+      this.#lo, this.#hi,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /**
+   * Raises `this` to signed integer exponent `exp` (`x ** 0 == 1` per IEEE 754
+   * `pown`).
+   */
+  operator **(exp: i32): Decimal {
+    return this.pow(exp);
+  }
+
+  /**
+   * Raises `this` to signed integer exponent `exp` (`x.pow(0) == 1` per
+   * IEEE 754 `pown`).
+   */
+  pow(exp: i32): Decimal {
+    let (lo, hi) = powDecCtx(
+      this.#lo, this.#hi, exp,
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP,
+      false, 0, RoundingMode.HalfEven,
+    );
+    return Decimal.#wrap(lo, hi);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rounding, quantization, and normalization
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Rounds fractional digits beyond `scale` decimal places using `mode`.
+   * Values whose `scale` is already `<= scale` (as well as `NaN` and
+   * `±Infinity`) are returned unchanged.
+   */
+  round(
+    scale: i32 = 0,
+    mode: RoundingMode = RoundingMode.HalfEven,
+  ): Decimal {
+    let (lo, hi) = roundDecToScale(this.#lo, this.#hi, scale, mode);
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /** Largest integral `Decimal` `<= this` (preserving large positive exponents). */
+  floor(): Decimal {
+    return this.round(0, RoundingMode.Floor);
+  }
+
+  /** Smallest integral `Decimal` `>= this` (preserving large positive exponents). */
+  ceil(): Decimal {
+    return this.round(0, RoundingMode.Ceil);
+  }
+
+  /** Integral part of `this` rounded toward zero. */
+  trunc(): Decimal {
+    return this.round(0, RoundingMode.Trunc);
+  }
+
+  /**
+   * IEEE 754 `quantize`: rounds or zero-pads `this` to have the exact same
+   * exponent as `quantum`, returning `NaN` if the scaled significand exceeds
+   * 34 digits or if only one operand is infinite.
+   */
+  quantize(
+    quantum: Decimal,
+    mode: RoundingMode = RoundingMode.HalfEven,
+  ): Decimal {
+    if (isNaNBits(this.#hi) || isNaNBits(quantum.#hi)) {
+      return Decimal.NAN;
+    }
+    let aInf = isInfBits(this.#hi);
+    let qInf = isInfBits(quantum.#hi);
+    if (aInf || qInf) {
+      return if (aInf && qInf) this else Decimal.NAN;
+    }
+    let (sa, ea, caLo, caHi) = unpackFinite(this.#lo, this.#hi);
+    let (_, targetExp, _, _) = unpackFinite(quantum.#lo, quantum.#hi);
+    let (lo, hi) = quantize128ToExp(sa, caLo, caHi, ea, targetExp, mode);
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /**
+   * Quantizes `this` to exact `scale` fractional digits (`exponent == -scale`),
+   * padding trailing zeros when needed and returning `NaN` if the result cannot
+   * fit in 34 digits at `-scale`.
+   */
+  quantize(
+    scale: i32,
+    mode: RoundingMode = RoundingMode.HalfEven,
+  ): Decimal {
+    if (isSpecialBits(this.#hi)) {
+      return Decimal.NAN;
+    }
+    let targetExp = if (scale == -2147483648) 2147483647 else -scale;
+    let (sa, ea, caLo, caHi) = unpackFinite(this.#lo, this.#hi);
+    let (lo, hi) = quantize128ToExp(sa, caLo, caHi, ea, targetExp, mode);
+    return Decimal.#wrap(lo, hi);
+  }
+
+  /**
+   * Strips trailing zeros from the significand (`1.500` becomes `1.5`, `0.00`
+   * becomes `0`, `-0.00` becomes `-0`).
+   */
+  normalize(): Decimal {
+    let (lo, hi) = normalizeDecBits(this.#lo, this.#hi);
+    return Decimal.#wrap(lo, hi);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Equality, ordering, and hashing
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Numerical equality (`1.5 == 1.50`, `-0 == 0`, and `NaN != NaN`).
+   */
+  operator ==(other: Decimal): boolean {
+    return eqDecBits(this.#lo, this.#hi, other.#lo, other.#hi);
+  }
+
+  /** Whether `this < other` (`false` when either operand is `NaN`). */
+  operator <(other: Decimal): boolean {
+    return cmpDecNumerical(this.#lo, this.#hi, other.#lo, other.#hi) == -1;
+  }
+
+  /** Whether `this <= other` (`false` when either operand is `NaN`). */
+  operator <=(other: Decimal): boolean {
+    let c = cmpDecNumerical(this.#lo, this.#hi, other.#lo, other.#hi);
+    return c == -1 || c == 0;
+  }
+
+  /** Whether `this > other` (`false` when either operand is `NaN`). */
+  operator >(other: Decimal): boolean {
+    return cmpDecNumerical(this.#lo, this.#hi, other.#lo, other.#hi) == 1;
+  }
+
+  /** Whether `this >= other` (`false` when either operand is `NaN`). */
+  operator >=(other: Decimal): boolean {
+    let c = cmpDecNumerical(this.#lo, this.#hi, other.#lo, other.#hi);
+    return c == 1 || c == 0;
+  }
+
+  /**
+   * IEEE 754-2008 `totalOrder` comparison (`-1`, `0`, or `1`), suitable for
+   * `Array.sort`: orders `-NaN < -Infinity < negatives < -0 < +0 < positives <
+   * +Infinity < +NaN`, breaking cohort ties by exponent (`1.00 < 1.0`).
+   */
+  compareTotal(other: Decimal): i32 {
+    return cmpDecTotal(this.#lo, this.#hi, other.#lo, other.#hi);
+  }
+
+  /**
+   * Smaller of `this` and `other`, propagating `NaN` and ordering `-0` below `+0`.
+   */
+  min(other: Decimal): Decimal {
+    if (isNaNBits(this.#hi) || isNaNBits(other.#hi)) {
+      return Decimal.NAN;
+    }
+    let c = cmpDecNumerical(this.#lo, this.#hi, other.#lo, other.#hi);
+    if (c < 0) {
+      return this;
+    }
+    if (c > 0) {
+      return other;
+    }
+    if (signBit(this.#hi) != signBit(other.#hi)) {
+      return if (signBit(this.#hi) != 0) this else other;
+    }
+    return if (this.exponent <= other.exponent) this else other;
+  }
+
+  /**
+   * Larger of `this` and `other`, propagating `NaN` and ordering `+0` above `-0`.
+   */
+  max(other: Decimal): Decimal {
+    if (isNaNBits(this.#hi) || isNaNBits(other.#hi)) {
+      return Decimal.NAN;
+    }
+    let c = cmpDecNumerical(this.#lo, this.#hi, other.#lo, other.#hi);
+    if (c > 0) {
+      return this;
+    }
+    if (c < 0) {
+      return other;
+    }
+    if (signBit(this.#hi) != signBit(other.#hi)) {
+      return if (signBit(this.#hi) == 0) this else other;
+    }
+    return if (this.exponent >= other.exponent) this else other;
+  }
+
+  /** Content hash consistent with `operator ==` (`1.5` and `1.50` hash alike). */
+  hashCode(): i32 {
+    return hashDecBits(this.#lo, this.#hi);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Conversions and string formatting
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Converts to `i64` if this value is an exact integer within
+   * `[I64_MIN, I64_MAX]`, returning `(true, value)` or `(false, _)`.
+   */
+  tryToI64(): inline (true, i64) | inline (false, _) {
+    if (isSpecialBits(this.#hi)) {
+      return (false, _);
+    }
+    let (sign, exp, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+    if (cLo == 0 && cHi == 0) {
+      return (true, 0 as i64);
+    }
+    let (nLo, nHi, nExp) = stripZeros128(cLo, cHi, exp);
+    if (nExp < 0 || nHi != 0) {
+      return (false, _);
+    }
+    let dn = digits128(nLo, 0);
+    if (dn + nExp > 19) {
+      return (false, _);
+    }
+    let (sLo, _) = mul128Pow10(nLo, 0, nExp);
+    if (sign == 0) {
+      if (sLo <= 0x7fffffffffffffff) {
+        return (true, sLo as i64);
+      }
+      return (false, _);
+    }
+    let minMag = (1 as u64) << 63;
+    if (sLo < minMag) {
+      return (true, -(sLo as i64));
+    }
+    if (sLo == minMag) {
+      return (true, I64_MIN);
+    }
+    return (false, _);
+  }
+
+  /**
+   * Converts an exact integral `Decimal` in `[I64_MIN, I64_MAX]` to `i64`,
+   * throwing `Error` if non-finite, fractional, or out of range.
+   */
+  toI64(): i64 {
+    if (let (true, v) = this.tryToI64()) {
+      return v;
+    }
+    throw new Error('Decimal is not an exact i64 integer');
+  }
+
+  /**
+   * Converts an exact integral `Decimal` to `BigInt`, returning `null` when
+   * `this` is `NaN`, `±Infinity`, or has a non-zero fractional part.
+   */
+  tryToBigInt(): BigInt | null {
+    if (isSpecialBits(this.#hi)) {
+      return null;
+    }
+    let (sign, exp, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+    if (cLo == 0 && cHi == 0) {
+      return BigInt.ZERO;
+    }
+    let (nLo, nHi, nExp) = stripZeros128(cLo, cHi, exp);
+    if (nExp < 0) {
+      return null;
+    }
+    var mag = u128ToBigInt(nLo, nHi);
+    if (nExp > 0) {
+      mag = mag * pow10Big(nExp);
+    }
+    return if (sign == 0) mag else mag.neg();
+  }
+
+  /**
+   * Converts an exact integral `Decimal` to `BigInt`, throwing `Error` when
+   * non-finite or fractional.
+   */
+  toBigInt(): BigInt {
+    let res = this.tryToBigInt();
+    if (res == null) {
+      throw new Error('Decimal is not an exact integer');
+    }
+    return res;
+  }
+
+  /** Converts this value to the nearest IEEE 754 `f64`. */
+  toF64(): f64 {
+    if (isNaNBits(this.#hi)) {
+      return 0.0 / 0.0;
+    }
+    if (isInfBits(this.#hi)) {
+      return if (signBit(this.#hi) == 0) 1.0 / 0.0 else -1.0 / 0.0;
+    }
+    let (sign, _, cLo, cHi) = unpackFinite(this.#lo, this.#hi);
+    if (cLo == 0 && cHi == 0) {
+      return if (sign != 0) f64_reinterpret_i64(I64_MIN) else 0.0;
+    }
+    return parseF64(formatSciDec(this.#lo, this.#hi));
+  }
+
+  /**
+   * Formats this value using IEEE 754 scientific-string rules: plain notation
+   * when `exponent <= 0` and adjusted exponent `>= -6`, and lowercase `'e'`
+   * exponential notation otherwise.
+   */
+  toString(): String {
+    return formatSciDec(this.#lo, this.#hi);
+  }
+
+  /** Formats this value without an exponent field (`1.2e+3` renders as `'1200'`). */
+  toPlainString(): String {
+    return formatPlainDec(this.#lo, this.#hi);
+  }
+
+  /**
+   * Formats this value with exact `digits` (`0..1000`) digits after the decimal
+   * point, rounding with `mode` if necessary.
+   */
+  toFixed(
+    digits: i32 = 0,
+    mode: RoundingMode = RoundingMode.HalfEven,
+  ): String {
+    if (digits < 0 || digits > 1000) {
+      throw new Error('toFixed digits out of range (0..1000)');
+    }
+    return formatFixedDec(this.#lo, this.#hi, digits, mode);
+  }
+
+  [Stringable.toString](): String {
+    return formatSciDec(this.#lo, this.#hi);
+  }
+}
+
+/**
+ * Immutable evaluation context for specifications that round every intermediate
+ * operation to either a fixed number of significant digits (`sigFigs`) or a
+ * fixed fractional scale (`fixedScale`).
+ *
+ * Every operation on `DecimalContext` computes its exact mathematical result
+ * and rounds once at the end, avoiding double-rounding.
+ */
+export final class DecimalContext {
+  #prec: i32;
+  #etiny: i32;
+  #etop: i32;
+  #isFixedScale: boolean;
+  #fixedExp: i32;
+  #rounding: RoundingMode;
+
+  new #raw(
+    prec: i32,
+    etiny: i32,
+    etop: i32,
+    isFixedScale: boolean,
+    fixedExp: i32,
+    rounding: RoundingMode,
+  )
+    : #prec = prec,
+      #etiny = etiny,
+      #etop = etop,
+      #isFixedScale = isFixedScale,
+      #fixedExp = fixedExp,
+      #rounding = rounding;
+
+  /** IEEE 754-2008 `decimal128` context (`34` digits, `Emin = -6143`, `Emax = 6144`, `HalfEven`). */
+  static DECIMAL128: DecimalContext = new DecimalContext.#raw(
+    DEC128_PREC, DEC128_ETINY, DEC128_ETOP, false, 0, RoundingMode.HalfEven,
+  );
+
+  /** IEEE 754-2008 `decimal64` context (`16` digits, `Emin = -383`, `Emax = 384`, `HalfEven`). */
+  static DECIMAL64: DecimalContext = new DecimalContext.#raw(
+    DEC64_PREC, DEC64_ETINY, DEC64_ETOP, false, 0, RoundingMode.HalfEven,
+  );
+
+  /**
+   * Creates a context that rounds every operation to `precision` (`1..34`)
+   * significant digits using `rounding`.
+   */
+  static sigFigs(
+    precision: i32 = DEC128_PREC,
+    rounding: RoundingMode = RoundingMode.HalfEven,
+  ): DecimalContext {
+    if (precision < 1 || precision > DEC128_PREC) {
+      throw new Error('DecimalContext precision must be in 1..34');
+    }
+    return new DecimalContext.#raw(
+      precision, DEC128_ETINY, DEC128_ETOP, false, 0, rounding,
+    );
+  }
+
+  /**
+   * Creates a context that quantizes every operation to `scale` (`-6111..6176`)
+   * digits after the decimal point (`exponent == -scale`) using `rounding`.
+   */
+  static fixedScale(
+    scale: i32,
+    rounding: RoundingMode = RoundingMode.HalfEven,
+  ): DecimalContext {
+    if (scale < -DEC128_ETOP || scale > -DEC128_ETINY) {
+      throw new Error('DecimalContext scale out of decimal128 range');
+    }
+    return new DecimalContext.#raw(
+      DEC128_PREC, DEC128_ETINY, DEC128_ETOP, true, -scale, rounding,
+    );
+  }
+
+  /** Returns a copy of this context with `rounding` replaced. */
+  withRounding(rounding: RoundingMode): DecimalContext {
+    return new DecimalContext.#raw(
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, rounding,
+    );
+  }
+
+  /** Maximum significant digits (`1..34`). */
+  precision: i32 {
+    get {
+      return this.#prec;
+    }
+  }
+
+  /** Active rounding mode. */
+  rounding: RoundingMode {
+    get {
+      return this.#rounding;
+    }
+  }
+
+  /** Whether this context quantizes results to a fixed fractional `scale`. */
+  isFixedScale: boolean {
+    get {
+      return this.#isFixedScale;
+    }
+  }
+
+  /** Fixed fractional scale when `isFixedScale` is true (`0` otherwise). */
+  scale: i32 {
+    get {
+      return if (this.#isFixedScale) -this.#fixedExp else 0;
+    }
+  }
+
+  /** Rounds `x` to this context's precision or fixed scale, preserving sign. */
+  round(x: Decimal): Decimal {
+    let (lo, hi) = x.toBits();
+    if (isNaNBits(hi)) {
+      return Decimal.NAN;
+    }
+    if (isInfBits(hi)) {
+      return if (this.#isFixedScale) Decimal.NAN else x;
+    }
+    let (s, e, cLo, cHi) = unpackFinite(lo, hi);
+    if (this.#isFixedScale) {
+      let (rLo, rHi) = quantize128ToExp(s, cLo, cHi, e, this.#fixedExp, this.#rounding);
+      return Decimal.fromBits(rLo, rHi);
+    }
+    let (rLo, rHi) = finalize128(
+      s, cLo, cHi, e, this.#prec, this.#etiny, this.#etop, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** IEEE 754 `plus(x)` (`0 + x` under this context). */
+  plus(x: Decimal): Decimal {
+    let (zLo, zHi) = packZero(
+      0,
+      if (this.#isFixedScale) this.#fixedExp else x.exponent,
+    );
+    let (xLo, xHi) = x.toBits();
+    let (rLo, rHi) = addDecCtx(
+      zLo, zHi, xLo, xHi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** IEEE 754 `minus(x)` (`0 - x` under this context). */
+  neg(x: Decimal): Decimal {
+    return this.plus(x.neg());
+  }
+
+  /** Absolute value `|x|` rounded under this context (`plus(|x|)`). */
+  abs(x: Decimal): Decimal {
+    return this.plus(x.abs());
+  }
+
+  /** Single-rounded `a + b` under this context. */
+  add(a: Decimal, b: Decimal): Decimal {
+    let (aLo, aHi) = a.toBits();
+    let (bLo, bHi) = b.toBits();
+    let (rLo, rHi) = addDecCtx(
+      aLo, aHi, bLo, bHi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** Single-rounded `a - b` under this context. */
+  sub(a: Decimal, b: Decimal): Decimal {
+    let (aLo, aHi) = a.toBits();
+    let (bLo, bHi) = b.toBits();
+    let (nbLo, nbHi) = negDecBits(bLo, bHi);
+    let (rLo, rHi) = addDecCtx(
+      aLo, aHi, nbLo, nbHi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** Single-rounded `a * b` under this context. */
+  mul(a: Decimal, b: Decimal): Decimal {
+    let (aLo, aHi) = a.toBits();
+    let (bLo, bHi) = b.toBits();
+    let (rLo, rHi) = mulDecCtx(
+      aLo, aHi, bLo, bHi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** Single-rounded `a / b` under this context. */
+  div(a: Decimal, b: Decimal): Decimal {
+    let (aLo, aHi) = a.toBits();
+    let (bLo, bHi) = b.toBits();
+    let (rLo, rHi) = divDecCtx(
+      aLo, aHi, bLo, bHi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** Single-rounded truncating remainder `a % b` under this context. */
+  rem(a: Decimal, b: Decimal): Decimal {
+    let (aLo, aHi) = a.toBits();
+    let (bLo, bHi) = b.toBits();
+    let (rLo, rHi) = remDecCtx(
+      aLo, aHi, bLo, bHi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** Truncating `(quotient, remainder)` under this context. */
+  divRem(a: Decimal, b: Decimal): inline (Decimal, Decimal) {
+    let (aLo, aHi) = a.toBits();
+    let (bLo, bHi) = b.toBits();
+    let (qLo, qHi, rLo, rHi) = divRemDecCtx(
+      aLo, aHi, bLo, bHi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return (Decimal.fromBits(qLo, qHi), Decimal.fromBits(rLo, rHi));
+  }
+
+  /** Single-rounded fused multiply-add `(a * b) + c` under this context. */
+  fma(a: Decimal, b: Decimal, c: Decimal): Decimal {
+    let (aLo, aHi) = a.toBits();
+    let (bLo, bHi) = b.toBits();
+    let (cLo, cHi) = c.toBits();
+    let (rLo, rHi) = fmaDecCtx(
+      aLo, aHi, bLo, bHi, cLo, cHi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** Single-rounded square root `sqrt(x)` under this context. */
+  sqrt(x: Decimal): Decimal {
+    let (lo, hi) = x.toBits();
+    let (rLo, rHi) = sqrtDecCtx(
+      lo, hi,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** Integer power `x ** exp` under this context. */
+  pow(x: Decimal, exp: i32): Decimal {
+    let (lo, hi) = x.toBits();
+    let (rLo, rHi) = powDecCtx(
+      lo, hi, exp,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    return Decimal.fromBits(rLo, rHi);
+  }
+
+  /** Parses `text` directly under this context's precision/scale and rounding mode. */
+  parse(text: String): Decimal | null {
+    let (ok, lo, hi) = parseDecCtx(
+      text,
+      this.#prec, this.#etiny, this.#etop,
+      this.#isFixedScale, this.#fixedExp, this.#rounding,
+    );
+    if (!ok) {
+      return null;
+    }
+    return Decimal.fromBits(lo, hi);
+  }
+
+  /** Parses `text` under this context, throwing `Error` on invalid syntax. */
+  from(text: String): Decimal {
+    let parsed = this.parse(text);
+    if (parsed == null) {
+      throw new Error(`Invalid Decimal literal: ${text}`);
+    }
+    return parsed;
+  }
+}

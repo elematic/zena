@@ -1,12 +1,14 @@
 ---
 title: 'Numbers'
-description: 'Integer, narrow integer, BigInt, and floating-point numeric types in Zena.'
+description: 'Integer, narrow integer, BigInt, binary floating-point, and Decimal numeric types in Zena.'
 ---
 
 Zena provides primitive numeric types covering signed integers, unsigned integers,
-narrow storage integers, and IEEE 754 floating-point numbers, plus
-[`BigInt`](/api/bigint/) in `zena:bigint` for arbitrary-precision signed integers.
-The primitive numeric types are unboxed WebAssembly values with no heap allocation.
+narrow storage integers, and IEEE 754 binary floating-point numbers, plus
+[`BigInt`](/api/bigint/) in `zena:bigint` for arbitrary-precision signed integers
+and [`Decimal`](/api/decimal/) in `zena:decimal` for 128-bit IEEE 754 decimal
+floating-point numbers. The primitive numeric types are unboxed WebAssembly
+values with no heap allocation.
 
 ## Integers
 
@@ -301,6 +303,79 @@ let (lo, hi) = mulWide(1000000000000 as u64, 1000000000000 as u64);
 `**` on floats lowers to a squaring loop that truncates a non-integer
 exponent, so write `pow(x, y)` for a non-integer `y` until it lowers to
 `pow` ([#878](https://github.com/elematic/zena/issues/878)).
+
+## Decimal floating-point
+
+[`Decimal`](/api/decimal/) in `zena:decimal` represents immutable 128-bit base-10
+floating-point numbers using the IEEE 754-2008 `decimal128` Binary Integer
+Decimal (BID) interchange encoding packed in two `u64` words. Finite values store
+up to 34 significant decimal digits with an unbiased base-10 quantum exponent in
+`-6176..6111` (adjusted exponent `-6143..6144`), alongside `NaN`, `±Infinity`,
+and `-0`.
+
+Exact base-10 fractions such as `0.1`, `0.2`, and `19.99` have no binary
+representation error, and trailing zeros record scale (`Decimal.from('1.50')`
+has `scale == 2` while comparing and hashing equal to `Decimal.from('1.5')`).
+
+### Construction, parsing, and conversions
+
+`Decimal.from` accepts `i32`, `i64`, `u64`, `BigInt`, or `String` (supporting
+optional `+` or `-` signs, fractional digits, scientific `e`/`E` exponents, `_`
+digit separators, `Infinity`, and `NaN`), throwing `Error` on malformed strings.
+`Decimal.parse(text)` returns `Decimal | null` without throwing,
+`Decimal.fromScaled(unscaled, scale, mode)` constructs `unscaled * 10^-scale`,
+`Decimal.fromF64(value)` converts via shortest round-trip decimal text, and
+`Decimal.fromBits(lo, hi)` / `toBits()` convert raw IEEE 754 BID words.
+
+```zena
+import {Decimal} from 'zena:decimal';
+
+let tenth = Decimal.from('0.1');
+let fifth = Decimal.from('0.2');
+let sum = tenth + fifth; // 0.3 (scale == 1)
+let price = Decimal.fromScaled(1999, 2); // 19.99
+```
+
+`tryToI64()` and `tryToBigInt()` convert exact integral values without throwing
+(`toI64()` and `toBigInt()` throw `Error` when non-finite, fractional, or out of
+range), `toF64()` converts to the nearest `f64`, `toString()` uses IEEE 754
+scientific-string rules, `toPlainString()` formats without an exponent field,
+and `toFixed(digits, mode)` formats with `digits` fractional places. `Decimal`
+implements `Stringable` and `Hashable`.
+
+### Operators, rounding modes, and contexts
+
+`Decimal` overloads unary `-`, binary `+`, `-`, `*`, `/`, `%` (truncating
+remainder), `**` (signed `i32` exponent), `==`, and `<`, `<=`, `>`, `>=`
+(`false` when either operand is `NaN`), evaluating arithmetic at 34 digits with
+`RoundingMode.HalfEven`. Methods include `.fma(mul, addend)`, `.sqrt()`,
+`.divRem(other)`, `.neg()`, `.abs()`, `.min(other)`, `.max(other)`, and IEEE 754
+`.compareTotal(other)` (for `Array.sort`).
+
+`RoundingMode` defines nine rounding directions: `HalfEven`, `HalfExpand`,
+`HalfTrunc`, `HalfCeil`, `HalfFloor`, `Ceil`, `Floor`, `Trunc`, and `Expand`.
+
+- **Explicit rounding at specific steps**: `.round(scale, mode)` rounds values
+  with more than `scale` fractional digits (`floor()`, `ceil()`, and `trunc()`
+  round to `scale == 0`), `.quantize(quantumOrScale, mode)` pads or rounds to an
+  exact exponent, and `.div(other, scale, mode)` divides and rounds to `scale`
+  in a single step.
+- **Per-operation rounding (`DecimalContext`)**: `DecimalContext.DECIMAL128`,
+  `DecimalContext.DECIMAL64`, `DecimalContext.sigFigs(precision, rounding)`, and
+  `DecimalContext.fixedScale(scale, rounding)` provide `add`, `sub`, `mul`,
+  `div`, `rem`, `divRem`, `fma`, `sqrt`, `pow`, `round`, `plus`, `neg`, `abs`,
+  `parse`, and `from`, each rounding once from the exact mathematical result.
+
+```zena
+import {Decimal, DecimalContext, RoundingMode} from 'zena:decimal';
+
+let subtotal = Decimal.from('19.99') * Decimal.from(3); // 59.97
+let tax = (subtotal * Decimal.from('0.0825')).round(2, RoundingMode.HalfExpand); // 4.95
+let total = subtotal + tax; // 64.92
+
+let cents = DecimalContext.fixedScale(2, RoundingMode.HalfEven);
+let split = cents.div(total, Decimal.from(3)); // 21.64
+```
 
 ## Number literals
 

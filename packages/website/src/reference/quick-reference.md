@@ -2629,6 +2629,26 @@ let p = a.modPow(65_537n, b);
 let parsed = BigInt.from('-zz', 36); // -1295n
 ```
 
+### zena:decimal
+
+128-bit IEEE 754-2008 `decimal128` base-10 floating-point numbers (`Decimal`),
+nine `RoundingMode` directions (`HalfEven`, `HalfExpand`, `HalfTrunc`,
+`HalfCeil`, `HalfFloor`, `Ceil`, `Floor`, `Trunc`, `Expand`), and
+`DecimalContext` (`DECIMAL128`, `DECIMAL64`, `sigFigs`, `fixedScale`) for
+single-rounded per-operation evaluation. Unary `-` and binary `+`, `-`, `*`,
+`/`, `%`, `**`, `==`, `<`, `<=`, `>`, `>=` evaluate at 34 digits with `HalfEven`
+rounding while preserving scale; `.round()`, `.quantize()`, `.div()`, and
+`.toFixed()` accept an explicit scale and `RoundingMode`.
+
+```zena
+import {Decimal, DecimalContext, RoundingMode} from 'zena:decimal';
+
+let subtotal = Decimal.from('19.99') * Decimal.from(3); // 59.97
+let tax = (subtotal * Decimal.from('0.0825')).round(2, RoundingMode.HalfExpand); // 4.95
+let cents = DecimalContext.fixedScale(2, RoundingMode.HalfEven);
+let split = cents.div(subtotal + tax, Decimal.from(3)); // 21.64
+```
+
 ### zena:simd
 
 Two layers over WebAssembly SIMD, in one import.

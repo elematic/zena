@@ -1,0 +1,2637 @@
+/**
+ * IEEE 754-2008 `decimal128` Binary Integer Decimal (BID) bit layout,
+ * rounding modes, parsing, formatting, and arithmetic kernels.
+ *
+ * Every `Decimal` is stored as two `u64` words `(lo, hi)`:
+ * - For finite values, `coeff <= 10^34 - 1 < 2^113` and biased exponent
+ *   `E = exp + 6176` lies in `0..12287` (`0x0000..0x2fff`), so bits `62..61`
+ *   of `hi` are never both `1`:
+ *   - bit `63`: sign (`0` positive, `1` negative)
+ *   - bits `62..49`: 14-bit biased exponent `E = exp + 6176`
+ *   - bits `48..0` of `hi` and bits `63..0` of `lo`: 113-bit integer significand
+ * - Special values have bits `62..61 == 0b11`:
+ *   - `(hi & 0x7c00000000000000) == 0x7c00000000000000`: quiet/signaling `NaN`
+ *   - `(hi & 0x7c00000000000000) == 0x7800000000000000`: `±Infinity`
+ */
+
+import { BigInt } from 'zena:bigint';
+import { StringBuilder } from 'zena:core';
+import { add128, clz, div, mulWide, sub128 } from 'zena:math';
+
+/**
+ * Rounding modes for decimal quantization, division, formatting, and
+ * `DecimalContext` evaluation.
+ */
+export enum RoundingMode {
+  /** Round to nearest; ties round to an even last digit (IEEE 754 default). */
+  HalfEven,
+  /** Round to nearest; ties round away from zero. */
+  HalfExpand,
+  /** Round to nearest; ties round toward zero. */
+  HalfTrunc,
+  /** Round to nearest; ties round toward `+Infinity`. */
+  HalfCeil,
+  /** Round to nearest; ties round toward `-Infinity`. */
+  HalfFloor,
+  /** Round toward `+Infinity`. */
+  Ceil,
+  /** Round toward `-Infinity`. */
+  Floor,
+  /** Round toward zero (truncate discarded digits). */
+  Trunc,
+  /** Round away from zero. */
+  Expand
+}
+
+// ---------------------------------------------------------------------------
+// IEEE 754-2008 decimal128 / decimal64 constants
+// ---------------------------------------------------------------------------
+
+export let DEC128_PREC = 34;
+export let DEC128_EMIN = -6143;
+export let DEC128_EMAX = 6144;
+export let DEC128_ETINY = -6176;
+export let DEC128_ETOP = 6111;
+export let DEC128_BIAS = 6176;
+
+export let DEC64_PREC = 16;
+export let DEC64_EMIN = -383;
+export let DEC64_EMAX = 384;
+export let DEC64_ETINY = -398;
+export let DEC64_ETOP = 369;
+
+export let SIGN_MASK: u64 = 0x8000000000000000;
+export let COMB_SPECIAL_MASK: u64 = 0x6000000000000000;
+export let NAN_MASK: u64 = 0x7c00000000000000;
+export let INF_MASK: u64 = 0x7800000000000000;
+export let COEFF_HI_MASK: u64 = 0x0001ffffffffffff;
+
+export let CANON_NAN_HI: u64 = 0x7c00000000000000;
+export let POS_INF_HI: u64 = 0x7800000000000000;
+export let NEG_INF_HI: u64 = 0xf800000000000000;
+
+/** Biased exponent `6176 << 49` (`exp == 0`). */
+export let ZERO_HI: u64 = 0x3040000000000000;
+export let NEG_ZERO_HI: u64 = 0xb040000000000000;
+
+/** `10^34 - 1 = 0x0001ed09bead87c0_378d8e63ffffffff`. */
+export let MAX_COEFF_HI: u64 = 0x0001ed09bead87c0;
+export let MAX_COEFF_LO: u64 = 0x378d8e63ffffffff;
+
+/** `MAX_VALUE` (`(10^34 - 1) * 10^6111`): `E = 12287 = 0x2fff`, `(0x2fff << 49) | MAX_COEFF_HI`. */
+export let MAX_FINITE_HI = 0x5ffe000000000000 | MAX_COEFF_HI;
+export let MAX_FINITE_LO = MAX_COEFF_LO;
+
+/** `MIN_POSITIVE` (`10^-6143 = 1 * 10^-6143`, `E = 33`): `33 << 49 = 0x0042000000000000`. */
+export let MIN_NORMAL_HI: u64 = 0x0042000000000000;
+export let MIN_NORMAL_LO: u64 = 1;
+
+/** `MIN_SUBNORMAL` (`1 * 10^-6176`, `E = 0`). */
+export let MIN_SUBNORMAL_HI: u64 = 0;
+export let MIN_SUBNORMAL_LO: u64 = 1;
+
+let B32 = (1 as u64) << 32;
+let MASK32: u64 = 0xffffffff;
+let MASK64_BIG = (BigInt.ONE << 64) - BigInt.ONE;
+
+// ---------------------------------------------------------------------------
+// Power-of-10 table (10^0 .. 10^38 in 128 bits; 10^38 < 2^127)
+// ---------------------------------------------------------------------------
+
+function buildPow10Lo() {
+  let loArr = new FixedArray<u64>(39, 0);
+  var lo: u64 = 1;
+  var hi: u64 = 0;
+  loArr[0] = 1;
+  for (var i = 1; i <= 38; i += 1) {
+    let (pLo, pHi) = mulWide(lo, 10);
+    lo = pLo;
+    hi = pHi + hi * 10;
+    loArr[i] = lo;
+  }
+  return loArr;
+}
+
+function buildPow10Hi() {
+  let hiArr = new FixedArray<u64>(39, 0);
+  var lo: u64 = 1;
+  var hi: u64 = 0;
+  hiArr[0] = 0;
+  for (var i = 1; i <= 38; i += 1) {
+    let (pLo, pHi) = mulWide(lo, 10);
+    lo = pLo;
+    hi = pHi + hi * 10;
+    hiArr[i] = hi;
+  }
+  return hiArr;
+}
+
+let POW10_LO = buildPow10Lo();
+let POW10_HI = buildPow10Hi();
+
+export function pow10Lo(k: i32): u64 {
+  return POW10_LO[k];
+}
+
+export function pow10Hi(k: i32): u64 {
+  return POW10_HI[k];
+}
+
+// ---------------------------------------------------------------------------
+// BID bit-level queries, packing, and canonicalization
+// ---------------------------------------------------------------------------
+
+export function isNaNBits(hi: u64): boolean {
+  return (hi & NAN_MASK) == NAN_MASK;
+}
+
+export function isInfBits(hi: u64): boolean {
+  return (hi & NAN_MASK) == INF_MASK;
+}
+
+export function isSpecialBits(hi: u64): boolean {
+  return (hi & COMB_SPECIAL_MASK) == COMB_SPECIAL_MASK;
+}
+
+export function signBit(hi: u64): i32 {
+  return (hi >>> 63) as i32;
+}
+
+export function packInf(sign: i32): inline (u64, u64) {
+  return (0, if (sign != 0) NEG_INF_HI else POS_INF_HI);
+}
+
+export function packZero(sign: i32, exp: i32): inline (u64, u64) {
+  let biased = (exp + DEC128_BIAS) as u64;
+  let s = if (sign != 0) SIGN_MASK else (0 as u64);
+  return (0, s | (biased << 49));
+}
+
+export function packFinite(
+  sign: i32, exp: i32, cLo: u64, cHi: u64,
+): inline (u64, u64) {
+  let biased = (exp + DEC128_BIAS) as u64;
+  let s = if (sign != 0) SIGN_MASK else (0 as u64);
+  return (cLo, s | (biased << 49) | cHi);
+}
+
+/** Unpacks a canonical finite `(lo, hi)` into `(sign, exp, cLo, cHi)`. */
+export function unpackFinite(
+  lo: u64, hi: u64,
+): inline (i32, i32, u64, u64) {
+  let sign = (hi >>> 63) as i32;
+  let biased = ((hi >>> 49) & 0x3fff) as i32;
+  let cHi = hi & COEFF_HI_MASK;
+  return (sign, biased - DEC128_BIAS, lo, cHi);
+}
+
+/**
+ * Canonicalizes arbitrary 128-bit IEEE 754-2008 `decimal128` BID bits into
+ * our normalized representation:
+ * - Quiet/signaling NaN -> `(0, (hi & SIGN_MASK) | CANON_NAN_HI)`
+ * - Infinity -> `(0, POS_INF_HI | (hi & SIGN_MASK))`
+ * - Non-canonical BID significands (`> 10^34 - 1`, including `G` starting
+ *   `1100..1110`) -> zero significand with the encoded `sign` and `biasedExp`,
+ *   per IEEE 754-2008 §3.5.2.
+ */
+export function canonicalizeBits(lo: u64, hi: u64): inline (u64, u64) {
+  let s = hi & SIGN_MASK;
+  if ((hi & COMB_SPECIAL_MASK) == COMB_SPECIAL_MASK) {
+    if ((hi & NAN_MASK) == NAN_MASK) {
+      return (0, s | CANON_NAN_HI);
+    }
+    if ((hi & NAN_MASK) == INF_MASK) {
+      return (0, s | POS_INF_HI);
+    }
+    // Combination `1100..1110`: 14-bit biased exponent sits at bits `60..47`
+    // (`0..12287`), and any `100x` significand exceeds `10^34 - 1`, decoding to 0.
+    let biased = (hi >>> 47) & 0x3fff;
+    return (0, s | (biased << 49));
+  }
+  let cHi = hi & COEFF_HI_MASK;
+  if (cHi > MAX_COEFF_HI || (cHi == MAX_COEFF_HI && lo > MAX_COEFF_LO)) {
+    let biased = (hi >>> 49) & 0x3fff;
+    return (0, s | (biased << 49));
+  }
+  return (lo, hi);
+}
+
+// ---------------------------------------------------------------------------
+// 128-bit unsigned arithmetic and digit counting
+// ---------------------------------------------------------------------------
+
+export function cmp128(aLo: u64, aHi: u64, bLo: u64, bHi: u64): i32 {
+  if (aHi != bHi) {
+    return if (aHi < bHi) -1 else 1;
+  }
+  if (aLo != bLo) {
+    return if (aLo < bLo) -1 else 1;
+  }
+  return 0;
+}
+
+function mul128ByU64(lo: u64, hi: u64, k: u64): inline (u64, u64) {
+  let (pLo, pHi) = mulWide(lo, k);
+  return (pLo, pHi + hi * k);
+}
+
+/** Multiplies `(lo, hi)` by `10^k` (`0 <= k <= 38`, caller ensures `< 2^128`). */
+export function mul128Pow10(lo: u64, hi: u64, k: i32): inline (u64, u64) {
+  if (k <= 0 || (lo == 0 && hi == 0)) {
+    return (lo, hi);
+  }
+  if (k <= 19) {
+    return mul128ByU64(lo, hi, POW10_LO[k]);
+  }
+  let (mLo, mHi) = mul128ByU64(lo, hi, POW10_LO[19]);
+  return mul128ByU64(mLo, mHi, POW10_LO[k - 19]);
+}
+
+/** Decimal digit count of `(lo, hi)` (`1` for `0`, up to `39` for `< 2^128`). */
+export function digits128(lo: u64, hi: u64): i32 {
+  if (hi == 0) {
+    if (lo < 10) {
+      return 1;
+    }
+    var low = 1;
+    var high = 19;
+    var best = 0;
+    while (low <= high) {
+      let mid = (low + high) >> 1;
+      if (lo >= POW10_LO[mid]) {
+        best = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best + 1;
+  }
+  var low = 19;
+  var high = 38;
+  var best = 19;
+  while (low <= high) {
+    let mid = (low + high) >> 1;
+    if (cmp128(lo, hi, POW10_LO[mid], POW10_HI[mid]) >= 0) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return best + 1;
+}
+
+/**
+ * Hacker's Delight `divlu`: divides `(u1 * 2^64 + u0)` by normalized `v`
+ * (`v >= 2^63` and `u1 < v`), returning `(quotient, remainder)`.
+ */
+function divlu(u1: u64, u0: u64, v: u64): inline (u64, u64) {
+  let vHi = v >>> 32;
+  let vLo = v & MASK32;
+  let u0Hi = u0 >>> 32;
+  let u0Lo = u0 & MASK32;
+
+  var q1 = div(u1, vHi);
+  var rhat = u1 - q1 * vHi;
+  while (q1 >= B32 || q1 * vLo > (rhat << 32) + u0Hi) {
+    q1 -= 1;
+    rhat += vHi;
+    if (rhat >= B32) {
+      break;
+    }
+  }
+
+  let un21 = (u1 << 32) + u0Hi - q1 * v;
+  var q0 = div(un21, vHi);
+  rhat = un21 - q0 * vHi;
+  while (q0 >= B32 || q0 * vLo > (rhat << 32) + u0Lo) {
+    q0 -= 1;
+    rhat += vHi;
+    if (rhat >= B32) {
+      break;
+    }
+  }
+
+  let q = (q1 << 32) | q0;
+  let r = (un21 << 32) + u0Lo - q0 * v;
+  return (q, r);
+}
+
+/** Divides `(lo, hi)` by non-zero `d`, returning `(qLo, qHi, rem)`. */
+export function divRem128ByU64(
+  lo: u64, hi: u64, d: u64,
+): inline (u64, u64, u64) {
+  if (hi == 0) {
+    let q0 = div(lo, d);
+    return (q0, 0, lo - q0 * d);
+  }
+  if (d == 1) {
+    return (lo, hi, 0);
+  }
+  let qHi = div(hi, d);
+  let rHi = hi - qHi * d;
+  let s = clz(d);
+  if (s == 0) {
+    let (qLo, rem) = divlu(rHi, lo, d);
+    return (qLo, qHi, rem);
+  }
+  let rShift = (64 as u64) - s;
+  let dn = d << s;
+  let u1 = (rHi << s) | (lo >>> rShift);
+  let u0 = lo << s;
+  let (qLo, rNorm) = divlu(u1, u0, dn);
+  return (qLo, qHi, rNorm >>> s);
+}
+
+// ---------------------------------------------------------------------------
+// Rounding decision & IEEE 754 finalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Decides whether to increment the magnitude quotient `q` given:
+ * - `sign`: `0` for non-negative, `1` for negative
+ * - `qIsOdd`: whether `q & 1 != 0`
+ * - `remCat`: `0` exact, `1` in `(0, 0.5)`, `2` exact tie `0.5`, `3` in `(0.5, 1)`
+ */
+export function shouldIncrement(
+  mode: RoundingMode, sign: i32, qIsOdd: boolean, remCat: i32,
+): boolean {
+  if (remCat == 0) {
+    return false;
+  }
+  match (mode) {
+    case RoundingMode.HalfEven: {
+      return remCat == 3 || (remCat == 2 && qIsOdd);
+    }
+    case RoundingMode.HalfExpand: {
+      return remCat >= 2;
+    }
+    case RoundingMode.HalfTrunc: {
+      return remCat == 3;
+    }
+    case RoundingMode.HalfCeil: {
+      return remCat == 3 || (remCat == 2 && sign == 0);
+    }
+    case RoundingMode.HalfFloor: {
+      return remCat == 3 || (remCat == 2 && sign != 0);
+    }
+    case RoundingMode.Ceil: {
+      return sign == 0;
+    }
+    case RoundingMode.Floor: {
+      return sign != 0;
+    }
+    case RoundingMode.Trunc: {
+      return false;
+    }
+    case RoundingMode.Expand: {
+      return true;
+    }
+  }
+}
+
+function clampExp(exp: i32, etiny: i32, etop: i32) {
+  if (exp < etiny) {
+    return etiny;
+  }
+  if (exp > etop) {
+    return etop;
+  }
+  return exp;
+}
+
+function overflowResult(
+  sign: i32, prec: i32, etop: i32, mode: RoundingMode,
+) {
+  let maxFinite =
+    mode == RoundingMode.Trunc ||
+    (mode == RoundingMode.Ceil && sign != 0) ||
+    (mode == RoundingMode.Floor && sign == 0);
+  if (maxFinite) {
+    let (mLo, mHi) = sub128(POW10_LO[prec], POW10_HI[prec], 1, 0);
+    return packFinite(sign, etop, mLo, mHi);
+  }
+  return packInf(sign);
+}
+
+/** Rounds `(lo, hi) / 10^drop` (`1 <= drop <= 38`) using `(sign, mode)`. */
+function roundDivPow10_128(
+  lo: u64, hi: u64, drop: i32, sign: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (drop <= 19) {
+    let d = POW10_LO[drop];
+    let half = d >>> 1;
+    let (qLo, qHi, rem) = divRem128ByU64(lo, hi, d);
+    let remCat = if (rem == 0) 0 else if (rem < half) 1 else if (rem == half) 2 else 3;
+    if (shouldIncrement(mode, sign, (qLo & 1) != 0, remCat)) {
+      return add128(qLo, qHi, 1, 0);
+    }
+    return (qLo, qHi);
+  }
+  let m = drop - 19;
+  let (q1Lo, q1Hi, rem1) = divRem128ByU64(lo, hi, POW10_LO[19]);
+  let d2 = POW10_LO[m];
+  let half2 = d2 >>> 1;
+  let (qLo, qHi, rem2) = divRem128ByU64(q1Lo, q1Hi, d2);
+  let remCat = if (rem2 == 0 && rem1 == 0) {
+    0
+  } else if (rem2 < half2) {
+    1
+  } else if (rem2 == half2) {
+    if (rem1 == 0) 2 else 3
+  } else {
+    3
+  };
+  if (shouldIncrement(mode, sign, (qLo & 1) != 0, remCat)) {
+    return add128(qLo, qHi, 1, 0);
+  }
+  return (qLo, qHi);
+}
+
+/**
+ * Finalizes exact `(-1)^sign * (cLo, cHi) * 10^exp` (`(cLo, cHi) < 10^38`)
+ * into a canonical BID `(lo, hi)` under `(prec, etiny, etop, mode)`.
+ */
+export function finalize128(
+  sign: i32, cLo: u64, cHi: u64, exp: i32,
+  prec: i32, etiny: i32, etop: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (cLo == 0 && cHi == 0) {
+    return packZero(sign, clampExp(exp, etiny, etop));
+  }
+  let d = digits128(cLo, cHi);
+  let dropPrec = d - prec;
+  let dropSub = etiny - exp;
+  var drop = if (dropPrec > dropSub) dropPrec else dropSub;
+  if (drop < 0) {
+    drop = 0;
+  }
+
+  if (drop == 0) {
+    if (exp > etop) {
+      let shift = exp - etop;
+      if (d + shift > prec) {
+        return overflowResult(sign, prec, etop, mode);
+      }
+      let (sLo, sHi) = mul128Pow10(cLo, cHi, shift);
+      return packFinite(sign, etop, sLo, sHi);
+    }
+    return packFinite(sign, exp, cLo, cHi);
+  }
+
+  if (drop > d) {
+    if (shouldIncrement(mode, sign, false, 1)) {
+      return packFinite(sign, etiny, 1, 0);
+    }
+    return packZero(sign, etiny);
+  }
+
+  let (rLo, rHi) = roundDivPow10_128(cLo, cHi, drop, sign, mode);
+  var qLo = rLo;
+  var qHi = rHi;
+  var resExp = exp + drop;
+  if (qLo == 0 && qHi == 0) {
+    return packZero(sign, clampExp(resExp, etiny, etop));
+  }
+  if (cmp128(qLo, qHi, POW10_LO[prec], POW10_HI[prec]) >= 0) {
+    qLo = POW10_LO[prec - 1];
+    qHi = POW10_HI[prec - 1];
+    resExp += 1;
+  }
+  if (resExp > etop) {
+    let qd = digits128(qLo, qHi);
+    let shift = resExp - etop;
+    if (qd + shift > prec) {
+      return overflowResult(sign, prec, etop, mode);
+    }
+    let (sLo, sHi) = mul128Pow10(qLo, qHi, shift);
+    return packFinite(sign, etop, sLo, sHi);
+  }
+  return packFinite(sign, resExp, qLo, qHi);
+}
+
+// ---------------------------------------------------------------------------
+// BigInt helpers for wide (> 38-digit) exact intermediates
+// ---------------------------------------------------------------------------
+
+export function u128ToBigInt(lo: u64, hi: u64): BigInt {
+  if (hi == 0) {
+    return BigInt.fromU64(lo);
+  }
+  return (BigInt.fromU64(hi) << 64) | BigInt.fromU64(lo);
+}
+
+export function bigIntToU128(v: BigInt): inline (u64, u64) {
+  if (v.isZero) {
+    return (0, 0);
+  }
+  let lo = (v & MASK64_BIG).toU64();
+  let hi = (v >> 64).toU64();
+  return (lo, hi);
+}
+
+export function pow10Big(k: i32): BigInt {
+  if (k <= 0) {
+    return BigInt.ONE;
+  }
+  if (k <= 38) {
+    return u128ToBigInt(POW10_LO[k], POW10_HI[k]);
+  }
+  let q = div(k, 38);
+  let r = k - q * 38;
+  let base38 = u128ToBigInt(POW10_LO[38], POW10_HI[38]);
+  let p = base38.pow(q as i64);
+  if (r == 0) {
+    return p;
+  }
+  return p * u128ToBigInt(POW10_LO[r], POW10_HI[r]);
+}
+
+function digitsBig(v: BigInt): i32 {
+  if (v.isZero) {
+    return 1;
+  }
+  let bits = v.bitLength();
+  if (bits <= 126) {
+    let (lo, hi) = bigIntToU128(v);
+    return digits128(lo, hi);
+  }
+  let est = ((bits - 1) * 78913) >> 18;
+  if (v.compareTo(pow10Big(est + 1)) >= 0) {
+    return est + 2;
+  }
+  return est + 1;
+}
+
+function roundDivPow10Big(
+  v: BigInt, drop: i32, sign: i32, mode: RoundingMode,
+) {
+  let d = pow10Big(drop);
+  let half = d >> 1;
+  let (q, rem) = v.divRem(d);
+  let cmp = rem.compareTo(half);
+  let remCat = if (rem.isZero) 0 else if (cmp < 0) 1 else if (cmp == 0) 2 else 3;
+  if (shouldIncrement(mode, sign, q.isOdd, remCat)) {
+    return q + BigInt.ONE;
+  }
+  return q;
+}
+
+function finalizeBig(
+  sign: i32, coeff: BigInt, exp: i32,
+  prec: i32, etiny: i32, etop: i32, mode: RoundingMode,
+) {
+  if (coeff.isZero) {
+    return packZero(sign, clampExp(exp, etiny, etop));
+  }
+  if (coeff.bitLength() <= 126) {
+    let (lo, hi) = bigIntToU128(coeff);
+    return finalize128(sign, lo, hi, exp, prec, etiny, etop, mode);
+  }
+  let d = digitsBig(coeff);
+  let dropPrec = d - prec;
+  let dropSub = etiny - exp;
+  var drop = if (dropPrec > dropSub) dropPrec else dropSub;
+  if (drop < 0) {
+    drop = 0;
+  }
+  if (drop > d) {
+    if (shouldIncrement(mode, sign, false, 1)) {
+      return packFinite(sign, etiny, 1, 0);
+    }
+    return packZero(sign, etiny);
+  }
+  let qBig = roundDivPow10Big(coeff, drop, sign, mode);
+  var resExp = exp + drop;
+  if (qBig.isZero) {
+    return packZero(sign, clampExp(resExp, etiny, etop));
+  }
+  let (rLo, rHi) = bigIntToU128(qBig);
+  var qLo = rLo;
+  var qHi = rHi;
+  if (cmp128(qLo, qHi, POW10_LO[prec], POW10_HI[prec]) >= 0) {
+    qLo = POW10_LO[prec - 1];
+    qHi = POW10_HI[prec - 1];
+    resExp += 1;
+  }
+  if (resExp > etop) {
+    let qd = digits128(qLo, qHi);
+    let shift = resExp - etop;
+    if (qd + shift > prec) {
+      return overflowResult(sign, prec, etop, mode);
+    }
+    let (sLo, sHi) = mul128Pow10(qLo, qHi, shift);
+    return packFinite(sign, etop, sLo, sHi);
+  }
+  return packFinite(sign, resExp, qLo, qHi);
+}
+
+// ---------------------------------------------------------------------------
+// Quantization to an exact target exponent (quantize & fixedScale contexts)
+// ---------------------------------------------------------------------------
+
+export function quantize128ToExp(
+  sign: i32, cLo: u64, cHi: u64, exp: i32,
+  targetExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (targetExp < DEC128_ETINY || targetExp > DEC128_ETOP) {
+    return (0, CANON_NAN_HI);
+  }
+  if (cLo == 0 && cHi == 0) {
+    return packZero(sign, targetExp);
+  }
+  if (exp == targetExp) {
+    if (cmp128(cLo, cHi, MAX_COEFF_LO, MAX_COEFF_HI) > 0) {
+      return (0, CANON_NAN_HI);
+    }
+    return packFinite(sign, targetExp, cLo, cHi);
+  }
+  let d = digits128(cLo, cHi);
+  if (exp > targetExp) {
+    let shift = exp - targetExp;
+    if (d + shift > DEC128_PREC) {
+      return (0, CANON_NAN_HI);
+    }
+    let (sLo, sHi) = mul128Pow10(cLo, cHi, shift);
+    return packFinite(sign, targetExp, sLo, sHi);
+  }
+  let drop = targetExp - exp;
+  if (d - drop > DEC128_PREC) {
+    return (0, CANON_NAN_HI);
+  }
+  if (drop > d) {
+    if (shouldIncrement(mode, sign, false, 1)) {
+      return packFinite(sign, targetExp, 1, 0);
+    }
+    return packZero(sign, targetExp);
+  }
+  let (qLo, qHi) = roundDivPow10_128(cLo, cHi, drop, sign, mode);
+  if (cmp128(qLo, qHi, MAX_COEFF_LO, MAX_COEFF_HI) > 0) {
+    return (0, CANON_NAN_HI);
+  }
+  return packFinite(sign, targetExp, qLo, qHi);
+}
+
+function quantizeBigToExp(
+  sign: i32, coeff: BigInt, exp: i32,
+  targetExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (targetExp < DEC128_ETINY || targetExp > DEC128_ETOP) {
+    return (0, CANON_NAN_HI);
+  }
+  if (coeff.isZero) {
+    return packZero(sign, targetExp);
+  }
+  if (coeff.bitLength() <= 126) {
+    let (lo, hi) = bigIntToU128(coeff);
+    return quantize128ToExp(sign, lo, hi, exp, targetExp, mode);
+  }
+  let d = digitsBig(coeff);
+  if (exp >= targetExp) {
+    // coeff already has > 38 digits (> 34), so shifting up or staying at exp overflows 34 digits.
+    return (0, CANON_NAN_HI);
+  }
+  let drop = targetExp - exp;
+  if (d - drop > DEC128_PREC) {
+    return (0, CANON_NAN_HI);
+  }
+  if (drop > d) {
+    if (shouldIncrement(mode, sign, false, 1)) {
+      return packFinite(sign, targetExp, 1, 0);
+    }
+    return packZero(sign, targetExp);
+  }
+  let qBig = roundDivPow10Big(coeff, drop, sign, mode);
+  if (qBig.bitLength() > 114) {
+    return (0, CANON_NAN_HI);
+  }
+  let (qLo, qHi) = bigIntToU128(qBig);
+  if (cmp128(qLo, qHi, MAX_COEFF_LO, MAX_COEFF_HI) > 0) {
+    return (0, CANON_NAN_HI);
+  }
+  return packFinite(sign, targetExp, qLo, qHi);
+}
+
+/** Finalizes either via `(prec, etiny, etop)` or fixed `targetExp` when `isFixedScale`. */
+function finalizeCtx128(
+  sign: i32, cLo: u64, cHi: u64, exp: i32,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+) {
+  if (isFixedScale) {
+    return quantize128ToExp(sign, cLo, cHi, exp, fixedExp, mode);
+  }
+  return finalize128(sign, cLo, cHi, exp, prec, etiny, etop, mode);
+}
+
+function finalizeCtxBig(
+  sign: i32, coeff: BigInt, exp: i32,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+) {
+  if (isFixedScale) {
+    return quantizeBigToExp(sign, coeff, exp, fixedExp, mode);
+  }
+  return finalizeBig(sign, coeff, exp, prec, etiny, etop, mode);
+}
+
+// ---------------------------------------------------------------------------
+// Addition and subtraction
+// ---------------------------------------------------------------------------
+
+function zeroCancelSign(s1: i32, s2: i32, mode: RoundingMode): i32 {
+  if (s1 == s2) {
+    return s1;
+  }
+  return if (mode == RoundingMode.Floor) 1 else 0;
+}
+
+function alignNonZeroWithZero(
+  sign: i32, cLo: u64, cHi: u64, exp: i32, zeroExp: i32,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+) {
+  if (isFixedScale) {
+    return quantize128ToExp(sign, cLo, cHi, exp, fixedExp, mode);
+  }
+  if (zeroExp < exp) {
+    let d = digits128(cLo, cHi);
+    if (d < prec) {
+      let maxPad = prec - d;
+      let wantPad = exp - zeroExp;
+      let pad = if (wantPad < maxPad) wantPad else maxPad;
+      let (sLo, sHi) = mul128Pow10(cLo, cHi, pad);
+      return finalize128(sign, sLo, sHi, exp - pad, prec, etiny, etop, mode);
+    }
+  }
+  return finalize128(sign, cLo, cHi, exp, prec, etiny, etop, mode);
+}
+
+export function addDecCtx(
+  aLo: u64, aHi: u64, bLo: u64, bHi: u64,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (isNaNBits(aHi) || isNaNBits(bHi)) {
+    return (0, CANON_NAN_HI);
+  }
+  let aInf = isInfBits(aHi);
+  let bInf = isInfBits(bHi);
+  if (aInf || bInf) {
+    if (aInf && bInf) {
+      let sa = signBit(aHi);
+      let sb = signBit(bHi);
+      if (sa != sb) {
+        return (0, CANON_NAN_HI);
+      }
+      return packInf(sa);
+    }
+    if (aInf) {
+      return (aLo, aHi);
+    }
+    return (bLo, bHi);
+  }
+
+  let (sa, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+  let (sb, eb, cbLo, cbHi) = unpackFinite(bLo, bHi);
+  let aZero = caLo == 0 && caHi == 0;
+  let bZero = cbLo == 0 && cbHi == 0;
+
+  if (aZero && bZero) {
+    let zs = zeroCancelSign(sa, sb, mode);
+    if (isFixedScale) {
+      return quantize128ToExp(zs, 0, 0, 0, fixedExp, mode);
+    }
+    let minExp = if (ea < eb) ea else eb;
+    return packZero(zs, clampExp(minExp, etiny, etop));
+  }
+  if (aZero) {
+    return alignNonZeroWithZero(
+      sb, cbLo, cbHi, eb, ea, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  if (bZero) {
+    return alignNonZeroWithZero(
+      sa, caLo, caHi, ea, eb, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+
+  // Order so operand 1 has the larger (or equal) exponent.
+  var s1 = sa;
+  var e1 = ea;
+  var c1Lo = caLo;
+  var c1Hi = caHi;
+  var s2 = sb;
+  var e2 = eb;
+  var c2Lo = cbLo;
+  var c2Hi = cbHi;
+  if (e1 < e2) {
+    s1 = sb; e1 = eb; c1Lo = cbLo; c1Hi = cbHi;
+    s2 = sa; e2 = ea; c2Lo = caLo; c2Hi = caHi;
+  }
+
+  let gap = e1 - e2;
+  let d1 = digits128(c1Lo, c1Hi);
+
+  // Fast path 1: aligned exponents or scaled operand 1 fits in <= 37 digits (< 10^38 < 2^128).
+  if (d1 + gap <= 37) {
+    let (sc1Lo, sc1Hi) = mul128Pow10(c1Lo, c1Hi, gap);
+    if (s1 == s2) {
+      let (sumLo, sumHi) = add128(sc1Lo, sc1Hi, c2Lo, c2Hi);
+      return finalizeCtx128(
+        s1, sumLo, sumHi, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+      );
+    }
+    let cmp = cmp128(sc1Lo, sc1Hi, c2Lo, c2Hi);
+    if (cmp == 0) {
+      let zs = zeroCancelSign(s1, s2, mode);
+      return finalizeCtx128(
+        zs, 0, 0, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+      );
+    }
+    if (cmp > 0) {
+      let (diffLo, diffHi) = sub128(sc1Lo, sc1Hi, c2Lo, c2Hi);
+      return finalizeCtx128(
+        s1, diffLo, diffHi, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+      );
+    }
+    let (diffLo, diffHi) = sub128(c2Lo, c2Hi, sc1Lo, sc1Hi);
+    return finalizeCtx128(
+      s2, diffLo, diffHi, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+
+  let d2 = digits128(c2Lo, c2Hi);
+
+  // Fast path 2: fixed-scale context with huge exponent gap.
+  if (isFixedScale) {
+    if (d1 + e1 - fixedExp > DEC128_PREC + 1) {
+      return (0, CANON_NAN_HI);
+    }
+    // Check if operand 1 itself is tiny below fixedExp - 2: then both are < 0.01 ulp at fixedExp.
+    if (d1 + e1 < fixedExp - 1) {
+      if (shouldIncrement(mode, s1, false, 1)) {
+        return quantize128ToExp(s1, 1, 0, fixedExp, fixedExp, mode);
+      }
+      return quantize128ToExp(s1, 0, 0, fixedExp, fixedExp, mode);
+    }
+    // Scale operand 1 down to `workExp = fixedExp - 2` if operand 2 lies strictly below `workExp`.
+    let workExp = fixedExp - 2;
+    if (e1 >= workExp && d2 + e2 <= workExp) {
+      let shift1 = e1 - workExp;
+      if (d1 + shift1 <= 37) {
+        let (wLo, wHi) = mul128Pow10(c1Lo, c1Hi, shift1);
+        var adjLo: u64 = 0;
+        var adjHi: u64 = 0;
+        if (s1 == s2) {
+          let (xLo, xHi) = add128(wLo, wHi, 1, 0);
+          adjLo = xLo;
+          adjHi = xHi;
+        } else {
+          let (xLo, xHi) = sub128(wLo, wHi, 1, 0);
+          adjLo = xLo;
+          adjHi = xHi;
+        }
+        return quantize128ToExp(s1, adjLo, adjHi, workExp, fixedExp, mode);
+      }
+    }
+  } else {
+    // Significant-figure context: sticky window when operand 2 lies below 2 guard digits of operand 1.
+    var s = prec + 2 - d1;
+    if (s < 0) {
+      s = 0;
+    }
+    let remGap = gap - s;
+    if (remGap > d2) {
+      let (aScaledLo, aScaledHi) = mul128Pow10(c1Lo, c1Hi, s);
+      let (m10Lo, m10Hi) = mul128ByU64(aScaledLo, aScaledHi, 10);
+      var resLo: u64 = 0;
+      var resHi: u64 = 0;
+      if (s1 == s2) {
+        let (xLo, xHi) = add128(m10Lo, m10Hi, 1, 0);
+        resLo = xLo;
+        resHi = xHi;
+      } else {
+        let (xLo, xHi) = sub128(m10Lo, m10Hi, 1, 0);
+        resLo = xLo;
+        resHi = xHi;
+      }
+      return finalize128(s1, resLo, resHi, e1 - s - 1, prec, etiny, etop, mode);
+    }
+  }
+
+  // Exact intermediate gap (~38..72 digits): evaluate via BigInt.
+  let b1 = u128ToBigInt(c1Lo, c1Hi) * pow10Big(gap);
+  let b2 = u128ToBigInt(c2Lo, c2Hi);
+  if (s1 == s2) {
+    return finalizeCtxBig(
+      s1, b1 + b2, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  let cmp = b1.compareTo(b2);
+  if (cmp == 0) {
+    let zs = zeroCancelSign(s1, s2, mode);
+    return finalizeCtx128(
+      zs, 0, 0, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  if (cmp > 0) {
+    return finalizeCtxBig(
+      s1, b1 - b2, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  return finalizeCtxBig(
+    s2, b2 - b1, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+  );
+}
+
+export function negDecBits(lo: u64, hi: u64): inline (u64, u64) {
+  if (isNaNBits(hi)) {
+    return (0, CANON_NAN_HI);
+  }
+  return (lo, hi ^ SIGN_MASK);
+}
+
+export function absDecBits(lo: u64, hi: u64): inline (u64, u64) {
+  if (isNaNBits(hi)) {
+    return (0, CANON_NAN_HI);
+  }
+  return (lo, hi & (0x7fffffffffffffff as u64));
+}
+
+// ---------------------------------------------------------------------------
+// Multiplication
+// ---------------------------------------------------------------------------
+
+export function mulDecCtx(
+  aLo: u64, aHi: u64, bLo: u64, bHi: u64,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (isNaNBits(aHi) || isNaNBits(bHi)) {
+    return (0, CANON_NAN_HI);
+  }
+  let resSign = signBit(aHi) ^ signBit(bHi);
+  let aInf = isInfBits(aHi);
+  let bInf = isInfBits(bHi);
+  if (aInf || bInf) {
+    if (aInf && !bInf) {
+      let (_, _, cbLo, cbHi) = unpackFinite(bLo, bHi);
+      if (cbLo == 0 && cbHi == 0) {
+        return (0, CANON_NAN_HI);
+      }
+    }
+    if (bInf && !aInf) {
+      let (_, _, caLo, caHi) = unpackFinite(aLo, aHi);
+      if (caLo == 0 && caHi == 0) {
+        return (0, CANON_NAN_HI);
+      }
+    }
+    return packInf(resSign);
+  }
+
+  let (_, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+  let (_, eb, cbLo, cbHi) = unpackFinite(bLo, bHi);
+  let resExp = ea + eb;
+
+  if ((caLo == 0 && caHi == 0) || (cbLo == 0 && cbHi == 0)) {
+    return finalizeCtx128(
+      resSign, 0, 0, resExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+
+  // Fast path: both significands fit in 64 bits (`<= 19` digits), product `< 2^128`.
+  if (caHi == 0 && cbHi == 0) {
+    let (pLo, pHi) = mulWide(caLo, cbLo);
+    // Guard against the tiny sliver `10^38 <= p < 2^128` where `POW10[38]` tops out.
+    if (cmp128(pLo, pHi, POW10_LO[38], POW10_HI[38]) < 0) {
+      return finalizeCtx128(
+        resSign, pLo, pHi, resExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+      );
+    }
+  }
+
+  let prod = u128ToBigInt(caLo, caHi) * u128ToBigInt(cbLo, cbHi);
+  return finalizeCtxBig(
+    resSign, prod, resExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Division and explicit scale division
+// ---------------------------------------------------------------------------
+
+/** Divides `a / b` rounded to an exact target exponent `targetExp` (`-scale`). */
+export function divToExpDec(
+  aLo: u64, aHi: u64, bLo: u64, bHi: u64,
+  targetExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (isNaNBits(aHi) || isNaNBits(bHi)) {
+    return (0, CANON_NAN_HI);
+  }
+  if (targetExp < DEC128_ETINY || targetExp > DEC128_ETOP) {
+    return (0, CANON_NAN_HI);
+  }
+  let resSign = signBit(aHi) ^ signBit(bHi);
+  let aInf = isInfBits(aHi);
+  let bInf = isInfBits(bHi);
+  if (aInf && bInf) {
+    return (0, CANON_NAN_HI);
+  }
+  if (aInf) {
+    return packInf(resSign);
+  }
+  if (bInf) {
+    return packZero(resSign, targetExp);
+  }
+
+  let (_, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+  let (_, eb, cbLo, cbHi) = unpackFinite(bLo, bHi);
+  let aZero = caLo == 0 && caHi == 0;
+  let bZero = cbLo == 0 && cbHi == 0;
+  if (bZero) {
+    if (aZero) {
+      return (0, CANON_NAN_HI);
+    }
+    return packInf(resSign);
+  }
+  if (aZero) {
+    return packZero(resSign, targetExp);
+  }
+
+  let da = digits128(caLo, caHi);
+  let db = digits128(cbLo, cbHi);
+  let shift = ea - eb - targetExp;
+
+  // Quotient has roughly `da - db + shift` digits.
+  if (da - db + shift > DEC128_PREC + 1) {
+    return (0, CANON_NAN_HI);
+  }
+  if (da - db + shift < -1) {
+    // 0 < |a / b| < 0.1 * 10^targetExp: quotient is 0 with tiny positive remainder.
+    if (shouldIncrement(mode, resSign, false, 1)) {
+      return packFinite(resSign, targetExp, 1, 0);
+    }
+    return packZero(resSign, targetExp);
+  }
+
+  var num = u128ToBigInt(caLo, caHi);
+  var den = u128ToBigInt(cbLo, cbHi);
+  if (shift > 0) {
+    num = num * pow10Big(shift);
+  } else if (shift < 0) {
+    den = den * pow10Big(-shift);
+  }
+
+  let (q, rem) = num.divRem(den);
+  let cmp2 = (rem << 1).compareTo(den);
+  let remCat = if (rem.isZero) 0 else if (cmp2 < 0) 1 else if (cmp2 == 0) 2 else 3;
+  let qFinal = if (shouldIncrement(mode, resSign, q.isOdd, remCat)) {
+    q + BigInt.ONE
+  } else {
+    q
+  };
+  if (qFinal.bitLength() > 114) {
+    return (0, CANON_NAN_HI);
+  }
+  let (qLo, qHi) = bigIntToU128(qFinal);
+  if (cmp128(qLo, qHi, MAX_COEFF_LO, MAX_COEFF_HI) > 0) {
+    return (0, CANON_NAN_HI);
+  }
+  return packFinite(resSign, targetExp, qLo, qHi);
+}
+
+export function divDecCtx(
+  aLo: u64, aHi: u64, bLo: u64, bHi: u64,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (isFixedScale) {
+    return divToExpDec(aLo, aHi, bLo, bHi, fixedExp, mode);
+  }
+  if (isNaNBits(aHi) || isNaNBits(bHi)) {
+    return (0, CANON_NAN_HI);
+  }
+  let resSign = signBit(aHi) ^ signBit(bHi);
+  let aInf = isInfBits(aHi);
+  let bInf = isInfBits(bHi);
+  if (aInf && bInf) {
+    return (0, CANON_NAN_HI);
+  }
+  if (aInf) {
+    return packInf(resSign);
+  }
+  if (bInf) {
+    return packZero(resSign, etiny);
+  }
+
+  let (_, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+  let (_, eb, cbLo, cbHi) = unpackFinite(bLo, bHi);
+  let aZero = caLo == 0 && caHi == 0;
+  let bZero = cbLo == 0 && cbHi == 0;
+  if (bZero) {
+    if (aZero) {
+      return (0, CANON_NAN_HI);
+    }
+    return packInf(resSign);
+  }
+  let idealExp = ea - eb;
+  if (aZero) {
+    return packZero(resSign, clampExp(idealExp, etiny, etop));
+  }
+
+  let da = digits128(caLo, caHi);
+  let db = digits128(cbLo, cbHi);
+  let scaleUp = prec - da + db;
+
+  var num = u128ToBigInt(caLo, caHi);
+  var den = u128ToBigInt(cbLo, cbHi);
+  if (scaleUp > 0) {
+    num = num * pow10Big(scaleUp);
+  } else if (scaleUp < 0) {
+    den = den * pow10Big(-scaleUp);
+  }
+
+  let (qRaw, rem) = num.divRem(den);
+  var qExp = idealExp - scaleUp;
+  let (rawLo, rawHi) = bigIntToU128(qRaw);
+  var qLo = rawLo;
+  var qHi = rawHi;
+
+  // If `rem == 0` and `q` has `prec + 1` digits ending in `0`, divide by 10 once.
+  if (rem.isZero && cmp128(qLo, qHi, POW10_LO[prec], POW10_HI[prec]) >= 0) {
+    let (dLo, dHi, dRem) = divRem128ByU64(qLo, qHi, 10);
+    if (dRem == 0) {
+      qLo = dLo;
+      qHi = dHi;
+      qExp += 1;
+    }
+  }
+
+  // Exact quotient fitting in `prec` digits: adjust trailing zeros toward `idealExp`.
+  if (rem.isZero && cmp128(qLo, qHi, POW10_LO[prec], POW10_HI[prec]) < 0) {
+    while (qExp < idealExp) {
+      let (dLo, dHi, dRem) = divRem128ByU64(qLo, qHi, 10);
+      if (dRem != 0) {
+        break;
+      }
+      qLo = dLo;
+      qHi = dHi;
+      qExp += 1;
+    }
+    var qd = digits128(qLo, qHi);
+    while (qExp > idealExp && qd < prec) {
+      let (mLo, mHi) = mul128ByU64(qLo, qHi, 10);
+      qLo = mLo;
+      qHi = mHi;
+      qExp -= 1;
+      qd += 1;
+    }
+    return finalize128(resSign, qLo, qHi, qExp, prec, etiny, etop, mode);
+  }
+
+  // Inexact quotient or `(prec + 1)`-digit quotient: combine `q` and `(rem, den)` in one rounding step.
+  let d = digits128(qLo, qHi);
+  let dropPrec = d - prec;
+  let dropSub = etiny - qExp;
+  var drop = if (dropPrec > dropSub) dropPrec else dropSub;
+  if (drop < 0) {
+    drop = 0;
+  }
+
+  if (drop == 0) {
+    let cmp2 = (rem << 1).compareTo(den);
+    let remCat = if (rem.isZero) 0 else if (cmp2 < 0) 1 else if (cmp2 == 0) 2 else 3;
+    if (shouldIncrement(mode, resSign, (qLo & 1) != 0, remCat)) {
+      let (incLo, incHi) = add128(qLo, qHi, 1, 0);
+      qLo = incLo;
+      qHi = incHi;
+    }
+  } else if (drop > d) {
+    qExp = etiny;
+    if (shouldIncrement(mode, resSign, false, 1)) {
+      return packFinite(resSign, etiny, 1, 0);
+    }
+    return packZero(resSign, etiny);
+  } else {
+    // `1 <= drop <= d <= prec + 1 <= 35`
+    var intQLo: u64 = 0;
+    var intQHi: u64 = 0;
+    var remCat = 0;
+    let hasFrac = !rem.isZero;
+    if (drop <= 19) {
+      let p = POW10_LO[drop];
+      let half = p >>> 1;
+      let (iqLo, iqHi, intRem) = divRem128ByU64(qLo, qHi, p);
+      intQLo = iqLo;
+      intQHi = iqHi;
+      if (intRem == 0 && !hasFrac) {
+        remCat = 0;
+      } else if (intRem < half) {
+        remCat = 1;
+      } else if (intRem == half) {
+        remCat = if (hasFrac) 3 else 2;
+      } else {
+        remCat = 3;
+      }
+    } else {
+      let m = drop - 19;
+      let (q1Lo, q1Hi, r1) = divRem128ByU64(qLo, qHi, POW10_LO[19]);
+      let p2 = POW10_LO[m];
+      let half2 = p2 >>> 1;
+      let (iqLo, iqHi, r2) = divRem128ByU64(q1Lo, q1Hi, p2);
+      intQLo = iqLo;
+      intQHi = iqHi;
+      let lowNonZero = r1 != 0 || hasFrac;
+      if (r2 == 0 && !lowNonZero) {
+        remCat = 0;
+      } else if (r2 < half2) {
+        remCat = 1;
+      } else if (r2 == half2) {
+        remCat = if (lowNonZero) 3 else 2;
+      } else {
+        remCat = 3;
+      }
+    }
+    qLo = intQLo;
+    qHi = intQHi;
+    qExp += drop;
+    if (shouldIncrement(mode, resSign, (qLo & 1) != 0, remCat)) {
+      let (incLo, incHi) = add128(qLo, qHi, 1, 0);
+      qLo = incLo;
+      qHi = incHi;
+    }
+    if (qLo == 0 && qHi == 0) {
+      return packZero(resSign, clampExp(qExp, etiny, etop));
+    }
+  }
+
+  if (cmp128(qLo, qHi, POW10_LO[prec], POW10_HI[prec]) >= 0) {
+    qLo = POW10_LO[prec - 1];
+    qHi = POW10_HI[prec - 1];
+    qExp += 1;
+  }
+  if (qExp > etop) {
+    let qd = digits128(qLo, qHi);
+    let shift = qExp - etop;
+    if (qd + shift > prec) {
+      return overflowResult(resSign, prec, etop, mode);
+    }
+    let (sLo, sHi) = mul128Pow10(qLo, qHi, shift);
+    return packFinite(resSign, etop, sLo, sHi);
+  }
+  return packFinite(resSign, qExp, qLo, qHi);
+}
+
+// ---------------------------------------------------------------------------
+// Truncating integer division & remainder (`%` and `divRem`)
+// ---------------------------------------------------------------------------
+
+/** Positive finite magnitude comparison: `-1`, `0`, or `1`. */
+export function cmpFiniteMag(
+  c1Lo: u64, c1Hi: u64, e1: i32,
+  c2Lo: u64, c2Hi: u64, e2: i32,
+): i32 {
+  let z1 = c1Lo == 0 && c1Hi == 0;
+  let z2 = c2Lo == 0 && c2Hi == 0;
+  if (z1 && z2) {
+    return 0;
+  }
+  if (z1) {
+    return -1;
+  }
+  if (z2) {
+    return 1;
+  }
+  let d1 = digits128(c1Lo, c1Hi);
+  let d2 = digits128(c2Lo, c2Hi);
+  let adj1 = d1 + e1;
+  let adj2 = d2 + e2;
+  if (adj1 != adj2) {
+    return if (adj1 < adj2) -1 else 1;
+  }
+  if (e1 == e2) {
+    return cmp128(c1Lo, c1Hi, c2Lo, c2Hi);
+  }
+  if (e1 > e2) {
+    let (s1Lo, s1Hi) = mul128Pow10(c1Lo, c1Hi, e1 - e2);
+    return cmp128(s1Lo, s1Hi, c2Lo, c2Hi);
+  }
+  let (s2Lo, s2Hi) = mul128Pow10(c2Lo, c2Hi, e2 - e1);
+  return cmp128(c1Lo, c1Hi, s2Lo, s2Hi);
+}
+
+/**
+ * Computes `(qLo, qHi, rLo, rHi)` for truncating `divRem` under `(prec, etiny, etop, ...)`
+ * where `q` is the exact integer quotient (`exp == 0`) and `r` is `a - q * b`.
+ * Per IEEE 754 / Cowlishaw `divide-integer` and `remainder`, returns `(NaN, NaN)`
+ * when `|a / b| >= 10^prec`.
+ */
+export function divRemDecCtx(
+  aLo: u64, aHi: u64, bLo: u64, bHi: u64,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (u64, u64, u64, u64) {
+  if (isNaNBits(aHi) || isNaNBits(bHi) || isInfBits(aHi)) {
+    return (0, CANON_NAN_HI, 0, CANON_NAN_HI);
+  }
+  let sa = signBit(aHi);
+  let sb = signBit(bHi);
+  let qSign = sa ^ sb;
+
+  if (isInfBits(bHi)) {
+    let (_, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+    let (qLo, qHi) = packZero(qSign, 0);
+    let (rLo, rHi) = finalizeCtx128(
+      sa, caLo, caHi, ea, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+    return (qLo, qHi, rLo, rHi);
+  }
+
+  let (_, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+  let (_, eb, cbLo, cbHi) = unpackFinite(bLo, bHi);
+  if (cbLo == 0 && cbHi == 0) {
+    return (0, CANON_NAN_HI, 0, CANON_NAN_HI);
+  }
+  let idealRemExp = if (ea < eb) ea else eb;
+  if (caLo == 0 && caHi == 0) {
+    let (qLo, qHi) = packZero(qSign, 0);
+    let (rLo, rHi) = finalizeCtx128(
+      sa, 0, 0, idealRemExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+    return (qLo, qHi, rLo, rHi);
+  }
+
+  let cmpMag = cmpFiniteMag(caLo, caHi, ea, cbLo, cbHi, eb);
+  if (cmpMag < 0) {
+    let (qLo, qHi) = packZero(qSign, 0);
+    let (rLo, rHi) = alignNonZeroWithZero(
+      sa, caLo, caHi, ea, idealRemExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+    return (qLo, qHi, rLo, rHi);
+  }
+
+  // Check if integer quotient exceeds `prec` digits before scaling.
+  let da = digits128(caLo, caHi);
+  let db = digits128(cbLo, cbHi);
+  if (da + ea - (db + eb) > prec) {
+    return (0, CANON_NAN_HI, 0, CANON_NAN_HI);
+  }
+
+  // Because `|a| >= |b|` and `|a / b| < 10^(prec + 1)`, `ea - eb` lies within `-34..68`.
+  var num = u128ToBigInt(caLo, caHi);
+  var den = u128ToBigInt(cbLo, cbHi);
+  if (ea > eb) {
+    num = num * pow10Big(ea - eb);
+  } else if (eb > ea) {
+    den = den * pow10Big(eb - ea);
+  }
+  let (qBig, rBig) = num.divRem(den);
+  if (qBig.compareTo(pow10Big(prec)) >= 0) {
+    return (0, CANON_NAN_HI, 0, CANON_NAN_HI);
+  }
+  let (qiLo, qiHi) = bigIntToU128(qBig);
+  let (qLo, qHi) = packFinite(qSign, 0, qiLo, qiHi);
+  let (rLo, rHi) = finalizeCtxBig(
+    sa, rBig, idealRemExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+  );
+  return (qLo, qHi, rLo, rHi);
+}
+
+export function remDecCtx(
+  aLo: u64, aHi: u64, bLo: u64, bHi: u64,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  let (_, _, rLo, rHi) = divRemDecCtx(
+    aLo, aHi, bLo, bHi, prec, etiny, etop, isFixedScale, fixedExp, mode,
+  );
+  return (rLo, rHi);
+}
+
+// ---------------------------------------------------------------------------
+// Fused multiply-add (`(a * b) + c` with single rounding)
+// ---------------------------------------------------------------------------
+
+export function fmaDecCtx(
+  aLo: u64, aHi: u64, bLo: u64, bHi: u64, cLo: u64, cHi: u64,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (isNaNBits(aHi) || isNaNBits(bHi) || isNaNBits(cHi)) {
+    return (0, CANON_NAN_HI);
+  }
+  let prodSign = signBit(aHi) ^ signBit(bHi);
+  let aInf = isInfBits(aHi);
+  let bInf = isInfBits(bHi);
+  let cInf = isInfBits(cHi);
+
+  if (aInf || bInf) {
+    if (aInf && !bInf) {
+      let (_, _, cbLo, cbHi) = unpackFinite(bLo, bHi);
+      if (cbLo == 0 && cbHi == 0) {
+        return (0, CANON_NAN_HI);
+      }
+    }
+    if (bInf && !aInf) {
+      let (_, _, caLo, caHi) = unpackFinite(aLo, aHi);
+      if (caLo == 0 && caHi == 0) {
+        return (0, CANON_NAN_HI);
+      }
+    }
+    if (cInf && signBit(cHi) != prodSign) {
+      return (0, CANON_NAN_HI);
+    }
+    return packInf(prodSign);
+  }
+  if (cInf) {
+    return (cLo, cHi);
+  }
+
+  let (_, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+  let (_, eb, cbLo, cbHi) = unpackFinite(bLo, bHi);
+  let (sc, ec, ccLo, ccHi) = unpackFinite(cLo, cHi);
+  let prodExp = ea + eb;
+  let prodZero = (caLo == 0 && caHi == 0) || (cbLo == 0 && cbHi == 0);
+  let cZero = ccLo == 0 && ccHi == 0;
+
+  if (prodZero) {
+    let (zLo, zHi) = packZero(prodSign, clampExp(prodExp, DEC128_ETINY, DEC128_ETOP));
+    if (prodExp < DEC128_ETINY || prodExp > DEC128_ETOP) {
+      // Preserve exact un-clamped zero alignment when `c` is non-zero or zero.
+      if (cZero) {
+        let zs = zeroCancelSign(prodSign, sc, mode);
+        if (isFixedScale) {
+          return quantize128ToExp(zs, 0, 0, 0, fixedExp, mode);
+        }
+        let minExp = if (prodExp < ec) prodExp else ec;
+        return packZero(zs, clampExp(minExp, etiny, etop));
+      }
+      return alignNonZeroWithZero(
+        sc, ccLo, ccHi, ec, prodExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+      );
+    }
+    return addDecCtx(
+      zLo, zHi, cLo, cHi, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+
+  let prodBig = u128ToBigInt(caLo, caHi) * u128ToBigInt(cbLo, cbHi);
+  let dp = digitsBig(prodBig);
+
+  if (cZero) {
+    if (!isFixedScale && ec < prodExp && dp < prec) {
+      let maxPad = prec - dp;
+      let wantPad = prodExp - ec;
+      let pad = if (wantPad < maxPad) wantPad else maxPad;
+      return finalizeBig(
+        prodSign, prodBig * pow10Big(pad), prodExp - pad, prec, etiny, etop, mode,
+      );
+    }
+    return finalizeCtxBig(
+      prodSign, prodBig, prodExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+
+  let cBig = u128ToBigInt(ccLo, ccHi);
+  let dc = digits128(ccLo, ccHi);
+
+  // Order `(s1, v1, d1, e1)` and `(s2, v2, d2, e2)` so `e1 >= e2`.
+  var s1 = prodSign;
+  var v1 = prodBig;
+  var d1 = dp;
+  var e1 = prodExp;
+  var s2 = sc;
+  var v2 = cBig;
+  var d2 = dc;
+  var e2 = ec;
+  if (e1 < e2) {
+    s1 = sc; v1 = cBig; d1 = dc; e1 = ec;
+    s2 = prodSign; v2 = prodBig; d2 = dp; e2 = prodExp;
+  }
+
+  let gap = e1 - e2;
+  if (!isFixedScale) {
+    var s = prec + 2 - d1;
+    if (s < 0) {
+      s = 0;
+    }
+    if (gap - s > d2) {
+      let scaled10 = v1 * pow10Big(s + 1);
+      let adj = if (s1 == s2) scaled10 + BigInt.ONE else scaled10 - BigInt.ONE;
+      return finalizeBig(s1, adj, e1 - s - 1, prec, etiny, etop, mode);
+    }
+  } else {
+    if (d1 + e1 - fixedExp > DEC128_PREC + 1) {
+      return (0, CANON_NAN_HI);
+    }
+    if (d1 + e1 < fixedExp - 1) {
+      if (shouldIncrement(mode, s1, false, 1)) {
+        return quantize128ToExp(s1, 1, 0, fixedExp, fixedExp, mode);
+      }
+      return quantize128ToExp(s1, 0, 0, fixedExp, fixedExp, mode);
+    }
+    let workExp = fixedExp - 2;
+    if (e1 >= workExp && d2 + e2 <= workExp) {
+      let shift1 = e1 - workExp;
+      let scaled = v1 * pow10Big(shift1);
+      let adj = if (s1 == s2) scaled + BigInt.ONE else scaled - BigInt.ONE;
+      return quantizeBigToExp(s1, adj, workExp, fixedExp, mode);
+    }
+  }
+
+  let aligned1 = v1 * pow10Big(gap);
+  if (s1 == s2) {
+    return finalizeCtxBig(
+      s1, aligned1 + v2, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  let cmp = aligned1.compareTo(v2);
+  if (cmp == 0) {
+    let zs = zeroCancelSign(s1, s2, mode);
+    return finalizeCtx128(
+      zs, 0, 0, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  if (cmp > 0) {
+    return finalizeCtxBig(
+      s1, aligned1 - v2, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  return finalizeCtxBig(
+    s2, v2 - aligned1, e2, prec, etiny, etop, isFixedScale, fixedExp, mode,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Exact single-rounded square root (`sqrt`)
+// ---------------------------------------------------------------------------
+
+/** Returns `(s, rem)` with `s = floor(sqrt(n))` and `rem = n - s * s` for `n >= 0`. */
+function isqrtRemBig(n: BigInt): inline (BigInt, BigInt) {
+  if (n.isZero) {
+    return (BigInt.ZERO, BigInt.ZERO);
+  }
+  let bits = n.bitLength();
+  var x = BigInt.ONE << ((bits + 1) >> 1);
+  while (true) {
+    let next = (x + n.div(x)) >> 1;
+    if (next.compareTo(x) >= 0) {
+      return (x, n - x * x);
+    }
+    x = next;
+  }
+}
+
+export function sqrtDecCtx(
+  lo: u64, hi: u64,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (isNaNBits(hi)) {
+    return (0, CANON_NAN_HI);
+  }
+  let sign = signBit(hi);
+  if (isInfBits(hi)) {
+    if (sign == 0) {
+      return (0, POS_INF_HI);
+    }
+    return (0, CANON_NAN_HI);
+  }
+  let (_, exp, cLo, cHi) = unpackFinite(lo, hi);
+  if (cLo == 0 && cHi == 0) {
+    let zExp = if (isFixedScale) fixedExp else (exp >> 1);
+    if (isFixedScale) {
+      return quantize128ToExp(sign, 0, 0, zExp, fixedExp, mode);
+    }
+    return packZero(sign, clampExp(zExp, etiny, etop));
+  }
+  if (sign != 0) {
+    return (0, CANON_NAN_HI);
+  }
+
+  let dx = digits128(cLo, cHi);
+  let cBig = u128ToBigInt(cLo, cHi);
+
+  if (isFixedScale) {
+    if (fixedExp < DEC128_ETINY || fixedExp > DEC128_ETOP) {
+      return (0, CANON_NAN_HI);
+    }
+    let shift = exp - 2 * fixedExp;
+    if (dx + shift > 2 * DEC128_PREC + 1) {
+      return (0, CANON_NAN_HI);
+    }
+    if (dx + shift < -1) {
+      if (shouldIncrement(mode, 0, false, 1)) {
+        return packFinite(0, fixedExp, 1, 0);
+      }
+      return packZero(0, fixedExp);
+    }
+    if (shift >= 0) {
+      let radicand = cBig * pow10Big(shift);
+      let (s, rem) = isqrtRemBig(radicand);
+      let remCat = if (rem.isZero) 0 else if (rem.compareTo(s) <= 0) 1 else 3;
+      let q = if (shouldIncrement(mode, 0, s.isOdd, remCat)) {
+        s + BigInt.ONE
+      } else {
+        s
+      };
+      return quantizeBigToExp(0, q, fixedExp, fixedExp, mode);
+    }
+    let m = (-shift + 1) >> 1;
+    let remParity = shift + 2 * m; // 0 or 1
+    let radicand = if (remParity == 1) cBig * BigInt.from(10) else cBig;
+    let (s, rem) = isqrtRemBig(radicand);
+    let pDrop = pow10Big(m);
+    let half = pDrop >> 1;
+    let (q, intRem) = s.divRem(pDrop);
+    var remCat = 0;
+    let cmpHalf = intRem.compareTo(half);
+    if (intRem.isZero && rem.isZero) {
+      remCat = 0;
+    } else if (cmpHalf < 0) {
+      remCat = 1;
+    } else if (cmpHalf == 0) {
+      remCat = if (rem.isZero) 2 else 3;
+    } else {
+      remCat = 3;
+    }
+    let qFinal = if (shouldIncrement(mode, 0, q.isOdd, remCat)) {
+      q + BigInt.ONE
+    } else {
+      q
+    };
+    return quantizeBigToExp(0, qFinal, fixedExp, fixedExp, mode);
+  }
+
+  let idealExp = exp >> 1;
+  var k = 2 * prec + 1 - dx;
+  if (k < 0) {
+    k = 0;
+  }
+  if (((exp - k) & 1) != 0) {
+    k += 1;
+  }
+
+  let workExp = (exp - k) >> 1;
+  let radicand = if (k > 0) cBig * pow10Big(k) else cBig;
+  let (s, rem) = isqrtRemBig(radicand);
+  let (s0Lo, s0Hi) = bigIntToU128(s);
+  var sLo = s0Lo;
+  var sHi = s0Hi;
+  var rExp = workExp;
+  if (rem.isZero) {
+    while (rExp < idealExp) {
+      let (dLo, dHi, dRem) = divRem128ByU64(sLo, sHi, 10);
+      if (dRem != 0) {
+        break;
+      }
+      sLo = dLo;
+      sHi = dHi;
+      rExp += 1;
+    }
+    return finalize128(0, sLo, sHi, rExp, prec, etiny, etop, mode);
+  }
+  // Append sticky digit `1` (`10 * s + 1` at `workExp - 1`). Because `s >= 10^prec`,
+  // `10 * s + 1` has `>= prec + 2` digits (`<= 36` digits `< 10^38`), so `finalize128`
+  // drops `>= 2` digits in a single rounding step across both normal and subnormal results.
+  let (m10Lo, m10Hi) = mul128ByU64(sLo, sHi, 10);
+  let (stLo, stHi) = add128(m10Lo, m10Hi, 1, 0);
+  return finalize128(0, stLo, stHi, rExp - 1, prec, etiny, etop, mode);
+}
+
+// ---------------------------------------------------------------------------
+// Integer power (`pow(exp: i32)`)
+// ---------------------------------------------------------------------------
+
+function clampI64ToExp(v: i64): i32 {
+  if (v < -1000000) {
+    return -1000000;
+  }
+  if (v > 1000000) {
+    return 1000000;
+  }
+  return v as i32;
+}
+
+export function powDecCtx(
+  lo: u64, hi: u64, exp: i32,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (exp == 0) {
+    return finalizeCtx128(
+      0, 1, 0, 0, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  if (isNaNBits(hi)) {
+    return (0, CANON_NAN_HI);
+  }
+  let sign = signBit(hi);
+  let resSign = if ((exp & 1) != 0) sign else 0;
+  if (isInfBits(hi)) {
+    if (exp > 0) {
+      return packInf(resSign);
+    }
+    if (isFixedScale) {
+      return quantize128ToExp(resSign, 0, 0, fixedExp, fixedExp, mode);
+    }
+    return packZero(resSign, etiny);
+  }
+
+  let (_, q, cLo, cHi) = unpackFinite(lo, hi);
+  if (cLo == 0 && cHi == 0) {
+    if (exp < 0) {
+      return packInf(resSign);
+    }
+    let zExp = clampI64ToExp((q as i64) * (exp as i64));
+    return finalizeCtx128(
+      resSign, 0, 0, zExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  if (exp == 1) {
+    return finalizeCtx128(
+      sign, cLo, cHi, q, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+
+  let absExp = if (exp < 0) -(exp as i64) else (exp as i64);
+
+  // Exact single-rounded path for small exponents (`|exp| <= 20`).
+  if (absExp <= 20) {
+    let pBig = u128ToBigInt(cLo, cHi).pow(absExp);
+    let pExp = (q as i64) * absExp;
+    if (exp > 0) {
+      return finalizeCtxBig(
+        resSign, pBig, clampI64ToExp(pExp),
+        prec, etiny, etop, isFixedScale, fixedExp, mode,
+      );
+    }
+    // `exp < 0`: compute `1 / (pBig * 10^pExp)`.
+    let dp = digitsBig(pBig);
+    if (isFixedScale) {
+      let shift = -pExp - (fixedExp as i64);
+      if ((1 - dp as i64) + shift > (DEC128_PREC + 1) as i64) {
+        return (0, CANON_NAN_HI);
+      }
+      if ((1 - dp as i64) + shift < -1) {
+        if (shouldIncrement(mode, resSign, false, 1)) {
+          return quantize128ToExp(resSign, 1, 0, fixedExp, fixedExp, mode);
+        }
+        return quantize128ToExp(resSign, 0, 0, fixedExp, fixedExp, mode);
+      }
+      let s = shift as i32;
+      let num = if (s > 0) pow10Big(s) else BigInt.ONE;
+      let den = if (s < 0) pBig * pow10Big(-s) else pBig;
+      let (quo, rem) = num.divRem(den);
+      let cmp2 = (rem << 1).compareTo(den);
+      let remCat = if (rem.isZero) 0 else if (cmp2 < 0) 1 else if (cmp2 == 0) 2 else 3;
+      let qf = if (shouldIncrement(mode, resSign, quo.isOdd, remCat)) {
+        quo + BigInt.ONE
+      } else {
+        quo
+      };
+      return quantizeBigToExp(resSign, qf, fixedExp, fixedExp, mode);
+    }
+
+    let idealExp = clampI64ToExp(-pExp);
+    let scaleUp = (prec + dp) as i64;
+    let num = pow10Big(scaleUp as i32);
+    let (quo, rem) = num.divRem(pBig);
+    var qExp = clampI64ToExp(-pExp - scaleUp);
+    let (r0Lo, r0Hi) = bigIntToU128(quo);
+    var qLo = r0Lo;
+    var qHi = r0Hi;
+    if (rem.isZero && cmp128(qLo, qHi, POW10_LO[prec], POW10_HI[prec]) >= 0) {
+      let (dLo, dHi, dRem) = divRem128ByU64(qLo, qHi, 10);
+      if (dRem == 0) {
+        qLo = dLo; qHi = dHi; qExp += 1;
+      }
+    }
+    if (rem.isZero && cmp128(qLo, qHi, POW10_LO[prec], POW10_HI[prec]) < 0) {
+      while (qExp < idealExp) {
+        let (dLo, dHi, dRem) = divRem128ByU64(qLo, qHi, 10);
+        if (dRem != 0) { break; }
+        qLo = dLo; qHi = dHi; qExp += 1;
+      }
+      return finalize128(resSign, qLo, qHi, qExp, prec, etiny, etop, mode);
+    }
+    let d = digits128(qLo, qHi);
+    let dropPrec = d - prec;
+    let dropSub = etiny - qExp;
+    var drop = if (dropPrec > dropSub) dropPrec else dropSub;
+    if (drop < 0) { drop = 0; }
+    if (drop == 0) {
+      let cmp2 = (rem << 1).compareTo(pBig);
+      let remCat = if (rem.isZero) 0 else if (cmp2 < 0) 1 else if (cmp2 == 0) 2 else 3;
+      if (shouldIncrement(mode, resSign, (qLo & 1) != 0, remCat)) {
+        let (iLo, iHi) = add128(qLo, qHi, 1, 0);
+        qLo = iLo; qHi = iHi;
+      }
+      return finalize128(resSign, qLo, qHi, qExp, prec, etiny, etop, mode);
+    }
+    if (drop > d) {
+      if (shouldIncrement(mode, resSign, false, 1)) {
+        return packFinite(resSign, etiny, 1, 0);
+      }
+      return packZero(resSign, etiny);
+    }
+    let pDrop = pow10Big(drop);
+    let half = pDrop >> 1;
+    let (iq, intRem) = quo.divRem(pDrop);
+    let hasFrac = !rem.isZero;
+    let cmpHalf = intRem.compareTo(half);
+    let remCat = if (intRem.isZero && !hasFrac) {
+      0
+    } else if (cmpHalf < 0) {
+      1
+    } else if (cmpHalf == 0) {
+      if (hasFrac) 3 else 2
+    } else {
+      3
+    };
+    let iqFinal = if (shouldIncrement(mode, resSign, iq.isOdd, remCat)) {
+      iq + BigInt.ONE
+    } else {
+      iq
+    };
+    return finalizeBig(resSign, iqFinal, qExp + drop, prec, etiny, etop, mode);
+  }
+
+  // Extended-precision (48 decimal digits) binary exponentiation for large `|exp| > 20`.
+  let workPrec = 48;
+  let p48 = pow10Big(workPrec);
+  var baseM = u128ToBigInt(cLo, cHi);
+  var baseE = q as i64;
+  var accM = BigInt.ONE;
+  var accE: i64 = 0;
+  var e = absExp;
+
+  while (e > 0) {
+    if ((e & 1) != 0) {
+      accM = accM * baseM;
+      accE += baseE;
+      let da = digitsBig(accM);
+      if (da > workPrec) {
+        let drop = da - workPrec;
+        accM = roundDivPow10Big(accM, drop, 0, RoundingMode.HalfEven);
+        accE += drop as i64;
+      }
+      let approxLog10 = accE + (digitsBig(accM) as i64) - 1;
+      if (exp > 0 && approxLog10 > 20000) {
+        if (isFixedScale) { return (0, CANON_NAN_HI); }
+        return overflowResult(resSign, prec, etop, mode);
+      }
+      if (exp > 0 && approxLog10 < -20000) {
+        return finalizeCtx128(
+          resSign, 1, 0, -20000, prec, etiny, etop, isFixedScale, fixedExp, mode,
+        );
+      }
+      if (exp < 0 && approxLog10 > 20000) {
+        return finalizeCtx128(
+          resSign, 1, 0, -20000, prec, etiny, etop, isFixedScale, fixedExp, mode,
+        );
+      }
+      if (exp < 0 && approxLog10 < -20000) {
+        if (isFixedScale) { return (0, CANON_NAN_HI); }
+        return overflowResult(resSign, prec, etop, mode);
+      }
+    }
+    e = e >> 1;
+    if (e > 0) {
+      baseM = baseM * baseM;
+      baseE = baseE * 2;
+      let db = digitsBig(baseM);
+      if (db > workPrec) {
+        let drop = db - workPrec;
+        baseM = roundDivPow10Big(baseM, drop, 0, RoundingMode.HalfEven);
+        baseE += drop as i64;
+      }
+      // Clamp runaway squaring exponent so `baseE * 2` never wraps `i64`.
+      if (baseE > 100000) { baseE = 100000; }
+      if (baseE < -100000) { baseE = -100000; }
+    }
+  }
+
+  if (exp > 0) {
+    return finalizeCtxBig(
+      resSign, accM, clampI64ToExp(accE),
+      prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  let da = digitsBig(accM);
+  let invScale = workPrec + da;
+  let (invM, invRem) = pow10Big(invScale).divRem(accM);
+  var invAdj = invM;
+  if (!invRem.isZero && (invM & BigInt.ONE).isZero) {
+    // Keep sticky accuracy in the 48th guard digit.
+    let _ = p48;
+    invAdj = (invM * BigInt.from(10)) + BigInt.ONE;
+    return finalizeCtxBig(
+      resSign, invAdj, clampI64ToExp(-accE - (invScale as i64) - 1),
+      prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+  }
+  return finalizeCtxBig(
+    resSign, invAdj, clampI64ToExp(-accE - (invScale as i64)),
+    prec, etiny, etop, isFixedScale, fixedExp, mode,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Normalization, equality, total ordering, and hashing
+// ---------------------------------------------------------------------------
+
+/** Strips trailing zeros from non-zero `(cLo, cHi)`, returning `(nLo, nHi, nExp)`. */
+export function stripZeros128(
+  cLo: u64, cHi: u64, exp: i32,
+): inline (u64, u64, i32) {
+  if (cLo == 0 && cHi == 0) {
+    return (0, 0, 0);
+  }
+  var lo = cLo;
+  var hi = cHi;
+  var e = exp;
+  while (true) {
+    let (qLo, qHi, rem) = divRem128ByU64(lo, hi, 100000000);
+    if (rem != 0) {
+      break;
+    }
+    lo = qLo;
+    hi = qHi;
+    e += 8;
+  }
+  while (true) {
+    let (qLo, qHi, rem) = divRem128ByU64(lo, hi, 10);
+    if (rem != 0) {
+      break;
+    }
+    lo = qLo;
+    hi = qHi;
+    e += 1;
+  }
+  return (lo, hi, e);
+}
+
+export function normalizeDecBits(lo: u64, hi: u64): inline (u64, u64) {
+  if (isSpecialBits(hi)) {
+    return (lo, hi);
+  }
+  let (sign, exp, cLo, cHi) = unpackFinite(lo, hi);
+  if (cLo == 0 && cHi == 0) {
+    return packZero(sign, 0);
+  }
+  let (nLo, nHi, nExp) = stripZeros128(cLo, cHi, exp);
+  return finalize128(
+    sign, nLo, nHi, nExp,
+    DEC128_PREC, DEC128_ETINY, DEC128_ETOP, RoundingMode.HalfEven,
+  );
+}
+
+export function eqDecBits(aLo: u64, aHi: u64, bLo: u64, bHi: u64): boolean {
+  if (isNaNBits(aHi) || isNaNBits(bHi)) {
+    return false;
+  }
+  if (aLo == bLo && aHi == bHi) {
+    return true;
+  }
+  if (isInfBits(aHi) || isInfBits(bHi)) {
+    return false;
+  }
+  let (s1, e1, c1Lo, c1Hi) = unpackFinite(aLo, aHi);
+  let (s2, e2, c2Lo, c2Hi) = unpackFinite(bLo, bHi);
+  let z1 = c1Lo == 0 && c1Hi == 0;
+  let z2 = c2Lo == 0 && c2Hi == 0;
+  if (z1 && z2) {
+    return true;
+  }
+  if (z1 || z2 || s1 != s2) {
+    return false;
+  }
+  let d1 = digits128(c1Lo, c1Hi);
+  let d2 = digits128(c2Lo, c2Hi);
+  if (d1 + e1 != d2 + e2) {
+    return false;
+  }
+  if (e1 == e2) {
+    return c1Lo == c2Lo && c1Hi == c2Hi;
+  }
+  if (e1 > e2) {
+    let (scLo, scHi) = mul128Pow10(c1Lo, c1Hi, e1 - e2);
+    return scLo == c2Lo && scHi == c2Hi;
+  }
+  let (scLo, scHi) = mul128Pow10(c2Lo, c2Hi, e2 - e1);
+  return c1Lo == scLo && c1Hi == scHi;
+}
+
+/**
+ * Numerical comparison returning `-1`, `0`, `1`, or `2` when either operand
+ * is `NaN` (unordered).
+ */
+export function cmpDecNumerical(
+  aLo: u64, aHi: u64, bLo: u64, bHi: u64,
+): i32 {
+  if (isNaNBits(aHi) || isNaNBits(bHi)) {
+    return 2;
+  }
+  let aInf = isInfBits(aHi);
+  let bInf = isInfBits(bHi);
+  let sa = signBit(aHi);
+  let sb = signBit(bHi);
+  if (aInf && bInf) {
+    if (sa == sb) {
+      return 0;
+    }
+    return if (sa != 0) -1 else 1;
+  }
+  if (aInf) {
+    return if (sa != 0) -1 else 1;
+  }
+  if (bInf) {
+    return if (sb != 0) 1 else -1;
+  }
+  let (_, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+  let (_, eb, cbLo, cbHi) = unpackFinite(bLo, bHi);
+  let za = caLo == 0 && caHi == 0;
+  let zb = cbLo == 0 && cbHi == 0;
+  if (za && zb) {
+    return 0;
+  }
+  if (sa != sb) {
+    return if (sa != 0) -1 else 1;
+  }
+  let mag = cmpFiniteMag(caLo, caHi, ea, cbLo, cbHi, eb);
+  return if (sa == 0) mag else -mag;
+}
+
+/**
+ * IEEE 754-2008 §5.10 `totalOrder` over `Decimal` values, distinguishing `-0`
+ * from `+0`, cohorts (`1.00 < 1.0`, `-1.0 < -1.00`), infinities, and `NaN`.
+ */
+export function cmpDecTotal(aLo: u64, aHi: u64, bLo: u64, bHi: u64): i32 {
+  if (aLo == bLo && aHi == bHi) {
+    return 0;
+  }
+  let sa = signBit(aHi);
+  let sb = signBit(bHi);
+  if (sa != sb) {
+    return if (sa != 0) -1 else 1;
+  }
+  // Both have the same sign: compute positive order and negate if negative.
+  var posOrd = 0;
+  let aNaN = isNaNBits(aHi);
+  let bNaN = isNaNBits(bHi);
+  if (aNaN || bNaN) {
+    if (aNaN && bNaN) {
+      posOrd = 0;
+    } else {
+      posOrd = if (aNaN) 1 else -1;
+    }
+  } else if (isInfBits(aHi) || isInfBits(bHi)) {
+    if (isInfBits(aHi) && isInfBits(bHi)) {
+      posOrd = 0;
+    } else {
+      posOrd = if (isInfBits(aHi)) 1 else -1;
+    }
+  } else {
+    let (_, ea, caLo, caHi) = unpackFinite(aLo, aHi);
+    let (_, eb, cbLo, cbHi) = unpackFinite(bLo, bHi);
+    let mag = cmpFiniteMag(caLo, caHi, ea, cbLo, cbHi, eb);
+    if (mag != 0) {
+      posOrd = mag;
+    } else if (ea != eb) {
+      posOrd = if (ea < eb) -1 else 1;
+    } else {
+      posOrd = 0;
+    }
+  }
+  return if (sa == 0) posOrd else -posOrd;
+}
+
+export function hashDecBits(lo: u64, hi: u64): i32 {
+  if (isNaNBits(hi)) {
+    return 0x7fc00000;
+  }
+  if (isInfBits(hi)) {
+    return if (signBit(hi) == 0) 0x7f800000 else -8388608;
+  }
+  let (sign, exp, cLo, cHi) = unpackFinite(lo, hi);
+  if (cLo == 0 && cHi == 0) {
+    return 0;
+  }
+  let (nLo, nHi, nExp) = stripZeros128(cLo, cHi, exp);
+  var h: i32 = if (sign == 0) -2128831035 else 0x517cc1b7;
+  h = (h ^ ((nLo & 0xffffffff) as i32)) * 0x01000193;
+  h = (h ^ ((nLo >>> 32) as i32)) * 0x01000193;
+  h = (h ^ ((nHi & 0xffffffff) as i32)) * 0x01000193;
+  h = (h ^ ((nHi >>> 32) as i32)) * 0x01000193;
+  h = (h ^ nExp) * 0x01000193;
+  return h;
+}
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+function matchAsciiWord(text: String, pos: i32, word: String): boolean {
+  let wLen = word.length;
+  if (pos + wLen != text.length) {
+    return false;
+  }
+  for (var i = 0; i < wLen; i += 1) {
+    if (text.getByteAt(pos + i) != word.getByteAt(i)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Parses `text` into `(true, lo, hi)` under `(prec, etiny, etop, ...)` or
+ * returns `(false, 0, 0)` on invalid syntax.
+ */
+export function parseDecCtx(
+  text: String,
+  prec: i32, etiny: i32, etop: i32,
+  isFixedScale: boolean, fixedExp: i32, mode: RoundingMode,
+): inline (boolean, u64, u64) {
+  let len = text.length;
+  if (len == 0) {
+    return (false, 0, 0);
+  }
+
+  var pos = 0;
+  var sign = 0;
+  let first = text.getByteAt(0);
+  if (first == 45) { // '-'
+    sign = 1;
+    pos = 1;
+  } else if (first == 43) { // '+'
+    pos = 1;
+  }
+  if (pos >= len) {
+    return (false, 0, 0);
+  }
+
+  let ch0 = text.getByteAt(pos);
+  if (ch0 == 78) { // 'N'
+    if (matchAsciiWord(text, pos, 'NaN')) {
+      return (true, 0, CANON_NAN_HI);
+    }
+    return (false, 0, 0);
+  }
+  if (ch0 == 73) { // 'I'
+    if (matchAsciiWord(text, pos, 'Infinity')) {
+      let (iLo, iHi) = packInf(sign);
+      return (true, iLo, iHi);
+    }
+    return (false, 0, 0);
+  }
+
+  var cLo: u64 = 0;
+  var cHi: u64 = 0;
+  var sigDigits = 0;
+  var guardDigit = 0;
+  var stickyAfter36 = false;
+  var extraExp: i64 = 0;
+  var fracDigits: i64 = 0;
+  var seenDot = false;
+  var seenAnyDigit = false;
+  var prevWasDigit = false;
+  var prevWasUnderscore = false;
+
+  while (pos < len) {
+    let b = text.getByteAt(pos);
+    if (b >= 48 && b <= 57) {
+      let d = b - 48;
+      seenAnyDigit = true;
+      prevWasDigit = true;
+      prevWasUnderscore = false;
+      if (seenDot) {
+        fracDigits += 1;
+      }
+      if (sigDigits == 0 && d == 0) {
+        // Leading zero: only affects `fracDigits` when after decimal point.
+      } else if (sigDigits < 35) {
+        let (mLo, mHi) = mul128ByU64(cLo, cHi, 10);
+        let (aLo, aHi) = add128(mLo, mHi, d as u64, 0);
+        cLo = aLo;
+        cHi = aHi;
+        sigDigits += 1;
+      } else if (sigDigits == 35) {
+        guardDigit = d;
+        sigDigits = 36;
+        extraExp += 1;
+      } else {
+        if (d != 0) {
+          stickyAfter36 = true;
+        }
+        extraExp += 1;
+      }
+      pos += 1;
+    } else if (b == 46) { // '.'
+      if (seenDot || prevWasUnderscore) {
+        return (false, 0, 0);
+      }
+      seenDot = true;
+      prevWasDigit = false;
+      pos += 1;
+    } else if (b == 95) { // '_'
+      if (!prevWasDigit || pos + 1 >= len) {
+        return (false, 0, 0);
+      }
+      let nextB = text.getByteAt(pos + 1);
+      if (nextB < 48 || nextB > 57) {
+        return (false, 0, 0);
+      }
+      prevWasDigit = false;
+      prevWasUnderscore = true;
+      pos += 1;
+    } else {
+      break;
+    }
+  }
+
+  if (!seenAnyDigit || prevWasUnderscore) {
+    return (false, 0, 0);
+  }
+
+  var parsedExp: i64 = 0;
+  if (pos < len) {
+    let eb = text.getByteAt(pos);
+    if (eb != 101 && eb != 69) { // 'e' or 'E'
+      return (false, 0, 0);
+    }
+    pos += 1;
+    var expNeg = false;
+    if (pos < len) {
+      let sb = text.getByteAt(pos);
+      if (sb == 45) {
+        expNeg = true;
+        pos += 1;
+      } else if (sb == 43) {
+        pos += 1;
+      }
+    }
+    if (pos >= len) {
+      return (false, 0, 0);
+    }
+    var expHasDigit = false;
+    var expPrevDigit = false;
+    while (pos < len) {
+      let db = text.getByteAt(pos);
+      if (db >= 48 && db <= 57) {
+        expHasDigit = true;
+        expPrevDigit = true;
+        if (parsedExp < 1000000000) {
+          parsedExp = parsedExp * 10 + ((db - 48) as i64);
+        }
+        pos += 1;
+      } else if (db == 95) {
+        if (!expPrevDigit || pos + 1 >= len) {
+          return (false, 0, 0);
+        }
+        let nextB = text.getByteAt(pos + 1);
+        if (nextB < 48 || nextB > 57) {
+          return (false, 0, 0);
+        }
+        expPrevDigit = false;
+        pos += 1;
+      } else {
+        return (false, 0, 0);
+      }
+    }
+    if (!expHasDigit) {
+      return (false, 0, 0);
+    }
+    if (expNeg) {
+      parsedExp = -parsedExp;
+    }
+  }
+
+  let totalExp64 = parsedExp - fracDigits + extraExp;
+  if (sigDigits == 0) {
+    let zExp = clampI64ToExp(totalExp64);
+    let (zLo, zHi) = finalizeCtx128(
+      sign, 0, 0, zExp, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+    return (true, zLo, zHi);
+  }
+
+  var adjExp64 = totalExp64;
+  if (sigDigits == 36) {
+    let stickyGuard = if (guardDigit == 0 && stickyAfter36) 1 else guardDigit;
+    let (mLo, mHi) = mul128ByU64(cLo, cHi, 10);
+    let (aLo, aHi) = add128(mLo, mHi, stickyGuard as u64, 0);
+    cLo = aLo;
+    cHi = aHi;
+    adjExp64 -= 1;
+  }
+
+  if (adjExp64 > 20000) {
+    if (isFixedScale) {
+      return (true, 0, CANON_NAN_HI);
+    }
+    let (oLo, oHi) = overflowResult(sign, prec, etop, mode);
+    return (true, oLo, oHi);
+  }
+  if (adjExp64 < -20000) {
+    let (uLo, uHi) = finalizeCtx128(
+      sign, 1, 0, -20000, prec, etiny, etop, isFixedScale, fixedExp, mode,
+    );
+    return (true, uLo, uHi);
+  }
+
+  let (fLo, fHi) = finalizeCtx128(
+    sign, cLo, cHi, adjExp64 as i32, prec, etiny, etop, isFixedScale, fixedExp, mode,
+  );
+  return (true, fLo, fHi);
+}
+
+// ---------------------------------------------------------------------------
+// String formatting (`toString`, `toPlainString`, `toFixed`)
+// ---------------------------------------------------------------------------
+
+/** Extracts decimal ASCII digits `48..57` of `(cLo, cHi)` into `buf[start..36)`. */
+function extractDigits128(
+  cLo: u64, cHi: u64, buf: FixedArray<i32>,
+): i32 {
+  if (cLo == 0 && cHi == 0) {
+    buf[35] = 48;
+    return 35;
+  }
+  var lo = cLo;
+  var hi = cHi;
+  var pos = 36;
+  while (hi != 0) {
+    let (qLo, qHi, rem) = divRem128ByU64(lo, hi, 10);
+    pos -= 1;
+    buf[pos] = 48 + (rem as i32);
+    lo = qLo;
+    hi = qHi;
+  }
+  while (lo != 0) {
+    let q = div(lo, 10);
+    let rem = lo - q * 10;
+    pos -= 1;
+    buf[pos] = 48 + (rem as i32);
+    lo = q;
+  }
+  return pos;
+}
+
+function appendZeros(sb: StringBuilder, count: i32) {
+  for (var i = 0; i < count; i += 1) {
+    sb.appendByte(48);
+  }
+}
+
+/**
+ * Formats `(lo, hi)` using IEEE 754 / Cowlishaw `to-scientific-string` rules
+ * with lowercase `'e'`.
+ */
+export function formatSciDec(lo: u64, hi: u64): String {
+  if (isNaNBits(hi)) {
+    return 'NaN';
+  }
+  if (isInfBits(hi)) {
+    return if (signBit(hi) == 0) 'Infinity' else '-Infinity';
+  }
+  let (sign, exp, cLo, cHi) = unpackFinite(lo, hi);
+  let buf = new FixedArray<i32>(36, 48);
+  let start = extractDigits128(cLo, cHi, buf);
+  let numDigits = 36 - start;
+  let adjExp = exp + numDigits - 1;
+
+  if (exp <= 0 && adjExp >= -6) {
+    let sb = new StringBuilder(numDigits + 8);
+    if (sign != 0) {
+      sb.appendByte(45);
+    }
+    if (exp == 0) {
+      for (var i = start; i < 36; i += 1) {
+        sb.appendByte(buf[i]);
+      }
+      return sb.toString();
+    }
+    let intDigits = numDigits + exp;
+    if (intDigits > 0) {
+      for (var i = 0; i < intDigits; i += 1) {
+        sb.appendByte(buf[start + i]);
+      }
+      sb.appendByte(46);
+      for (var i = start + intDigits; i < 36; i += 1) {
+        sb.appendByte(buf[i]);
+      }
+    } else {
+      sb.appendByte2(48, 46); // "0."
+      appendZeros(sb, -intDigits);
+      for (var i = start; i < 36; i += 1) {
+        sb.appendByte(buf[i]);
+      }
+    }
+    return sb.toString();
+  }
+
+  let sb = new StringBuilder(numDigits + 10);
+  if (sign != 0) {
+    sb.appendByte(45);
+  }
+  sb.appendByte(buf[start]);
+  if (numDigits > 1) {
+    sb.appendByte(46);
+    for (var i = start + 1; i < 36; i += 1) {
+      sb.appendByte(buf[i]);
+    }
+  }
+  sb.appendByte(101); // 'e'
+  if (adjExp >= 0) {
+    sb.appendByte(43); // '+'
+    sb.appendI32(adjExp);
+  } else {
+    sb.appendByte(45); // '-'
+    sb.appendI32(-adjExp);
+  }
+  return sb.toString();
+}
+
+/** Formats `(lo, hi)` in plain fixed-point form without an exponent field. */
+export function formatPlainDec(lo: u64, hi: u64): String {
+  if (isNaNBits(hi)) {
+    return 'NaN';
+  }
+  if (isInfBits(hi)) {
+    return if (signBit(hi) == 0) 'Infinity' else '-Infinity';
+  }
+  let (sign, exp, cLo, cHi) = unpackFinite(lo, hi);
+  if (cLo == 0 && cHi == 0) {
+    if (exp >= 0) {
+      return if (sign != 0) '-0' else '0';
+    }
+    let sb = new StringBuilder(3 - exp);
+    if (sign != 0) {
+      sb.appendByte(45);
+    }
+    sb.appendByte2(48, 46);
+    appendZeros(sb, -exp);
+    return sb.toString();
+  }
+
+  let buf = new FixedArray<i32>(36, 48);
+  let start = extractDigits128(cLo, cHi, buf);
+  let numDigits = 36 - start;
+
+  if (exp >= 0) {
+    let sb = new StringBuilder(numDigits + exp + 1);
+    if (sign != 0) {
+      sb.appendByte(45);
+    }
+    for (var i = start; i < 36; i += 1) {
+      sb.appendByte(buf[i]);
+    }
+    appendZeros(sb, exp);
+    return sb.toString();
+  }
+
+  let intDigits = numDigits + exp;
+  if (intDigits > 0) {
+    let sb = new StringBuilder(numDigits + 2);
+    if (sign != 0) {
+      sb.appendByte(45);
+    }
+    for (var i = 0; i < intDigits; i += 1) {
+      sb.appendByte(buf[start + i]);
+    }
+    sb.appendByte(46);
+    for (var i = start + intDigits; i < 36; i += 1) {
+      sb.appendByte(buf[i]);
+    }
+    return sb.toString();
+  }
+
+  let sb = new StringBuilder(numDigits - intDigits + 3);
+  if (sign != 0) {
+    sb.appendByte(45);
+  }
+  sb.appendByte2(48, 46);
+  appendZeros(sb, -intDigits);
+  for (var i = start; i < 36; i += 1) {
+    sb.appendByte(buf[i]);
+  }
+  return sb.toString();
+}
+
+/**
+ * Rounds `(lo, hi)` to at most `scale` fractional digits (leaving values with
+ * `exp >= -scale` unchanged so large integers never overflow to `NaN`).
+ */
+export function roundDecToScale(
+  lo: u64, hi: u64, scale: i32, mode: RoundingMode,
+): inline (u64, u64) {
+  if (isSpecialBits(hi)) {
+    return (lo, hi);
+  }
+  let (sign, exp, cLo, cHi) = unpackFinite(lo, hi);
+  let targetExp64 = -(scale as i64);
+  if ((exp as i64) >= targetExp64) {
+    return (lo, hi);
+  }
+  // `exp < targetExp64`: we are dropping `drop = targetExp64 - exp > 0` digits.
+  let drop64 = targetExp64 - (exp as i64);
+  let d = digits128(cLo, cHi);
+  if (cLo == 0 && cHi == 0) {
+    let zExp = clampI64ToExp(targetExp64);
+    return packZero(sign, clampExp(zExp, DEC128_ETINY, DEC128_ETOP));
+  }
+  if (drop64 > (d as i64)) {
+    let resExp = clampI64ToExp(targetExp64);
+    if (resExp > DEC128_ETOP) {
+      if (shouldIncrement(mode, sign, false, 1)) {
+        return overflowResult(sign, DEC128_PREC, DEC128_ETOP, mode);
+      }
+      return packZero(sign, DEC128_ETOP);
+    }
+    if (shouldIncrement(mode, sign, false, 1)) {
+      return packFinite(sign, resExp, 1, 0);
+    }
+    return packZero(sign, resExp);
+  }
+  let drop = drop64 as i32;
+  let (qLo, qHi) = roundDivPow10_128(cLo, cHi, drop, sign, mode);
+  return finalize128(
+    sign, qLo, qHi, exp + drop,
+    DEC128_PREC, DEC128_ETINY, DEC128_ETOP, mode,
+  );
+}
+
+/** Formats `(lo, hi)` with exact `digits` (`>= 0`) fractional digits. */
+export function formatFixedDec(
+  lo: u64, hi: u64, digits: i32, mode: RoundingMode,
+): String {
+  if (isNaNBits(hi)) {
+    return 'NaN';
+  }
+  if (isInfBits(hi)) {
+    return if (signBit(hi) == 0) 'Infinity' else '-Infinity';
+  }
+  let (rLo, rHi) = roundDecToScale(lo, hi, digits, mode);
+  if (isInfBits(rHi)) {
+    return if (signBit(rHi) == 0) 'Infinity' else '-Infinity';
+  }
+  let (sign, exp, cLo, cHi) = unpackFinite(rLo, rHi);
+  if (digits == 0) {
+    return formatPlainDec(rLo, rHi);
+  }
+  if (cLo == 0 && cHi == 0) {
+    let sb = new StringBuilder(digits + 3);
+    if (sign != 0) {
+      sb.appendByte(45);
+    }
+    sb.appendByte2(48, 46);
+    appendZeros(sb, digits);
+    return sb.toString();
+  }
+  // `roundDecToScale` guarantees `exp >= -digits`.
+  let buf = new FixedArray<i32>(36, 48);
+  let start = extractDigits128(cLo, cHi, buf);
+  let numDigits = 36 - start;
+  if (exp >= 0) {
+    let sb = new StringBuilder(numDigits + exp + digits + 2);
+    if (sign != 0) {
+      sb.appendByte(45);
+    }
+    for (var i = start; i < 36; i += 1) {
+      sb.appendByte(buf[i]);
+    }
+    appendZeros(sb, exp);
+    sb.appendByte(46);
+    appendZeros(sb, digits);
+    return sb.toString();
+  }
+  // `-digits <= exp < 0`: `haveFrac = -exp <= digits`.
+  let haveFrac = -exp;
+  let padFrac = digits - haveFrac;
+  let intDigits = numDigits - haveFrac;
+  let sb = new StringBuilder(numDigits + padFrac + 4);
+  if (sign != 0) {
+    sb.appendByte(45);
+  }
+  if (intDigits > 0) {
+    for (var i = 0; i < intDigits; i += 1) {
+      sb.appendByte(buf[start + i]);
+    }
+    sb.appendByte(46);
+    for (var i = start + intDigits; i < 36; i += 1) {
+      sb.appendByte(buf[i]);
+    }
+  } else {
+    sb.appendByte2(48, 46);
+    appendZeros(sb, -intDigits);
+    for (var i = start; i < 36; i += 1) {
+      sb.appendByte(buf[i]);
+    }
+  }
+  appendZeros(sb, padFrac);
+  return sb.toString();
+}
