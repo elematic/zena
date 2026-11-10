@@ -4,25 +4,12 @@
  * plugin dispatch.
  */
 
-import { FixedArray, GrowableArray } from 'zena:core';
-import {
-  StringBuilder, StringReader,
-  isAsciiWhitespace, isAsciiPunctuation, isAsciiAlpha, isAsciiAlphanumeric,
-  isUnicodeWhitespace, isUnicodePunctuation
-} from 'zena:string';
-import { HashMap } from 'zena:collections';
-import {
-  Inline, LinkDef, Span, Text, CodeSpan, Emphasis, Strong, Link, Image,
-  Autolink, HtmlInline, SoftBreak, HardBreak
-} from './ast.zena';
-import {
-  DelimiterProcessor, DelimiterRunInfo, InlineContentParser, InlineMatch,
-  InlineParserRunner, MarkdownExtension
-} from './plugin.zena';
-import {
-  skipSpacesAndOneLineEnd, normalizeLinkLabel, tryDecodeEntity,
-  scanLinkDestination, scanLinkTitle, scanLinkLabel
-} from './scanner.zena';
+import {FixedArray, GrowableArray} from 'zena:core';
+import {StringBuilder, StringReader, isAsciiWhitespace, isAsciiPunctuation, isAsciiAlpha, isAsciiAlphanumeric, isUnicodeWhitespace, isUnicodePunctuation} from 'zena:string';
+import {HashMap} from 'zena:collections';
+import {Inline, LinkDef, Span, Text, CodeSpan, Emphasis, Strong, Link, Image, Autolink, HtmlInline, SoftBreak, HardBreak} from './ast.zena';
+import {DelimiterProcessor, DelimiterRunInfo, InlineContentParser, InlineMatch, InlineParserRunner, MarkdownExtension} from './plugin.zena';
+import {skipSpacesAndOneLineEnd, normalizeLinkLabel, tryDecodeEntity, scanLinkDestination, scanLinkTitle, scanLinkLabel} from './scanner.zena';
 
 /**
  * Internal doubly-linked list node holding an `Inline` during Phase 2 parsing
@@ -34,7 +21,7 @@ final class InlineEntry {
   var prev: InlineEntry | null = null;
   var next: InlineEntry | null = null;
 
-  new(this.node);
+  new(this.node) {}
 }
 
 /**
@@ -52,15 +39,7 @@ final class Delimiter {
   var prev: Delimiter | null = null;
   var next: Delimiter | null = null;
 
-  new(
-    this.entry,
-    this.delimiterByte,
-    this.length,
-    this.originalLength,
-    this.canOpen,
-    this.canClose,
-    this.startOffset
-  );
+  new(this.entry, this.delimiterByte, this.length, this.originalLength, this.canOpen, this.canClose, this.startOffset) {}
 }
 
 /**
@@ -76,14 +55,7 @@ final class Bracket {
   var active: boolean = true;
   var bracketAfter: boolean = false;
 
-  new(
-    this.entry,
-    this.index,
-    this.startOffset,
-    this.isImage,
-    this.previousDelimiter,
-    this.prev
-  );
+  new(this.entry, this.index, this.startOffset, this.isImage, this.previousDelimiter, this.prev) {}
 }
 
 /**
@@ -92,7 +64,10 @@ final class Bracket {
 export final class InlineParser implements InlineParserRunner {
   links: HashMap<String, LinkDef>;
   #delimiterProcessors = new HashMap<i32, DelimiterProcessor>();
-  #inlineParsersByByte = new FixedArray<GrowableArray<InlineContentParser> | null>(128, null);
+  #inlineParsersByByte = new FixedArray<GrowableArray<InlineContentParser> | null>(
+    128,
+    null
+  );
   #specialBytes = new FixedArray<boolean>(128, false);
 
   var #firstEntry: InlineEntry | null = null;
@@ -100,10 +75,7 @@ export final class InlineParser implements InlineParserRunner {
   var #lastDelimiter: Delimiter | null = null;
   var #lastBracket: Bracket | null = null;
 
-  new(
-    links: HashMap<String, LinkDef>,
-    extensions: GrowableArray<MarkdownExtension>
-  ) : links = links {
+  new(links: HashMap<String, LinkDef>, extensions: GrowableArray<MarkdownExtension>) : links = links {
     // Mark built-in special ASCII bytes:
     // \n (10), \r (13), ! (33), & (38), * (42), < (60), [ (91), \ (92), ] (93), _ (95), ` (96)
     this.#specialBytes[0x0A] = true;
@@ -170,7 +142,13 @@ export final class InlineParser implements InlineParserRunner {
         if (bucket != null) {
           let prevCp = r.peekBefore();
           for (let parser in bucket) {
-            let matchResult = parser.tryParse(text, baseOffset, i, prevCp, this);
+            let matchResult = parser.tryParse(
+              text,
+              baseOffset,
+              i,
+              prevCp,
+              this
+            );
             if (matchResult != null && matchResult.nextIndex > i) {
               this.#appendNode(matchResult.node);
               r.reset(matchResult.nextIndex);
@@ -185,48 +163,73 @@ export final class InlineParser implements InlineParserRunner {
       }
 
       // 2. Built-in CommonMark inline constructs and registered DelimiterProcessors
-      if (b == 0x0A || b == 0x0D) { // \n or \r
+      if (b == 0x0A || b == 0x0D) {
+        // \n or \r
         this.#parseNewline(r, baseOffset);
-      } else if (b == 0x5C) { // \
+      } else if (b == 0x5C) {
+        // \
         this.#parseBackslash(r, baseOffset);
-      } else if (b == 0x60) { // `
+      } else if (b == 0x60) {
+        // `
         this.#parseBackticks(r, baseOffset);
-      } else if (b == 0x2A || b == 0x5F || (b < 128 && this.#delimiterProcessors.has(b))) { // *, _, or custom delimiter
+      } else if (b == 0x2A
+        || b == 0x5F
+        || b < 128 && this.#delimiterProcessors.has(b)) {
+        // *, _, or custom delimiter
         this.#parseDelimiterRun(r, baseOffset, b);
-      } else if (b == 0x5B) { // [
+      } else if (b == 0x5B) {
+        // [
         r.advance();
         let startOff = baseOffset + i;
-        let entry = this.#appendNode(new Text('[', new Span(startOff, baseOffset + r.mark())));
+        let entry = this.#appendNode(
+          new Text('[', new Span(startOff, baseOffset + r.mark()))
+        );
         this.#addBracket(entry, i, startOff, false);
-      } else if (b == 0x21) { // !
+      } else if (b == 0x21) {
+        // !
         r.advance();
         let bracketPos = r.mark();
-        if (r.matchCodePoint(0x5B)) { // ![
+        if (r.matchCodePoint(0x5B)) {
+          // ![
           let startOff = baseOffset + i;
-          let entry = this.#appendNode(new Text('![', new Span(startOff, baseOffset + r.mark())));
+          let entry = this.#appendNode(
+            new Text('![', new Span(startOff, baseOffset + r.mark()))
+          );
           this.#addBracket(entry, bracketPos, startOff, true);
         } else {
           let startOff = baseOffset + i;
-          this.#appendNode(new Text('!', new Span(startOff, baseOffset + bracketPos)));
+          this.#appendNode(
+            new Text('!', new Span(startOff, baseOffset + bracketPos))
+          );
         }
-      } else if (b == 0x5D) { // ]
+      } else if (b == 0x5D) {
+        // ]
         this.#parseCloseBracket(r, baseOffset);
-      } else if (b == 0x3C) { // <
+      } else if (b == 0x3C) {
+        // <
         if (!this.#parseAutolinkOrHtml(r, baseOffset)) {
           r.advance();
           let startOff = baseOffset + i;
-          this.#appendNode(new Text('<', new Span(startOff, baseOffset + r.mark())));
+          this.#appendNode(
+            new Text('<', new Span(startOff, baseOffset + r.mark()))
+          );
         }
-      } else if (b == 0x26) { // &
+      } else if (b == 0x26) {
+        // &
         let sb = new StringBuilder(8);
         if (tryDecodeEntity(r, sb)) {
           this.#appendNode(
-            new Text(sb.toString(), new Span(baseOffset + i, baseOffset + r.mark()))
+            new Text(
+              sb.toString(),
+              new Span(baseOffset + i, baseOffset + r.mark())
+            )
           );
         } else {
           r.advance();
           let startOff = baseOffset + i;
-          this.#appendNode(new Text('&', new Span(startOff, baseOffset + r.mark())));
+          this.#appendNode(
+            new Text('&', new Span(startOff, baseOffset + r.mark()))
+          );
         }
       } else {
         // Consume a run of plain text code points until the next special ASCII character
@@ -240,7 +243,10 @@ export final class InlineParser implements InlineParserRunner {
         }
         let end = r.mark();
         this.#appendNode(
-          new Text(r.sliceRange(i, end), new Span(baseOffset + i, baseOffset + end))
+          new Text(
+            r.sliceRange(i, end),
+            new Span(baseOffset + i, baseOffset + end)
+          )
         );
       }
     }
@@ -352,7 +358,9 @@ export final class InlineParser implements InlineParserRunner {
         } else {
           r.advance();
         }
-        this.#appendNode(new HardBreak(new Span(baseOffset + index, baseOffset + r.mark())));
+        this.#appendNode(
+          new HardBreak(new Span(baseOffset + index, baseOffset + r.mark()))
+        );
         while (r.matchCodePoint(0x20)) {}
         return;
       }
@@ -369,7 +377,9 @@ export final class InlineParser implements InlineParserRunner {
         return;
       }
     }
-    this.#appendNode(new Text('\\', new Span(baseOffset + index, baseOffset + r.mark())));
+    this.#appendNode(
+      new Text('\\', new Span(baseOffset + index, baseOffset + r.mark()))
+    );
   }
 
   #parseBackticks(r: StringReader, baseOffset: i32): void {
@@ -409,7 +419,9 @@ export final class InlineParser implements InlineParserRunner {
             }
           }
           var normalized = sb.toString();
-          if (hasNonSpace && normalized.startsWith(' ') && normalized.endsWith(' ')) {
+          if (hasNonSpace
+            && normalized.startsWith(' ')
+            && normalized.endsWith(' ')) {
             let nr = new StringReader(normalized);
             let normEnd = nr.remaining;
             if (normEnd >= 2) {
@@ -417,7 +429,10 @@ export final class InlineParser implements InlineParserRunner {
             }
           }
           this.#appendNode(
-            new CodeSpan(normalized, new Span(baseOffset + index, baseOffset + closeEnd))
+            new CodeSpan(
+              normalized,
+              new Span(baseOffset + index, baseOffset + closeEnd)
+            )
           );
           return;
         }
@@ -454,14 +469,15 @@ export final class InlineParser implements InlineParserRunner {
     let afterIsWhitespace = isUnicodeWhitespace(afterCp);
     let afterIsPunctuation = isUnicodePunctuation(afterCp);
 
-    let leftFlanking = !afterIsWhitespace &&
-        (!afterIsPunctuation || beforeIsWhitespace || beforeIsPunctuation);
-    let rightFlanking = !beforeIsWhitespace &&
-        (!beforeIsPunctuation || afterIsWhitespace || afterIsPunctuation);
+    let leftFlanking = !afterIsWhitespace
+      && (!afterIsPunctuation || beforeIsWhitespace || beforeIsPunctuation);
+    let rightFlanking = !beforeIsWhitespace
+      && (!beforeIsPunctuation || afterIsWhitespace || afterIsPunctuation);
 
     var canOpen = false;
     var canClose = false;
-    if (delimByte == 0x5F) { // '_'
+    if (delimByte == 0x5F) {
+      // '_'
       canOpen = leftFlanking && (!rightFlanking || beforeIsPunctuation);
       canClose = rightFlanking && (!leftFlanking || afterIsPunctuation);
     } else {
@@ -493,12 +509,7 @@ export final class InlineParser implements InlineParserRunner {
     }
   }
 
-  #addBracket(
-    entry: InlineEntry,
-    index: i32,
-    startOffset: i32,
-    isImage: boolean
-  ): void {
+  #addBracket(entry: InlineEntry, index: i32, startOffset: i32, isImage: boolean): void {
     let prev = this.#lastBracket;
     if (prev != null) {
       prev.bracketAfter = true;
@@ -527,12 +538,16 @@ export final class InlineParser implements InlineParserRunner {
 
     let opener = this.#lastBracket;
     if (opener == null) {
-      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + afterClose)));
+      this.#appendNode(
+        new Text(']', new Span(baseOffset + index, baseOffset + afterClose))
+      );
       return;
     }
     if (!opener.active) {
       this.#removeLastBracket();
-      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + afterClose)));
+      this.#appendNode(
+        new Text(']', new Span(baseOffset + index, baseOffset + afterClose))
+      );
       return;
     }
 
@@ -542,9 +557,11 @@ export final class InlineParser implements InlineParserRunner {
     var matched = false;
 
     // 1. Inline link/image: `[text](dest "title")`
-    if (r.matchCodePoint(0x28)) { // '('
+    if (r.matchCodePoint(0x28)) {
+      // '('
       skipSpacesAndOneLineEnd(r);
-      if (r.matchCodePoint(0x29)) { // empty `()`
+      if (r.matchCodePoint(0x29)) {
+        // empty `()`
         matched = true;
         nextPos = r.mark();
       } else {
@@ -580,7 +597,8 @@ export final class InlineParser implements InlineParserRunner {
     if (!matched) {
       var refLabel: String | null = null;
       var refEnd = afterClose;
-      if (r.peek() == 0x5B) { // '['
+      if (r.peek() == 0x5B) {
+        // '['
         if (r.matchString('[]')) {
           // Collapsed reference `[text][]`
           if (!opener.bracketAfter && index - (opener.index + 1) <= 999) {
@@ -614,7 +632,9 @@ export final class InlineParser implements InlineParserRunner {
     if (!matched) {
       r.reset(afterClose);
       this.#removeLastBracket();
-      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + afterClose)));
+      this.#appendNode(
+        new Text(']', new Span(baseOffset + index, baseOffset + afterClose))
+      );
       return;
     }
 
@@ -653,7 +673,8 @@ export final class InlineParser implements InlineParserRunner {
 
   #parseAutolinkOrHtml(r: StringReader, baseOffset: i32): boolean {
     let index = r.mark();
-    if (!r.matchCodePoint(0x3C)) { // '<'
+    if (!r.matchCodePoint(0x3C)) {
+      // '<'
       return false;
     }
     let contentStart = r.mark();
@@ -692,13 +713,21 @@ export final class InlineParser implements InlineParserRunner {
         var validScheme = isAsciiAlpha(r.advance());
         while (validScheme && r.mark() < colonPos) {
           let sb = r.advance();
-          validScheme = isAsciiAlphanumeric(sb) || sb == 0x2B || sb == 0x2D || sb == 0x2E;
+          validScheme = isAsciiAlphanumeric(sb)
+            || sb == 0x2B
+            || sb == 0x2D
+            || sb == 0x2E;
         }
         if (validScheme) {
           r.reset(afterAngle);
           let uri = r.sliceRange(contentStart, closeAngle);
           this.#appendNode(
-            new Autolink(uri, uri, false, new Span(baseOffset + index, baseOffset + afterAngle))
+            new Autolink(
+              uri,
+              uri,
+              false,
+              new Span(baseOffset + index, baseOffset + afterAngle)
+            )
           );
           return true;
         }
@@ -710,8 +739,11 @@ export final class InlineParser implements InlineParserRunner {
         var validEmail = true;
         while (r.mark() < atPos) {
           let eb = r.advance();
-          let ok = isAsciiAlphanumeric(eb) ||
-              eb == 0x2E || eb == 0x2D || eb == 0x5F || eb == 0x2B;
+          let ok = isAsciiAlphanumeric(eb)
+            || eb == 0x2E
+            || eb == 0x2D
+            || eb == 0x5F
+            || eb == 0x2B;
           if (!ok) {
             validEmail = false;
             break;
@@ -729,7 +761,7 @@ export final class InlineParser implements InlineParserRunner {
             }
             hasDot = true;
             labelLen = 0;
-          } else if (isAsciiAlphanumeric(db) || (db == 0x2D && labelLen > 0)) {
+          } else if (isAsciiAlphanumeric(db) || db == 0x2D && labelLen > 0) {
             labelLen += 1;
           } else {
             validEmail = false;
@@ -808,10 +840,9 @@ export final class InlineParser implements InlineParserRunner {
       }
 
       let delimByte = c.delimiterByte;
-      let customProc = if (this.#delimiterProcessors.has(delimByte))
-        this.#delimiterProcessors[delimByte]
-      else
-        null;
+      let customProc = if (this.#delimiterProcessors.has(
+        delimByte
+      )) this.#delimiterProcessors[delimByte] else null;
       let minLen = if (customProc != null) customProc.minLength() else 1;
 
       if (c.length < minLen) {
@@ -819,9 +850,12 @@ export final class InlineParser implements InlineParserRunner {
         continue;
       }
 
-      let lenKey = if (customProc != null) (c.length % 16) else (c.originalLength % 3);
+      let lenKey = if (customProc
+        != null) c.length % 16 else c.originalLength % 3;
       let bottomKey = delimByte * 32 + (if (c.canOpen) 16 else 0) + lenKey;
-      let lowerBound = if (openersBottom.has(bottomKey)) openersBottom[bottomKey] else stackBottom;
+      let lowerBound = if (openersBottom.has(
+        bottomKey
+      )) openersBottom[bottomKey] else stackBottom;
 
       var opener = c.prev;
       var matchedOpener: Delimiter | null = null;
@@ -832,12 +866,10 @@ export final class InlineParser implements InlineParserRunner {
         let o = opener;
         if (o.canOpen && o.delimiterByte == delimByte && o.length >= minLen) {
           // CommonMark Rule 9/10 interior multiple-of-3 rule for `*` and `_`
-          if (
-            customProc == null &&
-            (o.canClose || c.canOpen) &&
-            c.originalLength % 3 != 0 &&
-            (o.originalLength + c.originalLength) % 3 == 0
-          ) {
+          if (customProc == null
+            && (o.canClose || c.canOpen)
+            && c.originalLength % 3 != 0
+            && (o.originalLength + c.originalLength) % 3 == 0) {
             opener = o.prev;
             continue;
           }
@@ -869,7 +901,11 @@ export final class InlineParser implements InlineParserRunner {
               c.startOffset,
               c.startOffset + c.length
             );
-            let (used, customNode) = customProc.process(openerInfo, closerInfo, children);
+            let (used, customNode) = customProc.process(
+              openerInfo,
+              closerInfo,
+              children
+            );
             if (used > 0 && customNode != null) {
               usedDelims = used;
               wrappedNode = customNode;
@@ -881,10 +917,12 @@ export final class InlineParser implements InlineParserRunner {
             let spanStart = o.startOffset + (o.length - usedDelims);
             let spanEnd = c.startOffset + usedDelims;
             let span = new Span(spanStart, spanEnd);
-            wrappedNode = if (usedDelims == 2)
-              new Strong(delimByte, children, span)
-            else
-              new Emphasis(delimByte, children, span);
+            wrappedNode = if (usedDelims
+              == 2) new Strong(
+              delimByte,
+              children,
+              span
+            ) else new Emphasis(delimByte, children, span);
             matchedOpener = o;
             break;
           }
@@ -1009,13 +1047,15 @@ function repeatAsciiChar(ch: i32, count: i32) {
  */
 function scanInlineHtmlTag(r: StringReader): boolean {
   let saved = r.mark();
-  if (!r.matchCodePoint(0x3C)) { // '<'
+  if (!r.matchCodePoint(0x3C)) {
+    // '<'
     return false;
   }
   let second = r.peek();
 
   // 1. Comment `<!-- ... -->`, declaration `<!A...>`, or CDATA `<![CDATA[...]]>`
-  if (second == 0x21) { // '!'
+  if (second == 0x21) {
+    // '!'
     r.advance();
     if (r.matchString('--')) {
       if (r.matchCodePoint(0x3E) || r.matchString('->')) {
@@ -1056,7 +1096,8 @@ function scanInlineHtmlTag(r: StringReader): boolean {
   }
 
   // 2. Processing instruction `<? ... ?>`
-  if (second == 0x3F) { // '?'
+  if (second == 0x3F) {
+    // '?'
     r.advance();
     while (!r.isAtEnd) {
       if (r.matchString('?>')) {
@@ -1069,7 +1110,8 @@ function scanInlineHtmlTag(r: StringReader): boolean {
   }
 
   // 3. Closing tag `</tagname\s*>`
-  if (second == 0x2F) { // '/'
+  if (second == 0x2F) {
+    // '/'
     r.advance();
     if (!isAsciiAlpha(r.peek())) {
       r.reset(saved);
@@ -1100,7 +1142,8 @@ function scanInlineHtmlTag(r: StringReader): boolean {
       r.reset(saved);
       return false;
     }
-    if (r.matchCodePoint(0x3E)) { // '>'
+    if (r.matchCodePoint(0x3E)) {
+      // '>'
       return true;
     }
     if (r.matchString('/>')) {
@@ -1118,20 +1161,26 @@ function scanInlineHtmlTag(r: StringReader): boolean {
       return false;
     }
     r.advance();
-    r.skipWhile((ab) =>
-      isAsciiAlphanumeric(ab) || ab == 0x5F || ab == 0x2E || ab == 0x3A || ab == 0x2D
+    r.skipWhile(
+      (ab) => isAsciiAlphanumeric(ab)
+        || ab == 0x5F
+        || ab == 0x2E
+        || ab == 0x3A
+        || ab == 0x2D
     );
     // Optional `= value`
     let afterAttrName = r.mark();
     r.skipWhile((cp) => isAsciiWhitespace(cp));
-    if (r.matchCodePoint(0x3D)) { // '='
+    if (r.matchCodePoint(0x3D)) {
+      // '='
       r.skipWhile((cp) => isAsciiWhitespace(cp));
       if (r.isAtEnd) {
         r.reset(saved);
         return false;
       }
       let vb = r.peek();
-      if (vb == 0x22 || vb == 0x27) { // "..." or '...'
+      if (vb == 0x22 || vb == 0x27) {
+        // "..." or '...'
         let quote = r.advance();
         while (!r.isAtEnd && r.peek() != quote) {
           r.advance();
@@ -1142,14 +1191,14 @@ function scanInlineHtmlTag(r: StringReader): boolean {
         }
       } else {
         let valStart = r.mark();
-        r.skipWhile((ub) =>
-          !isAsciiWhitespace(ub) &&
-          ub != 0x22 &&
-          ub != 0x27 &&
-          ub != 0x3D &&
-          ub != 0x3C &&
-          ub != 0x3E &&
-          ub != 0x60
+        r.skipWhile(
+          (ub) => !isAsciiWhitespace(ub)
+            && ub != 0x22
+            && ub != 0x27
+            && ub != 0x3D
+            && ub != 0x3C
+            && ub != 0x3E
+            && ub != 0x60
         );
         if (r.mark() == valStart) {
           r.reset(saved);

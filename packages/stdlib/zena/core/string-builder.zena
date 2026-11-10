@@ -1,6 +1,6 @@
-import { Encoding } from './encoding.zena';
-import { writeI32, writeU32, writeI64, writeU64 } from './string-convert.zena';
-import { f32ToString } from './number-format.zena';
+import {Encoding} from './encoding.zena';
+import {writeI32, writeU32, writeI64, writeU64} from './string-convert.zena';
+import {f32ToString} from './number-format.zena';
 
 let numScratch = __byte_array_new(21);
 
@@ -40,9 +40,9 @@ export final class StringBuilder {
    * Creates a new StringBuilder with the specified initial capacity.
    * @param capacity Initial capacity for the first chunk.
    */
-  new(capacity: i32 = 16)
-    : #currentChunk = __byte_array_new(if (capacity <= 0) 16 else capacity),
-      #currentChunkLen = if (capacity <= 0) 16 else capacity;
+  new(capacity: i32 = 16) : #currentChunk = __byte_array_new(
+    if (capacity <= 0) 16 else capacity
+  ), #currentChunkLen = if (capacity <= 0) 16 else capacity {}
 
   /**
    * Current length of the built string in bytes.
@@ -88,7 +88,7 @@ export final class StringBuilder {
       }
       chunks.push(this.#currentChunk);
       this.#totalLength = this.#totalLength + chunkLen;
-      
+
       // Grow strategy: at least double the size of the previous chunk
       var newCapacity = chunkLen * 2;
       if (newCapacity < minNeeded) {
@@ -207,7 +207,13 @@ export final class StringBuilder {
       let remaining = end - offset;
       let avail = this.#prepareWrite(remaining);
       let toCopy = if (remaining < avail) remaining else avail;
-      __byte_array_copy(this.#currentChunk, this.#currentPos, source, offset, toCopy);
+      __byte_array_copy(
+        this.#currentChunk,
+        this.#currentPos,
+        source,
+        offset,
+        toCopy
+      );
       this.#currentPos = this.#currentPos + toCopy;
       offset = offset + toCopy;
     }
@@ -255,21 +261,21 @@ export final class StringBuilder {
    */
   appendCodePoint(codePoint: i32): StringBuilder {
     var cp = codePoint;
-    if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+    if (cp < 0 || cp > 0x10FFFF || cp >= 0xD800 && cp <= 0xDFFF) {
       cp = 0xFFFD;
     }
     if (cp <= 0x7F) {
       return this.appendByte(cp);
     }
     if (cp <= 0x7FF) {
-      return this.appendByte2(0xC0 | ((cp >> 6) & 0x1F), 0x80 | (cp & 0x3F));
+      return this.appendByte2(0xC0 | cp >> 6 & 0x1F, 0x80 | cp & 0x3F);
     }
     if (cp <= 0xFFFF) {
-      this.appendByte(0xE0 | ((cp >> 12) & 0x0F));
-      return this.appendByte2(0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+      this.appendByte(0xE0 | cp >> 12 & 0x0F);
+      return this.appendByte2(0x80 | cp >> 6 & 0x3F, 0x80 | cp & 0x3F);
     }
-    this.appendByte2(0xF0 | ((cp >> 18) & 0x07), 0x80 | ((cp >> 12) & 0x3F));
-    return this.appendByte2(0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+    this.appendByte2(0xF0 | cp >> 18 & 0x07, 0x80 | cp >> 12 & 0x3F);
+    return this.appendByte2(0x80 | cp >> 6 & 0x3F, 0x80 | cp & 0x3F);
   }
 
   /**
@@ -289,7 +295,7 @@ export final class StringBuilder {
    * Uses shared conversion from zena:string-convert.
    */
   appendU32(n: u32): StringBuilder {
-    if (n < (10 as u32)) {
+    if (n < 10 as u32) {
       return this.appendByte(48 + (n as i32));
     }
     let (start, end) = writeU32(n, numScratch, 11);
@@ -301,7 +307,7 @@ export final class StringBuilder {
    * Uses shared conversion from zena:string-convert.
    */
   appendI64(n: i64): StringBuilder {
-    if (n >= (0 as i64) && n < (10 as i64)) {
+    if (n >= 0 as i64 && n < 10 as i64) {
       return this.appendByte(48 + (n as i32));
     }
     let (start, end) = writeI64(n, numScratch, 21);
@@ -313,7 +319,7 @@ export final class StringBuilder {
    * Uses shared conversion from zena:string-convert.
    */
   appendU64(n: u64): StringBuilder {
-    if (n < (10 as u64)) {
+    if (n < 10 as u64) {
       return this.appendByte(48 + (n as i32));
     }
     let (start, end) = writeU64(n, numScratch, 21);
@@ -342,17 +348,22 @@ export final class StringBuilder {
   toString(): String {
     let finalLen = this.length;
     if (finalLen == 0) {
-      return "";
+      return '';
     }
-    
+
     let chunks = this.#chunks;
     if (chunks == null || chunks.length == 0) {
-      return String.fromByteArray(this.#currentChunk, 0, this.#currentPos, this.#encoding);
+      return String.fromByteArray(
+        this.#currentChunk,
+        0,
+        this.#currentPos,
+        this.#encoding
+      );
     }
-    
+
     let resultBuffer = __byte_array_new(finalLen);
     var offset = 0;
-    
+
     // Copy all full chunks
     let numChunks = chunks.length;
     var i = 0;
@@ -363,12 +374,18 @@ export final class StringBuilder {
       offset = offset + chunkLen;
       i += 1;
     }
-    
+
     // Copy current chunk
     if (this.#currentPos > 0) {
-      __byte_array_copy(resultBuffer, offset, this.#currentChunk, 0, this.#currentPos);
+      __byte_array_copy(
+        resultBuffer,
+        offset,
+        this.#currentChunk,
+        0,
+        this.#currentPos
+      );
     }
-    
+
     return String.fromByteArray(resultBuffer, 0, finalLen, this.#encoding);
   }
 
@@ -404,4 +421,3 @@ export final class StringBuilder {
     return sb;
   }
 }
-

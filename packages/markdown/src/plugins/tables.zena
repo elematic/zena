@@ -2,18 +2,11 @@
  * GFM pipe tables extension (`| a | b |\n| --- | :---: |`).
  */
 
-import { Array, GrowableArray } from 'zena:core';
-import { StringBuilder, StringReader, isSpaceOrTab } from 'zena:string';
-import {
-  Block, CustomBlock, CustomInline, Inline, Span
-} from '../ast.zena';
-import {
-  AstTransformer, BlockContinue, BlockLineState, BlockParserFactory,
-  CustomBlockParser, CustomBlockStart, DelimiterProcessor, HtmlRenderContext,
-  InlineContentParser, InlineParserRunner, MarkdownExtension, MatchedBlockInfo,
-  NodeRenderer
-} from '../plugin.zena';
-import { trimSpaces } from '../scanner.zena';
+import {Array, GrowableArray} from 'zena:core';
+import {StringBuilder, StringReader, isSpaceOrTab} from 'zena:string';
+import {Block, CustomBlock, CustomInline, Inline, Span} from '../ast.zena';
+import {AstTransformer, BlockContinue, BlockLineState, BlockParserFactory, CustomBlockParser, CustomBlockStart, DelimiterProcessor, HtmlRenderContext, InlineContentParser, InlineParserRunner, MarkdownExtension, MatchedBlockInfo, NodeRenderer} from '../plugin.zena';
+import {trimSpaces} from '../scanner.zena';
 
 /**
  * Column alignment in a GFM pipe table.
@@ -28,20 +21,12 @@ export enum TableAlignment {
 /**
  * A single cell in a GFM table header or body row.
  */
-export final class TableCell(
-  var inlines: GrowableArray<Inline>,
-  alignment: TableAlignment,
-  isHeader: boolean,
-  span: Span
-)
+export final class TableCell(var inlines: GrowableArray<Inline>, alignment: TableAlignment, isHeader: boolean, span: Span)
 
 /**
  * A row of cells in a GFM table.
  */
-export final class TableRow(
-  var cells: GrowableArray<TableCell>,
-  span: Span
-)
+export final class TableRow(var cells: GrowableArray<TableCell>, span: Span)
 
 /**
  * AST block node representing a GFM pipe table.
@@ -51,7 +36,7 @@ export final class TableBlock extends CustomBlock {
   var head: TableRow;
   var rows: GrowableArray<TableRow>;
 
-  new(this.alignments, this.head, this.rows, span: Span) : super(span);
+  new(this.alignments, this.head, this.rows, span: Span) : super(span) {}
 }
 
 final class TableBlockParser implements CustomBlockParser {
@@ -62,13 +47,7 @@ final class TableBlockParser implements CustomBlockParser {
   #rawBodyOffsets = new GrowableArray<i32>(4);
   var #builtTable: TableBlock | null = null;
 
-  new(
-    alignments: GrowableArray<TableAlignment>,
-    headerRawCells: GrowableArray<String>,
-    startOffset: i32
-  ) : #alignments = alignments,
-      #headerRawCells = headerRawCells,
-      #startOffset = startOffset;
+  new(alignments: GrowableArray<TableAlignment>, headerRawCells: GrowableArray<String>, startOffset: i32) : #alignments = alignments, #headerRawCells = headerRawCells, #startOffset = startOffset {}
 
   acceptsLines(): boolean {
     return true;
@@ -90,7 +69,8 @@ final class TableBlockParser implements CustomBlockParser {
       if (b == 0x23 || b == 0x3E || b == 0x60 || b == 0x7E) {
         return BlockContinue.none();
       }
-      if ((b == 0x2A || b == 0x2D || b == 0x5F) && isTableInterruptingBreakOrList(slice)) {
+      if ((b == 0x2A || b == 0x2D || b == 0x5F)
+        && isTableInterruptingBreakOrList(slice)) {
         return BlockContinue.none();
       }
     }
@@ -113,10 +93,10 @@ final class TableBlockParser implements CustomBlockParser {
     let headCells = new GrowableArray<TableCell>(colCount);
     var c = 0;
     while (c < colCount) {
-      let rawText = if (c < this.#headerRawCells.length)
-        unescapePipes(this.#headerRawCells[c])
-      else
-        '';
+      let rawText = if (c
+        < this.#headerRawCells.length) unescapePipes(
+        this.#headerRawCells[c]
+      ) else '';
       let inlines = inlineParser.parse(rawText, this.#startOffset);
       headCells.push(
         new TableCell(
@@ -128,7 +108,10 @@ final class TableBlockParser implements CustomBlockParser {
       );
       c += 1;
     }
-    table.head = new TableRow(headCells, new Span(this.#startOffset, table.span.end));
+    table.head = new TableRow(
+      headCells,
+      new Span(this.#startOffset, table.span.end)
+    );
 
     // Parse body rows
     var r = 0;
@@ -139,10 +122,8 @@ final class TableBlockParser implements CustomBlockParser {
       let cells = new GrowableArray<TableCell>(colCount);
       var col = 0;
       while (col < colCount) {
-        let cellText = if (col < rawCells.length)
-          unescapePipes(rawCells[col])
-        else
-          '';
+        let cellText = if (col
+          < rawCells.length) unescapePipes(rawCells[col]) else '';
         let inlines = inlineParser.parse(cellText, rowOffset);
         cells.push(
           new TableCell(
@@ -154,9 +135,7 @@ final class TableBlockParser implements CustomBlockParser {
         );
         col += 1;
       }
-      table.rows.push(
-        new TableRow(cells, new Span(rowOffset, table.span.end))
-      );
+      table.rows.push(new TableRow(cells, new Span(rowOffset, table.span.end)));
       r += 1;
     }
   }
@@ -180,10 +159,7 @@ final class TableBlockParserFactory implements BlockParserFactory {
     return [0x7C, 0x2D, 0x3A]; // '|', '-', ':'
   }
 
-  tryStart(
-    state: BlockLineState,
-    matched: MatchedBlockInfo
-  ): CustomBlockStart | null {
+  tryStart(state: BlockLineState, matched: MatchedBlockInfo): CustomBlockStart | null {
     if (state.indent >= 4 || !matched.isParagraph) {
       return null;
     }
@@ -197,7 +173,8 @@ final class TableBlockParserFactory implements BlockParserFactory {
     r.reset(state.nextNonSpaceIndex);
     let delimLine = r.readToEnd();
     let headerLine = paraLines[paraLines.length - 1];
-    if (!containsUnescapedPipe(delimLine) || !containsUnescapedPipe(headerLine)) {
+    if (!containsUnescapedPipe(delimLine)
+      || !containsUnescapedPipe(headerLine)) {
       return null;
     }
 
@@ -216,9 +193,7 @@ final class TableBlockParserFactory implements BlockParserFactory {
       headerCells,
       matched.paragraphStartOffset
     );
-    return CustomBlockStart.of(parser)
-      .atIndex(lineEnd)
-      .replacingParagraph();
+    return CustomBlockStart.of(parser).atIndex(lineEnd).replacingParagraph();
   }
 }
 
@@ -258,7 +233,8 @@ function containsUnescapedPipe(s: String): boolean {
       r.advance();
       continue;
     }
-    if (cp == 0x7C) { // '|'
+    if (cp == 0x7C) {
+      // '|'
       return true;
     }
   }
@@ -336,7 +312,8 @@ function parseDelimiterRow(line: String): GrowableArray<TableAlignment> | null {
     let r = new StringReader(cell);
     let left = r.matchCodePoint(0x3A); // ':'
     var dashCount = 0;
-    while (r.matchCodePoint(0x2D)) { // '-'
+    while (r.matchCodePoint(0x2D)) {
+      // '-'
       dashCount += 1;
     }
     if (dashCount == 0) {
@@ -346,14 +323,8 @@ function parseDelimiterRow(line: String): GrowableArray<TableAlignment> | null {
     if (!r.isAtEnd) {
       return null;
     }
-    let align = if (left && right)
-      TableAlignment.Center
-    else if (left)
-      TableAlignment.Left
-    else if (right)
-      TableAlignment.Right
-    else
-      TableAlignment.None;
+    let align = if (left
+      && right) TableAlignment.Center else if (left) TableAlignment.Left else if (right) TableAlignment.Right else TableAlignment.None;
     alignments.push(align);
   }
   return alignments;
@@ -422,7 +393,7 @@ final class TableRenderer implements NodeRenderer {
         ctx.sb.append(' align="right"');
       }
       case TableAlignment.None: {}
-    }
+    };
     ctx.sb.append('>');
     ctx.renderInlines(cell.inlines);
     ctx.sb.append('</');

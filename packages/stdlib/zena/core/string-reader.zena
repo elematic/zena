@@ -1,5 +1,5 @@
-import { Encoding, asciiLowerByte } from './string.zena';
-import { StringTable } from './string-table.zena';
+import {Encoding, asciiLowerByte} from './string.zena';
+import {StringTable} from './string-table.zena';
 
 export * from './string-table.zena';
 
@@ -33,8 +33,7 @@ export final class StringReader {
   var #pos: i32;
   #table: StringTable | null;
 
-  new(source: String, table: StringTable | null = null)
-    : #source = source, #pos = 0, #table = table;
+  new(source: String, table: StringTable | null = null) : #source = source, #pos = 0, #table = table {}
 
   /** The string table this reader interns into, if any. */
   table: StringTable | null {
@@ -128,42 +127,45 @@ export final class StringReader {
       return this.#source.codePointAt(this.#pos);
     }
     let b0 = this.#source.getByteAt(this.#pos);
-    
+
     // ASCII (0xxxxxxx)
     if ((b0 & 0x80) == 0) {
       return b0;
     }
-    
+
     // 2-byte sequence (110xxxxx 10xxxxxx)
     if ((b0 & 0xE0) == 0xC0) {
       if (this.#pos + 1 >= this.#source.length) {
-        return 0 - 1;  // Incomplete sequence
+        return 0 - 1; // Incomplete sequence
       }
       let b1 = this.#source.getByteAt(this.#pos + 1);
-      return ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+      return (b0 & 0x1F) << 6 | b1 & 0x3F;
     }
-    
+
     // 3-byte sequence (1110xxxx 10xxxxxx 10xxxxxx)
     if ((b0 & 0xF0) == 0xE0) {
       if (this.#pos + 2 >= this.#source.length) {
-        return 0 - 1;  // Incomplete sequence
+        return 0 - 1; // Incomplete sequence
       }
       let b1 = this.#source.getByteAt(this.#pos + 1);
       let b2 = this.#source.getByteAt(this.#pos + 2);
-      return ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+      return (b0 & 0x0F) << 12 | (b1 & 0x3F) << 6 | b2 & 0x3F;
     }
-    
+
     // 4-byte sequence (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
     if ((b0 & 0xF8) == 0xF0) {
       if (this.#pos + 3 >= this.#source.length) {
-        return 0 - 1;  // Incomplete sequence
+        return 0 - 1; // Incomplete sequence
       }
       let b1 = this.#source.getByteAt(this.#pos + 1);
       let b2 = this.#source.getByteAt(this.#pos + 2);
       let b3 = this.#source.getByteAt(this.#pos + 3);
-      return ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+      return (b0 & 0x07) << 18
+        | (b1 & 0x3F) << 12
+        | (b2 & 0x3F) << 6
+        | b3 & 0x3F;
     }
-    
+
     // Invalid UTF-8 lead byte, return as-is
     return b0;
   }
@@ -207,13 +209,13 @@ export final class StringReader {
       return cp;
     }
     let b0 = this.#source.getByteAt(this.#pos);
-    
+
     // ASCII (0xxxxxxx) - 1 byte
     if ((b0 & 0x80) == 0) {
       this.#pos = this.#pos + 1;
       return b0;
     }
-    
+
     // 2-byte sequence (110xxxxx)
     if ((b0 & 0xE0) == 0xC0) {
       if (this.#pos + 1 >= this.#source.length) {
@@ -222,9 +224,9 @@ export final class StringReader {
       }
       let b1 = this.#source.getByteAt(this.#pos + 1);
       this.#pos = this.#pos + 2;
-      return ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+      return (b0 & 0x1F) << 6 | b1 & 0x3F;
     }
-    
+
     // 3-byte sequence (1110xxxx)
     if ((b0 & 0xF0) == 0xE0) {
       if (this.#pos + 2 >= this.#source.length) {
@@ -234,9 +236,9 @@ export final class StringReader {
       let b1 = this.#source.getByteAt(this.#pos + 1);
       let b2 = this.#source.getByteAt(this.#pos + 2);
       this.#pos = this.#pos + 3;
-      return ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+      return (b0 & 0x0F) << 12 | (b1 & 0x3F) << 6 | b2 & 0x3F;
     }
-    
+
     // 4-byte sequence (11110xxx)
     if ((b0 & 0xF8) == 0xF0) {
       if (this.#pos + 3 >= this.#source.length) {
@@ -247,9 +249,12 @@ export final class StringReader {
       let b2 = this.#source.getByteAt(this.#pos + 2);
       let b3 = this.#source.getByteAt(this.#pos + 3);
       this.#pos = this.#pos + 4;
-      return ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+      return (b0 & 0x07) << 18
+        | (b1 & 0x3F) << 12
+        | (b2 & 0x3F) << 6
+        | b3 & 0x3F;
     }
-    
+
     // Invalid UTF-8 lead byte, skip 1 byte
     this.#pos = this.#pos + 1;
     return b0;
@@ -362,7 +367,11 @@ export final class StringReader {
    * True if the remaining text at the current position starts with `prefix`.
    */
   startsWith(prefix: String): boolean {
-    return prefix.regionEqualsBytes(this.#source, this.#pos, this.#pos + prefix.length);
+    return prefix.regionEqualsBytes(
+      this.#source,
+      this.#pos,
+      this.#pos + prefix.length
+    );
   }
 
   /**
@@ -375,11 +384,14 @@ export final class StringReader {
       return false;
     }
     if (this.#source.encoding == Encoding.WTF16) {
-      return this.#source.sliceBytes(this.#pos, this.#pos + len).asciiLowerCase()
+      return this.#source
+        .sliceBytes(this.#pos, this.#pos + len)
+        .asciiLowerCase()
         == prefix.asciiLowerCase();
     }
     for (var i = 0; i < len; i += 1) {
-      if (asciiLowerByte(this.#source.getByteAt(this.#pos + i)) != asciiLowerByte(prefix.getByteAt(i))) {
+      if (asciiLowerByte(this.#source.getByteAt(this.#pos + i))
+        != asciiLowerByte(prefix.getByteAt(i))) {
         return false;
       }
     }
@@ -457,7 +469,7 @@ export final class StringReader {
    * Predicate receives byte value (not code point).
    * Useful for ASCII character classes: digits, letters, etc.
    */
-  skipBytesWhile(predicate: (byte: i32) => boolean): void {
+  skipBytesWhile(predicate: (b: i32) => boolean): void {
     while (this.#pos < this.#source.length) {
       let b = this.#source.getByteAt(this.#pos);
       if (!predicate(b)) {
@@ -503,12 +515,12 @@ export final class StringReader {
     if (needleLength == 0) {
       return null;
     }
-    
+
     let haystackLength = this.#source.length;
     if (needleLength > haystackLength - this.#pos) {
       return null;
     }
-    
+
     if (needleLength == 1) {
       let b = needle.getByteAt(0);
       let start = this.#pos;
@@ -520,21 +532,21 @@ export final class StringReader {
       }
       return null;
     }
-    
+
     let firstByte = needle.getByteAt(0);
     let lastByte = needle.getByteAt(needleLength - 1);
-    
+
     for (var i = this.#pos; i <= haystackLength - needleLength; i += 1) {
       // 1. Check first byte
       if (this.#source.getByteAt(i) != firstByte) {
         continue;
       }
-      
+
       // 2. Check last byte
       if (this.#source.getByteAt(i + needleLength - 1) != lastByte) {
         continue;
       }
-      
+
       // 3. Full comparison
       var match = true;
       for (var j = 1; j < needleLength - 1; j += 1) {
@@ -543,14 +555,14 @@ export final class StringReader {
           break;
         }
       }
-      
+
       if (match) {
         let result = this.#source.sliceBytes(this.#pos, i);
         this.#pos = i + needleLength; // advance past the needle
         return result;
       }
     }
-    
+
     return null;
   }
 

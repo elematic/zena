@@ -5,12 +5,10 @@
  * `HtmlRendererTest`, and `SpecialInputTest`).
  */
 
-import { StringBuilder } from 'zena:core';
-import { suite, test, TestContext } from 'zena:test';
-import { equal } from 'zena:assert';
-import {
-  parse, markdownToHtml, Heading, Paragraph, FencedCodeBlock, ThematicBreak
-} from 'markdown:index';
+import {StringBuilder} from 'zena:core';
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {parse, markdownToHtml, Heading, Paragraph, FencedCodeBlock, ThematicBreak} from 'markdown:index';
 
 function repeatString(s: String, count: i32) {
   let sb = new StringBuilder(s.length * count);
@@ -22,549 +20,799 @@ function repeatString(s: String, count: i32) {
   return sb.toString();
 }
 
-export let tests = suite('CommonMark (ported from commonmark-java)', () => {
-  suite('HeadingParserTest', () => {
-    test('atxHeadingStart', (ctx) => {
-      equal(markdownToHtml('# test'), '<h1>test</h1>\n');
-      equal(markdownToHtml('###### test'), '<h6>test</h6>\n');
-      equal(markdownToHtml('####### test'), '<p>####### test</p>\n');
-      equal(markdownToHtml('#test'), '<p>#test</p>\n');
-      equal(markdownToHtml('#'), '<h1></h1>\n');
-    });
+export let tests = suite(
+  'CommonMark (ported from commonmark-java)',
+  () => {
+    suite(
+      'HeadingParserTest',
+      () => {
+        test(
+          'atxHeadingStart',
+          (ctx) => {
+            equal(markdownToHtml('# test'), '<h1>test</h1>\n');
+            equal(markdownToHtml('###### test'), '<h6>test</h6>\n');
+            equal(markdownToHtml('####### test'), '<p>####### test</p>\n');
+            equal(markdownToHtml('#test'), '<p>#test</p>\n');
+            equal(markdownToHtml('#'), '<h1></h1>\n');
+          }
+        );
 
-    test('atxHeadingTrailing', (ctx) => {
-      equal(markdownToHtml('# test #'), '<h1>test</h1>\n');
-      equal(markdownToHtml('# test ###'), '<h1>test</h1>\n');
-      equal(markdownToHtml('# test # '), '<h1>test</h1>\n');
-      equal(markdownToHtml('# test  ###  '), '<h1>test</h1>\n');
-      equal(markdownToHtml('# test # #'), '<h1>test #</h1>\n');
-      equal(markdownToHtml('# test#'), '<h1>test#</h1>\n');
-    });
+        test(
+          'atxHeadingTrailing',
+          (ctx) => {
+            equal(markdownToHtml('# test #'), '<h1>test</h1>\n');
+            equal(markdownToHtml('# test ###'), '<h1>test</h1>\n');
+            equal(markdownToHtml('# test # '), '<h1>test</h1>\n');
+            equal(markdownToHtml('# test  ###  '), '<h1>test</h1>\n');
+            equal(markdownToHtml('# test # #'), '<h1>test #</h1>\n');
+            equal(markdownToHtml('# test#'), '<h1>test#</h1>\n');
+          }
+        );
 
-    test('atxHeadingSurrogates', (ctx) => {
-      let smile = String.fromCodePoint(0x1F60A);
-      equal(markdownToHtml(`# ${smile} #`), `<h1>${smile}</h1>\n`);
-    });
+        test(
+          'atxHeadingSurrogates',
+          (ctx) => {
+            let smile = String.fromCodePoint(0x1F60A);
+            equal(markdownToHtml(`# ${smile} #`), `<h1>${smile}</h1>\n`);
+          }
+        );
 
-    test('setextHeadingMarkers', (ctx) => {
-      equal(markdownToHtml('test\n='), '<h1>test</h1>\n');
-      equal(markdownToHtml('test\n-'), '<h2>test</h2>\n');
-      equal(markdownToHtml('test\n===='), '<h1>test</h1>\n');
-      equal(markdownToHtml('test\n----'), '<h2>test</h2>\n');
-      equal(markdownToHtml('test\n====   '), '<h1>test</h1>\n');
-      equal(markdownToHtml('test\n====   ='), '<p>test\n====   =</p>\n');
-      equal(markdownToHtml('test\n=-='), '<p>test\n=-=</p>\n');
-      equal(markdownToHtml('test\n=a'), '<p>test\n=a</p>\n');
-    });
-  });
-
-  suite('FencedCodeBlockParserTest', () => {
-    test('backtickInfo', (ctx) => {
-      let doc = parse('```info ~ test\ncode\n```\n');
-      equal(doc.blocks.length, 1);
-      if (let FencedCodeBlock {info, literal} = doc.blocks[0]) {
-        equal(info, 'info ~ test');
-        equal(literal, 'code\n');
+        test(
+          'setextHeadingMarkers',
+          (ctx) => {
+            equal(markdownToHtml('test\n='), '<h1>test</h1>\n');
+            equal(markdownToHtml('test\n-'), '<h2>test</h2>\n');
+            equal(markdownToHtml('test\n===='), '<h1>test</h1>\n');
+            equal(markdownToHtml('test\n----'), '<h2>test</h2>\n');
+            equal(markdownToHtml('test\n====   '), '<h1>test</h1>\n');
+            equal(markdownToHtml('test\n====   ='), '<p>test\n====   =</p>\n');
+            equal(markdownToHtml('test\n=-='), '<p>test\n=-=</p>\n');
+            equal(markdownToHtml('test\n=a'), '<p>test\n=a</p>\n');
+          }
+        );
       }
-    });
+    );
 
-    test('backtickInfoCanStartWithTilde', (ctx) => {
-      let doc = parse('```~/.bashrc\ncode\n```\n');
-      equal(doc.blocks.length, 1);
-      if (let FencedCodeBlock {info, literal} = doc.blocks[0]) {
-        equal(info, '~/.bashrc');
-        equal(literal, 'code\n');
+    suite(
+      'FencedCodeBlockParserTest',
+      () => {
+        test(
+          'backtickInfo',
+          (ctx) => {
+            let doc = parse('```info ~ test\ncode\n```\n');
+            equal(doc.blocks.length, 1);
+            if (let FencedCodeBlock {info, literal} = doc.blocks[0]) {
+              equal(info, 'info ~ test');
+              equal(literal, 'code\n');
+            }
+          }
+        );
+
+        test(
+          'backtickInfoCanStartWithTilde',
+          (ctx) => {
+            let doc = parse('```~/.bashrc\ncode\n```\n');
+            equal(doc.blocks.length, 1);
+            if (let FencedCodeBlock {info, literal} = doc.blocks[0]) {
+              equal(info, '~/.bashrc');
+              equal(literal, 'code\n');
+            }
+          }
+        );
+
+        test(
+          'tildeInfoCanStartWithBacktick',
+          (ctx) => {
+            equal(
+              markdownToHtml('~~~`info`\ncode\n~~~\n'),
+              '<pre><code class="language-`info`">code\n</code></pre>\n'
+            );
+          }
+        );
+
+        test(
+          'backtickInfoDoesntAllowBacktick',
+          (ctx) => {
+            equal(
+              markdownToHtml('```info ` test\ncode\n```\n'),
+              '<p>```info ` test\ncode</p>\n<pre><code></code></pre>\n'
+            );
+          }
+        );
+
+        test(
+          'backtickAndTildeCantBeMixed',
+          (ctx) => {
+            equal(
+              markdownToHtml('``~`\ncode\n``~`\n'),
+              '<p><code>~` code </code>~`</p>\n'
+            );
+          }
+        );
+
+        test(
+          'closingCanHaveSpacesAfter',
+          (ctx) => {
+            equal(
+              markdownToHtml('```\ncode\n```   \n'),
+              '<pre><code>code\n</code></pre>\n'
+            );
+          }
+        );
+
+        test(
+          'closingCanNotHaveNonSpaces',
+          (ctx) => {
+            equal(
+              markdownToHtml('```\ncode\n``` a\n'),
+              '<pre><code>code\n``` a\n</code></pre>\n'
+            );
+          }
+        );
+
+        test(
+          'issue151 blank lines inside fenced code block',
+          (ctx) => {
+            equal(
+              markdownToHtml(
+                '```\nthis code\n\nshould not have BRs or paragraphs in it\nok\n```\n'
+              ),
+              '<pre><code>this code\n\nshould not have BRs or paragraphs in it\nok\n</code></pre>\n'
+            );
+          }
+        );
+
+        test(
+          'indented fenced code block strips fence indent',
+          (ctx) => {
+            equal(
+              markdownToHtml('  ```zena\n  let x = 1 < 2;\n  ```\n'),
+              '<pre><code class="language-zena">let x = 1 &lt; 2;\n</code></pre>\n'
+            );
+          }
+        );
       }
-    });
+    );
 
-    test('tildeInfoCanStartWithBacktick', (ctx) => {
-      equal(
-        markdownToHtml('~~~`info`\ncode\n~~~\n'),
-        '<pre><code class="language-`info`">code\n</code></pre>\n'
-      );
-    });
+    suite(
+      'ThematicBreakParserTest',
+      () => {
+        test(
+          'thematic break variants',
+          (ctx) => {
+            equal(markdownToHtml('***\n'), '<hr />\n');
+            equal(markdownToHtml('-- -\n'), '<hr />\n');
+            equal(markdownToHtml('  __  __  __  \n'), '<hr />\n');
+            equal(
+              markdownToHtml('> ***\n'),
+              '<blockquote>\n<hr />\n</blockquote>\n'
+            );
+          }
+        );
+      }
+    );
 
-    test('backtickInfoDoesntAllowBacktick', (ctx) => {
-      equal(
-        markdownToHtml('```info ` test\ncode\n```\n'),
-        '<p>```info ` test\ncode</p>\n<pre><code></code></pre>\n'
-      );
-    });
+    suite(
+      'HtmlInlineParserTest',
+      () => {
+        test(
+          'comment',
+          (ctx) => {
+            equal(markdownToHtml('inline <!---->'), '<p>inline <!----></p>\n');
+            equal(
+              markdownToHtml('inline <!-- -> -->'),
+              '<p>inline <!-- -> --></p>\n'
+            );
+            equal(
+              markdownToHtml('inline <!-- -- -->'),
+              '<p>inline <!-- -- --></p>\n'
+            );
+            equal(
+              markdownToHtml('inline <!-- --->'),
+              '<p>inline <!-- ---></p>\n'
+            );
+            equal(
+              markdownToHtml('inline <!-- ---->'),
+              '<p>inline <!-- ----></p>\n'
+            );
+            equal(
+              markdownToHtml('inline <!-->-->'),
+              '<p>inline <!-->--&gt;</p>\n'
+            );
+            equal(
+              markdownToHtml('inline <!--->-->'),
+              '<p>inline <!--->--&gt;</p>\n'
+            );
+          }
+        );
 
-    test('backtickAndTildeCantBeMixed', (ctx) => {
-      equal(
-        markdownToHtml('``~`\ncode\n``~`\n'),
-        '<p><code>~` code </code>~`</p>\n'
-      );
-    });
+        test(
+          'cdata',
+          (ctx) => {
+            equal(
+              markdownToHtml('inline <![CDATA[]]>'),
+              '<p>inline <![CDATA[]]></p>\n'
+            );
+            equal(
+              markdownToHtml('inline <![CDATA[ ] ]] ]]>'),
+              '<p>inline <![CDATA[ ] ]] ]]></p>\n'
+            );
+          }
+        );
 
-    test('closingCanHaveSpacesAfter', (ctx) => {
-      equal(
-        markdownToHtml('```\ncode\n```   \n'),
-        '<pre><code>code\n</code></pre>\n'
-      );
-    });
+        test(
+          'processingInstruction',
+          (ctx) => {
+            equal(markdownToHtml('inline <??>'), '<p>inline <??></p>\n');
+            equal(markdownToHtml('inline <?a??>'), '<p>inline <?a??></p>\n');
+            equal(
+              markdownToHtml('inline <?? <?php ?>'),
+              '<p>inline <?? <?php ?></p>\n'
+            );
+          }
+        );
 
-    test('closingCanNotHaveNonSpaces', (ctx) => {
-      equal(
-        markdownToHtml('```\ncode\n``` a\n'),
-        '<pre><code>code\n``` a\n</code></pre>\n'
-      );
-    });
+        test(
+          'afterFailedAttempt',
+          (ctx) => {
+            equal(
+              markdownToHtml('inline <!- <!-- a -->'),
+              '<p>inline &lt;!- <!-- a --></p>\n'
+            );
+            equal(
+              markdownToHtml('inline <![x]]> <![CDATA[a]]>'),
+              '<p>inline &lt;![x]]&gt; <![CDATA[a]]></p>\n'
+            );
+            equal(
+              markdownToHtml('inline <!1> <!bar baz>'),
+              '<p>inline &lt;!1&gt; <!bar baz></p>\n'
+            );
+          }
+        );
 
-    test('issue151 blank lines inside fenced code block', (ctx) => {
-      equal(
-        markdownToHtml(
-          '```\nthis code\n\nshould not have BRs or paragraphs in it\nok\n```\n'
-        ),
-        '<pre><code>this code\n\nshould not have BRs or paragraphs in it\nok\n</code></pre>\n'
-      );
-    });
+        test(
+          'unterminatedConstructDoesNotAffectLaterParagraph',
+          (ctx) => {
+            equal(
+              markdownToHtml('x <?a\n\nx <?b?>'),
+              '<p>x &lt;?a</p>\n<p>x <?b?></p>\n'
+            );
+            equal(
+              markdownToHtml('x <!--a\n\nx <!--b-->'),
+              '<p>x &lt;!--a</p>\n<p>x <!--b--></p>\n'
+            );
+            equal(
+              markdownToHtml('x <![CDATA[a\n\nx <![CDATA[b]]>'),
+              '<p>x &lt;![CDATA[a</p>\n<p>x <![CDATA[b]]></p>\n'
+            );
+            equal(
+              markdownToHtml('x <!A a\n\nx <!A b>'),
+              '<p>x &lt;!A a</p>\n<p>x <!A b></p>\n'
+            );
+          }
+        );
 
-    test('indented fenced code block strips fence indent', (ctx) => {
-      equal(
-        markdownToHtml('  ```zena\n  let x = 1 < 2;\n  ```\n'),
-        '<pre><code class="language-zena">let x = 1 &lt; 2;\n</code></pre>\n'
-      );
-    });
-  });
+        test(
+          'declaration',
+          (ctx) => {
+            equal(markdownToHtml('inline <!FOO>'), '<p>inline <!FOO></p>\n');
+            equal(markdownToHtml('inline <!FOO >'), '<p>inline <!FOO ></p>\n');
+            equal(
+              markdownToHtml('inline <!FOO \'bar\'>'),
+              '<p>inline <!FOO \'bar\'></p>\n'
+            );
+            equal(
+              markdownToHtml('inline <!foo bar>'),
+              '<p>inline <!foo bar></p>\n'
+            );
+            equal(markdownToHtml('inline <!foo>'), '<p>inline <!foo></p>\n');
+          }
+        );
+      }
+    );
 
-  suite('ThematicBreakParserTest', () => {
-    test('thematic break variants', (ctx) => {
-      equal(markdownToHtml('***\n'), '<hr />\n');
-      equal(markdownToHtml('-- -\n'), '<hr />\n');
-      equal(markdownToHtml('  __  __  __  \n'), '<hr />\n');
-      equal(markdownToHtml('> ***\n'), '<blockquote>\n<hr />\n</blockquote>\n');
-    });
-  });
+    suite(
+      'LinkReferenceDefinitionParserTest',
+      () => {
+        test(
+          'empty and invalid labels remain paragraphs',
+          (ctx) => {
+            equal(markdownToHtml('[]: /\n'), '<p>[]: /</p>\n');
+            equal(markdownToHtml('[ ]: /\n'), '<p>[ ]: /</p>\n');
+            equal(markdownToHtml('[ \t\n ]: /\n'), '<p>[ \t\n]: /</p>\n');
+            equal(markdownToHtml('[foo] : /\n'), '<p>[foo] : /</p>\n');
+            equal(markdownToHtml('[foo[]:\n'), '<p>[foo[]:</p>\n');
+            equal(
+              markdownToHtml('[foo]: <bar<>\n'),
+              '<p>[foo]: &lt;bar&lt;&gt;</p>\n'
+            );
+          }
+        );
 
-  suite('HtmlInlineParserTest', () => {
-    test('comment', (ctx) => {
-      equal(markdownToHtml('inline <!---->'), '<p>inline <!----></p>\n');
-      equal(markdownToHtml('inline <!-- -> -->'), '<p>inline <!-- -> --></p>\n');
-      equal(markdownToHtml('inline <!-- -- -->'), '<p>inline <!-- -- --></p>\n');
-      equal(markdownToHtml('inline <!-- --->'), '<p>inline <!-- ---></p>\n');
-      equal(markdownToHtml('inline <!-- ---->'), '<p>inline <!-- ----></p>\n');
-      equal(markdownToHtml('inline <!-->-->'), '<p>inline <!-->--&gt;</p>\n');
-      equal(markdownToHtml('inline <!--->-->'), '<p>inline <!--->--&gt;</p>\n');
-    });
+        test(
+          'multiline label and destination',
+          (ctx) => {
+            equal(
+              markdownToHtml('[two\nlines]:\n/url\n\n[two lines]\n'),
+              '<p><a href="/url">two lines</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[\nweird]:\n/url\n\n[weird]\n'),
+              '<p><a href="/url">weird</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: /url\n[bar]: </url2>\n\n[foo] [bar]\n'),
+              '<p><a href="/url">foo</a> <a href="/url2">bar</a></p>\n'
+            );
+          }
+        );
 
-    test('cdata', (ctx) => {
-      equal(markdownToHtml('inline <![CDATA[]]>'), '<p>inline <![CDATA[]]></p>\n');
-      equal(
-        markdownToHtml('inline <![CDATA[ ] ]] ]]>'),
-        '<p>inline <![CDATA[ ] ]] ]]></p>\n'
-      );
-    });
+        test(
+          'multiline titles and fallback when trailing garbage follows title',
+          (ctx) => {
+            equal(
+              markdownToHtml('[foo]: /url \'two\nlines\n\'\n\n[foo]\n'),
+              '<p><a href="/url" title="two\nlines\n">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: /url \'\ntitle\'\n\n[foo]\n'),
+              '<p><a href="/url" title="\ntitle">foo</a></p>\n'
+            );
+            // Title line with trailing garbage falls back to title-less definition + paragraph line
+            equal(
+              markdownToHtml('[foo]: /url\n"title" bad\n\n[foo]\n'),
+              '<p>&quot;title&quot; bad</p>\n<p><a href="/url">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: /url\n(title\nfoo(\n\n[foo]\n'),
+              '<p>(title\nfoo(</p>\n<p><a href="/url">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: /url\n(partial title\n\n[foo]\n'),
+              '<p>(partial title</p>\n<p><a href="/url">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml(
+                '[foo]: /url\n"title\ncontinued" garbage\n\n[foo]\n'
+              ),
+              '<p>&quot;title\ncontinued&quot; garbage</p>\n<p><a href="/url">foo</a></p>\n'
+            );
+          }
+        );
 
-    test('processingInstruction', (ctx) => {
-      equal(markdownToHtml('inline <??>'), '<p>inline <??></p>\n');
-      equal(markdownToHtml('inline <?a??>'), '<p>inline <?a??></p>\n');
-      equal(markdownToHtml('inline <?? <?php ?>'), '<p>inline <?? <?php ?></p>\n');
-    });
+        test(
+          'invalid single-line titles make whole definition a paragraph',
+          (ctx) => {
+            equal(
+              markdownToHtml('[foo]: /url (invalid(\n'),
+              '<p>[foo]: /url (invalid(</p>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: </url>\'title\'\n'),
+              '<p>[foo]: </url>\'title\'</p>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: /url \'title\' INVALID\n'),
+              '<p>[foo]: /url \'title\' INVALID</p>\n'
+            );
+          }
+        );
+      }
+    );
 
-    test('afterFailedAttempt', (ctx) => {
-      equal(
-        markdownToHtml('inline <!- <!-- a -->'),
-        '<p>inline &lt;!- <!-- a --></p>\n'
-      );
-      equal(
-        markdownToHtml('inline <![x]]> <![CDATA[a]]>'),
-        '<p>inline &lt;![x]]&gt; <![CDATA[a]]></p>\n'
-      );
-      equal(
-        markdownToHtml('inline <!1> <!bar baz>'),
-        '<p>inline &lt;!1&gt; <!bar baz></p>\n'
-      );
-    });
+    suite(
+      'HtmlRendererTest',
+      () => {
+        test(
+          'raw HTML allowed by default',
+          (ctx) => {
+            equal(
+              markdownToHtml(
+                'paragraph with <span id=\'foo\' class="bar">inline &amp; html</span>'
+              ),
+              '<p>paragraph with <span id=\'foo\' class="bar">inline &amp; html</span></p>\n'
+            );
+            equal(
+              markdownToHtml('<div id=\'foo\' class="bar">block &amp;</div>'),
+              '<div id=\'foo\' class="bar">block &amp;</div>\n'
+            );
+          }
+        );
 
-    test('unterminatedConstructDoesNotAffectLaterParagraph', (ctx) => {
-      equal(
-        markdownToHtml('x <?a\n\nx <?b?>'),
-        '<p>x &lt;?a</p>\n<p>x <?b?></p>\n'
-      );
-      equal(
-        markdownToHtml('x <!--a\n\nx <!--b-->'),
-        '<p>x &lt;!--a</p>\n<p>x <!--b--></p>\n'
-      );
-      equal(
-        markdownToHtml('x <![CDATA[a\n\nx <![CDATA[b]]>'),
-        '<p>x &lt;![CDATA[a</p>\n<p>x <![CDATA[b]]></p>\n'
-      );
-      equal(
-        markdownToHtml('x <!A a\n\nx <!A b>'),
-        '<p>x &lt;!A a</p>\n<p>x <!A b></p>\n'
-      );
-    });
+        test(
+          'text and entity escaping',
+          (ctx) => {
+            equal(
+              markdownToHtml('escaping: & < > " \''),
+              '<p>escaping: &amp; &lt; &gt; &quot; \'</p>\n'
+            );
+            let input = '[example](&#x6A&#x61&#x76&#x61&#x73&#x63&#x72&#x69&#x70&#x74&#x3A&#x61&#x6C&#x65&#x72&#x74&#x28&#x27&#x58&#x53&#x53&#x27&#x29)';
+            equal(
+              markdownToHtml(input),
+              '<p><a href="&amp;#x6A&amp;#x61&amp;#x76&amp;#x61&amp;#x73&amp;#x63&amp;#x72&amp;#x69&amp;#x70&amp;#x74&amp;#x3A&amp;#x61&amp;#x6C&amp;#x65&amp;#x72&amp;#x74&amp;#x28&amp;#x27&amp;#x58&amp;#x53&amp;#x53&amp;#x27&amp;#x29">example</a></p>\n'
+            );
+          }
+        );
 
-    test('declaration', (ctx) => {
-      equal(markdownToHtml('inline <!FOO>'), '<p>inline <!FOO></p>\n');
-      equal(markdownToHtml('inline <!FOO >'), '<p>inline <!FOO ></p>\n');
-      equal(markdownToHtml("inline <!FOO 'bar'>"), "<p>inline <!FOO 'bar'></p>\n");
-      equal(markdownToHtml('inline <!foo bar>'), '<p>inline <!foo bar></p>\n');
-      equal(markdownToHtml('inline <!foo>'), '<p>inline <!foo></p>\n');
-    });
-  });
+        test(
+          'orderedListStartZero',
+          (ctx) => {
+            equal(
+              markdownToHtml('0. Test\n'),
+              '<ol start="0">\n<li>Test</li>\n</ol>\n'
+            );
+          }
+        );
 
-  suite('LinkReferenceDefinitionParserTest', () => {
-    test('empty and invalid labels remain paragraphs', (ctx) => {
-      equal(markdownToHtml('[]: /\n'), '<p>[]: /</p>\n');
-      equal(markdownToHtml('[ ]: /\n'), '<p>[ ]: /</p>\n');
-      equal(markdownToHtml('[ \t\n ]: /\n'), '<p>[ \t\n]: /</p>\n');
-      equal(markdownToHtml('[foo] : /\n'), '<p>[foo] : /</p>\n');
-      equal(markdownToHtml('[foo[]:\n'), '<p>[foo[]:</p>\n');
-      equal(markdownToHtml('[foo]: <bar<>\n'), '<p>[foo]: &lt;bar&lt;&gt;</p>\n');
-    });
+        test(
+          'imageAltText flattening',
+          (ctx) => {
+            equal(
+              markdownToHtml('![foo\nbar](/url)\n'),
+              '<p><img src="/url" alt="foo\nbar" /></p>\n'
+            );
+            equal(
+              markdownToHtml('![foo  \nbar](/url)\n'),
+              '<p><img src="/url" alt="foo\nbar" /></p>\n'
+            );
+            equal(
+              markdownToHtml('![foo &auml;](/url)\n'),
+              '<p><img src="/url" alt="foo ä" /></p>\n'
+            );
+            equal(
+              markdownToHtml('![_foo_ **bar** [link](/url)](/url)\n'),
+              '<p><img src="/url" alt="foo bar link" /></p>\n'
+            );
+            equal(
+              markdownToHtml('![`foo` bar](/url)\n'),
+              '<p><img src="/url" alt="foo bar" /></p>\n'
+            );
+          }
+        );
+      }
+    );
 
-    test('multiline label and destination', (ctx) => {
-      equal(
-        markdownToHtml('[two\nlines]:\n/url\n\n[two lines]\n'),
-        '<p><a href="/url">two lines</a></p>\n'
-      );
-      equal(
-        markdownToHtml('[\nweird]:\n/url\n\n[weird]\n'),
-        '<p><a href="/url">weird</a></p>\n'
-      );
-      equal(
-        markdownToHtml('[foo]: /url\n[bar]: </url2>\n\n[foo] [bar]\n'),
-        '<p><a href="/url">foo</a> <a href="/url2">bar</a></p>\n'
-      );
-    });
+    suite(
+      'SpecialInputTest',
+      () => {
+        test(
+          'empty',
+          (ctx) => {
+            equal(markdownToHtml(''), '');
+          }
+        );
 
-    test('multiline titles and fallback when trailing garbage follows title', (ctx) => {
-      equal(
-        markdownToHtml("[foo]: /url 'two\nlines\n'\n\n[foo]\n"),
-        '<p><a href="/url" title="two\nlines\n">foo</a></p>\n'
-      );
-      equal(
-        markdownToHtml("[foo]: /url '\ntitle'\n\n[foo]\n"),
-        '<p><a href="/url" title="\ntitle">foo</a></p>\n'
-      );
-      // Title line with trailing garbage falls back to title-less definition + paragraph line
-      equal(
-        markdownToHtml('[foo]: /url\n"title" bad\n\n[foo]\n'),
-        '<p>&quot;title&quot; bad</p>\n<p><a href="/url">foo</a></p>\n'
-      );
-      equal(
-        markdownToHtml('[foo]: /url\n(title\nfoo(\n\n[foo]\n'),
-        '<p>(title\nfoo(</p>\n<p><a href="/url">foo</a></p>\n'
-      );
-      equal(
-        markdownToHtml('[foo]: /url\n(partial title\n\n[foo]\n'),
-        '<p>(partial title</p>\n<p><a href="/url">foo</a></p>\n'
-      );
-      equal(
-        markdownToHtml('[foo]: /url\n"title\ncontinued" garbage\n\n[foo]\n'),
-        '<p>&quot;title\ncontinued&quot; garbage</p>\n<p><a href="/url">foo</a></p>\n'
-      );
-    });
+        test(
+          'nullCharacterShouldBeReplaced',
+          (ctx) => {
+            let nul = String.fromCodePoint(0);
+            let replacement = String.fromCodePoint(0xFFFD);
+            equal(
+              markdownToHtml(`foo${nul}bar`),
+              `<p>foo${replacement}bar</p>\n`
+            );
+          }
+        );
 
-    test('invalid single-line titles make whole definition a paragraph', (ctx) => {
-      equal(markdownToHtml('[foo]: /url (invalid(\n'), '<p>[foo]: /url (invalid(</p>\n');
-      equal(
-        markdownToHtml("[foo]: </url>'title'\n"),
-        "<p>[foo]: </url>'title'</p>\n"
-      );
-      equal(
-        markdownToHtml("[foo]: /url 'title' INVALID\n"),
-        "<p>[foo]: /url 'title' INVALID</p>\n"
-      );
-    });
-  });
+        test(
+          'nullCharacterEntityShouldBeReplaced',
+          (ctx) => {
+            let replacement = String.fromCodePoint(0xFFFD);
+            equal(
+              markdownToHtml('foo&#0;bar'),
+              `<p>foo${replacement}bar</p>\n`
+            );
+          }
+        );
 
-  suite('HtmlRendererTest', () => {
-    test('raw HTML allowed by default', (ctx) => {
-      equal(
-        markdownToHtml("paragraph with <span id='foo' class=\"bar\">inline &amp; html</span>"),
-        "<p>paragraph with <span id='foo' class=\"bar\">inline &amp; html</span></p>\n"
-      );
-      equal(
-        markdownToHtml("<div id='foo' class=\"bar\">block &amp;</div>"),
-        "<div id='foo' class=\"bar\">block &amp;</div>\n"
-      );
-    });
+        test(
+          'crLfAndMixedLineSeparators',
+          (ctx) => {
+            equal(markdownToHtml('foo\r\nbar'), '<p>foo\nbar</p>\n');
+            equal(markdownToHtml('foo\r\n'), '<p>foo</p>\n');
+            equal(
+              markdownToHtml('- a\n- b\r- c\r\n- d'),
+              '<ul>\n<li>a</li>\n<li>b</li>\n<li>c</li>\n<li>d</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('a\n\nb\r\rc\r\n\r\nd\n\re'),
+              '<p>a</p>\n<p>b</p>\n<p>c</p>\n<p>d</p>\n<p>e</p>\n'
+            );
+          }
+        );
 
-    test('text and entity escaping', (ctx) => {
-      equal(
-        markdownToHtml("escaping: & < > \" '"),
-        "<p>escaping: &amp; &lt; &gt; &quot; '</p>\n"
-      );
-      let input =
-        '[example](&#x6A&#x61&#x76&#x61&#x73&#x63&#x72&#x69&#x70&#x74&#x3A&#x61&#x6C&#x65&#x72&#x74&#x28&#x27&#x58&#x53&#x53&#x27&#x29)';
-      equal(
-        markdownToHtml(input),
-        '<p><a href="&amp;#x6A&amp;#x61&amp;#x76&amp;#x61&amp;#x73&amp;#x63&amp;#x72&amp;#x69&amp;#x70&amp;#x74&amp;#x3A&amp;#x61&amp;#x6C&amp;#x65&amp;#x72&amp;#x74&amp;#x28&amp;#x27&amp;#x58&amp;#x53&amp;#x53&amp;#x27&amp;#x29">example</a></p>\n'
-      );
-    });
+        test(
+          'surrogatePairAndLinkDestination',
+          (ctx) => {
+            let clef = String.fromCodePoint(0x1D11E);
+            equal(
+              markdownToHtml(`surrogate pair: ${clef}`),
+              `<p>surrogate pair: ${clef}</p>\n`
+            );
+            equal(
+              markdownToHtml(`[title](${clef})`),
+              `<p><a href="${clef}">title</a></p>\n`
+            );
+          }
+        );
 
-    test('orderedListStartZero', (ctx) => {
-      equal(
-        markdownToHtml('0. Test\n'),
-        '<ol start="0">\n<li>Test</li>\n</ol>\n'
-      );
-    });
+        test(
+          'htmlBlockDeclarationWithLowercaseLetter',
+          (ctx) => {
+            equal(markdownToHtml('<!doctype html>'), '<!doctype html>\n');
+            equal(markdownToHtml('<!x\nfoo>\nbar'), '<!x\nfoo>\n<p>bar</p>\n');
+          }
+        );
 
-    test('imageAltText flattening', (ctx) => {
-      equal(
-        markdownToHtml('![foo\nbar](/url)\n'),
-        '<p><img src="/url" alt="foo\nbar" /></p>\n'
-      );
-      equal(
-        markdownToHtml('![foo  \nbar](/url)\n'),
-        '<p><img src="/url" alt="foo\nbar" /></p>\n'
-      );
-      equal(
-        markdownToHtml('![foo &auml;](/url)\n'),
-        '<p><img src="/url" alt="foo ä" /></p>\n'
-      );
-      equal(
-        markdownToHtml('![_foo_ **bar** [link](/url)](/url)\n'),
-        '<p><img src="/url" alt="foo bar link" /></p>\n'
-      );
-      equal(
-        markdownToHtml('![`foo` bar](/url)\n'),
-        '<p><img src="/url" alt="foo bar" /></p>\n'
-      );
-    });
-  });
+        test(
+          'indentedCodeBlockWithMixedTabsAndSpaces',
+          (ctx) => {
+            equal(
+              markdownToHtml('    foo\n\tbar'),
+              '<pre><code>foo\nbar\n</code></pre>\n'
+            );
+          }
+        );
 
-  suite('SpecialInputTest', () => {
-    test('empty', (ctx) => {
-      equal(markdownToHtml(''), '');
-    });
+        test(
+          'tightAndLooseListInBlockQuote',
+          (ctx) => {
+            equal(
+              markdownToHtml('> *\n> * a\n'),
+              '<blockquote>\n<ul>\n<li></li>\n<li>a</li>\n</ul>\n</blockquote>\n'
+            );
+            equal(
+              markdownToHtml('> *\n>\n> * a\n'),
+              '<blockquote>\n<ul>\n<li></li>\n<li>\n<p>a</p>\n</li>\n</ul>\n</blockquote>\n'
+            );
+          }
+        );
 
-    test('nullCharacterShouldBeReplaced', (ctx) => {
-      let nul = String.fromCodePoint(0);
-      let replacement = String.fromCodePoint(0xFFFD);
-      equal(markdownToHtml(`foo${nul}bar`), `<p>foo${replacement}bar</p>\n`);
-    });
+        test(
+          'lineWithOnlySpacesAfterListBullet and orderedListMarkerOnly',
+          (ctx) => {
+            equal(
+              markdownToHtml('-  \n  \n  foo\n'),
+              '<ul>\n<li></li>\n</ul>\n<p>foo</p>\n'
+            );
+            equal(
+              markdownToHtml('*  \n  foo\n'),
+              '<ul>\n<li>foo</li>\n</ul>\n'
+            );
+            equal(markdownToHtml('2.\n'), '<ol start="2">\n<li></li>\n</ol>\n');
+          }
+        );
 
-    test('nullCharacterEntityShouldBeReplaced', (ctx) => {
-      let replacement = String.fromCodePoint(0xFFFD);
-      equal(markdownToHtml('foo&#0;bar'), `<p>foo${replacement}bar</p>\n`);
-    });
+        test(
+          'columnIsInTabOnPreviousLine',
+          (ctx) => {
+            equal(
+              markdownToHtml('- foo\n\n\tbar\n\n# baz\n'),
+              '<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>\n<h1>baz</h1>\n'
+            );
+            equal(
+              markdownToHtml('- foo\n\n\tbar\n# baz\n'),
+              '<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>\n<h1>baz</h1>\n'
+            );
+          }
+        );
 
-    test('crLfAndMixedLineSeparators', (ctx) => {
-      equal(markdownToHtml('foo\r\nbar'), '<p>foo\nbar</p>\n');
-      equal(markdownToHtml('foo\r\n'), '<p>foo</p>\n');
-      equal(
-        markdownToHtml('- a\n- b\r- c\r\n- d'),
-        '<ul>\n<li>a</li>\n<li>b</li>\n<li>c</li>\n<li>d</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('a\n\nb\r\rc\r\n\r\nd\n\re'),
-        '<p>a</p>\n<p>b</p>\n<p>c</p>\n<p>d</p>\n<p>e</p>\n'
-      );
-    });
+        test(
+          'linkLabelWithBracket',
+          (ctx) => {
+            equal(
+              markdownToHtml('[a[b]\n\n[a[b]: /\n'),
+              '<p>[a[b]</p>\n<p>[a[b]: /</p>\n'
+            );
+            equal(
+              markdownToHtml('[a]b]\n\n[a]b]: /\n'),
+              '<p>[a]b]</p>\n<p>[a]b]: /</p>\n'
+            );
+            equal(
+              markdownToHtml('[a[b]]\n\n[a[b]]: /\n'),
+              '<p>[a[b]]</p>\n<p>[a[b]]: /</p>\n'
+            );
+          }
+        );
 
-    test('surrogatePairAndLinkDestination', (ctx) => {
-      let clef = String.fromCodePoint(0x1D11E);
-      equal(
-        markdownToHtml(`surrogate pair: ${clef}`),
-        `<p>surrogate pair: ${clef}</p>\n`
-      );
-      equal(
-        markdownToHtml(`[title](${clef})`),
-        `<p><a href="${clef}">title</a></p>\n`
-      );
-    });
+        test(
+          'linkReferenceDefinitionWithUnbalancedParens',
+          (ctx) => {
+            equal(markdownToHtml('[foo]: ('), '<p>[foo]: (</p>\n');
+            equal(markdownToHtml('[foo]: (\nbar'), '<p>[foo]: (\nbar</p>\n');
+            equal(
+              markdownToHtml('[foo]: a(b\n\n[foo]'),
+              '<p>[foo]: a(b</p>\n<p>[foo]</p>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: a(b) "t"\n\n[foo]'),
+              '<p><a href="a(b)" title="t">foo</a></p>\n'
+            );
+          }
+        );
 
-    test('htmlBlockDeclarationWithLowercaseLetter', (ctx) => {
-      equal(markdownToHtml('<!doctype html>'), '<!doctype html>\n');
-      equal(markdownToHtml('<!x\nfoo>\nbar'), '<!x\nfoo>\n<p>bar</p>\n');
-    });
+        test(
+          'listCanNotInterruptParagraphWithOnlyLinkReferenceDefinitions',
+          (ctx) => {
+            equal(
+              markdownToHtml('[foo]: /url\n2. a\n\n[foo]'),
+              '<p>2. a</p>\n<p><a href="/url">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: /url\n-\n\n[foo]'),
+              '<p>-</p>\n<p><a href="/url">foo</a></p>\n'
+            );
+            equal(markdownToHtml('[foo]: /url "t"\n2. a'), '<p>2. a</p>\n');
+            equal(
+              markdownToHtml('> [foo]: /url\n> 2. a'),
+              '<blockquote>\n<p>2. a</p>\n</blockquote>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: /url\n1. a'),
+              '<ol>\n<li>a</li>\n</ol>\n'
+            );
+            equal(
+              markdownToHtml('[foo]: /url\n- a'),
+              '<ul>\n<li>a</li>\n</ul>\n'
+            );
+          }
+        );
 
-    test('indentedCodeBlockWithMixedTabsAndSpaces', (ctx) => {
-      equal(
-        markdownToHtml('    foo\n\tbar'),
-        '<pre><code>foo\nbar\n</code></pre>\n'
-      );
-    });
+        test(
+          'linkLabelLength (999 character boundary)',
+          (ctx) => {
+            let label1 = repeatString('a', 999);
+            equal(
+              markdownToHtml(`[foo][${label1}]\n\n[${label1}]: /\n`),
+              '<p><a href="/">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml(`[foo][x${label1}]\n\n[x${label1}]: /\n`),
+              `<p>[foo][x${label1}]</p>\n<p>[x${label1}]: /</p>\n`
+            );
+            equal(
+              markdownToHtml(`[foo][\n${label1}]\n\n[\n${label1}]: /\n`),
+              `<p>[foo][\n${label1}]</p>\n<p>[\n${label1}]: /</p>\n`
+            );
 
-    test('tightAndLooseListInBlockQuote', (ctx) => {
-      equal(
-        markdownToHtml('> *\n> * a\n'),
-        '<blockquote>\n<ul>\n<li></li>\n<li>a</li>\n</ul>\n</blockquote>\n'
-      );
-      equal(
-        markdownToHtml('> *\n>\n> * a\n'),
-        '<blockquote>\n<ul>\n<li></li>\n<li>\n<p>a</p>\n</li>\n</ul>\n</blockquote>\n'
-      );
-    });
+            let label2 = repeatString('a\n', 499);
+            equal(
+              markdownToHtml(`[foo][${label2}]\n\n[${label2}]: /\n`),
+              '<p><a href="/">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml(`[foo][12${label2}]\n\n[12${label2}]: /\n`),
+              `<p>[foo][12${label2}]</p>\n<p>[12${label2}]: /</p>\n`
+            );
+          }
+        );
 
-    test('lineWithOnlySpacesAfterListBullet and orderedListMarkerOnly', (ctx) => {
-      equal(
-        markdownToHtml('-  \n  \n  foo\n'),
-        '<ul>\n<li></li>\n</ul>\n<p>foo</p>\n'
-      );
-      equal(
-        markdownToHtml('*  \n  foo\n'),
-        '<ul>\n<li>foo</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('2.\n'),
-        '<ol start="2">\n<li></li>\n</ol>\n'
-      );
-    });
+        test(
+          'linkDestinationEscaping',
+          (ctx) => {
+            equal(markdownToHtml('[foo](\\))'), '<p><a href=")">foo</a></p>\n');
+            equal(
+              markdownToHtml('[foo](\\ )'),
+              '<p><a href="\\">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[foo](<a\\b>)'),
+              '<p><a href="a\\b">foo</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[foo](<a\\>>)'),
+              '<p><a href="a&gt;">foo</a></p>\n'
+            );
+            equal(markdownToHtml('[foo](<\\>)'), '<p>[foo](&lt;&gt;)</p>\n');
+          }
+        );
 
-    test('columnIsInTabOnPreviousLine', (ctx) => {
-      equal(
-        markdownToHtml('- foo\n\n\tbar\n\n# baz\n'),
-        '<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>\n<h1>baz</h1>\n'
-      );
-      equal(
-        markdownToHtml('- foo\n\n\tbar\n# baz\n'),
-        '<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>\n<h1>baz</h1>\n'
-      );
-    });
+        test(
+          'linkReferenceBackslash',
+          (ctx) => {
+            equal(markdownToHtml('[\\]: test'), '<p>[]: test</p>\n');
+            equal(
+              markdownToHtml('[a\\b]\n\n[a\\b]: test\n'),
+              '<p><a href="test">a\\b</a></p>\n'
+            );
+            equal(
+              markdownToHtml('[a\\]]\n\n[a\\]]: test\n'),
+              '<p><a href="test">a]</a></p>\n'
+            );
+          }
+        );
 
-    test('linkLabelWithBracket', (ctx) => {
-      equal(
-        markdownToHtml('[a[b]\n\n[a[b]: /\n'),
-        '<p>[a[b]</p>\n<p>[a[b]: /</p>\n'
-      );
-      equal(
-        markdownToHtml('[a]b]\n\n[a]b]: /\n'),
-        '<p>[a]b]</p>\n<p>[a]b]: /</p>\n'
-      );
-      equal(
-        markdownToHtml('[a[b]]\n\n[a[b]]: /\n'),
-        '<p>[a[b]]</p>\n<p>[a[b]]: /</p>\n'
-      );
-    });
+        test(
+          'emphasisMultipleOf3Rule and complex runs',
+          (ctx) => {
+            equal(
+              markdownToHtml('a***b* c*'),
+              '<p>a*<em><em>b</em> c</em></p>\n'
+            );
+            equal(
+              markdownToHtml('*****Hello*world****'),
+              '<p>**<em><strong>Hello<em>world</em></strong></em></p>\n'
+            );
+          }
+        );
 
-    test('linkReferenceDefinitionWithUnbalancedParens', (ctx) => {
-      equal(markdownToHtml('[foo]: ('), '<p>[foo]: (</p>\n');
-      equal(markdownToHtml('[foo]: (\nbar'), '<p>[foo]: (\nbar</p>\n');
-      equal(markdownToHtml('[foo]: a(b\n\n[foo]'), '<p>[foo]: a(b</p>\n<p>[foo]</p>\n');
-      equal(
-        markdownToHtml('[foo]: a(b) "t"\n\n[foo]'),
-        '<p><a href="a(b)" title="t">foo</a></p>\n'
-      );
-    });
+        test(
+          'deeplyIndentedList',
+          (ctx) => {
+            equal(
+              markdownToHtml('* one\n  * two\n    * three\n      * four\n'),
+              '<ul>\n<li>one\n<ul>\n<li>two\n<ul>\n<li>three\n<ul>\n<li>four</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>\n'
+            );
+          }
+        );
 
-    test('listCanNotInterruptParagraphWithOnlyLinkReferenceDefinitions', (ctx) => {
-      equal(
-        markdownToHtml('[foo]: /url\n2. a\n\n[foo]'),
-        '<p>2. a</p>\n<p><a href="/url">foo</a></p>\n'
-      );
-      equal(
-        markdownToHtml('[foo]: /url\n-\n\n[foo]'),
-        '<p>-</p>\n<p><a href="/url">foo</a></p>\n'
-      );
-      equal(markdownToHtml('[foo]: /url "t"\n2. a'), '<p>2. a</p>\n');
-      equal(
-        markdownToHtml('> [foo]: /url\n> 2. a'),
-        '<blockquote>\n<p>2. a</p>\n</blockquote>\n'
-      );
-      equal(markdownToHtml('[foo]: /url\n1. a'), '<ol>\n<li>a</li>\n</ol>\n');
-      equal(markdownToHtml('[foo]: /url\n- a'), '<ul>\n<li>a</li>\n</ul>\n');
-    });
+        test(
+          'trailingTabs',
+          (ctx) => {
+            equal(markdownToHtml('a\t\nb\n'), '<p>a\t\nb</p>\n');
+          }
+        );
 
-    test('linkLabelLength (999 character boundary)', (ctx) => {
-      let label1 = repeatString('a', 999);
-      equal(
-        markdownToHtml(`[foo][${label1}]\n\n[${label1}]: /\n`),
-        '<p><a href="/">foo</a></p>\n'
-      );
-      equal(
-        markdownToHtml(`[foo][x${label1}]\n\n[x${label1}]: /\n`),
-        `<p>[foo][x${label1}]</p>\n<p>[x${label1}]: /</p>\n`
-      );
-      equal(
-        markdownToHtml(`[foo][\n${label1}]\n\n[\n${label1}]: /\n`),
-        `<p>[foo][\n${label1}]</p>\n<p>[\n${label1}]: /</p>\n`
-      );
+        test(
+          'htmlBlockInterruptingList',
+          (ctx) => {
+            equal(
+              markdownToHtml(
+                '- <script>\n- some text\nsome other text\n</script>\n'
+              ),
+              '<ul>\n<li>\n<script>\n</li>\n<li>some text\nsome other text\n</script></li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml(
+                '- <script>\n- some text\nsome other text\n\n</script>\n'
+              ),
+              '<ul>\n<li>\n<script>\n</li>\n<li>some text\nsome other text</li>\n</ul>\n</script>\n'
+            );
+          }
+        );
 
-      let label2 = repeatString('a\n', 499);
-      equal(
-        markdownToHtml(`[foo][${label2}]\n\n[${label2}]: /\n`),
-        '<p><a href="/">foo</a></p>\n'
-      );
-      equal(
-        markdownToHtml(`[foo][12${label2}]\n\n[12${label2}]: /\n`),
-        `<p>[foo][12${label2}]</p>\n<p>[12${label2}]: /</p>\n`
-      );
-    });
+        test(
+          'emphasisAfterHardLineBreak',
+          (ctx) => {
+            equal(
+              markdownToHtml('Hello  \n**Bar**\nFoo\n'),
+              '<p>Hello<br />\n<strong>Bar</strong>\nFoo</p>\n'
+            );
+            equal(
+              markdownToHtml('Hello  \n**Bar**  \nFoo\n'),
+              '<p>Hello<br />\n<strong>Bar</strong><br />\nFoo</p>\n'
+            );
+          }
+        );
 
-    test('linkDestinationEscaping', (ctx) => {
-      equal(markdownToHtml('[foo](\\))'), '<p><a href=")">foo</a></p>\n');
-      equal(markdownToHtml('[foo](\\ )'), '<p><a href="\\">foo</a></p>\n');
-      equal(markdownToHtml('[foo](<a\\b>)'), '<p><a href="a\\b">foo</a></p>\n');
-      equal(markdownToHtml('[foo](<a\\>>)'), '<p><a href="a&gt;">foo</a></p>\n');
-      equal(markdownToHtml('[foo](<\\>)'), '<p>[foo](&lt;&gt;)</p>\n');
-    });
+        test(
+          'codeSpansAfterUnclosedBackticks',
+          (ctx) => {
+            equal(
+              markdownToHtml('`` `a` `c`'),
+              '<p>`` <code>a</code> <code>c</code></p>\n'
+            );
+            equal(
+              markdownToHtml('`` `a` `c` `e`'),
+              '<p>`` <code>a</code> <code>c</code> <code>e</code></p>\n'
+            );
+          }
+        );
 
-    test('linkReferenceBackslash', (ctx) => {
-      equal(markdownToHtml('[\\]: test'), '<p>[]: test</p>\n');
-      equal(
-        markdownToHtml('[a\\b]\n\n[a\\b]: test\n'),
-        '<p><a href="test">a\\b</a></p>\n'
-      );
-      equal(
-        markdownToHtml('[a\\]]\n\n[a\\]]: test\n'),
-        '<p><a href="test">a]</a></p>\n'
-      );
-    });
-
-    test('emphasisMultipleOf3Rule and complex runs', (ctx) => {
-      equal(markdownToHtml('a***b* c*'), '<p>a*<em><em>b</em> c</em></p>\n');
-      equal(
-        markdownToHtml('*****Hello*world****'),
-        '<p>**<em><strong>Hello<em>world</em></strong></em></p>\n'
-      );
-    });
-
-    test('deeplyIndentedList', (ctx) => {
-      equal(
-        markdownToHtml('* one\n  * two\n    * three\n      * four\n'),
-        '<ul>\n<li>one\n<ul>\n<li>two\n<ul>\n<li>three\n<ul>\n<li>four</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>\n'
-      );
-    });
-
-    test('trailingTabs', (ctx) => {
-      equal(markdownToHtml('a\t\nb\n'), '<p>a\t\nb</p>\n');
-    });
-
-    test('htmlBlockInterruptingList', (ctx) => {
-      equal(
-        markdownToHtml('- <script>\n- some text\nsome other text\n</script>\n'),
-        '<ul>\n<li>\n<script>\n</li>\n<li>some text\nsome other text\n</script></li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('- <script>\n- some text\nsome other text\n\n</script>\n'),
-        '<ul>\n<li>\n<script>\n</li>\n<li>some text\nsome other text</li>\n</ul>\n</script>\n'
-      );
-    });
-
-    test('emphasisAfterHardLineBreak', (ctx) => {
-      equal(
-        markdownToHtml('Hello  \n**Bar**\nFoo\n'),
-        '<p>Hello<br />\n<strong>Bar</strong>\nFoo</p>\n'
-      );
-      equal(
-        markdownToHtml('Hello  \n**Bar**  \nFoo\n'),
-        '<p>Hello<br />\n<strong>Bar</strong><br />\nFoo</p>\n'
-      );
-    });
-
-    test('codeSpansAfterUnclosedBackticks', (ctx) => {
-      equal(
-        markdownToHtml('`` `a` `c`'),
-        '<p>`` <code>a</code> <code>c</code></p>\n'
-      );
-      equal(
-        markdownToHtml('`` `a` `c` `e`'),
-        '<p>`` <code>a</code> <code>c</code> <code>e</code></p>\n'
-      );
-    });
-
-    test('htmlBlockInBlockQuoteAfterPartiallyConsumedTab', (ctx) => {
-      equal(markdownToHtml('>\t<div>'), '<blockquote>\n  <div>\n</blockquote>\n');
-      equal(
-        markdownToHtml('> <div>\n>\tfoo'),
-        '<blockquote>\n<div>\n  foo\n</blockquote>\n'
-      );
-    });
-  });
-});
+        test(
+          'htmlBlockInBlockQuoteAfterPartiallyConsumedTab',
+          (ctx) => {
+            equal(
+              markdownToHtml('>\t<div>'),
+              '<blockquote>\n  <div>\n</blockquote>\n'
+            );
+            equal(
+              markdownToHtml('> <div>\n>\tfoo'),
+              '<blockquote>\n<div>\n  foo\n</blockquote>\n'
+            );
+          }
+        );
+      }
+    );
+  }
+);

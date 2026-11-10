@@ -3,185 +3,261 @@ import {suite, test, TestContext} from 'zena:test';
 import {equal} from 'zena:assert';
 import {StringBuilder, join} from 'zena:core';
 
-export let tests = suite('StringBuilder', () => {
-  test('append strings', (ctx) => {
-    let sb = new StringBuilder();
-    sb.append("Hello");
-    sb.append(" ");
-    sb.append("World");
-    
-    equal(sb.toString(), "Hello World");
-    equal(sb.length, 11);
-  });
+export let tests = suite(
+  'StringBuilder',
+  () => {
+    test(
+      'append strings',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.append('Hello');
+        sb.append(' ');
+        sb.append('World');
 
-  test('append characters (bytes)', (ctx) => {
-    let sb = new StringBuilder(4);
-    sb.appendByte(65); // 'A'
-    sb.appendByte(66); // 'B'
-    sb.appendByte(67); // 'C'
-    
-    equal(sb.toString(), "ABC");
-    equal(sb.length, 3);
-  });
+        equal(sb.toString(), 'Hello World');
+        equal(sb.length, 11);
+      }
+    );
 
-  test('resize buffer', (ctx) => {
-    let sb = new StringBuilder(2); // Start small
-    sb.append("12");
-    equal(sb.capacity, 2, "Capacity should be 2 after filling");
-    
-    sb.append("3"); // Should trigger resize (2 -> 4)
-    equal(sb.toString(), "123", "Content should be 123 after resize");
-    // Capacity might wait for implementation details, but at least > 3
-    
-    sb.append("45678"); // Should resize again
-    equal(sb.toString(), "12345678", "Content should be 12345678 after second resize");
-  });
+    test(
+      'append characters (bytes)',
+      (ctx) => {
+        let sb = new StringBuilder(4);
+        sb.appendByte(65); // 'A'
+        sb.appendByte(66); // 'B'
+        sb.appendByte(67); // 'C'
 
-  test('clear', (ctx) => {
-    let sb = new StringBuilder();
-    sb.append("foo");
-    equal(sb.length, 3);
-    
-    sb.clear();
-    equal(sb.length, 0);
-    equal(sb.toString(), "");
-    
-    sb.append("bar");
-    equal(sb.toString(), "bar");
-  });
-  
-  test('mixed operations', (ctx) => {
-      let sb = new StringBuilder();
-      sb.append("A");
-      sb.appendByte(43); // '+'
-      sb.append("B");
-      equal(sb.toString(), "A+B");
-  });
+        equal(sb.toString(), 'ABC');
+        equal(sb.length, 3);
+      }
+    );
 
-  test('append string larger than chunk', (ctx) => {
-    // Start with a tiny buffer of 2 bytes
-    let sb = new StringBuilder(2);
-    // Append "ABCDEFGH" (8 bytes) which is larger than initial chunk
-    sb.append("ABCDEFGH");
-    equal(sb.toString(), "ABCDEFGH");
-    equal(sb.length, 8);
-  });
+    test(
+      'resize buffer',
+      (ctx) => {
+        let sb = new StringBuilder(2); // Start small
+        sb.append('12');
+        equal(sb.capacity, 2, 'Capacity should be 2 after filling');
 
-  test('chaining append calls', (ctx) => {
-    let sb = new StringBuilder();
-    sb.append("a").append("b").append("c");
-    equal(sb.toString(), "abc");
-  });
+        sb.append('3'); // Should trigger resize (2 -> 4)
+        equal(sb.toString(), '123', 'Content should be 123 after resize');
+        // Capacity might wait for implementation details, but at least > 3
 
-  test('appendI32 zero', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendI32(0);
-    equal(sb.toString(), "0");
-  });
+        sb.append('45678'); // Should resize again
+        equal(
+          sb.toString(),
+          '12345678',
+          'Content should be 12345678 after second resize'
+        );
+      }
+    );
 
-  test('appendI32 positive', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendI32(12345);
-    equal(sb.toString(), "12345");
-  });
+    test(
+      'clear',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.append('foo');
+        equal(sb.length, 3);
 
-  test('appendI32 negative', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendI32(-42);
-    equal(sb.toString(), "-42");
-  });
+        sb.clear();
+        equal(sb.length, 0);
+        equal(sb.toString(), '');
 
-  test('appendI32 max value', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendI32(2147483647);
-    equal(sb.toString(), "2147483647");
-  });
+        sb.append('bar');
+        equal(sb.toString(), 'bar');
+      }
+    );
 
-  test('appendI32 min value', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendI32(-2147483648);
-    equal(sb.toString(), "-2147483648");
-  });
+    test(
+      'mixed operations',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.append('A');
+        sb.appendByte(43); // '+'
+        sb.append('B');
+        equal(sb.toString(), 'A+B');
+      }
+    );
 
-  test('appendI32 chaining', (ctx) => {
-    let sb = new StringBuilder();
-    sb.append("count: ").appendI32(42).append(" items");
-    equal(sb.toString(), "count: 42 items");
-  });
+    test(
+      'append string larger than chunk',
+      (ctx) => {
+        // Start with a tiny buffer of 2 bytes
+        let sb = new StringBuilder(2);
+        // Append "ABCDEFGH" (8 bytes) which is larger than initial chunk
+        sb.append('ABCDEFGH');
+        equal(sb.toString(), 'ABCDEFGH');
+        equal(sb.length, 8);
+      }
+    );
 
-  test('appendU32 zero', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendU32(0 as u32);
-    equal(sb.toString(), "0");
-  });
+    test(
+      'chaining append calls',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.append('a').append('b').append('c');
+        equal(sb.toString(), 'abc');
+      }
+    );
 
-  test('appendU32 positive', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendU32(4294967295 as u32);
-    equal(sb.toString(), "4294967295");
-  });
+    test(
+      'appendI32 zero',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendI32(0);
+        equal(sb.toString(), '0');
+      }
+    );
 
-  test('appendI64 zero', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendI64(0 as i64);
-    equal(sb.toString(), "0");
-  });
+    test(
+      'appendI32 positive',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendI32(12345);
+        equal(sb.toString(), '12345');
+      }
+    );
 
-  test('appendI64 positive', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendI64(9223372036854775807 as i64);
-    equal(sb.toString(), "9223372036854775807");
-  });
+    test(
+      'appendI32 negative',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendI32(-42);
+        equal(sb.toString(), '-42');
+      }
+    );
 
-  test('appendI64 negative', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendI64(-9223372036854775808 as i64);
-    equal(sb.toString(), "-9223372036854775808");
-  });
+    test(
+      'appendI32 max value',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendI32(2147483647);
+        equal(sb.toString(), '2147483647');
+      }
+    );
 
-  test('appendU64 max', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendU64(18446744073709551615 as u64);
-    equal(sb.toString(), "18446744073709551615");
-  });
+    test(
+      'appendI32 min value',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendI32(-2147483648);
+        equal(sb.toString(), '-2147483648');
+      }
+    );
 
-  test('join concatenates iterable strings with separator', (ctx) => {
-    let empty: Iterable<String> = [];
-    equal(join(empty, ','), '');
-    equal(join(['only'], ','), 'only');
-    equal(join(['a', 'b', 'c'], ','), 'a,b,c');
-    equal(join(['a', 'b', 'c']), 'abc');
+    test(
+      'appendI32 chaining',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.append('count: ').appendI32(42).append(' items');
+        equal(sb.toString(), 'count: 42 items');
+      }
+    );
 
-    let growable = new GrowableArray<String>();
-    growable.push('GET');
-    growable.push('POST');
-    equal(join(growable, ', '), 'GET, POST');
-  });
+    test(
+      'appendU32 zero',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendU32(0 as u32);
+        equal(sb.toString(), '0');
+      }
+    );
 
-  test('appendSlice and appendByte2', (ctx) => {
-    let sb = new StringBuilder(4);
-    sb.appendSlice('hello world', 0, 5);
-    sb.appendByte2(92, 110); // '\n'
-    sb.appendSlice('hello world', 6, 11);
-    equal(sb.toString(), 'hello\\nworld');
-  });
+    test(
+      'appendU32 positive',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendU32(4294967295 as u32);
+        equal(sb.toString(), '4294967295');
+      }
+    );
 
-  test('String.getI32At packs 4 bytes little-endian', (ctx) => {
-    let s = 'xxABCDyy'.sliceBytes(2, 6);
-    let expected = 65 | (66 << 8) | (67 << 16) | (68 << 24);
-    equal(s.getI32At(0), expected);
-  });
+    test(
+      'appendI64 zero',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendI64(0 as i64);
+        equal(sb.toString(), '0');
+      }
+    );
 
-  test('appendCodePoint encodes ASCII, BMP, supplementary, and invalid scalars', (ctx) => {
-    let sb = new StringBuilder();
-    sb.appendCodePoint(0x41)     // 'A'
-      .appendCodePoint(0xE9)     // 'é'
-      .appendCodePoint(0x20AC)   // '€'
-      .appendCodePoint(0x1F600)  // '😀'
-      .appendCodePoint(0xD800)   // surrogate -> U+FFFD
-      .appendCodePoint(-1);      // negative -> U+FFFD
-    let replacement = String.fromCodePoint(0xFFFD);
-    equal(sb.toString(), `Aé€😀${replacement}${replacement}`);
-  });
-});
+    test(
+      'appendI64 positive',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendI64(9223372036854775807 as i64);
+        equal(sb.toString(), '9223372036854775807');
+      }
+    );
 
+    test(
+      'appendI64 negative',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendI64(-9223372036854775808 as i64);
+        equal(sb.toString(), '-9223372036854775808');
+      }
+    );
+
+    test(
+      'appendU64 max',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb.appendU64(18446744073709551615 as u64);
+        equal(sb.toString(), '18446744073709551615');
+      }
+    );
+
+    test(
+      'join concatenates iterable strings with separator',
+      (ctx) => {
+        let empty: Iterable<String> = [];
+        equal(join(empty, ','), '');
+        equal(join(['only'], ','), 'only');
+        equal(join(['a', 'b', 'c'], ','), 'a,b,c');
+        equal(join(['a', 'b', 'c']), 'abc');
+
+        let growable = new GrowableArray<String>();
+        growable.push('GET');
+        growable.push('POST');
+        equal(join(growable, ', '), 'GET, POST');
+      }
+    );
+
+    test(
+      'appendSlice and appendByte2',
+      (ctx) => {
+        let sb = new StringBuilder(4);
+        sb.appendSlice('hello world', 0, 5);
+        sb.appendByte2(92, 110); // '\n'
+        sb.appendSlice('hello world', 6, 11);
+        equal(sb.toString(), 'hello\\nworld');
+      }
+    );
+
+    test(
+      'String.getI32At packs 4 bytes little-endian',
+      (ctx) => {
+        let s = 'xxABCDyy'.sliceBytes(2, 6);
+        let expected = 65 | 66 << 8 | 67 << 16 | 68 << 24;
+        equal(s.getI32At(0), expected);
+      }
+    );
+
+    test(
+      'appendCodePoint encodes ASCII, BMP, supplementary, and invalid scalars',
+      (ctx) => {
+        let sb = new StringBuilder();
+        sb
+          .appendCodePoint(0x41)
+          .appendCodePoint(0xE9)
+          .appendCodePoint(0x20AC)
+          .appendCodePoint(0x1F600)
+          .appendCodePoint(0xD800)
+          .appendCodePoint(-1); // negative -> U+FFFD
+        let replacement = String.fromCodePoint(0xFFFD);
+        equal(sb.toString(), `Aé€😀${replacement}${replacement}`);
+      }
+    );
+  }
+);

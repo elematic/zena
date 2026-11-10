@@ -2,37 +2,23 @@
  * GFM extended autolink extension (`http://...`, `https://...`, `www....`).
  */
 
-import { Array, GrowableArray } from 'zena:core';
-import { StringReader, isAsciiAlphanumeric } from 'zena:string';
-import {
-  Autolink, Block, BlockQuote, Document, Emphasis, Heading, Inline, ListBlock,
-  ListItem, Paragraph, Span, Strong, Text
-} from '../ast.zena';
-import {
-  AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser,
-  InlineMatch, InlineParserRunner, MarkdownExtension, NodeRenderer
-} from '../plugin.zena';
+import {Array, GrowableArray} from 'zena:core';
+import {StringReader, isAsciiAlphanumeric} from 'zena:string';
+import {Autolink, Block, BlockQuote, Document, Emphasis, Heading, Inline, ListBlock, ListItem, Paragraph, Span, Strong, Text} from '../ast.zena';
+import {AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser, InlineMatch, InlineParserRunner, MarkdownExtension, NodeRenderer} from '../plugin.zena';
 
 final class GfmAutolinkParser implements InlineContentParser {
   triggerBytes(): Array<i32> {
     return [0x68, 0x48, 0x77, 0x57]; // 'h', 'H', 'w', 'W'
   }
 
-  tryParse(
-    source: String,
-    baseOffset: i32,
-    index: i32,
-    precedingByte: i32,
-    inlineParser: InlineParserRunner
-  ): InlineMatch | null {
+  tryParse(source: String, baseOffset: i32, index: i32, precedingByte: i32, inlineParser: InlineParserRunner): InlineMatch | null {
     // Do not trigger in the middle of an identifier or path
-    if (
-      precedingByte >= 0 &&
-      (isAsciiAlphanumeric(precedingByte) ||
-        precedingByte == 0x5F ||
-        precedingByte == 0x2F ||
-        precedingByte == 0x2E)
-    ) {
+    if (precedingByte >= 0
+      && (isAsciiAlphanumeric(precedingByte)
+        || precedingByte == 0x5F
+        || precedingByte == 0x2F
+        || precedingByte == 0x2E)) {
       return null;
     }
 
@@ -85,10 +71,7 @@ final class GfmAutolinkParser implements InlineContentParser {
   }
 }
 
-function scanAutolinkDomain(
-  r: StringReader,
-  requireDot: boolean
-): boolean {
+function scanAutolinkDomain(r: StringReader, requireDot: boolean): boolean {
   let start = r.mark();
   var hasDot = false;
   var segLen = 0;
@@ -98,7 +81,8 @@ function scanAutolinkDomain(
     if (isAsciiAlphanumeric(cp) || cp == 0x2D || cp == 0x5F) {
       segLen += 1;
       r.advance();
-    } else if (cp == 0x2E) { // '.'
+    } else if (cp == 0x2E) {
+      // '.'
       if (segLen == 0) {
         break;
       }
@@ -122,16 +106,14 @@ function trimAutolinkTrailing(r: StringReader, start: i32, initialEnd: i32): i32
     r.reset(end);
     let last = r.peekBefore();
     // Always trim `? ! . , : * _ ~`
-    if (
-      last == 0x3F ||
-      last == 0x21 ||
-      last == 0x2E ||
-      last == 0x2C ||
-      last == 0x3A ||
-      last == 0x2A ||
-      last == 0x5F ||
-      last == 0x7E
-    ) {
+    if (last == 0x3F
+      || last == 0x21
+      || last == 0x2E
+      || last == 0x2C
+      || last == 0x3A
+      || last == 0x2A
+      || last == 0x5F
+      || last == 0x7E) {
       end -= 1;
       continue;
     }
@@ -204,7 +186,7 @@ final class AutolinkEmailTransformer implements AstTransformer {
           this.#visitBlocks(children);
         }
         case _: {}
-      }
+      };
     }
   }
 
@@ -242,7 +224,7 @@ final class AutolinkEmailTransformer implements AstTransformer {
         case _: {
           out.push(node);
         }
-      }
+      };
     }
     return out;
   }
@@ -253,9 +235,14 @@ final class AutolinkEmailTransformer implements AstTransformer {
     while (!r.isAtEnd) {
       let atPos = r.mark();
       let cp = r.advance();
-      if (cp == 0x40) { // '@'
+      if (cp == 0x40) {
+        // '@'
         let afterAt = r.mark();
-        let (matched, emailStart, emailEnd) = tryScanEmailAt(r, atPos, textStart);
+        let (matched, emailStart, emailEnd) = tryScanEmailAt(
+          r,
+          atPos,
+          textStart
+        );
         if (matched) {
           if (emailStart > textStart) {
             out.push(
@@ -294,18 +281,14 @@ final class AutolinkEmailTransformer implements AstTransformer {
 }
 
 function isEmailLocalByte(b: i32) {
-  return isAsciiAlphanumeric(b) ||
-      b == 0x2E ||
-      b == 0x2D ||
-      b == 0x5F ||
-      b == 0x2B;
+  return isAsciiAlphanumeric(b)
+    || b == 0x2E
+    || b == 0x2D
+    || b == 0x5F
+    || b == 0x2B;
 }
 
-function tryScanEmailAt(
-  r: StringReader,
-  atIndex: i32,
-  minStart: i32
-): inline (boolean, i32, i32) {
+function tryScanEmailAt(r: StringReader, atIndex: i32, minStart: i32): inline (boolean, i32, i32) {
   var localStart = atIndex;
   while (localStart > minStart) {
     r.reset(localStart);
@@ -342,7 +325,8 @@ function tryScanEmailAt(
       lastDotPos = pos;
       labelLen = 0;
       r.advance();
-    } else if (isAsciiAlphanumeric(db) || ((db == 0x2D || db == 0x5F) && labelLen > 0)) {
+    } else if (isAsciiAlphanumeric(db)
+      || (db == 0x2D || db == 0x5F) && labelLen > 0) {
       labelLen += 1;
       r.advance();
     } else {

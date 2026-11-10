@@ -3,87 +3,111 @@
  * cases ported from `commonmark-java`'s `HtmlRendererTest`.
  */
 
-import { suite, test, TestContext } from 'zena:test';
-import { equal } from 'zena:assert';
-import { markdownToHtml, isSafeUrl, gfmExtensions } from 'markdown:index';
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {markdownToHtml, isSafeUrl, gfmExtensions} from 'markdown:index';
 
-export let tests = suite('Sanitization and Safe Mode', () => {
-  test('omits raw HTML blocks and inline HTML when safe is true', (ctx) => {
-    let md =
-      'Hello <script>alert(1)</script> world\n\n<div onclick="evil()">\nblock\n</div>\n\nParagraph.\n';
-    equal(
-      markdownToHtml(md, {safe: true}),
-      '<p>Hello alert(1) world</p>\n<p>Paragraph.</p>\n'
+export let tests = suite(
+  'Sanitization and Safe Mode',
+  () => {
+    test(
+      'omits raw HTML blocks and inline HTML when safe is true',
+      (ctx) => {
+        let md = 'Hello <script>alert(1)</script> world\n\n<div onclick="evil()">\nblock\n</div>\n\nParagraph.\n';
+        equal(
+          markdownToHtml(md, { safe: true }),
+          '<p>Hello alert(1) world</p>\n<p>Paragraph.</p>\n'
+        );
+      }
     );
-  });
 
-  test('escapes raw HTML inline and blocks when safe and escapeRawHtml are true', (ctx) => {
-    equal(
-      markdownToHtml(
-        "paragraph with <span id='foo' class=\"bar\">inline &amp; html</span>",
-        {safe: true, escapeRawHtml: true}
-      ),
-      "<p>paragraph with &lt;span id='foo' class=&quot;bar&quot;&gt;inline &amp; html&lt;/span&gt;</p>\n"
+    test(
+      'escapes raw HTML inline and blocks when safe and escapeRawHtml are true',
+      (ctx) => {
+        equal(
+          markdownToHtml(
+            'paragraph with <span id=\'foo\' class="bar">inline &amp; html</span>',
+            { safe: true, escapeRawHtml: true }
+          ),
+          '<p>paragraph with &lt;span id=\'foo\' class=&quot;bar&quot;&gt;inline &amp; html&lt;/span&gt;</p>\n'
+        );
+        equal(
+          markdownToHtml(
+            '<div id=\'foo\' class="bar">block &amp;</div>',
+            { safe: true, escapeRawHtml: true }
+          ),
+          '<p>&lt;div id=\'foo\' class=&quot;bar&quot;&gt;block &amp;amp;&lt;/div&gt;</p>\n'
+        );
+      }
     );
-    equal(
-      markdownToHtml(
-        "<div id='foo' class=\"bar\">block &amp;</div>",
-        {safe: true, escapeRawHtml: true}
-      ),
-      "<p>&lt;div id='foo' class=&quot;bar&quot;&gt;block &amp;amp;&lt;/div&gt;</p>\n"
-    );
-  });
 
-  test('filters dangerous link and image schemes in safe mode', (ctx) => {
-    let md =
-      '[Evil](javascript:alert(1)) and [Entity](&#106;avascript:alert(1)) and ![Bad](data:text/html,hi) and [Good](https://zena-lang.dev) and [Rel](./guide.md)\n';
-    equal(
-      markdownToHtml(md, {safe: true, extensions: gfmExtensions()}),
-      '<p><a href="">Evil</a> and <a href="">Entity</a> and <img src="" alt="Bad" /> and <a href="https://zena-lang.dev">Good</a> and <a href="./guide.md">Rel</a></p>\n'
+    test(
+      'filters dangerous link and image schemes in safe mode',
+      (ctx) => {
+        let md = '[Evil](javascript:alert(1)) and [Entity](&#106;avascript:alert(1)) and ![Bad](data:text/html,hi) and [Good](https://zena-lang.dev) and [Rel](./guide.md)\n';
+        equal(
+          markdownToHtml(md, { safe: true, extensions: gfmExtensions() }),
+          '<p><a href="">Evil</a> and <a href="">Entity</a> and <img src="" alt="Bad" /> and <a href="https://zena-lang.dev">Good</a> and <a href="./guide.md">Rel</a></p>\n'
+        );
+      }
     );
-  });
 
-  test('allows safe protocols and data images in safe mode', (ctx) => {
-    let dataPng =
-      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAFiUAABYlAUlSJPAAAAAQSURBVBhXY/iPBVBf8P9/AG8TY51nJdgkAAAAAElFTkSuQmCC';
-    equal(
-      markdownToHtml(`[http](http://google.com) [https](https://google.com) [mail](mailto:foo@bar.example.com) ![img](${dataPng})\n`, {safe: true}),
-      `<p><a href="http://google.com">http</a> <a href="https://google.com">https</a> <a href="mailto:foo@bar.example.com">mail</a> <img src="${dataPng}" alt="img" /></p>\n`
+    test(
+      'allows safe protocols and data images in safe mode',
+      (ctx) => {
+        let dataPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAFiUAABYlAUlSJPAAAAAQSURBVBhXY/iPBVBf8P9/AG8TY51nJdgkAAAAAElFTkSuQmCC';
+        equal(
+          markdownToHtml(
+            `[http](http://google.com) [https](https://google.com) [mail](mailto:foo@bar.example.com) ![img](${dataPng})\n`,
+            { safe: true }
+          ),
+          `<p><a href="http://google.com">http</a> <a href="https://google.com">https</a> <a href="mailto:foo@bar.example.com">mail</a> <img src="${dataPng}" alt="img" /></p>\n`
+        );
+      }
     );
-  });
 
-  test('isSafeUrl unit checks', (ctx) => {
-    equal(isSafeUrl('https://zena-lang.dev', false), true);
-    equal(isSafeUrl('http://example.com', true), true);
-    equal(isSafeUrl('mailto:dev@zena-lang.dev', false), true);
-    equal(isSafeUrl('mailto:dev@zena-lang.dev', true), false);
-    equal(isSafeUrl('/docs/intro', false), true);
-    equal(isSafeUrl('./image.png', true), true);
-    equal(isSafeUrl('#section', false), true);
-    equal(isSafeUrl('javascript:alert(1)', false), false);
-    equal(isSafeUrl('  JaVaScRiPt:alert(1)', false), false);
-    equal(isSafeUrl('java\tscript:alert(1)', false), false);
-    equal(isSafeUrl('vbscript:msgbox(1)', false), false);
-    equal(isSafeUrl('ftp://google.com', false), false);
-    equal(isSafeUrl('data:image/svg+xml;base64,PHN2Zz4=', true), false);
-  });
-
-  test('preserves multi-byte Unicode characters in text, attributes, and fenced code info', (ctx) => {
-    let hBar = String.fromCodePoint(0x0126); // U+0126 (low byte 0x26 == '&')
-    let cyrM = String.fromCodePoint(0x043C); // U+043C (low byte 0x3C == '<')
-    let rocket = String.fromCodePoint(0x1F680);
-    let md = `${hBar} and ${cyrM} and ${rocket}\n\n\`\`\`ts-${hBar} extra\ncode\n\`\`\`\n`;
-    equal(
-      markdownToHtml(md),
-      `<p>${hBar} and ${cyrM} and ${rocket}</p>\n<pre><code class="language-ts-${hBar}">code\n</code></pre>\n`
+    test(
+      'isSafeUrl unit checks',
+      (ctx) => {
+        equal(isSafeUrl('https://zena-lang.dev', false), true);
+        equal(isSafeUrl('http://example.com', true), true);
+        equal(isSafeUrl('mailto:dev@zena-lang.dev', false), true);
+        equal(isSafeUrl('mailto:dev@zena-lang.dev', true), false);
+        equal(isSafeUrl('/docs/intro', false), true);
+        equal(isSafeUrl('./image.png', true), true);
+        equal(isSafeUrl('#section', false), true);
+        equal(isSafeUrl('javascript:alert(1)', false), false);
+        equal(isSafeUrl('  JaVaScRiPt:alert(1)', false), false);
+        equal(isSafeUrl('java\tscript:alert(1)', false), false);
+        equal(isSafeUrl('vbscript:msgbox(1)', false), false);
+        equal(isSafeUrl('ftp://google.com', false), false);
+        equal(isSafeUrl('data:image/svg+xml;base64,PHN2Zz4=', true), false);
+      }
     );
-  });
 
-  test('pretty-prints nested block elements when indent option is set', (ctx) => {
-    let md = '> - item 1\n>   - nested\n\n| A | B |\n| - | - |\n| 1 | 2 |\n';
-    equal(
-      markdownToHtml(md, {indent: 2, extensions: gfmExtensions()}),
-      '<blockquote>\n  <ul>\n    <li>item 1\n      <ul>\n        <li>nested</li>\n      </ul>\n    </li>\n  </ul>\n</blockquote>\n<table>\n  <thead>\n    <tr>\n      <th>A</th>\n      <th>B</th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n      <td>1</td>\n      <td>2</td>\n    </tr>\n  </tbody>\n</table>\n'
+    test(
+      'preserves multi-byte Unicode characters in text, attributes, and fenced code info',
+      (ctx) => {
+        let hBar = String.fromCodePoint(0x0126); // U+0126 (low byte 0x26 == '&')
+        let cyrM = String.fromCodePoint(0x043C); // U+043C (low byte 0x3C == '<')
+        let rocket = String.fromCodePoint(0x1F680);
+        let md = `${hBar} and ${cyrM} and ${rocket}\n\n\`\`\`ts-${hBar} extra\ncode\n\`\`\`\n`;
+        equal(
+          markdownToHtml(md),
+          `<p>${hBar} and ${cyrM} and ${rocket}</p>\n<pre><code class="language-ts-${hBar}">code\n</code></pre>\n`
+        );
+      }
     );
-  });
-});
+
+    test(
+      'pretty-prints nested block elements when indent option is set',
+      (ctx) => {
+        let md = '> - item 1\n>   - nested\n\n| A | B |\n| - | - |\n| 1 | 2 |\n';
+        equal(
+          markdownToHtml(md, { indent: 2, extensions: gfmExtensions() }),
+          '<blockquote>\n  <ul>\n    <li>item 1\n      <ul>\n        <li>nested</li>\n      </ul>\n    </li>\n  </ul>\n</blockquote>\n<table>\n  <thead>\n    <tr>\n      <th>A</th>\n      <th>B</th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n      <td>1</td>\n      <td>2</td>\n    </tr>\n  </tbody>\n</table>\n'
+        );
+      }
+    );
+  }
+);

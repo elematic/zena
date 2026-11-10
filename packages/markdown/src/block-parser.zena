@@ -3,27 +3,13 @@
  * link reference definitions, and `BlockParserFactory` plugin dispatch.
  */
 
-import { FixedArray, GrowableArray, Option, none } from 'zena:core';
-import {
-  StringBuilder, StringReader,
-  isSpaceOrTab, isAsciiAlpha, isAsciiDigit, isAsciiAlphanumeric
-} from 'zena:string';
-import { HashMap } from 'zena:collections';
-import {
-  Block, Document, Inline, LinkDef, Span, Paragraph, Heading, BlockQuote,
-  ListBlock, ListItem, FencedCodeBlock, IndentedCodeBlock, HtmlBlock,
-  ThematicBreak, Text
-} from './ast.zena';
-import {
-  AstTransformer, BlockContinue, BlockLineState, BlockParserFactory,
-  CustomBlockParser, CustomBlockStart, InlineParserRunner, MarkdownExtension,
-  MatchedBlockInfo
-} from './plugin.zena';
-import { InlineParser } from './inline-parser.zena';
-import {
-  trimSpaces, normalizeLinkLabel, unescapeString, scanLinkDestination,
-  scanLinkTitle, scanLinkLabel
-} from './scanner.zena';
+import {FixedArray, GrowableArray, Option, none} from 'zena:core';
+import {StringBuilder, StringReader, isSpaceOrTab, isAsciiAlpha, isAsciiDigit, isAsciiAlphanumeric} from 'zena:string';
+import {HashMap} from 'zena:collections';
+import {Block, Document, Inline, LinkDef, Span, Paragraph, Heading, BlockQuote, ListBlock, ListItem, FencedCodeBlock, IndentedCodeBlock, HtmlBlock, ThematicBreak, Text} from './ast.zena';
+import {AstTransformer, BlockContinue, BlockLineState, BlockParserFactory, CustomBlockParser, CustomBlockStart, InlineParserRunner, MarkdownExtension, MatchedBlockInfo} from './plugin.zena';
+import {InlineParser} from './inline-parser.zena';
+import {trimSpaces, normalizeLinkLabel, unescapeString, scanLinkDestination, scanLinkTitle, scanLinkLabel} from './scanner.zena';
 
 enum OpenBlockKind {
   Doc,
@@ -82,16 +68,15 @@ final class OpenBlock {
   var customParser: CustomBlockParser | null = null;
   var builtBlock: Block | null = null;
 
-  new(this.kind, this.startOffset) : endOffset = startOffset;
+  new(this.kind, this.startOffset) : endOffset = startOffset {}
 }
 
 /**
  * Parses a Markdown document string into a `Document` AST.
  */
-export function parse(
-  source: String,
-  extensions: GrowableArray<MarkdownExtension> = new GrowableArray<MarkdownExtension>(0)
-): Document {
+export function parse(source: String, extensions: GrowableArray<MarkdownExtension> = new GrowableArray<MarkdownExtension>(
+  0
+)): Document {
   let parser = new DocumentBlockParser(extensions);
   return parser.parseDocument(source);
 }
@@ -101,7 +86,10 @@ export function parse(
  */
 export final class DocumentBlockParser {
   #extensions: GrowableArray<MarkdownExtension>;
-  #factoriesByByte = new FixedArray<GrowableArray<BlockParserFactory> | null>(128, null);
+  #factoriesByByte = new FixedArray<GrowableArray<BlockParserFactory> | null>(
+    128,
+    null
+  );
   #wildcardFactories = new GrowableArray<BlockParserFactory>(2);
   #transformers = new GrowableArray<AstTransformer>(4);
 
@@ -180,12 +168,7 @@ export final class DocumentBlockParser {
     return doc;
   }
 
-  #processLine(
-    source: String,
-    line: String,
-    lineStartOffset: i32,
-    lineEndOffset: i32
-  ): void {
+  #processLine(source: String, line: String, lineStartOffset: i32, lineEndOffset: i32): void {
     this.#partiallyConsumedTab = false;
     this.#tabRemainingColumns = 0;
     this.#closingFenceConsumedLine = false;
@@ -222,10 +205,10 @@ export final class DocumentBlockParser {
 
     // Step 2: Try to open new child blocks unless the last matched block is a
     // leaf block that consumes raw text (FencedCode, IndentedCode, Html, Custom)
-    let tryBlockStarts = lastMatched.kind != OpenBlockKind.FencedCode &&
-        lastMatched.kind != OpenBlockKind.IndentedCode &&
-        lastMatched.kind != OpenBlockKind.Html &&
-        lastMatched.kind != OpenBlockKind.Custom;
+    let tryBlockStarts = lastMatched.kind != OpenBlockKind.FencedCode
+      && lastMatched.kind != OpenBlockKind.IndentedCode
+      && lastMatched.kind != OpenBlockKind.Html
+      && lastMatched.kind != OpenBlockKind.Custom;
 
     while (tryBlockStarts) {
       this.#findNextNonSpace(state);
@@ -235,7 +218,12 @@ export final class DocumentBlockParser {
       }
 
       let matchedBlock = this.#openBlocks[matchedCount - 1];
-      let started = this.#tryStartNewBlock(state, matchedBlock, currentTip, lineEndOffset);
+      let started = this.#tryStartNewBlock(
+        state,
+        matchedBlock,
+        currentTip,
+        lineEndOffset
+      );
       if (!started) {
         this.#setNewIndex(state, state.nextNonSpaceIndex);
         break;
@@ -249,7 +237,9 @@ export final class DocumentBlockParser {
     }
 
     // Step 3: Lazy continuation of an open paragraph
-    if (!allMatched && !state.isBlank && currentTip.kind == OpenBlockKind.Para) {
+    if (!allMatched
+      && !state.isBlank
+      && currentTip.kind == OpenBlockKind.Para) {
       this.#addParagraphLine(currentTip, state, lineEndOffset);
       return;
     }
@@ -262,11 +252,10 @@ export final class DocumentBlockParser {
     // If a non-blank line did not start a new list item in an open List block,
     // close the List block now before adding paragraph text
     this.#findNextNonSpace(state);
-    while (
-      !state.isBlank &&
-      this.#openBlocks.length > 1 &&
-      this.#openBlocks[this.#openBlocks.length - 1].kind == OpenBlockKind.List
-    ) {
+    while (!state.isBlank
+      && this.#openBlocks.length > 1
+      && this.#openBlocks[this.#openBlocks.length - 1].kind
+        == OpenBlockKind.List) {
       this.#closeTipBlock(lineStartOffset);
     }
 
@@ -300,7 +289,7 @@ export final class DocumentBlockParser {
       case OpenBlockKind.Para: {
         if (!state.isBlank) {
           this.#addParagraphLine(currentTip, state, lineEndOffset);
-        }
+        };
       }
       case OpenBlockKind.Custom: {
         let cp = currentTip.customParser;
@@ -309,7 +298,7 @@ export final class DocumentBlockParser {
           r.reset(state.index);
           cp.addLine(r.readToEnd(), state.lineStartOffset + state.index);
           currentTip.endOffset = lineEndOffset;
-        }
+        };
       }
       case OpenBlockKind.HeadingBlock | OpenBlockKind.BreakBlock: {
         // Single-line blocks close immediately at the end of the line
@@ -325,16 +314,16 @@ export final class DocumentBlockParser {
           this.#openChildBlock(para, state.lineStartOffset);
           this.#setNewIndex(state, state.nextNonSpaceIndex);
           this.#addParagraphLine(para, state, lineEndOffset);
-        }
+        };
       }
-    }
+    };
   }
 
   #isContainerOrCustomizable(block: OpenBlock): boolean {
-    return block.kind == OpenBlockKind.Doc ||
-        block.kind == OpenBlockKind.Quote ||
-        block.kind == OpenBlockKind.List ||
-        block.kind == OpenBlockKind.Item;
+    return block.kind == OpenBlockKind.Doc
+      || block.kind == OpenBlockKind.Quote
+      || block.kind == OpenBlockKind.List
+      || block.kind == OpenBlockKind.Item;
   }
 
   #continueOpenBlock(block: OpenBlock, state: BlockLineState): boolean {
@@ -343,14 +332,15 @@ export final class DocumentBlockParser {
     match (block.kind) {
       case OpenBlockKind.Quote: {
         r.reset(state.nextNonSpaceIndex);
-        if (state.indent <= 3 && r.peek() == 0x3E) { // '>'
+        if (state.indent <= 3 && r.peek() == 0x3E) {
+          // '>'
           this.#setNewColumn(state, state.nextNonSpaceColumn + 1);
           r.reset(state.index);
           if (isSpaceOrTab(r.peek())) {
             this.#setNewColumn(state, state.column + 1);
-          }
+          };
           return true;
-        }
+        };
         return false;
       }
       case OpenBlockKind.List: {
@@ -361,25 +351,25 @@ export final class DocumentBlockParser {
           if (block.children.length == 0 && block.itemLineCount == 0) {
             // An empty list item cannot continue past a blank line
             return false;
-          }
+          };
           this.#setNewIndex(state, state.nextNonSpaceIndex);
           return true;
-        }
+        };
         if (state.indent >= block.itemContentIndent) {
           this.#setNewColumn(state, state.column + block.itemContentIndent);
           return true;
-        }
+        };
         return false;
       }
       case OpenBlockKind.IndentedCode: {
         if (state.indent >= 4) {
           this.#setNewColumn(state, state.column + 4);
           return true;
-        }
+        };
         if (state.isBlank) {
           this.#setNewIndex(state, state.nextNonSpaceIndex);
           return true;
-        }
+        };
         return false;
       }
       case OpenBlockKind.FencedCode: {
@@ -397,9 +387,9 @@ export final class DocumentBlockParser {
               this.#closeTipBlock(state.lineStartOffset + r.mark());
               this.#AdvanceToEnd(state);
               return false;
-            }
-          }
-        }
+            };
+          };
+        };
         // Strip up to `fenceIndent` leading spaces
         var spaces = block.fenceIndent;
         while (spaces > 0) {
@@ -416,7 +406,7 @@ export final class DocumentBlockParser {
       case OpenBlockKind.Html: {
         if (state.isBlank && (block.htmlType == 6 || block.htmlType == 7)) {
           return false;
-        }
+        };
         return true;
       }
       case OpenBlockKind.Para: {
@@ -426,34 +416,29 @@ export final class DocumentBlockParser {
         let cp = block.customParser;
         if (cp == null) {
           return false;
-        }
+        };
         let cont = cp.tryContinue(state);
         if (!cont.matched) {
           return false;
-        }
+        };
         if (cont.finalize) {
           this.#closeTipBlock(state.lineStartOffset + r.remaining);
           return false;
-        }
+        };
         if (cont.newIndex >= 0) {
           this.#setNewIndex(state, cont.newIndex);
         } else if (cont.newColumn >= 0) {
           this.#setNewColumn(state, cont.newColumn);
-        }
+        };
         return true;
       }
       case _: {
         return false;
       }
-    }
+    };
   }
 
-  #tryStartNewBlock(
-    state: BlockLineState,
-    matchedBlock: OpenBlock,
-    currentTip: OpenBlock,
-    lineEndOffset: i32
-  ): boolean {
+  #tryStartNewBlock(state: BlockLineState, matchedBlock: OpenBlock, currentTip: OpenBlock, lineEndOffset: i32): boolean {
     let inParagraph = currentTip.kind == OpenBlockKind.Para;
     let r = new StringReader(state.line);
     r.reset(state.nextNonSpaceIndex);
@@ -586,26 +571,25 @@ export final class DocumentBlockParser {
     }
 
     // 8. List Item (`-`, `+`, `*`, or `1.`, `1)`)
-    if (
-      b == 0x2D ||
-      b == 0x2B ||
-      b == 0x2A ||
-      isAsciiDigit(b)
-    ) {
+    if (b == 0x2D || b == 0x2B || b == 0x2A || isAsciiDigit(b)) {
       let inParaAtCurrentLevel = matchedBlock.kind == OpenBlockKind.Para;
-      let (listOk, ordered, startNum, delim, contentIndent, nextCol) =
-          tryParseListMarker(state, inParaAtCurrentLevel);
+      let (listOk, ordered, startNum, delim, contentIndent, nextCol) = tryParseListMarker(
+        state,
+        inParaAtCurrentLevel
+      );
       if (listOk) {
-        this.#closeUnmatchedBeforeNewBlock(matchedBlock, state.lineStartOffset, true);
+        this.#closeUnmatchedBeforeNewBlock(
+          matchedBlock,
+          state.lineStartOffset,
+          true
+        );
         this.#setNewColumn(state, nextCol);
 
         // Ensure an open `ListBlock` with matching type/delimiter is on top
         let top = this.#openBlocks[this.#openBlocks.length - 1];
-        if (
-          top.kind != OpenBlockKind.List ||
-          top.listOrdered != ordered ||
-          top.listDelimiter != delim
-        ) {
+        if (top.kind != OpenBlockKind.List
+          || top.listOrdered != ordered
+          || top.listDelimiter != delim) {
           if (top.kind == OpenBlockKind.List) {
             this.#closeTipBlock(state.lineStartOffset);
           }
@@ -640,12 +624,7 @@ export final class DocumentBlockParser {
     return false;
   }
 
-  #tryCustomBlockFactories(
-    state: BlockLineState,
-    currentTip: OpenBlock,
-    firstByte: i32,
-    lineEndOffset: i32
-  ): boolean {
+  #tryCustomBlockFactories(state: BlockLineState, currentTip: OpenBlock, firstByte: i32, lineEndOffset: i32): boolean {
     var matchedInfo: MatchedBlockInfo | null = null;
     if (firstByte >= 0 && firstByte < 128) {
       let bucket = this.#factoriesByByte[firstByte];
@@ -679,18 +658,17 @@ export final class DocumentBlockParser {
     if (currentTip.kind == OpenBlockKind.Para) {
       this.#extractLinkDefinitionsFromParagraph(currentTip);
       if (currentTip.lines.length > 0) {
-        return new MatchedBlockInfo(true, currentTip.lines, currentTip.startOffset);
+        return new MatchedBlockInfo(
+          true,
+          currentTip.lines,
+          currentTip.startOffset
+        );
       }
     }
     return new MatchedBlockInfo(false, null, 0);
   }
 
-  #applyCustomBlockStart(
-    start: CustomBlockStart,
-    state: BlockLineState,
-    currentTip: OpenBlock,
-    lineEndOffset: i32
-  ): void {
+  #applyCustomBlockStart(start: CustomBlockStart, state: BlockLineState, currentTip: OpenBlock, lineEndOffset: i32): void {
     var startOff = state.lineStartOffset + state.nextNonSpaceIndex;
     if (start.replaceParagraph && currentTip.kind == OpenBlockKind.Para) {
       if (currentTip.lines.length > 1) {
@@ -721,11 +699,7 @@ export final class DocumentBlockParser {
     }
   }
 
-  #closeUnmatchedBeforeNewBlock(
-    matchedBlock: OpenBlock,
-    closeOffset: i32,
-    startingListItem: boolean = false
-  ): void {
+  #closeUnmatchedBeforeNewBlock(matchedBlock: OpenBlock, closeOffset: i32, startingListItem: boolean = false): void {
     while (this.#openBlocks.length > 1) {
       let top = this.#openBlocks[this.#openBlocks.length - 1];
       if (top == matchedBlock) {
@@ -774,7 +748,7 @@ export final class DocumentBlockParser {
           let inlines = new GrowableArray<Inline>(1);
           inlines.push(new Text(rawText, span));
           parent.children.push(new Paragraph(inlines, null, span));
-        }
+        };
       }
       case OpenBlockKind.HeadingBlock: {
         let inlines = new GrowableArray<Inline>(1);
@@ -784,7 +758,9 @@ export final class DocumentBlockParser {
             new Span(tip.headingTextOffset, tip.endOffset)
           )
         );
-        parent.children.push(new Heading(tip.headingLevel, inlines, null, span));
+        parent.children.push(
+          new Heading(tip.headingLevel, inlines, null, span)
+        );
       }
       case OpenBlockKind.Quote: {
         parent.children.push(new BlockQuote(tip.children, span));
@@ -795,8 +771,8 @@ export final class DocumentBlockParser {
             parent.itemHadBlankLine = true;
           } else if (parent.kind == OpenBlockKind.List) {
             parent.listHadBlankLine = true;
-          }
-        }
+          };
+        };
         parent.children.push(
           new ListBlock(
             tip.listOrdered,
@@ -813,11 +789,11 @@ export final class DocumentBlockParser {
         if (parent.kind == OpenBlockKind.List) {
           if (tip.itemHadBlankLine) {
             parent.listHadBlankLine = true;
-          }
+          };
           parent.listItems.push(itemNode);
         } else {
           parent.children.push(itemNode);
-        }
+        };
       }
       case OpenBlockKind.FencedCode: {
         let sb = new StringBuilder(64);
@@ -844,8 +820,8 @@ export final class DocumentBlockParser {
             parent.itemHadBlankLine = true;
           } else if (parent.kind == OpenBlockKind.List) {
             parent.listHadBlankLine = true;
-          }
-        }
+          };
+        };
         let sb = new StringBuilder(64);
         var i = start;
         while (i < end) {
@@ -876,17 +852,13 @@ export final class DocumentBlockParser {
           let built = cp.closeBlock(tip.endOffset);
           tip.builtBlock = built;
           parent.children.push(built);
-        }
+        };
       }
       case OpenBlockKind.Doc: {}
-    }
+    };
   }
 
-  #addParagraphLine(
-    para: OpenBlock,
-    state: BlockLineState,
-    lineEndOffset: i32
-  ): void {
+  #addParagraphLine(para: OpenBlock, state: BlockLineState, lineEndOffset: i32): void {
     let r = new StringReader(state.line);
     r.reset(state.nextNonSpaceIndex);
     para.lines.push(r.readToEnd());
@@ -895,22 +867,14 @@ export final class DocumentBlockParser {
     this.#markEnclosingItemHasLine();
   }
 
-  #addIndentedCodeLine(
-    code: OpenBlock,
-    state: BlockLineState,
-    lineEndOffset: i32
-  ): void {
+  #addIndentedCodeLine(code: OpenBlock, state: BlockLineState, lineEndOffset: i32): void {
     let content = this.#extractRemainingWithTabSpaces(state);
     code.lines.push(content);
     code.endOffset = lineEndOffset;
     this.#markEnclosingItemHasLine();
   }
 
-  #addFencedCodeLine(
-    code: OpenBlock,
-    state: BlockLineState,
-    lineEndOffset: i32
-  ): void {
+  #addFencedCodeLine(code: OpenBlock, state: BlockLineState, lineEndOffset: i32): void {
     if (code.fenceFirstLine) {
       code.fenceFirstLine = false;
       return;
@@ -921,11 +885,7 @@ export final class DocumentBlockParser {
     this.#markEnclosingItemHasLine();
   }
 
-  #addHtmlBlockLine(
-    html: OpenBlock,
-    state: BlockLineState,
-    lineEndOffset: i32
-  ): void {
+  #addHtmlBlockLine(html: OpenBlock, state: BlockLineState, lineEndOffset: i32): void {
     let content = this.#extractRemainingWithTabSpaces(state);
     html.lines.push(content);
     html.endOffset = lineEndOffset;
@@ -1007,25 +967,22 @@ export final class DocumentBlockParser {
     }
   }
 
-  #parseBlockInlines(
-    blocks: GrowableArray<Block>,
-    inlineParser: InlineParserRunner
-  ): void {
+  #parseBlockInlines(blocks: GrowableArray<Block>, inlineParser: InlineParserRunner): void {
     for (let block in blocks) {
       match (block) {
         case Paragraph as p: {
           if (p.inlines.length == 1) {
             if (let Text {literal, span} = p.inlines[0]) {
               p.inlines = inlineParser.parse(literal, span.start);
-            }
-          }
+            };
+          };
         }
         case Heading as h: {
           if (h.inlines.length == 1) {
             if (let Text {literal, span} = h.inlines[0]) {
               h.inlines = inlineParser.parse(literal, span.start);
-            }
-          }
+            };
+          };
         }
         case BlockQuote {blocks: let children}: {
           this.#parseBlockInlines(children, inlineParser);
@@ -1039,7 +996,7 @@ export final class DocumentBlockParser {
           this.#parseBlockInlines(children, inlineParser);
         }
         case _: {}
-      }
+      };
     }
   }
 
@@ -1094,7 +1051,10 @@ export final class DocumentBlockParser {
       }
     }
 
-    let h = new OpenBlock(OpenBlockKind.HeadingBlock, state.lineStartOffset + start);
+    let h = new OpenBlock(
+      OpenBlockKind.HeadingBlock,
+      state.lineStartOffset + start
+    );
     h.headingLevel = level;
     h.headingText = r.sliceRange(contentStart, contentEnd);
     h.headingTextOffset = state.lineStartOffset + contentStart;
@@ -1120,7 +1080,10 @@ export final class DocumentBlockParser {
       return null;
     }
     let rawInfo = trimSpaces(rest);
-    let block = new OpenBlock(OpenBlockKind.FencedCode, state.lineStartOffset + start);
+    let block = new OpenBlock(
+      OpenBlockKind.FencedCode,
+      state.lineStartOffset + start
+    );
     block.fenceByte = fenceByte;
     block.fenceLength = fenceLen;
     block.fenceIndent = state.indent;
@@ -1144,7 +1107,7 @@ export final class DocumentBlockParser {
         cols += 1;
       } else if (b == 0x09) {
         r.advance();
-        cols += 4 - (cols % 4);
+        cols += 4 - cols % 4;
       } else {
         break;
       }
@@ -1165,7 +1128,7 @@ export final class DocumentBlockParser {
     while (r.mark() < newIndex && !r.isAtEnd) {
       let b = r.advance();
       if (b == 0x09) {
-        state.column += 4 - (state.column % 4);
+        state.column += 4 - state.column % 4;
       } else {
         state.column += 1;
       }
@@ -1185,7 +1148,7 @@ export final class DocumentBlockParser {
     while (state.column < newColumn && !r.isAtEnd) {
       let b = r.advance();
       if (b == 0x09) {
-        let step = 4 - (state.column % 4);
+        let step = 4 - state.column % 4;
         if (state.column + step > newColumn) {
           this.#partiallyConsumedTab = true;
           this.#tabRemainingColumns = state.column + step - newColumn;
@@ -1304,10 +1267,7 @@ function isThematicBreak(line: String, start: i32): boolean {
  * `state.nextNonSpaceIndex`.
  * Returns `(matched, ordered, startNumber, delimiterByte, contentIndent, nextColumn)`.
  */
-function tryParseListMarker(
-  state: BlockLineState,
-  inParagraph: boolean
-): inline (boolean, boolean, i32, i32, i32, i32) {
+function tryParseListMarker(state: BlockLineState, inParagraph: boolean): inline (boolean, boolean, i32, i32, i32, i32) {
   let r = new StringReader(state.line);
   let start = state.nextNonSpaceIndex;
   r.reset(start);
@@ -1328,7 +1288,8 @@ function tryParseListMarker(
       digits += 1;
     }
     let d = r.peek();
-    if (d != 0x2E && d != 0x29) { // '.' or ')'
+    if (d != 0x2E && d != 0x29) {
+      // '.' or ')'
       return (false, false, 1, 0, 0, 0);
     }
     delim = r.advance();
@@ -1353,7 +1314,7 @@ function tryParseListMarker(
       col += 1;
       r.advance();
     } else if (wb == 0x09) {
-      col += 4 - (col % 4);
+      col += 4 - col % 4;
       r.advance();
     } else {
       break;
@@ -1364,16 +1325,15 @@ function tryParseListMarker(
   // Rule: interrupting a paragraph requires non-blank item content and, for
   // ordered lists, a start number of 1
   if (inParagraph) {
-    if (blankAfterMarker || (ordered && startNum != 1)) {
+    if (blankAfterMarker || ordered && startNum != 1) {
       return (false, false, 1, 0, 0, 0);
     }
   }
 
   let spacesAfter = col - markerEndCol;
-  let spacesConsumed = if (!blankAfterMarker && spacesAfter >= 1 && spacesAfter <= 4)
-    spacesAfter
-  else
-    1;
+  let spacesConsumed = if (!blankAfterMarker
+    && spacesAfter >= 1
+    && spacesAfter <= 4) spacesAfter else 1;
   let contentIndent = state.indent + markerCols + spacesConsumed;
   let nextCol = markerEndCol + (if (blankAfterMarker) 0 else spacesConsumed);
   return (true, ordered, startNum, delim, contentIndent, nextCol);
@@ -1384,18 +1344,18 @@ function tryParseListMarker(
  * at the current position of `r`.
  * Returns `(matched, normalizedLabel, destination, title)`.
  */
-function tryParseLinkReferenceDefinition(
-  r: StringReader
-): inline (boolean, String, String, String) {
+function tryParseLinkReferenceDefinition(r: StringReader): inline (boolean, String, String, String) {
   let saved = r.mark();
   r.skipSpaces();
-  if (r.peek() != 0x5B) { // '['
+  if (r.peek() != 0x5B) {
+    // '['
     r.reset(saved);
     return (false, '', '', '');
   }
 
   let (labelOk, rawLabel) = scanLinkLabel(r);
-  if (!labelOk || !r.matchCodePoint(0x3A)) { // ':'
+  if (!labelOk || !r.matchCodePoint(0x3A)) {
+    // ':'
     r.reset(saved);
     return (false, '', '', '');
   }
@@ -1463,19 +1423,17 @@ function tryParseLinkReferenceDefinition(
  * Detects whether `line` at `start` starts a CommonMark HTML block of type 1..7.
  * Returns `0` if none matches.
  */
-function detectHtmlBlockStart(
-  line: String,
-  start: i32,
-  inParagraph: boolean
-): i32 {
+function detectHtmlBlockStart(line: String, start: i32, inParagraph: boolean): i32 {
   let r = new StringReader(line);
   r.reset(start);
-  if (!r.matchCodePoint(0x3C) || r.isAtEnd) { // '<'
+  if (!r.matchCodePoint(0x3C) || r.isAtEnd) {
+    // '<'
     return 0;
   }
   let second = r.peek();
 
-  if (second == 0x21) { // '<!'
+  if (second == 0x21) {
+    // '<!'
     r.advance();
     if (r.matchString('--')) {
       return 2; // <!--
@@ -1504,18 +1462,19 @@ function detectHtmlBlockStart(
   let nextByte = if (r.isAtEnd) 0x20 else r.peek();
 
   // Type 1: <pre, <script, <style, <textarea
-  if (
-    !isClose &&
-    (tagName == 'pre' || tagName == 'script' || tagName == 'style' || tagName == 'textarea') &&
-    (isSpaceOrTab(nextByte) || nextByte == 0x3E)
-  ) {
+  if (!isClose
+    && (tagName == 'pre'
+      || tagName == 'script'
+      || tagName == 'style'
+      || tagName == 'textarea')
+    && (isSpaceOrTab(nextByte) || nextByte == 0x3E)) {
     return 1;
   }
 
   // Type 6: standard HTML block tags
-  let afterOk = isSpaceOrTab(nextByte) ||
-      nextByte == 0x3E ||
-      r.startsWith('/>');
+  let afterOk = isSpaceOrTab(nextByte)
+    || nextByte == 0x3E
+    || r.startsWith('/>');
   if (afterOk && isType6HtmlTag(tagName)) {
     return 6;
   }
@@ -1536,36 +1495,77 @@ function detectHtmlBlockStart(
 }
 
 function isType6HtmlTag(tag: String): boolean {
-  return tag == 'address' || tag == 'article' || tag == 'aside' ||
-      tag == 'base' || tag == 'basefont' || tag == 'blockquote' ||
-      tag == 'body' || tag == 'caption' || tag == 'center' ||
-      tag == 'col' || tag == 'colgroup' || tag == 'dd' ||
-      tag == 'details' || tag == 'dialog' || tag == 'dir' ||
-      tag == 'div' || tag == 'dl' || tag == 'dt' ||
-      tag == 'fieldset' || tag == 'figcaption' || tag == 'figure' ||
-      tag == 'footer' || tag == 'form' || tag == 'frame' ||
-      tag == 'frameset' || tag == 'h1' || tag == 'h2' ||
-      tag == 'h3' || tag == 'h4' || tag == 'h5' || tag == 'h6' ||
-      tag == 'head' || tag == 'header' || tag == 'hr' ||
-      tag == 'html' || tag == 'iframe' || tag == 'legend' ||
-      tag == 'li' || tag == 'link' || tag == 'main' ||
-      tag == 'menu' || tag == 'menuitem' || tag == 'nav' ||
-      tag == 'noframes' || tag == 'ol' || tag == 'optgroup' ||
-      tag == 'option' || tag == 'p' || tag == 'param' ||
-      tag == 'search' || tag == 'section' || tag == 'summary' ||
-      tag == 'table' || tag == 'tbody' || tag == 'td' ||
-      tag == 'tfoot' || tag == 'th' || tag == 'thead' ||
-      tag == 'title' || tag == 'tr' || tag == 'track' ||
-      tag == 'ul';
+  return tag == 'address'
+    || tag == 'article'
+    || tag == 'aside'
+    || tag == 'base'
+    || tag == 'basefont'
+    || tag == 'blockquote'
+    || tag == 'body'
+    || tag == 'caption'
+    || tag == 'center'
+    || tag == 'col'
+    || tag == 'colgroup'
+    || tag == 'dd'
+    || tag == 'details'
+    || tag == 'dialog'
+    || tag == 'dir'
+    || tag == 'div'
+    || tag == 'dl'
+    || tag == 'dt'
+    || tag == 'fieldset'
+    || tag == 'figcaption'
+    || tag == 'figure'
+    || tag == 'footer'
+    || tag == 'form'
+    || tag == 'frame'
+    || tag == 'frameset'
+    || tag == 'h1'
+    || tag == 'h2'
+    || tag == 'h3'
+    || tag == 'h4'
+    || tag == 'h5'
+    || tag == 'h6'
+    || tag == 'head'
+    || tag == 'header'
+    || tag == 'hr'
+    || tag == 'html'
+    || tag == 'iframe'
+    || tag == 'legend'
+    || tag == 'li'
+    || tag == 'link'
+    || tag == 'main'
+    || tag == 'menu'
+    || tag == 'menuitem'
+    || tag == 'nav'
+    || tag == 'noframes'
+    || tag == 'ol'
+    || tag == 'optgroup'
+    || tag == 'option'
+    || tag == 'p'
+    || tag == 'param'
+    || tag == 'search'
+    || tag == 'section'
+    || tag == 'summary'
+    || tag == 'table'
+    || tag == 'tbody'
+    || tag == 'td'
+    || tag == 'tfoot'
+    || tag == 'th'
+    || tag == 'thead'
+    || tag == 'title'
+    || tag == 'tr'
+    || tag == 'track'
+    || tag == 'ul';
 }
 
 function htmlBlockEndsOnLine(line: String, htmlType: i32): boolean {
   if (htmlType == 1) {
     let lower = line.asciiLowerCase();
-    return lower.contains('</pre>') ||
-        lower.contains('</script>') ||
-        lower.contains('</style>') ||
-        lower.contains('</textarea>');
+    return lower.contains('</pre>')
+      || lower.contains('</script>')
+      || lower.contains('</style>')
+      || lower.contains('</textarea>');
   }
   if (htmlType == 2) {
     return line.contains('-->');

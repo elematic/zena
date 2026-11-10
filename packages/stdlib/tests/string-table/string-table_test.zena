@@ -1,341 +1,453 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse, same, notSame} from 'zena:assert';
-import {
-  StringReader, StringTable, StringBuilder,
-  isSpaceOrTab, isAsciiWhitespace, isAsciiDigit, isAsciiHexDigit,
-  hexDigitValue, isAsciiAlpha, isAsciiAlphanumeric, isAsciiPunctuation,
-  isUnicodeWhitespace, isUnicodePunctuation,
-} from 'zena:string';
+import {StringReader, StringTable, StringBuilder, isSpaceOrTab, isAsciiWhitespace, isAsciiDigit, isAsciiHexDigit, hexDigitValue, isAsciiAlpha, isAsciiAlphanumeric, isAsciiPunctuation, isUnicodeWhitespace, isUnicodePunctuation} from 'zena:string';
 import {HashMap} from 'zena:collections';
 
 /**
  * Builds a String with the given content whose identity is guaranteed fresh,
  * so `===` tests are about interning rather than about literal pooling.
  */
-let fresh = (s: String) => {
+function fresh(s: String) {
   let b = new StringBuilder();
   b.append(s);
   return b.toString();
-};
+}
 
-export let tests = suite('StringTable', () => {
-  suite('intern', () => {
-    test('returns an equal string', () => {
-      let t = new StringTable();
-      equal(t.intern(fresh('hello')), 'hello');
-    });
+export let tests = suite(
+  'StringTable',
+  () => {
+    suite(
+      'intern',
+      () => {
+        test(
+          'returns an equal string',
+          () => {
+            let t = new StringTable();
+            equal(t.intern(fresh('hello')), 'hello');
+          }
+        );
 
-    test('returns the same instance for equal bytes', () => {
-      let t = new StringTable();
-      let a = t.intern(fresh('identifier'));
-      let b = t.intern(fresh('identifier'));
-      same(a, b);
-    });
+        test(
+          'returns the same instance for equal bytes',
+          () => {
+            let t = new StringTable();
+            let a = t.intern(fresh('identifier'));
+            let b = t.intern(fresh('identifier'));
+            same(a, b);
+          }
+        );
 
-    test('distinguishes different strings', () => {
-      let t = new StringTable();
-      let a = t.intern(fresh('alpha'));
-      let b = t.intern(fresh('beta'));
-      notSame(a, b);
-      equal(a, 'alpha');
-      equal(b, 'beta');
-    });
+        test(
+          'distinguishes different strings',
+          () => {
+            let t = new StringTable();
+            let a = t.intern(fresh('alpha'));
+            let b = t.intern(fresh('beta'));
+            notSame(a, b);
+            equal(a, 'alpha');
+            equal(b, 'beta');
+          }
+        );
 
-    test('counts distinct strings only', () => {
-      let t = new StringTable();
-      t.intern(fresh('a'));
-      t.intern(fresh('a'));
-      t.intern(fresh('b'));
-      equal(t.size, 2);
-    });
+        test(
+          'counts distinct strings only',
+          () => {
+            let t = new StringTable();
+            t.intern(fresh('a'));
+            t.intern(fresh('a'));
+            t.intern(fresh('b'));
+            equal(t.size, 2);
+          }
+        );
 
-    test('handles the empty string', () => {
-      let t = new StringTable();
-      let a = t.intern(fresh(''));
-      let b = t.intern(fresh(''));
-      same(a, b);
-      equal(a.length, 0);
-      equal(t.size, 1);
-    });
+        test(
+          'handles the empty string',
+          () => {
+            let t = new StringTable();
+            let a = t.intern(fresh(''));
+            let b = t.intern(fresh(''));
+            same(a, b);
+            equal(a.length, 0);
+            equal(t.size, 1);
+          }
+        );
 
-    test('does not confuse strings sharing first, last and length', () => {
-      // These four collide on every feature the bucket hash looks at except
-      // the middle byte, and 'axxb'/'ayyb' collide on that too — so the byte
-      // compare, not the hash, is what has to separate them.
-      let t = new StringTable();
-      let a = t.intern(fresh('axxb'));
-      let b = t.intern(fresh('ayyb'));
-      let c = t.intern(fresh('azzb'));
-      let d = t.intern(fresh('axyb'));
-      equal(t.size, 4);
-      equal(a, 'axxb');
-      equal(b, 'ayyb');
-      equal(c, 'azzb');
-      equal(d, 'axyb');
-      notSame(a, b);
-      notSame(a, d);
-    });
+        test(
+          'does not confuse strings sharing first, last and length',
+          () => {
+            // These four collide on every feature the bucket hash looks at except
+            // the middle byte, and 'axxb'/'ayyb' collide on that too — so the byte
+            // compare, not the hash, is what has to separate them.
+            let t = new StringTable();
+            let a = t.intern(fresh('axxb'));
+            let b = t.intern(fresh('ayyb'));
+            let c = t.intern(fresh('azzb'));
+            let d = t.intern(fresh('axyb'));
+            equal(t.size, 4);
+            equal(a, 'axxb');
+            equal(b, 'ayyb');
+            equal(c, 'azzb');
+            equal(d, 'axyb');
+            notSame(a, b);
+            notSame(a, d);
+          }
+        );
 
-    test('separates a prefix from the string it prefixes', () => {
-      let t = new StringTable();
-      let a = t.intern(fresh('foo'));
-      let b = t.intern(fresh('foobar'));
-      notSame(a, b);
-      equal(a, 'foo');
-      equal(b, 'foobar');
-    });
+        test(
+          'separates a prefix from the string it prefixes',
+          () => {
+            let t = new StringTable();
+            let a = t.intern(fresh('foo'));
+            let b = t.intern(fresh('foobar'));
+            notSame(a, b);
+            equal(a, 'foo');
+            equal(b, 'foobar');
+          }
+        );
 
-    test('copies, so the interned string does not view the source', () => {
-      // A slice of a large source keeps the whole backing array alive. The
-      // canonical instance must own its bytes instead: a table shared across
-      // a compilation would otherwise pin every file it ever read.
-      let t = new StringTable();
-      let source = 'let alpha = 1; let beta = 2;';
-      let reader = new StringReader(source, t);
-      reader.skipBytes(4);
-      let interned = reader.internRange(4, 9);
-      equal(interned, 'alpha');
-      notSame(interned, source.sliceBytes(4, 9));
-      equal(interned.length, 5);
-    });
+        test(
+          'copies, so the interned string does not view the source',
+          () => {
+            // A slice of a large source keeps the whole backing array alive. The
+            // canonical instance must own its bytes instead: a table shared across
+            // a compilation would otherwise pin every file it ever read.
+            let t = new StringTable();
+            let source = 'let alpha = 1; let beta = 2;';
+            let reader = new StringReader(source, t);
+            reader.skipBytes(4);
+            let interned = reader.internRange(4, 9);
+            equal(interned, 'alpha');
+            notSame(interned, source.sliceBytes(4, 9));
+            equal(interned.length, 5);
+          }
+        );
 
-    test('preserves multi-byte UTF-8 content', () => {
-      let t = new StringTable();
-      let a = t.intern(fresh('héllo'));
-      let b = t.intern(fresh('héllo'));
-      same(a, b);
-      equal(a, 'héllo');
-    });
-  });
-
-  suite('maxLength', () => {
-    /** A string of `n` 'x' bytes. */
-    let long = (n: i32) => {
-      let b = new StringBuilder();
-      for (var i = 0; i < n; i += 1) {
-        b.append('x');
+        test(
+          'preserves multi-byte UTF-8 content',
+          () => {
+            let t = new StringTable();
+            let a = t.intern(fresh('héllo'));
+            let b = t.intern(fresh('héllo'));
+            same(a, b);
+            equal(a, 'héllo');
+          }
+        );
       }
-      return b.toString();
-    };
+    );
 
-    test('defaults to 128 bytes', () => {
-      equal(new StringTable().maxLength, 128);
-    });
+    suite(
+      'maxLength',
+      () => {
+        /** A string of `n` 'x' bytes. */
+        let long = (n: i32) => {
+          let b = new StringBuilder();
+          for (var i = 0; i < n; i += 1) {
+            b.append('x');
+          }
+          return b.toString();
+        };
 
-    test('interns a string of exactly maxLength', () => {
-      let t = new StringTable(16, 8);
-      same(t.intern(fresh('abcdefgh')), t.intern(fresh('abcdefgh')));
-      equal(t.size, 1);
-    });
+        test(
+          'defaults to 128 bytes',
+          () => {
+            equal(new StringTable().maxLength, 128);
+          }
+        );
 
-    test('declines one byte over', () => {
-      let t = new StringTable(16, 8);
-      let a = t.intern(fresh('abcdefghi'));
-      let b = t.intern(fresh('abcdefghi'));
-      equal(a, b);
-      notSame(a, b);
-      equal(t.size, 0);
-    });
+        test(
+          'interns a string of exactly maxLength',
+          () => {
+            let t = new StringTable(16, 8);
+            same(t.intern(fresh('abcdefgh')), t.intern(fresh('abcdefgh')));
+            equal(t.size, 1);
+          }
+        );
 
-    test('returns an over-long string unchanged rather than copying it', () => {
-      // The point of declining is to store nothing and allocate nothing;
-      // returning a copy would pay half the cost for none of the benefit.
-      let t = new StringTable(16, 8);
-      let s = fresh('abcdefghij');
-      same(t.intern(s), s);
-    });
+        test(
+          'declines one byte over',
+          () => {
+            let t = new StringTable(16, 8);
+            let a = t.intern(fresh('abcdefghi'));
+            let b = t.intern(fresh('abcdefghi'));
+            equal(a, b);
+            notSame(a, b);
+            equal(t.size, 0);
+          }
+        );
 
-    test('internRange declines over-long ranges', () => {
-      let t = new StringTable(16, 8);
-      let source = 'abcdefghij';
-      let a = t.internRange(source, 0, 10);
-      equal(a, 'abcdefghij');
-      equal(t.size, 0);
-      // ...and still interns a short range from the same source.
-      t.internRange(source, 0, 4);
-      equal(t.size, 1);
-    });
+        test(
+          'returns an over-long string unchanged rather than copying it',
+          () => {
+            // The point of declining is to store nothing and allocate nothing;
+            // returning a copy would pay half the cost for none of the benefit.
+            let t = new StringTable(16, 8);
+            let s = fresh('abcdefghij');
+            same(t.intern(s), s);
+          }
+        );
 
-    test('prime declines too, so intern can never miss a longer key', () => {
-      let t = new StringTable(16, 8);
-      t.prime('abcdefghi');
-      equal(t.size, 0);
-      isFalse(t.has('abcdefghi'));
-    });
+        test(
+          'internRange declines over-long ranges',
+          () => {
+            let t = new StringTable(16, 8);
+            let source = 'abcdefghij';
+            let a = t.internRange(source, 0, 10);
+            equal(a, 'abcdefghij');
+            equal(t.size, 0);
+            // ...and still interns a short range from the same source.
+            t.internRange(source, 0, 4);
+            equal(t.size, 1);
+          }
+        );
 
-    test('has is false for an over-long string', () => {
-      let t = new StringTable(16, 8);
-      isFalse(t.has(long(200)));
-    });
+        test(
+          'prime declines too, so intern can never miss a longer key',
+          () => {
+            let t = new StringTable(16, 8);
+            t.prime('abcdefghi');
+            equal(t.size, 0);
+            isFalse(t.has('abcdefghi'));
+          }
+        );
 
-    test('a long document body does not fill the table', () => {
-      // The case the cap exists for: a parser that interns every scanned
-      // value, over an input whose values are long and mostly distinct.
-      let t = new StringTable(64, 32);
-      for (var i = 0; i < 50; i += 1) {
-        t.intern(long(64 + i));
+        test(
+          'has is false for an over-long string',
+          () => {
+            let t = new StringTable(16, 8);
+            isFalse(t.has(long(200)));
+          }
+        );
+
+        test(
+          'a long document body does not fill the table',
+          () => {
+            // The case the cap exists for: a parser that interns every scanned
+            // value, over an input whose values are long and mostly distinct.
+            let t = new StringTable(64, 32);
+            for (var i = 0; i < 50; i += 1) {
+              t.intern(long(64 + i));
+            }
+            equal(t.size, 0);
+          }
+        );
       }
-      equal(t.size, 0);
-    });
-  });
+    );
 
-  suite('prime', () => {
-    test('makes the given instance canonical', () => {
-      let t = new StringTable();
-      let literal = 'let';
-      same(t.prime(literal), literal);
-      same(t.intern(fresh('let')), literal);
-    });
+    suite(
+      'prime',
+      () => {
+        test(
+          'makes the given instance canonical',
+          () => {
+            let t = new StringTable();
+            let literal = 'let';
+            same(t.prime(literal), literal);
+            same(t.intern(fresh('let')), literal);
+          }
+        );
 
-    test('does not displace an already-interned string', () => {
-      let t = new StringTable();
-      let first = t.intern(fresh('while'));
-      same(t.prime('while'), first);
-      equal(t.size, 1);
-    });
+        test(
+          'does not displace an already-interned string',
+          () => {
+            let t = new StringTable();
+            let first = t.intern(fresh('while'));
+            same(t.prime('while'), first);
+            equal(t.size, 1);
+          }
+        );
 
-    test('primeAll primes a sequence', () => {
-      let t = new StringTable();
-      t.primeAll(['if', 'else', 'while']);
-      equal(t.size, 3);
-      isTrue(t.has('if'));
-      isTrue(t.has('while'));
-    });
-  });
-
-  suite('has', () => {
-    test('reports membership without inserting', () => {
-      let t = new StringTable();
-      isFalse(t.has('nope'));
-      equal(t.size, 0);
-      t.intern(fresh('yes'));
-      isTrue(t.has('yes'));
-      isFalse(t.has('no'));
-    });
-  });
-
-  suite('growth', () => {
-    test('keeps every entry canonical across resizes', () => {
-      // Starts well below the default capacity so the table resizes several
-      // times, then re-checks every string inserted before the first resize.
-      let t = new StringTable(16);
-      let names = new Array<String>();
-      for (var i = 0; i < 500; i += 1) {
-        let b = new StringBuilder();
-        b.append('name');
-        b.appendI32(i);
-        names.push(t.intern(b.toString()));
+        test(
+          'primeAll primes a sequence',
+          () => {
+            let t = new StringTable();
+            t.primeAll(['if', 'else', 'while']);
+            equal(t.size, 3);
+            isTrue(t.has('if'));
+            isTrue(t.has('while'));
+          }
+        );
       }
-      equal(t.size, 500);
-      for (var i = 0; i < 500; i += 1) {
-        let b = new StringBuilder();
-        b.append('name');
-        b.appendI32(i);
-        same(t.intern(b.toString()), names[i]);
+    );
+
+    suite(
+      'has',
+      () => {
+        test(
+          'reports membership without inserting',
+          () => {
+            let t = new StringTable();
+            isFalse(t.has('nope'));
+            equal(t.size, 0);
+            t.intern(fresh('yes'));
+            isTrue(t.has('yes'));
+            isFalse(t.has('no'));
+          }
+        );
       }
-      equal(t.size, 500);
-    });
-  });
+    );
 
-  suite('interned strings as map keys', () => {
-    test('behave as values, not as identities', () => {
-      // The point of interning is that it is invisible: an interned string
-      // and an equal un-interned one must hit the same map entry.
-      let t = new StringTable();
-      let m: HashMap<String, i32> = {t.intern(fresh('key')) => 7};
-      equal(m.getOr(fresh('key'), 0), 7);
-      equal(m.getOr('key', 0), 7);
-    });
-  });
+    suite(
+      'growth',
+      () => {
+        test(
+          'keeps every entry canonical across resizes',
+          () => {
+            // Starts well below the default capacity so the table resizes several
+            // times, then re-checks every string inserted before the first resize.
+            let t = new StringTable(16);
+            let names = new Array<String>();
+            for (var i = 0; i < 500; i += 1) {
+              let b = new StringBuilder();
+              b.append('name');
+              b.appendI32(i);
+              names.push(t.intern(b.toString()));
+            }
+            equal(t.size, 500);
+            for (var i = 0; i < 500; i += 1) {
+              let b = new StringBuilder();
+              b.append('name');
+              b.appendI32(i);
+              same(t.intern(b.toString()), names[i]);
+            }
+            equal(t.size, 500);
+          }
+        );
+      }
+    );
 
-  suite('StringReader interning', () => {
-    test('internFrom returns canonical instances', () => {
-      let t = new StringTable();
-      let a = new StringReader('foo bar', t);
-      a.skipBytes(0);
-      let start = a.mark();
-      a.skipBytes(3);
-      let first = a.internFrom(start);
+    suite(
+      'interned strings as map keys',
+      () => {
+        test(
+          'behave as values, not as identities',
+          () => {
+            // The point of interning is that it is invisible: an interned string
+            // and an equal un-interned one must hit the same map entry.
+            let t = new StringTable();
+            let m: HashMap<String, i32> = {t.intern(fresh('key')) => 7};
+            equal(m.getOr(fresh('key'), 0), 7);
+            equal(m.getOr('key', 0), 7);
+          }
+        );
+      }
+    );
 
-      let b = new StringReader('xxxxfoo', t);
-      b.skipBytes(4);
-      let second = b.internRange(4, 7);
+    suite(
+      'StringReader interning',
+      () => {
+        test(
+          'internFrom returns canonical instances',
+          () => {
+            let t = new StringTable();
+            let a = new StringReader('foo bar', t);
+            a.skipBytes(0);
+            let start = a.mark();
+            a.skipBytes(3);
+            let first = a.internFrom(start);
 
-      same(first, second);
-      equal(first, 'foo');
-    });
+            let b = new StringReader('xxxxfoo', t);
+            b.skipBytes(4);
+            let second = b.internRange(4, 7);
 
-    test('a reader with no table still returns equal strings', () => {
-      let r = new StringReader('foo bar');
-      equal(r.internRange(0, 3), 'foo');
-      equal(r.table == null, true);
-    });
+            same(first, second);
+            equal(first, 'foo');
+          }
+        );
 
-    test('a shared table reuses entries across readers', () => {
-      let t = new StringTable();
-      new StringReader('alpha', t).internRange(0, 5);
-      new StringReader('alpha', t).internRange(0, 5);
-      new StringReader('beta', t).internRange(0, 4);
-      equal(t.size, 2);
-    });
-  });
+        test(
+          'a reader with no table still returns equal strings',
+          () => {
+            let r = new StringReader('foo bar');
+            equal(r.internRange(0, 3), 'foo');
+            equal(r.table == null, true);
+          }
+        );
 
-  suite('StringReader scanning and character utilities', () => {
-    test('peek, advance, and peekBefore handle multi-byte Unicode', () => {
-      let r = new StringReader('aé€😀!');
-      equal(r.peekBefore(), -1);
-      equal(r.peek(), 0x61);
-      equal(r.advance(), 0x61);
-      equal(r.peekBefore(), 0x61);
-      equal(r.advance(), 0xE9);
-      equal(r.peekBefore(), 0xE9);
-      equal(r.advance(), 0x20AC);
-      equal(r.peekBefore(), 0x20AC);
-      equal(r.advance(), 0x1F600);
-      equal(r.peekBefore(), 0x1F600);
-      equal(r.advance(), 0x21);
-      equal(r.peekBefore(), 0x21);
-      isTrue(r.isAtEnd);
-    });
+        test(
+          'a shared table reuses entries across readers',
+          () => {
+            let t = new StringTable();
+            new StringReader('alpha', t).internRange(0, 5);
+            new StringReader('alpha', t).internRange(0, 5);
+            new StringReader('beta', t).internRange(0, 4);
+            equal(t.size, 2);
+          }
+        );
+      }
+    );
 
-    test('startsWith, startsWithIgnoreAsciiCase, matchString, and matchCodePoint', () => {
-      let r = new StringReader('  [!NoTe] €100');
-      r.skipSpaces();
-      isTrue(r.startsWith('[!NoTe]'));
-      isTrue(r.startsWithIgnoreAsciiCase('[!note]'));
-      isTrue(r.matchString('[!NoTe]'));
-      r.skipSpaces();
-      isTrue(r.matchCodePoint(0x20AC));
-      equal(r.readToEnd(), '100');
-    });
+    suite(
+      'StringReader scanning and character utilities',
+      () => {
+        test(
+          'peek, advance, and peekBefore handle multi-byte Unicode',
+          () => {
+            let r = new StringReader('aé€😀!');
+            equal(r.peekBefore(), -1);
+            equal(r.peek(), 0x61);
+            equal(r.advance(), 0x61);
+            equal(r.peekBefore(), 0x61);
+            equal(r.advance(), 0xE9);
+            equal(r.peekBefore(), 0xE9);
+            equal(r.advance(), 0x20AC);
+            equal(r.peekBefore(), 0x20AC);
+            equal(r.advance(), 0x1F600);
+            equal(r.peekBefore(), 0x1F600);
+            equal(r.advance(), 0x21);
+            equal(r.peekBefore(), 0x21);
+            isTrue(r.isAtEnd);
+          }
+        );
 
-    test('readLine handles LF, CRLF, CR, and EOF', () => {
-      let r = new StringReader('one\ntwo\r\nthree\rfour');
-      equal(r.readLine() ?? '', 'one');
-      equal(r.readLine() ?? '', 'two');
-      equal(r.readLine() ?? '', 'three');
-      equal(r.readLine() ?? '', 'four');
-      equal(r.readLine() == null, true);
-    });
+        test(
+          'startsWith, startsWithIgnoreAsciiCase, matchString, and matchCodePoint',
+          () => {
+            let r = new StringReader('  [!NoTe] €100');
+            r.skipSpaces();
+            isTrue(r.startsWith('[!NoTe]'));
+            isTrue(r.startsWithIgnoreAsciiCase('[!note]'));
+            isTrue(r.matchString('[!NoTe]'));
+            r.skipSpaces();
+            isTrue(r.matchCodePoint(0x20AC));
+            equal(r.readToEnd(), '100');
+          }
+        );
 
-    test('character classification helpers', () => {
-      isTrue(isSpaceOrTab(0x20));
-      isTrue(isSpaceOrTab(0x09));
-      isFalse(isSpaceOrTab(0x0A));
-      isTrue(isAsciiWhitespace(0x0A));
-      isTrue(isAsciiDigit(0x35));
-      isTrue(isAsciiHexDigit(0x66));
-      equal(hexDigitValue(0x66), 15);
-      equal(hexDigitValue(0x41), 10);
-      equal(hexDigitValue(0x39), 9);
-      equal(hexDigitValue(0x67), -1);
-      isTrue(isAsciiAlpha(0x5A));
-      isTrue(isAsciiAlphanumeric(0x30));
-      isTrue(isAsciiPunctuation(0x21));
-      isTrue(isUnicodeWhitespace(0xA0));
-      isTrue(isUnicodeWhitespace(0x3000));
-      isTrue(isUnicodePunctuation(0x2014));
-      isTrue(isUnicodePunctuation(0x20AC));
-    });
-  });
-});
+        test(
+          'readLine handles LF, CRLF, CR, and EOF',
+          () => {
+            let r = new StringReader('one\ntwo\r\nthree\rfour');
+            equal(r.readLine() ?? '', 'one');
+            equal(r.readLine() ?? '', 'two');
+            equal(r.readLine() ?? '', 'three');
+            equal(r.readLine() ?? '', 'four');
+            equal(r.readLine() == null, true);
+          }
+        );
+
+        test(
+          'character classification helpers',
+          () => {
+            isTrue(isSpaceOrTab(0x20));
+            isTrue(isSpaceOrTab(0x09));
+            isFalse(isSpaceOrTab(0x0A));
+            isTrue(isAsciiWhitespace(0x0A));
+            isTrue(isAsciiDigit(0x35));
+            isTrue(isAsciiHexDigit(0x66));
+            equal(hexDigitValue(0x66), 15);
+            equal(hexDigitValue(0x41), 10);
+            equal(hexDigitValue(0x39), 9);
+            equal(hexDigitValue(0x67), -1);
+            isTrue(isAsciiAlpha(0x5A));
+            isTrue(isAsciiAlphanumeric(0x30));
+            isTrue(isAsciiPunctuation(0x21));
+            isTrue(isUnicodeWhitespace(0xA0));
+            isTrue(isUnicodeWhitespace(0x3000));
+            isTrue(isUnicodePunctuation(0x2014));
+            isTrue(isUnicodePunctuation(0x20AC));
+          }
+        );
+      }
+    );
+  }
+);
