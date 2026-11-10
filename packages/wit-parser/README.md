@@ -1,208 +1,108 @@
-# WIT Parser
+# wit-parser
 
-This package contains the WIT (WebAssembly Interface Types) parser for Zena.
+A WebAssembly Interface Types (WIT) parser, semantic resolver, `.wit.json`
+serializer, and component type encoder for Zena.
 
-## Status
+## Installation
 
-✅ **Implemented** — lexer, parser, resolver, and `.wit.json` serialization, all
-written in Zena (`zena/`). The full ported wasm-tools UI corpus passes:
-**215/215** (130 parse-fail, 81 ported resolve-and-compare, 4 of our own).
+```bash
+zena pkg add @zena/wit-parser
+```
 
-**Real WASI parses and resolves end to end** — three trees, checked on every
-`npm test`:
-
-| tree                                  | packages / interfaces / worlds |
-| ------------------------------------- | ------------------------------ |
-| WASI 0.2 (`wasi:http@0.2.8` + 6 deps) | 7 / 31 / 9                     |
-| WASI 0.3.0-rc-2025-09-16 draft        | 6 / 25 / 8                     |
-| **WASI 0.3.0, released**              | 6 / 25 / 8                     |
-
-Getting there took five fixes for combinations the synthetic corpus never
-exercised — passing it was no evidence at all that real WASI would work. Each is
-now covered by a test of our own (`versioned-paths/`, `param-doc-comments.wit`,
-`interface-shadowed-by-use.wit`, `cross-package-name-collision/`); see
-TEST-STATUS.md.
-
-## Using it
-
-The parser is a Zena package of the repository's workspace
-(`zena/zena-package.json`), so any Zena code in this repo outside a package, or
-in one that depends on it, can import it:
+## Example
 
 ```zena
 import { parse } from 'wit-parser:wit';
 import { AstItemTag } from 'wit-parser:parser';
 
-let doc = parse(source);   // parses AND resolves; throws on either failure
+let source = `
+package example:greeter@1.0.0;
+
+interface greet {
+  record greeting { text: string, formal: bool }
+  hello: func(name: string) -> greeting;
+}
+
+interface farewell {
+  use greet.{greeting};
+  goodbye: func(name: string) -> greeting;
+}
+
+world greeter {
+  export greet;
+  export farewell;
+}
+`;
+
+// Parses syntax and resolves names and cross-interface `use` references.
+// Throws `ParseError` or `ResolveError` if the document is invalid.
+let doc = parse(source);
+
+var interfaces = 0;
+var worlds = 0;
+for (let item in doc.items) {
+  if (item.tag == AstItemTag.Interface) {
+    interfaces += 1;
+  } else if (item.tag == AstItemTag.World) {
+    worlds += 1;
+  }
+}
 ```
 
-`zena/wit.zena` is the entry point:
+## Libraries
 
-|                       |                                                                       |
-| --------------------- | --------------------------------------------------------------------- |
-| `parse(source)`       | parse + resolve → `Ast`. What you almost always want.                 |
-| `parseSyntax(source)` | parse only, for tooling that reparses a file in isolation             |
-| `resolve(ast)`        | resolve an AST in place, for documents assembled from several sources |
-| `toJson(ast, order?)` | the `.wit.json` shape `wasm-tools` emits                              |
+### `wit-parser:wit`
 
-The names are unqualified because the module already says what they are about;
-rename at the import site if `parse` is ambiguous in context. The test harness
-does exactly that — it has its own `parse()` export, so it imports
-`parse as parseWit`.
+The primary entry point for parsing, resolving, and serializing WIT source text.
 
-Errors are thrown, not returned — `Result<T, E>` is an inline multi-value union
-([result-option.md](../../docs/design/result-option.md)) but is not in the
-stdlib yet. `ParseError` and `ResolveError` both carry a `Span`.
+| Function                     | Description                                                                                         |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| `parse(source)`              | Parses and resolves `source` into a validated `Ast`. Throws `ParseError` or `ResolveError`.         |
+| `parseSyntax(source)`        | Parses `source` without resolving names, for single-file syntax tooling such as formatters.         |
+| `resolve(ast)`               | Resolves names and validates an `Ast` in place.                                                     |
+| `toJson(ast, packageOrder?)` | Serializes a resolved `Ast` to the `.wit.json` format emitted by `wasm-tools component wit --json`. |
 
-The AST types live in `wit-parser:parser`; walking a document touches most of 87
-declarations, so `wit.zena` re-exports only what you need to call it and catch
-its failures.
+`wit-parser:wit` also re-exports `Ast`, `ParseError`, and `ResolveError`. Both
+error types carry a `Span` with byte offsets into the source text.
 
-`examples/parse-wit.zena` is a runnable consumer. It sits outside the package
-root deliberately, so it can only reach the parser through the package map — it
-stops compiling if that wiring breaks, which a test using relative imports would
-not.
+### `wit-parser:parser`
 
-That guard only works if something builds it, and for a while nothing did: the
-example had rotted into calling `.toString()` on an `i32`, which neither
-compiler accepts. `npm test` now builds _and runs_ it with the self-hosted CLI
-(`test:example`), so a broken package map, a compile regression, or a parser
-that throws all fail the suite.
+The AST node declarations (`Ast`, `AstItem`, `AstItemTag`, `InterfaceDef`,
+`WorldDef`, `TypeDef`, `Type`, `NamedFunc`, `ResourceFunc`, `Use`, `Include`,
+`Docs`, `Attribute`, `PackageName`, `NestedPackage`, and related types) and
+`Parser`.
 
-> **The package both compiles and is consumable under the self-hosted
-> compiler.** All 12 modules compile — generic _private_ methods
-> (`Parser.#parseList<T>`, 0e7effe4), distributed sealed variants and
-> block-scoped function bindings (#164), self/forward-referencing closure
-> captures (#165) — and a _consumer_ reaching the package through the
-> package map now works too. That last one was a reachability bug, not
-> anything cross-module: a checkable-phase visit of a member satisfied
-> the later reachable visit, stranding closures the first visit had
-> created but not marked reached.
+### `wit-parser:document`
 
-Nothing in the _compiler_ calls the parser yet — making WIT imports first-class
-is the next step; see
-[component-model.md](../../docs/design/component-model.md).
+Utilities for assembling multi-file WIT directories into a single source
+document while tracking file boundaries for error reporting:
 
-## Directory Structure
+- `WitFile(name, source)` and `joinWitDocument(files)`: concatenates `.wit`
+  files in canonical name order and records where each file starts.
+- `WitDocument.locate(offset)`: maps a byte offset back to a `WitLocation`
+  (`file`, 1-based `line`, 1-based `column`).
+- `witDiagnostic(doc, error)`: formats a `LexError`, `ParseError`, or
+  `ResolveError` with its filename, line, column, source line, and caret
+  underline.
+- `findInterface(ast, namespace, interfacePath)`: looks up an interface (`pkg/iface`)
+  in a parsed document.
 
-```
-packages/wit-parser/
-├── README.md              # This file
-├── package.json           # Package config with Wireit scripts
-├── zena/                  # The parser itself, in Zena
-│   ├── lexer.zena
-│   ├── parser.zena
-│   ├── resolver.zena
-│   ├── ast-json.zena      # .wit.json serialization
-│   ├── wit.zena           # The public entry point
-│   └── test/              # The tests, in Zena
-│       ├── syntax_test.zena   # Lexer and parser
-│       ├── corpus_test.zena   # The ported wasm-tools corpus
-│       └── encoder_test.zena  # Component encoder round-trip
-├── dev/
-│   ├── parse-real-wit.zena # Run the parser over real-world WIT
-│   ├── encode-wit.zena    # Encode a world as a types-only component
-│   ├── fetch-wit-corpus.js # Download the pinned corpus (non-Nix checkouts)
-│   └── wit-corpus.js      # Locate + verify the corpus (for the fetcher)
-└── tests/                 # Ported test files (mirrors wasm-tools ui/ structure)
-    ├── empty.wit              # Success test input
-    ├── empty.wit.json         # Expected parsed output
-    └── parse-fail/            # Error test cases
-        ├── bad-list.wit           # Error test input
-        └── bad-list.wit.result    # Expected error message
-```
+### `wit-parser:component-encoder`
 
-## Running Tests
+Encodes a resolved WIT world into WebAssembly Component Model binary type and
+import sections:
 
-```bash
-# Run WIT parser tests (from monorepo root)
-npm test -w @zena-lang/wit-parser
+- `encodeTypesOnlyComponent(ast, worldName)`: encodes the named world as a
+  standalone types-only component binary.
+- `ComponentTypeEncoder`: emits component type, alias, import, and export
+  sections and canonical ABI metadata (`WitFuncMeta`, `WitFlatMeta`).
+- `expandedWorldItems(ast, world)` and `worldNames(ast)`: expands world
+  `include`s and transitive `use` dependencies.
 
-# Or from this directory
-npm test
-```
+### `wit-parser:lexer` and `wit-parser:token`
 
-The tests are Zena tests, run by `zena-cli test` like the standard library's.
-`corpus_test.zena` walks `tests/`, parses each case and compares the serialized
-AST against the `.wit.json` beside it, or requires that the case fail when a
-`.wit.result` is what sits there.
+Low-level tokenization: `Lexer`, `LexError`, `Token`, `TokenType`, and `Span`.
 
-### The real-world WIT corpus
+### `wit-parser:resolver`
 
-`npm test` also checks the parser against real WASI, which is where every bug
-the synthetic corpus missed was found. That WIT is third-party and carries its
-own license, so it is **fetched, not vendored** — pinned by
-[`wit-corpus.json`](wit-corpus.json) (commits, not tags or branches) and
-reaching a checkout one of two ways:
-
-```bash
-nix develop                     # exports ZENA_WASI_WIT; no download, works offline
-node dev/fetch-wit-corpus.js    # non-Nix checkouts: downloads to .wit-corpus/
-```
-
-**The check fails if the corpus is absent** rather than skipping. A check that
-skips reports the same green tick as one that ran, which is how "we test against
-real WASI" quietly becomes a claim nobody has verified in months.
-
-Both paths verify content before use, and neither trusts the tarball bytes:
-GitHub regenerates archives, so gzip framing changes even when no file does.
-Nix's `fetchzip` hashes the unpacked tree; the script hashes the extracted
-`.wit` files. Updating the pin means refreshing both hashes — `wit-corpus.json`
-documents the commands.
-
-Two sources are pinned, laid out as `<root>/<source-name>/…` by both fetchers:
-
-- **`wasi-http`** — `WebAssembly/wasi-http`, which carries WASI 0.2 (`wasi:http@0.2.8`
-  with its six deps vendored under `wit/deps/`) and the `0.3.0-rc-2025-09-16`
-  draft. That repo is archived, having been merged into `WebAssembly/WASI`, so
-  the pin will not move again. Its layout — deps vendored, the package header in
-  only one file per package — is what exposed the ordering bugs.
-- **`wasi`** — `WebAssembly/WASI` at `v0.3.0`, where 0.3 actually lives now.
-  Structurally different: one `wit/` per proposal under `proposals/`, with _no_
-  vendored deps, so resolving it leans on topological package ordering instead.
-
-Both pins are deliberately behind upstream (0.2 is now at 0.2.12, and 0.3 has
-newer RCs). They are fixtures, not a dependency — bump them when there is a
-reason to.
-
-Other modes take explicit directories, so they work on any WIT. Run them from
-the repository root; `--dir .` is where the program finds `wit-corpus.json`, and
-`--dir /` is what lets it read a Nix store path.
-
-```bash
-ZC="./target/release/zena-cli run --dir . --dir /"
-WIT="packages/wit-parser/dev/parse-real-wit.zena"
-
-$ZC $WIT --check                                   # what npm test runs
-$ZC $WIT "$ZENA_WASI_WIT/wasi/proposals"           # resolve a tree
-$ZC $WIT --files "$ZENA_WASI_WIT/wasi-http/wit"    # per-file breakdown
-```
-
-Minimal repros of the constructs that used to fail — a prerelease version in a
-`use` path, a versioned interface path in a world, a doc comment in a parameter
-list — are tests, in `zena/test/syntax_test.zena`.
-
-## Test Formats
-
-### Success Tests (`.wit` + `.wit.json`)
-
-Tests that verify valid WIT files parse correctly. The `.wit.json` file contains the expected JSON representation of the resolved AST.
-
-### Error Tests (`.wit` + `.wit.result`)
-
-Tests that verify invalid WIT files produce expected error messages. The `.wit.result` file contains the expected error with location info.
-
-### Directory Tests
-
-Some tests use directories containing multiple `.wit` files (multi-file packages). The expected output is at the parent level: `dirname.wit.json` or `dirname.wit.result`.
-
-## Next Steps
-
-The parser is done, p2 and p3 alike; the consumers do not exist yet. See
-[component-model.md](../../docs/design/component-model.md):
-
-1. ~~Expose a stable entry point~~ — done, `zena/wit.zena`
-2. Make WIT imports first-class in the compiler: a WIT-backed package resolves
-   to a `SourceFile` whose `ModuleExports` are synthesized from the resolved
-   WIT, so `import {Request} from 'wasi:http/types'` binds real symbols with no
-   generated source (Parts 2–5)
+Semantic validation and name resolution: `Resolver` and `ResolveError`.

@@ -2,14 +2,14 @@
 # Syncs WIT parser tests from the upstream wasm-tools repository.
 #
 # Usage:
-#   ./sync-upstream-tests.sh [path-to-wasm-tools]
+#   ./dev/sync-upstream-tests.sh [path-to-wasm-tools]
 #
 # If no path is provided, clones wasm-tools to a temp directory.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TESTS_DIR="$SCRIPT_DIR/tests"
+TESTS_DIR="$SCRIPT_DIR/../test/fixtures/wasm-tools"
 
 # Source repo path (clone if not provided)
 if [[ $# -ge 1 ]]; then

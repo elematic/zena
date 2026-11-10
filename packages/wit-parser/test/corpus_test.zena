@@ -1,6 +1,8 @@
 /**
- * The ported wasm-tools UI corpus: every `.wit` file under `tests/`, and
- * every directory of them, checked against the expectation beside it.
+ * The WIT parser corpus: every `.wit` file and multi-file directory under
+ * `test/fixtures/wasm-tools/` (synced from upstream wasm-tools `tests/ui/`)
+ * and `test/fixtures/corpus/` (our own regression cases), checked against the
+ * expectation beside it.
  *
  * A `<name>.wit.json` says the document must parse and resolve, and that
  * serializing the result must equal that JSON — the same shape
@@ -14,8 +16,9 @@
  * by path. Two of them carry their dependencies as `.wat`/`.wasm` instead of
  * WIT text, which `wasm-tools component wit` decodes.
  *
- * `tests/test-config.json` can hold out a case by name: `skip` means do not
- * run it, `expectedFailures` means run it and require that it still fails.
+ * `test/fixtures/wasm-tools/test-config.json` can hold out a case by name:
+ * `skip` means do not run it, `expectedFailures` means run it and require
+ * that it still fails.
  */
 
 import { suite, test } from 'zena:test';
@@ -26,11 +29,12 @@ import { exists, isDirectory, listDir, readFile } from 'zena:fs';
 import { JsonArray, JsonObject, JsonValue, parseJson } from 'zena:json';
 import { runIn } from 'zena:process';
 import { regex } from 'zena:regex';
-import { Ast } from '../parser.zena';
-import { parse, toJson } from '../wit.zena';
+import { Ast } from 'wit-parser:parser';
+import { parse, toJson } from 'wit-parser:wit';
 
-/** The corpus root, relative to the repository root. */
-let TESTS = 'packages/wit-parser/tests';
+/** The upstream wasm-tools corpus and our own corpus cases, relative to the repository root. */
+let WASM_TOOLS_TESTS = 'packages/wit-parser/test/fixtures/wasm-tools';
+let OWN_TESTS = 'packages/wit-parser/test/fixtures/corpus';
 
 /** One case: a `.wit` file, or a directory of them, and its expectation. */
 final class Case {
@@ -433,12 +437,13 @@ final class Corpus {
  * Reads the corpus from disk.
  */
 async function readCorpus() {
-  let config = parseJson(await readFile(`${TESTS}/test-config.json`), {
+  let config = parseJson(await readFile(`${WASM_TOOLS_TESTS}/test-config.json`), {
     allowComments: true,
     trackLocations: false,
   });
   let cases = new GrowableArray<Case>();
-  await discover(TESTS, '', cases);
+  await discover(WASM_TOOLS_TESTS, '', cases);
+  await discover(OWN_TESTS, '', cases);
   return new Corpus(
     cases,
     namesFrom(config, 'skip'),

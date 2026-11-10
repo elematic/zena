@@ -1,7 +1,7 @@
 /**
  * Vendor the WASI 0.3 WIT into `zena/wit/` from the pinned corpus.
  *
- * The corpus is the one `packages/wit-parser/wit-corpus.json` pins: its
+ * The corpus is the one `packages/wit-parser/dev/wit-corpus.json` pins: its
  * `wasi` source is the WebAssembly/WASI repository at the 0.3.0
  * release, fetched by `nix develop` (ZENA_WASI_WIT) or by
  * `node packages/wit-parser/dev/fetch-wit-corpus.js`. Each proposal's

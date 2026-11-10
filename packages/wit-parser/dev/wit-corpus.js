@@ -12,7 +12,7 @@
  *
  * Either way the layout is the same — `<root>/<source-name>/…` — so callers
  * address a source identically no matter how it arrived. Both are pinned by
- * `wit-corpus.json`.
+ * `dev/wit-corpus.json`.
  */
 import {createHash} from 'node:crypto';
 import {readdir, readFile} from 'node:fs/promises';
@@ -22,7 +22,7 @@ import {fileURLToPath} from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const pkgDir = join(__dirname, '..');
-export const manifestPath = join(pkgDir, 'wit-corpus.json');
+export const manifestPath = join(__dirname, 'wit-corpus.json');
 export const localCorpusDir = join(pkgDir, '.wit-corpus');
 
 export const readManifest = async () =>
@@ -75,7 +75,7 @@ either:
   nix develop                     (exports ZENA_WASI_WIT; no download needed)
   node dev/fetch-wit-corpus.js    (downloads to .wit-corpus/, needs network)
 
-Both are pinned by packages/wit-parser/wit-corpus.json.`;
+Both are pinned by packages/wit-parser/dev/wit-corpus.json.`;
 
 /**
  * Where the corpus root is, or `null`. Callers are expected to fail loudly

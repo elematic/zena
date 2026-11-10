@@ -10,7 +10,7 @@ vendoring them; and the component's import surface carries their true
 types, which is what lets `wasmtime` link the component at all.
 
 **Do not edit these files.** They are written by
-`dev/vendor-wasi-wit.js` from the corpus `packages/wit-parser/wit-corpus.json`
+`dev/vendor-wasi-wit.js` from the corpus `packages/wit-parser/dev/wit-corpus.json`
 pins — the WebAssembly/WASI repository at the 0.3.0 release, which
 `nix develop` provides as `ZENA_WASI_WIT` and
 `packages/wit-parser/dev/fetch-wit-corpus.js` downloads otherwise — and
