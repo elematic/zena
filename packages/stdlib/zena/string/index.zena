@@ -1,0 +1,140 @@
+/**
+ * String manipulation, parsing, building, interning, and Unicode code-point
+ * classification.
+ *
+ * Re-exports `String`, `StringBuilder`, `StringReader`, `StringTable`,
+ * `Stringable`, `join`, `dedent`, and `dedentRaw` from `zena:core`, and
+ * provides ASCII and Unicode code-point predicates (`isSpaceOrTab`,
+ * `isAsciiWhitespace`, `isAsciiDigit`, `isAsciiHexDigit`, `hexDigitValue`,
+ * `isAsciiAlpha`, `isAsciiAlphanumeric`, `isAsciiPunctuation`,
+ * `isUnicodeWhitespace`, `isUnicodePunctuation`).
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import {
+ *   StringReader, StringBuilder, isAsciiAlphanumeric
+ * } from 'zena:string';
+ *
+ * let reader = new StringReader('hello_world!');
+ * let start = reader.mark();
+ * reader.skipWhile((cp) => isAsciiAlphanumeric(cp) || cp == 0x5F);
+ * let ident = reader.sliceFrom(start);
+ * ```
+ */
+
+export {
+  String,
+  Encoding,
+  StringIndex,
+  asciiLowerByte,
+  asciiUpperByte,
+  StringBuilder,
+  StringReader,
+  StringTable,
+  Stringable,
+  TemplateStringsArray,
+  dedent,
+  dedentRaw,
+  join,
+} from 'zena:core';
+
+/** Whether `cp` is an ASCII space (`0x20`) or tab (`0x09`). */
+export function isSpaceOrTab(cp: i32): boolean {
+  return cp == 0x20 || cp == 0x09;
+}
+
+/**
+ * Whether `cp` is an ASCII whitespace character (` `, `\t`, `\n`, `\v`, `\f`, `\r`).
+ */
+export function isAsciiWhitespace(cp: i32): boolean {
+  return cp == 0x20 || (cp >= 0x09 && cp <= 0x0D);
+}
+
+/** Whether `cp` is an ASCII decimal digit (`0`-`9`). */
+export function isAsciiDigit(cp: i32): boolean {
+  return cp >= 0x30 && cp <= 0x39;
+}
+
+/** Whether `cp` is an ASCII hexadecimal digit (`0`-`9`, `A`-`F`, `a`-`f`). */
+export function isAsciiHexDigit(cp: i32): boolean {
+  return (cp >= 0x30 && cp <= 0x39)
+    || (cp >= 0x41 && cp <= 0x46)
+    || (cp >= 0x61 && cp <= 0x66);
+}
+
+/**
+ * Returns the numeric value (`0`-`15`) of an ASCII hex digit `cp`, or `-1`
+ * if `cp` is not a hex digit.
+ */
+export function hexDigitValue(cp: i32): i32 {
+  if (cp >= 0x30 && cp <= 0x39) return cp - 0x30;
+  if (cp >= 0x41 && cp <= 0x46) return cp - 0x41 + 10;
+  if (cp >= 0x61 && cp <= 0x66) return cp - 0x61 + 10;
+  return 0 - 1;
+}
+
+/** Whether `cp` is an ASCII letter (`A`-`Z` or `a`-`z`). */
+export function isAsciiAlpha(cp: i32): boolean {
+  return (cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A);
+}
+
+/** Whether `cp` is an ASCII letter or decimal digit (`A`-`Z`, `a`-`z`, `0`-`9`). */
+export function isAsciiAlphanumeric(cp: i32): boolean {
+  return isAsciiAlpha(cp) || isAsciiDigit(cp);
+}
+
+/**
+ * Whether `cp` is an ASCII punctuation character (`0x21..0x2F`, `0x3A..0x40`,
+ * `0x5B..0x60`, `0x7B..0x7E`).
+ */
+export function isAsciiPunctuation(cp: i32): boolean {
+  return (cp >= 0x21 && cp <= 0x2F)
+    || (cp >= 0x3A && cp <= 0x40)
+    || (cp >= 0x5B && cp <= 0x60)
+    || (cp >= 0x7B && cp <= 0x7E);
+}
+
+/**
+ * Whether `cp` is Unicode whitespace (ASCII whitespace or Unicode general
+ * category `Zs`).
+ */
+export function isUnicodeWhitespace(cp: i32): boolean {
+  if (cp <= 0) return true;
+  if (cp == 0x20 || cp == 0x09 || cp == 0x0A || cp == 0x0B || cp == 0x0C || cp == 0x0D) return true;
+  if (cp == 0xA0 || cp == 0x1680) return true;
+  if (cp >= 0x2000 && cp <= 0x200A) return true;
+  return cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
+
+/**
+ * Whether `cp` is a Unicode punctuation or symbol character (ASCII punctuation
+ * or Unicode general categories `P` and `S`).
+ */
+export function isUnicodePunctuation(cp: i32): boolean {
+  if (cp < 0) return false;
+  if (cp < 0x80) return isAsciiPunctuation(cp);
+  if (cp >= 0x00A1 && cp <= 0x00BF && cp != 0x00AA && cp != 0x00B5 && cp != 0x00BA) return true;
+  if (cp == 0x00D7 || cp == 0x00F7) return true;
+  if (cp >= 0x037E && cp <= 0x0387 && cp != 0x0386) return true;
+  if (cp >= 0x055A && cp <= 0x055F) return true;
+  if (cp == 0x0589 || cp == 0x058A) return true;
+  if (cp >= 0x05BE && cp <= 0x05C6 && cp != 0x05C1 && cp != 0x05C2 && cp != 0x05C4 && cp != 0x05C5) return true;
+  if (cp == 0x05F3 || cp == 0x05F4) return true;
+  if (cp >= 0x2010 && cp <= 0x2027) return true;
+  if (cp >= 0x2030 && cp <= 0x205E) return true;
+  if (cp >= 0x20A0 && cp <= 0x20CF) return true;
+  if (cp >= 0x2190 && cp <= 0x2BFF) return true;
+  if (cp >= 0x2E00 && cp <= 0x2E7F) return true;
+  if (cp >= 0x3001 && cp <= 0x3003) return true;
+  if (cp >= 0x3008 && cp <= 0x3020) return true;
+  if (cp == 0x3030 || cp == 0x303D || cp == 0x30A0 || cp == 0x30FB) return true;
+  if (cp == 0xFD3E || cp == 0xFD3F) return true;
+  if (cp >= 0xFE10 && cp <= 0xFE19) return true;
+  if (cp >= 0xFE30 && cp <= 0xFE6B) return true;
+  if (cp >= 0xFF01 && cp <= 0xFF0F) return true;
+  if (cp >= 0xFF1A && cp <= 0xFF20) return true;
+  if (cp >= 0xFF3B && cp <= 0xFF40) return true;
+  if (cp >= 0xFF5B && cp <= 0xFF65) return true;
+  return cp >= 0xFFE0 && cp <= 0xFFEE;
+}
