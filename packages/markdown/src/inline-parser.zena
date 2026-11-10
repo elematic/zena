@@ -4,7 +4,11 @@
  * plugin dispatch.
  */
 
-import { FixedArray, GrowableArray, StringBuilder } from 'zena:core';
+import {
+  FixedArray, GrowableArray, StringBuilder, StringReader,
+  isAsciiWhitespace, isAsciiPunctuation, isAsciiAlpha, isAsciiAlphanumeric,
+  isUnicodeWhitespace, isUnicodePunctuation
+} from 'zena:core';
 import { HashMap } from 'zena:collections';
 import {
   Inline, LinkDef, Span, Text, CodeSpan, Emphasis, Strong, Link, Image,
@@ -15,11 +19,8 @@ import {
   InlineParserRunner, MarkdownExtension
 } from './plugin.zena';
 import {
-  isSpaceOrTab, isWhitespaceByte, isAsciiPunctuation, isAsciiLetter,
-  isAsciiDigit, isAsciiAlphanumeric, codePointAtByte, codePointBeforeByte,
-  isUnicodeWhitespace, isUnicodePunctuation, skipSpacesAndOneLineEnd,
-  normalizeLinkLabel, tryDecodeEntity, scanLinkDestination, scanLinkTitle,
-  scanLinkLabel
+  skipSpacesAndOneLineEnd, normalizeLinkLabel, tryDecodeEntity,
+  scanLinkDestination, scanLinkTitle, scanLinkLabel
 } from './scanner.zena';
 
 /**
@@ -156,22 +157,22 @@ export final class InlineParser implements InlineParserRunner {
     this.#lastDelimiter = null;
     this.#lastBracket = null;
 
-    let len = text.length;
-    var i = 0;
-    while (i < len) {
-      let b = text.getByteAt(i);
+    let r = new StringReader(text);
+    while (!r.isAtEnd) {
+      let i = r.mark();
+      let b = r.peek();
 
       // 1. Check registered InlineContentParser plugins triggered by `b`
       var pluginMatched = false;
-      if (b < 128) {
+      if (b >= 0 && b < 128) {
         let bucket = this.#inlineParsersByByte[b];
         if (bucket != null) {
-          let prevByte = if (i > 0) text.getByteAt(i - 1) else -1;
+          let prevCp = r.peekBefore();
           for (let parser in bucket) {
-            let matchResult = parser.tryParse(text, baseOffset, i, prevByte, this);
+            let matchResult = parser.tryParse(text, baseOffset, i, prevCp, this);
             if (matchResult != null && matchResult.nextIndex > i) {
               this.#appendNode(matchResult.node);
-              i = matchResult.nextIndex;
+              r.reset(matchResult.nextIndex);
               pluginMatched = true;
               break;
             }
@@ -184,66 +185,61 @@ export final class InlineParser implements InlineParserRunner {
 
       // 2. Built-in CommonMark inline constructs and registered DelimiterProcessors
       if (b == 0x0A || b == 0x0D) { // \n or \r
-        i = this.#parseNewline(text, baseOffset, i);
+        this.#parseNewline(r, baseOffset);
       } else if (b == 0x5C) { // \
-        i = this.#parseBackslash(text, baseOffset, i);
+        this.#parseBackslash(r, baseOffset);
       } else if (b == 0x60) { // `
-        i = this.#parseBackticks(text, baseOffset, i);
-      } else if (b == 0x2A || b == 0x5F || this.#delimiterProcessors.has(b)) { // *, _, or custom delimiter
-        i = this.#parseDelimiterRun(text, baseOffset, i, b);
+        this.#parseBackticks(r, baseOffset);
+      } else if (b == 0x2A || b == 0x5F || (b < 128 && this.#delimiterProcessors.has(b))) { // *, _, or custom delimiter
+        this.#parseDelimiterRun(r, baseOffset, b);
       } else if (b == 0x5B) { // [
+        r.advance();
         let startOff = baseOffset + i;
-        let entry = this.#appendNode(new Text('[', new Span(startOff, startOff + 1)));
+        let entry = this.#appendNode(new Text('[', new Span(startOff, baseOffset + r.mark())));
         this.#addBracket(entry, i, startOff, false);
-        i += 1;
       } else if (b == 0x21) { // !
-        if (i + 1 < len && text.getByteAt(i + 1) == 0x5B) { // ![
+        r.advance();
+        let bracketPos = r.mark();
+        if (r.matchCodePoint(0x5B)) { // ![
           let startOff = baseOffset + i;
-          let entry = this.#appendNode(new Text('![', new Span(startOff, startOff + 2)));
-          this.#addBracket(entry, i + 1, startOff, true);
-          i += 2;
+          let entry = this.#appendNode(new Text('![', new Span(startOff, baseOffset + r.mark())));
+          this.#addBracket(entry, bracketPos, startOff, true);
         } else {
           let startOff = baseOffset + i;
-          this.#appendNode(new Text('!', new Span(startOff, startOff + 1)));
-          i += 1;
+          this.#appendNode(new Text('!', new Span(startOff, baseOffset + bracketPos)));
         }
       } else if (b == 0x5D) { // ]
-        i = this.#parseCloseBracket(text, baseOffset, i);
+        this.#parseCloseBracket(r, baseOffset);
       } else if (b == 0x3C) { // <
-        let nextIdx = this.#parseAutolinkOrHtml(text, baseOffset, i);
-        if (nextIdx > i) {
-          i = nextIdx;
-        } else {
+        if (!this.#parseAutolinkOrHtml(r, baseOffset)) {
+          r.advance();
           let startOff = baseOffset + i;
-          this.#appendNode(new Text('<', new Span(startOff, startOff + 1)));
-          i += 1;
+          this.#appendNode(new Text('<', new Span(startOff, baseOffset + r.mark())));
         }
       } else if (b == 0x26) { // &
         let sb = new StringBuilder(8);
-        let afterEntity = tryDecodeEntity(text, i, sb);
-        if (afterEntity > i) {
+        if (tryDecodeEntity(r, sb)) {
           this.#appendNode(
-            new Text(sb.toString(), new Span(baseOffset + i, baseOffset + afterEntity))
+            new Text(sb.toString(), new Span(baseOffset + i, baseOffset + r.mark()))
           );
-          i = afterEntity;
         } else {
+          r.advance();
           let startOff = baseOffset + i;
-          this.#appendNode(new Text('&', new Span(startOff, startOff + 1)));
-          i += 1;
+          this.#appendNode(new Text('&', new Span(startOff, baseOffset + r.mark())));
         }
       } else {
-        // Consume a run of plain text bytes until the next special byte
-        let start = i;
-        i += 1;
-        while (i < len) {
-          let nb = text.getByteAt(i);
-          if (nb < 128 && this.#specialBytes[nb]) {
+        // Consume a run of plain text code points until the next special ASCII character
+        r.advance();
+        while (!r.isAtEnd) {
+          let nb = r.peek();
+          if (nb >= 0 && nb < 128 && this.#specialBytes[nb]) {
             break;
           }
-          i += 1;
+          r.advance();
         }
+        let end = r.mark();
         this.#appendNode(
-          new Text(text.sliceBytes(start, i), new Span(baseOffset + start, baseOffset + i))
+          new Text(r.sliceRange(i, end), new Span(baseOffset + i, baseOffset + end))
         );
       }
     }
@@ -295,33 +291,37 @@ export final class InlineParser implements InlineParserRunner {
     }
   }
 
-  #parseNewline(text: String, baseOffset: i32, index: i32): i32 {
-    var i = index;
-    if (text.getByteAt(i) == 0x0D) {
-      i += 1;
-      if (i < text.length && text.getByteAt(i) == 0x0A) {
-        i += 1;
-      }
+  #parseNewline(r: StringReader, baseOffset: i32): void {
+    let index = r.mark();
+    if (r.matchCodePoint(0x0D)) {
+      r.matchCodePoint(0x0A);
     } else {
-      i += 1;
+      r.advance();
     }
+    let afterNewline = r.mark();
 
     // Check trailing spaces in the previous Text node
     var trailingSpaces = 0;
     let last = this.#lastEntry;
     if (last != null) {
       if (let Text {literal} = last.node) {
-        var end = literal.length;
-        while (end > 0 && literal.getByteAt(end - 1) == 0x20) {
-          trailingSpaces += 1;
-          end -= 1;
+        let lr = new StringReader(literal);
+        var end = lr.remaining;
+        while (end > 0) {
+          lr.reset(end);
+          if (lr.peekBefore() == 0x20) {
+            trailingSpaces += 1;
+            end -= 1;
+          } else {
+            break;
+          }
         }
         if (trailingSpaces > 0) {
           if (end == 0) {
             this.#unlinkEntry(last);
           } else {
             last.node = new Text(
-              literal.sliceBytes(0, end),
+              lr.sliceRange(0, end),
               new Span(last.node.span.start, last.node.span.start + end)
             );
           }
@@ -329,7 +329,7 @@ export final class InlineParser implements InlineParserRunner {
       }
     }
 
-    let span = new Span(baseOffset + index, baseOffset + i);
+    let span = new Span(baseOffset + index, baseOffset + afterNewline);
     if (trailingSpaces >= 2) {
       this.#appendNode(new HardBreak(span));
     } else {
@@ -337,118 +337,116 @@ export final class InlineParser implements InlineParserRunner {
     }
 
     // Skip leading spaces on the next line
-    while (i < text.length && text.getByteAt(i) == 0x20) {
-      i += 1;
-    }
-    return i;
+    while (r.matchCodePoint(0x20)) {}
   }
 
-  #parseBackslash(text: String, baseOffset: i32, index: i32): i32 {
-    let len = text.length;
-    if (index + 1 < len) {
-      let next = text.getByteAt(index + 1);
+  #parseBackslash(r: StringReader, baseOffset: i32): void {
+    let index = r.mark();
+    r.advance(); // consume '\'
+    if (!r.isAtEnd) {
+      let next = r.peek();
       if (next == 0x0A || next == 0x0D) {
-        var i = index + 2;
-        if (next == 0x0D && i < len && text.getByteAt(i) == 0x0A) {
-          i += 1;
+        if (r.matchCodePoint(0x0D)) {
+          r.matchCodePoint(0x0A);
+        } else {
+          r.advance();
         }
-        this.#appendNode(new HardBreak(new Span(baseOffset + index, baseOffset + i)));
-        while (i < len && text.getByteAt(i) == 0x20) {
-          i += 1;
-        }
-        return i;
+        this.#appendNode(new HardBreak(new Span(baseOffset + index, baseOffset + r.mark())));
+        while (r.matchCodePoint(0x20)) {}
+        return;
       }
       if (isAsciiPunctuation(next)) {
+        let charStart = r.mark();
+        r.advance();
+        let charEnd = r.mark();
         this.#appendNode(
           new Text(
-            text.sliceBytes(index + 1, index + 2),
-            new Span(baseOffset + index, baseOffset + index + 2)
+            r.sliceRange(charStart, charEnd),
+            new Span(baseOffset + index, baseOffset + charEnd)
           )
         );
-        return index + 2;
+        return;
       }
     }
-    this.#appendNode(new Text('\\', new Span(baseOffset + index, baseOffset + index + 1)));
-    return index + 1;
+    this.#appendNode(new Text('\\', new Span(baseOffset + index, baseOffset + r.mark())));
   }
 
-  #parseBackticks(text: String, baseOffset: i32, index: i32): i32 {
-    let len = text.length;
-    var openEnd = index;
-    while (openEnd < len && text.getByteAt(openEnd) == 0x60) {
-      openEnd += 1;
+  #parseBackticks(r: StringReader, baseOffset: i32): void {
+    let index = r.mark();
+    var tickCount = 0;
+    while (r.matchCodePoint(0x60)) {
+      tickCount += 1;
     }
-    let tickCount = openEnd - index;
+    let openEnd = r.mark();
 
-    var i = openEnd;
-    while (i < len) {
-      if (text.getByteAt(i) == 0x60) {
-        let closeStart = i;
-        while (i < len && text.getByteAt(i) == 0x60) {
-          i += 1;
+    while (!r.isAtEnd) {
+      if (r.peek() == 0x60) {
+        let closeStart = r.mark();
+        var closeCount = 0;
+        while (r.matchCodePoint(0x60)) {
+          closeCount += 1;
         }
-        if (i - closeStart == tickCount) {
+        if (closeCount == tickCount) {
+          let closeEnd = r.mark();
           // Normalize code span interior: convert line endings to spaces
-          let raw = text.sliceBytes(openEnd, closeStart);
-          let sb = new StringBuilder(raw.length);
-          var r = 0;
+          let raw = r.sliceRange(openEnd, closeStart);
+          let rawReader = new StringReader(raw);
+          let sb = new StringBuilder();
           var hasNonSpace = false;
-          while (r < raw.length) {
-            let rb = raw.getByteAt(r);
-            if (rb == 0x0D) {
+          while (!rawReader.isAtEnd) {
+            let cp = rawReader.advance();
+            if (cp == 0x0D) {
               sb.appendByte(0x20);
-              if (r + 1 < raw.length && raw.getByteAt(r + 1) == 0x0A) {
-                r += 1;
-              }
-            } else if (rb == 0x0A) {
+              rawReader.matchCodePoint(0x0A);
+            } else if (cp == 0x0A) {
               sb.appendByte(0x20);
             } else {
-              if (rb != 0x20) {
+              if (cp != 0x20) {
                 hasNonSpace = true;
               }
-              sb.appendByte(rb);
+              sb.appendCodePoint(cp);
             }
-            r += 1;
           }
           var normalized = sb.toString();
-          if (
-            hasNonSpace &&
-            normalized.length >= 2 &&
-            normalized.getByteAt(0) == 0x20 &&
-            normalized.getByteAt(normalized.length - 1) == 0x20
-          ) {
-            normalized = normalized.sliceBytes(1, normalized.length - 1);
+          if (hasNonSpace && normalized.startsWith(' ') && normalized.endsWith(' ')) {
+            let nr = new StringReader(normalized);
+            let normEnd = nr.remaining;
+            if (normEnd >= 2) {
+              normalized = nr.sliceRange(1, normEnd - 1);
+            }
           }
           this.#appendNode(
-            new CodeSpan(normalized, new Span(baseOffset + index, baseOffset + i))
+            new CodeSpan(normalized, new Span(baseOffset + index, baseOffset + closeEnd))
           );
-          return i;
+          return;
         }
       } else {
-        i += 1;
+        r.advance();
       }
     }
 
     // Unmatched backtick run becomes literal text
+    r.reset(openEnd);
     this.#appendNode(
       new Text(
-        text.sliceBytes(index, openEnd),
+        r.sliceRange(index, openEnd),
         new Span(baseOffset + index, baseOffset + openEnd)
       )
     );
-    return openEnd;
   }
 
-  #parseDelimiterRun(text: String, baseOffset: i32, index: i32, delimByte: i32): i32 {
-    let len = text.length;
-    var end = index;
-    while (end < len && text.getByteAt(end) == delimByte) {
-      end += 1;
-    }
-    let count = end - index;
+  #parseDelimiterRun(r: StringReader, baseOffset: i32, delimByte: i32): void {
+    let index = r.mark();
+    let prevCp = r.peekBefore();
+    let beforeCp = if (prevCp < 0) 0x20 else prevCp;
 
-    let beforeCp = codePointBeforeByte(text, index);
-    let afterCp = codePointAtByte(text, end);
+    var count = 0;
+    while (r.matchCodePoint(delimByte)) {
+      count += 1;
+    }
+    let end = r.mark();
+    let nextCp = r.peek();
+    let afterCp = if (nextCp < 0) 0x20 else nextCp;
 
     let beforeIsWhitespace = isUnicodeWhitespace(beforeCp);
     let beforeIsPunctuation = isUnicodePunctuation(beforeCp);
@@ -472,7 +470,7 @@ export final class InlineParser implements InlineParserRunner {
 
     let startOff = baseOffset + index;
     let entry = this.#appendNode(
-      new Text(text.sliceBytes(index, end), new Span(startOff, baseOffset + end))
+      new Text(r.sliceRange(index, end), new Span(startOff, baseOffset + end))
     );
 
     if (canOpen || canClose) {
@@ -492,8 +490,6 @@ export final class InlineParser implements InlineParserRunner {
       }
       this.#lastDelimiter = delim;
     }
-
-    return end;
   }
 
   #addBracket(
@@ -523,52 +519,59 @@ export final class InlineParser implements InlineParserRunner {
     }
   }
 
-  #parseCloseBracket(text: String, baseOffset: i32, index: i32): i32 {
+  #parseCloseBracket(r: StringReader, baseOffset: i32): void {
+    let index = r.mark();
+    r.advance(); // consume ']'
+    let afterClose = r.mark();
+
     let opener = this.#lastBracket;
     if (opener == null) {
-      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + index + 1)));
-      return index + 1;
+      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + afterClose)));
+      return;
     }
     if (!opener.active) {
       this.#removeLastBracket();
-      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + index + 1)));
-      return index + 1;
+      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + afterClose)));
+      return;
     }
 
-    let len = text.length;
-    let afterClose = index + 1;
     var dest = '';
     var title = '';
     var nextPos = afterClose;
     var matched = false;
 
     // 1. Inline link/image: `[text](dest "title")`
-    if (afterClose < len && text.getByteAt(afterClose) == 0x28) { // (
-      var p = skipSpacesAndOneLineEnd(text, afterClose + 1, len);
-      if (p < len && text.getByteAt(p) == 0x29) { // empty `()`
+    if (r.matchCodePoint(0x28)) { // '('
+      skipSpacesAndOneLineEnd(r);
+      if (r.matchCodePoint(0x29)) { // empty `()`
         matched = true;
-        nextPos = p + 1;
+        nextPos = r.mark();
       } else {
-        let (destOk, parsedDest, afterDest) = scanLinkDestination(text, p, len);
+        let (destOk, parsedDest) = scanLinkDestination(r);
         if (destOk) {
-          p = skipSpacesAndOneLineEnd(text, afterDest, len);
-          if (p < len && text.getByteAt(p) == 0x29) {
+          let afterDest = r.mark();
+          skipSpacesAndOneLineEnd(r);
+          let p = r.mark();
+          if (r.matchCodePoint(0x29)) {
             dest = parsedDest;
             matched = true;
-            nextPos = p + 1;
+            nextPos = r.mark();
           } else if (p > afterDest) {
-            let (titleOk, parsedTitle, afterTitle) = scanLinkTitle(text, p, len);
+            let (titleOk, parsedTitle) = scanLinkTitle(r);
             if (titleOk) {
-              p = skipSpacesAndOneLineEnd(text, afterTitle, len);
-              if (p < len && text.getByteAt(p) == 0x29) {
+              skipSpacesAndOneLineEnd(r);
+              if (r.matchCodePoint(0x29)) {
                 dest = parsedDest;
                 title = parsedTitle;
                 matched = true;
-                nextPos = p + 1;
+                nextPos = r.mark();
               }
             }
           }
         }
+      }
+      if (!matched) {
+        r.reset(afterClose);
       }
     }
 
@@ -576,28 +579,28 @@ export final class InlineParser implements InlineParserRunner {
     if (!matched) {
       var refLabel: String | null = null;
       var refEnd = afterClose;
-      if (afterClose < len && text.getByteAt(afterClose) == 0x5B) { // [
-        if (afterClose + 1 < len && text.getByteAt(afterClose + 1) == 0x5D) {
+      if (r.peek() == 0x5B) { // '['
+        if (r.matchString('[]')) {
           // Collapsed reference `[text][]`
           if (!opener.bracketAfter && index - (opener.index + 1) <= 999) {
-            refLabel = text.sliceBytes(opener.index + 1, index);
-            refEnd = afterClose + 2;
+            refLabel = r.sliceRange(opener.index + 1, index);
+            refEnd = r.mark();
           }
         } else {
-          let (labelOk, rawLabel, afterLabel) = scanLinkLabel(text, afterClose, len);
+          let (labelOk, rawLabel) = scanLinkLabel(r);
           if (labelOk) {
             refLabel = rawLabel;
-            refEnd = afterLabel;
+            refEnd = r.mark();
           }
         }
       } else if (!opener.bracketAfter && index - (opener.index + 1) <= 999) {
         // Shortcut reference `[text]`
-        refLabel = text.sliceBytes(opener.index + 1, index);
+        refLabel = r.sliceRange(opener.index + 1, index);
       }
 
       if (refLabel != null) {
         let normalized = normalizeLinkLabel(refLabel);
-        if (normalized.length > 0 && this.links.has(normalized)) {
+        if (!normalized.isEmpty && this.links.has(normalized)) {
           let def = this.links[normalized];
           dest = def.destination;
           title = def.title;
@@ -608,10 +611,13 @@ export final class InlineParser implements InlineParserRunner {
     }
 
     if (!matched) {
+      r.reset(afterClose);
       this.#removeLastBracket();
-      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + index + 1)));
-      return afterClose;
+      this.#appendNode(new Text(']', new Span(baseOffset + index, baseOffset + afterClose)));
+      return;
     }
+
+    r.reset(nextPos);
 
     // Resolve delimiters strictly inside the bracketed text
     this.#processDelimiters(opener.previousDelimiter);
@@ -642,75 +648,82 @@ export final class InlineParser implements InlineParserRunner {
     }
 
     this.#removeLastBracket();
-    return nextPos;
   }
 
-  #parseAutolinkOrHtml(text: String, baseOffset: i32, index: i32): i32 {
-    let len = text.length;
-    if (index + 2 >= len) {
-      return -1;
+  #parseAutolinkOrHtml(r: StringReader, baseOffset: i32): boolean {
+    let index = r.mark();
+    if (!r.matchCodePoint(0x3C)) { // '<'
+      return false;
+    }
+    let contentStart = r.mark();
+    if (r.isAtEnd) {
+      r.reset(index);
+      return false;
     }
 
     // 1. Check for `<...>`: URI autolink or email autolink
-    var closeAngle = index + 1;
     var hasSpaceOrAngle = false;
     var colonPos = -1;
     var atPos = -1;
-    while (closeAngle < len && text.getByteAt(closeAngle) != 0x3E) {
-      let b = text.getByteAt(closeAngle);
-      if (b <= 0x20 || b == 0x3C) {
+    while (!r.isAtEnd && r.peek() != 0x3E) {
+      let pos = r.mark();
+      let cp = r.advance();
+      if (cp <= 0x20 || cp == 0x3C) {
         hasSpaceOrAngle = true;
         break;
       }
-      if (b == 0x3A && colonPos < 0) {
-        colonPos = closeAngle;
+      if (cp == 0x3A && colonPos < 0) {
+        colonPos = pos;
       }
-      if (b == 0x40 && atPos < 0) {
-        atPos = closeAngle;
+      if (cp == 0x40 && atPos < 0) {
+        atPos = pos;
       }
-      closeAngle += 1;
     }
 
-    if (!hasSpaceOrAngle && closeAngle < len && text.getByteAt(closeAngle) == 0x3E) {
+    if (!hasSpaceOrAngle && r.peek() == 0x3E) {
+      let closeAngle = r.mark();
+      r.advance(); // consume '>'
+      let afterAngle = r.mark();
+
       // Check URI autolink: scheme of 2..32 chars starting with letter followed by ':'
-      if (colonPos >= index + 3 && colonPos - (index + 1) <= 32) {
-        var validScheme = isAsciiLetter(text.getByteAt(index + 1));
-        var s = index + 2;
-        while (validScheme && s < colonPos) {
-          let sb = text.getByteAt(s);
+      if (colonPos >= contentStart + 2 && colonPos - contentStart <= 32) {
+        r.reset(contentStart);
+        var validScheme = isAsciiAlpha(r.advance());
+        while (validScheme && r.mark() < colonPos) {
+          let sb = r.advance();
           validScheme = isAsciiAlphanumeric(sb) || sb == 0x2B || sb == 0x2D || sb == 0x2E;
-          s += 1;
         }
         if (validScheme) {
-          let uri = text.sliceBytes(index + 1, closeAngle);
+          r.reset(afterAngle);
+          let uri = r.sliceRange(contentStart, closeAngle);
           this.#appendNode(
-            new Autolink(uri, uri, false, new Span(baseOffset + index, baseOffset + closeAngle + 1))
+            new Autolink(uri, uri, false, new Span(baseOffset + index, baseOffset + afterAngle))
           );
-          return closeAngle + 1;
+          return true;
         }
       }
 
       // Check email autolink: local@domain
-      if (atPos > index + 1 && atPos + 1 < closeAngle && colonPos < 0) {
+      if (atPos > contentStart && atPos + 1 < closeAngle && colonPos < 0) {
+        r.reset(contentStart);
         var validEmail = true;
-        var p = index + 1;
-        while (p < atPos) {
-          let eb = text.getByteAt(p);
+        while (r.mark() < atPos) {
+          let eb = r.advance();
           let ok = isAsciiAlphanumeric(eb) ||
               eb == 0x2E || eb == 0x2D || eb == 0x5F || eb == 0x2B;
           if (!ok) {
             validEmail = false;
             break;
           }
-          p += 1;
         }
         var hasDot = false;
         var labelLen = 0;
-        p = atPos + 1;
-        while (validEmail && p < closeAngle) {
-          let db = text.getByteAt(p);
+        r.reset(atPos + 1);
+        while (validEmail && r.mark() < closeAngle) {
+          let prev = r.peekBefore();
+          let db = r.advance();
           if (db == 0x2E) {
-            if (labelLen == 0 || text.getByteAt(p - 1) == 0x2D) {
+            if (labelLen == 0 || prev == 0x2D) {
               validEmail = false;
             }
             hasDot = true;
@@ -720,36 +733,39 @@ export final class InlineParser implements InlineParserRunner {
           } else {
             validEmail = false;
           }
-          p += 1;
         }
-        if (validEmail && hasDot && labelLen > 0 && text.getByteAt(closeAngle - 1) != 0x2D) {
-          let email = text.sliceBytes(index + 1, closeAngle);
+        r.reset(closeAngle);
+        if (validEmail && hasDot && labelLen > 0 && r.peekBefore() != 0x2D) {
+          r.reset(afterAngle);
+          let email = r.sliceRange(contentStart, closeAngle);
           this.#appendNode(
             new Autolink(
               `mailto:${email}`,
               email,
               true,
-              new Span(baseOffset + index, baseOffset + closeAngle + 1)
+              new Span(baseOffset + index, baseOffset + afterAngle)
             )
           );
-          return closeAngle + 1;
+          return true;
         }
       }
     }
 
     // 2. Check for inline HTML tag, comment, processing instruction, declaration, or CDATA
-    let htmlEnd = scanInlineHtmlTag(text, index, len);
-    if (htmlEnd > index) {
+    r.reset(index);
+    if (scanInlineHtmlTag(r)) {
+      let htmlEnd = r.mark();
       this.#appendNode(
         new HtmlInline(
-          text.sliceBytes(index, htmlEnd),
+          r.sliceRange(index, htmlEnd),
           new Span(baseOffset + index, baseOffset + htmlEnd)
         )
       );
-      return htmlEnd;
+      return true;
     }
 
-    return -1;
+    r.reset(index);
+    return false;
   }
 
   #removeDelimiter(delim: Delimiter): void {
@@ -907,9 +923,9 @@ export final class InlineParser implements InlineParserRunner {
       if (o.length == 0) {
         this.#unlinkEntry(o.entry);
         this.#removeDelimiter(o);
-      } else if (let Text {literal} = o.entry.node) {
+      } else {
         o.entry.node = new Text(
-          literal.sliceBytes(0, o.length),
+          repeatAsciiChar(o.delimiterByte, o.length),
           new Span(o.startOffset, o.startOffset + o.length)
         );
       }
@@ -919,9 +935,9 @@ export final class InlineParser implements InlineParserRunner {
         this.#unlinkEntry(c.entry);
         this.#removeDelimiter(c);
         closer = nextCloser;
-      } else if (let Text {literal} = c.entry.node) {
+      } else {
         c.entry.node = new Text(
-          literal.sliceBytes(0, c.length),
+          repeatAsciiChar(c.delimiterByte, c.length),
           new Span(c.startOffset, c.startOffset + c.length)
         );
       }
@@ -944,9 +960,9 @@ export final class InlineParser implements InlineParserRunner {
       let node = c.node;
       var nextEntry = c.next;
       if (let Text {literal} = node) {
-        if (literal.length > 0) {
+        if (!literal.isEmpty) {
           if (nextEntry != null && nextEntry.node is Text) {
-            let sb = new StringBuilder(literal.length + 16);
+            let sb = new StringBuilder();
             sb.append(literal);
             let start = node.span.start;
             var end = node.span.end;
@@ -974,190 +990,175 @@ export final class InlineParser implements InlineParserRunner {
   }
 }
 
+function repeatAsciiChar(ch: i32, count: i32) {
+  let sb = new StringBuilder(count);
+  var i = 0;
+  while (i < count) {
+    sb.appendByte(ch);
+    i += 1;
+  }
+  return sb.toString();
+}
+
 /**
  * Scans a CommonMark inline HTML tag, comment, processing instruction,
- * declaration, or CDATA section starting with `<` at `index`.
- * Returns the byte index past the closing `>`, or `-1` if not valid inline HTML.
+ * declaration, or CDATA section starting with `<` at the current position of
+ * `r`. Advances `r` past the closing `>` and returns `true` on match; resets
+ * `r` and returns `false` otherwise.
  */
-function scanInlineHtmlTag(s: String, index: i32, len: i32): i32 {
-  if (index + 2 >= len || s.getByteAt(index) != 0x3C) {
-    return -1;
+function scanInlineHtmlTag(r: StringReader): boolean {
+  let saved = r.mark();
+  if (!r.matchCodePoint(0x3C)) { // '<'
+    return false;
   }
-  let second = s.getByteAt(index + 1);
+  let second = r.peek();
 
   // 1. Comment `<!-- ... -->`, declaration `<!A...>`, or CDATA `<![CDATA[...]]>`
-  if (second == 0x21) { // !
-    if (
-      index + 4 <= len &&
-      s.getByteAt(index + 2) == 0x2D &&
-      s.getByteAt(index + 3) == 0x2D
-    ) {
-      var i = index + 4;
-      if (i < len && s.getByteAt(i) == 0x3E) {
-        return i + 1;
+  if (second == 0x21) { // '!'
+    r.advance();
+    if (r.matchString('--')) {
+      if (r.matchCodePoint(0x3E) || r.matchString('->')) {
+        return true;
       }
-      if (i + 1 < len && s.getByteAt(i) == 0x2D && s.getByteAt(i + 1) == 0x3E) {
-        return i + 2;
-      }
-      while (i + 2 < len) {
-        if (
-          s.getByteAt(i) == 0x2D &&
-          s.getByteAt(i + 1) == 0x2D &&
-          s.getByteAt(i + 2) == 0x3E
-        ) {
-          return i + 3;
+      while (!r.isAtEnd) {
+        if (r.matchString('-->')) {
+          return true;
         }
-        i += 1;
+        r.advance();
       }
-      return -1;
+      r.reset(saved);
+      return false;
     }
-    if (index + 9 <= len && s.sliceBytes(index + 2, index + 9) == '[CDATA[') {
-      var i = index + 9;
-      while (i + 2 < len) {
-        if (
-          s.getByteAt(i) == 0x5D &&
-          s.getByteAt(i + 1) == 0x5D &&
-          s.getByteAt(i + 2) == 0x3E
-        ) {
-          return i + 3;
+    if (r.matchString('[CDATA[')) {
+      while (!r.isAtEnd) {
+        if (r.matchString(']]>')) {
+          return true;
         }
-        i += 1;
+        r.advance();
       }
-      return -1;
+      r.reset(saved);
+      return false;
     }
-    if (index + 3 < len && isAsciiLetter(s.getByteAt(index + 2))) {
-      var i = index + 3;
-      while (i < len && s.getByteAt(i) != 0x3E) {
-        i += 1;
+    if (isAsciiAlpha(r.peek())) {
+      r.advance();
+      while (!r.isAtEnd && r.peek() != 0x3E) {
+        r.advance();
       }
-      return if (i < len) i + 1 else -1;
+      if (r.matchCodePoint(0x3E)) {
+        return true;
+      }
+      r.reset(saved);
+      return false;
     }
-    return -1;
+    r.reset(saved);
+    return false;
   }
 
   // 2. Processing instruction `<? ... ?>`
-  if (second == 0x3F) { // ?
-    var i = index + 2;
-    while (i + 1 < len) {
-      if (s.getByteAt(i) == 0x3F && s.getByteAt(i + 1) == 0x3E) {
-        return i + 2;
+  if (second == 0x3F) { // '?'
+    r.advance();
+    while (!r.isAtEnd) {
+      if (r.matchString('?>')) {
+        return true;
       }
-      i += 1;
+      r.advance();
     }
-    return -1;
+    r.reset(saved);
+    return false;
   }
 
   // 3. Closing tag `</tagname\s*>`
-  if (second == 0x2F) { // /
-    if (index + 3 >= len || !isAsciiLetter(s.getByteAt(index + 2))) {
-      return -1;
+  if (second == 0x2F) { // '/'
+    r.advance();
+    if (!isAsciiAlpha(r.peek())) {
+      r.reset(saved);
+      return false;
     }
-    var i = index + 3;
-    while (i < len && (isAsciiAlphanumeric(s.getByteAt(i)) || s.getByteAt(i) == 0x2D)) {
-      i += 1;
+    r.advance();
+    r.skipWhile((cp) => isAsciiAlphanumeric(cp) || cp == 0x2D);
+    r.skipWhile((cp) => isAsciiWhitespace(cp));
+    if (r.matchCodePoint(0x3E)) {
+      return true;
     }
-    while (i < len && isWhitespaceByte(s.getByteAt(i))) {
-      i += 1;
-    }
-    return if (i < len && s.getByteAt(i) == 0x3E) i + 1 else -1;
+    r.reset(saved);
+    return false;
   }
 
   // 4. Opening tag `<tagname attr="val" ... /?>`
-  if (!isAsciiLetter(second)) {
-    return -1;
+  if (!isAsciiAlpha(second)) {
+    r.reset(saved);
+    return false;
   }
-  var i = index + 2;
-  while (i < len && (isAsciiAlphanumeric(s.getByteAt(i)) || s.getByteAt(i) == 0x2D)) {
-    i += 1;
-  }
+  r.advance();
+  r.skipWhile((cp) => isAsciiAlphanumeric(cp) || cp == 0x2D);
 
-  while (i < len) {
-    let wsStart = i;
-    while (i < len && isWhitespaceByte(s.getByteAt(i))) {
-      i += 1;
+  while (!r.isAtEnd) {
+    let wsStart = r.mark();
+    r.skipWhile((cp) => isAsciiWhitespace(cp));
+    if (r.isAtEnd) {
+      r.reset(saved);
+      return false;
     }
-    if (i >= len) {
-      return -1;
+    if (r.matchCodePoint(0x3E)) { // '>'
+      return true;
     }
-    let b = s.getByteAt(i);
-    if (b == 0x3E) { // >
-      return i + 1;
-    }
-    if (b == 0x2F && i + 1 < len && s.getByteAt(i + 1) == 0x3E) { // />
-      return i + 2;
+    if (r.matchString('/>')) {
+      return true;
     }
     // Attribute must be preceded by whitespace
-    if (i == wsStart) {
-      return -1;
+    if (r.mark() == wsStart) {
+      r.reset(saved);
+      return false;
     }
     // Attribute name: `[a-zA-Z_:][a-zA-Z0-9_.:-]*`
-    let attrStart = s.getByteAt(i);
-    if (!isAsciiLetter(attrStart) && attrStart != 0x5F && attrStart != 0x3A) {
-      return -1;
+    let attrStart = r.peek();
+    if (!isAsciiAlpha(attrStart) && attrStart != 0x5F && attrStart != 0x3A) {
+      r.reset(saved);
+      return false;
     }
-    i += 1;
-    while (i < len) {
-      let ab = s.getByteAt(i);
-      if (
-        isAsciiAlphanumeric(ab) ||
-        ab == 0x5F ||
-        ab == 0x2E ||
-        ab == 0x3A ||
-        ab == 0x2D
-      ) {
-        i += 1;
-      } else {
-        break;
-      }
-    }
+    r.advance();
+    r.skipWhile((ab) =>
+      isAsciiAlphanumeric(ab) || ab == 0x5F || ab == 0x2E || ab == 0x3A || ab == 0x2D
+    );
     // Optional `= value`
-    let afterAttrName = i;
-    while (i < len && isWhitespaceByte(s.getByteAt(i))) {
-      i += 1;
-    }
-    if (i < len && s.getByteAt(i) == 0x3D) { // =
-      i += 1;
-      while (i < len && isWhitespaceByte(s.getByteAt(i))) {
-        i += 1;
+    let afterAttrName = r.mark();
+    r.skipWhile((cp) => isAsciiWhitespace(cp));
+    if (r.matchCodePoint(0x3D)) { // '='
+      r.skipWhile((cp) => isAsciiWhitespace(cp));
+      if (r.isAtEnd) {
+        r.reset(saved);
+        return false;
       }
-      if (i >= len) {
-        return -1;
-      }
-      let vb = s.getByteAt(i);
+      let vb = r.peek();
       if (vb == 0x22 || vb == 0x27) { // "..." or '...'
-        let quote = vb;
-        i += 1;
-        while (i < len && s.getByteAt(i) != quote) {
-          i += 1;
+        let quote = r.advance();
+        while (!r.isAtEnd && r.peek() != quote) {
+          r.advance();
         }
-        if (i >= len) {
-          return -1;
+        if (!r.matchCodePoint(quote)) {
+          r.reset(saved);
+          return false;
         }
-        i += 1;
       } else {
-        let valStart = i;
-        while (i < len) {
-          let ub = s.getByteAt(i);
-          if (
-            isWhitespaceByte(ub) ||
-            ub == 0x22 ||
-            ub == 0x27 ||
-            ub == 0x3D ||
-            ub == 0x3C ||
-            ub == 0x3E ||
-            ub == 0x60
-          ) {
-            break;
-          }
-          i += 1;
-        }
-        if (i == valStart) {
-          return -1;
+        let valStart = r.mark();
+        r.skipWhile((ub) =>
+          !isAsciiWhitespace(ub) &&
+          ub != 0x22 &&
+          ub != 0x27 &&
+          ub != 0x3D &&
+          ub != 0x3C &&
+          ub != 0x3E &&
+          ub != 0x60
+        );
+        if (r.mark() == valStart) {
+          r.reset(saved);
+          return false;
         }
       }
     } else {
-      i = afterAttrName;
+      r.reset(afterAttrName);
     }
   }
-  return -1;
+  r.reset(saved);
+  return false;
 }

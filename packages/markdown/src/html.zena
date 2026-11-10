@@ -1,9 +1,12 @@
 /**
- * HTML renderer for `Document` ASTs with `safe` sanitization mode and
- * `NodeRenderer` extension dispatch.
+ * HTML renderer for `Document` ASTs with `safe` sanitization mode, optional
+ * indentation tracking, and `NodeRenderer` extension dispatch.
  */
 
-import { GrowableArray, Some, StringBuilder } from 'zena:core';
+import {
+  GrowableArray, Some, StringBuilder, StringReader, isAsciiWhitespace
+} from 'zena:core';
+import { URL } from 'zena:url';
 import {
   Block, CustomBlock, Document, Inline, CustomInline, Paragraph, Heading,
   BlockQuote, ListBlock, ListItem, FencedCodeBlock, IndentedCodeBlock,
@@ -11,9 +14,6 @@ import {
   Autolink, HtmlInline, SoftBreak, HardBreak, appendInlinesPlainText
 } from './ast.zena';
 import { HtmlRenderContext, MarkdownExtension, NodeRenderer } from './plugin.zena';
-import {
-  isWhitespaceByte, isAsciiLetter, isAsciiAlphanumeric, toLowerAsciiByte
-} from './scanner.zena';
 
 /**
  * Options controlling HTML rendering and sanitization.
@@ -32,6 +32,11 @@ export type HtmlRenderOptions = {
   escapeRawHtml?: boolean,
   /** String emitted for `SoftBreak` nodes (default `"\n"`). */
   softBreak?: String,
+  /**
+   * Number of spaces per indentation level for nested block containers
+   * (default `0` for compact CommonMark output).
+   */
+  indent?: i32,
   /** Extensions supplying `NodeRenderer` implementations. */
   extensions?: GrowableArray<MarkdownExtension>
 };
@@ -52,77 +57,46 @@ export function renderHtml(
  *
  * Allows relative references (`/`, `./`, `../`, `#`, `?`, or paths with no `:`
  * before the first `/`, `?`, or `#`). When a scheme is present, allows `http:`
- * and `https:` for both links and images, and `mailto:`, `irc:`, `ircs:`, and
- * `xmpp:` for links. Rejects `javascript:`, `vbscript:`, `data:`, and other
- * schemes.
+ * and `https:` for both links and images, safe `data:image/*` rasters, and
+ * `mailto:`, `irc:`, `ircs:`, and `xmpp:` for links. Rejects `javascript:`,
+ * `vbscript:`, `data:text/html`, and other schemes.
  */
 export function isSafeUrl(url: String, isImage: boolean = false): boolean {
-  // Strip ASCII control characters and whitespace when inspecting the scheme
-  let len = url.length;
-  var start = 0;
-  while (start < len && url.getByteAt(start) <= 0x20) {
-    start += 1;
-  }
-  if (start >= len) {
-    return true;
-  }
-  let first = url.getByteAt(start);
-  if (first == 0x23 || first == 0x2F || first == 0x3F) { // #, /, ?
-    // Reject protocol-relative `//` only if desired? No, CommonMark safe mode
-    // allows `/path`; check that there is no scheme colon.
-    return true;
-  }
-
-  let schemeSb = new StringBuilder(16);
-  var hasColon = false;
-  var i = start;
-  while (i < len) {
-    let b = url.getByteAt(i);
-    if (b <= 0x20 || b == 0x7F) {
-      i += 1;
-      continue;
-    }
-    if (b == 0x2F || b == 0x3F || b == 0x23) { // /, ?, # before any ':'
-      return true;
-    }
-    if (b == 0x3A) { // :
-      hasColon = true;
-      break;
-    }
-    schemeSb.appendByte(toLowerAsciiByte(b));
-    i += 1;
-  }
-
-  if (!hasColon) {
-    return true;
-  }
-
-  let scheme = schemeSb.toString();
-  if (scheme == 'http' || scheme == 'https') {
-    return true;
-  }
-  if (scheme == 'data') {
-    let rest = url.sliceBytes(i + 1, len);
-    return startsWithCaseInsensitiveAscii(rest, 'image/png;') ||
-        startsWithCaseInsensitiveAscii(rest, 'image/gif;') ||
-        startsWithCaseInsensitiveAscii(rest, 'image/jpeg;') ||
-        startsWithCaseInsensitiveAscii(rest, 'image/webp;');
-  }
-  return !isImage && (scheme == 'mailto' || scheme == 'irc' || scheme == 'ircs' || scheme == 'xmpp');
-}
-
-function startsWithCaseInsensitiveAscii(s: String, prefix: String): boolean {
-  if (s.length < prefix.length) {
+  let parsed = URL.parse(url, 'relative://base/');
+  if (parsed == null) {
     return false;
   }
-  var i = 0;
-  while (i < prefix.length) {
-    if (toLowerAsciiByte(s.getByteAt(i)) != prefix.getByteAt(i)) {
-      return false;
+  let proto = parsed.protocol;
+  if (proto == 'relative:') {
+    // Ensure no obfuscated scheme colon precedes '/', '?', or '#'
+    let r = new StringReader(url);
+    while (!r.isAtEnd) {
+      let cp = r.advance();
+      if (cp == 0x2F || cp == 0x3F || cp == 0x23) { // /, ?, #
+        return true;
+      }
+      if (cp == 0x3A) { // :
+        return false;
+      }
     }
-    i += 1;
+    return true;
   }
-  return true;
+  if (proto == 'http:' || proto == 'https:') {
+    return true;
+  }
+  if (proto == 'data:') {
+    let body = parsed.pathname.asciiLowerCase();
+    return body.startsWith('image/png;') ||
+        body.startsWith('image/gif;') ||
+        body.startsWith('image/jpeg;') ||
+        body.startsWith('image/webp;');
+  }
+  return !isImage && (
+    proto == 'mailto:' ||
+    proto == 'irc:' ||
+    proto == 'ircs:' ||
+    proto == 'xmpp:'
+  );
 }
 
 /**
@@ -130,24 +104,25 @@ function startsWithCaseInsensitiveAscii(s: String, prefix: String): boolean {
  */
 export final class HtmlRenderer implements HtmlRenderContext {
   sb = new StringBuilder(256);
-  var safe: boolean;
-  var escapeRawHtml: boolean;
-  var #softBreak: String;
+  var safe = false;
+  var escapeRawHtml = false;
+  var #softBreak = '\n';
+  var #indentStep = 0;
+  var #indentLevel = 0;
   #renderers = new GrowableArray<NodeRenderer>(4);
 
-  new(options: HtmlRenderOptions = {})
-    : safe = false,
-      escapeRawHtml = false,
-      #softBreak = '\n' {
+  new(options: HtmlRenderOptions = {}) {
     let {
       safe = false,
       escapeRawHtml = false,
       softBreak = '\n',
+      indent = 0,
       extensions = new GrowableArray<MarkdownExtension>(0)
     } = options;
     this.safe = safe;
     this.escapeRawHtml = escapeRawHtml;
     this.#softBreak = softBreak;
+    this.#indentStep = if (indent > 0) indent else 0;
     for (let ext in extensions) {
       for (let r in ext.nodeRenderers) {
         this.#renderers.push(r);
@@ -155,8 +130,28 @@ export final class HtmlRenderer implements HtmlRenderContext {
     }
   }
 
+  pushIndent(): void {
+    this.#indentLevel += 1;
+  }
+
+  popIndent(): void {
+    if (this.#indentLevel > 0) {
+      this.#indentLevel -= 1;
+    }
+  }
+
+  writeIndent(): void {
+    let spaces = this.#indentLevel * this.#indentStep;
+    var i = 0;
+    while (i < spaces) {
+      this.sb.appendByte(0x20);
+      i += 1;
+    }
+  }
+
   render(doc: Document): String {
     this.sb.clear();
+    this.#indentLevel = 0;
     this.renderBlocks(doc.blocks);
     return this.sb.toString();
   }
@@ -170,6 +165,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
   renderBlock(block: Block): void {
     match (block) {
       case Paragraph {inlines, id}: {
+        this.writeIndent();
         if (id != null) {
           this.sb.append('<p id="');
           this.escapeAttribute(id);
@@ -181,6 +177,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
         this.sb.append('</p>\n');
       }
       case Heading {level, inlines, id}: {
+        this.writeIndent();
         this.sb.append('<h');
         this.sb.appendI32(level);
         if (id != null) {
@@ -195,11 +192,16 @@ export final class HtmlRenderer implements HtmlRenderContext {
         this.sb.append('>\n');
       }
       case BlockQuote {blocks}: {
+        this.writeIndent();
         this.sb.append('<blockquote>\n');
+        this.pushIndent();
         this.renderBlocks(blocks);
+        this.popIndent();
+        this.writeIndent();
         this.sb.append('</blockquote>\n');
       }
       case ListBlock {ordered, startNumber, tight, items}: {
+        this.writeIndent();
         if (ordered) {
           if (startNumber != 1) {
             this.sb.append('<ol start="');
@@ -211,9 +213,12 @@ export final class HtmlRenderer implements HtmlRenderContext {
         } else {
           this.sb.append('<ul>\n');
         }
+        this.pushIndent();
         for (let item in items) {
           this.#renderListItem(item, tight);
         }
+        this.popIndent();
+        this.writeIndent();
         if (ordered) {
           this.sb.append('</ol>\n');
         } else {
@@ -224,8 +229,9 @@ export final class HtmlRenderer implements HtmlRenderContext {
         this.#renderListItem(item, false);
       }
       case FencedCodeBlock {info, literal}: {
+        this.writeIndent();
         let lang = firstWord(info);
-        if (lang.length > 0) {
+        if (!lang.isEmpty) {
           this.sb.append('<pre><code class="language-');
           this.escapeAttribute(lang);
           this.sb.append('">');
@@ -236,6 +242,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
         this.sb.append('</code></pre>\n');
       }
       case IndentedCodeBlock {literal}: {
+        this.writeIndent();
         this.sb.append('<pre><code>');
         this.escapeHtml(literal);
         this.sb.append('</code></pre>\n');
@@ -243,16 +250,19 @@ export final class HtmlRenderer implements HtmlRenderContext {
       case HtmlBlock {literal}: {
         if (this.safe) {
           if (this.escapeRawHtml) {
+            this.writeIndent();
             this.sb.append('<p>');
             this.escapeHtml(literal);
             this.sb.append('</p>\n');
           }
         } else {
+          this.writeIndent();
           this.sb.append(literal);
           this.sb.appendByte(0x0A);
         }
       }
       case ThematicBreak: {
+        this.writeIndent();
         this.sb.append('<hr />\n');
       }
       case CustomBlock as custom: {
@@ -273,6 +283,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
       isChecked = value;
     }
 
+    this.writeIndent();
     if (hasCheckbox) {
       this.sb.append('<li class="task-list-item">');
     } else {
@@ -294,15 +305,22 @@ export final class HtmlRenderer implements HtmlRenderContext {
 
     if (tight) {
       var idx = 0;
+      var indentedBody = false;
       while (idx < item.blocks.length) {
         let child = item.blocks[idx];
         if (let Paragraph {inlines} = child) {
           if (idx == 0 && hasCheckbox) {
             this.sb.append(checkboxHtml);
+          } else if (idx > 0) {
+            this.writeIndent();
           }
           this.renderInlines(inlines);
           if (idx + 1 < item.blocks.length) {
             this.sb.appendByte(0x0A);
+            if (!indentedBody) {
+              this.pushIndent();
+              indentedBody = true;
+            }
           }
         } else {
           if (idx == 0) {
@@ -310,21 +328,31 @@ export final class HtmlRenderer implements HtmlRenderContext {
               this.sb.append(checkboxHtml);
             }
             this.sb.appendByte(0x0A);
+            this.pushIndent();
+            indentedBody = true;
           }
           this.renderBlock(child);
         }
         idx += 1;
+      }
+      if (indentedBody) {
+        this.popIndent();
+        if (!(item.blocks[item.blocks.length - 1] is Paragraph)) {
+          this.writeIndent();
+        }
       }
       this.sb.append('</li>\n');
       return;
     }
 
     this.sb.appendByte(0x0A);
+    this.pushIndent();
     var idx = 0;
     while (idx < item.blocks.length) {
       let child = item.blocks[idx];
       if (idx == 0 && hasCheckbox) {
         if (let Paragraph {inlines, id} = child) {
+          this.writeIndent();
           if (id != null) {
             this.sb.append('<p id="');
             this.escapeAttribute(id);
@@ -338,11 +366,14 @@ export final class HtmlRenderer implements HtmlRenderContext {
           idx += 1;
           continue;
         }
+        this.writeIndent();
         this.sb.append(checkboxHtml);
       }
       this.renderBlock(child);
       idx += 1;
     }
+    this.popIndent();
+    this.writeIndent();
     this.sb.append('</li>\n');
   }
 
@@ -378,7 +409,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
           this.escapeAttribute(destination);
         }
         this.sb.append('"');
-        if (title.length > 0) {
+        if (!title.isEmpty) {
           this.sb.append(' title="');
           this.escapeAttribute(title);
           this.sb.append('"');
@@ -397,7 +428,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
         appendInlinesPlainText(children, altSb);
         this.escapeAttribute(altSb.toString());
         this.sb.append('"');
-        if (title.length > 0) {
+        if (!title.isEmpty) {
           this.sb.append(' title="');
           this.escapeAttribute(title);
           this.sb.append('"');
@@ -439,35 +470,34 @@ export final class HtmlRenderer implements HtmlRenderContext {
   }
 
   escapeHtml(text: String): void {
-    let len = text.length;
-    var last = 0;
-    var i = 0;
-    while (i < len) {
-      let b = text.getByteAt(i);
-      let entity = if (b == 0x26) {
+    let r = new StringReader(text);
+    var last = r.mark();
+    while (!r.isAtEnd) {
+      let pos = r.mark();
+      let cp = r.advance();
+      let entity = if (cp == 0x26) {
         '&amp;'
-      } else if (b == 0x3C) {
+      } else if (cp == 0x3C) {
         '&lt;'
-      } else if (b == 0x3E) {
+      } else if (cp == 0x3E) {
         '&gt;'
-      } else if (b == 0x22) {
+      } else if (cp == 0x22) {
         '&quot;'
       } else {
         null
       };
       if (entity != null) {
-        if (i > last) {
-          this.sb.appendSlice(text, last, i);
+        if (pos > last) {
+          this.sb.append(r.sliceRange(last, pos));
         }
         this.sb.append(entity);
-        last = i + 1;
+        last = r.mark();
       }
-      i += 1;
     }
     if (last == 0) {
       this.sb.append(text);
-    } else if (last < len) {
-      this.sb.appendSlice(text, last, len);
+    } else if (last < r.mark()) {
+      this.sb.append(r.sliceFrom(last));
     }
   }
 
@@ -480,10 +510,9 @@ export final class HtmlRenderer implements HtmlRenderContext {
   }
 }
 
-function firstWord(s: String): String {
-  var i = 0;
-  while (i < s.length && !isWhitespaceByte(s.getByteAt(i))) {
-    i += 1;
-  }
-  return s.sliceBytes(0, i);
+function firstWord(s: String) {
+  let r = new StringReader(s);
+  let start = r.mark();
+  r.skipWhile((cp) => !isAsciiWhitespace(cp));
+  return r.sliceFrom(start);
 }

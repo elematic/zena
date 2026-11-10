@@ -14,7 +14,7 @@
 import { u32ToString, u64ToString, f32ToString } from './number-format.zena';
 import {
   __js_string_length, __js_string_concat, __js_string_substring,
-  __js_string_from_char_code,
+  __js_string_from_char_code, __js_string_from_code_point,
 } from './js-string-builtins.zena';
 
 /**
@@ -82,6 +82,19 @@ export final class StringBuilder {
    */
   appendByte2(b0: i32, b1: i32): StringBuilder {
     return this.appendByte(b0).appendByte(b1);
+  }
+
+  /**
+   * Appends a single Unicode code point.
+   * Invalid or surrogate code points are replaced with U+FFFD.
+   */
+  appendCodePoint(codePoint: i32): StringBuilder {
+    var cp = codePoint;
+    if (cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+      cp = 0xFFFD;
+    }
+    this.#handle = __js_string_concat(this.#handle, __js_string_from_code_point(cp));
+    return this;
   }
 
   /** Appends a signed 32-bit integer as decimal. */

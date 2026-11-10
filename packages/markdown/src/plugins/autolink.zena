@@ -2,7 +2,9 @@
  * GFM extended autolink extension (`http://...`, `https://...`, `www....`).
  */
 
-import { Array, GrowableArray } from 'zena:core';
+import {
+  Array, GrowableArray, StringReader, isAsciiAlphanumeric
+} from 'zena:core';
 import {
   Autolink, Block, BlockQuote, Document, Emphasis, Heading, Inline, ListBlock,
   ListItem, Paragraph, Span, Strong, Text
@@ -11,9 +13,6 @@ import {
   AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser,
   InlineMatch, InlineParserRunner, MarkdownExtension, NodeRenderer
 } from '../plugin.zena';
-import {
-  isWhitespaceByte, isAsciiLetter, isAsciiAlphanumeric, toLowerAsciiByte
-} from '../scanner.zena';
 
 final class GfmAutolinkParser implements InlineContentParser {
   triggerBytes(): Array<i32> {
@@ -38,44 +37,44 @@ final class GfmAutolinkParser implements InlineContentParser {
       return null;
     }
 
-    let len = source.length;
-    var domainStart = -1;
+    let r = new StringReader(source);
+    r.reset(index);
     var isWww = false;
 
-    if (startsWithCaseInsensitive(source, index, 'https://')) {
-      domainStart = index + 8;
-    } else if (startsWithCaseInsensitive(source, index, 'http://')) {
-      domainStart = index + 7;
-    } else if (startsWithCaseInsensitive(source, index, 'www.')) {
-      domainStart = index + 4;
+    if (r.startsWithIgnoreAsciiCase('https://')) {
+      r.skip(8);
+    } else if (r.startsWithIgnoreAsciiCase('http://')) {
+      r.skip(7);
+    } else if (r.startsWithIgnoreAsciiCase('www.')) {
+      r.skip(4);
       isWww = true;
     } else {
       return null;
     }
 
+    let domainStart = r.mark();
+
     // Validate domain: non-empty, contains at least one '.', valid domain chars
-    let (domainOk, afterDomain) = scanAutolinkDomain(source, domainStart, len, isWww);
-    if (!domainOk) {
+    if (!scanAutolinkDomain(r, isWww)) {
       return null;
     }
 
     // Scan path/query/fragment up to whitespace or `<`
-    var end = afterDomain;
-    while (end < len) {
-      let b = source.getByteAt(end);
-      if (b <= 0x20 || b == 0x3C || b == 0x7F) {
+    while (!r.isAtEnd) {
+      let cp = r.peek();
+      if (cp <= 0x20 || cp == 0x3C || cp == 0x7F) {
         break;
       }
-      end += 1;
+      r.advance();
     }
 
     // Apply GFM extended autolink trailing punctuation trimming
-    end = trimAutolinkTrailing(source, index, end);
+    let end = trimAutolinkTrailing(r, index, r.mark());
     if (end <= domainStart) {
       return null;
     }
 
-    let label = source.sliceBytes(index, end);
+    let label = r.sliceRange(index, end);
     let destination = if (isWww) `http://${label}` else label;
     let node = new Autolink(
       destination,
@@ -87,61 +86,42 @@ final class GfmAutolinkParser implements InlineContentParser {
   }
 }
 
-function startsWithCaseInsensitive(s: String, index: i32, prefix: String): boolean {
-  if (index + prefix.length > s.length) {
-    return false;
-  }
-  var i = 0;
-  while (i < prefix.length) {
-    if (toLowerAsciiByte(s.getByteAt(index + i)) != prefix.getByteAt(i)) {
-      return false;
-    }
-    i += 1;
-  }
-  return true;
-}
-
 function scanAutolinkDomain(
-  s: String,
-  start: i32,
-  len: i32,
+  r: StringReader,
   requireDot: boolean
-): inline (boolean, i32) {
-  if (start >= len) {
-    return (false, start);
-  }
-  var i = start;
+): boolean {
+  let start = r.mark();
   var hasDot = false;
   var segLen = 0;
-  while (i < len) {
-    let b = s.getByteAt(i);
-    if (isAsciiAlphanumeric(b) || b == 0x2D || b == 0x5F) {
+  var lastDotStart = -1;
+  while (!r.isAtEnd) {
+    let cp = r.peek();
+    if (isAsciiAlphanumeric(cp) || cp == 0x2D || cp == 0x5F) {
       segLen += 1;
-      i += 1;
-    } else if (b == 0x2E) { // .
+      r.advance();
+    } else if (cp == 0x2E) { // '.'
       if (segLen == 0) {
         break;
       }
       hasDot = true;
       segLen = 0;
-      i += 1;
+      lastDotStart = r.mark();
+      r.advance();
     } else {
       break;
     }
   }
-  if (segLen == 0 && i > start && s.getByteAt(i - 1) == 0x2E) {
-    i -= 1;
+  if (segLen == 0 && lastDotStart >= start) {
+    r.reset(lastDotStart);
   }
-  if (i == start || (requireDot && !hasDot)) {
-    return (false, start);
-  }
-  return (true, i);
+  return r.mark() != start && (!requireDot || hasDot);
 }
 
-function trimAutolinkTrailing(s: String, start: i32, initialEnd: i32): i32 {
+function trimAutolinkTrailing(r: StringReader, start: i32, initialEnd: i32): i32 {
   var end = initialEnd;
   while (end > start) {
-    let last = s.getByteAt(end - 1);
+    r.reset(end);
+    let last = r.peekBefore();
     // Always trim `? ! . , : * _ ~`
     if (
       last == 0x3F ||
@@ -160,15 +140,14 @@ function trimAutolinkTrailing(s: String, start: i32, initialEnd: i32): i32 {
     if (last == 0x29) {
       var openCount = 0;
       var closeCount = 0;
-      var i = start;
-      while (i < end) {
-        let b = s.getByteAt(i);
-        if (b == 0x28) {
+      r.reset(start);
+      while (r.mark() < end) {
+        let cp = r.advance();
+        if (cp == 0x28) {
           openCount += 1;
-        } else if (b == 0x29) {
+        } else if (cp == 0x29) {
           closeCount += 1;
         }
-        i += 1;
       }
       if (closeCount > openCount) {
         end -= 1;
@@ -178,12 +157,18 @@ function trimAutolinkTrailing(s: String, start: i32, initialEnd: i32): i32 {
     }
     // Trim `;` and preceding `&alnum+` entity reference
     if (last == 0x3B) {
-      var k = end - 2;
-      while (k > start && isAsciiAlphanumeric(s.getByteAt(k))) {
-        k -= 1;
+      var k = end - 1;
+      while (k > start) {
+        r.reset(k);
+        if (isAsciiAlphanumeric(r.peekBefore())) {
+          k -= 1;
+        } else {
+          break;
+        }
       }
-      if (k > start && k < end - 2 && s.getByteAt(k) == 0x26) {
-        end = k;
+      r.reset(k);
+      if (k > start && k < end - 1 && r.peekBefore() == 0x26) {
+        end = k - 1;
         continue;
       }
       end -= 1;
@@ -228,18 +213,12 @@ final class AutolinkEmailTransformer implements AstTransformer {
     var hasAt = false;
     for (let node in inlines) {
       if (let Text {literal} = node) {
-        var i = 0;
-        while (i < literal.length) {
-          if (literal.getByteAt(i) == 0x40) {
-            hasAt = true;
-            break;
-          }
-          i += 1;
+        if (literal.contains('@')) {
+          hasAt = true;
+          break;
         }
       } else if (node is Emphasis || node is Strong) {
         hasAt = true;
-      }
-      if (hasAt) {
         break;
       }
     }
@@ -270,22 +249,24 @@ final class AutolinkEmailTransformer implements AstTransformer {
   }
 
   #splitEmailsInText(text: String, baseOffset: i32, out: GrowableArray<Inline>): void {
-    let len = text.length;
-    var textStart = 0;
-    var i = 0;
-    while (i < len) {
-      if (text.getByteAt(i) == 0x40) { // '@'
-        let (matched, emailStart, emailEnd) = tryScanEmailAt(text, i, textStart, len);
+    let r = new StringReader(text);
+    var textStart = r.mark();
+    while (!r.isAtEnd) {
+      let atPos = r.mark();
+      let cp = r.advance();
+      if (cp == 0x40) { // '@'
+        let afterAt = r.mark();
+        let (matched, emailStart, emailEnd) = tryScanEmailAt(r, atPos, textStart);
         if (matched) {
           if (emailStart > textStart) {
             out.push(
               new Text(
-                text.sliceBytes(textStart, emailStart),
+                r.sliceRange(textStart, emailStart),
                 new Span(baseOffset + textStart, baseOffset + emailStart)
               )
             );
           }
-          let email = text.sliceBytes(emailStart, emailEnd);
+          let email = r.sliceRange(emailStart, emailEnd);
           out.push(
             new Autolink(
               `mailto:${email}`,
@@ -295,17 +276,18 @@ final class AutolinkEmailTransformer implements AstTransformer {
             )
           );
           textStart = emailEnd;
-          i = emailEnd;
+          r.reset(emailEnd);
           continue;
         }
+        r.reset(afterAt);
       }
-      i += 1;
     }
-    if (textStart < len) {
+    let endPos = r.mark();
+    if (textStart < endPos) {
       out.push(
         new Text(
-          text.sliceBytes(textStart, len),
-          new Span(baseOffset + textStart, baseOffset + len)
+          r.sliceRange(textStart, endPos),
+          new Span(baseOffset + textStart, baseOffset + endPos)
         )
       );
     }
@@ -321,49 +303,58 @@ function isEmailLocalByte(b: i32) {
 }
 
 function tryScanEmailAt(
-  s: String,
+  r: StringReader,
   atIndex: i32,
-  minStart: i32,
-  len: i32
+  minStart: i32
 ): inline (boolean, i32, i32) {
   var localStart = atIndex;
-  while (localStart > minStart && isEmailLocalByte(s.getByteAt(localStart - 1))) {
-    localStart -= 1;
+  while (localStart > minStart) {
+    r.reset(localStart);
+    if (isEmailLocalByte(r.peekBefore())) {
+      localStart -= 1;
+    } else {
+      break;
+    }
   }
   if (localStart == atIndex) {
     return (false, 0, 0);
   }
   if (localStart > 0) {
-    let prev = s.getByteAt(localStart - 1);
+    r.reset(localStart);
+    let prev = r.peekBefore();
     if (prev == 0x2F || prev == 0x3A) {
       return (false, 0, 0);
     }
   }
 
-  var p = atIndex + 1;
+  r.reset(atIndex + 1);
   var hasDot = false;
   var labelLen = 0;
   var lastDotPos = -1;
-  while (p < len) {
-    let db = s.getByteAt(p);
+  while (!r.isAtEnd) {
+    let pos = r.mark();
+    let db = r.peek();
     if (db == 0x2E) {
-      if (labelLen == 0 || s.getByteAt(p - 1) == 0x2D || s.getByteAt(p - 1) == 0x5F) {
+      let prev = r.peekBefore();
+      if (labelLen == 0 || prev == 0x2D || prev == 0x5F) {
         break;
       }
       hasDot = true;
-      lastDotPos = p;
+      lastDotPos = pos;
       labelLen = 0;
-      p += 1;
+      r.advance();
     } else if (isAsciiAlphanumeric(db) || ((db == 0x2D || db == 0x5F) && labelLen > 0)) {
       labelLen += 1;
-      p += 1;
+      r.advance();
     } else {
       break;
     }
   }
+  var p = r.mark();
   // Strip trailing '.', '-', '_'
   while (p > atIndex + 1) {
-    let last = s.getByteAt(p - 1);
+    r.reset(p);
+    let last = r.peekBefore();
     if (last == 0x2E || last == 0x2D || last == 0x5F) {
       p -= 1;
     } else {

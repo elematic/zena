@@ -2,7 +2,10 @@
  * Heading anchor (`id` slug) generation and deduplication extension.
  */
 
-import { GrowableArray, StringBuilder, i32ToString } from 'zena:core';
+import {
+  GrowableArray, StringBuilder, StringReader, i32ToString,
+  asciiLowerByte, isAsciiAlpha, isAsciiDigit, isAsciiWhitespace
+} from 'zena:core';
 import { HashMap } from 'zena:collections';
 import {
   Block, Document, Heading, BlockQuote, ListBlock, ListItem,
@@ -12,9 +15,6 @@ import {
   AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser,
   InlineParserRunner, MarkdownExtension, NodeRenderer
 } from '../plugin.zena';
-import {
-  isAsciiLetter, isAsciiDigit, isWhitespaceByte, toLowerAsciiByte, trimWhitespace
-} from '../scanner.zena';
 
 final class HeadingAnchorsTransformer implements AstTransformer {
   transform(doc: Document, inlineParser: InlineParserRunner): void {
@@ -29,7 +29,7 @@ final class HeadingAnchorsTransformer implements AstTransformer {
           if (h.id == null) {
             let text = inlinesToPlainText(h.inlines);
             let baseSlug = slugifyHeading(text);
-            if (baseSlug.length > 0) {
+            if (!baseSlug.isEmpty) {
               if (counts.has(baseSlug)) {
                 let n = counts[baseSlug];
                 counts[baseSlug] = n + 1;
@@ -60,22 +60,21 @@ final class HeadingAnchorsTransformer implements AstTransformer {
 
 /**
  * Converts heading text to a lowercase URL slug, turning whitespace into `-`
- * and keeping ASCII letters, digits, `-`, `_`, and multi-byte UTF-8 scalars.
+ * and keeping ASCII letters, digits, `-`, `_`, and non-ASCII Unicode scalars.
  */
 export function slugifyHeading(text: String): String {
-  let trimmed = trimWhitespace(text);
-  let sb = new StringBuilder(trimmed.length);
+  let trimmed = text.trim();
+  let r = new StringReader(trimmed);
+  let sb = new StringBuilder();
   var lastWrittenWasDash = false;
   var lastWasStrippedAfterDash = false;
-  var i = 0;
-  let len = trimmed.length;
-  while (i < len) {
-    let b = trimmed.getByteAt(i);
-    if (isAsciiLetter(b) || isAsciiDigit(b) || b == 0x5F || b == 0x2D || b >= 0x80) {
-      sb.appendByte(toLowerAsciiByte(b));
-      lastWrittenWasDash = b == 0x2D;
+  while (!r.isAtEnd) {
+    let cp = r.advance();
+    if (isAsciiAlpha(cp) || isAsciiDigit(cp) || cp == 0x5F || cp == 0x2D || cp >= 0x80) {
+      sb.appendCodePoint(asciiLowerByte(cp));
+      lastWrittenWasDash = cp == 0x2D;
       lastWasStrippedAfterDash = false;
-    } else if (isWhitespaceByte(b)) {
+    } else if (isAsciiWhitespace(cp)) {
       if (!lastWasStrippedAfterDash) {
         sb.appendByte(0x2D);
         lastWrittenWasDash = true;
@@ -84,7 +83,6 @@ export function slugifyHeading(text: String): String {
     } else if (lastWrittenWasDash) {
       lastWasStrippedAfterDash = true;
     }
-    i += 1;
   }
   return sb.toString();
 }

@@ -2,7 +2,7 @@
  * GFM task list item extension (`- [ ] todo`, `- [x] done`).
  */
 
-import { GrowableArray, some } from 'zena:core';
+import { GrowableArray, StringReader, some } from 'zena:core';
 import {
   Block, Document, Inline, Paragraph, BlockQuote, ListBlock, ListItem, Text,
   SoftBreak, HardBreak, Span
@@ -47,10 +47,11 @@ final class TaskListTransformer implements AstTransformer {
         return;
       }
       if (let Text {literal, span} = inlines[0]) {
-        if (literal.length < 3 || literal.getByteAt(0) != 0x5B || literal.getByteAt(2) != 0x5D) {
+        let r = new StringReader(literal);
+        if (!r.matchCodePoint(0x5B)) { // '['
           return;
         }
-        let mark = literal.getByteAt(1);
+        let mark = r.advance();
         var checked = false;
         if (mark == 0x20) { // ' '
           checked = false;
@@ -59,24 +60,25 @@ final class TaskListTransformer implements AstTransformer {
         } else {
           return;
         }
+        if (!r.matchCodePoint(0x5D)) { // ']'
+          return;
+        }
 
         // Must be followed by space/tab, or end of Text node when followed by
         // another inline (e.g. `SoftBreak` or `Emphasis`)
-        if (literal.length > 3) {
-          let after = literal.getByteAt(3);
+        if (!r.isAtEnd) {
+          let after = r.peek();
           if (after != 0x20 && after != 0x09) {
             return;
           }
-          var s = 4;
-          while (s < literal.length && (literal.getByteAt(s) == 0x20 || literal.getByteAt(s) == 0x09)) {
-            s += 1;
-          }
-          let rest = literal.sliceBytes(s, literal.length);
+          r.skipSpaces();
+          let restOffset = r.mark();
+          let rest = r.readToEnd();
           item.checked = some(checked);
-          if (rest.length == 0 && inlines.length > 1) {
+          if (rest.isEmpty && inlines.length > 1) {
             this.#removeFirstInline(inlines);
           } else {
-            inlines[0] = new Text(rest, new Span(span.start + s, span.end));
+            inlines[0] = new Text(rest, new Span(span.start + restOffset, span.end));
           }
         } else if (inlines.length > 1) {
           item.checked = some(checked);
@@ -85,9 +87,10 @@ final class TaskListTransformer implements AstTransformer {
             if (inlines[0] is SoftBreak || inlines[0] is HardBreak) {
               this.#removeFirstInline(inlines);
             } else if (let Text {literal: nextLit, span: nextSpan} = inlines[0]) {
-              if (nextLit.length > 0 && nextLit.getByteAt(0) == 0x20) {
+              let nextReader = new StringReader(nextLit);
+              if (nextReader.matchCodePoint(0x20)) {
                 inlines[0] = new Text(
-                  nextLit.sliceBytes(1, nextLit.length),
+                  nextReader.readToEnd(),
                   new Span(nextSpan.start + 1, nextSpan.end)
                 );
               }
