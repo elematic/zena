@@ -34,6 +34,7 @@ import {
   ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
   Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, limitName, limitNamed
 } from 'registry:app-view';
+import {MAX_README_BYTES, ReleaseContents, ReleaseFile} from 'registry:release-contents';
 import {nowMicros} from 'pds:xrpc/common';
 import {createApp} from 'registry:server';
 import {WebSessions} from 'registry:web-sessions';
@@ -1595,23 +1596,25 @@ export let tests = suite('registry:app-view', () => {
     isTrue(packageHtml.contains('href="/packages/router.acme.pkg.test/versions/1.1.0"'), 'a link to 1.1.0');
 
     // The README's relative links and images point to the release's files,
-    // from the package's root; one that leaves the root, or names no file,
-    // is left out, with its text. An image from another site stays.
-    let files = '/packages/router.acme.pkg.test/versions/1.0.0/files';
+    // from the package's root, by the package's DID; one that leaves the
+    // root, or names no file, is left out, with its text. An image from
+    // another site stays.
+    let files = `/packages/${router}/versions/1.0.0/files`;
     for (let expected in [`<a href="${files}/docs/guide.md#start">guide</a>`, ' up ', ' gone ',
         `<a href="${files}/router.zena">source</a>`, `<img src="${files}/logo.png" alt="logo" />`,
         '<img src="https://img.example/badge.svg"', '<a href="#router">top</a>']) {
       isTrue(packageHtml.contains(expected), `${expected} in the README`);
     }
     isTrue(!packageHtml.contains('outside.md') && !packageHtml.contains('nope.md'), 'no link out of the package');
-    // The App View serves those files: an image as its type, anything else as
-    // text, and neither runs on its origin.
+    // The App View serves those files, by DID or by handle: an image as its
+    // type, anything else as text, and neither runs on its origin.
     let logo = await fixture.get(`${files}/logo.png`);
     equal(logo.statusCode, 200);
     equal(logo.type ?? '', 'image/png');
     equal(logo.getHeader('content-security-policy') ?? '', "default-src 'none'; sandbox");
     equal(logo.getHeader('x-content-type-options') ?? '', 'nosniff');
-    let guide = await fixture.get(`${files}/docs/guide.md`);
+    let guide = await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/docs/guide.md');
+    equal(guide.statusCode, 200);
     equal(guide.type ?? '', 'text/plain; charset=utf-8');
     equal((await fixture.get(`${files}/nope.md`)).statusCode, 404);
 
@@ -1631,6 +1634,74 @@ export let tests = suite('registry:app-view', () => {
       isTrue(versionHtml.contains(expected), `${expected} in the version page`);
     }
     equal((await fixture.get('/packages/router.acme.pkg.test/versions/9.9.9')).statusCode, 404);
+  });
+
+  test("keeps a release's contents when it is published, and its pages show them from there", async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let archive = archiveOf(router, '1.0.0');
+    await release(fixture, ALICE, router, '1.0.0', await upload(fixture, router, archive));
+    let kept = (await appView.derived.read(router, '1.0.0')) as ReleaseContents;
+    isTrue(kept.archive.equals(Cid.forBlob(archive)), 'from the archive published');
+    equal(kept.files.length, 2);
+
+    // The page shows what is kept, and does not derive it again.
+    await appView.derived.write(router, '1.0.0',
+        new ReleaseContents(kept.archive, kept.archiveBytes, kept.files, 'README.md', '<p>As kept</p>'));
+    let html = pageOf(await fixture.get('/packages/router.acme.pkg.test'));
+    isTrue(html.contains('<p>As kept</p>'), html);
+  });
+
+  test('derives the contents of a release again when they are missing or from another archive', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    // Releases written straight to the repository, as before the App View
+    // kept contents: nothing is kept for them.
+    let account = (await fixture.pds.storage.accountByHandle('router.acme.pkg.test')) as Account;
+    for (let version in ['1.0.0', '1.0.1']) {
+      let archive = packSource({
+        'zena-package.json' => `{"name": "router", "version": "${version}"}`.toBytes(),
+        'README.md' => `# Router ${version}\n`.toBytes(),
+      });
+      let blob = await upload(fixture, account.did, archive);
+      let record = new Release(Version.parse(version), '2026-11-10T00:00:00.000Z',
+          new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), []);
+      await fixture.pds.repositoryOf(account).applyWrites([new CreateRecord(RELEASE_TYPE, version,
+          record.toValue()) as Write], 0 as i64);
+    }
+    isTrue((await appView.derived.read(account.did, '1.0.0')) == null, 'nothing kept');
+    let missing = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0'));
+    isTrue(missing.contains('Router 1.0.0</h1>'), missing);
+    isTrue((await appView.derived.read(account.did, '1.0.0')) != null, 'kept once derived');
+
+    // Contents kept from another archive are derived again.
+    let other = new ReleaseContents(Cid.forBlob('another archive'.toBytes()), 1 as i64,
+        new FixedArray<ReleaseFile>(0, new ReleaseFile('', Cid.forBlob('x'.toBytes()), 0 as i64)), 'README.md',
+        '<p>From another archive</p>');
+    await appView.derived.write(account.did, '1.0.1', other);
+    let stale = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.1'));
+    isTrue(stale.contains('Router 1.0.1</h1>') && !stale.contains('From another archive'), stale);
+    let rewritten = (await appView.derived.read(account.did, '1.0.1')) as ReleaseContents;
+    equal(rewritten.files.length, 2);
+  });
+
+  test('links to a README too large to render', async (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let archive = packSource({
+      'zena-package.json' => `{"name": "router", "did": "${router}", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}`
+        .toBytes(),
+      'README.md' => new FixedArray<u8>(MAX_README_BYTES + 1, 97 as u8),
+    });
+    await release(fixture, ALICE, router, '1.0.0', await upload(fixture, router, archive));
+    let html = pageOf(await fixture.get('/packages/router.acme.pkg.test'));
+    isTrue(html.contains('The README is too large to show here') &&
+        html.contains('href="/packages/router.acme.pkg.test/versions/1.0.0/files/README.md"'), html);
   });
 
   test('renders the pages a visitor browses', async (ctx) => {

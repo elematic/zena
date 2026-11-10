@@ -143,6 +143,9 @@ APP_VIEW_VARS=(
   "APP_VIEW_STORAGE=firestore"
   "APP_VIEW_FIRESTORE_DATABASE=${DATABASE}"
   "APP_VIEW_TENANT=${TENANT}"
+  # padstone's bucket, whose blobs are under ${TENANT}/<did>/ and the App
+  # View's objects under ${TENANT}/app-view/.
+  "APP_VIEW_BUCKET=${BUCKET}"
   "APP_VIEW_SIGNING_KMS_KEY=${SIGNING_KMS_KEY_VERSION}"
   "APP_VIEW_HANDLE_RECORDS=cloud-dns"
   "APP_VIEW_DNS_ZONE=${ZONE}"

@@ -29,7 +29,11 @@
  *   - `APP_VIEW_STORAGE`: `memory` (the default) or `firestore`, where the
  *     App View keeps its stores; with `firestore`, `APP_VIEW_TENANT` and
  *     `APP_VIEW_FIRESTORE_DATABASE`, as `pds:service`'s `PDS_TENANT` and
- *     `PDS_FIRESTORE_DATABASE`.
+ *     `PDS_FIRESTORE_DATABASE`, and `APP_VIEW_BUCKET`, the Cloud Storage
+ *     bucket for what it derives from releases
+ *     (`registry:release-contents`), or `APP_VIEW_OBJECT_DIR`, a directory
+ *     for it, as `PDS_BLOB_BUCKET` and `PDS_BLOB_DIR`. With the PDS in the
+ *     same process, it is kept beside the PDS's blobs.
  * - `APP_VIEW_SESSION_SECRET`: 32 bytes in hex, which signs the site's web
  *   sessions and the URLs of its avatars (`registry:web-sessions`). By
  *   default the PDS's `PDS_JWT_SECRET` in the same process; required with
@@ -110,9 +114,10 @@ import {SigningKeyLookup} from 'atproto:service-auth';
 import {PlcLogLookup, TrustedAppView} from 'pds:managed';
 import {Pds} from 'pds:pds';
 import {InProcessPds, PdsClient, XrpcPds} from 'pds:pds-client';
+import {MemoryBlobs} from 'pds:firestore';
 import {
-  InFirestore, PDS_VARIABLES, PdsConfig, buildPds, decodeKey, didWebOfOrigin, listen, originOf,
-  readPdsConfig, readPort, refuseProblems, valuesOf
+  BlobChoice, InBucket, InDirectory, InFirestore, PDS_VARIABLES, PdsConfig, blobBytes, buildPds, decodeKey,
+  didWebOfOrigin, listen, originOf, readPdsConfig, readPort, refuseProblems, valuesOf
 } from 'pds:service';
 import {Sessions} from 'pds:sessions';
 import {KmsSigner, LocalSigner, Signer} from 'pds:signer';
@@ -120,6 +125,7 @@ import {SigningKey} from 'pds:storage';
 import {REQUEST_BODY_LIMIT} from 'pds:xrpc/common';
 import {AppViewConfig, AppViewStore, MemoryAppViewStore, AppView} from './app-view.zena';
 import {FirestoreAppViewStore, FirestorePlcLog} from './firestore.zena';
+import {DerivedObjects} from './release-contents.zena';
 import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
 import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
 import {AppPart, createApp} from './server.zena';
@@ -178,8 +184,12 @@ export final class RemotePds {
 /** Where the App View keeps its stores when its PDS is elsewhere (`APP_VIEW_STORAGE`). */
 export sealed class StoreChoice {
   case StoresInMemory
-  /** Firestore, for `tenant`, in the database `database`, or the project's default one when null. */
-  case StoresInFirestore(tenant: String, database: String | null)
+  /**
+   * Firestore, for `tenant`, in the database `database`, or the project's
+   * default one when null, with what the App View derives from releases
+   * in `objects`.
+   */
+  case StoresInFirestore(tenant: String, database: String | null, objects: BlobChoice)
 }
 
 /** What the server is to be: the App View, and the PDS that keeps its accounts. */
@@ -280,21 +290,30 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       }
     }
     let storageKind = value('APP_VIEW_STORAGE') ?? 'memory';
+    let bucket = value('APP_VIEW_BUCKET');
+    let objectDir = value('APP_VIEW_OBJECT_DIR');
     if (storageKind == 'firestore') {
       firestore = 'APP_VIEW_STORAGE';
       let tenant = value('APP_VIEW_TENANT');
       if (tenant == null) {
         problems.push('APP_VIEW_STORAGE=firestore needs APP_VIEW_TENANT');
-      } else {
-        stores = new StoresInFirestore(tenant, value('APP_VIEW_FIRESTORE_DATABASE'));
+      }
+      if (bucket != null && objectDir != null) {
+        problems.push('give APP_VIEW_BUCKET or APP_VIEW_OBJECT_DIR, not both');
+      } else if (bucket == null && objectDir == null) {
+        problems.push('APP_VIEW_STORAGE=firestore needs APP_VIEW_BUCKET or APP_VIEW_OBJECT_DIR');
+      } else if (tenant != null) {
+        let objects: BlobChoice = if (bucket != null) new InBucket(bucket) else new InDirectory(objectDir as String);
+        stores = new StoresInFirestore(tenant, value('APP_VIEW_FIRESTORE_DATABASE'), objects);
       }
       if (secretText == null) {
         problems.push('APP_VIEW_STORAGE=firestore needs APP_VIEW_SESSION_SECRET');
       }
     } else if (storageKind == 'memory') {
       stores = new StoresInMemory();
-      if (value('APP_VIEW_TENANT') != null || value('APP_VIEW_FIRESTORE_DATABASE') != null) {
-        problems.push('APP_VIEW_TENANT and APP_VIEW_FIRESTORE_DATABASE need APP_VIEW_STORAGE=firestore');
+      if (value('APP_VIEW_TENANT') != null || value('APP_VIEW_FIRESTORE_DATABASE') != null ||
+          bucket != null || objectDir != null) {
+        problems.push('APP_VIEW_TENANT, APP_VIEW_FIRESTORE_DATABASE, APP_VIEW_BUCKET and APP_VIEW_OBJECT_DIR need APP_VIEW_STORAGE=firestore');
       }
     } else {
       problems.push(`APP_VIEW_STORAGE is memory or firestore, not ${storageKind}`);
@@ -315,7 +334,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       firestore = 'PDS_STORAGE';
     }
     for (let name in ['APP_VIEW_PDS_DID', 'APP_VIEW_PUBLIC_URL', 'APP_VIEW_STORAGE', 'APP_VIEW_TENANT',
-        'APP_VIEW_FIRESTORE_DATABASE']) {
+        'APP_VIEW_FIRESTORE_DATABASE', 'APP_VIEW_BUCKET', 'APP_VIEW_OBJECT_DIR']) {
       if (value(name) != null) {
         problems.push(`${name} needs APP_VIEW_PDS_URL: with the PDS in the same process, the App View is served at its name and keeps its stores beside its`);
       }
@@ -482,22 +501,31 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let inProcess = config.pds;
   var tenant: String | null = null;
   var database: String | null = null;
+  // What the App View derives from releases: beside the PDS's blobs, or in
+  // its own bucket, under the tenant.
+  var objects: BlobChoice | null = null;
   let stores = config.stores;
   if (stores != null) {
-    if (let StoresInFirestore {tenant: given, database: givenDatabase} = stores) {
+    if (let StoresInFirestore {tenant: given, database: givenDatabase, objects: givenObjects} = stores) {
       tenant = given;
       database = givenDatabase;
+      objects = givenObjects;
     }
   } else if (inProcess != null) {
-    if (let InFirestore {tenant: given, database: givenDatabase} = inProcess.storage) {
+    if (let InFirestore {tenant: given, blobs, database: givenDatabase} = inProcess.storage) {
       tenant = given;
       database = givenDatabase;
+      objects = blobs;
     }
   }
+  var derived = new DerivedObjects(new MemoryBlobs(), '');
   if (tenant != null) {
     let db = if (database != null) await Firestore.connect({databaseId: database}) else await Firestore.connect();
     appViewStore = new FirestoreAppViewStore(db, tenant);
     plcLog = new FirestorePlcLog(db, tenant);
+    if (objects != null) {
+      derived = new DerivedObjects(blobBytes(objects), `${tenant}/app-view/`);
+    }
   }
   let plc = if (config.plcStaging) new PlcDirectory(plcLog, config.plcDirectory) else null;
   let settings = config.appView;
@@ -571,6 +599,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   }
   let appView = new AppView(client as PdsClient, appViewConfig, appViewStore, records, keys, submit,
       (count: i32) => randomBytes(count), dependencies);
+  appView.derived = derived;
   // By default the site's sessions are signed with the secret the PDS in
   // the same process is given, so that one server needs one secret.
   let sessionSecret = config.sessionSecret ?? inProcess?.jwtSecret ?? randomBytes(32);

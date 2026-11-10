@@ -8,6 +8,7 @@
 import {HashMap} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
 import {HTMLPartial, TemplateValue, html, unsafeHTML} from 'zena:http';
+import {div} from 'zena:math';
 import {URL} from 'zena:url';
 
 /** A chip: `text` in a pill, colored by `kind`, one of `app.css`'s `chip-*` classes. */
@@ -18,6 +19,23 @@ export function chip(text: String, kind: String = 'neutral'): HTMLPartial {
 /** `n` and `noun`, plural unless `n` is 1. */
 export function count(n: i32, noun: String): String {
   return if (n == 1) `1 ${noun}` else `${n} ${noun}s`;
+}
+
+/** `bytes` for people: bytes below a KiB, then KiB and MiB to a tenth. */
+export function formatBytes(bytes: i64): String {
+  let kib = 1024 as i64;
+  if (bytes < kib) {
+    return `${bytes} bytes`;
+  }
+  if (bytes < kib * kib) {
+    return tenths(bytes, kib, 'KiB');
+  }
+  return tenths(bytes, kib * kib, 'MiB');
+}
+
+function tenths(bytes: i64, unit: i64, name: String): String {
+  let count = div(bytes * (10 as i64), unit);
+  return `${div(count, 10 as i64)}.${count - div(count, 10 as i64) * (10 as i64)} ${name}`;
 }
 
 /** `render` of each of `items`, for a template. */

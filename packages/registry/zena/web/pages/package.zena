@@ -11,19 +11,19 @@
 
 import {HashMap} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
-import {HTMLPartial, Response, Router, TemplateValue, html} from 'zena:http';
+import {HTMLPartial, Response, Router, TemplateValue, html, unsafeHTML} from 'zena:http';
 import {percentDecode} from 'zena:url';
 import {Dependency, Maintainer, Maintainers, RELEASE_TYPE, Release} from 'package-manager:records';
-import {PackageDetail, AppView, ReleaseFiles} from '../../app-view.zena';
+import {PackageDetail, AppView} from '../../app-view.zena';
+import {ReleaseContents, fileUrl} from '../../release-contents.zena';
 import {Approvals} from '../approvals.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {PageContext, contextOf} from '../session.zena';
-import {chip, count, each, externalLink, when} from '../partials/common.zena';
+import {chip, count, each, externalLink, formatBytes, when} from '../partials/common.zena';
 import {Shown, describe, shownWith, visibleEntries} from '../partials/members.zena';
 import {PendingRow, pendingOf, pendingTable} from '../partials/pending.zena';
 import {personLink} from '../partials/person.zena';
-import {PackageUrls, fileUrl, formatBytes, readmeHtml} from '../partials/readme.zena';
 import {notFound} from './not-found.zena';
 
 /** How many of a package's newest releases its page shows the approvers of. */
@@ -34,19 +34,17 @@ let APPROVALS_SHOWN = 10;
  * `/packages/<handle>/versions/<version>`, to `router`.
  */
 export function packagePage(router: Router, appView: AppView, people: People, approvals: Approvals): void {
+  // By handle or by DID: a README's links name the package by its DID, so
+  // that they keep working when it is renamed.
   router.get('/packages/:handle/versions/:version/files/*', async (req, res, next, params) => {
     let handle = percentDecode(params['handle'] ?? '');
     let version = percentDecode(params['version'] ?? '');
     let detail = await appView.getPackage(handle);
-    let files = if (detail != null) await appView.releaseFiles(detail.did, version) else null;
     let path = percentDecode(params['*'] ?? '');
-    if (files != null) {
-      for (let file in files.files) {
-        if (file.path == path) {
-          serveFile(res, path, file.contents);
-          return;
-        }
-      }
+    let contents = if (detail != null) await appView.releaseFile(detail.did, version, path) else null;
+    if (contents != null) {
+      serveFile(res, path, contents);
+      return;
     }
     let context = await contextOf(req, appView, people);
     notFound(res, context, `${handle} ${version} has no file ${path}.`);
@@ -147,11 +145,11 @@ async function packageView(context: PageContext, res: Response, appView: AppView
       waiting = await pendingTable(context, rows, false);
     }
   }
-  let files = if (wanted != null) await appView.releaseFiles(found.did, wanted) else null;
+  let contents = if (wanted != null) await appView.releaseContents(found.did, wanted) else null;
   let title = if (version != null) `${name} ${version}` else name;
   res.type = 'text/html; charset=utf-8';
   res.body = page(`${title} · Zena packages`, context,
-      packageBody(found, release, version != null, files, handles, shown, approvedBy, waiting));
+      packageBody(found, release, version != null, contents, handles, shown, approvedBy, waiting));
 }
 
 /**
@@ -159,7 +157,7 @@ async function packageView(context: PageContext, res: Response, appView: AppView
  * that is not retracted; `pinned` when the page is the release's own, whose
  * command adds that version.
  */
-function packageBody(detail: PackageDetail, release: Release | null, pinned: boolean, files: ReleaseFiles | null,
+function packageBody(detail: PackageDetail, release: Release | null, pinned: boolean, contents: ReleaseContents | null,
     handles: HashMap<String, String>, shown: Shown, approvedBy: HashMap<String, Array<String>>,
     waiting: HTMLPartial | null): HTMLPartial {
   let profile = detail.profile;
@@ -173,7 +171,6 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
       reason = retraction.reason;
     }
   }
-  let readme = readmeOf(files);
   // TODO(#1031): `profile?.license ?? '—'` as one expression, once that no longer traps on a profile with no
   // license; apart, the two work.
   let licensed = profile?.license;
@@ -203,12 +200,11 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
           <rad-tab slot="tabs" panel="versions">Versions</rad-tab>
           <rad-tab-panel name="readme" active>
             ${if (release == null) html`<p class="muted">Nothing is published yet.</p>`
-                else if (readme == null) html`<p class="muted">This release has no README.</p>`
-                else readmeHtml(readme, new PackageUrls(detail.handle, version as String, files as ReleaseFiles))}
+                else readme(detail.handle, version as String, contents)}
           </rad-tab-panel>
           <rad-tab-panel name="files">
-            ${if (files == null) html`<p class="muted">${if (release == null) 'Nothing is published yet.' else 'The source archive could not be read.'}</p>`
-                else fileList(detail.handle, version as String, files)}
+            ${if (contents == null) html`<p class="muted">${if (release == null) 'Nothing is published yet.' else 'The source archive could not be read.'}</p>`
+                else fileList(detail.handle, version as String, contents)}
           </rad-tab-panel>
           <rad-tab-panel name="dependencies">
             ${if (release == null) html`<p class="muted">Nothing is published yet.</p>` else dependencies(release, handles)}
@@ -231,9 +227,9 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
             <div><dt>License</dt><dd>${license}</dd></div>
             <div><dt>Published</dt><dd>${(release as Release).createdAt.sliceBytes(0, 10)}</dd></div>
             <div><dt>Dependencies</dt><dd>${`${dependencyCount}`}</dd></div>
-            ${when(files != null, () => html`
-            <div><dt>Size</dt><dd>${formatBytes((files as ReleaseFiles).archiveBytes)}</dd></div>
-            <div><dt>Files</dt><dd>${`${(files as ReleaseFiles).files.length}`}</dd></div>`)}
+            ${when(contents != null, () => html`
+            <div><dt>Size</dt><dd>${formatBytes((contents as ReleaseContents).archiveBytes)}</dd></div>
+            <div><dt>Files</dt><dd>${`${(contents as ReleaseContents).files.length}`}</dd></div>`)}
           </dl>
         </section>`)}
         <section>
@@ -289,10 +285,23 @@ function serveFile(res: Response, path: String, contents: FixedArray<u8>): void 
   res.body = contents;
 }
 
-/** The README of `files`, or null without files. */
-function readmeOf(files: ReleaseFiles | null): String | null {
-  // TODO(#398): `files?.readme()`, once a method call behind `?.` lowers.
-  return if (files != null) files.readme() else null;
+/**
+ * The README of release `version` of the package `handle`, rendered when
+ * its contents were derived, or a link to it when it was too large to
+ * render. The HTML is the App View's own rendering, in safe mode
+ * (`registry:release-contents`).
+ */
+function readme(handle: String, version: String, contents: ReleaseContents | null): TemplateValue {
+  let path = contents?.readmePath;
+  if (path == null) {
+    return html`<p class="muted">This release has no README.</p>`;
+  }
+  let rendered = (contents as ReleaseContents).readmeHtml;
+  if (rendered == null) {
+    return html`<p class="muted">The README is too large to show here:
+      <a href="${fileUrl(handle, version, path)}">${path}</a>.</p>`;
+  }
+  return html`<div class="prose readme">${unsafeHTML(rendered)}</div>`;
 }
 
 /** The newest version of `detail` that is not retracted, or null. */
@@ -395,17 +404,17 @@ function approvalPolicy(record: Maintainers): HTMLPartial {
   `;
 }
 
-function fileList(handle: String, version: String, files: ReleaseFiles): HTMLPartial {
+function fileList(handle: String, version: String, contents: ReleaseContents): HTMLPartial {
   return html`
     <table>
       <thead><tr><th>File</th><th>Size</th></tr></thead>
-      <tbody>${each(files.files, (file) => html`
+      <tbody>${each(contents.files, (file) => html`
         <tr>
           <td class="mono"><a href="${fileUrl(handle, version, file.path)}">${file.path}</a></td>
-          <td class="muted">${formatBytes(file.contents.length as i64)}</td>
+          <td class="muted">${formatBytes(file.size)}</td>
         </tr>`)}
       </tbody>
     </table>
-    <p class="muted">${count(files.files.length, 'file')}, ${formatBytes(files.archiveBytes)} as an archive.</p>
+    <p class="muted">${count(contents.files.length, 'file')}, ${formatBytes(contents.archiveBytes)} as an archive.</p>
   `;
 }

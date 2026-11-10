@@ -58,6 +58,13 @@ When a pull request closes an item there, tick its box.
 - Several servers may share a store. Take names with
   `AppViewStore.claimScope` and `claimName`, never with a read and then a
   write.
+- What the App View derives from a release's archive for its pages (the
+  files, the rendered README) is `registry:release-contents`, kept as one
+  object per release in `AppView.derived`: a bucket, or memory. Pages read
+  `AppView.releaseContents`, never the archive; only a file's own route
+  reads the archive (`releaseFile`). A change to what is derived bumps
+  `CONTENTS_FORMAT`, so that kept contents are derived again
+  (package-manager.md, "What the App View derives from releases").
 - The emulator run is `npm run test:emulator -w @zena-lang/registry`. It
   is not part of `npm test`, so run it after changing `registry:firestore`
   or `registry:service`.

@@ -1910,6 +1910,56 @@ roles only.
 | A person's memberships, private ones included               | the App View, from its mentions and its entries |
 | Who maintains a package by DID, and what a person maintains | the App View's index                            |
 
+### What the App View derives from releases
+
+A release's pages show its files, their sizes and its README, and will
+show its API. All of that comes from the release's source archive, which
+never changes, so the App View derives it once per release and keeps it,
+instead of unpacking the archive on every view. Every server of the App
+View reads the same copy.
+
+For each release, by the package's DID and the version, the App View
+keeps:
+
+- **The contents**: the archive's CID and size; each file's path, size
+  and CID, by path; and the README, `README.md` at the package's root in
+  any case, rendered to HTML. It is rendered in safe mode, without raw
+  HTML or URLs that could run script, and only when it is at most
+  256 KiB of Markdown; a larger one is linked to instead. Its relative
+  links and images point to the release's files by the package's DID,
+  so that they keep working when the package is renamed.
+- **Later, its API**: the JSON `zena doc` writes
+  ([zenadoc.md](zenadoc.md)), and the text search reads (names,
+  descriptions, doc comments).
+
+They are kept as one object per release in the App View's bucket,
+`{tenant}/app-view/releases/{did}/{version}`, in DAG-CBOR, with a format
+number. The App View derives the contents when a release is published,
+from the archive it has just validated, and again when a page finds them
+missing, of an older format, or derived from another archive. That
+covers releases published before the App View kept them, and releases it
+did not publish.
+
+The App View keeps no copies of the files themselves: it is not a CDN,
+and a fetch reads the archive from the package's PDS. A page that shows
+one file reads it from the archive. To read it without the rest, the
+contents will record where each file's bytes are in the archive, and the
+App View will keep a copy of each archive in its own bucket, since it
+reaches its accounts' blobs only through their PDS, which has no ranged
+reads. One file is then one ranged read of that copy, checked against
+the file's CID.
+
+Documenting a package means compiling it with its dependencies, at the
+latest versions their ranges allow when the documentation is built. That
+takes seconds and much of a server's memory, so it is never done in a
+request a person waits for. Each release gets a task in a queue (Cloud
+Tasks), which calls the App View back at a route of its own; Cloud Run
+gives a server CPU only while it answers a request. The App View claims
+the release in its store, so one server documents it, and runs
+`zena pkg fetch` and `zena doc` in a process of their own, so a
+compile's memory is freed when it ends and never competes with the
+pages.
+
 ### Labelers
 
 Labels are standard atproto labels on a package's DID or on a release's
