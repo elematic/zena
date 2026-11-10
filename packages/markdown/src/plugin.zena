@@ -9,11 +9,9 @@
  * 5. `NodeRenderer` (Phase 4: rendering `CustomBlock` and `CustomInline` nodes)
  */
 
-import { Array, GrowableArray, StringBuilder } from 'zena:core';
-import {
-  Block, CustomBlock, Inline, CustomInline, Document, LinkDef, Span
-} from './ast.zena';
-import { HashMap } from 'zena:collections';
+import {Array, GrowableArray, StringBuilder} from 'zena:core';
+import {Block, CustomBlock, Inline, CustomInline, Document, LinkDef, Span} from './ast.zena';
+import {HashMap} from 'zena:collections';
 
 /**
  * Runner interface passed to blocks and transformers that need to parse inline
@@ -28,53 +26,18 @@ export interface InlineParserRunner {
 /**
  * Snapshot of the current line and cursor during Phase 1 block parsing.
  */
-export final class BlockLineState(
-  /** Full document source string. */
-  source: String,
-  /** Current line without trailing `\r` or `\n`. */
-  line: String,
-  /** 0-based byte offset of `line` in `source`. */
-  lineStartOffset: i32,
-  /** Current byte index in `line`. */
-  var index: i32,
-  /** Current column (with 4-space tab stops). */
-  var column: i32,
-  /** Byte index of the next non-space/tab byte in `line` at or after `index`. */
-  var nextNonSpaceIndex: i32,
-  /** Column of `nextNonSpaceIndex`. */
-  var nextNonSpaceColumn: i32,
-  /** Columns of indentation (`nextNonSpaceColumn - column`). */
-  var indent: i32,
-  /** True when the rest of the line contains only spaces or tabs. */
-  var isBlank: boolean
-)
+export final class BlockLineState(source: String, line: String, lineStartOffset: i32, var index: i32, var column: i32, var nextNonSpaceIndex: i32, var nextNonSpaceColumn: i32, var indent: i32, var isBlank: boolean)
 
 /**
  * Information about the currently open tip block when trying to start a new
  * child block.
  */
-export final class MatchedBlockInfo(
-  /** True when the active tip block is an open paragraph. */
-  isParagraph: boolean,
-  /**
-   * The raw lines accumulated in the open paragraph (after stripping leading
-   * link reference definitions), or `null` when the tip block is not a
-   * paragraph.
-   */
-  paragraphLines: GrowableArray<String> | null,
-  /** Start byte offset of the open paragraph, or `0`. */
-  paragraphStartOffset: i32
-)
+export final class MatchedBlockInfo(isParagraph: boolean, paragraphLines: GrowableArray<String> | null, paragraphStartOffset: i32)
 
 /**
  * Result of `CustomBlockParser.tryContinue`.
  */
-export final class BlockContinue(
-  matched: boolean,
-  newIndex: i32,
-  newColumn: i32,
-  finalize: boolean
-) {
+export final class BlockContinue(matched: boolean, newIndex: i32, newColumn: i32, finalize: boolean) {
   static none(): BlockContinue {
     return new BlockContinue(false, -1, -1, false);
   }
@@ -123,12 +86,7 @@ export interface CustomBlockParser {
 /**
  * Result of `BlockParserFactory.tryStart` when a custom block matches.
  */
-export final class CustomBlockStart(
-  parser: CustomBlockParser,
-  newIndex: i32,
-  newColumn: i32,
-  replaceParagraph: boolean
-) {
+export final class CustomBlockStart(parser: CustomBlockParser, newIndex: i32, newColumn: i32, replaceParagraph: boolean) {
   static of(parser: CustomBlockParser): CustomBlockStart {
     return new CustomBlockStart(parser, -1, -1, false);
   }
@@ -176,29 +134,14 @@ export interface BlockParserFactory {
    * Inspects `state` and `matched` and returns a `CustomBlockStart` when a new
    * block begins, or `null` otherwise.
    */
-  tryStart(
-    state: BlockLineState,
-    matched: MatchedBlockInfo
-  ): CustomBlockStart | null;
+  tryStart(state: BlockLineState, matched: MatchedBlockInfo): CustomBlockStart | null;
 }
 
 /**
  * Metadata for an opening or closing delimiter run on the Phase 2 delimiter
  * stack.
  */
-export final class DelimiterRunInfo(
-  delimiterByte: i32,
-  /** Current remaining number of delimiter characters in this run. */
-  length: i32,
-  /** Initial number of delimiter characters before any were consumed. */
-  originalLength: i32,
-  canOpen: boolean,
-  canClose: boolean,
-  /** Byte offset in the document where the active delimiter characters start. */
-  startOffset: i32,
-  /** Byte offset in the document where the active delimiter characters end. */
-  endOffset: i32
-)
+export final class DelimiterRunInfo(delimiterByte: i32, length: i32, originalLength: i32, canOpen: boolean, canClose: boolean, startOffset: i32, endOffset: i32)
 
 /**
  * Phase 2 extension point: processes paired inline delimiters (such as `~~`
@@ -222,20 +165,13 @@ export interface DelimiterProcessor {
    * is the replacement `Inline` node, or `(0, null)` when the runs do not
    * form a valid delimiter pair.
    */
-  process(
-    opener: DelimiterRunInfo,
-    closer: DelimiterRunInfo,
-    children: GrowableArray<Inline>
-  ): inline (i32, Inline | null);
+  process(opener: DelimiterRunInfo, closer: DelimiterRunInfo, children: GrowableArray<Inline>): inline (i32, Inline | null);
 }
 
 /**
  * Result of `InlineContentParser.tryParse`.
  */
-export final class InlineMatch(
-  node: Inline,
-  nextIndex: i32
-)
+export final class InlineMatch(node: Inline, nextIndex: i32)
 
 /**
  * Phase 2 extension point: scans an inline construct starting at one of its
@@ -250,13 +186,7 @@ export interface InlineContentParser {
    * `baseOffset` is the byte offset of `source` in the document and
    * `precedingByte` is the byte at `index - 1`, or `-1` at index 0).
    */
-  tryParse(
-    source: String,
-    baseOffset: i32,
-    index: i32,
-    precedingByte: i32,
-    inlineParser: InlineParserRunner
-  ): InlineMatch | null;
+  tryParse(source: String, baseOffset: i32, index: i32, precedingByte: i32, inlineParser: InlineParserRunner): InlineMatch | null;
 }
 
 /**
@@ -306,15 +236,15 @@ export final class MarkdownExtension {
   astTransformers: GrowableArray<AstTransformer>;
   nodeRenderers: GrowableArray<NodeRenderer>;
 
-  new(
-    blockFactories: GrowableArray<BlockParserFactory> = new GrowableArray<BlockParserFactory>(0),
-    delimiterProcessors: GrowableArray<DelimiterProcessor> = new GrowableArray<DelimiterProcessor>(0),
-    inlineParsers: GrowableArray<InlineContentParser> = new GrowableArray<InlineContentParser>(0),
-    astTransformers: GrowableArray<AstTransformer> = new GrowableArray<AstTransformer>(0),
-    nodeRenderers: GrowableArray<NodeRenderer> = new GrowableArray<NodeRenderer>(0)
-  ) : blockFactories = blockFactories,
-      delimiterProcessors = delimiterProcessors,
-      inlineParsers = inlineParsers,
-      astTransformers = astTransformers,
-      nodeRenderers = nodeRenderers;
+  new(blockFactories: GrowableArray<BlockParserFactory> = new GrowableArray<BlockParserFactory>(
+    0
+  ), delimiterProcessors: GrowableArray<DelimiterProcessor> = new GrowableArray<DelimiterProcessor>(
+    0
+  ), inlineParsers: GrowableArray<InlineContentParser> = new GrowableArray<InlineContentParser>(
+    0
+  ), astTransformers: GrowableArray<AstTransformer> = new GrowableArray<AstTransformer>(
+    0
+  ), nodeRenderers: GrowableArray<NodeRenderer> = new GrowableArray<NodeRenderer>(
+    0
+  )) : blockFactories = blockFactories, delimiterProcessors = delimiterProcessors, inlineParsers = inlineParsers, astTransformers = astTransformers, nodeRenderers = nodeRenderers {}
 }

@@ -3,52 +3,36 @@
  * indentation tracking, and `NodeRenderer` extension dispatch.
  */
 
-import { GrowableArray, Some } from 'zena:core';
-import {
-  StringBuilder, StringReader, isAsciiWhitespace
-} from 'zena:string';
-import { URL } from 'zena:url';
-import {
-  Block, CustomBlock, Document, Inline, CustomInline, Paragraph, Heading,
-  BlockQuote, ListBlock, ListItem, FencedCodeBlock, IndentedCodeBlock,
-  HtmlBlock, ThematicBreak, Text, CodeSpan, Emphasis, Strong, Link, Image,
-  Autolink, HtmlInline, SoftBreak, HardBreak, appendInlinesPlainText
-} from './ast.zena';
-import { HtmlRenderContext, MarkdownExtension, NodeRenderer } from './plugin.zena';
+import {GrowableArray, Some} from 'zena:core';
+import {StringBuilder, StringReader, isAsciiWhitespace} from 'zena:string';
+import {URL} from 'zena:url';
+import {Block, CustomBlock, Document, Inline, CustomInline, Paragraph, Heading, BlockQuote, ListBlock, ListItem, FencedCodeBlock, IndentedCodeBlock, HtmlBlock, ThematicBreak, Text, CodeSpan, Emphasis, Strong, Link, Image, Autolink, HtmlInline, SoftBreak, HardBreak, appendInlinesPlainText} from './ast.zena';
+import {HtmlRenderContext, MarkdownExtension, NodeRenderer} from './plugin.zena';
 
 /**
  * Options controlling HTML rendering and sanitization.
  */
-export type HtmlRenderOptions = {
-  /**
+export type HtmlRenderOptions = {safe?: boolean, escapeRawHtml?: boolean, softBreak?: String, indent?: i32, extensions?: GrowableArray<MarkdownExtension>};
+/**
    * When `true`, raw HTML (`HtmlBlock`, `HtmlInline`) is omitted (or escaped
    * if `escapeRawHtml` is also `true`) and link/image URLs are checked with
    * `isSafeUrl`.
    */
-  safe?: boolean,
-  /**
+/**
    * When `true` alongside `safe: true`, raw HTML blocks and inline HTML are
    * rendered as escaped text rather than dropped.
    */
-  escapeRawHtml?: boolean,
-  /** String emitted for `SoftBreak` nodes (default `"\n"`). */
-  softBreak?: String,
-  /**
+/** String emitted for `SoftBreak` nodes (default `"\n"`). */
+/**
    * Number of spaces per indentation level for nested block containers
    * (default `0` for compact CommonMark output).
    */
-  indent?: i32,
-  /** Extensions supplying `NodeRenderer` implementations. */
-  extensions?: GrowableArray<MarkdownExtension>
-};
+/** Extensions supplying `NodeRenderer` implementations. */
 
 /**
  * Renders `doc` to an HTML string.
  */
-export function renderHtml(
-  doc: Document,
-  options: HtmlRenderOptions = {}
-): String {
+export function renderHtml(doc: Document, options: HtmlRenderOptions = {}): String {
   let renderer = new HtmlRenderer(options);
   return renderer.render(doc);
 }
@@ -73,10 +57,12 @@ export function isSafeUrl(url: String, isImage: boolean = false): boolean {
     let r = new StringReader(url);
     while (!r.isAtEnd) {
       let cp = r.advance();
-      if (cp == 0x2F || cp == 0x3F || cp == 0x23) { // /, ?, #
+      if (cp == 0x2F || cp == 0x3F || cp == 0x23) {
+        // /, ?, #
         return true;
       }
-      if (cp == 0x3A) { // :
+      if (cp == 0x3A) {
+        // :
         return false;
       }
     }
@@ -87,17 +73,16 @@ export function isSafeUrl(url: String, isImage: boolean = false): boolean {
   }
   if (proto == 'data:') {
     let body = parsed.pathname.asciiLowerCase();
-    return body.startsWith('image/png;') ||
-        body.startsWith('image/gif;') ||
-        body.startsWith('image/jpeg;') ||
-        body.startsWith('image/webp;');
+    return body.startsWith('image/png;')
+      || body.startsWith('image/gif;')
+      || body.startsWith('image/jpeg;')
+      || body.startsWith('image/webp;');
   }
-  return !isImage && (
-    proto == 'mailto:' ||
-    proto == 'irc:' ||
-    proto == 'ircs:' ||
-    proto == 'xmpp:'
-  );
+  return !isImage
+    && (proto == 'mailto:'
+      || proto == 'irc:'
+      || proto == 'ircs:'
+      || proto == 'xmpp:');
 }
 
 /**
@@ -113,13 +98,9 @@ export final class HtmlRenderer implements HtmlRenderContext {
   #renderers = new GrowableArray<NodeRenderer>(4);
 
   new(options: HtmlRenderOptions = {}) {
-    let {
-      safe = false,
-      escapeRawHtml = false,
-      softBreak = '\n',
-      indent = 0,
-      extensions = new GrowableArray<MarkdownExtension>(0)
-    } = options;
+    let {safe: safe = false, escapeRawHtml: escapeRawHtml = false, softBreak: softBreak = '\n', indent: indent = 0, extensions: extensions = new GrowableArray<MarkdownExtension>(
+      0
+    )} = options;
     this.safe = safe;
     this.escapeRawHtml = escapeRawHtml;
     this.#softBreak = softBreak;
@@ -173,7 +154,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
           this.sb.append('">');
         } else {
           this.sb.append('<p>');
-        }
+        };
         this.renderInlines(inlines);
         this.sb.append('</p>\n');
       }
@@ -185,7 +166,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
           this.sb.append(' id="');
           this.escapeAttribute(id);
           this.sb.append('"');
-        }
+        };
         this.sb.append('>');
         this.renderInlines(inlines);
         this.sb.append('</h');
@@ -210,10 +191,10 @@ export final class HtmlRenderer implements HtmlRenderContext {
             this.sb.append('">\n');
           } else {
             this.sb.append('<ol>\n');
-          }
+          };
         } else {
           this.sb.append('<ul>\n');
-        }
+        };
         this.pushIndent();
         for (let item in items) {
           this.#renderListItem(item, tight);
@@ -224,7 +205,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
           this.sb.append('</ol>\n');
         } else {
           this.sb.append('</ul>\n');
-        }
+        };
       }
       case ListItem as item: {
         this.#renderListItem(item, false);
@@ -238,7 +219,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
           this.sb.append('">');
         } else {
           this.sb.append('<pre><code>');
-        }
+        };
         this.escapeHtml(literal);
         this.sb.append('</code></pre>\n');
       }
@@ -255,12 +236,12 @@ export final class HtmlRenderer implements HtmlRenderContext {
             this.sb.append('<p>');
             this.escapeHtml(literal);
             this.sb.append('</p>\n');
-          }
+          };
         } else {
           this.writeIndent();
           this.sb.append(literal);
           this.sb.appendByte(0x0A);
-        }
+        };
       }
       case ThematicBreak: {
         this.writeIndent();
@@ -273,7 +254,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
           }
         }
       }
-    }
+    };
   }
 
   #renderListItem(item: ListItem, tight: boolean): void {
@@ -291,10 +272,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
       this.sb.append('<li>');
     }
 
-    let checkboxHtml = if (isChecked)
-      '<input type="checkbox" disabled="" checked="" /> '
-    else
-      '<input type="checkbox" disabled="" /> ';
+    let checkboxHtml = if (isChecked) '<input type="checkbox" disabled="" checked="" /> ' else '<input type="checkbox" disabled="" /> ';
 
     if (item.blocks.length == 0) {
       if (hasCheckbox) {
@@ -408,13 +386,13 @@ export final class HtmlRenderer implements HtmlRenderContext {
         this.sb.append('<a href="');
         if (!this.safe || this.isSafeUrl(destination, false)) {
           this.escapeAttribute(destination);
-        }
+        };
         this.sb.append('"');
         if (!title.isEmpty) {
           this.sb.append(' title="');
           this.escapeAttribute(title);
           this.sb.append('"');
-        }
+        };
         this.sb.append('>');
         this.renderInlines(children);
         this.sb.append('</a>');
@@ -423,7 +401,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
         this.sb.append('<img src="');
         if (!this.safe || this.isSafeUrl(destination, true)) {
           this.escapeAttribute(destination);
-        }
+        };
         this.sb.append('" alt="');
         let altSb = new StringBuilder(32);
         appendInlinesPlainText(children, altSb);
@@ -433,14 +411,14 @@ export final class HtmlRenderer implements HtmlRenderContext {
           this.sb.append(' title="');
           this.escapeAttribute(title);
           this.sb.append('"');
-        }
+        };
         this.sb.append(' />');
       }
       case Autolink {destination, label}: {
         this.sb.append('<a href="');
         if (!this.safe || this.isSafeUrl(destination, false)) {
           this.escapeAttribute(destination);
-        }
+        };
         this.sb.append('">');
         this.escapeHtml(label);
         this.sb.append('</a>');
@@ -449,10 +427,10 @@ export final class HtmlRenderer implements HtmlRenderContext {
         if (this.safe) {
           if (this.escapeRawHtml) {
             this.escapeHtml(literal);
-          }
+          };
         } else {
           this.sb.append(literal);
-        }
+        };
       }
       case SoftBreak: {
         this.sb.append(this.#softBreak);
@@ -467,7 +445,7 @@ export final class HtmlRenderer implements HtmlRenderContext {
           }
         }
       }
-    }
+    };
   }
 
   escapeHtml(text: String): void {
@@ -477,15 +455,15 @@ export final class HtmlRenderer implements HtmlRenderContext {
       let pos = r.mark();
       let cp = r.advance();
       let entity = if (cp == 0x26) {
-        '&amp;'
+        '&amp;';
       } else if (cp == 0x3C) {
-        '&lt;'
+        '&lt;';
       } else if (cp == 0x3E) {
-        '&gt;'
+        '&gt;';
       } else if (cp == 0x22) {
-        '&quot;'
+        '&quot;';
       } else {
-        null
+        null;
       };
       if (entity != null) {
         if (pos > last) {

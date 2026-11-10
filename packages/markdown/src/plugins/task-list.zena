@@ -2,15 +2,9 @@
  * GFM task list item extension (`- [ ] todo`, `- [x] done`).
  */
 
-import { GrowableArray, StringReader, some } from 'zena:core';
-import {
-  Block, Document, Inline, Paragraph, BlockQuote, ListBlock, ListItem, Text,
-  SoftBreak, HardBreak, Span
-} from '../ast.zena';
-import {
-  AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser,
-  InlineParserRunner, MarkdownExtension, NodeRenderer
-} from '../plugin.zena';
+import {GrowableArray, StringReader, some} from 'zena:core';
+import {Block, Document, Inline, Paragraph, BlockQuote, ListBlock, ListItem, Text, SoftBreak, HardBreak, Span} from '../ast.zena';
+import {AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser, InlineParserRunner, MarkdownExtension, NodeRenderer} from '../plugin.zena';
 
 final class TaskListTransformer implements AstTransformer {
   transform(doc: Document, inlineParser: InlineParserRunner): void {
@@ -34,7 +28,7 @@ final class TaskListTransformer implements AstTransformer {
           this.#visitBlocks(item.blocks);
         }
         case _: {}
-      }
+      };
     }
   }
 
@@ -48,19 +42,23 @@ final class TaskListTransformer implements AstTransformer {
       }
       if (let Text {literal, span} = inlines[0]) {
         let r = new StringReader(literal);
-        if (!r.matchCodePoint(0x5B)) { // '['
+        if (!r.matchCodePoint(0x5B)) {
+          // '['
           return;
         }
         let mark = r.advance();
         var checked = false;
-        if (mark == 0x20) { // ' '
+        if (mark == 0x20) {
+          // ' '
           checked = false;
-        } else if (mark == 0x78 || mark == 0x58) { // 'x' or 'X'
+        } else if (mark == 0x78 || mark == 0x58) {
+          // 'x' or 'X'
           checked = true;
         } else {
           return;
         }
-        if (!r.matchCodePoint(0x5D)) { // ']'
+        if (!r.matchCodePoint(0x5D)) {
+          // ']'
           return;
         }
 
@@ -78,7 +76,10 @@ final class TaskListTransformer implements AstTransformer {
           if (rest.isEmpty && inlines.length > 1) {
             this.#removeFirstInline(inlines);
           } else {
-            inlines[0] = new Text(rest, new Span(span.start + restOffset, span.end));
+            inlines[0] = new Text(
+              rest,
+              new Span(span.start + restOffset, span.end)
+            );
           }
         } else if (inlines.length > 1) {
           item.checked = some(checked);

@@ -6,8 +6,8 @@
  * subclassing `CustomBlock` or `CustomInline`.
  */
 
-import { GrowableArray, Option, StringBuilder } from 'zena:core';
-import { HashMap } from 'zena:collections';
+import {GrowableArray, Option, StringBuilder} from 'zena:core';
+import {HashMap} from 'zena:collections';
 
 /**
  * A 0-based UTF-8 byte range `[start, end)` in the source string.
@@ -17,70 +17,26 @@ export final class Span(start: i32, end: i32)
 /**
  * A normalized link reference definition (`[label]: destination "title"`).
  */
-export final class LinkDef(
-  label: String,
-  destination: String,
-  title: String,
-  span: Span
-)
+export final class LinkDef(label: String, destination: String, title: String, span: Span)
 
 /**
  * The root of a parsed Markdown document.
  */
-export final class Document(
-  var blocks: GrowableArray<Block>,
-  links: HashMap<String, LinkDef>,
-  span: Span
-)
+export final class Document(var blocks: GrowableArray<Block>, links: HashMap<String, LinkDef>, span: Span)
 
 /**
  * Block-level nodes in a Markdown document.
  */
 export sealed class Block {
-  case Paragraph(
-    var inlines: GrowableArray<Inline>,
-    var id: String | null,
-    span: Span
-  )
-  case Heading(
-    level: i32,
-    var inlines: GrowableArray<Inline>,
-    var id: String | null,
-    span: Span
-  )
-  case BlockQuote(
-    var blocks: GrowableArray<Block>,
-    span: Span
-  )
-  case ListBlock(
-    ordered: boolean,
-    startNumber: i32,
-    delimiter: i32,
-    var tight: boolean,
-    var items: GrowableArray<ListItem>,
-    span: Span
-  )
-  case ListItem(
-    var blocks: GrowableArray<Block>,
-    var checked: Option<boolean>,
-    span: Span
-  )
-  case FencedCodeBlock(
-    info: String,
-    literal: String,
-    span: Span
-  )
-  case IndentedCodeBlock(
-    literal: String,
-    span: Span
-  )
-  case HtmlBlock(
-    literal: String,
-    span: Span
-  )
-  case ThematicBreak(
-    span: Span
-  )
+  case Paragraph(var inlines: GrowableArray<Inline>, var id: String | null, span: Span)
+  case Heading(level: i32, var inlines: GrowableArray<Inline>, var id: String | null, span: Span)
+  case BlockQuote(var blocks: GrowableArray<Block>, span: Span)
+  case ListBlock(ordered: boolean, startNumber: i32, delimiter: i32, var tight: boolean, var items: GrowableArray<ListItem>, span: Span)
+  case ListItem(var blocks: GrowableArray<Block>, var checked: Option<boolean>, span: Span)
+  case FencedCodeBlock(info: String, literal: String, span: Span)
+  case IndentedCodeBlock(literal: String, span: Span)
+  case HtmlBlock(literal: String, span: Span)
+  case ThematicBreak(span: Span)
   case CustomBlock
 
   abstract span: Span;
@@ -93,59 +49,23 @@ export sealed class Block {
 export abstract class CustomBlock extends Block {
   span: Span;
 
-  new(this.span) : super();
+  new(this.span) : super() {}
 }
 
 /**
  * Inline-level nodes within a block's rich text.
  */
 export sealed class Inline {
-  case Text(
-    var literal: String,
-    span: Span
-  )
-  case CodeSpan(
-    literal: String,
-    span: Span
-  )
-  case Emphasis(
-    delimiter: i32,
-    var children: GrowableArray<Inline>,
-    span: Span
-  )
-  case Strong(
-    delimiter: i32,
-    var children: GrowableArray<Inline>,
-    span: Span
-  )
-  case Link(
-    var destination: String,
-    var title: String,
-    var children: GrowableArray<Inline>,
-    span: Span
-  )
-  case Image(
-    var destination: String,
-    var title: String,
-    var children: GrowableArray<Inline>,
-    span: Span
-  )
-  case Autolink(
-    var destination: String,
-    var label: String,
-    isEmail: boolean,
-    span: Span
-  )
-  case HtmlInline(
-    literal: String,
-    span: Span
-  )
-  case SoftBreak(
-    span: Span
-  )
-  case HardBreak(
-    span: Span
-  )
+  case Text(var literal: String, span: Span)
+  case CodeSpan(literal: String, span: Span)
+  case Emphasis(delimiter: i32, var children: GrowableArray<Inline>, span: Span)
+  case Strong(delimiter: i32, var children: GrowableArray<Inline>, span: Span)
+  case Link(var destination: String, var title: String, var children: GrowableArray<Inline>, span: Span)
+  case Image(var destination: String, var title: String, var children: GrowableArray<Inline>, span: Span)
+  case Autolink(var destination: String, var label: String, isEmail: boolean, span: Span)
+  case HtmlInline(literal: String, span: Span)
+  case SoftBreak(span: Span)
+  case HardBreak(span: Span)
   case CustomInline
 
   abstract span: Span;
@@ -158,7 +78,7 @@ export sealed class Inline {
 export abstract class CustomInline extends Inline {
   span: Span;
 
-  new(this.span) : super();
+  new(this.span) : super() {}
 
   /**
    * Appends the plain-text representation of this custom inline node to `sb`.
@@ -172,10 +92,7 @@ export abstract class CustomInline extends Inline {
  * preserving text inside emphasis, links, images, code spans, and custom
  * inlines.
  */
-export function appendInlinesPlainText(
-  inlines: GrowableArray<Inline>,
-  sb: StringBuilder
-): void {
+export function appendInlinesPlainText(inlines: GrowableArray<Inline>, sb: StringBuilder): void {
   for (let node in inlines) {
     match (node) {
       case Text {literal}: {
@@ -209,7 +126,7 @@ export function appendInlinesPlainText(
       case CustomInline as custom: {
         custom.appendPlainText(sb);
       }
-    }
+    };
   }
 }
 

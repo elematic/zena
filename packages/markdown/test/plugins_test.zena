@@ -4,19 +4,11 @@
  * `TaskListItemsTest`, `AutolinkTest`, `HeadingAnchorTest`, and `AlertsTest`).
  */
 
-import { Array, GrowableArray } from 'zena:core';
-import { StringBuilder, StringReader, isAsciiAlphanumeric } from 'zena:string';
-import { suite, test, TestContext } from 'zena:test';
-import { equal } from 'zena:assert';
-import {
-  parse, markdownToHtml, gfmExtensions, strikethroughExtension,
-  taskListExtension, autolinkExtension, alertsExtension,
-  headingAnchorsExtension, CustomInline, CustomBlock, Inline, Span,
-  DelimiterProcessor, DelimiterRunInfo, InlineContentParser, InlineMatch,
-  InlineParserRunner, AstTransformer, BlockParserFactory, HtmlRenderContext,
-  MarkdownExtension, NodeRenderer, Link, Text, Paragraph, Strikethrough,
-  AlertBlock, AlertKind, appendInlinesPlainText, inlinesToPlainText
-} from 'markdown:index';
+import {Array, GrowableArray} from 'zena:core';
+import {StringBuilder, StringReader, isAsciiAlphanumeric} from 'zena:string';
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {parse, markdownToHtml, gfmExtensions, strikethroughExtension, taskListExtension, autolinkExtension, alertsExtension, headingAnchorsExtension, CustomInline, CustomBlock, Inline, Span, DelimiterProcessor, DelimiterRunInfo, InlineContentParser, InlineMatch, InlineParserRunner, AstTransformer, BlockParserFactory, HtmlRenderContext, MarkdownExtension, NodeRenderer, Link, Text, Paragraph, Strikethrough, AlertBlock, AlertKind, appendInlinesPlainText, inlinesToPlainText} from 'markdown:index';
 
 /**
  * Custom test inline node for `==highlight==` (`<mark>...</mark>`).
@@ -24,7 +16,7 @@ import {
 final class Highlight extends CustomInline {
   children: GrowableArray<Inline>;
 
-  new(this.children, span: Span) : super(span);
+  new(this.children, span: Span) : super(span) {}
 
   appendPlainText(sb: StringBuilder): void {
     appendInlinesPlainText(this.children, sb);
@@ -44,13 +36,12 @@ final class HighlightDelimiterProcessor implements DelimiterProcessor {
     return 2;
   }
 
-  process(
-    opener: DelimiterRunInfo,
-    closer: DelimiterRunInfo,
-    children: GrowableArray<Inline>
-  ): inline (i32, Inline | null) {
+  process(opener: DelimiterRunInfo, closer: DelimiterRunInfo, children: GrowableArray<Inline>): inline (i32, Inline | null) {
     if (opener.length >= 2 && closer.length >= 2) {
-      return (2, new Highlight(children, new Span(opener.startOffset, closer.endOffset)));
+      return (2, new Highlight(
+        children,
+        new Span(opener.startOffset, closer.endOffset)
+      ));
     }
     return (0, null);
   }
@@ -80,13 +71,7 @@ final class MentionInlineParser implements InlineContentParser {
     return [0x40]; // '@'
   }
 
-  tryParse(
-    source: String,
-    baseOffset: i32,
-    index: i32,
-    precedingByte: i32,
-    inlineParser: InlineParserRunner
-  ): InlineMatch | null {
+  tryParse(source: String, baseOffset: i32, index: i32, precedingByte: i32, inlineParser: InlineParserRunner): InlineMatch | null {
     if (precedingByte >= 0 && isAsciiAlphanumeric(precedingByte)) {
       return null;
     }
@@ -107,374 +92,523 @@ final class MentionInlineParser implements InlineContentParser {
   }
 }
 
-export let tests = suite('Plugins and GFM (ported from commonmark-java)', () => {
-  suite('StrikethroughTest', () => {
-    test('oneTildeIsEnough and twoTildesWorksToo', (ctx) => {
-      let exts = gfmExtensions();
-      equal(markdownToHtml('~foo~', {extensions: exts}), '<p><del>foo</del></p>\n');
-      equal(markdownToHtml('~~foo~~', {extensions: exts}), '<p><del>foo</del></p>\n');
-    });
+export let tests = suite(
+  'Plugins and GFM (ported from commonmark-java)',
+  () => {
+    suite(
+      'StrikethroughTest',
+      () => {
+        test(
+          'oneTildeIsEnough and twoTildesWorksToo',
+          (ctx) => {
+            let exts = gfmExtensions();
+            equal(
+              markdownToHtml('~foo~', { extensions: exts }),
+              '<p><del>foo</del></p>\n'
+            );
+            equal(
+              markdownToHtml('~~foo~~', { extensions: exts }),
+              '<p><del>foo</del></p>\n'
+            );
+          }
+        );
 
-    test('fourTildesNope, unmatched, threeInnerThree, twoInnerThree', (ctx) => {
-      let exts = gfmExtensions();
-      equal(markdownToHtml('foo ~~~~', {extensions: exts}), '<p>foo ~~~~</p>\n');
-      equal(markdownToHtml('~~foo', {extensions: exts}), '<p>~~foo</p>\n');
-      equal(markdownToHtml('foo~~', {extensions: exts}), '<p>foo~~</p>\n');
-      equal(markdownToHtml('a ~~~foo~~~', {extensions: exts}), '<p>a ~~~foo~~~</p>\n');
-      equal(markdownToHtml('~~foo~~~', {extensions: exts}), '<p>~~foo~~~</p>\n');
-    });
+        test(
+          'fourTildesNope, unmatched, threeInnerThree, twoInnerThree',
+          (ctx) => {
+            let exts = gfmExtensions();
+            equal(
+              markdownToHtml('foo ~~~~', { extensions: exts }),
+              '<p>foo ~~~~</p>\n'
+            );
+            equal(
+              markdownToHtml('~~foo', { extensions: exts }),
+              '<p>~~foo</p>\n'
+            );
+            equal(
+              markdownToHtml('foo~~', { extensions: exts }),
+              '<p>foo~~</p>\n'
+            );
+            equal(
+              markdownToHtml('a ~~~foo~~~', { extensions: exts }),
+              '<p>a ~~~foo~~~</p>\n'
+            );
+            equal(
+              markdownToHtml('~~foo~~~', { extensions: exts }),
+              '<p>~~foo~~~</p>\n'
+            );
+          }
+        );
 
-    test('tildesInside', (ctx) => {
-      let exts = gfmExtensions();
-      equal(markdownToHtml('~~foo~bar~~', {extensions: exts}), '<p><del>foo~bar</del></p>\n');
-      equal(markdownToHtml('~~foo~~bar~~', {extensions: exts}), '<p><del>foo</del>bar~~</p>\n');
-      equal(markdownToHtml('~~foo~~~bar~~', {extensions: exts}), '<p><del>foo~~~bar</del></p>\n');
-      equal(
-        markdownToHtml('~~foo~~~~bar~~', {extensions: exts}),
-        '<p><del>foo~~~~bar</del></p>\n'
-      );
-      equal(
-        markdownToHtml('~~foo~~~~~bar~~', {extensions: exts}),
-        '<p><del>foo~~~~~bar</del></p>\n'
-      );
-      equal(
-        markdownToHtml('~~foo~~~~~~bar~~', {extensions: exts}),
-        '<p><del>foo~~~~~~bar</del></p>\n'
-      );
-    });
+        test(
+          'tildesInside',
+          (ctx) => {
+            let exts = gfmExtensions();
+            equal(
+              markdownToHtml('~~foo~bar~~', { extensions: exts }),
+              '<p><del>foo~bar</del></p>\n'
+            );
+            equal(
+              markdownToHtml('~~foo~~bar~~', { extensions: exts }),
+              '<p><del>foo</del>bar~~</p>\n'
+            );
+            equal(
+              markdownToHtml('~~foo~~~bar~~', { extensions: exts }),
+              '<p><del>foo~~~bar</del></p>\n'
+            );
+            equal(
+              markdownToHtml('~~foo~~~~bar~~', { extensions: exts }),
+              '<p><del>foo~~~~bar</del></p>\n'
+            );
+            equal(
+              markdownToHtml('~~foo~~~~~bar~~', { extensions: exts }),
+              '<p><del>foo~~~~~bar</del></p>\n'
+            );
+            equal(
+              markdownToHtml('~~foo~~~~~~bar~~', { extensions: exts }),
+              '<p><del>foo~~~~~~bar</del></p>\n'
+            );
+          }
+        );
 
-    test('strikethroughWholeParagraphWithOtherDelimiters and insideBlockQuote', (ctx) => {
-      let exts = gfmExtensions();
-      equal(
-        markdownToHtml(
-          '~~Paragraph with *emphasis* and __strong emphasis__~~',
-          {extensions: exts}
-        ),
-        '<p><del>Paragraph with <em>emphasis</em> and <strong>strong emphasis</strong></del></p>\n'
-      );
-      equal(
-        markdownToHtml('> strike ~~that~~', {extensions: exts}),
-        '<blockquote>\n<p>strike <del>that</del></p>\n</blockquote>\n'
-      );
-    });
+        test(
+          'strikethroughWholeParagraphWithOtherDelimiters and insideBlockQuote',
+          (ctx) => {
+            let exts = gfmExtensions();
+            equal(
+              markdownToHtml(
+                '~~Paragraph with *emphasis* and __strong emphasis__~~',
+                { extensions: exts }
+              ),
+              '<p><del>Paragraph with <em>emphasis</em> and <strong>strong emphasis</strong></del></p>\n'
+            );
+            equal(
+              markdownToHtml('> strike ~~that~~', { extensions: exts }),
+              '<blockquote>\n<p>strike <del>that</del></p>\n</blockquote>\n'
+            );
+          }
+        );
 
-    test('sourceSpans', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(strikethroughExtension());
-      let doc = parse('hey ~~there~~\n', exts);
-      if (let Paragraph {inlines} = doc.blocks[0]) {
-        equal(inlines.length, 2);
-        let st = inlines[1];
-        equal(st is Strikethrough, true);
-        equal(st.span.start, 4);
-        equal(st.span.end, 13);
+        test(
+          'sourceSpans',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(strikethroughExtension());
+            let doc = parse('hey ~~there~~\n', exts);
+            if (let Paragraph {inlines} = doc.blocks[0]) {
+              equal(inlines.length, 2);
+              let st = inlines[1];
+              equal(st is Strikethrough, true);
+              equal(st.span.start, 4);
+              equal(st.span.end, 13);
+            }
+          }
+        );
       }
-    });
-  });
+    );
 
-  suite('TaskListItemsTest', () => {
-    test('baseCase', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(taskListExtension());
-      let checked = '<li class="task-list-item"><input type="checkbox" disabled="" checked="" />';
-      let unchecked = '<li class="task-list-item"><input type="checkbox" disabled="" />';
+    suite(
+      'TaskListItemsTest',
+      () => {
+        test(
+          'baseCase',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(taskListExtension());
+            let checked = '<li class="task-list-item"><input type="checkbox" disabled="" checked="" />';
+            let unchecked = '<li class="task-list-item"><input type="checkbox" disabled="" />';
 
-      equal(
-        markdownToHtml('- [x] this is *done*\n', {extensions: exts}),
-        `<ul>\n${checked} this is <em>done</em></li>\n</ul>\n`
-      );
-      equal(
-        markdownToHtml('- [ ] do this\n', {extensions: exts}),
-        `<ul>\n${unchecked} do this</li>\n</ul>\n`
-      );
-      equal(
-        markdownToHtml('- [x] foo\n  - [ ] bar\n  - [x] baz\n- [ ] bim\n', {extensions: exts}),
-        `<ul>\n${checked} foo\n<ul>\n${unchecked} bar</li>\n${checked} baz</li>\n</ul>\n</li>\n${unchecked} bim</li>\n</ul>\n`
-      );
-      equal(
-        markdownToHtml('*   [ ]   do this\n*   [ ]   and this\n', {extensions: exts}),
-        `<ul>\n${unchecked} do this</li>\n${unchecked} and this</li>\n</ul>\n`
-      );
-      equal(
-        markdownToHtml('+ [x] one\n  - [ ] two\n    * [x] three\n', {extensions: exts}),
-        `<ul>\n${checked} one\n<ul>\n${unchecked} two\n<ul>\n${checked} three</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>\n`
-      );
-      equal(
-        markdownToHtml(
-          'TODO list\n---------\n- [ ] first task\n- [x] second task\n- [ ] third task\n\nLet me know when you are finished\n',
-          {extensions: exts}
-        ),
-        `<h2>TODO list</h2>\n<ul>\n${unchecked} first task</li>\n${checked} second task</li>\n${unchecked} third task</li>\n</ul>\n<p>Let me know when you are finished</p>\n`
-      );
-    });
+            equal(
+              markdownToHtml('- [x] this is *done*\n', { extensions: exts }),
+              `<ul>\n${checked} this is <em>done</em></li>\n</ul>\n`
+            );
+            equal(
+              markdownToHtml('- [ ] do this\n', { extensions: exts }),
+              `<ul>\n${unchecked} do this</li>\n</ul>\n`
+            );
+            equal(
+              markdownToHtml(
+                '- [x] foo\n  - [ ] bar\n  - [x] baz\n- [ ] bim\n',
+                { extensions: exts }
+              ),
+              `<ul>\n${checked} foo\n<ul>\n${unchecked} bar</li>\n${checked} baz</li>\n</ul>\n</li>\n${unchecked} bim</li>\n</ul>\n`
+            );
+            equal(
+              markdownToHtml(
+                '*   [ ]   do this\n*   [ ]   and this\n',
+                { extensions: exts }
+              ),
+              `<ul>\n${unchecked} do this</li>\n${unchecked} and this</li>\n</ul>\n`
+            );
+            equal(
+              markdownToHtml(
+                '+ [x] one\n  - [ ] two\n    * [x] three\n',
+                { extensions: exts }
+              ),
+              `<ul>\n${checked} one\n<ul>\n${unchecked} two\n<ul>\n${checked} three</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>\n`
+            );
+            equal(
+              markdownToHtml(
+                'TODO list\n---------\n- [ ] first task\n- [x] second task\n- [ ] third task\n\nLet me know when you are finished\n',
+                { extensions: exts }
+              ),
+              `<h2>TODO list</h2>\n<ul>\n${unchecked} first task</li>\n${checked} second task</li>\n${unchecked} third task</li>\n</ul>\n<p>Let me know when you are finished</p>\n`
+            );
+          }
+        );
 
-    test('notListItem', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(taskListExtension());
-      equal(
-        markdownToHtml('[x] this is not a task\n', {extensions: exts}),
-        '<p>[x] this is not a task</p>\n'
-      );
-      equal(
-        markdownToHtml(' [ ] this is not a task either\n', {extensions: exts}),
-        '<p>[ ] this is not a task either</p>\n'
-      );
-    });
+        test(
+          'notListItem',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(taskListExtension());
+            equal(
+              markdownToHtml('[x] this is not a task\n', { extensions: exts }),
+              '<p>[x] this is not a task</p>\n'
+            );
+            equal(
+              markdownToHtml(
+                ' [ ] this is not a task either\n',
+                { extensions: exts }
+              ),
+              '<p>[ ] this is not a task either</p>\n'
+            );
+          }
+        );
 
-    test('notValidTaskFormat', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(taskListExtension());
-      equal(
-        markdownToHtml('- [x]no space\n', {extensions: exts}),
-        '<ul>\n<li>[x]no space</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('- [O] is not a _task_\n', {extensions: exts}),
-        '<ul>\n<li>[O] is not a <em>task</em></li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('* [] neither is this\n', {extensions: exts}),
-        '<ul>\n<li>[] neither is this</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('* [  ] nor this\n* [XX] nor this\n', {extensions: exts}),
-        '<ul>\n<li>[  ] nor this</li>\n<li>[XX] nor this</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('+ [x]] is not a task\n', {extensions: exts}),
-        '<ul>\n<li>[x]] is not a task</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml("- [x isn't\n", {extensions: exts}),
-        "<ul>\n<li>[x isn't</li>\n</ul>\n"
-      );
-      equal(
-        markdownToHtml('- [[x is not\n', {extensions: exts}),
-        '<ul>\n<li>[[x is not</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('- x] nope\n', {extensions: exts}),
-        '<ul>\n<li>x] nope</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('- x]] no way\n', {extensions: exts}),
-        '<ul>\n<li>x]] no way</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('+ (x) sorry no\n', {extensions: exts}),
-        '<ul>\n<li>(x) sorry no</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('+ {x} sorry not sorry\n', {extensions: exts}),
-        '<ul>\n<li>{x} sorry not sorry</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('+ [[x]] nooo\n', {extensions: exts}),
-        '<ul>\n<li>[[x]] nooo</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('+ text before [x] is not a task\n', {extensions: exts}),
-        '<ul>\n<li>text before [x] is not a task</li>\n</ul>\n'
-      );
-      equal(
-        markdownToHtml('* [x]  \n* [ ]  \n', {extensions: exts}),
-        '<ul>\n<li>[x]</li>\n<li>[ ]</li>\n</ul>\n'
-      );
-    });
-  });
-
-  suite('AutolinkTest', () => {
-    test('oneTextNode and textNodeAndOthers', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(autolinkExtension());
-      equal(
-        markdownToHtml('foo http://one.org/ bar http://two.org/', {extensions: exts}),
-        '<p>foo <a href="http://one.org/">http://one.org/</a> bar <a href="http://two.org/">http://two.org/</a></p>\n'
-      );
-      equal(
-        markdownToHtml(
-          'foo http://one.org/ bar `code` baz http://two.org/',
-          {extensions: exts}
-        ),
-        '<p>foo <a href="http://one.org/">http://one.org/</a> bar <code>code</code> baz <a href="http://two.org/">http://two.org/</a></p>\n'
-      );
-    });
-
-    test('tricky punctuation and balanced parentheses', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(autolinkExtension());
-      equal(
-        markdownToHtml(
-          'http://example.com/one. Example 2 (see http://example.com/two). Example 3: http://example.com/foo_(bar)',
-          {extensions: exts}
-        ),
-        '<p><a href="http://example.com/one">http://example.com/one</a>. Example 2 (see <a href="http://example.com/two">http://example.com/two</a>). Example 3: <a href="http://example.com/foo_(bar)">http://example.com/foo_(bar)</a></p>\n'
-      );
-    });
-
-    test('emailUsesMailto and emailWithTldNotLinked', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(autolinkExtension());
-      equal(
-        markdownToHtml('foo@example.com', {extensions: exts}),
-        '<p><a href="mailto:foo@example.com">foo@example.com</a></p>\n'
-      );
-      equal(
-        markdownToHtml('foo@com', {extensions: exts}),
-        '<p>foo@com</p>\n'
-      );
-    });
-
-    test('dontLinkTextWithinLinks and wwwLinks', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(autolinkExtension());
-      equal(
-        markdownToHtml('<http://example.com>', {extensions: exts}),
-        '<p><a href="http://example.com">http://example.com</a></p>\n'
-      );
-      equal(
-        markdownToHtml('www.example.com', {extensions: exts}),
-        '<p><a href="http://www.example.com">www.example.com</a></p>\n'
-      );
-    });
-  });
-
-  suite('HeadingAnchorTest', () => {
-    test('baseCaseSingleHeader and singleHeaderWithCodeBlock', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(headingAnchorsExtension());
-      equal(
-        markdownToHtml('# Heading here\n', {extensions: exts}),
-        '<h1 id="heading-here">Heading here</h1>\n'
-      );
-      equal(
-        markdownToHtml('Hi there\n# Heading `here`\n', {extensions: exts}),
-        '<p>Hi there</p>\n<h1 id="heading-here">Heading <code>here</code></h1>\n'
-      );
-    });
-
-    test('duplicateHeadersMakeUniqueIds and caseIsIgnoredWhenComparingIds', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(headingAnchorsExtension());
-      equal(
-        markdownToHtml('# Heading here\n# Heading here\n', {extensions: exts}),
-        '<h1 id="heading-here">Heading here</h1>\n<h1 id="heading-here-1">Heading here</h1>\n'
-      );
-      equal(
-        markdownToHtml('# HEADING here\n# heading here\n', {extensions: exts}),
-        '<h1 id="heading-here">HEADING here</h1>\n<h1 id="heading-here-1">heading here</h1>\n'
-      );
-      equal(
-        markdownToHtml('# Header\n# Header\n# Header-1\n', {extensions: exts}),
-        '<h1 id="header">Header</h1>\n<h1 id="header-1">Header</h1>\n<h1 id="header-1">Header-1</h1>\n'
-      );
-    });
-
-    test('nestedBlocks, boldEmphasis, strongEmphasis, and multipleSpacesKept', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(headingAnchorsExtension());
-      equal(
-        markdownToHtml('## `h` `e` **l** *l* o\n', {extensions: exts}),
-        '<h2 id="h-e-l-l-o"><code>h</code> <code>e</code> <strong>l</strong> <em>l</em> o</h2>\n'
-      );
-      equal(
-        markdownToHtml('# _hello_ **there**', {extensions: exts}),
-        '<h1 id="hello-there"><em>hello</em> <strong>there</strong></h1>\n'
-      );
-      equal(
-        markdownToHtml('# _**Hi there**_\n', {extensions: exts}),
-        '<h1 id="hi-there"><em><strong>Hi there</strong></em></h1>\n'
-      );
-      equal(
-        markdownToHtml('# Hi  There\n', {extensions: exts}),
-        '<h1 id="hi--there">Hi  There</h1>\n'
-      );
-    });
-
-    test('nonAsciiCharacterHeading and unicodeMarks', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(headingAnchorsExtension());
-      equal(
-        markdownToHtml('# bär\n', {extensions: exts}),
-        '<h1 id="bär">bär</h1>\n'
-      );
-      let undertie = String.fromCodePoint(0x203F);
-      equal(
-        markdownToHtml(`# undertie ${undertie}\n`, {extensions: exts}),
-        `<h1 id="undertie-${undertie}">undertie ${undertie}</h1>\n`
-      );
-      let mark1 = String.fromCodePoint(0x1DC0);
-      equal(
-        markdownToHtml(`# a${mark1}\n`, {extensions: exts}),
-        `<h1 id="a${mark1}">a${mark1}</h1>\n`
-      );
-    });
-  });
-
-  suite('AlertsTest', () => {
-    test('all five standard GitHub alert types', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(alertsExtension());
-      let md =
-        '> [!NOTE]\n> Note body\n\n> [!TIP]\n> Tip body\n\n> [!IMPORTANT]\n> Important body\n\n> [!WARNING]\n> Warning body\n\n> [!CAUTION]\n> Caution body\n';
-      equal(
-        markdownToHtml(md, {extensions: exts}),
-        '<div class="markdown-alert markdown-alert-note">\n<p class="markdown-alert-title">Note</p>\n<p>Note body</p>\n</div>\n<div class="markdown-alert markdown-alert-tip">\n<p class="markdown-alert-title">Tip</p>\n<p>Tip body</p>\n</div>\n<div class="markdown-alert markdown-alert-important">\n<p class="markdown-alert-title">Important</p>\n<p>Important body</p>\n</div>\n<div class="markdown-alert markdown-alert-warning">\n<p class="markdown-alert-title">Warning</p>\n<p>Warning body</p>\n</div>\n<div class="markdown-alert markdown-alert-caution">\n<p class="markdown-alert-title">Caution</p>\n<p>Caution body</p>\n</div>\n'
-      );
-    });
-
-    test('leading empty blockquote lines and nested alerts', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(alertsExtension());
-      equal(
-        markdownToHtml('>\n>   \n> [!TIP]\n> Body\n', {extensions: exts}),
-        '<div class="markdown-alert markdown-alert-tip">\n<p class="markdown-alert-title">Tip</p>\n<p>Body</p>\n</div>\n'
-      );
-      equal(
-        markdownToHtml(
-          '> [!TIP]\n> Tip body\n> > [!IMPORTANT]\n> > Important body\n',
-          {extensions: exts}
-        ),
-        '<div class="markdown-alert markdown-alert-tip">\n<p class="markdown-alert-title">Tip</p>\n<p>Tip body</p>\n<div class="markdown-alert markdown-alert-important">\n<p class="markdown-alert-title">Important</p>\n<p>Important body</p>\n</div>\n</div>\n'
-      );
-    });
-
-    test('alertParsedAsAlertNode', (ctx) => {
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(alertsExtension());
-      let doc = parse('> [!NOTE]\n> This is a note\n', exts);
-      equal(doc.blocks.length, 1);
-      if (let AlertBlock {kind, kindSlug, title} = doc.blocks[0]) {
-        equal(kind == AlertKind.Note, true);
-        equal(kindSlug, 'note');
-        equal(title, 'Note');
+        test(
+          'notValidTaskFormat',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(taskListExtension());
+            equal(
+              markdownToHtml('- [x]no space\n', { extensions: exts }),
+              '<ul>\n<li>[x]no space</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('- [O] is not a _task_\n', { extensions: exts }),
+              '<ul>\n<li>[O] is not a <em>task</em></li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('* [] neither is this\n', { extensions: exts }),
+              '<ul>\n<li>[] neither is this</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml(
+                '* [  ] nor this\n* [XX] nor this\n',
+                { extensions: exts }
+              ),
+              '<ul>\n<li>[  ] nor this</li>\n<li>[XX] nor this</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('+ [x]] is not a task\n', { extensions: exts }),
+              '<ul>\n<li>[x]] is not a task</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('- [x isn\'t\n', { extensions: exts }),
+              '<ul>\n<li>[x isn\'t</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('- [[x is not\n', { extensions: exts }),
+              '<ul>\n<li>[[x is not</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('- x] nope\n', { extensions: exts }),
+              '<ul>\n<li>x] nope</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('- x]] no way\n', { extensions: exts }),
+              '<ul>\n<li>x]] no way</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('+ (x) sorry no\n', { extensions: exts }),
+              '<ul>\n<li>(x) sorry no</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('+ {x} sorry not sorry\n', { extensions: exts }),
+              '<ul>\n<li>{x} sorry not sorry</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('+ [[x]] nooo\n', { extensions: exts }),
+              '<ul>\n<li>[[x]] nooo</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml(
+                '+ text before [x] is not a task\n',
+                { extensions: exts }
+              ),
+              '<ul>\n<li>text before [x] is not a task</li>\n</ul>\n'
+            );
+            equal(
+              markdownToHtml('* [x]  \n* [ ]  \n', { extensions: exts }),
+              '<ul>\n<li>[x]</li>\n<li>[ ]</li>\n</ul>\n'
+            );
+          }
+        );
       }
-    });
-  });
+    );
 
-  suite('Custom user plugins', () => {
-    test('custom DelimiterProcessor (==highlight==) and InlineContentParser (@mention)', (ctx) => {
-      let delims = new GrowableArray<DelimiterProcessor>(1);
-      delims.push(new HighlightDelimiterProcessor());
-      let inlines = new GrowableArray<InlineContentParser>(1);
-      inlines.push(new MentionInlineParser());
-      let renderers = new GrowableArray<NodeRenderer>(1);
-      renderers.push(new HighlightRenderer());
+    suite(
+      'AutolinkTest',
+      () => {
+        test(
+          'oneTextNode and textNodeAndOthers',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(autolinkExtension());
+            equal(
+              markdownToHtml(
+                'foo http://one.org/ bar http://two.org/',
+                { extensions: exts }
+              ),
+              '<p>foo <a href="http://one.org/">http://one.org/</a> bar <a href="http://two.org/">http://two.org/</a></p>\n'
+            );
+            equal(
+              markdownToHtml(
+                'foo http://one.org/ bar `code` baz http://two.org/',
+                { extensions: exts }
+              ),
+              '<p>foo <a href="http://one.org/">http://one.org/</a> bar <code>code</code> baz <a href="http://two.org/">http://two.org/</a></p>\n'
+            );
+          }
+        );
 
-      let customExt = new MarkdownExtension(
-        new GrowableArray<BlockParserFactory>(0),
-        delims,
-        inlines,
-        new GrowableArray<AstTransformer>(0),
-        renderers
-      );
-      let exts = new GrowableArray<MarkdownExtension>(1);
-      exts.push(customExt);
+        test(
+          'tricky punctuation and balanced parentheses',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(autolinkExtension());
+            equal(
+              markdownToHtml(
+                'http://example.com/one. Example 2 (see http://example.com/two). Example 3: http://example.com/foo_(bar)',
+                { extensions: exts }
+              ),
+              '<p><a href="http://example.com/one">http://example.com/one</a>. Example 2 (see <a href="http://example.com/two">http://example.com/two</a>). Example 3: <a href="http://example.com/foo_(bar)">http://example.com/foo_(bar)</a></p>\n'
+            );
+          }
+        );
 
-      equal(
-        markdownToHtml('Hello @alice, check out ==this feature==!\n', {extensions: exts}),
-        '<p>Hello <a href="/people/alice">@alice</a>, check out <mark>this feature</mark>!</p>\n'
-      );
-    });
-  });
-});
+        test(
+          'emailUsesMailto and emailWithTldNotLinked',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(autolinkExtension());
+            equal(
+              markdownToHtml('foo@example.com', { extensions: exts }),
+              '<p><a href="mailto:foo@example.com">foo@example.com</a></p>\n'
+            );
+            equal(
+              markdownToHtml('foo@com', { extensions: exts }),
+              '<p>foo@com</p>\n'
+            );
+          }
+        );
+
+        test(
+          'dontLinkTextWithinLinks and wwwLinks',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(autolinkExtension());
+            equal(
+              markdownToHtml('<http://example.com>', { extensions: exts }),
+              '<p><a href="http://example.com">http://example.com</a></p>\n'
+            );
+            equal(
+              markdownToHtml('www.example.com', { extensions: exts }),
+              '<p><a href="http://www.example.com">www.example.com</a></p>\n'
+            );
+          }
+        );
+      }
+    );
+
+    suite(
+      'HeadingAnchorTest',
+      () => {
+        test(
+          'baseCaseSingleHeader and singleHeaderWithCodeBlock',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(headingAnchorsExtension());
+            equal(
+              markdownToHtml('# Heading here\n', { extensions: exts }),
+              '<h1 id="heading-here">Heading here</h1>\n'
+            );
+            equal(
+              markdownToHtml(
+                'Hi there\n# Heading `here`\n',
+                { extensions: exts }
+              ),
+              '<p>Hi there</p>\n<h1 id="heading-here">Heading <code>here</code></h1>\n'
+            );
+          }
+        );
+
+        test(
+          'duplicateHeadersMakeUniqueIds and caseIsIgnoredWhenComparingIds',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(headingAnchorsExtension());
+            equal(
+              markdownToHtml(
+                '# Heading here\n# Heading here\n',
+                { extensions: exts }
+              ),
+              '<h1 id="heading-here">Heading here</h1>\n<h1 id="heading-here-1">Heading here</h1>\n'
+            );
+            equal(
+              markdownToHtml(
+                '# HEADING here\n# heading here\n',
+                { extensions: exts }
+              ),
+              '<h1 id="heading-here">HEADING here</h1>\n<h1 id="heading-here-1">heading here</h1>\n'
+            );
+            equal(
+              markdownToHtml(
+                '# Header\n# Header\n# Header-1\n',
+                { extensions: exts }
+              ),
+              '<h1 id="header">Header</h1>\n<h1 id="header-1">Header</h1>\n<h1 id="header-1">Header-1</h1>\n'
+            );
+          }
+        );
+
+        test(
+          'nestedBlocks, boldEmphasis, strongEmphasis, and multipleSpacesKept',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(headingAnchorsExtension());
+            equal(
+              markdownToHtml('## `h` `e` **l** *l* o\n', { extensions: exts }),
+              '<h2 id="h-e-l-l-o"><code>h</code> <code>e</code> <strong>l</strong> <em>l</em> o</h2>\n'
+            );
+            equal(
+              markdownToHtml('# _hello_ **there**', { extensions: exts }),
+              '<h1 id="hello-there"><em>hello</em> <strong>there</strong></h1>\n'
+            );
+            equal(
+              markdownToHtml('# _**Hi there**_\n', { extensions: exts }),
+              '<h1 id="hi-there"><em><strong>Hi there</strong></em></h1>\n'
+            );
+            equal(
+              markdownToHtml('# Hi  There\n', { extensions: exts }),
+              '<h1 id="hi--there">Hi  There</h1>\n'
+            );
+          }
+        );
+
+        test(
+          'nonAsciiCharacterHeading and unicodeMarks',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(headingAnchorsExtension());
+            equal(
+              markdownToHtml('# bär\n', { extensions: exts }),
+              '<h1 id="bär">bär</h1>\n'
+            );
+            let undertie = String.fromCodePoint(0x203F);
+            equal(
+              markdownToHtml(`# undertie ${undertie}\n`, { extensions: exts }),
+              `<h1 id="undertie-${undertie}">undertie ${undertie}</h1>\n`
+            );
+            let mark1 = String.fromCodePoint(0x1DC0);
+            equal(
+              markdownToHtml(`# a${mark1}\n`, { extensions: exts }),
+              `<h1 id="a${mark1}">a${mark1}</h1>\n`
+            );
+          }
+        );
+      }
+    );
+
+    suite(
+      'AlertsTest',
+      () => {
+        test(
+          'all five standard GitHub alert types',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(alertsExtension());
+            let md = '> [!NOTE]\n> Note body\n\n> [!TIP]\n> Tip body\n\n> [!IMPORTANT]\n> Important body\n\n> [!WARNING]\n> Warning body\n\n> [!CAUTION]\n> Caution body\n';
+            equal(
+              markdownToHtml(md, { extensions: exts }),
+              '<div class="markdown-alert markdown-alert-note">\n<p class="markdown-alert-title">Note</p>\n<p>Note body</p>\n</div>\n<div class="markdown-alert markdown-alert-tip">\n<p class="markdown-alert-title">Tip</p>\n<p>Tip body</p>\n</div>\n<div class="markdown-alert markdown-alert-important">\n<p class="markdown-alert-title">Important</p>\n<p>Important body</p>\n</div>\n<div class="markdown-alert markdown-alert-warning">\n<p class="markdown-alert-title">Warning</p>\n<p>Warning body</p>\n</div>\n<div class="markdown-alert markdown-alert-caution">\n<p class="markdown-alert-title">Caution</p>\n<p>Caution body</p>\n</div>\n'
+            );
+          }
+        );
+
+        test(
+          'leading empty blockquote lines and nested alerts',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(alertsExtension());
+            equal(
+              markdownToHtml(
+                '>\n>   \n> [!TIP]\n> Body\n',
+                { extensions: exts }
+              ),
+              '<div class="markdown-alert markdown-alert-tip">\n<p class="markdown-alert-title">Tip</p>\n<p>Body</p>\n</div>\n'
+            );
+            equal(
+              markdownToHtml(
+                '> [!TIP]\n> Tip body\n> > [!IMPORTANT]\n> > Important body\n',
+                { extensions: exts }
+              ),
+              '<div class="markdown-alert markdown-alert-tip">\n<p class="markdown-alert-title">Tip</p>\n<p>Tip body</p>\n<div class="markdown-alert markdown-alert-important">\n<p class="markdown-alert-title">Important</p>\n<p>Important body</p>\n</div>\n</div>\n'
+            );
+          }
+        );
+
+        test(
+          'alertParsedAsAlertNode',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(alertsExtension());
+            let doc = parse('> [!NOTE]\n> This is a note\n', exts);
+            equal(doc.blocks.length, 1);
+            if (let AlertBlock {kind, kindSlug, title} = doc.blocks[0]) {
+              equal(kind == AlertKind.Note, true);
+              equal(kindSlug, 'note');
+              equal(title, 'Note');
+            }
+          }
+        );
+      }
+    );
+
+    suite(
+      'Custom user plugins',
+      () => {
+        test(
+          'custom DelimiterProcessor (==highlight==) and InlineContentParser (@mention)',
+          (ctx) => {
+            let delims = new GrowableArray<DelimiterProcessor>(1);
+            delims.push(new HighlightDelimiterProcessor());
+            let inlines = new GrowableArray<InlineContentParser>(1);
+            inlines.push(new MentionInlineParser());
+            let renderers = new GrowableArray<NodeRenderer>(1);
+            renderers.push(new HighlightRenderer());
+
+            let customExt = new MarkdownExtension(
+              new GrowableArray<BlockParserFactory>(0),
+              delims,
+              inlines,
+              new GrowableArray<AstTransformer>(0),
+              renderers
+            );
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(customExt);
+
+            equal(
+              markdownToHtml(
+                'Hello @alice, check out ==this feature==!\n',
+                { extensions: exts }
+              ),
+              '<p>Hello <a href="/people/alice">@alice</a>, check out <mark>this feature</mark>!</p>\n'
+            );
+          }
+        );
+      }
+    );
+  }
+);
