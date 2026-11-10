@@ -10,13 +10,10 @@
  * cannot be passed for one another — and free at runtime.
  *
  * The operators carry the affine core of the algebra: instant minus
- * instant is a duration, instant plus duration is an instant, and
- * durations add, subtract and scale among themselves. Adding two
- * instants is a compile error, which is the point. Two gaps are the
- * language's, not choices: relational operators do not dispatch to
- * operator methods (#526), so ordering is spelled
- * `isBefore`/`isPositive`; and a class gets one method per operator
- * symbol, so instant minus duration is the named `minus`.
+ * instant is a duration, instant plus or minus duration is an instant,
+ * durations add, subtract, negate and scale among themselves, and both
+ * types order with `<`, `<=`, `>`, and `>=`. Adding two instants is a
+ * compile error, which is the point.
  */
 
 /** Nanoseconds per millisecond. */
@@ -35,20 +32,21 @@ export final extension class Instant on i64 {
     return ((this as i64) - (other as i64)) as Duration;
   }
 
+  /** The instant `d` before this one — after it, for a negative `d`. */
+  operator -(d: Duration): Instant {
+    return ((this as i64) - (d as i64)) as Instant;
+  }
+
   /** The instant `d` after this one — before it, for a negative `d`. */
   operator +(d: Duration): Instant {
     return ((this as i64) + (d as i64)) as Instant;
   }
 
-  /** The instant `d` before this one. Named because `-` already means
-   * instant minus instant, and one operator gets one method. */
-  minus(d: Duration): Instant {
-    return ((this as i64) - (d as i64)) as Instant;
-  }
-
-  /** True when this instant precedes `other`. */
-  isBefore(other: Instant): boolean {
-    return (this as i64) < (other as i64);
+  /** Returns `-1` if this instant precedes `other`, `0` if equal, or `1` if later. */
+  compareTo(other: Instant): i32 {
+    let a = this as i64;
+    let b = other as i64;
+    return if (a < b) -1 else if (a > b) 1 else 0;
   }
 
   operator ==(other: Instant): boolean {
@@ -58,6 +56,11 @@ export final extension class Instant on i64 {
 
 /** A signed span of time, in nanoseconds. */
 export final extension class Duration on i64 {
+  /** This span negated. */
+  operator -(): Duration {
+    return (-(this as i64)) as Duration;
+  }
+
   operator +(other: Duration): Duration {
     return ((this as i64) + (other as i64)) as Duration;
   }
@@ -69,6 +72,13 @@ export final extension class Duration on i64 {
   /** This span scaled `k` times. */
   operator *(k: i64): Duration {
     return ((this as i64) * k) as Duration;
+  }
+
+  /** Returns `-1` if `this < other`, `0` if equal, or `1` if `this > other`. */
+  compareTo(other: Duration): i32 {
+    let a = this as i64;
+    let b = other as i64;
+    return if (a < b) -1 else if (a > b) 1 else 0;
   }
 
   /** True for a span longer than zero. */

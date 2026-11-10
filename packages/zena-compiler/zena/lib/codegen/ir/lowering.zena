@@ -10354,21 +10354,30 @@ export final class FunctionLowerer {
    * already a subtype, ref.as_non_null for nullable-to-non-null of
    * the same target. */
   #lowerOperatorMemberOn(opMember: String, left: i32, right: i32,
-      leftCt: ClassType): i32 {
-    return this.#cx().operatorMemberOn(opMember, left, right, leftCt);
+      leftCt: ClassType, chosenFt: FunctionType | null = null): i32 {
+    return this.#cx().operatorMemberOn(opMember, left, right, leftCt, chosenFt);
   }
 
   /**
    * The combining step of a compound assignment: current (op) rhs.
    * Scalar operands map to the numeric operator (unsignedness read
-   * from the target and value expressions); reference operands
-   * resolve the operator member on the current value's class
-   * (String += is String.+), exactly like binary expressions.
+   * from the target and value expressions); class operands (including
+   * extension classes on primitives) resolve the operator member on
+   * the target's class, exactly like binary expressions.
    */
   #combineCompound(current: i32, assign: AssignmentExpression,
       target: Expression): i32 {
     let opName = assign.operator as String;
     let rhs = this.#lowerExpression(assign.value);
+    let chosenFt = this.func.model.getResolvedCompoundOperator(assign);
+    let targetType = this.#cx().substitutedNodeType(target);
+    let targetBase = if (targetType != null) baseType(targetType) else null;
+    if (targetBase != null && targetBase is ClassType) {
+      let targetCt = eraseTypeParameters(this.wasm, targetBase) as ClassType;
+      if (targetCt.members.has(opName)) {
+        return this.#lowerOperatorMemberOn(opName, current, rhs, targetCt, chosenFt);
+      }
+    }
     let vt = this.#valueType(current);
     if (isRefValType(vt)) {
       let ct = this.#classTypeOfValue(current);
@@ -10378,7 +10387,7 @@ export final class FunctionLowerer {
       if (!ct.members.has(opName)) {
         this.#bail('compound operator member not found');
       }
-      return this.#lowerOperatorMemberOn(opName, current, rhs, ct);
+      return this.#lowerOperatorMemberOn(opName, current, rhs, ct, chosenFt);
     }
     if (!valTypeEquals(vt, this.#valueType(rhs))) {
       this.#bail('mixed compound assignment types');

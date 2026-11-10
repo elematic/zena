@@ -1,0 +1,242 @@
+// @mode: run
+// @result: 1
+// Covers unary `operator -()` (#233), overloaded binary operators (#253),
+// generic receiver type-argument substitution (#232), contextual typing of
+// numeric literals against operator parameters, direct relational operators
+// (`<`, `<=`, `>`, `>=`) including partial orders, and `compareTo` fallback.
+
+import { isTrue, isFalse, equal } from 'zena:assert';
+
+final extension class Span on i64 {
+  operator -(): Span {
+    return (-(this as i64)) as Span;
+  }
+
+  operator +(other: Span): Span {
+    return ((this as i64) + (other as i64)) as Span;
+  }
+
+  operator -(other: Span): Span {
+    return ((this as i64) - (other as i64)) as Span;
+  }
+
+  operator *(k: i64): Span {
+    return ((this as i64) * k) as Span;
+  }
+
+  compareTo(other: Span): i32 {
+    let a = this as i64;
+    let b = other as i64;
+    return if (a < b) -1 else if (a > b) 1 else 0;
+  }
+}
+
+final extension class Stamp on i64 {
+  operator -(other: Stamp): Span {
+    return ((this as i64) - (other as i64)) as Span;
+  }
+
+  operator -(d: Span): Stamp {
+    return ((this as i64) - (d as i64)) as Stamp;
+  }
+
+  operator +(d: Span): Stamp {
+    return ((this as i64) + (d as i64)) as Stamp;
+  }
+
+  compareTo(other: Stamp): i32 {
+    let a = this as i64;
+    let b = other as i64;
+    return if (a < b) -1 else if (a > b) 1 else 0;
+  }
+}
+
+class Meters {}
+
+class Qty<D> {
+  v: f64;
+  new(this.v);
+
+  operator -(): Qty<D> {
+    return new Qty<D>(-this.v);
+  }
+
+  operator +(other: Qty<D>): Qty<D> {
+    return new Qty<D>(this.v + other.v);
+  }
+
+  operator -(other: Qty<D>): Qty<D> {
+    return new Qty<D>(this.v - other.v);
+  }
+
+  compareTo(other: Qty<D>): i32 {
+    return if (this.v < other.v) -1 else if (this.v > other.v) 1 else 0;
+  }
+}
+
+// Partial order (NaN-like): unordered values return false for all four
+// relational operators, which cannot be derived from compareTo: i32.
+class PartialVal {
+  v: i32;
+  isUnordered: boolean;
+  new(this.v, this.isUnordered = false);
+
+  operator <(other: PartialVal): boolean {
+    if (this.isUnordered || other.isUnordered) { return false; }
+    return this.v < other.v;
+  }
+
+  operator <=(other: PartialVal): boolean {
+    if (this.isUnordered || other.isUnordered) { return false; }
+    return this.v <= other.v;
+  }
+
+  operator >(other: PartialVal): boolean {
+    if (this.isUnordered || other.isUnordered) { return false; }
+    return this.v > other.v;
+  }
+
+  operator >=(other: PartialVal): boolean {
+    if (this.isUnordered || other.isUnordered) { return false; }
+    return this.v >= other.v;
+  }
+}
+
+// Direct `operator <` takes precedence over `compareTo`, while remaining
+// relational operators fall back to `compareTo`.
+class HybridOrd {
+  v: i32;
+  new(this.v);
+
+  operator <(other: HybridOrd): boolean {
+    return this.v + 100 < other.v;
+  }
+
+  compareTo(other: HybridOrd): i32 {
+    return if (this.v < other.v) -1 else if (this.v > other.v) 1 else 0;
+  }
+
+  // Contextual typing against an i64 parameter on compareTo.
+  compareTo(k: i64): i32 {
+    let v64 = this.v as i64;
+    return if (v64 < k) -1 else if (v64 > k) 1 else 0;
+  }
+}
+
+// Virtual dispatch for unary `-`, overloaded binary `-`, and `compareTo`.
+class BaseNum {
+  x: i32;
+  new(this.x);
+
+  operator -(): BaseNum {
+    return new BaseNum(-this.x);
+  }
+
+  operator -(other: BaseNum): i32 {
+    return this.x - other.x;
+  }
+
+  operator -(delta: i32): i32 {
+    return this.x - delta;
+  }
+
+  compareTo(other: BaseNum): i32 {
+    return if (this.x < other.x) -1 else if (this.x > other.x) 1 else 0;
+  }
+}
+
+class InvertedNum extends BaseNum {
+  new(x: i32) : super(x);
+
+  operator -(): BaseNum {
+    return new InvertedNum(this.x * 10);
+  }
+
+  operator -(delta: i32): i32 {
+    return this.x + delta;
+  }
+
+  compareTo(other: BaseNum): i32 {
+    return if (this.x > other.x) -1 else if (this.x < other.x) 1 else 0;
+  }
+}
+
+export let main = (): i32 => {
+  // 1. Extension classes: unary `-`, overloaded `-`, literal adaptation on `*`, and `compareTo`
+  let s1 = (10 as i64) as Span;
+  let s2 = -s1;
+  equal(s2 as i64, -10 as i64);
+  let s3 = s1 * 3;
+  equal(s3 as i64, 30 as i64);
+  isTrue(s2 < s1);
+  isTrue(s1 <= s3);
+  isTrue(s3 > s1);
+  isTrue(s1 >= s1);
+  isFalse(s1 < s1);
+
+  let t1 = (1000 as i64) as Stamp;
+  let t2 = (1250 as i64) as Stamp;
+  let diff: Span = t2 - t1;
+  equal(diff as i64, 250 as i64);
+  let earlier: Stamp = t2 - diff;
+  equal(earlier as i64, 1000 as i64);
+  isTrue(t1 < t2);
+  isTrue(t2 > t1);
+  isTrue(earlier <= t1);
+  isTrue(earlier >= t1);
+
+  // 2. Generic class (#232): unary `-`, `+`, `-`, `+=`, and `compareTo`
+  var q1 = new Qty<Meters>(3.5);
+  let q2 = new Qty<Meters>(1.5);
+  equal((-q1).v, -3.5);
+  equal((q1 + q2).v, 5.0);
+  equal((q1 - q2).v, 2.0);
+  isTrue(q2 < q1);
+  isTrue(q1 > q2);
+  isTrue(q1 >= new Qty<Meters>(3.5));
+  isTrue(q2 <= new Qty<Meters>(1.5));
+  q1 += q2;
+  equal(q1.v, 5.0);
+
+  // 3. Partial ordering via direct relational operators
+  let p1 = new PartialVal(1);
+  let p2 = new PartialVal(2);
+  let nan = new PartialVal(0, true);
+  isTrue(p1 < p2);
+  isTrue(p1 <= p1);
+  isTrue(p2 > p1);
+  isTrue(p2 >= p2);
+  isFalse(nan < p1);
+  isFalse(nan <= p1);
+  isFalse(nan > p1);
+  isFalse(nan >= p1);
+  isFalse(p1 < nan);
+  isFalse(nan <= nan);
+
+  // 4. Direct `operator <` wins over `compareTo`; `<=` and `>` fall back to `compareTo`
+  let h1 = new HybridOrd(5);
+  let h2 = new HybridOrd(10);
+  isFalse(h1 < h2); // 5 + 100 < 10 is false
+  isTrue(h1 <= h2); // compareTo: 5 <= 10 is true
+  isTrue(h2 > h1);  // compareTo: 10 > 5 is true
+  isTrue(h2 > 7);   // overloaded compareTo(i64) with integer literal adaptation
+
+  // 5. Virtual dispatch across subclasses
+  let base: BaseNum = new InvertedNum(4);
+  let other = new BaseNum(9);
+  equal((-base).x, 40);
+  equal(base - other, -5);
+  equal(base - 3, 7);
+  isTrue(other < base == false);
+  isTrue(base < other == false); // InvertedNum(4).compareTo(BaseNum(9)) => 4 < 9 => 1 (> 0)
+  isTrue(base > other);
+
+  // 6. String lexicographical ordering via compareTo
+  isTrue('apple' < 'banana');
+  isTrue('banana' > 'apple');
+  isTrue('apple' <= 'apple');
+  isTrue('banana' >= 'apple');
+  isFalse('banana' < 'apple');
+
+  return 1;
+};

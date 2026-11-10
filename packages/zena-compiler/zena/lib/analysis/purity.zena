@@ -1755,6 +1755,11 @@ export final class PurityAnalysis {
       this.#operatorCall(frame, node, node.operator, node.left, node.right, node.loc);
       return;
     }
+    if (node is UnaryExpression) {
+      this.#visit(frame, node.argument);
+      this.#unaryOperatorCall(frame, node, node.operator, node.argument, node.loc);
+      return;
+    }
     if (node is FunctionExpression) {
       // Making a closure does nothing a caller can see. Calling one is
       // a call of a function value, which is an effect where it happens.
@@ -2341,19 +2346,57 @@ export final class PurityAnalysis {
     let receiver = this.#receiverType(leftType);
     let key = if (operator == "!=") "==" else operator;
     if (receiver is ClassType) {
+      let resolvedOv = if (site is AssignmentExpression) {
+        frame.model.getResolvedCompoundOperator(site)
+      } else {
+        frame.model.getResolvedOverload(site)
+      };
       if (receiver.members.has(key)) {
         let dispatches = !receiver.isFinal && !receiver.isExtension;
         let verdict = this.#memberVerdict(
-          receiver, key, false, dispatches, frame.model.getResolvedOverload(site)
+          receiver, key, false, dispatches, resolvedOv
         );
         let detached = this.#isDetached(frame, left) && this.#isDetached(frame, right);
         this.#applyCall(frame, verdict, `calls the operator '${key}'`, detached, loc);
+      } else if ((operator == "<" || operator == "<=" || operator == ">" || operator == ">=") &&
+          receiver.members.has("compareTo")) {
+        let dispatches = !receiver.isFinal && !receiver.isExtension;
+        let verdict = this.#memberVerdict(
+          receiver, "compareTo", false, dispatches, resolvedOv
+        );
+        let detached = this.#isDetached(frame, left) && this.#isDetached(frame, right);
+        this.#applyCall(frame, verdict, "calls 'compareTo'", detached, loc);
       }
       return;
     }
     if (isEquality &&
         (receiver is TypeParameterType || receiver is InterfaceType || receiver is UnionType)) {
       frame.effect("compares values of a type the analysis does not follow", loc);
+    }
+  }
+
+  #unaryOperatorCall(
+    frame: Frame,
+    site: Node,
+    operator: String,
+    argument: Expression,
+    loc: SourceLocation | null
+  ): void {
+    if (operator == "-" && argument is NumberLiteral) {
+      return;
+    }
+    let argType = this.#typeOf(frame, argument);
+    if (argType == null) {
+      return;
+    }
+    let receiver = this.#receiverType(argType);
+    if (receiver is ClassType && receiver.members.has(operator)) {
+      let dispatches = !receiver.isFinal && !receiver.isExtension;
+      let verdict = this.#memberVerdict(
+        receiver, operator, false, dispatches, frame.model.getResolvedOverload(site)
+      );
+      let detached = this.#isDetached(frame, argument);
+      this.#applyCall(frame, verdict, `calls the operator '${operator}'`, detached, loc);
     }
   }
 }

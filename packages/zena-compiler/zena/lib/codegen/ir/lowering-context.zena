@@ -12,7 +12,7 @@ import {
   AssignmentExpression, BindingPattern, CallExpression, Expression, FunctionExpression, Identifier, IdentifierPattern, IndexExpression, MemberExpression, Node, Statement, VariableDeclaration,
 } from '../../ast.zena';
 import {
-  ClassType, InterfaceType, NullType, RecordType, ThisType, Type,
+  ClassType, FunctionType, InterfaceType, NullType, RecordType, ThisType, Type,
   UnionType, baseType,
 } from '../../types.zena';
 import {
@@ -36,7 +36,7 @@ import {
 import { getCellKey, getCellStruct } from '../type-mapping.zena';
 import {
   getClassInterfaceKey, getClassKey, getClassMethodKey, getInterfaceKey,
-  ClassKey, InterfaceKey,
+  getSignatureKey, ClassKey, InterfaceKey,
 } from '../codegen-utils.zena';
 import { IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
 import { IrBuilder } from './builder.zena';
@@ -1398,10 +1398,11 @@ export final class LoweringContext {
    * method calls); the given checked class is the fallback.
    */
   operatorMemberOn(opMember: String, left: i32, right: i32,
-      leftCt: ClassType): i32 {
-    let fromValue = this.classTypeOfValue(left);
-    let recvCt = if (fromValue != null) fromValue else leftCt;
-    let method = this.resolveDevirtualizedMethod(recvCt, opMember);
+      leftCt: ClassType, chosenFt: FunctionType | null = null): i32 {
+    let slotName = if (chosenFt != null) opMember + getSignatureKey(chosenFt) else opMember;
+    let fromValue = if (leftCt.isExtension) null else this.classTypeOfValue(left);
+    let recvCt = fromValue ?? leftCt;
+    let method = this.resolveDevirtualizedMethod(recvCt, slotName);
     if (method != null) {
       let sig = method.signature;
       if (sig.params.length != 2 || sig.returns.length != 1) {
@@ -1422,7 +1423,7 @@ export final class LoweringContext {
     while (currClass != null && resolvedOpt == null) {
       var g: ClassType | null = currClass;
       while (g != null && resolvedOpt == null) {
-        let key = getClassMethodKey(getClassKey(g), opMember);
+        let key = getClassMethodKey(getClassKey(g), slotName);
         if (let (true, m) = this.wasm.classMethodMap.get(key)) {
           resolvedOpt = m;
         }
@@ -1443,14 +1444,67 @@ export final class LoweringContext {
       this.fail('operator dispatch');
     }
     let classInfo = infoOpt;
-    if (this.vtableSlotIndex(classInfo, opMember) < 0) {
+    if (this.vtableSlotIndex(classInfo, slotName) < 0) {
       this.fail('operator dispatch');
     }
     let vrecv = this.coerceTo(left, vsig.params[0]);
     let varg = this.coerceTo(right, vsig.params[1]);
     let vargs = growable<i32>([vrecv, varg]);
-    return this.lowerVtableCall(vrecv, classInfo, opMember, vsig,
+    return this.lowerVtableCall(vrecv, classInfo, slotName, vsig,
         vargs, vsig.returns[0]);
+  }
+
+  /**
+   * Direct or virtual call to a unary class operator member (`-a` as
+   * `a.-()`). Mirrors `operatorMemberOn` with a receiver-only signature.
+   */
+  unaryOperatorMemberOn(opMember: String, operand: i32,
+      operandCt: ClassType, chosenFt: FunctionType | null = null): i32 {
+    let slotName = if (chosenFt != null) opMember + getSignatureKey(chosenFt) else opMember;
+    let fromValue = if (operandCt.isExtension) null else this.classTypeOfValue(operand);
+    let recvCt = fromValue ?? operandCt;
+    let method = this.resolveDevirtualizedMethod(recvCt, slotName);
+    if (method != null) {
+      let sig = method.signature;
+      if (sig.params.length != 1 || sig.returns.length != 1) {
+        this.fail('unary operator method shape');
+      }
+      let recv = this.coerceTo(operand, sig.params[0]);
+      let funcRef = this.b.addRef(new IrRefFunc(method));
+      return this.b.callFunc(funcRef, oneValue(recv), sig.returns[0]);
+    }
+    var resolvedOpt: WasmFunction | null = null;
+    var currClass: ClassType | null = recvCt;
+    while (currClass != null && resolvedOpt == null) {
+      var g: ClassType | null = currClass;
+      while (g != null && resolvedOpt == null) {
+        let key = getClassMethodKey(getClassKey(g), slotName);
+        if (let (true, m) = this.wasm.classMethodMap.get(key)) {
+          resolvedOpt = m;
+        }
+        g = g.genericSource;
+      }
+      currClass = currClass.superType;
+    }
+    if (resolvedOpt == null) {
+      this.fail('unary operator dispatch');
+    }
+    let resolvedM = resolvedOpt;
+    let vsig = resolvedM.signature;
+    if (vsig.params.length != 1 || vsig.returns.length != 1) {
+      this.fail('unary operator method shape');
+    }
+    let infoOpt = if (let (true, info) = this.wasm.classInfos.get(getClassKey(recvCt))) info else null;
+    if (infoOpt == null) {
+      this.fail('unary operator dispatch');
+    }
+    let classInfo = infoOpt;
+    if (this.vtableSlotIndex(classInfo, slotName) < 0) {
+      this.fail('unary operator dispatch');
+    }
+    let vrecv = this.coerceTo(operand, vsig.params[0]);
+    return this.lowerVtableCall(vrecv, classInfo, slotName, vsig,
+        oneValue(vrecv), vsig.returns[0]);
   }
 
   /** Symbols assigned anywhere inside `node` that are locals in scope. */

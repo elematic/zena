@@ -1,7 +1,6 @@
 // zena:time — the Instant/Duration affine core: instant minus instant
-// is a duration, instant plus duration is an instant, durations add,
-// subtract and scale. Ordering is named (`isBefore`, `isPositive`)
-// because relational operators do not dispatch to operator methods.
+// is a duration, instant plus or minus duration is an instant, durations
+// add, subtract, negate, scale and compare.
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {monotonic, milliseconds, formatTimestamp, Instant} from 'zena:time';
@@ -17,23 +16,31 @@ export let tests = suite('time types', () => {
     let b = 4000 as i64 as Instant;
     equal((b - a) as i64, 3000 as i64);
     isTrue((a - b).isNegative());
+    isTrue((a - b) < milliseconds(0));
   });
 
-  test('instant plus duration round-trips', () => {
+  test('instant plus and minus duration round-trip', () => {
     let a = monotonic();
     let d = milliseconds(25);
     let b = a + d;
-    isTrue(a.isBefore(b));
-    isFalse(b.isBefore(a));
+    isTrue(a < b);
+    isTrue(b > a);
+    isTrue(a <= a);
+    isTrue(b >= a);
+    isFalse(b < a);
     equal((b - a) as i64, d as i64);
-    isTrue(a == b + milliseconds(0 - 25));
+    equal(b - d, a);
+    equal(b + (-d), a);
   });
 
-  test('durations add, subtract and scale', () => {
+  test('durations add, subtract, negate, scale and compare', () => {
     let d = milliseconds(3) + milliseconds(4);
     equal(d as i64, milliseconds(7) as i64);
     equal((d - milliseconds(2)) as i64, milliseconds(5) as i64);
-    equal((d * (3 as i64)) as i64, milliseconds(21) as i64);
+    equal((-d) as i64, milliseconds(-7) as i64);
+    equal((d * 3) as i64, milliseconds(21) as i64);
+    isTrue(d > milliseconds(4));
+    isTrue(-d < milliseconds(0));
     isTrue(d.isPositive());
     isFalse(d.isNegative());
     isFalse(milliseconds(0).isPositive());

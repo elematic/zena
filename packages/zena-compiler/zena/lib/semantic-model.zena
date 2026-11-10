@@ -557,6 +557,7 @@ export final class SemanticModel {
    */
   #interfaceAdaptations = new NodeMap<InterfaceAdaptation>();
   #resolvedOverloads = new NodeMap<FunctionType>();
+  #resolvedCompoundOperators = new NodeMap<FunctionType>();
   /**
    * Map from node.id → the `Box<P>` a tagged template's primitive
    * interpolation is wrapped in, recorded when the tag's value type
@@ -621,6 +622,35 @@ export final class SemanticModel {
       let owner = (this.index as ModelIndex).ownerOfNode(node.id);
       if (owner != null && owner != this) {
         return owner.getResolvedOverloadDirect(node);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The operator overload selected for the binary step of a compound
+   * assignment (`x += y`, `arr[i] += y`), kept separate from
+   * `#resolvedOverloads` because `arr[i] += y` already records its
+   * `[]=` overload on the same AssignmentExpression node.
+   */
+  setResolvedCompoundOperator(node: Node, ft: FunctionType): void {
+    this.#resolvedCompoundOperators[node] = ft;
+  }
+
+  getResolvedCompoundOperatorDirect(node: Node): FunctionType | null {
+    if (let (true, t) = this.#resolvedCompoundOperators.get(node)) {
+      return t;
+    }
+    return null;
+  }
+
+  getResolvedCompoundOperator(node: Node): FunctionType | null {
+    let t = this.getResolvedCompoundOperatorDirect(node);
+    if (t != null) return t;
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.getResolvedCompoundOperatorDirect(node);
       }
     }
     return null;
