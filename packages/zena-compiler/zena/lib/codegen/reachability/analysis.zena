@@ -1489,9 +1489,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         // (`html`, `Event`, `defineElement`), and those are reached
         // like any library's exports when something imports them. Only
         // its `webui_*` functions are the host's to call, so only those
-        // root; the rest are left to be reached, and are not queued as
-        // checkable either, which would discover a global the layout
-        // then leaves out while `__start` still initializes it.
+        // root; the rest are left to be reached.
         if (!isEntry && isWebUiProtocolLibrary(unit.ast.path) &&
             !(declName.startsWith("webui_") && targetUsesJsStrings(this.target))) {
           continue;
@@ -2101,10 +2099,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.#pruneUndispatchedSlots();
     this.#layoutTypeTests();
 
+    // A global only unreached code names is dropped from the map too: the
+    // start function initializes the module variables it finds there.
     let keptGlobals = new Array<WasmGlobal>();
     for (let g in this.wasm.globals) {
       if (g.symbolId == noSymbolId || this.reachedGlobals.has(g.symbolId)) {
         keptGlobals.push(g);
+      } else {
+        this.wasm.globalMap.delete(g.symbolId);
       }
     }
     while (this.wasm.globals.length > 0) { this.wasm.globals.pop(); }
