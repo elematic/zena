@@ -19,8 +19,11 @@ import {compareKeys} from 'atproto:mst';
 import {SourceFile, unpackSource} from 'package-manager:archive';
 import {BlobBytes} from 'pds:firestore';
 
-/** The format `ReleaseContents.toBytes` writes. Contents of another are derived again. */
-export let CONTENTS_FORMAT = 1;
+/**
+ * The format `ReleaseContents.toBytes` writes. Contents of another are
+ * derived again. 2 added each file's offset in the archive.
+ */
+export let CONTENTS_FORMAT = 2;
 
 /** The largest README rendered, in bytes of Markdown. A larger one is linked to instead. */
 export let MAX_README_BYTES = 256 * 1024;
@@ -32,8 +35,10 @@ export final class ReleaseFile {
   /** The raw CID of its contents. */
   cid: Cid;
   size: i64;
+  /** Where its contents start in the archive's bytes. */
+  offset: i64;
 
-  new(this.path, this.cid, this.size);
+  new(this.path, this.cid, this.size, this.offset);
 }
 
 /** What a release's source archive holds, as the release's pages show it. */
@@ -64,6 +69,7 @@ export final class ReleaseContents {
       entry.entries['path'] = new StringValue(file.path);
       entry.entries['cid'] = new LinkValue(file.cid);
       entry.entries['size'] = new IntValue(file.size);
+      entry.entries['offset'] = new IntValue(file.offset);
       files[i] = entry;
     }
     map.entries['files'] = new ListValue(files);
@@ -99,7 +105,7 @@ export final class ReleaseContents {
     if (!(archive is LinkValue) || !(archiveBytes is IntValue) || !(list is ListValue)) {
       return null;
     }
-    let files = new FixedArray<ReleaseFile>(list.items.length, new ReleaseFile('', archive.cid, 0 as i64));
+    let files = new FixedArray<ReleaseFile>(list.items.length, new ReleaseFile('', archive.cid, 0 as i64, 0 as i64));
     for (var i = 0; i < list.items.length; i += 1) {
       let item = list.items[i];
       if (!(item is MapValue)) {
@@ -108,10 +114,11 @@ export final class ReleaseContents {
       let path = field(item, 'path');
       let cid = field(item, 'cid');
       let size = field(item, 'size');
-      if (!(path is StringValue) || !(cid is LinkValue) || !(size is IntValue)) {
+      let offset = field(item, 'offset');
+      if (!(path is StringValue) || !(cid is LinkValue) || !(size is IntValue) || !(offset is IntValue)) {
         return null;
       }
-      files[i] = new ReleaseFile(path.value, cid.cid, size.value);
+      files[i] = new ReleaseFile(path.value, cid.cid, size.value, offset.value);
     }
     var readmePath: String | null = null;
     let pathValue = field(value, 'readmePath');
@@ -137,12 +144,12 @@ export final class ReleaseContents {
 export function deriveContents(did: String, version: String, archive: Cid, bytes: FixedArray<u8>): ReleaseContents {
   let unpacked = unpackSource(bytes);
   unpacked.sort((a, b) => compareKeys(a.path, b.path));
-  let files = new FixedArray<ReleaseFile>(unpacked.length, new ReleaseFile('', archive, 0 as i64));
+  let files = new FixedArray<ReleaseFile>(unpacked.length, new ReleaseFile('', archive, 0 as i64, 0 as i64));
   let paths = new HashSet<String>();
   var readme: SourceFile | null = null;
   for (var i = 0; i < unpacked.length; i += 1) {
     let file = unpacked[i];
-    files[i] = new ReleaseFile(file.path, file.cid, file.contents.length as i64);
+    files[i] = new ReleaseFile(file.path, file.cid, file.contents.length as i64, file.offset as i64);
     paths.add(file.path);
     if (file.path.asciiLowerCase() == 'readme.md') {
       readme = file;

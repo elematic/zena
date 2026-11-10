@@ -41,7 +41,7 @@ import {REGISTRY_SERVICE, REGISTRY_TYPE} from 'package-manager:registry-methods'
 import {Identity, IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
 import {ARTIFACT_MIME_TYPES, artifactMimeType, validateRelease} from 'package-manager:validate';
-import {ArchiveError, unpackSource} from 'package-manager:archive';
+import {ArchiveError} from 'package-manager:archive';
 import {Version} from 'package-manager:version';
 import {
   ADMIN,
@@ -99,9 +99,6 @@ export let AUTOMATION_TOKEN_PREFIX = 'zena_ci_';
 
 /** How long a release waits for approval before its version is free again: seven days. */
 export let PENDING_MICROS = ((7 * 24 * 60 * 60) as i64) * (1000000 as i64);
-
-/** How many release archives the App View keeps unpacked, for the files a page serves (`AppView.releaseFile`). */
-let ARCHIVES_KEPT = 64;
 
 /** How many releases' contents the App View keeps read, beside `AppView.derived` (`AppView.releaseContents`). */
 let CONTENTS_KEPT = 256;
@@ -839,8 +836,6 @@ export final class AppView {
   /** Resolves the DIDs of a release's dependencies, to check them. */
   #resolver: IdentityResolver;
   #replays = new ReplayGuard();
-  /** Release archives' files by path, by the CID of their blob (`releaseFile`). */
-  #archives = new HashMap<String, HashMap<String, FixedArray<u8>>>();
   /** Releases' contents, by DID and version (`releaseContents`). */
   #contents = new HashMap<String, ReleaseContents>();
 
@@ -2112,43 +2107,20 @@ export final class AppView {
   /**
    * The contents of the file at `path` in release `version` of the package
    * `did`, or null when it has no such release or file, or its archive
-   * cannot be read. A release never changes, so archives are kept unpacked
-   * by their CID, up to `ARCHIVES_KEPT` of them.
+   * cannot be read. They are one read of the file's span of the archive on
+   * the package's PDS (`PdsClient.getBlobRange`), where its contents say
+   * it is, checked against the file's CID.
    */
   async releaseFile(did: String, version: String, path: String): Future<FixedArray<u8> | null> {
-    let blob = await this.#sourceOf(did, version);
-    if (blob == null) {
+    let contents = await this.releaseContents(did, version);
+    if (contents == null) {
       return null;
     }
-    let key = blob.cid.toString();
-    var files: HashMap<String, FixedArray<u8>> | null = null;
-    if (let (true, kept) = this.#archives.get(key)) {
-      files = kept;
-    } else {
-      let stored = await this.#pds.getBlob(did, blob.cid);
-      if (stored == null) {
-        return null;
+    for (let file in contents.files) {
+      if (file.path == path) {
+        let bytes = await this.#pds.getBlobRange(did, contents.archive, file.offset, file.size);
+        return if (bytes != null && Cid.forBlob(bytes).equals(file.cid)) bytes else null;
       }
-      let unpacked = try {
-        unpackSource(stored.bytes)
-      } catch (e) {
-        if (e is ArchiveError) {
-          return null;
-        }
-        throw e;
-      };
-      let byPath = new HashMap<String, FixedArray<u8>>();
-      for (let file in unpacked) {
-        byPath[file.path] = file.contents;
-      }
-      if (this.#archives.size >= ARCHIVES_KEPT) {
-        this.#archives.clear();
-      }
-      this.#archives[key] = byPath;
-      files = byPath;
-    }
-    if (let (true, contents) = files.get(path)) {
-      return contents;
     }
     return null;
   }

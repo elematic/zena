@@ -44,6 +44,9 @@ export let tests = suite('registry:release-contents', () => {
     equal(contents.files[2].path, 'zena-package.json');
     equal(contents.files[1].size, 22 as i64);
     isTrue(contents.files[1].cid.equals(Cid.forBlob('export let route = 1;\n'.toBytes())), 'its CID');
+    // Where its bytes are in the archive, so that it can be read alone.
+    let start = contents.files[1].offset as i32;
+    isTrue(archive.slice(start, start + 22).contentEquals('export let route = 1;\n'.toBytes()), 'its offset');
     isTrue(contents.readmePath == null && contents.readmeHtml == null, 'no README');
   });
 
@@ -84,6 +87,7 @@ export let tests = suite('registry:release-contents', () => {
     equal(read.files[1].path, 'a.zena');
     isTrue(read.files[1].cid.equals(contents.files[1].cid), 'a CID');
     equal(read.files[1].size, contents.files[1].size);
+    equal(read.files[1].offset, contents.files[1].offset);
     equal(read.readmePath as String, 'README.md');
     equal(read.readmeHtml as String, contents.readmeHtml as String);
 

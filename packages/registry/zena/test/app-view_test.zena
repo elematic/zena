@@ -1680,13 +1680,34 @@ export let tests = suite('registry:app-view', () => {
 
     // Contents kept from another archive are derived again.
     let other = new ReleaseContents(Cid.forBlob('another archive'.toBytes()), 1 as i64,
-        new FixedArray<ReleaseFile>(0, new ReleaseFile('', Cid.forBlob('x'.toBytes()), 0 as i64)), 'README.md',
+        new FixedArray<ReleaseFile>(0, new ReleaseFile('', Cid.forBlob('x'.toBytes()), 0 as i64, 0 as i64)), 'README.md',
         '<p>From another archive</p>');
     await appView.derived.write(account.did, '1.0.1', other);
     let stale = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.1'));
     isTrue(stale.contains('Router 1.0.1</h1>') && !stale.contains('From another archive'), stale);
     let rewritten = (await appView.derived.read(account.did, '1.0.1')) as ReleaseContents;
     equal(rewritten.files.length, 2);
+  });
+
+  test("serves a file by reading its span of the archive, checked against the file's CID", async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    for (let version in ['1.0.0', '1.0.1']) {
+      await release(fixture, ALICE, router, version, await upload(fixture, router, archiveOf(router, version)));
+    }
+    let file = await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/router.zena');
+    equal(file.statusCode, 200);
+    equal(String.fromBytes(file.body as FixedArray<u8>), 'export let route = 1;\n');
+
+    // Contents kept with the file one byte further on: the bytes read there
+    // are not the file's, and are not served.
+    let kept = (await appView.derived.read(router, '1.0.1')) as ReleaseContents;
+    let moved = kept.files.map((f, i, all) => new ReleaseFile(f.path, f.cid, f.size, f.offset + (1 as i64)));
+    await appView.derived.write(router, '1.0.1',
+        new ReleaseContents(kept.archive, kept.archiveBytes, moved, kept.readmePath, kept.readmeHtml));
+    equal((await fixture.get('/packages/router.acme.pkg.test/versions/1.0.1/files/router.zena')).statusCode, 404);
   });
 
   test('links to a README too large to render', async (ctx) => {

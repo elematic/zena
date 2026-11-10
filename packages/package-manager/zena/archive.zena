@@ -45,8 +45,10 @@ export final class SourceFile {
   /** The raw CID of the contents. */
   cid: Cid;
   contents: FixedArray<u8>;
+  /** Where the contents start in the archive's bytes. */
+  offset: i32;
 
-  new(path: String, cid: Cid, contents: FixedArray<u8>) : path = path, cid = cid, contents = contents;
+  new(this.path, this.cid, this.contents, this.offset);
 }
 
 /**
@@ -157,7 +159,7 @@ export function unpackSource(bytes: FixedArray<u8>): FixedArray<SourceFile> {
   checkPaths(paths);
   let used = new HashSet<String>();
   used.add(rootCid.toString());
-  let files = new FixedArray<SourceFile>(paths.length, new SourceFile('', rootCid, rootBytes));
+  let files = new FixedArray<SourceFile>(paths.length, new SourceFile('', rootCid, rootBytes, 0));
   var unpacked = 0;
   for (var i = 0; i < paths.length; i += 1) {
     let path = paths[i];
@@ -174,7 +176,7 @@ export function unpackSource(bytes: FixedArray<u8>): FixedArray<SourceFile> {
     }
     unpacked = addUnpacked(unpacked, contents.length);
     used.add(link.cid.toString());
-    files[i] = new SourceFile(path, link.cid, contents);
+    files[i] = new SourceFile(path, link.cid, contents, car.offsetOf(link.cid));
   }
   if (used.size != car.blocks.size) {
     throw new ArchiveError(`the archive has ${car.blocks.size - used.size} blocks its root does not name`);
