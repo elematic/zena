@@ -174,6 +174,10 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
     }
   }
   let readme = readmeOf(files);
+  // TODO(#1031): `profile?.license ?? '—'` as one expression, once that no longer traps on a profile with no
+  // license; apart, the two work.
+  let licensed = profile?.license;
+  let license = licensed ?? '—';
   let dependencyCount = if (release != null) release.dependencies.length else 0;
   return html`
     <div class="package-header">
@@ -216,30 +220,41 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
         </rad-tab-group>
       </div>
       <aside class="package-sidebar">
-        <dl>
-          <dt>Install</dt>
-          <dd><pre class="mono">zena pkg add ${detail.handle}${if (pinned && version != null) `@${version}` else ''}</pre></dd>
-          ${when(version != null, () => html`
-          <dt>Version</dt><dd class="mono">${version as String}</dd>
-          <dt>Published</dt><dd>${(release as Release).createdAt.sliceBytes(0, 10)}</dd>
-          <dt>Approved by</dt><dd>${approvers(version as String, shown, approvedBy)}</dd>`)}
-          ${when(profile?.license != null, () => html`<dt>License</dt><dd>${profile?.license as String}</dd>`)}
-          ${when(release != null, () => html`
-          <dt>Dependencies</dt><dd>${`${dependencyCount}`}</dd>`)}
-          ${when(files != null, () => html`
-          <dt>Size</dt><dd>${formatBytes((files as ReleaseFiles).archiveBytes)},
-            ${count((files as ReleaseFiles).files.length, 'file')}</dd>`)}
-          <dt>Scope</dt><dd><a href="/scopes/${detail.scope}">@${detail.scope}</a></dd>
+        <section>
+          <h3>Install</h3>
+          <pre class="mono">zena pkg add ${detail.handle}${if (pinned && version != null) `@${version}` else ''}</pre>
+        </section>
+        ${when(release != null, () => html`
+        <section>
+          <dl class="pairs">
+            <div><dt>Version</dt><dd class="mono">${version as String}</dd></div>
+            <div><dt>License</dt><dd>${license}</dd></div>
+            <div><dt>Published</dt><dd>${(release as Release).createdAt.sliceBytes(0, 10)}</dd></div>
+            <div><dt>Dependencies</dt><dd>${`${dependencyCount}`}</dd></div>
+            ${when(files != null, () => html`
+            <div><dt>Size</dt><dd>${formatBytes((files as ReleaseFiles).archiveBytes)}</dd></div>
+            <div><dt>Files</dt><dd>${`${(files as ReleaseFiles).files.length}`}</dd></div>`)}
+          </dl>
+        </section>`)}
+        <section>
+          <h3>Package</h3>
+          <p class="name"><a href="/scopes/${detail.scope}">@${detail.scope}</a>/${detail.profile?.name ?? detail.handle}</p>
+          <p class="mono muted small" title="Handle">${detail.handle}</p>
+          <p class="mono muted small" title="DID">${detail.did}</p>
           ${when(profile?.homepage != null || profile?.source != null, () => html`
-          <dt>Links</dt><dd>${externalLink(profile?.homepage, 'Homepage')} ${externalLink(profile?.source, 'Source')}</dd>`)}
-          <dt>Handle</dt><dd class="mono">${detail.handle}</dd>
-          <dt>DID</dt><dd class="mono">${detail.did}</dd>
-          <dt>Maintainers</dt>
-          <dd>${if (detail.maintainers == null) html`<span class="muted">No maintainers record.</span>`
-              else maintainerList(detail.maintainers as Maintainers, shown)}</dd>
+          <p class="links">${externalLink(profile?.homepage, 'Homepage')} ${externalLink(profile?.source, 'Source')}</p>`)}
+        </section>
+        <section>
+          <h3>Maintainers</h3>
+          ${if (detail.maintainers == null) html`<p class="muted">No maintainers record.</p>`
+              else maintainerList(detail.maintainers as Maintainers, shown)}
+          ${when(version != null, () => html`
+          <h4>Approved ${version as String}</h4>
+          ${approvers(version as String, shown, approvedBy)}`)}
           ${when(detail.maintainers != null, () => html`
-          <dt>Approvals</dt><dd>${approvalPolicy(detail.maintainers as Maintainers)}</dd>`)}
-        </dl>
+          <h4>Policy</h4>
+          <p>${approvalPolicy(detail.maintainers as Maintainers)}</p>`)}
+        </section>
       </aside>
     </div>
   `;
