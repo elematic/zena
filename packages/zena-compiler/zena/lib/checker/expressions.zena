@@ -43,7 +43,7 @@ import {
 } from './literals.zena';
 import { checkMatchCaseBody, checkMatchExpr } from './match.zena';
 import {
-  accessMemberKey, checkIndexExpression, checkIndexWrite, checkMemberExpression, displayMemberName, isStaticReceiver, resolveArrayBackingClass, staticAccessMismatch, staticMemberHint
+  accessMemberKey, checkIndexExpression, discriminatedRecordMember, checkIndexWrite, checkMemberExpression, displayMemberName, isStaticReceiver, resolveArrayBackingClass, staticAccessMismatch, staticMemberHint
 } from './members.zena';
 import {
   applyFalseNarrowingFromCondition, applyTrueNarrowingFromCondition,
@@ -1123,6 +1123,14 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
   }
   case RecordLiteral {properties, loc}: {
+    // Against a union of records told apart by a literal field, a
+    // literal is checked against the member its literals name.
+    let discriminated = if (expectedType != null) {
+      discriminatedRecordMember(expectedType, properties)
+    } else {
+      null
+    };
+    let recordExpected: Type | null = discriminated ?? expectedType;
     // Contextual typing: expected property types flow into the property
     // values, and (below) an assignable literal takes the expected record
     // type as its own. Codegen mints one struct per distinct record type,
@@ -1130,8 +1138,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     // different mints ({p: null} and {p: somePofTypeP} against {p: P | null}) —
     // record dispatch casts the receiver to the declared type's mint.
     var expectedProps: HashMap<String, Type> | null = null;
-    if (expectedType != null) {
-      let baseExpected = baseType(expectedType);
+    if (recordExpected != null) {
+      let baseExpected = baseType(recordExpected);
       if (baseExpected is RecordT) {
         expectedProps = baseExpected.properties;
       }
@@ -1240,28 +1248,28 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       noteFieldsBesideRow(ctx, literalRow, propTypes, expr);
     }
     let recT = new RecordT(propTypes, literalOptionals, literalRow, false);
-    if (expectedType != null) {
+    if (recordExpected != null) {
       // A closed record type names all its fields, so a literal checked
       // against one may write no others (row-types.md §3.2): a typo is
       // an error rather than a field dropped. Fields a spread brings are
       // a projection, as they are from a variable; a type with a row
       // takes the extra fields as the row.
-      let exactExpected = baseType(expectedType);
+      let exactExpected = baseType(recordExpected);
       if (exactExpected is RecordT) {
         let closedExpected = exactExpected;
         if (closedExpected.row == null && !closedExpected.isExistential) {
           for (let key in explicitKeys.keys()) {
             if (!closedExpected.properties.has(key)) {
               ctx.errorOnce(explicitKeys[key],
-                  `Field '${key}' is not in '${typeToString(expectedType)}': a literal of a closed record type names exactly its fields.`,
+                  `Field '${key}' is not in '${typeToString(recordExpected)}': a literal of a closed record type names exactly its fields.`,
                   DiagnosticCode.PropertyNotFound);
             }
           }
         }
       }
     }
-    if (expectedType != null) {
-      let baseExpected = baseType(expectedType);
+    if (recordExpected != null) {
+      let baseExpected = baseType(recordExpected);
       if (baseExpected is RecordT && isAssignableTo(ctx, recT, baseExpected)) {
         // A literal is a closed record; packing it into an existential
         // is the conversion at the use, not the literal's type.

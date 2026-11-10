@@ -4,15 +4,16 @@ import {
   AsPattern, BindingPattern, BlockStatement, BooleanLiteral, ClassPattern,
   EnumDeclaration, Expression, ExpressionStatement, Identifier,
   IdentifierPattern, LogicalPattern, MatchExpression, MemberExpression, Node,
-  NullLiteral, NumberLiteral, StringLiteral
+  NullLiteral, NumberLiteral, RecordPattern, StringLiteral
 } from '../ast.zena';
 import {
-  BoolLiteralType, BooleanType, ClassType, EnumType, InterfaceType, NeverType, NullType, StringLiteralType, Type, UnionType as UnionT, VoidType, isBooleanLike, typeToString, unwrapAliases
+  BoolLiteralType, BooleanType, ClassType, EnumType, InterfaceType, NeverType, NullType, NumLiteralType, RecordType as RecordT, StringLiteralType, Type, UnionType as UnionT, VoidType, baseType, isBooleanLike, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { adaptArmToContext, adaptJoinedArm, armValueNode } from './adaptation.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
+import { literalFits, recordUnionMembersOf } from './members.zena';
 import { sameInterfaceDeclaration, sameTypeArguments } from './generics.zena';
 import { prescanPendingFunctions } from './module.zena';
 import {
@@ -59,6 +60,11 @@ function isFiniteType(t: Type): boolean {
     case ClassType as ct: ct.isSealed
     case EnumType: true
     case UnionT {types}: {
+      // A union of records told apart by a literal field: its arms name
+      // the members, so a missing one is an error (`recordMemberCovered`).
+      if (isDiscriminatedRecordUnion(t)) {
+        return true;
+      }
       var allFinite = true;
       for (let member in types) {
         if (!isFiniteType(member)) { allFinite = false; }
@@ -67,6 +73,70 @@ function isFiniteType(t: Type): boolean {
     }
     case _: false
   };
+}
+
+/**
+ * Whether `t` is a union of record types with a field every member has at
+ * a literal type, as a discriminated union is.
+ */
+function isDiscriminatedRecordUnion(t: Type): boolean {
+  if (!(t is UnionT)) {
+    return false;
+  }
+  let members = recordUnionMembersOf(t);
+  if (members == null) {
+    return false;
+  }
+  for (let field in members[0].properties.keys()) {
+    var literalInAll = true;
+    for (let rec in members) {
+      if (!rec.properties.has(field) || rec.isOptional(field) ||
+          !isLiteralFieldType(rec.properties[field])) {
+        literalInAll = false;
+      }
+    }
+    if (literalInAll) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a field of `rec` has a literal type, as a discriminant does. */
+function hasLiteralField(rec: RecordT): boolean {
+  for (let pair in rec.properties) {
+    if (!rec.isOptional(pair.key) && isLiteralFieldType(pair.value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isLiteralFieldType(t: Type): boolean {
+  return t is BoolLiteralType || t is NumLiteralType || t is StringLiteralType;
+}
+
+/**
+ * Whether a record pattern matches every value of the record type `rec`:
+ * each field it names is required there, and its pattern for the field
+ * covers the field's type, a literal equal to the field's literal type
+ * or a pattern that leaves nothing of the type.
+ */
+function recordMemberCovered(ctx: CheckerContext, rec: RecordT, pattern: RecordPattern): boolean {
+  for (let prop in pattern.properties) {
+    let name = prop.name.name;
+    if (!rec.properties.has(name) || rec.isOptional(name)) {
+      return false;
+    }
+    let fieldType = rec.properties[name];
+    if (literalFits(fieldType, prop.value) == 1) {
+      continue;
+    }
+    if (!(subtractPatternFromType(ctx, fieldType, prop.value) is NeverType)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -244,6 +314,19 @@ function subtractPatternFromType(ctx: CheckerContext, t: Type, pattern: Node): T
       // `case let Leaf {size}: …` — the binding prefix doesn't change
       // what the inner pattern covers.
       return subtractPatternFromType(ctx, t, bp.pattern);
+    }
+    case RecordPattern as rp: {
+      // The members of a discriminated record union the pattern matches
+      // whole. A record with no literal field is left as it was: its arms
+      // are not checked for coverage.
+      return narrowUnion(t, (member) => {
+        let rec = baseType(member);
+        return if (rec is RecordT && hasLiteralField(rec) && recordMemberCovered(ctx, rec, rp)) {
+          new NeverType() as Type
+        } else {
+          member
+        };
+      });
     }
     case BooleanLiteral {value}: {
       // Subtract the specific boolean literal from the remaining type.

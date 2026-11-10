@@ -1,0 +1,46 @@
+// @mode: check
+// A union of record types told apart by a literal field every member has.
+
+type Outcome = {kind: 0, ok: i32} | {kind: 1, err: String};
+
+// A literal takes the member its literal names; one no member has is an
+// error.
+let good: Outcome = {kind: 0, ok: 1};
+let bad: Outcome = {kind: 2, ok: 1}; // @error: Type mismatch: '{ kind: i32, ok: i32 }' is not assignable to '{ kind: 0, ok: i32 } | { kind: 1, err: String }'.
+
+function reads(o: Outcome): i32 {
+  // The discriminant reads as the union of its literals.
+  let k: 0 | 1 = o.kind;
+  if (o.kind == 0) {
+    let e = o.err; // @error: Property 'err' does not exist on record type.
+    return o.ok;
+  }
+  return o.err.length;
+}
+
+// Each member needs an arm.
+function partial(o: Outcome): i32 {
+  return match (o) { // @error: Non-exhaustive match. Not all cases are covered.
+    case {kind: 0, ok}: ok
+  };
+}
+
+// Members whose other fields disagree still cannot be read through one.
+type Mixed = {kind: 0, v: i32} | {kind: 1, v: String};
+
+function mixed(m: Mixed): i32 {
+  let v = m.v; // @error: Property 'v' is 'i32' in one member of '{ kind: 0, v: i32 } | { kind: 1, v: String }' and 'String' in another, so the read has no one type.
+  return 0;
+}
+
+// A member whose discriminant is wider than a literal stays on both
+// sides of a comparison.
+type Wide = {kind: i32, x: i32} | {kind: 1, y: i32};
+
+function wide(w: Wide): i32 {
+  if (w.kind == 1) {
+    let y = w.y; // @error: Property 'y' does not exist on '{ kind: i32, x: i32 }', one member of '{ kind: i32, x: i32 } | { kind: 1, y: i32 }'.
+    return 0;
+  }
+  return w.x;
+}

@@ -54,8 +54,21 @@ let bail = (cx: LoweringContext, reason: String): never => {
 let recordPatternValue = (cx: LoweringContext, rp: RecordPattern,
     value: i32): i32 => {
   let raOpt = cx.func.model.getRecordUnionAdaptation(rp as Node);
-  if (raOpt == null) { return value; }
-  return repackRecordUnion(cx, raOpt, value);
+  if (raOpt != null) {
+    return repackRecordUnion(cx, raOpt, value);
+  }
+  // A record union narrowed to one member, by the arms before this one or
+  // by a comparison of its discriminant: the value is that member, held
+  // as the union, so it is cast to the member's fat pointer.
+  if (recordDispatchOfValue(cx, value) == null && isRefValType(cx.valueTypeOf(value))) {
+    let matched = cx.substitutedNodeType(rp as Node);
+    if (matched is RecordType) {
+      let d = cx.recordDispatchOf(matched);
+      return cx.conformToSlot(value, new ValTypeRef(d.fatPtrType) as ValType,
+          'record pattern on a narrowed union');
+    }
+  }
+  return value;
 };
 
 /** Branches to `failB` when `cond` is false; continues in a new block. */
