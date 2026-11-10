@@ -288,8 +288,9 @@ export async function main(): Future<void> {
     // The workspace has a manifest, so that zena, walking up from it, stops
     // there and not at the repository's, which holds it.
     await writeFile('/smoke/app/zena-package.json', '{"name": "app"}\n');
+    // Added by its handle, the canary is `<scope>:smoke` (import-names.md).
     await writeFile('/smoke/app/prog.zena',
-        'import { answer } from \'smoke:smoke\';\n\nexport function main(): i32 {\n  return answer() - 42;\n}\n');
+        `import { answer } from '${smoke.scope}:smoke/smoke';\n\nexport function main(): i32 {\n  return answer() - 42;\n}\n`);
     let added = await smoke.zena('app', ['pkg', 'add', canary]);
     expect(added.succeeded(), `zena pkg add: ${described(added)}`);
     let ran = await smoke.zena('app', ['run', 'prog.zena']);

@@ -7,10 +7,11 @@
  * workspace package whose directory holds the current directory, or else
  * the root, whose manifest `zena pkg add` creates if need be.
  *
- * `zena pkg add <package>[@<version>]` takes a DID, a handle or `@scope/name`,
+ * `zena pkg add <package>[@<version>]` takes a DID, a handle or `scope:name`,
  * and the latest version that is not retracted unless one is given. The local
- * name is the one the package's profile suggests, unless `--name` gives
- * another. `zena pkg update [<name>...]` raises each named dependency, or all
+ * name is `scope:name` for a package in a scope, unless the root manifest sets
+ * `scopedNames` to false, and otherwise the one the package's profile
+ * suggests; `--name` gives another. `zena pkg update [<name>...]` raises each named dependency, or all
  * of them, to the latest version of its major version that is not retracted.
  *
  * Both print what the new selection changes in the lockfile's pins, and
@@ -28,8 +29,11 @@ import { exists, readFile, writeFile } from 'zena:fs';
 import { Cid } from 'atproto:cid';
 import { IdentityResolver } from 'atproto:identity';
 import { writeDependencies } from 'package-manager:manifest';
-import { isValidPackageName } from 'package-manager:records';
-import { DEFAULT_DOMAIN, fetchProfile, listVersions, networkReleases, resolveIdentifier } from 'package-manager:registry';
+import { isValidLocalName } from 'package-manager:records';
+import {
+  DEFAULT_DOMAIN, fetchProfile, isScopedIdentifier, listVersions, networkReleases, resolveIdentifier, scopedHandle,
+  scopedName
+} from 'package-manager:registry';
 import {
   Pin, PinAdded, PinChange, PinChangedInPlace, PinRemoved, PinVersionChanged, diffPins, readPins, writeLockfile
 } from 'package-manager:resolution';
@@ -41,7 +45,7 @@ import { fetchAndReport, packageResolver } from './fetch.zena';
 import { findRegistry } from './publish.zena';
 
 /**
- * The domain `@scope/name` stands under when the workspace's `scopes` do
+ * The domain `scope:name` stands under when the workspace's `scopes` do
  * not name one: the domain of the registry `ZENA_REGISTRY` names, as its
  * `describeRegistry` gives it, or else the Zena project's, without asking
  * any registry, so that adding a package needs no App View.
@@ -55,7 +59,7 @@ async function scopeDomain(args: ParsedArgs): Future<String> {
 
 export async function addCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length != 1) {
-    console.error('Error: zena pkg add takes one package: a DID, a handle or @scope/name, with @<version> if wanted.');
+    console.error('Error: zena pkg add takes one package: a DID, a handle or scope:name, with @<version> if wanted.');
     return 2;
   }
   let (identifier, versionText) = splitVersion(args.rest[0]);
@@ -64,7 +68,8 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
   let manifest = target.manifest;
   let requirements = manifest.requirements;
   let resolver = packageResolver();
-  let domain = if (identifier.startsWith('@')) await scopeDomain(args) else DEFAULT_DOMAIN;
+  let scopedIdentifier = isScopedIdentifier(identifier);
+  let domain = if (scopedIdentifier) await scopeDomain(args) else DEFAULT_DOMAIN;
   let did = await resolveIdentifier(identifier, workspace.root.manifest.scopes, resolver, domain);
   let document = await resolver.resolveDid(did);
 
@@ -85,15 +90,31 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
   if (let (true, given) = args.getOption('name')) {
     name = given;
   } else {
-    let profile = await fetchProfile(document);
-    if (profile == null) {
-      console.error(`Error: ${identifier} has no profile to suggest a name; give one with --name.`);
-      return 1;
+    // A package in a scope is `<scope>:<name>`, by a handle that resolves
+    // to it, unless the workspace turns that off (docs/design/import-names.md);
+    // any other, by the name its profile suggests.
+    let root = workspace.root.manifest;
+    let scopes = root.scopes;
+    var scoped: String | null = null;
+    if (root.scopedNames) {
+      let handle = await verifiedHandle(identifier, did, document.handle, scopes, resolver, domain);
+      if (handle != null) {
+        scoped = scopedName(handle, scopes, if (scopedIdentifier) domain else await scopeDomain(args));
+      }
     }
-    name = profile.name;
+    if (scoped != null) {
+      name = scoped;
+    } else {
+      let profile = await fetchProfile(document);
+      if (profile == null) {
+        console.error(`Error: ${identifier} has no profile to suggest a name; give one with --name.`);
+        return 1;
+      }
+      name = profile.name;
+    }
   }
-  if (!isValidPackageName(name)) {
-    console.error(`Error: '${name}' is not a valid package name.`);
+  if (!isValidLocalName(name)) {
+    console.error(`Error: '${name}' is not a valid local name: a package name, or scope:name.`);
     return 1;
   }
   let taken = nameTaken(workspace, target, name, did);
@@ -153,6 +174,30 @@ export async function updateCommand(args: ParsedArgs, options: Options): Future<
  * itself, or, in a root that is not a package, a workspace package. Null
  * when it is free.
  */
+/**
+ * The handle of the package `did`, which `identifier` named, or null when
+ * none is known to resolve to it: the handle `identifier` is or stands for,
+ * which `resolveIdentifier` resolved, or for a DID, the handle its document
+ * gives, `claimed`, once it resolves back to the DID.
+ */
+async function verifiedHandle(identifier: String, did: String, claimed: String | null,
+    scopes: OrderedHashMap<String, String>, resolver: IdentityResolver, domain: String): Future<String | null> {
+  if (isScopedIdentifier(identifier)) {
+    return scopedHandle(identifier, scopes, domain);
+  }
+  if (!identifier.startsWith('did:')) {
+    return identifier;
+  }
+  if (claimed == null) {
+    return null;
+  }
+  try {
+    return if ((await resolver.resolve(claimed)).did == did) claimed else null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function nameTaken(workspace: Workspace, target: WorkspacePackage, name: String,
     did: String): String | null {
   let manifest = target.manifest;
@@ -165,12 +210,12 @@ function nameTaken(workspace: Workspace, target: WorkspacePackage, name: String,
   if (let (true, wit) = manifest.wits.get(name)) {
     return `the WIT in ${wit}`;
   }
-  if (manifest.name != null && manifest.name == name) {
+  if (workspace.localNameOf(target) == name) {
     return 'this package';
   }
   if (target.dir == workspace.root.dir && manifest.name == null) {
     for (let pkg in workspace.packages) {
-      if (pkg.manifest.name != null && pkg.manifest.name == name) {
+      if (workspace.localNameOf(pkg) == name) {
         return `the workspace package in ${pkg.dir}`;
       }
     }
@@ -259,7 +304,6 @@ function cidsChanged(pin: Pin, release: Cid, source: Cid): String {
 
 /** `text` split into the package and the version after its last `@`, if any. */
 function splitVersion(text: String): inline (String, String | null) {
-  // A leading `@` begins `@scope/name`, and is not a version.
   for (var i = text.length - 1; i > 0; i -= 1) {
     if (text.getByteAt(i) == 64) {
       return (text.sliceBytes(0, i), text.sliceBytes(i + 1, text.length));

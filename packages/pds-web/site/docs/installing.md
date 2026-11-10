@@ -33,17 +33,17 @@ zena run main.zena
 
 ## Adding a dependency
 
-Use `zena pkg add` to add a published package to your project. You can refer to a package by `@scope/name`, by its full handle, or by its DID:
+Use `zena pkg add` to add a published package to your project. You can refer to a package by `scope:name`, by its full handle, or by its DID:
 
 ```sh
-# By @scope/name, on pkg.zena-lang.dev, or on the registry ZENA_REGISTRY names
-zena pkg add @acme/router
+# By scope:name, on pkg.zena-lang.dev, or on the registry ZENA_REGISTRY names
+zena pkg add acme:router
 
 # By full handle (including packages on custom domains)
 zena pkg add router.acme.pkg.zena-lang.dev
 
 # Pinning a specific minimum version
-zena pkg add @acme/router@1.4.2
+zena pkg add acme:router@1.4.2
 ```
 
 When you run `zena pkg add`, the CLI performs three steps:
@@ -52,14 +52,14 @@ When you run `zena pkg add`, the CLI performs three steps:
 2. Selects versions across your workspace using minimal version selection and writes the exact versions and content hashes (CIDs) to `zena-lock.json`.
 3. Fetches each package's source archive into the local package cache and verifies its CID against `zena-lock.json`.
 
-After running `zena pkg add @acme/router`, your `zena-package.json` looks like this:
+After running `zena pkg add acme:router`, your `zena-package.json` looks like this:
 
 ```json [zena-package.json]
 {
   "name": "my-app",
   "version": "0.1.0",
   "dependencies": {
-    "router": {
+    "acme:router": {
       "did": "did:plc:routerrouterrouterrouter",
       "version": "1.4.2"
     }
@@ -69,25 +69,27 @@ After running `zena pkg add @acme/router`, your `zena-package.json` looks like t
 
 ## Importing libraries
 
-Libraries in your package import a dependency using the local key in `dependencies` followed by `:` and the exported library name:
+Libraries in your package import a dependency using its key in `dependencies` followed by `:` and the exported library name:
 
 ```zena [main.zena]
-import {Router} from 'router:server';
+import {Router} from 'acme:router/server';
 
 export function main(): void {
   let app = new Router();
 }
 ```
 
+The package's name alone, `'acme:router'`, imports its `index` library.
+
 ### Choosing a custom local name
 
-By default, `zena pkg add` uses the name suggested by the dependency's profile. If that name collides with another dependency or you prefer a shorter alias, pass `--name`:
+By default, `zena pkg add` names a package in a scope by its `scope:name`, and a package with a handle on its own domain by the name its profile suggests. If that name collides with another dependency or you prefer a shorter alias, pass `--name`:
 
 ```sh
-zena pkg add @acme/router --name http-router
+zena pkg add acme:router --name http-router
 ```
 
-Your code then imports from `http-router:<library>` while other packages in the dependency graph continue using their own local names.
+Your code then imports from `http-router/<library>` while other packages in the dependency graph continue using their own local names.
 
 ## Updating dependencies
 
@@ -104,7 +106,7 @@ zena pkg update router
 To upgrade a dependency to a new major version, pass the new version explicitly to `zena pkg add`:
 
 ```sh
-zena pkg add @acme/router@2.0.0
+zena pkg add acme:router@2.0.0
 ```
 
 ## Fetching locked packages

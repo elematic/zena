@@ -2,7 +2,7 @@
 title: Scopes, Orgs & Teams
 ---
 
-Every scope on a registry (such as `@acme` on `pkg.zena-lang.dev`) is an organization backed by its own AT Protocol account (`acme.pkg.zena-lang.dev`). Organizations group packages under a shared namespace, manage members and teams, and enforce security policies across their packages.
+Every scope on a registry (such as `acme` on `pkg.zena-lang.dev`) is an organization backed by its own AT Protocol account (`acme.pkg.zena-lang.dev`). Organizations group packages under a shared namespace, manage members and teams, and enforce security policies across their packages.
 
 ## Organization roles
 
@@ -42,7 +42,7 @@ Each member of a team has one of two roles within the team:
 - **`member`**: Can publish and attest releases for any package that lists the team as a maintainer.
 
 ```sh
-# Create a team inside @acme
+# Create a team inside acme
 zena pkg team create acme core
 
 # Add members to the team
@@ -65,17 +65,17 @@ Each package has its own `dev.zena-lang.package.maintainers` record listing who 
 
 ```sh
 # List a package's maintainers
-zena pkg owner list @acme/router
+zena pkg owner list acme:router
 
 # Add an individual publisher or owner
-zena pkg owner add @acme/router bob.bsky.social --role publisher
-zena pkg owner add @acme/router dave.bsky.social --role owner
+zena pkg owner add acme:router bob.bsky.social --role publisher
+zena pkg owner add acme:router dave.bsky.social --role owner
 
 # Grant a team publishing rights on a package
-zena pkg owner add @acme/router @acme/core --role publisher
+zena pkg owner add acme:router acme:core --role publisher
 
 # Remove a maintainer
-zena pkg owner remove @acme/router bob.bsky.social
+zena pkg owner remove acme:router bob.bsky.social
 ```
 
 ## Private membership commitments

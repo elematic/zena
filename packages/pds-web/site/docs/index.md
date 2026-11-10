@@ -11,16 +11,16 @@ Zena packages are libraries and tools for the Zena programming language. Add one
 
 ## Install a package
 
-Add a package by its `@scope/name`:
+Add a package by its `scope:name`:
 
 ```sh
-zena pkg add @acme/router
+zena pkg add acme:router
 ```
 
-Then import its libraries by the name your project gives it:
+Then import its libraries by that name:
 
 ```zena
-import {Router} from 'router:server';
+import {Router} from 'acme:router/server';
 ```
 
 `zena pkg add` records the package in `zena-package.json` and pins the exact release in `zena-lock.json`, so every machine builds the same code. See [Installing Packages](/docs/installing/).
@@ -43,7 +43,7 @@ Every dependency is pinned by its content hash, a published version never change
 
 ## Scopes, organizations and teams
 
-Packages are published under a scope, such as `@acme`, that an organization owns. Its owners give members and teams roles, and who belongs stays private until they act. See [Scopes, Orgs & Teams](/docs/orgs-and-teams/).
+Packages are published under a scope, such as `acme`, that an organization owns. Its owners give members and teams roles, and who belongs stays private until they act. See [Scopes, Orgs & Teams](/docs/orgs-and-teams/).
 
 ## Decentralized
 

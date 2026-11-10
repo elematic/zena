@@ -6,7 +6,7 @@ No single registry owns Zena packages. Each package keeps its identity and its d
 
 ## A package's identity is its own
 
-A project depends on a package by its permanent identifier, a DID, which `zena pkg add` writes into `zena-package.json`. The names people type, such as `@acme/router`, point to that identifier. Since projects record the identifier, a package can be renamed or move to another host without breaking them. (Commands for moving a package are not built yet.)
+A project depends on a package by its permanent identifier, a DID, which `zena pkg add` writes into `zena-package.json`. The names people type, such as `acme:router`, point to that identifier. Since projects record the identifier, a package can be renamed or move to another host without breaking them. (Commands for moving a package are not built yet.)
 
 ## Your data stays in your accounts
 

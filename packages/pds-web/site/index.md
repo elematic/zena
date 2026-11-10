@@ -38,7 +38,7 @@ features:
     linkText: Labels and what is planned
   - icon: 👥
     title: Scopes, Orgs & Teams
-    details: Publish under a scope your organization owns, such as <code>@acme</code>. Give members and teams roles, and keep who belongs private until they act.
+    details: Publish under a scope your organization owns, such as <code>acme</code>. Give members and teams roles, and keep who belongs private until they act.
     link: /docs/orgs-and-teams/
     linkText: Orgs & teams
   - icon: 🌐

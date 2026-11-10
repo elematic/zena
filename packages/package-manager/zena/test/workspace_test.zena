@@ -2,6 +2,7 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
+import {join} from 'zena:core';
 import {ManifestError} from 'package-manager:manifest';
 import {WorkspaceFiles, readWorkspace} from 'package-manager:workspace';
 
@@ -105,6 +106,25 @@ export let tests = suite('package-manager:workspace', () => {
     equal(workspace.packageAt('/ws/packages/library').dir, '/ws');
     equal(workspace.packageAt('/ws/scripts').dir, '/ws');
     equal(workspace.packageAt('/ws').dir, '/ws');
+  });
+
+  test('names a package in a scope scope:name, with the root scope inside the workspace', async (ctx) => {
+    let plain = await readWorkspace('/ws', files());
+    equal(plain.localNameOf(plain.packages[1]) as String, 'lib');
+
+    let scoped = files()
+      .add('/ws/zena-package.json', '{"name": "app", "scope": "acme", "workspace": {"packages": ["packages/*"]}}')
+      .add('/ws/packages/lib/zena-package.json',
+          '{"name": "lib", "dependencies": {"tool": {"path": "../../../tool"}}}')
+      .add('/ws/packages/wit/zena-package.json', '{"name": "wit", "scope": "zena-lang"}');
+    let workspace = await readWorkspace('/ws', scoped);
+    let names = new GrowableArray<String>();
+    for (let pkg in workspace.packages) {
+      names.push(workspace.localNameOf(pkg) ?? '-');
+    }
+    // The root's scope is its packages' unless they name one, and not that
+    // of tool, outside the workspace.
+    equal(join(names, ' '), 'acme:app acme:lib tool zena-lang:wit');
   });
 
   test('reads a root with no manifest yet as an empty one', async (ctx) => {

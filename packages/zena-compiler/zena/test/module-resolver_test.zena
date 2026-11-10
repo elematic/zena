@@ -83,6 +83,7 @@ function makeResolvedResolver() {
     "did:plc:router@1" => router,
     "did:web:json@2" => json,
     "router" => alias,
+    "acme:router" => alias,
     "wasi" => wasi,
   };
   return new ModuleResolver(packages, "zena-component");
@@ -302,7 +303,7 @@ export let tests = suite("Module Resolver", () => {
 
   test("resolves user package module", (t) => {
     let resolver = makeResolver("js");
-    let result = resolver.resolve("mylib:utils", "/my/file.zena");
+    let result = resolver.resolve("mylib/utils", "/my/file.zena");
     equal(result.path, "/project/packages/mylib/zena/lib/utils.zena");
     equal(result.packageName, "mylib");
   });
@@ -310,7 +311,7 @@ export let tests = suite("Module Resolver", () => {
   test("rejects unknown package", (t) => {
     let resolver = makeResolver("js");
     throws(() => {
-      resolver.resolve("unknown:module", "/my/file.zena");
+      resolver.resolve("unknown/module", "/my/file.zena");
     });
   });
 
@@ -330,11 +331,37 @@ export let tests = suite("Module Resolver", () => {
 
   // --- Specifier validation ---
 
-  test("rejects bare specifier without colon", (t) => {
+  test("a specifier without a library names the package's index library", (t) => {
     let resolver = makeResolver("js");
+    equal(resolver.resolve("mylib", "/my/file.zena").path, "/project/packages/mylib/zena/lib/index.zena");
+    // Still only a package's name.
     throws(() => {
       resolver.resolve("bare-specifier", "/my/file.zena");
     });
+  });
+
+  test("resolves a package by its name in a scope", (t) => {
+    let packages: HashMap<String, PackageConfig> = {
+      "zena" => makeStdlibConfig(),
+      "acme:markdown" => new PackageConfig("/project/packages/markdown", null),
+    };
+    let resolver = new ModuleResolver(packages, "js");
+    let gfm = resolver.resolve("acme:markdown/plugins/gfm", "/my/file.zena");
+    equal(gfm.path, "/project/packages/markdown/plugins/gfm.zena");
+    equal(gfm.packageName, "acme:markdown");
+    equal(resolver.resolve("acme:markdown", "/my/file.zena").path, "/project/packages/markdown/index.zena");
+  });
+
+  test("ends a package without a scope at its first slash", (t) => {
+    let resolver = makeResolver("js");
+    equal(resolver.resolve("mylib/net/http", "/my/file.zena").path, "/project/packages/mylib/zena/lib/net/http.zena");
+    // The standard library keeps its libraries' ids, slashes and all.
+    equal(resolver.resolve("zena:string", "/my/file.zena").path, "zena:string");
+  });
+
+  test("reads the old form, package:library, until the repository is renamed", (t) => {
+    let resolver = makeResolver("js");
+    equal(resolver.resolve("mylib:utils", "/my/file.zena").path, "/project/packages/mylib/zena/lib/utils.zena");
   });
 
   // --- Package membership ---
@@ -358,19 +385,21 @@ export let tests = suite("Module Resolver", () => {
   suite("Published packages", () => {
 
   test("a project name resolves through its alias to the pinned package", (t) => {
-    let resolved = makeResolvedResolver().resolve("router:match", "/project/src/main.zena");
+    let resolved = makeResolvedResolver().resolve("router/match", "/project/src/main.zena");
     equal(resolved.path, "/cache/sources/bafkreirouter/match.zena");
     equal(resolved.packageName, "did:plc:router@1");
+    let scoped = makeResolvedResolver().resolve("acme:router/match", "/project/src/main.zena");
+    equal(scoped.path, "/cache/sources/bafkreirouter/match.zena");
   });
 
   test("a pinned package's files resolve names through its own dependencies", (t) => {
     let resolver = makeResolvedResolver();
-    let resolved = resolver.resolve("json:parse", "/cache/sources/bafkreirouter/match.zena");
+    let resolved = resolver.resolve("json/parse", "/cache/sources/bafkreirouter/match.zena");
     equal(resolved.path, "/cache/sources/bafkreijson/parse.zena");
     equal(resolved.packageName, "did:web:json@2");
     // The project has no name for json.
     throws(() => {
-      resolver.resolve("json:parse", "/project/src/main.zena");
+      resolver.resolve("json/parse", "/project/src/main.zena");
     });
   });
 
@@ -384,10 +413,10 @@ export let tests = suite("Module Resolver", () => {
   test("a pinned package does not see the project's names", (t) => {
     let resolver = makeResolvedResolver();
     throws(() => {
-      resolver.resolve("app:main", "/cache/sources/bafkreirouter/match.zena");
+      resolver.resolve("app/main", "/cache/sources/bafkreirouter/match.zena");
     });
     throws(() => {
-      resolver.resolve("router:match", "/cache/sources/bafkreijson/parse.zena");
+      resolver.resolve("router/match", "/cache/sources/bafkreijson/parse.zena");
     });
   });
 

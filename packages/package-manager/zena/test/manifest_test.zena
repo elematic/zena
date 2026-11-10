@@ -38,26 +38,33 @@ export let tests = suite('package-manager:manifest', () => {
       "dependencies": {
         "router": {"did": "${ROUTER}", "version": "1.4.2"},
         "lib": {"path": "./packages/lib"},
-        "json": {"did": "did:web:json.example.com", "version": "2.0.1"}
+        "json": {"did": "did:web:json.example.com", "version": "2.0.1"},
+        "acme:http": {"did": "did:web:http.example.com", "version": "3.0.0"}
       },
       "workspace": {"packages": ["packages/*", "tools/gen"]},
-      "scopes": {"@widgets": "widgets.alt-pkg.org"}
+      "scopes": {"widgets": "widgets.alt-pkg.org"}
     }`);
     equal(manifest.name as String, 'app');
     equal(manifest.did as String, 'did:plc:appappappappappappappapp');
-    equal(manifest.requirements.size, 2);
+    equal(manifest.requirements.size, 3);
     let names = new GrowableArray<String>();
     for (let name in manifest.requirements.keys()) {
       names.push(name);
     }
     equal(names[0], 'router');
     equal(names[1], 'json');
+    equal(names[2], 'acme:http');
     equal(manifest.requirements['router'].did, ROUTER);
     equal(manifest.requirements['json'].version.toString(), '2.0.1');
     equal(manifest.paths['lib'], './packages/lib');
     equal(manifest.workspacePackages.length, 2);
     equal(manifest.workspacePackages[1], 'tools/gen');
-    equal(manifest.scopes['@widgets'], 'widgets.alt-pkg.org');
+    equal(manifest.scopes['widgets'], 'widgets.alt-pkg.org');
+  });
+
+  test('gives names their scope unless scopedNames is false', (ctx) => {
+    isTrue(readManifest('{}').scopedNames, 'by default');
+    isTrue(!readManifest('{"scopedNames": false}').scopedNames, 'turned off');
   });
 
   test("measures exports' files from the source directory, src by default", (ctx) => {
@@ -91,6 +98,10 @@ export let tests = suite('package-manager:manifest', () => {
     rejects('{"did": "app"}');
     rejects('{"dependencies": []}');
     rejects(`{"dependencies": {"Router": {"did": "${ROUTER}", "version": "1.4.2"}}}`);
+    for (let name in ['acme:', ':router', 'acme:router:x', 'acme/router', 'Acme:router', 'zena:router', '@acme/router']) {
+      rejects(`{"dependencies": {"${name}": {"did": "${ROUTER}", "version": "1.4.2"}}}`);
+    }
+    rejects('{"name": "acme:app"}');
     rejects('{"dependencies": {"router": {"did": "router", "version": "1.4.2"}}}');
     rejects(`{"dependencies": {"router": {"did": "${ROUTER}", "version": "1.4"}}}`);
     rejects(`{"dependencies": {"router": {"did": "${ROUTER}"}}}`);
@@ -98,7 +109,8 @@ export let tests = suite('package-manager:manifest', () => {
     rejects(`{"dependencies": {"lib": {"path": "./lib", "did": "${ROUTER}"}}}`);
     rejects('{"dependencies": {"lib": {"path": 3}}}');
     rejects('{"workspace": {"packages": "packages/*"}}');
-    rejects('{"scopes": {"widgets": "widgets.alt-pkg.org"}}');
+    rejects('{"scopes": {"@widgets": "widgets.alt-pkg.org"}}');
+    rejects('{"scopedNames": "no"}');
     rejects('{"scope": "Acme"}');
     rejects('{"scope": 3}');
   });

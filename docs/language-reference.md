@@ -5577,6 +5577,19 @@ import { StringBuilder as SB } from 'zena:core';
 import * as math from 'zena:math';
 ```
 
+A specifier names a library (docs/design/import-names.md):
+
+- `./file.zena` or `../dir/file.zena`: a file, relative to the importing one.
+- `zena:<library>`: a library of the standard library.
+- `<package>/<library>` or `<scope>:<package>/<library>`: a library of a
+  package, by the name the importing package's manifest gives it, such as
+  `router/server` or `acme:markdown/plugins/gfm`. A `:` before any `/`
+  ends the scope, the first `/` after it ends the package's name, and the
+  library's name is the rest, its path in the package.
+- `<package>` or `<scope>:<package>` alone: the package's `index` library.
+- `<namespace>:<interface>`, where the namespace is a WIT dependency's
+  name: a WIT interface, such as `wasi:clocks/system-clock`.
+
 #### Namespace Imports
 
 A namespace import (`import * as x`) defines a read-only variable `x` whose type is a structural **`RecordType`** containing all of the value exports of the imported library as properties.

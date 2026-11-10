@@ -31,6 +31,7 @@ import {
   ADMIN, MAINTAINER, MAINTAINERS_TYPE, MEMBER, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, OWNER,
   POLICY_TYPE, PUBLISHER, Policy, TEAM_TYPE, Team, TeamRole
 } from 'package-manager:records';
+import { isScopedIdentifier } from 'package-manager:registry';
 import { DiskFiles, readWorkspace } from 'package-manager:workspace';
 import { Options, workspaceRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
@@ -71,7 +72,7 @@ export async function scopeAddCommand(args: ParsedArgs, options: Options): Futur
     input['members'] = toJson(record.toValue());
     input['entries'] = entriesJson([added]);
     input['swapRecord'] = held.cid;
-    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, scope)) {
       console.log(`Added ${person} to ${scope} as ${role}.`);
     }
     await saveIfRefreshed(session);
@@ -99,7 +100,7 @@ export async function scopeRemoveCommand(args: ParsedArgs, options: Options): Fu
     input['members'] = toJson(record.toValue());
     input['entries'] = new JsonArray();
     input['swapRecord'] = held.cid;
-    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, scope)) {
       console.log(`Removed ${person} from ${scope}.`);
     }
     await saveIfRefreshed(session);
@@ -138,7 +139,7 @@ export async function scopeSettingsCommand(args: ParsedArgs, options: Options): 
     input['members'] = toJson(record.toValue());
     input['entries'] = new JsonArray();
     input['swapRecord'] = held.cid;
-    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, `@${scope}`)) {
+    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, scope)) {
       console.log(scopeSettings(scope, record));
     }
     await saveIfRefreshed(session);
@@ -207,7 +208,7 @@ export async function scopePolicyCommand(args: ParsedArgs, options: Options): Fu
     if (held != null) {
       input['swapRecord'] = held.cid;
     }
-    if (await write(session, registry, PUT_POLICY, input, `${scope}'s policy`, `@${scope}`)) {
+    if (await write(session, registry, PUT_POLICY, input, `${scope}'s policy`, scope)) {
       console.log(describePolicy(scope, policy));
     }
     await saveIfRefreshed(session);
@@ -539,7 +540,7 @@ async function putTeam(session: Session, registry: Registry, scope: String, org:
   if (swap != null) {
     input['swapRecord'] = swap;
   }
-  return await write(session, registry, PUT_TEAM, input, `the team ${scope}/${name}`, `@${scope}`);
+  return await write(session, registry, PUT_TEAM, input, `the team ${scope}/${name}`, scope);
 }
 
 /** What a package's maintainers record asks of its releases and of changes to it. */
@@ -552,7 +553,7 @@ function packageSettings(record: Maintainers): String {
 
 /**
  * How `zena pkg approve` names the package: as `--package` did, else as
- * `@scope/name` from the manifest of the package in the current directory,
+ * `scope:name` from the manifest of the package in the current directory,
  * else by DID.
  */
 async function approveAsOf(args: ParsedArgs, pkg: String): Future<String> {
@@ -563,7 +564,7 @@ async function approveAsOf(args: ParsedArgs, pkg: String): Future<String> {
   let manifest = workspace.packageAt(userCwd().value).manifest;
   let scope = manifest.scope ?? workspace.root.manifest.scope;
   if (manifest.did == pkg && scope != null && manifest.name != null) {
-    return `@${scope}/${manifest.name as String}`;
+    return `${scope}:${manifest.name as String}`;
   }
   return pkg;
 }
@@ -649,7 +650,7 @@ async function personDid(person: String): Future<String> {
 }
 
 /**
- * The package `--package` names, by DID, handle or `@scope/name` on the
+ * The package `--package` names, by DID, handle or `scope:name` on the
  * registry, else the one in the current directory, by its manifest's DID.
  */
 export async function packageDid(registry: Registry, args: ParsedArgs): Future<String> {
@@ -659,15 +660,18 @@ export async function packageDid(registry: Registry, args: ParsedArgs): Future<S
   return await currentPackageDid();
 }
 
-/** The package `given` names, by DID, handle or `@scope/name` on the registry. */
+/** The package `given` names, by DID, handle or `scope:name` on the registry. */
 export async function namedPackage(registry: Registry, given: String): Future<String> {
   if (given.startsWith('did:')) {
     return given;
   }
   var handle = given;
-  if (given.startsWith('@')) {
-    let (scope, name) = teamName(given.sliceBytes(1, given.length));
-    handle = `${name}.${scope}.${registry.domain}`;
+  if (isScopedIdentifier(given)) {
+    let parts = given.split(':');
+    if (parts.length != 2 || parts[0] == '' || parts[1] == '') {
+      throw new PublishError(`'${given}' is not <scope>:<name>`);
+    }
+    handle = `${parts[1]}.${parts[0]}.${registry.domain}`;
   }
   let did = await scopeOrganization(handle);
   if (did == null) {
