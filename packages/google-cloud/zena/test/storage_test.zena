@@ -131,14 +131,22 @@ final class FakeStorage implements ProtoTransport {
       return new ViewStream(responses, rpcError(12, `unimplemented: ${method.name}`));
     }
     let read = new ReadObjectRequest(request);
-    this.log.push(`ReadObject ${read.object}`);
+    let range = if (read.readOffset != 0 as i64 || read.readLimit != 0 as i64) ` ${read.readOffset} ${read.readLimit}` else '';
+    this.log.push(`ReadObject ${read.object}${range}`);
     if (read.object == DENIED) {
       return new ViewStream(responses, rpcError(7, 'denied'));
     }
     if (let (true, stored) = this.objects.get(`${read.bucket} ${read.object}`)) {
-      var offset = 0;
-      while (offset < stored.data.length) {
-        let end = if (stored.data.length - offset > this.readChunk) offset + this.readChunk else stored.data.length;
+      // As Cloud Storage reads: from read_offset, at most read_limit bytes,
+      // where a limit of 0 is none.
+      if (read.readOffset > stored.data.length as i64) {
+        return new ViewStream(responses, rpcError(11, `offset ${read.readOffset} past the end`));
+      }
+      var offset = read.readOffset as i32;
+      let last = if (read.readLimit > 0 as i64 && (offset as i64) + read.readLimit < (stored.data.length as i64))
+          offset + (read.readLimit as i32) else stored.data.length;
+      while (offset < last) {
+        let end = if (last - offset > this.readChunk) offset + this.readChunk else last;
         let content = newByteArray(end - offset);
         for (var i = offset; i < end; i += 1) {
           content[i - offset] = stored.data[i];
@@ -235,6 +243,21 @@ export let tests = suite('Cloud Storage', () => {
     equal(fake.log[0], `WriteObject big ${MAX_WRITE_CHUNK},${MAX_WRITE_CHUNK},5`);
     let read = await bucket.read('big');
     isTrue(read != null && sameBytes(read as ByteArray, data), 'the bytes read are the bytes written');
+  });
+
+  test('reads part of an object', async () => {
+    let fake = new FakeStorage();
+    let bucket = new Storage(fake).bucket('blobs');
+    let data = bytesOf(10, 7);
+    await bucket.write('a', data);
+    let part = await bucket.readRange('a', 3 as i64, 5 as i64) as ByteArray;
+    equal(part.length, 5);
+    equal(part[0], data[3]);
+    equal(part[4], data[7]);
+    equal(fake.log[1], 'ReadObject a 3 5');
+    // A range past the end ends at the end.
+    equal((await bucket.readRange('a', 8 as i64, 5 as i64) as ByteArray).length, 2);
+    isTrue(await bucket.readRange('missing', 0 as i64, 1 as i64) == null, 'no object');
   });
 
   test('writes an empty object in one request', async () => {

@@ -17,7 +17,7 @@
  * and reads do not check the ones it sends.
  */
 
-import { ByteBuffer } from 'zena:core';
+import { ByteBuffer, newByteArray } from 'zena:core';
 import { Duration } from 'zena:time';
 import { GrpcTransport } from 'protobuf:grpc';
 import { ProtoBytes, ProtoTransport, RpcError, RpcMetadata, RoutingHeader } from 'protobuf:runtime';
@@ -128,9 +128,28 @@ export final class Bucket {
 
   /** The contents of object `name`, or null when there is none. */
   async read(name: String): Future<ByteArray | null> {
+    return await this.#read(name, 0 as i64, 0 as i64);
+  }
+
+  /**
+   * `length` bytes of object `name` from `offset`, fewer when it ends
+   * sooner, or null when there is none. Cloud Storage refuses an offset
+   * past the end. A `length` of 0 reads nothing: Cloud Storage would take
+   * it as no limit.
+   */
+  async readRange(name: String, offset: i64, length: i64): Future<ByteArray | null> {
+    if (length <= 0 as i64) {
+      return newByteArray(0);
+    }
+    return await this.#read(name, offset, length);
+  }
+
+  /** Object `name` from `offset`, at most `limit` bytes of it, or all of it for 0. */
+  async #read(name: String, offset: i64, limit: i64): Future<ByteArray | null> {
     let data = new ByteBuffer();
     try {
-      for await (let response in this.#storage.client.readObject({bucket: this.resource, object: name})) {
+      for await (let response in this.#storage.client.readObject(
+          {bucket: this.resource, object: name, readOffset: offset, readLimit: limit})) {
         let chunk = response.checksummedData;
         if (chunk != null) {
           chunk.content.writeTo(data);

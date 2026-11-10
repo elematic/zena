@@ -140,6 +140,41 @@ export let tests = suite('pds:server', () => {
     equal(errorOf(await getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=nonsense`)), 'InvalidRequest');
   });
 
+  test('sync.getBlob answers a Range with that part of the blob', async (ctx) => {
+    let app = await aliceApp();
+    let path = `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=${Cid.forBlob('hello'.toBytes()).toString()}`;
+    let ranged = async (range: String): Future<Response> => {
+      let headers: Map<String, String> = {'range' => range};
+      let res = new Response();
+      await app.handleRequest(new Request.fromUrl(`http://localhost${path}`, 'GET', headers), res);
+      return res;
+    };
+    let whole = await getFrom(app, path);
+    equal(whole.statusCode, 200);
+    equal(whole.getHeader('accept-ranges') ?? '', 'bytes');
+
+    let middle = await ranged('bytes=1-3');
+    equal(middle.statusCode, 206);
+    equal(middle.type as String, 'text/plain');
+    equal(middle.getHeader('content-range') ?? '', 'bytes 1-3/5');
+    equal(String.fromBytes(middle.body as FixedArray<u8>), 'ell');
+    let open = await ranged('bytes=2-');
+    equal(open.getHeader('content-range') ?? '', 'bytes 2-4/5');
+    equal(String.fromBytes(open.body as FixedArray<u8>), 'llo');
+    // A range past the end ends at it; one that starts there is not satisfiable.
+    equal(String.fromBytes((await ranged('bytes=3-99')).body as FixedArray<u8>), 'lo');
+    let past = await ranged('bytes=5-');
+    equal(past.statusCode, 416);
+    equal(past.getHeader('content-range') ?? '', 'bytes */5');
+
+    // Ranges it does not take, suffixes and lists among them, get the whole blob.
+    for (let other in ['bytes=-2', 'bytes=0-1,3-4', 'items=0-1', 'bytes=3-1', 'bytes=x-', 'bytes=-']) {
+      let res = await ranged(other);
+      equal(res.statusCode, 200, other);
+      equal(String.fromBytes(res.body as FixedArray<u8>), 'hello', other);
+    }
+  });
+
   test('repo.getRecord answers with the record as JSON, by DID or handle', async (ctx) => {
     let app = await aliceApp();
     let byHandle = jsonOf(await getFrom(app, `/xrpc/com.atproto.repo.getRecord?repo=alice.test&collection=${POST}&rkey=post2`));

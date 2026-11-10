@@ -183,6 +183,24 @@ export final class StoredBlob {
   new(mimeType: String, bytes: FixedArray<u8>) : mimeType = mimeType, bytes = bytes;
 }
 
+/** Part of a blob (`AccountStore.getBlobRange`), with the whole blob's type and size. */
+export final class BlobRange {
+  mimeType: String;
+  /** The size of the whole blob. */
+  size: i64;
+  bytes: FixedArray<u8>;
+
+  new(this.mimeType, this.size, this.bytes);
+}
+
+/** The bytes of `bytes` from `offset`, at most `length` of them, and none from its end on. */
+export function bytesInRange(bytes: FixedArray<u8>, offset: i64, length: i64): FixedArray<u8> {
+  let size = bytes.length as i64;
+  let start = if (offset < 0 as i64) 0 as i64 else if (offset < size) offset else size;
+  let end = if (length < size - start) start + length else size;
+  return bytes.slice(start as i32, end as i32);
+}
+
 /** One account's repository and blobs. */
 export interface AccountStore {
   /** The block `cid` names, or null. */
@@ -212,6 +230,11 @@ export interface AccountStore {
   commit(previous: Head | null, head: Head, changes: Array<RecordChange>): Future<boolean>;
 
   getBlob(cid: Cid): Future<StoredBlob | null>;
+  /**
+   * `length` bytes of the blob `cid` from `offset`: fewer when it ends
+   * sooner, and none from its end on. Null when there is no such blob.
+   */
+  getBlobRange(cid: Cid, offset: i64, length: i64): Future<BlobRange | null>;
   putBlob(cid: Cid, blob: StoredBlob): Future<void>;
 }
 
@@ -317,6 +340,13 @@ export final class MemoryAccountStore implements AccountStore {
   async getBlob(cid: Cid): Future<StoredBlob | null> {
     if (let (true, blob) = this.#blobs.get(cid.toString())) {
       return blob;
+    }
+    return null;
+  }
+
+  async getBlobRange(cid: Cid, offset: i64, length: i64): Future<BlobRange | null> {
+    if (let (true, blob) = this.#blobs.get(cid.toString())) {
+      return new BlobRange(blob.mimeType, blob.bytes.length as i64, bytesInRange(blob.bytes, offset, length));
     }
     return null;
   }

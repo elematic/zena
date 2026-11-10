@@ -65,11 +65,19 @@ export final class XrpcClient {
 
   /**
    * Calls a query and returns the raw answer, for methods that answer with
-   * something other than JSON, such as `com.atproto.sync.getRecord`.
-   * Throws `XrpcError` for an error answer.
+   * something other than JSON, such as `com.atproto.sync.getRecord`, sending
+   * `headers` too, such as a `Range`. Throws `XrpcError` for an error
+   * answer.
    */
-  async queryRaw(nsid: String, params: Array<(String, String)> | null = null): Future<Own<Response>> {
-    let response = await fetch(this.#url(nsid, params), {headers: this.#headers(null)});
+  async queryRaw(nsid: String, params: Array<(String, String)> | null = null,
+      headers: Array<(String, String)> | null = null): Future<Own<Response>> {
+    let sent = this.#headers(null);
+    if (headers != null) {
+      for (let header in headers) {
+        sent.push(header);
+      }
+    }
+    let response = await fetch(this.#url(nsid, params), {headers: sent});
     return await checkAnswer(nsid, response);
   }
 

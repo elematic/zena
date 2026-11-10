@@ -12,7 +12,7 @@ It holds many accounts, with its data in memory, or in Firestore with blob
 bytes in Cloud Storage or a directory. Each account's
 repository takes writes, which sign a new commit, and the server answers the
 reads of `com.atproto.sync` (`getRecord`, `getRepo`, `getLatestCommit`,
-`getBlob`) and `com.atproto.repo` (`getRecord`, `listRecords`,
+`getBlob`, which also answers a `Range` of one span) and `com.atproto.repo` (`getRecord`, `listRecords`,
 `describeRepo`), and `com.atproto.server.describeServer`, which names its
 DID. An account with an app password signs in with
 `com.atproto.server.createSession`, and with its session refreshes it,

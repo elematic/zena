@@ -19,7 +19,8 @@ import {formatDidKey} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
 import {CreateRecord, DeleteRecord, UpdateRecord, Write} from 'pds:repository';
 import {
-  Account, AccountKind, Head, KeyEncryption, RecordChange, RecordEntry, ReservedKey, SigningKey, Storage, StoredBlob
+  Account, AccountKind, BlobRange, Head, KeyEncryption, RecordChange, RecordEntry, ReservedKey, SigningKey, Storage,
+  StoredBlob
 } from 'pds:storage';
 import {Future} from 'zena:async';
 import {sha256} from 'zena:crypto';
@@ -184,6 +185,16 @@ export function storageConformance(make: () => Storage): void {
     let blob = (await store.getBlob(cid)) as StoredBlob;
     equal(blob.mimeType, 'text/plain');
     isTrue(sameBytes(blob.bytes, bytes), 'blob bytes');
+
+    // Part of a blob, with the whole one's size and type.
+    let part = (await store.getBlobRange(cid, 2 as i64, 3 as i64)) as BlobRange;
+    equal(part.mimeType, 'text/plain');
+    equal(part.size, 6 as i64);
+    isTrue(sameBytes(part.bytes, 'blo'.toBytes()), 'the range');
+    // A range past the end ends at it, and one that starts there is empty.
+    isTrue(sameBytes(((await store.getBlobRange(cid, 4 as i64, 10 as i64)) as BlobRange).bytes, 'ob'.toBytes()), 'to the end');
+    equal(((await store.getBlobRange(cid, 6 as i64, 1 as i64)) as BlobRange).bytes.length, 0);
+    isNull(await store.getBlobRange(cidOf('never stored'), 0 as i64, 1 as i64));
   });
 
   test('commits only on the head it was built on', async (ctx) => {

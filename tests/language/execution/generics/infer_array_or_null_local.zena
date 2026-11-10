@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 3
+// @skip: the specialized `T | null` slot is structref, which an array is not, and lowering bails with "method argument type" (#1036)
+
+// A generic function's `T extends anyref` parameter typed `T | null`,
+// given an array, an array or null, and null: `T` is inferred as
+// `FixedArray<u8>`. zena:assert's `isNull` has this signature.
+
+function isNullRef<T extends anyref>(value: T | null): boolean {
+  return value == null;
+}
+
+function bytesOrNull(present: boolean): FixedArray<u8> | null {
+  return if (present) new FixedArray<u8>(1, 0 as u8) else null;
+}
+
+export function main(): i32 {
+  var count = 0;
+  if (!isNullRef(new FixedArray<u8>(1, 0 as u8))) {
+    count += 1;
+  }
+  if (!isNullRef(bytesOrNull(true))) {
+    count += 1;
+  }
+  if (isNullRef(bytesOrNull(false))) {
+    count += 1;
+  }
+  return count;
+}

@@ -222,6 +222,14 @@ function clientConformance(make: () => Harness) {
       equal(blob.size, bytes.length as i64);
       let held = await harness.client.getBlob(did, blob.cid);
       isTrue(held != null && held.mimeType == 'application/wasm' && held.bytes.length == bytes.length, 'the blob');
+      // Part of it, and what is left of a part past its end.
+      equal(String.fromBytes((await harness.client.getBlobRange(did, blob.cid, 2 as i64, 3 as i64)) as FixedArray<u8>),
+          'mod');
+      equal(String.fromBytes((await harness.client.getBlobRange(did, blob.cid, 5 as i64, 10 as i64)) as FixedArray<u8>),
+          'ule');
+      // TODO(#1036): isNull(...), once a FixedArray<u8> | null reaches it.
+      isTrue(await harness.client.getBlobRange(did, Cid.forBlob('another'.toBytes()), 0 as i64, 1 as i64) == null,
+          'no such blob');
       // Only what the PDS's limits on managed accounts allow.
       equal(await refusal(() =>
           harness.client.uploadBlob(did, 'text/html', '<script></script>'.toBytes())),
