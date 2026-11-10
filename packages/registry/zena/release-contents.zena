@@ -1,0 +1,266 @@
+/**
+ * What the App View derives from a release's source archive for its pages:
+ * the archive's files by path, with their sizes and CIDs, and its README
+ * rendered to HTML. A release never changes, so they are derived once and
+ * kept (`DerivedObjects`), and no page unpacks an archive
+ * (docs/design/package-manager.md, "What the App View derives from
+ * releases").
+ */
+
+import {HashSet} from 'zena:collections';
+import {join} from 'zena:core';
+import {EncodeSet, percentDecode, percentEncode} from 'zena:url';
+import {UrlResolver, markdownToHtml} from 'markdown:index';
+import {gfmExtensions} from 'markdown:plugins/gfm';
+import {decodeCbor, encodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {BytesValue, IntValue, LinkValue, ListValue, MapValue, StringValue, Value, field, newMap} from 'atproto:data';
+import {compareKeys} from 'atproto:mst';
+import {SourceFile, unpackSource} from 'package-manager:archive';
+import {BlobBytes} from 'pds:firestore';
+
+/** The format `ReleaseContents.toBytes` writes. Contents of another are derived again. */
+export let CONTENTS_FORMAT = 1;
+
+/** The largest README rendered, in bytes of Markdown. A larger one is linked to instead. */
+export let MAX_README_BYTES = 256 * 1024;
+
+/** A file of a release's source archive. */
+export final class ReleaseFile {
+  /** The path from the package's root. */
+  path: String;
+  /** The raw CID of its contents. */
+  cid: Cid;
+  size: i64;
+
+  new(this.path, this.cid, this.size);
+}
+
+/** What a release's source archive holds, as the release's pages show it. */
+export final class ReleaseContents {
+  /** The CID of the archive it was derived from. */
+  archive: Cid;
+  /** The archive's size in bytes. */
+  archiveBytes: i64;
+  /** By path, byte by byte. */
+  files: FixedArray<ReleaseFile>;
+  /** The path of the README, `README.md` at the package's root in any case, or null. */
+  readmePath: String | null;
+  /** The README as HTML, or null when there is none or it is larger than `MAX_README_BYTES`. */
+  readmeHtml: String | null;
+
+  new(this.archive, this.archiveBytes, this.files, this.readmePath, this.readmeHtml);
+
+  /** The contents as DAG-CBOR, with `CONTENTS_FORMAT`. */
+  toBytes(): FixedArray<u8> {
+    let map = newMap();
+    map.entries['format'] = new IntValue(CONTENTS_FORMAT as i64);
+    map.entries['archive'] = new LinkValue(this.archive);
+    map.entries['archiveBytes'] = new IntValue(this.archiveBytes);
+    let files = new FixedArray<Value>(this.files.length, new StringValue(''));
+    for (var i = 0; i < this.files.length; i += 1) {
+      let file = this.files[i];
+      let entry = newMap();
+      entry.entries['path'] = new StringValue(file.path);
+      entry.entries['cid'] = new LinkValue(file.cid);
+      entry.entries['size'] = new IntValue(file.size);
+      files[i] = entry;
+    }
+    map.entries['files'] = new ListValue(files);
+    let readmePath = this.readmePath;
+    if (readmePath != null) {
+      map.entries['readmePath'] = new StringValue(readmePath);
+    }
+    // As bytes: a README need not be UTF-8, and DAG-CBOR's strings must be.
+    let readmeHtml = this.readmeHtml;
+    if (readmeHtml != null) {
+      map.entries['readmeHtml'] = new BytesValue(readmeHtml.toBytes());
+    }
+    return encodeCbor(map);
+  }
+
+  /** The contents `toBytes` wrote, or null for anything else, an older format included. */
+  static fromBytes(bytes: FixedArray<u8>): ReleaseContents | null {
+    let value = try {
+      decodeCbor(bytes)
+    } catch (e) {
+      return null;
+    };
+    if (!(value is MapValue)) {
+      return null;
+    }
+    let format = field(value, 'format');
+    if (!(format is IntValue) || format.value != CONTENTS_FORMAT as i64) {
+      return null;
+    }
+    let archive = field(value, 'archive');
+    let archiveBytes = field(value, 'archiveBytes');
+    let list = field(value, 'files');
+    if (!(archive is LinkValue) || !(archiveBytes is IntValue) || !(list is ListValue)) {
+      return null;
+    }
+    let files = new FixedArray<ReleaseFile>(list.items.length, new ReleaseFile('', archive.cid, 0 as i64));
+    for (var i = 0; i < list.items.length; i += 1) {
+      let item = list.items[i];
+      if (!(item is MapValue)) {
+        return null;
+      }
+      let path = field(item, 'path');
+      let cid = field(item, 'cid');
+      let size = field(item, 'size');
+      if (!(path is StringValue) || !(cid is LinkValue) || !(size is IntValue)) {
+        return null;
+      }
+      files[i] = new ReleaseFile(path.value, cid.cid, size.value);
+    }
+    var readmePath: String | null = null;
+    let pathValue = field(value, 'readmePath');
+    if (pathValue is StringValue) {
+      readmePath = pathValue.value;
+    }
+    var readmeHtml: String | null = null;
+    let htmlValue = field(value, 'readmeHtml');
+    if (htmlValue is BytesValue) {
+      readmeHtml = String.fromBytes(htmlValue.value);
+    }
+    return new ReleaseContents(archive.cid, archiveBytes.value, files, readmePath, readmeHtml);
+  }
+}
+
+/**
+ * The contents of `bytes`, the source archive whose CID is `archive`, of
+ * release `version` of the package `did`. The README's links to the
+ * release's files name the package by its DID, so that they keep working
+ * when it is renamed. Throws `ArchiveError` for an archive that does not
+ * unpack.
+ */
+export function deriveContents(did: String, version: String, archive: Cid, bytes: FixedArray<u8>): ReleaseContents {
+  let unpacked = unpackSource(bytes);
+  unpacked.sort((a, b) => compareKeys(a.path, b.path));
+  let files = new FixedArray<ReleaseFile>(unpacked.length, new ReleaseFile('', archive, 0 as i64));
+  let paths = new HashSet<String>();
+  var readme: SourceFile | null = null;
+  for (var i = 0; i < unpacked.length; i += 1) {
+    let file = unpacked[i];
+    files[i] = new ReleaseFile(file.path, file.cid, file.contents.length as i64);
+    paths.add(file.path);
+    if (file.path.asciiLowerCase() == 'readme.md') {
+      readme = file;
+    }
+  }
+  let readmeHtml = if (readme != null && readme.contents.length <= MAX_README_BYTES)
+      markdownToHtml(String.fromBytes(readme.contents),
+          {safe: true, extensions: gfmExtensions(), resolver: new PackageUrls(did, version, paths)})
+      else null;
+  return new ReleaseContents(archive, bytes.length as i64, files, readme?.path, readmeHtml);
+}
+
+/**
+ * Where the App View serves the file at `path` of release `version` of the
+ * package `ref`, its handle or its DID.
+ */
+export function fileUrl(ref: String, version: String, path: String): String {
+  let segments = new GrowableArray<String>();
+  for (let segment in path.split('/')) {
+    segments.push(percentEncode(segment, EncodeSet.Path));
+  }
+  // A handle and a DID are a path segment as they are, but for the `%` of
+  // a did:web with a port, which the path set leaves alone.
+  // TODO(#1034): `ref.replaceAll('%', '%25')`, once the byte String has it.
+  let escaped = join(ref.split('%'), '%25');
+  return `/packages/${escaped}/versions/${version}/files/${join(segments, '/')}`;
+}
+
+/**
+ * Resolves the links and images of a README at the root of release
+ * `version` of the package `ref`, whose archive holds the files at `paths`.
+ * A URL with a scheme, or to another host, and a link within the page
+ * (`#...`) stay as they are, so images from other sites show. A relative
+ * path is resolved from the package's root, as is one that starts with
+ * `/`, and points to the file the App View serves from the release's
+ * archive (`fileUrl`). One that climbs out of the package's root, or names
+ * no file in the archive, is left out.
+ */
+export final class PackageUrls implements UrlResolver {
+  #ref: String;
+  #version: String;
+  #paths: HashSet<String>;
+
+  new(ref: String, version: String, paths: HashSet<String>) : #ref = ref, #version = version, #paths = paths;
+
+  resolve(url: String, isImage: boolean): String | null {
+    if (url == '' || url.startsWith('#') || url.startsWith('//') || hasScheme(url)) {
+      return url;
+    }
+    // The path, apart from its query and fragment, which are kept.
+    var end = 0;
+    while (end < url.length && url.getByteAt(end) != 63 && url.getByteAt(end) != 35) {
+      end += 1;
+    }
+    let suffix = url.sliceBytes(end, url.length);
+    let segments = new GrowableArray<String>();
+    for (let segment in url.sliceBytes(0, end).split('/')) {
+      if (segment == '' || segment == '.') {
+        continue;
+      }
+      if (segment == '..') {
+        if (segments.length == 0) {
+          return null;
+        }
+        segments.pop();
+        continue;
+      }
+      segments.push(percentDecode(segment));
+    }
+    let path = join(segments, '/');
+    if (!this.#paths.has(path)) {
+      return null;
+    }
+    return `${fileUrl(this.#ref, this.#version, path)}${suffix}`;
+  }
+}
+
+/**
+ * Whether `url` starts with a scheme: a letter, then letters, digits, `+`,
+ * `-` or `.`, then `:`, before any `/`, `?` or `#`.
+ */
+function hasScheme(url: String): boolean {
+  for (var i = 0; i < url.length; i += 1) {
+    let byte = url.getByteAt(i);
+    if (byte == 58) {
+      return i > 0;
+    }
+    let letter = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122);
+    let other = (byte >= 48 && byte <= 57) || byte == 43 || byte == 45 || byte == 46;
+    if (!letter && !(i > 0 && other)) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Where the App View keeps what it derives from releases: one object per
+ * release in `objects`, named under `prefix`, by the package's DID and the
+ * version.
+ */
+export final class DerivedObjects {
+  #objects: BlobBytes;
+  #prefix: String;
+
+  new(objects: BlobBytes, prefix: String) : #objects = objects, #prefix = prefix;
+
+  /** The contents kept for release `version` of `did`, or null when none are, or they are of another format. */
+  async read(did: String, version: String): Future<ReleaseContents | null> {
+    let bytes = await this.#objects.read(this.#name(did, version));
+    return if (bytes == null) null else ReleaseContents.fromBytes(bytes);
+  }
+
+  async write(did: String, version: String, contents: ReleaseContents): Future<void> {
+    await this.#objects.write(this.#name(did, version), contents.toBytes(), 'application/vnd.ipld.dag-cbor');
+  }
+
+  #name(did: String, version: String): String {
+    return `${this.#prefix}releases/${did}/${version}`;
+  }
+}

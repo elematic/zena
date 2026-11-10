@@ -422,6 +422,7 @@ export let tests = suite('registry:service', () => {
       ('APP_VIEW_STORAGE', 'firestore'),
       ('APP_VIEW_TENANT', 'pkg'),
       ('APP_VIEW_FIRESTORE_DATABASE', 'zena-pkg'),
+      ('APP_VIEW_BUCKET', 'zena-pkg-objects'),
       ('APP_VIEW_SESSION_SECRET', OTHER_KEY),
       ('APP_VIEW_ROTATION_KEY', KEY),
       ('APP_VIEW_SIGNING_KEY', OTHER_KEY),
@@ -433,9 +434,10 @@ export let tests = suite('registry:service', () => {
     equal(deployed.appView.serviceDid as String, 'did:web:app-view.example.dev');
     equal(deployed.appView.siteUrl as String, 'https://pkg.example.dev');
     equal(hex.encode(deployed.sessionSecret as FixedArray<u8>), OTHER_KEY);
-    if (let StoresInFirestore {tenant, database} = deployed.stores) {
+    if (let StoresInFirestore {tenant, database, objects} = deployed.stores) {
       equal(tenant, 'pkg');
       equal(database as String, 'zena-pkg');
+      isTrue(objects is InBucket && objects.bucket == 'zena-pkg-objects', 'what it derives in its bucket');
     } else {
       isTrue(false, 'its stores in Firestore');
     }
@@ -445,6 +447,7 @@ export let tests = suite('registry:service', () => {
     let firestore = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PDS_URL', 'https://padstone.test'),
         ('APP_VIEW_STORAGE', 'firestore')]);
     for (let expected in ['APP_VIEW_STORAGE=firestore needs APP_VIEW_TENANT',
+        'APP_VIEW_STORAGE=firestore needs APP_VIEW_BUCKET or APP_VIEW_OBJECT_DIR',
         'APP_VIEW_STORAGE=firestore needs APP_VIEW_SESSION_SECRET',
         'APP_VIEW_STORAGE=firestore needs APP_VIEW_ROTATION_KEY or APP_VIEW_ROTATION_KMS_KEY',
         'needs APP_VIEW_SIGNING_KEY or APP_VIEW_SIGNING_KMS_KEY',
@@ -465,6 +468,13 @@ export let tests = suite('registry:service', () => {
     let tenant = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PDS_URL', 'https://padstone.test'),
         ('APP_VIEW_TENANT', 'pkg')]);
     isTrue(tenant.contains('need APP_VIEW_STORAGE=firestore'), tenant);
+    let bucket = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PDS_URL', 'https://padstone.test'),
+        ('APP_VIEW_BUCKET', 'b')]);
+    isTrue(bucket.contains('need APP_VIEW_STORAGE=firestore'), bucket);
+    let both = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PDS_URL', 'https://padstone.test'),
+        ('APP_VIEW_STORAGE', 'firestore'), ('APP_VIEW_TENANT', 'pkg'), ('APP_VIEW_BUCKET', 'b'),
+        ('APP_VIEW_OBJECT_DIR', '/d')]);
+    isTrue(both.contains('give APP_VIEW_BUCKET or APP_VIEW_OBJECT_DIR, not both'), both);
     let site = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_PDS_URL', 'https://padstone.test'),
         ('APP_VIEW_SITE_URL', 'https://pkg.test')]);
     isTrue(site.contains("APP_VIEW_SITE_URL names the App View's own host") && site.contains('APP_VIEW_PUBLIC_URL'),
@@ -473,7 +483,7 @@ export let tests = suite('registry:service', () => {
     // With the PDS in the same process, the App View's own stores and
     // origin are the PDS's.
     for (let name in ['APP_VIEW_PDS_DID', 'APP_VIEW_PUBLIC_URL', 'APP_VIEW_STORAGE', 'APP_VIEW_TENANT',
-        'APP_VIEW_FIRESTORE_DATABASE']) {
+        'APP_VIEW_FIRESTORE_DATABASE', 'APP_VIEW_BUCKET', 'APP_VIEW_OBJECT_DIR']) {
       let alone = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), (name, 'x')]);
       isTrue(alone.contains(`${name} needs APP_VIEW_PDS_URL`), alone);
     }

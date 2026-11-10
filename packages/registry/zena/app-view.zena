@@ -41,7 +41,7 @@ import {REGISTRY_SERVICE, REGISTRY_TYPE} from 'package-manager:registry-methods'
 import {Identity, IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
 import {ARTIFACT_MIME_TYPES, artifactMimeType, validateRelease} from 'package-manager:validate';
-import {ArchiveError, SourceFile, unpackSource} from 'package-manager:archive';
+import {ArchiveError, unpackSource} from 'package-manager:archive';
 import {Version} from 'package-manager:version';
 import {
   ADMIN,
@@ -76,6 +76,8 @@ import {
 } from 'package-manager:records';
 import {isPublicHttps} from './egress.zena';
 import {HandleRecords} from './handles.zena';
+import {DerivedObjects, ReleaseContents, deriveContents} from './release-contents.zena';
+import {MemoryBlobs} from 'pds:firestore';
 import {HeldRecord, PdsClient} from 'pds:pds-client';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from 'pds:repository';
 import {WebSessions} from './web-sessions.zena';
@@ -98,8 +100,11 @@ export let AUTOMATION_TOKEN_PREFIX = 'zena_ci_';
 /** How long a release waits for approval before its version is free again: seven days. */
 export let PENDING_MICROS = ((7 * 24 * 60 * 60) as i64) * (1000000 as i64);
 
-/** How many release archives the App View keeps read for the pages (`AppView.releaseFiles`). */
+/** How many release archives the App View keeps unpacked, for the files a page serves (`AppView.releaseFile`). */
 let ARCHIVES_KEPT = 64;
+
+/** How many releases' contents the App View keeps read, beside `AppView.derived` (`AppView.releaseContents`). */
+let CONTENTS_KEPT = 256;
 
 /** How long reading one maintainer's attestation from their PDS may take. */
 let ATTESTATION_READ_MILLISECONDS = 5000 as i64;
@@ -822,6 +827,8 @@ export final class AppView {
   var sessions: WebSessions | null = null;
   /** Reads other PDSes' records in place of the App View's own reading, as tests do; null reads them. */
   var remoteRecords: RemoteRecords | null = null;
+  /** Where the App View keeps what it derives from releases, shared by its servers; in memory by default. */
+  var derived = new DerivedObjects(new MemoryBlobs(), '');
   config: AppViewConfig;
   #pds: PdsClient;
   #store: AppViewStore;
@@ -832,8 +839,10 @@ export final class AppView {
   /** Resolves the DIDs of a release's dependencies, to check them. */
   #resolver: IdentityResolver;
   #replays = new ReplayGuard();
-  /** Release archives read for the pages, by the CID of their blob (`releaseFiles`). */
-  #archives = new HashMap<String, ReleaseFiles>();
+  /** Release archives' files by path, by the CID of their blob (`releaseFile`). */
+  #archives = new HashMap<String, HashMap<String, FixedArray<u8>>>();
+  /** Releases' contents, by DID and version (`releaseContents`). */
+  #contents = new HashMap<String, ReleaseContents>();
 
   /**
    * An App View keeping its accounts on `pds`, and its own record of them and
@@ -1329,12 +1338,14 @@ export final class AppView {
     let created = new Created(account.did, account.handle, `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
     var held = await this.#held(pkg, version, nowMicros);
     if (held == null && await this.#store.holdRelease(pkg, new PendingRelease(version, record, cid, caller, nowMicros))) {
+      await this.#keepContents(account.did, version, source?.blob, archive?.bytes);
       await this.#attestForAutomation(caller, created, nowMicros);
       return created;
     }
     // Another publish of the version holds it.
     held = held ?? await this.#held(pkg, version, nowMicros);
     if (held != null && held.cid.equals(cid)) {
+      await this.#keepContents(account.did, version, source?.blob, archive?.bytes);
       await this.#attestForAutomation(caller, created, nowMicros);
       return created;
     }
@@ -2023,18 +2034,18 @@ export final class AppView {
   }
 
   /**
-   * The package whose handle is `handle`, as its page shows it: its
+   * The package whose handle or DID is `ref`, as its page shows it: its
    * profile, its releases, newest first, its retractions and its
-   * maintainers record; or null when no package here has that handle.
-   * Public, as the records are.
+   * maintainers record; or null when no package here has that handle or
+   * DID. Public, as the records are.
    */
-  async getPackage(handle: String): Future<PackageDetail | null> {
-    let account = await this.#accountByHandle(handle);
+  async getPackage(ref: String): Future<PackageDetail | null> {
+    let account = if (ref.startsWith('did:')) await this.#store.account(ref) else await this.#accountByHandle(ref);
     if (account == null || account.kind != AccountKind.Package) {
       return null;
     }
     let did = account.did;
-    let detail = new PackageDetail(did, handle, account.scope);
+    let detail = new PackageDetail(did, account.handle, account.scope);
     let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
     if (profile != null) {
       detail.profile = Profile.fromValue(profile.value);
@@ -2057,45 +2068,110 @@ export final class AppView {
   }
 
   /**
-   * The files of release `version` of the package `did`, from its source
-   * archive on the package's PDS, for the pages; or null when it has no
-   * such release, or its archive cannot be read. A release never changes,
-   * so archives are kept by their CID, up to `ARCHIVES_KEPT` of them.
+   * What release `version` of the package `did` holds, for its pages: its
+   * files and its README (`registry:release-contents`); or null when it
+   * has no such release, or its archive cannot be read. They are read from
+   * `derived`, and derived from the archive on the package's PDS, and kept
+   * there, when they are missing, of an older format or from another
+   * archive.
    */
-  async releaseFiles(did: String, version: String): Future<ReleaseFiles | null> {
-    let record = await this.#current(did, RELEASE_TYPE, version);
-    if (record == null) {
+  async releaseContents(did: String, version: String): Future<ReleaseContents | null> {
+    let blob = await this.#sourceOf(did, version);
+    if (blob == null) {
       return null;
     }
-    let source = Release.fromValue(record.value).artifact(SOURCE);
-    let blob = source?.blob;
+    let key = `${did} ${version}`;
+    if (let (true, kept) = this.#contents.get(key)) {
+      if (kept.archive.equals(blob.cid)) {
+        return kept;
+      }
+    }
+    var contents = await this.derived.read(did, version);
+    if (contents == null || !contents.archive.equals(blob.cid)) {
+      let stored = await this.#pds.getBlob(did, blob.cid);
+      if (stored == null) {
+        return null;
+      }
+      contents = try {
+        deriveContents(did, version, blob.cid, stored.bytes)
+      } catch (e) {
+        if (e is ArchiveError) {
+          return null;
+        }
+        throw e;
+      };
+      await this.derived.write(did, version, contents);
+    }
+    if (this.#contents.size >= CONTENTS_KEPT) {
+      this.#contents.clear();
+    }
+    this.#contents[key] = contents;
+    return contents;
+  }
+
+  /**
+   * The contents of the file at `path` in release `version` of the package
+   * `did`, or null when it has no such release or file, or its archive
+   * cannot be read. A release never changes, so archives are kept unpacked
+   * by their CID, up to `ARCHIVES_KEPT` of them.
+   */
+  async releaseFile(did: String, version: String, path: String): Future<FixedArray<u8> | null> {
+    let blob = await this.#sourceOf(did, version);
     if (blob == null) {
       return null;
     }
     let key = blob.cid.toString();
+    var files: HashMap<String, FixedArray<u8>> | null = null;
     if (let (true, kept) = this.#archives.get(key)) {
-      return kept;
-    }
-    let stored = await this.#pds.getBlob(did, blob.cid);
-    if (stored == null) {
-      return null;
-    }
-    let files = try {
-      unpackSource(stored.bytes)
-    } catch (e) {
-      if (e is ArchiveError) {
+      files = kept;
+    } else {
+      let stored = await this.#pds.getBlob(did, blob.cid);
+      if (stored == null) {
         return null;
       }
-      throw e;
-    };
-    // By path, for the pages to list.
-    files.sort((a, b) => compareKeys(a.path, b.path));
-    let read = new ReleaseFiles(stored.bytes.length as i64, files);
-    if (this.#archives.size >= ARCHIVES_KEPT) {
-      this.#archives.clear();
+      let unpacked = try {
+        unpackSource(stored.bytes)
+      } catch (e) {
+        if (e is ArchiveError) {
+          return null;
+        }
+        throw e;
+      };
+      let byPath = new HashMap<String, FixedArray<u8>>();
+      for (let file in unpacked) {
+        byPath[file.path] = file.contents;
+      }
+      if (this.#archives.size >= ARCHIVES_KEPT) {
+        this.#archives.clear();
+      }
+      this.#archives[key] = byPath;
+      files = byPath;
     }
-    this.#archives[key] = read;
-    return read;
+    if (let (true, contents) = files.get(path)) {
+      return contents;
+    }
+    return null;
+  }
+
+  /**
+   * Derives the contents of release `version` of the package `did` from
+   * `archive`, the bytes of its source archive `source`, which publishing
+   * has just validated, and keeps them in `derived`, so that no page
+   * unpacks it.
+   */
+  async #keepContents(did: String, version: String, source: BlobRef | null, archive: FixedArray<u8> | null): Future<void> {
+    if (source != null && archive != null) {
+      await this.derived.write(did, version, deriveContents(did, version, source.cid, archive));
+    }
+  }
+
+  /** The source archive of release `version` of the package `did`, or null when it has no such release. */
+  async #sourceOf(did: String, version: String): Future<BlobRef | null> {
+    let record = await this.#current(did, RELEASE_TYPE, version);
+    if (record == null) {
+      return null;
+    }
+    return Release.fromValue(record.value).artifact(SOURCE)?.blob;
   }
 
   /**
@@ -3182,26 +3258,6 @@ export final class Waiting {
 }
 
 /** A package, as `getPackage` reads it. */
-/** What release of a package holds: the files of its source archive, as `AppView.releaseFiles` reads them. */
-export final class ReleaseFiles {
-  /** The source archive's size in bytes. */
-  archiveBytes: i64;
-  /** By path. */
-  files: FixedArray<SourceFile>;
-
-  new(this.archiveBytes, this.files);
-
-  /** The text of the README at the package's root, `README.md` in any case, or null. */
-  readme(): String | null {
-    for (let file in this.files) {
-      if (file.path.asciiLowerCase() == 'readme.md') {
-        return String.fromBytes(file.contents);
-      }
-    }
-    return null;
-  }
-}
-
 export final class PackageDetail {
   did: String;
   handle: String;

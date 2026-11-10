@@ -1,0 +1,107 @@
+/**
+ * `registry:release-contents`: what the App View derives from a release's
+ * source archive for its pages, and how it is kept.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {HashMap} from 'zena:collections';
+import {decodeCbor, encodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {IntValue, MapValue, StringValue} from 'atproto:data';
+import {packSource} from 'package-manager:archive';
+import {MemoryBlobs} from 'pds:firestore';
+import {
+  CONTENTS_FORMAT, DerivedObjects, MAX_README_BYTES, ReleaseContents, deriveContents
+} from 'registry:release-contents';
+
+let DID = 'did:plc:routerrouterrouterrouterr';
+
+function archiveOf(files: HashMap<String, FixedArray<u8>>) {
+  return packSource(files);
+}
+
+function contentsOf(files: HashMap<String, FixedArray<u8>>) {
+  let archive = archiveOf(files);
+  return deriveContents(DID, '1.0.0', Cid.forBlob(archive), archive);
+}
+
+export let tests = suite('registry:release-contents', () => {
+  test("lists the archive's files by path, with their sizes and CIDs", (ctx) => {
+    let files: HashMap<String, FixedArray<u8>> = {
+      'zena-package.json' => '{}'.toBytes(),
+      'src/router.zena' => 'export let route = 1;\n'.toBytes(),
+      'LICENSE' => 'MIT'.toBytes(),
+    };
+    let archive = archiveOf(files);
+    let contents = deriveContents(DID, '1.0.0', Cid.forBlob(archive), archive);
+    isTrue(contents.archive.equals(Cid.forBlob(archive)), 'the archive it came from');
+    equal(contents.archiveBytes, archive.length as i64);
+    equal(contents.files.length, 3);
+    // By path, byte by byte, not in the archive's order, which is shorter first.
+    equal(contents.files[0].path, 'LICENSE');
+    equal(contents.files[1].path, 'src/router.zena');
+    equal(contents.files[2].path, 'zena-package.json');
+    equal(contents.files[1].size, 22 as i64);
+    isTrue(contents.files[1].cid.equals(Cid.forBlob('export let route = 1;\n'.toBytes())), 'its CID');
+    isTrue(contents.readmePath == null && contents.readmeHtml == null, 'no README');
+  });
+
+  test('renders the README, in safe mode, with its links to the files by DID', (ctx) => {
+    let readme = '# Router\n\nRoutes **requests**.\n\n<script>alert(1)</script>\n\n' +
+        '[guide](docs/guide.md#start) [up](../outside.md) [gone](nope.md) ![logo](./logo.png) ' +
+        '![badge](https://img.example/badge.svg) [top](#router)\n';
+    let contents = contentsOf({
+      'Readme.MD' => readme.toBytes(),
+      'docs/guide.md' => '# Guide\n'.toBytes(),
+      'logo.png' => new FixedArray<u8>(4, 137 as u8),
+    });
+    equal(contents.readmePath as String, 'Readme.MD');
+    let html = contents.readmeHtml as String;
+    let files = `/packages/${DID}/versions/1.0.0/files`;
+    for (let expected in ['<strong>requests</strong>', `<a href="${files}/docs/guide.md#start">guide</a>`,
+        `<img src="${files}/logo.png" alt="logo" />`, '<img src="https://img.example/badge.svg"',
+        '<a href="#router">top</a>', ' up ', ' gone ']) {
+      isTrue(html.contains(expected), `${expected} in ${html}`);
+    }
+    isTrue(!html.contains('<script>') && !html.contains('outside.md') && !html.contains('nope.md'), html);
+  });
+
+  test('names a README too large to render, and leaves it unrendered', (ctx) => {
+    let contents = contentsOf({'README.md' => new FixedArray<u8>(MAX_README_BYTES + 1, 97 as u8)});
+    equal(contents.readmePath as String, 'README.md');
+    isTrue(contents.readmeHtml == null, 'not rendered');
+    let atLimit = contentsOf({'README.md' => new FixedArray<u8>(MAX_README_BYTES, 97 as u8)});
+    isTrue(atLimit.readmeHtml != null, 'rendered at the limit');
+  });
+
+  test('reads back what it writes, and nothing of another format', async (ctx) => {
+    let contents = contentsOf({'README.md' => '# Router\n'.toBytes(), 'a.zena' => 'let a = 1;'.toBytes()});
+    let read = ReleaseContents.fromBytes(contents.toBytes()) as ReleaseContents;
+    isTrue(read.archive.equals(contents.archive), 'the archive');
+    equal(read.archiveBytes, contents.archiveBytes);
+    equal(read.files.length, 2);
+    equal(read.files[1].path, 'a.zena');
+    isTrue(read.files[1].cid.equals(contents.files[1].cid), 'a CID');
+    equal(read.files[1].size, contents.files[1].size);
+    equal(read.readmePath as String, 'README.md');
+    equal(read.readmeHtml as String, contents.readmeHtml as String);
+
+    isTrue(ReleaseContents.fromBytes('not CBOR'.toBytes()) == null, 'not CBOR');
+    let older = decodeCbor(contents.toBytes()) as MapValue;
+    older.entries['format'] = new IntValue((CONTENTS_FORMAT - 1) as i64);
+    isTrue(ReleaseContents.fromBytes(encodeCbor(older)) == null, 'an older format');
+    let reshaped = decodeCbor(contents.toBytes()) as MapValue;
+    reshaped.entries['files'] = new StringValue('a.zena');
+    isTrue(ReleaseContents.fromBytes(encodeCbor(reshaped)) == null, 'files that are not a list');
+
+    // Kept by DID and version, under a prefix.
+    let objects = new MemoryBlobs();
+    let derived = new DerivedObjects(objects, 'pkg/app-view/');
+    isTrue(await derived.read(DID, '1.0.0') == null, 'nothing kept yet');
+    await derived.write(DID, '1.0.0', contents);
+    isTrue(await objects.read(`pkg/app-view/releases/${DID}/1.0.0`) != null, 'the object');
+    let kept = (await derived.read(DID, '1.0.0')) as ReleaseContents;
+    equal(kept.files.length, 2);
+  });
+});
