@@ -111,6 +111,7 @@ session, because the App View holds nothing that can write there
 | Let a team create packages                           | owners (_threshold_)                       | `zena pkg scope policy --creators`; `putPolicy`                                      |
 | Edit the scope's profile: name, description, website | admins                                     | `zena pkg scope profile`; `putScopeProfile`                                          |
 | Rename a scope                                       | owners, App View admins                    | no                                                                                   |
+| Release a name a rename reserved, in the scope       | admins, the package that held it           | no; `releaseName` is designed (package-manager.md, "Changing names")                 |
 | Dissolve a scope                                     | owners, App View admins                    | no                                                                                   |
 | Create an automation account                         | admins                                     | `zena pkg ci create`; `createAutomationAccount`                                      |
 | Reset or revoke an automation account's token        | admins                                     | `zena pkg ci token`; `issueAutomationToken`, which replaces it                       |
@@ -127,6 +128,7 @@ session, because the App View holds nothing that can write there
 | Add a collaborator from outside the scope        | owners (_threshold_)               | `zena pkg owner add <handle or DID>`; `putMaintainers`              |
 | Change the thresholds                            | owners (_threshold_)               | `zena pkg owner settings`; `putMaintainers`                         |
 | Rename the package                               | owners                             | no; `renamePackage` is designed                                     |
+| Release the name a rename left it                | owners                             | no; `releaseName` is designed                                       |
 | Move it to another scope on the App View         | owners, and the new scope's admins | no                                                                  |
 | Move it to another App View                      | owners (_threshold_)               | no; designed, without methods                                       |
 | Deprecate it, with a pointer to a replacement    | owners                             | no                                                                  |

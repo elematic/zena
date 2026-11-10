@@ -290,9 +290,9 @@ So a scope's names need not belong to packages hosted there, and a package
 that moves to another App View can keep its handle.
 
 Renaming a package changes its handle, in the scope's records and with a
-PLC operation, and not its DID, so nothing that depends on it notices. A
-name freed by a rename can be given to another package by the scope's
-admins. Manifests that name the first package's DID keep it.
+PLC operation, and not its DID, so nothing that depends on it notices.
+The name it leaves stays reserved for it (see
+[Changing names](#changing-names)).
 
 **Names are DNS labels.** A package name, whether a local name, a
 profile's suggested name or the first label of a handle, is one DNS
@@ -302,6 +302,63 @@ which internationalized domain names reserve, and at most 63 characters.
 `zena` names the standard library and no package. Scope names follow the
 same rules, and an App View reserves some, such as `www` (see
 [Scopes](#scopes)).
+
+### Changing names
+
+A rename changes handles and never DIDs, so a manifest or a lockfile that
+names a package by its DID notices nothing. Who can be misled is whoever
+names it by its handle after the change: a `zena pkg add` by the old
+handle, a link, a README. Suppose `@acme/router` becomes
+`@acme/http-router`, and someone else's package then takes
+`@acme/router`: `zena pkg add @acme/router` would add that package, with
+nothing to say it is not the one everyone meant. So a name a rename frees
+stays reserved, the App View keeps each name's history, and `zena` and the
+pages say when a name has changed.
+
+**Renames.** `renamePackage` changes a package's handle: a PLC operation,
+the scope's DNS records, and its profile's name. Moving a package to
+another scope is the same operation, with the other scope's admins
+agreeing. Renaming a scope changes its organization's handle and every
+handle under it, with a PLC operation for each account in the scope.
+
+**Reserved names.** A name a rename frees stays reserved for the account
+that held it: a package name, in its scope, for its package, and a scope
+name for its organization. No one else can take it until it is
+released, by the account's own owners or by an admin: a scope's admins
+for a name in it, and the App View's operator for a scope. A reservation
+does not expire. While a name is reserved, its old holder can take it
+back, which undoes the rename, and the App View answers for the old
+handle with the account's new one: its pages redirect there, and `zena pkg
+add` by the old handle names the new one. A handle cannot point to the
+old DID itself, since that DID's document names its new handle.
+
+**Name history.** The App View records each time a name is given or
+freed: the scope, the name, the DID, when, and the call that did it. It
+writes the record in the same step that claims or frees the name, and
+answers for a name or a DID with `getNameHistory`. For a `did:plc`, the
+PLC directory's log holds every handle the DID has had, so anyone can
+check the App View's history of it. The checksum log, when it exists,
+records names too, so that an App View cannot rewrite one's history
+unseen.
+
+**What `zena` does.**
+
+- `zena pkg add` by a handle or `@scope/name` asks the App View for the
+  name's history. When the name changed hands in the last 90 days, it
+  shows the DID that held it before and asks again before writing
+  anything, as `--yes` skips. A name reserved after a rename gets the
+  package's new handle in reply.
+- `zena-lock.json` records the handle each package had when it was added.
+  `zena pkg update` and `zena pkg fetch` say when a pinned DID's handle
+  has changed since: a note, since the DID is what they trust.
+- When the lockfile pins one DID for a handle and the App View now
+  answers another, `zena pkg add` by that handle refuses unless told to
+  go on.
+
+**What the pages show.** A renamed package's page says "formerly
+`@acme/router`, until" the date. A package whose name was another's in
+the last 90 days says so, linking to the one before. Each package page
+lists its handles over time, from the name history.
 
 ## Records
 
@@ -1622,6 +1679,8 @@ once the attestations the previous record requires reach the log.
 | `retract`                 | a package's maintainers                                       | writes a retraction record                                          |
 | `putProfile`              | a package's owners                                            | replaces the profile                                                |
 | `renamePackage`           | a package's owners                                            | changes the handle, with a PLC operation, and the profile's name    |
+| `releaseName`             | the account that held a reserved name, or an admin over it    | lets another account take a name a rename reserved                  |
+| `getNameHistory`          | anyone                                                        | returns who held a name, or which names a DID held, and when        |
 | `putMaintainers`          | a package's owners                                            | holds a maintainers record, with the entries behind its commitments |
 | `putMembers`              | an organization's owners                                      | holds a members record, with its entries                            |
 | `putTeam`                 | an organization's admins, or a team's maintainers             | holds a new or replaced team                                        |
@@ -2126,7 +2185,8 @@ DID, so dependents can move.
   disputes, as package registries do. An organization that uses its own
   domain as its scope is out of reach. A handle that a scope gives to
   another package moves no dependent, since manifests and lockfiles record
-  DIDs.
+  DIDs, and a name a rename frees stays reserved for its package until it
+  is released (see [Changing names](#changing-names)).
 
 ### Confusion
 
