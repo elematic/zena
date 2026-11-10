@@ -193,6 +193,26 @@ let classify = (opts: RequestOptions): String => match (opts) {
 Testing absence on a required field produces a compile-time error, as required
 fields are never absent.
 
+## Discriminated unions
+
+A union of record types whose members each have a field of a different literal
+type is told apart by that field:
+
+```zena
+type Outcome = {kind: 0, ok: i32} | {kind: 1, err: String};
+
+let score = (o: Outcome): i32 => match (o) {
+  case {kind: 0, ok}: ok
+  case {kind: 1, err}: err.length
+};
+
+let viaIf = (o: Outcome): i32 => if (o.kind == 0) o.ok else o.err.length;
+```
+
+A record literal takes the member its literal names, a pattern with the literal
+matches that member, a `match` must name every member, and comparing the field
+with a literal narrows the union.
+
 ## Spread
 
 The spread operator (`...`) unpacks fields from an existing record into a new

@@ -5,11 +5,12 @@ import {
   Expression, FieldDefinition, Identifier, ImportSpecifier, IndexExpression,
   InterfaceDeclaration, MemberExpression, MethodDefinition, MethodSignature,
   MixinDeclaration, Node, NumberLiteral, PropertySignature, RecordPattern,
+  BooleanLiteral, StringLiteral, PropertyAssignment, LiteralPattern,
   SourceLocation, SymbolDeclaration, SymbolPropertyName, ThisExpression,
   isSymbolFieldDeclaration, syntacticMemberName
 } from '../ast.zena';
 import {
-  ArrayType, ClassType, EnumType, ErrorType, FieldInfo, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType, OwnershipHandle, RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, isAffineValue, isIntegerType, ownershipHandleInner, ownershipHandleOf, parseTupleIndexLiteral, typeCarriesOwner, typeToString, unwrapAliases
+  ArrayType, BoolLiteralType, ClassType, EnumType, ErrorType, FieldInfo, NumLiteralType, StringLiteralType, sameNumericLiteralRaw, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType, OwnershipHandle, RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, isAffineValue, isIntegerType, ownershipHandleInner, ownershipHandleOf, parseTupleIndexLiteral, typeCarriesOwner, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { noSymbolId } from '../scope/symbol.zena';
@@ -694,6 +695,154 @@ export function checkMemberExpression(
 }
 
 /**
+ * The type a field of a record union has across two members: their type
+ * when they agree, the union of the two when both are literals of one base
+ * type, as a discriminant is (`{kind: 0, ...} | {kind: 1, ...}`), and null
+ * when they disagree otherwise.
+ */
+export function joinRecordFieldTypes(a: Type, b: Type): Type | null {
+  if (typesEqual(a, b)) {
+    return a;
+  }
+  if (isLiteralUnionOf(a) && isLiteralUnionOf(b) &&
+      literalKind(literalBaseOf(a)) == literalKind(literalBaseOf(b))) {
+    return createUnionType(growable<Type>([a, b]));
+  }
+  // A literal beside its own base type reads as the base type.
+  if (isLiteralUnionOf(a) && !isLiteralUnionOf(b) &&
+      literalKind(literalBaseOf(a)) == typeToString(b)) {
+    return b;
+  }
+  if (isLiteralUnionOf(b) && !isLiteralUnionOf(a) &&
+      literalKind(literalBaseOf(b)) == typeToString(a)) {
+    return a;
+  }
+  return null;
+}
+
+/** What a literal type is a literal of: booleans, strings, or one number type. */
+function literalKind(t: Type): String {
+  if (t is BoolLiteralType) {
+    return 'boolean';
+  }
+  if (t is StringLiteralType) {
+    return 'String';
+  }
+  return typeToString(baseType(t));
+}
+
+/** Whether `t` is a literal type, or a union of literal types. */
+function isLiteralUnionOf(t: Type): boolean {
+  if (t is UnionT) {
+    for (let member in t.types) {
+      if (!isLiteralType(member)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return isLiteralType(t);
+}
+
+function isLiteralType(t: Type): boolean {
+  return t is BoolLiteralType || t is NumLiteralType || t is StringLiteralType;
+}
+
+/** A literal type of `t`, a literal or a union of them, to read its base off. */
+function literalBaseOf(t: Type): Type {
+  if (t is UnionT && t.types.length > 0) {
+    return t.types[0];
+  }
+  return t;
+}
+
+/**
+ * Whether the literal `value` (a literal expression, or a literal pattern
+ * around one) can be a value of `t`: 1 for a literal type equal to it, 0
+ * for a different literal of the same kind, and -1 when `t` is not a
+ * literal type or `value` not a literal, which tells members nothing.
+ */
+export function literalFits(t: Type, value: Node | null): i32 {
+  var v = value;
+  if (v is LiteralPattern) {
+    v = v.value;
+  }
+  if (let BoolLiteralType {value as literal} = t) {
+    if (let BooleanLiteral {value as written} = v) {
+      return if (literal == written) 1 else 0;
+    }
+    return -1;
+  }
+  if (let NumLiteralType {raw} = t) {
+    if (let NumberLiteral {raw as written} = v) {
+      return if (sameNumericLiteralRaw(raw, written)) 1 else 0;
+    }
+    return -1;
+  }
+  if (let StringLiteralType {value as literal} = t) {
+    if (let StringLiteral {value as written} = v) {
+      return if (literal == written) 1 else 0;
+    }
+    return -1;
+  }
+  return -1;
+}
+
+/**
+ * The members of a record union whose fields can hold the literals a
+ * record pattern or literal names at literal-typed fields: `{kind: 0, ..}`
+ * keeps the members whose `kind` is `0`. `fields` and `values` are the
+ * names and the nodes written for them.
+ */
+export function membersMatchingLiterals(members: GrowableArray<RecordT>,
+    fields: GrowableArray<String>, values: GrowableArray<Node | null>): GrowableArray<RecordT> {
+  let out = new Array<RecordT>();
+  for (let rec in members) {
+    var ok = true;
+    for (var i = 0; i < fields.length; i += 1) {
+      if (!rec.properties.has(fields[i])) {
+        continue;
+      }
+      if (literalFits(rec.properties[fields[i]], values[i]) == 0) {
+        ok = false;
+      }
+    }
+    if (ok) {
+      out.push(rec);
+    }
+  }
+  return out;
+}
+
+/**
+ * The member of the record union `expected` a record literal with these
+ * properties is: the one whose literal-typed fields its literal values
+ * match, when exactly one does and some literal tells it apart. Null for
+ * anything else, which leaves the literal checked against `expected`.
+ */
+export function discriminatedRecordMember(expected: Type,
+    properties: GrowableArray<Node>): RecordT | null {
+  let base = baseType(expected);
+  if (!(base is UnionT)) {
+    return null;
+  }
+  let members = recordUnionMembersOf(base);
+  if (members == null) {
+    return null;
+  }
+  let fields = new Array<String>();
+  let values = new Array<Node | null>();
+  for (let property in properties) {
+    if (let PropertyAssignment {name, value} = property) {
+      fields.push(name.name);
+      values.push(value);
+    }
+  }
+  let matching = membersMatchingLiterals(members, fields, values);
+  return if (matching.length == 1 && matching.length < members.length) matching[0] else null;
+}
+
+/**
  * The members of a union whose every member is a record type, or null
  * for any other union. A record union is read, destructured and
  * repacked one member at a time; see `RecordUnionAdaptation`.
@@ -746,12 +895,14 @@ function recordUnionPatternShape(
       }
       if (rec.isOptional(propName)) { anyAbsent = true; }
       let memberFieldType = rec.properties[propName];
-      if (fieldType == null) {
-        fieldType = memberFieldType;
-      } else if (!typesEqual(fieldType, memberFieldType)) {
+      let prior = fieldType;
+      let joined = if (prior != null) joinRecordFieldTypes(prior, memberFieldType) else memberFieldType;
+      if (joined != null) {
+        fieldType = joined;
+      } else {
         ctx.error(
           "Field '" + displayMemberName(propName) + "' is '" +
-              typeToString(fieldType) + "' in one member of the " +
+              typeToString(prior as Type) + "' in one member of the " +
               "union and '" + typeToString(memberFieldType) +
               "' in another, so one pattern cannot bind it.",
           DiagnosticCode.TypeMismatch,
@@ -883,12 +1034,14 @@ function resolveRecordUnionMemberType(
       return new ErrorType();
     }
     let fieldType = rec.properties[propName];
-    if (shared == null) {
-      shared = fieldType;
-    } else if (!typesEqual(shared, fieldType)) {
+    let prior = shared;
+    let joined = if (prior != null) joinRecordFieldTypes(prior, fieldType) else fieldType;
+    if (joined != null) {
+      shared = joined;
+    } else {
       ctx.error(
         "Property '" + displayMemberName(propName) + "' is '" +
-            typeToString(shared) + "' in one member of '" +
+            typeToString(prior as Type) + "' in one member of '" +
             typeToString(ut) + "' and '" + typeToString(fieldType) +
             "' in another, so the read has no one type.",
         DiagnosticCode.PropertyNotFound,

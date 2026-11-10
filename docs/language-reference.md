@@ -4777,6 +4777,52 @@ at run time.
 let o: Named = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
 ```
 
+#### Discriminated Record Unions
+
+When every member of a record union has a field of a literal type, each
+member a different literal, the field tells the members apart, as
+TypeScript's discriminated unions do. Boolean, number and string literals
+can all serve:
+
+```zena
+type Outcome = {kind: 0, ok: i32} | {kind: 1, err: String};
+
+let make = (good: boolean): Outcome =>
+  if (good) ({kind: 0, ok: 5}) else ({kind: 1, err: 'bad'});
+```
+
+A record literal for the union takes the member its literals name, so
+`{kind: 0, ok: 5}` keeps `kind: 0` instead of widening it to `i32`. One no
+member has is an error.
+
+A pattern with the literal matches that member, and a `match` must name
+every member, since the field makes the union finite:
+
+```zena
+let score = (o: Outcome): i32 => match (o) {
+  case {kind: 0, ok}: ok
+  case {kind: 1, err}: err.length
+};
+```
+
+Comparing the field with a literal narrows the union, as a null test
+narrows a nullable value. The rest of a block after an early return is
+narrowed too:
+
+```zena
+let viaIf = (o: Outcome): i32 => {
+  if (o.kind == 0) {
+    return o.ok;       // o is {kind: 0, ok: i32}
+  }
+  return o.err.length; // o is {kind: 1, err: String}
+};
+```
+
+Read off the union, the field has the union of its literals, `0 | 1`
+here, or the base type when some member's field is wider than a literal.
+A member whose field is wider (`{kind: i32, ...}`) stays on both sides of
+a comparison.
+
 #### Spreading Record Types
 
 A record type can spread another record type into itself, which builds a

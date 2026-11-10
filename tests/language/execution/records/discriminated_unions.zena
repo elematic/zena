@@ -1,0 +1,92 @@
+// @mode: run
+// @result: 0
+// A union of record types told apart by a literal field every member has,
+// as TypeScript's discriminated unions are: a record literal takes the
+// member its literal names, a pattern with that literal picks its member,
+// and comparing the field narrows the union.
+
+type Outcome = {kind: 0, ok: i32} | {kind: 1, err: String};
+
+function make(good: boolean): Outcome {
+  return if (good) ({kind: 0, ok: 5}) else ({kind: 1, err: 'bad'});
+}
+
+function score(o: Outcome): i32 {
+  return match (o) {
+    case {kind: 0, ok}: ok
+    case {kind: 1, err}: err.length * 10
+  };
+}
+
+// Comparing the field narrows it, and so does the early return.
+function viaIf(o: Outcome): i32 {
+  if (o.kind == 0) {
+    return o.ok;
+  }
+  return o.err.length;
+}
+
+function viaElse(o: Outcome): i32 {
+  return if (o.kind != 1) o.ok else o.err.length + 100;
+}
+
+// Members with the same fields, told apart only by the literal.
+type Sized = {kind: 0, n: i32} | {kind: 1, n: i32};
+
+function sized(s: Sized): i32 {
+  return match (s) {
+    case {kind: 0, n}: n
+    case {kind: 1, n}: n * 2
+  };
+}
+
+// A boolean discriminant, and a member with nothing else.
+type Found = {found: true, value: i32} | {found: false};
+
+function look(f: Found): i32 {
+  if (let {found: true, value} = f) {
+    return value;
+  }
+  return -1;
+}
+
+// A string discriminant, narrowed inside `&&`.
+type Shape = {tag: 'circle', r: i32} | {tag: 'square', side: i32};
+
+function area(s: Shape): i32 {
+  if (s.tag == 'circle' && s.r > 0) {
+    return s.r * s.r * 3;
+  }
+  return match (s) {
+    case {tag: 'square', side}: side * side
+    case {tag: 'circle'}: 0
+  };
+}
+
+// Patterns fix more than the discriminant.
+function exact(o: Outcome): i32 {
+  return match (o) {
+    case {kind: 0, ok: 5}: 1
+    case {kind: 0, ok}: ok + 100
+    case {kind: 1}: -1
+  };
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (score(make(true)) != 5 || score(make(false)) != 30) { failures += 1; }
+  if (viaIf(make(true)) != 5 || viaIf(make(false)) != 3) { failures += 2; }
+  if (viaElse(make(true)) != 5 || viaElse(make(false)) != 103) { failures += 4; }
+  let s: Sized = {kind: 1, n: 4};
+  if (sized(s) != 8 || sized({kind: 0, n: 4}) != 4) { failures += 8; }
+  let f: Found = {found: true, value: 9};
+  if (look(f) != 9 || look({found: false}) != -1) { failures += 16; }
+  // The discriminant reads as the union of its literals.
+  let o = make(false);
+  if (o.kind != 1) { failures += 32; }
+  if (area({tag: 'circle', r: 2}) != 12 || area({tag: 'square', side: 3}) != 9 ||
+      area({tag: 'circle', r: 0}) != 0) { failures += 64; }
+  if (exact(make(true)) != 1 || exact({kind: 0, ok: 6}) != 106 ||
+      exact(make(false)) != -1) { failures += 128; }
+  return failures;
+};

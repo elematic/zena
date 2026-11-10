@@ -6,19 +6,21 @@ import {
   BreakStatement, CallExpression, ClassDeclaration, ContinueStatement,
   Expression, ExpressionStatement, ForInStatement, ForStatement,
   FunctionExpression, Identifier, IfExpression, IfStatement, IsExpression,
-  MatchExpression, MemberExpression, Node, NullLiteral, ReturnStatement,
+  MatchExpression, MemberExpression, Node, NullLiteral, NumberLiteral, ReturnStatement,
+  StringLiteral,
   ShieldedStatement, Statement, ThisExpression, ThrowExpression, UnaryExpression,
   WhileStatement, getMemberPropertyName
 } from '../ast.zena';
 import {
   ClassType, FieldInfo, InterfaceType, NeverType, NullType,
-  RecordType as RecordT, Type
+  RecordType as RecordT, Type, UnionType as UnionT, baseType
 } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { resolveTypeAnnotation } from './annotations.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
+import { literalFits, recordUnionMembersOf } from './members.zena';
 import {
   createUnionType, subtractNullFromType, subtractTypeFromUnion,
   unwrapNullableForMemberLookup
@@ -469,7 +471,17 @@ export function conditionNarrowings(ctx: CheckerContext, condition: Expression):
           null
         };
         if (tested == null) {
-          return new BranchNarrowings(new ConditionNarrowings(), new ConditionNarrowings());
+          let discriminated = discriminantNarrowings(ctx, left, right) ??
+              discriminantNarrowings(ctx, right, left);
+          if (discriminated == null) {
+            return new BranchNarrowings(new ConditionNarrowings(), new ConditionNarrowings());
+          }
+          let found = discriminated;
+          return if (operator == "==" || operator == "===") {
+            found
+          } else {
+            new BranchNarrowings(found.whenFalse, found.whenTrue)
+          };
         }
         let subject = narrowingSubject(ctx, tested);
         if (subject == null) {
@@ -501,6 +513,66 @@ export function conditionNarrowings(ctx: CheckerContext, condition: Expression):
     case _: {}
   }
   return new BranchNarrowings(new ConditionNarrowings(), new ConditionNarrowings());
+}
+
+/**
+ * What `x.f == literal` establishes when `x` is a union of record types
+ * told apart by `f`, as a discriminated union is: where it holds, `x` is
+ * the members whose `f` can be that literal; where it does not, the
+ * members whose `f` is not exactly it. A member whose `f` is wider than a
+ * literal (`i32`) stays on both sides. Null when `access` is not such a
+ * read or `literal` not a literal.
+ */
+function discriminantNarrowings(ctx: CheckerContext, access: Expression,
+    literal: Expression): BranchNarrowings | null {
+  if (!(access is MemberExpression) ||
+      !(literal is NumberLiteral || literal is BooleanLiteral || literal is StringLiteral)) {
+    return null;
+  }
+  let member = access;
+  let subject = narrowingSubject(ctx, member.object);
+  if (subject == null) {
+    return null;
+  }
+  let union = baseType(subject.type);
+  if (!(union is UnionT)) {
+    return null;
+  }
+  let members = recordUnionMembersOf(union);
+  if (members == null) {
+    return null;
+  }
+  let field = member.property.name;
+  let equal = new Array<Type>();
+  let unequal = new Array<Type>();
+  for (let rec in members) {
+    if (!rec.properties.has(field)) {
+      return null;
+    }
+    let fits = literalFits(rec.properties[field], literal);
+    if (fits != 0) {
+      equal.push(rec);
+    }
+    if (fits != 1) {
+      unequal.push(rec);
+    }
+  }
+  if (equal.length == members.length && unequal.length == members.length) {
+    return null;
+  }
+  let whenTrue = new ConditionNarrowings();
+  whenTrue.narrow(subject, narrowedMembers(ctx, equal));
+  let whenFalse = new ConditionNarrowings();
+  whenFalse.narrow(subject, narrowedMembers(ctx, unequal));
+  return new BranchNarrowings(whenTrue, whenFalse);
+}
+
+/** The union of the members a narrowing keeps: `never` for none. */
+function narrowedMembers(ctx: CheckerContext, members: GrowableArray<Type>): Type {
+  if (members.length == 0) {
+    return new NeverType();
+  }
+  return if (members.length == 1) members[0] else createUnionType(members, ctx, null);
 }
 
 /** Puts `condition`'s true-branch narrowings on the flow: for a
