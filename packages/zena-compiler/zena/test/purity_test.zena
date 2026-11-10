@@ -1,0 +1,240 @@
+/**
+ * Purity inference (lib/analysis/purity.zena): the verdict of each
+ * function of a small program, asked for directly. The `static` clauses
+ * that rest on these verdicts are tested as programs in
+ * tests/language/semantics/contracts/static-*.zena.
+ */
+import { suite, test } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { FunctionDeclaration, Statement } from '../lib/ast.zena';
+import { PurityAnalysis, PurityVerdict, PurityReason } from '../lib/analysis/purity.zena';
+import { SemanticModel } from '../lib/semantic-model.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+import { makeStdlibCompiler, PlainHost, errorDiagnostics } from './test-utils.zena';
+
+/** A checked program and the analysis that answers for its functions. */
+class Fixture {
+  #analysis: PurityAnalysis;
+  #model: SemanticModel;
+  #functions = new HashMap<String, FunctionDeclaration>();
+
+  new(analysis: PurityAnalysis, model: SemanticModel, statements: GrowableArray<Statement>)
+      : #analysis = analysis, #model = model {
+    for (let statement in statements) {
+      if (statement is FunctionDeclaration) {
+        let declaration = statement;
+        this.#functions[declaration.name.name] = declaration;
+      }
+    }
+  }
+
+  verdictOf(name: String): PurityVerdict {
+    return this.#analysis.verdictOf(this.#functions[name], this.#model);
+  }
+
+  /** The facts the verdict of `name` holds, in the order the class declares them. */
+  facts(name: String): String {
+    let verdict = this.verdictOf(name);
+    var held = '';
+    if (verdict.effect != null) { held = `${held} effect`; }
+    if (verdict.stateRead != null) { held = `${held} stateRead`; }
+    if (verdict.write != null) { held = `${held} write`; }
+    if (verdict.mutableRead != null) { held = `${held} mutableRead`; }
+    return held.trim();
+  }
+
+  /** Why `name` is not pure, as the chain of calls an error would print. */
+  because(name: String): String {
+    let reason = this.verdictOf(name).notPureBecause;
+    if (reason == null) {
+      return '';
+    }
+    return reason.render();
+  }
+}
+
+async function analyze(source: String): Future<Fixture> {
+  let host = new PlainHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeStdlibCompiler(host);
+  let compResult = await compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+  return new Fixture(
+    new PurityAnalysis(checkRes.sharedState.modelIndex),
+    checkRes.results["test.zena"].model,
+    compResult.entry.ast.body
+  );
+}
+
+let source = `
+  import {sqrt} from 'zena:math';
+
+  let limit = 10;
+  var counter = 0;
+  let table = new FixedArray<i32>(4, 0);
+
+  class Point {
+    x: f64;
+    y: f64;
+    new(this.x, this.y);
+  }
+
+  class Cell {
+    var value: i32 = 0;
+  }
+
+  @external("env", "now")
+  declare function now(): i32;
+
+  function add(a: i32, b: i32): i32 {
+    return a + b + limit;
+  }
+
+  function norm(point: Point): f64 {
+    return sqrt(point.x * point.x + point.y * point.y);
+  }
+
+  function isEven(n: i32): boolean {
+    if (n == 0) {
+      return true;
+    }
+    return isOdd(n - 1);
+  }
+
+  function isOdd(n: i32): boolean {
+    if (n == 0) {
+      return false;
+    }
+    return isEven(n - 1);
+  }
+
+  function readCell(cell: Cell): i32 {
+    return cell.value;
+  }
+
+  function setCell(cell: Cell): void {
+    cell.value = 1;
+  }
+
+  function ownCell(): i32 {
+    let cell = new Cell();
+    setCell(cell);
+    return readCell(cell);
+  }
+
+  function readCounter(): i32 {
+    return counter;
+  }
+
+  function readTable(at: i32): i32 {
+    return table[at];
+  }
+
+  function setTable(): void {
+    table[0] = 1;
+  }
+
+  function callSetTable(): void {
+    setTable();
+  }
+
+  function count(): i32 {
+    counter += 1;
+    return counter;
+  }
+
+  function relay(): i32 {
+    return count();
+  }
+
+  function countDown(n: i32): i32 {
+    if (n == 0) {
+      counter += 1;
+      return 0;
+    }
+    return countDown(n - 1);
+  }
+
+  function clock(): i32 {
+    return now();
+  }
+`;
+
+export let tests = suite('Purity inference', () => {
+  test('a function that computes from its arguments and immutable values is pure', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('add'), '');
+    equal(fixture.facts('norm'), '');
+    isTrue(fixture.verdictOf('add').isPure);
+    isTrue(fixture.verdictOf('norm').isPure);
+  });
+
+  test('functions that call each other are pure when neither does anything else', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('isEven'), '');
+    equal(fixture.facts('isOdd'), '');
+  });
+
+  test('a read of a field that can change is effect-free and not pure', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('readCell'), 'mutableRead');
+    let verdict = fixture.verdictOf('readCell');
+    isTrue(verdict.isEffectFree);
+    isTrue(verdict.changesNothing);
+    isFalse(verdict.isPure);
+    equal(fixture.because('readCell'), "reads the mutable field 'value'");
+  });
+
+  test('a write to an argument is effect-free and changes something', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('setCell'), 'write');
+    let verdict = fixture.verdictOf('setCell');
+    isTrue(verdict.isEffectFree);
+    isFalse(verdict.changesNothing);
+  });
+
+  test('writes to and reads of an object the body made are its own business', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('ownCell'), '');
+  });
+
+  test('a read of a module variable is a read of state', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('readCounter'), 'stateRead');
+    let verdict = fixture.verdictOf('readCounter');
+    isFalse(verdict.isEffectFree);
+    isTrue(verdict.changesNothing);
+  });
+
+  test('a module-level object is state, and a write to it reaches every caller', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('readTable'), 'stateRead mutableRead');
+    equal(fixture.facts('setTable'), 'stateRead write');
+    equal(fixture.facts('callSetTable'), 'effect stateRead');
+  });
+
+  test('an assignment to a module variable is an effect, with the calls that lead to it', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('count'), 'effect stateRead');
+    equal(fixture.because('count'), "assigns the module variable 'counter'");
+    equal(fixture.because('relay'), "calls 'count', which assigns the module variable 'counter'");
+    equal(fixture.because('countDown'), "assigns the module variable 'counter'");
+  });
+
+  test('a call of the host is an effect', async () => {
+    let fixture = await analyze(source);
+    equal(fixture.facts('clock'), 'effect');
+    equal(fixture.because('clock'), "calls 'now', which is a host function");
+  });
+
+  test('a verdict is computed once', async () => {
+    let fixture = await analyze(source);
+    isTrue(fixture.verdictOf('relay') === fixture.verdictOf('relay'));
+    isTrue(fixture.verdictOf('isEven') === fixture.verdictOf('isEven'));
+  });
+});

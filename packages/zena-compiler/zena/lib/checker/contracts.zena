@@ -15,6 +15,7 @@ import {
 import { DiagnosticCode } from '../diagnostics.zena';
 import { FlowNode } from '../analysis/flow.zena';
 import { SymbolId } from '../scope/symbol.zena';
+import { PurityObligation } from '../semantic-model.zena';
 import {
   ErrorType, InlineTupleType, Type, UnionType, VoidType, unwrapAliases
 } from '../types.zena';
@@ -62,6 +63,14 @@ function checkCondition(ctx: CheckerContext, clause: ContractClause) {
         DiagnosticCode.TypeMismatch, n.loc);
     }
   });
+  // A `static` condition is never run, so it can stand for a fact only
+  // if evaluating it would change nothing. That depends on the bodies
+  // of what it calls, and is settled when every module is checked.
+  if (clause.mode == ContractMode.Static && !(conditionType is ErrorType)) {
+    ctx.model.addPurityObligation(new PurityObligation(
+      condition, `A 'static ${keyword}' condition`, clause.kind == ContractKind.Ensures
+    ));
+  }
 }
 
 /**
@@ -302,5 +311,10 @@ export function checkOldExpression(ctx: CheckerContext, call: CallExpression): T
       }
     }
   });
+  // The argument runs on entry in a build that checks the clause and
+  // not at all in one that leaves it out, so it can change nothing.
+  if (!(argumentType is ErrorType)) {
+    ctx.model.addPurityObligation(new PurityObligation(argument, "The argument of 'old'", false));
+  }
   return argumentType;
 }

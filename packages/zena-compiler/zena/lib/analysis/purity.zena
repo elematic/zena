@@ -1,0 +1,2368 @@
+/**
+ * Purity inference (docs/design/pure-functions.md).
+ *
+ * `PurityAnalysis` answers, for a function, method, constructor or
+ * accessor, what its body does to the state of the program, and for
+ * each thing it does, the first place it does it. It reads checked
+ * `SemanticModel`s and writes nothing into them, so it runs after the
+ * check, on demand, and remembers each answer.
+ */
+
+import { HashMap, HashSet } from 'zena:collections';
+import {
+  Node, NodeId, SourceLocation, Expression, Statement, Pattern, TypeAnnotation,
+  Identifier, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral,
+  TemplateLiteral, TaggedTemplateExpression, BinaryExpression,
+  UnaryExpression, AssignmentExpression, AsExpression, IsExpression,
+  RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression,
+  AwaitExpression, CallExpression, MemberExpression, IndexExpression,
+  ThisExpression, SuperExpression, NewExpression, ArrayLiteral, RecordLiteral,
+  MapLiteral, TupleLiteral, MatchExpression, IfExpression, ThrowExpression,
+  TryExpression, VariableDeclaration, FunctionDeclaration, UsingStatement,
+  ShieldedStatement, ExpressionStatement, BlockStatement, ReturnStatement,
+  YieldStatement, BreakStatement, ContinueStatement, IfStatement,
+  WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
+  InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
+  TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration,
+  ExportFromDeclaration, DeclareFunction, SymbolDeclaration, Module,
+  IdentifierPattern, ClassPattern, RecordPattern, ArrayPattern,
+  BindingProperty, PropertyAssignment, SpreadElement,
+  MapEntry, MatchCase, LetPatternCondition, FieldDefinition, MethodDefinition,
+  AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer,
+  CatchClause, Decorator, Parameter, ContractClause, ContractMode,
+  ContractKind, decoratorStringArg, isOldCallee,
+} from '../ast.zena';
+import { SemanticModel, ModelIndex, memberKeyOf, accessKeyOf } from '../semantic-model.zena';
+import { Symbol, SymbolId } from '../scope/symbol.zena';
+import {
+  Type, ClassType, InterfaceType, MixinType, FunctionType, ArrayType,
+  UnionType, NullType, RecordType, TupleType, InlineTupleType, EnumType,
+  TypeParameterType, TypeAliasType, SymbolType, FieldInfo, MethodInfo,
+  MemberInfo, BooleanType, VoidType, NeverType, BoolLiteralType,
+  StringLiteralType, NumLiteralType, unwrapAliases, ownershipHandleInner,
+  isOwnershipWrapper, soleNonNullMember, isNumericType,
+  forInLowersToIndexLoop,
+} from '../types.zena';
+import { getSignatureKey } from '../codegen/codegen-utils.zena';
+import { WellKnown, isWellKnown } from '../well-known.zena';
+import { walkChildren } from '../visitor.zena';
+
+/**
+ * One thing a body does that a grade forbids: what, and where.
+ *
+ * `description` is a verb phrase in the third person ("assigns the
+ * module variable 'count'"). For a call, `cause` is the callee's own
+ * reason, so a reason reads as the chain of calls that leads to the
+ * offending statement.
+ */
+export final class PurityReason(
+  description: String,
+  loc: SourceLocation | null,
+  path: String,
+  cause: PurityReason | null
+) {
+  /** The whole chain: "calls 'log', which calls 'print', which …". */
+  render(): String {
+    let {cause} = this;
+    if (cause == null) {
+      return this.description;
+    }
+    return `${this.description}, which ${cause.render()}`;
+  }
+}
+
+/**
+ * What a body does, as four facts, each with the first violation the
+ * walk found, or null when there is none.
+ *
+ * - `effect`: a change outside the function's parameters and what they
+ *   reach, or something that may be one: an assignment to a module
+ *   variable, a call of the host or of a function value, a suspension.
+ * - `stateRead`: a read of a module or static variable, or of a
+ *   module-level object that can change.
+ * - `write`: a change to an object that existed before the call.
+ * - `mutableRead`: a read of a field or element that can change, of an
+ *   object that existed before the call.
+ *
+ * The last two are relative to the call's arguments: a caller that
+ * hands over only what it allocated itself is not touched by them. A
+ * body with neither of the first two is effect-free, and a body with
+ * none of the four is pure.
+ */
+export final class PurityVerdict {
+  var effect: PurityReason | null = null;
+  var stateRead: PurityReason | null = null;
+  var write: PurityReason | null = null;
+  var mutableRead: PurityReason | null = null;
+
+  isEffectFree: boolean {
+    get {
+      return this.effect == null && this.stateRead == null;
+    }
+  }
+
+  /** Whether the body only reads: nothing a caller can see is different after it. */
+  changesNothing: boolean {
+    get {
+      return this.effect == null && this.write == null;
+    }
+  }
+
+  isPure: boolean {
+    get {
+      return this.effect == null && this.stateRead == null &&
+          this.write == null && this.mutableRead == null;
+    }
+  }
+
+  /** Why the body is not effect-free, or null when it is. */
+  notEffectFreeBecause: PurityReason | null {
+    get {
+      return this.effect ?? this.stateRead;
+    }
+  }
+
+  /** Why the body is not pure, or null when it is. */
+  notPureBecause: PurityReason | null {
+    get {
+      return this.effect ?? this.write ?? this.stateRead ?? this.mutableRead;
+    }
+  }
+
+  /** What the body changes, its effect or its write, or null for a body that only reads. */
+  changesBecause: PurityReason | null {
+    get {
+      return this.effect ?? this.write;
+    }
+  }
+}
+
+/** The verdict of a body with nothing in it. Never written to. */
+let cleanVerdict = new PurityVerdict();
+
+/** The walk of one body: the verdict it fills in and what it knows. */
+class Frame {
+  /**
+   * The model of the nodes being walked. A default initializer the
+   * checker spliced into a call belongs to the callee's library, so
+   * this changes for the length of that walk.
+   */
+  var model: SemanticModel;
+  verdict: PurityVerdict;
+
+  /**
+   * The fresh locals: each a `let` initialized directly by `new`, an
+   * array literal or an array allocation, so that it names an object
+   * this call allocated. Whether everything it reaches is also new or
+   * cannot change is the analysis's `#holdsShared`.
+   */
+  fresh = new HashSet<SymbolId>();
+
+  /**
+   * Whether the body is a constructor's, so that `this` is the object
+   * being built: its own fields may be assigned and read. What those
+   * fields hold came from the caller, so nothing follows for a path
+   * that goes on through one.
+   */
+  thisIsNew: boolean;
+
+  /** Whether an `ensures` condition is being walked, where `old(e)` is not a call. */
+  var inEnsures: boolean = false;
+
+  new(this.model, this.verdict, this.thisIsNew);
+
+  effect(description: String, loc: SourceLocation | null, cause: PurityReason | null = null): void {
+    if (this.verdict.effect == null) {
+      this.verdict.effect = new PurityReason(description, loc, this.model.sourcePath, cause);
+    }
+  }
+
+  stateRead(description: String, loc: SourceLocation | null, cause: PurityReason | null = null): void {
+    if (this.verdict.stateRead == null) {
+      this.verdict.stateRead = new PurityReason(description, loc, this.model.sourcePath, cause);
+    }
+  }
+
+  write(description: String, loc: SourceLocation | null, cause: PurityReason | null = null): void {
+    if (this.verdict.write == null) {
+      this.verdict.write = new PurityReason(description, loc, this.model.sourcePath, cause);
+    }
+  }
+
+  mutableRead(description: String, loc: SourceLocation | null, cause: PurityReason | null = null): void {
+    if (this.verdict.mutableRead == null) {
+      this.verdict.mutableRead = new PurityReason(description, loc, this.model.sourcePath, cause);
+    }
+  }
+}
+
+/** A class member's declaration and the model of the library that declares it. */
+final class MemberDeclaration(model: SemanticModel, node: Node)
+
+/** The members a class or mixin declaration wrote, and the model of its library. */
+final class DeclarationBody(model: SemanticModel, body: GrowableArray<Node>)
+
+/** A class declaration and the model of its library. */
+final class ClassSource(model: SemanticModel, declaration: ClassDeclaration)
+
+/** Where a name is bound. */
+enum BindingKind {
+  /** In a body: a parameter, a local, a pattern's binding. */
+  Local,
+  /** By a `let` or `var` at the top of a library. */
+  ModuleVariable,
+  /** By a declaration: a function, a class, an enum, or a name the compiler supplies. */
+  Declaration
+}
+
+/** A verdict for something the analysis cannot read, which it takes to have an effect. */
+function effectVerdict(description: String) {
+  let verdict = new PurityVerdict();
+  verdict.effect = new PurityReason(description, null, "", null);
+  return verdict;
+}
+
+/** Adds to `into` each fact of `from` it does not hold yet. */
+function mergeVerdict(into: PurityVerdict, from: PurityVerdict) {
+  if (into.effect == null) {
+    into.effect = from.effect;
+  }
+  if (into.stateRead == null) {
+    into.stateRead = from.stateRead;
+  }
+  if (into.write == null) {
+    into.write = from.write;
+  }
+  if (into.mutableRead == null) {
+    into.mutableRead = from.mutableRead;
+  }
+}
+
+/** `cause` with one step in front of it, at the same place. */
+function wrapReason(description: String, cause: PurityReason | null): PurityReason | null {
+  if (cause == null) {
+    return null;
+  }
+  return new PurityReason(description, cause.loc, cause.path, cause);
+}
+
+/** Whether a verdict holds nothing but what an array instruction does itself, with no call between. */
+function isArrayAccessOnly(verdict: PurityVerdict): boolean {
+  if (verdict.effect != null || verdict.stateRead != null) {
+    return false;
+  }
+  let {write, mutableRead} = verdict;
+  if (write != null) {
+    if (write.cause != null) {
+      return false;
+    }
+  }
+  if (mutableRead != null) {
+    if (mutableRead.cause != null) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The constructor key of a class's unnamed constructor. */
+/**
+ * The index in `declared`, the types of a name's declarations, of the
+ * overload the checker chose for a use, or -1 when it cannot be told.
+ * The checker records the choice as the declaration's own type or as a
+ * copy of it, so a copy is matched by its signature key, which is what
+ * code generation picks the callee by. Two declarations with one key
+ * leave the choice open.
+ */
+function chosenOverload(declared: GrowableArray<Type | null>, resolved: FunctionType): i32 {
+  let wanted = resolved.info;
+  var i = 0;
+  while (i < declared.length) {
+    let candidate = declared[i];
+    if (candidate is FunctionType) {
+      if (candidate == resolved || (wanted != null && candidate.info == wanted)) {
+        return i;
+      }
+    }
+    i += 1;
+  }
+  let key = getSignatureKey(resolved);
+  var found = -1;
+  i = 0;
+  while (i < declared.length) {
+    let candidate = declared[i];
+    if (candidate is FunctionType) {
+      if (getSignatureKey(candidate) == key) {
+        if (found >= 0) {
+          return -1;
+        }
+        found = i;
+      }
+    }
+    i += 1;
+  }
+  return found;
+}
+
+let unnamedConstructor = "<constructor>";
+
+/**
+ * The purity of the functions of one compilation.
+ *
+ * A verdict is computed the first time it is asked for, by walking the
+ * body and asking for the verdict of everything it calls. A function
+ * that calls itself, directly or through others, is taken to be clean
+ * while its own walk is under way; what the walk finds then decides.
+ */
+export final class PurityAnalysis {
+  #index: ModelIndex;
+  #verdicts = new HashMap<NodeId, PurityVerdict>();
+
+  /** The declarations being walked, each with its depth in the walk. */
+  #walking = new HashMap<NodeId, i32>();
+  var #depth: i32 = 0;
+
+  /**
+   * The shallowest declaration under way that the current walk took on
+   * trust. A verdict that rests on one is not final until that
+   * declaration's walk ends, and is not remembered.
+   */
+  var #trusted: i32 = 2147483647;
+
+  /** Every class of the compilation by the classes it extends, built on first use. */
+  var #subclasses: HashMap<SymbolId, GrowableArray<ClassType>> | null = null;
+
+  /** The types being judged immutable, to end the walk of a class that names itself. */
+  #judging = new HashSet<Type>();
+
+  /**
+   * Whether the walk under way takes its fresh locals to hold values
+   * the body did not make. A walk starts by taking them to hold none.
+   * A store that proves otherwise sets `#foundSharedStore`, and the
+   * body is walked again with this set.
+   */
+  var #holdsShared: boolean = false;
+  var #foundSharedStore: boolean = false;
+
+  new(index: ModelIndex) : #index = index;
+
+  /**
+   * The verdict of a declaration with a body: a `FunctionDeclaration`,
+   * a `MethodDefinition` (a constructor included), an
+   * `AccessorDeclaration` (its getter), a `SetterInfo`, a
+   * `DeclareFunction`, or a `ClassDeclaration` (the constructor a
+   * class without one gets). `model` is the model of the library that
+   * declares it.
+   */
+  verdictOf(declaration: Node, model: SemanticModel): PurityVerdict {
+    if (let (true, done) = this.#verdicts.get(declaration.id)) {
+      return done;
+    }
+    if (let (true, walkingAt) = this.#walking.get(declaration.id)) {
+      if (walkingAt < this.#trusted) {
+        this.#trusted = walkingAt;
+      }
+      return cleanVerdict;
+    }
+    let depth = this.#depth;
+    let outerTrusted = this.#trusted;
+    this.#walking[declaration.id] = depth;
+    this.#depth = depth + 1;
+    this.#trusted = depth;
+
+    let outerHolds = this.#holdsShared;
+    let outerFound = this.#foundSharedStore;
+    this.#holdsShared = false;
+    this.#foundSharedStore = false;
+    var verdict = new PurityVerdict();
+    this.#walkDeclaration(declaration, model, verdict);
+    if (this.#foundSharedStore) {
+      this.#holdsShared = true;
+      verdict = new PurityVerdict();
+      this.#walkDeclaration(declaration, model, verdict);
+    }
+    this.#holdsShared = outerHolds;
+    this.#foundSharedStore = outerFound;
+
+    this.#depth = depth;
+    this.#walking.delete(declaration.id);
+    let trusted = this.#trusted;
+    if (trusted >= depth) {
+      this.#verdicts[declaration.id] = verdict;
+      this.#trusted = outerTrusted;
+    } else if (trusted < outerTrusted) {
+      this.#trusted = trusted;
+    } else {
+      this.#trusted = outerTrusted;
+    }
+    return verdict;
+  }
+
+  /**
+   * The verdict of one expression evaluated where it stands: a clause's
+   * condition, or the argument of `old`.
+   */
+  verdictOfExpression(expression: Expression, model: SemanticModel, inEnsures: boolean): PurityVerdict {
+    let verdict = new PurityVerdict();
+    let frame = new Frame(model, verdict, false);
+    frame.inEnsures = inEnsures;
+    let outerHolds = this.#holdsShared;
+    this.#holdsShared = true;
+    this.#visit(frame, expression);
+    this.#holdsShared = outerHolds;
+    return verdict;
+  }
+
+  /**
+   * Whether no value of type `t` can change, nor anything such a value
+   * reaches: a primitive, a `String`, an enum member, a record, tuple
+   * or immutable array of such types, or an instance of a class that
+   * cannot be extended and has only `let` fields of such types.
+   */
+  isImmutableType(t: Type): boolean {
+    let bare = unwrapAliases(t);
+    if (isNumericType(bare)) {
+      return true;
+    }
+    return match (bare) {
+      case BooleanType: true
+      case NullType: true
+      case VoidType: true
+      case NeverType: true
+      case BoolLiteralType {}: true
+      case StringLiteralType {}: true
+      case NumLiteralType {}: true
+      case EnumType: true
+      case SymbolType: true
+      case ArrayType {elementType, elementsMutable}:
+        !elementsMutable && this.isImmutableType(elementType)
+      case TupleType {elementTypes, row}:
+        row == null && this.#allImmutable(elementTypes)
+      case InlineTupleType {elementTypes}: this.#allImmutable(elementTypes)
+      case UnionType {types}: this.#allImmutable(types)
+      // A function value holds nothing a caller can read; calling it is
+      // what the analysis does not follow, and a call says so.
+      case FunctionType {}: true
+      case RecordType as record: this.#isImmutableRecord(record)
+      case ClassType as ct: this.#isImmutableClass(ct)
+      case TypeAliasType as alias: this.#isImmutableAlias(alias)
+      case _: false
+    };
+  }
+
+  #allImmutable(types: Array<Type>): boolean {
+    for (let t in types) {
+      if (!this.isImmutableType(t)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  #isImmutableRecord(record: RecordType): boolean {
+    if (record.row != null) {
+      return false;
+    }
+    for (let name in record.properties.keys()) {
+      if (!this.isImmutableType(record.properties[name])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** A distinct alias is as immutable as what it wraps; a handle or a type operator is not judged. */
+  #isImmutableAlias(alias: TypeAliasType): boolean {
+    if (!alias.isDistinct || alias.intrinsicName != null || alias.resolving) {
+      return false;
+    }
+    if (isOwnershipWrapper(alias)) {
+      return false;
+    }
+    return this.isImmutableType(alias.target);
+  }
+
+  #isImmutableClass(ct: ClassType): boolean {
+    let canonical = canonicalClass(ct);
+    if (isWellKnown(WellKnown.StringClass, canonical.name, canonical.sourcePath) ||
+        isWellKnown(WellKnown.BigIntClass, canonical.name, canonical.sourcePath)) {
+      return true;
+    }
+    if (isWellKnown(WellKnown.ImmutableArrayClass, canonical.name, canonical.sourcePath)) {
+      let typeArguments = ct.typeArguments;
+      if (typeArguments == null) {
+        return false;
+      }
+      return this.#allImmutable(typeArguments);
+    }
+    if (ct.isExtension) {
+      let onType = ct.onType;
+      if (onType == null) {
+        return false;
+      }
+      return this.isImmutableType(onType);
+    }
+    if (!ct.isFinal && !ct.isSealed) {
+      // A value of this type may be an instance of a subclass.
+      return false;
+    }
+    if (this.#judging.has(ct)) {
+      // A field of the class's own type: the outer judgment decides.
+      return true;
+    }
+    this.#judging.add(ct);
+    let result = this.#hasImmutableFields(ct);
+    this.#judging.delete(ct);
+    return result;
+  }
+
+  #hasImmutableFields(ct: ClassType): boolean {
+    for (let entry in ct.members) {
+      let member = entry.value;
+      if (member is FieldInfo) {
+        if (member.isMutable || !this.isImmutableType(member.type)) {
+          return false;
+        }
+      }
+    }
+    let variants = ct.sealedVariants;
+    if (variants != null) {
+      for (let variant in variants) {
+        if (!this.#isImmutableClass(variant)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /** The type of an expression, as the checker recorded it. */
+  #typeOf(frame: Frame, expression: Node): Type | null {
+    return frame.model.getNodeType(expression);
+  }
+
+  /**
+   * The type a member is looked up on: `t` without its aliases, its
+   * `| null` and its ownership handle.
+   */
+  #receiverType(t: Type): Type {
+    var current = unwrapAliases(t);
+    var hops = 0;
+    while (hops < 8) {
+      hops += 1;
+      let inner = ownershipHandleInner(current);
+      if (inner != null) {
+        current = unwrapAliases(inner);
+        continue;
+      }
+      let nonNull = soleNonNullMember(current);
+      if (nonNull != null) {
+        current = unwrapAliases(nonNull);
+        continue;
+      }
+      break;
+    }
+    return current;
+  }
+
+  /** Where `binding`, which `owner` declares, is bound. */
+  #bindingKind(binding: Symbol, owner: SemanticModel): BindingKind {
+    var current = binding.declaration;
+    var steps = 0;
+    while (current != null && steps < 100000) {
+      let node = current;
+      if (node is VariableDeclaration) {
+        let parent = owner.getParent(node);
+        if (parent == null || parent is Module) {
+          return BindingKind.ModuleVariable;
+        }
+        return BindingKind.Local;
+      }
+      if (node is Module) {
+        return BindingKind.Declaration;
+      }
+      if (node is Parameter || node is FunctionExpression || node is MethodDefinition ||
+          node is BlockStatement || node is AccessorDeclaration || node is SetterInfo ||
+          node is CatchClause || node is MatchCase || node is LetPatternCondition ||
+          node is ForInStatement || node is ForStatement) {
+        return BindingKind.Local;
+      }
+      current = owner.getParent(node);
+      steps += 1;
+    }
+    return BindingKind.Declaration;
+  }
+
+  /**
+   * The model of the library that declares `binding`. The index's own
+   * answer is the last model to record a type for the binding, which
+   * for a re-exported name is the library that re-exports it.
+   */
+  #ownerOf(binding: Symbol, asking: SemanticModel): SemanticModel {
+    return this.#modelOf(binding.modulePath, binding.id) ?? asking;
+  }
+
+  /** The symbol a declaration's name binds. */
+  #symbolOf(model: SemanticModel, node: Node): Symbol | null {
+    return model.resolveDeclaration(node) ?? model.resolve(node);
+  }
+
+  /** Has the checker check a body it left for something to reach. */
+  #askForBody(model: SemanticModel, node: Node): void {
+    let deferred = model.deferredBodies;
+    if (deferred != null) {
+      deferred.checkBodyOfNode(node.id as i32);
+    }
+  }
+
+  /** A read of a name, which may be module state that can change. */
+  #readIdentifier(frame: Frame, node: Identifier): void {
+    let found = frame.model.resolve(node);
+    if (found == null) {
+      return;
+    }
+    let binding = found.resolveTarget();
+    let owner = this.#ownerOf(binding, frame.model);
+    if (this.#bindingKind(binding, owner) != BindingKind.ModuleVariable) {
+      return;
+    }
+    if (binding.isMutable) {
+      frame.stateRead(`reads the module variable '${node.name}'`, node.loc);
+      return;
+    }
+    let bindingType = owner.getBindingType(binding);
+    if (bindingType == null || !this.isImmutableType(bindingType)) {
+      frame.stateRead(`reads '${node.name}', a module-level value that can change`, node.loc);
+    }
+  }
+
+  /** The binding a path of member, index and cast expressions starts at. */
+  #rootSymbol(frame: Frame, expression: Node): Symbol | null {
+    var current = expression;
+    var steps = 0;
+    while (steps < 10000) {
+      let node = current;
+      if (node is MemberExpression) {
+        current = node.object;
+      } else if (node is IndexExpression) {
+        current = node.object;
+      } else if (node is AsExpression) {
+        current = node.expression;
+      } else if (node is Identifier) {
+        let found = frame.model.resolve(node);
+        if (found == null) {
+          return null;
+        }
+        return found.resolveTarget();
+      } else {
+        return null;
+      }
+      steps += 1;
+    }
+    return null;
+  }
+
+  /** Whether `call` is one of the prelude's allocations, which no library declares. */
+  #isAllocationCall(frame: Frame, call: CallExpression): boolean {
+    let callee = call.callee;
+    if (callee is Identifier) {
+      let name = callee.name;
+      if (name != "__array_new" && name != "__array_new_empty" && name != "__byte_array_new") {
+        return false;
+      }
+      let found = frame.model.resolve(callee);
+      return found == null || found.declaration == null;
+    }
+    return false;
+  }
+
+  /**
+   * Whether the value of `expression` reaches nothing the caller could
+   * read or write afterwards through another path: a value of an
+   * immutable type, an allocation made from such values, or something
+   * reached from a fresh local that holds only such values.
+   */
+  #isDetached(frame: Frame, expression: Node): boolean {
+    let known = frame.model.getNodeType(expression);
+    if (known != null && this.isImmutableType(known)) {
+      return true;
+    }
+    if (expression is AsExpression) {
+      return this.#isDetached(frame, expression.expression);
+    }
+    if (expression is NewExpression) {
+      // A constructor that reads module state may keep what it read.
+      return this.#arguments(frame, expression, expression.args, false) &&
+          this.#constructedBy(frame, expression).stateRead == null;
+    }
+    if (expression is ArrayLiteral) {
+      for (let element in expression.elements) {
+        if (!this.#isDetached(frame, element)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (expression is CallExpression) {
+      if (this.#isAllocationCall(frame, expression)) {
+        return this.#arguments(frame, expression, expression.args, false);
+      }
+      return false;
+    }
+    if (this.#holdsShared) {
+      return false;
+    }
+    let root = this.#rootSymbol(frame, expression);
+    return root != null && frame.fresh.has(root.id);
+  }
+
+  /**
+   * Whether a slot of `object` is a slot of something this body
+   * allocated: `this` in a constructor, a fresh local, or something
+   * reached from a fresh local while those hold only what the body made.
+   */
+  #isOwned(frame: Frame, object: Node): boolean {
+    if (object is ThisExpression) {
+      return frame.thisIsNew;
+    }
+    let root = this.#rootSymbol(frame, object);
+    if (root == null || !frame.fresh.has(root.id)) {
+      return false;
+    }
+    if (!this.#holdsShared) {
+      return true;
+    }
+    var named = object;
+    var steps = 0;
+    while (steps < 10000) {
+      let node = named;
+      if (node is AsExpression) {
+        named = node.expression;
+      } else {
+        return node is Identifier;
+      }
+      steps += 1;
+    }
+    return false;
+  }
+
+  /**
+   * A store of `value` into a slot of `object`. A slot of something the
+   * body allocated is no write a caller can see. When the value stored
+   * reaches something else, what the body allocated now holds a value
+   * it did not make, and the walk starts again knowing so.
+   */
+  #isHiddenStore(frame: Frame, object: Node, value: Node): boolean {
+    if (!this.#isOwned(frame, object)) {
+      return false;
+    }
+    if (!this.#holdsShared && !this.#isDetached(frame, value)) {
+      this.#foundSharedStore = true;
+    }
+    return true;
+  }
+
+  /**
+   * Walks the arguments of a call or `new` when `visit` is set, and
+   * answers whether every one is detached. A default the checker
+   * spliced in belongs to the callee's library and is read in its
+   * model.
+   */
+  #arguments(frame: Frame, call: Node, args: GrowableArray<Expression>, visit: boolean): boolean {
+    let written = frame.model.getOriginalArgCount(call);
+    let caller = frame.model;
+    var detached = true;
+    var position = 0;
+    for (let argument in args) {
+      var readable = true;
+      if (written >= 0 && position >= written) {
+        let owner = this.#index.ownerOfNode(argument.id);
+        if (owner == null) {
+          readable = false;
+        } else {
+          frame.model = owner;
+        }
+      }
+      if (readable) {
+        if (visit) {
+          this.#visit(frame, argument);
+        }
+        if (!this.#isDetached(frame, argument)) {
+          detached = false;
+        }
+      } else {
+        if (visit) {
+          frame.effect("takes a default argument the analysis does not follow", null);
+        }
+        detached = false;
+      }
+      frame.model = caller;
+      position += 1;
+    }
+    return detached;
+  }
+
+  #visitArguments(frame: Frame, call: Node, args: GrowableArray<Expression>): boolean {
+    return this.#arguments(frame, call, args, true);
+  }
+
+  /** The model of the library that declares a class, mixin or interface. */
+  #modelOf(sourcePath: String, symbolId: SymbolId): SemanticModel | null {
+    if (sourcePath != "") {
+      if (let (true, byPath) = this.#index.currentByPath.get(sourcePath)) {
+        return byPath;
+      }
+    }
+    if (let (true, bySymbol) = this.#index.symbolToModel.get(symbolId)) {
+      return bySymbol;
+    }
+    return null;
+  }
+
+  /**
+   * The member lists that make up `ct`: its class declaration's, or for
+   * the intermediate class of a mixin application, the mixin's and
+   * those of the mixins it composes.
+   */
+  #declarationBodies(ct: ClassType): GrowableArray<DeclarationBody> {
+    let out = new Array<DeclarationBody>();
+    let source = canonicalClass(ct);
+    this.#appendBodies(source.symbolId, ct.sourcePath, ct.isMixinIntermediate, ct.mixins, out);
+    return out;
+  }
+
+  #appendBodies(
+    lookupId: SymbolId,
+    sourcePath: String,
+    isMixin: boolean,
+    composed: GrowableArray<MixinType>,
+    out: GrowableArray<DeclarationBody>
+  ): void {
+    let model = this.#modelOf(sourcePath, lookupId);
+    if (model != null) {
+      let owner = model;
+      if (owner.classDeclarations.has(lookupId)) {
+        out.push(new DeclarationBody(owner, owner.classDeclarations[lookupId].body));
+      } else if (owner.mixinDeclarations.has(lookupId)) {
+        out.push(new DeclarationBody(owner, owner.mixinDeclarations[lookupId].body));
+      }
+    }
+    if (!isMixin) {
+      return;
+    }
+    var i = composed.length - 1;
+    while (i >= 0) {
+      let mixin = composed[i];
+      let source = mixin.genericSource ?? mixin;
+      this.#appendBodies(source.symbolId, source.sourcePath, true, source.mixins, out);
+      i -= 1;
+    }
+  }
+
+  /** Adds the declarations in `body` that implement the member `key`. */
+  #collectMembers(
+    body: DeclarationBody,
+    key: String,
+    isStatic: boolean,
+    found: GrowableArray<MemberDeclaration>
+  ): void {
+    for (let member in body.body) {
+      if (member is MethodDefinition) {
+        if (!member.isConstructor && member.isStatic == isStatic &&
+            memberKeyOf(body.model, member.name) == key) {
+          found.push(new MemberDeclaration(body.model, member));
+        }
+      } else if (member is AccessorDeclaration) {
+        if (member.isStatic == isStatic) {
+          let name = memberKeyOf(body.model, member.name);
+          let setter = member.setter;
+          if (key == "get#" + name && member.getter != null) {
+            found.push(new MemberDeclaration(body.model, member));
+          } else if (key == "set#" + name && setter != null) {
+            found.push(new MemberDeclaration(body.model, setter));
+          }
+        }
+      }
+    }
+  }
+
+  /** The declarations of the member `key` that `ct` has or inherits: those of the nearest class that declares any. */
+  #lookupMember(ct: ClassType, key: String, isStatic: boolean): GrowableArray<MemberDeclaration> {
+    let found = new Array<MemberDeclaration>();
+    var current: ClassType | null = ct;
+    var steps = 0;
+    while (current != null && found.length == 0 && steps < 10000) {
+      let cls = current;
+      for (let body in this.#declarationBodies(cls)) {
+        this.#collectMembers(body, key, isStatic, found);
+      }
+      current = cls.superType;
+      steps += 1;
+    }
+    return found;
+  }
+
+  #classDeclarationOf(ct: ClassType): ClassSource | null {
+    let source = canonicalClass(ct);
+    let model = this.#modelOf(source.sourcePath, source.symbolId);
+    if (model == null) {
+      return null;
+    }
+    let owner = model;
+    if (!owner.classDeclarations.has(source.symbolId)) {
+      return null;
+    }
+    return new ClassSource(owner, owner.classDeclarations[source.symbolId]);
+  }
+
+  #classTypeOf(model: SemanticModel, declaration: ClassDeclaration): ClassType | null {
+    let recorded = model.getNodeType(declaration);
+    if (recorded is ClassType) {
+      return recorded;
+    }
+    let binding =this.#symbolOf(model, declaration.name) ?? this.#symbolOf(model, declaration);
+    if (binding == null) {
+      return null;
+    }
+    let bound = model.getBindingTypeDirect(binding);
+    if (bound is ClassType) {
+      return bound;
+    }
+    return null;
+  }
+
+  /** The class `ct` extends, past the intermediate classes of its mixin applications. */
+  #declaredSuperclass(ct: ClassType): ClassType | null {
+    var current = ct.superType;
+    var steps = 0;
+    while (current != null && steps < 10000) {
+      let cls = current;
+      if (!cls.isMixinIntermediate) {
+        return cls;
+      }
+      current = cls.superType;
+      steps += 1;
+    }
+    return null;
+  }
+
+  /** Every declared class, by the class it extends. */
+  #subclassIndex(): HashMap<SymbolId, GrowableArray<ClassType>> {
+    let existing = this.#subclasses;
+    if (existing != null) {
+      return existing;
+    }
+    let built = new HashMap<SymbolId, GrowableArray<ClassType>>();
+    for (let path in this.#index.currentByPath.keys()) {
+      let model = this.#index.currentByPath[path];
+      for (let id in model.classDeclarations.keys()) {
+        let subclass = this.#classTypeOf(model, model.classDeclarations[id]);
+        if (subclass != null) {
+          let parent = this.#declaredSuperclass(subclass);
+          if (parent != null) {
+            let parentId = canonicalClass(parent).symbolId;
+            if (!built.has(parentId)) {
+              built[parentId] = new Array<ClassType>();
+            }
+            built[parentId].push(subclass);
+          }
+        }
+      }
+    }
+    this.#subclasses = built;
+    return built;
+  }
+
+  /** Adds every class that extends `ct`, directly or not. */
+  #collectSubclasses(ct: ClassType, out: GrowableArray<ClassType>): void {
+    let index = this.#subclassIndex();
+    let id = canonicalClass(ct).symbolId;
+    if (!index.has(id)) {
+      return;
+    }
+    for (let subclass in index[id]) {
+      out.push(subclass);
+      this.#collectSubclasses(subclass, out);
+    }
+  }
+
+  /**
+   * What a use of the member `key` on a value of type `ct` can do: the
+   * implementation `ct` has or inherits, and when the call `dispatches`,
+   * every override in a subclass.
+   */
+  #memberVerdict(
+    ct: ClassType,
+    key: String,
+    isStatic: boolean,
+    dispatches: boolean,
+    resolved: FunctionType | null
+  ): PurityVerdict {
+    let verdict = new PurityVerdict();
+    let declarations = this.#lookupMember(ct, key, isStatic);
+    if (declarations.length == 0) {
+      mergeVerdict(verdict, this.#synthesizedVerdict(ct, key));
+    } else {
+      this.#mergeDeclarations(verdict, declarations, resolved);
+    }
+    if (dispatches) {
+      let subclasses = new Array<ClassType>();
+      this.#collectSubclasses(ct, subclasses);
+      for (let subclass in subclasses) {
+        this.#mergeOverride(verdict, subclass, key, resolved);
+      }
+    }
+    return verdict;
+  }
+
+  /** Merges the override of `key` that `subclass` declares itself or takes from a mixin. */
+  #mergeOverride(into: PurityVerdict, subclass: ClassType, key: String, resolved: FunctionType | null): void {
+    let found = new Array<MemberDeclaration>();
+    var current: ClassType | null = subclass;
+    var steps = 0;
+    while (current != null && steps < 10000) {
+      let cls = current;
+      for (let body in this.#declarationBodies(cls)) {
+        this.#collectMembers(body, key, false, found);
+      }
+      let next = cls.superType;
+      if (next != null && next.isMixinIntermediate) {
+        current = next;
+      } else {
+        current = null;
+      }
+      steps += 1;
+    }
+    if (found.length > 0) {
+      let overriding = new PurityVerdict();
+      this.#mergeDeclarations(overriding, found, resolved);
+      // The use names the member of the superclass, whose own body may
+      // be clean, so each reason says whose override it comes from.
+      let description = `may run the override in '${subclass.name}'`;
+      let through = new PurityVerdict();
+      through.effect = wrapReason(description, overriding.effect);
+      through.stateRead = wrapReason(description, overriding.stateRead);
+      through.write = wrapReason(description, overriding.write);
+      through.mutableRead = wrapReason(description, overriding.mutableRead);
+      mergeVerdict(into, through);
+    }
+  }
+
+  /**
+   * Merges the verdict of the overload the checker resolved the use to,
+   * or of every declaration when it recorded none.
+   */
+  #mergeDeclarations(
+    into: PurityVerdict,
+    declarations: GrowableArray<MemberDeclaration>,
+    resolved: FunctionType | null
+  ): void {
+    if (declarations.length > 1 && resolved != null) {
+      let declared = new Array<Type | null>();
+      for (let candidate in declarations) {
+        declared.push(candidate.model.getNodeType(candidate.node));
+      }
+      let chosen = chosenOverload(declared, resolved);
+      if (chosen >= 0) {
+        let candidate = declarations[chosen];
+        mergeVerdict(into, this.verdictOf(candidate.node, candidate.model));
+        return;
+      }
+    }
+    for (let candidate in declarations) {
+      mergeVerdict(into, this.verdictOf(candidate.node, candidate.model));
+    }
+  }
+
+  /** The verdict of a member no declaration implements: one the checker wrote for a case class. */
+  #synthesizedVerdict(ct: ClassType, key: String): PurityVerdict {
+    if ((key == "==" || key == "hashCode") && ct.isCaseClass && this.#hasPlainFields(ct)) {
+      return cleanVerdict;
+    }
+    return effectVerdict(`is '${key}' of '${ct.name}', which the analysis does not follow`);
+  }
+
+  /** Whether every field is immutable and compared and hashed without a call the analysis would have to follow. */
+  #hasPlainFields(ct: ClassType): boolean {
+    for (let entry in ct.members) {
+      let member = entry.value;
+      if (member is FieldInfo) {
+        if (member.isMutable || !this.#isPlainType(member.type)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  #isPlainType(t: Type): boolean {
+    let bare = unwrapAliases(t);
+    if (isNumericType(bare)) {
+      return true;
+    }
+    if (bare is ClassType) {
+      let canonical = canonicalClass(bare);
+      return isWellKnown(WellKnown.StringClass, canonical.name, canonical.sourcePath);
+    }
+    return bare is BooleanType || bare is EnumType || bare is BoolLiteralType ||
+        bare is StringLiteralType || bare is NumLiteralType;
+  }
+
+  /**
+   * Records what a call, with the verdict of what it calls, does in
+   * this body. The callee's effects and its reads of module state are
+   * the body's. Its writes and its reads of mutable fields and elements
+   * are the body's unless everything the call was handed is `detached`:
+   * then they touch only what this body allocated. A callee that also
+   * reads module state is the exception: what it wrote may be that
+   * state, or it may have stored that state in what it was handed, and
+   * the two cannot be told apart, so its write is an effect here.
+   */
+  #applyCall(
+    frame: Frame,
+    verdict: PurityVerdict,
+    description: String,
+    detached: boolean,
+    loc: SourceLocation | null
+  ): void {
+    let effect = verdict.effect;
+    if (effect != null) {
+      frame.effect(description, loc, effect);
+    }
+    let stateRead = verdict.stateRead;
+    if (stateRead != null) {
+      frame.stateRead(description, loc, stateRead);
+    }
+    let write = verdict.write;
+    if (detached) {
+      if (stateRead != null && write != null) {
+        frame.effect(description, loc, write);
+      }
+      return;
+    }
+    if (write != null) {
+      frame.write(description, loc, write);
+    }
+    let mutableRead = verdict.mutableRead;
+    if (mutableRead != null) {
+      frame.mutableRead(description, loc, mutableRead);
+    }
+  }
+
+  /** What a declaration without a body does, which its decorators say. */
+  #declared(frame: Frame, decorators: GrowableArray<Decorator>, loc: SourceLocation | null): void {
+    for (let decorator in decorators) {
+      if (decorator.name == "intrinsic") {
+        let name = decoratorStringArg(decorator, 0);
+        if (name != null) {
+          this.#intrinsic(frame, name, loc);
+          return;
+        }
+      }
+      if (decorator.name == "external") {
+        this.#hostFunction(frame, decoratorStringArg(decorator, 0), loc);
+        return;
+      }
+    }
+    frame.effect("is declared without a body the analysis can read", loc);
+  }
+
+  /**
+   * A function the host supplies. The string builtins and the standard
+   * library's own string and number functions compute on immutable
+   * values; nothing is known of any other.
+   */
+  #hostFunction(frame: Frame, hostModule: String | null, loc: SourceLocation | null): void {
+    if (hostModule != null) {
+      let known = hostModule;
+      if (known == "wasm:js-string" || known == "zena:host:string" || known == "zena:host:number") {
+        return;
+      }
+    }
+    frame.effect("is a host function", loc);
+  }
+
+  #intrinsic(frame: Frame, name: String, loc: SourceLocation | null): void {
+    if (name.startsWith("array.get")) {
+      frame.mutableRead("reads an element of an array that can change", loc);
+    } else if (name == "array.set" || name == "array.copy" || name == "array.fill" ||
+        name.startsWith("array.init")) {
+      frame.write("writes the elements of an array", loc);
+    } else if (name.startsWith("memory.") || name.contains(".load") || name.contains(".store")) {
+      frame.effect("reads or writes linear memory", loc);
+    } else if (name == "release_owned" || name == "share_reference" || name == "cancel.raise") {
+      frame.effect("releases, shares or cancels, which the analysis does not follow", loc);
+    } else if (name == "eq" || name == "hash" || name == "to_string") {
+      frame.effect(
+        "compares, hashes or formats a value of a type parameter, which the analysis does not follow",
+        loc
+      );
+    }
+  }
+
+  /** A call of a name no library declares: one of the prelude's array operations, or something unknown. */
+  #preludeCall(frame: Frame, name: String, detached: boolean, loc: SourceLocation | null): void {
+    if (name == "__array_new" || name == "__array_new_empty" || name == "__array_len" ||
+        name == "__byte_array_new" || name == "__byte_array_length") {
+      return;
+    }
+    if (name == "__array_get" || name == "__byte_array_get") {
+      if (!detached) {
+        frame.mutableRead("reads an element of an array that can change", loc);
+      }
+      return;
+    }
+    if (name == "__array_set" || name == "__byte_array_set" || name == "__byte_array_copy") {
+      if (!detached) {
+        frame.write("writes the elements of an array", loc);
+      }
+      return;
+    }
+    frame.effect(`calls '${name}', which the analysis does not follow`, loc);
+  }
+
+  /** An owner has to be released, and the analysis does not follow releases. */
+  #noteOwner(frame: Frame, node: Node, loc: SourceLocation | null): void {
+    let produced = frame.model.getNodeType(node);
+    if (produced is TypeAliasType) {
+      if (isOwnershipWrapper(produced)) {
+        frame.effect("produces an owner, whose release the analysis does not follow", loc);
+      }
+    }
+  }
+
+  #call(frame: Frame, call: CallExpression): void {
+    let callee = call.callee;
+    if (frame.inEnsures && isOldCallee(callee)) {
+      for (let argument in call.args) {
+        this.#visit(frame, argument);
+      }
+      return;
+    }
+    if (callee is Identifier) {
+      this.#namedCall(frame, call, callee);
+    } else if (callee is MemberExpression) {
+      this.#memberCall(frame, call, callee);
+    } else {
+      this.#visit(frame, callee);
+      this.#visitArguments(frame, call, call.args);
+      frame.effect("calls a function value", call.loc);
+    }
+    this.#noteOwner(frame, call, call.loc);
+  }
+
+  #namedCall(frame: Frame, call: CallExpression, callee: Identifier): void {
+    let detached = this.#visitArguments(frame, call, call.args);
+    let name = callee.name;
+    let found = frame.model.resolve(callee);
+    if (found == null) {
+      this.#preludeCall(frame, name, detached, call.loc);
+      return;
+    }
+    let binding = found.resolveTarget();
+    let owner = this.#ownerOf(binding, frame.model);
+    if (this.#bindingKind(binding, owner) != BindingKind.Declaration) {
+      this.#readIdentifier(frame, callee);
+      frame.effect(`calls the function value '${name}'`, call.loc);
+      return;
+    }
+    let declarations = owner.getGlobalDeclarations(binding.id);
+    if (declarations == null || declarations.length == 0) {
+      this.#preludeCall(frame, name, detached, call.loc);
+      return;
+    }
+    let deferred = owner.deferredBodies;
+    if (deferred != null) {
+      deferred.checkGlobalBody(binding.id);
+    }
+    let verdict = new PurityVerdict();
+    this.#mergeGlobals(
+      verdict, declarations, owner, frame.model.getResolvedOverload(call)
+    );
+    this.#applyCall(frame, verdict, `calls '${name}'`, detached, call.loc);
+  }
+
+  /** The type the checker recorded for a top-level function's declaration. */
+  #declaredType(owner: SemanticModel, declaration: Node): Type | null {
+    if (declaration is FunctionDeclaration) {
+      return owner.getNodeType(declaration.func);
+    }
+    return owner.getNodeType(declaration);
+  }
+
+  /** Merges the verdict of the overload a call resolved to, or of every declaration of the name. */
+  #mergeGlobals(
+    into: PurityVerdict,
+    declarations: GrowableArray<Node>,
+    owner: SemanticModel,
+    resolved: FunctionType | null
+  ): void {
+    if (declarations.length > 1 && resolved != null) {
+      let declared = new Array<Type | null>();
+      for (let candidate in declarations) {
+        declared.push(this.#declaredType(owner, candidate));
+      }
+      let chosen = chosenOverload(declared, resolved);
+      if (chosen >= 0) {
+        mergeVerdict(into, this.verdictOf(declarations[chosen], owner));
+        return;
+      }
+    }
+    for (let candidate in declarations) {
+      mergeVerdict(into, this.verdictOf(candidate, owner));
+    }
+  }
+
+  #memberCall(frame: Frame, call: CallExpression, callee: MemberExpression): void {
+    let object = callee.object;
+    let name = callee.property.name;
+    this.#visit(frame, object);
+    let argumentsDetached = this.#visitArguments(frame, call, call.args);
+    let objectType = frame.model.getNodeType(object);
+    if (objectType == null) {
+      frame.effect(`calls '${name}' on a value the analysis does not follow`, call.loc);
+      return;
+    }
+    let receiver = this.#receiverType(objectType);
+    if (receiver is ClassType) {
+      let isStatic = frame.model.isStaticAccess(callee);
+      let key = accessKeyOf(frame.model, callee);
+      let table = receiver.memberTable(isStatic);
+      if (table.has(key)) {
+        let member = table[key];
+        if (member is MethodInfo) {
+          let dispatches = !isStatic && !(object is SuperExpression) && !member.isFinal &&
+              !receiver.isFinal && !receiver.isExtension && !key.startsWith("#");
+          let verdict = this.#memberVerdict(
+            receiver, key, isStatic, dispatches, frame.model.getResolvedOverload(call)
+          );
+          let detached = argumentsDetached && (isStatic || this.#isDetached(frame, object));
+          this.#applyCall(frame, verdict, `calls '${name}'`, detached, call.loc);
+          return;
+        }
+      }
+      this.#memberAccess(frame, callee);
+      frame.effect(`calls the function value '${name}'`, call.loc);
+      return;
+    }
+    if (receiver is InterfaceType) {
+      frame.effect(`calls '${name}' through the interface '${receiver.name}'`, call.loc);
+      return;
+    }
+    frame.effect(`calls '${name}' on a value the analysis does not follow`, call.loc);
+  }
+
+  #construction(frame: Frame, node: NewExpression): void {
+    let detached = this.#visitArguments(frame, node, node.args);
+    let verdict = this.#constructedBy(frame, node);
+    this.#applyCall(frame, verdict, `constructs '${node.callee.name}'`, detached, node.loc);
+    this.#noteOwner(frame, node, node.loc);
+  }
+
+  /** The verdict of the constructor `node` names, or of the unnamed one. */
+  #constructedBy(frame: Frame, node: NewExpression): PurityVerdict {
+    let constructorName = node.constructorName;
+    let key = if (constructorName != null) {
+      memberKeyOf(frame.model, constructorName)
+    } else {
+      unnamedConstructor
+    };
+    return this.#constructorVerdict(frame, node, key);
+  }
+
+  /** The verdict of the constructor a `new` runs. */
+  #constructorVerdict(frame: Frame, node: NewExpression, key: String): PurityVerdict {
+    let found = frame.model.resolve(node.callee);
+    if (found != null) {
+      let binding = found.resolveTarget();
+      let owner = this.#ownerOf(binding, frame.model);
+      if (owner.classDeclarations.has(binding.id)) {
+        return this.#classConstructor(owner.classDeclarations[binding.id], owner, key);
+      }
+      if (owner.interfaceDeclarations.has(binding.id)) {
+        return this.#factory(owner.interfaceDeclarations[binding.id].body, owner, key);
+      }
+    }
+    let made = frame.model.getNodeType(node);
+    if (made != null) {
+      let receiver = this.#receiverType(made);
+      if (receiver is ClassType) {
+        let source = this.#classDeclarationOf(receiver);
+        if (source != null) {
+          let known = source;
+          return this.#classConstructor(known.declaration, known.model, key);
+        }
+        // A case of a sealed class has no declaration of its own: its
+        // constructor stores its arguments and runs the sealed class's.
+        let parent = receiver.superType;
+        if (parent != null && parent.isSealed) {
+          let parentSource = this.#classDeclarationOf(parent);
+          if (parentSource != null) {
+            let sealedClass = parentSource;
+            return this.#classConstructor(sealedClass.declaration, sealedClass.model, unnamedConstructor);
+          }
+        }
+      }
+    }
+    return effectVerdict("has a constructor the analysis does not follow");
+  }
+
+  /** The verdict of an interface's constructor, which is a function that returns an implementation. */
+  #factory(body: GrowableArray<Node>, owner: SemanticModel, key: String): PurityVerdict {
+    for (let member in body) {
+      if (member is MethodDefinition) {
+        if (member.isConstructor && memberKeyOf(owner, member.name) == key) {
+          return this.verdictOf(member, owner);
+        }
+      }
+    }
+    return effectVerdict("has a constructor the analysis does not follow");
+  }
+
+  /**
+   * The verdict of the constructor `key` of a class. Constructing an
+   * `Error` captures a stack trace, which no program can tell from
+   * another capture, so it does not count.
+   */
+  #classConstructor(declaration: ClassDeclaration, owner: SemanticModel, key: String): PurityVerdict {
+    if (isWellKnown(WellKnown.ErrorClass, declaration.name.name, owner.sourcePath)) {
+      return cleanVerdict;
+    }
+    for (let member in declaration.body) {
+      if (member is MethodDefinition) {
+        if (member.isConstructor && memberKeyOf(owner, member.name) == key) {
+          return this.verdictOf(member, owner);
+        }
+      }
+    }
+    if (key == unnamedConstructor) {
+      return this.verdictOf(declaration, owner);
+    }
+    return effectVerdict("has a constructor the analysis does not follow");
+  }
+
+  /** Walks what runs when `declaration` is called, read, assigned or constructed. */
+  #walkDeclaration(declaration: Node, model: SemanticModel, verdict: PurityVerdict): void {
+    if (declaration is FunctionDeclaration) {
+      let binding =this.#symbolOf(model, declaration.name);
+      let deferred = model.deferredBodies;
+      if (binding != null) {
+        if (deferred != null) {
+          deferred.checkGlobalBody(binding.id);
+        }
+      }
+      this.#functionBody(new Frame(model, verdict, false), declaration.func);
+      return;
+    }
+    if (declaration is FunctionExpression) {
+      this.#functionBody(new Frame(model, verdict, false), declaration);
+      return;
+    }
+    if (declaration is MethodDefinition) {
+      this.#method(declaration, model, verdict);
+      return;
+    }
+    if (declaration is ClassDeclaration) {
+      this.#constructorBody(new Frame(model, verdict, true), declaration, null);
+      return;
+    }
+    if (declaration is AccessorDeclaration) {
+      this.#askForBody(model, declaration);
+      let getterFrame = new Frame(model, verdict, false);
+      let getter = declaration.getter;
+      if (getter == null) {
+        this.#declared(getterFrame, declaration.decorators, declaration.loc);
+      } else {
+        this.#visit(getterFrame, getter);
+      }
+      return;
+    }
+    if (declaration is SetterInfo) {
+      let accessor = model.getParent(declaration);
+      if (accessor != null) {
+        this.#askForBody(model, accessor);
+      }
+      this.#visit(new Frame(model, verdict, false), declaration.body);
+      return;
+    }
+    if (declaration is DeclareFunction) {
+      let declareFrame = new Frame(model, verdict, false);
+      if (declaration.externalModule != null) {
+        this.#hostFunction(declareFrame, declaration.externalModule, declaration.loc);
+      } else {
+        this.#declared(declareFrame, declaration.decorators, declaration.loc);
+      }
+      return;
+    }
+    new Frame(model, verdict, false).effect("is a declaration the analysis does not follow", null);
+  }
+
+  #functionBody(frame: Frame, func: FunctionExpression): void {
+    if (func.isAsync) {
+      frame.effect("is async", func.loc);
+    }
+    if (func.isGenerator) {
+      frame.effect("is a generator", func.loc);
+    }
+    this.#parameters(frame, func.params);
+    this.#clauses(frame, func.contracts);
+    this.#visit(frame, func.body);
+  }
+
+  /** Walks the patterns parameters are destructured with. A default value is walked where a call takes it. */
+  #parameters(frame: Frame, params: GrowableArray<Parameter>): void {
+    for (let param in params) {
+      let pattern = param.pattern;
+      if (pattern != null) {
+        this.#visit(frame, pattern as Node);
+      }
+    }
+  }
+
+  #clauses(frame: Frame, contracts: GrowableArray<ContractClause> | null): void {
+    if (contracts == null) {
+      return;
+    }
+    for (let clause in contracts) {
+      this.#clause(frame, clause);
+    }
+  }
+
+  /** A clause's condition runs with the body, unless the clause is `static`, which never runs. */
+  #clause(frame: Frame, clause: ContractClause): void {
+    if (clause.mode == ContractMode.Static) {
+      return;
+    }
+    let outer = frame.inEnsures;
+    frame.inEnsures = clause.kind == ContractKind.Ensures;
+    this.#visit(frame, clause.condition);
+    frame.inEnsures = outer;
+  }
+
+  #method(declaration: MethodDefinition, model: SemanticModel, verdict: PurityVerdict): void {
+    this.#askForBody(model, declaration);
+    let parent = model.getParent(declaration);
+    if (declaration.isConstructor && parent != null) {
+      let enclosing = parent;
+      if (enclosing is ClassDeclaration) {
+        this.#constructorBody(new Frame(model, verdict, true), enclosing, declaration);
+        return;
+      }
+    }
+    let frame = new Frame(model, verdict, false);
+    let body = declaration.body;
+    if (body == null) {
+      if (!declaration.isAbstract) {
+        this.#declaredMember(frame, declaration, parent);
+      }
+      return;
+    }
+    if (declaration.isAsync) {
+      frame.effect("is async", declaration.loc);
+    }
+    if (declaration.isGenerator) {
+      frame.effect("is a generator", declaration.loc);
+    }
+    this.#parameters(frame, declaration.params);
+    this.#clauses(frame, declaration.contracts);
+    this.#visit(frame, body);
+  }
+
+  /**
+   * A method declared without a body. Reading an element is a read of
+   * state that can change, except in an extension on an array whose
+   * elements cannot.
+   */
+  #declaredMember(frame: Frame, declaration: MethodDefinition, parent: Node | null): void {
+    if (parent != null && this.#readsElement(declaration)) {
+      let enclosing = parent;
+      if (enclosing is ClassDeclaration) {
+        let classType = this.#classTypeOf(frame.model, enclosing);
+        if (classType != null) {
+          let onType = classType.onType;
+          if (onType != null) {
+            let target = unwrapAliases(onType);
+            if (target is ArrayType) {
+              if (!target.elementsMutable) {
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+    this.#declared(frame, declaration.decorators, declaration.loc);
+  }
+
+  #readsElement(declaration: MethodDefinition): boolean {
+    for (let decorator in declaration.decorators) {
+      if (decorator.name == "intrinsic") {
+        let name = decoratorStringArg(decorator, 0);
+        if (name != null && name.startsWith("array.get")) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Walks what constructing an instance of `classDeclaration` runs: its
+   * field initializers and those of the mixins it applies, the
+   * constructor's initializer list, the superclass's constructor, and
+   * the constructor's body. `constructor` is null for a class that
+   * declares none.
+   */
+  #constructorBody(
+    frame: Frame,
+    classDeclaration: ClassDeclaration,
+    constructor: MethodDefinition | null
+  ): void {
+    let model = frame.model;
+    this.#fieldInitializers(frame, new DeclarationBody(model, classDeclaration.body));
+    let classType = this.#classTypeOf(model, classDeclaration);
+    var superClass: ClassType | null = null;
+    if (classType != null) {
+      var current = classType.superType;
+      var steps = 0;
+      while (current != null && steps < 10000) {
+        let cls = current;
+        if (cls.isMixinIntermediate) {
+          for (let mixinBody in this.#declarationBodies(cls)) {
+            this.#fieldInitializers(frame, mixinBody);
+          }
+          current = cls.superType;
+        } else {
+          superClass = cls;
+          current = null;
+        }
+        steps += 1;
+      }
+    }
+    var initializer: SuperInitializer | null = null;
+    var loc = classDeclaration.loc;
+    if (constructor != null) {
+      let declared = constructor;
+      loc = declared.loc;
+      this.#parameters(frame, declared.params);
+      this.#clauses(frame, declared.contracts);
+      let list = declared.initializerList;
+      if (list != null) {
+        for (let item in list) {
+          if (item is FieldInitializer) {
+            this.#visit(frame, item.value);
+          } else if (item is SuperInitializer) {
+            initializer = item;
+          }
+        }
+      }
+      let separate = declared.superInitializer;
+      if (separate != null) {
+        let separateNode = separate;
+        if (separateNode is SuperInitializer) {
+          initializer = separateNode;
+        }
+      }
+    }
+    if (superClass != null) {
+      this.#superConstruction(frame, superClass, initializer, loc);
+    }
+    if (constructor != null) {
+      let block = constructor.body;
+      if (block != null) {
+        this.#visit(frame, block);
+      }
+    }
+  }
+
+  /** Walks the initializers of the instance fields in `body`, in the model of the library that declares them. */
+  #fieldInitializers(frame: Frame, body: DeclarationBody): void {
+    let outer = frame.model;
+    frame.model = body.model;
+    for (let member in body.body) {
+      if (member is FieldDefinition) {
+        let value = member.value;
+        if (!member.isStatic && value != null) {
+          this.#askForBody(body.model, member);
+          this.#visit(frame, value as Node);
+        }
+      }
+    }
+    frame.model = outer;
+  }
+
+  /** The superclass's constructor, called by a `super(…)` initializer or, without one, with no arguments. */
+  #superConstruction(
+    frame: Frame,
+    superClass: ClassType,
+    initializer: SuperInitializer | null,
+    loc: SourceLocation | null
+  ): void {
+    var key = unnamedConstructor;
+    var detached = true;
+    if (initializer != null) {
+      let written = initializer;
+      let constructorName = written.constructorName;
+      if (constructorName != null) {
+        key = memberKeyOf(frame.model, constructorName);
+      }
+      detached = this.#visitArguments(frame, written, written.args);
+    }
+    var verdict = effectVerdict("has a constructor the analysis does not follow");
+    let source = this.#classDeclarationOf(superClass);
+    if (source != null) {
+      let known = source;
+      verdict = this.#classConstructor(known.declaration, known.model, key);
+    }
+    this.#applyCall(frame, verdict, `constructs the superclass '${superClass.name}'`, detached, loc);
+  }
+
+  /** Walks one node of a body, recording what running it does. */
+  #visit(frame: Frame, node: Node): void {
+    if (node is TypeAnnotation) {
+      return;
+    }
+    if (node is Identifier) {
+      this.#readIdentifier(frame, node);
+      return;
+    }
+    if (node is CallExpression) {
+      this.#call(frame, node);
+      return;
+    }
+    if (node is MemberExpression) {
+      this.#visit(frame, node.object);
+      this.#memberAccess(frame, node);
+      return;
+    }
+    if (node is IndexExpression) {
+      this.#visit(frame, node.object);
+      this.#visit(frame, node.index);
+      this.#element(frame, node, node.object, node.index, null, node.loc);
+      return;
+    }
+    if (node is AssignmentExpression) {
+      this.#assignment(frame, node);
+      return;
+    }
+    if (node is NewExpression) {
+      this.#construction(frame, node);
+      return;
+    }
+    if (node is BinaryExpression) {
+      this.#visit(frame, node.left);
+      this.#visit(frame, node.right);
+      this.#operatorCall(frame, node, node.operator, node.left, node.right, node.loc);
+      return;
+    }
+    if (node is FunctionExpression) {
+      // Making a closure does nothing a caller can see. Calling one is
+      // a call of a function value, which is an effect where it happens.
+      return;
+    }
+    if (node is VariableDeclaration) {
+      this.#variable(frame, node);
+      return;
+    }
+    if (node is MatchExpression) {
+      this.#visit(frame, node.discriminant);
+      let matched = this.#typeOf(frame, node.discriminant);
+      for (let arm in node.cases) {
+        this.#pattern(frame, arm.pattern, matched);
+        let guard = arm.guard;
+        if (guard != null) {
+          this.#visit(frame, guard);
+        }
+        this.#visit(frame, arm.body);
+      }
+      return;
+    }
+    if (node is LetPatternCondition) {
+      this.#visit(frame, node.init);
+      this.#pattern(frame, node.pattern, this.#typeOf(frame, node.init));
+      return;
+    }
+    if (node is ForInStatement) {
+      if (node.isAwait) {
+        frame.effect("awaits", node.loc);
+      }
+      this.#iteration(frame, node);
+      this.#visitChildren(frame, node);
+      return;
+    }
+    if (node is TemplateLiteral) {
+      this.#visitChildren(frame, node);
+      for (let expression in node.expressions) {
+        let formatted = this.#typeOf(frame, expression);
+        if (formatted == null || !this.#formatsDirectly(formatted)) {
+          frame.effect("formats a value with its 'toString'", node.loc);
+        }
+      }
+      return;
+    }
+    if (node is TaggedTemplateExpression) {
+      this.#visitChildren(frame, node);
+      frame.effect("calls a template tag", node.loc);
+      return;
+    }
+    if (node is MapLiteral) {
+      this.#visitChildren(frame, node);
+      frame.effect("builds a map, which hashes its keys", node.loc);
+      return;
+    }
+    if (node is AwaitExpression) {
+      this.#visitChildren(frame, node);
+      frame.effect("awaits", node.loc);
+      return;
+    }
+    if (node is YieldStatement) {
+      this.#visitChildren(frame, node);
+      frame.effect("yields", node.loc);
+      return;
+    }
+    if (node is UsingStatement) {
+      this.#visitChildren(frame, node);
+      frame.effect("releases a resource at the end of its block", node.loc);
+      return;
+    }
+    if (node is ShieldedStatement) {
+      this.#visitChildren(frame, node);
+      frame.effect("shields a block from cancellation", node.loc);
+      return;
+    }
+    if (node is TryExpression) {
+      this.#visitChildren(frame, node);
+      if (node.cancelBlock != null) {
+        frame.effect("handles cancellation", node.loc);
+      }
+      return;
+    }
+    if (node is ClassPattern) {
+      this.#classPattern(frame, node);
+      return;
+    }
+    if (node is RecordPattern) {
+      this.#recordPattern(frame, node, null);
+      return;
+    }
+    if (node is ArrayPattern) {
+      let matchedArray = this.#typeOf(frame, node);
+      if (matchedArray == null || !this.isImmutableType(matchedArray)) {
+        frame.mutableRead("reads the elements of an array that can change", node.loc);
+      }
+      this.#visitChildren(frame, node);
+      return;
+    }
+    if (node is ContractClause) {
+      this.#clause(frame, node);
+      return;
+    }
+    this.#visitChildren(frame, node);
+  }
+
+  #visitChildren(frame: Frame, node: Node): void {
+    walkChildren(node, (child) => {
+      this.#visit(frame, child);
+      return false;
+    }, (child) => {});
+  }
+
+  /** Whether a template formats a value of type `t` itself, without calling its `toString`. */
+  #formatsDirectly(t: Type): boolean {
+    let bare = unwrapAliases(t);
+    return !(bare is EnumType) && this.#isPlainType(bare);
+  }
+
+  /**
+   * A `let` or `var`. A `let` bound directly to something this body
+   * allocates is fresh: a store into it is a store into what the body
+   * allocated. An allocation made from a value that reaches something
+   * else holds a value the body did not make, as a store of one does.
+   */
+  #variable(frame: Frame, node: VariableDeclaration): void {
+    let init = node.init;
+    let pattern = node.pattern;
+    this.#visit(frame, init);
+    this.#pattern(frame, pattern, this.#typeOf(frame, init));
+    if (node.kind != "let") {
+      return;
+    }
+    if (pattern is IdentifierPattern) {
+      var made: Node = init;
+      var steps = 0;
+      while (steps < 10000) {
+        let node = made;
+        if (node is AsExpression) {
+          made = node.expression;
+        } else {
+          break;
+        }
+        steps += 1;
+      }
+      let allocation = made;
+      let allocates = if (allocation is CallExpression) {
+        this.#isAllocationCall(frame, allocation)
+      } else {
+        allocation is NewExpression || allocation is ArrayLiteral
+      };
+      if (allocates && !this.#holdsShared && !this.#isDetached(frame, init)) {
+        this.#foundSharedStore = true;
+      }
+      if (allocates) {
+        let binding =this.#symbolOf(frame.model, pattern);
+        if (binding != null) {
+          frame.fresh.add(binding.id);
+        }
+      }
+    }
+  }
+
+  /** Walks a pattern matched against a value of type `matched`, when that is known. */
+  #pattern(frame: Frame, pattern: Node, matched: Type | null): void {
+    if (pattern is RecordPattern) {
+      this.#recordPattern(frame, pattern, matched);
+    } else {
+      this.#visit(frame, pattern);
+    }
+  }
+
+  /**
+   * A record pattern reads the fields it names. Against a record they
+   * cannot change; against a class each is a field read; against a
+   * value whose type is not known here, the pattern counts as a read of
+   * state that can change.
+   */
+  #recordPattern(frame: Frame, pattern: RecordPattern, matched: Type | null): void {
+    let receiver: Type | null = if (matched != null) {
+      this.#receiverType(matched)
+    } else {
+      null
+    };
+    let known = receiver;
+    if (known == null) {
+      frame.mutableRead("destructures a value whose type the analysis does not follow", pattern.loc);
+    }
+    for (let property in pattern.properties) {
+      let name = property.name.name;
+      var fieldType: Type | null = null;
+      if (known is RecordType) {
+        if (known.properties.has(name)) {
+          fieldType = known.properties[name];
+        }
+      } else if (known is ClassType) {
+        var isField = false;
+        if (known.members.has(name)) {
+          let member = known.members[name];
+          if (member is FieldInfo) {
+            isField = true;
+            fieldType = member.type;
+            if (member.isMutable) {
+              frame.mutableRead(`reads the mutable field '${name}'`, property.loc);
+            }
+          }
+        }
+        if (!isField) {
+          frame.mutableRead(`reads '${name}' by destructuring`, property.loc);
+        }
+      } else if (known != null) {
+        frame.mutableRead(`reads '${name}' by destructuring`, property.loc);
+      }
+      this.#pattern(frame, property.value, fieldType);
+    }
+    let rest = pattern.rest;
+    if (rest != null) {
+      this.#visit(frame, rest);
+    }
+  }
+
+  /** A class pattern reads the fields it names, and a `var` field can change. */
+  #classPattern(frame: Frame, pattern: ClassPattern): void {
+    let matched = this.#typeOf(frame, pattern);
+    let receiver: Type | null = if (matched != null) {
+      this.#receiverType(matched)
+    } else {
+      null
+    };
+    let known = receiver;
+    for (let property in pattern.properties) {
+      let name = property.name.name;
+      var fieldType: Type | null = null;
+      var isField = false;
+      if (known is ClassType) {
+        if (known.members.has(name)) {
+          let member = known.members[name];
+          if (member is FieldInfo) {
+            isField = true;
+            fieldType = member.type;
+            if (member.isMutable) {
+              frame.mutableRead(`reads the mutable field '${name}'`, property.loc);
+            }
+          }
+        }
+      }
+      if (!isField) {
+        frame.mutableRead(`reads '${name}' by destructuring`, property.loc);
+      }
+      this.#pattern(frame, property.value, fieldType);
+    }
+  }
+
+  /** What a `for`-in does to reach its elements, apart from its body. */
+  #iteration(frame: Frame, node: ForInStatement): void {
+    let iterable = node.iterable;
+    let known = this.#typeOf(frame, iterable);
+    if (known == null) {
+      frame.effect("iterates over a value the analysis does not follow", node.loc);
+      return;
+    }
+    let receiver = this.#receiverType(known);
+    if (receiver is ArrayType) {
+      if (receiver.elementsMutable && !this.#isOwned(frame, iterable)) {
+        frame.mutableRead("reads the elements of an array that can change", node.loc);
+      }
+      return;
+    }
+    if (receiver is ClassType) {
+      if (forInLowersToIndexLoop(receiver)) {
+        let canonical = canonicalClass(receiver);
+        let changes = isWellKnown(WellKnown.FixedArrayClass, canonical.name, canonical.sourcePath) ||
+            isWellKnown(WellKnown.GrowableArrayClass, canonical.name, canonical.sourcePath);
+        if (changes && !this.#isOwned(frame, iterable)) {
+          frame.mutableRead("reads the elements of an array that can change", node.loc);
+        }
+        return;
+      }
+    }
+    frame.effect("iterates over a value through its iterator", node.loc);
+  }
+
+  /** The field a read of `key` on `receiver` reads, when it reads one. */
+  #fieldOf(receiver: ClassType, isStatic: boolean, key: String): FieldInfo | null {
+    let table = receiver.memberTable(isStatic);
+    if (table.has(key)) {
+      let member = table[key];
+      if (member is FieldInfo) {
+        return member;
+      }
+      return null;
+    }
+    // A `var(#x) x` field is registered under the name of its setter.
+    let setterNames = receiver.fieldSetterNames;
+    if (setterNames != null) {
+      if (let (true, setterName) = setterNames.get(key)) {
+        if (table.has(setterName)) {
+          let stored = table[setterName];
+          if (stored is FieldInfo) {
+            return stored;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /** The verdicts of the declarations of `key` in the subclasses of `ct`. */
+  #overridesVerdict(ct: ClassType, key: String): PurityVerdict {
+    let verdict = new PurityVerdict();
+    let subclasses = new Array<ClassType>();
+    this.#collectSubclasses(ct, subclasses);
+    for (let subclass in subclasses) {
+      this.#mergeOverride(verdict, subclass, key, null);
+    }
+    return verdict;
+  }
+
+  /** A read of `object.property`, after `object` has been walked. */
+  #memberAccess(frame: Frame, node: MemberExpression): void {
+    let object = node.object;
+    let name = node.property.name;
+    let objectType = this.#typeOf(frame, object);
+    if (objectType == null) {
+      let own = this.#typeOf(frame, node);
+      if (own == null || frame.model.isStaticAccess(node) || !this.isImmutableType(own)) {
+        frame.effect(`reads '${name}' of a value the analysis does not follow`, node.loc);
+      }
+      return;
+    }
+    let receiver = this.#receiverType(objectType);
+    if (receiver is ClassType) {
+      let isStatic = frame.model.isStaticAccess(node);
+      let key = accessKeyOf(frame.model, node);
+      let dispatches = !isStatic && !(object is SuperExpression) && !receiver.isFinal &&
+          !receiver.isExtension && !key.startsWith("#");
+      let field = this.#fieldOf(receiver, isStatic, key);
+      if (field != null) {
+        let read = field;
+        if (isStatic) {
+          if (read.isMutable) {
+            frame.stateRead(`reads the static variable '${name}'`, node.loc);
+          } else if (!this.isImmutableType(read.type)) {
+            frame.stateRead(`reads '${name}', a static value that can change`, node.loc);
+          }
+          return;
+        }
+        if (read.isMutable && !this.#isOwned(frame, object)) {
+          frame.mutableRead(`reads the mutable field '${name}'`, node.loc);
+        }
+        if (dispatches) {
+          // A subclass may declare an accessor in the field's place.
+          this.#applyCall(
+            frame, this.#overridesVerdict(receiver, "get#" + key), `reads the property '${name}'`,
+            this.#isDetached(frame, object), node.loc
+          );
+        }
+        return;
+      }
+      let table = receiver.memberTable(isStatic);
+      if (table.has(key)) {
+        if (table[key] is MethodInfo) {
+          return;
+        }
+      }
+      let getterKey = "get#" + key;
+      if (table.has(getterKey)) {
+        let verdict = this.#memberVerdict(receiver, getterKey, isStatic, dispatches, null);
+        this.#applyCall(
+          frame, verdict, `reads the property '${name}'`,
+          isStatic || this.#isDetached(frame, object), node.loc
+        );
+        return;
+      }
+      frame.effect(`reads '${name}', which the analysis does not follow`, node.loc);
+      return;
+    }
+    if (receiver is InterfaceType) {
+      frame.effect(`reads '${name}' through the interface '${receiver.name}'`, node.loc);
+      return;
+    }
+    if (receiver is ArrayType || receiver is RecordType || receiver is TupleType ||
+        receiver is InlineTupleType || receiver is EnumType || this.isImmutableType(receiver)) {
+      return;
+    }
+    frame.effect(`reads '${name}' of a value the analysis does not follow`, node.loc);
+  }
+
+  /**
+   * A read of `object[index]`, or with a `value` a write of it. `site`
+   * is the node the checker recorded the chosen `[]` or `[]=` on: the
+   * index expression for a read, the assignment for a write.
+   */
+  #element(
+    frame: Frame,
+    site: Node,
+    object: Expression,
+    index: Expression,
+    value: Expression | null,
+    loc: SourceLocation | null
+  ): void {
+    let objectType = this.#typeOf(frame, object);
+    if (objectType == null) {
+      frame.effect("indexes a value the analysis does not follow", loc);
+      return;
+    }
+    let receiver = this.#receiverType(objectType);
+    if (receiver is ArrayType) {
+      if (value != null) {
+        if (!this.#isHiddenStore(frame, object, value)) {
+          frame.write("writes an element of an array", loc);
+        }
+      } else if (receiver.elementsMutable && !this.#isOwned(frame, object)) {
+        frame.mutableRead("reads an element of an array that can change", loc);
+      }
+      return;
+    }
+    if (receiver is TupleType || receiver is InlineTupleType) {
+      return;
+    }
+    if (receiver is ClassType) {
+      var key = "[]";
+      var description = "reads an element with '[]'";
+      if (value != null) {
+        key = "[]=";
+        description = "assigns an element with '[]='";
+      }
+      let dispatches = !receiver.isFinal && !receiver.isExtension;
+      let verdict = this.#memberVerdict(
+        receiver, key, false, dispatches, frame.model.getResolvedOverload(site)
+      );
+      var detached = this.#isDetached(frame, object) && this.#isDetached(frame, index);
+      if (detached && value != null) {
+        detached = this.#isDetached(frame, value);
+      }
+      if (receiver.isExtension && receiver.onType is ArrayType && isArrayAccessOnly(verdict)) {
+        // The array classes declare `[]` and `[]=` as the array
+        // instructions, so the operator is the access itself and not a
+        // call that leads to one.
+        if (value != null && verdict.write != null) {
+          if (!this.#isHiddenStore(frame, object, value)) {
+            frame.write("writes an element of an array", loc);
+          }
+        } else if (!detached && verdict.write != null) {
+          frame.write("writes an element of an array", loc);
+        }
+        if (verdict.mutableRead != null && !this.#isOwned(frame, object)) {
+          frame.mutableRead("reads an element of an array that can change", loc);
+        }
+        return;
+      }
+      this.#applyCall(frame, verdict, description, detached, loc);
+      return;
+    }
+    if (receiver is InterfaceType) {
+      frame.effect(`indexes through the interface '${receiver.name}'`, loc);
+      return;
+    }
+    frame.effect("indexes a value the analysis does not follow", loc);
+  }
+
+  #assignment(frame: Frame, node: AssignmentExpression): void {
+    let target = node.left;
+    let value = node.value;
+    let operator = node.operator;
+    // A compound assignment reads its target first, and all but `??=`
+    // then apply an operator, which a class can declare.
+    let reads = operator != null;
+    let applied = if (operator != null && (operator) != "??") {
+      operator
+    } else {
+      ""
+    };
+    this.#visit(frame, value);
+    if (target is Identifier) {
+      let found = frame.model.resolve(target);
+      if (found != null) {
+        let binding = found.resolveTarget();
+        let owner = this.#ownerOf(binding, frame.model);
+        if (this.#bindingKind(binding, owner) != BindingKind.Local) {
+          frame.effect(`assigns the module variable '${target.name}'`, node.loc);
+        }
+      }
+      if (applied != "") {
+        this.#operatorCall(frame, node, applied, target, value, node.loc);
+      }
+      return;
+    }
+    if (target is MemberExpression) {
+      this.#visit(frame, target.object);
+      if (reads) {
+        this.#memberAccess(frame, target);
+      }
+      if (applied != "") {
+        this.#operatorCall(frame, node, applied, target, value, node.loc);
+      }
+      this.#memberWrite(frame, target, value, node.loc);
+      return;
+    }
+    if (target is IndexExpression) {
+      this.#visit(frame, target.object);
+      this.#visit(frame, target.index);
+      if (reads) {
+        this.#element(frame, target, target.object, target.index, null, target.loc);
+      }
+      if (applied != "") {
+        this.#operatorCall(frame, node, applied, target, value, node.loc);
+      }
+      this.#element(frame, node, target.object, target.index, value, node.loc);
+      return;
+    }
+    this.#visit(frame, target);
+    frame.write("assigns through a pattern", node.loc);
+  }
+
+  /** A write of `object.property`, after `object` and `value` have been walked. */
+  #memberWrite(frame: Frame, target: MemberExpression, value: Expression, loc: SourceLocation | null): void {
+    let object = target.object;
+    let name = target.property.name;
+    let objectType = this.#typeOf(frame, object);
+    if (objectType == null) {
+      frame.effect(`assigns '${name}' of a value the analysis does not follow`, loc);
+      return;
+    }
+    let receiver = this.#receiverType(objectType);
+    if (receiver is ClassType) {
+      let isStatic = frame.model.isStaticAccess(target);
+      let key = accessKeyOf(frame.model, target);
+      let table = receiver.memberTable(isStatic);
+      if (table.has(key)) {
+        if (table[key] is FieldInfo) {
+          if (isStatic) {
+            frame.effect(`assigns the static variable '${name}'`, loc);
+            return;
+          }
+          let initializes = frame.thisIsNew && object is ThisExpression;
+          if (!initializes && !this.#isHiddenStore(frame, object, value)) {
+            frame.write(`assigns the field '${name}'`, loc);
+          }
+          return;
+        }
+      }
+      let setterKey = "set#" + key;
+      if (table.has(setterKey)) {
+        let dispatches = !isStatic && !(object is SuperExpression) && !receiver.isFinal &&
+            !receiver.isExtension && !key.startsWith("#");
+        let verdict = this.#memberVerdict(receiver, setterKey, isStatic, dispatches, null);
+        let detached = this.#isDetached(frame, value) && (isStatic || this.#isDetached(frame, object));
+        this.#applyCall(frame, verdict, `assigns the property '${name}'`, detached, loc);
+        return;
+      }
+      frame.effect(`assigns '${name}', which the analysis does not follow`, loc);
+      return;
+    }
+    if (receiver is InterfaceType) {
+      frame.effect(`assigns '${name}' through the interface '${receiver.name}'`, loc);
+      return;
+    }
+    frame.effect(`assigns '${name}' of a value the analysis does not follow`, loc);
+  }
+
+  /**
+   * An operator a class can declare. `&&`, `||` and `??` call nothing,
+   * and neither does a comparison with `null`.
+   */
+  #operatorCall(
+    frame: Frame,
+    site: Node,
+    operator: String,
+    left: Expression,
+    right: Expression,
+    loc: SourceLocation | null
+  ): void {
+    if (operator == "&&" || operator == "||" || operator == "??") {
+      return;
+    }
+    let isEquality = operator == "==" || operator == "!=";
+    if (isEquality && (left is NullLiteral || right is NullLiteral)) {
+      return;
+    }
+    let leftType = this.#typeOf(frame, left);
+    if (leftType == null) {
+      return;
+    }
+    let receiver = this.#receiverType(leftType);
+    let key = if (operator == "!=") "==" else operator;
+    if (receiver is ClassType) {
+      if (receiver.members.has(key)) {
+        let dispatches = !receiver.isFinal && !receiver.isExtension;
+        let verdict = this.#memberVerdict(
+          receiver, key, false, dispatches, frame.model.getResolvedOverload(site)
+        );
+        let detached = this.#isDetached(frame, left) && this.#isDetached(frame, right);
+        this.#applyCall(frame, verdict, `calls the operator '${key}'`, detached, loc);
+      }
+      return;
+    }
+    if (isEquality &&
+        (receiver is TypeParameterType || receiver is InterfaceType || receiver is UnionType)) {
+      frame.effect("compares values of a type the analysis does not follow", loc);
+    }
+  }
+}
+
+/** The class a generic instantiation was made from, or the class itself. */
+function canonicalClass(ct: ClassType): ClassType {
+  var canonical = ct;
+  while (canonical.genericSource != null) {
+    canonical = canonical.genericSource as ClassType;
+  }
+  return canonical;
+}

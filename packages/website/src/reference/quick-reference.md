@@ -474,7 +474,9 @@ builds run without it.
 
 A clause marked `static` is to be proved at compile time rather than checked at
 run time. The compiler does not prove anything yet, so today it is type-checked
-in every build and never checked.
+in every build and never checked. Its condition, like the argument of `old`, may
+read anything and change nothing: calling a function that assigns a module
+variable or writes to an existing object is an error.
 
 ```zena
 function search(items: FixedArray<i32>, target: i32): i32

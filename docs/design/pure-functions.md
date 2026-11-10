@@ -1,6 +1,10 @@
 # Pure functions
 
-Status: **Proposed**
+Status: **Partly implemented.** Inference, and the check on `static`
+clauses and `old`, are in the compiler
+(`packages/zena-compiler/zena/lib/analysis/purity.zena`). The `pure`
+modifier, the evaluator, the lint and the hover are not; see
+[Implementation steps](#implementation-steps).
 
 A pure function is one the compiler may reason about as a mathematical
 function: its result depends on its arguments alone, and calling it
@@ -74,7 +78,7 @@ strong purity with Dafny's specification functions on top:
 | grade                      | the body                                                                                 | who needs it                                                            | demanded by                 |
 | -------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------- |
 | **effect-free**            | reads and writes nothing but its parameters and what they reach, and what it allocates   | macros, dead-code elimination, calls on fresh objects inside pure code  | a `macro` declaration       |
-| **pure**                   | effect-free, reads only immutable paths of its parameters, writes only what it allocates | `static` clauses, predicates, `old`, evaluation, memoization            | the `pure` modifier         |
+| **pure**                   | effect-free, reads only immutable paths of its parameters, writes only what it allocates | predicates, evaluation, memoization                                     | the `pure` modifier         |
 | **specification function** | pure, terminates, and is in the prover's fragment                                        | symbolic proof: unfolding in `static` clauses, `static type` predicates | a `static type`'s predicate |
 
 An effect-free function is referentially opaque: `GrowableArray.push`
@@ -84,6 +88,15 @@ referentially transparent: its result is a function of its arguments'
 immutable contents, so a call can be replaced by its value, evaluated
 at compile time, memoized or reordered. A specification function is a
 pure function the solver can also reason about with unknown arguments.
+
+A `static` condition and the argument of `old` are held to a property
+that is none of the three grades: evaluating them **changes nothing**.
+`static requires (index < this.length)` on a growable array reads a
+field that can change, so it is not pure, and it is what a
+precondition on a mutable object looks like. The condition is about
+the object's state at the point of the clause, as a Dafny function
+with a `reads` clause is, and what the compiler needs from it is that
+it only reads. See [Where purity is required](#where-purity-is-required).
 
 No grade has a keyword of its own. Each is inferred for every
 function, and where a program needs a body to have a grade, the
@@ -128,7 +141,11 @@ asked for on demand: when a `static` clause or a
 predicate calls `isPort`, the checker walks `isPort`'s body then, which
 lazy body checking ([lazy-body-checking.md](./lazy-body-checking.md))
 already allows, and the same on-demand walk is what the evaluator
-needs.
+needs. The clauses of a compilation are judged after every library in
+it is checked, since a body a clause calls may be in a library that
+is checked later, and an incremental check judges them again whenever
+any library is checked again: a body can change without its library's
+export signature changing.
 
 Two kinds of call cannot be inferred from the caller's side. A call
 through an interface reaches any implementation, which the checker
@@ -218,44 +235,131 @@ Two tools surface inferred purity:
 
 ## The rule
 
-One walk of a body decides both inferred grades. It classifies every
-read, write and call, and tracks which locals hold **fresh** objects:
-a `let` local initialized directly by `new` or by a literal, and
-nothing else. A call's result is not fresh, since a pure function may
-return an object it did not allocate, such as a module `let`; and a
-`var` local is never fresh, since it can be reassigned to alias a
-parameter.
+One walk of a body records four facts about it, each with the first
+place the walk found it:
 
-A body is **effect-free** when it:
+| fact             | the body                                                                                                                                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **effect**       | changes something outside its arguments, or does something the analysis does not follow: assigns a module or static variable, calls a host function, a function value or a method through an interface, awaits, yields |
+| **state read**   | reads a module or static `var`, or a module-level value that can change, such as a module `let` that holds an array                                                                                                    |
+| **write**        | assigns a field or an element of an object that existed before the call                                                                                                                                                |
+| **mutable read** | reads a `var` field, or an element of an array that can change, of an object that existed before the call                                                                                                              |
 
-- reads and assigns only its locals, its parameters and `this`, what
-  they reach, and fresh objects;
-- reads module `let`s, and no module `var`;
-- calls only effect-free functions and methods, operators and
-  intrinsics, and constructors of classes whose constructors are
-  effect-free;
-- calls no function value;
-- does not `await` or `yield`.
+A body with no effect and no state read is **effect-free**. A body
+with none of the four is **pure**. A body with no effect and no write
+changes nothing, which is what a `static` condition and the argument of
+`old` need. A module `let` of an immutable type, a number or a `String`
+or a record of them, is a constant, and reading it is none of the four.
 
-A body is **pure** when it is effect-free and, in addition:
+### Calls and fresh objects
 
-- reads only immutable (`let`) fields and immutable array elements
-  through its parameters and `this`, and module `let`s whose
-  initializers are pure expressions;
-- assigns fields and elements only on fresh locals, and calls
-  effect-free methods only with fresh locals as `this` and as every
-  argument the method writes through, which for the first version
-  means every argument: `let out = new GrowableArray<i32>(); out.push(x)`
-  is pure, `items.push(x)` for a parameter `items` is effect-free;
-- calls pure functions, and effect-free ones only as above;
-- contains no `tail` call to a function that is not pure.
+A call gives the calling body the callee's effect and state read. The
+callee's write and mutable read are about the objects it was handed,
+so whether they are the caller's depends on what the caller handed
+over:
 
-A constructor is effect-free when its body is; it is pure when the
-body is pure with `this` counted as fresh, which the usual initializer
-list is.
+```zena
+function squares(n: i32): GrowableArray<i32> {
+  let out = new GrowableArray<i32>();
+  for (var i = 0; i < n; i += 1) {
+    out.push(i * i);
+  }
+  return out;
+}
+```
 
-For an inferred function, the first violation of each grade is kept as
-the reason, for the trace. For a declared `pure` function, each
+`push` writes through `this`. Here `this` is an array `squares`
+allocated, which no caller has seen, so `squares` is pure. With a
+parameter `items`, `items.push(x)` is a write.
+
+The walk tracks which locals hold **fresh** objects: a `let` local
+bound to a `new` expression, an array literal or an array allocation.
+A `var` local is never fresh, since it can be reassigned to alias a
+parameter, and a call's result is not fresh, since a function may
+return an object it did not allocate, such as a module `let`. A value
+is **detached** when the caller cannot reach it by another path: a
+value of an immutable type, an allocation whose arguments are
+detached, or something reached from a fresh local. An assignment to a
+field or element of a fresh local is not a write, and a call whose
+receiver and arguments are all detached takes on neither the callee's
+write nor its mutable read. So a pure function may hand a fresh array
+to a helper that fills it.
+
+A fresh object can come to hold something the body did not make:
+
+```zena
+function clobber(items: FixedArray<i32>): boolean {
+  let holder = new Holder(items);
+  holder.items[0] = 0; // the caller's array
+  return true;
+}
+```
+
+`new Holder(items)` is not detached, because `items` is not. When a
+body binds a fresh local to an allocation that is not detached, or
+stores a value that is not detached in an object it allocated, the
+walk counts only the fresh locals themselves as the body's own, in the
+whole of that body: `holder` is, and `holder.items` is the caller's.
+This is coarser than tracking which local holds what: one such store
+anywhere in a body makes every path through every fresh local of that
+body the caller's.
+
+A callee can also reach module state by itself:
+
+```zena
+let shared = new Counter();
+
+function plant(slot: Slot): void {
+  slot.counter = shared;
+}
+
+function planted(): boolean {
+  let slot = new Slot();
+  plant(slot);
+  return slot.counter.increment() > 0; // increments `shared`
+}
+```
+
+`plant` has a state read and a write, and its verdict does not say
+whether it wrote the module's object or stored it in what it was
+handed. So at a call that hands over only detached values, a callee
+with both a state read and a write counts as an effect of the caller.
+The cost is a function that reads a module-level table and fills an
+array it was given: calling it is an effect even with a fresh array.
+For the same reason a `new` expression is detached only when the
+constructor has no state read.
+
+A constructor's body is walked with `this` as an object the body
+allocated, which is what the usual initializer list assigns.
+
+### What the analysis does not follow
+
+Each of these is recorded as an effect, or as the fact named, where a
+finer analysis could show there is none:
+
+- A call through a function value or an interface, and iteration with
+  `for`/`in` over anything but an array or an `i32` range, which calls
+  the iterator through an interface.
+- The `eq`, `hash` and `to_string` intrinsics on a value of a type
+  parameter, which call a method the analysis cannot name. A hash
+  map's methods use them, so reading a `HashMap` is an effect, and so
+  is a map literal and a template literal that formats a value that is
+  not a number, a `boolean` or a `String`.
+- A module variable a function fills on first use. Whoever calls the
+  function sees one result, and the analysis sees an assignment.
+- `items.push(shared)` on a fresh `items` makes `items` hold a value
+  the body did not make, and the walk does not see through `push` to
+  know it, so it counts as a write.
+- In a constructor, a call of a method or setter on `this`, and an
+  assignment to an element of one of its fields, count as writes.
+- Destructuring a value whose type the analysis cannot name is a
+  mutable read, and a destructuring assignment is a write.
+- A field assignment that a subclass's setter overrides is counted as
+  the field's own.
+- Constructing an `Error` captures a stack trace, which is not counted.
+
+For an inferred function, the first of each fact is kept as the
+reason, for the trace. For a declared `pure` function, each
 violation of purity is an error at the expression, naming what it
 reads, writes or calls. The checker applies the rule by walking the
 body, which the clause checks already do for assignment and `await`
@@ -264,12 +368,10 @@ function may call only pure functions as well, since the clause is
 part of the function's meaning.
 
 The fresh-local rule is a syntactic stand-in for escape analysis. It
-covers building a result in a `GrowableArray` or a `StringBuilder` and
-returning it, which is most of what a pure function would want to
-mutate, and it rejects a fresh object once it has been stored into
-anything that is not fresh or passed to a function that is not
-effect-free, by not tracking it any further. Widening it is listed
-under [Open questions](#open-questions).
+covers building a result in a `GrowableArray` or a `StringBuilder`,
+with or without a helper, and returning it, which is most of what a
+pure function would want to mutate. What it gives up is listed under
+[Open questions](#open-questions).
 
 Throwing is allowed in both grades. A pure function that throws is partial, and the
 prover treats a call that throws as a condition that does not hold.
@@ -278,13 +380,23 @@ case.
 
 ## Where purity is required
 
-- **`static` clauses.** A `static requires`, `ensures` or `invariant`
-  may call only pure functions and methods, inferred or declared; the
-  error for an impure call carries the trace. Until then its condition is
-  limited to the literal evaluator's subset (contracts.md, "Kinds of
-  clause"), which is comparisons and arithmetic over literals and the
-  names in scope, and the extension to calls is the first thing this
-  design delivers.
+- **`static` clauses.** The condition of a `static requires`, `ensures`
+  or `invariant` may change nothing: it may read fields, elements and
+  module variables that can change, and call functions that do, and it
+  may not have an effect or write to an object. A proof is about the
+  state at the clause, as it is for a comparison of two `var` fields,
+  so a read needs no restriction; a write or an effect would make the
+  program depend on a condition that is never run. The error carries
+  the trace:
+
+  ```
+  A 'static requires' condition cannot have effects: it calls
+  'positive', which assigns the module variable 'calls'.
+  ```
+
+  The compiler checks this and still does not prove the condition;
+  that is the evaluator's step, below.
+
 - **Refinement predicates.** A predicate may call pure functions, and
   pure methods on `self` or on what it reads from `self`, on top of
   what refinement-types.md allows. A `static type`'s predicate must be
@@ -292,8 +404,9 @@ case.
   predicate with effects would make a type test change the program,
   and the checker rejects an impure call in either.
 - **`old(…)`.** The argument of `old` is evaluated at entry and kept.
-  It may call only pure functions, so that evaluating it early cannot
-  be observed.
+  It may change nothing, so that evaluating it early cannot be
+  observed. It exists to read state that the body is about to change,
+  so reads of that state are what it is for.
 - **Unmarked and `debug` clauses.** Unchanged: they may call any
   function, as contracts.md says, and nothing checks for effects. A
   lint can suggest `pure` on a function that every clause calls and
@@ -429,13 +542,16 @@ changing what it means.
 
 ## Open questions
 
-- **Widening freshness.** The fresh-local rule stops tracking an
-  object once it is passed to another function or stored, so a pure
-  function cannot hand a fresh `GrowableArray` to a helper that fills
-  it. A per-parameter notion of which arguments an effect-free function
-  writes through (D's `pure` with mutable parameters, Rust's `&mut`)
-  would let it, at the cost of that information on every signature or
-  an escape analysis in the checker.
+- **Widening freshness.** A verdict says that a function writes and
+  not through which parameter, or whether what it stores came from
+  module state. So one store of a shared value in a body's own object
+  costs every fresh local of that body its paths, a helper that reads a
+  module-level table and fills the array it is handed is an effect at
+  every call, and a call's result is never fresh. A per-parameter
+  notion of which arguments a function writes through and what it
+  returns (D's `pure` with mutable parameters, Rust's `&mut`) would
+  remove all three, at the cost of that information in every verdict
+  and, for declared functions, on every signature.
 - **Macros and mutation of their arguments.** An effect-free macro may
   write through the syntax it is given, which hygiene (macros.md, "No
   Variable Capture") may or may not want. Whether a macro's parameters
@@ -467,12 +583,13 @@ changing what it means.
 
 ## Implementation steps
 
-1. Inference: the body walk and the callee fixpoint in the checker,
-   remembered per function and asked for on demand, with the trace
-   for a negative answer; the intrinsics and constructors it treats as
-   pure.
-2. The requirement: `static` clauses, refinement predicates and `old`
-   arguments may call only pure functions, with the trace in the error.
+1. Inference: the body walk and the callee fixpoint, remembered per
+   function and asked for on demand, with the trace for a negative
+   answer; the intrinsics and constructors it treats as pure. **Done.**
+2. The requirement: `static` clauses and `old` arguments may change
+   nothing, with the trace in the error. **Done.** Refinement
+   predicates, which must be pure, get the same check when refinement
+   types are implemented.
 3. The modifier: parsed before `function` and before a method name,
    stored on the declaration and the signature, checked against the
    body, printed by the formatter, and the interface and override
@@ -486,7 +603,7 @@ changing what it means.
 5. The `declare-pure` lint, the hover in the language service, and the
    language reference and website.
 
-Each step lands with portable tests. The first two are enough for
-`static type Port = i32 where (isPort(self))` to be declared and
-checked against an unmarked `isPort`; the fourth makes `8080 as Port`
-free and `70000 as Port` an error.
+Each step lands with portable tests. The first two are what
+`static type Port = i32 where (isPort(self))` needs from this design to
+be declared and checked against an unmarked `isPort`; the fourth makes
+`8080 as Port` free and `70000 as Port` an error.

@@ -136,8 +136,26 @@ A condition is checked as a boolean expression, like the condition of
 an `if`. It cannot contain an assignment or an `await`: a clause can be
 left out of a build (see [Kinds of clause](#kinds-of-clause)), and a
 condition that assigns or suspends would make the program behave
-differently without it. A condition can still call a function that has
-effects; nothing checks for that yet.
+differently without it. An unmarked or `debug` condition can still call
+a function that has effects, and nothing checks for that. A `static`
+condition and the argument of `old` cannot: the checker follows what
+they call, and rejects one that assigns a variable outside it, writes
+to an object or calls the host, with the chain of calls that leads
+there ([pure-functions.md](./pure-functions.md), "Where purity is
+required").
+
+```zena
+var calls = 0;
+
+function positive(n: i32): boolean {
+  calls += 1;
+  return n > 0;
+}
+
+function keep(n: i32): i32 static requires (positive(n)) { ... }
+// A 'static requires' condition cannot have effects: it calls
+// 'positive', which assigns the module variable 'calls'.
+```
 
 ### Names in scope
 
@@ -172,7 +190,10 @@ whose body returns nothing.
 directly in an `ensures` condition, where it hides any function named
 `old`. In a function written inside the condition, `old` is an ordinary
 name, because `e` would be evaluated on entry, before that function's
-parameters exist. `e` cannot name `result` or contain another `old`.
+parameters exist. `e` cannot name `result` or contain another `old`,
+and evaluating it cannot change anything (see
+[Conditions](#conditions)), since it is evaluated before the body and
+not where it is written.
 
 ### What a precondition narrows
 
@@ -472,13 +493,13 @@ function search(items: FixedArray<i32>, target: i32): i32
   can narrow in the body as an unmarked one does. A `debug` clause
   cannot, because a build may run without it.
 - **What it may contain.** Any expression a clause may contain, that the
-  prover can decide, calling only pure functions
-  ([pure-functions.md](./pure-functions.md)): a function the prover can
-  unfold is one whose body reads nothing mutable and has no effects.
+  prover can decide, and that changes nothing: it may read state that
+  can change and call functions that do, and may not have an effect or
+  write to an object ([pure-functions.md](./pure-functions.md)).
   Quantifiers and specification-only functions arrive with the
   verifier, and are the reason the marker exists before it does.
-- **Today's compiler** accepts a `static` clause without proving it, and
-  does not narrow from it. That is the gap between this design and
+- **Today's compiler** checks that a `static` condition changes
+  nothing, accepts it without proving it, and does not narrow from it. That is the gap between this design and
   #974, and closing it, with constant evaluation as the first prover, is
   the next piece of work on `static` (#936 follow-up).
 - **The word.** `static_assert` is the precedent for `static` meaning
@@ -576,8 +597,9 @@ loop optimizer uses.
 - **Calls with effects in a condition.** Assignments and `await` are
   rejected. A function an unmarked or `debug` condition calls can still
   change state. [pure-functions.md](./pure-functions.md) gives `static`
-  conditions, `old` arguments and refinement predicates a rule, and
-  leaves the others as they are.
+  conditions, `old` arguments and refinement predicates a rule, which
+  the checker applies to the first two, and leaves the others as they
+  are.
 - **Narrowing from `invariant`.** An invariant that held at the test
   could narrow in the loop's body until the body assigns what it
   names. It does not today.

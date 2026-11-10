@@ -1,33 +1,32 @@
 // @mode: run
 // @result: 3
 // A `static` clause is never checked at run time, in any build: this
-// is a test build, where `debug` clauses do run, and these conditions
-// are false.
+// is a test build, where `debug` clauses do run, and each of these
+// conditions is false or would trap. A condition cannot count its own
+// evaluations to show it: that would be an effect, which a `static`
+// condition cannot have.
 
-var evaluated = 0;
-
-function note(holds: boolean): boolean {
-  evaluated += 1;
-  return holds;
+function never(n: i32): boolean {
+  return n != n;
 }
 
 function first(items: FixedArray<i32>): i32
   requires (items.length > 0)
-  static requires (note(false))
-  static ensures (note(false))
+  static requires (never(items.length))
+  static ensures (items[items.length] == result)
 {
   return items[0];
 }
 
 function countTo(limit: i32): i32 {
   var i = 0;
-  while (i < limit) static invariant (note(false)) {
+  while (i < limit) static invariant (i > limit) {
     i += 1;
   }
   return i;
 }
 
 export function main(): i32 {
-  // 1 + 2 + 0: nothing threw, and no static condition was evaluated.
-  return first([1, 2]) + countTo(2) + evaluated;
+  // 1 + 2: nothing threw, and nothing read past the end of the array.
+  return first([1, 2]) + countTo(2);
 }

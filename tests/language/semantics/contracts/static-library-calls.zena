@@ -1,0 +1,69 @@
+// @mode: check
+
+// A `static` condition may call what the standard library declares:
+// the analysis reads a library's bodies as it reads the program's own.
+
+import {div, sqrt, isNaN, sin, pow, clz, hypot} from 'zena:math';
+
+function divides(n: i32): i32 static requires (div(n, 2) > 0) {
+  return n;
+}
+
+function roots(x: f64): f64 static requires (sqrt(x) >= 0.0) {
+  return x;
+}
+
+function numbers(x: f64): f64 static requires (!isNaN(x)) {
+  return x;
+}
+
+function waves(x: f64): f64 static ensures (sin(result) <= 1.0) {
+  return x;
+}
+
+function powers(x: f64): f64 static ensures (pow(result, 2.0) >= 0.0) {
+  return x;
+}
+
+function bits(n: i32): i32 static requires (clz(n) < 32) {
+  return n;
+}
+
+function distances(x: f64, y: f64): f64 static requires (hypot(x, y) >= 0.0) {
+  return x;
+}
+
+function strings(name: String): i32
+  static requires (name.startsWith('a') || name.contains('b'))
+  static requires (name.trim().length > 0 && !name.endsWith('z'))
+{
+  return name.length;
+}
+
+function lists(names: GrowableArray<String>, sizes: FixedArray<i32>): i32
+  static requires (names.length > 0 && names[0] == 'a')
+  static requires (sizes.length == names.length && sizes[0] > 0)
+{
+  return names.length;
+}
+
+function countShort(names: GrowableArray<String>): i32 {
+  var count = 0;
+  var i = 0;
+  while (i < names.length) {
+    if (names[i].length < 3) {
+      count += 1;
+    }
+    i += 1;
+  }
+  return count;
+}
+
+// An array class declares `[]` twice, for an index and for a range.
+function indexed(names: GrowableArray<String>, at: i32): i32
+  static requires (names[at] == 'a')
+  static requires (countShort(names) > 0)
+  static requires (names[0..1].length == 1)
+{
+  return at;
+}

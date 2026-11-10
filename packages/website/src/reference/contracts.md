@@ -257,6 +257,24 @@ class Counter {
   not deep-clone reference objects. If `this.items` is a `GrowableArray<i32>`,
   `old(this.items.length)` captures the `i32` length before mutation, while
   `old(this.items)` retains a reference to the same array object.
+- **Reads only**: `e` is evaluated on entry, not where it is written, so it may
+  read anything and change nothing. An argument that assigns a variable outside
+  itself, writes to an object, or calls a function that does is an error, by the
+  rule for [`static` conditions](#what-a-static-condition-may-do):
+
+```zena
+class Counter {
+  var count: i32 = 0;
+
+  increment(): i32 {
+    this.count += 1;
+    return this.count;
+  }
+
+  bad(): void ensures (old(this.increment()) > 0) {}
+  // @error: The argument of 'old' cannot have effects: it calls 'increment', which assigns the field 'count'.
+}
+```
 
 ## Loop invariants (invariant)
 
@@ -370,6 +388,8 @@ function search(items: FixedArray<i32>, target: i32): i32
   function called only in a `static` condition is not linked in.
 - **Type-checked**: Its names must resolve and its condition must be a boolean,
   by the rules every clause follows, so it cannot rot.
+- **Reads only**: Its condition may not change anything; see
+  [below](#what-a-static-condition-may-do).
 - **No narrowing**: A `static requires` narrows nothing, for the reason a `debug`
   one does not.
 - **One modifier per clause**: `debug` or `static`, not both. A `static` clause
@@ -378,8 +398,57 @@ function search(items: FixedArray<i32>, target: i32): i32
   compile time"; the position keeps it apart from a member's `static`.
 
 Until a static verifier exists, a `static` clause is documentation the compiler
-keeps honest about names and types. Quantifiers and specification-only
+keeps honest about names, types and effects. Quantifiers and specification-only
 functions arrive with the verifier.
+
+### What a static condition may do
+
+A `static` condition is never run, so it cannot be what changes the program's
+state. It may read anything, including fields, array elements and module
+variables that can change, and call any function that only reads. It is an error
+for the condition to assign a variable outside itself, write to an object that
+existed before it was evaluated, or call something that does. The error names
+the chain of calls that leads there:
+
+```zena
+var calls = 0;
+
+function note(n: i32): boolean {
+  calls += 1;
+  return n > 0;
+}
+
+function relay(n: i32): boolean {
+  return note(n);
+}
+
+function keep(n: i32): i32 static requires (relay(n)) {
+// @error: A 'static requires' condition cannot have effects: it calls 'relay', which calls 'note', which assigns the module variable 'calls'.
+  return n;
+}
+```
+
+The compiler decides this from the bodies of the functions the condition calls,
+with no annotation on them. A function may allocate objects and fill them: one
+that collects its result in a new `GrowableArray` only reads, as far as a caller
+can tell, and a `static` condition may call it.
+
+What the compiler cannot follow, it treats as an effect:
+
+| In a function the condition calls                                 | Status                                 |
+| :---------------------------------------------------------------- | :------------------------------------- |
+| A call of a function value (an arrow, a function-typed parameter) | rejected                               |
+| A method called through an interface                              | rejected                               |
+| `for`/`in` over anything but an array or an `i32` range           | rejected (it calls through `Iterator`) |
+| A `HashMap` or `HashSet` operation, or a map literal              | rejected (it hashes through its key)   |
+| A template literal that formats a value with its `toString`       | rejected                               |
+| A `declare function` the host implements                          | rejected                               |
+| `await` and `yield`                                               | rejected                               |
+| A method a subclass overrides                                     | every override is followed             |
+
+The same rule applies to the argument of [`old()`](#rules-for-old). The design,
+and the stricter grades of purity that refinement types will need, are in
+[pure-functions.md](https://github.com/elematic/zena/blob/main/docs/design/pure-functions.md).
 
 ## Type checking and narrowing
 

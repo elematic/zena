@@ -1,0 +1,299 @@
+// @mode: check
+
+// A `static` condition is never evaluated when the program runs, so
+// it cannot be what changes something. The error names the effect and
+// the calls that lead to it.
+
+import {HashMap} from 'zena:collections';
+
+var calls = 0;
+
+function note(holds: boolean): boolean {
+  calls += 1;
+  return holds;
+}
+
+function relay(holds: boolean): boolean {
+  return note(holds);
+}
+
+function announce(holds: boolean): boolean {
+  console.log('checked');
+  return holds;
+}
+
+function clobber(items: FixedArray<i32>): boolean {
+  items[0] = 0;
+  return true;
+}
+
+// Two functions that call each other, one of which has an effect.
+function ping(n: i32): boolean {
+  if (n == 0) {
+    return true;
+  }
+  return pong(n - 1);
+}
+
+function pong(n: i32): boolean {
+  calls += 1;
+  return ping(n);
+}
+
+class Counter {
+  var count: i32 = 0;
+
+  increment(): i32 {
+    this.count += 1;
+    return this.count;
+  }
+}
+
+class Tracked {
+  id: i32;
+
+  new(this.id) {
+    calls += 1;
+  }
+}
+
+interface Measured {
+  measure(): i32;
+}
+
+class Quiet {
+  check(): boolean {
+    return true;
+  }
+}
+
+class Loud extends Quiet {
+  check(): boolean {
+    calls += 1;
+    return true;
+  }
+}
+
+class Registry {
+  static var entries: i32 = 0;
+
+  static register(): i32 {
+    Registry.entries += 1;
+    return Registry.entries;
+  }
+}
+
+class Gauge {
+  var #level: i32 = 0;
+
+  level: i32 {
+    get {
+      return this.#level;
+    }
+    set(value) {
+      this.#level = value;
+    }
+  }
+
+  reset(): boolean {
+    this.level = 0;
+    return true;
+  }
+}
+
+class Token {
+  id: i32;
+
+  new(this.id);
+
+  operator ==(other: Token): boolean {
+    calls += 1;
+    return this.id == other.id;
+  }
+}
+
+@external("env", "now")
+declare function now(): i32;
+
+let twice = (n: i32): i32 => n * 2;
+
+// An object a function makes is its own to change, but not what the
+// object holds of the caller's.
+class Holder {
+  items: FixedArray<i32>;
+
+  new(this.items);
+}
+
+function throughHolder(items: FixedArray<i32>): boolean {
+  let holder = new Holder(items);
+  holder.items[0] = 0;
+  return true;
+}
+
+// A module-level object is nobody's own.
+let shared = new Counter();
+
+function bump(): boolean {
+  return shared.increment() > 0;
+}
+
+// Nor is what a function puts in an object from there, or what a
+// constructor finds there.
+
+class Slot {
+  var counter: Counter = new Counter();
+}
+
+function plant(slot: Slot): void {
+  slot.counter = shared;
+}
+
+function planted(): boolean {
+  let slot = new Slot();
+  plant(slot);
+  return slot.counter.increment() > 0;
+}
+
+class Borrower {
+  counter: Counter;
+
+  new() : counter = shared;
+}
+
+function borrowed(): boolean {
+  let borrower = new Borrower();
+  return borrower.counter.increment() > 0;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'note', which assigns the module variable 'calls'.
+function direct(n: i32): i32 static requires (note(n > 0)) {
+  return n;
+}
+
+// @error: A 'static ensures' condition cannot have effects: it calls 'relay', which calls 'note', which assigns the module variable 'calls'.
+function chained(n: i32): i32 static ensures (relay(result > 0)) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'announce', which calls 'log', which calls 'toString', which compares, hashes or formats a value of a type parameter, which the analysis does not follow.
+function printed(n: i32): i32 static requires (announce(n > 0)) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'clobber', which writes an element of an array.
+function elements(items: FixedArray<i32>): i32 static requires (clobber(items)) {
+  return items[0];
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'ping', which calls 'pong', which assigns the module variable 'calls'.
+function cyclic(n: i32): i32 static requires (ping(n)) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'increment', which assigns the field 'count'.
+function fields(counter: Counter): i32 static requires (counter.increment() > 0) {
+  return counter.count;
+}
+
+// @error: A 'static requires' condition cannot have effects: it constructs 'Tracked', which assigns the module variable 'calls'.
+function constructed(n: i32): i32 static requires (new Tracked(n).id == n) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls the function value 'predicate'.
+function values(n: i32, predicate: (n: i32) => boolean): i32 static requires (predicate(n)) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'measure' through the interface 'Measured'.
+function interfaces(subject: Measured): i32 static requires (subject.measure() > 0) {
+  return 0;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'has', which calls 'hash', which compares, hashes or formats a value of a type parameter, which the analysis does not follow.
+function maps(ages: HashMap<String, i32>): i32 static requires (ages.has('a')) {
+  return 0;
+}
+
+function iterated(ages: HashMap<String, i32>): i32 {
+  var total = 0;
+  for (let name in ages.keys()) {
+    total += name.length;
+  }
+  return total;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'iterated', which iterates over a value through its iterator.
+function iterators(ages: HashMap<String, i32>): i32 static requires (iterated(ages) > 0) {
+  return 0;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'check', which may run the override in 'Loud', which assigns the module variable 'calls'.
+function overrides(subject: Quiet): i32 static requires (subject.check()) {
+  return 0;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'register', which assigns the static variable 'entries'.
+function statics(n: i32): i32 static requires (Registry.register() > n) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'reset', which assigns the property 'level', which assigns the field '#level'.
+function setters(gauge: Gauge): i32 static requires (gauge.reset()) {
+  return gauge.level;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls the operator '==', which assigns the module variable 'calls'.
+function operators(a: Token, b: Token): i32 static requires (a == b) {
+  return a.id;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'now', which is a host function.
+function hosts(n: i32): i32 static requires (now() > n) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls the function value 'twice'.
+function moduleValues(n: i32): i32 static requires (twice(n) > 0) {
+  return n;
+}
+
+// @error: A 'static ensures' condition cannot have effects: it formats a value with its 'toString'.
+function formats(subject: Quiet): String static ensures (result == `${subject}`) {
+  return '';
+}
+
+function loops(n: i32): i32 {
+  var i = 0;
+  // @error: A 'static invariant' condition cannot have effects: it calls 'note', which assigns the module variable 'calls'.
+  while (i < n) static invariant (note(i >= 0)) {
+    i += 1;
+  }
+  return i;
+}
+
+// @error: The argument of 'old' cannot have effects: it calls 'increment', which assigns the field 'count'.
+function before(counter: Counter): i32 ensures (result > old(counter.increment())) {
+  return counter.increment();
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'throughHolder', which writes an element of an array.
+function held(items: FixedArray<i32>): i32 static requires (throughHolder(items)) {
+  return items[0];
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'bump', which calls 'increment', which assigns the field 'count'.
+function bumps(n: i32): i32 static requires (bump()) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'planted', which calls 'plant', which assigns the field 'counter'.
+function plants(n: i32): i32 static requires (planted()) {
+  return n;
+}
+
+// @error: A 'static requires' condition cannot have effects: it calls 'borrowed', which calls 'increment', which assigns the field 'count'.
+function borrows(n: i32): i32 static requires (borrowed()) {
+  return n;
+}

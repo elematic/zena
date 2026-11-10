@@ -1,0 +1,219 @@
+// @mode: check
+
+// A `static` condition and the argument of `old` may read anything and
+// call any function that changes nothing outside itself.
+
+import {div, sqrt} from 'zena:math';
+
+let limit = 10;
+var threshold = 5;
+
+function isSorted(items: FixedArray<i32>): boolean {
+  var i = 1;
+  while (i < items.length) {
+    if (items[i - 1] > items[i]) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+function sum(items: FixedArray<i32>): i32 {
+  var total = 0;
+  for (let item in items) {
+    total += item;
+  }
+  return total;
+}
+
+// Recursion, and two functions that call each other.
+function factorial(n: i32): i32 {
+  if (n <= 1) {
+    return 1;
+  }
+  return n * factorial(n - 1);
+}
+
+function isEven(n: i32): boolean {
+  if (n == 0) {
+    return true;
+  }
+  return isOdd(n - 1);
+}
+
+function isOdd(n: i32): boolean {
+  if (n == 0) {
+    return false;
+  }
+  return isEven(n - 1);
+}
+
+class Range {
+  low: i32;
+  high: i32;
+
+  new(this.low, this.high);
+
+  width: i32 {
+    get {
+      return this.high - this.low;
+    }
+  }
+
+  isEmpty(): boolean {
+    return this.width <= 0;
+  }
+
+  contains(value: i32): boolean {
+    return !this.isEmpty() && value >= this.low && value < this.high;
+  }
+}
+
+class Meter {
+  var reading: i32 = 0;
+}
+
+class Pair(first: i32, second: i32)
+
+sealed class Shape {
+  case Circle(radius: i32)
+  case Square(side: i32)
+}
+
+function extent(shape: Shape): i32 {
+  return match (shape) {
+    case Circle {radius}: radius * 2
+    case Square {side}: side
+  };
+}
+
+// A function may change what it made itself.
+function squares(count: i32): i32 {
+  let values = new Array<i32>();
+  var i = 0;
+  while (i < count) {
+    values.push(i * i);
+    i += 1;
+  }
+  let range = new Range(0, values.length);
+  return range.width;
+}
+
+// A copy is the function's own too, whatever it was copied from.
+function largestAfterClearing(items: FixedArray<i32>): i32 {
+  let copy = new FixedArray<i32>(items.length, 0);
+  var i = 0;
+  while (i < items.length) {
+    copy[i] = items[i];
+    i += 1;
+  }
+  copy[0] = 0;
+  var largest = 0;
+  for (let item in copy) {
+    if (item > largest) {
+      largest = item;
+    }
+  }
+  return largest + items.slice(0, 1).length;
+}
+
+// Throwing changes nothing.
+function isCount(n: i32): boolean {
+  if (n < 0) {
+    throw new Error('negative');
+  }
+  return true;
+}
+
+function describe(n: i32): String {
+  return `n = ${n}`;
+}
+
+function clamp(n: i32): i32
+  static requires (limit > 0 && threshold < limit)
+  static requires (factorial(3) == 6 && isEven(n))
+  static ensures (new Range(0, limit).contains(result))
+  static ensures (new Pair(result, n).first == result)
+{
+  return n;
+}
+
+function head(items: FixedArray<i32>, name: String, meter: Meter, shape: Shape): i32
+  static requires (isSorted(items) && sum(items) > 0)
+  static requires (name.length > 0 && name == 'head' && describe(1) != name)
+  static requires (meter.reading >= 0 && extent(shape) > 0)
+  static requires (squares(items.length) >= 0)
+  static requires (largestAfterClearing(items) >= 0 && isCount(items.length))
+  ensures (result >= old(sum(items)) - old(meter.reading))
+{
+  return items[0];
+}
+
+enum Level {
+  Low,
+  High
+}
+
+type Point = {x: i32, y: i32};
+
+function norm(point: Point): f64 {
+  let {x, y} = point;
+  return sqrt((x * x + y * y) as f64);
+}
+
+function longest(names: GrowableArray<String>): i32 {
+  var best = 0;
+  for (let name in names) {
+    if (name.length > best) {
+      best = name.length;
+    }
+  }
+  var i = 0;
+  while (i < names.length) {
+    if (names[i].startsWith('a') || names[i].contains('b')) {
+      best += 1;
+    }
+    i += 1;
+  }
+  return best;
+}
+
+function halves(n: i32): (i32, i32) {
+  let half = div(n, 2);
+  return (half, n - half);
+}
+
+function known(value: String | null, level: Level): boolean {
+  if (value == null) {
+    return level == Level.Low;
+  }
+  let (low, high) = halves(value.length);
+  return low <= high;
+}
+
+function library(names: GrowableArray<String>, point: Point, value: String | null): i32
+  static requires (longest(names) > 0 && norm(point) > 0.0)
+  static requires (known(value, Level.High) && norm({x: 3, y: 4}) == 5.0)
+{
+  return names.length;
+}
+
+// A module variable can be read, before the call and after it.
+function raise(): i32
+  static ensures (threshold > old(threshold))
+  ensures (threshold == old(threshold) + 1)
+{
+  threshold += 1;
+  return threshold;
+}
+
+function total(items: FixedArray<i32>): i32 {
+  var result = 0;
+  var i = 0;
+  while (i < items.length) static invariant (result >= 0 && isSorted(items)) {
+    result += items[i];
+    i += 1;
+  }
+  return result;
+}
