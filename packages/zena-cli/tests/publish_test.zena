@@ -198,14 +198,14 @@ export let tests = suite('zena pkg publish', () => {
       equal(((parseJson(await listed.text()) as JsonObject)['records'] as JsonArray).length, 5,
           'attestations of two members records and three releases');
 
-      // Another workspace adds the package by @scope/name, under the domain
+      // Another workspace adds the package by scope:name, under the domain
       // of the registry ZENA_REGISTRY names, pkg.test, and runs it.
-      await write(scratch.at('app/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
+      await write(scratch.at('app/prog.zena'), `import { answer } from 'acme:greet/greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
       // A manifest makes app a workspace: without one, zena would walk up to
       // this repository's.
       await write(scratch.at('app/zena-package.json'), '{"name": "app"}\n');
       let app = zenaIn('app');
-      let added = await app.run(['pkg', 'add', '@acme/greet']);
+      let added = await app.run(['pkg', 'add', 'acme:greet']);
       isTrue(added.succeeded(), described(added));
       // Each archive it fetched holds the package's files, but not its tests
       // or hidden files.
@@ -236,7 +236,7 @@ export let tests = suite('zena pkg publish', () => {
       isTrue(retracted.succeeded() && retracted.stdout.contains('Retracted 1.1.0'), described(retracted));
       let stillRuns = await app.run(['run', 'prog.zena']);
       isTrue(stillRuns.succeeded(), described(stillRuns));
-      await write(scratch.at('later/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
+      await write(scratch.at('later/prog.zena'), `import { answer } from 'acme:greet/greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
       await write(scratch.at('later/zena-package.json'), '{"name": "later"}\n');
       let later = zenaIn('later');
       let addedLater = await later.run(['pkg', 'add', 'greet.acme.pkg.test']);

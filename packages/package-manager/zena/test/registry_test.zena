@@ -16,7 +16,8 @@ import {
   listVersions,
   networkReleases,
   resolveIdentifier,
-  scopedHandle
+  scopedHandle,
+  scopedName
 } from 'package-manager:registry';
 import {Requirement, resolve} from 'package-manager:resolve';
 import {DID, FakeAccount, FakePds} from 'package-manager:testing/fake-pds';
@@ -53,13 +54,13 @@ function noScopes() {
 }
 
 export let tests = suite('package-manager:registry', () => {
-  test('turns @scope/name into a handle', (ctx) => {
-    equal(scopedHandle('@acme/router', noScopes()), 'router.acme.pkg.zena-lang.dev');
-    equal(scopedHandle('@acme/router', noScopes(), 'pkg.example.com'), 'router.acme.pkg.example.com');
+  test('turns scope:name into a handle', (ctx) => {
+    equal(scopedHandle('acme:router', noScopes()), 'router.acme.pkg.zena-lang.dev');
+    equal(scopedHandle('acme:router', noScopes(), 'pkg.example.com'), 'router.acme.pkg.example.com');
     let scopes = new OrderedHashMap<String, String>();
-    scopes['@widgets'] = 'widgets.alt-pkg.org';
-    equal(scopedHandle('@widgets/foo', scopes), 'foo.widgets.alt-pkg.org');
-    for (let bad in ['acme/router', '@acme', '@/router', '@acme/']) {
+    scopes['widgets'] = 'widgets.alt-pkg.org';
+    equal(scopedHandle('widgets:foo', scopes), 'foo.widgets.alt-pkg.org');
+    for (let bad in ['acme', 'acme:', ':router', 'acme:router:x']) {
       var caught = false;
       try {
         scopedHandle(bad, noScopes());
@@ -70,16 +71,30 @@ export let tests = suite('package-manager:registry', () => {
     }
   });
 
-  test('resolves a DID, a handle and @scope/name to a DID', async (ctx): Future<void> => {
+  test('names a handle in a scope scope:name, as scopedHandle reads it', (ctx) => {
+    equal(scopedName('router.acme.pkg.zena-lang.dev', noScopes()) as String, 'acme:router');
+    equal(scopedName('Router.ACME.pkg.zena-lang.dev', noScopes()) as String, 'acme:router');
+    equal(scopedName('router.acme.pkg.example.com', noScopes(), 'pkg.example.com') as String, 'acme:router');
+    let scopes = new OrderedHashMap<String, String>();
+    scopes['widgets'] = 'widgets.alt-pkg.org';
+    equal(scopedName('foo.widgets.alt-pkg.org', scopes) as String, 'widgets:foo');
+    // A handle in no scope this workspace knows, or not a name in one.
+    for (let handle in ['json.example.com', 'acme.pkg.zena-lang.dev', 'a.b.acme.pkg.zena-lang.dev',
+        'router.acme.pkg.example.com', 'deep.foo.widgets.alt-pkg.org']) {
+      isNull(scopedName(handle, scopes), handle);
+    }
+  });
+
+  test('resolves a DID, a handle and scope:name to a DID', async (ctx): Future<void> => {
     let pds = started();
     pds.account(JSON_DID, 'json.acme.pkg.zena-lang.dev');
     let resolver = pds.resolver();
     equal(await resolveIdentifier(JSON_DID, noScopes(), resolver), JSON_DID);
     equal(await resolveIdentifier('json.acme.pkg.zena-lang.dev', noScopes(), resolver), JSON_DID);
-    equal(await resolveIdentifier('@acme/json', noScopes(), resolver), JSON_DID);
+    equal(await resolveIdentifier('acme:json', noScopes(), resolver), JSON_DID);
     var message = '';
     try {
-      await resolveIdentifier('@acme/nothing', noScopes(), resolver);
+      await resolveIdentifier('acme:nothing', noScopes(), resolver);
     } catch (e) {
       message = e.message;
     }

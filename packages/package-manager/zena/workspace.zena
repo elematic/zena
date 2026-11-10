@@ -95,6 +95,25 @@ export final class Workspace {
   }
 
   /**
+   * What the workspace, and `pkg`'s own tests, call `pkg`: `<scope>:<name>`
+   * when it has a scope, its own or, inside the workspace, the root's;
+   * its `name` when it has none; and null when it has no name. The compiler
+   * names it the same way (docs/design/import-names.md, "Workspace
+   * packages").
+   */
+  localNameOf(pkg: WorkspacePackage): String | null {
+    let name = pkg.manifest.name;
+    if (name == null) {
+      return null;
+    }
+    let root = this.root.dir;
+    let inside = pkg.dir == root || pkg.dir.startsWith(`${root}/`) ||
+        (root == '.' && !pkg.dir.startsWith('/') && !pkg.dir.startsWith('..'));
+    let scope = pkg.manifest.scope ?? (if (inside) this.root.manifest.scope else null);
+    return if (scope != null) `${scope}:${name}` else name;
+  }
+
+  /**
    * The package whose directory holds `dir`, the innermost one if several
    * do, and the root if no other does.
    */

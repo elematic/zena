@@ -6,7 +6,7 @@ serializer, and component type encoder for Zena.
 ## Installation
 
 ```bash
-zena pkg add @zena/wit-parser
+zena pkg add zena-lang:wit-parser
 ```
 
 ## Example

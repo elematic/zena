@@ -8,9 +8,10 @@ defines local names and the manifest, and
 [package-manager.md](package-manager.md#names-and-scopes) defines scopes
 and handles.
 
-> **Current status**: designed. The compiler reads `<name>:<library>`,
-> where `<name>` is a dependency's local name, one DNS label, and has no
-> imports without a library yet.
+> **Current status**: implemented: the compiler reads both forms of name,
+> `zena pkg add` writes `<scope>:<name>`, and `scopedNames` turns that
+> off. Until this repository's own imports are renamed, the compiler also
+> reads `<package>:<library>` when `<package>` is not a scope it knows.
 
 ## The form
 

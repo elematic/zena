@@ -283,10 +283,13 @@ three formats:
 2. **Standard library specifiers**: Begin with `zena:` (such as `zena:core`,
    `zena:collections`, `zena:math`). These resolve against the standard library
    manifest shipped with the compiler.
-3. **Package specifiers**: Follow the format `package:library` (such as
-   `compiler:parser` or `ui:components`). The compiler resolves the package name
-   through the importing package's dependencies, which its
-   `zena-package.json` lists.
+3. **Package specifiers**: Follow the format `package/library` or
+   `scope:package/library` (such as `compiler/parser` or
+   `acme:ui/components`). The compiler resolves the package name through
+   the importing package's dependencies, which its `zena-package.json`
+   lists. A `:` before any `/` ends the scope, and the first `/` after it
+   ends the package's name. A package's name alone, such as `acme:ui`,
+   imports its `index` library.
 
 The resolver normalizes all paths to a canonical identity. Every library is
 loaded, parsed, and checked exactly once, ensuring that types originating from

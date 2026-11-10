@@ -11,6 +11,7 @@ import {
   Attestation,
   attestationKey,
   COMPONENT,
+  Dependency,
   MAINTAINERS_TYPE,
   Maintainer,
   Maintainers,
@@ -33,9 +34,11 @@ import {
   RETRACTION_TYPE,
   Retraction,
   isValidLicenseExpression,
+  isValidLocalName,
   isValidPackageName,
   isValidScopeName
 } from 'package-manager:records';
+import {Version} from 'package-manager:version';
 
 function bytes(text: String) {
   let out = new FixedArray<u8>(text.length, 0 as u8);
@@ -295,6 +298,19 @@ export let tests = suite('package-manager:records', () => {
     ]) {
       isFalse(isValidPackageName(name), name);
     }
+  });
+
+  test('accepts local names that are a package name or one in a scope', (ctx) => {
+    for (let name in ['router', 'acme:router', 'zena-lang:wit-parser', 'acme:zena']) {
+      isTrue(isValidLocalName(name), name);
+    }
+    for (let name in ['', 'zena', 'acme:', ':router', 'acme:router:x', 'acme:router/x', 'acme/router', 'Acme:router',
+        'zena:router', 'Router']) {
+      isFalse(isValidLocalName(name), name);
+    }
+    // A release names its dependencies as its manifest does.
+    let dependency = new Dependency('did:plc:httphttphttphttphttphttp', Version.parse('3.0.0'), 'acme:http');
+    equal(Dependency.fromValue(dependency.toValue()).name, 'acme:http');
   });
 
   test('accepts SPDX license expressions', (ctx) => {

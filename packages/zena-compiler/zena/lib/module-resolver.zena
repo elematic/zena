@@ -138,24 +138,84 @@ export final class ModuleResolver {
 
   // Resolve an import specifier relative to a referrer module.
   //
-  // Specifier formats:
+  // Specifier formats (docs/design/import-names.md):
   // - Relative: "./foo.zena", "../bar.zena"
-  // - Package:  "zena:regex", "mypackage:module"
+  // - Package:  "[scope:]package[/library]", such as "acme:router/server"
+  //   or "router/server"; without a library, the package's `index`
+  // - The standard library, the scope `zena`: "zena:regex"
+  // - A WIT interface, whose namespace is a WIT dependency's name:
+  //   "wasi:clocks/monotonic-clock"
   resolve(specifier: String, referrer: String): ResolvedModule {
     if (specifier.startsWith("./") || specifier.startsWith("../")) {
       return this.resolveRelative(specifier, referrer);
     }
 
+    // A `:` before any `/` ends the scope.
     let colonPos = indexOfByte(specifier, 58); // 58 = ':'
-    if (colonPos < 0) {
-      throw new Error(
-        `Invalid specifier: '${specifier}' (expected package:path format)`
-      );
+    let slashPos = indexOfByte(specifier, 47); // 47 = '/'
+    var scope: String | null = null;
+    var rest = specifier;
+    if (colonPos >= 0 && (slashPos < 0 || colonPos < slashPos)) {
+      scope = specifier.sliceBytes(0, colonPos);
+      rest = specifier.sliceBytes(colonPos + 1, specifier.length);
     }
+    if (scope != null) {
+      // The standard library's libraries keep their ids, `/`s and all.
+      if (scope == "zena") {
+        return this.resolvePackage("zena", rest, referrer);
+      }
+      let witKey = this.#witPackageKey(scope, referrer);
+      if (witKey != null) {
+        return this.resolvePackage(witKey, rest, referrer);
+      }
+    }
+    let restSlash = indexOfByte(rest, 47);
+    let packageName = if (restSlash < 0) rest else rest.sliceBytes(0, restSlash);
+    let moduleName = if (restSlash < 0) "index" else rest.sliceBytes(restSlash + 1, rest.length);
+    let name = if (scope != null) `${scope}:${packageName}` else packageName;
+    if (scope != null && this.#lookupKey(name, referrer) == null) {
+      // TODO(import-names): the old form, `<package>:<library>`, while the
+      // repository's imports are written in it. The change that renames
+      // them, after the bootstrap reads the new form, removes this.
+      let old = this.#lookupKey(scope, referrer);
+      if (old != null) {
+        return this.resolvePackage(old, rest, referrer);
+      }
+    }
+    return this.resolvePackage(this.#packageKey(name, referrer), moduleName, referrer);
+  }
 
-    let packageName = specifier.sliceBytes(0, colonPos);
-    let moduleName = specifier.sliceBytes(colonPos + 1, specifier.length);
-    return this.resolvePackage(this.#packageKey(packageName, referrer), moduleName, referrer);
+  // The key of the package `name` stands for in an import from
+  // `referrer`, or null when it stands for none.
+  #lookupKey(name: String, referrer: String): String | null {
+    let owner = this.findPackageForPath(referrer);
+    if (owner != "" && owner != "zena") {
+      let dependencies = this.#packages[owner].dependencies;
+      if (dependencies != null) {
+        if (let (true, key) = dependencies.get(name)) {
+          return key;
+        }
+        return if (name == "zena" || this.#isWitPackage(name)) name else null;
+      }
+    }
+    return if (this.#packages.has(name)) name else null;
+  }
+
+  // The key of the WIT-backed package the scope `scope` names in an import
+  // from `referrer`, or null when it names none: WIT's namespaces are the
+  // scopes of its interfaces.
+  #witPackageKey(scope: String, referrer: String): String | null {
+    var key = scope;
+    let owner = this.findPackageForPath(referrer);
+    if (owner != "" && owner != "zena") {
+      let dependencies = this.#packages[owner].dependencies;
+      if (dependencies != null) {
+        if (let (true, given) = dependencies.get(scope)) {
+          key = given;
+        }
+      }
+    }
+    return if (this.#isWitPackage(key)) key else null;
   }
 
   // The key of the package `name` stands for in an import from

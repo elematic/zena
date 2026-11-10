@@ -14,7 +14,7 @@ zena pkg add <package>[@<version>] [--name <local-name>]
 
 Adds a published package to the current package's `zena-package.json`, runs minimal version selection across the workspace, updates `zena-lock.json`, and fetches the resolved archives into the package cache.
 
-- `<package>`: `@scope/name`, a handle (`router.acme.pkg.zena-lang.dev`), or a DID (`did:plc:...`, `did:web:...`).
+- `<package>`: `scope:name`, a handle (`router.acme.pkg.zena-lang.dev`), or a DID (`did:plc:...`, `did:web:...`).
 - `@<version>`: Optional minimum version to require (defaults to the package's latest non-retracted release).
 - `--name <local-name>`: Local import alias in `zena-package.json` (defaults to the name in the package's profile).
 
@@ -77,7 +77,7 @@ Creates the package's account on the registry and writes its `did` into `zena-pa
 ### `zena pkg approve`
 
 ```sh
-zena pkg approve [<package>@]<version> | @<scope> | <package> [--yes]
+zena pkg approve [<package>@]<version> | <scope> | <package> [--yes]
 ```
 
 Without `--yes`, displays the pending release or pending membership/settings change waiting for maintainer attestations. With `--yes`, writes your attestation record to your repository and submits it to the registry.

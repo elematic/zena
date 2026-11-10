@@ -321,8 +321,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   `--list-rules` prints the rules.
 - **`pkg <command>`**: The package commands, under one noun.
   - **`pkg add <package>[@version] [--name <local>]`**: Add a published
-    package, by DID, handle or `@scope/name`, to `zena-package.json`;
-    select versions for everything it leads to, pin them in
+    package, by DID, handle or `scope:name`, to `zena-package.json`,
+    under `scope:name` for a package in a scope (imports then read
+    `'scope:name/library'`); select versions for everything it leads to, pin them in
     `zena-lock.json`, and fetch them. It prints what changed in the
     lockfile, and refuses a pinned release whose CIDs changed at the same
     version unless given `--allow-changed`.
@@ -345,7 +346,7 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
     `files` patterns name (by default, all but tests). The registry holds
     the release until enough maintainers attest it. **`pkg create`** only
     creates it.
-  - **`pkg approve [<package>@]<version> | @<scope> | <package> [--yes]`**
+  - **`pkg approve [<package>@]<version> | <scope> | <package> [--yes]`**
     shows a release, or changes to who belongs, waiting for approval and,
     with `--yes`, approves them. **`pkg retract <version> [--reason]`**
     marks a release so that choosing a version skips it.

@@ -857,15 +857,16 @@ export let tests = suite('registry:app-view', () => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
     equal(errorOf(await createOrganization(fixture, ALICE, 'zena')), 'NameTaken');
-    let created = await appView.createScopeAsOperator(ALICE, 'zena', [], 0 as i64);
-    equal(created.handle, 'zena.pkg.test');
+    equal(errorOf(await createOrganization(fixture, ALICE, 'zena-lang')), 'NameTaken');
+    let created = await appView.createScopeAsOperator(ALICE, 'zena-lang', [], 0 as i64);
+    equal(created.handle, 'zena-lang.pkg.test');
     equal(fixture.genesisOf(created.did).rotationKeys.length, 1);
     // Its owner is Alice, who can create packages in it.
     ok(await createPackage(fixture, ALICE, created.did, 'wit-parser'));
     // Taken once, as any scope.
     var taken = '';
     try {
-      await appView.createScopeAsOperator(BOB, 'zena', [], 0 as i64);
+      await appView.createScopeAsOperator(BOB, 'zena-lang', [], 0 as i64);
     } catch (e) {
       taken = if (e is AppViewError) e.error else e.message;
     }
@@ -1757,7 +1758,7 @@ export let tests = suite('registry:app-view', () => {
       isTrue(homeHtml.contains(expected), `${expected} in the home page`);
     }
     // Only packages with a release, and no made-up ones.
-    isTrue(!homeHtml.contains('parser.acme.pkg.test') && !homeHtml.contains('@zena/http'), homeHtml);
+    isTrue(!homeHtml.contains('parser.acme.pkg.test') && !homeHtml.contains('zena-lang:http'), homeHtml);
     // The filter matches the description, ignoring case, and escapes the query.
     let found = pageOf(await fixture.get('/?q=ROUTES'));
     isTrue(found.contains('router.acme.pkg.test') && !found.contains('parser.acme.pkg.test'), found);
@@ -1765,7 +1766,7 @@ export let tests = suite('registry:app-view', () => {
     isTrue(none.contains('No packages match') && none.contains('&lt;b&gt;') && !none.contains('<b>'), none);
 
     let scope = pageOf(await fixture.get('/scopes/acme'));
-    isTrue(scope.contains('@acme') && scope.contains('parser.acme.pkg.test'), scope);
+    isTrue(scope.contains('<h1>acme</h1>') && scope.contains('parser.acme.pkg.test'), scope);
     equal((await fixture.get('/scopes/nobody')).statusCode, 404, 'a missing scope');
 
     // A release of parser that depends on router, written straight to its

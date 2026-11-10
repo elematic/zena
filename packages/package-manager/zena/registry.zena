@@ -10,11 +10,13 @@ import {DidDocument} from 'atproto:did';
 import {IdentityResolver} from 'atproto:identity';
 import {getVerifiedRecord, listRecords} from 'atproto:sync';
 import {isValidDid, isValidHandle} from 'atproto:syntax';
-import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, RETRACTION_TYPE} from './records.zena';
+import {
+  PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, RETRACTION_TYPE, isValidLocalName
+} from './records.zena';
 import {CheckedRelease, ReleaseSource} from './resolve.zena';
 import {Version} from './version.zena';
 
-/** The domain `@scope/name` is looked up in when no `scopes` entry names one. */
+/** The domain `scope:name` is looked up in when no `scopes` entry names one. */
 export let DEFAULT_DOMAIN = 'pkg.zena-lang.dev';
 
 /** A package that cannot be found as asked. */
@@ -22,32 +24,61 @@ export class RegistryError extends Error {
   new(message: String) : super(message);
 }
 
-/**
- * The handle `@scope/name` stands for: `name.<domain>`, where the domain
- * is the one `scopes` maps `@scope` to, or `scope.<defaultDomain>`.
- */
-export function scopedHandle(identifier: String, scopes: OrderedHashMap<String, String>,
-    defaultDomain: String = DEFAULT_DOMAIN): String {
-  var slash = -1;
-  for (var i = 0; i < identifier.length; i += 1) {
-    if (identifier.getByteAt(i) == 47) {
-      slash = i;
-      break;
-    }
-  }
-  if (!identifier.startsWith('@') || slash < 2 || slash == identifier.length - 1) {
-    throw new RegistryError(`'${identifier}' is not @scope/name`);
-  }
-  let scope = identifier.sliceBytes(0, slash);
-  let name = identifier.sliceBytes(slash + 1, identifier.length);
-  if (let (true, domain) = scopes.get(scope)) {
-    return `${name}.${domain}`;
-  }
-  return `${name}.${scope.sliceBytes(1, scope.length)}.${defaultDomain}`;
+/** Whether `identifier`, a package as `zena pkg add` is given one, is `scope:name`: one `:`, and not a DID. */
+export function isScopedIdentifier(identifier: String): boolean {
+  return !identifier.startsWith('did:') && identifier.contains(':');
 }
 
 /**
- * The DID that `identifier` names: a DID as it is, `@scope/name` by the
+ * The handle `scope:name` stands for: `name.<domain>`, where the domain
+ * is the one `scopes` maps `scope` to, or `scope.<defaultDomain>`.
+ */
+export function scopedHandle(identifier: String, scopes: OrderedHashMap<String, String>,
+    defaultDomain: String = DEFAULT_DOMAIN): String {
+  let parts = identifier.split(':');
+  if (parts.length != 2 || parts[0] == '' || parts[1] == '') {
+    throw new RegistryError(`'${identifier}' is not scope:name`);
+  }
+  let scope = parts[0];
+  let name = parts[1];
+  if (let (true, domain) = scopes.get(scope)) {
+    return `${name}.${domain}`;
+  }
+  return `${name}.${scope}.${defaultDomain}`;
+}
+
+/**
+ * The local name `zena pkg add` gives the package whose handle is
+ * `handle` when it is not told one, the inverse of `scopedHandle`:
+ * `<scope>:<name>` for a name in a scope on the domain `scopes` maps
+ * `<scope>` to (`<name>.<domain>`) or on `defaultDomain`
+ * (`<name>.<scope>.<defaultDomain>`); null for any other handle
+ * (docs/design/import-names.md, "Names are still local").
+ */
+export function scopedName(handle: String, scopes: OrderedHashMap<String, String>,
+    defaultDomain: String = DEFAULT_DOMAIN): String | null {
+  let lower = handle.asciiLowerCase();
+  var found: String | null = null;
+  for (let scope in scopes.keys()) {
+    let suffix = `.${scopes[scope].asciiLowerCase()}`;
+    if (found == null && lower.endsWith(suffix)) {
+      found = `${scope}:${lower.sliceBytes(0, lower.length - suffix.length)}`;
+    }
+  }
+  if (found == null) {
+    let suffix = `.${defaultDomain.asciiLowerCase()}`;
+    if (lower.endsWith(suffix)) {
+      let labels = lower.sliceBytes(0, lower.length - suffix.length).split('.');
+      if (labels.length == 2) {
+        found = `${labels[1]}:${labels[0]}`;
+      }
+    }
+  }
+  return if (found != null && isValidLocalName(found)) found else null;
+}
+
+/**
+ * The DID that `identifier` names: a DID as it is, `scope:name` by the
  * handle it stands for, and a handle by resolving it and checking that the
  * DID's document claims it back.
  */
@@ -59,9 +90,9 @@ export async function resolveIdentifier(identifier: String, scopes: OrderedHashM
     }
     return identifier;
   }
-  let handle = if (identifier.startsWith('@')) scopedHandle(identifier, scopes, defaultDomain) else identifier;
+  let handle = if (isScopedIdentifier(identifier)) scopedHandle(identifier, scopes, defaultDomain) else identifier;
   if (!isValidHandle(handle)) {
-    throw new RegistryError(`'${identifier}' is not a DID, a handle or @scope/name`);
+    throw new RegistryError(`'${identifier}' is not a DID, a handle or scope:name`);
   }
   let identity = await resolver.resolve(handle);
   return identity.did;

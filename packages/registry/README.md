@@ -116,14 +116,14 @@ yourself: `publish` writes an attestation to the publisher's repository,
 which for you is on your real PDS.
 
 In another workspace, with the same variables, add the package and import
-its libraries as `'<name>:<library>'`:
+its libraries as `'<scope>:<name>/<library>'`:
 
 ```sh
 mkdir -p ~/demo/app && cd ~/demo/app
 echo '{"name": "app"}' > zena-package.json
 zena pkg add hello.acme.pkg.test
 cat > main.zena <<'EOF'
-import {greeting} from 'hello:hello';
+import {greeting} from 'acme:hello/hello';
 
 export function main(): i32 {
   console.log(greeting);
@@ -220,7 +220,7 @@ whose indexes could not be written, which the server logs.
 
 With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`, it
 creates a scope owned by that DID and exits. This is how the operator
-takes a name the App View reserves (`www`, `api`, `admin`, `zena`, `pkg`,
+takes a name the App View reserves (`www`, `api`, `admin`, `zena`, `zena-lang`, `pkg`,
 `mail`, and `APP_VIEW_RESERVED_SCOPES`), which no `zena pkg scope create` can.
 
 The App View limits the storage releases take: 4 MiB for one release, 64
@@ -280,7 +280,7 @@ blank cell means the variable is not set, and the default applies.
 | `APP_VIEW_DID`                  | Its DID.                                                                                                                                               | the `did:web` of the origin its methods are at     | `did:web:localhost%3A2583` |                                          |                                       |
 | `APP_VIEW_SITE_URL`             | The site's origin, when the pages have a name of their own.                                                                                            | none: every name serves both                       |                            |                                          |                                       |
 | `APP_VIEW_ADMIN_DIDS`           | The DIDs of its admins, separated by commas or spaces.                                                                                                 | none                                               | yours, if you set it       | `ZENA_ADMIN_DIDS`                        | `ZENA_ADMIN_DIDS`                     |
-| `APP_VIEW_RESERVED_SCOPES`      | Scope names no one may take, beside `www`, `api`, `admin`, `zena`, `pkg` and `mail`.                                                                   | none                                               |                            |                                          |                                       |
+| `APP_VIEW_RESERVED_SCOPES`      | Scope names no one may take, beside `www`, `api`, `admin`, `zena`, `zena-lang`, `pkg` and `mail`.                                                      | none                                               |                            |                                          |                                       |
 | `APP_VIEW_PRIVATE_READS`        | `1` lets it read PDSes on this machine or a private network.                                                                                           | off                                                | `1`                        |                                          |                                       |
 | `APP_VIEW_HANDLE_RECORDS`       | Where it writes its handles' DNS records: `memory` or `cloud-dns`. Required with Firestore.                                                            | `memory`                                           | `memory`                   | `cloud-dns`                              | `cloud-dns`                           |
 | `APP_VIEW_DNS_ZONE`             | The Cloud DNS zone, with `cloud-dns`.                                                                                                                  |                                                    |                            | `zena-pkg-staging`                       | `zena-pkg`                            |
@@ -350,7 +350,7 @@ The variables the `zena pkg` commands read are in
 | `ZENA_ADMIN_DIDS`           | The admins' DIDs, for `APP_VIEW_ADMIN_DIDS`.                                                                        |                                 |
 | `ZENA_DNS_PARENT_PROJECT`   | The project of `zena-lang.dev`'s Cloud DNS zone.                                                                    | the project                     |
 | `ZENA_DNS_PARENT_ZONE`      | That zone's name.                                                                                                   | the zone named `zena-lang.dev.` |
-| `ZENA_SMOKE_SCOPE`          | The scope of the smoke test's canary package.                                                                       | `zena`                          |
+| `ZENA_SMOKE_SCOPE`          | The scope of the smoke test's canary package.                                                                       | `zena-lang`                     |
 | `ZENA_ALERT_EMAIL`          | Where `deploy:alerts` sends alerts. Required by it.                                                                 |                                 |
 | `ZENA_MONTHLY_BUDGET`       | A monthly budget on the project, in US dollars, for `deploy:alerts`.                                                | none                            |
 
@@ -439,7 +439,7 @@ on it, and `deploy`.
 `deploy:smoke` checks an environment as its clients see it, with no
 browser and no personal account (`dev/smoke.zena`): both names' health,
 DID documents and descriptions, the site's home page, assets and OAuth
-client, and the canary package `@zena/smoke` (`ZENA_SMOKE_SCOPE` names
+client, and the canary package `zena-lang:smoke` (`ZENA_SMOKE_SCOPE` names
 another scope): its DID document, its repository on padstone, its page,
 and a new workspace that adds it and runs a program importing it. Then
 it publishes a new version as the automation account `smoke-ci`, which

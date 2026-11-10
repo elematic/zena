@@ -68,6 +68,20 @@ export function isValidPackageName(name: String): boolean {
 }
 
 /**
+ * Whether `name` can be a local name, what a package's imports call a
+ * dependency: a package name, or `<scope>:<package>` for a package in a
+ * scope (docs/design/import-names.md). `zena` is the standard library's,
+ * as a name and as a scope.
+ */
+export function isValidLocalName(name: String): boolean {
+  let parts = name.split(':');
+  if (parts.length == 1) {
+    return isValidPackageName(name);
+  }
+  return parts.length == 2 && parts[0] != 'zena' && isValidScopeName(parts[0]) && isValidScopeName(parts[1]);
+}
+
+/**
  * Whether `text` is an SPDX license expression
  * (https://spdx.github.io/spdx-spec/v2.3/SPDX-license-expressions/): license
  * identifiers, each perhaps with `+` or `WITH` an exception, joined by `AND`
@@ -401,8 +415,8 @@ export final class Dependency {
       throw new RecordError(`release: dependency '${did}' is not a DID`);
     }
     let name = requiredString(map, 'name', 'release dependency');
-    if (!isValidPackageName(name)) {
-      throw new RecordError(`release: dependency name '${name}' is not a valid package name`);
+    if (!isValidLocalName(name)) {
+      throw new RecordError(`release: dependency name '${name}' is not a valid local name`);
     }
     let version = readVersion(requiredString(map, 'version', 'release dependency'), 'release dependency');
     return new Dependency(did, version, name);

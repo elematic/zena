@@ -12,7 +12,7 @@ Every package and every organization scope is an atproto account:
 
 - **Identity (`did:plc` or `did:web`)**: A package's permanent identifier is its DID. Its DID document specifies its public signing key and the URL of the Personal Data Server (PDS) that hosts its repository.
 - **Portability**: Because `zena-package.json` and `zena-lock.json` reference packages by DID, a package can change its handle, transfer to a new organization, or migrate to another PDS without breaking existing dependents.
-- **Handles**: A package hosted on `pkg.zena-lang.dev` under scope `@acme` receives the handle `<name>.acme.pkg.zena-lang.dev`, verified bidirectionally via DNS (`_atproto.<handle>` TXT record) and the account's DID document. Maintainers can also assign a domain they control as the package's handle.
+- **Handles**: A package hosted on `pkg.zena-lang.dev` under scope `acme` receives the handle `<name>.acme.pkg.zena-lang.dev`, verified bidirectionally via DNS (`_atproto.<handle>` TXT record) and the account's DID document. Maintainers can also assign a domain they control as the package's handle.
 
 ## Repository records and lexicons
 

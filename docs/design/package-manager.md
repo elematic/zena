@@ -219,8 +219,8 @@ A package has three kinds of name:
   (`import {Router} from 'router:server'`). Each package chooses its own,
   starting from the name the package's profile suggests, so two packages
   that both suggest `router` can be used side by side.
-  [import-names.md](import-names.md) designs `scope:name` as the local
-  name of a package in a scope (`'acme:router/server'`).
+  A package in a scope is named `scope:name` by default
+  (`'acme:router/server'`, [import-names.md](import-names.md)).
 - **A handle** is for finding a package. `zena pkg add` resolves it to a DID
   once and records the DID, so a handle that later points elsewhere
   changes nothing that depends on the package. The index shows handles.
@@ -249,24 +249,24 @@ and they stay with the package when it moves to another App View. An
 organization with a domain should use it; an App View's scopes are for those
 without one.
 
-**The `@scope/name` shorthand.** `zena pkg add @acme/router` means
+**The `scope:name` shorthand.** `zena pkg add acme:router` means
 `router.acme.pkg.zena-lang.dev`: the name in the scope on the default
 domain, which a user or a workspace can change. A scope on another domain
 is mapped to it by name, in `zena-package.json` or the user's
 configuration:
 
 ```json
-{"scopes": {"@widgets": "widgets.alt-pkg.org"}}
+{"scopes": {"widgets": "widgets.alt-pkg.org"}}
 ```
 
-`@widgets/foo` then means `foo.widgets.alt-pkg.org`, and never anything
+`widgets:foo` then means `foo.widgets.alt-pkg.org`, and never anything
 on another domain. A full handle, as in `zena pkg add router.acme.com`, needs
 no scope. `zena pkg add` prints the DID, handle and maintainers it resolved
 before it writes anything.
 
 The shorthand does not try several domains in turn. If it did, someone
 who registered `widgets` on a domain tried before the scope's own would
-take over every new `zena pkg add @widgets/foo`, and nothing would fail to
+take over every new `zena pkg add widgets:foo`, and nothing would fail to
 show it. This is the dependency confusion that pip's `--extra-index-url`
 allows. If several default domains are ever needed, `zena pkg add` should
 resolve a scoped name on all of them and stop with an error when more
@@ -310,9 +310,9 @@ same rules, and an App View reserves some, such as `www` (see
 A rename changes handles and never DIDs, so a manifest or a lockfile that
 names a package by its DID notices nothing. Who can be misled is whoever
 names it by its handle after the change: a `zena pkg add` by the old
-handle, a link, a README. Suppose `@acme/router` becomes
-`@acme/http-router`, and someone else's package then takes
-`@acme/router`: `zena pkg add @acme/router` would add that package, with
+handle, a link, a README. Suppose `acme:router` becomes
+`acme:http-router`, and someone else's package then takes
+`acme:router`: `zena pkg add acme:router` would add that package, with
 nothing to say it is not the one everyone meant. So a name a rename frees
 stays reserved, the App View keeps each name's history, and `zena` and the
 pages say when a name has changed.
@@ -345,7 +345,7 @@ unseen.
 
 **What `zena` does.**
 
-- `zena pkg add` by a handle or `@scope/name` asks the App View for the
+- `zena pkg add` by a handle or `scope:name` asks the App View for the
   name's history. When the name changed hands in the last 90 days, it
   shows the DID that held it before and asks again before writing
   anything, as `--yes` skips. A name reserved after a rename gets the
@@ -358,7 +358,7 @@ unseen.
   go on.
 
 **What the pages show.** A renamed package's page says "formerly
-`@acme/router`, until" the date. A package whose name was another's in
+`acme:router`, until" the date. A package whose name was another's in
 the last 90 days says so, linking to the one before. Each package page
 lists its handles over time, from the name history.
 
@@ -565,7 +565,7 @@ its directory ([package-manifest.md](package-manifest.md#dependencies)):
 }
 ```
 
-`zena pkg add` takes a DID, a handle or `@scope/name` (see
+`zena pkg add` takes a DID, a handle or `scope:name` (see
 [Names and scopes](#names-and-scopes)) and adds an entry to the manifest of
 the package in the current directory, with the name the added package's
 profile suggests unless one is given.
@@ -981,7 +981,7 @@ one for a manifest without it. A workspace root's `scope` is the default
 for its workspace packages (see
 [package-manifest.md](package-manifest.md#scope)). The manifest's `name`
 stays the package's own name, without the scope, since it is also the
-name dependents import it by, and a DNS label. `@acme/router` is only
+name dependents import it by, and a DNS label. `acme:router` is only
 `zena pkg add`'s shorthand for a handle.
 
 Once the package exists, its DID decides where it is, and `scope` is a
@@ -999,7 +999,7 @@ the members the caller may see (see
 lists the packages in a scope, by their handles.
 
 **Reserved scopes.** An App View keeps some scope names from everyone:
-`www`, `api`, `admin`, `zena`, `pkg` and `mail`, and those its operator
+`www`, `api`, `admin`, `zena`, `zena-lang`, `pkg` and `mail`, and those its operator
 adds. The operator creates a scope with one of those names, for the
 project that runs the App View, with a command run with the App View's own
 configuration, as `sync-handles` is:
@@ -1485,7 +1485,7 @@ threshold is approved under the thresholds it replaces, so raising
 `ownerThreshold` from 1 to 2 needs one owner, and lowering it back needs
 two. The `owner` commands act on the package in the
 current directory, or on the one `--package` names by DID, handle or
-`@scope/name`. `zena pkg scope members <scope>`, `zena pkg team members` and
+`scope:name`. `zena pkg scope members <scope>`, `zena pkg team members` and
 `zena pkg owner list` print the entries the caller may see.
 
 Each change takes the same steps:
@@ -1527,7 +1527,7 @@ have attested it. Only people count; automation chooses no one's roles.
 So one owner of a package whose `ownerThreshold` is 2 cannot replace the
 others, and until the others approve, the record before the change
 decides every role: the owner being removed is still an owner. The
-others see a waiting change with `zena pkg approve @acme` or
+others see a waiting change with `zena pkg approve acme` or
 `zena pkg approve <package>` (`dev.zena-lang.registry.getPendingChanges`), which
 shows the entries added and removed and the thresholds changed first,
 and with `--yes` writes their attestations and calls `completeChange`.
@@ -2197,7 +2197,7 @@ DID, so dependents can move.
 
 ### Confusion
 
-- **Typosquatting**, as in `@acme/routr` beside `@acme/router`. Handles
+- **Typosquatting**, as in `acme:routr` beside `acme:router`. Handles
   are ASCII, which rules out look-alike Unicode. `zena pkg add` shows the DID,
   handle, maintainers, and how many packages depend on the package before
   it writes anything, and the index can label handles that look like
@@ -2206,7 +2206,7 @@ DID, so dependents can move.
   that moment.
 - **Dependency confusion**, where a public package shadows a private one
   of the same name, needs names that resolve by search. Packages are
-  named by DID, and `@scope/name` maps to one domain per scope (see
+  named by DID, and `scope:name` maps to one domain per scope (see
   [Names and scopes](#names-and-scopes)).
 - **Expired domains.** Whoever registers a domain a package's handle was
   on can point the handle at their own DID, which affects only new
@@ -2392,7 +2392,7 @@ own several scopes (#988), an organization's count will join these.
   which `wasi:http` provides directly.
 - **The `zena` command**: `login`, `add`, `update`, `fetch`, `publish`,
   `approve`, `retract`, `scope`, `owner`, `team`, `package create` and
-  `package move`, and the `@scope/name` shorthand with its `scopes`
+  `package move`, and the `scope:name` shorthand with its `scopes`
   mapping. Signing in needs OAuth with a loopback redirect, a
   client metadata document at `zena-lang.dev`, and the
   `dev.zena-lang.authPublish` permission set.

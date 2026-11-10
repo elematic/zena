@@ -42,10 +42,11 @@ A package is defined by the `zena-package.json` manifest at its root: its name, 
 | `description`  | `string`                     | Any package    | One-sentence summary of the package; required to publish                                             |
 | `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish            |
 | `source`       | `string`                     | Any package    | The directory the package's libraries are in; `src` by default                                       |
-| `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>:<library>`                                      |
+| `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>/<library>`                                      |
 | `dependencies` | `Record<string, Dependency>` | Any package    | Packages imported by this package's libraries, keyed by local name                                   |
 | `workspace`    | `{packages: string[]}`       | Workspace root | Directories or `/*` globs of workspace member packages                                               |
-| `scopes`       | `Record<string, string>`     | Workspace root | Custom handle domains for `@scope/name` lookups                                                      |
+| `scopes`       | `Record<string, string>`     | Workspace root | Custom handle domains for `scope:name` lookups                                                       |
+| `scopedNames`  | `boolean`                    | Workspace root | Whether `zena pkg add` names a package in a scope `scope:name` (the default) or by its own name      |
 
 All file and directory paths in `zena-package.json` are relative to the directory containing that manifest.
 
@@ -79,7 +80,7 @@ A library's name is its path from `src`, without `.zena`. Set `source` to keep t
 
 ## Exporting libraries (`exports`)
 
-Each key under `exports` declares a library that dependents can import as `<package>:<library>`. Entry files are relative to the `source` directory.
+Each key under `exports` declares a library that dependents can import as `<package>/<library>`. Entry files are relative to the `source` directory.
 
 ```json
 {
@@ -144,14 +145,26 @@ Synthesizes Zena interface declarations from a `.wit` file or directory for WebA
 
 ## Custom scope domains (`scopes`)
 
-By default, `zena pkg add @scope/name` resolves `<name>.<scope>.pkg.zena-lang.dev` (or the registry in `ZENA_REGISTRY`). If an organization hosts packages under its own domain, map the scope in the workspace root's `zena-package.json`:
+By default, `zena pkg add scope:name` resolves `<name>.<scope>.pkg.zena-lang.dev` (or the registry in `ZENA_REGISTRY`). If an organization hosts packages under its own domain, map the scope in the workspace root's `zena-package.json`:
 
 ```json
 {
   "scopes": {
-    "@widgets": "pkg.widgets.example.com"
+    "widgets": "pkg.widgets.example.com"
   }
 }
 ```
 
-With that mapping, `zena pkg add @widgets/button` resolves `button.pkg.widgets.example.com`.
+With that mapping, `zena pkg add widgets:button` resolves `button.pkg.widgets.example.com`.
+
+## Names without their scope (`scopedNames`)
+
+`zena pkg add` names a package in a scope by its `scope:name`, and imports read `'widgets:button/icons'`. To name packages by their own names instead, and import `'button/icons'`, set `scopedNames` in the workspace root's `zena-package.json`:
+
+```json
+{
+  "scopedNames": false
+}
+```
+
+`--name` still gives any package the name you choose.

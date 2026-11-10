@@ -9,7 +9,7 @@
 #   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:smoke -w @zena-lang/registry
 #
 # Once per environment, `smoke.sh setup` makes what it uses, as you, signed
-# in with `zena pkg login` as an owner of the scope SMOKE_SCOPE (`zena`
+# in with `zena pkg login` as an owner of the scope SMOKE_SCOPE (`zena-lang`
 # unless ZENA_SMOKE_SCOPE is set): the canary package `smoke` at 1.0.0,
 # and the automation account `smoke-ci`, one of its publishers, whose token
 # it keeps in Secret Manager as SMOKE_SECRET.
@@ -53,7 +53,7 @@ export function answer(): i32 {
   return 42;
 }
 EOF
-  echo "==> The canary, @$SMOKE_SCOPE/smoke 1.0.0"
+  echo "==> The canary, $SMOKE_SCOPE:smoke 1.0.0"
   (cd "$CANARY" && "$ZENA" pkg publish --yes)
   echo "==> The automation account smoke-ci"
   local created token

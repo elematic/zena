@@ -43,24 +43,25 @@ else moved.
     "lib": {"path": "./packages/lib"}
   },
   "workspace": {"packages": ["packages/*"]},
-  "scopes": {"@widgets": "widgets.alt-pkg.org"}
+  "scopes": {"widgets": "widgets.alt-pkg.org"}
 }
 ```
 
-| Field          | Type                            | Where          | Description                                                            |
-| -------------- | ------------------------------- | -------------- | ---------------------------------------------------------------------- |
-| `name`         | `string`                        | any package    | The package's own name, and the name it suggests to its dependents     |
-| `did`          | `string`                        | any package    | The package's DID, once it has been created on an App View             |
-| `scope`        | `string`                        | any package    | The scope on an App View the package is created in                     |
-| `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish            |
-| `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish         |
-| `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                          |
-| `source`       | `string`                        | any package    | The directory the package's libraries are in; `src` by default         |
-| `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                |
-| `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                       |
-| `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name            |
-| `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                      |
-| `scopes`       | `Record<string, string>`        | workspace root | Domains for `@scope/name` (see package-manager.md, "Names and scopes") |
+| Field          | Type                            | Where          | Description                                                                     |
+| -------------- | ------------------------------- | -------------- | ------------------------------------------------------------------------------- |
+| `name`         | `string`                        | any package    | The package's own name, and the name it suggests to its dependents              |
+| `did`          | `string`                        | any package    | The package's DID, once it has been created on an App View                      |
+| `scope`        | `string`                        | any package    | The scope on an App View the package is created in                              |
+| `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish                     |
+| `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish                  |
+| `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                                   |
+| `source`       | `string`                        | any package    | The directory the package's libraries are in; `src` by default                  |
+| `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                         |
+| `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                                |
+| `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name                     |
+| `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                               |
+| `scopes`       | `Record<string, string>`        | workspace root | Domains for `scope:name` (see package-manager.md, "Names and scopes")           |
+| `scopedNames`  | `boolean`                       | workspace root | Whether `zena pkg add` names a package in a scope `scope:name`; true by default |
 
 All paths are relative to the directory the manifest is in.
 
@@ -71,7 +72,9 @@ starting with a letter, not ending with `-`, without `--` as its third and
 fourth characters, and at most 63 characters. `zena` is the standard
 library's. The name is what a published package's profile suggests to
 the packages that add it, and what a workspace's other packages call it
-unless they choose another name.
+unless they choose another name. A package with a `scope` is
+`<scope>:<name>` instead, in its workspace and to its own tests
+([import-names.md](import-names.md)).
 
 ### `did`
 
@@ -88,7 +91,9 @@ the package has a `did`, `zena pkg publish` refuses when the package's handle
 is not in this scope, since the manifest and the package then disagree
 about where it is. A workspace root's `scope` is also the scope of each
 workspace package that has none of its own. A package whose handle is on
-its maintainers' own domain has no `scope`. The compiler does not read it.
+its maintainers' own domain has no `scope`. The compiler reads it for the
+package's name: a package with a scope, its own or, inside the workspace,
+the root's, is `<scope>:<name>` there.
 
 `scope` is unrelated to `scopes`, below, which says where `zena pkg add`
 looks up the packages of other scopes.
@@ -125,7 +130,8 @@ directory must be inside the package: a relative path without `..`.
 ### `exports`
 
 Each key under `exports` names a library other packages may import, as
-`<package>:<library>`. The value is an empty object, for the library
+`<package>/<library>`. The key `index` is the library an import of the
+package's name alone imports. The value is an empty object, for the library
 `<name>.zena`, or an object with a `path` or `virtual` field. Every entry
 file is relative to the `source` directory.
 
@@ -212,8 +218,11 @@ before the rule are fetched as they are.
 ### `dependencies`
 
 Each key is a **local name**: what this package's libraries call the
-dependency in their imports (`import {Router} from 'router:server'`). A
-dependency is one of two kinds:
+dependency in their imports (`import {Router} from 'router:server'`), a
+package name or `<scope>:<name>` (`'acme:router/server'`). `zena pkg add`
+names a package in a scope `<scope>:<name>`, and any other by the name
+its profile suggests ([import-names.md](import-names.md)). A dependency is
+one of these kinds:
 
 - **A published package**, by DID and the lowest version this package
   needs: `{"did": "did:plc:...", "version": "1.4.2"}`. `zena pkg add` writes
@@ -233,9 +242,7 @@ dependency is one of two kinds:
 
 Local names belong to the package that chooses them. Two packages can give
 the same dependency different names, or the same name to different
-packages. [import-names.md](import-names.md) designs local names of the
-form `scope:name`, which `zena pkg add` will give a package in a scope,
-and the specifier `[scope:]package[/library]`. A package sees its own dependencies' names, its own name, so
+packages. A package sees its own dependencies' names, its own name, so
 that its tests can import its libraries as a dependent would, the
 standard library (`zena`), and the WIT packages the standard library
 carries (`wasi`).
@@ -256,8 +263,18 @@ nothing else besides the standard library.
 ### `scopes`
 
 Only the manifest at a workspace's root has `scopes`. It maps a scope in
-`@scope/name` to the domain its handles are under, for `zena pkg add`. See
+`scope:name` to the domain its handles are under, for `zena pkg add`. See
 package-manager.md, "Names and scopes".
+
+### `scopedNames`
+
+`zena pkg add` names a package in a scope `<scope>:<name>`, so two scopes'
+`router`s can be dependencies side by side. A workspace whose packages
+come from one scope, or that would rather import `'router/server'`, sets
+`"scopedNames": false` in its root manifest, and `zena pkg add` names
+each package by the name its profile suggests. Either way `--name` gives
+another, and the imports read whatever name the manifest has
+(import-names.md, "Names are still local").
 
 ## `zena-lock.json`
 
@@ -302,8 +319,10 @@ entry `<did>@<major>`.
    [workspace-loading.md](workspace-loading.md) designs reading only the
    ones it reaches.
 2. It reads the pins from `zena-lock.json`.
-3. For an import `<name>:<library>` in a library of package P, it looks
-   `<name>` up among P's dependencies:
+3. For an import `<name>/<library>` in a library of package P, or `<name>`
+   alone for its `index` library, it looks `<name>` up among P's
+   dependencies, where `<name>` is a plain name or `<scope>:<name>`
+   ([import-names.md](import-names.md)):
    - a path dependency is the package in that directory, whose manifest
      the compiler reads too;
    - a WIT dependency is the package whose libraries the compiler

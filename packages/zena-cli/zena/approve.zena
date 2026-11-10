@@ -7,7 +7,7 @@
  *   published release out of the package's repository until enough
  *   maintainers attest it. The command shows the release, who published
  *   it, its dependencies, and who has approved it so far.
- * - `zena pkg approve @<scope>` or `zena pkg approve <package>`: the changes
+ * - `zena pkg approve <scope>` or `zena pkg approve <package>`: the changes
  *   waiting to an organization's members and teams, or to a package's
  *   maintainers, which the registry holds until enough owners, admins or team
  *   maintainers of the record before each attest it. The command shows
@@ -16,7 +16,7 @@
  * With `--yes` it writes the attestations to the caller's own repository
  * and asks the registry to complete each, as `zena pkg publish` and `zena pkg scope
  * add` do for the caller's own. A package is a DID, a handle or
- * `@scope/name` on the registry, else the package in the current directory.
+ * `scope:name` on the registry, else the package in the current directory.
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -42,7 +42,7 @@ import {
 import { GET_PENDING_CHANGES, GET_PENDING_RELEASES } from 'package-manager:registry-methods';
 import { Session } from 'atproto:session';
 
-let USAGE = 'zena pkg approve [<package>@]<version> | @<scope> | <package> [--yes]';
+let USAGE = 'zena pkg approve [<package>@]<version> | <scope> | <package> [--yes]';
 
 export async function approveCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
@@ -128,10 +128,12 @@ function describeRelease(entry: JsonObject, label: String): void {
 
 /**
  * Shows, and with `--yes` approves, the changes waiting to the records of
- * the organization `@<scope>` or the package `given` names.
+ * the organization `<scope>`, a name with no `:` or `.`, or the package
+ * `given` names.
  */
 async function approveChanges(args: ParsedArgs, session: Session, registry: Registry, given: String): Future<void> {
-  let account = if (given.startsWith('@') && !given.contains('/')) await scopeDid(registry, given.sliceBytes(1, given.length))
+  let isScope = !given.startsWith('did:') && !given.contains(':') && !given.contains('.');
+  let account = if (isScope) await scopeDid(registry, given)
       else await namedPackage(registry, given);
   let client = await registryClient(session, registry, GET_PENDING_CHANGES);
   let answer = (await client.query(GET_PENDING_CHANGES, [('account', account)])) as JsonObject;

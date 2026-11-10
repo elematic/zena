@@ -196,7 +196,7 @@ export let tests = suite("Package Manifest", () => {
       await rejects(`{"resolved": {${router}, "did:plc:copy@1": {"source": "bafkreirouter"}}}`);
       // A pin's dependency that is not pinned, or not a name.
       await rejects('{"resolved": {"did:plc:router@1": {"source": "bafkreirouter", "dependencies": {"json": "did:web:json@2"}}}}');
-      await rejects(`{"resolved": {"did:plc:router@1": {"source": "bafkreirouter", "dependencies": {"a:b": "did:plc:router@1"}}}}`);
+      await rejects(`{"resolved": {"did:plc:router@1": {"source": "bafkreirouter", "dependencies": {"a/b": "did:plc:router@1"}}}}`);
     });
 
     test("rejects a workspace that does not hold together", async () => {
@@ -224,13 +224,55 @@ export let tests = suite("Package Manifest", () => {
           '{"name": "app", "dependencies": {"router": {"did": "did:plc:router", "version": "1.0.0"}}}')],
           "a published dependency the lockfile does not pin");
       await rejects([("/ws/zena-package.json", '{"name": "zena"}')], "the standard library's name");
-      await rejects([("/ws/zena-package.json", '{"name": "app", "dependencies": {"a:b": {"path": "."}}}')],
+      await rejects([("/ws/zena-package.json", '{"name": "app", "dependencies": {"a/b": {"path": "."}}}')],
           "a local name that cannot be imported");
       await rejects([
         ("/ws/zena-package.json", '{"workspace": {"packages": ["lib"]}, "dependencies": {"lib": {"path": "./other"}}}'),
         ("/ws/lib/zena-package.json", '{"name": "lib"}'),
         ("/ws/other/zena-package.json", '{"name": "other"}'),
       ], "a root name that is also a package's");
+      // Local names are a plain name or scope:name, and nothing else; zena
+      // is the standard library's scope.
+      for (let name in ['acme:', ':lib', 'acme:lib:x', 'acme:lib/x', 'acme/lib', 'zena:lib', 'zena']) {
+        await rejects([("/ws/zena-package.json", `{"name": "app", "dependencies": {"${name}": {"path": "."}}}`)],
+            `the local name ${name}`);
+      }
+      await rejects([("/ws/zena-package.json", '{"name": "acme:app"}')], "a name with its scope in it");
+      await rejects([("/ws/zena-package.json", '{"name": "app", "scope": "a/b"}')], "a scope that is not a name");
+      await rejects([("/ws/zena-package.json", '{"name": "app", "scope": "zena"}')], "the standard library's scope");
+    });
+
+    test("names a package in a scope scope:name, in its workspace and to itself", async () => {
+      let host = new MockHost();
+      host.addFile("/ws/zena-package.json", `{
+        "name": "app",
+        "scope": "acme",
+        "dependencies": {
+          "zena-lang:wit": {"path": "./packages/wit"},
+          "acme:lib": {"path": "./packages/lib"},
+          "tool": {"path": "/elsewhere/tool"},
+          "acme:router": {"did": "did:plc:router", "version": "1.0.0"}
+        },
+        "workspace": {"packages": ["packages/*"]}
+      }`);
+      host.addFile("/ws/packages/wit/zena-package.json", '{"name": "wit", "scope": "zena-lang"}');
+      host.addFile("/ws/packages/lib/zena-package.json", '{"name": "lib", "dependencies": {"zena-lang:wit": {"path": "../wit"}}}');
+      host.addFile("/elsewhere/tool/zena-package.json", '{"name": "tool"}');
+      host.addFile("/ws/zena-lock.json",
+          '{"resolved": {"did:plc:router@1": {"version": "1.0.0", "source": "bafkreirouter"}}}');
+      let packages = await loadWorkspace(host, "/ws", null, "/cache");
+      // The root's scope is the scope of the packages in its workspace that
+      // name none, and not of a package outside it.
+      isTrue(packages.has("acme:app") && packages.has("acme:lib") && packages.has("zena-lang:wit"), 'scoped');
+      isFalse(packages.has("app") || packages.has("lib") || packages.has("wit"));
+      equal(packages["tool"].root, "/elsewhere/tool");
+      let names = packages["acme:app"].dependencies as HashMap<String, String>;
+      // Its own name, which its tests import it by.
+      equal(names["acme:app"], "acme:app");
+      equal(names["zena-lang:wit"], "zena-lang:wit");
+      equal(names["acme:lib"], "acme:lib");
+      equal(names["acme:router"], "did:plc:router@1");
+      equal((packages["acme:lib"].dependencies as HashMap<String, String>)["zena-lang:wit"], "zena-lang:wit");
     });
   });
 

@@ -22,7 +22,7 @@ echo "$APP_PASSWORD" | zena pkg login alice.bsky.social --password-stdin
 
 ## 2. Create a scope
 
-Every package hosted on `pkg.zena-lang.dev` belongs to a scope, such as `@acme`. A scope is an organization account on the registry (`acme.pkg.zena-lang.dev`).
+Every package hosted on `pkg.zena-lang.dev` belongs to a scope, such as `acme`. A scope is an organization account on the registry (`acme.pkg.zena-lang.dev`).
 
 Create a scope before publishing your first package to it:
 
