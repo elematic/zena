@@ -41,6 +41,7 @@ import {REGISTRY_SERVICE, REGISTRY_TYPE} from 'package-manager:registry-methods'
 import {Identity, IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
 import {ARTIFACT_MIME_TYPES, artifactMimeType, validateRelease} from 'package-manager:validate';
+import {ArchiveError, SourceFile, unpackSource} from 'package-manager:archive';
 import {Version} from 'package-manager:version';
 import {
   ADMIN,
@@ -96,6 +97,9 @@ export let AUTOMATION_TOKEN_PREFIX = 'zena_ci_';
 
 /** How long a release waits for approval before its version is free again: seven days. */
 export let PENDING_MICROS = ((7 * 24 * 60 * 60) as i64) * (1000000 as i64);
+
+/** How many release archives the App View keeps read for the pages (`AppView.releaseFiles`). */
+let ARCHIVES_KEPT = 64;
 
 /** How long reading one maintainer's attestation from their PDS may take. */
 let ATTESTATION_READ_MILLISECONDS = 5000 as i64;
@@ -828,6 +832,8 @@ export final class AppView {
   /** Resolves the DIDs of a release's dependencies, to check them. */
   #resolver: IdentityResolver;
   #replays = new ReplayGuard();
+  /** Release archives read for the pages, by the CID of their blob (`releaseFiles`). */
+  #archives = new HashMap<String, ReleaseFiles>();
 
   /**
    * An App View keeping its accounts on `pds`, and its own record of them and
@@ -2074,6 +2080,56 @@ export final class AppView {
   }
 
   /**
+   * The files of release `version` of the package `did`, from its source
+   * archive on the package's PDS, for the pages; or null when it has no
+   * such release, or its archive cannot be read. A release never changes,
+   * so archives are kept by their CID, up to `ARCHIVES_KEPT` of them.
+   */
+  async releaseFiles(did: String, version: String): Future<ReleaseFiles | null> {
+    let record = await this.#current(did, RELEASE_TYPE, version);
+    if (record == null) {
+      return null;
+    }
+    let source = Release.fromValue(record.value).artifact(SOURCE);
+    let blob = source?.blob;
+    if (blob == null) {
+      return null;
+    }
+    let key = blob.cid.toString();
+    if (let (true, kept) = this.#archives.get(key)) {
+      return kept;
+    }
+    let stored = await this.#pds.getBlob(did, blob.cid);
+    if (stored == null) {
+      return null;
+    }
+    let files = try {
+      unpackSource(stored.bytes)
+    } catch (e) {
+      if (e is ArchiveError) {
+        return null;
+      }
+      throw e;
+    };
+    // By path, for the pages to list.
+    for (var i = 1; i < files.length; i += 1) {
+      let file = files[i];
+      var j = i;
+      while (j > 0 && compareKeys(files[j - 1].path, file.path) > 0) {
+        files[j] = files[j - 1];
+        j -= 1;
+      }
+      files[j] = file;
+    }
+    let read = new ReleaseFiles(stored.bytes.length as i64, files);
+    if (this.#archives.size >= ARCHIVES_KEPT) {
+      this.#archives.clear();
+    }
+    this.#archives[key] = read;
+    return read;
+  }
+
+  /**
    * `retract`: marks release `version` of `pkg` as retracted, with
    * `reason`, at the record key equal to the version. The release stays,
    * for the builds that pin it; choosing a version skips it. Any maintainer
@@ -3166,6 +3222,26 @@ export final class Waiting {
 }
 
 /** A package, as `getPackage` reads it. */
+/** What release of a package holds: the files of its source archive, as `AppView.releaseFiles` reads them. */
+export final class ReleaseFiles {
+  /** The source archive's size in bytes. */
+  archiveBytes: i64;
+  /** By path. */
+  files: FixedArray<SourceFile>;
+
+  new(this.archiveBytes, this.files);
+
+  /** The text of the README at the package's root, `README.md` in any case, or null. */
+  readme(): String | null {
+    for (let file in this.files) {
+      if (file.path.asciiLowerCase() == 'readme.md') {
+        return String.fromBytes(file.contents);
+      }
+    }
+    return null;
+  }
+}
+
 export final class PackageDetail {
   did: String;
   handle: String;

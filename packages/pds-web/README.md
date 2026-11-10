@@ -11,9 +11,15 @@ using its `html` tag:
   Eleventy (`site/docs/` → `out/docs/`);
 - `/scopes/<name>`: a scope's profile and packages;
 - `/packages/<handle>`: a package's profile and scope, the command that
-  adds it, the releases waiting for approval, for its maintainers, its
-  versions with their dependencies and the versions they accept, who
-  approved each, its retractions, and its maintainers;
+  adds it, the releases waiting for approval, for its maintainers, the
+  README of its latest release that is not retracted, its versions with
+  their dependencies and the versions they accept, who approved each, its
+  retractions, and its maintainers;
+- `/packages/<handle>/versions/<version>`: one release: when it was
+  published and whether it is retracted, the command that adds it, its
+  dependencies, who approved it, the files of its source archive with
+  their sizes, and its README. A README is rendered with
+  `packages/markdown`, in its safe mode, which leaves out raw HTML;
 - `/people/<handle or DID>`: a person's profile, and the packages that
   name them as a maintainer publicly;
 - `/me`: once signed in, the scopes, teams and packages you have a role in,

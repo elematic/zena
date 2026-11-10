@@ -1564,6 +1564,44 @@ export let tests = suite('registry:app-view', () => {
     equal(await handles(1), ' router');
   });
 
+  test("shows a package's README, and a page for each version with its files", async (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let withReadme = (version: String, readme: String) => {
+      let files: HashMap<String, FixedArray<u8>> = {
+        'zena-package.json' => `{"name": "router", "did": "${router}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`
+          .toBytes(),
+        'router.zena' => 'export let route = 1;\n'.toBytes(),
+        'README.md' => readme.toBytes(),
+      };
+      return packSource(files);
+    };
+    await release(fixture, ALICE, router, '1.0.0', await upload(fixture, router,
+        withReadme('1.0.0', '# Router\n\nRoutes **requests**.\n\n<script>alert(1)</script>\n')));
+    await release(fixture, ALICE, router, '1.1.0', await upload(fixture, router,
+        withReadme('1.1.0', '# Router\n\nNow with ~~fewer~~ more routes.\n')));
+    ok(await fixture.call(ALICE, 'retract', `{"package": "${router}", "version": "1.1.0", "reason": "broken"}`));
+
+    // The package page shows the README of the latest release that is not
+    // retracted, without the raw HTML in it, and links each version.
+    let packageHtml = pageOf(await fixture.get('/packages/router.acme.pkg.test'));
+    isTrue(packageHtml.contains('<strong>requests</strong>') && !packageHtml.contains('<script>alert') &&
+        !packageHtml.contains('fewer'), packageHtml);
+    isTrue(packageHtml.contains('href="/packages/router.acme.pkg.test/versions/1.1.0"'), 'a link to 1.1.0');
+
+    // A version's page has its own README, its files with their sizes, and
+    // the command that adds it.
+    let versionResponse = await fixture.get('/packages/router.acme.pkg.test/versions/1.1.0');
+    equal(versionResponse.statusCode, 200);
+    let versionHtml = pageOf(versionResponse);
+    for (let expected in ['<del>fewer</del>', 'README.md', 'router.zena', 'zena-package.json', '3 files', 'retracted',
+        'broken', 'bytes', 'zena pkg add router.acme.pkg.test@1.1.0']) {
+      isTrue(versionHtml.contains(expected), `${expected} in the version page`);
+    }
+    equal((await fixture.get('/packages/router.acme.pkg.test/versions/9.9.9')).statusCode, 404);
+  });
+
   test('renders the pages a visitor browses', async (ctx) => {
     let fixture = new Fixture();
     let router = await seedBrowsable(fixture);
@@ -1612,7 +1650,7 @@ export let tests = suite('registry:app-view', () => {
     }
     // 1.1.0 is retracted, so 1.0.0 is the latest, and listed after it.
     isTrue(pkgHtml.contains('chip-primary">1.0.0<'), 'the latest');
-    isTrue(pkgHtml.split('>1.1.0<')[1].contains('>1.0.0</span>'), 'newest first');
+    isTrue(pkgHtml.split('>1.1.0<')[1].contains('/versions/1.0.0">1.0.0</a>'), 'newest first');
 
     let missing = await fixture.get('/packages/nothing.acme.pkg.test');
     equal(missing.statusCode, 404, 'a missing package');

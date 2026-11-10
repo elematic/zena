@@ -1,0 +1,44 @@
+/**
+ * A package's README, rendered for its pages, and the sizes of its files.
+ */
+
+import {div} from 'zena:math';
+import {TemplateValue, html, unsafeHTML} from 'zena:http';
+import {markdownToHtml} from 'markdown:index';
+import {gfmExtensions} from 'markdown:plugins/gfm';
+
+/**
+ * `text`, a README in Markdown, as HTML in a section of its own, or null for
+ * none. It is rendered with GitHub's extensions and in safe mode
+ * (`markdown:html`'s `isSafeUrl`), which leaves out raw HTML and URLs
+ * whose scheme could run script: a README is the publisher's, and the
+ * page is on the App View's origin.
+ */
+export function readmeSection(text: String | null): TemplateValue {
+  if (text == null) {
+    return null;
+  }
+  let rendered = markdownToHtml(text, {safe: true, extensions: gfmExtensions()});
+  return html`
+    <section class="readme">
+      <h2>README</h2>
+      <div class="prose">${unsafeHTML(rendered)}</div>
+    </section>`;
+}
+
+/** `bytes` for people: bytes below a KiB, then KiB and MiB to a tenth. */
+export function formatBytes(bytes: i64): String {
+  let kib = 1024 as i64;
+  if (bytes < kib) {
+    return `${bytes} bytes`;
+  }
+  if (bytes < kib * kib) {
+    return tenths(bytes, kib, 'KiB');
+  }
+  return tenths(bytes, kib * kib, 'MiB');
+}
+
+function tenths(bytes: i64, unit: i64, name: String): String {
+  let count = div(bytes * (10 as i64), unit);
+  return `${div(count, 10 as i64)}.${count - div(count, 10 as i64) * (10 as i64)} ${name}`;
+}
