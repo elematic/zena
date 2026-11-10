@@ -228,7 +228,7 @@ reported with its backtrace, and the memory a test used goes away with
 its store. There is no process per test.
 
 A copy needs the variables the host set for the CLI module
-(`ZENA_REPO_ROOT` and the rest). `zena:wasm`'s `inheritEnv` passes on the
+(`ZENA_WORKSPACE_ROOT` and the rest). `zena:wasm`'s `inheritEnv` passes on the
 host process's environment, which does not have them, so the runner
 hands them over explicitly (`hostEnv()` in `env.zena`).
 
@@ -264,16 +264,19 @@ to stdout. [lsp.md](./lsp.md) describes the server.
 With all of that in the module, `zena-cli` (`packages/zena-cli/src/main.rs`,
 about 130 lines) does what `zena-run` does, plus three things:
 
-- It finds the repository and the CLI module: `ZENA_REPO_ROOT`, else the
-  checkout the binary was built in, and `ZENA_CLI_MODULE`, else
-  `packages/zena-cli/out/zena.wasm` under it.
-- It preopens the repository as `.`, first, because `zena:fs` resolves a
+- It finds the workspace by walking up from where the command runs: the
+  nearest `zena-package.json` is the package, and the nearest manifest
+  above it whose `workspace.packages` lists it is the root, else the
+  package is its own. It finds the CLI module and the standard library in
+  the workspace when that is a checkout of Zena, else in the checkout the
+  binary was built in, short of `ZENA_CLI_MODULE` and `ZENA_STDLIB_DIR`.
+- It preopens the workspace's root as `.`, first, because `zena:fs` resolves a
   relative path against the first preopen and the compiler reads the
   workspace's `zena-package.json` and the standard library relative to it. It
   preopens `/` as `/` too, because the command works with files anywhere
   the user points it, and grants the module the spawn capability.
 - It tells the module what it cannot find out for itself, in environment
-  variables: `ZENA_REPO_ROOT`, `ZENA_CWD` (the directory the user ran
+  variables: `ZENA_WORKSPACE_ROOT`, `ZENA_CWD` (the directory the user ran
   the command from, which relative paths on the command line are
   measured from), `ZENA_CLI_MODULE`, and `ZENA_AVAILABLE_PARALLELISM`
   (the CPU count).

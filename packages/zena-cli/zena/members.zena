@@ -32,7 +32,7 @@ import {
   POLICY_TYPE, PUBLISHER, Policy, TEAM_TYPE, Team, TeamRole
 } from 'package-manager:records';
 import { DiskFiles, readWorkspace } from 'package-manager:workspace';
-import { Options, repoRoot, userCwd } from './env.zena';
+import { Options, workspaceRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import {
   Registry, PublishError, attest, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
@@ -559,7 +559,7 @@ async function approveAsOf(args: ParsedArgs, pkg: String): Future<String> {
   if (let (true, given) = args.getOption('package')) {
     return given;
   }
-  let workspace = await readWorkspace(repoRoot().value, new DiskFiles());
+  let workspace = await readWorkspace(workspaceRoot().value, new DiskFiles());
   let manifest = workspace.packageAt(userCwd().value).manifest;
   let scope = manifest.scope ?? workspace.root.manifest.scope;
   if (manifest.did == pkg && scope != null && manifest.name != null) {
@@ -678,7 +678,7 @@ export async function namedPackage(registry: Registry, given: String): Future<St
 
 /** The DID of the package in the current directory, from its manifest. */
 export async function currentPackageDid(): Future<String> {
-  let workspace = await readWorkspace(repoRoot().value, new DiskFiles());
+  let workspace = await readWorkspace(workspaceRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
   if (target.manifest.did == null) {
     throw new PublishError('run this in a published package, or name the package');

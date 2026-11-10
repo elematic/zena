@@ -157,12 +157,13 @@
             # The zena command is zena-cli (Rust/wasmtime host) running the
             # CLI module the build produced
             # (packages/zena-cli/out/zena.wasm), which has the compiler in
-            # it. ZENA_REPO_ROOT locates the module and the stdlib; it
-            # defaults to the installed tree and can be overridden to point
-            # at a checkout.
+            # it. ZENA_STDLIB_DIR and ZENA_CLI_MODULE locate the stdlib and
+            # the module in the installed tree, unless set to a checkout's;
+            # the workspace is found from where the command runs.
             cat > $out/bin/zena << EOF
             #!${pkgs.bash}/bin/bash
-            export ZENA_REPO_ROOT="\''${ZENA_REPO_ROOT:-$out/lib/zena}"
+            export ZENA_STDLIB_DIR="\''${ZENA_STDLIB_DIR:-$out/lib/zena/packages/stdlib/zena}"
+            export ZENA_CLI_MODULE="\''${ZENA_CLI_MODULE:-$out/lib/zena/packages/zena-cli/out/zena.wasm}"
             exec $out/lib/zena/zena-cli "\$@"
             EOF
             chmod +x $out/bin/zena

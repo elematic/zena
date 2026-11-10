@@ -1,31 +1,34 @@
 /**
- * The workspace a `zena` built in this checkout works in when nothing says
- * which (#552): the checkout, inside it, and the directory it runs in
- * anywhere else, with the checkout's standard library and CLI module
- * either way. The other tests set `ZENA_REPO_ROOT`; this one leaves it,
- * and the variables that place the standard library and the module, unset.
+ * The workspace `zena` works in, which it finds by walking up from where it
+ * runs, as npm and Cargo do: the nearest `zena-package.json` is the
+ * package, and the nearest manifest above it whose `workspace.packages`
+ * lists it is the workspace's root, else the package is its own. A `zena`
+ * built in this checkout takes the checkout's standard library and CLI
+ * module wherever it runs. These tests leave unset the variables that
+ * place the standard library and the module, and set `ZENA_REPO_ROOT`,
+ * which once chose the workspace, to show that a shell's value no longer
+ * does.
  */
 
 import {suite, test} from 'zena:test';
 import {isTrue} from 'zena:assert';
 import {run} from 'zena:process';
-import {MAIN, described, repoRoot, zenaBinary} from './cli-support.zena';
+import {MAIN, Scratch, described, repoRoot, write, zenaBinary, zenaIn} from './cli-support.zena';
 
 /** Everything that would choose for the command. */
 let CHOOSERS = [
-  'ZENA_REPO_ROOT', 'ZENA_CLI_MODULE', 'ZENA_STDLIB_DIR', 'ZENA_PROJECT_CACHE', 'ZENA_LOCAL_CACHE',
-  'ZENA_COMPILER_WASM',
+  'ZENA_CLI_MODULE', 'ZENA_STDLIB_DIR', 'ZENA_PROJECT_CACHE', 'ZENA_LOCAL_CACHE', 'ZENA_COMPILER_WASM',
 ];
 
 export let tests = suite('the workspace zena works in', () => {
-  test('is the directory it runs in, outside the checkout it was built in', async (ctx) => {
+  test('is found by walking up from where it runs, and no shell variable moves it', async (ctx) => {
     // A directory outside the checkout, as the host names it. The test
     // module reaches only the repository and its own /tmp, so the shell
     // writes the project.
     let outside = (await run(['mktemp', '-d'])).stdout.trim();
     isTrue(!outside.startsWith(repoRoot()), outside);
     try {
-      let setUp = await run(['/bin/sh', '-c', `mkdir -p "$1/lib" &&
+      let setUp = await run(['/bin/sh', '-c', `mkdir -p "$1/lib" "$1/src" &&
 printf '%s\\n' '{"name": "app", "dependencies": {"lib": {"path": "./lib"}}}' > "$1/zena-package.json" &&
 printf '%s\\n' '{"name": "lib"}' > "$1/lib/zena-package.json" &&
 printf '%s\\n' 'export function answer(): i32 { return 42; }' > "$1/lib/answer.zena" &&
@@ -33,19 +36,44 @@ printf '%s\\n' "import { answer } from 'lib:answer';" '${MAIN} { return answer()
           'sh', outside]);
       isTrue(setUp.succeeded(), described(setUp));
       // The program imports lib by the path in the project's own
-      // manifest, so it compiles only when the project is the workspace.
-      // The shell goes into the directory, since a working directory the
-      // test names would be read in its own namespace, where /tmp can be
-      // another directory (ZENA_PROJECT_CACHE).
+      // manifest, so it compiles only when the project is the workspace:
+      // run in it, and in src/, below it. ZENA_REPO_ROOT, which once chose
+      // the workspace, names no directory and changes nothing. The shell
+      // goes into the directory, since a working directory the test names
+      // would be read in its own namespace, where /tmp can be another
+      // directory (ZENA_PROJECT_CACHE).
       var unset = '';
       for (let name in CHOOSERS) {
         unset = `${unset} -u ${name}`;
       }
-      let ran = await run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" run prog.zena`,
-          'sh', outside, zenaBinary()]);
-      isTrue(ran.succeeded(), described(ran));
+      let runsIn = async (dir: String, file: String) => {
+        let ran = await run(['/bin/sh', '-c',
+            `cd "$1${dir}" && exec env${unset} ZENA_REPO_ROOT=/no/such/dir ZENA_CACHE_DIR="$1/.cache" "$2" run ${file}`,
+            'sh', outside, zenaBinary()]);
+        isTrue(ran.succeeded(), `in ${outside}${dir}: ${described(ran)}`);
+      };
+      await runsIn('', 'prog.zena');
+      await runsIn('/src', '../prog.zena');
     } finally {
       await run(['rm', '-rf', outside]);
+    }
+  });
+
+  test("is a package's own, inside the checkout, when the checkout's workspace does not list it", async (ctx) => {
+    // As a test package someone makes in their clone of this repository:
+    // its path dependency resolves only when it is the workspace.
+    let scratch = await Scratch.create('workspace-nested');
+    try {
+      await write(scratch.at('package-1/zena-package.json'),
+          '{"name": "package-1", "dependencies": {"lib": {"path": "./lib"}}}\n');
+      await write(scratch.at('package-1/lib/zena-package.json'), '{"name": "lib"}\n');
+      await write(scratch.at('package-1/lib/answer.zena'), 'export function answer(): i32 { return 42; }\n');
+      await write(scratch.at('package-1/prog.zena'),
+          `import { answer } from 'lib:answer';\n${MAIN} { return answer() - 42; }\n`);
+      let ran = await zenaIn(scratch, 'package-1').run(['run', 'prog.zena']);
+      isTrue(ran.succeeded(), described(ran));
+    } finally {
+      await scratch.remove();
     }
   });
 

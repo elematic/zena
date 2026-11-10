@@ -28,7 +28,7 @@ import { div } from 'zena:math';
 import { Run, RunOutcome, runModule, startModule } from 'zena:wasm';
 import { CompileFailure, CompileRequest, compileCached, compileIntoCache, isCached } from './compile.zena';
 import {
-  Options, cliModule, hostEnv, parallelism, repoRelative, repoRoot, resolveUserPath,
+  Options, cliModule, hostEnv, parallelism, repoRelative, workspaceRoot, resolveUserPath,
   stdlibDir
 } from './env.zena';
 import { hostDir } from './run.zena';
@@ -83,7 +83,7 @@ async function findTests(args: ParsedArgs): Future<Array<String> | null> {
       return null;
     }
     let opts = new GlobOptions();
-    opts.cwd = repoRoot().value;
+    opts.cwd = workspaceRoot().value;
     for (let exclude in excludes) {
       opts.exclude.push(exclude);
     }
@@ -144,7 +144,7 @@ async function report(running: RunningTest): Future<boolean> {
  * the user is, and `file` is relative to the repository root.
  */
 function testPath(file: String) {
-  return repoRoot().join(new RelativePath(file)).value;
+  return workspaceRoot().join(new RelativePath(file)).value;
 }
 
 /** The compile `zena test --single` asks the cache for. */
@@ -179,7 +179,7 @@ function startCopy(mode: String, paths: Array<String>, options: Options) {
     env: hostEnv(),
     inheritEnv: true,
     dirs: [
-      {from: repoRoot().value, to: '.'},
+      {from: workspaceRoot().value, to: '.'},
       {from: stdlibDir().value, to: '/stdlib'},
       {from: '/', to: '/'},
     ],
@@ -316,8 +316,8 @@ function echo(text: String, toError: boolean) {
  *
  * The test gets the repository as `.`, the standard library as
  * `/stdlib` and a temporary directory as `/tmp`, and may spawn
- * processes: repository tests are trusted code. `ZENA_REPO_ROOT` gives
- * it the repository's path on the host, for the processes it starts.
+ * processes: repository tests are trusted code. `ZENA_WORKSPACE_ROOT`
+ * gives it the workspace's path on the host, for the processes it starts.
  */
 async function runSingle(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length != 1) {
@@ -338,10 +338,10 @@ async function runSingle(args: ParsedArgs, options: Options): Future<i32> {
   }
   let result = await runModule(module.value, {
     args: [file],
-    env: {'ZENA_REPO_ROOT' => repoRoot().value},
+    env: {'ZENA_WORKSPACE_ROOT' => workspaceRoot().value},
     inheritEnv: true,
     dirs: [
-      {from: repoRoot().value, to: '.'},
+      {from: workspaceRoot().value, to: '.'},
       {from: stdlibDir().value, to: '/stdlib'},
       {from: (await hostDir('/tmp')).value, to: '/tmp'},
     ],

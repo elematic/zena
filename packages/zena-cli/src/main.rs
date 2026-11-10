@@ -7,13 +7,13 @@
 //! `zena-run` does for any component, plus three things the module
 //! cannot find out for itself.
 //!
-//! - Where the module is, and the repository it works in.
+//! - Where the module is, and the workspace it works in.
 //! - The directory the user ran the command from. The module's working
-//!   directory is the repository root, or the current directory outside
-//!   the checkout the binary was built in or when standalone,
-//!   preopened as `.`, because that is where the compiler finds the
-//!   workspace's `zena-package.json`; the standard library is preopened as `/stdlib`,
-//!   and the whole filesystem is preopened as `/` for everything else.
+//!   directory is the workspace's root (`workspace_root_for`), preopened as
+//!   `.`, because that is where the compiler finds the workspace's
+//!   `zena-package.json`, and the module is told it as
+//!   `ZENA_WORKSPACE_ROOT`; the standard library is preopened as
+//!   `/stdlib`, and the whole filesystem as `/` for everything else.
 //! - How many CPUs there are, which WASI cannot ask.
 //!
 //! The module may spawn processes and run components (zb runs build
@@ -75,46 +75,72 @@ fn build_checkout() -> Option<PathBuf> {
     }
 }
 
-/// The repository root: the module's working directory, and the workspace
-/// its commands act on. `ZENA_REPO_ROOT` when set, and none when it is
-/// set empty. Otherwise `checkout` when the command runs inside it.
-/// Anywhere else none, in standalone mode: the directory the command runs
-/// in is the workspace, as it is for a binary from somewhere else, though
-/// the checkout still supplies the standard library and the module (#552).
-fn repo_root_for(
-    env: Option<&str>,
-    checkout: Option<&Path>,
-    cwd: &Path,
-) -> Result<Option<PathBuf>> {
-    if let Some(root) = env {
-        if root.is_empty() {
-            return Ok(None);
-        }
-        let path = std::fs::canonicalize(root)
-            .with_context(|| format!("ZENA_REPO_ROOT does not exist: {root}"))?;
-        return Ok(Some(path));
-    }
+/// The file that makes a directory a package.
+const MANIFEST: &str = "zena-package.json";
+
+/// The workspace a command run in `cwd` acts on, the module's working
+/// directory, found as npm and Cargo find theirs. The nearest directory,
+/// from `cwd` up, with a `zena-package.json` is the package. The nearest
+/// directory above it whose manifest's `workspace.packages` lists it is the
+/// workspace's root; when none does, the package is a workspace of its
+/// own. With no manifest anywhere above, it is `cwd`. Nothing in the
+/// environment decides it, so a variable a shell sets cannot move a
+/// command into another workspace.
+fn workspace_root_for(cwd: &Path) -> PathBuf {
     let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    Ok(checkout
-        .filter(|root| cwd.starts_with(root))
-        .map(Path::to_path_buf))
+    let Some(package) = cwd.ancestors().find(|dir| dir.join(MANIFEST).is_file()) else {
+        return cwd;
+    };
+    package
+        .ancestors()
+        .skip(1)
+        .find(|dir| lists_package(dir, package))
+        .unwrap_or(package)
+        .to_path_buf()
+}
+
+/// Whether the manifest in `root` lists `package` in `workspace.packages`,
+/// by its path from `root`, or as a directory in a `<dir>/*` entry's
+/// `<dir>`, as `package-manager:workspace` reads them. A manifest that is
+/// missing or cannot be read lists nothing.
+fn lists_package(root: &Path, package: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(MANIFEST)) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let Some(entries) = manifest
+        .pointer("/workspace/packages")
+        .and_then(|v| v.as_array())
+    else {
+        return false;
+    };
+    entries
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .any(|entry| match entry.strip_suffix("/*") {
+            Some(parent) => package.parent() == Some(root.join(parent).as_path()),
+            None => package == root.join(entry),
+        })
 }
 
 /// Where the standard library and the CLI module come from, short of
-/// `ZENA_STDLIB_DIR` and `ZENA_CLI_MODULE`: the repository root when it has
-/// them, else the checkout the binary was built in.
-fn source_root(repo_root: Option<&Path>, checkout: Option<&Path>) -> Option<PathBuf> {
-    repo_root
-        .filter(|root| root.join("packages/stdlib/zena").is_dir())
-        .or(checkout)
-        .map(Path::to_path_buf)
+/// `ZENA_STDLIB_DIR` and `ZENA_CLI_MODULE`: the workspace when it is a
+/// checkout of Zena, as a worktree is, else the checkout the binary was
+/// built in, else neither, for the bundled copies.
+fn source_root(workspace: &Path, checkout: Option<&Path>) -> Option<PathBuf> {
+    if workspace.join("packages/stdlib/zena").is_dir() {
+        return Some(workspace.to_path_buf());
+    }
+    checkout.map(Path::to_path_buf)
 }
 
 /// The standard library source directory.
 ///
 /// In repo dev mode, uses `packages/stdlib/zena` directly on disk so edits are live.
 /// In standalone mode, unpacks the bundled stdlib into `~/.cache/zena/stdlib/<version>/`.
-fn resolve_stdlib_dir(repo_root: Option<&Path>) -> Result<PathBuf> {
+fn resolve_stdlib_dir(sources: Option<&Path>) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("ZENA_STDLIB_DIR") {
         if !dir.is_empty() {
             let path = PathBuf::from(&dir);
@@ -124,7 +150,7 @@ fn resolve_stdlib_dir(repo_root: Option<&Path>) -> Result<PathBuf> {
             }
         }
     }
-    if let Some(root) = repo_root {
+    if let Some(root) = sources {
         let stdlib = root.join("packages/stdlib/zena");
         if stdlib.is_dir() {
             return std::fs::canonicalize(&stdlib).with_context(|| {
@@ -172,14 +198,14 @@ fn resolve_stdlib_dir(repo_root: Option<&Path>) -> Result<PathBuf> {
 
 /// The CLI module: ZENA_CLI_MODULE, the one built in the repository,
 /// or the bundled module extracted to user cache.
-fn cli_module(repo_root: Option<&Path>) -> Result<PathBuf> {
+fn cli_module(sources: Option<&Path>) -> Result<PathBuf> {
     if let Ok(path) = std::env::var("ZENA_CLI_MODULE") {
         if !path.is_empty() {
             return std::fs::canonicalize(&path)
                 .with_context(|| format!("ZENA_CLI_MODULE does not exist: {path}"));
         }
     }
-    if let Some(root) = repo_root {
+    if let Some(root) = sources {
         let path = root.join("packages/zena-cli/out/zena.wasm");
         if path.is_file() {
             return std::fs::canonicalize(&path).with_context(|| {
@@ -216,12 +242,8 @@ fn main() -> Result<()> {
     zena_runtime::init_signals();
     let cwd = std::env::current_dir()?;
     let checkout = build_checkout();
-    let repo_root = repo_root_for(
-        std::env::var("ZENA_REPO_ROOT").ok().as_deref(),
-        checkout.as_deref(),
-        &cwd,
-    )?;
-    let sources = source_root(repo_root.as_deref(), checkout.as_deref());
+    let workspace = workspace_root_for(&cwd);
+    let sources = source_root(&workspace, checkout.as_deref());
     let stdlib_dir = resolve_stdlib_dir(sources.as_deref())?;
     let module_path = cli_module(sources.as_deref())?;
     if zena_runtime::core_module::is_core_module_file(&module_path)? {
@@ -247,33 +269,24 @@ fn main() -> Result<()> {
         ),
         ("ZENA_AVAILABLE_PARALLELISM".to_string(), cpus.to_string()),
         ("ZENA_STDLIB_DIR".to_string(), "/stdlib".to_string()),
+        (
+            "ZENA_WORKSPACE_ROOT".to_string(),
+            workspace.to_string_lossy().into_owned(),
+        ),
     ];
-    if let Some(ref root) = repo_root {
-        host_env.push((
-            "ZENA_REPO_ROOT".to_string(),
-            root.to_string_lossy().into_owned(),
-        ));
-    }
 
     let mut wasi = WasiCtxBuilder::new();
     wasi.inherit_stdio()
         .envs(&zena_runtime::inherited_env_with(&host_env))
         .args(&args);
 
-    if let Some(ref root) = repo_root {
-        wasi.preopened_dir(root, ".", FsPerms::ReadWrite)?;
-    } else {
-        wasi.preopened_dir(&cwd, ".", FsPerms::ReadWrite)?;
-    }
+    wasi.preopened_dir(&workspace, ".", FsPerms::ReadWrite)?;
 
     wasi.preopened_dir(&stdlib_dir, "/stdlib", FsPerms::ReadOnly)?
         .preopened_dir("/", "/", FsPerms::ReadWrite)?;
 
     let grant_path_map = vec![
-        (
-            ".".to_string(),
-            repo_root.clone().unwrap_or_else(|| cwd.clone()),
-        ),
+        (".".to_string(), workspace.clone()),
         ("/stdlib".to_string(), stdlib_dir.clone()),
         ("/".to_string(), PathBuf::from("/")),
     ];
@@ -320,51 +333,72 @@ mod tests {
         std::fs::canonicalize(dir).unwrap()
     }
 
-    #[test]
-    fn the_checkout_is_the_workspace_only_inside_it() {
-        let checkout = scratch("checkout");
-        let inside = checkout.join("packages/stdlib/zena");
-        let outside = scratch("project");
-        assert_eq!(
-            repo_root_for(None, Some(&checkout), &checkout).unwrap(),
-            Some(checkout.clone())
-        );
-        assert_eq!(
-            repo_root_for(None, Some(&checkout), &inside).unwrap(),
-            Some(checkout.clone())
-        );
-        assert_eq!(
-            repo_root_for(None, Some(&checkout), &outside).unwrap(),
-            None
-        );
-        assert_eq!(repo_root_for(None, None, &outside).unwrap(), None);
-        // The checkout still supplies the standard library and the module.
-        assert_eq!(source_root(None, Some(&checkout)), Some(checkout.clone()));
-        let _ = std::fs::remove_dir_all(&checkout);
-        let _ = std::fs::remove_dir_all(&outside);
+    /// Writes `text` to `dir`'s `zena-package.json`, making `dir`.
+    fn manifest(dir: &Path, text: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(MANIFEST), text).unwrap();
     }
 
     #[test]
-    fn zena_repo_root_decides_when_set() {
-        let checkout = scratch("set-checkout");
-        let project = scratch("set-project");
+    fn the_workspace_is_found_by_walking_up_as_npm_and_cargo_do() {
+        let base = scratch("walk");
+        // No manifest anywhere above: the directory itself.
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(workspace_root_for(&empty), empty);
+        // A package of its own, from it and from below it.
+        let alone = base.join("alone");
+        manifest(&alone, r#"{"name": "alone"}"#);
+        std::fs::create_dir_all(alone.join("src")).unwrap();
+        assert_eq!(workspace_root_for(&alone), alone);
+        assert_eq!(workspace_root_for(&alone.join("src")), alone);
+        // A workspace, its members by name and by `dir/*`, and a directory
+        // in it that no package holds.
+        let root = base.join("mono");
+        manifest(
+            &root,
+            r#"{"workspace": {"packages": ["tools/cli", "./packages/*"]}}"#,
+        );
+        manifest(&root.join("tools/cli"), r#"{"name": "cli"}"#);
+        manifest(&root.join("packages/a"), r#"{"name": "a"}"#);
+        std::fs::create_dir_all(root.join("packages/a/src")).unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        assert_eq!(workspace_root_for(&root), root);
+        assert_eq!(workspace_root_for(&root.join("tools/cli")), root);
+        assert_eq!(workspace_root_for(&root.join("packages/a/src")), root);
+        assert_eq!(workspace_root_for(&root.join("docs")), root);
+        // A package in the workspace's tree that it does not list is a
+        // workspace of its own, as is one two levels under a `dir/*`.
+        let stray = root.join("tests/package-1");
+        manifest(&stray, r#"{"name": "package-1"}"#);
+        assert_eq!(workspace_root_for(&stray), stray);
+        let deep = root.join("packages/a/vendor/b");
+        manifest(&deep, r#"{"name": "b"}"#);
+        assert_eq!(workspace_root_for(&deep), deep);
+        // A manifest that cannot be read lists nothing.
+        let broken = base.join("broken");
+        manifest(&broken, "{");
+        manifest(&broken.join("inner"), r#"{"name": "inner"}"#);
+        assert_eq!(
+            workspace_root_for(&broken.join("inner")),
+            broken.join("inner")
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_checkout_workspace_supplies_its_own_sources() {
+        let checkout = scratch("sources-checkout");
+        let project = scratch("sources-project");
         std::fs::remove_dir_all(project.join("packages")).unwrap();
-        let named = project.to_string_lossy().into_owned();
+        // A workspace that is a checkout uses its own standard library and
+        // module, as a worktree does; any other takes the binary's checkout.
+        assert_eq!(source_root(&checkout, None), Some(checkout.clone()));
         assert_eq!(
-            repo_root_for(Some(&named), Some(&checkout), &checkout).unwrap(),
-            Some(project.clone())
-        );
-        assert_eq!(
-            repo_root_for(Some(""), Some(&checkout), &checkout).unwrap(),
-            None
-        );
-        assert!(repo_root_for(Some("/no/such/dir"), Some(&checkout), &checkout).is_err());
-        // A root without the standard library takes it from the checkout.
-        assert_eq!(
-            source_root(Some(&project), Some(&checkout)),
+            source_root(&project, Some(&checkout)),
             Some(checkout.clone())
         );
-        assert_eq!(source_root(Some(&checkout), None), Some(checkout.clone()));
+        assert_eq!(source_root(&project, None), None);
         let _ = std::fs::remove_dir_all(&checkout);
         let _ = std::fs::remove_dir_all(&project);
     }
