@@ -25,8 +25,9 @@ for the architecture.
   bracket stack for links and images, code spans, autolinks, raw HTML tags, and
   `DelimiterProcessor` / `InlineContentParser` dispatch).
 - `src/html.zena`: `renderHtml` and `HtmlRenderOptions`, including `safe` mode
-  (raw HTML stripping/escaping and URL scheme checks) and `NodeRenderer`
-  dispatch.
+  (raw HTML stripping/escaping and URL scheme checks), a `UrlResolver` that
+  rewrites or removes each link and image URL before `safe` mode checks it,
+  and `NodeRenderer` dispatch.
 - `src/plugins/`: built-in extensions implemented against `markdown:plugin`:
   - `strikethrough.zena`: `~` / `~~` strikethrough (`DelimiterProcessor` +
     `Strikethrough` inline node + `NodeRenderer`).

@@ -12,7 +12,29 @@ import {HtmlRenderContext, MarkdownExtension, NodeRenderer} from './plugin.zena'
 /**
  * Options controlling HTML rendering and sanitization.
  */
-export type HtmlRenderOptions = {safe?: boolean, escapeRawHtml?: boolean, softBreak?: String, indent?: i32, extensions?: GrowableArray<MarkdownExtension>};
+export type HtmlRenderOptions = {safe?: boolean, escapeRawHtml?: boolean, softBreak?: String, indent?: i32, extensions?: GrowableArray<MarkdownExtension>, resolver?: UrlResolver};
+
+/**
+ * Rewrites the URL of each link, image and autolink before it is rendered,
+ * such as to put a document's relative links under the address it is
+ * served at (`HtmlRenderOptions.resolver`). `safe` mode checks the URL it
+ * returns.
+ */
+export interface UrlResolver {
+  /**
+   * The URL to render for `url`, or null to leave it out: a link is
+   * rendered as its text alone, and an image not at all.
+   */
+  resolve(url: String, isImage: boolean): String | null;
+}
+
+/** The resolver that keeps every URL as it is written, which `HtmlRenderOptions` defaults to. */
+final class KeepUrls implements UrlResolver {
+  resolve(url: String, isImage: boolean): String | null {
+    return url;
+  }
+}
+
 /**
    * When `true`, raw HTML (`HtmlBlock`, `HtmlInline`) is omitted (or escaped
    * if `escapeRawHtml` is also `true`) and link/image URLs are checked with
@@ -28,6 +50,7 @@ export type HtmlRenderOptions = {safe?: boolean, escapeRawHtml?: boolean, softBr
    * (default `0` for compact CommonMark output).
    */
 /** Extensions supplying `NodeRenderer` implementations. */
+/** Rewrites or removes link and image URLs (`UrlResolver`). */
 
 /**
  * Renders `doc` to an HTML string.
@@ -96,11 +119,13 @@ export final class HtmlRenderer implements HtmlRenderContext {
   var #indentStep = 0;
   var #indentLevel = 0;
   #renderers = new GrowableArray<NodeRenderer>(4);
+  var #resolver: UrlResolver = new KeepUrls();
 
   new(options: HtmlRenderOptions = {}) {
     let {safe: safe = false, escapeRawHtml: escapeRawHtml = false, softBreak: softBreak = '\n', indent: indent = 0, extensions: extensions = new GrowableArray<MarkdownExtension>(
       0
-    )} = options;
+    ), resolver: resolver = new KeepUrls()} = options;
+    this.#resolver = resolver;
     this.safe = safe;
     this.escapeRawHtml = escapeRawHtml;
     this.#softBreak = softBreak;
@@ -382,7 +407,12 @@ export final class HtmlRenderer implements HtmlRenderContext {
         this.renderInlines(children);
         this.sb.append('</strong>');
       }
-      case Link {destination, title, children}: {
+      case Link {destination: let written, title, children}: {
+        let destination = this.#resolver.resolve(written, false);
+        if (destination == null) {
+          this.renderInlines(children);
+          return;
+        };
         this.sb.append('<a href="');
         if (!this.safe || this.isSafeUrl(destination, false)) {
           this.escapeAttribute(destination);
@@ -397,7 +427,11 @@ export final class HtmlRenderer implements HtmlRenderContext {
         this.renderInlines(children);
         this.sb.append('</a>');
       }
-      case Image {destination, title, children}: {
+      case Image {destination: let written, title, children}: {
+        let destination = this.#resolver.resolve(written, true);
+        if (destination == null) {
+          return;
+        };
         this.sb.append('<img src="');
         if (!this.safe || this.isSafeUrl(destination, true)) {
           this.escapeAttribute(destination);
@@ -414,7 +448,12 @@ export final class HtmlRenderer implements HtmlRenderContext {
         };
         this.sb.append(' />');
       }
-      case Autolink {destination, label}: {
+      case Autolink {destination: let written, label}: {
+        let destination = this.#resolver.resolve(written, false);
+        if (destination == null) {
+          this.escapeHtml(label);
+          return;
+        };
         this.sb.append('<a href="');
         if (!this.safe || this.isSafeUrl(destination, false)) {
           this.escapeAttribute(destination);

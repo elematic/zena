@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 3
+// @skip: the `null` default fails to lower with "zir unsupported: null without context" (#1019)
+
+// An optional field of a nullable reference type, destructured with a
+// `null` default: absent, the default is used; present, the value is.
+
+interface Shape {
+  area(): i32;
+}
+
+final class Square implements Shape {
+  side: i32;
+  new(this.side);
+  area(): i32 {
+    return this.side * this.side;
+  }
+}
+
+type Options = {shape?: Shape | null};
+
+function areaOf(options: Options): i32 {
+  let {shape: shape = null} = options;
+  return if (shape == null) 2 else shape.area();
+}
+
+export function main(): i32 {
+  // 2 without a shape, and 1 for a square of side 1.
+  return areaOf({}) + areaOf({shape: new Square(1)}) - 0;
+}
