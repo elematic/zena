@@ -61,8 +61,9 @@ When a pull request closes an item there, tick its box.
 - What the App View derives from a release's archive for its pages (the
   files, the rendered README) is `registry:release-contents`, kept as one
   object per release in `AppView.derived`: a bucket, or memory. Pages read
-  `AppView.releaseContents`, never the archive; only a file's own route
-  reads the archive (`releaseFile`). A change to what is derived bumps
+  `AppView.releaseContents`, never the archive; a file's own route reads
+  only that file's span of it (`releaseFile`, `PdsClient.getBlobRange`).
+  A change to what is derived bumps
   `CONTENTS_FORMAT`, so that kept contents are derived again
   (package-manager.md, "What the App View derives from releases").
 - The emulator run is `npm run test:emulator -w @zena-lang/registry`. It

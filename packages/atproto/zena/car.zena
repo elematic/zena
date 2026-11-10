@@ -76,7 +76,22 @@ export final class BlockMap {
 export final class Car {
   roots: FixedArray<Cid>;
   blocks: BlockMap;
-  new(roots: FixedArray<Cid>, blocks: BlockMap) : roots = roots, blocks = blocks;
+  /** Where each block's data starts in the file read, by CID. */
+  #offsets: HashMap<String, i32>;
+
+  new(roots: FixedArray<Cid>, blocks: BlockMap, offsets: HashMap<String, i32> | null = null)
+      : roots = roots, blocks = blocks, #offsets = offsets ?? new HashMap<String, i32>();
+
+  /**
+   * Where the data of block `cid` starts in the bytes `readCar` read, or
+   * -1 when it holds no such block.
+   */
+  offsetOf(cid: Cid): i32 {
+    if (let (true, offset) = this.#offsets.get(cid.toString())) {
+      return offset;
+    }
+    return -1;
+  }
 }
 
 /**
@@ -91,6 +106,7 @@ export function readCar(bytes: FixedArray<u8>): Car {
   }
   let roots = readHeader(decodeCborRange(bytes, headerStart, headerEnd));
   let blocks = new BlockMap();
+  let offsets = new HashMap<String, i32>();
   var pos = headerEnd;
   while (pos < bytes.length) {
     let (length, start) = readVarint(bytes, pos, bytes.length);
@@ -104,9 +120,10 @@ export function readCar(bytes: FixedArray<u8>): Car {
       throw new CarError(`block ${cid.toString()} does not match its CID`);
     }
     blocks.set(cid, data);
+    offsets[cid.toString()] = dataStart;
     pos = end;
   }
-  return new Car(roots, blocks);
+  return new Car(roots, blocks, offsets);
 }
 
 function readHeader(header: Value): FixedArray<Cid> {

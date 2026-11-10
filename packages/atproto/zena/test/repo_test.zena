@@ -160,4 +160,19 @@ export let tests = suite('atproto:car and atproto:repo', () => {
     isTrue(car.roots[0].equals(a));
     equal(hex.encode(encodeCbor(new StringValue('a'))), '6161');
   });
+
+  test("knows where each block's data is in the file it read", (ctx) => {
+    let blocks = new BlockMap();
+    let a = blocks.add(new StringValue('first'));
+    let b = blocks.add(new StringValue('second block'));
+    let bytes = writeCar(new FixedArray<Cid>(1, a), blocks);
+    let car = readCar(bytes);
+    for (let cid in [a, b]) {
+      let data = car.blocks.get(cid) as FixedArray<u8>;
+      let offset = car.offsetOf(cid);
+      isTrue(offset > 0, 'after the header');
+      isTrue(bytes.slice(offset, offset + data.length).contentEquals(data), cid.toString());
+    }
+    equal(car.offsetOf(Cid.forBlob('absent'.toBytes())), -1);
+  });
 });

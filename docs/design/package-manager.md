@@ -1921,8 +1921,8 @@ View reads the same copy.
 For each release, by the package's DID and the version, the App View
 keeps:
 
-- **The contents**: the archive's CID and size; each file's path, size
-  and CID, by path; and the README, `README.md` at the package's root in
+- **The contents**: the archive's CID and size; each file's path, size,
+  CID and offset in the archive, by path; and the README, `README.md` at the package's root in
   any case, rendered to HTML. It is rendered in safe mode, without raw
   HTML or URLs that could run script, and only when it is at most
   256 KiB of Markdown; a larger one is linked to instead. Its relative
@@ -1942,12 +1942,11 @@ did not publish.
 
 The App View keeps no copies of the files themselves: it is not a CDN,
 and a fetch reads the archive from the package's PDS. A page that shows
-one file reads it from the archive. To read it without the rest, the
-contents will record where each file's bytes are in the archive, and the
-App View will keep a copy of each archive in its own bucket, since it
-reaches its accounts' blobs only through their PDS, which has no ranged
-reads. One file is then one ranged read of that copy, checked against
-the file's CID.
+one file reads only that file's bytes, where the contents say they are:
+`com.atproto.sync.getBlob` with an HTTP `Range`, which padstone answers
+with that span of the archive. A PDS that ignores the `Range` sends the
+whole blob, and the App View takes the span from it. The bytes are
+checked against the file's CID.
 
 Documenting a package means compiling it with its dependencies, at the
 latest versions their ranges allow when the documentation is built. That
