@@ -17,6 +17,7 @@ import '../../website-client/src/zena-sidebar.js';
 import '@radica/ui/components/tab-group/tab-group.js';
 import '@radica/ui/components/tab/tab.js';
 import '@radica/ui/components/tab-panel/tab-panel.js';
+import './package-tabs.js';
 
 /**
  * The DID the browser last signed in as, kept so that a page with no web

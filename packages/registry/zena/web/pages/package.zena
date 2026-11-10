@@ -192,11 +192,11 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
     </section>`)}
     <div class="package-layout">
       <div class="package-main">
-        <rad-tab-group>
+        <rad-tab-group data-fragment>
           <rad-tab slot="tabs" panel="readme" active>Readme</rad-tab>
-          <rad-tab slot="tabs" panel="files">Files${when(files != null, () => html` (${`${(files as ReleaseFiles).files.length}`})`)}</rad-tab>
-          <rad-tab slot="tabs" panel="dependencies">Dependencies (${`${dependencyCount}`})</rad-tab>
-          <rad-tab slot="tabs" panel="versions">Versions (${`${detail.releases.length}`})</rad-tab>
+          <rad-tab slot="tabs" panel="files">Files</rad-tab>
+          <rad-tab slot="tabs" panel="dependencies">Dependencies</rad-tab>
+          <rad-tab slot="tabs" panel="versions">Versions</rad-tab>
           <rad-tab-panel name="readme" active>
             ${if (release == null) html`<p class="muted">Nothing is published yet.</p>`
                 else if (readme == null) html`<p class="muted">This release has no README.</p>`
@@ -216,14 +216,16 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
         </rad-tab-group>
       </div>
       <aside class="package-sidebar">
-        <h3>Install</h3>
-        <pre class="mono">zena pkg add ${detail.handle}${if (pinned && version != null) `@${version}` else ''}</pre>
         <dl>
+          <dt>Install</dt>
+          <dd><pre class="mono">zena pkg add ${detail.handle}${if (pinned && version != null) `@${version}` else ''}</pre></dd>
           ${when(version != null, () => html`
           <dt>Version</dt><dd class="mono">${version as String}</dd>
           <dt>Published</dt><dd>${(release as Release).createdAt.sliceBytes(0, 10)}</dd>
           <dt>Approved by</dt><dd>${approvers(version as String, shown, approvedBy)}</dd>`)}
           ${when(profile?.license != null, () => html`<dt>License</dt><dd>${profile?.license as String}</dd>`)}
+          ${when(release != null, () => html`
+          <dt>Dependencies</dt><dd>${`${dependencyCount}`}</dd>`)}
           ${when(files != null, () => html`
           <dt>Size</dt><dd>${formatBytes((files as ReleaseFiles).archiveBytes)},
             ${count((files as ReleaseFiles).files.length, 'file')}</dd>`)}
@@ -232,10 +234,12 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
           <dt>Links</dt><dd>${externalLink(profile?.homepage, 'Homepage')} ${externalLink(profile?.source, 'Source')}</dd>`)}
           <dt>Handle</dt><dd class="mono">${detail.handle}</dd>
           <dt>DID</dt><dd class="mono">${detail.did}</dd>
+          <dt>Maintainers</dt>
+          <dd>${if (detail.maintainers == null) html`<span class="muted">No maintainers record.</span>`
+              else maintainerList(detail.maintainers as Maintainers, shown)}</dd>
+          ${when(detail.maintainers != null, () => html`
+          <dt>Approvals</dt><dd>${approvalPolicy(detail.maintainers as Maintainers)}</dd>`)}
         </dl>
-        <h3>Maintainers</h3>
-        ${if (detail.maintainers == null) html`<p class="muted">No maintainers record.</p>`
-            else maintainers(detail.maintainers as Maintainers, shown)}
       </aside>
     </div>
   `;
@@ -359,16 +363,20 @@ function rangeTitle(dependency: Dependency): String {
   return `${dependency.version.toString()} or any later ${dependency.version.major}.x release`;
 }
 
-function maintainers(record: Maintainers, shown: Shown): HTMLPartial {
+function maintainerList(record: Maintainers, shown: Shown): HTMLPartial {
   return html`
     <ul class="plain">${each(record.maintainers, (maintainer: Maintainer) => html`
       <li>${describe(maintainer, shown)} ${chip(maintainer.role)}</li>`)}
     </ul>
-    <p class="muted">
-      A release counts once ${count(record.threshold as i32, 'maintainer')}
-      ${if (record.threshold == 1 as i64) 'approves' else 'approve'} it, and a change of maintainers once
-      ${count(record.ownerThreshold as i32, 'owner')} ${if (record.ownerThreshold == 1 as i64) 'does' else 'do'}.
-    </p>
+  `;
+}
+
+/** How many maintainers approve a release, and how many owners a change of maintainers. */
+function approvalPolicy(record: Maintainers): HTMLPartial {
+  return html`
+    A release counts once ${count(record.threshold as i32, 'maintainer')}
+    ${if (record.threshold == 1 as i64) 'approves' else 'approve'} it, and a change of maintainers once
+    ${count(record.ownerThreshold as i32, 'owner')} ${if (record.ownerThreshold == 1 as i64) 'does' else 'do'}.
   `;
 }
 
