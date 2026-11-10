@@ -25,7 +25,7 @@ export let tests = suite('zena pkg publish', () => {
       await fakePdsOrigin(scratch, stack);
       let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
       let zenaIn = (dir: String) =>
-        new ZenaCommand(scratch.host(dir), scratch.at(dir), scratch.host('cache'))
+        new ZenaCommand(scratch.at(dir), scratch.host('cache'))
           .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
           .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
           .set('ZENA_REGISTRY', addresses['registry'] as String)
@@ -143,7 +143,7 @@ export let tests = suite('zena pkg publish', () => {
       await write(scratch.at('ws/zena-package.json'), '{"workspace": {"packages": ["pkgs/*"]}, "scope": "acme"}\n');
       await write(scratch.at('ws/pkgs/third/zena-package.json'), '{"name": "third", "description": "A package for tests", "license": "MIT", "version": "0.1.0"}\n');
       await write(scratch.at('ws/pkgs/third/third.zena'), 'export let y = 2;\n');
-      let third = await new ZenaCommand(scratch.host('ws'), scratch.at('ws/pkgs/third'), scratch.host('cache'))
+      let third = await new ZenaCommand(scratch.at('ws/pkgs/third'), scratch.host('cache'))
         .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
         .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
         .set('ZENA_REGISTRY', addresses['registry'] as String)
@@ -185,6 +185,9 @@ export let tests = suite('zena pkg publish', () => {
       // Another workspace adds the package by @scope/name, under the domain
       // of the registry ZENA_REGISTRY names, pkg.test, and runs it.
       await write(scratch.at('app/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
+      // A manifest makes app a workspace: without one, zena would walk up to
+      // this repository's.
+      await write(scratch.at('app/zena-package.json'), '{"name": "app"}\n');
       let app = zenaIn('app');
       let added = await app.run(['pkg', 'add', '@acme/greet']);
       isTrue(added.succeeded(), described(added));
@@ -218,6 +221,7 @@ export let tests = suite('zena pkg publish', () => {
       let stillRuns = await app.run(['run', 'prog.zena']);
       isTrue(stillRuns.succeeded(), described(stillRuns));
       await write(scratch.at('later/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
+      await write(scratch.at('later/zena-package.json'), '{"name": "later"}\n');
       let later = zenaIn('later');
       let addedLater = await later.run(['pkg', 'add', 'greet.acme.pkg.test']);
       isTrue(addedLater.succeeded(), described(addedLater));

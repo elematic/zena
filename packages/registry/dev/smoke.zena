@@ -188,7 +188,11 @@ final class Smoke {
     return did;
   }
 
-  /** Runs `zena` with `args` in `/smoke/<dir>`, a workspace of its own, as a client would. */
+  /**
+   * Runs `zena` with `args` in `/smoke/<dir>`, as a client would. The
+   * directory has its own `zena-package.json`, which makes it a workspace
+   * of its own.
+   */
   async zena(dir: String, args: Array<String>): Future<ProcessResult> {
     let argv = new GrowableArray<String>();
     argv.push(`${this.repo}/target/release/zena-cli`);
@@ -196,7 +200,6 @@ final class Smoke {
       argv.push(arg);
     }
     let env: Array<(String, String)> = [
-      ('ZENA_REPO_ROOT', `${this.hostDir}/${dir}`),
       ('ZENA_CLI_MODULE', `${this.repo}/packages/zena-cli/out/zena.wasm`),
       ('ZENA_STDLIB_DIR', `${this.repo}/packages/stdlib/zena`),
       ('ZENA_CACHE_DIR', `${this.hostDir}/cache`),
@@ -282,6 +285,9 @@ export async function main(): Future<void> {
     await mkdir(dir);
   }
   await smoke.check('a new workspace adds the canary, and a program that imports it runs', async (): Future<void> => {
+    // The workspace has a manifest, so that zena, walking up from it, stops
+    // there and not at the repository's, which holds it.
+    await writeFile('/smoke/app/zena-package.json', '{"name": "app"}\n');
     await writeFile('/smoke/app/prog.zena',
         'import { answer } from \'smoke:smoke\';\n\nexport function main(): i32 {\n  return answer() - 42;\n}\n');
     let added = await smoke.zena('app', ['pkg', 'add', canary]);

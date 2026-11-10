@@ -31,7 +31,7 @@ import {
 import { targetEmitsComponent } from 'zena-compiler:targets';
 import { sha256HexOfString } from 'zena:crypto';
 import {
-  Options, cliModule, envSet, repoRelative, repoRoot, resolveUserPath, stdlibDir
+  Options, cliModule, envSet, repoRelative, workspaceRoot, resolveUserPath, stdlibDir
 } from './env.zena';
 
 /** What to compile, and how. */
@@ -266,7 +266,7 @@ async function compileFileOptions(
     entry: repoRelative(request.source),
     outPath: out.value,
     stdlibRoot: stdlibDir().value,
-    projectRoot: repoRoot().value,
+    projectRoot: workspaceRoot().value,
     packageCache: packageCacheDir(),
     testMode: request.testMode,
     time: request.time,
@@ -352,7 +352,7 @@ async function compileWith(
     env: env,
     inheritEnv: true,
     dirs: [
-      {from: repoRoot().value, to: '.'},
+      {from: workspaceRoot().value, to: '.'},
       {from: stdlibDir().value, to: '/stdlib'},
       {from: outDir, to: outDir},
     ],
@@ -424,7 +424,7 @@ export function packageCacheDir(): String {
  */
 function cacheSubdir(inProject: String, inUserCache: String): String {
   if (envSet('ZENA_PROJECT_CACHE') || envSet('ZENA_LOCAL_CACHE')) {
-    return `${repoRoot().value}/.zena/${inProject}`;
+    return `${workspaceRoot().value}/.zena/${inProject}`;
   }
   let custom = getEnv('ZENA_CACHE_DIR');
   if (custom != null && custom != '') {
@@ -436,7 +436,7 @@ function cacheSubdir(inProject: String, inUserCache: String): String {
   }
   let home = getEnv('HOME');
   if (home == null || home == '') {
-    return `${repoRoot().value}/.zena/${inProject}`;
+    return `${workspaceRoot().value}/.zena/${inProject}`;
   }
   return `${home}/.cache/zena/${inUserCache}`;
 }

@@ -75,20 +75,25 @@ the `zena` command. The design is in
      each grant only with its flag (`--allow-spawn`,
      `--allow-extensions`) or its variable (`ZENA_ALLOW_SPAWN=1`,
      `ZENA_ALLOW_EXTENSIONS=1`); `zena test` gives tests both.
-   - Sets `ZENA_REPO_ROOT`, `ZENA_CWD` (where the user is; user paths are
+   - Sets `ZENA_WORKSPACE_ROOT`, `ZENA_CWD` (where the user is; user paths are
      resolved against it, see `resolveUserPath`), `ZENA_CLI_MODULE`,
      `ZENA_AVAILABLE_PARALLELISM` and `ZENA_STDLIB_DIR` (`/stdlib`), in
      place of any values the shell has for them
      (`zena_runtime::inherited_env_with`).
-   - The repository root, preopened as `.` and the workspace the commands
-     act on, is `ZENA_REPO_ROOT` when it is set, and none when it is set
-     empty. Otherwise it is the checkout the binary was built in when the
-     command runs inside that checkout. Anywhere else there is none, and
-     the directory the command runs in is the workspace, as for a binary
-     built elsewhere (#552). The standard library and `ZENA_CLI_MODULE`
-     (`packages/zena-cli/out/zena.wasm`) come from the repository root
-     when it has them, and otherwise from the checkout, wherever the
-     command runs (`repo_root_for`, `source_root` in `src/main.rs`).
+   - The workspace's root, preopened as `.` and the workspace the commands
+     act on, is found by walking up from where the command runs, as npm
+     and Cargo find theirs (`workspace_root_for` in `src/main.rs`): the
+     nearest `zena-package.json` is the package, and the nearest manifest
+     above it whose `workspace.packages` lists it is the root, else the
+     package is a workspace of its own; with no manifest above, the
+     current directory. No variable decides it. In this repository the
+     walk finds the root's manifest, which lists its packages; a scratch
+     directory a test or a script runs `zena` in needs a manifest of its
+     own, or `zena pkg add` there changes the repository's. The standard
+     library and the CLI module (`packages/zena-cli/out/zena.wasm`) come
+     from the workspace when it is a checkout of Zena, as a worktree is,
+     and otherwise from the checkout the binary was built in
+     (`source_root`), short of `ZENA_STDLIB_DIR` and `ZENA_CLI_MODULE`.
 
 3. **Compiling**
    - In-process by default: the compiler is part of the module. With
@@ -144,7 +149,7 @@ the `zena` command. The design is in
      the `zena` command with `zena:process`, setting and removing
      variables with `SpawnOptions.env` and `envRemove`
      (`tests/cli-support.zena`). The test runner gives each test
-     `ZENA_REPO_ROOT`, the repository's host path, so a test can name its
+     `ZENA_WORKSPACE_ROOT`, the repository's host path, so a test can name its
      scratch directories, under `.zena/test-scratch`, both ways. Servers a
      test needs, such as the fake PDSes in `tests/fixtures/`, run as
      separate `zena run` processes, since waiting on a process blocks the

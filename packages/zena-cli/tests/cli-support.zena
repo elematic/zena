@@ -7,7 +7,7 @@
  *
  * A test module sees the repository as `.`, and the command it starts sees
  * the host's file system, so scratch directories go under the repository's
- * `.zena/` directory, whose host path is `ZENA_REPO_ROOT`'s. A `Scratch`
+ * `.zena/` directory, whose host path is `ZENA_WORKSPACE_ROOT`'s. A `Scratch`
  * names each path both ways.
  */
 
@@ -29,9 +29,9 @@ export let MAIN = 'export function ' + 'main(): i32';
 
 /** The repository's path on the host. */
 export function repoRoot(): String {
-  let root = getEnv('ZENA_REPO_ROOT');
+  let root = getEnv('ZENA_WORKSPACE_ROOT');
   if (root == null || root == '') {
-    throw new Error('ZENA_REPO_ROOT is not set; run this test with zena test');
+    throw new Error('ZENA_WORKSPACE_ROOT is not set; run this test with zena test');
   }
   return root;
 }
@@ -108,19 +108,16 @@ let INHERITED_SETTINGS = [
 ];
 
 /**
- * The `zena` command, run as in a workspace of its own: `workspace` is its
- * repository root and its directory, both as the host names them, and its
- * caches are in `cache`. `set` adds variables, and `from` runs it in
- * another directory, as the test names it.
+ * The `zena` command, run in `cwd`, as the test names it, with its caches in
+ * `cache`, as the host names it. The command finds its workspace by walking
+ * up from `cwd`, so a scratch workspace needs a `zena-package.json`:
+ * without one, the walk reaches this repository's. `set` adds variables.
  */
 export final class ZenaCommand {
-  #workspace: String;
   #cwd: String;
   #env = new GrowableArray<(String, String)>();
 
-  new(workspace: String, cwd: String, cache: String)
-      : #workspace = workspace, #cwd = cwd {
-    this.#env.push(('ZENA_REPO_ROOT', workspace));
+  new(cwd: String, cache: String) : #cwd = cwd {
     this.#env.push(('ZENA_CLI_MODULE', `${repoRoot()}/packages/zena-cli/out/zena.wasm`));
     this.#env.push(('ZENA_STDLIB_DIR', `${repoRoot()}/packages/stdlib/zena`));
     this.#env.push(('ZENA_CACHE_DIR', cache));
@@ -154,7 +151,7 @@ export final class ZenaCommand {
 
 /** `zena` in `workspace`, a directory of `scratch`, with its cache in `cache/`. */
 export function zenaIn(scratch: Scratch, workspace: String): ZenaCommand {
-  return new ZenaCommand(scratch.host(workspace), scratch.at(workspace), scratch.host('cache'));
+  return new ZenaCommand(scratch.at(workspace), scratch.host('cache'));
 }
 
 /** The text after `label` on its line of `text`. */
@@ -193,7 +190,7 @@ function fixtureCache() {
  */
 export async function startFakePds(scratch: Scratch, fixture: String, web: String | null = null): Future<Own<Process>> {
   await ensureDir(scratch.at('pds'));
-  let command = new ZenaCommand(repoRoot(), '.', fixtureCache());
+  let command = new ZenaCommand('.', fixtureCache());
   let args = new GrowableArray<String>();
   args.push('run');
   args.push('--dir');

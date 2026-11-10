@@ -8,7 +8,7 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {ProcessResult} from 'zena:process';
 import {
-  MAIN, Scratch, ZenaCommand, described, dnsBeside, ensureDir, fakePdsOrigin, read, startFakePds, stopFakePds, write
+  MAIN, Scratch, ZenaCommand, described, dnsBeside, fakePdsOrigin, read, startFakePds, stopFakePds, write
 } from './cli-support.zena';
 
 let JSON_KEY = 'did:plc:jsonjsonjsonjsonjsonjson@2';
@@ -21,7 +21,7 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
     try {
       let plc = await fakePdsOrigin(scratch, pds);
       let zenaFrom = (dir: String) =>
-        new ZenaCommand(scratch.host('workspace'), scratch.at(dir), scratch.host('cache'))
+        new ZenaCommand(scratch.at(dir), scratch.host('cache'))
           .set('ZENA_PLC_DIRECTORY', plc)
           .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc));
       let zena = zenaFrom('workspace');
@@ -32,9 +32,12 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
       };
       await write(scratch.at('workspace/prog.zena'),
           `import { route } from 'router:match';\n${MAIN} {\n  return route() - 42;\n}\n`);
+      // A workspace has a manifest: without one, the command would walk up
+      // to this repository's.
+      await write(manifest, '{"name": "app"}\n');
 
       // Add router at a version, by its scoped name, to a workspace with no
-      // manifest yet. Its dependency, json, is selected and fetched with it.
+      // dependencies yet. Its dependency, json, is selected and fetched with it.
       let add = await zena.run(['pkg', 'add', '@acme/router@1.4.2']);
       succeeds('zena pkg add', add);
       isTrue(add.stdout.contains('2 fetched'), described(add));
@@ -88,7 +91,7 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
     let pds = await startFakePds(scratch, 'add-pds.zena');
     try {
       let plc = await fakePdsOrigin(scratch, pds);
-      let zena = new ZenaCommand(scratch.host('workspace'), scratch.at('workspace'), scratch.host('cache'))
+      let zena = new ZenaCommand(scratch.at('workspace'), scratch.host('cache'))
         .set('ZENA_PLC_DIRECTORY', plc)
         .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc));
       let manifest = scratch.at('workspace/zena-package.json');
@@ -112,12 +115,12 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
     let scratch = await Scratch.create('add-changed');
     try {
       let zenaWith = (plc: String) =>
-        new ZenaCommand(scratch.host('workspace'), scratch.at('workspace'), scratch.host('cache'))
+        new ZenaCommand(scratch.at('workspace'), scratch.host('cache'))
           .set('ZENA_PLC_DIRECTORY', plc)
           .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc));
       let manifest = scratch.at('workspace/zena-package.json');
       let lockfile = scratch.at('workspace/zena-lock.json');
-      await ensureDir(scratch.at('workspace'));
+      await write(manifest, '{"name": "app"}\n');
       let first = await startFakePds(scratch, 'add-pds.zena');
       try {
         let add = await zenaWith(await fakePdsOrigin(scratch, first)).run(['pkg', 'add', '@acme/router@1.5.0']);

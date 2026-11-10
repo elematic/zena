@@ -152,10 +152,10 @@ self-reporting Node script.
 
 ## Notes
 
-- `zena-cli` now honors `ZENA_REPO_ROOT` (falling back to the baked-in
-  build checkout), so one built binary can serve git worktrees and
-  secondary clones — needed by any workflow that benchmarks the working
-  tree against another checkout.
+- A `zena-cli` run inside another checkout of Zena, such as a worktree or
+  a second clone, takes that checkout's standard library and CLI module,
+  so one built binary can serve several — needed by any workflow that
+  benchmarks the working tree against another checkout.
 - VMs make absolute numbers untrustworthy (invisible steal time); the
   round-robin + difference-CI design is exactly what keeps _relative_
   conclusions valid there. Absolute tracking belongs on raw hardware.

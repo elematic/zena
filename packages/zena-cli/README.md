@@ -218,9 +218,12 @@ A change to a threshold is approved under the thresholds it replaces: one
 owner raises `--owner-threshold` from 1 to 2, and lowering it again needs
 both.
 
-The workspace's root is the repository root, `ZENA_REPO_ROOT`, which
-defaults to the checkout the binary was built in, or the current directory
-for a standalone binary.
+`zena` finds the workspace it acts on by walking up from where it runs, as
+npm and Cargo do: the nearest `zena-package.json` is the package, and the
+nearest manifest above it whose `workspace.packages` lists it is the
+workspace's root, else the package is a workspace of its own. With no
+manifest above, the current directory is the workspace. Start a new
+project inside another one with a `zena-package.json` of its own.
 
 These are the `zena` command's variables. The registry's servers, the
 App View and padstone, read their own, `APP_VIEW_*` and `PDS_*`, which
