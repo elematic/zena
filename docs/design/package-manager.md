@@ -448,6 +448,14 @@ DAG-CBOR. It needs no compression library, which Zena does not have yet.
 Each file has its own CID, so the cache stores a file shared by two
 versions once.
 
+An archive holds at most 10,000 files, which take at most 64 MiB
+together, counting a file once for each path that names it. Contents
+two paths share are stored once, so without the second limit an archive
+of a few megabytes could name one block from every path and take
+gigabytes to write out. Packing and unpacking both refuse an archive
+over either limit (`package-manager:archive`), so publishing, fetching
+and the App View's pages all do.
+
 ### Large artifacts
 
 The reference PDS accepts blobs up to 5 MB unless configured otherwise. An

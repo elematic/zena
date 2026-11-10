@@ -116,31 +116,15 @@ function byScope(accounts: Array<AppViewAccount>): Array<ScopeAccounts> {
     if (account.kind == AccountKind.Organization) {
       held.org = account;
     } else if (account.kind == AccountKind.Automation) {
-      insert(held.automation, account);
+      held.automation.push(account);
     } else {
-      insert(held.packages, account);
+      held.packages.push(account);
     }
   }
-  let sorted = new GrowableArray<ScopeAccounts>();
   for (let scope in order) {
-    var i = sorted.length;
-    sorted.push(scope);
-    while (i > 0 && compareKeys(sorted[i - 1].scope, scope.scope) > 0) {
-      sorted[i] = sorted[i - 1];
-      i -= 1;
-    }
-    sorted[i] = scope;
+    scope.packages.sort((a, b) => compareKeys(a.name, b.name));
+    scope.automation.sort((a, b) => compareKeys(a.name, b.name));
   }
-  return sorted;
-}
-
-/** Adds `account` to `list`, keeping it in order of name. */
-function insert(list: GrowableArray<AppViewAccount>, account: AppViewAccount): void {
-  var i = list.length;
-  list.push(account);
-  while (i > 0 && compareKeys(list[i - 1].name, account.name) > 0) {
-    list[i] = list[i - 1];
-    i -= 1;
-  }
-  list[i] = account;
+  order.sort((a, b) => compareKeys(a.scope, b.scope));
+  return order;
 }

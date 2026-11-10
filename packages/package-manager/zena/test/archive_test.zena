@@ -1,11 +1,14 @@
 import {suite, test} from 'zena:test';
-import {equal, isFalse, isTrue} from 'zena:assert';
+import {equal, isFalse, isTrue, less} from 'zena:assert';
 import {OrderedHashMap} from 'zena:collections';
+import {div} from 'zena:math';
 import {BlockMap, readCar, writeCar} from 'atproto:car';
 import {Cid} from 'atproto:cid';
 import {LinkValue, ListValue, MapValue, StringValue, Value, newMap} from 'atproto:data';
 import {
   ArchiveError,
+  MAX_ARCHIVE_FILES,
+  MAX_UNPACKED_BYTES,
   TREE_TYPE,
   isValidSourcePath,
   packSource,
@@ -29,13 +32,38 @@ function files(paths: Array<String>) {
 }
 
 function packRejects(paths: Array<String>) {
+  packRefuses(files(paths), `packed ${paths[0]}`);
+}
+
+function packRefuses(contents: OrderedHashMap<String, FixedArray<u8>>, what: String) {
   var caught = false;
   try {
-    packSource(files(paths));
+    packSource(contents);
   } catch (e) {
     caught = e is ArchiveError;
   }
-  isTrue(caught, `packed ${paths[0]}`);
+  isTrue(caught, what);
+}
+
+/** An archive of `count` paths, `f0` and on, that all name one block of `contents`. */
+function sharedArchive(count: i32, contents: FixedArray<u8>) {
+  let cid = Cid.forBlob(contents);
+  let blocks = new BlockMap();
+  blocks.set(cid, contents);
+  let map = newMap();
+  for (var i = 0; i < count; i += 1) {
+    map.entries[`f${i}`] = new LinkValue(cid);
+  }
+  return archive(root(map), blocks);
+}
+
+/** `count` paths, `f0` and on, that all have `contents`. */
+function sharedFiles(count: i32, contents: FixedArray<u8>) {
+  let map = new OrderedHashMap<String, FixedArray<u8>>();
+  for (var i = 0; i < count; i += 1) {
+    map[`f${i}`] = contents;
+  }
+  return map;
 }
 
 function unpackRejects(archive: FixedArray<u8>, what: String) {
@@ -180,5 +208,24 @@ export let tests = suite('package-manager:archive', () => {
     let future = root(tree(['a.zena'], futureBlocks));
     future.entries['compression'] = new StringValue('none');
     equal(unpackSource(archive(future, futureBlocks)).length, 1);
+  });
+
+  test('holds at most MAX_ARCHIVE_FILES files', (ctx) => {
+    let contents = bytes('shared');
+    equal(unpackSource(sharedArchive(MAX_ARCHIVE_FILES, contents)).length, MAX_ARCHIVE_FILES);
+    unpackRejects(sharedArchive(MAX_ARCHIVE_FILES + 1, contents), 'one file too many');
+    packRefuses(sharedFiles(MAX_ARCHIVE_FILES + 1, contents), 'packed one file too many');
+  });
+
+  test('unpacks to at most MAX_UNPACKED_BYTES', (ctx) => {
+    // One block stored once and named by every path: a small archive that
+    // would take many times its size to write out.
+    let contents = new FixedArray<u8>(1048576, 0 as u8);
+    let copies = div(MAX_UNPACKED_BYTES, contents.length);
+    equal(unpackSource(sharedArchive(copies, contents)).length, copies);
+    let over = sharedArchive(copies + 1, contents);
+    less(over.length, 2 * contents.length);
+    unpackRejects(over, 'one copy too many');
+    packRefuses(sharedFiles(copies + 1, contents), 'packed one copy too many');
   });
 });

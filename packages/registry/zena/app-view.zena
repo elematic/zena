@@ -1724,15 +1724,9 @@ export final class AppView {
       if (let (true, count) = counts.get(claimed.scope)) {
         packages = count;
       }
-      let summary = new ScopeSummary(claimed.scope, claimed.org, account.handle, packages);
-      var i = scopes.length;
-      scopes.push(summary);
-      while (i > 0 && compareKeys(scopes[i - 1].name, summary.name) > 0) {
-        scopes[i] = scopes[i - 1];
-        i -= 1;
-      }
-      scopes[i] = summary;
+      scopes.push(new ScopeSummary(claimed.scope, claimed.org, account.handle, packages));
     }
+    scopes.sort((a, b) => compareKeys(a.name, b.name));
     return scopes;
   }
 
@@ -1969,14 +1963,9 @@ export final class AppView {
   async listPackages(scope: String | null): Future<Array<PackageSummary>> {
     let packages = new GrowableArray<PackageSummary>();
     for (let summary in await this.#store.summaries(scope)) {
-      var i = packages.length;
       packages.push(summary);
-      while (i > 0 && compareKeys(packages[i - 1].sortKey(), summary.sortKey()) > 0) {
-        packages[i] = packages[i - 1];
-        i -= 1;
-      }
-      packages[i] = summary;
     }
+    packages.sort((a, b) => compareKeys(a.sortKey(), b.sortKey()));
     return packages;
   }
 
@@ -1990,18 +1979,12 @@ export final class AppView {
   async recentPackages(count: i32): Future<Array<PackageSummary>> {
     let packages = new GrowableArray<PackageSummary>();
     for (let summary in await this.#store.summaries(null)) {
-      let rev = summary.rev;
-      if (summary.releases == 0 || rev == null) {
+      if (summary.releases == 0 || summary.rev == null) {
         continue;
       }
-      var i = packages.length;
       packages.push(summary);
-      while (i > 0 && compareKeys(packages[i - 1].rev as String, rev) < 0) {
-        packages[i] = packages[i - 1];
-        i -= 1;
-      }
-      packages[i] = summary;
     }
+    packages.sort((a, b) => compareKeys(b.rev as String, a.rev as String));
     let recent = new GrowableArray<PackageSummary>();
     for (var i = 0; i < packages.length && i < count; i += 1) {
       recent.push(packages[i]);
@@ -2067,15 +2050,9 @@ export final class AppView {
     for (let record in await this.#pds.listRecords(did, RELEASE_TYPE)) {
       let release = Release.fromValue(record.value);
       detail.releaseCids[release.version.toString()] = record.cid;
-      let releases = detail.releases;
-      var i = releases.length;
-      releases.push(release);
-      while (i > 0 && releases[i - 1].version.compareTo(release.version) < 0) {
-        releases[i] = releases[i - 1];
-        i -= 1;
-      }
-      releases[i] = release;
+      detail.releases.push(release);
     }
+    detail.releases.sort((a, b) => b.version.compareTo(a.version));
     return detail;
   }
 
@@ -2112,15 +2089,7 @@ export final class AppView {
       throw e;
     };
     // By path, for the pages to list.
-    for (var i = 1; i < files.length; i += 1) {
-      let file = files[i];
-      var j = i;
-      while (j > 0 && compareKeys(files[j - 1].path, file.path) > 0) {
-        files[j] = files[j - 1];
-        j -= 1;
-      }
-      files[j] = file;
-    }
+    files.sort((a, b) => compareKeys(a.path, b.path));
     let read = new ReleaseFiles(stored.bytes.length as i64, files);
     if (this.#archives.size >= ARCHIVES_KEPT) {
       this.#archives.clear();
@@ -3083,16 +3052,7 @@ export final class Membership {
 
 /** Sorts `memberships` by scope, then name, in place. */
 function sortByName(memberships: GrowableArray<Membership>): void {
-  for (var i = 1; i < memberships.length; i += 1) {
-    let membership = memberships[i];
-    let key = `${membership.scope} ${membership.name}`;
-    var j = i;
-    while (j > 0 && compareKeys(`${memberships[j - 1].scope} ${memberships[j - 1].name}`, key) > 0) {
-      memberships[j] = memberships[j - 1];
-      j -= 1;
-    }
-    memberships[j] = membership;
-  }
+  memberships.sort((a, b) => compareKeys(`${a.scope} ${a.name}`, `${b.scope} ${b.name}`));
 }
 
 /** What `getMemberships` finds. */

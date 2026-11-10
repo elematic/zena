@@ -22,6 +22,17 @@ import {LinkValue, MapValue, StringValue, Value, field, newMap} from 'atproto:da
 
 export let TREE_TYPE = 'dev.zena-lang.package.tree';
 
+/** The most files a source archive may hold. */
+export let MAX_ARCHIVE_FILES = 10000;
+
+/**
+ * The most bytes a source archive's files may take together, counting a
+ * file once for each path that names it. Contents two paths share are
+ * stored once, so without this an archive of a few megabytes could name
+ * one block from every path and take gigabytes to write out.
+ */
+export let MAX_UNPACKED_BYTES = 64 * 1024 * 1024;
+
 /** An archive that cannot be packed or unpacked. */
 export class ArchiveError extends Error {
   new(message: String) : super(message);
@@ -71,12 +82,16 @@ export function isValidSourcePath(path: String): boolean {
 /**
  * Packs `files`, from path to contents, into a source archive. Throws
  * `ArchiveError` for an invalid path, for two paths that differ only in
- * case, and for a path that is also another's directory.
+ * case, for a path that is also another's directory, and for more files
+ * or bytes than an archive may hold.
  */
 export function packSource(files: HashMap<String, FixedArray<u8>>): FixedArray<u8> {
+  checkFileCount(files.size);
   let paths = new GrowableArray<String>();
+  var unpacked = 0;
   for (let path in files.keys()) {
     paths.push(path);
+    unpacked = addUnpacked(unpacked, files[path].length);
   }
   checkPaths(paths);
 
@@ -136,12 +151,14 @@ export function unpackSource(bytes: FixedArray<u8>): FixedArray<SourceFile> {
   if (!(tree is MapValue)) {
     throw new ArchiveError('the root has no map of files');
   }
+  checkFileCount(tree.entries.size);
 
   let paths = sortedKeys(tree.entries);
   checkPaths(paths);
   let used = new HashSet<String>();
   used.add(rootCid.toString());
   let files = new FixedArray<SourceFile>(paths.length, new SourceFile('', rootCid, rootBytes));
+  var unpacked = 0;
   for (var i = 0; i < paths.length; i += 1) {
     let path = paths[i];
     let link = tree.entries[path];
@@ -155,6 +172,7 @@ export function unpackSource(bytes: FixedArray<u8>): FixedArray<SourceFile> {
     if (contents == null) {
       throw new ArchiveError(`the archive has no block for '${path}'`);
     }
+    unpacked = addUnpacked(unpacked, contents.length);
     used.add(link.cid.toString());
     files[i] = new SourceFile(path, link.cid, contents);
   }
@@ -189,6 +207,24 @@ function checkPaths(paths: Array<String>): void {
       }
     }
   }
+}
+
+function checkFileCount(count: i32): void {
+  if (count > MAX_ARCHIVE_FILES) {
+    throw new ArchiveError(`${count} files are more than the ${MAX_ARCHIVE_FILES} an archive may hold`);
+  }
+}
+
+/**
+ * `total + length`, or `ArchiveError` when the sum would be more than
+ * `MAX_UNPACKED_BYTES`. `total` never is, so the subtraction cannot
+ * overflow where the sum could.
+ */
+function addUnpacked(total: i32, length: i32): i32 {
+  if (length > MAX_UNPACKED_BYTES - total) {
+    throw new ArchiveError(`the files take more than the ${MAX_UNPACKED_BYTES} bytes an archive may unpack to`);
+  }
+  return total + length;
 }
 
 function readCarOrThrow(bytes: FixedArray<u8>): Car {
