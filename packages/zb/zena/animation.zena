@@ -1,0 +1,180 @@
+/**
+ * Terminal animation, cursor control, and live status-line utilities.
+ *
+ * Implements Clack's 4-frame quadrant spinner (`◒`, `◐`, `◓`, `◑`) and a
+ * `Spinner` controller that coordinates a transient bottom status line
+ * with permanent log lines scrolling above it on interactive terminals,
+ * while emitting no control sequences when output is piped or in CI.
+ */
+
+import {getEnv} from 'zena:cli';
+import {logString} from 'zena:console';
+import {Colors, ESC, isTerminalStdout} from './colors.zena';
+
+/** Hides the terminal cursor (`CSI ? 25 l`). */
+export let CURSOR_HIDE = `${ESC}[?25l`;
+
+/** Restores the terminal cursor (`CSI ? 25 h`). */
+export let CURSOR_SHOW = `${ESC}[?25h`;
+
+/** Moves to column 0 and erases the entire current line (`\r CSI 2 K`). */
+export let CLEAR_LINE = `\r${ESC}[2K`;
+
+/** Clack's 4-frame circle-quadrant spinner sequence. */
+export let SPINNER_FRAMES = ['◒', '◐', '◓', '◑'];
+
+/**
+ * Decides whether interactive terminal animations should run given
+ * `isTty` and an environment lookup (`CI`, `TERM`).
+ */
+export function shouldAnimate(
+  isTty: boolean = isTerminalStdout(),
+  env: (name: String) => String? = getEnv,
+): boolean {
+  if (!isTty) {
+    return false;
+  }
+  if (env('TERM') == 'dumb') {
+    return false;
+  }
+  let ci = env('CI');
+  return ci == null || ci == '' || ci == '0' || ci == 'false';
+}
+
+/**
+ * Manages a single-line transient spinner at the bottom of an
+ * interactive terminal while permanent lines are printed above it.
+ *
+ * When `interactive` is false, `start`, `update`, `tick`, `clear`,
+ * `redraw`, and `stop` emit nothing, and `writeLine` writes `line + "\n"`
+ * directly.
+ */
+export class Spinner {
+  interactive: boolean;
+  colors: Colors;
+  #writeRaw: (s: String) => void;
+  var #active = false;
+  var #cursorHidden = false;
+  var #message = '';
+  var #frameIndex = 0;
+
+  new(
+    interactive: boolean = shouldAnimate(),
+    colors: Colors = new Colors(),
+    writeRaw: (s: String) => void = logString,
+  ) : interactive = interactive,
+      colors = colors,
+      #writeRaw = writeRaw;
+
+  isActive: boolean {
+    get {
+      return this.#active;
+    }
+  }
+
+  message: String {
+    get {
+      return this.#message;
+    }
+  }
+
+  /** The current spinner glyph (`◒`, `◐`, `◓`, or `◑`). */
+  currentFrame(): String {
+    return SPINNER_FRAMES[this.#frameIndex % SPINNER_FRAMES.length];
+  }
+
+  /** Formats the spinner glyph and `message` for display. */
+  formatFrame(message: String = this.#message): String {
+    return `${this.colors.magenta(this.currentFrame())}  ${message}`;
+  }
+
+  /** Starts the spinner with `message`. */
+  start(message: String): void {
+    this.#active = true;
+    this.#message = message;
+    this.#frameIndex = 0;
+    if (!this.interactive) {
+      return;
+    }
+    let write = this.#writeRaw;
+    if (!this.#cursorHidden) {
+      this.#cursorHidden = true;
+      write(CURSOR_HIDE);
+    }
+    write(CLEAR_LINE + this.formatFrame(message));
+  }
+
+  /** Updates the spinner message and advances one frame. */
+  update(message: String): void {
+    if (!this.#active) {
+      this.start(message);
+      return;
+    }
+    this.#message = message;
+    this.#frameIndex = (this.#frameIndex + 1) % SPINNER_FRAMES.length;
+    if (this.interactive) {
+      let write = this.#writeRaw;
+      write(CLEAR_LINE + this.formatFrame(message));
+    }
+  }
+
+  /** Advances the spinner by one frame without changing its message. */
+  tick(): void {
+    if (!this.#active) {
+      return;
+    }
+    this.#frameIndex = (this.#frameIndex + 1) % SPINNER_FRAMES.length;
+    if (this.interactive) {
+      let write = this.#writeRaw;
+      write(CLEAR_LINE + this.formatFrame(this.#message));
+    }
+  }
+
+  /** Erases the transient spinner line so permanent output can be written. */
+  clear(): void {
+    if (this.#active && this.interactive) {
+      let write = this.#writeRaw;
+      write(CLEAR_LINE);
+    }
+  }
+
+  /** Redraws the transient spinner line after permanent output is written. */
+  redraw(): void {
+    if (this.#active && this.interactive) {
+      let write = this.#writeRaw;
+      write(CLEAR_LINE + this.formatFrame(this.#message));
+    }
+  }
+
+  /**
+   * Prints a permanent line (`line + "\n"`), clearing the transient
+   * spinner line before and redrawing it after when active.
+   */
+  writeLine(line: String): void {
+    let write = this.#writeRaw;
+    if (this.#active && this.interactive) {
+      write(`${CLEAR_LINE}${line}\n${this.formatFrame(this.#message)}`);
+    } else {
+      write(line + '\n');
+    }
+  }
+
+  /** Stops the spinner, clears its transient line, and restores the cursor. */
+  stop(): void {
+    if (!this.#active && !this.#cursorHidden) {
+      return;
+    }
+    if (this.interactive) {
+      let write = this.#writeRaw;
+      if (this.#active) {
+        write(CLEAR_LINE);
+      }
+      if (this.#cursorHidden) {
+        write(CURSOR_SHOW);
+      }
+    }
+    this.#active = false;
+    this.#cursorHidden = false;
+    this.#message = '';
+  }
+}

@@ -506,4 +506,49 @@ export let tests = suite('engine', () => {
     equal(stepRuns, 3);
     equal(cache.puts, putsBefore + 1);
   });
+
+  test('onStepStart and onStepFinish observe task execution and freshness', async (ctx) => {
+    let events = new GrowableArray<String>();
+    let step: Step = new TaskStep(
+      new StepKey('compile'),
+      new Fingerprint('cfg:1'),
+      [new LeafInput('src.zena')],
+      (ctx) => {
+        events.push('run:compile');
+        return Future.of(new OutputManifest([
+          new OutputEntry('out.wasm', new Fingerprint('fp:1')),
+        ]));
+      },
+    );
+    let graph = new Graph([step]);
+    let leaves = {'src.zena' => new Fingerprint('in:1')};
+    let engine = new Engine(digest, new NullCache());
+    let opts = new RunOptions(
+      8,
+      false,
+      null,
+      null,
+      (key) => {
+        events.push('start:' + key.value);
+      },
+      (key, outcome) => {
+        if (outcome is Succeeded) {
+          let src = if (outcome.source == StepSource.Ran) 'ran' else 'fresh';
+          events.push(`finish:${key.value}:${src}`);
+        }
+      },
+    );
+
+    let r1 = await engine.run(graph, leaves, EngineState.empty(), opts);
+    isTrue(r1.allSucceeded);
+    equal(events.length, 3);
+    equal(events[0], 'start:compile');
+    equal(events[1], 'run:compile');
+    equal(events[2], 'finish:compile:ran');
+
+    let r2 = await engine.run(graph, leaves, r1.state, opts);
+    isTrue(r2.allSucceeded);
+    equal(events.length, 4);
+    equal(events[3], 'finish:compile:fresh');
+  });
 });

@@ -1,0 +1,168 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {
+  CLEAR_LINE,
+  CURSOR_HIDE,
+  CURSOR_SHOW,
+  SPINNER_FRAMES,
+  Spinner,
+  shouldAnimate,
+} from '../animation.zena';
+import {
+  Colors,
+  ESC,
+  isTerminalStderr,
+  isTerminalStdout,
+  shouldUseColor,
+  stripAnsi,
+  visibleLength,
+} from '../colors.zena';
+import {
+  BAR,
+  BAR_END,
+  BAR_START,
+  RailLayout,
+  STEP_ACTIVE,
+  STEP_CANCEL,
+  STEP_IDLE,
+  STEP_SUBMIT,
+  STEP_WARN,
+  StepKind,
+  formatDuration,
+  padVisibleRight,
+} from '../layout.zena';
+
+export let tests = suite('terminal libraries (colors, layout, animation)', () => {
+  test('shouldUseColor honors NO_COLOR, FORCE_COLOR, TERM, and isTty', () => {
+    // Under the test runner, stdio is captured via pipes rather than a TTY.
+    isFalse(isTerminalStdout());
+    isFalse(isTerminalStderr());
+    let emptyEnv = (name: String): String? => null;
+    isTrue(shouldUseColor(true, emptyEnv));
+    isFalse(shouldUseColor(false, emptyEnv));
+
+    let noColorEnv = (name: String): String? =>
+      if (name == 'NO_COLOR') '1' else null;
+    isFalse(shouldUseColor(true, noColorEnv));
+
+    let forceColorEnv = (name: String): String? =>
+      if (name == 'FORCE_COLOR') '1' else null;
+    isTrue(shouldUseColor(false, forceColorEnv));
+
+    let forceZeroEnv = (name: String): String? =>
+      if (name == 'FORCE_COLOR') '0' else null;
+    isFalse(shouldUseColor(true, forceZeroEnv));
+
+    let dumbTermEnv = (name: String): String? =>
+      if (name == 'TERM') 'dumb' else null;
+    isFalse(shouldUseColor(true, dumbTermEnv));
+  });
+
+  test('Colors wraps SGR sequences when enabled and strips/measures cleanly', () => {
+    let ansi = Colors.ansi();
+    let plain = Colors.plain();
+
+    let styled = ansi.bgCyan(ansi.black(' zb '));
+    equal(styled, `${ESC}[46m${ESC}[30m zb ${ESC}[39m${ESC}[49m`);
+    equal(plain.bgCyan(plain.black(' zb ')), ' zb ');
+    equal(stripAnsi(styled), ' zb ');
+    equal(visibleLength(styled), 4);
+
+    // Multi-byte box-drawing glyphs count as 1 visible column each.
+    let step = `${ansi.green(STEP_SUBMIT)}  packages/lib:build`;
+    equal(stripAnsi(step), '◇  packages/lib:build');
+    equal(visibleLength(step), 21);
+    equal(visibleLength(padVisibleRight(step, 25)), 25);
+  });
+
+  test('RailLayout formats intro, step, logBlock, note, outro, and durations', () => {
+    let layout = new RailLayout(Colors.plain());
+
+    equal(layout.badge('zb'), '[zb]');
+    equal(layout.intro('[zb] :build'), `${BAR_START}  [zb] :build`);
+    equal(layout.bar(), BAR);
+    equal(layout.barLine('hello'), `${BAR}  hello`);
+    equal(
+      layout.step(StepKind.Success, 'packages/lib:build: ran', '(42ms)'),
+      `${STEP_SUBMIT}  packages/lib:build: ran (42ms)`,
+    );
+    equal(
+      layout.step(StepKind.Active, 'packages/lib:build: restored'),
+      `${STEP_ACTIVE}  packages/lib:build: restored`,
+    );
+    equal(
+      layout.step(StepKind.Fresh, 'packages/lib:build: fresh'),
+      `${STEP_IDLE}  packages/lib:build: fresh`,
+    );
+    equal(
+      layout.step(StepKind.Warning, 'packages/app:build: skipped'),
+      `${STEP_WARN}  packages/app:build: skipped`,
+    );
+    equal(
+      layout.step(StepKind.Error, 'packages/app:build: failed'),
+      `${STEP_CANCEL}  packages/app:build: failed`,
+    );
+
+    let block = layout.logBlock('line 1\r\nline 2\n', true);
+    equal(block.length, 2);
+    equal(block[0], `${BAR}  line 1`);
+    equal(block[1], `${BAR}  line 2`);
+
+    let note = layout.note('first\nsecond line', 'Output');
+    isTrue(note.contains('◇  Output ──────╮'), note);
+    isTrue(note.contains('│  first        │'), note);
+    isTrue(note.contains('│  second line  │'), note);
+    isTrue(note.contains('├───────────────╯'), note);
+
+    equal(layout.outro('build succeeded'), `${BAR_END}  build succeeded`);
+    equal(formatDuration(0 as i64), '0ms');
+    equal(formatDuration(42 as i64), '42ms');
+    equal(formatDuration(999 as i64), '999ms');
+    equal(formatDuration(1000 as i64), '1.0s');
+    equal(formatDuration(1450 as i64), '1.4s');
+  });
+
+  test('Spinner emits cursor and frame sequences when interactive and stays quiet when non-interactive', () => {
+    let emptyEnv = (name: String): String? => null;
+    isTrue(shouldAnimate(true, emptyEnv));
+    isFalse(shouldAnimate(false, emptyEnv));
+    let ciEnv = (name: String): String? =>
+      if (name == 'CI') 'true' else null;
+    isFalse(shouldAnimate(true, ciEnv));
+
+    let chunks = new GrowableArray<String>();
+    let interactive = new Spinner(true, Colors.plain(), (s: String) => {
+      chunks.push(s);
+    });
+    interactive.start('Running :a');
+    equal(chunks.length, 2);
+    equal(chunks[0], CURSOR_HIDE);
+    equal(chunks[1], `${CLEAR_LINE}${SPINNER_FRAMES[0]}  Running :a`);
+
+    interactive.tick();
+    equal(chunks[2], `${CLEAR_LINE}${SPINNER_FRAMES[1]}  Running :a`);
+
+    interactive.writeLine('◇  :a: ran');
+    equal(
+      chunks[3],
+      `${CLEAR_LINE}◇  :a: ran\n${SPINNER_FRAMES[1]}  Running :a`,
+    );
+
+    interactive.stop();
+    equal(chunks[4], CLEAR_LINE);
+    equal(chunks[5], CURSOR_SHOW);
+    isFalse(interactive.isActive);
+
+    // Non-interactive mode writes only permanent lines without ANSI control codes.
+    let quietChunks = new GrowableArray<String>();
+    let quiet = new Spinner(false, Colors.plain(), (s: String) => {
+      quietChunks.push(s);
+    });
+    quiet.start('Running :a');
+    quiet.tick();
+    quiet.writeLine('◇  :a: ran');
+    quiet.stop();
+    equal(quietChunks.length, 1);
+    equal(quietChunks[0], '◇  :a: ran\n');
+  });
+});

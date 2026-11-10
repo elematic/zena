@@ -1,0 +1,266 @@
+/**
+ * Terminal color and ANSI escape utilities.
+ *
+ * Detects whether `stdout` / `stderr` are attached to a terminal via
+ * `wasi:cli/terminal-stdout` and `wasi:cli/terminal-stderr`, honors
+ * `NO_COLOR`, `FORCE_COLOR`, and `TERM=dumb`, and provides composable
+ * SGR styling methods (`Colors`), ANSI stripping (`stripAnsi`), and
+ * visible column measurement (`visibleLength`).
+ */
+
+import {getEnv} from 'zena:cli';
+import {Disposable, Some, StringBuilder} from 'zena:core';
+import {TerminalOutput} from 'wasi:cli/terminal-output';
+import {getTerminalStderr} from 'wasi:cli/terminal-stderr';
+import {getTerminalStdout} from 'wasi:cli/terminal-stdout';
+
+function makeEsc() {
+  let sb = new StringBuilder(1);
+  sb.appendByte(27);
+  return sb.toString();
+}
+
+/** The ASCII escape character (`0x1b`). */
+export let ESC = makeEsc();
+
+/** Formats an ANSI SGR sequence (`ESC [ <code> m`). */
+export function sgr(code: String): String {
+  return `${ESC}[${code}m`;
+}
+
+/** Whether standard output is connected to an interactive terminal. */
+export function isTerminalStdout(): boolean {
+  let term = getTerminalStdout();
+  if (term is Some<TerminalOutput>) {
+    term.value.[Disposable.dispose]();
+    return true;
+  }
+  return false;
+}
+
+/** Whether standard error is connected to an interactive terminal. */
+export function isTerminalStderr(): boolean {
+  let term = getTerminalStderr();
+  if (term is Some<TerminalOutput>) {
+    term.value.[Disposable.dispose]();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Decides whether ANSI colors should be emitted given `isTty` and an
+ * environment lookup function (`NO_COLOR`, `FORCE_COLOR`, `TERM`).
+ */
+export function shouldUseColor(
+  isTty: boolean = isTerminalStdout(),
+  env: (name: String) => String? = getEnv,
+): boolean {
+  let noColor = env('NO_COLOR');
+  if (noColor != null && noColor != '') {
+    return false;
+  }
+  let forceColor = env('FORCE_COLOR');
+  if (forceColor != null && forceColor != '') {
+    return forceColor != '0' && forceColor != 'false';
+  }
+  if (env('TERM') == 'dumb') {
+    return false;
+  }
+  return isTty;
+}
+
+/**
+ * Composable SGR color and text style helpers. Each helper closes only
+ * its own attribute (`39` for foreground, `49` for background, `22` for
+ * intensity) so nested calls like `c.bgCyan(c.black(' zb '))` preserve
+ * outer styles. When `enabled` is false, all methods return `text`
+ * unchanged.
+ */
+export class Colors {
+  enabled: boolean;
+
+  new(this.enabled = shouldUseColor());
+
+  /** A palette that always emits ANSI SGR sequences. */
+  static ansi(): Colors {
+    return new Colors(true);
+  }
+
+  /** A palette that never emits ANSI SGR sequences. */
+  static plain(): Colors {
+    return new Colors(false);
+  }
+
+  #wrap(open: String, close: String, text: String): String {
+    if (!this.enabled || text == '') {
+      return text;
+    }
+    return `${ESC}[${open}m${text}${ESC}[${close}m`;
+  }
+
+  reset(text: String): String {
+    return this.#wrap('0', '0', text);
+  }
+
+  bold(text: String): String {
+    return this.#wrap('1', '22', text);
+  }
+
+  dim(text: String): String {
+    return this.#wrap('2', '22', text);
+  }
+
+  italic(text: String): String {
+    return this.#wrap('3', '23', text);
+  }
+
+  underline(text: String): String {
+    return this.#wrap('4', '24', text);
+  }
+
+  inverse(text: String): String {
+    return this.#wrap('7', '27', text);
+  }
+
+  strikethrough(text: String): String {
+    return this.#wrap('9', '29', text);
+  }
+
+  black(text: String): String {
+    return this.#wrap('30', '39', text);
+  }
+
+  red(text: String): String {
+    return this.#wrap('31', '39', text);
+  }
+
+  green(text: String): String {
+    return this.#wrap('32', '39', text);
+  }
+
+  yellow(text: String): String {
+    return this.#wrap('33', '39', text);
+  }
+
+  blue(text: String): String {
+    return this.#wrap('34', '39', text);
+  }
+
+  magenta(text: String): String {
+    return this.#wrap('35', '39', text);
+  }
+
+  cyan(text: String): String {
+    return this.#wrap('36', '39', text);
+  }
+
+  white(text: String): String {
+    return this.#wrap('37', '39', text);
+  }
+
+  gray(text: String): String {
+    return this.#wrap('90', '39', text);
+  }
+
+  bgBlack(text: String): String {
+    return this.#wrap('40', '49', text);
+  }
+
+  bgRed(text: String): String {
+    return this.#wrap('41', '49', text);
+  }
+
+  bgGreen(text: String): String {
+    return this.#wrap('42', '49', text);
+  }
+
+  bgYellow(text: String): String {
+    return this.#wrap('43', '49', text);
+  }
+
+  bgBlue(text: String): String {
+    return this.#wrap('44', '49', text);
+  }
+
+  bgMagenta(text: String): String {
+    return this.#wrap('45', '49', text);
+  }
+
+  bgCyan(text: String): String {
+    return this.#wrap('46', '49', text);
+  }
+
+  bgWhite(text: String): String {
+    return this.#wrap('47', '49', text);
+  }
+}
+
+/**
+ * Returns the index just past the CSI escape sequence starting at
+ * `start` (`ESC [`), or `start + 1` if `start` is a bare `ESC`.
+ */
+function skipEscapeAt(text: String, start: i32) {
+  if (start + 1 >= text.length || text.getByteAt(start + 1) != 91) {
+    return start + 1;
+  }
+  var i = start + 2;
+  while (i < text.length) {
+    let b = text.getByteAt(i);
+    i += 1;
+    // Final byte of a CSI sequence is in 0x40..=0x7E ('@'..'~').
+    if (b >= 64 && b <= 126) {
+      break;
+    }
+  }
+  return i;
+}
+
+/** Returns `text` with all ANSI CSI escape sequences removed. */
+export function stripAnsi(text: String): String {
+  var hasEsc = false;
+  for (var i = 0; i < text.length; i += 1) {
+    if (text.getByteAt(i) == 27) {
+      hasEsc = true;
+      break;
+    }
+  }
+  if (!hasEsc) {
+    return text;
+  }
+  let sb = new StringBuilder(text.length);
+  var i = 0;
+  while (i < text.length) {
+    let b = text.getByteAt(i);
+    if (b == 27) {
+      i = skipEscapeAt(text, i);
+    } else {
+      sb.appendByte(b);
+      i += 1;
+    }
+  }
+  return sb.toString();
+}
+
+/**
+ * Visible character count of `text`: skips ANSI CSI sequences and
+ * counts UTF-8 code points (so multi-byte box-drawing glyphs like `│`
+ * and `◇` each count as 1 column).
+ */
+export function visibleLength(text: String): i32 {
+  var cols = 0;
+  var i = 0;
+  while (i < text.length) {
+    let b = text.getByteAt(i);
+    if (b == 27) {
+      i = skipEscapeAt(text, i);
+    } else {
+      // Count UTF-8 leading bytes (not continuation bytes 10xxxxxx).
+      if ((b & 192) != 128) {
+        cols += 1;
+      }
+      i += 1;
+    }
+  }
+  return cols;
+}

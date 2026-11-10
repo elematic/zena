@@ -11,9 +11,10 @@ import {
   Succeeded,
 } from 'workflow:engine';
 import {StepKey} from 'workflow:step';
+import {Colors} from '../colors.zena';
 import {ensureDir, ensureParentDir, withRoot} from '../fs-util.zena';
 import {FileHasher} from '../fs-walk.zena';
-import {BuildOutcome, buildTarget, watchTarget} from '../runner.zena';
+import {BuildOutcome, buildTarget, formatBuildReport, watchTarget} from '../runner.zena';
 import {ScriptRef} from '../wireit-config.zena';
 
 /**
@@ -898,7 +899,7 @@ export let tests = suite('zb end to end', () => {
       if (line == null) {
         break;
       }
-      if (line == 'build succeeded') {
+      if (line.contains('build succeeded')) {
         sawSucceeded = true;
         break;
       }
@@ -974,5 +975,95 @@ export let tests = suite('zb end to end', () => {
     isFalse(stopped.timedOut, 'expected in-flight build to exit cleanly on SIGTERM');
     equal(stopped.exitCode, 143);
     equal(await readFile(withRoot(root, 'svc.log')), 'db-start\napp-start\napp-stop\ndb-stop\n');
+  });
+
+  test('formatBuildReport renders Clack rail for ran, fresh, restored, verbose, and failed builds', async (ctx) => {
+    let root = '/tmp/zb-report-ux-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {"dependencies": ["./packages/app:build"]}
+      }
+    }`);
+    await write(root, 'packages/lib/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "mkdir -p out && echo 'lib log line' && cat src/in.txt > out/lib.txt",
+          "files": ["src/**"],
+          "output": ["out/**"]
+        }
+      }
+    }`);
+    await write(root, 'packages/lib/src/in.txt', 'lib-v1\n');
+    await write(root, 'packages/app/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "mkdir -p out && cat ../lib/out/lib.txt greeting.txt > out/app.txt",
+          "files": ["greeting.txt"],
+          "output": ["out/**"],
+          "dependencies": ["../lib:build"]
+        }
+      }
+    }`);
+    await write(root, 'packages/app/greeting.txt', 'hello-v1\n');
+    let entry = new ScriptRef('', 'build');
+    let plain = Colors.plain();
+
+    // 1. Cold build: lists ran steps on the rail and summarizes fresh (:build aggregator) in the outro.
+    let first = await buildTarget(root, entry);
+    let firstDefault = formatBuildReport(first, false, plain);
+    isTrue(firstDefault.contains('┌  [zb] :build'), firstDefault);
+    isTrue(firstDefault.contains('◇  packages/lib:build: ran'), firstDefault);
+    isTrue(firstDefault.contains('◇  packages/app:build: ran'), firstDefault);
+    isFalse(firstDefault.contains('lib log line'), 'passing stdout is hidden unless verbose');
+    isTrue(firstDefault.contains('└  build succeeded in '), firstDefault);
+    isTrue(firstDefault.contains('(3 ran)'), firstDefault);
+
+    // Verbose mode prints captured stdout indented along the rail.
+    let firstVerbose = formatBuildReport(first, true, plain);
+    isTrue(firstVerbose.contains('│  lib log line'), firstVerbose);
+
+    // 2. Warm build: collapses fresh steps into the outro unless verbose is true.
+    let second = await buildTarget(root, entry);
+    let secondDefault = formatBuildReport(second, false, plain);
+    isFalse(secondDefault.contains('packages/lib:build: fresh'), secondDefault);
+    isTrue(secondDefault.contains('(3 fresh)'), secondDefault);
+
+    let secondVerbose = formatBuildReport(second, true, plain);
+    isTrue(secondVerbose.contains('○  packages/lib:build: fresh'), secondVerbose);
+    isTrue(secondVerbose.contains('○  packages/app:build: fresh'), secondVerbose);
+
+    // 3. Cache restore: shows restored steps with ◆ on the rail.
+    await unlink(withRoot(root, 'packages/lib/.zb/state.json'));
+    let restored = await buildTarget(root, entry);
+    let restoredReport = formatBuildReport(restored, false, plain);
+    isTrue(restoredReport.contains('◆  packages/lib:build: restored'), restoredReport);
+    isTrue(restoredReport.contains('(1 restored, 2 fresh)'), restoredReport);
+
+    // 4. Failing step: prints ■, command, and stderr on the rail even when not verbose.
+    await write(root, 'packages/app/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "echo 'boom on stderr' >&2 && exit 1",
+          "files": ["greeting.txt"],
+          "output": ["out/**"],
+          "dependencies": ["../lib:build"]
+        }
+      }
+    }`);
+    let failed = await buildTarget(root, entry);
+    let failedDefault = formatBuildReport(failed, false, plain);
+    isTrue(failedDefault.contains('■  packages/app:build: failed (exit 1)'), failedDefault);
+    isTrue(failedDefault.contains('│  $ echo \'boom on stderr\' >&2 && exit 1'), failedDefault);
+    isTrue(failedDefault.contains('│  boom on stderr'), failedDefault);
+    isTrue(failedDefault.contains('└  build failed in '), failedDefault);
+    isTrue(failedDefault.contains('(1 failed, 1 skipped, 1 fresh)'), failedDefault);
+
+    let failedVerbose = formatBuildReport(failed, true, plain);
+    isTrue(failedVerbose.contains('▲  :build: skipped'), failedVerbose);
   });
 });

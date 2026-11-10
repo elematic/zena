@@ -111,6 +111,11 @@ function describe() {
             abbr: 'f',
             help: 'Rebuild target scripts even when fresh or cached',
           },
+          'verbose' => {
+            type: OptionType.Flag,
+            abbr: 'v',
+            help: 'List fresh and skipped target steps and print step command output',
+          },
           'time' => time,
           'no-cache' => noCache,
         },
@@ -571,6 +576,7 @@ async function build(args: ParsedArgs, options: Options): Future<i32> {
     args.getFlag('watch'),
     args.getFlag('force'),
     !args.getFlag('no-cache'),
+    options.verbose || args.getFlag('verbose'),
   );
 }
 
@@ -631,6 +637,7 @@ async function buildScript(
   watch: boolean = false,
   force: boolean = false,
   useCache: boolean = true,
+  verbose: boolean = false,
 ): Future<i32> {
   var packagePath = '.';
   var script = argument;
@@ -659,10 +666,10 @@ async function buildScript(
   let packageRef = if (relative == null) '' else relative.value;
   let entry = new ScriptRef(packageRef, script);
   let outcome = if (watch)
-    await watchTarget(root.value, entry, jobs, force, useCache)
+    await watchTarget(root.value, entry, jobs, force, useCache, 150 as i64, null, verbose)
   else
     await buildTarget(root.value, entry, jobs, force, useCache);
-  return reportBuild(outcome);
+  return reportBuild(outcome, verbose);
 }
 
 /** The nearest directory at or above `from` whose package.json has workspaces. */

@@ -143,16 +143,29 @@ export class RunOptions {
    * alive in the pool when the run ends.
    */
   servicePool: ServicePool?;
+  /**
+   * Optional callback invoked immediately before a task step executes
+   * its `run` callback or a service step executes its `start` callback.
+   */
+  onStepStart: ((step: StepKey) => void)?;
+  /**
+   * Optional callback invoked as soon as a step's outcome is recorded.
+   */
+  onStepFinish: ((step: StepKey, outcome: StepOutcome) => void)?;
 
   new(
     parallelism: i32 = 8,
     force: boolean = false,
     verifyOutputs: ((step: StepKey, manifest: OutputManifest) => Future<boolean>)? = null,
     servicePool: ServicePool? = null,
+    onStepStart: ((step: StepKey) => void)? = null,
+    onStepFinish: ((step: StepKey, outcome: StepOutcome) => void)? = null,
   ) : parallelism = parallelism,
       force = force,
       verifyOutputs = verifyOutputs,
-      servicePool = servicePool;
+      servicePool = servicePool,
+      onStepStart = onStepStart,
+      onStepFinish = onStepFinish;
 }
 
 /** The result of an engine run. */
@@ -516,7 +529,12 @@ export class Engine {
   }
 
   async #runStep(step: TaskStep, rs: RunState): Future<void> {
-    rs.outcomes[step.key.value] = await this.#outcomeOf(step, rs);
+    let outcome = await this.#outcomeOf(step, rs);
+    rs.outcomes[step.key.value] = outcome;
+    let onFinish = rs.options.onStepFinish;
+    if (onFinish != null) {
+      onFinish(step.key, outcome);
+    }
     if (let (true, completer) = rs.done.get(step.key.value)) {
       completer.complete();
     }
@@ -590,6 +608,10 @@ export class Engine {
         return serviceFailure;
       }
 
+      let onStart = rs.options.onStepStart;
+      if (onStart != null) {
+        onStart(step.key);
+      }
       let ctx = this.#runContext(step, prior, resolved);
       let manifest = await step.run(ctx);
       // Fingerprinting validates duplicate output names loudly here, at
@@ -820,6 +842,10 @@ export class Engine {
       return;
     }
     try {
+      let onStart = rs.options.onStepStart;
+      if (onStart != null) {
+        onStart(svc.step.key);
+      }
       let handle = await svc.start(new ServiceContext());
       svc.handle = handle;
       let pool = rs.options.servicePool;
@@ -861,13 +887,17 @@ export class Engine {
       }
     }
     let failure = svc.failure;
-    if (failure != null) {
-      rs.outcomes[svc.step.key.value] = new Failed(failure);
-    } else {
-      rs.outcomes[svc.step.key.value] = new Succeeded(
+    let outcome: StepOutcome = if (failure != null)
+      new Failed(failure)
+    else
+      new Succeeded(
         OutputManifest.empty(),
         if (svc.started && !svc.reusedFromPool) StepSource.Ran else StepSource.Fresh,
       );
+    rs.outcomes[svc.step.key.value] = outcome;
+    let onFinish = rs.options.onStepFinish;
+    if (onFinish != null) {
+      onFinish(svc.step.key, outcome);
     }
     // A stopped service no longer holds its own service dependencies.
     this.#releaseServices(svc.step, rs);

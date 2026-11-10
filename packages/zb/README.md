@@ -62,8 +62,13 @@ default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
   manifests, blob store); lost state restores from cache instead of
   rebuilding
 - bounded parallel command execution (`-j <jobs>`, defaulting to
-  `ZENA_AVAILABLE_PARALLELISM`) and cache flags (`-f` / `--force`,
-  `--no-cache`)
+  `ZENA_AVAILABLE_PARALLELISM`), cache flags (`-f` / `--force`,
+  `--no-cache`), and verbose output (`-v` / `--verbose`)
+- Clack-style rail output (`┌`, `│`, `◇`, `◆`, `○`, `▲`, `■`, `└`) with
+  per-step durations, buffered stdout/stderr blocks shown on failure (or
+  for all non-empty outputs with `-v` / `--verbose`), summarized fresh
+  and skipped step counts by default, and a live interactive spinner
+  when stdout is a terminal
 - precise cleaning: the previous run's recorded file outputs are deleted
 
 Not yet (see the design doc's milestones):
@@ -77,15 +82,19 @@ Prerequisite: a built checkout (`npm run build`), so
 root:
 
 ```sh
-./target/release/zena-cli build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [<target>]
+./target/release/zena-cli build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>]
 # or directly:
 ./target/release/zena-cli run --dir . --allow-spawn packages/zb/zena/main.zena \
-  [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [<package-dir>] <script>
+  [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] <script>
 ```
 
 `--dir .` grants filesystem access and `--allow-spawn` process spawning;
-`-C` points at a workspace other than the current directory. Each step
-prints one of `ran`, `fresh`, `restored`, `skipped (...)`, or `FAILED`.
+`-C` points at a workspace other than the current directory. By default,
+executed (`ran`), cache-restored (`restored`), and failed (`FAILED`)
+steps appear on the rail and `fresh` / `skipped` steps are summarized in
+the footer (`└  build succeeded in 42ms (2 ran, 4 fresh)`); pass `-v` /
+`--verbose` to list every step and any captured stdout/stderr on the
+rail.
 
 ## The example workspace
 
@@ -160,12 +169,16 @@ whose outputs changed on disk.
 ## Layout
 
 - `zena/main.zena` — the CLI
-- `zena/runner.zena` — config → plan → engine run → persisted state
+- `zena/runner.zena` — config → plan → engine run → persisted state and
+  rail report
 - `zena/wireit-config.zena` — package.json wireit parsing and resolution
 - `zena/builder.zena` — script configs → workflow steps and run callbacks
 - `zena/fs-walk.zena` — input discovery: walks each glob's literal base
   directory and keeps what `zena:glob`'s `GlobSet` matches
 - `zena/disk-cache.zena`, `zena/state-json.zena` — the `.zb/` formats
+- `zena/colors.zena`, `zena/layout.zena`, `zena/animation.zena` —
+  standalone terminal formatting, Clack-style rail layout, and spinner
+  animation helpers
 
 Fingerprints are `sha256:<hex>`, hashed with `zena:crypto`.
 
