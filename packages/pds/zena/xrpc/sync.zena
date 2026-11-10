@@ -81,16 +81,89 @@ export function syncRoutes(router: Router, pds: Pds): void {
       fail(res, 400, 'InvalidRequest', `'${given[1]}' is not a CID`);
       return;
     }
-    let blob = await pds.storage.store(account.did).getBlob(cid);
+    // As the reference PDS does: whatever its type, a blob is never a page
+    // or a script on this origin, where the site's cookie may be.
+    res.setHeader('content-security-policy', "default-src 'none'; sandbox");
+    res.setHeader('x-content-type-options', 'nosniff');
+    let store = pds.storage.store(account.did);
+    let range = byteRange(req.getHeader('range'));
+    if (range != null) {
+      let first = range.first;
+      let part = await store.getBlobRange(cid, first, range.length);
+      if (part == null) {
+        fail(res, 400, 'BlobNotFound', 'Blob not found');
+        return;
+      }
+      if (first >= part.size) {
+        res.statusCode = 416;
+        res.setHeader('content-range', `bytes */${part.size}`);
+        res.body = new FixedArray<u8>(0, 0 as u8);
+        return;
+      }
+      res.statusCode = 206;
+      res.type = part.mimeType;
+      res.setHeader('content-range', `bytes ${first}-${first + (part.bytes.length as i64) - (1 as i64)}/${part.size}`);
+      res.body = part.bytes;
+      return;
+    }
+    let blob = await store.getBlob(cid);
     if (blob == null) {
       fail(res, 400, 'BlobNotFound', 'Blob not found');
       return;
     }
-    // As the reference PDS does: whatever its type, a blob is never a page
-    // or a script on this origin, where the site's cookie may be.
     res.type = blob.mimeType;
-    res.setHeader('content-security-policy', "default-src 'none'; sandbox");
-    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('accept-ranges', 'bytes');
     res.body = blob.bytes;
   });
+}
+
+/** The longest range a `Range` without a last byte asks for. */
+let TO_THE_END: i64 = 0x7fffffffffffffff;
+
+/** A range of bytes a `Range` header asks for: `length` bytes from `first`. */
+class ByteRange(first: i64, length: i64)
+
+/**
+ * The one range `header` asks for, `bytes=<first>-<last>` or
+ * `bytes=<first>-`; or null when there is no header, or it asks for
+ * anything else. A server may answer any `Range` with the whole
+ * representation (RFC 9110, section 14.2), and this one does for a suffix
+ * (`bytes=-<n>`), a list of ranges and anything it cannot read.
+ */
+function byteRange(header: String | null): ByteRange | null {
+  if (header == null || !header.startsWith('bytes=')) {
+    return null;
+  }
+  let parts = header.sliceBytes(6, header.length).trim().split('-');
+  if (parts.length != 2) {
+    return null;
+  }
+  let first = digitsOf(parts[0]);
+  if (first < 0 as i64) {
+    return null;
+  }
+  if (parts[1] == '') {
+    return new ByteRange(first, TO_THE_END - first);
+  }
+  let last = digitsOf(parts[1]);
+  if (last < first) {
+    return null;
+  }
+  return new ByteRange(first, last - first + (1 as i64));
+}
+
+/** `text` as a number, when it is 1 to 18 decimal digits; otherwise -1. */
+function digitsOf(text: String): i64 {
+  if (text.length == 0 || text.length > 18) {
+    return -1 as i64;
+  }
+  var value = 0 as i64;
+  for (var i = 0; i < text.length; i += 1) {
+    let byte = text.getByteAt(i);
+    if (byte < 48 || byte > 57) {
+      return -1 as i64;
+    }
+    value = value * (10 as i64) + ((byte - 48) as i64);
+  }
+  return value;
 }

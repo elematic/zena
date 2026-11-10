@@ -28,7 +28,7 @@ import {XrpcClient, XrpcError} from 'atproto:xrpc';
 import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {Signer} from './signer.zena';
-import {Account, Head, StoredBlob} from './storage.zena';
+import {Account, Head, StoredBlob, bytesInRange} from './storage.zena';
 import {nowMicros, nowSeconds} from './xrpc/common.zena';
 
 /** A record in a repository: its key, its value and its CID. */
@@ -69,6 +69,12 @@ export interface PdsClient {
   uploadBlob(did: String, mimeType: String, bytes: FixedArray<u8>): Future<BlobRef>;
   /** `com.atproto.sync.getBlob`: the blob `cid` of `did`, or null. */
   getBlob(did: String, cid: Cid): Future<StoredBlob | null>;
+  /**
+   * `com.atproto.sync.getBlob` with a `Range`: `length` bytes of the blob
+   * `cid` of `did` from `offset`, which is before its end, or fewer when it
+   * ends sooner; or null when there is no such blob.
+   */
+  getBlobRange(did: String, cid: Cid, offset: i64, length: i64): Future<FixedArray<u8> | null>;
   /** `com.atproto.repo.getRecord`: the record at `collection/rkey` in `did`'s repository, or null. */
   getRecord(did: String, collection: String, rkey: String): Future<HeldRecord | null>;
   /** `com.atproto.repo.listRecords`, every page: the records of `collection`, in record-key order. */
@@ -129,6 +135,10 @@ export final class InProcessPds implements PdsClient {
 
   async getBlob(did: String, cid: Cid): Future<StoredBlob | null> {
     return await this.#pds.storage.store(did).getBlob(cid);
+  }
+
+  async getBlobRange(did: String, cid: Cid, offset: i64, length: i64): Future<FixedArray<u8> | null> {
+    return (await this.#pds.storage.store(did).getBlobRange(cid, offset, length))?.bytes;
   }
 
   async getRecord(did: String, collection: String, rkey: String): Future<HeldRecord | null> {
@@ -264,6 +274,25 @@ export final class XrpcPds implements PdsClient {
           [('did', did), ('cid', cid.toString())]);
       let mimeType = response.header('content-type') ?? 'application/octet-stream';
       return new StoredBlob(mimeType, await response.bytes());
+    } catch (e) {
+      if (e is XrpcError && (e.error == 'BlobNotFound' || e.error == 'RepoNotFound')) {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  async getBlobRange(did: String, cid: Cid, offset: i64, length: i64): Future<FixedArray<u8> | null> {
+    if (length <= 0 as i64) {
+      return new FixedArray<u8>(0, 0 as u8);
+    }
+    try {
+      let response = await new XrpcClient(this.#endpoint).queryRaw(SYNC_GET_BLOB,
+          [('did', did), ('cid', cid.toString())], [('range', `bytes=${offset}-${offset + length - (1 as i64)}`)]);
+      let partial = response.status == 206;
+      let bytes = await response.bytes();
+      // A PDS may answer a Range with the whole blob.
+      return if (partial) bytes else bytesInRange(bytes, offset, length);
     } catch (e) {
       if (e is XrpcError && (e.error == 'BlobNotFound' || e.error == 'RepoNotFound')) {
         return null;

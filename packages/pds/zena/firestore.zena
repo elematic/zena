@@ -54,8 +54,8 @@ import {KeyType} from 'atproto:didkey';
 import {compareKeys} from 'atproto:mst';
 import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
-  Account, AccountKind, AccountStore, EncryptedKey, Head, KeyEncryption, RecordChange, RecordEntry, ReservedKey,
-  SigningKey, Storage, StoredBlob, sameHead, sortRecordEntries
+  Account, AccountKind, AccountStore, BlobRange, EncryptedKey, Head, KeyEncryption, RecordChange, RecordEntry,
+  ReservedKey, SigningKey, Storage, StoredBlob, bytesInRange, sameHead, sortRecordEntries
 } from './storage.zena';
 
 /** The most writes one batch holds. */
@@ -65,6 +65,11 @@ export let BATCH_WRITES = 500;
 export interface BlobBytes {
   /** The bytes of object `name`, or null. */
   read(name: String): Future<FixedArray<u8> | null>;
+  /**
+   * `length` bytes of object `name` from `offset`, which is before its
+   * end, or fewer when it ends sooner; or null when there is no object.
+   */
+  readRange(name: String, offset: i64, length: i64): Future<FixedArray<u8> | null>;
   write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void>;
 }
 
@@ -76,6 +81,11 @@ export final class CloudStorageBlobs implements BlobBytes {
 
   async read(name: String): Future<FixedArray<u8> | null> {
     let bytes = await this.#bucket.read(name);
+    return if (bytes == null) null else bytes as FixedArray<u8>;
+  }
+
+  async readRange(name: String, offset: i64, length: i64): Future<FixedArray<u8> | null> {
+    let bytes = await this.#bucket.readRange(name, offset, length);
     return if (bytes == null) null else bytes as FixedArray<u8>;
   }
 
@@ -97,6 +107,12 @@ export final class DirectoryBlobs implements BlobBytes {
   async read(name: String): Future<FixedArray<u8> | null> {
     let path = `${this.#root}/${name}`;
     return if (await exists(path)) await readFileBytes(path) else null;
+  }
+
+  /** Reads the whole file: a server on one machine reads its own disk. */
+  async readRange(name: String, offset: i64, length: i64): Future<FixedArray<u8> | null> {
+    let bytes = await this.read(name);
+    return if (bytes == null) null else bytesInRange(bytes, offset, length);
   }
 
   async write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void> {
@@ -134,6 +150,13 @@ export final class MemoryBlobs implements BlobBytes {
   async read(name: String): Future<FixedArray<u8> | null> {
     if (let (true, bytes) = this.#objects.get(name)) {
       return bytes;
+    }
+    return null;
+  }
+
+  async readRange(name: String, offset: i64, length: i64): Future<FixedArray<u8> | null> {
+    if (let (true, bytes) = this.#objects.get(name)) {
+      return bytesInRange(bytes, offset, length);
     }
     return null;
   }
@@ -411,6 +434,23 @@ export final class FirestoreAccountStore implements AccountStore {
       let bytes = await this.#blobs.read(`${this.#blobPrefix}/${cid.toString()}`);
       if (bytes != null) {
         return new StoredBlob(mimeType, bytes);
+      }
+    }
+    return null;
+  }
+
+  async getBlobRange(cid: Cid, offset: i64, length: i64): Future<BlobRange | null> {
+    let snapshot = await this.#account().collection('blobs').doc(cid.toString()).get();
+    if (let (true, mimeType) = snapshot.getString('mimeType')) {
+      if (let (true, size) = snapshot.getInteger('size')) {
+        // Cloud Storage refuses a read from the end on, which is empty.
+        if (offset >= size || length <= 0 as i64) {
+          return new BlobRange(mimeType, size, new FixedArray<u8>(0, 0 as u8));
+        }
+        let bytes = await this.#blobs.readRange(`${this.#blobPrefix}/${cid.toString()}`, offset, length);
+        if (bytes != null) {
+          return new BlobRange(mimeType, size, bytes);
+        }
       }
     }
     return null;
