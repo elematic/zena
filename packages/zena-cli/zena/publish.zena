@@ -409,13 +409,36 @@ async function createPackage(args: ParsedArgs, session: Session, registry: Regis
   let initial = await initialMaintainers(session.did, org);
   input['maintainers'] = toJson(initial.toValue());
   let client = await registryClient(session, registry, CREATE_PACKAGE);
-  let created = (await client.procedure(CREATE_PACKAGE, input)) as JsonObject;
+  let created = try {
+    (await client.procedure(CREATE_PACKAGE, input)) as JsonObject
+  } catch (e) {
+    if (e is XrpcError && e.error == 'NameTaken') {
+      throw await nameTaken(handle, target);
+    }
+    throw e;
+  };
   let did = created['did'] as String;
   let text = writeDid(target.text as String, did,
       if (target.manifest.scope == null && (await rootScope()) != scope) scope else null);
   await writeFile(target.manifestPath(), text);
   console.log(`Created ${created['handle'] as String} (${did}), and wrote its DID into ${target.manifestPath()}.`);
   return text;
+}
+
+/**
+ * Why `target`, a manifest with no DID, cannot be created as `handle`: a
+ * package has the name. Most often it is `target`'s own, published before
+ * from a manifest whose DID was never committed, so the error names the
+ * DID to write. It writes nothing itself: a new package that happens to
+ * take the name would be published into the other one.
+ */
+async function nameTaken(handle: String, target: WorkspacePackage): Future<PublishError> {
+  let did = await scopeOrganization(handle);
+  if (did == null) {
+    return new PublishError(`${handle} is taken; choose another name in ${target.manifestPath()}`);
+  }
+  return new PublishError(
+      `${handle} already exists, as ${did}. If ${target.manifestPath()} is that package's, add "did": "${did}" to it and publish again; otherwise choose another name.`);
 }
 
 /**
