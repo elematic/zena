@@ -1723,7 +1723,11 @@ parameter named `result`.
 
 `old(e)` keeps a reference: `old(this.items)` is the same array the
 body went on to change, and `old(this.items.length)` is the earlier
-length.
+length. `e` is evaluated on entry, before the body and not where it is
+written, so it may only read: an `e` that assigns a variable outside
+itself, writes to an object or calls something that does is an error,
+by the rule a [`static`](#clauses-that-are-proved-not-run-static)
+condition follows.
 
 A postcondition is checked on every way of returning, and after any
 `finally` block the return passes through. It is not checked when the
@@ -1810,6 +1814,33 @@ function search(items: FixedArray<i32>, target: i32): i32
 Its names must resolve and its condition must be a boolean, like any
 clause's, so it cannot rot. It narrows nothing. A clause takes one
 modifier: `debug` or `static`.
+
+A `static` condition is never run, so it cannot be what changes the
+program's state. It may read anything, fields and module variables
+that can change included, and call any function that only reads. It is
+an error for it to assign a variable outside itself, write to an object
+that already exists, or call something that does, and the error names
+the chain of calls:
+
+```zena
+var calls = 0;
+
+function positive(n: i32): boolean {
+  calls += 1;
+  return n > 0;
+}
+
+function keep(n: i32): i32 static requires (positive(n)) { ... }
+// error: A 'static requires' condition cannot have effects: it calls
+// 'positive', which assigns the module variable 'calls'.
+```
+
+The compiler follows the bodies of the functions a condition calls to
+decide this. It cannot follow a call of a function value, a call
+through an interface, a `for`/`in` loop over anything but an array or
+an integer range, or a host function, and treats each as an effect. A function may build and
+fill objects of its own: one that collects its result in a new array
+only reads, as far as its callers can tell.
 
 `requires`, `ensures`, `invariant` and `debug` are contextual keywords
 and stay available as identifiers; `static` is a keyword, and means a

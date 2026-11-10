@@ -29,6 +29,35 @@ lists the call sites that ask today. `ZENA_CHECK_ALL_BODIES=1` turns
 the deferral off — the way to tell a compiler bug apart from a deferral
 bug, and the way to see diagnostics in standard library source.
 
+## Purity Is Decided After the Check
+
+`zena/lib/analysis/purity.zena` (`PurityAnalysis`) answers what a
+function's body does to the program's state: four facts (effect, state
+read, write, mutable read), each with the place it was found and, for a
+call, the callee's own reason, so an error prints the chain of calls.
+The rule and its limits are in
+[pure-functions.md](../../docs/design/pure-functions.md). It reads
+checked models and writes nothing into them, and it asks for a deferred
+body before walking it, so asking about a standard library function
+checks that function's body.
+
+The checker does not call it. A `static` clause's condition and the
+argument of `old` must change nothing, and whether they do depends on
+bodies that may be in a library checked later. So the checker records a
+`PurityObligation` on the `SemanticModel` (`checker/contracts.zena`),
+and `checkPurityObligations` in `compiler.zena` settles them after the
+check loop, adding its diagnostics to the library's result. A library
+that already has errors is passed over.
+
+A verdict depends on bodies, and an export signature says nothing about
+a body. So an incremental check that checks anything again also checks
+again every library whose previous result holds an obligation
+(`checkCompilation`, where `mustCheck` is built). A new analysis is
+made per check; nothing of it is carried from one to the next.
+
+`zena/test/purity_test.zena` asks for verdicts directly, and
+`tests/language/semantics/contracts/static-*.zena` are the programs.
+
 ## WebAssembly Code Generation
 
 Code generation separates semantic discovery from lowering and emission

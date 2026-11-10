@@ -42,7 +42,7 @@ import {
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
 import {
-  Node, NodeId, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, IdGenerator, syntacticMemberName, MemberExpression, getMemberPropertyName,
+  Node, NodeId, Expression, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, IdGenerator, syntacticMemberName, MemberExpression, getMemberPropertyName,
 } from './ast.zena';
 import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
@@ -412,8 +412,35 @@ export interface DeferredBodies {
   checkBodyOfNode(nodeId: i32): void;
 }
 
+/**
+ * An expression that must not change anything a caller can see: the
+ * condition of a `static` clause, or the argument of `old`
+ * (docs/design/pure-functions.md). The checker records one where it
+ * meets the expression, and `checkCompilation` settles them when every
+ * module is checked, since the answer depends on the bodies of what
+ * the expression calls.
+ */
+export final class PurityObligation(
+  expression: Expression,
+  /** What the expression is, to begin the error with: "A 'static requires' condition". */
+  subject: String,
+  /** Whether the expression may name `result`. */
+  inEnsures: boolean
+)
+
 export final class SemanticModel {
   var typeIdGenerator: IdGenerator<TypeId> | null = null;
+
+  /** The expressions of this module that must be free of effects. */
+  purityObligations = new Array<PurityObligation>();
+
+  /** Records `obligation`, once however often its expression is checked. */
+  addPurityObligation(obligation: PurityObligation): void {
+    for (let recorded in this.purityObligations) {
+      if (recorded.expression === obligation.expression) { return; }
+    }
+    this.purityObligations.push(obligation);
+  }
 
   /**
    * Set on a module whose bodies wait for something to reach them: a

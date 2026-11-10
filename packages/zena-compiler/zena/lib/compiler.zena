@@ -38,7 +38,8 @@ import {
 import { parse } from './parser.zena';
 import { checkModule, beginModule, finishModule, ModuleCheck, CheckResult, SharedCheckerState } from './checker.zena';
 import { walk } from './visitor.zena';
-import { Diagnostic, SourceSpan, spanOf } from './diagnostics.zena';
+import { Diagnostic, DiagnosticCode, DiagnosticSeverity, SourceSpan, spanOf } from './diagnostics.zena';
+import { PurityAnalysis } from './analysis/purity.zena';
 import { SemanticModel } from './semantic-model.zena';
 import { nowMs, performance } from './time.zena';
 import {
@@ -1323,6 +1324,45 @@ final class ImportComponents {
 }
 
 /**
+ * Settles the purity obligations of freshly checked modules: reports
+ * each `static` condition and `old` argument that would change
+ * something a caller can see, with the chain of calls that leads to
+ * the change (docs/design/pure-functions.md).
+ *
+ * A module that already has errors is passed over. Its expressions may
+ * hold nodes without types, which the analysis would report as effects
+ * it cannot follow, a second error for one mistake.
+ */
+function checkPurityObligations(checked: GrowableArray<CheckResult>, state: SharedCheckerState) {
+  let analysis = new PurityAnalysis(state.modelIndex);
+  for (let checkResult in checked) {
+    let {model, diagnostics} = checkResult;
+    if (model.purityObligations.length == 0) { continue; }
+    var hasErrors = false;
+    for (let reported in diagnostics) {
+      if (reported.severity == DiagnosticSeverity.Error) { hasErrors = true; }
+    }
+    if (hasErrors) { continue; }
+    for (let obligation in model.purityObligations) {
+      let verdict = analysis.verdictOfExpression(
+        obligation.expression, model, obligation.inEnsures
+      );
+      let reason = verdict.changesBecause;
+      if (reason == null) { continue; }
+      let loc = reason.loc ?? obligation.expression.loc;
+      let span: SourceSpan | null = if (loc != null) { spanOf(loc, model.sourcePath) } else { null };
+      let diagnostic = new Diagnostic(
+        DiagnosticCode.ImpureExpression,
+        `${obligation.subject} cannot have effects: it ${reason.render()}.`,
+        DiagnosticSeverity.Error, span
+      );
+      diagnostics.push(diagnostic);
+      model.addDiagnostic(diagnostic);
+    }
+  }
+}
+
+/**
  * Type-check all modules in a compilation result in dependency order.
  *
  * Uses export signature comparison for precise incremental invalidation:
@@ -1409,6 +1449,18 @@ export function checkCompilation(
               mustCheck.add(file.path);
             }
           }
+        }
+      }
+    }
+    // Whether an expression is free of effects depends on the bodies of
+    // what it calls, in whichever files those are, and a body can change
+    // without its file's export signature changing. So when anything is
+    // checked again, so is every file that asked that of an expression.
+    if (mustCheck.size > 0) {
+      for (let file in result.files) {
+        if (previous.results.has(file.path) &&
+            previous.results[file.path].model.purityObligations.length > 0) {
+          mustCheck.add(file.path);
         }
       }
     }
@@ -1565,7 +1617,11 @@ export function checkCompilation(
     }
   };
 
+  // The results this call produced, as opposed to carried forward.
+  let checkedNow = new Array<CheckResult>();
+
   let recordChecked = (file: SourceFile, checkResult: CheckResult) => {
+    checkedNow.push(checkResult);
     allResults[file.path] = checkResult;
     allSources[file.path] = file.source;
     allAsts[file.path] = file.ast;
@@ -1715,6 +1771,10 @@ export function checkCompilation(
     }
   }
   performance.end(tCheck);
+
+  let tPurity = nowMs();
+  checkPurityObligations(checkedNow, sharedState);
+  performance.add("check-purity", nowMs() - tPurity);
 
   // The entry module's result is always the last in topo order.
   let entryResult = allResults[result.entry.path];

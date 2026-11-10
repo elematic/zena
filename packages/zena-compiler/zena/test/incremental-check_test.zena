@@ -261,6 +261,41 @@ export let tests = suite('Incremental Type Checking', () => {
     });
   });
 
+  suite('conditions that rest on a body', () => {
+
+    // Whether a `static` condition has an effect is decided by the
+    // bodies of what it calls, which an export signature says nothing
+    // about.
+    test('a static condition is judged again when a body it calls changes', async () => {
+      let quiet = "export function positive(n: i32): boolean { return n > 0; }";
+      let loud = "var calls = 0;\nexport function positive(n: i32): boolean { calls += 1; return n > 0; }";
+      let host = new MockHost();
+      host.addFile("/project/lib.zena", quiet);
+      host.addFile("/project/main.zena",
+        "import { positive } from './lib.zena';\nfunction keep(n: i32): i32 static requires (positive(n)) { return n; }");
+
+      let compiler = makeCompiler(host);
+      let result1 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let check1 = checkCompilation(result1);
+      equal(errorDiagnostics(check1.diagnostics).length, 0);
+
+      host.addFile("/project/lib.zena", loud);
+      await compiler.invalidate("/project/lib.zena");
+      let result2 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let check2 = checkCompilation(result2, check1);
+      let errors2 = errorDiagnostics(check2.diagnostics);
+      equal(errors2.length, 1);
+      equal(errors2[0].message,
+        "A 'static requires' condition cannot have effects: it calls 'positive', which assigns the module variable 'calls'.");
+
+      host.addFile("/project/lib.zena", quiet);
+      await compiler.invalidate("/project/lib.zena");
+      let result3 = await compiler.compile({entry: "/project/main.zena", target: 'js'});
+      let check3 = checkCompilation(result3, check2);
+      equal(errorDiagnostics(check3.diagnostics).length, 0);
+    });
+  });
+
   suite('no previous results', () => {
 
     test('first check works without previous', async () => {

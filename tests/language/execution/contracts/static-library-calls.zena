@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 7
+// A program whose `static` conditions call the standard library
+// compiles and runs, and the conditions are never evaluated: each of
+// these is false for the arguments `main` passes.
+
+import {div, sqrt, pow, hypot} from 'zena:math';
+
+function half(n: i32): i32 static requires (div(n, 2) > n) {
+  return div(n, 2);
+}
+
+function square(x: f64): f64
+  static requires (sqrt(x) < 0.0)
+  static ensures (pow(result, 2.0) < hypot(x, x))
+{
+  return x * x;
+}
+
+function shortest(names: GrowableArray<String>): i32
+  static requires (names[0..1].length == 2 && names[0].startsWith('z'))
+{
+  var shortest = names[0].length;
+  for (let name in names) {
+    if (name.length < shortest) {
+      shortest = name.length;
+    }
+  }
+  return shortest;
+}
+
+export function main(): i32 {
+  let names = new GrowableArray<String>();
+  names.push('ab');
+  names.push('abc');
+  // 2 + 4 + 2 - 1
+  return half(4) + (square(2.0) as i32) + shortest(names) - names[0..1].length;
+}
