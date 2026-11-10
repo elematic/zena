@@ -1,7 +1,9 @@
 import {getEnv} from 'zena:cli';
 import { HashSet } from 'zena:collections';
+import {div} from 'zena:math';
 import {Process, checkSignal, runWith, spawnWith} from 'zena:process';
 import {Regex} from 'zena:regex';
+import {monotonic} from 'zena:time';
 import {StringBuilder, Unmanaged, adopt, disown} from 'zena:core';
 import {Fingerprint} from 'workflow:fingerprint';
 import {Graph} from 'workflow:graph';
@@ -31,12 +33,41 @@ import {
   refKey,
 } from './wireit-config.zena';
 
-/** A planned build: the step graph and the initial leaf map. */
+/** Captured command output and wall-clock duration for a step that executed. */
+export class StepExecution {
+  command: String;
+  exitCode: i32;
+  stdout: String;
+  stderr: String;
+  durationMs: i64;
+
+  new(this.command, this.exitCode, this.stdout, this.stderr, this.durationMs);
+
+  combinedOutput(): String {
+    if (this.stdout == '') {
+      return this.stderr;
+    }
+    if (this.stderr == '') {
+      return this.stdout;
+    }
+    if (this.stdout.endsWith('\n')) {
+      return this.stdout + this.stderr;
+    }
+    return `${this.stdout}\n${this.stderr}`;
+  }
+}
+
+/** A planned build: the step graph, initial leaf map, and captured step runs. */
 export class Plan {
   graph: Graph;
   leaves: HashMap<String, Fingerprint>;
+  executions: HashMap<String, StepExecution>;
 
-  new(this.graph, this.leaves);
+  new(
+    this.graph,
+    this.leaves,
+    this.executions = new HashMap<String, StepExecution>(),
+  );
 }
 
 function appendSegment(sb: StringBuilder, s: String) {
@@ -188,6 +219,7 @@ export async function runScript(
   ctx: RunContext,
   volatileMark: String?,
   hasher: FileHasher?,
+  executions: HashMap<String, StepExecution>? = null,
 ): Future<OutputManifest> {
   let command = config.command;
   if (command == null && config.output.length == 0) {
@@ -204,16 +236,18 @@ export async function runScript(
     return new OutputManifest(forwarded);
   }
   if (command != null) {
+    let key = refKey(config.ref);
     let sigBefore = checkSignal();
     if (sigBefore != 0) {
       throw new Error(
-        `script "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigBefore)}`,
+        `script "${key}" interrupted by signal ${i32ToString(sigBefore)}`,
       );
     }
     if (hasher != null) {
       hasher.markMutated();
     }
     await cleanOutputs(root, config, ctx);
+    let startNs = monotonic() as i64;
     let cwd = withRoot(root, config.ref.packageDir);
     let wrapped =
       `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${command}`;
@@ -225,12 +259,22 @@ export async function runScript(
     let sigAfter = checkSignal();
     if (sigAfter != 0) {
       throw new Error(
-        `script "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigAfter)}`,
+        `script "${key}" interrupted by signal ${i32ToString(sigAfter)}`,
+      );
+    }
+    if (executions != null) {
+      let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+      executions[key] = new StepExecution(
+        command,
+        result.exitCode,
+        result.stdout,
+        result.stderr,
+        durationMs,
       );
     }
     if (!result.succeeded()) {
       throw new Error(
-        `script "${refKey(config.ref)}" failed (exit ${i32ToString(result.exitCode)}): ${command}\n` +
+        `script "${key}" failed (exit ${i32ToString(result.exitCode)}): ${command}\n` +
         result.stdout + result.stderr,
       );
     }
@@ -316,14 +360,17 @@ async function startService(
   config: ScriptConfig,
   readyRegex: Regex?,
   hasher: FileHasher,
+  executions: HashMap<String, StepExecution>,
 ): Future<ServiceHandle> {
+  let key = refKey(config.ref);
   let sigBefore = checkSignal();
   if (sigBefore != 0) {
     throw new Error(
-      `service "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigBefore)}`,
+      `service "${key}" interrupted by signal ${i32ToString(sigBefore)}`,
     );
   }
   hasher.markMutated();
+  let startNs = monotonic() as i64;
   let command = config.command ?? '';
   let cwd = withRoot(root, config.ref.packageDir);
   let wrapped =
@@ -349,24 +396,42 @@ async function startService(
     if (sigAfter != 0) {
       await proc.stop(2000 as i64);
       throw new Error(
-        `service "${refKey(config.ref)}" interrupted by signal ${i32ToString(sigAfter)}`,
+        `service "${key}" interrupted by signal ${i32ToString(sigAfter)}`,
       );
     }
     if (!matched) {
       let res = await proc.stop(500 as i64);
+      let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+      executions[key] = new StepExecution(
+        command,
+        res.exitCode,
+        res.stdout,
+        res.stderr,
+        durationMs,
+      );
       throw new Error(
-        `service "${refKey(config.ref)}" exited before readyWhen.lineMatches matched (exit ${i32ToString(res.exitCode)}): ${command}\n` +
+        `service "${key}" exited before readyWhen.lineMatches matched (exit ${i32ToString(res.exitCode)}): ${command}\n` +
         res.stdout + res.stderr,
       );
     }
   } else if (proc.hasExited()) {
     let res = await proc.wait();
+    let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+    executions[key] = new StepExecution(
+      command,
+      res.exitCode,
+      res.stdout,
+      res.stderr,
+      durationMs,
+    );
     throw new Error(
-      `service "${refKey(config.ref)}" exited immediately (exit ${i32ToString(res.exitCode)}): ${command}\n` +
+      `service "${key}" exited immediately (exit ${i32ToString(res.exitCode)}): ${command}\n` +
       res.stdout + res.stderr,
     );
   }
-  return new ZbServiceHandle(refKey(config.ref), command, disown(proc));
+  let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+  executions[key] = new StepExecution(command, 0, '', '', durationMs);
+  return new ZbServiceHandle(key, command, disown(proc));
 }
 
 async function runForegroundService(
@@ -523,6 +588,7 @@ export function planScripts(
 ): Plan {
   let fileHasher = hasher ?? new FileHasher(root);
   let leaves = new HashMap<String, Fingerprint>();
+  let executions = new HashMap<String, StepExecution>();
   let steps = new GrowableArray<Step>();
   for (let config in configs) {
     let key = refKey(config.ref);
@@ -541,7 +607,7 @@ export function planScripts(
           new StepKey(key),
           configFingerprint(config, salt),
           inputs,
-          (svcCtx) => startService(root, config, readyRegex, fileHasher),
+          (svcCtx) => startService(root, config, readyRegex, fileHasher, executions),
         ));
       }
     } else {
@@ -555,9 +621,10 @@ export function planScripts(
           ctx,
           if (config.fingerprintable) null else salt,
           fileHasher,
+          executions,
         ),
       ));
     }
   }
-  return new Plan(new Graph(steps), leaves);
+  return new Plan(new Graph(steps), leaves, executions);
 }

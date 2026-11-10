@@ -7,14 +7,14 @@ import {ScriptRef} from './wireit-config.zena';
 /**
  * zb: a wireit-compatible incremental build runner.
  *
- *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] <script>
- *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] <package-dir> <script>
+ *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] <script>
+ *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] <package-dir> <script>
  *
  * The workspace root defaults to the current directory; -C points at a
  * nested workspace (a directory with its own package.json tree).
  */
 let usage =
-  'usage: zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [<package-dir>] <script>';
+  'usage: zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] <script>';
 
 export async function main(): Future<i32> {
   let args = getArguments();
@@ -23,6 +23,7 @@ export async function main(): Future<i32> {
   var watch = false;
   var force = false;
   var useCache = true;
+  var verbose = false;
   var next = 1;
   while (next < args.length && args[next].startsWith('-')) {
     let flag = args[next];
@@ -56,6 +57,9 @@ export async function main(): Future<i32> {
     } else if (flag == '--no-cache') {
       useCache = false;
       next += 1;
+    } else if (flag == '-v' || flag == '--verbose') {
+      verbose = true;
+      next += 1;
     } else {
       console.log(usage);
       return 2;
@@ -74,7 +78,7 @@ export async function main(): Future<i32> {
   var outcome: BuildOutcome | null = null;
   try {
     outcome = if (watch)
-      await watchTarget(root, entry, jobs, force, useCache)
+      await watchTarget(root, entry, jobs, force, useCache, 150 as i64, null, verbose)
     else
       await buildTarget(root, entry, jobs, force, useCache);
   } catch (e) {
@@ -88,5 +92,5 @@ export async function main(): Future<i32> {
   if (outcome == null) {
     return 1;
   }
-  return reportBuild(outcome);
+  return reportBuild(outcome, verbose);
 }

@@ -1,0 +1,244 @@
+/**
+ * Clack-inspired terminal rail, step, log block, and box layout utilities.
+ *
+ * Structures command-line output along a left-hand guide rail (`┌`, `│`,
+ * `└`) with geometric status markers (`◇`, `◆`, `○`, `▲`, `■`), indented
+ * log blocks for captured command output, and boxed notes.
+ */
+
+import {StringBuilder} from 'zena:core';
+import {div} from 'zena:math';
+import {Colors, visibleLength} from './colors.zena';
+
+/** Top cap of a vertical rail (`┌`). */
+export let BAR_START = '┌';
+
+/** Vertical rail segment (`│`). */
+export let BAR = '│';
+
+/** Bottom cap of a vertical rail (`└`). */
+export let BAR_END = '└';
+
+/** Horizontal box line (`─`). */
+export let BAR_H = '─';
+
+/** Top-right rounded box corner (`╮`). */
+export let CORNER_TOP_RIGHT = '╮';
+
+/** Bottom-right rounded box corner (`╯`). */
+export let CORNER_BOTTOM_RIGHT = '╯';
+
+/** Left T-junction on the rail (`├`). */
+export let CONNECT_LEFT = '├';
+
+/** Completed / succeeded step marker (`◇`). */
+export let STEP_SUBMIT = '◇';
+
+/** Active / restored / running service step marker (`◆`). */
+export let STEP_ACTIVE = '◆';
+
+/** Idle / fresh step marker (`○`). */
+export let STEP_IDLE = '○';
+
+/** Warning / skipped step marker (`▲`). */
+export let STEP_WARN = '▲';
+
+/** Canceled / failed step marker (`■`). */
+export let STEP_CANCEL = '■';
+
+/** Semantic status kind for a step on the rail. */
+export enum StepKind {
+  Success,
+  Active,
+  Fresh,
+  Warning,
+  Error,
+}
+
+/** Repeats `unit` `count` times. */
+export function repeatString(unit: String, count: i32): String {
+  if (count <= 0 || unit == '') {
+    return '';
+  }
+  let sb = new StringBuilder(unit.length * count);
+  for (var i = 0; i < count; i += 1) {
+    sb.append(unit);
+  }
+  return sb.toString();
+}
+
+/** Pads `text` on the right with spaces to `width` visible columns. */
+export function padVisibleRight(text: String, width: i32): String {
+  let len = visibleLength(text);
+  if (len >= width) {
+    return text;
+  }
+  return text + repeatString(' ', width - len);
+}
+
+/**
+ * Formats a duration in milliseconds: `42ms` under a second, or `1.4s`
+ * at one second and above.
+ */
+export function formatDuration(ms: i64): String {
+  let clamped = if (ms < (0 as i64)) 0 as i64 else ms;
+  if (clamped < (1000 as i64)) {
+    return `${i64ToString(clamped)}ms`;
+  }
+  let secs = div(clamped, 1000 as i64);
+  let tenths = div(clamped % (1000 as i64), 100 as i64);
+  return `${i64ToString(secs)}.${i64ToString(tenths)}s`;
+}
+
+/** Splits `text` into display lines, trimming one trailing `\n` and `\r`s. */
+export function splitLines(text: String): Array<String> {
+  if (text == '') {
+    return [];
+  }
+  let trimmed = if (text.endsWith('\n'))
+    text.sliceBytes(0, text.length - 1)
+  else
+    text;
+  let raw = trimmed.split('\n');
+  let lines = new GrowableArray<String>();
+  for (let line in raw) {
+    lines.push(
+      if (line.endsWith('\r')) line.sliceBytes(0, line.length - 1) else line,
+    );
+  }
+  return lines;
+}
+
+/**
+ * Formatter for Clack-style rail layouts parameterized by a `Colors`
+ * palette.
+ */
+export class RailLayout {
+  colors: Colors;
+
+  new(this.colors = new Colors());
+
+  /**
+   * Formats a pill badge (` bgCyan(black(" label ")) ` when color is
+   * enabled, or `[label]` in plain text).
+   */
+  badge(label: String): String {
+    if (this.colors.enabled) {
+      return this.colors.bgCyan(this.colors.black(` ${label} `));
+    }
+    return `[${label}]`;
+  }
+
+  /** Formats the opening rail line (`┌  <title>`). */
+  intro(title: String): String {
+    return `${this.colors.gray(BAR_START)}  ${title}`;
+  }
+
+  /** Formats a bare vertical guide line (`│`). */
+  bar(): String {
+    return this.colors.gray(BAR);
+  }
+
+  /** Formats a line indented along the rail (`│  <text>`). */
+  barLine(text: String): String {
+    return `${this.colors.gray(BAR)}  ${text}`;
+  }
+
+  /** Returns the styled symbol for `kind`. */
+  symbolFor(kind: StepKind): String {
+    if (kind == StepKind.Success) {
+      return this.colors.green(STEP_SUBMIT);
+    }
+    if (kind == StepKind.Active) {
+      return this.colors.cyan(STEP_ACTIVE);
+    }
+    if (kind == StepKind.Fresh) {
+      return this.colors.dim(STEP_IDLE);
+    }
+    if (kind == StepKind.Warning) {
+      return this.colors.yellow(STEP_WARN);
+    }
+    return this.colors.red(STEP_CANCEL);
+  }
+
+  /**
+   * Formats a step line on the rail (`<symbol>  <message>` with an
+   * optional dimmed `detail` suffix).
+   */
+  step(kind: StepKind, message: String, detail: String = ''): String {
+    let sym = this.symbolFor(kind);
+    if (detail == '') {
+      return `${sym}  ${message}`;
+    }
+    return `${sym}  ${message} ${this.colors.dim(detail)}`;
+  }
+
+  /**
+   * Formats multi-line command output as rail-indented lines (`│  ...`).
+   * Uses a red guide bar when `isError` is true.
+   */
+  logBlock(text: String, isError: boolean = false): Array<String> {
+    let lines = splitLines(text);
+    let out = new GrowableArray<String>();
+    let rail = if (isError) this.colors.red(BAR) else this.colors.gray(BAR);
+    for (let line in lines) {
+      if (line == '') {
+        out.push(rail);
+      } else {
+        out.push(`${rail}  ${line}`);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Formats a Clack-style boxed note attached to the rail (`├`, `╮`, `╯`).
+   */
+  note(body: String, title: String = ''): String {
+    let lines = splitLines(body);
+    var maxLen = visibleLength(title);
+    for (let line in lines) {
+      let len = visibleLength(line);
+      if (len > maxLen) {
+        maxLen = len;
+      }
+    }
+    let innerWidth = maxLen + 2;
+    let c = this.colors;
+    let sb = new StringBuilder();
+    if (title != '') {
+      let titleLen = visibleLength(title);
+      let topBars = if (innerWidth - titleLen - 1 > 1)
+        innerWidth - titleLen - 1
+      else
+        1;
+      sb.append(
+        `${c.gray(STEP_SUBMIT)}  ${title} ${c.gray(repeatString(BAR_H, topBars) + CORNER_TOP_RIGHT)}\n`,
+      );
+    } else {
+      sb.append(
+        `${c.gray(CONNECT_LEFT + repeatString(BAR_H, innerWidth + 2) + CORNER_TOP_RIGHT)}\n`,
+      );
+    }
+    sb.append(
+      `${c.gray(BAR)}  ${repeatString(' ', innerWidth)}${c.gray(BAR)}\n`,
+    );
+    for (let line in lines) {
+      sb.append(
+        `${c.gray(BAR)}  ${padVisibleRight(line, innerWidth)}${c.gray(BAR)}\n`,
+      );
+    }
+    sb.append(
+      `${c.gray(BAR)}  ${repeatString(' ', innerWidth)}${c.gray(BAR)}\n`,
+    );
+    sb.append(
+      `${c.gray(CONNECT_LEFT + repeatString(BAR_H, innerWidth + 2) + CORNER_BOTTOM_RIGHT)}`,
+    );
+    return sb.toString();
+  }
+
+  /** Formats the closing rail line (`└  <message>`). */
+  outro(message: String): String {
+    return `${this.colors.gray(BAR_END)}  ${message}`;
+  }
+}
