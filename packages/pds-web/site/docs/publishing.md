@@ -51,10 +51,12 @@ To be published, a package's `zena-package.json` must include `name`, `version`,
   "description": "HTTP request router for Zena",
   "license": "MIT",
   "exports": {
-    "server": {"path": "src/server.zena"}
+    "server": {}
   }
 }
 ```
+
+The library `server` is `src/server.zena`: a package's libraries are in `src/` unless its `source` says otherwise.
 
 ::: note Closed exports
 Defining `exports` makes the package closed: dependents can only import the library names listed in `exports`, keeping internal helper files private to your package. See [Package Manifests](/docs/manifests/) for details.

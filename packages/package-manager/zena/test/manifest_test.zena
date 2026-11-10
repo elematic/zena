@@ -1,6 +1,7 @@
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue, jsonEqual} from 'zena:assert';
 import {OrderedHashMap} from 'zena:collections';
+import {join} from 'zena:core';
 import {parseJson} from 'zena:json';
 import {ManifestError, readManifest, writeDependencies, writeDid} from 'package-manager:manifest';
 import {Requirement} from 'package-manager:resolve';
@@ -57,6 +58,20 @@ export let tests = suite('package-manager:manifest', () => {
     equal(manifest.workspacePackages.length, 2);
     equal(manifest.workspacePackages[1], 'tools/gen');
     equal(manifest.scopes['@widgets'], 'widgets.alt-pkg.org');
+  });
+
+  test("measures exports' files from the source directory, src by default", (ctx) => {
+    let named = readManifest(`{"exports": {"server": {}, "client": {"path": "./web/client.zena"},
+        "console": {"virtual": {"js": "console/js.zena"}}}}`);
+    equal(named.source, 'src');
+    equal(join(named.exportFiles, ' '), 'src/server.zena src/web/client.zena src/console/js.zena');
+    let atRoot = readManifest('{"source": "./", "exports": {"server": {}}}');
+    equal(atRoot.source, '.');
+    equal(join(atRoot.exportFiles, ' '), 'server.zena');
+    equal(readManifest('{"source": "lib/zena/"}').source, 'lib/zena');
+    rejects('{"source": "../shared"}');
+    rejects('{"source": "/abs"}');
+    rejects('{"source": 3}');
   });
 
   test('reads a missing or minimal manifest as empty', (ctx) => {
